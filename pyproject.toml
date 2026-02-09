@@ -40,8 +40,8 @@ packages = ["hibiki_zero"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
-# [project.scripts]
-# hibiki-zero = "hibiki-zero.main:serve"
+[project.scripts]
+hibiki-zero = "hibiki_zero.server:serve"
 
 [tool.uv]
 # System python distribution can have header files missing, so we use only the python
