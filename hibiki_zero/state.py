@@ -43,15 +43,14 @@ class ServerState:
         mimi: MimiModel,
         text_tokenizer: sentencepiece.SentencePieceProcessor,
         lm: LMModel,
-        cfg_coef: float,
         device: str | torch.device,
         **kwargs,
     ):
         self.model_type = model_type
         self.mimi = mimi
         self.text_tokenizer = text_tokenizer
-        condition_tensors = get_condition_tensors(model_type, lm, batch_size=1, cfg_coef=cfg_coef)
-        self.lm_gen = LMGen(lm, cfg_coef=cfg_coef, condition_tensors=condition_tensors, **kwargs)
+        condition_tensors = get_condition_tensors(model_type, lm, batch_size=1, cfg_coef=1)
+        self.lm_gen = LMGen(lm, cfg_coef=1, condition_tensors=condition_tensors, **kwargs)
 
         self.device = device
         self.frame_size = int(self.mimi.sample_rate / self.mimi.frame_rate)

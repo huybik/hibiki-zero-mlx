@@ -3,13 +3,16 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+import sys
 import inspect
 import tarfile
 import secrets
 from pathlib import Path
 from typing import Optional
+from typing_extensions import Annotated
 
-import torch, typer
+import torch
+import typer
 from aiohttp import web
 from huggingface_hub import hf_hub_download
 
@@ -21,27 +24,27 @@ DEFAULT_REPO: str = "kyutai/hibiki-zero-3b-pytorch-bf16"
 
 cli_app = typer.Typer()
 
-
 @cli_app.command()
 def serve(
-    host: str = typer.Option("localhost", help="Host to bind the server to."),
-    port: int = typer.Option(8998, help="Port to bind the server to."),
-    static: Optional[str] = typer.Option(None, help="Path to static files directory, or 'none'."),
-    gradio_tunnel: bool = typer.Option(False, help="Activate a gradio tunnel."),
-    gradio_tunnel_token: Optional[str] = typer.Option(None, help="Custom tunnel token."),
-    tokenizer: Optional[str] = typer.Option(None, help="Path to a local tokenizer file."),
-    moshi_weight: Optional[str] = typer.Option(None, help="Path to a Moshi checkpoint."),
-    mimi_weight: Optional[str] = typer.Option(None, help="Path to a Mimi checkpoint."),
-    hf_repo: str = typer.Option(DEFAULT_REPO, help="HF repo for model, codec and tokenizer."),
-    lora_weight: Optional[str] = typer.Option(None, help="Path to a LoRA checkpoint."),
-    config_path: Optional[str] = typer.Option(None, help="Path to a config file."),
-    cfg_coef: float = typer.Option(1.0, help="CFG coefficient."),
-    device: str = typer.Option("cuda", help="Device to run on."),
-    fuse_lora: bool = typer.Option(True, "--fuse-lora/--no-fuse-lora", help="Fuse LoRA layers."),
-    bf16: bool = typer.Option(False, help="Use bfloat16."),
-    ssl: Optional[str] = typer.Option(None, help="Directory containing cert.pem and key.pem."),
+    host: Annotated[str, typer.Option(help="Host to bind the server to.")] = "localhost",
+    port: Annotated[int, typer.Option(help="Port to bind the server to.")] = 8998,
+    static: Annotated[Optional[str], typer.Option(help="Path to static files directory, or 'none'.")] = None,
+    gradio_tunnel: Annotated[bool, typer.Option(help="Activate a gradio tunnel.")] = False,
+    gradio_tunnel_token: Annotated[Optional[str], typer.Option(help="Custom tunnel token.")] = None,
+    tokenizer: Annotated[Optional[str], typer.Option(help="Path to a text tokenizer file.")] = None,
+    moshi_weight: Annotated[Optional[str], typer.Option(help="Path to a Hibiki-Zero checkpoint.")] = None,
+    mimi_weight: Annotated[Optional[str], typer.Option(help="Path to a Mimi checkpoint.")] = None,
+    hf_repo: Annotated[str, typer.Option(help="HF repo for model, codec and text tokenizer.")] = DEFAULT_REPO,
+    lora_weight: Annotated[Optional[str], typer.Option(help="Path to a LoRA checkpoint.")] = None,
+    config_path: Annotated[Optional[str], typer.Option(help="Path to a config file.")] = None,
+    device: Annotated[str, typer.Option(help="Device to run on.")] = "cuda",
+    fuse_lora: Annotated[bool, typer.Option("--fuse-lora/--no-fuse-lora", help="Fuse LoRA layers.")] = True,
+    bf16: Annotated[bool, typer.Option(help="Use bfloat16.")] = False,
+    ssl: Annotated[Optional[str], typer.Option(help="Directory containing cert.pem and key.pem.")] = None,
+    seed: Annotated[int, typer.Option(help="Random seed.")] = 42,
 ):
-    seed_all(42424242)
+
+    seed_all(seed)
     dtype = torch.bfloat16 if bf16 else torch.float16
 
     log("info", "Starting Hibiki-Zero server.")
@@ -81,7 +84,6 @@ def serve(
         mimi,
         text_tokenizer,
         lm,
-        cfg_coef,
         device,
         **checkpoint_info.lm_gen_config,
     )
@@ -133,6 +135,11 @@ def serve(
         log("info", "Note: tunnel goes through the US; expect higher latency in Europe.")
 
     web.run_app(web_app, host=host, port=port, ssl_context=ssl_context)
+
+
+@cli_app.command()
+def generate():
+    raise NotImplementedError("WIP")
 
 
 def main():

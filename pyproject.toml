@@ -41,7 +41,7 @@ packages = ["hibiki_zero"]
 allow-direct-references = true
 
 [project.scripts]
-hibiki-zero = "hibiki_zero.server:serve"
+hibiki-zero = "hibiki_zero.run:cli_app"
 
 [tool.uv]
 # System python distribution can have header files missing, so we use only the python
