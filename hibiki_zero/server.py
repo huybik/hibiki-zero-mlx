@@ -3,14 +3,14 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
-import sys
-from pathlib import Path
+import inspect
 import tarfile
 import secrets
-import argparse
-import inspect
+from pathlib import Path
+from typing import Optional
+
+import torch, typer
 from aiohttp import web
-import torch
 from huggingface_hub import hf_hub_download
 
 from moshi.models import loaders
@@ -19,163 +19,126 @@ from hibiki_zero.state import seed_all, ServerState
 
 DEFAULT_REPO: str = "kyutai/hibiki-zero-3b-pytorch-bf16"
 
+cli_app = typer.Typer()
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="localhost", type=str)
-    parser.add_argument("--port", default=8998, type=int)
-    parser.add_argument("--static", type=str)
-    parser.add_argument("--gradio-tunnel", action="store_true", help="Activate a gradio tunnel.")
-    parser.add_argument(
-        "--gradio-tunnel-token",
-        help="Provide a custom (secret) token here to keep getting the same URL.",
-    )
-    parser.add_argument("--tokenizer", type=str, help="Path to a local tokenizer file.")
-    parser.add_argument(
-        "--moshi-weight", type=str, help="Path to a local checkpoint file for Moshi."
-    )
-    parser.add_argument("--mimi-weight", type=str, help="Path to a local checkpoint file for Mimi.")
-    parser.add_argument(
-        "--hf-repo",
-        type=str,
-        default=DEFAULT_REPO,
-        help="HF repo to look into to load the model, codec and text tokenizer.",
-    )
-    parser.add_argument(
-        "--lora-weight", type=str, help="Path to a local checkpoint file for LoRA.", default=None
-    )
-    parser.add_argument(
-        "--config-path", type=str, help="Path to a local config file.", default=None
-    )
-    parser.add_argument("--cfg-coef", type=float, default=1.0, help="CFG coefficient.")
-    parser.add_argument(
-        "--device", type=str, default="cuda", help="Device on which to run, defaults to 'cuda'."
-    )
-    parser.add_argument(
-        "--no_fuse_lora",
-        action="store_false",
-        dest="fuse_lora",
-        default=True,
-        help="Do not fuse LoRA layers intot Linear layers.",
-    )
-    parser.add_argument(
-        "--bf16",
-        action="store_const",
-        const=torch.bfloat16,
-        default=torch.float16,
-        dest="dtype",
-        help="Run inference with bfloat16 (float16 might be better for old GPUs).",
-    )
-    parser.add_argument(
-        "--ssl",
-        type=str,
-        help=(
-            "use https instead of http, this flag should point to a directory "
-            "that contains valid key.pem and cert.pem files"
-        ),
-    )
 
-    args = parser.parse_args()
+@cli_app.command()
+def serve(
+    host: str = typer.Option("localhost", help="Host to bind the server to."),
+    port: int = typer.Option(8998, help="Port to bind the server to."),
+    static: Optional[str] = typer.Option(None, help="Path to static files directory, or 'none'."),
+    gradio_tunnel: bool = typer.Option(False, help="Activate a gradio tunnel."),
+    gradio_tunnel_token: Optional[str] = typer.Option(None, help="Custom tunnel token."),
+    tokenizer: Optional[str] = typer.Option(None, help="Path to a local tokenizer file."),
+    moshi_weight: Optional[str] = typer.Option(None, help="Path to a Moshi checkpoint."),
+    mimi_weight: Optional[str] = typer.Option(None, help="Path to a Mimi checkpoint."),
+    hf_repo: str = typer.Option(DEFAULT_REPO, help="HF repo for model, codec and tokenizer."),
+    lora_weight: Optional[str] = typer.Option(None, help="Path to a LoRA checkpoint."),
+    config_path: Optional[str] = typer.Option(None, help="Path to a config file."),
+    cfg_coef: float = typer.Option(1.0, help="CFG coefficient."),
+    device: str = typer.Option("cuda", help="Device to run on."),
+    fuse_lora: bool = typer.Option(True, "--fuse-lora/--no-fuse-lora", help="Fuse LoRA layers."),
+    bf16: bool = typer.Option(False, help="Use bfloat16."),
+    ssl: Optional[str] = typer.Option(None, help="Directory containing cert.pem and key.pem."),
+):
     seed_all(42424242)
+    dtype = torch.bfloat16 if bf16 else torch.float16
 
-    setup_tunnel = None
-    tunnel_token = ""
-    if args.gradio_tunnel:
+    log("info", "Starting Hibiki-Zero server.")
+    setup_tunnel, tunnel_token = None, ""
+    if gradio_tunnel:
         try:
             from gradio import networking  # type: ignore
         except ImportError:
             log(
-                "error",
-                "Cannot find gradio which is required to activate a tunnel. "
-                "Please install with `pip install gradio`.",
+                "error", "Gradio is required for tunnel support. Install with `pip install gradio`."
             )
-            sys.exit(1)
+            raise typer.Exit(1)
         setup_tunnel = networking.setup_tunnel
-        if args.gradio_tunnel_token is None:
-            tunnel_token = secrets.token_urlsafe(32)
-        else:
-            tunnel_token = args.gradio_tunnel_token
-
-    log("info", "Starting Hibiki-Zero server.")
+        tunnel_token = (
+            secrets.token_urlsafe(32) if gradio_tunnel_token is None else gradio_tunnel_token
+        )
 
     log("info", "Retrieving the model checkpoint...")
     checkpoint_info = loaders.CheckpointInfo.from_hf_repo(
-        args.hf_repo,
-        args.moshi_weight,
-        args.mimi_weight,
-        args.tokenizer,
-        lora_weights=args.lora_weight,
-        config_path=args.config_path,
+        hf_repo,
+        moshi_weight,
+        mimi_weight,
+        tokenizer,
+        lora_weights=lora_weight,
+        config_path=config_path,
     )
-    log("info", "Loading the codec...")
-    mimi = checkpoint_info.get_mimi(device=args.device)
-    # log("info", "Mimi loaded!")
 
+    log("info", "Loading the codec...")
+    mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
     log("info", "Loading the model...")
-    lm = checkpoint_info.get_moshi(device=args.device, dtype=args.dtype, fuse_lora=args.fuse_lora)
-    # log("info", "Hibiki-Zero loaded!")
+    lm = checkpoint_info.get_moshi(device=device, dtype=dtype, fuse_lora=fuse_lora)
 
     state = ServerState(
         checkpoint_info.model_type,
         mimi,
         text_tokenizer,
         lm,
-        args.cfg_coef,
-        args.device,
+        cfg_coef,
+        device,
         **checkpoint_info.lm_gen_config,
     )
     log("info", "Warming up the model...")
     state.warmup()
-    app = web.Application()
-    app.router.add_get("/api/chat", state.handle_chat)
-    static_path: None | str = None
-    if args.static is None:
+
+    web_app = web.Application()
+    web_app.router.add_get("/api/chat", state.handle_chat)
+
+    static_path: Optional[str] = None
+    if static is None:
         log("info", "Retrieving the static content...")
-        dist_tgz = hf_hub_download("kyutai/moshi-artifacts", "dist.tgz")
-        dist_tgz = Path(dist_tgz)
+        dist_tgz = Path(hf_hub_download("kyutai/moshi-artifacts", "dist.tgz"))
         dist = dist_tgz.parent / "dist"
         if not dist.exists():
             with tarfile.open(dist_tgz, "r:gz") as tar:
                 tar.extractall(path=dist_tgz.parent)
         static_path = str(dist)
-    elif args.static != "none":
-        # When set to the "none" string, we don't serve any static content.
-        static_path = args.static
+    elif static != "none":
+        static_path = static
+
     if static_path is not None:
 
         async def handle_root(_):
             return web.FileResponse(os.path.join(static_path, "index.html"))
 
-        # log("info", "Serving static content from {0}", [(static_path, "yellow")])
-        app.router.add_get("/", handle_root)
-        app.router.add_static("/", path=static_path, follow_symlinks=True, name="static")
-    protocol = "http"
-    ssl_context = None
-    if args.ssl is not None:
-        import ssl
+        web_app.router.add_get("/", handle_root)
+        web_app.router.add_static("/", path=static_path, follow_symlinks=True, name="static")
 
-        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        cert_file = os.path.join(args.ssl, "cert.pem")
-        key_file = os.path.join(args.ssl, "key.pem")
-        ssl_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    protocol, ssl_context = "http", None
+    if ssl is not None:
+        import ssl as ssl_module
+
+        ssl_context = ssl_module.create_default_context(ssl_module.Purpose.CLIENT_AUTH)
+        ssl_context.load_cert_chain(
+            certfile=os.path.join(ssl, "cert.pem"), keyfile=os.path.join(ssl, "key.pem")
+        )
         protocol = "https"
 
-    local_url: str = f"{protocol}://{args.host}:{args.port}"
+    local_url = f"{protocol}://{host}:{port}"
     log("info", "Access the Web UI directly at {0}", [(local_url, "orange")])
+
     if setup_tunnel is not None:
         tunnel_kwargs = {}
         if "share_server_tls_certificate" in inspect.signature(setup_tunnel).parameters:
             tunnel_kwargs["share_server_tls_certificate"] = None
-        tunnel = setup_tunnel("localhost", args.port, tunnel_token, None, **tunnel_kwargs)  # type: ignore
-        log("info", "Tunnel started, if executing on a remote GPU, you can go at {0}", [(tunnel, "green")])
-        log(
-            "info",
-            "Note that this tunnel goes through the US and you might experience high latency in Europe.",
-        )
-    web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)
+        tunnel = setup_tunnel("localhost", port, tunnel_token, None, **tunnel_kwargs)  # type: ignore
+        log("info", "Tunnel started at {0}", [(tunnel, "green")])
+        log("info", "Note: tunnel goes through the US; expect higher latency in Europe.")
+
+    web.run_app(web_app, host=host, port=port, ssl_context=ssl_context)
 
 
-with torch.no_grad():
+def main():
+    with torch.no_grad():
+        cli_app()
+
+
+if __name__ == "__main__":
     main()
