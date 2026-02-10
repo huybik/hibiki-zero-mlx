@@ -55,6 +55,10 @@ def serve(
     ] = None,
     seed: Annotated[int, typer.Option(help="Random seed.")] = 42,
 ):
+    if not torch.cuda.is_available():
+        log("error", "Found no NVIDIA driver on your system. The server needs to be launched from a machine that has access to a GPU.")
+        return
+
     seed_all(seed)
     dtype = torch.bfloat16 if bf16 else torch.float16
 
@@ -151,6 +155,9 @@ def serve(
 @cli_app.command()
 @torch.no_grad()
 def generate():
+    if not torch.cuda.is_available():
+        log("error", "Found no NVIDIA driver on your system. Generatin needs to be launched from a machine that has access to a GPU.")
+        return
     raise NotImplementedError("WIP")
 
 
