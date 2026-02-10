@@ -215,5 +215,7 @@ __marimo__/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
-# Custom
+
+# User
 translations/
+blog/
