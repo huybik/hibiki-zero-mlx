@@ -1,0 +1,47 @@
+@import url("./satoshi.css");
+@import "tailwindcss";
+
+:root {
+  --green: #39F2AE;
+  --offwhite: #EFEFEF;
+  --textgray: #b5bcc5;
+  --lightgray: #9d9d9d;
+  --gray: #343434;
+  --background: #121212;
+
+  --orange: #f5ab4a;
+  /* for errors */
+  --red: #f55142;
+
+  font-family:
+    'Satoshi-Variable',
+    system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-weight: 500;
+  line-height: 1.5;
+  font-size: 1.35rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-green: var(--green);
+  --color-offwhite: var(--offwhite);
+  --color-lightgray: var(--lightgray);
+  --color-textgray: var(--textgray);
+  --color-gray: var(--gray);
+  --color-darkgray: var(--darkgray);
+  --color-orange: var(--orange);
+  --color-pink: var(--pink);
+  --color-purple: var(--purple);
+  --color-red: var(--red);
+  --color-background: var(--background);
+  /* sometimes it's useful to have these as variables too */
+  --color-white: #ffffff;
+  --color-black: #000000;
+}
+
+body {
+  background: var(--background);
+  color: var(--offwhite);
+}
