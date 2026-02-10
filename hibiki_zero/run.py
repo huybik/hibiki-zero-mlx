@@ -191,6 +191,7 @@ def generate(
     seed_all(seed)
     dtype = torch.bfloat16 if bf16 else torch.float16
     
+    log("info", "Starting Hibiki-Zero inference.")
     files = files if files is not None else DEFAULT_AUDIO_SAMPLES
     all_files_exist: bool = len(files) > 0
     for fpath in files:
