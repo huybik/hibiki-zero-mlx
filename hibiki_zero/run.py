@@ -25,7 +25,6 @@ DEFAULT_REPO: str = "kyutai/hibiki-zero-3b-pytorch-bf16"
 cli_app = typer.Typer()
 
 
-@torch.no_grad()
 @cli_app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Host to bind the server to.")] = "localhost",
@@ -148,7 +147,6 @@ def serve(
     web.run_app(web_app, host=host, port=port, ssl_context=ssl_context)
 
 
-@torch.no_grad()
 @cli_app.command()
 def generate():
     raise NotImplementedError("WIP")
