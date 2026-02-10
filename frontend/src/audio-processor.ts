@@ -16,7 +16,7 @@ class MoshiProcessor extends AudioWorkletProcessor {
     // Buffer length definitions
     let frameSize = asSamples(80);
     // initialBufferSamples: we wait to have at least that many samples before starting to play
-    this.initialBufferSamples = 1 * frameSize;
+    this.initialBufferSamples = 6 * frameSize;
     // once we have enough samples, we further wait that long before starting to play.
     // This allows to have buffer lengths that are not a multiple of frameSize.
     this.partialBufferSamples = asSamples(10);
