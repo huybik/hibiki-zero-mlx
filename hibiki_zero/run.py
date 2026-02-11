@@ -42,26 +42,26 @@ cli_app = typer.Typer()
 def serve(
     host: Annotated[str, typer.Option(help="Host to bind the server to.")] = "localhost",
     port: Annotated[int, typer.Option(help="Port to bind the server to.")] = 8998,
-    static: Annotated[
-        Optional[str], typer.Option(help="Path to static files directory, or 'none'.")
-    ] = None,
+    static: Annotated[Optional[str], typer.Option(help="Path to static files directory.")] = None,
     gradio_tunnel: Annotated[bool, typer.Option(help="Activate a gradio tunnel.")] = False,
     gradio_tunnel_token: Annotated[Optional[str], typer.Option(help="Custom tunnel token.")] = None,
-    tokenizer: Annotated[Optional[str], typer.Option(help="Path to a text tokenizer file.")] = None,
-    moshi_weight: Annotated[
-        Optional[str], typer.Option(help="Path to a Hibiki-Zero checkpoint.")
-    ] = None,
-    mimi_weight: Annotated[Optional[str], typer.Option(help="Path to a Mimi checkpoint.")] = None,
     hf_repo: Annotated[
         str, typer.Option(help="HF repo for model, codec and text tokenizer.")
     ] = DEFAULT_REPO,
-    lora_weight: Annotated[Optional[str], typer.Option(help="Path to a LoRA checkpoint.")] = None,
     config_path: Annotated[Optional[str], typer.Option(help="Path to a config file.")] = None,
-    device: Annotated[str, typer.Option(help="Device to run on.")] = "cuda",
+    tokenizer: Annotated[Optional[str], typer.Option(help="Path to a text tokenizer file.")] = None,
+    model_weight: Annotated[
+        Optional[str], typer.Option(help="Path to a Hibiki-Zero checkpoint.")
+    ] = None,
+    mimi_weight: Annotated[
+        Optional[str], typer.Option(help="Path to a Mimi codec checkpoint.")
+    ] = None,
+    lora_weight: Annotated[Optional[str], typer.Option(help="Path to a LoRA checkpoint.")] = None,
     fuse_lora: Annotated[
         bool, typer.Option("--fuse-lora/--no-fuse-lora", help="Fuse LoRA layers.")
     ] = True,
     bf16: Annotated[bool, typer.Option(help="Use bfloat16.")] = False,
+    device: Annotated[str, typer.Option(help="Device to run on.")] = "cuda",
     ssl: Annotated[
         Optional[str], typer.Option(help="Directory containing cert.pem and key.pem.")
     ] = None,
@@ -96,18 +96,18 @@ def serve(
     log("info", "Retrieving the model checkpoint...")
     checkpoint_info = loaders.CheckpointInfo.from_hf_repo(
         hf_repo,
-        moshi_weight,
+        model_weight,
         mimi_weight,
         tokenizer,
         lora_weights=lora_weight,
         config_path=config_path,
     )
 
-    log("info", "Loading the codec...")
+    log("info", "Loading the codec {0}", [(checkpoint_info.mimi_weights, "blue")])
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
-    log("info", "Loading the model...")
+    log("info", "Loading the model {0}", [(checkpoint_info.moshi_weights, "blue")])
     lm = checkpoint_info.get_moshi(device=device, dtype=dtype, fuse_lora=fuse_lora)
 
     state = ServerState(
@@ -173,42 +173,39 @@ def serve(
 def generate(
     files: Annotated[list[Path], typer.Option("--file", help="Input files to translate.")] = None,
     gen_duration: Annotated[
-        float, typer.Option("--gen-duration", help="Generation duration in seconds.")
+        float,
+        typer.Option(
+            help="Generation duration in seconds. Should be <=120 seconds for Hibiki-Zero."
+        ),
     ] = 120,
-    out_dir: Annotated[
-        str, typer.Option("--out_dir", help="Directory where to save the outputs.")
-    ] = None,
+    out_dir: Annotated[Path, typer.Option(help="Directory where to save the outputs.")] = None,
     tag: Annotated[
-        str,
-        typer.Option("--tag", help="Tag to add to translation outputs filenames to identify them."),
+        str, typer.Option(help="Tag to add to translation outputs filenames to identify them.")
     ] = None,
-    repeats: Annotated[
-        int, typer.Option("--repeats", help="Do repeats generation for each input file.")
-    ] = 1,
-    tokenizer: Annotated[Optional[str], typer.Option(help="Path to a text tokenizer file.")] = None,
-    moshi_weight: Annotated[
-        Optional[str], typer.Option(help="Path to a Hibiki-Zero checkpoint.")
-    ] = None,
-    mimi_weight: Annotated[Optional[str], typer.Option(help="Path to a Mimi checkpoint.")] = None,
+    repeats: Annotated[int, typer.Option(help="Do repeats generation for each input file.")] = 1,
     hf_repo: Annotated[
         str, typer.Option(help="HF repo for model, codec and text tokenizer.")
     ] = DEFAULT_REPO,
-    lora_weight: Annotated[Optional[str], typer.Option(help="Path to a LoRA checkpoint.")] = None,
     config_path: Annotated[Optional[str], typer.Option(help="Path to a config file.")] = None,
-    device: Annotated[str, typer.Option(help="Device to run on.")] = "cuda",
+    tokenizer: Annotated[Optional[str], typer.Option(help="Path to a text tokenizer file.")] = None,
+    model_weight: Annotated[
+        Optional[str], typer.Option(help="Path to a Hibiki-Zero checkpoint.")
+    ] = None,
+    mimi_weight: Annotated[
+        Optional[str], typer.Option(help="Path to a Mimi codec checkpoint.")
+    ] = None,
+    lora_weight: Annotated[Optional[str], typer.Option(help="Path to a LoRA checkpoint.")] = None,
     fuse_lora: Annotated[
         bool, typer.Option("--fuse-lora/--no-fuse-lora", help="Fuse LoRA layers.")
     ] = True,
     bf16: Annotated[bool, typer.Option(help="Use bfloat16.")] = False,
-    ssl: Annotated[
-        Optional[str], typer.Option(help="Directory containing cert.pem and key.pem.")
-    ] = None,
+    device: Annotated[str, typer.Option(help="Device to run on.")] = "cuda",
     seed: Annotated[int, typer.Option(help="Random seed.")] = 42,
 ):
     if not torch.cuda.is_available():
         log(
             "error",
-            "Found no NVIDIA driver on your system. Generatin needs to be launched from a machine that has access to a GPU.",
+            "Found no NVIDIA driver on your system. Generation needs to be done on a machine that has access to a GPU.",
         )
         return
 
@@ -227,25 +224,25 @@ def generate(
         if len(files) == 0:
             log("error", f"No files provided.")
         return
-    log("info", "Audio files to process in a single batch:")
+    log("info", "The following audios will be processed in a single batch:")
     for fidx, fpath in enumerate(files):
         log("info", f"{fidx} : " + "{0}", [(fpath, "grey")])
 
     log("info", "Retrieving the model checkpoint...")
     checkpoint_info = loaders.CheckpointInfo.from_hf_repo(
         hf_repo,
-        moshi_weight,
+        model_weight,
         mimi_weight,
         tokenizer,
         lora_weights=lora_weight,
         config_path=config_path,
     )
 
-    log("info", "Loading the codec...")
+    log("info", "Loading the codec {0}", [(checkpoint_info.mimi_weights, "blue")])
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
-    log("info", "Loading the model...")
+    log("info", "Loading the model {0}", [(checkpoint_info.moshi_weights, "blue")])
     lm = checkpoint_info.get_moshi(device=device, dtype=dtype, fuse_lora=fuse_lora)
 
     log("info", "Loading audios...")
