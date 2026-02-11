@@ -11,11 +11,16 @@ If you don't have `node` either, get it using:
 pnpm env use --global lts
 ```
 
-Install: `pnpm install`
+Then install using `pnpm install`.
 
-To run in dev mode: `pnpm dev`.
-This will start a development server that will auto-reload if you change the source files. 
+To run in dev mode, starting a development server that will auto-reload if you change the source files:
+```bash
+pnpm dev
+```
 
-To run in production mode: First build using `pnpm build`, then start the server with `pnpm start`.
+To get a static build that you can serve using a webserver:
+```bash
+STATIC_EXPORT=1 pnpm next build
+```
 
 For either of these, you can specify the host using `--host` and the port using `--port`.
