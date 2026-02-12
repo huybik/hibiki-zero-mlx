@@ -3,10 +3,7 @@
 Hibiki-Zero is a real-time and multilingual speech translation model.
 It translates from French, Spanish, Portuguese and German to English: accurately, with low latency, high audio quality, and voice transfer.
 
-<video controls width="400">
-    <source src="https://huggingface.co/spaces/kyutai/hibiki-zero-samples/resolve/main/videos/clip_fr_translated.mp4" type="video/mp4">
-    Your browser does not support the video tag.
-</video>
+https://github.com/user-attachments/assets/d533ec45-8d5e-4e41-886a-0b2d198be6f3
 
 [🤗 Hugging Face Model Card](https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16) | 
 [⚙️ Tech report](https://kyutai.org/blog/2026-02-12-hibiki-zero) |
