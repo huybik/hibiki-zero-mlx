@@ -21,11 +21,7 @@ jobs:
         version: 10
     - name: Build frontend
       run: |
-        cd frontend
-        pnpm install
-        STATIC_EXPORT=1 pnpm next build
-        mkdir -p ../hibiki_zero/static
-        cp -r out/* ../hibiki_zero/static/
+        bash build_frontend.sh
     - name: Temporarily unignore static in gitignore
       run: sed -i 's/^hibiki_zero\/static\/$/# hibiki_zero\/static\//' .gitignore
     - name: Build wheels
