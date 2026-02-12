@@ -24,7 +24,8 @@ export default function Home() {
   const userVisualizerRef = useRef<WaveformVisualizerRef>(null);
   const hibikiVisualizerRef = useRef<WaveformVisualizerRef>(null);
 
-  const webSocketUrl = "ws://localhost:8998/api/chat";
+  const wsProtocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+  const webSocketUrl = `${wsProtocol}//${typeof window !== "undefined" ? window.location.host : "localhost"}/api/chat`;
 
   const { sendMessage, readyState, lastMessage } = useWebSocket(
     webSocketUrl,
