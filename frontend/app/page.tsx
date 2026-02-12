@@ -24,7 +24,10 @@ export default function Home() {
   const userVisualizerRef = useRef<WaveformVisualizerRef>(null);
   const hibikiVisualizerRef = useRef<WaveformVisualizerRef>(null);
 
-  const wsProtocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsProtocol =
+    typeof window !== "undefined" && window.location.protocol === "https:"
+      ? "wss:"
+      : "ws:";
   const webSocketUrl = `${wsProtocol}//${typeof window !== "undefined" ? window.location.host : "localhost"}/api/chat`;
 
   const { sendMessage, readyState, lastMessage } = useWebSocket(
@@ -170,7 +173,8 @@ export default function Home() {
             {/* TODO link to blog and code */}
           </p>
           <p>
-            Hibiki-Zero translates into English from French, Spanish, Portuguese and German.
+            Hibiki-Zero translates into English from French, Spanish, German,
+            and Portugese.
           </p>
           <p>Use headphones for a better experience.</p>
         </div>
