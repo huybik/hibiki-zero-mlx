@@ -19,18 +19,32 @@ Hibiki-Zero is a 3B-parameter model and requires an NVIDIA GPU to run: 8 GB VRAM
 Hibiki-Zero comes with a server you can run to interact with Hibiki in real time. To run it, just use:
 
 ```python
-uv run hibiki-zero serve [--gradio-tunnel]
+uvx -p 3.13 hibiki-zero serve [--gradio-tunnel]
 ```
 
 Then go to the URL displayed to try out Hibiki-Zero.
 The `--gradio-tunnel` flag will forward the server to a public URL that you can access from anywhere.
+
+If you don't have `uv`, you must first install hibiki-zero with `pip install hibiki-zero` and then run the server with `hibiki-zero serve [--gradio-tunnel]`.
 
 ## Run inference
 
 If you'd like to run Hibiki-Zero on existing audio files, run:
 
 ```python
-uv run hibiki-zero generate [--file /path/to/my/audio.wav --file /path/to/another/audio.mp3]
+uvx -p 3.13 hibiki-zero generate [--file /path/to/my/audio.wav --file /path/to/another/audio.mp3]
 ```
 
 Batch inference is supported, meaning you can run the model on multiple audio files at the same time.
+
+## Local development
+
+We recomment using `uv`, run anything with `uv run` in this repository. For example
+
+```bash
+uv run some_file.py
+or 
+uv run hibiki-zero serve
+```
+if you use pip, use `pip install -e .` before executing python commands.
+

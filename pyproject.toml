@@ -2,7 +2,7 @@
 name = "hibiki-zero"
 requires-python = ">= 3.10,<3.14"
 description = "Simultaneous Speech-to-Speech Translation Without Aligned Data."
-version = "0.0.3"
+version = "0.0.4"
 readme = "README.md"
 dependencies = [
     # TODO: use the public release of moshi when it's been published
