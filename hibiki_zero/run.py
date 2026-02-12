@@ -73,6 +73,14 @@ def serve(
     seed_all(seed)
     dtype = torch.bfloat16 if bf16 else torch.float16
 
+    if not static.exists():
+        log(
+            "error",
+            "Static frontend directory {0} doesn't exist, please run {1} first.",
+            [(static, "grey"), (MODULE_DIR.parent / "build_frontend.sh", "orange")],
+        )
+        return
+
     log("info", "Starting Hibiki-Zero server.")
     setup_tunnel, tunnel_token = None, ""
     if gradio_tunnel:
@@ -127,25 +135,11 @@ def serve(
     web_app = web.Application()
     web_app.router.add_get("/api/chat", state.handle_chat)
 
-    static_path: Optional[str] = None
-    if static is None:
-        log("info", "Retrieving the static content...")
-        dist_tgz = Path(hf_hub_download("kyutai/moshi-artifacts", "dist.tgz"))
-        dist = dist_tgz.parent / "dist"
-        if not dist.exists():
-            with tarfile.open(dist_tgz, "r:gz") as tar:
-                tar.extractall(path=dist_tgz.parent)
-        static_path = str(dist)
-    elif static != "none":
-        static_path = static
+    async def handle_root(_):
+        return web.FileResponse(os.path.join(static, "index.html"))
 
-    if static_path is not None:
-
-        async def handle_root(_):
-            return web.FileResponse(os.path.join(static_path, "index.html"))
-
-        web_app.router.add_get("/", handle_root)
-        web_app.router.add_static("/", path=static_path, follow_symlinks=True, name="static")
+    web_app.router.add_get("/", handle_root)
+    web_app.router.add_static("/", path=static, follow_symlinks=True, name="static")
 
     protocol, ssl_context = "http", None
     if ssl is not None:
