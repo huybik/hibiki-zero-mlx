@@ -166,14 +166,13 @@ export default function Home() {
         <h1 className="text-5xl text-green pb-1">Hibiki-Zero</h1>
         <div className="flex flex-col gap-2">
           <p>
-            Kyutai&apos;s real-time speech translation model.
+            Kyutai&apos;s latest real-time speech-to-speech translation model.
             {/* TODO link to blog and code */}
           </p>
           <p>
-            Hibiki-Zero translates into English from French, Spanish, German,
-            Portugese and Italian.
+            Hibiki-Zero translates into English from French, Spanish, Portugese and German.
           </p>
-          <p>Use headphones for best results.</p>
+          <p>Use headphones for a better experience.</p>
         </div>
 
         <div className="w-full flex flex-row items-center justify-center gap-4">
