@@ -234,12 +234,13 @@ def generate(
 
     log("info", "Retrieving the model checkpoint...")
     checkpoint_info = loaders.CheckpointInfo.from_hf_repo(
-        hf_repo,
+        hf_repo_name,
         model_weight,
         mimi_weight,
         tokenizer,
         lora_weights=lora_weight,
         config_path=config_path,
+        revision=revision,
     )
 
     log("info", "Loading the codec {0}", [(checkpoint_info.mimi_weights, "blue")])
