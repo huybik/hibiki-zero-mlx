@@ -225,6 +225,13 @@ def generate(
     for fidx, fpath in enumerate(files):
         log("info", f"{fidx} : " + "{0}", [(fpath, "grey")])
 
+    hf_repo_parts = hf_repo.split("@")
+    hf_repo_name = hf_repo_parts[0]
+    if len(hf_repo_parts) > 1:
+        revision = hf_repo_parts[1]
+    else:
+        revision = None
+
     log("info", "Retrieving the model checkpoint...")
     checkpoint_info = loaders.CheckpointInfo.from_hf_repo(
         hf_repo,
