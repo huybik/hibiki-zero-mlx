@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMicrophoneAccess } from "./useMicrophoneAccess";
 import useWebSocket, { ReadyState } from "react-use-websocket";
 import { useAudioProcessor } from "./useAudioProcessor";
-import { Circle } from "lucide-react";
+import { Circle, Download } from "lucide-react";
 import { clsx } from "clsx";
 import WaveformVisualizer, {
   WaveformVisualizerRef,
@@ -60,8 +60,26 @@ export default function Home() {
     [sendMessage],
   );
 
-  const { setupAudio, shutdownAudio, audioProcessor, processingDelaySec } =
-    useAudioProcessor(onAudioReceivedFromMic);
+  const {
+    setupAudio,
+    shutdownAudio,
+    audioProcessor,
+    processingDelaySec,
+    hasRecording,
+    getRecordingBlob,
+  } = useAudioProcessor(onAudioReceivedFromMic);
+
+  const onDownloadRecording = useCallback(() => {
+    const blob = getRecordingBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hibiki-zero-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [getRecordingBlob]);
 
   useEffect(() => {
     if (lastMessage === null) return;
@@ -157,7 +175,7 @@ export default function Home() {
           <p>Use headphones for best results.</p>
         </div>
 
-        <div className="w-full flex flex-row items-center justify-center">
+        <div className="w-full flex flex-row items-center justify-center gap-4">
           <button
             className={clsx(
               "flex flex-row items-center justify-between gap-2 cursor-pointer w-40 px-2 py-2",
@@ -188,6 +206,15 @@ export default function Home() {
               />
             )}
           </button>
+          {!shouldConnect && !firstTime && hasRecording && (
+            <button
+              className="flex flex-row items-center justify-center gap-2 cursor-pointer px-2 py-2 border border-dashed border-green text-green text-xl"
+              onClick={onDownloadRecording}
+            >
+              <span>Download recording</span>
+              <Download size={20} />
+            </button>
+          )}
         </div>
         {allErrors.length > 0 && (
           <div>

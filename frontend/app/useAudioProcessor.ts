@@ -21,7 +21,8 @@ export interface AudioProcessor {
   inputAnalyser: AnalyserNode;
   outputAnalyser: AnalyserNode;
   mediaStreamDestination: MediaStreamAudioDestinationNode;
-  processingDelaySec: number;
+  mediaRecorder: MediaRecorder;
+  // processingDelaySec: number;
 }
 
 type WorkletStats = {
@@ -36,6 +37,8 @@ export const useAudioProcessor = (
 ) => {
   const audioProcessorRef = useRef<AudioProcessor | null>(null);
   const [processingDelaySec, setProcessingDelaySec] = useState(0);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const [hasRecording, setHasRecording] = useState(false);
 
   const setupAudio = useCallback(
     async (mediaStream: MediaStream) => {
@@ -52,10 +55,13 @@ export const useAudioProcessor = (
       inputAnalyser.fftSize = 2048;
       source.connect(inputAnalyser);
 
+      // Stereo recording: model=left (channel 0), user=right (channel 1)
+      const merger = audioContext.createChannelMerger(2);
+      outputWorklet.connect(merger, 0, 0); // model → left
+      source.connect(merger, 0, 1); // user → right
       const mediaStreamDestination =
         audioContext.createMediaStreamDestination();
-      outputWorklet.connect(mediaStreamDestination);
-      source.connect(mediaStreamDestination);
+      merger.connect(mediaStreamDestination);
 
       outputWorklet.connect(audioContext.destination);
       const outputAnalyser = audioContext.createAnalyser();
@@ -68,7 +74,6 @@ export const useAudioProcessor = (
       outputWorklet.port.onmessage = (event: MessageEvent<WorkletStats>) => {
         const curDelay =
           event.data.totalAudioPlayed - event.data.actualAudioPlayed;
-        console.log("Received message from output worklet:", curDelay, event);
         setProcessingDelaySec(curDelay);
       };
 
@@ -137,6 +142,17 @@ export const useAudioProcessor = (
         }
         onOpusRecorded(data);
       };
+      // Set up stereo recording via MediaRecorder
+      recordedChunksRef.current = [];
+      setHasRecording(false);
+      const mediaRecorder = new MediaRecorder(mediaStreamDestination.stream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        setHasRecording(recordedChunksRef.current.length > 0);
+      };
+
       audioProcessorRef.current = {
         audioContext,
         opusRecorder,
@@ -145,11 +161,12 @@ export const useAudioProcessor = (
         inputAnalyser,
         outputAnalyser,
         mediaStreamDestination,
-        processingDelaySec,
+        mediaRecorder,
       };
       // Resume the audio context if it was suspended
       audioProcessorRef.current.audioContext.resume();
       opusRecorder.start();
+      mediaRecorder.start(1000);
 
       return audioProcessorRef.current;
     },
@@ -158,8 +175,13 @@ export const useAudioProcessor = (
 
   const shutdownAudio = useCallback(() => {
     if (audioProcessorRef.current) {
-      const { audioContext, opusRecorder, outputWorklet } =
+      const { audioContext, opusRecorder, outputWorklet, mediaRecorder } =
         audioProcessorRef.current;
+
+      // Stop the stereo recorder first
+      if (mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
 
       // Disconnect all nodes
       outputWorklet.disconnect();
@@ -171,10 +193,18 @@ export const useAudioProcessor = (
     }
   }, []);
 
+  const getRecordingBlob = useCallback(() => {
+    const mimeType =
+      audioProcessorRef.current?.mediaRecorder.mimeType || "audio/webm";
+    return new Blob(recordedChunksRef.current, { type: mimeType });
+  }, []);
+
   return {
     setupAudio,
     shutdownAudio,
     audioProcessor: audioProcessorRef,
     processingDelaySec,
+    hasRecording,
+    getRecordingBlob,
   };
 };
