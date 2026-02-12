@@ -5,7 +5,6 @@
 import inspect
 import os
 import secrets
-import tarfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -13,7 +12,6 @@ from typing import Optional
 import torch
 import typer
 from aiohttp import web
-from huggingface_hub import hf_hub_download
 from moshi.models import LMGen, loaders
 from typing_extensions import Annotated
 
