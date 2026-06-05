@@ -82,6 +82,21 @@ python convert_mlx_q4.py   # writes weights/hibiki.q4.safetensors
 python verify_mlx_q4.py    # translates samples/leon.wav -> translations/leon_mlx_q4.wav
 ```
 
+Pre-quantized weights (no need to run `convert_mlx_q4.py`) are published at
+[`huybik/hibiki-zero-3b-mlx-q4`](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4).
+
+#### Results (Apple M4 Pro, `samples/leon.wav`, FR→EN)
+
+|              | Value |
+|--------------|-------|
+| **LM weights** | 5.8 GB bf16 → **2.2 GB** q4 (578 layers quantized) |
+| **Speed**    | 16.5 tok/s ≈ **1.3× real-time** — vs ~0.7× for the PyTorch/MPS path (~1.9× faster) |
+| **Quality**  | Coherent FR→EN — correctly translated the Léon Marchand / Paris 2024 Olympics commentary; minor q4 artifacts (e.g. one "Paris 1024" slip) |
+| **Audio out** | `translations/leon_mlx_q4.wav` (2.9 MB, 24 kHz) ✅ |
+
+The q4 weights use `group_size=32`; this is required because stock `moshi-mlx`
+(and the moshi-swift iOS loader) hardcode gs32 for `.q4.safetensors`.
+
 ## Local development
 
 We recomment using `uv`, run anything with `uv run` in this repository. For example

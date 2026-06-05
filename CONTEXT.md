@@ -36,6 +36,7 @@ Native MLX inference via `moshi-mlx` 0.3.0 (installed in `.venv`). **~1.3× real
 - `code/mlx_hibiki_patch.py` — runtime patches `moshi_mlx` for hibiki-zero (stock pkg targets moshi/older-hibiki): honours `hidden_scale=6` + `kv_repeat=2` in config, adds grouped-query attention to the forward pass, and wires `rope_concat` (RoPE interleave=False). Import before building/loading the model.
 - `code/convert_mlx_q4.py` — one-shot: load PyTorch LM → `nn.quantize(bits=4, group_size=32)` → `weights/hibiki.q4.safetensors`. Mimi codec stays separate/bf16.
 - `code/verify_mlx_q4.py` — translates `leon.wav` via patched `moshi_mlx.run_inference` (uses `rustymimi` for the codec; our mimi sig `e351c8d8` loads directly). Output: `translations/leon_mlx_q4.wav`. Verified coherent FR→EN.
+- Published q4 weights + patch + model card: [`huybik/hibiki-zero-3b-mlx-q4`](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4). **Keep `group_size=32`** — stock `moshi-mlx`/moshi-swift hardcode gs32 for `.q4.safetensors` (`run_inference.py:80`); gs64 saves ~240 MB but won't load without patching every loader (bad for the iOS/moshi-swift path).
 
 ## Notes / gotchas
 - Input must be FR/ES/PT/DE and **≤ `--gen-duration`** seconds (max 120). Every input is padded to gen-duration, so smaller = faster.
