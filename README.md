@@ -12,7 +12,9 @@ https://github.com/user-attachments/assets/d533ec45-8d5e-4e41-886a-0b2d198be6f3
 
 ## Requirements
 
-Hibiki-Zero is a 3B-parameter model and requires an NVIDIA GPU to run: 8 GB VRAM should work, 12 GB is safe.
+Hibiki-Zero is a 3B-parameter model. It runs on:
+- an **NVIDIA GPU** (8 GB VRAM should work, 12 GB is safe), or
+- **Apple Silicon** — this fork patches the model to run on Mac via PyTorch/MPS or natively in MLX (see [Apple Silicon](#apple-silicon-mps--mlx) below).
 
 ## Run the server
 
@@ -36,6 +38,33 @@ uvx -p 3.13 hibiki-zero generate [--file /path/to/my/audio.wav --file /path/to/a
 ```
 
 Batch inference is supported, meaning you can run the model on multiple audio files at the same time.
+
+## Apple Silicon (MPS / MLX)
+
+This fork adds two ways to run Hibiki-Zero on a Mac (the upstream code is NVIDIA-only). Both expect the checkpoint files in `weights/` (`config.json`, the `hibiki-*` and `mimi-*` safetensors, and the tokenizer).
+
+### PyTorch / MPS
+
+Pass `--device mps`; the CUDA-only guards are patched out so `serve` and `generate` work on Apple GPUs. Runs at roughly **0.7× real-time** — fine for offline batch translation.
+
+```bash
+hibiki-zero generate --device mps \
+  --config-path weights/config.json \
+  --model-weight "weights/hibiki-pytorch-77f82164@110.safetensors" \
+  --mimi-weight "weights/mimi-pytorch-e351c8d8@125.safetensors" \
+  --tokenizer weights/tokenizer_spm_48k_multi6_2.model \
+  --file hibiki_zero/samples/leon.wav --gen-duration 66 --out-dir translations
+```
+
+### MLX 4-bit (faster)
+
+Native MLX inference via [`moshi-mlx`](https://pypi.org/project/moshi-mlx/), quantized to 4-bit. The LM shrinks from **5.8 GB → 2.2 GB** and runs at **~1.3× real-time** (faster than the bf16 MPS path). `mlx_hibiki_patch.py` adds the hibiki-zero deltas that stock `moshi-mlx` misses (`hidden_scale`, grouped-query attention / `kv_repeat=2`, and `rope_concat`).
+
+```bash
+pip install moshi-mlx
+python convert_mlx_q4.py   # writes weights/hibiki.q4.safetensors
+python verify_mlx_q4.py    # translates samples/leon.wav -> translations/leon_mlx_q4.wav
+```
 
 ## Local development
 
