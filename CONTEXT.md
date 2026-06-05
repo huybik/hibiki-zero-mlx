@@ -38,6 +38,12 @@ Native MLX inference via `moshi-mlx` 0.3.0 (installed in `.venv`). **~1.3× real
 - `code/verify_mlx_q4.py` — translates `leon.wav` via patched `moshi_mlx.run_inference` (uses `rustymimi` for the codec; our mimi sig `e351c8d8` loads directly). Output: `translations/leon_mlx_q4.wav`. Verified coherent FR→EN.
 - Published q4 weights + patch + model card: [`huybik/hibiki-zero-3b-mlx-q4`](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4). **Keep `group_size=32`** — stock `moshi-mlx`/moshi-swift hardcode gs32 for `.q4.safetensors` (`run_inference.py:80`); gs64 saves ~240 MB but won't load without patching every loader (bad for the iOS/moshi-swift path).
 
+## Speed work (in progress)
+Profiled q4 decode (`code/profile_mlx.py`, per-stage w/ mx.eval barriers): mimi codec (rustymimi, **CPU**) was ~58%/frame (enc 30% + dec 28%), run *sequentially* with the GPU LM (main 20% + depformer 21%). rustymimi **releases the GIL**.
+- `code/infer_mlx_fast.py` — overlaps codec with LM via 3 threads (encoder runs whole file ahead → queue → main-thread GPU LM step → decoder thread). Each thread needs its **own** `rustymimi.Tokenizer` (one instance borrowed by 2 threads → "Already borrowed" panic). FIFO queues keep streaming order ⇒ output byte-identical. **1.35× → 3.0× RT** (16.9 → 37.5 frames/s, 2.2×), zero quality change. Codec now hidden; GPU LM (~25 ms/frame) is the new floor. Reusable `load()`/`run()`.
+- `code/verify_mlx_q4.py` — now wired to `infer_mlx_fast.run()` (the MLX entry point; ~2.8–3× RT). The PyTorch `serve`/`generate` in `run.py` are a **separate stack** (codec on MPS GPU, live-streaming) — this CPU/GPU-overlap trick doesn't apply there.
+- Next: `mx.compile` the LM step (depformer loop) to shave the now-exposed ~25 ms → target ~4–5× RT.
+
 ## Notes / gotchas
 - Input must be FR/ES/PT/DE and **≤ `--gen-duration`** seconds (max 120). Every input is padded to gen-duration, so smaller = faster.
 - Default dtype float16 (no MPS op errors); `--bf16` available.

@@ -79,7 +79,7 @@ Native MLX inference via [`moshi-mlx`](https://pypi.org/project/moshi-mlx/), qua
 ```bash
 pip install moshi-mlx
 python convert_mlx_q4.py   # writes weights/hibiki.q4.safetensors
-python verify_mlx_q4.py    # translates samples/leon.wav -> translations/leon_mlx_q4.wav
+python verify_mlx_q4.py    # translates samples/leon.wav -> translations/leon_mlx_q4.wav (pipelined, ~3x RT)
 ```
 
 Pre-quantized weights (no need to run `convert_mlx_q4.py`) are published at
@@ -96,6 +96,36 @@ Pre-quantized weights (no need to run `convert_mlx_q4.py`) are published at
 
 The q4 weights use `group_size=32`; this is required because stock `moshi-mlx`
 (and the moshi-swift iOS loader) hardcode gs32 for `.q4.safetensors`.
+
+### Pipelined MLX (faster still — overlaps codec with the LM)
+
+Profiling the q4 decode loop showed the Mimi codec (`rustymimi`, CPU) was **~58%**
+of each frame, run strictly *sequentially* with the GPU LM — CPU and GPU idling on
+each other. `infer_mlx_fast.py` overlaps them: an **encoder thread** streams the
+whole file ahead, the **main thread** runs only the GPU LM step, and a **decoder
+thread** turns the audio tokens back into PCM. FIFO queues preserve streaming order,
+so the output is identical to the sequential path — `rustymimi` releases the GIL, so
+the threads run truly concurrently (each thread gets its own `Tokenizer` instance).
+
+```bash
+python infer_mlx_fast.py [in.wav] [out.wav]   # defaults: samples/leon.wav -> translations/leon_mlx_fast.wav
+```
+
+`verify_mlx_q4.py` now uses this path under the hood, so the MLX entry point is fast
+by default. (The PyTorch `serve`/`generate` commands are a separate stack — codec on
+the MPS GPU, live-streaming — so this CPU/GPU-overlap trick doesn't transfer there.)
+
+For an offline file the encode stream runs entirely ahead and decode hides under the
+GPU, so per-frame wall collapses to ~the LM cost alone:
+
+|              | frames/s | × real-time | ms/frame |
+|--------------|----------|-------------|----------|
+| Sequential (`run_inference`) | 16.9 | 1.35× | 59 |
+| **Pipelined** (`infer_mlx_fast.py`) | **37.5** | **3.0×** | **27** |
+
+(Apple M4 Pro, `samples/leon.wav`, FR→EN, q4 — **2.2× faster**, output byte-identical.)
+`profile_mlx.py` prints the per-stage breakdown (mimi encode / LM main / LM depformer
+/ mimi decode) used to find this.
 
 ## Local development
 
