@@ -7,12 +7,17 @@ moshi_mlx targets moshi / older hibiki and misses three hibiki-zero deltas:
      attention (hibiki-zero main transformer uses kv_repeat=2) won't run.
   3. positional embedding: only "rope" (interleaved) is wired up; hibiki-zero
      uses "rope_concat" == RoPE with interleave=False (MLX traditional=False).
+  4. depformer: hibiki-zero applies a learned per-slice output LayerNorm
+     (`depformer_norms.{i}`) before each audio `linear_out`; moshi_mlx omits it,
+     so the audio logits come out ~3x too small -> out-of-distribution tokens ->
+     babbling/overlapping speech (the text stream is unaffected).
 
 Import this module before building/loading the model.
 """
 import mlx.core as mx
 import mlx.nn as nn
 from moshi_mlx import models
+from moshi_mlx.models import lm as L
 from moshi_mlx.modules import transformer as T
 
 # --- 1. config: honour hidden_scale + kv_repeat -----------------------------
@@ -71,3 +76,77 @@ def _attn_call(self, xs, cache, mask=None):
 
 T.Attention.__init__ = _attn_init
 T.Attention.__call__ = _attn_call
+
+# --- 4. depformer per-codebook output LayerNorm -----------------------------
+# hibiki-zero applies a learned per-slice LayerNorm (`depformer_norms.{i}`,
+# dim=depformer_dim, eps 1e-5, with bias) to the depformer transformer output
+# *before* `linear_out` (PyTorch: logits = linears[i](depformer_norms[i](out))).
+# moshi_mlx feeds the un-normalised features straight into linear_out, so the
+# audio logits come out ~3x too small and uncorrelated -> babble + clipping.
+# Add the norm to each slice, apply it in DepFormer.sample, and load its weights.
+_orig_slice_init = L.DepFormerSlice.__init__
+
+
+def _slice_init(self, in_vocab_size, out_vocab_size, main_transformer_dim,
+                demux_second_stream, cfg):
+    _orig_slice_init(self, in_vocab_size, out_vocab_size, main_transformer_dim,
+                     demux_second_stream, cfg)
+    self.norm = nn.LayerNorm(cfg.transformer.d_model, 1e-5)
+
+
+L.DepFormerSlice.__init__ = _slice_init
+
+
+def _depformer_sample(self, main_transformer_out, sampler, text_token, cache,
+                      cfg_coef=1.0):
+    tokens = []
+    last_token = text_token
+    for c in cache:
+        c.reset()
+    for slice in self.slices:
+        if cfg_coef != 1:
+            last_token = mx.tile(last_token, (2, 1))
+        xs = slice.linear_in(main_transformer_out) + slice.emb(last_token)
+        xs = slice.transformer(xs, cache=cache)
+        logits = slice.linear_out(slice.norm(xs))
+        if cfg_coef != 1:
+            l1, l2 = logits.split(2, axis=0)
+            logits = cfg_coef * l1 - (cfg_coef - 1) * l2
+        last_token, _ = sampler(logits)
+        tokens.append(last_token)
+    return mx.stack(tokens, axis=1)
+
+
+L.DepFormer.sample = _depformer_sample
+
+# load depformer_norms.{i}.{weight,bias} into slices.{i}.norm
+_orig_load = L.Lm.load_pytorch_weights
+
+
+def _load_pytorch_weights(self, file, lm_config, strict=True):
+    # Run the original mapping non-strict to build the rest, capture its weight
+    # dict, append our depformer norms, then do the single strict load.
+    pth = mx.load(file)
+    extra = {}
+    for i in range(lm_config.depformer.num_slices):
+        for p in ("weight", "bias"):
+            k = f"depformer_norms.{i}.{p}"
+            if k in pth:
+                extra[f"depformer.slices.{i}.norm.{p}"] = pth[k]
+    captured = {}
+    real_load = self.load_weights
+
+    def _capture(items, strict):
+        captured.update(dict(items))
+        return None
+
+    self.load_weights = _capture
+    try:
+        _orig_load(self, file, lm_config, strict=False)
+    finally:
+        self.load_weights = real_load
+    captured.update(extra)
+    return self.load_weights(list(captured.items()), strict=strict)
+
+
+L.Lm.load_pytorch_weights = _load_pytorch_weights
