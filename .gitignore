@@ -220,3 +220,6 @@ translations/
 blog/
 .claude/
 hibiki_zero/static/
+
+# macOS
+.DS_Store
