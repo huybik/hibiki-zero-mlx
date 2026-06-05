@@ -24,7 +24,6 @@ import rustymimi
 import sentencepiece
 import sphn
 
-import mlx_hibiki_patch  # noqa: F401  (patches moshi_mlx for hibiki-zero)
 from moshi_mlx import models, utils
 
 HERE = Path(__file__).parent

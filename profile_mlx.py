@@ -15,7 +15,6 @@ import numpy as np
 import rustymimi
 import sentencepiece
 
-import mlx_hibiki_patch  # noqa: F401
 from moshi_mlx import models, utils
 
 HERE = Path(__file__).parent

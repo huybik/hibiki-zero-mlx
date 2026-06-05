@@ -9,7 +9,6 @@ import mlx.core as mx
 import rustymimi
 import sentencepiece
 
-import mlx_hibiki_patch  # noqa: F401
 from moshi_mlx import models
 import infer_mlx_fast as f
 

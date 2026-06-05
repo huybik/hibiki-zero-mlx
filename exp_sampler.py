@@ -5,7 +5,6 @@ import json, time
 from pathlib import Path
 import mlx.core as mx, mlx.nn as nn, numpy as np
 import rustymimi, sentencepiece, sphn
-import mlx_hibiki_patch  # noqa
 from moshi_mlx import models, utils
 
 HERE = Path(__file__).parent; W = HERE / "weights"
