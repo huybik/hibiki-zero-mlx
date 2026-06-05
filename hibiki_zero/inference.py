@@ -71,7 +71,8 @@ class ServerState:
                     continue
                 _ = self.mimi.decode(tokens[:, 1:])
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     async def decode_and_send(
         self, tokens: torch.Tensor, ws: web.WebSocketResponse, opus_writer: sphn.OpusStreamWriter

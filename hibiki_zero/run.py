@@ -61,7 +61,7 @@ def serve(
     seed: Annotated[int, typer.Option(help="Random seed.")] = 42,
 ):
     # sanity checks
-    if not torch.cuda.is_available():
+    if device == "cuda" and not torch.cuda.is_available():
         log(
             "error",
             "Found no NVIDIA driver on your system. The server needs to be launched from a machine that has access to a GPU.",
@@ -199,7 +199,7 @@ def generate(
     device: Annotated[str, typer.Option(help="Device to run on.")] = "cuda",
     seed: Annotated[int, typer.Option(help="Random seed.")] = 42,
 ):
-    if not torch.cuda.is_available():
+    if device == "cuda" and not torch.cuda.is_available():
         log(
             "error",
             "Found no NVIDIA driver on your system. Generation needs to be done on a machine that has access to a GPU.",
