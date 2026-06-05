@@ -9,7 +9,7 @@ Running Kyutai's **Hibiki-Zero** (simultaneous speech-to-speech + speech-to-text
 - `code/` — cloned inference repo (`hibiki_zero/run.py` = CLI, `inference.py` = core). Patched + installed editable.
 - `code/weights/` — the checkpoint (gitignored): `config.json`, `hibiki-pytorch-77f82164@110.safetensors` (5.8 GB), `mimi-pytorch-e351c8d8@125.safetensors` (367 MB), `tokenizer_spm_48k_multi6_2.model`.
 - `code/hibiki_zero/static/` — built Next.js frontend (from `build_frontend.sh`, needed by `serve`).
-- `.venv/` — isolated venv (py3.13): hibiki-zero 0.0.4, moshi 0.2.13, torch 2.9.1. **Never** install into the conda base env.
+- `.venv/` — isolated venv (py3.13): hibiki-zero 0.0.4, moshi 0.2.13, moshi-mlx 0.3.0, torch 2.9.1. **Never** install into the conda base env.
 - `code/translations/` — `generate` outputs (mono + stereo wav + txt), gitignored.
 - `code/hibiki_zero/samples/` — bundled test clips: `leon.wav` (~64 s FR Olympics), `crepes.mp3`.
 
