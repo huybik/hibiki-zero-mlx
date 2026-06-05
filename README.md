@@ -43,6 +43,22 @@ Batch inference is supported, meaning you can run the model on multiple audio fi
 
 This fork adds two ways to run Hibiki-Zero on a Mac (the upstream code is NVIDIA-only). Both expect the checkpoint files in `weights/` (`config.json`, the `hibiki-*` and `mimi-*` safetensors, and the tokenizer).
 
+### Download the weights
+
+Pull the checkpoint from Hugging Face into `weights/` (~6.2 GB):
+
+```bash
+pip install -U "huggingface_hub[cli]"
+hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
+  config.json \
+  "hibiki-pytorch-77f82164@110.safetensors" \
+  "mimi-pytorch-e351c8d8@125.safetensors" \
+  tokenizer_spm_48k_multi6_2.model \
+  --local-dir weights
+```
+
+The model is gated (CC BY-NC-SA 4.0) — accept the terms on the [model page](https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16) and run `hf auth login` first if the download 401s.
+
 ### PyTorch / MPS
 
 Pass `--device mps`; the CUDA-only guards are patched out so `serve` and `generate` work on Apple GPUs. Runs at roughly **0.7× real-time** — fine for offline batch translation.
