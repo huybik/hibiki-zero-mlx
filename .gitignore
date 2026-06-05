@@ -223,3 +223,6 @@ hibiki_zero/static/
 
 # macOS
 .DS_Store
+
+/weights
+/translations
