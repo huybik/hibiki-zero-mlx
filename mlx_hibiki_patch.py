@@ -1,5 +1,11 @@
 """Runtime patches that make moshi_mlx (0.3.0) run hibiki-zero.
 
+NOTE: this project's local scripts use the vendored fork at ./moshi-mlx/, which
+already has all of these deltas folded in, so they no longer import this module.
+It is kept only as the portable compatibility shim published alongside the q4
+weights on the Hub (`huybik/hibiki-zero-3b-mlx-q4`) for users running the stock
+`moshi-mlx` package off PyPI.
+
 moshi_mlx targets moshi / older hibiki and misses three hibiki-zero deltas:
   1. config: `hidden_scale` is ignored (feedforward hardcoded to 4*dim) and the
      depformer feedforward is left None; `kv_repeat` is hardcoded to 1.

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
-import mlx_hibiki_patch  # noqa: F401  (patches moshi_mlx for hibiki-zero)
 from moshi_mlx import models
 
 WEIGHTS = Path(__file__).parent / "weights"
@@ -17,7 +16,7 @@ OUT = WEIGHTS / "hibiki.q4.safetensors"
 with open(CONFIG) as f:
     cfg = json.load(f)
 
-lm_config = models.LmConfig.from_config_dict(cfg)  # patched by mlx_hibiki_patch
+lm_config = models.LmConfig.from_config_dict(cfg)
 model = models.Lm(lm_config)
 model.set_dtype(mx.bfloat16)
 

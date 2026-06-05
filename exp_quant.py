@@ -11,7 +11,6 @@ import numpy as np
 import sphn
 from mlx.utils import tree_flatten
 
-import mlx_hibiki_patch  # noqa: F401
 from moshi_mlx import models
 import infer_mlx_fast as f
 
