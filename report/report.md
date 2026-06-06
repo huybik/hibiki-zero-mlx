@@ -104,7 +104,7 @@ The broader lesson: most of the speedup didn't come from a faster model, but fro
 
 - ▶️ **Demo video & samples (FR→EN, voice preserved):** [kyutai.org/blog/2026-02-12-hibiki-zero](https://kyutai.org/blog/2026-02-12-hibiki-zero)
 - 📄 **Paper:** [arXiv:2602.11072](https://arxiv.org/abs/2602.11072)
-- 🍴 **Forked repo (MPS + MLX paths):** [github.com/huybik/hibiki-zero](https://github.com/huybik/hibiki-zero)
+- 🍎 **This repo (MPS + MLX paths):** [github.com/huybik/hibiki-zero-mlx](https://github.com/huybik/hibiki-zero-mlx)
 - 🤗 **Pre-quantized 4-bit MLX weights:** [huggingface.co/huybik/hibiki-zero-3b-mlx-q4](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4)
 - 📦 **Upstream model (Kyutai):** [kyutai/hibiki-zero-3b-pytorch-bf16](https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16) · [github.com/kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero)
 
