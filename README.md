@@ -1,4 +1,6 @@
-# Hibiki-Zero
+# Hibiki-Zero MLX
+
+Apple Silicon port of **Hibiki-Zero** — runs the model on Mac via PyTorch/MPS or natively in MLX (4-bit). Derived from [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero), now an independent repo.
 
 Hibiki-Zero is a real-time and multilingual speech translation model.
 It translates from French, Spanish, Portuguese and German to English: accurately, with low latency, high audio quality, and voice transfer.
@@ -14,7 +16,7 @@ https://github.com/user-attachments/assets/d533ec45-8d5e-4e41-886a-0b2d198be6f3
 
 Hibiki-Zero is a 3B-parameter model. It runs on:
 - an **NVIDIA GPU** (8 GB VRAM should work, 12 GB is safe), or
-- **Apple Silicon** — this fork patches the model to run on Mac via PyTorch/MPS or natively in MLX (see [Apple Silicon](#apple-silicon-mps--mlx) below).
+- **Apple Silicon** — this repo patches the model to run on Mac via PyTorch/MPS or natively in MLX (see [Apple Silicon](#apple-silicon-mps--mlx) below).
 
 ## Run the server
 
@@ -41,7 +43,7 @@ Batch inference is supported, meaning you can run the model on multiple audio fi
 
 ## Apple Silicon (MPS / MLX)
 
-This fork adds two ways to run Hibiki-Zero on a Mac (the upstream code is NVIDIA-only). Both expect the checkpoint files in `weights/` (`config.json`, the `hibiki-*` and `mimi-*` safetensors, and the tokenizer).
+This repo adds two ways to run Hibiki-Zero on a Mac (the upstream code is NVIDIA-only). Both expect the checkpoint files in `weights/` (`config.json`, the `hibiki-*` and `mimi-*` safetensors, and the tokenizer).
 
 ### Download the weights
 
