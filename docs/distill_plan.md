@@ -1,8 +1,15 @@
-# Distilling a Parallel Codebook Head (5a) — Plan & Primer
+# Add Vietnamese + Distil a Parallel Codebook Head — Plan & Primer
 
-Goal: make hibiki-zero fast enough for **real-time speech translation on iPhone** by
-removing the depformer's 16 sequential passes, **without** retraining the 3B model or
-needing the original training dataset.
+We want **two** things from hibiki-zero, and they are **two different kinds of job** (see §A — read it first):
+
+- **Track A — add an input language (Vietnamese → EN).** A *supervised fine-tune* of the 3B main
+  on real Vi→EN data. **Un-freezes** the 3B. Runs upstream on GPU (not this repo).
+- **Track B — parallel codebook head (the original "5a" plan).** Make hibiki-zero fast enough for
+  **real-time speech translation on iPhone** by removing the depformer's 16 sequential passes,
+  **without** retraining the 3B and **without** the original dataset (self-distillation). Runs in MLX on the M4.
+
+Order is **A → B**: Track A produces a new base checkpoint that *knows* Vietnamese; Track B then
+**freezes that base** and distils the fast head against it. Output is **English** throughout.
 
 This doc is both a **plan** and a **learning guide**. It explains the architecture,
 *where* we cut, *how* we distil, the data, and the phase-by-phase steps.
@@ -20,6 +27,65 @@ This doc is both a **plan** and a **learning guide**. It explains the architectu
 - We train *only the new head* by **self-distillation**: the existing model is the **teacher**,
   generating targets from monolingual source audio. Frozen main ⇒ no dataset, no full training stack.
 - **Data:** Common Voice (bulk training) + Audio-NTREX-4L (eval + validation).
+- **New in this revision — the language track (§A, §B):** adding Vietnamese is a *separate, supervised
+  3B fine-tune* done **before** 5a. It is **not** self-distillation (the current model can't teach a
+  language it never learned). Everything in the 5a plan below is unchanged except that it now distils
+  against the **Vietnamese-extended base** and dumps Vietnamese audio too.
+
+---
+
+## A. Two tracks (read this first)
+
+Adding a language and speeding up the head feel related, but they are **opposite kinds of job**.
+Keeping them apart — and in the right order — is what keeps each one cheap.
+
+| | **Track A — add Vietnamese** | **Track B — parallel head (5a)** |
+|---|---|---|
+| What changes | the **3B main** (+ its AR depformer) | **only a new head** bolted onto a frozen main |
+| 3B frozen? | **No — fine-tunes / un-freezes it** | **Yes** — main never trained |
+| Targets come from | **real** Vi→EN data (Whisper→MADLAD→TTS) | **self**-distilled from the existing AR depformer |
+| Why not self-distill? | the model **can't teach Vietnamese it never learned** | the teacher already does the task perfectly |
+| Compute / stack | **upstream PyTorch + GPU** (Kyutai recipe + RL) — *not this repo* | **MLX on the M4** — this repo |
+| Output | still **English** | still English, same 16 codebooks |
+| Cost | the expensive part (data pipeline + 3B fine-tune) | the cheap part (small head, frozen teacher) |
+
+**The pipeline end-to-end:**
+
+```mermaid
+flowchart LR
+    BASE["hibiki-zero base<br/>FR/ES/PT/DE → EN<br/>AR depformer (16 steps)"] --> A
+    subgraph A["TRACK A — add Vietnamese (upstream, GPU)"]
+        direction TB
+        DATA["build Vi→EN data<br/>Whisper · MADLAD · TTS"] --> FT["fine-tune 3B main<br/>+ RL · keep old langs"]
+    end
+    A --> BASE2["NEW base<br/>+ VI → EN<br/>AR depformer (still 16 steps)"]
+    BASE2 --> B
+    subgraph B["TRACK B — parallel head (this repo, MLX/M4)"]
+        direction TB
+        FREEZE["freeze new base"] --> DISTIL["self-distil AR head<br/>→ parallel head (1–4 passes)"]
+    end
+    B --> SHIP["fast + multilingual<br/>iPhone-ready model"]
+
+    style A fill:#fde3c8,stroke:#c80,stroke-width:2px
+    style B fill:#d6ffd6,stroke:#090,stroke-width:2px
+    style BASE2 fill:#eef,stroke:#88a
+```
+
+**Why the order is A → B and never the reverse.** Track B's whole premise is a *frozen* main whose
+`transformer_out` distribution never moves (that's why self-distillation is valid — see §4, §5). A
+language fine-tune **moves** that distribution. So:
+
+```mermaid
+flowchart LR
+    AB["A then B ✅"] --> AB2["fine-tune first → new stable base<br/>→ distil head against it once"]
+    BA["B then A ❌"] --> BA2["distil head → THEN fine-tune main<br/>→ transformer_out shifts<br/>→ head is now stale → re-distil anyway"]
+    style AB2 fill:#dfd,stroke:#090
+    style BA2 fill:#fdd,stroke:#c00
+```
+
+> **Rule:** whenever the main changes (any new language), **re-run Track B afterwards.** Track B is
+> cheap (frozen teacher, self-distil), so this ordering costs almost nothing — and doing it the other
+> way wastes the entire head-training run.
 
 ---
 
@@ -208,11 +274,112 @@ flowchart LR
 
 ---
 
+## B. Track A — the Vietnamese fine-tune (un-freezes the 3B)
+
+This is the part the original 5a plan *deliberately avoided* (old §12: "❌ retrain the 3B"). Adding an
+input language is, unavoidably, a **supervised fine-tune of the main transformer**. There is **no**
+inference-time or tokenizer-only shortcut:
+
+```mermaid
+flowchart LR
+    Q["want Vietnamese in?"] --> CFG{"a config flag?"}
+    CFG -->|no| W["the source language lives in the WEIGHTS,<br/>not in any setting — the inference stack<br/>has zero language parameters"]
+    W --> TOK{"new tokenizer?"}
+    TOK -->|no| T2["model only EMITS English →<br/>the multi6 SPM is fine.<br/>Vietnamese text appears ONLY inside<br/>the data pipeline (MADLAD input)"]
+    T2 --> FT["⇒ the only lever is a real fine-tune<br/>of the 3B on Vi→EN data"]
+    style FT fill:#fde3c8,stroke:#c80,stroke-width:2px
+```
+
+### B.1 — Why Vietnamese is harder than the paper's Italian
+
+The paper adapts **Italian** with **<1000 h + RL** and *retains* the old languages — but Italian is a
+near neighbour (Romance, shares phonology/script with FR/ES/PT). **Vietnamese is far:** tonal,
+monosyllabic, Austroasiatic. So treat the paper's numbers as a **floor, not a target**:
+
+```mermaid
+flowchart LR
+    IT["Italian<br/>Indo-European · Romance"] -->|small jump| EZ["≤1000h works · old langs kept easily"]
+    VI["Vietnamese<br/>Austroasiatic · tonal"] -->|big jump| HARD["plan for MORE data<br/>· watch old-lang retention<br/>· tonal ASR/MT noisier"]
+    style EZ fill:#dfd,stroke:#090
+    style HARD fill:#fde0c0,stroke:#c80
+```
+
+### B.2 — The data-construction pipeline (the real work)
+
+Distillation in Track B needs only *source audio*; Track A needs **supervised (source-audio → EN)
+pairs**, which we synthesise — exactly the paper's recipe. We never hand-label translations.
+
+```mermaid
+flowchart TD
+    SRC["Vietnamese source audio<br/>single-speaker utterances, 30–75 s"] --> ASR["Whisper → Vietnamese transcript"]
+    ASR --> MT["MADLAD-3B → English translation"]
+    MT --> TTS["TTS (speaker-conditioned) →<br/>English target audio"]
+    TTS --> ALN["coarse SENTENCE-level alignment<br/>(artificial silences, no word-level)"]
+    SRC --> PAIR
+    ALN --> PAIR[("training pair:<br/>Vi audio  →  EN text + EN audio-tokens")]
+    style PAIR fill:#fff6e0,stroke:#c90
+```
+
+- **Vietnamese audio is just audio** to Mimi/the model — tonal content rides through the codec fine.
+  The tonal-language risk is in the **labels**: Whisper-VI and MADLAD Vi→EN are decent but noisier than
+  for Romance languages, so target quality is the thing to watch. English TTS + Mimi are unaffected.
+- **Coarse alignment** (sentence-level + artificial silences) is deliberate — the paper shows it
+  removes the need for brittle word-level alignment heuristics.
+
+### B.3 — Sourcing ~850 h+ of Vietnamese (the practical blocker)
+
+Common Voice Vietnamese alone is small (~tens of hours) — far short of the budget. Plan to combine
+real-speech corpora:
+
+| Source | ~Scale | Notes |
+|---|---|---|
+| **Common Voice** (vi) | tens of h | Real, crowd-read; accent variety. |
+| **VietBud500** | hundreds of h | Large, diverse — the bulk. |
+| **VIVOS / VLSP / VinBigData** | tens–hundreds of h | Read + some spontaneous. |
+| **YouTube-mined** (optional) | scalable | Cheapest path to volume; needs VAD + dedup + license care. |
+
+Keep **real mic-like speech** dominant (same lesson as §7: don't overfit a clean/TTS domain you won't
+see live).
+
+### B.4 — Train, then hand off to Track B
+
+```mermaid
+flowchart LR
+    PAIRS[("Vi→EN pairs")] --> FTUNE["fine-tune 3B main (+ AR depformer)<br/>on (Vi audio → EN text + EN audio-tokens)"]
+    FTUNE --> RL["RL polish<br/>(paper: improves quality)"]
+    RL --> RET{"old langs<br/>FR/ES/PT/DE<br/>still good?"}
+    RET -->|yes| CKPT["new bf16 PyTorch checkpoint<br/>FR/ES/PT/DE/VI → EN"]
+    RET -->|no| MIX["replay old-lang data,<br/>lower LR, retrain"] --> FTUNE
+    CKPT --> CONV["scripts/convert_mlx_q4.py<br/>(already exists)"] --> B5a["→ enter Track B / 5a"]
+    style CKPT fill:#eef,stroke:#88a
+    style B5a fill:#d6ffd6,stroke:#090
+```
+
+- **Where it runs:** the **upstream Kyutai PyTorch training stack on real GPU(s)** — *not* this
+  MLX/Mac repo (which is inference-only). Track A's only in-repo artifact is the **converted checkpoint**.
+- **Retention gate:** re-score FR/ES/PT/DE ASR-BLEU after fine-tuning; if it regressed, mix old-language
+  data back in (replay) and/or lower the learning rate.
+- **Shortcut:** if a Vietnamese-capable hibiki-zero checkpoint ever ships upstream, **skip Track A
+  entirely** — just convert + distil. (Unlike Italian, none exists today, so plan for the full fine-tune.)
+
+### B.5 — What Track A changes in the 5a plan (almost nothing)
+
+Once the new base exists, Track B runs as written, with **two** small changes:
+
+1. **P0 baseline** is re-measured on the new base — it's a different (now 5-language) teacher.
+2. **Teacher-dump (P1)** adds Vietnamese source audio: the new base *can* translate it, so
+   self-distillation now covers Vietnamese too (see §7).
+
+Everything else — frozen main, cb16, KL+CE distill, silence-in gate, passes knob — is **identical**.
+
+---
+
 ## 7. Data plan
 
 | Source | Role | Why |
 |---|---|---|
 | **Common Voice** FR/ES/PT/DE | Bulk teacher-dump (training) | Large, **real human speech**, monolingual source is all distillation needs. Start ~10–20 h, scale to ~100 h (≈4.5 M frames) if quality needs it. |
+| **Common Voice + VietBud500 / VIVOS** (vi) | Teacher-dump **after Track A** | The Vietnamese-extended base can now translate VI → EN, so dump it like any other source. Source audio only — no labels needed for the dump. |
 | **Audio-NTREX-4L** (test split) | **Held-out eval** | Has English `target_text` → ASR-BLEU. Never train on it. |
 | **Audio-NTREX-4L** (val split) | Validation during training | Track distill quality vs the teacher. |
 
@@ -220,6 +387,9 @@ Notes:
 - NTREX-4L is **TTS audio** — clean/synthetic. Keep the bulk training on Common Voice (real mic-like
   speech) so the head doesn't overfit a synthetic domain it won't see live.
 - Distillation needs **only source audio**; the English references in NTREX are for *scoring*, not training.
+- **Two different data needs, don't confuse them:** Track A (§B) needs *supervised Vi→EN pairs* (built
+  via Whisper→MADLAD→TTS); Track B's teacher-dump here needs *only raw source audio* (the teacher makes
+  the targets). The Vietnamese row above is for the **dump**, not the fine-tune.
 
 ---
 
@@ -241,17 +411,24 @@ Three gates, run before/after every head iteration:
 
 ```mermaid
 flowchart LR
-    P0["P0 Baseline<br/>ASR-BLEU + speed of<br/>current AR model"] --> P1["P1 Teacher dump<br/>cache transformer_out<br/>+ logits"]
+    PL["PL Language (Track A)<br/>fine-tune 3B on Vietnamese<br/>UPSTREAM · GPU"] --> P0["P0 Baseline<br/>ASR-BLEU + speed of<br/>AR base (post-PL)"]
+    P0 --> P1["P1 Teacher dump<br/>cache transformer_out<br/>+ logits (incl. VI)"]
     P1 --> P2["P2 Head module<br/>delay-pattern /<br/>iterative, MLX"]
     P2 --> P3["P3 Train head<br/>KL distill, frozen main"]
     P3 --> P4["P4 Integrate<br/>swap + re-quantize q4"]
     P4 --> P5["P5 Eval + tune<br/>passes vs quality"]
     P5 -->|iterate| P2
+    style PL fill:#fde3c8,stroke:#c80,stroke-width:2px
 ```
+
+> **PL is Track A** (§B) — the only phase that **un-freezes the 3B** and the only one that runs
+> **outside this repo**. P0–P5 are Track B (the original 5a), unchanged. If you start from a base that
+> already knows your target language, skip PL.
 
 | Phase | Deliverable | Notes |
 |---|---|---|
-| **P0** | `eval_asr_bleu.py` + baseline numbers | Establish the teacher's BLEU & speed to beat/match. |
+| **PL** | new bf16 PyTorch checkpoint (FR/ES/PT/DE/**VI** → EN) + `convert_mlx_q4.py` output | **Track A / upstream, GPU.** Data pipeline (Whisper→MADLAD→TTS) + 3B fine-tune + RL; pass the old-language **retention gate** before handing off. Skip if a VI checkpoint already exists. |
+| **P0** | `eval_asr_bleu.py` + baseline numbers | Establish the teacher's BLEU & speed to beat/match — **on the post-PL base**. |
 | **P1** | `dump_teacher.py` → cached `(transformer_out, text_token, cb_logits)` shards | Inference only; resumable; start with 10–20 h. |
 | **P2** | `parallel_head.py` (new `nn.Module`) | Pick delay-pattern vs iterative; configurable #passes. |
 | **P3** | `train_head.py` (MLX, frozen main) | KL + CE loss; Adam; val on NTREX-val. |
@@ -265,6 +442,8 @@ flowchart LR
 | Risk | Mitigation |
 |---|---|
 | Parallel head loses inter-codebook dependency → audio quality drop | Use delay-pattern or 2–4 iterative passes before going fully 1-pass; distill on **logits** (KL) not just tokens. |
+| **(Track A)** Vietnamese is linguistically distant → needs more than the paper's ~850 h; old langs may regress | Budget **>1000 h**; mix accents/sources; enforce the **retention gate** (re-score FR/ES/PT/DE) with old-language **replay**. |
+| **(Track A)** Tonal-language label noise (Whisper-VI / MADLAD Vi→EN) | Spot-check transcripts/translations; filter low-confidence pairs; the English-side TTS + Mimi are unaffected. |
 | Training data too small / narrow | Scale Common Voice hours; mix accents/speakers; validate on NTREX-val each epoch. |
 | TTS-domain overfit | Bulk-train on real speech (Common Voice), keep NTREX (TTS) for eval only. |
 | Re-quantization regresses quality | Keep the new head bf16 first, verify, then q4; re-run silence-in + ASR-BLEU. |
@@ -309,10 +488,20 @@ flowchart LR
   KV-only tool.
 
 ## 12. What we are NOT doing
-- ❌ Retraining the 3B main transformer.
-- ❌ Collecting parallel translation data (teacher provides targets).
+
+**In Track B (5a) — the cheap, in-repo job:**
+- ❌ Retraining the 3B main transformer — it stays **frozen**.
+- ❌ Collecting parallel translation data (the teacher provides targets via self-distillation).
 - ❌ Re-implementing Kyutai's training pipeline (we write a ~few-hundred-line head trainer in MLX).
 - ❌ Reducing codebooks (cb16 stays; that keeps the main frozen).
 
-**Next concrete step:** P0 — write `eval_asr_bleu.py` and record the current AR model's BLEU + speed,
-so every later change is measured against a fixed baseline.
+**In Track A (§B) — the language job — we explicitly DO the opposite:** fine-tune the 3B, build
+supervised Vi→EN data, and use the upstream PyTorch training stack on GPU. That is *why* the two are
+kept as separate jobs, run **A → B** — so the expensive parts stay confined to Track A and never
+contaminate the cheap, frozen-main distillation in Track B.
+
+**Next concrete steps:**
+- **Track A (PL):** secure ~1000 h+ Vietnamese audio and stand up the Whisper→MADLAD→TTS data pipeline
+  upstream; fine-tune + RL; pass the retention gate; convert to MLX q4.
+- **Track B (P0):** write `eval_asr_bleu.py` and record the **post-PL** base's BLEU + speed, so every
+  later head change is measured against a fixed baseline.
