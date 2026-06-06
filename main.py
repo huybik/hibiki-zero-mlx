@@ -44,6 +44,8 @@ def run_mic(max_steps: int, weights_dir: Path = f.W):
     mx.eval(model.parameters())
 
     in_q: queue.Queue = queue.Queue()
+    enc_q: queue.Queue = queue.Queue()                # encoder -> LM
+    dec_q: queue.Queue = queue.Queue()                # LM -> decoder
     out_q: queue.Queue = queue.Queue()
     stop = threading.Event()
 
@@ -56,30 +58,51 @@ def run_mic(max_steps: int, weights_dir: Path = f.W):
         except queue.Empty:
             outdata.fill(0)                            # not ready yet -> silence
 
-    def worker():
+    # Pipeline the codec off the LM thread (same trick as the file path): encode
+    # and decode are CPU (GIL-free) and independent of the LM recurrence, so the
+    # live critical path collapses from encode+LM+decode (~58 ms) to just the LM
+    # step (~24 ms on M4). Costs one frame (80 ms) of extra output latency.
+    def encoder():
+        while not stop.is_set():
+            try:
+                pcm = in_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            codes = mimi_enc.encode_step(pcm[None, None, :])             # CPU, GIL free
+            codes = mx.array(codes).transpose(0, 2, 1)[:, :, :other_cb]
+            enc_q.put_nowait(codes[0])
+
+    def lm():
         try:
             while not stop.is_set():
                 try:
-                    pcm = in_q.get(timeout=0.1)
+                    codes = enc_q.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                codes = mimi_enc.encode_step(pcm[None, None, :])          # CPU, GIL free
-                codes = mx.array(codes).transpose(0, 2, 1)[:, :, :other_cb]
-                tt = gen.step(codes[0])
+                tt = gen.step(codes)
                 tok = tt[0].item()                                       # sync this frame
                 if tok not in (0, 3):
                     sys.stdout.write(text_tok.id_to_piece(tok).replace("▁", " "))
                     sys.stdout.flush()
                 audio = gen.last_audio_tokens()
                 if audio is not None and gen_cb > 0:
-                    out = mimi_dec.decode_step(np.array(audio[:, :, None]).astype(np.uint32))
-                    out_q.put_nowait(out[0, 0])                          # (1920,) float32
+                    dec_q.put_nowait(np.array(audio[:, :, None]).astype(np.uint32))
         except ValueError as e:                                         # reached max_steps
             print(f"\n[reached cap: {e}]")
         finally:
             stop.set()
 
-    threading.Thread(target=worker, daemon=True).start()
+    def decoder():
+        while not stop.is_set():
+            try:
+                at = dec_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            out = mimi_dec.decode_step(at)                              # CPU, GIL free
+            out_q.put_nowait(out[0, 0])                                 # (1920,) float32
+
+    for fn in (encoder, lm, decoder):
+        threading.Thread(target=fn, daemon=True).start()
     print(f"listening — speak FR/ES/PT/DE; translated EN plays back. Ctrl-C to stop "
           f"(cap {max_steps / 12.5 / 60:.0f} min)\n")
     try:
