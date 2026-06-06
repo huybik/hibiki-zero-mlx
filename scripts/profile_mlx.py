@@ -17,7 +17,7 @@ import sentencepiece
 
 from moshi_mlx import models, utils
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 W = HERE / "weights"
 N_FRAMES = 150
 

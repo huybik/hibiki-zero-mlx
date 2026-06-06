@@ -8,7 +8,7 @@ Overlaps the CPU Mimi codec (rustymimi, GIL-released) with the GPU LM:
 FIFO queues preserve the streaming order, so output is bit-identical to the
 sequential loop; we just stop letting the CPU and GPU idle on each other.
 
-Usage: python infer_mlx_fast.py <in.wav> <out.wav>
+Usage: python scripts/verify_mlx_q4.py  (or import src/infer_mlx_fast.run)
 """
 import json
 import queue
@@ -26,8 +26,8 @@ import sphn
 
 from moshi_mlx import models, utils
 
-HERE = Path(__file__).parent
-W = HERE / "weights"
+ROOT = Path(__file__).resolve().parent.parent  # repo root (src/ -> ..)
+W = ROOT / "weights"
 SENTINEL = object()
 
 
@@ -116,7 +116,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W):
 
 
 if __name__ == "__main__":
-    infile = sys.argv[1] if len(sys.argv) > 1 else str(HERE / "hibiki_zero" / "samples" / "leon.wav")
-    outfile = sys.argv[2] if len(sys.argv) > 2 else str(HERE / "translations" / "leon_mlx_fast.wav")
+    infile = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "hibiki_zero" / "samples" / "leon.wav")
+    outfile = sys.argv[2] if len(sys.argv) > 2 else str(ROOT / "translations" / "leon_mlx_fast.wav")
     mx.random.seed(299792458)
     run(infile, outfile)

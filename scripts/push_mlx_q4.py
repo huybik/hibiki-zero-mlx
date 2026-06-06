@@ -5,12 +5,13 @@ from pathlib import Path
 from huggingface_hub import CommitOperationAdd, HfApi
 
 REPO = "huybik/hibiki-zero-3b-mlx-q4"
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 
+# left side = path_in_repo on the Hub (kept stable); right side = local source.
 FILES = {
     "hibiki.q4.safetensors": HERE / "weights" / "hibiki.q4.safetensors",
-    "mlx_hibiki_patch.py": HERE / "mlx_hibiki_patch.py",
-    "verify_mlx_q4.py": HERE / "verify_mlx_q4.py",
+    "mlx_hibiki_patch.py": HERE / "src" / "mlx_hibiki_patch.py",
+    "verify_mlx_q4.py": HERE / "scripts" / "verify_mlx_q4.py",
 }
 
 ops = [CommitOperationAdd(path_in_repo=dst, path_or_fileobj=str(src))

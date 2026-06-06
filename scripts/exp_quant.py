@@ -3,6 +3,7 @@
 Loads PyTorch LM once, then for each scheme quantizes a fresh-from-pth copy,
 runs leon, and reports clipping / sample-step stats + estimated weight size."""
 import json
+import sys
 from pathlib import Path
 
 import mlx.core as mx
@@ -12,10 +13,11 @@ import sphn
 from mlx.utils import tree_flatten
 
 from moshi_mlx import models
-import infer_mlx_fast as f
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 W = HERE / "weights"
+sys.path.insert(0, str(HERE / "src"))
+import infer_mlx_fast as f
 PTH = str(W / "hibiki-pytorch-77f82164@110.safetensors")
 CFG = json.loads((W / "config.json").read_text())
 SAMPLE = str(HERE / "hibiki_zero" / "samples" / "leon.wav")

@@ -74,15 +74,24 @@ hibiki-zero generate --device mps \
 
 ### MLX 4-bit (faster)
 
-Native MLX inference via [`moshi-mlx`](https://pypi.org/project/moshi-mlx/), quantized to 4-bit. The LM shrinks from **5.8 GB → 2.2 GB** and runs at **~1.3× real-time** (faster than the bf16 MPS path). `mlx_hibiki_patch.py` adds the hibiki-zero deltas that stock `moshi-mlx` misses (`hidden_scale`, grouped-query attention / `kv_repeat=2`, and `rope_concat`).
+Native MLX inference via [`moshi-mlx`](https://pypi.org/project/moshi-mlx/), quantized to 4-bit. The LM shrinks from **5.8 GB → 2.2 GB** and runs at **~1.3× real-time** (faster than the bf16 MPS path). `src/mlx_hibiki_patch.py` adds the hibiki-zero deltas that stock `moshi-mlx` misses (`hidden_scale`, grouped-query attention / `kv_repeat=2`, and `rope_concat`).
+
+Run from the repo root (`main.py`/scripts add `src/` to the path and anchor on it):
 
 ```bash
-pip install moshi-mlx
-python convert_mlx_q4.py   # writes weights/hibiki.q4.safetensors
-python verify_mlx_q4.py    # translates samples/leon.wav -> translations/leon_mlx_q4.wav (pipelined, ~3x RT)
+pip install moshi-mlx sounddevice
+python main.py samples/leon.wav         # file  -> translations/leon_translated.wav (~3x RT)
+python main.py --mic                    # realtime mic -> speakers (Ctrl-C to stop)
 ```
 
-Pre-quantized weights (no need to run `convert_mlx_q4.py`) are published at
+`main.py` is the entry point for both. To (re)build the q4 weights or verify them:
+
+```bash
+python scripts/convert_mlx_q4.py   # writes weights/hibiki.q4.safetensors
+python scripts/verify_mlx_q4.py    # translates samples/leon.wav -> translations/leon_mlx_q4.wav (pipelined, ~3x RT)
+```
+
+Pre-quantized weights (no need to run `scripts/convert_mlx_q4.py`) are published at
 [`huybik/hibiki-zero-3b-mlx-q4`](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4).
 
 #### Results (Apple M4 Pro, `samples/leon.wav`, FR→EN)
@@ -101,14 +110,14 @@ The q4 weights use `group_size=32`; this is required because stock `moshi-mlx`
 
 Profiling the q4 decode loop showed the Mimi codec (`rustymimi`, CPU) was **~58%**
 of each frame, run strictly *sequentially* with the GPU LM — CPU and GPU idling on
-each other. `infer_mlx_fast.py` overlaps them: an **encoder thread** streams the
+each other. `src/infer_mlx_fast.py` overlaps them: an **encoder thread** streams the
 whole file ahead, the **main thread** runs only the GPU LM step, and a **decoder
 thread** turns the audio tokens back into PCM. FIFO queues preserve streaming order,
 so the output is identical to the sequential path — `rustymimi` releases the GIL, so
 the threads run truly concurrently (each thread gets its own `Tokenizer` instance).
 
 ```bash
-python infer_mlx_fast.py [in.wav] [out.wav]   # defaults: samples/leon.wav -> translations/leon_mlx_fast.wav
+python scripts/verify_mlx_q4.py [in.wav] [out.wav]   # defaults: samples/leon.wav -> translations/leon_mlx_q4.wav
 ```
 
 `verify_mlx_q4.py` now uses this path under the hood, so the MLX entry point is fast
@@ -121,10 +130,10 @@ GPU, so per-frame wall collapses to ~the LM cost alone:
 |              | frames/s | × real-time | ms/frame |
 |--------------|----------|-------------|----------|
 | Sequential (`run_inference`) | 16.9 | 1.35× | 59 |
-| **Pipelined** (`infer_mlx_fast.py`) | **37.5** | **3.0×** | **27** |
+| **Pipelined** (`src/infer_mlx_fast.py`) | **37.5** | **3.0×** | **27** |
 
 (Apple M4 Pro, `samples/leon.wav`, FR→EN, q4 — **2.2× faster**, output byte-identical.)
-`profile_mlx.py` prints the per-stage breakdown (mimi encode / LM main / LM depformer
+`scripts/profile_mlx.py` prints the per-stage breakdown (mimi encode / LM main / LM depformer
 / mimi decode) used to find this.
 
 ## Local development

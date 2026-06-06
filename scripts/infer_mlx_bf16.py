@@ -3,6 +3,7 @@
 is loaded at full bf16 precision (no q4 quant). A/B this against *_mlx_fast.wav
 to tell whether any audio degradation comes from the q4 quant or not."""
 import json
+import sys
 from pathlib import Path
 
 import mlx.core as mx
@@ -10,10 +11,11 @@ import rustymimi
 import sentencepiece
 
 from moshi_mlx import models
-import infer_mlx_fast as f
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 W = HERE / "weights"
+sys.path.insert(0, str(HERE / "src"))
+import infer_mlx_fast as f
 
 
 def load_bf16(weights_dir: Path = W):

@@ -5,13 +5,14 @@ Uses the pipelined inference path (infer_mlx_fast), which overlaps the CPU Mimi
 codec with the GPU LM (~3x real-time vs ~1.3x for the sequential run_inference
 loop). Output is identical; this is just the fast entry point for the MLX path.
 """
+import sys
 from pathlib import Path
 
 import mlx.core as mx
 
+HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
+sys.path.insert(0, str(HERE / "src"))
 from infer_mlx_fast import run
-
-HERE = Path(__file__).parent
 
 if __name__ == "__main__":
     mx.random.seed(299792458)

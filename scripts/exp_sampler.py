@@ -7,7 +7,7 @@ import mlx.core as mx, mlx.nn as nn, numpy as np
 import rustymimi, sentencepiece, sphn
 from moshi_mlx import models, utils
 
-HERE = Path(__file__).parent; W = HERE / "weights"
+HERE = Path(__file__).resolve().parent.parent; W = HERE / "weights"  # scripts/ -> ..
 SAMPLE = str(HERE / "hibiki_zero" / "samples" / "leon.wav")
 
 cfg = json.loads((W/"config.json").read_text())
