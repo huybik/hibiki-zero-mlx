@@ -82,7 +82,7 @@ Run from the repo root (`main.py`/scripts add `src/` to the path and anchor on i
 
 ```bash
 pip install moshi-mlx sounddevice
-python main.py samples/leon.wav         # file  -> translations/leon_translated.wav (~3x RT)
+python main.py hibiki_zero/samples/leon.wav  # file -> translations/leon_translated.wav (~3x RT)
 python main.py --mic                    # realtime mic -> speakers (Ctrl-C to stop)
 ```
 
@@ -90,7 +90,7 @@ python main.py --mic                    # realtime mic -> speakers (Ctrl-C to st
 
 ```bash
 python scripts/convert_mlx_q4.py   # writes weights/hibiki.q4.safetensors
-python scripts/verify_mlx_q4.py    # translates samples/leon.wav -> translations/leon_mlx_q4.wav (pipelined, ~3x RT)
+python scripts/verify_mlx_q4.py    # translates hibiki_zero/samples/leon.wav -> translations/leon_mlx_q4.wav
 ```
 
 Pre-quantized weights (no need to run `scripts/convert_mlx_q4.py`) are published at
@@ -119,7 +119,7 @@ so the output is identical to the sequential path — `rustymimi` releases the G
 the threads run truly concurrently (each thread gets its own `Tokenizer` instance).
 
 ```bash
-python scripts/verify_mlx_q4.py [in.wav] [out.wav]   # defaults: samples/leon.wav -> translations/leon_mlx_q4.wav
+python scripts/verify_mlx_q4.py [in.wav] [out.wav]   # defaults: hibiki_zero/samples/leon.wav -> translations/leon_mlx_q4.wav
 ```
 
 `verify_mlx_q4.py` now uses this path under the hood, so the MLX entry point is fast
@@ -148,4 +148,3 @@ or
 uv run hibiki-zero serve
 ```
 if you use pip, use `pip install -e .` before executing python commands.
-
