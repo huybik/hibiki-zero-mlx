@@ -6,9 +6,14 @@ from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
-from moshi_mlx import models
 
 WEIGHTS = Path(__file__).resolve().parent.parent / "weights"  # scripts/ -> ..
+VENDORED_MOSHI_MLX = WEIGHTS.parent / "moshi-mlx"
+if VENDORED_MOSHI_MLX.exists():
+    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
+
+from moshi_mlx import models
+
 CONFIG = WEIGHTS / "config.json"
 PTH = WEIGHTS / "hibiki-pytorch-77f82164@110.safetensors"
 OUT = WEIGHTS / "hibiki.q4.safetensors"

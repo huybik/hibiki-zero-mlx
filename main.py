@@ -123,6 +123,7 @@ def main():
     p.add_argument("input", nargs="?", help="audio file to translate (FR/ES/PT/DE)")
     p.add_argument("--mic", action="store_true", help="realtime mic -> speakers")
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
+    p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()
 
@@ -133,7 +134,7 @@ def main():
         infile = args.input
         out = args.out or str(ROOT / "translations" / f"{Path(infile).stem}_translated.wav")
         Path(out).parent.mkdir(parents=True, exist_ok=True)
-        f.run(infile, out)
+        f.run(infile, out, text_outfile=args.text_out)
     else:
         p.error("give an audio file path, or --mic for realtime")
 

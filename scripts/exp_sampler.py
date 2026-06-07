@@ -2,12 +2,17 @@
 """Does a tighter audio sampler suppress q4 crackle? Same published q4 weights,
 sweep audio (top_k, temp). One model load; re-run with fresh LmGen each time."""
 import json, time
+import sys
 from pathlib import Path
 import mlx.core as mx, mlx.nn as nn, numpy as np
 import rustymimi, sentencepiece, sphn
-from moshi_mlx import models, utils
 
 HERE = Path(__file__).resolve().parent.parent; W = HERE / "weights"  # scripts/ -> ..
+VENDORED_MOSHI_MLX = HERE / "moshi-mlx"
+if VENDORED_MOSHI_MLX.exists():
+    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
+
+from moshi_mlx import models, utils
 SAMPLE = str(HERE / "hibiki_zero" / "samples" / "leon.wav")
 
 cfg = json.loads((W/"config.json").read_text())
