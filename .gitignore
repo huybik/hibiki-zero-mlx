@@ -195,7 +195,11 @@ cython_debug/
 # Downloaded remote dataset samples
 remote_dataset/french_english_unprocessed_samples/
 remote_dataset/french_english_unprocessed_*s/
+remote_dataset/covost2_*/
 hibiki_zero/samples/fr_sample*.mp3
+
+# Local Hugging Face cache (HF_HOME override)
+.hf_cache/
 
 # PyPI configuration file
 .pypirc
