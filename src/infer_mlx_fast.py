@@ -33,6 +33,7 @@ from moshi_mlx import models, utils
 
 W = ROOT / "weights"
 SENTINEL = object()
+PAD_STOP = 12  # frames (~1 s) of sustained pad after audio ends => translation flushed
 
 
 def _require_file(path: Path, hint: str) -> None:
@@ -65,10 +66,6 @@ def load(weights_dir: Path):
         weights_dir / "tokenizer_spm_48k_multi6_2.model",
         "Download the tokenizer into weights/.",
     )
-    _require_file(
-        weights_dir / "mimi-pytorch-e351c8d8@125.safetensors",
-        "Download the Mimi checkpoint into weights/.",
-    )
     cfg = json.loads((weights_dir / "config.json").read_text())
     lm_config = models.LmConfig.from_config_dict(cfg)
     model = models.Lm(lm_config)
@@ -77,26 +74,44 @@ def load(weights_dir: Path):
     model.load_weights(str(weights_dir / "hibiki.q4.safetensors"), strict=True)
     mx.eval(model.parameters())
     tok = sentencepiece.SentencePieceProcessor(str(weights_dir / "tokenizer_spm_48k_multi6_2.model"))
-    # Separate codec instances per thread: a single rustymimi.Tokenizer can't be
-    # borrowed by the encoder and decoder threads at once ("Already borrowed").
-    mimi_path = str(weights_dir / "mimi-pytorch-e351c8d8@125.safetensors")
-    nq = max(lm_config.other_codebooks, lm_config.generated_codebooks)
-    mimi_enc = rustymimi.Tokenizer(mimi_path, num_codebooks=nq)
-    mimi_dec = rustymimi.Tokenizer(mimi_path, num_codebooks=nq)
+    mimi_enc, mimi_dec = make_mimi(weights_dir, lm_config)
     return model, lm_config, tok, mimi_enc, mimi_dec
 
 
-def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | None = None):
+def make_mimi(weights_dir: Path, lm_config):
+    # Separate codec instances per thread: a single rustymimi.Tokenizer can't be
+    # borrowed by the encoder and decoder threads at once ("Already borrowed").
+    # Fresh instances also reset the streaming state, so batch callers must make
+    # a new pair per file rather than reuse one across files.
+    _require_file(
+        weights_dir / "mimi-pytorch-e351c8d8@125.safetensors",
+        "Download the Mimi checkpoint into weights/.",
+    )
+    mimi_path = str(weights_dir / "mimi-pytorch-e351c8d8@125.safetensors")
+    nq = max(lm_config.other_codebooks, lm_config.generated_codebooks)
+    return (rustymimi.Tokenizer(mimi_path, num_codebooks=nq),
+            rustymimi.Tokenizer(mimi_path, num_codebooks=nq))
+
+
+def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | None = None,
+        tail_s: float = 8.0, preloaded=None):
     infile = _resolve_audio_path(infile)
-    model, lm_config, text_tok, mimi_enc, mimi_dec = load(weights_dir)
+    model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir)
     other_cb = lm_config.other_codebooks
     gen_cb = lm_config.generated_codebooks
 
     in_pcms, _ = sphn.read(infile, sample_rate=24000)
     steps = in_pcms.shape[-1] // 1920
+    # Hibiki translates simultaneously with a ~6 s lag, so when the input ends the
+    # tail of the translation is still unspoken. Feed trailing silence to flush it
+    # (mirroring the gen-duration padding of the PyTorch path); without this short
+    # clips get their translation truncated. tail_s is an upper bound — generation
+    # early-stops once the model goes quiet (see PAD_STOP below), so it doesn't sit
+    # in silence long enough to start hallucinating.
+    tail = int(round(tail_s * 12.5))
 
     gen = models.LmGen(
-        model=model, max_steps=steps + 8,
+        model=model, max_steps=steps + tail + 8,
         text_sampler=utils.Sampler(top_k=25, temp=0.8),
         audio_sampler=utils.Sampler(top_k=250, temp=0.8),
         cfg_coef=1.0, check=False,
@@ -107,13 +122,23 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
     dec_q: queue.Queue = queue.Queue(maxsize=64)   # main -> decoder
     out_pcm: list = []
 
+    stop = threading.Event()
+
     def encoder():
         # Separate streaming state from the model; runs ahead of the LM.
-        for idx in range(steps):
-            pcm = in_pcms[:, idx * 1920:(idx + 1) * 1920]
-            codes = mimi_enc.encode_step(pcm[None, 0:1])      # CPU, GIL released
+        def emit(pcm_frame):
+            codes = mimi_enc.encode_step(pcm_frame)           # CPU, GIL released
             codes = mx.array(codes).transpose(0, 2, 1)[:, :, :other_cb]
             enc_q.put(codes[0])
+        silence = np.zeros((1, 1, 1920), dtype=in_pcms.dtype)  # flush the lag tail
+        for idx in range(steps):
+            if stop.is_set():
+                break
+            emit(in_pcms[None, 0:1, idx * 1920:(idx + 1) * 1920])
+        for _ in range(tail):
+            if stop.is_set():
+                break
+            emit(silence)
         enc_q.put(SENTINEL)
 
     def decoder():
@@ -128,6 +153,8 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
     enc_t.start(); dec_t.start()
 
     text_pieces: list[str] = []
+    processed = 0
+    pad_run = 0
     t0 = time.perf_counter()
     while True:
         oat = enc_q.get()
@@ -135,12 +162,28 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
             break
         text_token = gen.step(oat)
         tt = text_token[0].item()                             # sync this frame's LM
+        processed += 1
         if tt not in (0, 3):
             piece = text_tok.id_to_piece(tt).replace("▁", " ")
             text_pieces.append(piece)
         audio = gen.last_audio_tokens()
         if audio is not None and gen_cb > 0:
             dec_q.put(np.array(audio[:, :, None]).astype(np.uint32))
+        # After the input audio ends, stop once the model goes quiet (sustained pad).
+        # Sitting in silence longer makes it hallucinate/repeat and inflates WER.
+        if processed > steps:
+            pad_run = pad_run + 1 if tt in (0, 3) else 0
+            if pad_run >= PAD_STOP:
+                break
+    stop.set()
+    # Drain the queue so the encoder isn't parked on a full put(), then shut down.
+    while True:
+        try:
+            if enc_q.get(timeout=0.1) is SENTINEL:
+                break
+        except queue.Empty:
+            if not enc_t.is_alive():
+                break
     dec_q.put(SENTINEL)
     enc_t.join(); dec_t.join()
     wall = time.perf_counter() - t0
@@ -154,7 +197,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
     text_path.parent.mkdir(parents=True, exist_ok=True)
     text_path.write_text(text + "\n")
     print(text)
-    print(f"\n[{steps} frames in {wall:.2f}s -> {steps/wall:.1f} frames/s "
+    print(f"\n[{processed} frames ({steps} audio) in {wall:.2f}s -> {processed/wall:.1f} frames/s "
           f"({steps/wall/12.5:.2f}x RT), out: {outfile}, text: {text_path}]")
 
 
