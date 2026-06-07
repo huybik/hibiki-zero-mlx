@@ -24,14 +24,51 @@ import rustymimi
 import sentencepiece
 import sphn
 
+ROOT = Path(__file__).resolve().parent.parent  # repo root (src/ -> ..)
+VENDORED_MOSHI_MLX = ROOT / "moshi-mlx"
+if VENDORED_MOSHI_MLX.exists():
+    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
+
 from moshi_mlx import models, utils
 
-ROOT = Path(__file__).resolve().parent.parent  # repo root (src/ -> ..)
 W = ROOT / "weights"
 SENTINEL = object()
 
 
+def _require_file(path: Path, hint: str) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"missing {path}\n{hint}")
+
+
+def _resolve_audio_path(infile: str) -> str:
+    path = Path(infile)
+    if path.exists():
+        return str(path)
+    if len(path.parts) > 1 and path.parts[0] == "samples":
+        packaged = ROOT / "hibiki_zero" / path
+        if packaged.exists():
+            return str(packaged)
+    return infile
+
+
 def load(weights_dir: Path):
+    _require_file(
+        weights_dir / "config.json",
+        "Download the Hibiki-Zero config into weights/.",
+    )
+    _require_file(
+        weights_dir / "hibiki.q4.safetensors",
+        "Download the pre-quantized q4 checkpoint from huybik/hibiki-zero-3b-mlx-q4 "
+        "or run `python scripts/convert_mlx_q4.py`.",
+    )
+    _require_file(
+        weights_dir / "tokenizer_spm_48k_multi6_2.model",
+        "Download the tokenizer into weights/.",
+    )
+    _require_file(
+        weights_dir / "mimi-pytorch-e351c8d8@125.safetensors",
+        "Download the Mimi checkpoint into weights/.",
+    )
     cfg = json.loads((weights_dir / "config.json").read_text())
     lm_config = models.LmConfig.from_config_dict(cfg)
     model = models.Lm(lm_config)
@@ -49,7 +86,8 @@ def load(weights_dir: Path):
     return model, lm_config, tok, mimi_enc, mimi_dec
 
 
-def run(infile: str, outfile: str, weights_dir: Path = W):
+def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | None = None):
+    infile = _resolve_audio_path(infile)
     model, lm_config, text_tok, mimi_enc, mimi_dec = load(weights_dir)
     other_cb = lm_config.other_codebooks
     gen_cb = lm_config.generated_codebooks
@@ -107,12 +145,17 @@ def run(infile: str, outfile: str, weights_dir: Path = W):
     enc_t.join(); dec_t.join()
     wall = time.perf_counter() - t0
 
+    Path(outfile).parent.mkdir(parents=True, exist_ok=True)
     if out_pcm:
         pcm = np.concatenate(out_pcm, axis=-1)[0, 0]
         sphn.write_wav(outfile, pcm, 24000)
-    print("".join(text_pieces).strip())
+    text = "".join(text_pieces).strip()
+    text_path = Path(text_outfile) if text_outfile else Path(outfile).with_suffix(".txt")
+    text_path.parent.mkdir(parents=True, exist_ok=True)
+    text_path.write_text(text + "\n")
+    print(text)
     print(f"\n[{steps} frames in {wall:.2f}s -> {steps/wall:.1f} frames/s "
-          f"({steps/wall/12.5:.2f}x RT), out: {outfile}]")
+          f"({steps/wall/12.5:.2f}x RT), out: {outfile}, text: {text_path}]")
 
 
 if __name__ == "__main__":
