@@ -94,7 +94,7 @@ def make_mimi(weights_dir: Path, lm_config):
 
 
 def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | None = None,
-        tail_s: float = 8.0, preloaded=None):
+        tail_s: float = 8.0, preloaded=None, text_temp: float = 0.4):
     infile = _resolve_audio_path(infile)
     model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir)
     other_cb = lm_config.other_codebooks
@@ -112,7 +112,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
 
     gen = models.LmGen(
         model=model, max_steps=steps + tail + 8,
-        text_sampler=utils.Sampler(top_k=25, temp=0.8),
+        text_sampler=utils.Sampler(top_k=25, temp=text_temp),
         audio_sampler=utils.Sampler(top_k=250, temp=0.8),
         cfg_coef=1.0, check=False,
     )

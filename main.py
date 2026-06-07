@@ -36,7 +36,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W):
     gen_cb = lm_config.generated_codebooks
     gen = models.LmGen(
         model=model, max_steps=max_steps,
-        text_sampler=utils.Sampler(top_k=25, temp=0.8),
+        text_sampler=utils.Sampler(top_k=25, temp=0.4),  # low text temp: avoids cold-start spurious openers
         audio_sampler=utils.Sampler(top_k=250, temp=0.8),
         cfg_coef=1.0, check=False,
     )
