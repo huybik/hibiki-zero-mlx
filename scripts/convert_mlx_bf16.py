@@ -4,12 +4,18 @@
 Same as convert_mlx_q4.py without the quantization step: produces a native MLX
 bf16 checkpoint that loads without the runtime PyTorch->MLX conversion."""
 import json
+import sys
 from pathlib import Path
 
 import mlx.core as mx
-from moshi_mlx import models
 
 WEIGHTS = Path(__file__).resolve().parent.parent / "weights"  # scripts/ -> ..
+VENDORED_MOSHI_MLX = WEIGHTS.parent / "moshi-mlx"
+if VENDORED_MOSHI_MLX.exists():
+    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
+
+from moshi_mlx import models
+
 CONFIG = WEIGHTS / "config.json"
 PTH = WEIGHTS / "hibiki-pytorch-77f82164@110.safetensors"
 OUT = WEIGHTS / "hibiki.bf16.safetensors"

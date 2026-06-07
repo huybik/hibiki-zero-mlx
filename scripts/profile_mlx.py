@@ -6,6 +6,7 @@ depformer (16 codebook steps) vs mimi codec, using mx.eval barriers so the
 lazy graph is actually forced at each boundary. Run before/after changes.
 """
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -15,9 +16,13 @@ import numpy as np
 import rustymimi
 import sentencepiece
 
+HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
+VENDORED_MOSHI_MLX = HERE / "moshi-mlx"
+if VENDORED_MOSHI_MLX.exists():
+    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
+
 from moshi_mlx import models, utils
 
-HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 W = HERE / "weights"
 N_FRAMES = 150
 
