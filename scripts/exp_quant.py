@@ -12,11 +12,14 @@ import numpy as np
 import sphn
 from mlx.utils import tree_flatten
 
-from moshi_mlx import models
-
 HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 W = HERE / "weights"
+VENDORED_MOSHI_MLX = HERE / "moshi-mlx"
+if VENDORED_MOSHI_MLX.exists():
+    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
 sys.path.insert(0, str(HERE / "src"))
+
+from moshi_mlx import models
 import infer_mlx_fast as f
 PTH = str(W / "hibiki-pytorch-77f82164@110.safetensors")
 CFG = json.loads((W / "config.json").read_text())
