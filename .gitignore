@@ -192,6 +192,11 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Downloaded remote dataset samples
+remote_dataset/french_english_unprocessed_samples/
+remote_dataset/french_english_unprocessed_*s/
+hibiki_zero/samples/fr_sample*.mp3
+
 # PyPI configuration file
 .pypirc
 
