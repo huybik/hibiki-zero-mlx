@@ -1,0 +1,101 @@
+sample,audio_file,duration_s,transcript_fr,reference_en,q4_translation_en
+fr_0000,remote_dataset/french_english_unprocessed_100/fr_0000.wav,2.50,bon on va tout de suite,"All right, let's go right now.","Well, let's go right away."
+fr_0001,remote_dataset/french_english_unprocessed_100/fr_0001.wav,3.75,croyez-vous qu' il y a un docteur ou une infirmière,Do you think there's a doctor or a nurse?,Do you think there's a doctor or a nurse?
+fr_0002,remote_dataset/french_english_unprocessed_100/fr_0002.wav,2.25,c' est à droite ou à gauche,It's on the right or on the left.,Is it right or left?
+fr_0003,remote_dataset/french_english_unprocessed_100/fr_0003.wav,2.75,merci bien de votre assistance,Thank you very much for your assistance,Thank you for your assistance.
+fr_0004,remote_dataset/french_english_unprocessed_100/fr_0004.wav,2.50,est-ce que le médecin est loin d' ici,Is the doctor far from here?,Is the doctor far from here?
+fr_0005,remote_dataset/french_english_unprocessed_100/fr_0005.wav,3.50,d' accord mais je ne connais pas cet endroit,but I don't know this place.,But I don't know this place.
+fr_0006,remote_dataset/french_english_unprocessed_100/fr_0006.wav,2.00,oui on a du transport,"Yes, we have transport.",We have transportation.
+fr_0007,remote_dataset/french_english_unprocessed_100/fr_0007.wav,3.25,non le moteur marche toujours bien,no the engine always works well,"No, the engine is still working. Well,"
+fr_0008,remote_dataset/french_english_unprocessed_100/fr_0008.wav,3.50,le moteur a-t-il cessé de fonctionner,Has the engine stopped operating,Did the engine stop working?
+fr_0009,remote_dataset/french_english_unprocessed_100/fr_0009.wav,4.75,pourquoi vous ne pouvez pas la conduire,Why can't you drive her?,"Why do you not believe? The driver,"
+fr_0010,remote_dataset/french_english_unprocessed_100/fr_0010.wav,2.50,pourquoi vous ne pouvez pas la conduire,Why can't you drive her?,Why can't you drive it?
+fr_0011,remote_dataset/french_english_unprocessed_100/fr_0011.wav,3.00,il n' y a pas de roue de secours,There is no spare wheel,There is no spare wheel.
+fr_0012,remote_dataset/french_english_unprocessed_100/fr_0012.wav,3.00,il n' y a pas de roue de secours,There is no spare wheel,There is no spare wheel.
+fr_0013,remote_dataset/french_english_unprocessed_100/fr_0013.wav,2.25,j' ai un pneu crevé,I've got a flat tire.,
+fr_0014,remote_dataset/french_english_unprocessed_100/fr_0014.wav,2.75,il n' y a pas de roue de secours,There is no spare wheel,There is no spare wheel.
+fr_0015,remote_dataset/french_english_unprocessed_100/fr_0015.wav,3.00,non le moteur marche tout toujours bien,no the engine always works well,"No, the engine is still working well."
+fr_0016,remote_dataset/french_english_unprocessed_100/fr_0016.wav,1.00,on a du transport,We've got transportation.,
+fr_0017,remote_dataset/french_english_unprocessed_100/fr_0017.wav,1.75,dans d' aller voir un médecin,in going to see a doctor,"To go see a doctor,"
+fr_0018,remote_dataset/french_english_unprocessed_100/fr_0018.wav,2.50,depuis quand votre ami est-il malade,since when is your friend sick,"When your friend is sick,"
+fr_0019,remote_dataset/french_english_unprocessed_100/fr_0019.wav,0.50,canadiens,Canadian,
+fr_0020,remote_dataset/french_english_unprocessed_100/fr_0020.wav,3.50,bien monsieur vous allez bien,"Well, sir, you're fine.","Well, sir,"
+fr_0021,remote_dataset/french_english_unprocessed_100/fr_0021.wav,2.50,les toilettes sont au fond du couloir,the toilets are at the bottom of the hall,The toilets are at the end of the corridor.
+fr_0022,remote_dataset/french_english_unprocessed_100/fr_0022.wav,2.75,asseyez-vous s' il vous plaît,Please sit down.,"Try yourself. Please,"
+fr_0023,remote_dataset/french_english_unprocessed_100/fr_0023.wav,2.25,merci bien de votre assistance,Thank you very much for your assistance,Thank you for your assistance.
+fr_0024,remote_dataset/french_english_unprocessed_100/fr_0024.wav,3.00,bon on va tout de suite,"All right, let's go right now.","Well,"
+fr_0025,remote_dataset/french_english_unprocessed_100/fr_0025.wav,2.75,c' est à droite ou à gauche,It's on the right or on the left.,It is to the right or left.
+fr_0026,remote_dataset/french_english_unprocessed_100/fr_0026.wav,2.50,est-ce que le médecin est loin d' ici,Is the doctor far from here?,Because my drawings are far from here.
+fr_0027,remote_dataset/french_english_unprocessed_100/fr_0027.wav,3.25,d' accord mais je ne connais pas cet endroit,but I don't know this place.,"Okay, but I don't know this place."
+fr_0028,remote_dataset/french_english_unprocessed_100/fr_0028.wav,2.50,c' est à droite ou à gauche,It's on the right or on the left.,It's left or right.
+fr_0029,remote_dataset/french_english_unprocessed_100/fr_0029.wav,3.25,croyez-vous qu' il y a un docteur ou une infirmière,Do you think there's a doctor or a nurse?,Do you like to be a doctor or a nurse?
+fr_0030,remote_dataset/french_english_unprocessed_100/fr_0030.wav,2.00,je vais tout de suite,I'm going right now.,God wants everything right away.
+fr_0031,remote_dataset/french_english_unprocessed_100/fr_0031.wav,2.00,ma voiture est en panne,My car's broken down.,My car broke down.
+fr_0032,remote_dataset/french_english_unprocessed_100/fr_0032.wav,2.25,à tout à l' heure monsieur,"I'll see you later, sir.","See you later, sir."
+fr_0033,remote_dataset/french_english_unprocessed_100/fr_0033.wav,2.00,asseyez-vous s' il vous plaît,Please sit down.,Please sit down.
+fr_0034,remote_dataset/french_english_unprocessed_100/fr_0034.wav,2.00,après le repas alors,after the meal then,"After the meal, then"
+fr_0035,remote_dataset/french_english_unprocessed_100/fr_0035.wav,1.50,je dois me laver les mains,I have to wash my hands.,I have to wash my hands.
+fr_0036,remote_dataset/french_english_unprocessed_100/fr_0036.wav,1.75,les toilettes sont au fond du couloir,the toilets are at the bottom of the hall,The toilets are at the end of the hallway.
+fr_0037,remote_dataset/french_english_unprocessed_100/fr_0037.wav,2.00,je vais tout de suite,I'm going right now.,I'm going right away.
+fr_0038,remote_dataset/french_english_unprocessed_100/fr_0038.wav,2.25,les toilettes sont au fond du couloir,the toilets are at the bottom of the hall,The toilets are at the end of the corridor.
+fr_0039,remote_dataset/french_english_unprocessed_100/fr_0039.wav,6.42,a qui vous donnez  il l' écrit sur le sable  et à qui vous l' ôtez  il l' écrit sur l' acier,to whom you give he writes it on the sand and to whom you remove it he writes it on the steel,"To whom you give, he writes on the sand. And to whom you note, he writes on the steel."
+fr_0040,remote_dataset/french_english_unprocessed_100/fr_0040.wav,4.46,le plus difficile à écorcher  c' est la queue,the most difficult to peel is the tail,The most difficult to peel off is the tail.
+fr_0041,remote_dataset/french_english_unprocessed_100/fr_0041.wav,4.70,les eaux calmes sont les plus profondes,calm waters are the deepest,The other souls are the deepest.
+fr_0042,remote_dataset/french_english_unprocessed_100/fr_0042.wav,4.23,il ne faut pas porter de l' eau à la rivière,We must not carry water to the river.,You should not bring water to the river.
+fr_0043,remote_dataset/french_english_unprocessed_100/fr_0043.wav,4.09,fier comme un écossés,proud as a shell,Proud as a hiccup.
+fr_0044,remote_dataset/french_english_unprocessed_100/fr_0044.wav,3.25,a donner  donner  et à vendre  vendre,to give and for sale,"Giving,"
+fr_0045,remote_dataset/french_english_unprocessed_100/fr_0045.wav,3.86,il ne faut qu' une étincelle pour faire un grand incendie,All you need is a spark to make a big fire.,It takes only a spark to make a big fire.
+fr_0046,remote_dataset/french_english_unprocessed_100/fr_0046.wav,6.69,qui veut être riche  n' apprenne pas seulement comme on gagne  mais aussi comme on épargne,who wants to be rich not only learns how you win but also how you save,"Who wants to be rich? Well,"
+fr_0047,remote_dataset/french_english_unprocessed_100/fr_0047.wav,3.25,il faut faire vie qui dure,you have to make life that lasts,You have to make life that lasts.
+fr_0048,remote_dataset/french_english_unprocessed_100/fr_0048.wav,3.72,eau-de-vie  eau de mort,Life water death water,Another quote. Another death.
+fr_0049,remote_dataset/french_english_unprocessed_100/fr_0049.wav,5.58,qui parle  sème  qui écoute  recueille,who speaks som who listens collects,What happens if you love yourself? Who listens to your collection?
+fr_0050,remote_dataset/french_english_unprocessed_100/fr_0050.wav,5.11,qui écoute aux portes  entendra mal parler sur son compte,who listens to the doors will hear bad talk on his account,"Okay, listen to the pot will hear bad talk on his account."
+fr_0051,remote_dataset/french_english_unprocessed_100/fr_0051.wav,3.95,l' eau la plus claire peut faire de la boue,the clearest water can make mud,The clearest water can make mud.
+fr_0052,remote_dataset/french_english_unprocessed_100/fr_0052.wav,4.60,a dur âne  dur aiguillon,a hard ass stinging,
+fr_0053,remote_dataset/french_english_unprocessed_100/fr_0053.wav,5.16,a la porte où l' on donne les miches  les gueux y vont,at the door where we give the asses the heaps go there,"At the door where man gives the crumbs,"
+fr_0054,remote_dataset/french_english_unprocessed_100/fr_0054.wav,4.42,si tu veux qu' on t' épargne  épargne aussi les autres,"If you want us to save you, we'll save you, too.",
+fr_0055,remote_dataset/french_english_unprocessed_100/fr_0055.wav,4.04,évêque d' or  crosse de bois  crosse d' or  évêque de bois,Bishop of gold lacrosse of wood lacrosse of gold bishop of wood,Bishop of Gold. Wood cross. Gold cross.
+fr_0056,remote_dataset/french_english_unprocessed_100/fr_0056.wav,3.35,fol est qui se met en enquête,Fol is who's going into the investigation.,Full here.
+fr_0057,remote_dataset/french_english_unprocessed_100/fr_0057.wav,2.93,erreur n' est pas compte,error is not counted,"Erin is not against,"
+fr_0058,remote_dataset/french_english_unprocessed_100/fr_0058.wav,3.63,ne réveillez pas le chat qui dort,Don't wake the sleeping cat,Do not wake the cat that sleeps.
+fr_0059,remote_dataset/french_english_unprocessed_100/fr_0059.wav,5.39,une chose bien donnée  n' est perdue ni égarée,a well-given thing is not lost or lost,And things well given is not lost or lost.
+fr_0060,remote_dataset/french_english_unprocessed_100/fr_0060.wav,6.37,il ne faut qu' une voie d' eau  pour submerger un vaisseau,It only takes one waterway to overwhelm a ship.,It takes only a waterway to submerge a ship.
+fr_0061,remote_dataset/french_english_unprocessed_100/fr_0061.wav,4.74,l' écurie use plus le cheval que la course,the stable uses the horse more than the race,The curious use more the horse than the race.
+fr_0062,remote_dataset/french_english_unprocessed_100/fr_0062.wav,4.32,il ne faut pas s' embarquer sans biscuit,We mustn't sail without biscuit.,You shouldn't go without biscuit.
+fr_0063,remote_dataset/french_english_unprocessed_100/fr_0063.wav,3.53,l' eau va toujours à la rivière,the water always goes to the river,The water always goes to the river.
+fr_0064,remote_dataset/french_english_unprocessed_100/fr_0064.wav,7.20,si tu veux donner par savoir  avec bon sens   que ton don ne passe ton pouvoir,If you want to give by knowing with common sense that your gift does not pass your power,"If you want to give by knowing with common sense, let's not give up your power."
+fr_0065,remote_dataset/french_english_unprocessed_100/fr_0065.wav,3.07,qui dort  dîne,Sleeping at dinner,Who sleeps? Din.
+fr_0066,remote_dataset/french_english_unprocessed_100/fr_0066.wav,3.35,bonne épée  point querelleur,good sword dot quarreler,Good sword.
+fr_0067,remote_dataset/french_english_unprocessed_100/fr_0067.wav,5.02,l' homme est son plus grand ennemi,man is his greatest enemy,Man is his greatest enemy.
+fr_0068,remote_dataset/french_english_unprocessed_100/fr_0068.wav,3.77,de l' esprit comme quatre  et pas de sens comme un,of the mind as four and no sense as one,Spirit as four and no sense as one.
+fr_0069,remote_dataset/french_english_unprocessed_100/fr_0069.wav,4.14,donner et retenir  ne vaut,donating and remembering is,Giving and retaining is new.
+fr_0070,remote_dataset/french_english_unprocessed_100/fr_0070.wav,6.59,où il y a un écu  il y a un diable  où il n' y en a pas  il y en a deux,where there's a shield there's a devil where there's no shield there's two,"Oh, there's one asshole."
+fr_0071,remote_dataset/french_english_unprocessed_100/fr_0071.wav,5.86,pour boire de l' eau et coucher dehors  on ne demande congé à personne,to drink water and to sleep outside is not asked leave to anyone,To drink water and lie down outside.
+fr_0072,remote_dataset/french_english_unprocessed_100/fr_0072.wav,3.77,il n' est pire eau que celle qui dort,There's no water worse than the one who sleeps.,
+fr_0073,remote_dataset/french_english_unprocessed_100/fr_0073.wav,4.88,la parole s' enfuit  et l' écriture demeure,the word ran away and the scripture remained,The word flees and the writing remains.
+fr_0074,remote_dataset/french_english_unprocessed_100/fr_0074.wav,3.44,qui donne mal  ne donne rien,who gives evil does not give anything,What a pity that gives nothing.
+fr_0075,remote_dataset/french_english_unprocessed_100/fr_0075.wav,4.46,l' esprit qu' on veut avoir  gâte celui qu' on a,the spirit we want to spoil the one we have,The mind that we want to have keeps the one we have.
+fr_0076,remote_dataset/french_english_unprocessed_100/fr_0076.wav,7.11,mieux vaut souffrir son enfant morveux  que de lui arracher le nez,It's better to suffer his snotty child than to rip his nose off.,God wants to suffer his evil child than to pluck out his nose.
+fr_0077,remote_dataset/french_english_unprocessed_100/fr_0077.wav,4.09,qui n' entend qu' une partie  n' instruit pas le procès,who hears only one party does not hear the trial,"Who hears only one part,"
+fr_0078,remote_dataset/french_english_unprocessed_100/fr_0078.wav,5.35,tout ce qui est doux à la bouche  n' est pas forcément bon pour l' estomac,all that is sweet in the mouth is not necessarily good for the stomach,Everything in the mouth is not necessarily good for the stomach.
+fr_0079,remote_dataset/french_english_unprocessed_100/fr_0079.wav,3.77,mieux vaut donner que recevoir,Better to give than to receive,Better is to give than to receive.
+fr_0080,remote_dataset/french_english_unprocessed_100/fr_0080.wav,4.93,a bon emprunteur  bon éconduiseur,a good borrower good driver,
+fr_0081,remote_dataset/french_english_unprocessed_100/fr_0081.wav,4.88,qui peut  et n' empêche  pèche,which can and does not prevent fishing,Keep and do not prevent.
+fr_0082,remote_dataset/french_english_unprocessed_100/fr_0082.wav,5.58,renard qui dort la matinée  n' a guère la bouche emplumée,fox sleeping in the morning hardly has a full mouth,"Renac, who in the morning barely has a mouthful."
+fr_0083,remote_dataset/french_english_unprocessed_100/fr_0083.wav,3.95,dans le doute  abstiens-toi,in doubt refrain from,"In doubt,"
+fr_0084,remote_dataset/french_english_unprocessed_100/fr_0084.wav,4.18,a bon entendeur  demi mot,a good half-word hearer,
+fr_0085,remote_dataset/french_english_unprocessed_100/fr_0085.wav,5.11,a mal enfourner  on fait des pains cornus,We're making horny breads.,"At the point of smoking,"
+fr_0086,remote_dataset/french_english_unprocessed_100/fr_0086.wav,3.67,quand le paysan est enrichi  il n' a ni parent ni ami,when the peasant is enriched he has neither parent nor friend,"When the farmer is enriched, he has neither parents nor friends."
+fr_0087,remote_dataset/french_english_unprocessed_100/fr_0087.wav,4.37,les enfants vivent peu quand ils ont trop d' esprit,children live little when they have too much mind,Children live only when they have too much mind.
+fr_0088,remote_dataset/french_english_unprocessed_100/fr_0088.wav,5.07,la façon de donner vaut mieux que ce qu' on donne,the way to give is better than what we give,The way to give your best than what you give.
+fr_0089,remote_dataset/french_english_unprocessed_100/fr_0089.wav,4.00,douces paroles n' écorchent pas la langue,sweet words don't scratch the tongue,Two words do not peel off the tongue.
+fr_0090,remote_dataset/french_english_unprocessed_100/fr_0090.wav,4.56,soit muet en donnant  et parle en recevant,or mute in giving and speaking in receiving,Either by giving it to me or by receiving it.
+fr_0091,remote_dataset/french_english_unprocessed_100/fr_0091.wav,3.63,tard donner  c' est refuser,late giving it is refusing,Forgive is refuse.
+fr_0092,remote_dataset/french_english_unprocessed_100/fr_0092.wav,3.90,plus fait douceur que violence,softer than violence,"The weaker than violence,"
+fr_0093,remote_dataset/french_english_unprocessed_100/fr_0093.wav,4.00,donner un oeuf  pour avoir un boeuf,give an egg to get an ox,
+fr_0094,remote_dataset/french_english_unprocessed_100/fr_0094.wav,3.49,les enfants sont ce qu' on les fait,Children are what we do.,Children are what you are.
+fr_0095,remote_dataset/french_english_unprocessed_100/fr_0095.wav,3.35,trop s' enquérir n' est pas bon,too much to ask is not good,
+fr_0096,remote_dataset/french_english_unprocessed_100/fr_0096.wav,5.11,a bon entendeur  il ne faut qu' une parole,a good listener you only need one word,Who is this? The good hearer needs only one word.
+fr_0097,remote_dataset/french_english_unprocessed_100/fr_0097.wav,4.14,mieux vaut être marteau qu' enclume,It's better to be a hammer than anvil.,Better be taken than a clown.
+fr_0098,remote_dataset/french_english_unprocessed_100/fr_0098.wav,4.37,qui donne tôt  donne deux fois,that gives early gives twice,Which giver gives twice?
+fr_0099,remote_dataset/french_english_unprocessed_100/fr_0099.wav,4.23,qui ne doute de rien  ne se doute de rien,"who doesn't doubt anything, doesn't doubt anything.","Who doubts nothing, doesn't doubt anything."
