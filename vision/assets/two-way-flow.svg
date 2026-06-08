@@ -1,0 +1,68 @@
+<svg viewBox="0 0 1200 520" xmlns="http://www.w3.org/2000/svg" font-family="Inter, Segoe UI, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B1020"/><stop offset="1" stop-color="#10162B"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto">
+      <path d="M0 0 L7 3 L0 6 Z" fill="#6366F1"/>
+    </marker>
+    <marker id="arrowP" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto">
+      <path d="M0 0 L7 3 L0 6 Z" fill="#F472B6"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="520" rx="24" fill="url(#bg2)"/>
+  <text x="600" y="48" font-size="26" font-weight="700" text-anchor="middle" fill="#E5E7EB">Two people. One phone. A natural conversation.</text>
+
+  <!-- Person A -->
+  <g transform="translate(80,170)">
+    <rect width="170" height="120" rx="16" fill="#161C33" stroke="#22D3EE" stroke-width="1.5"/>
+    <text x="85" y="50" font-size="30" text-anchor="middle">🧑</text>
+    <text x="85" y="82" font-size="15" text-anchor="middle" fill="#E5E7EB">Speaks Vietnamese</text>
+    <text x="85" y="104" font-size="13" text-anchor="middle" fill="#94A3B8">earbud + mic</text>
+  </g>
+
+  <!-- Phone / engine in center -->
+  <g transform="translate(465,120)">
+    <rect width="270" height="280" rx="22" fill="#11182E" stroke="#6366F1" stroke-width="2"/>
+    <text x="135" y="40" font-size="16" font-weight="700" text-anchor="middle" fill="#E5E7EB">On-device engine</text>
+    <text x="135" y="62" font-size="12" text-anchor="middle" fill="#94A3B8">~2 GB · quantized</text>
+
+    <g transform="translate(35,86)">
+      <rect width="200" height="40" rx="10" fill="#0B1020" stroke="#22D3EE" stroke-width="1"/>
+      <text x="100" y="25" font-size="13" text-anchor="middle" fill="#22D3EE">Mimi codec · 12.5 Hz stream</text>
+    </g>
+    <g transform="translate(35,134)">
+      <rect width="200" height="40" rx="10" fill="#0B1020" stroke="#6366F1" stroke-width="1"/>
+      <text x="100" y="25" font-size="13" text-anchor="middle" fill="#A5B4FC">Simultaneous translation LM</text>
+    </g>
+    <g transform="translate(35,182)">
+      <rect width="200" height="40" rx="10" fill="#0B1020" stroke="#F472B6" stroke-width="1"/>
+      <text x="100" y="25" font-size="13" text-anchor="middle" fill="#F9A8D4">Voice-preserving decoder</text>
+    </g>
+    <text x="135" y="252" font-size="12" text-anchor="middle" fill="#34D399">runs both directions, full duplex</text>
+  </g>
+
+  <!-- Person B -->
+  <g transform="translate(950,170)">
+    <rect width="170" height="120" rx="16" fill="#161C33" stroke="#F472B6" stroke-width="1.5"/>
+    <text x="85" y="50" font-size="30" text-anchor="middle">🧑‍🦰</text>
+    <text x="85" y="82" font-size="15" text-anchor="middle" fill="#E5E7EB">Hears English</text>
+    <text x="85" y="104" font-size="13" text-anchor="middle" fill="#94A3B8">earbud</text>
+  </g>
+
+  <!-- A -> engine -->
+  <path d="M250 210 H 460" stroke="#22D3EE" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <text x="355" y="198" font-size="12" text-anchor="middle" fill="#22D3EE">VI speech</text>
+  <!-- engine -> B -->
+  <path d="M735 210 H 945" stroke="#6366F1" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <text x="840" y="198" font-size="12" text-anchor="middle" fill="#A5B4FC">EN speech</text>
+
+  <!-- B -> engine (return path) -->
+  <path d="M945 280 H 735" stroke="#F472B6" stroke-width="3" fill="none" marker-end="url(#arrowP)"/>
+  <text x="840" y="304" font-size="12" text-anchor="middle" fill="#F9A8D4">EN reply</text>
+  <!-- engine -> A -->
+  <path d="M460 280 H 250" stroke="#F472B6" stroke-width="3" fill="none" marker-end="url(#arrowP)"/>
+  <text x="355" y="304" font-size="12" text-anchor="middle" fill="#F9A8D4">VI reply</text>
+
+  <text x="600" y="470" font-size="14" text-anchor="middle" fill="#94A3B8">Simultaneous — translation streams out while you are still speaking, keeping the original voice and tone.</text>
+</svg>
