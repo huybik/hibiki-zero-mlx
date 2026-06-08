@@ -1,0 +1,59 @@
+<svg viewBox="0 0 1200 420" xmlns="http://www.w3.org/2000/svg" font-family="Inter, Segoe UI, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1020"/>
+      <stop offset="1" stop-color="#161C33"/>
+    </linearGradient>
+    <linearGradient id="grad1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="0.5" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#F472B6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#6366F1" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6366F1" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="420" rx="24" fill="url(#bg)"/>
+  <circle cx="600" cy="210" r="260" fill="url(#glow)"/>
+
+  <!-- left speaker -->
+  <g transform="translate(150,210)">
+    <circle r="54" fill="#161C33" stroke="#22D3EE" stroke-width="2"/>
+    <text x="0" y="10" font-size="34" text-anchor="middle" fill="#E5E7EB">🗣️</text>
+    <text x="0" y="92" font-size="18" text-anchor="middle" fill="#94A3B8">Tiếng Việt</text>
+  </g>
+  <!-- right speaker -->
+  <g transform="translate(1050,210)">
+    <circle r="54" fill="#161C33" stroke="#F472B6" stroke-width="2"/>
+    <text x="0" y="10" font-size="34" text-anchor="middle" fill="#E5E7EB">👂</text>
+    <text x="0" y="92" font-size="18" text-anchor="middle" fill="#94A3B8">English</text>
+  </g>
+
+  <!-- streaming waveform between them -->
+  <g stroke="url(#grad1)" stroke-width="4" stroke-linecap="round" fill="none">
+    <path d="M230 210 q 30 -40 60 0 t 60 0 t 60 0 t 60 0 t 60 0 t 60 0 t 60 0 t 60 0 t 60 0 t 60 0 t 60 0 t 60 0" opacity="0.9"/>
+  </g>
+  <g fill="url(#grad1)">
+    <rect x="250" y="190" width="6" height="40" rx="3"/>
+    <rect x="330" y="170" width="6" height="80" rx="3"/>
+    <rect x="410" y="196" width="6" height="28" rx="3"/>
+    <rect x="500" y="160" width="6" height="100" rx="3"/>
+    <rect x="600" y="184" width="6" height="52" rx="3"/>
+    <rect x="700" y="166" width="6" height="88" rx="3"/>
+    <rect x="790" y="196" width="6" height="28" rx="3"/>
+    <rect x="870" y="174" width="6" height="72" rx="3"/>
+    <rect x="950" y="190" width="6" height="40" rx="3"/>
+  </g>
+
+  <!-- title -->
+  <text x="600" y="70" font-size="42" font-weight="800" text-anchor="middle" fill="#E5E7EB">Talk to anyone. In any language.</text>
+  <text x="600" y="112" font-size="20" text-anchor="middle" fill="#94A3B8">Real-time, two-way speech translation — running entirely on the phone in your pocket.</text>
+
+  <!-- chip -->
+  <g transform="translate(600,360)">
+    <rect x="-150" y="-22" width="300" height="44" rx="22" fill="#161C33" stroke="#34D399" stroke-width="1.5"/>
+    <circle cx="-120" cy="0" r="6" fill="#34D399"/>
+    <text x="6" y="6" font-size="17" text-anchor="middle" fill="#E5E7EB">On-device · &lt;1s latency · no cloud</text>
+  </g>
+</svg>
