@@ -196,6 +196,7 @@ cython_debug/
 remote_dataset/french_english_unprocessed_samples/
 remote_dataset/french_english_unprocessed_*s/
 remote_dataset/covost2_*/
+remote_dataset/fleurs_vi_en/
 hibiki_zero/samples/fr_sample*.mp3
 
 # Local Hugging Face cache (HF_HOME override)
