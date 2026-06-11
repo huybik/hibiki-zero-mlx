@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Push only the MLX q4 model weight to the HF Hub."""
+"""Push the MLX q4 model artifacts to the HF Hub."""
 from pathlib import Path
 
 from huggingface_hub import CommitOperationAdd, HfApi
@@ -9,7 +9,14 @@ HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 
 # left side = path_in_repo on the Hub (kept stable); right side = local source.
 FILES = {
+    "config.json": HERE / "weights" / "config.json",
     "hibiki.q4.safetensors": HERE / "weights" / "hibiki.q4.safetensors",
+    "mimi-pytorch-e351c8d8@125.safetensors": (
+        HERE / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"
+    ),
+    "tokenizer_spm_48k_multi6_2.model": HERE / "weights" / "tokenizer_spm_48k_multi6_2.model",
+    "mlx_hibiki_patch.py": HERE / "src" / "mlx_hibiki_patch.py",
+    "verify_mlx_q4.py": HERE / "scripts" / "verify_mlx_q4.py",
 }
 
 missing = [str(src) for src in FILES.values() if not src.exists()]
