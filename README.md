@@ -108,6 +108,22 @@ Pre-quantized weights (no need to run `scripts/convert_mlx_q4.py`) are published
 The q4 weights use `group_size=32`; this is required because stock `moshi-mlx`
 (and the moshi-swift iOS loader) hardcode gs32 for `.q4.safetensors`.
 
+### Hibiki-M MLX q4
+
+Hibiki-M starts from the official MLX BF16 checkpoint, so the q4 path loads the
+source MLX safetensors directly, quantizes with `group_size=32`, and stages a
+standalone Hugging Face repo directory:
+
+```bash
+HF_HOME=.hf_cache ./.venv/bin/python scripts/convert_hibiki_m_mlx_q4.py
+./.venv/bin/python scripts/push_hibiki_m_mlx_q4.py  # publishes huybik/hibiki-1b-mlx-q4
+```
+
+The staged repo lives at `weights/hibiki-m-mlx-q4/` and includes the q4 LM,
+patched `config.json`, Mimi weights, tokenizer, model card, and LFS attributes.
+The published q4 artifact is pinned at
+[`huybik/hibiki-1b-mlx-q4@9649ed0ce90b1a93efac1a89a6bfbe44820c2e7b`](https://huggingface.co/huybik/hibiki-1b-mlx-q4/tree/9649ed0ce90b1a93efac1a89a6bfbe44820c2e7b).
+
 ### Pipelined MLX (faster still — overlaps codec with the LM)
 
 Profiling the q4 decode loop showed the Mimi codec (`rustymimi`, CPU) was **~58%**

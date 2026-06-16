@@ -33,6 +33,16 @@ def hf_get(filename: str) -> str:
         return filename
 
 
+def quantization_predicate(group_size: int):
+    def predicate(_, module):
+        weight = getattr(module, "weight", None)
+        if weight is None or not hasattr(module, "to_quantized"):
+            return False
+        return weight.shape[-1] % group_size == 0
+
+    return predicate
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tokenizer", type=str)
@@ -79,9 +89,9 @@ def main():
     model = models.Lm(lm_config)
     model.set_dtype(mx.bfloat16)
     if moshi_weights.endswith(".q4.safetensors"):
-        nn.quantize(model, bits=4, group_size=32)
+        nn.quantize(model, bits=4, group_size=32, class_predicate=quantization_predicate(32))
     elif moshi_weights.endswith(".q8.safetensors"):
-        nn.quantize(model, bits=8, group_size=64)
+        nn.quantize(model, bits=8, group_size=64, class_predicate=quantization_predicate(64))
 
     log("info", f"loading model weights from {moshi_weights}")
     model.load_weights(moshi_weights, strict=True)

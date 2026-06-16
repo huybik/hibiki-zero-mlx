@@ -23,6 +23,7 @@ class DepFormerConfig:
     num_slices: int
     weights_per_step_schedule: list[int] | None = None
     low_rank_embeddings: int | None = None
+    output_layer_norm: bool = False
 
 
 @dataclass
@@ -54,11 +55,14 @@ class LmConfig:
         # hibiki-zero: feedforward width is `hidden_scale * dim` (not 4*dim) and
         # the main transformer uses grouped-query attention (`kv_repeat` > 1).
         hidden_scale = data.get("hidden_scale", 4)
+        def scaled_dimension(dim: int) -> int:
+            return int(round(hidden_scale * dim))
+
         transformer = TransformerConfig(
             d_model=data["dim"],
             num_heads=data["num_heads"],
             num_layers=data["num_layers"],
-            dim_feedforward=hidden_scale * data["dim"],
+            dim_feedforward=scaled_dimension(data["dim"]),
             causal=data["causal"],
             norm_first=True,
             bias_ff=False,
@@ -84,7 +88,7 @@ class LmConfig:
                 num_layers=data["depformer_num_layers"],
                 dim_feedforward=(
                     data.get("depformer_dim_feedforward")
-                    or hidden_scale * data["depformer_dim"]
+                    or scaled_dimension(data["depformer_dim"])
                 ),
                 causal=data.get("depformer_causal", True),
                 norm_first=True,
@@ -109,6 +113,9 @@ class LmConfig:
                 "depformer_weights_per_step_schedule", None
             ),
             low_rank_embeddings=data.get("depformer_low_rank_embeddings", None),
+            output_layer_norm=data.get(
+                "depformer_output_layer_norm", "depformer_norm" in data
+            ),
         )
         conditioners = {}
         if "conditioners" in data:
@@ -235,8 +242,8 @@ class DepFormerSlice(nn.Module):
         self.linear_out = nn.Linear(dim, out_vocab_size, bias=False)
         self.transformer = Transformer(cfg.transformer)
         # hibiki-zero: learned per-slice output LayerNorm applied before linear_out.
-        # Without it the audio logits come out ~3x too small -> babbling/clipping.
-        self.norm = nn.LayerNorm(dim, 1e-5)
+        # Hibiki-M does not have these tensors.
+        self.norm = nn.LayerNorm(dim, 1e-5) if cfg.output_layer_norm else None
 
     def __call__(self, _: mx.array) -> mx.array:
         raise ValueError("not implemented")
@@ -283,7 +290,9 @@ class DepFormer(nn.Module):
                 last_token = mx.tile(last_token, (2, 1))
             xs = slice.linear_in(main_transformer_out) + slice.emb(last_token)
             xs = slice.transformer(xs, cache=cache)
-            logits = slice.linear_out(slice.norm(xs))
+            if slice.norm is not None:
+                xs = slice.norm(xs)
+            logits = slice.linear_out(xs)
             if cfg_coef != 1:
                 l1, l2 = logits.split(2, axis=0)
                 logits = cfg_coef * l1 - (cfg_coef - 1) * l2
