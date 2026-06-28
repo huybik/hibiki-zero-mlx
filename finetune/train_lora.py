@@ -57,6 +57,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-every", type=int, default=50, help="Optimizer steps between saves.")
     parser.add_argument("--log-every", type=int, default=1, help="Optimizer steps between logs.")
     parser.add_argument(
+        "--mps-empty-cache-every",
+        type=int,
+        default=0,
+        help="Optimizer steps between torch.mps.empty_cache() calls, 0 disables.",
+    )
+    parser.add_argument(
         "--resume-checkpoint",
         type=Path,
         help="trainer_step*.pt checkpoint to resume from.",
@@ -272,6 +278,16 @@ def batch_condition_tensors(
     return get_condition_tensors(model_type, lm, batch_size=batch_size, cfg_coef=1.0)
 
 
+def mps_memory_stats(torch: Any, device: Any) -> dict[str, float]:
+    if getattr(device, "type", str(device)) != "mps":
+        return {}
+    return {
+        "mps_allocated_gb": torch.mps.current_allocated_memory() / 1024**3,
+        "mps_driver_gb": torch.mps.driver_allocated_memory() / 1024**3,
+        "mps_recommended_gb": torch.mps.recommended_max_memory() / 1024**3,
+    }
+
+
 def main() -> None:
     args = parse_args()
     if args.epochs <= 0:
@@ -389,6 +405,12 @@ def main() -> None:
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             global_step += 1
+            if (
+                args.mps_empty_cache_every
+                and device.type == "mps"
+                and global_step % args.mps_empty_cache_every == 0
+            ):
+                torch.mps.empty_cache()
 
             if args.log_every and global_step % args.log_every == 0:
                 log_item = {
@@ -399,13 +421,21 @@ def main() -> None:
                     "text_loss": float(text_loss.detach().cpu()),
                     "lr": optimizer.param_groups[0]["lr"],
                 }
+                log_item.update(mps_memory_stats(torch, device))
                 with log_path.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(log_item, sort_keys=True) + "\n")
+                memory_msg = ""
+                if "mps_driver_gb" in log_item:
+                    memory_msg = (
+                        f" mps={log_item['mps_allocated_gb']:.1f}/"
+                        f"{log_item['mps_driver_gb']:.1f}GB"
+                    )
                 print(
                     f"epoch={epoch + 1} step={global_step} "
                     f"loss={float(loss.detach().cpu()):.4f} "
                     f"audio={float(audio_loss.detach().cpu()):.4f} "
                     f"text={float(text_loss.detach().cpu()):.4f}"
+                    f"{memory_msg}"
                 )
             if args.save_every and global_step % args.save_every == 0:
                 save_checkpoint(torch, save_file, lm, optimizer, args, global_step, out_dir)
