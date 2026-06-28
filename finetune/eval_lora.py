@@ -112,7 +112,7 @@ def adapter_metadata(safe_open: Any, adapter_path: Path) -> tuple[int, float]:
     missing = [key for key in ("target", "lora_rank", "lora_scaling") if key not in metadata]
     if missing:
         raise RuntimeError(f"Adapter is missing metadata: {', '.join(missing)}")
-    if metadata["target"] != "LMModel.transformer":
+    if metadata["target"] not in ("LMModel.transformer", "LMModel.transformer+text_linear"):
         raise RuntimeError(f"Unsupported adapter target: {metadata['target']}")
     return int(metadata["lora_rank"]), float(metadata["lora_scaling"])
 
@@ -130,16 +130,17 @@ def load_main_lora(
     rank, scaling = adapter_metadata(safe_open, adapter_path)
     replace_all_linear_with_lora(lm.transformer, rank, scaling, device=device, dtype=dtype)
     state = load_file(str(adapter_path), device=str(device))
-    bad_keys = [key for key in state if not key.startswith("transformer.")]
+    allowed_prefixes = ("transformer.", "text_linear.")
+    bad_keys = [key for key in state if not key.startswith(allowed_prefixes)]
     if bad_keys:
-        raise RuntimeError(f"Adapter has non-transformer tensors: {bad_keys[:5]}")
+        raise RuntimeError(f"Adapter has unsupported tensors: {bad_keys[:5]}")
     for key, value in state.items():
         if value.dtype.is_floating_point:
             state[key] = value.to(dtype=dtype)
     result = lm.load_state_dict(state, strict=False, assign=True)
     if result.unexpected_keys:
         raise RuntimeError(f"Unexpected adapter keys: {result.unexpected_keys[:5]}")
-    print(f"Loaded {len(state)} LoRA tensors from {repo_display_path(adapter_path)}")
+    print(f"Loaded {len(state)} adapter tensors from {repo_display_path(adapter_path)}")
 
 
 def output_paths(out_dir: Path, index: int, source_path: Path, tag: str | None) -> dict[str, Path]:

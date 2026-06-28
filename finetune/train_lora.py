@@ -49,6 +49,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-scaling", type=float, default=2.0)
+    parser.add_argument(
+        "--train-text-head",
+        action="store_true",
+        help="Also train/save LMModel.text_linear for tiny text-overfit experiments.",
+    )
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
@@ -175,12 +180,15 @@ def apply_main_lora(
     replace_all_linear_with_lora(model.transformer, args.lora_rank, args.lora_scaling)
     for name, param in model.named_parameters():
         is_lora = ".lora_A." in name or ".lora_B." in name
-        param.requires_grad_(is_lora and name.startswith("transformer."))
+        is_text_head = args.train_text_head and name.startswith("text_linear.")
+        param.requires_grad_((is_lora and name.startswith("transformer.")) or is_text_head)
 
     bad = [
         name
         for name, param in model.named_parameters()
-        if param.requires_grad and not name.startswith("transformer.")
+        if param.requires_grad
+        and not name.startswith("transformer.")
+        and not name.startswith("text_linear.")
     ]
     if bad:
         raise RuntimeError(
@@ -193,12 +201,13 @@ def trainable_parameters(model: Any) -> list[Any]:
 
 
 def adapter_state_dict(model: Any) -> dict[str, Any]:
+    trainable_names = {name for name, param in model.named_parameters() if param.requires_grad}
     state: dict[str, Any] = {}
     for name, tensor in model.state_dict().items():
-        if ".lora_A." in name or ".lora_B." in name:
+        if name in trainable_names:
             state[name] = tensor.detach().cpu().contiguous()
     if not state:
-        raise RuntimeError("No LoRA tensors found to save.")
+        raise RuntimeError("No trainable adapter tensors found to save.")
     return state
 
 
@@ -216,7 +225,10 @@ def save_checkpoint(
     metadata = {
         "lora_rank": str(args.lora_rank),
         "lora_scaling": str(args.lora_scaling),
-        "target": "LMModel.transformer",
+        "target": "LMModel.transformer+text_linear"
+        if args.train_text_head
+        else "LMModel.transformer",
+        "train_text_head": str(args.train_text_head),
         "base_model": repo_display_path(args.model_weight),
     }
     save_file(adapter_state_dict(model), str(adapter_path), metadata=metadata)
@@ -364,7 +376,7 @@ def main() -> None:
         raise RuntimeError("No trainable LoRA parameters after freeze map.")
     trainable_count = sum(param.numel() for param in params)
     total_count = sum(param.numel() for param in lm.parameters())
-    print(f"Trainable LoRA params: {trainable_count:,} / {total_count:,}")
+    print(f"Trainable params: {trainable_count:,} / {total_count:,}")
 
     optimizer = torch.optim.AdamW(params, lr=args.lr)
     global_step = 0
