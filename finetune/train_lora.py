@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=0,
+        help="Use only the first N cached samples after optional length-sort; 0 means all.",
+    )
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-scaling", type=float, default=2.0)
@@ -127,7 +133,7 @@ def dtype_from_name(torch: Any, name: str) -> Any:
 
 def make_dataset_class(torch: Any, Dataset: Any) -> Any:
     class CachedCodeDataset(Dataset):
-        def __init__(self, cache_dir: Path, sort_by_length: bool):
+        def __init__(self, cache_dir: Path, sort_by_length: bool, max_samples: int):
             self.samples: list[dict[str, Any]] = []
             for shard_path in sorted(cache_dir.glob("shard_*.pt")):
                 payload = torch.load(shard_path, map_location="cpu")
@@ -150,6 +156,10 @@ def make_dataset_class(torch: Any, Dataset: Any) -> Any:
                 raise RuntimeError(f"No shard_*.pt cache files found in {cache_dir}")
             if sort_by_length:
                 self.samples.sort(key=lambda sample: sample["frames"])
+            if max_samples:
+                self.samples = self.samples[:max_samples]
+                if not self.samples:
+                    raise RuntimeError("--max-samples selected no cached samples")
 
         def __len__(self) -> int:
             return len(self.samples)
@@ -326,6 +336,8 @@ def main() -> None:
         raise ValueError("--epochs must be positive")
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
+    if args.max_samples < 0:
+        raise ValueError("--max-samples must be non-negative")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
 
@@ -353,7 +365,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     DatasetClass = make_dataset_class(torch, Dataset)
-    dataset = DatasetClass(cache_dir, args.sort_by_length)
+    dataset = DatasetClass(cache_dir, args.sort_by_length, args.max_samples)
+    print(f"Loaded {len(dataset)} cached samples from {repo_display_path(cache_dir)}")
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -413,6 +426,9 @@ def main() -> None:
     )
     log_path = out_dir / "train_log.jsonl"
     condition_cache: dict[int, Any | None] = {}
+    log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
+    log_steps = 0
+    log_text_tokens = 0
 
     for epoch in range(args.epochs):
         for batch in dataloader:
@@ -463,14 +479,24 @@ def main() -> None:
             ):
                 empty_mps_cache(torch, device)
 
+            loss_value = float(loss.detach().cpu())
+            audio_loss_value = float(audio_loss.detach().cpu())
+            text_loss_value = float(text_loss.detach().cpu())
+            log_sums["loss"] += loss_value
+            log_sums["audio_loss"] += audio_loss_value
+            log_sums["text_loss"] += text_loss_value
+            log_steps += 1
+            log_text_tokens += int(text_mask.sum().detach().cpu())
+
             if args.log_every and global_step % args.log_every == 0:
                 log_item = {
                     "epoch": epoch + 1,
                     "step": global_step,
-                    "loss": float(loss.detach().cpu()),
-                    "audio_loss": float(audio_loss.detach().cpu()),
-                    "text_loss": float(text_loss.detach().cpu()),
-                    "text_tokens": int(text_mask.sum().detach().cpu()),
+                    "loss": log_sums["loss"] / log_steps,
+                    "audio_loss": log_sums["audio_loss"] / log_steps,
+                    "text_loss": log_sums["text_loss"] / log_steps,
+                    "text_tokens": log_text_tokens,
+                    "log_steps": log_steps,
                     "lr": optimizer.param_groups[0]["lr"],
                 }
                 log_item.update(mps_memory_stats(torch, device))
@@ -484,11 +510,14 @@ def main() -> None:
                     )
                 print(
                     f"epoch={epoch + 1} step={global_step} "
-                    f"loss={float(loss.detach().cpu()):.4f} "
-                    f"audio={float(audio_loss.detach().cpu()):.4f} "
-                    f"text={float(text_loss.detach().cpu()):.4f}"
+                    f"loss={log_item['loss']:.4f} "
+                    f"audio={log_item['audio_loss']:.4f} "
+                    f"text={log_item['text_loss']:.4f}"
                     f"{memory_msg}"
                 )
+                log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
+                log_steps = 0
+                log_text_tokens = 0
             if args.save_every and global_step % args.save_every == 0:
                 save_checkpoint(torch, save_file, lm, optimizer, args, global_step, out_dir)
 
