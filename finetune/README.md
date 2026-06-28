@@ -10,6 +10,10 @@ PY=/opt/homebrew/Caskroom/miniconda/base/bin/python
 $PY finetune/build_pairs.py --splits train validation test
 $PY finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
 $PY finetune/train_lora.py --cache-dir finetune/cache/train --max-steps 10
+$PY finetune/eval_lora.py \
+  --pairs finetune/pairs/validation.jsonl \
+  --adapter finetune/runs/vn_lora/adapter_step000010.safetensors \
+  --limit 2
 ```
 
 `cache_codes.py` and `train_lora.py` require the PyTorch `moshi` and `sphn` packages in that
@@ -33,6 +37,9 @@ environment. They intentionally fail before doing work if those imports are miss
   `.safetensors` plus optimizer checkpoints. It also appends scalar logs to
   `finetune/runs/vn_lora/train_log.jsonl`. The default dtype is `bfloat16`; MPS
   `float16` can go non-finite after the first optimizer step.
+- `eval_lora.py` loads one transformer-only adapter, runs PyTorch generation on a
+  small pair file, writes wav/txt outputs, and records references/predictions in
+  `predictions.csv`.
 
 ## Defaults
 
