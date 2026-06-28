@@ -288,6 +288,13 @@ def masked_cross_entropy(torch: Any, logits: Any, targets: Any, mask: Any) -> An
     return torch.nn.functional.cross_entropy(logits[mask].float(), targets[mask].long())
 
 
+def text_supervision_mask(torch: Any, base_mask: Any, targets: Any, pad_id: int) -> Any:
+    non_pad = targets != pad_id
+    seen_text = non_pad.long().cumsum(dim=-1) > 0
+    prefix_pad = (targets == pad_id) & ~seen_text
+    return base_mask & (non_pad | prefix_pad)
+
+
 def batch_condition_tensors(
     lm: Any, model_type: str, batch_size: int, get_condition_tensors: Any
 ) -> Any | None:
@@ -426,7 +433,9 @@ def main() -> None:
             audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
             text_targets = codes[:, :1]
             audio_loss = masked_cross_entropy(torch, output.logits, audio_targets, output.mask)
-            text_mask = output.text_mask & (text_targets != lm.text_padding_token_id)
+            text_mask = text_supervision_mask(
+                torch, output.text_mask, text_targets, lm.text_padding_token_id
+            )
             text_loss = masked_cross_entropy(
                 torch, output.text_logits, text_targets, text_mask
             )
