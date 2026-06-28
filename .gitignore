@@ -236,5 +236,7 @@ finetune/runs/
 # macOS
 .DS_Store
 
+.codegraph/
+
 /weights
 /translations
