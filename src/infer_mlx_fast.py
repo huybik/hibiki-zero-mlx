@@ -52,28 +52,46 @@ def _resolve_audio_path(infile: str) -> str:
     return infile
 
 
+def _q4_compatible(_: str, module: object) -> bool:
+    weight = getattr(module, "weight", None)
+    return (
+        weight is not None
+        and hasattr(module, "to_quantized")
+        and weight.shape[-1] % 32 == 0
+    )
+
+
+def _q4_model_name(cfg: dict) -> str:
+    name = cfg.get("moshi_name")
+    if isinstance(name, str) and name.endswith(".q4.safetensors"):
+        return name
+    return "hibiki.q4.safetensors"
+
+
 def load(weights_dir: Path):
+    cfg_path = weights_dir / "config.json"
     _require_file(
-        weights_dir / "config.json",
-        "Download the Hibiki-Zero config into weights/.",
+        cfg_path,
+        "Use a q4 model directory containing config.json.",
+    )
+    cfg = json.loads(cfg_path.read_text())
+    model_name = _q4_model_name(cfg)
+    tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
+    _require_file(
+        weights_dir / model_name,
+        "Use a staged q4 model directory, or run the matching q4 conversion script.",
     )
     _require_file(
-        weights_dir / "hibiki.q4.safetensors",
-        "Download the pre-quantized q4 checkpoint from huybik/hibiki-zero-3b-mlx-q4 "
-        "or run `python scripts/convert_mlx_q4.py`.",
+        weights_dir / tokenizer_name,
+        "Download or copy the tokenizer into the q4 model directory.",
     )
-    _require_file(
-        weights_dir / "tokenizer_spm_48k_multi6_2.model",
-        "Download the tokenizer into weights/.",
-    )
-    cfg = json.loads((weights_dir / "config.json").read_text())
     lm_config = models.LmConfig.from_config_dict(cfg)
     model = models.Lm(lm_config)
     model.set_dtype(mx.bfloat16)
-    nn.quantize(model, bits=4, group_size=32)
-    model.load_weights(str(weights_dir / "hibiki.q4.safetensors"), strict=True)
+    nn.quantize(model, bits=4, group_size=32, class_predicate=_q4_compatible)
+    model.load_weights(str(weights_dir / model_name), strict=True)
     mx.eval(model.parameters())
-    tok = sentencepiece.SentencePieceProcessor(str(weights_dir / "tokenizer_spm_48k_multi6_2.model"))
+    tok = sentencepiece.SentencePieceProcessor(str(weights_dir / tokenizer_name))
     mimi_enc, mimi_dec = make_mimi(weights_dir, lm_config)
     return model, lm_config, tok, mimi_enc, mimi_dec
 
@@ -83,11 +101,14 @@ def make_mimi(weights_dir: Path, lm_config):
     # borrowed by the encoder and decoder threads at once ("Already borrowed").
     # Fresh instances also reset the streaming state, so batch callers must make
     # a new pair per file rather than reuse one across files.
+    cfg_path = weights_dir / "config.json"
+    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+    mimi_name = cfg.get("mimi_name", "mimi-pytorch-e351c8d8@125.safetensors")
     _require_file(
-        weights_dir / "mimi-pytorch-e351c8d8@125.safetensors",
-        "Download the Mimi checkpoint into weights/.",
+        weights_dir / mimi_name,
+        "Download or copy the Mimi checkpoint into the q4 model directory.",
     )
-    mimi_path = str(weights_dir / "mimi-pytorch-e351c8d8@125.safetensors")
+    mimi_path = str(weights_dir / mimi_name)
     nq = max(lm_config.other_codebooks, lm_config.generated_codebooks)
     return (rustymimi.Tokenizer(mimi_path, num_codebooks=nq),
             rustymimi.Tokenizer(mimi_path, num_codebooks=nq))
@@ -97,6 +118,10 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         tail_s: float = 8.0, preloaded=None, text_temp: float = 0.4):
     infile = _resolve_audio_path(infile)
     model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir)
+    if model.condition_provider is not None:
+        ct = model.condition_provider.condition_tensor("description", "very_good")
+    else:
+        ct = None
     other_cb = lm_config.other_codebooks
     gen_cb = lm_config.generated_codebooks
 
@@ -116,7 +141,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         audio_sampler=utils.Sampler(top_k=250, temp=0.8),
         cfg_coef=1.0, check=False,
     )
-    model.warmup()
+    model.warmup(ct)
 
     enc_q: queue.Queue = queue.Queue(maxsize=64)   # encoder -> main
     dec_q: queue.Queue = queue.Queue(maxsize=64)   # main -> decoder
@@ -160,7 +185,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         oat = enc_q.get()
         if oat is SENTINEL:
             break
-        text_token = gen.step(oat)
+        text_token = gen.step(oat, ct)
         tt = text_token[0].item()                             # sync this frame's LM
         processed += 1
         if tt not in (0, 3):
