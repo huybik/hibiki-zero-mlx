@@ -56,6 +56,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=0, help="Optimizer steps, 0 means all.")
     parser.add_argument("--save-every", type=int, default=50, help="Optimizer steps between saves.")
     parser.add_argument("--log-every", type=int, default=1, help="Optimizer steps between logs.")
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        help="trainer_step*.pt checkpoint to resume from.",
+    )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
         "--gradient-checkpointing",
@@ -71,10 +76,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def require_runtime_deps() -> tuple[Any, Any, Any, Any, Any, Any]:
+def require_runtime_deps() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     try:
         import torch
-        from safetensors.torch import save_file
+        from safetensors.torch import load_file, save_file
         from torch.utils.data import DataLoader, Dataset
         from moshi.models import loaders
         from moshi.modules.lora import replace_all_linear_with_lora
@@ -83,6 +88,7 @@ def require_runtime_deps() -> tuple[Any, Any, Any, Any, Any, Any]:
         raise SystemExit(f"Missing training dependency: {exc.name}") from exc
     return (
         torch,
+        load_file,
         save_file,
         DataLoader,
         Dataset,
@@ -222,6 +228,36 @@ def save_checkpoint(
     )
 
 
+def load_resume_checkpoint(
+    torch: Any,
+    load_file: Any,
+    model: Any,
+    optimizer: Any,
+    resume_path: Path,
+    device: Any,
+    dtype: Any,
+) -> int:
+    checkpoint = torch.load(resume_path, map_location="cpu")
+    adapter_path = require_file(checkpoint["adapter"], "resume adapter")
+    adapter_state = load_file(str(adapter_path), device=str(device))
+    for key, value in adapter_state.items():
+        if value.dtype.is_floating_point:
+            adapter_state[key] = value.to(dtype=dtype)
+    result = model.load_state_dict(adapter_state, strict=False, assign=True)
+    if result.unexpected_keys:
+        raise RuntimeError(f"Unexpected adapter keys while resuming: {result.unexpected_keys[:5]}")
+
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    for state in optimizer.state.values():
+        for key, value in list(state.items()):
+            if torch.is_tensor(value):
+                state[key] = value.to(device=device)
+
+    step = int(checkpoint["step"])
+    print(f"Resumed step {step} from {repo_display_path(resume_path)}")
+    return step
+
+
 def masked_cross_entropy(torch: Any, logits: Any, targets: Any, mask: Any) -> Any:
     if not bool(mask.any()):
         return logits.float().sum() * 0.0
@@ -247,6 +283,7 @@ def main() -> None:
 
     (
         torch,
+        load_file,
         save_file,
         DataLoader,
         Dataset,
@@ -262,6 +299,8 @@ def main() -> None:
     args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
+    if args.resume_checkpoint is not None:
+        args.resume_checkpoint = require_file(args.resume_checkpoint, "resume checkpoint")
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -299,6 +338,13 @@ def main() -> None:
     print(f"Trainable LoRA params: {trainable_count:,} / {total_count:,}")
 
     optimizer = torch.optim.AdamW(params, lr=args.lr)
+    global_step = 0
+    micro_step = 0
+    if args.resume_checkpoint is not None:
+        global_step = load_resume_checkpoint(
+            torch, load_file, lm, optimizer, args.resume_checkpoint, device, dtype
+        )
+        micro_step = global_step * args.grad_accum_steps
     optimizer.zero_grad(set_to_none=True)
 
     run_config = {
@@ -310,8 +356,6 @@ def main() -> None:
     )
     log_path = out_dir / "train_log.jsonl"
 
-    global_step = 0
-    micro_step = 0
     for epoch in range(args.epochs):
         for batch in dataloader:
             if args.max_steps and global_step >= args.max_steps:

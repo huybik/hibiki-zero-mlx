@@ -10,6 +10,7 @@ PY=/opt/homebrew/Caskroom/miniconda/base/bin/python
 $PY finetune/build_pairs.py --splits train validation test
 $PY finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
 $PY finetune/train_lora.py --cache-dir finetune/cache/train --max-steps 10
+$PY finetune/train_lora.py --resume-checkpoint finetune/runs/vn_lora/trainer_step000010.pt --max-steps 100
 $PY finetune/eval_lora.py \
   --pairs finetune/pairs/validation.jsonl \
   --adapter finetune/runs/vn_lora/adapter_step000010.safetensors \
