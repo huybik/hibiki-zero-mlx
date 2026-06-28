@@ -106,15 +106,17 @@ def seed_all(torch: Any, seed: int) -> None:
     np.random.seed(seed)
 
 
-def adapter_metadata(safe_open: Any, adapter_path: Path) -> tuple[int, float]:
+def adapter_metadata(safe_open: Any, adapter_path: Path) -> tuple[int, float, set[str]]:
     with safe_open(str(adapter_path), framework="pt", device="cpu") as handle:
         metadata = handle.metadata() or {}
     missing = [key for key in ("target", "lora_rank", "lora_scaling") if key not in metadata]
     if missing:
         raise RuntimeError(f"Adapter is missing metadata: {', '.join(missing)}")
-    if metadata["target"] not in ("LMModel.transformer", "LMModel.transformer+text_linear"):
+    targets = set(metadata["target"].split("+"))
+    supported = {"LMModel.transformer", "text_linear", "audio_heads"}
+    if "LMModel.transformer" not in targets or targets - supported:
         raise RuntimeError(f"Unsupported adapter target: {metadata['target']}")
-    return int(metadata["lora_rank"]), float(metadata["lora_scaling"])
+    return int(metadata["lora_rank"]), float(metadata["lora_scaling"]), targets
 
 
 def load_main_lora(
@@ -127,11 +129,18 @@ def load_main_lora(
     device: Any,
     dtype: Any,
 ) -> None:
-    rank, scaling = adapter_metadata(safe_open, adapter_path)
+    rank, scaling, targets = adapter_metadata(safe_open, adapter_path)
     replace_all_linear_with_lora(lm.transformer, rank, scaling, device=device, dtype=dtype)
+    if "audio_heads" in targets:
+        replace_all_linear_with_lora(lm.depformer_in, rank, scaling, device=device, dtype=dtype)
+        replace_all_linear_with_lora(lm.linears, rank, scaling, device=device, dtype=dtype)
     state = load_file(str(adapter_path), device=str(device))
-    allowed_prefixes = ("transformer.", "text_linear.")
-    bad_keys = [key for key in state if not key.startswith(allowed_prefixes)]
+    allowed_prefixes = ["transformer."]
+    if "text_linear" in targets:
+        allowed_prefixes.append("text_linear.")
+    if "audio_heads" in targets:
+        allowed_prefixes.extend(("depformer_in.", "linears."))
+    bad_keys = [key for key in state if not key.startswith(tuple(allowed_prefixes))]
     if bad_keys:
         raise RuntimeError(f"Adapter has unsupported tensors: {bad_keys[:5]}")
     for key, value in state.items():
