@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also train/save LMModel.text_linear for tiny text-overfit experiments.",
     )
+    parser.add_argument(
+        "--train-audio-heads",
+        action="store_true",
+        help="Also add/train LoRA on depformer_in and audio output linears.",
+    )
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
@@ -77,6 +82,11 @@ def parse_args() -> argparse.Namespace:
         "--resume-checkpoint",
         type=Path,
         help="trainer_step*.pt checkpoint to resume from.",
+    )
+    parser.add_argument(
+        "--init-adapter",
+        type=Path,
+        help="Load adapter weights before training without optimizer/global-step resume.",
     )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
@@ -182,16 +192,40 @@ def collate_cached(samples: list[dict[str, Any]], torch: Any) -> dict[str, Any]:
     return {"codes": batch, "ids": ids}
 
 
-def apply_main_lora(
+def adapter_target(args: argparse.Namespace) -> str:
+    targets = ["LMModel.transformer"]
+    if args.train_text_head:
+        targets.append("text_linear")
+    if args.train_audio_heads:
+        targets.append("audio_heads")
+    return "+".join(targets)
+
+
+def zero_lora_updates(model: Any) -> None:
+    for module in model.modules():
+        lora_b = getattr(module, "lora_B", None)
+        if lora_b is not None:
+            lora_b.weight.data.zero_()
+
+
+def apply_lora_targets(
     model: Any, replace_all_linear_with_lora: Any, args: argparse.Namespace
 ) -> None:
     for param in model.parameters():
         param.requires_grad_(False)
     replace_all_linear_with_lora(model.transformer, args.lora_rank, args.lora_scaling)
+    if args.train_audio_heads:
+        replace_all_linear_with_lora(model.depformer_in, args.lora_rank, args.lora_scaling)
+        replace_all_linear_with_lora(model.linears, args.lora_rank, args.lora_scaling)
+    zero_lora_updates(model)
     for name, param in model.named_parameters():
         is_lora = ".lora_A." in name or ".lora_B." in name
-        is_text_head = args.train_text_head and name.startswith("text_linear.")
-        param.requires_grad_((is_lora and name.startswith("transformer.")) or is_text_head)
+        train_transformer = is_lora and name.startswith("transformer.")
+        train_text_head = args.train_text_head and name.startswith("text_linear.")
+        train_audio_head = args.train_audio_heads and is_lora and (
+            name.startswith("depformer_in.") or name.startswith("linears.")
+        )
+        param.requires_grad_(train_transformer or train_text_head or train_audio_head)
 
     bad = [
         name
@@ -199,10 +233,12 @@ def apply_main_lora(
         if param.requires_grad
         and not name.startswith("transformer.")
         and not name.startswith("text_linear.")
+        and not name.startswith("depformer_in.")
+        and not name.startswith("linears.")
     ]
     if bad:
         raise RuntimeError(
-            f"LoRA freeze map leaked trainable params outside transformer: {bad[:5]}"
+            f"LoRA freeze map leaked trainable params outside selected targets: {bad[:5]}"
         )
 
 
@@ -235,10 +271,9 @@ def save_checkpoint(
     metadata = {
         "lora_rank": str(args.lora_rank),
         "lora_scaling": str(args.lora_scaling),
-        "target": "LMModel.transformer+text_linear"
-        if args.train_text_head
-        else "LMModel.transformer",
+        "target": adapter_target(args),
         "train_text_head": str(args.train_text_head),
+        "train_audio_heads": str(args.train_audio_heads),
         "base_model": repo_display_path(args.model_weight),
     }
     save_file(adapter_state_dict(model), str(adapter_path), metadata=metadata)
@@ -256,6 +291,22 @@ def save_checkpoint(
     )
 
 
+def load_adapter_state(
+    load_file: Any,
+    model: Any,
+    adapter_path: Path,
+    dtype: Any,
+) -> None:
+    adapter_state = load_file(str(adapter_path), device="cpu")
+    for key, value in adapter_state.items():
+        if value.dtype.is_floating_point:
+            adapter_state[key] = value.to(dtype=dtype)
+    result = model.load_state_dict(adapter_state, strict=False)
+    if result.unexpected_keys:
+        raise RuntimeError(f"Unexpected adapter keys while loading {adapter_path}: {result.unexpected_keys[:5]}")
+    print(f"Loaded {len(adapter_state)} adapter tensors from {repo_display_path(adapter_path)}")
+
+
 def load_resume_checkpoint(
     torch: Any,
     load_file: Any,
@@ -267,13 +318,7 @@ def load_resume_checkpoint(
 ) -> int:
     checkpoint = torch.load(resume_path, map_location="cpu")
     adapter_path = require_file(checkpoint["adapter"], "resume adapter")
-    adapter_state = load_file(str(adapter_path), device="cpu")
-    for key, value in adapter_state.items():
-        if value.dtype.is_floating_point:
-            adapter_state[key] = value.to(dtype=dtype)
-    result = model.load_state_dict(adapter_state, strict=False)
-    if result.unexpected_keys:
-        raise RuntimeError(f"Unexpected adapter keys while resuming: {result.unexpected_keys[:5]}")
+    load_adapter_state(load_file, model, adapter_path, dtype)
 
     optimizer.load_state_dict(checkpoint["optimizer"])
     for state in optimizer.state.values():
@@ -340,6 +385,8 @@ def main() -> None:
         raise ValueError("--max-samples must be non-negative")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
+    if args.resume_checkpoint is not None and args.init_adapter is not None:
+        raise ValueError("--resume-checkpoint and --init-adapter are mutually exclusive")
 
     (
         torch,
@@ -361,6 +408,8 @@ def main() -> None:
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
     if args.resume_checkpoint is not None:
         args.resume_checkpoint = require_file(args.resume_checkpoint, "resume checkpoint")
+    if args.init_adapter is not None:
+        args.init_adapter = require_file(args.init_adapter, "initial adapter")
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -389,7 +438,9 @@ def main() -> None:
         lm_kwargs_overrides={"gradient_checkpointing": args.gradient_checkpointing},
     )
     lm.train()
-    apply_main_lora(lm, replace_all_linear_with_lora, args)
+    apply_lora_targets(lm, replace_all_linear_with_lora, args)
+    if args.init_adapter is not None:
+        load_adapter_state(load_file, lm, args.init_adapter, dtype)
 
     params = trainable_parameters(lm)
     if not params:
