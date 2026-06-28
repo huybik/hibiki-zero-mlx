@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import random
 import sys
 import time
@@ -22,7 +23,6 @@ from finetune.utils import (  # noqa: E402
     DEFAULT_PAIRS_DIR,
     DEFAULT_RUN_DIR,
     DEFAULT_TOKENIZER,
-    read_pair_file,
     repo_display_path,
     require_file,
     resolve_repo_path,
@@ -33,10 +33,10 @@ from hibiki_zero.inference import decode_outputs, encode_inputs, get_lmgen  # no
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate tiny vi->en validation outputs with a transformer-only LoRA adapter."
+        description="Generate validation outputs with the base model or a LoRA adapter."
     )
     parser.add_argument("--pairs", type=Path, default=DEFAULT_PAIRS_DIR / "validation.jsonl")
-    parser.add_argument("--adapter", type=Path, required=True, help="Adapter .safetensors file.")
+    parser.add_argument("--adapter", type=Path, help="Optional adapter .safetensors file.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_RUN_DIR / "eval")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
@@ -65,6 +65,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k-text", type=int, default=250)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tag", default="lora")
+    parser.add_argument("--source-column", default="vi_audio")
+    parser.add_argument("--reference-column", default="text_en")
+    parser.add_argument("--id-column", default="id")
     return parser.parse_args()
 
 
@@ -104,6 +107,43 @@ def seed_all(torch: Any, seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
+
+
+def read_eval_rows(path: Path) -> list[dict[str, str]]:
+    path = require_file(path, "eval rows")
+    if path.suffix == ".csv":
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            return [
+                {key: value or "" for key, value in row.items()}
+                for row in csv.DictReader(handle)
+            ]
+    if path.suffix == ".jsonl":
+        rows: list[dict[str, str]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_no, line in enumerate(handle, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError(f"{path}:{line_no} is not a JSON object")
+                rows.append({key: str(value) for key, value in row.items()})
+        return rows
+    raise ValueError(f"Eval rows must be .jsonl or .csv: {path}")
+
+
+def validate_eval_rows(
+    rows: list[dict[str, str]], source_column: str, reference_column: str, id_column: str
+) -> None:
+    if not rows:
+        return
+    missing = [
+        column
+        for column in (source_column, reference_column, id_column)
+        if column not in rows[0]
+    ]
+    if missing:
+        raise ValueError(f"Eval rows are missing columns: {', '.join(missing)}")
 
 
 def adapter_metadata(safe_open: Any, adapter_path: Path) -> tuple[int, float, set[str]]:
@@ -172,6 +212,7 @@ def save_batch_outputs(
     tag: str | None,
     start_index: int,
     sphn: Any,
+    args: argparse.Namespace,
 ) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -187,9 +228,9 @@ def save_batch_outputs(
         paths["text"].write_text(out_text, encoding="utf-8")
         records.append(
             {
-                "id": row["id"],
-                "vi_audio": row["vi_audio"],
-                "reference_text": row["text_en"],
+                "id": row[args.id_column],
+                "source_audio": row[args.source_column],
+                "reference_text": row[args.reference_column],
                 "prediction_text": out_text,
                 "mono_wav": repo_display_path(paths["mono_wav"]),
                 "stereo_wav": repo_display_path(paths["stereo_wav"]),
@@ -211,7 +252,7 @@ def generate_batch(
     checkpoint_info: Any,
     out_dir: Path,
 ) -> list[dict[str, str]]:
-    files = [resolve_repo_path(row["vi_audio"]) for row in rows]
+    files = [resolve_repo_path(row[args.source_column]) for row in rows]
     input_wavs = [audio_read(path, to_sample_rate=mimi.sample_rate, mono=True)[0] for path in files]
     audio_durations = [wav.shape[-1] / mimi.sample_rate for wav in input_wavs]
     gen_duration = args.gen_duration if args.gen_duration else max(audio_durations) + args.tail_s
@@ -253,6 +294,7 @@ def generate_batch(
         args.tag,
         batch_start,
         sphn,
+        args,
     )
 
 
@@ -262,7 +304,7 @@ def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
             handle,
             fieldnames=[
                 "id",
-                "vi_audio",
+                "source_audio",
                 "reference_text",
                 "prediction_text",
                 "mono_wav",
@@ -286,10 +328,11 @@ def main() -> None:
     dtype = dtype_from_name(torch, args.dtype)
     seed_all(torch, args.seed)
 
-    rows = read_pair_file(args.pairs)[: args.limit]
+    rows = read_eval_rows(args.pairs)[: args.limit]
+    validate_eval_rows(rows, args.source_column, args.reference_column, args.id_column)
     if not rows:
         raise RuntimeError(f"No rows selected from {args.pairs}")
-    adapter = require_file(args.adapter, "LoRA adapter")
+    adapter = require_file(args.adapter, "LoRA adapter") if args.adapter else None
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
@@ -314,16 +357,19 @@ def main() -> None:
     text_tokenizer = checkpoint_info.get_text_tokenizer()
     print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
     lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
-    load_main_lora(
-        lm,
-        adapter,
-        torch,
-        safe_open,
-        load_file,
-        replace_all_linear_with_lora,
-        device,
-        dtype,
-    )
+    if adapter is not None:
+        load_main_lora(
+            lm,
+            adapter,
+            torch,
+            safe_open,
+            load_file,
+            replace_all_linear_with_lora,
+            device,
+            dtype,
+        )
+    else:
+        print("Using base model without adapter.")
     lm.eval()
 
     records: list[dict[str, str]] = []

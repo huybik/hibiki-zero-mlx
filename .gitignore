@@ -240,3 +240,4 @@ finetune/runs/
 
 /weights
 /translations
+/tests
