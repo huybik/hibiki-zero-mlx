@@ -31,7 +31,8 @@ environment. They intentionally fail before doing work if those imports are miss
 - `train_lora.py` loads the PyTorch LM, freezes everything, applies LoRA only to
   `LMModel.transformer`, trains CE on `LMModel.forward` masks, and saves adapter
   `.safetensors` plus optimizer checkpoints. It also appends scalar logs to
-  `finetune/runs/vn_lora/train_log.jsonl`.
+  `finetune/runs/vn_lora/train_log.jsonl`. The default dtype is `bfloat16`; MPS
+  `float16` can go non-finite after the first optimizer step.
 
 ## Defaults
 

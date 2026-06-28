@@ -41,8 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dtype",
         choices=("float16", "bfloat16", "float32"),
-        default="float16",
-        help="Model/LoRA dtype.",
+        default="bfloat16",
+        help="Model/LoRA dtype. bfloat16 is the stable smoke-test default on MPS.",
     )
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -329,6 +329,11 @@ def main() -> None:
                 torch, output.text_logits, text_targets, output.text_mask
             )
             loss = args.audio_loss_weight * audio_loss + args.text_loss_weight * text_loss
+            if not bool(torch.isfinite(loss.detach()).cpu()):
+                raise RuntimeError(
+                    f"Non-finite loss at epoch={epoch + 1} micro_step={micro_step + 1}. "
+                    "On MPS, use --dtype bfloat16 or lower --lr."
+                )
             (loss / args.grad_accum_steps).backward()
             micro_step += 1
 

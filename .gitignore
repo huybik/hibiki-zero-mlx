@@ -229,6 +229,9 @@ translations/
 blog/
 .claude/
 hibiki_zero/static/
+finetune/pairs/
+finetune/cache/
+finetune/runs/
 
 # macOS
 .DS_Store
