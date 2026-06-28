@@ -59,8 +59,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mps-empty-cache-every",
         type=int,
-        default=0,
-        help="Optimizer steps between torch.mps.empty_cache() calls, 0 disables.",
+        default=10,
+        help="Optimizer steps between MPS synchronize+empty_cache calls, 0 disables.",
     )
     parser.add_argument(
         "--resume-checkpoint",
@@ -245,11 +245,11 @@ def load_resume_checkpoint(
 ) -> int:
     checkpoint = torch.load(resume_path, map_location="cpu")
     adapter_path = require_file(checkpoint["adapter"], "resume adapter")
-    adapter_state = load_file(str(adapter_path), device=str(device))
+    adapter_state = load_file(str(adapter_path), device="cpu")
     for key, value in adapter_state.items():
         if value.dtype.is_floating_point:
             adapter_state[key] = value.to(dtype=dtype)
-    result = model.load_state_dict(adapter_state, strict=False, assign=True)
+    result = model.load_state_dict(adapter_state, strict=False)
     if result.unexpected_keys:
         raise RuntimeError(f"Unexpected adapter keys while resuming: {result.unexpected_keys[:5]}")
 
@@ -262,6 +262,12 @@ def load_resume_checkpoint(
     step = int(checkpoint["step"])
     print(f"Resumed step {step} from {repo_display_path(resume_path)}")
     return step
+
+
+def resume_batch_offset(global_step: int, grad_accum_steps: int, dataloader_len: int) -> int:
+    if dataloader_len <= 0:
+        return 0
+    return (global_step * grad_accum_steps) % dataloader_len
 
 
 def masked_cross_entropy(torch: Any, logits: Any, targets: Any, mask: Any) -> Any:
@@ -286,6 +292,13 @@ def mps_memory_stats(torch: Any, device: Any) -> dict[str, float]:
         "mps_driver_gb": torch.mps.driver_allocated_memory() / 1024**3,
         "mps_recommended_gb": torch.mps.recommended_max_memory() / 1024**3,
     }
+
+
+def empty_mps_cache(torch: Any, device: Any) -> None:
+    if getattr(device, "type", str(device)) != "mps":
+        return
+    torch.mps.synchronize()
+    torch.mps.empty_cache()
 
 
 def main() -> None:
@@ -356,11 +369,20 @@ def main() -> None:
     optimizer = torch.optim.AdamW(params, lr=args.lr)
     global_step = 0
     micro_step = 0
+    resume_skip_batches = 0
     if args.resume_checkpoint is not None:
         global_step = load_resume_checkpoint(
             torch, load_file, lm, optimizer, args.resume_checkpoint, device, dtype
         )
         micro_step = global_step * args.grad_accum_steps
+        if args.sort_by_length:
+            resume_skip_batches = resume_batch_offset(
+                global_step, args.grad_accum_steps, len(dataloader)
+            )
+            if resume_skip_batches:
+                print(f"Skipping {resume_skip_batches} sorted batches already covered by resume.")
+        else:
+            print("Resume with shuffled data starts a fresh shuffle; use --sort-by-length to continue deterministically.")
     optimizer.zero_grad(set_to_none=True)
 
     run_config = {
@@ -371,22 +393,30 @@ def main() -> None:
         json.dumps(run_config, indent=2, sort_keys=True), encoding="utf-8"
     )
     log_path = out_dir / "train_log.jsonl"
+    condition_cache: dict[int, Any | None] = {}
 
     for epoch in range(args.epochs):
         for batch in dataloader:
+            if resume_skip_batches:
+                resume_skip_batches -= 1
+                continue
             if args.max_steps and global_step >= args.max_steps:
                 break
             codes = batch["codes"].to(device=device, dtype=torch.long)
-            condition_tensors = batch_condition_tensors(
-                lm, checkpoint_info.model_type, codes.shape[0], get_condition_tensors
-            )
+            batch_size = int(codes.shape[0])
+            if batch_size not in condition_cache:
+                condition_cache[batch_size] = batch_condition_tensors(
+                    lm, checkpoint_info.model_type, batch_size, get_condition_tensors
+                )
+            condition_tensors = condition_cache[batch_size]
             output = lm(codes, condition_tensors=condition_tensors)
 
             audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
             text_targets = codes[:, :1]
             audio_loss = masked_cross_entropy(torch, output.logits, audio_targets, output.mask)
+            text_mask = output.text_mask & (text_targets != lm.text_padding_token_id)
             text_loss = masked_cross_entropy(
-                torch, output.text_logits, text_targets, output.text_mask
+                torch, output.text_logits, text_targets, text_mask
             )
             loss = args.audio_loss_weight * audio_loss + args.text_loss_weight * text_loss
             if not bool(torch.isfinite(loss.detach()).cpu()):
@@ -410,7 +440,7 @@ def main() -> None:
                 and device.type == "mps"
                 and global_step % args.mps_empty_cache_every == 0
             ):
-                torch.mps.empty_cache()
+                empty_mps_cache(torch, device)
 
             if args.log_every and global_step % args.log_every == 0:
                 log_item = {
@@ -419,6 +449,7 @@ def main() -> None:
                     "loss": float(loss.detach().cpu()),
                     "audio_loss": float(audio_loss.detach().cpu()),
                     "text_loss": float(text_loss.detach().cpu()),
+                    "text_tokens": int(text_mask.sum().detach().cpu()),
                     "lr": optimizer.param_groups[0]["lr"],
                 }
                 log_item.update(mps_memory_stats(torch, device))
