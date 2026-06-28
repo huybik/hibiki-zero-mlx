@@ -27,7 +27,7 @@ from moshi_mlx import models, utils  # noqa: E402
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 
 
-def run_mic(max_steps: int, weights_dir: Path = f.W):
+def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
     import sounddevice as sd
 
     print("loading q4 weights ...")
@@ -36,7 +36,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W):
     gen_cb = lm_config.generated_codebooks
     gen = models.LmGen(
         model=model, max_steps=max_steps,
-        text_sampler=utils.Sampler(top_k=25, temp=0.4),  # low text temp: avoids cold-start spurious openers
+        text_sampler=utils.Sampler(top_k=25, temp=text_temp),
         audio_sampler=utils.Sampler(top_k=250, temp=0.8),
         cfg_coef=1.0, check=False,
     )
@@ -124,17 +124,29 @@ def main():
     p.add_argument("--mic", action="store_true", help="realtime mic -> speakers")
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
+    p.add_argument("--weights-dir", type=Path, default=f.W, help="q4 model directory (default weights/)")
+    p.add_argument("--text-temp", type=float, default=0.4, help="text sampling temperature (default 0.4)")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()
 
     mx.random.seed(299792458)
     if args.mic or args.input == "mic":
-        run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8)
+        run_mic(
+            max_steps=int(args.minutes * 60 * 12.5) + 8,
+            weights_dir=args.weights_dir,
+            text_temp=args.text_temp,
+        )
     elif args.input:
         infile = args.input
         out = args.out or str(ROOT / "translations" / f"{Path(infile).stem}_translated.wav")
         Path(out).parent.mkdir(parents=True, exist_ok=True)
-        f.run(infile, out, text_outfile=args.text_out)
+        f.run(
+            infile,
+            out,
+            weights_dir=args.weights_dir,
+            text_outfile=args.text_out,
+            text_temp=args.text_temp,
+        )
     else:
         p.error("give an audio file path, or --mic for realtime")
 
