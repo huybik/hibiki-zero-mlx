@@ -302,6 +302,12 @@ def eval_command(
     return cmd
 
 
+def copy_args(args: argparse.Namespace, **updates: Any) -> argparse.Namespace:
+    data = vars(args).copy()
+    data.update(updates)
+    return argparse.Namespace(**data)
+
+
 def run_trial(args: argparse.Namespace) -> None:
     if args.adapter is not None and not args.skip_train:
         raise ValueError("--adapter is only valid with --skip-train")
@@ -351,6 +357,89 @@ def run_trial(args: argparse.Namespace) -> None:
     if not args.dry_run:
         row = build_result_row(
             args,
+            run_dir,
+            seen_loss,
+            validation_loss,
+            seen_metrics,
+            val_metrics,
+        )
+        append_result(args.results_tsv, row)
+
+
+def run_staged_trial(args: argparse.Namespace) -> None:
+    run_dir = RUN_ROOT / args.trial
+    stage1_dir = run_dir / "stage1"
+    stage2_dir = run_dir / "stage2"
+    stage1_adapter = stage1_dir / f"adapter_step{args.stage1_steps:06d}.safetensors"
+    adapter = stage2_dir / f"adapter_step{args.stage2_steps:06d}.safetensors"
+    seen_loss = run_dir / "seen_first3_loss.json"
+    validation_loss = run_dir / "validation_loss.json"
+    seen_metrics = run_dir / "eval_seen3_text_metrics.json"
+    val_metrics = run_dir / f"eval_val{args.eval_limit}_text_metrics.json"
+
+    stage1_args = copy_args(
+        args,
+        max_steps=args.stage1_steps,
+        init_adapter=args.init_adapter,
+        replay_weight=args.stage1_replay_weight,
+        text_loss_weight=args.stage1_text_loss_weight,
+    )
+    stage2_args = copy_args(
+        args,
+        max_steps=args.stage2_steps,
+        init_adapter=stage1_adapter,
+        replay_weight=args.stage2_replay_weight,
+        text_loss_weight=args.stage2_text_loss_weight,
+    )
+    eval_args = copy_args(args, text_loss_weight=args.stage2_text_loss_weight)
+
+    command(train_command(stage1_args, stage1_dir), args.dry_run)
+    command(train_command(stage2_args, stage2_dir), args.dry_run)
+    command(
+        validate_command(eval_args, "finetune/cache/seen_first3", adapter, seen_loss, 3),
+        args.dry_run,
+    )
+    command(
+        validate_command(eval_args, "finetune/cache/validation", adapter, validation_loss, 8),
+        args.dry_run,
+    )
+    command(
+        eval_command(
+            args,
+            "finetune/pairs/train.jsonl",
+            adapter,
+            run_dir / "eval_seen3_text",
+            seen_metrics,
+            3,
+            args.trial,
+            ids=ANCHOR_IDS,
+        ),
+        args.dry_run,
+    )
+    command(
+        eval_command(
+            args,
+            "finetune/pairs/validation.jsonl",
+            adapter,
+            run_dir / f"eval_val{args.eval_limit}_text",
+            val_metrics,
+            args.eval_batch_size,
+            args.trial,
+            limit=args.eval_limit,
+        ),
+        args.dry_run,
+    )
+    if not args.dry_run:
+        row_args = copy_args(
+            args,
+            max_steps=args.stage1_steps + args.stage2_steps,
+            text_loss_weight=(
+                f"{args.stage1_text_loss_weight:g}->{args.stage2_text_loss_weight:g}"
+            ),
+            replay_weight=f"{args.stage1_replay_weight:g}->{args.stage2_replay_weight:g}",
+        )
+        row = build_result_row(
+            row_args,
             run_dir,
             seen_loss,
             validation_loss,
@@ -440,6 +529,28 @@ def parse_args() -> argparse.Namespace:
     run_parser.add_argument("--skip-train", action="store_true")
     run_parser.add_argument("--dry-run", action="store_true")
 
+    staged_parser = subparsers.add_parser("run-staged-trial")
+    add_common_args(staged_parser)
+    staged_parser.add_argument("--python", type=Path, default=PYTHON)
+    staged_parser.add_argument("--init-adapter", type=Path, default=BASE_ADAPTER)
+    staged_parser.add_argument("--device", default="mps")
+    staged_parser.add_argument("--dtype", default="bfloat16")
+    staged_parser.add_argument("--batch-size", type=int, default=1)
+    staged_parser.add_argument("--grad-accum-steps", type=int, default=2)
+    staged_parser.add_argument("--log-every", type=int, default=10)
+    staged_parser.add_argument("--replay-seed", type=int, default=0)
+    staged_parser.add_argument("--eval-limit", type=int, default=16)
+    staged_parser.add_argument("--eval-batch-size", type=int, default=4)
+    staged_parser.add_argument("--text-temp", type=float, default=0.0)
+    staged_parser.add_argument("--seed", type=int, default=42)
+    staged_parser.add_argument("--stage1-steps", type=int, default=40)
+    staged_parser.add_argument("--stage1-replay-weight", type=float, default=300.0)
+    staged_parser.add_argument("--stage1-text-loss-weight", type=float, default=5.0)
+    staged_parser.add_argument("--stage2-steps", type=int, default=40)
+    staged_parser.add_argument("--stage2-replay-weight", type=float, default=100.0)
+    staged_parser.add_argument("--stage2-text-loss-weight", type=float, default=5.0)
+    staged_parser.add_argument("--dry-run", action="store_true")
+
     record_parser = subparsers.add_parser("record-existing")
     add_common_args(record_parser)
     record_parser.add_argument("--run-dir", type=Path, required=True)
@@ -455,6 +566,8 @@ def main() -> None:
     args = parse_args()
     if args.command == "run-trial":
         run_trial(args)
+    elif args.command == "run-staged-trial":
+        run_staged_trial(args)
     elif args.command == "record-existing":
         record_existing(args)
     else:
