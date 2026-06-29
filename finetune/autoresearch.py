@@ -32,6 +32,11 @@ RESULT_FIELDS = [
     "val_nonempty_rate",
     "val_eos_rate",
     "val_exact",
+    "val_overlong",
+    "val_repeat4",
+    "val_max_repeat4",
+    "val_length_ratio",
+    "seen_nonempty_rate",
     "seen_exact",
     "seen_eos_rate",
     "seen_audio_loss",
@@ -118,9 +123,26 @@ def command(args: list[str], dry_run: bool) -> None:
     subprocess.run(args, cwd=REPO_ROOT, check=True)
 
 
+def migrate_results_tsv(path: Path) -> None:
+    if not path.is_file():
+        return
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        rows = list(reader)
+        if reader.fieldnames == RESULT_FIELDS:
+            return
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS, delimiter="\t")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in RESULT_FIELDS})
+    print(f"migrated result schema -> {rel(path)}")
+
+
 def append_result(path: Path, row: dict[str, str]) -> None:
     resolved = repo_path(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
+    migrate_results_tsv(resolved)
     exists = resolved.is_file()
     with resolved.open("a", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS, delimiter="\t")
@@ -155,6 +177,11 @@ def build_result_row(
         "val_nonempty_rate": rate(val_metrics, "nonempty_predictions"),
         "val_eos_rate": rate(val_metrics, "eos_found"),
         "val_exact": metric(val_metrics, "exact_matches"),
+        "val_overlong": metric(val_metrics, "overlong_predictions"),
+        "val_repeat4": metric(val_metrics, "repeated_4gram_predictions"),
+        "val_max_repeat4": metric(val_metrics, "max_repeated_4gram_count"),
+        "val_length_ratio": metric(val_metrics, "mean_length_ratio"),
+        "seen_nonempty_rate": rate(seen_metrics, "nonempty_predictions"),
         "seen_exact": metric(seen_metrics, "exact_matches"),
         "seen_eos_rate": rate(seen_metrics, "eos_found"),
         "seen_audio_loss": metric(seen_loss, "audio_loss"),
