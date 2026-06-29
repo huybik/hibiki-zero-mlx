@@ -57,6 +57,23 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Use only the first N cached samples after optional length-sort; 0 means all.",
     )
+    parser.add_argument(
+        "--replay-ids",
+        default="",
+        help="Comma-separated sample ids to upweight in the training sampler.",
+    )
+    parser.add_argument(
+        "--replay-weight",
+        type=float,
+        default=1.0,
+        help="Sampling weight multiplier for --replay-ids; 1 disables replay weighting.",
+    )
+    parser.add_argument(
+        "--replay-seed",
+        type=int,
+        default=0,
+        help="Deterministic seed for the replay-weighted sampler.",
+    )
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument(
         "--text-head-lr",
@@ -215,6 +232,38 @@ def make_dataset_class(torch: Any, Dataset: Any) -> Any:
     return CachedCodeDataset
 
 
+def parse_replay_ids(value: str) -> set[str]:
+    return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def make_replay_sampler(
+    torch: Any,
+    dataset: Any,
+    replay_ids: set[str],
+    replay_weight: float,
+    seed: int,
+) -> Any | None:
+    if not replay_ids or replay_weight == 1.0:
+        return None
+    sample_ids = {str(sample["id"]) for sample in dataset.samples}
+    missing = sorted(replay_ids - sample_ids)
+    if missing:
+        raise ValueError(f"--replay-ids not present in selected cache samples: {missing[:10]}")
+
+    weights = [
+        float(replay_weight) if str(sample["id"]) in replay_ids else 1.0
+        for sample in dataset.samples
+    ]
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return torch.utils.data.WeightedRandomSampler(
+        weights=torch.DoubleTensor(weights),
+        num_samples=len(weights),
+        replacement=True,
+        generator=generator,
+    )
+
+
 def collate_cached(samples: list[dict[str, Any]], torch: Any) -> dict[str, Any]:
     codebooks = int(samples[0]["codes"].shape[0])
     max_frames = max(int(sample["codes"].shape[1]) for sample in samples)
@@ -234,11 +283,13 @@ def make_cached_dataloader(
     batch_size: int,
     num_workers: int,
     sort_by_length: bool,
+    sampler: Any | None = None,
 ) -> Any:
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=not sort_by_length,
+        shuffle=False if sampler is not None else not sort_by_length,
+        sampler=sampler,
         num_workers=num_workers,
         collate_fn=lambda samples: collate_cached(samples, torch),
     )
@@ -585,6 +636,8 @@ def main() -> None:
         raise ValueError("--val-every must be non-negative")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
+    if args.replay_weight <= 0:
+        raise ValueError("--replay-weight must be positive")
     if args.text_head_lr < 0 or args.audio_head_lr < 0:
         raise ValueError("Custom LR values must be non-negative")
     if args.resume_checkpoint is not None and args.init_adapter is not None:
@@ -623,6 +676,15 @@ def main() -> None:
     DatasetClass = make_dataset_class(torch, Dataset)
     dataset = DatasetClass(cache_dir, args.sort_by_length, args.max_samples)
     print(f"Loaded {len(dataset)} cached samples from {repo_display_path(cache_dir)}")
+    replay_ids = parse_replay_ids(args.replay_ids)
+    replay_sampler = make_replay_sampler(
+        torch, dataset, replay_ids, args.replay_weight, args.replay_seed
+    )
+    if replay_sampler is not None:
+        print(
+            f"Replay-weighted sampler: {len(replay_ids)} ids at "
+            f"{args.replay_weight:g}x weight, seed={args.replay_seed}"
+        )
     dataloader = make_cached_dataloader(
         DataLoader,
         dataset,
@@ -630,6 +692,7 @@ def main() -> None:
         args.batch_size,
         args.num_workers,
         args.sort_by_length,
+        replay_sampler,
     )
     val_dataloader = None
     if val_cache_dir is not None:
@@ -678,7 +741,7 @@ def main() -> None:
             torch, load_file, lm, optimizer, args.resume_checkpoint, device, dtype
         )
         micro_step = global_step * args.grad_accum_steps
-        if args.sort_by_length:
+        if args.sort_by_length and replay_sampler is None:
             resume_skip_batches = resume_batch_offset(
                 global_step, args.grad_accum_steps, len(dataloader)
             )
