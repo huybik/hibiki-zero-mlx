@@ -9,12 +9,18 @@ Run from the repo root with the project Python:
 PY=/opt/homebrew/Caskroom/miniconda/base/bin/python
 $PY finetune/build_pairs.py --splits train validation test
 $PY finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
+$PY finetune/cache_codes.py --pairs finetune/pairs/validation.jsonl --out-dir finetune/cache/validation
 $PY finetune/train_lora.py --cache-dir finetune/cache/train --max-steps 10
+$PY finetune/validate_lora.py \
+  --cache-dir finetune/cache/validation \
+  --adapter finetune/runs/vn_lora/adapter_step000010.safetensors \
+  --batch-size 8
 $PY finetune/train_lora.py --resume-checkpoint finetune/runs/vn_lora/trainer_step000010.pt --max-steps 100 --mps-empty-cache-every 10
 $PY finetune/eval_lora.py \
   --pairs finetune/pairs/validation.jsonl \
   --adapter finetune/runs/vn_lora/adapter_step000010.safetensors \
-  --limit 2
+  --limit 2 \
+  --text-only
 ```
 
 `cache_codes.py` and `train_lora.py` require the PyTorch `moshi` and `sphn` packages in that
@@ -33,14 +39,19 @@ environment. They intentionally fail before doing work if those imports are miss
   English audio is left-padded by a deterministic delay sampled from
   `[0, 0.5 * vi_duration_s]`, and English text starts after the same delay. Use
   `--target-delay-ratio 0` to disable this.
-- `train_lora.py` loads the PyTorch LM, freezes everything, applies LoRA only to
-  `LMModel.transformer`, trains CE on `LMModel.forward` masks, and saves adapter
-  `.safetensors` plus optimizer checkpoints. It also appends scalar logs to
-  `finetune/runs/vn_lora/train_log.jsonl`. The default dtype is `bfloat16`; MPS
-  `float16` can go non-finite after the first optimizer step.
-- `eval_lora.py` loads one transformer-only adapter, runs PyTorch generation on a
-  small pair file, writes wav/txt outputs, and records references/predictions in
-  `predictions.csv`.
+- `train_lora.py` loads the PyTorch LM, freezes everything, applies LoRA to selected
+  targets, trains CE on `LMModel.forward` masks, and saves adapter `.safetensors`
+  plus optimizer checkpoints. It appends scalar logs to `train_log.jsonl`, can log
+  teacher-forced cache validation to `val_log.jsonl` with `--val-cache-dir`, and
+  supports optional `--text-head-lr` / `--audio-head-lr` groups. The default dtype is
+  `bfloat16`; MPS `float16` can go non-finite after the first optimizer step.
+- `validate_lora.py` computes teacher-forced CE on cached rows for the base model or
+  an adapter. Use this before full autoregressive eval to separate underfit from
+  free-running collapse.
+- `eval_lora.py` loads an adapter, runs PyTorch generation on a pair file, writes
+  references/predictions in `predictions.csv`, and writes `metrics.json` with
+  nonempty/EOS/exact plus BLEU/chrF/WER when `sacrebleu` is installed. Use
+  `--text-only` for fast gates, or omit it to also decode/write wav outputs.
 
 ## Defaults
 

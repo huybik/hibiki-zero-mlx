@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
         description="Minimal Hibiki-Zero main-transformer LoRA trainer for cached vi->en codes."
     )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_ROOT / "train")
+    parser.add_argument(
+        "--val-cache-dir",
+        type=Path,
+        help="Optional cached validation split for teacher-forced CE logging.",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
@@ -53,6 +58,18 @@ def parse_args() -> argparse.Namespace:
         help="Use only the first N cached samples after optional length-sort; 0 means all.",
     )
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--text-head-lr",
+        type=float,
+        default=0.0,
+        help="Optional LR for text_linear params; 0 uses --lr.",
+    )
+    parser.add_argument(
+        "--audio-head-lr",
+        type=float,
+        default=0.0,
+        help="Optional LR for audio-head LoRA params; 0 uses --lr.",
+    )
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-scaling", type=float, default=2.0)
     parser.add_argument(
@@ -70,6 +87,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--max-steps", type=int, default=0, help="Optimizer steps, 0 means all.")
+    parser.add_argument(
+        "--val-every",
+        type=int,
+        default=0,
+        help="Optimizer steps between teacher-forced validation runs; 0 means final only.",
+    )
+    parser.add_argument(
+        "--val-max-samples",
+        type=int,
+        default=0,
+        help="Use only the first N validation cache samples after sort; 0 means all.",
+    )
+    parser.add_argument(
+        "--val-batches",
+        type=int,
+        default=0,
+        help="Validate only the first N batches; 0 means all selected validation batches.",
+    )
     parser.add_argument("--save-every", type=int, default=50, help="Optimizer steps between saves.")
     parser.add_argument("--log-every", type=int, default=1, help="Optimizer steps between logs.")
     parser.add_argument(
@@ -192,6 +227,23 @@ def collate_cached(samples: list[dict[str, Any]], torch: Any) -> dict[str, Any]:
     return {"codes": batch, "ids": ids}
 
 
+def make_cached_dataloader(
+    DataLoader: Any,
+    dataset: Any,
+    torch: Any,
+    batch_size: int,
+    num_workers: int,
+    sort_by_length: bool,
+) -> Any:
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=not sort_by_length,
+        num_workers=num_workers,
+        collate_fn=lambda samples: collate_cached(samples, torch),
+    )
+
+
 def adapter_target(args: argparse.Namespace) -> str:
     targets = ["LMModel.transformer"]
     if args.train_text_head:
@@ -244,6 +296,41 @@ def apply_lora_targets(
 
 def trainable_parameters(model: Any) -> list[Any]:
     return [param for param in model.parameters() if param.requires_grad]
+
+
+def optimizer_parameters(model: Any, args: argparse.Namespace) -> list[Any] | list[dict[str, Any]]:
+    text_lr = args.text_head_lr or args.lr
+    audio_lr = args.audio_head_lr or args.lr
+    if text_lr == args.lr and audio_lr == args.lr:
+        return trainable_parameters(model)
+
+    groups: dict[str, dict[str, Any]] = {
+        "transformer": {"params": [], "lr": args.lr, "name": "transformer"},
+        "text_linear": {"params": [], "lr": text_lr, "name": "text_linear"},
+        "audio_heads": {"params": [], "lr": audio_lr, "name": "audio_heads"},
+    }
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if name.startswith("transformer."):
+            groups["transformer"]["params"].append(param)
+        elif name.startswith("text_linear."):
+            groups["text_linear"]["params"].append(param)
+        elif name.startswith("depformer_in.") or name.startswith("linears."):
+            groups["audio_heads"]["params"].append(param)
+        else:
+            raise RuntimeError(f"Unexpected trainable parameter outside optimizer groups: {name}")
+
+    return [group for group in groups.values() if group["params"]]
+
+
+def optimizer_lrs(optimizer: Any) -> float | dict[str, float]:
+    if len(optimizer.param_groups) == 1:
+        return float(optimizer.param_groups[0]["lr"])
+    return {
+        str(group.get("name", f"group{index}")): float(group["lr"])
+        for index, group in enumerate(optimizer.param_groups)
+    }
 
 
 def adapter_state_dict(model: Any) -> dict[str, Any]:
@@ -337,10 +424,12 @@ def resume_batch_offset(global_step: int, grad_accum_steps: int, dataloader_len:
     return (global_step * grad_accum_steps) % dataloader_len
 
 
-def masked_cross_entropy(torch: Any, logits: Any, targets: Any, mask: Any) -> Any:
-    if not bool(mask.any()):
-        return logits.float().sum() * 0.0
-    return torch.nn.functional.cross_entropy(logits[mask].float(), targets[mask].long())
+def masked_cross_entropy(torch: Any, logits: Any, targets: Any, mask: Any) -> tuple[Any, int]:
+    token_count = int(mask.sum().detach().cpu())
+    if token_count == 0:
+        return logits.float().sum() * 0.0, 0
+    loss = torch.nn.functional.cross_entropy(logits[mask].float(), targets[mask].long())
+    return loss, token_count
 
 
 def text_supervision_mask(torch: Any, base_mask: Any, targets: Any, pad_id: int) -> Any:
@@ -348,6 +437,36 @@ def text_supervision_mask(torch: Any, base_mask: Any, targets: Any, pad_id: int)
     seen_text = non_pad.long().cumsum(dim=-1) > 0
     prefix_pad = (targets == pad_id) & ~seen_text
     return base_mask & (non_pad | prefix_pad)
+
+
+def compute_batch_losses(
+    torch: Any,
+    lm: Any,
+    codes: Any,
+    condition_tensors: Any | None,
+    audio_loss_weight: float,
+    text_loss_weight: float,
+) -> dict[str, Any]:
+    output = lm(codes, condition_tensors=condition_tensors)
+    audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
+    text_targets = codes[:, :1]
+    audio_loss, audio_tokens = masked_cross_entropy(
+        torch, output.logits, audio_targets, output.mask
+    )
+    text_mask = text_supervision_mask(
+        torch, output.text_mask, text_targets, lm.text_padding_token_id
+    )
+    text_loss, text_tokens = masked_cross_entropy(
+        torch, output.text_logits, text_targets, text_mask
+    )
+    loss = audio_loss_weight * audio_loss + text_loss_weight * text_loss
+    return {
+        "loss": loss,
+        "audio_loss": audio_loss,
+        "text_loss": text_loss,
+        "audio_tokens": audio_tokens,
+        "text_tokens": text_tokens,
+    }
 
 
 def batch_condition_tensors(
@@ -375,6 +494,81 @@ def empty_mps_cache(torch: Any, device: Any) -> None:
     torch.mps.empty_cache()
 
 
+def evaluate_teacher_forced(
+    torch: Any,
+    lm: Any,
+    dataloader: Any,
+    device: Any,
+    model_type: str,
+    get_condition_tensors: Any,
+    audio_loss_weight: float,
+    text_loss_weight: float,
+    max_batches: int = 0,
+) -> dict[str, float | int]:
+    was_training = bool(lm.training)
+    lm.eval()
+    condition_cache: dict[int, Any | None] = {}
+    totals = {
+        "audio_loss_sum": 0.0,
+        "text_loss_sum": 0.0,
+        "audio_tokens": 0,
+        "text_tokens": 0,
+        "batches": 0,
+        "samples": 0,
+    }
+    with torch.no_grad():
+        for batch_index, batch in enumerate(dataloader):
+            if max_batches and batch_index >= max_batches:
+                break
+            codes = batch["codes"].to(device=device, dtype=torch.long)
+            batch_size = int(codes.shape[0])
+            if batch_size not in condition_cache:
+                condition_cache[batch_size] = batch_condition_tensors(
+                    lm, model_type, batch_size, get_condition_tensors
+                )
+            losses = compute_batch_losses(
+                torch,
+                lm,
+                codes,
+                condition_cache[batch_size],
+                audio_loss_weight,
+                text_loss_weight,
+            )
+            audio_tokens = int(losses["audio_tokens"])
+            text_tokens = int(losses["text_tokens"])
+            totals["audio_loss_sum"] += float(losses["audio_loss"].detach().cpu()) * audio_tokens
+            totals["text_loss_sum"] += float(losses["text_loss"].detach().cpu()) * text_tokens
+            totals["audio_tokens"] += audio_tokens
+            totals["text_tokens"] += text_tokens
+            totals["batches"] += 1
+            totals["samples"] += batch_size
+
+    if was_training:
+        lm.train()
+    if not totals["batches"]:
+        raise RuntimeError("Validation dataloader produced no batches.")
+
+    audio_loss = (
+        totals["audio_loss_sum"] / totals["audio_tokens"]
+        if totals["audio_tokens"]
+        else 0.0
+    )
+    text_loss = (
+        totals["text_loss_sum"] / totals["text_tokens"]
+        if totals["text_tokens"]
+        else 0.0
+    )
+    return {
+        "loss": audio_loss_weight * audio_loss + text_loss_weight * text_loss,
+        "audio_loss": audio_loss,
+        "text_loss": text_loss,
+        "audio_tokens": totals["audio_tokens"],
+        "text_tokens": totals["text_tokens"],
+        "batches": totals["batches"],
+        "samples": totals["samples"],
+    }
+
+
 def main() -> None:
     args = parse_args()
     if args.epochs <= 0:
@@ -383,8 +577,16 @@ def main() -> None:
         raise ValueError("--batch-size must be positive")
     if args.max_samples < 0:
         raise ValueError("--max-samples must be non-negative")
+    if args.val_max_samples < 0:
+        raise ValueError("--val-max-samples must be non-negative")
+    if args.val_batches < 0:
+        raise ValueError("--val-batches must be non-negative")
+    if args.val_every < 0:
+        raise ValueError("--val-every must be non-negative")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
+    if args.text_head_lr < 0 or args.audio_head_lr < 0:
+        raise ValueError("Custom LR values must be non-negative")
     if args.resume_checkpoint is not None and args.init_adapter is not None:
         raise ValueError("--resume-checkpoint and --init-adapter are mutually exclusive")
 
@@ -402,6 +604,11 @@ def main() -> None:
     dtype = dtype_from_name(torch, args.dtype)
 
     cache_dir = require_dir(args.cache_dir, "code cache directory")
+    val_cache_dir = (
+        require_dir(args.val_cache_dir, "validation code cache directory")
+        if args.val_cache_dir is not None
+        else None
+    )
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
@@ -416,13 +623,26 @@ def main() -> None:
     DatasetClass = make_dataset_class(torch, Dataset)
     dataset = DatasetClass(cache_dir, args.sort_by_length, args.max_samples)
     print(f"Loaded {len(dataset)} cached samples from {repo_display_path(cache_dir)}")
-    dataloader = DataLoader(
+    dataloader = make_cached_dataloader(
+        DataLoader,
         dataset,
-        batch_size=args.batch_size,
-        shuffle=not args.sort_by_length,
-        num_workers=args.num_workers,
-        collate_fn=lambda samples: collate_cached(samples, torch),
+        torch,
+        args.batch_size,
+        args.num_workers,
+        args.sort_by_length,
     )
+    val_dataloader = None
+    if val_cache_dir is not None:
+        val_dataset = DatasetClass(val_cache_dir, args.sort_by_length, args.val_max_samples)
+        val_dataloader = make_cached_dataloader(
+            DataLoader,
+            val_dataset,
+            torch,
+            args.batch_size,
+            args.num_workers,
+            args.sort_by_length,
+        )
+        print(f"Loaded {len(val_dataset)} validation cached samples from {repo_display_path(val_cache_dir)}")
 
     checkpoint_info = loaders.CheckpointInfo.from_hf_repo(
         args.hf_repo,
@@ -449,7 +669,7 @@ def main() -> None:
     total_count = sum(param.numel() for param in lm.parameters())
     print(f"Trainable params: {trainable_count:,} / {total_count:,}")
 
-    optimizer = torch.optim.AdamW(params, lr=args.lr)
+    optimizer = torch.optim.AdamW(optimizer_parameters(lm, args), lr=args.lr)
     global_step = 0
     micro_step = 0
     resume_skip_batches = 0
@@ -476,10 +696,45 @@ def main() -> None:
         json.dumps(run_config, indent=2, sort_keys=True), encoding="utf-8"
     )
     log_path = out_dir / "train_log.jsonl"
+    val_log_path = out_dir / "val_log.jsonl"
     condition_cache: dict[int, Any | None] = {}
     log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
     log_steps = 0
     log_text_tokens = 0
+
+    def run_validation(step: int, epoch: int) -> None:
+        if val_dataloader is None:
+            return
+        metrics = evaluate_teacher_forced(
+            torch,
+            lm,
+            val_dataloader,
+            device,
+            checkpoint_info.model_type,
+            get_condition_tensors,
+            args.audio_loss_weight,
+            args.text_loss_weight,
+            args.val_batches,
+        )
+        log_item = {
+            "epoch": epoch,
+            "step": step,
+            "loss": metrics["loss"],
+            "audio_loss": metrics["audio_loss"],
+            "text_loss": metrics["text_loss"],
+            "audio_tokens": metrics["audio_tokens"],
+            "text_tokens": metrics["text_tokens"],
+            "batches": metrics["batches"],
+            "samples": metrics["samples"],
+        }
+        log_item.update(mps_memory_stats(torch, device))
+        with val_log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(log_item, sort_keys=True) + "\n")
+        print(
+            f"val step={step} loss={metrics['loss']:.4f} "
+            f"audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} "
+            f"samples={metrics['samples']}"
+        )
 
     for epoch in range(args.epochs):
         for batch in dataloader:
@@ -495,18 +750,17 @@ def main() -> None:
                     lm, checkpoint_info.model_type, batch_size, get_condition_tensors
                 )
             condition_tensors = condition_cache[batch_size]
-            output = lm(codes, condition_tensors=condition_tensors)
-
-            audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
-            text_targets = codes[:, :1]
-            audio_loss = masked_cross_entropy(torch, output.logits, audio_targets, output.mask)
-            text_mask = text_supervision_mask(
-                torch, output.text_mask, text_targets, lm.text_padding_token_id
+            losses = compute_batch_losses(
+                torch,
+                lm,
+                codes,
+                condition_tensors,
+                args.audio_loss_weight,
+                args.text_loss_weight,
             )
-            text_loss = masked_cross_entropy(
-                torch, output.text_logits, text_targets, text_mask
-            )
-            loss = args.audio_loss_weight * audio_loss + args.text_loss_weight * text_loss
+            loss = losses["loss"]
+            audio_loss = losses["audio_loss"]
+            text_loss = losses["text_loss"]
             if not bool(torch.isfinite(loss.detach()).cpu()):
                 raise RuntimeError(
                     f"Non-finite loss at epoch={epoch + 1} micro_step={micro_step + 1}. "
@@ -537,7 +791,7 @@ def main() -> None:
             log_sums["audio_loss"] += audio_loss_value
             log_sums["text_loss"] += text_loss_value
             log_steps += 1
-            log_text_tokens += int(text_mask.sum().detach().cpu())
+            log_text_tokens += int(losses["text_tokens"])
 
             if args.log_every and global_step % args.log_every == 0:
                 log_item = {
@@ -548,7 +802,7 @@ def main() -> None:
                     "text_loss": log_sums["text_loss"] / log_steps,
                     "text_tokens": log_text_tokens,
                     "log_steps": log_steps,
-                    "lr": optimizer.param_groups[0]["lr"],
+                    "lr": optimizer_lrs(optimizer),
                 }
                 log_item.update(mps_memory_stats(torch, device))
                 with log_path.open("a", encoding="utf-8") as fh:
@@ -571,6 +825,12 @@ def main() -> None:
                 log_text_tokens = 0
             if args.save_every and global_step % args.save_every == 0:
                 save_checkpoint(torch, save_file, lm, optimizer, args, global_step, out_dir)
+            if (
+                val_dataloader is not None
+                and args.val_every
+                and global_step % args.val_every == 0
+            ):
+                run_validation(global_step, epoch + 1)
 
         if args.max_steps and global_step >= args.max_steps:
             break
@@ -579,6 +839,8 @@ def main() -> None:
         raise RuntimeError(
             "Training ended before any optimizer step. Check cache size and grad accumulation."
         )
+    if val_dataloader is not None and (not args.val_every or global_step % args.val_every != 0):
+        run_validation(global_step, min(args.epochs, epoch + 1))
     save_checkpoint(torch, save_file, lm, optimizer, args, global_step, out_dir)
     print(
         f"Saved final LoRA adapter/checkpoint at step {global_step} in "
