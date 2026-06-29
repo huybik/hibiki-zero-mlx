@@ -200,6 +200,15 @@ hibiki_zero/samples/fr_sample*.mp3
 
 # Local Hugging Face cache (HF_HOME override)
 .hf_cache/
+training-data/.hf_cache/
+training-data/phomt/
+training-data/vieNeu/.hf_cache/
+training-data/vieNeu/outputs/
+training-data/english/.hf_cache/
+training-data/english/outputs/
+training-data/phomt-en-vi-speech/
+training-data/audios/
+training-data/uploaded_preview/
 
 # PyPI configuration file
 .pypirc
