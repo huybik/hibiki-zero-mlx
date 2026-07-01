@@ -15,9 +15,9 @@ SPLIT = "train"
 START_INDEX = 0
 N_SAMPLES = 20
 
-TRAINING_DATA_DIR = Path(__file__).resolve().parent
-CACHE_DIR = TRAINING_DATA_DIR / ".hf_cache"
-PREVIEW_DIR = TRAINING_DATA_DIR / "audios"
+DATASETS_DIR = Path(r"D:\Code\datasets")
+CACHE_DIR = DATASETS_DIR / ".hf_cache"
+PREVIEW_DIR = DATASETS_DIR / "audios"
 
 
 def load_train_dataset(split: str = SPLIT, decode_audio: bool = False) -> Dataset:
