@@ -7,6 +7,7 @@ import os
 import random
 import subprocess
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -25,7 +26,12 @@ PARALLEL_LANGUAGES = True
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
 START_INDEX = 0
 END_INDEX: int | None = None
-N_SAMPLES = 128
+
+# N_SAMPLES = 262000 # Total need to 1000 hours.
+N_SAMPLES = 10240 # Total need to 1000 hours.
+
+# Batch generation by voice when the TTS backend supports batched inference.
+BATCH_SIZE = 16
 
 RANDOMIZE_VOICE = True
 MATCH_VOICE_GENDER = True
@@ -47,13 +53,26 @@ VI_BACKEND = "auto"
 VI_DTYPE = "auto"
 
 # Keep runtime output compact.
-SHOW_PROGRESS = True
 QUIET_HF_DOWNLOADS = True
 
 if QUIET_HF_DOWNLOADS:
+    os.environ.setdefault("UV_LINK_MODE", "copy")
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
     logging.getLogger("huggingface_hub.file_download").setLevel(logging.ERROR)
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+    logging.getLogger("transformers.dynamic_module_utils").setLevel(logging.ERROR)
+    warnings.filterwarnings(
+        "ignore",
+        message=".*torch.nn.utils.weight_norm.*deprecated.*",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=".*dropout option adds dropout after all but last recurrent layer.*",
+        category=UserWarning,
+    )
 
 
 # =========================
@@ -61,7 +80,8 @@ if QUIET_HF_DOWNLOADS:
 # =========================
 
 TRAINING_DATA_DIR = Path(__file__).resolve().parent
-HF_CACHE_DIR = TRAINING_DATA_DIR / ".hf_cache"
+DATASETS_DIR = Path(r"D:\Code\datasets")
+HF_CACHE_DIR = DATASETS_DIR / ".hf_cache"
 os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
 PIPELINE_LANGUAGE_ENV = "PHOMT_PIPELINE_LANGUAGE"
 PIPELINE_FIXED_GENDER_ENV = "PHOMT_PIPELINE_FIXED_GENDER"
@@ -118,6 +138,13 @@ KOKORO_EN_VOICES = {
     "am_puck": VoiceSpec(gender="male", style="bright"),
 }
 
+# Kokoro voice speed multipliers. af_nicole is noticeably slow at 1.0 and
+# creates large EN/VI duration mismatches.
+KOKORO_EN_VOICE_SPEEDS = {
+    "af_nicole": 1.35,
+    "am_michael": 1.10,
+}
+
 VI_TTS = TTSConfig(
     name="vieNeu",
     provider="vieneu",
@@ -130,7 +157,7 @@ VI_TTS = TTSConfig(
     dtype=VI_DTYPE,
     sample_rate=48_000,
     cache_dir=HF_CACHE_DIR,
-    output_dir=TRAINING_DATA_DIR / "vieNeu" / "outputs" / "vi",
+    output_dir=DATASETS_DIR / "vieNeu" / "outputs" / "vi",
     voices=VIE_NEU_VOICES,
 )
 
@@ -146,7 +173,7 @@ EN_TTS = TTSConfig(
     dtype="auto",
     sample_rate=24_000,
     cache_dir=HF_CACHE_DIR,
-    output_dir=TRAINING_DATA_DIR / "english" / "outputs" / "en",
+    output_dir=DATASETS_DIR / "english" / "outputs" / "en",
     voices=KOKORO_EN_VOICES,
 )
 
@@ -165,6 +192,7 @@ MANIFEST_FIELDNAMES = [
     "voice",
     "gender",
     "style",
+    "speed",
     "sample_rate",
     "status",
 ]
@@ -290,22 +318,12 @@ def close_tts(tts) -> None:
         close()
 
 
-def progress_iter(items: Iterable, description: str, total: int | None = None) -> Iterable:
-    if not SHOW_PROGRESS:
-        return items
+def batched(items: list, batch_size: int) -> Iterable[list]:
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
 
-    try:
-        from tqdm import tqdm
-    except ImportError:
-        return items
-
-    return tqdm(
-        items,
-        total=total,
-        desc=description,
-        unit="file",
-        bar_format="{desc}: {n_fmt}/{total_fmt}",
-    )
+    for start in range(0, len(items), batch_size):
+        yield items[start : start + batch_size]
 
 
 def stable_rng(seed: int | None, *parts: object) -> random.Random:
@@ -357,6 +375,25 @@ def get_voice_spec(config: TTSConfig, voice: str) -> VoiceSpec:
     return VoiceSpec(gender="unknown", style="unknown")
 
 
+def get_voice_speed(config: TTSConfig, voice: str) -> float | None:
+    if config.provider != "kokoro":
+        return None
+    return KOKORO_EN_VOICE_SPEEDS.get(voice, 1.0)
+
+
+def speed_matches(existing_speed: str | None, speed: float | None) -> bool:
+    if speed is None:
+        return True
+    if not existing_speed:
+        existing = 1.0
+    else:
+        try:
+            existing = float(existing_speed)
+        except ValueError:
+            return False
+    return abs(existing - speed) < 1e-6
+
+
 def get_fixed_voice(language: str) -> str | None:
     if language == "vi":
         return VI_VOICE
@@ -401,6 +438,7 @@ def synthesize_language(
     n_samples: int = N_SAMPLES,
     start_index: int = START_INDEX,
     end_index: int | None = END_INDEX,
+    batch_size: int = BATCH_SIZE,
     rows: list[dict] | None = None,
     seed: int | None = SEED,
     fixed_voice: str | None = None,
@@ -428,7 +466,10 @@ def synthesize_language(
         target_gender = pick_target_gender(dataset_index, seed, fixed_matched_gender)
         voice_rng = stable_rng(seed, dataset_index, language, "voice")
         voice = pick_voice(config, voice_rng, fixed_voice, target_gender)
-        jobs.append((dataset_index, text, voice, output_path))
+        speed = get_voice_speed(config, voice)
+        if "speed" in infer_kwargs and config.provider == "kokoro":
+            speed = float(infer_kwargs["speed"])
+        jobs.append((dataset_index, text, voice, speed, output_path))
 
     if not jobs:
         return []
@@ -444,35 +485,120 @@ def synthesize_language(
 
     tts = None
     try:
-        for index, text, voice, output_path in progress_iter(
-            jobs, f"{language} audio", total=len(jobs)
-        ):
+        generation_jobs = []
+
+        for index, text, voice, speed, output_path in jobs:
             spec = get_voice_spec(config, voice)
             existing_row = existing_manifest.get(index)
             existing_voice = existing_row.get("voice") if existing_row else None
             existing_gender = existing_row.get("gender") if existing_row else None
+            existing_speed = existing_row.get("speed") if existing_row else None
             can_skip = (
                 skip_existing
                 and output_path.exists()
                 and existing_voice == voice
                 and existing_gender == spec.gender
+                and speed_matches(existing_speed, speed)
             )
 
             if can_skip:
                 skipped_count += 1
-                status = "skipped"
-            else:
+                paths.append(output_path)
+                manifest_rows[index] = make_manifest_row(
+                    index,
+                    language,
+                    text,
+                    output_path,
+                    config,
+                    voice,
+                    spec,
+                    speed,
+                    "skipped",
+                )
+                continue
+
+            generation_jobs.append((index, text, voice, speed, output_path, spec))
+
+        jobs_by_voice = {}
+        for generation_job in generation_jobs:
+            jobs_by_voice.setdefault((generation_job[2], generation_job[3]), []).append(
+                generation_job
+            )
+
+        total_batches = sum(
+            (len(voice_jobs) + batch_size - 1) // batch_size
+            for voice_jobs in jobs_by_voice.values()
+        )
+        batch_number = 0
+
+        for (voice, speed), voice_jobs in jobs_by_voice.items():
+            voice_infer_kwargs = dict(infer_kwargs)
+            if speed is not None:
+                voice_infer_kwargs["speed"] = speed
+
+            for voice_batch in batched(voice_jobs, batch_size):
+                batch_number += 1
+                batch_indexes = [job[0] for job in voice_batch]
+                speed_text = "" if speed is None else f", speed={speed:g}"
+                print(
+                    f"{language}: batch {batch_number}/{total_batches} "
+                    f"indexes {min(batch_indexes)}-{max(batch_indexes)} "
+                    f"({len(voice_batch)} files), voice={voice}{speed_text}",
+                    flush=True,
+                )
+
                 if tts is None:
                     tts = load_tts(config)
-                audio = infer_one_or_batch(tts, [text], voice=voice, **infer_kwargs)[0]
-                tts.save(audio, str(output_path))
-                generated_count += 1
-                status = "generated"
 
-            paths.append(output_path)
-            manifest_rows[index] = make_manifest_row(
-                index, language, text, output_path, config, voice, spec, status
-            )
+                infer_batch = getattr(tts, "infer_batch", None)
+                if len(voice_batch) > 1 and infer_batch is None:
+                    for index, text, voice, speed, output_path, spec in voice_batch:
+                        audio = infer_one_or_batch(
+                            tts, [text], voice=voice, **voice_infer_kwargs
+                        )[0]
+                        tts.save(audio, str(output_path))
+                        generated_count += 1
+                        paths.append(output_path)
+                        manifest_rows[index] = make_manifest_row(
+                            index,
+                            language,
+                            text,
+                            output_path,
+                            config,
+                            voice,
+                            spec,
+                            speed,
+                            "generated",
+                        )
+                    continue
+
+                texts = [job[1] for job in voice_batch]
+                audios = infer_one_or_batch(
+                    tts, texts, voice=voice, **voice_infer_kwargs
+                )
+                if len(audios) != len(voice_batch):
+                    raise RuntimeError(
+                        f"{config.name} returned {len(audios)} audio outputs "
+                        f"for {len(voice_batch)} texts."
+                    )
+
+                for (index, text, voice, speed, output_path, spec), audio in zip(
+                    voice_batch, audios
+                ):
+                    tts.save(audio, str(output_path))
+                    generated_count += 1
+                    paths.append(output_path)
+                    manifest_rows[index] = make_manifest_row(
+                        index,
+                        language,
+                        text,
+                        output_path,
+                        config,
+                        voice,
+                        spec,
+                        speed,
+                        "generated",
+                    )
     finally:
         if tts is not None:
             close_tts(tts)
@@ -501,6 +627,7 @@ def make_manifest_row(
     config: TTSConfig,
     voice: str,
     spec: VoiceSpec,
+    speed: float | None,
     status: str,
 ) -> dict:
     return {
@@ -513,6 +640,7 @@ def make_manifest_row(
         "voice": voice,
         "gender": spec.gender,
         "style": spec.style,
+        "speed": "" if speed is None else f"{speed:g}",
         "sample_rate": config.sample_rate,
         "status": status,
     }
@@ -665,8 +793,12 @@ def synthesize_en_train_samples(
     return synthesize_language("en", n_samples=n, start_index=start_index, **kwargs)
 
 
-if __name__ == "__main__":
+def pipeline_main() -> None:
     if os.environ.get(PIPELINE_LANGUAGE_ENV):
         run_pipeline_worker()
     else:
         run_pipeline()
+
+
+if __name__ == "__main__":
+    pipeline_main()

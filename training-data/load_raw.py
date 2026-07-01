@@ -6,7 +6,8 @@ from datasets import Dataset, DatasetDict, load_dataset
 
 
 DATASET_ID = "ura-hcmut/PhoMT"
-CACHE_DIR = Path(__file__).resolve().parent / ".hf_cache"
+DATASETS_DIR = Path(r"D:\Code\datasets")
+CACHE_DIR = DATASETS_DIR / ".hf_cache"
 
 
 # Load raw text to text machine translation

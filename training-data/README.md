@@ -17,7 +17,7 @@ anquachdev/PhoMT-en-vi-speech
 Final uploaded columns:
 
 ```text
-en, vi, audio_en, audio_vi
+en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 ```
 
 ## Files
@@ -28,7 +28,11 @@ en, vi, audio_en, audio_vi
 - `upload.py` builds the paired audio dataset and pushes it to Hugging Face.
 - `load_train_data.py` loads the uploaded speech dataset for training or coworker preview.
 
-Generated audio, local cache, and preview folders are gitignored.
+Generated audio, local cache, and preview folders are written outside the repo under:
+
+```text
+D:\Code\datasets
+```
 
 ## Setup
 
@@ -60,6 +64,7 @@ Edit the config at the top of `pipeline.py`:
 ```python
 START_INDEX = 0
 N_SAMPLES = 128
+BATCH_SIZE = 8
 LANGUAGES = ("vi","en")
 TTS_DEVICE = "cuda"
 PARALLEL_LANGUAGES = True
@@ -74,11 +79,14 @@ uv run python training-data/pipeline.py
 When `PARALLEL_LANGUAGES = True`, the parent command launches separate child processes:
 
 ```text
-vi worker -> training-data/vieNeu/outputs/vi/
-en worker -> training-data/english/outputs/en/
+vi worker -> D:\Code\datasets\vieNeu\outputs\vi\
+en worker -> D:\Code\datasets\english\outputs\en\
 ```
 
 Each output folder contains WAV files and a `manifest.csv`.
+
+Kokoro `af_nicole` is generated faster than the default because it is otherwise
+much slower than the paired Vietnamese speech.
 
 If GPU memory is tight, set:
 
@@ -94,11 +102,17 @@ After both Vietnamese and English audio are generated for matching indexes:
 uv run python training-data/upload.py
 ```
 
+The uploader reads manifests from `D:\Code\datasets\vieNeu\outputs\vi\` and
+`D:\Code\datasets\english\outputs\en\`.
+
 This builds rows with:
 
 ```text
-en, vi, audio_en, audio_vi
+en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 ```
+
+Rows with EN/VI duration ratio outside the configured range in `upload.py` are
+skipped before upload.
 
 and pushes to:
 
@@ -123,7 +137,7 @@ Audio(decode=False)
 This avoids requiring `torchcodec` just to inspect or copy audio samples. It writes a few preview WAV files to:
 
 ```text
-training-data/audios/
+D:\Code\datasets\audios\
 ```
 
 ## Notes
