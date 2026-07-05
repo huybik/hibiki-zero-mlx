@@ -29,6 +29,7 @@ from moshi_mlx import models, utils
 ROOT = Path(__file__).resolve().parent.parent  # repo root (hibiki_mlx/ -> ..)
 
 W = ROOT / "weights"
+MODEL_DIRS = {"3b": W, "1b": W / "hibiki-m-mlx-q4"}  # 3b = Mac/teacher, 1b = phone candidate
 SENTINEL = object()
 PAD_STOP = 12  # frames (~1 s) of sustained pad after audio ends => translation flushed
 
@@ -58,21 +59,40 @@ def _q4_compatible(_: str, module: object) -> bool:
     )
 
 
-def _q4_model_name(cfg: dict) -> str:
+def _quant_predicate(quant: str):
+    # "q4": everything 4-bit gs32. "q4-depq3": the depformer slice transformers at
+    # 3-bit (smaller artifact for phone bandwidth), rest 4-bit. The slice embeddings
+    # and linear_out stay q4 — q3 there makes the 3B babble through the tail flush.
+    def predicate(path: str, module: object):
+        if not _q4_compatible(path, module):
+            return False
+        if quant == "q4-depq3" and path.startswith("depformer") and ".transformer." in path:
+            return {"bits": 3, "group_size": 32}
+        return True
+    return predicate
+
+
+def _q4_model_name(cfg: dict, quant: str = "q4") -> str:
     name = cfg.get("moshi_name")
-    if isinstance(name, str) and name.endswith(".q4.safetensors"):
-        return name
-    return "hibiki.q4.safetensors"
+    if not (isinstance(name, str) and name.endswith(".q4.safetensors")):
+        name = "hibiki.q4.safetensors"
+    if quant != "q4":
+        name = name.replace(".q4.safetensors", f".{quant}.safetensors")
+    return name
 
 
-def load(weights_dir: Path):
+def resolve_weights_dir(model: str | Path = "3b") -> Path:
+    return MODEL_DIRS.get(str(model), Path(model))
+
+
+def load(weights_dir: Path, quant: str = "q4"):
     cfg_path = weights_dir / "config.json"
     _require_file(
         cfg_path,
         "Use a q4 model directory containing config.json.",
     )
     cfg = json.loads(cfg_path.read_text())
-    model_name = _q4_model_name(cfg)
+    model_name = _q4_model_name(cfg, quant)
     tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
     _require_file(
         weights_dir / model_name,
@@ -85,7 +105,7 @@ def load(weights_dir: Path):
     lm_config = models.LmConfig.from_config_dict(cfg)
     model = models.Lm(lm_config)
     model.set_dtype(mx.bfloat16)
-    nn.quantize(model, bits=4, group_size=32, class_predicate=_q4_compatible)
+    nn.quantize(model, bits=4, group_size=32, class_predicate=_quant_predicate(quant))
     model.load_weights(str(weights_dir / model_name), strict=True)
     mx.eval(model.parameters())
     tok = sentencepiece.SentencePieceProcessor(str(weights_dir / tokenizer_name))
@@ -112,9 +132,9 @@ def make_mimi(weights_dir: Path, lm_config):
 
 
 def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | None = None,
-        tail_s: float = 8.0, preloaded=None, text_temp: float = 0.4):
+        tail_s: float = 8.0, preloaded=None, text_temp: float = 0.4, quant: str = "q4"):
     infile = _resolve_audio_path(infile)
-    model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir)
+    model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir, quant)
     if model.condition_provider is not None:
         ct = model.condition_provider.condition_tensor("description", "very_good")
     else:

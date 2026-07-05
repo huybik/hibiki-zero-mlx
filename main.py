@@ -5,9 +5,10 @@
   python main.py --mic                  # mic   -> speakers, live (Ctrl-C to stop)
 
 Speak/record FR/ES/PT/DE; you get streamed EN text + 24 kHz EN audio. Both modes
-use the 4-bit weights via hibiki_mlx.pipeline (load()/run()). File mode is the
-3-thread pipelined path (~3x RT); mic mode pipelines encode->LM->decode across
-threads so the live critical path is just the LM step (~24 ms < the 80 ms budget).
+use the 4-bit weights via hibiki_mlx.pipeline (load()/run()); --model picks the
+3B (default) or the Hibiki-M 1B (FR->EN only). File mode is the 3-thread
+pipelined path; mic mode pipelines encode->LM->decode across threads so the live
+critical path is just the LM step (3B ~22 ms / 1B ~15 ms on M4, budget 80 ms).
 """
 import argparse
 import queue
@@ -27,11 +28,14 @@ ROOT = Path(__file__).resolve().parent
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 
 
-def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
+def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4, quant: str = "q4"):
     import sounddevice as sd
 
     print("loading q4 weights ...")
-    model, lm_config, text_tok, mimi_enc, mimi_dec = f.load(weights_dir)
+    model, lm_config, text_tok, mimi_enc, mimi_dec = f.load(weights_dir, quant)
+    ct = None
+    if model.condition_provider is not None:
+        ct = model.condition_provider.condition_tensor("description", "very_good")
     other_cb = lm_config.other_codebooks
     gen_cb = lm_config.generated_codebooks
     gen = models.LmGen(
@@ -40,7 +44,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
         audio_sampler=utils.Sampler(top_k=250, temp=0.8),
         cfg_coef=1.0, check=False,
     )
-    model.warmup()
+    model.warmup(ct)
     mx.eval(model.parameters())
 
     in_q: queue.Queue = queue.Queue()
@@ -80,7 +84,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
                     codes = enc_q.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                tt = gen.step(mx.array(codes))
+                tt = gen.step(mx.array(codes), ct)
                 tok = tt[0].item()                                       # sync this frame
                 if tok not in (0, 3):
                     sys.stdout.write(text_tok.id_to_piece(tok).replace("▁", " "))
@@ -125,17 +129,20 @@ def main():
     p.add_argument("--mic", action="store_true", help="realtime mic -> speakers")
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
-    p.add_argument("--weights-dir", type=Path, default=f.W, help="q4 model directory (default weights/)")
+    p.add_argument("--model", default="3b", help="model size (3b|1b) or a q4 model directory (default 3b)")
+    p.add_argument("--quant", default="q4", choices=["q4", "q4-depq3"], help="quant variant (default q4)")
     p.add_argument("--text-temp", type=float, default=0.4, help="text sampling temperature (default 0.4)")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()
 
+    weights_dir = f.resolve_weights_dir(args.model)
     mx.random.seed(299792458)
     if args.mic or args.input == "mic":
         run_mic(
             max_steps=int(args.minutes * 60 * 12.5) + 8,
-            weights_dir=args.weights_dir,
+            weights_dir=weights_dir,
             text_temp=args.text_temp,
+            quant=args.quant,
         )
     elif args.input:
         infile = args.input
@@ -144,9 +151,10 @@ def main():
         f.run(
             infile,
             out,
-            weights_dir=args.weights_dir,
+            weights_dir=weights_dir,
             text_outfile=args.text_out,
             text_temp=args.text_temp,
+            quant=args.quant,
         )
     else:
         p.error("give an audio file path, or --mic for realtime")

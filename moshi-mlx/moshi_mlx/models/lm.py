@@ -244,9 +244,32 @@ class DepFormerSlice(nn.Module):
         # hibiki-zero: learned per-slice output LayerNorm applied before linear_out.
         # Hibiki-M does not have these tensors.
         self.norm = nn.LayerNorm(dim, 1e-5) if cfg.output_layer_norm else None
+        self._step_c = None
 
     def __call__(self, _: mx.array) -> mx.array:
         raise ValueError("not implemented")
+
+    def _step(self, main_transformer_out: mx.array, last_token: mx.array, kv: list):
+        # One whole slice forward for a single token, pure in the KV state: kv is
+        # [[k, v], ...] per layer with width == slice index, so every shape is
+        # fixed per slice and the whole step can be mx.compile'd (one compile per
+        # slice). The depformer context (<= num_slices) never exceeds the buffer,
+        # so no trimming or rotating is needed. Depformer has no RoPE.
+        xs = self.linear_in(main_transformer_out) + self.emb(last_token)
+        new_kv = []
+        for idx, layer in enumerate(self.transformer.layers):
+            q, k, v = layer.self_attn._qkv(layer.norm1(xs), 0)
+            if kv:
+                k = mx.concatenate([kv[idx][0], k], axis=2)
+                v = mx.concatenate([kv[idx][1], v], axis=2)
+            attn = mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=layer.self_attn.scale, mask=None
+            )
+            xs = layer._attn_post(xs, attn)
+            new_kv.append([k, v])
+        if self.norm is not None:
+            xs = self.norm(xs)
+        return self.linear_out(xs), new_kv
 
 
 class DepFormer(nn.Module):
@@ -278,6 +301,18 @@ class DepFormer(nn.Module):
     ) -> mx.array:
         tokens = []
         last_token = text_token
+        if cfg_coef == 1:
+            # Fast path: KV threaded functionally through one compiled step per
+            # slice (fixed shapes -> each compiles once). Replaces the shared
+            # KVCache reset/alloc machinery, cutting per-frame kernel launches.
+            kv: list = []
+            for slice in self.slices:
+                if slice._step_c is None:
+                    slice._step_c = mx.compile(slice._step)
+                logits, kv = slice._step_c(main_transformer_out, last_token, kv)
+                last_token, _ = sampler(logits)
+                tokens.append(last_token)
+            return mx.stack(tokens, axis=1)
         # The cache is shared between the depformer slices but not persisted between sample calls.
         for c in cache:
             c.reset()

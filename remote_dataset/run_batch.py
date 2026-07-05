@@ -19,6 +19,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suffix", default="q4", help="output filename suffix (default: q4)")
     parser.add_argument("--tail-s", type=float, default=8.0, help="silence flush seconds (default: 8)")
     parser.add_argument("--limit", type=int, help="process only the first N rows")
+    parser.add_argument("--model", default="3b", help="model size (3b|1b) or a q4 model directory")
+    parser.add_argument("--quant", default="q4", choices=["q4", "q4-depq3"], help="quant variant")
     return parser.parse_args()
 
 
@@ -30,14 +32,15 @@ def main() -> None:
         rows = rows[: args.limit]
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    model, lm_config, text_tok, _, _ = f.load(f.W)  # load the LM once
+    weights_dir = f.resolve_weights_dir(args.model)
+    model, lm_config, text_tok, _, _ = f.load(weights_dir, args.quant)  # load the LM once
     t0 = time.perf_counter()
     for i, row in enumerate(rows):
         wav = row["audio_file"]
         stem = Path(wav).stem
         out_wav = args.out_dir / f"{stem}_{args.suffix}.wav"
         out_txt = args.out_dir / f"{stem}_{args.suffix}.txt"
-        mimi_enc, mimi_dec = f.make_mimi(f.W, lm_config)  # fresh codec state per file
+        mimi_enc, mimi_dec = f.make_mimi(weights_dir, lm_config)  # fresh codec state per file
         f.run(
             wav,
             str(out_wav),

@@ -38,6 +38,7 @@ staged by `scripts/convert_hibiki_m_mlx_q4.py`).
 ```bash
 python main.py assets/samples/leon.wav   # file -> translations/leon_translated.wav + .txt (~3x RT)
 python main.py --mic                     # realtime mic -> speakers (needs sounddevice; Ctrl-C stops)
+python main.py --model 1b --mic          # Hibiki-M 1B (FR->EN only, phone-size, ~1.5x faster)
 ```
 
 Both modes run the q4 weights through `hibiki_mlx.pipeline` (`load()`/`run()`): the CPU Mimi
@@ -52,9 +53,10 @@ run("audio.wav", "out.wav")   # writes wav + text sidecar
 ## Scripts
 
 - `scripts/verify_mlx_q4.py` — gate: translates `assets/samples/leon.wav` → `translations/leon_mlx_q4.wav`.
-- `scripts/profile_mlx.py` — per-stage frame profile (mimi encode / LM main / depformer / decode).
-- `scripts/convert_mlx_q4.py`, `scripts/convert_hibiki_m_mlx_q4.py` — q4 conversion (keep `group_size=32`,
-  required by stock moshi-mlx/moshi-swift loaders).
+- `scripts/bench.py` — unified benchmark: per-stage ms table, RT factor, artifact size, projected
+  iPhone frame time, silence-in gate (`--model {3b,1b} --quant {q4,q4-depq3} [--silence]`).
+- `scripts/convert_mlx_q4.py`, `scripts/convert_hibiki_m_mlx_q4.py`, `scripts/convert_depq3.py` —
+  quant conversion (keep `group_size=32`, required by stock moshi-mlx/moshi-swift loaders).
 - `scripts/push_mlx_q4.py`, `scripts/push_hibiki_m_mlx_q4.py` — publish weights to HF.
 
 ## Repo map
