@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Repush the new q4 weights + coupled patch/verify to the HF Hub in one commit."""
+"""Repush the q4 weights to the HF Hub (patch/verify shims already live there)."""
 from pathlib import Path
 
 from huggingface_hub import CommitOperationAdd, HfApi
@@ -10,8 +10,6 @@ HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 # left side = path_in_repo on the Hub (kept stable); right side = local source.
 FILES = {
     "hibiki.q4.safetensors": HERE / "weights" / "hibiki.q4.safetensors",
-    "mlx_hibiki_patch.py": HERE / "src" / "mlx_hibiki_patch.py",
-    "verify_mlx_q4.py": HERE / "scripts" / "verify_mlx_q4.py",
 }
 
 ops = [CommitOperationAdd(path_in_repo=dst, path_or_fileobj=str(src))
@@ -21,6 +19,6 @@ HfApi().create_commit(
     repo_id=REPO,
     repo_type="model",
     operations=ops,
-    commit_message="Refactor depformer-LayerNorm fix (slices.{i}.norm); regenerate q4",
+    commit_message="Regenerate q4 weights",
 )
 print("pushed:", ", ".join(FILES))

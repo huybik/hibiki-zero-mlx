@@ -28,8 +28,13 @@ from finetune.utils import (  # noqa: E402
     require_file,
     resolve_repo_path,
 )
-from hibiki_zero.client_utils import audio_read, stack_and_pad_audio  # noqa: E402
-from hibiki_zero.inference import decode_outputs, encode_inputs, get_lmgen  # noqa: E402
+from finetune.hibiki_helpers import (  # noqa: E402
+    audio_read,
+    decode_outputs,
+    encode_inputs,
+    get_lmgen,
+    stack_and_pad_audio,
+)
 
 
 def parse_args() -> argparse.Namespace:

@@ -196,7 +196,6 @@ cython_debug/
 remote_dataset/french_english_unprocessed_samples/
 remote_dataset/french_english_unprocessed_*s/
 remote_dataset/covost2_*/
-hibiki_zero/samples/fr_sample*.mp3
 
 # Local Hugging Face cache (HF_HOME override)
 .hf_cache/
@@ -228,16 +227,10 @@ __marimo__/
 # Gradio
 .gradio
 
-# Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-
 # User
 translations/
 blog/
 .claude/
-hibiki_zero/static/
 finetune/pairs/
 finetune/cache/
 finetune/runs/

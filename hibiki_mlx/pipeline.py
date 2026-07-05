@@ -8,7 +8,7 @@ Overlaps the CPU Mimi codec (rustymimi, GIL-released) with the GPU LM:
 FIFO queues preserve the streaming order, so output is bit-identical to the
 sequential loop; we just stop letting the CPU and GPU idle on each other.
 
-Usage: python scripts/verify_mlx_q4.py  (or import src/infer_mlx_fast.run)
+Usage: python scripts/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
 import json
 import queue
@@ -24,12 +24,9 @@ import rustymimi
 import sentencepiece
 import sphn
 
-ROOT = Path(__file__).resolve().parent.parent  # repo root (src/ -> ..)
-VENDORED_MOSHI_MLX = ROOT / "moshi-mlx"
-if VENDORED_MOSHI_MLX.exists():
-    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
-
 from moshi_mlx import models, utils
+
+ROOT = Path(__file__).resolve().parent.parent  # repo root (hibiki_mlx/ -> ..)
 
 W = ROOT / "weights"
 SENTINEL = object()
@@ -46,7 +43,7 @@ def _resolve_audio_path(infile: str) -> str:
     if path.exists():
         return str(path)
     if len(path.parts) > 1 and path.parts[0] == "samples":
-        packaged = ROOT / "hibiki_zero" / path
+        packaged = ROOT / "assets" / path
         if packaged.exists():
             return str(packaged)
     return infile
@@ -150,11 +147,12 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
     stop = threading.Event()
 
     def encoder():
-        # Separate streaming state from the model; runs ahead of the LM.
+        # Separate streaming state from the model; runs ahead of the LM. Queue
+        # numpy (not mx) arrays: lazy mx graphs are bound to the creating
+        # thread's stream and can't be evaluated from the LM thread.
         def emit(pcm_frame):
             codes = mimi_enc.encode_step(pcm_frame)           # CPU, GIL released
-            codes = mx.array(codes).transpose(0, 2, 1)[:, :, :other_cb]
-            enc_q.put(codes[0])
+            enc_q.put(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
         silence = np.zeros((1, 1, 1920), dtype=in_pcms.dtype)  # flush the lag tail
         for idx in range(steps):
             if stop.is_set():
@@ -185,7 +183,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         oat = enc_q.get()
         if oat is SENTINEL:
             break
-        text_token = gen.step(oat, ct)
+        text_token = gen.step(mx.array(oat), ct)
         tt = text_token[0].item()                             # sync this frame's LM
         processed += 1
         if tt not in (0, 3):
@@ -227,7 +225,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
 
 
 if __name__ == "__main__":
-    infile = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "hibiki_zero" / "samples" / "leon.wav")
+    infile = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "assets" / "samples" / "leon.wav")
     outfile = sys.argv[2] if len(sys.argv) > 2 else str(ROOT / "translations" / "leon_mlx_fast.wav")
     mx.random.seed(299792458)
     run(infile, outfile)

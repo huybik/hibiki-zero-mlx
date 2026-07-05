@@ -6,7 +6,6 @@ depformer (16 codebook steps) vs mimi codec, using mx.eval barriers so the
 lazy graph is actually forced at each boundary. Run before/after changes.
 """
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -16,12 +15,9 @@ import numpy as np
 import rustymimi
 import sentencepiece
 
-HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
-VENDORED_MOSHI_MLX = HERE / "moshi-mlx"
-if VENDORED_MOSHI_MLX.exists():
-    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
-
 from moshi_mlx import models, utils
+
+HERE = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 
 W = HERE / "weights"
 N_FRAMES = 150
@@ -36,7 +32,7 @@ model.load_weights(str(W / "hibiki.q4.safetensors"), strict=True)
 
 other_cb = lm_config.other_codebooks
 mimi = rustymimi.Tokenizer(str(W / "mimi-pytorch-e351c8d8@125.safetensors"), num_codebooks=other_cb)
-in_pcms, _ = sphn = __import__("sphn").read(str(HERE / "hibiki_zero" / "samples" / "leon.wav"), sample_rate=24000)
+in_pcms, _ = __import__("sphn").read(str(HERE / "assets" / "samples" / "leon.wav"), sample_rate=24000)
 
 gen = models.LmGen(model=model, max_steps=N_FRAMES + 8,
                    text_sampler=utils.Sampler(top_k=25, temp=0.8),
