@@ -26,10 +26,18 @@ $PY finetune/eval_lora.py \
 `cache_codes.py` and `train_lora.py` require the PyTorch `moshi` and `sphn` packages in that
 environment. They intentionally fail before doing work if those imports are missing.
 
+See `docs/finetune.md` for the full design, the schedule/selection flags, the
+AutoResearch protocol, and recommended 128 / 512 / 1449 / CUDA commands.
+
 ## Scripts
 
+- `common.py` is the shared toolkit (device/dtype, cached-shard dataset + loader,
+  LoRA insertion + adapter save/load, teacher-forced losses, greedy generation,
+  BLEU/chrF/WER + loop metrics, and the `value@fraction` schedule primitives). The
+  three scripts below are thin wrappers over it.
 - `build_pairs.py` reads `remote_dataset/fleurs_vi_en/{train,validation,test}/manifest.csv`,
-  validates audio files, and writes deterministic `finetune/pairs/{split}.jsonl` files.
+  validates audio files, and writes deterministic `finetune/pairs/{split}.jsonl` files
+  plus `val16.jsonl` / `val128.jsonl` held-out gate subsets (first-N of validation).
 - `cache_codes.py` loads Mimi and the text tokenizer, then writes resumable `shard_*.pt`
   caches. Each sample contains `codes[33, T]`:
   - `0`: English text tokens, padded with Hibiki text pad id.
@@ -43,8 +51,13 @@ environment. They intentionally fail before doing work if those imports are miss
   targets, trains CE on `LMModel.forward` masks, and saves adapter `.safetensors`
   plus optimizer checkpoints. It appends scalar logs to `train_log.jsonl`, can log
   teacher-forced cache validation to `val_log.jsonl` with `--val-cache-dir`, and
-  supports optional `--text-head-lr` / `--audio-head-lr` groups. The default dtype is
-  `bfloat16`; MPS `float16` can go non-finite after the first optimizer step.
+  supports piecewise `value@fraction` schedules for loss weights
+  (`--text-weight-schedule` / `--audio-weight-schedule`), replay weight
+  (`--replay-weight-schedule`), and per-group LR (`--lr-schedule` /
+  `--text-head-lr-schedule` / `--audio-head-lr-schedule` + `--warmup-steps`) — each
+  degrading to the matching static flag. `--eval-every N` runs an in-training batched
+  greedy val eval and saves `adapter_best.safetensors` on chrF improvement. Default
+  dtype is `bfloat16`; MPS `float16` can go non-finite after the first optimizer step.
 - `validate_lora.py` computes teacher-forced CE on cached rows for the base model or
   an adapter. Use this before full autoregressive eval to separate underfit from
   free-running collapse.

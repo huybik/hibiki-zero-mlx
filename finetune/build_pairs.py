@@ -69,6 +69,13 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Drop rows longer than this Vietnamese duration, 0 disables.",
     )
+    parser.add_argument(
+        "--val-subsets",
+        type=int,
+        nargs="*",
+        default=[16, 128],
+        help="Also write val{N}.jsonl held-out gate files (first N validation rows). Empty to disable.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Replace existing pair files.")
     return parser.parse_args()
 
@@ -114,6 +121,17 @@ def main() -> None:
             f"{split}: wrote {len(rows)} rows, {source_hours:.2f} source hours -> "
             f"{repo_display_path(out_path)}"
         )
+
+        # Deterministic held-out gate subsets (first N rows), same selection as val16.
+        if split == "validation" and args.val_subsets:
+            for size in args.val_subsets:
+                if size <= 0:
+                    continue
+                subset_path = out_dir / f"val{size}.{args.format}"
+                if subset_path.exists() and not args.overwrite:
+                    raise FileExistsError(f"Refusing to overwrite existing subset: {subset_path}")
+                write_pair_file(rows[:size], subset_path, args.format)
+                print(f"  val{size}: wrote {min(size, len(rows))} rows -> {repo_display_path(subset_path)}")
 
 
 if __name__ == "__main__":
