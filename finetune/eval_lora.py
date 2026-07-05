@@ -322,6 +322,49 @@ def word_error_rate(references: list[str], hypotheses: list[str]) -> float:
     return edits / total_words if total_words else 0.0
 
 
+def mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def max_repeated_ngram(words: list[str], n: int) -> int:
+    if len(words) < n:
+        return 0
+    counts: dict[tuple[str, ...], int] = {}
+    for start in range(len(words) - n + 1):
+        ngram = tuple(words[start : start + n])
+        counts[ngram] = counts.get(ngram, 0) + 1
+    return max(counts.values(), default=0)
+
+
+def length_repetition_metrics(references: list[str], hypotheses: list[str]) -> dict[str, Any]:
+    reference_lengths = [len(normalize(reference).split()) for reference in references]
+    hypothesis_lengths = [len(normalize(hypothesis).split()) for hypothesis in hypotheses]
+    length_ratios = [
+        hyp_len / ref_len
+        for ref_len, hyp_len in zip(reference_lengths, hypothesis_lengths, strict=True)
+        if ref_len > 0
+    ]
+    repeated_4grams = [
+        max_repeated_ngram(normalize(hypothesis).split(), 4) for hypothesis in hypotheses
+    ]
+    return {
+        "mean_reference_words": mean([float(value) for value in reference_lengths]),
+        "mean_prediction_words": mean([float(value) for value in hypothesis_lengths]),
+        "mean_length_ratio": mean(length_ratios),
+        "overlong_predictions": sum(
+            1
+            for ref_len, hyp_len in zip(reference_lengths, hypothesis_lengths, strict=True)
+            if hyp_len > max(32, 2 * ref_len)
+        ),
+        "repeated_4gram_predictions": sum(1 for value in repeated_4grams if value >= 3),
+        "max_repeated_4gram_count": max(repeated_4grams, default=0),
+    }
+
+
+def is_bool_text(value: Any, expected: bool) -> bool:
+    return value is expected or str(value).lower() == str(expected).lower()
+
+
 def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     references = [str(record["reference_text"]).strip() for record in records]
     hypotheses = [str(record["prediction_text"]).strip() for record in records]
@@ -344,10 +387,11 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             for reference, hypothesis in zip(references, hypotheses, strict=True)
             if normalize(reference) == normalize(hypothesis)
         ),
-        "eos_found": sum(1 for record in records if record.get("eos_found") is True),
-        "eos_missing": sum(1 for record in records if record.get("eos_found") is False),
+        "eos_found": sum(1 for record in records if is_bool_text(record.get("eos_found"), True)),
+        "eos_missing": sum(1 for record in records if is_bool_text(record.get("eos_found"), False)),
         "wer": word_error_rate(references, hypotheses),
     }
+    metrics.update(length_repetition_metrics(references, hypotheses))
     try:
         import sacrebleu
     except ImportError:
@@ -607,7 +651,9 @@ def main() -> None:
         f"nonempty={metrics['nonempty_predictions']}/{metrics['num_predictions']} "
         f"eos={metrics['eos_found']}/{metrics['num_predictions']} "
         f"exact={metrics['exact_matches']}/{metrics['num_predictions']} "
-        f"wer={100 * metrics['wer']:.2f}%"
+        f"wer={100 * metrics['wer']:.2f}% "
+        f"overlong={metrics['overlong_predictions']} "
+        f"repeat4={metrics['repeated_4gram_predictions']}"
     )
     if "bleu" in metrics:
         summary += f" bleu={metrics['bleu']:.2f} chrf={metrics['chrf']:.2f}"
