@@ -1,18 +1,14 @@
 #!/usr/bin/env python
 """Convert hibiki-zero PyTorch LM weights to 4-bit MLX safetensors via moshi_mlx."""
 import json
-import sys
 from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
 
-WEIGHTS = Path(__file__).resolve().parent.parent / "weights"  # scripts/ -> ..
-VENDORED_MOSHI_MLX = WEIGHTS.parent / "moshi-mlx"
-if VENDORED_MOSHI_MLX.exists():
-    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
-
 from moshi_mlx import models
+
+WEIGHTS = Path(__file__).resolve().parent.parent / "weights"  # scripts/ -> ..
 
 CONFIG = WEIGHTS / "config.json"
 PTH = WEIGHTS / "hibiki-pytorch-77f82164@110.safetensors"

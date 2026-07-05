@@ -8,7 +8,6 @@ import argparse
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import mlx.core as mx
@@ -18,11 +17,6 @@ HERE = Path(__file__).resolve().parent.parent
 os.environ.setdefault("HF_HOME", str(HERE / ".hf_cache"))
 
 from huggingface_hub import hf_hub_download
-
-VENDORED_MOSHI_MLX = HERE / "moshi-mlx"
-if VENDORED_MOSHI_MLX.exists():
-    sys.path.insert(0, str(VENDORED_MOSHI_MLX))
-
 from moshi_mlx import models
 
 SOURCE_REPO = "kyutai/hibiki-1b-mlx-bf16"

@@ -5,9 +5,9 @@
   python main.py --mic                  # mic   -> speakers, live (Ctrl-C to stop)
 
 Speak/record FR/ES/PT/DE; you get streamed EN text + 24 kHz EN audio. Both modes
-use the 4-bit weights via src/infer_mlx_fast (load()/run()). File mode is the
-3-thread pipelined path (~3x RT); mic mode runs encode->LM->decode per 80 ms
-frame in one worker (~59 ms/frame < the 80 ms budget, so it keeps up live).
+use the 4-bit weights via hibiki_mlx.pipeline (load()/run()). File mode is the
+3-thread pipelined path (~3x RT); mic mode pipelines encode->LM->decode across
+threads so the live critical path is just the LM step (~24 ms < the 80 ms budget).
 """
 import argparse
 import queue
@@ -19,10 +19,10 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 
+from hibiki_mlx import pipeline as f
+from moshi_mlx import models, utils
+
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "src"))
-import infer_mlx_fast as f  # noqa: E402
-from moshi_mlx import models, utils  # noqa: E402
 
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 
@@ -63,14 +63,15 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
     # live critical path collapses from encode+LM+decode (~58 ms) to just the LM
     # step (~24 ms on M4). Costs one frame (80 ms) of extra output latency.
     def encoder():
+        # Queue numpy (not mx) arrays: lazy mx graphs are bound to the creating
+        # thread's stream and can't be evaluated from the LM thread.
         while not stop.is_set():
             try:
                 pcm = in_q.get(timeout=0.1)
             except queue.Empty:
                 continue
             codes = mimi_enc.encode_step(pcm[None, None, :])             # CPU, GIL free
-            codes = mx.array(codes).transpose(0, 2, 1)[:, :, :other_cb]
-            enc_q.put_nowait(codes[0])
+            enc_q.put_nowait(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
 
     def lm():
         try:
@@ -79,7 +80,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
                     codes = enc_q.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                tt = gen.step(codes)
+                tt = gen.step(mx.array(codes))
                 tok = tt[0].item()                                       # sync this frame
                 if tok not in (0, 3):
                     sys.stdout.write(text_tok.id_to_piece(tok).replace("▁", " "))

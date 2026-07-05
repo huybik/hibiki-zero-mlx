@@ -6,13 +6,10 @@ wav) per row, matching the layout evaluate_translation_text.py expects.
 """
 import argparse
 import csv
-import sys
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent.parent  # repo root (remote_dataset/ -> ..)
-sys.path.insert(0, str(HERE / "src"))
-import infer_mlx_fast as f
+from hibiki_mlx import pipeline as f
 
 
 def parse_args() -> argparse.Namespace:
