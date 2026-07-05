@@ -50,11 +50,33 @@ from hibiki_mlx import load, run
 run("audio.wav", "out.wav")   # writes wav + text sidecar
 ```
 
+## Phone artifact (Hibiki-M 1B q4) & iPhone budget
+
+The chosen phone config is **Hibiki-M 1B q4 gs32**, staged as a standalone HF-style repo
+dir at `weights/hibiki-m-mlx-q4/` (config.json with `moshi_name` → the q4 file, the q4 LM
+safetensors, Mimi, tokenizer, model card). It ships the **AR head** (the parallel head is a
+documented follow-up — see below). Produce / validate / publish it:
+
+```bash
+python scripts/convert_hibiki_m_mlx_q4.py     # stage weights/hibiki-m-mlx-q4/ (1.13 GB q4 LM)
+python scripts/convert_depq3.py --model 1b    # + q4-depq3 size-constrained variant (1.05 GB), staged alongside
+python scripts/check_swift_compat.py          # validate the moshi-swift load path (gs32, config, tokenizer, mimi) — no device
+python scripts/push_hibiki_m_mlx_q4.py        # publish to HF (needs `hf auth login`) — manual/authed step
+```
+
+`check_swift_compat.py` reproduces exactly how `moshi_mlx.run_inference` / moshi-swift load
+the artifact (build `LmConfig` → quantize gs32 q4 → strict weight load), so a PASS proves the
+artifact is loadable on the swift path without needing an iPhone. **The `q4-depq3` variant is
+our-pipeline-only** (its name isn't `.q4.safetensors`, so the stock swift loader would not
+q4-load it). Projected per-frame time and memory vs the 80 ms budget:
+[`reports/iphone_budget.md`](reports/iphone_budget.md) — 1B AR head ~30 ms @0.5× (projection).
+
 ## Scripts
 
 - `scripts/verify_mlx_q4.py` — gate: translates `assets/samples/leon.wav` → `translations/leon_mlx_q4.wav`.
 - `scripts/bench.py` — unified benchmark: per-stage ms table, RT factor, artifact size, projected
   iPhone frame time, silence-in gate (`--model {3b,1b} --quant {q4,q4-depq3} [--silence]`).
+- `scripts/check_swift_compat.py` — validate a staged artifact the way moshi-swift loads it (no device).
 - `scripts/convert_mlx_q4.py`, `scripts/convert_hibiki_m_mlx_q4.py`, `scripts/convert_depq3.py` —
   quant conversion (keep `group_size=32`, required by stock moshi-mlx/moshi-swift loaders).
 - `scripts/push_mlx_q4.py`, `scripts/push_hibiki_m_mlx_q4.py` — publish weights to HF.
