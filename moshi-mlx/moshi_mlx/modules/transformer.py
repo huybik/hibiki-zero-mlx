@@ -350,12 +350,15 @@ class Transformer(nn.Module):
 
     def make_rot_cache(self) -> list[LayerCache]:
         num_kv_heads = self.cfg.num_heads // self.cfg.kv_repeat
+        # Cap the ring buffer at the attention context: _trim_kv discards anything
+        # older anyway, so a larger buffer is dead KV memory (mattered for long mic
+        # sessions: 4096-frame cap wasted ~0.5 GB on the 1B whose context is 500).
         return [
             LayerCache(
                 RotatingKVCache(
                     head_dim=self.cfg.head_dim,
                     n_kv_heads=num_kv_heads,
-                    max_size=self.cfg.max_seq_len,
+                    max_size=min(self.cfg.max_seq_len, self.cfg.context),
                 )
             )
             for _ in self.layers
