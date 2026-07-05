@@ -11,6 +11,7 @@ sequential loop; we just stop letting the CPU and GPU idle on each other.
 Usage: python scripts/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
 import json
+import os
 import queue
 import sys
 import threading
@@ -108,9 +109,29 @@ def load(weights_dir: Path, quant: str = "q4"):
     nn.quantize(model, bits=4, group_size=32, class_predicate=_quant_predicate(quant))
     model.load_weights(str(weights_dir / model_name), strict=True)
     mx.eval(model.parameters())
+    _maybe_attach_parallel_head(model, lm_config)
     tok = sentencepiece.SentencePieceProcessor(str(weights_dir / tokenizer_name))
     mimi_enc, mimi_dec = make_mimi(weights_dir, lm_config)
     return model, lm_config, tok, mimi_enc, mimi_dec
+
+
+def _maybe_attach_parallel_head(model, lm_config) -> None:
+    # Track B: opt-in parallel codebook head (distill_plan §3). Default stays the
+    # AR depformer. HIBIKI_HEAD=parallel [+ HIBIKI_HEAD_CKPT=<head.safetensors>
+    # HIBIKI_HEAD_PASSES=N] swaps in the trained bf16 head. It attaches AFTER
+    # nn.quantize, so the head stays bf16 (q4 head is a scale-up step).
+    if os.environ.get("HIBIKI_HEAD") != "parallel":
+        return
+    from mlx.utils import tree_unflatten
+    from distill.parallel_head import build_head
+    passes = int(os.environ.get("HIBIKI_HEAD_PASSES", "1"))
+    head = build_head(lm_config, num_passes=passes)
+    ckpt = os.environ.get("HIBIKI_HEAD_CKPT")
+    if ckpt:
+        head.update(tree_unflatten(list(mx.load(ckpt).items())))
+    mx.eval(head.parameters())
+    model.parallel_head = head
+    print(f"[parallel head attached: {passes} pass(es), ckpt={ckpt}]")
 
 
 def make_mimi(weights_dir: Path, lm_config):
@@ -159,6 +180,8 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         cfg_coef=1.0, check=False,
     )
     model.warmup(ct)
+    if getattr(model, "parallel_head", None) is not None:
+        model.parallel_head.reset()  # drop the warmup frame's streaming state
 
     enc_q: queue.Queue = queue.Queue(maxsize=64)   # encoder -> main
     dec_q: queue.Queue = queue.Queue(maxsize=64)   # main -> decoder
