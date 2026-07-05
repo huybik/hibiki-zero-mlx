@@ -1,24 +1,17 @@
 #!/usr/bin/env python
+"""Teacher-forced CE on cached codes for a base model or LoRA adapter."""
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from finetune.eval_lora import load_main_lora  # noqa: E402
-from finetune.train_lora import (  # noqa: E402
-    check_device,
-    dtype_from_name,
-    evaluate_teacher_forced,
-    make_cached_dataloader,
-    make_dataset_class,
-)
+from finetune import common  # noqa: E402
 from finetune.utils import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
     DEFAULT_CONFIG_PATH,
@@ -46,10 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--device", default="mps")
     parser.add_argument(
-        "--dtype",
-        choices=("float16", "bfloat16", "float32"),
-        default="bfloat16",
-        help="Model/LoRA dtype.",
+        "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model/LoRA dtype."
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-samples", type=int, default=0, help="0 means all.")
@@ -66,50 +56,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def require_runtime_deps() -> tuple[Any, ...]:
-    try:
-        import torch
-        from moshi.models import loaders
-        from moshi.modules.lora import replace_all_linear_with_lora
-        from moshi.run_inference import get_condition_tensors
-        from safetensors import safe_open
-        from safetensors.torch import load_file
-        from torch.utils.data import DataLoader, Dataset
-    except ImportError as exc:
-        raise SystemExit(f"Missing validation dependency: {exc.name}") from exc
-    return (
-        torch,
-        DataLoader,
-        Dataset,
-        loaders,
-        replace_all_linear_with_lora,
-        get_condition_tensors,
-        safe_open,
-        load_file,
-    )
-
-
 def main() -> None:
     args = parse_args()
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
-    if args.max_samples < 0:
-        raise ValueError("--max-samples must be non-negative")
-    if args.max_batches < 0:
-        raise ValueError("--max-batches must be non-negative")
 
-    (
-        torch,
-        DataLoader,
-        Dataset,
-        loaders,
-        replace_all_linear_with_lora,
-        get_condition_tensors,
-        safe_open,
-        load_file,
-    ) = require_runtime_deps()
-    device = check_device(torch, args.device)
-    dtype = dtype_from_name(torch, args.dtype)
+    device = common.check_device(args.device)
+    dtype = common.dtype_from_name(args.dtype)
 
     cache_dir = require_dir(args.cache_dir, "code cache directory")
     adapter = require_file(args.adapter, "LoRA adapter") if args.adapter else None
@@ -118,68 +71,30 @@ def main() -> None:
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
 
-    DatasetClass = make_dataset_class(torch, Dataset)
-    dataset = DatasetClass(cache_dir, args.sort_by_length, args.max_samples)
-    dataloader = make_cached_dataloader(
-        DataLoader,
-        dataset,
-        torch,
-        args.batch_size,
-        args.num_workers,
-        args.sort_by_length,
+    dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples)
+    dataloader = common.make_cached_dataloader(
+        dataset, args.batch_size, args.num_workers, args.sort_by_length
     )
     print(f"Loaded {len(dataset)} cached samples from {repo_display_path(cache_dir)}")
 
-    checkpoint_info = loaders.CheckpointInfo.from_hf_repo(
-        args.hf_repo,
-        moshi_weights=args.model_weight,
-        mimi_weights=args.mimi_weight,
-        tokenizer=args.tokenizer,
-        config_path=args.config_path,
-    )
+    checkpoint_info = common.load_checkpoint_info(args)
     print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
     lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
     if adapter is not None:
-        load_main_lora(
-            lm,
-            adapter,
-            torch,
-            safe_open,
-            load_file,
-            replace_all_linear_with_lora,
-            device,
-            dtype,
-        )
+        common.load_main_lora(lm, adapter, device, dtype)
     else:
         print("Using base model without adapter.")
 
-    metrics = evaluate_teacher_forced(
-        torch,
-        lm,
-        dataloader,
-        device,
-        checkpoint_info.model_type,
-        get_condition_tensors,
-        args.audio_loss_weight,
-        args.text_loss_weight,
-        args.max_batches,
+    metrics = common.evaluate_teacher_forced(
+        lm, dataloader, device, checkpoint_info.model_type,
+        args.audio_loss_weight, args.text_loss_weight, args.max_batches,
     )
     result = {
         "cache_dir": repo_display_path(cache_dir),
         "adapter": repo_display_path(adapter) if adapter is not None else "",
-        "loss": metrics["loss"],
-        "audio_loss": metrics["audio_loss"],
-        "text_loss": metrics["text_loss"],
-        "audio_tokens": metrics["audio_tokens"],
-        "text_tokens": metrics["text_tokens"],
-        "batches": metrics["batches"],
-        "samples": metrics["samples"],
+        **{k: metrics[k] for k in ("loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "batches", "samples")},
     }
-    print(
-        f"loss={metrics['loss']:.4f} "
-        f"audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} "
-        f"samples={metrics['samples']}"
-    )
+    print(f"loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} samples={metrics['samples']}")
     if args.out_json:
         out_path = resolve_repo_path(args.out_json)
         out_path.parent.mkdir(parents=True, exist_ok=True)

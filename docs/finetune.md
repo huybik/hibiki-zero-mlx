@@ -1,145 +1,99 @@
-# Plan: LoRA-on-main fine-tune, Mimi-cached — 10h "test the water"
+# Finetune (Track A): Vietnamese LoRA on the 3B main transformer
 
-Goal: **validate the training mechanics** on the Mac for adapting hibiki-zero to a
-**new source language (Vietnamese → EN)** using ~10h of data. Quality is secondary; the
-output of this run is a yes/no on "does a LoRA-on-main-only fine-tune (depformer/Mimi/
-embeddings frozen) move the loss for a new language."
+PyTorch/MPS (CUDA-portable) LoRA stack that adapts Hibiki-Zero to a **new source
+language (Vietnamese → EN)** by fine-tuning only the main transformer (depformer /
+Mimi / embeddings frozen). Separate from the MLX inference runtime; uses the
+`moshi` pip package + `sphn` + `safetensors` in the conda base env. Phase 4 of the
+refactor plan is **done** (consolidation + schedules + selection + val128).
 
-Source tricks being tested: pre-tokenize Mimi once, bf16 LoRA (not full FT), LoRA only the
-main transformer, length-bucketing, subset-first (10h), gradient checkpointing.
+## Design (locked)
 
----
+- **Freeze map:** everything `requires_grad=False`, then LoRA on `LMModel.transformer`;
+  optional full `text_linear` (`--train-text-head`) and audio-head LoRA on
+  `depformer_in`+`linears` (`--train-audio-heads`). New LoRA `B` is **zero-init**
+  (random-init spikes loss). Audio loss still backprops through the frozen depformer.
+- **Cache codes once:** `cache_codes.py` writes `codes[1+n_q, T]` shards — row 0 EN
+  text tokens (prefix-pad supervised, tail-pad masked), rows `1..dep_q` EN target Mimi
+  codes, rows `dep_q+1..` VI source codes + source-EOS. Mimi is not in the training loop.
+- **MPS memory:** `--dtype bfloat16 --batch-size 2 --grad-accum-steps 2` (batch 4 spikes
+  the 48 GB driver). Eval/validate can use `--batch-size 8`. `float16` goes non-finite
+  after the first step — bf16 is the default.
+- **Device portability:** all `torch.mps.*` calls (empty_cache/synchronize, memory
+  stats) are gated behind `common.is_mps(device)`, so `--device cuda` runs clean.
 
-## 0. Key decisions (locked, with rationale)
+## Layout
 
-**Framework = PyTorch/MPS, not MLX.** Training needs autograd + LoRA + a training forward.
-The PyTorch `moshi` package already ships all three (`LMModel.forward` → `LMOutput`,
-`modules/lora.py`, `Mimi.encode`). The MLX fork is **inference-only** — using it would mean
-hand-writing the whole training loss/backward. So the MLX work stays untouched; this is a
-separate PyTorch stack living in `finetune/`. (Same split the repo already makes between the
-MPS `serve/generate` stack and the MLX path.)
+- `common.py` — the shared toolkit: device/dtype/seed, cached-shard dataset + loader +
+  replay sampler, LoRA insertion + adapter save/load (metadata-driven), teacher-forced
+  losses, greedy generation, BLEU/chrF/WER + loop metrics, and the schedule primitives.
+  `train_lora.py` / `eval_lora.py` / `validate_lora.py` are thin wrappers over it.
+- `build_pairs.py` FLEURS manifests → `pairs/{split}.jsonl` (+ deterministic
+  `val16.jsonl` / `val128.jsonl` held-out gate subsets, first-N of validation).
+- `cache_codes.py` → `cache/{train,validation,...}/shard_*.pt`.
+- `autoresearch.py` — fixed trial runner (subprocess), TSV protocol, primary = val chrF.
 
-**Freeze map** (the three tricks, mapped to real modules in `moshi/models/lm.py`):
+## Schedules (all CLI, piecewise-constant `value@fraction`)
 
-| Module | Action | Why |
-|---|---|---|
-| Mimi codec | **not loaded in the loop** (cached) | removes the ~58%/frame codec cost entirely — biggest win |
-| `emb`, `text_emb`, `depformer_emb`, `depformer_text_emb` | `requires_grad=False` | audio/text token embeddings are language-agnostic |
-| `depformer`, `depformer_in`, `depformer_norms`, `linears` | `requires_grad=False` | acoustic head; a new *source* lang adapts the main, not the head |
-| `out_norm`, `text_linear` | freeze (output is still English) | nothing about the EN text head changes |
-| `transformer` (the 28-layer main) | **LoRA only** via `replace_all_linear_with_lora(model.transformer, rank, scaling)` | the one thing that must adapt to a new source language |
+Every static flag is the degenerate single-point schedule, so old commands run unchanged.
+`fraction` is a fraction of total optimizer steps (`--max-steps`, else epochs×steps/epoch).
 
-Audio loss still backprops *through* the frozen depformer into the main via LoRA — that's
-desired, not wasted.
+- **Loss weights:** `--text-weight-schedule "5@0,2@0.6"`, `--audio-weight-schedule`.
+  Fall back to `--text-loss-weight` / `--audio-loss-weight`.
+- **Replay:** `--replay-weight-schedule "300@0,100@0.5"` (needs `--replay-ids`);
+  reuses the WeightedRandomSampler, rebuilt at each boundary. Falls back to `--replay-weight`.
+- **Per-group LR:** `--lr-schedule` (transformer LoRA), `--text-head-lr-schedule`,
+  `--audio-head-lr-schedule`, plus `--warmup-steps N` (linear warmup, all groups). Fall
+  back to `--lr` / `--text-head-lr` / `--audio-head-lr`. Groups collapse to one when
+  their schedules match.
 
-**This contradicts the repo's own `docs/distill_plan.md` Track A** (which says adding a
-language unfreezes the full 3B + AR depformer, upstream on GPU). That's intentional — this
-LoRA-main-only, depformer-frozen, on-device bet is precisely the cheap hypothesis worth
-*testing* before committing to a full upstream fine-tune.
+## Selection & speed
 
-## 1. Concrete model facts (from `weights/config.json`)
+- `--eval-every N` runs a **batched greedy val eval** (`--eval-pairs`, `--eval-limit`
+  128, `--eval-batch-size` 8, `--eval-text-temp 0.0`), logs chrF to
+  `greedy_eval_log.jsonl`, and saves `adapter_best.safetensors` + `best.json` on chrF
+  improvement. Mimi is loaded only when `--eval-every>0`.
+- Teacher-forced CE validation stays available via `--val-cache-dir` + `--val-every`.
 
-- `K = 33` codebooks total: **1 text + 32 audio**. The 32 audio = **16 target/EN (predicted,
-  `dep_q=16`) + 16 source (input-only)**. `card=2048` audio, `text_card=48000`.
-- `LMModel.forward(codes[B,33,T])` handles delays/interleave internally and returns masked
-  `logits [B,16,T,2048]` + `text_logits [B,1,T,48000]` — **ready for cross-entropy**, no
-  manual shifting.
-- **#1 implementation detail to verify first:** the exact row order of the 33 in `codes`
-  (text / EN-audio-16 / source-audio-16) and the `audio_offset`. Confirm against how
-  `inference.py` / `LMGen` assembles the live input before trusting the layout.
+## AutoResearch protocol (keep it)
 
-## 2. De-risk: prove the loop *before* the data pipeline
+`autoresearch.py {run-trial | run-staged-trial | record-existing}` drives train →
+validate (seen3 + val CE) → greedy eval (seen3 anchors + val16/val128) → append one
+row to `finetune/autoresearch/results.tsv` (gitignored). Primary metric = val chrF;
+secondary gates = nonempty rate, EOS rate, overlong / repeated-4gram loop metrics.
+One hypothesis per commit; keep only if the primary metric improves. `run-staged-trial`
+expresses replay/text-weight staging as two chained train stages (now also expressible
+in a single run via the schedule flags above).
 
-Two independent things can break — the **trainer** and the **Vietnamese data synthesis**.
-Don't debug them together. So **Phase A first, on an existing language**, with self-generated,
-guaranteed-correct targets. Cheap, and catches every trainer bug (freezing, codes layout,
-loss masking, MPS dtype) with zero external data risk. Then Phase B swaps in real Vietnamese.
+Gate discipline: `seen_first3` / `short16` for smoke mechanics only; **val128 for real
+decisions**; full 1449 last. 5/16-row deltas are noise.
 
-## 3. Phases & deliverables (all in `finetune/`)
+## Recommended next commands
 
-**Phase A — trainer smoke test (existing lang, ~1h of FR/ES)**
-- `cache_codes.py` — Mimi-encode source + EN audio for each clip → save `codes [33,T]` int16
-  shards (`.npy`/`.safetensors`) + aligned EN text tokens. *This is the Mimi-caching trick.*
-  Run once, offline.
-- `train_lora.py` — load LM, apply freeze map + `replace_all_linear_with_lora(model.transformer,
-  r=16, scaling=2.0)`, Adam on LoRA params only, CE loss from `LMOutput` masks. bf16 forward,
-  fp32 LoRA/optimizer.
-- **Gate:** *overfit a single batch to ~0 loss.* If it can't, the trainer is wrong — stop and
-  fix. Confirms layout + masking + grad flow.
+```bash
+PY=/opt/homebrew/Caskroom/miniconda/base/bin/python
+# One-time: build pair files + val128 gate, cache codes.
+$PY finetune/build_pairs.py --splits train validation test          # writes val16/val128 too
+$PY finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
+$PY finetune/cache_codes.py --pairs finetune/pairs/validation.jsonl --out-dir finetune/cache/validation
 
-**Phase B — Vietnamese data (10h)** — see §7 for sourcing
-- `build_pairs.py` — take a 10h slice of **VietBud500** (transcripts ship with it → skip Whisper)
-  → MADLAD/NLLB **Vi→EN** text → EN TTS audio (speaker-ish) → **concatenate consecutive clips
-  into 30–75s chunks with artificial silences** (VietBud500 clips avg ~2.8s; coarse alignment per
-  distill_plan §B.2). Output: `(vi_audio, en_text, en_audio)` triples.
-- Feed triples through `cache_codes.py` → cached `codes` shards. **10h ≈ 450k frames @ 12.5 Hz.**
-- Length-bucket the shards (utterances 30–75s) — the cheap 10–30% throughput trick.
+# 128-row decision run on MPS with schedules + in-training best-on-chrF selection.
+$PY finetune/train_lora.py --cache-dir finetune/cache/train --out-dir finetune/runs/vn_sched \
+  --dtype bfloat16 --batch-size 2 --grad-accum-steps 2 --max-steps 512 \
+  --train-text-head --train-audio-heads --lora-rank 32 \
+  --text-weight-schedule "5@0,2@0.6" --replay-ids 213,211,245 \
+  --replay-weight-schedule "300@0,100@0.5" --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 20 \
+  --eval-every 128 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128 --eval-batch-size 8
 
-**Phase C — train + read the result**
-- Run `train_lora.py` on the 10h cache, a few epochs.
-- **Success = mechanics validated:** (1) train loss decreases steadily; (2) **silence-in test
-  passes** (zeros → rms<0.10, peak<1.1 — the repo's standard babble/clip detector); (3) it fits
-  in 48GB; (4) a held-out Vietnamese clip produces *non-garbage* EN text after merge.
-- Merge LoRA (`replace_lora_with_linear`) → bf16 checkpoint → existing `scripts/convert_mlx_q4.py`
-  → listen via the MLX fast path. (No ASR-BLEU gate yet — that's for the "move real quality"
-  goal, not mechanics.)
+# Larger CUDA run (same command; MPS-only calls auto-disable off MPS).
+$PY finetune/train_lora.py --device cuda --dtype bfloat16 --batch-size 16 --grad-accum-steps 1 \
+  --cache-dir finetune/cache/train --max-steps 4000 --train-text-head --train-audio-heads \
+  --lora-rank 32 --eval-every 500 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128
+```
 
-## 4. Feasibility on M4 Pro 48GB (rough)
+## Limitations
 
-- Resident: full LM bf16 ≈ **5.8GB** (all frozen); LoRA params + Adam fp32 ≈ <0.2GB; Mimi **not
-  loaded**. Activations at T≈940, B=1: logits dominate (~0.4GB), layer activations ~1–2GB.
-  **Comfortable in 48GB** — gradient checkpointing is the *optional* knob if you push batch
-  size, not required.
-- Speed: caching removes the 58% codec cost. Training fwd+bwd ≈ a few ×10⁻² s/frame on MPS →
-  order **~hours/epoch for 10h**. Fine for a water test; this is why you start at 10h, not 100h
-  (subset-first / curriculum trick).
-
-## 5. Tricks coverage check
-
-✅ Mimi pre-tokenize once (`cache_codes.py`) · ✅ bf16 LoRA not full FT · ✅ LoRA only the main
-transformer · ✅ length-bucket · ✅ subset-first (10h) · ✅ gradient checkpointing (available,
-optional). All six accounted for.
-
-## 7. Vietnamese data sourcing (researched)
-
-**There is no off-the-shelf Vietnamese→English speech-translation corpus.** You build it from
-monolingual Vietnamese audio + synthesized targets — exactly the distill_plan Track A recipe.
-
-Why nothing ready-made fits:
-- **`kyutai/Audio-NTREX-4L`** is speech-to-**text** *eval only* (FR/ES/PT/DE→EN). Columns:
-  `source_audio` (ElevenLabs **TTS**, ~4–72s) + `source_text` + aligned transcript + `target_text`
-  (**English text only — no target audio**). 3,600 rows (1,800 valid + 1,800 test). No Vietnamese,
-  and not training data. Note: even this set has no EN target *audio* — hibiki being S2ST, you must
-  TTS the English target into audio for **training** regardless of source.
-- **CoVoST-2** (`facebook/covost2`): 21 langs → EN, but **Vietnamese is not included**.
-- **PhoST** (arXiv 2208.04243; 508h, 331K triplets): **English→Vietnamese** — wrong direction.
-
-What to actually use:
-
-| Role | Source | Scale / notes |
-|---|---|---|
-| **Training (bulk source)** | **VietBud500** (`linhtran92/viet_bud500`) | ~500h, 634k clips, 16kHz, **transcripts included** (skip Whisper). **CC-BY-NC-SA-4.0 = same license as the model.** Spontaneous (podcast/travel/food). Clips avg ~2.8s → **concatenate to 30–75s** chunks. |
-| Training (extra) | **Common Voice `vi`** | tens of h, real read speech, accent variety. |
-| **Held-out eval** | **Build "Audio-NTREX-VI"** | **NTREX-128 includes Vietnamese** (line-aligned to English, same newstest2019 source; CC-BY-SA-4.0). TTS the Vi reference lines → Vi source audio; the English line is `target_text`. Same construction kyutai used for 4L → directly comparable S2T eval. |
-
-For the 10h water test: a 10h VietBud500 slice → MADLAD/NLLB Vi→EN → EN TTS → `cache_codes.py`.
-No Whisper needed (transcripts ship with VietBud500).
-
-## 8. Top risks
-
-- **Hypothesis itself may fail:** if depformer-frozen LoRA-on-main *can't* learn Vietnamese
-  (distill_plan bets it can't), Phase C loss stalls → that's a *valid, cheap* answer pointing to
-  "unfreeze depformer / go upstream." Don't over-invest before Phase C reads out.
-- **Codes layout / `audio_offset`** wrong → silent garbage. Phase A's overfit-a-batch gate
-  catches it.
-- **Vi label noise** (Whisper-VI, MADLAD Vi→EN) — acceptable for mechanics; matters only for the
-  later quality goal.
-- **MPS bf16 op gaps** — fall back to fp16/fp32 on the offending op (the repo already hit this;
-  `--bf16` is opt-in for that reason).
-
----
-
-This is ~3 small scripts in `finetune/`, no edits to the inference stacks.
-
-**Next step:** Phase A — confirm the exact `codes` row layout from `inference.py`, then write
-`cache_codes.py` + `train_lora.py` and run the overfit-a-batch gate.
+Mechanics/optimization scaffold, not a finished quality recipe: FLEURS is small,
+source/target are only coarsely aligned by frame padding, and there is no LoRA merge or
+MLX conversion here. The depformer-frozen LoRA-on-main bet may still cap quality (per
+`distill_plan` Track A) — that is exactly the cheap hypothesis these schedules probe.
+Missing weights/data/deps fail loudly.
