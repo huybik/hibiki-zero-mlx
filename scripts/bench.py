@@ -60,19 +60,35 @@ def main() -> None:
                        audio_sampler=utils.Sampler(top_k=250, temp=0.8),
                        cfg_coef=1.0, check=False)
 
-    # Time depformer.sample inside the LM step with eval barriers on both sides.
+    # Time the codebook head inside the LM step with eval barriers on both sides.
+    # Parallel head (Track B) if attached, else the AR depformer.
+    head = getattr(model, "parallel_head", None)
+    dep_label = f"LM parallel head ({n_slices}x, 1 pass)" if head else f"LM depformer ({n_slices}x)"
     dep_t = [0.0]
-    _orig_dep = model.depformer.sample
-    def timed_dep(*a, **k):
-        mx.eval(a[0])           # barrier: main transformer out is ready
-        t0 = time.perf_counter()
-        r = _orig_dep(*a, **k)
-        mx.eval(r)              # barrier: all codebooks sampled
-        dep_t[0] += time.perf_counter() - t0
-        return r
-    model.depformer.sample = timed_dep
+    if head is not None:
+        _orig_dep = head.sample
+        def timed_dep(*a, **k):
+            mx.eval(a[0])
+            t0 = time.perf_counter()
+            r = _orig_dep(*a, **k)
+            mx.eval(r)
+            dep_t[0] += time.perf_counter() - t0
+            return r
+        head.sample = timed_dep
+    else:
+        _orig_dep = model.depformer.sample
+        def timed_dep(*a, **k):
+            mx.eval(a[0])           # barrier: main transformer out is ready
+            t0 = time.perf_counter()
+            r = _orig_dep(*a, **k)
+            mx.eval(r)              # barrier: all codebooks sampled
+            dep_t[0] += time.perf_counter() - t0
+            return r
+        model.depformer.sample = timed_dep
 
     model.warmup(ct)
+    if head is not None:
+        head.reset()
     mx.eval(model.parameters())
 
     enc_t = dec_t = step_t = 0.0
@@ -109,7 +125,7 @@ def main() -> None:
           f"-> {n / wall:.1f} frames/s ({n / wall / 12.5:.2f}x RT sequential) ===")
     print(f"{'stage':<26}{'ms/frame':>10}{'% of wall':>10}")
     for name, t in [("mimi encode", enc_t), ("LM main transformer", main_t),
-                    (f"LM depformer ({n_slices}x)", dep_t[0]), ("mimi decode", dec_t)]:
+                    (dep_label, dep_t[0]), ("mimi decode", dec_t)]:
         print(f"{name:<26}{1000 * t / n:>10.2f}{100 * t / wall:>9.1f}%")
     print(f"{'LM total':<26}{lm_ms:>10.2f}")
     print(f"depformer per slice: {1000 * dep_t[0] / n / max(n_slices, 1):.2f} ms")

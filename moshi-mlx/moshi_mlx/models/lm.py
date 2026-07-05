@@ -305,14 +305,23 @@ class DepFormer(nn.Module):
             # Fast path: KV threaded functionally through one compiled step per
             # slice (fixed shapes -> each compiles once). Replaces the shared
             # KVCache reset/alloc machinery, cutting per-frame kernel launches.
+            # Distill capture: when self.capture is set, stash the per-slice
+            # teacher logits (Track B teacher dump). No effect on normal inference.
+            caps = [] if getattr(self, "capture", False) else None
             kv: list = []
             for slice in self.slices:
                 if slice._step_c is None:
                     slice._step_c = mx.compile(slice._step)
                 logits, kv = slice._step_c(main_transformer_out, last_token, kv)
+                if caps is not None:
+                    caps.append(logits[:, 0])
                 last_token, _ = sampler(logits)
                 tokens.append(last_token)
-            return mx.stack(tokens, axis=1)
+            out = mx.stack(tokens, axis=1)
+            if caps is not None:
+                self.last_logits = mx.stack(caps, axis=1)  # (B, num_slices, vocab)
+                self.last_tokens = out                     # (B, num_slices, 1)
+            return out
         # The cache is shared between the depformer slices but not persisted between sample calls.
         for c in cache:
             c.reset()
@@ -545,7 +554,15 @@ class Lm(nn.Module):
         text_token, _ = text_sampler(text_logits)
         if on_text_hook is not None:
             on_text_hook(text_token)
-        if len(self.depformer.slices) > 0:
+        if getattr(self, "parallel_head", None) is not None:
+            # Track B: swap the 16 sequential depformer slices for the trained
+            # parallel head (one forward). Streaming state lives in the head.
+            audio_tokens = self.parallel_head.sample(
+                transformer_out, text_token, audio_sampler
+            )
+            if on_audio_hook is not None:
+                on_audio_hook(audio_tokens)
+        elif len(self.depformer.slices) > 0:
             audio_tokens = self.depformer.sample(
                 transformer_out,
                 audio_sampler,
