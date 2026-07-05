@@ -241,6 +241,7 @@ hibiki_zero/static/
 finetune/pairs/
 finetune/cache/
 finetune/runs/
+finetune/autoresearch/results*.tsv
 
 # macOS
 .DS_Store
