@@ -84,6 +84,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-head-lr", type=float, default=0.0, help="Static audio-head LR; 0=lr.")
     parser.add_argument("--audio-head-lr-schedule", default="", help="audio-head LoRA LR schedule.")
     parser.add_argument("--warmup-steps", type=int, default=0, help="Linear LR warmup steps; 0=off.")
+    parser.add_argument(
+        "--full-finetune",
+        action="store_true",
+        help="Full-model SFT (paper §4.6): train every LM param, no LoRA. The scaled CUDA run; "
+        "uses --lr/--lr-schedule for all params (per-group head LR flags ignored).",
+    )
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-scaling", type=float, default=2.0)
     parser.add_argument("--train-text-head", action="store_true", help="Also train LMModel.text_linear.")
@@ -141,20 +147,27 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_metadata(args: argparse.Namespace) -> dict[str, str]:
+    target = "full" if args.full_finetune else common.adapter_target(
+        args.train_text_head, args.train_audio_heads
+    )
     return {
         "lora_rank": str(args.lora_rank),
         "lora_scaling": str(args.lora_scaling),
-        "target": common.adapter_target(args.train_text_head, args.train_audio_heads),
+        "target": target,
         "train_text_head": str(args.train_text_head),
         "train_audio_heads": str(args.train_audio_heads),
         "base_model": repo_display_path(args.model_weight),
     }
 
 
+def checkpoint_prefix(args: argparse.Namespace) -> str:
+    return "model" if args.full_finetune else "adapter"
+
+
 def save_checkpoint(
     model: Any, optimizer: Any, args: argparse.Namespace, step: int, out_dir: Path
 ) -> Path:
-    adapter_path = out_dir / f"adapter_step{step:06d}.safetensors"
+    adapter_path = out_dir / f"{checkpoint_prefix(args)}_step{step:06d}.safetensors"
     common.save_adapter(model, adapter_path, build_metadata(args))
     torch.save(
         {
@@ -265,19 +278,27 @@ def main() -> None:
         lm_kwargs_overrides={"gradient_checkpointing": args.gradient_checkpointing},
     )
     lm.train()
-    common.apply_lora_targets(
-        lm, args.lora_rank, args.lora_scaling, args.train_text_head, args.train_audio_heads
-    )
+    if args.full_finetune:
+        common.apply_full_finetune(lm)
+    else:
+        common.apply_lora_targets(
+            lm, args.lora_rank, args.lora_scaling, args.train_text_head, args.train_audio_heads
+        )
     if args.init_adapter is not None:
         common.load_adapter_state(lm, args.init_adapter, dtype)
         print(f"Loaded init adapter {repo_display_path(args.init_adapter)}")
 
     params = common.trainable_parameters(lm)
     if not params:
-        raise RuntimeError("No trainable LoRA parameters after freeze map.")
+        raise RuntimeError("No trainable parameters after freeze map.")
     print(f"Trainable params: {sum(p.numel() for p in params):,} / {sum(p.numel() for p in lm.parameters()):,}")
 
-    optimizer = torch.optim.AdamW(common.build_param_groups(lm, lr_specs), lr=args.lr)
+    groups = (
+        common.full_param_groups(lm, lr_specs["transformer"])
+        if args.full_finetune
+        else common.build_param_groups(lm, lr_specs)
+    )
+    optimizer = torch.optim.AdamW(groups, lr=args.lr)
 
     # Optional greedy-eval resources (Mimi is loaded only when selection is on).
     mimi = None
@@ -381,7 +402,7 @@ def main() -> None:
         marker = ""
         if chrf > best_chrf:
             best_chrf = chrf
-            common.save_adapter(lm, out_dir / "adapter_best.safetensors", build_metadata(args))
+            common.save_adapter(lm, out_dir / f"{checkpoint_prefix(args)}_best.safetensors", build_metadata(args))
             (out_dir / "best.json").write_text(
                 json.dumps({"step": step, "chrf": chrf}, sort_keys=True) + "\n", "utf-8"
             )
@@ -513,8 +534,10 @@ def main() -> None:
         run_greedy_val(global_step)
     save_checkpoint(lm, optimizer, args, global_step, out_dir)
     if best_chrf >= 0.0:
-        print(f"Best greedy val chrF={best_chrf:.3f} -> {repo_display_path(out_dir / 'adapter_best.safetensors')}")
-    print(f"Saved final LoRA adapter/checkpoint at step {global_step} in {repo_display_path(out_dir)}")
+        best_path = out_dir / f"{checkpoint_prefix(args)}_best.safetensors"
+        print(f"Best greedy val chrF={best_chrf:.3f} -> {repo_display_path(best_path)}")
+    kind = "full-model checkpoint" if args.full_finetune else "LoRA adapter"
+    print(f"Saved final {kind} at step {global_step} in {repo_display_path(out_dir)}")
 
 
 if __name__ == "__main__":

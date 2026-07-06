@@ -302,6 +302,17 @@ def apply_lora_targets(
         raise RuntimeError(f"LoRA freeze map leaked trainable params outside targets: {bad[:5]}")
 
 
+def apply_full_finetune(model: Any) -> None:
+    """Full-model SFT (paper §4.6): unfreeze every LM parameter, no LoRA.
+
+    Faithful to how the paper adds a language (full finetune from the base
+    checkpoint). Saving/loading reuses the adapter helpers: with everything
+    trainable, `adapter_state_dict` captures the whole model.
+    """
+    for param in model.parameters():
+        param.requires_grad_(True)
+
+
 def trainable_parameters(model: Any) -> list[Any]:
     return [param for param in model.parameters() if param.requires_grad]
 
@@ -372,6 +383,25 @@ def load_main_lora(lm: Any, adapter_path: Path, device: torch.device, dtype: tor
     print(f"Loaded {len(state)} adapter tensors from {repo_display_path(adapter_path)}")
 
 
+def checkpoint_is_full(path: Path) -> bool:
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        return (handle.metadata() or {}).get("target") == "full"
+
+
+def load_finetuned(lm: Any, path: Path, device: torch.device, dtype: torch.dtype) -> None:
+    """Load a checkpoint into `lm`, dispatching on its metadata target.
+
+    Full-finetune checkpoints hold every param key, so they load straight onto
+    the base model (missing keys are just buffers); LoRA adapters get the LoRA
+    modules inserted first.
+    """
+    if checkpoint_is_full(path):
+        count = load_adapter_state(lm, path, dtype)
+        print(f"Loaded {count} full-finetune tensors from {repo_display_path(path)}")
+    else:
+        load_main_lora(lm, path, device, dtype)
+
+
 # --------------------------------------------------------------------------- #
 # Optimizer param groups + per-group LR scheduling
 # --------------------------------------------------------------------------- #
@@ -400,6 +430,12 @@ def build_param_groups(model: Any, lr_schedules: dict[str, list[tuple[float, flo
         {"name": name, "params": params, "points": lr_schedules[name]}
         for name, params in active.items()
     ]
+
+
+def full_param_groups(model: Any, lr_points: list[tuple[float, float]]) -> list[dict[str, Any]]:
+    """One optimizer group over all trainable params (full finetune = one LR schedule)."""
+    params = [param for param in model.parameters() if param.requires_grad]
+    return [{"name": "all", "params": params, "points": lr_points}]
 
 
 def apply_lr_schedule(

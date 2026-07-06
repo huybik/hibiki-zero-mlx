@@ -30,7 +30,9 @@ def parse_args() -> argparse.Namespace:
         description="Compute teacher-forced CE on cached codes for a base model or LoRA adapter."
     )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_ROOT / "validation")
-    parser.add_argument("--adapter", type=Path, help="Optional adapter .safetensors file.")
+    parser.add_argument(
+        "--adapter", type=Path, help="Optional LoRA adapter or full-finetune .safetensors checkpoint."
+    )
     parser.add_argument("--out-json", type=Path, help="Optional metrics JSON path.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
@@ -65,7 +67,7 @@ def main() -> None:
     dtype = common.dtype_from_name(args.dtype)
 
     cache_dir = require_dir(args.cache_dir, "code cache directory")
-    adapter = require_file(args.adapter, "LoRA adapter") if args.adapter else None
+    adapter = require_file(args.adapter, "checkpoint") if args.adapter else None
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
@@ -81,7 +83,7 @@ def main() -> None:
     print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
     lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
     if adapter is not None:
-        common.load_main_lora(lm, adapter, device, dtype)
+        common.load_finetuned(lm, adapter, device, dtype)
     else:
         print("Using base model without adapter.")
 
