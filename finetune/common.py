@@ -141,9 +141,18 @@ def schedule_value(points: list[tuple[float, float]], step: int, total_steps: in
 # Cached-shard dataset / loader / replay sampler
 # --------------------------------------------------------------------------- #
 class CachedCodeDataset(Dataset):
-    def __init__(self, cache_dir: Path, sort_by_length: bool, max_samples: int):
+    def __init__(
+        self,
+        cache_dir: Path | list[Path],
+        sort_by_length: bool,
+        max_samples: int,
+        max_frames: int = 0,
+    ):
         self.samples: list[dict[str, Any]] = []
-        for shard_path in sorted(cache_dir.glob("shard_*.pt")):
+        dropped = 0
+        cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
+        shard_paths = [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]
+        for shard_path in shard_paths:
             payload = torch.load(shard_path, map_location="cpu")
             if payload.get("format") != CACHE_FORMAT:
                 raise RuntimeError(f"Unsupported cache format in {shard_path}")
@@ -151,6 +160,9 @@ class CachedCodeDataset(Dataset):
                 codes = sample["codes"]
                 if codes.ndim != 2:
                     raise RuntimeError(f"{shard_path} id={sample.get('id')} codes must be [K,T]")
+                if max_frames and codes.shape[1] > max_frames:
+                    dropped += 1
+                    continue
                 self.samples.append(
                     {
                         "id": str(sample["id"]),
@@ -160,6 +172,8 @@ class CachedCodeDataset(Dataset):
                 )
         if not self.samples:
             raise RuntimeError(f"No shard_*.pt cache files found in {cache_dir}")
+        if max_frames and dropped:
+            print(f"[dataset] dropped {dropped} samples over {max_frames} frames; kept {len(self.samples)}")
         if sort_by_length:
             self.samples.sort(key=lambda sample: sample["frames"])
         if max_samples:

@@ -41,7 +41,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Minimal Hibiki-Zero main-transformer LoRA trainer for cached vi->en codes."
     )
-    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_ROOT / "train")
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        nargs="+",
+        default=[DEFAULT_CACHE_ROOT / "train"],
+        help="One or more cache dirs; shards from all are pooled (e.g. FLEURS + PhoMT).",
+    )
     parser.add_argument("--val-cache-dir", type=Path, help="Cached val split for teacher-forced CE.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -59,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-samples", type=int, default=0, help="First N cached samples; 0=all.")
+    parser.add_argument("--max-frames", type=int, default=0, help="Drop cached samples longer than N Mimi frames; 0=off.")
     parser.add_argument("--replay-ids", default="", help="Comma-separated ids to upweight.")
     parser.add_argument(
         "--replay-weight", type=float, default=1.0, help="Static replay weight; 1 disables replay."
@@ -206,7 +213,7 @@ def main() -> None:
     device = common.check_device(args.device)
     dtype = common.dtype_from_name(args.dtype)
 
-    cache_dir = require_dir(args.cache_dir, "code cache directory")
+    cache_dir = [require_dir(d, "code cache directory") for d in args.cache_dir]
     val_cache_dir = (
         require_dir(args.val_cache_dir, "validation code cache directory")
         if args.val_cache_dir is not None
@@ -223,8 +230,11 @@ def main() -> None:
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples)
-    print(f"Loaded {len(dataset)} cached samples from {repo_display_path(cache_dir)}")
+    dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples, args.max_frames)
+    print(
+        f"Loaded {len(dataset)} cached samples from "
+        f"{', '.join(repo_display_path(d) for d in cache_dir)}"
+    )
     replay_ids = common.parse_ids(args.replay_ids)
 
     # Schedules (static flag becomes a single-point schedule).
@@ -312,7 +322,14 @@ def main() -> None:
         else:
             print("Resume with shuffled/replay data starts a fresh sampler order.")
 
-    run_config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
+    def _jsonable(v: Any) -> Any:
+        if isinstance(v, Path):
+            return str(v)
+        if isinstance(v, list):
+            return [_jsonable(x) for x in v]
+        return v
+
+    run_config = {k: _jsonable(v) for k, v in vars(args).items()}
     run_config["total_steps"] = total_steps
     (out_dir / "run_config.json").write_text(json.dumps(run_config, indent=2, sort_keys=True), "utf-8")
     log_path = out_dir / "train_log.jsonl"
