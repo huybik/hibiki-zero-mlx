@@ -188,9 +188,18 @@ class CachedCodeDataset(Dataset):
         return self.samples[index]
 
 
+# Pad each batch's frame length up to a multiple of this. MPS compiles+caches a
+# Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
+# lengths, which balloons the GPU working set (26 GB wired, swap-thrash). Bucketing
+# collapses that to ~9 shapes. Loss-neutral: extra frames are -1 == zero_token_id,
+# masked out of both CE terms (see LMModel.forward logits_mask).
+FRAME_BUCKET = 32
+
+
 def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
     codebooks = int(samples[0]["codes"].shape[0])
     max_frames = max(int(sample["codes"].shape[1]) for sample in samples)
+    max_frames = ((max_frames + FRAME_BUCKET - 1) // FRAME_BUCKET) * FRAME_BUCKET
     batch = torch.full((len(samples), codebooks, max_frames), -1, dtype=torch.long)
     ids: list[str] = []
     for index, sample in enumerate(samples):
