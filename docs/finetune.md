@@ -29,7 +29,12 @@ refactor plan is **done** (consolidation + schedules + selection + val128).
   `train_lora.py` / `eval_lora.py` / `validate_lora.py` are thin wrappers over it.
 - `build_pairs.py` FLEURS manifests → `pairs/{split}.jsonl` (+ deterministic
   `val16.jsonl` / `val128.jsonl` held-out gate subsets, first-N of validation).
-- `cache_codes.py` → `cache/{train,validation,...}/shard_*.pt`.
+- `fetch_phomt.py` HF `anquachdev/PhoMT-en-vi-speech` (real EN+VI speech) →
+  `remote_dataset/phomt_en_vi/{en,vi}/*.wav` + `pairs/phomt_train.jsonl` (989 pairs,
+  drops vi>25 s). Reads `HF_TOKEN` from `.env`; same 8-field pair schema as `build_pairs`.
+- `cache_codes.py` → `cache/{train,validation,phomt_train,...}/shard_*.pt`.
+  `train_lora.py --cache-dir` accepts **multiple dirs** — shards from all are pooled, so
+  FLEURS + PhoMT train together without re-encoding FLEURS.
 - `autoresearch.py` — fixed trial runner (subprocess), TSV protocol, primary = val chrF.
 
 ## Schedules (all CLI, piecewise-constant `value@fraction`)
@@ -71,10 +76,23 @@ decisions**; full 1449 last. 5/16-row deltas are noise.
 
 ```bash
 PY=/opt/homebrew/Caskroom/miniconda/base/bin/python
+export HF_HOME="$(pwd)/.hf_cache"                                    # HF_HOME may point at a dead mount
 # One-time: build pair files + val128 gate, cache codes.
 $PY finetune/build_pairs.py --splits train validation test          # writes val16/val128 too
 $PY finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
 $PY finetune/cache_codes.py --pairs finetune/pairs/validation.jsonl --out-dir finetune/cache/validation
+# Add PhoMT real-speech data (fetch + cache into its own dir).
+$PY finetune/fetch_phomt.py
+$PY finetune/cache_codes.py --pairs finetune/pairs/phomt_train.jsonl --out-dir finetune/cache/phomt_train
+
+# Combined FLEURS+PhoMT vi->en run (pool both caches; --eval-every 0 avoids the slow
+# in-training val128 greedy, then eval audio at the end with eval_lora --stop-on-eos).
+$PY finetune/train_lora.py --cache-dir finetune/cache/train finetune/cache/phomt_train \
+  --out-dir finetune/runs/vn_phomt_combined --dtype bfloat16 --batch-size 2 --grad-accum-steps 2 \
+  --max-steps 1000 --train-text-head --train-audio-heads --lora-rank 32 \
+  --text-weight-schedule "5@0,2@0.6" --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 20 --eval-every 0
+$PY finetune/eval_lora.py --adapter finetune/runs/vn_phomt_combined/adapter_step001000.safetensors \
+  --pairs finetune/pairs/val16.jsonl --limit 16 --out-dir finetune/runs/vn_phomt_combined/eval_audio
 
 # 128-row decision run on MPS with schedules + in-training best-on-chrF selection.
 $PY finetune/train_lora.py --cache-dir finetune/cache/train --out-dir finetune/runs/vn_sched \
