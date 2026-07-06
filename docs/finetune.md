@@ -8,16 +8,24 @@ refactor plan is **done** (consolidation + schedules + selection + val128).
 
 ## Design (locked)
 
-- **Freeze map:** everything `requires_grad=False`, then LoRA on `LMModel.transformer`;
-  optional full `text_linear` (`--train-text-head`) and audio-head LoRA on
-  `depformer_in`+`linears` (`--train-audio-heads`). New LoRA `B` is **zero-init**
+- **Freeze map (LoRA, default):** everything `requires_grad=False`, then LoRA on
+  `LMModel.transformer`; optional full `text_linear` (`--train-text-head`) and audio-head
+  LoRA on `depformer_in`+`linears` (`--train-audio-heads`). New LoRA `B` is **zero-init**
   (random-init spikes loss). Audio loss still backprops through the frozen depformer.
+- **Full finetune (`--full-finetune`):** paper-faithful SFT — unfreezes **every** LM param,
+  no LoRA, one optimizer group on `--lr`/`--lr-schedule`, saves `model_step*.safetensors`
+  (metadata `target=full`). This is the **scaled CUDA run** (won't fit the 36 GB MPS cap).
+  LoRA stays the cheap MPS plumbing/capacity probe. `eval_lora.py`/`validate_lora.py`
+  auto-detect the checkpoint kind (`common.load_finetuned`) and load full weights straight
+  onto the base model. Rationale + when-to-use: `docs/vi_training_plan.md`.
 - **Cache codes once:** `cache_codes.py` writes `codes[1+n_q, T]` shards — row 0 EN
   text tokens (prefix-pad supervised, tail-pad masked), rows `1..dep_q` EN target Mimi
   codes, rows `dep_q+1..` VI source codes + source-EOS. Mimi is not in the training loop.
 - **MPS memory:** `--dtype bfloat16 --batch-size 2 --grad-accum-steps 2` (batch 4 spikes
   the 48 GB driver). Eval/validate can use `--batch-size 8`. `float16` goes non-finite
-  after the first step — bf16 is the default.
+  after the first step — bf16 is the default. **`--max-frames N` drops cached samples over
+  N Mimi frames at load** — with `sort_by_length=true` the longest clips land in the final
+  batches and can OOM/BSOD the driver; use **280** (22 s) for the FLEURS+PhoMT pool.
 - **Device portability:** all `torch.mps.*` calls (empty_cache/synchronize, memory
   stats) are gated behind `common.is_mps(device)`, so `--device cuda` runs clean.
 
@@ -102,10 +110,11 @@ $PY finetune/train_lora.py --cache-dir finetune/cache/train --out-dir finetune/r
   --replay-weight-schedule "300@0,100@0.5" --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 20 \
   --eval-every 128 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128 --eval-batch-size 8
 
-# Larger CUDA run (same command; MPS-only calls auto-disable off MPS).
+# Scaled CUDA run — paper-faithful FULL-MODEL SFT (no LoRA, batch 16). The real run.
 $PY finetune/train_lora.py --device cuda --dtype bfloat16 --batch-size 16 --grad-accum-steps 1 \
-  --cache-dir finetune/cache/train --max-steps 4000 --train-text-head --train-audio-heads \
-  --lora-rank 32 --eval-every 500 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128
+  --full-finetune --cache-dir finetune/cache/train finetune/cache/phomt_train \
+  --max-steps 4000 --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 100 --gradient-checkpointing \
+  --eval-every 500 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128
 ```
 
 ## Limitations
