@@ -184,7 +184,9 @@ def save_checkpoint(
 def load_resume_checkpoint(
     model: Any, optimizer: Any, resume_path: Path, device: torch.device, dtype: torch.dtype
 ) -> int:
-    checkpoint = torch.load(resume_path, map_location="cpu")
+    # weights_only=False: our own trusted checkpoint; its `args` dict holds Path
+    # objects that PyTorch 2.6's default weights_only=True refuses to unpickle.
+    checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
     adapter_path = require_file(checkpoint["adapter"], "resume adapter")
     common.load_adapter_state(model, adapter_path, dtype)
     optimizer.load_state_dict(checkpoint["optimizer"])
