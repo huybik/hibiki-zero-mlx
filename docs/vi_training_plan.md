@@ -53,3 +53,22 @@ So for the real scaled run: **full-model SFT, matching the paper.** The cost obj
 ## Immediate plumbing check (while data builds)
 
 Re-run the current 7.8 h with **LoRA r32 on MPS**, `--max-frames 280`, **8–10 epochs, eff-batch 8, resampled delay** — a cheap local capacity/soundness probe, not the real run. If it **memorizes** the seen set (loss → near-zero, seen rows translate) the pipeline is sound and it's purely data-starvation. If it **still loops on seen data**, there's a bug to fix before spending on data. (The real run goes full-model on CUDA — §Full-model, not LoRA — so a green LoRA probe is necessary-but-not-sufficient; it de-risks the data pipeline, not the full-finetune weights path.)
+
+### Outcome (2026-07-06, `runs/vn_plumbing_lora`, stopped at step 1750 / epoch 6)
+
+**Verdict: pipeline is sound — the blocker is data starvation + LoRA capacity, not a bug.** Do not debug the stack; proceed to scale-data + full-finetune.
+
+The green-looking training loss was a trap. `train_log` text_loss fell to **~0.21**, but that number is **pad-dominated**: on the seen rows **57 % of supervised text tokens are prefix-delay pads** (CE ~0.007, trivial). Splitting the CE (`content_ce.py` diagnostic):
+
+| | content CE | pad CE | blended (logged) | TF top-1 content acc |
+|---|---|---|---|---|
+| seen rows @1750 | **1.08 (ppl ~3)** | 0.007 | 0.47 | 81 % |
+
+So the content is **not** memorized. And teacher-forced reconstruction (fed ground-truth previous tokens, on the cached training codes) shows **errors concentrated at the sequence start** — the tokens that must be grounded in the VI source:
+- `no one was inside the apartment` → `no one was inside the apartment` ✓
+- `when the official arrived …` → `**the capsule** arrived …` (start wrong, tail right)
+- `some may not agree …` → `**countries** not agree …` (start wrong, tail right)
+
+The model learned **target-side language modeling** (continue given a correct English prefix) but **not source→target grounding** (produce the correct *first* tokens from the source). In free-running greedy decode the first token is wrong → context derails → fluent hallucination (chrF ~11–18, no trend toward refs across steps 500/750/1500). Because these first-token errors appear in **pure teacher-forced mode on the training codes** (no streaming/eval path), it is **not** a train↔eval mismatch — the forward/masking/loss are correct.
+
+This is exactly the data-hungry part (grounding a *new source language* needs volume + the embeddings/full transformer), which **empirically justifies the full-finetune switch**: LoRA on a frozen backbone could reach target-LM but not source routing.
