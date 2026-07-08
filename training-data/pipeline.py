@@ -18,13 +18,15 @@ from typing import Iterable
 # =========================
 
 # Pick one or both: ("vi",), ("en",), or ("vi", "en").
-LANGUAGES = ("vi","en")
+LANGUAGES = ("vi", "en")
 
 # Run selected languages in separate Python processes.
+# VI_WORKERS > 1 shards Vietnamese across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
+VI_WORKERS = 3                                                                                                                                    
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
-START_INDEX = 0
+START_INDEX = 10240
 END_INDEX: int | None = None
 
 # N_SAMPLES = 262000 # Total need to 1000 hours.
@@ -33,11 +35,17 @@ N_SAMPLES = 10240 # Total need to 1000 hours.
 # Batch generation by voice when the TTS backend supports batched inference.
 BATCH_SIZE = 16
 
+# VieNeu's public infer_batch is sequential; its v3_turbo_serve engine is real
+# CUDA batching. Keep this on for VI throughput, and fall back safely otherwise.
+VI_USE_BATCH_ENGINE = True
+VI_BATCH_USE_CUDAGRAPH = False
+
 RANDOMIZE_VOICE = True
 MATCH_VOICE_GENDER = True
 MATCH_GENDERS = ("female", "male")
 SEED: int | None = 0
 SKIP_EXISTING = True
+SCAN_AUDIO_TOTALS = False
 
 # Override with a fixed voice by setting one of these to a voice name.
 VI_VOICE: str | None = None
@@ -85,6 +93,8 @@ HF_CACHE_DIR = DATASETS_DIR / ".hf_cache"
 os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
 PIPELINE_LANGUAGE_ENV = "PHOMT_PIPELINE_LANGUAGE"
 PIPELINE_FIXED_GENDER_ENV = "PHOMT_PIPELINE_FIXED_GENDER"
+PIPELINE_WORKER_INDEX_ENV = "PHOMT_PIPELINE_WORKER_INDEX"
+PIPELINE_WORKER_COUNT_ENV = "PHOMT_PIPELINE_WORKER_COUNT"
 
 if str(TRAINING_DATA_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DATA_DIR))
@@ -199,6 +209,8 @@ MANIFEST_FIELDNAMES = [
 
 
 class KokoroTTS:
+    supports_real_batch = True
+
     def __init__(self, config: TTSConfig):
         config.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -261,6 +273,99 @@ class KokoroTTS:
         sf.write(output_path, audio, self.sample_rate)
 
 
+class BatchedVieneuTTS:
+    supports_real_batch = True
+
+    def __init__(self, tts, *, use_cudagraph: bool = VI_BATCH_USE_CUDAGRAPH):
+        if getattr(tts, "backend", None) != "pytorch":
+            raise ValueError("VieNeu batch engine requires the PyTorch backend.")
+
+        from vieneu.v3_turbo_serve.engine import V3TurboBatchEngine
+
+        self.tts = tts
+        self.batch_engine = V3TurboBatchEngine(tts.engine)
+        self.use_cudagraph = use_cudagraph
+        self.sample_rate = tts.sample_rate
+
+    def infer(self, text: str, **kwargs):
+        return self.infer_batch([text], **kwargs)[0]
+
+    def infer_batch(
+        self,
+        texts: list[str],
+        ref_audio=None,
+        ref_codes=None,
+        ref_text=None,  # noqa: ARG002 - v3 turbo ignores reference text.
+        voice=None,
+        emotion: str = "natural",
+        temperature: float = 0.8,
+        top_k: int = 25,
+        top_p: float = 0.95,
+        max_new_frames: int = 300,
+        repetition_penalty: float = 1.2,
+        max_chars: int = 384,
+        silence_p: float = 0.15,
+        crossfade_p: float = 0.0,
+        apply_watermark: bool = True,
+        **kwargs,
+    ) -> list:
+        import numpy as np
+        from vieneu_utils.core_utils import join_audio_chunks
+        from vieneu_utils.phonemize_text import (
+            normalize_to_chunks_v3,
+            phonemize_text_with_emotions,
+        )
+
+        ref_codes, voice_token_id = self.tts._resolve_v3_ref(
+            voice, ref_audio, ref_codes
+        )
+        grouped_wavs: list[list] = [[] for _ in texts]
+        requests = []
+        request_text_indexes = []
+
+        for text_index, text in enumerate(texts):
+            for chunk in normalize_to_chunks_v3(text, max_chars=max_chars):
+                requests.append(
+                    {
+                        "text": "",
+                        "phonemes": phonemize_text_with_emotions(chunk),
+                        "ref_codes": ref_codes,
+                        "emotion": emotion,
+                        "voice_token_id": voice_token_id,
+                    }
+                )
+                request_text_indexes.append(text_index)
+
+        if requests:
+            chunk_wavs = self.batch_engine.generate_batch(
+                requests,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                max_new_frames=max_new_frames,
+                use_cudagraph=self.use_cudagraph,
+            )
+            for text_index, wav in zip(request_text_indexes, chunk_wavs):
+                grouped_wavs[text_index].append(wav)
+
+        outputs = []
+        for wavs in grouped_wavs:
+            wav = (
+                join_audio_chunks(wavs, self.sample_rate, silence_p, crossfade_p)
+                if wavs
+                else np.zeros(0, dtype=np.float32)
+            )
+            outputs.append(self.tts._apply_watermark(wav) if apply_watermark else wav)
+        return outputs
+
+    def save(self, audio, output_path: str) -> None:
+        self.tts.save(audio, output_path)
+
+    def close(self) -> None:
+        self.tts.close()
+
+
 def load_tts(config: TTSConfig):
     validate_tts_runtime(config)
 
@@ -280,13 +385,20 @@ def load_tts(config: TTSConfig):
             "Run this script with `uv run python training-data/pipeline.py` or run `uv sync` first."
         ) from error
 
-    return Vieneu(
+    tts = Vieneu(
         mode=config.mode,
         backbone_repo=config.model_repo,
         device=config.device,
         backend=config.backend,
         dtype=config.dtype,
     )
+    if (
+        VI_USE_BATCH_ENGINE
+        and config.provider == "vieneu"
+        and getattr(tts, "backend", None) == "pytorch"
+    ):
+        return BatchedVieneuTTS(tts)
+    return tts
 
 
 def validate_tts_runtime(config: TTSConfig) -> None:
@@ -425,11 +537,26 @@ def infer_one_or_batch(tts, texts: list[str], voice: str, **infer_kwargs) -> lis
     if len(texts) == 1:
         return [tts.infer(texts[0], **kwargs)]
 
-    infer_batch = getattr(tts, "infer_batch", None)
-    if infer_batch is not None:
-        return infer_batch(texts, **kwargs)
+    if supports_real_batch(tts):
+        return tts.infer_batch(texts, **kwargs)
 
     return [tts.infer(text, **kwargs) for text in texts]
+
+
+def supports_real_batch(tts) -> bool:
+    return bool(getattr(tts, "supports_real_batch", False))
+
+
+def get_language_worker_count(language: str) -> int:
+    if language == "vi":
+        return max(1, VI_WORKERS)
+    return 1
+
+
+def get_worker_label(language: str, worker_index: int, worker_count: int) -> str:
+    if worker_count == 1:
+        return language
+    return f"{language}[{worker_index + 1}/{worker_count}]"
 
 
 def synthesize_language(
@@ -444,12 +571,19 @@ def synthesize_language(
     fixed_voice: str | None = None,
     fixed_matched_gender: str | None = None,
     skip_existing: bool = SKIP_EXISTING,
+    worker_index: int = 0,
+    worker_count: int = 1,
     **infer_kwargs,
 ) -> list[Path]:
     if language not in LANGUAGE_CONFIGS:
         raise ValueError(f"Unsupported language: {language}")
+    if worker_count < 1:
+        raise ValueError("worker_count must be at least 1")
+    if worker_index < 0 or worker_index >= worker_count:
+        raise ValueError("worker_index must be in [0, worker_count)")
 
     config = LANGUAGE_CONFIGS[language]
+    worker_label = get_worker_label(language, worker_index, worker_count)
     if rows is None:
         rows = load_train_samples(
             n=n_samples, start_index=start_index, end_index=end_index, verbose=False
@@ -458,6 +592,9 @@ def synthesize_language(
     jobs = []
     for offset, row in enumerate(rows):
         dataset_index = start_index + offset
+        if dataset_index % worker_count != worker_index:
+            continue
+
         text = row[language].strip()
         if not text:
             continue
@@ -475,11 +612,15 @@ def synthesize_language(
         return []
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = config.output_dir / "manifest.csv"
-    existing_manifest = read_manifest(manifest_path)
+    manifest_path = get_manifest_path(config, worker_index, worker_count)
+    final_manifest_path = get_manifest_path(config)
+    final_manifest = read_manifest(final_manifest_path)
+    worker_manifest = {} if manifest_path == final_manifest_path else read_manifest(manifest_path)
+    existing_manifest = final_manifest.copy()
+    existing_manifest.update(worker_manifest)
 
     paths: list[Path] = []
-    manifest_rows = existing_manifest.copy()
+    manifest_rows = existing_manifest.copy() if manifest_path == final_manifest_path else worker_manifest.copy()
     generated_count = 0
     skipped_count = 0
 
@@ -541,7 +682,7 @@ def synthesize_language(
                 batch_indexes = [job[0] for job in voice_batch]
                 speed_text = "" if speed is None else f", speed={speed:g}"
                 print(
-                    f"{language}: batch {batch_number}/{total_batches} "
+                    f"{worker_label}: batch {batch_number}/{total_batches} "
                     f"indexes {min(batch_indexes)}-{max(batch_indexes)} "
                     f"({len(voice_batch)} files), voice={voice}{speed_text}",
                     flush=True,
@@ -550,8 +691,7 @@ def synthesize_language(
                 if tts is None:
                     tts = load_tts(config)
 
-                infer_batch = getattr(tts, "infer_batch", None)
-                if len(voice_batch) > 1 and infer_batch is None:
+                if len(voice_batch) > 1 and not supports_real_batch(tts):
                     for index, text, voice, speed, output_path, spec in voice_batch:
                         audio = infer_one_or_batch(
                             tts, [text], voice=voice, **voice_infer_kwargs
@@ -570,6 +710,7 @@ def synthesize_language(
                             speed,
                             "generated",
                         )
+                    write_manifest(manifest_path, list(manifest_rows.values()))
                     continue
 
                 texts = [job[1] for job in voice_batch]
@@ -599,16 +740,36 @@ def synthesize_language(
                         speed,
                         "generated",
                     )
+                write_manifest(manifest_path, list(manifest_rows.values()))
     finally:
         if tts is not None:
             close_tts(tts)
 
     write_manifest(manifest_path, list(manifest_rows.values()))
     print(
-        f"{language}: {len(paths)}/{len(jobs)} complete "
+        f"{worker_label}: {len(paths)}/{len(jobs)} complete "
         f"({generated_count} generated, {skipped_count} skipped)"
     )
     return paths
+
+
+def get_manifest_path(
+    config: TTSConfig, worker_index: int = 0, worker_count: int = 1
+) -> Path:
+    if worker_count == 1:
+        return config.output_dir / "manifest.csv"
+    return config.output_dir / f"manifest.worker{worker_index:02d}-of-{worker_count:02d}.csv"
+
+
+def merge_worker_manifests(language: str, worker_count: int) -> None:
+    if worker_count == 1:
+        return
+
+    config = LANGUAGE_CONFIGS[language]
+    merged = read_manifest(get_manifest_path(config))
+    for worker_index in range(worker_count):
+        merged.update(read_manifest(get_manifest_path(config, worker_index, worker_count)))
+    write_manifest(get_manifest_path(config), list(merged.values()))
 
 
 def read_manifest(path: Path) -> dict[int, dict]:
@@ -714,17 +875,31 @@ def current_generated_audio_totals(
 
 def run_pipeline() -> None:
     fixed_matched_gender = get_fixed_matched_gender(LANGUAGES)
+    total_workers = sum(get_language_worker_count(language) for language in LANGUAGES)
 
-    if PARALLEL_LANGUAGES and len(LANGUAGES) > 1:
-        processes = {
-            language: start_language_process(language, fixed_matched_gender)
-            for language in LANGUAGES
-        }
-        failed_languages = [
-            language for language, process in processes.items() if process.wait() != 0
+    if PARALLEL_LANGUAGES and total_workers > 1:
+        processes = []
+        for language in LANGUAGES:
+            worker_count = get_language_worker_count(language)
+            for worker_index in range(worker_count):
+                label = get_worker_label(language, worker_index, worker_count)
+                process = start_language_process(
+                    language,
+                    fixed_matched_gender,
+                    worker_index=worker_index,
+                    worker_count=worker_count,
+                )
+                processes.append((label, language, worker_count, process))
+
+        failed_workers = [
+            label for label, _language, _worker_count, process in processes
+            if process.wait() != 0
         ]
-        if failed_languages:
-            raise RuntimeError(f"Synthesis failed for: {', '.join(failed_languages)}")
+        if failed_workers:
+            raise RuntimeError(f"Synthesis failed for: {', '.join(failed_workers)}")
+
+        for language in LANGUAGES:
+            merge_worker_manifests(language, get_language_worker_count(language))
     else:
         rows = list(
             load_train_samples(
@@ -740,14 +915,21 @@ def run_pipeline() -> None:
                 fixed_matched_gender=fixed_matched_gender,
             )
 
-    current_generated_audio_totals(LANGUAGES)
+    if SCAN_AUDIO_TOTALS:
+        current_generated_audio_totals(LANGUAGES)
 
 
 def start_language_process(
-    language: str, fixed_matched_gender: str | None
+    language: str,
+    fixed_matched_gender: str | None,
+    *,
+    worker_index: int = 0,
+    worker_count: int = 1,
 ) -> subprocess.Popen:
     env = os.environ.copy()
     env[PIPELINE_LANGUAGE_ENV] = language
+    env[PIPELINE_WORKER_INDEX_ENV] = str(worker_index)
+    env[PIPELINE_WORKER_COUNT_ENV] = str(worker_count)
     if fixed_matched_gender:
         env[PIPELINE_FIXED_GENDER_ENV] = fixed_matched_gender
     else:
@@ -762,14 +944,19 @@ def start_language_process(
 
 def run_pipeline_worker() -> None:
     language = os.environ[PIPELINE_LANGUAGE_ENV]
+    worker_index = int(os.environ.get(PIPELINE_WORKER_INDEX_ENV, "0"))
+    worker_count = int(os.environ.get(PIPELINE_WORKER_COUNT_ENV, "1"))
     fixed_voice = get_fixed_voice(language)
     fixed_matched_gender = os.environ.get(PIPELINE_FIXED_GENDER_ENV) or None
     synthesize_language(
         language,
         fixed_voice=fixed_voice,
         fixed_matched_gender=fixed_matched_gender,
+        worker_index=worker_index,
+        worker_count=worker_count,
     )
-    current_generated_audio_totals((language,))
+    if worker_count == 1 and SCAN_AUDIO_TOTALS:
+        current_generated_audio_totals((language,))
 
 
 def run_language(language: str) -> list[Path]:
