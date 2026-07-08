@@ -120,6 +120,83 @@ and pushes to:
 anquachdev/PhoMT-en-vi-speech
 ```
 
+## Storage-Saving Resume Workflow
+
+Use this loop when local disk space is limited and the previous batches are
+already uploaded to Hugging Face.
+
+1. Pick the next batch range in `training-data/pipeline.py`:
+
+```python
+START_INDEX = 20000
+N_SAMPLES = 1000
+```
+
+Use a `START_INDEX` that is after the rows already generated or uploaded. Keep
+`N_SAMPLES` small enough that the generated WAV files fit on local disk.
+
+2. Generate only that batch:
+
+```powershell
+uv run python training-data/pipeline.py
+```
+
+This creates the current batch under:
+
+```text
+D:\Code\datasets\vieNeu\outputs\vi\
+D:\Code\datasets\english\outputs\en\
+```
+
+Each folder must contain its current batch WAV files and `manifest.csv`.
+
+3. Upload the current batch immediately:
+
+```powershell
+uv run python training-data/upload.py
+```
+
+With `RESUME_UPLOAD = True`, `upload.py` checks the existing Hugging Face
+dataset, skips already-uploaded `(en, vi)` text pairs, and appends only new
+rows. Existing remote Parquet files are left untouched.
+
+4. Confirm the command printed a successful append or push message.
+
+Examples:
+
+```text
+Appended 1000 rows in 1 shard(s) to https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
+Pushed to https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
+```
+
+5. After upload success, delete local generated data for the finished batch:
+
+```text
+D:\Code\datasets\vieNeu\outputs\vi\
+D:\Code\datasets\english\outputs\en\
+D:\Code\datasets\phomt-en-vi-speech\
+D:\Code\datasets\.hf_cache\
+```
+
+Do not delete the current batch's WAV files or manifests before upload finishes.
+The uploader needs the local files while it builds the Parquet shard.
+
+6. Repeat with the next `START_INDEX`.
+
+The safe loop is:
+
+```text
+generate one batch -> upload that batch -> delete local batch -> generate next batch
+```
+
+The Hugging Face dataset is the permanent copy. `D:\Code\datasets` can be
+treated as temporary working storage for the next batch once the upload has
+succeeded.
+
+Important: resume detection uses the uploaded `(en, vi)` text pair. If the same
+text pair is regenerated with new audio, `upload.py` skips it instead of
+replacing the existing Hugging Face row.
+
 ## Load Uploaded Dataset
 
 For training or coworker preview:
