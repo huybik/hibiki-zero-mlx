@@ -52,6 +52,23 @@ def read_manifest(path: Path) -> dict[int, dict]:
         return {int(row["index"]): row for row in csv.DictReader(file)}
 
 
+def get_next_start_index() -> int:
+    shared_indexes = set(read_manifest(VI_MANIFEST)) & set(read_manifest(EN_MANIFEST))
+
+    if not shared_indexes:
+        raise ValueError(
+            "No shared indexes found in the Vietnamese and English manifests."
+        )
+
+    return max(shared_indexes) + 1
+
+
+def print_next_start_index_hint() -> None:
+    print("Next batch config hint:")
+    print(f"  Set START_INDEX = {get_next_start_index()} in training-data/pipeline.py")
+    print("  Keep N_SAMPLES as the batch size you want to generate next.")
+
+
 def get_audio_duration_seconds(path: Path) -> float:
     try:
         import soundfile as sf
@@ -62,17 +79,15 @@ def get_audio_duration_seconds(path: Path) -> float:
     return info.frames / info.samplerate
 
 
-UploadKey = tuple[str, ...]
-
-
-def get_upload_key(row: dict) -> UploadKey:
+def get_upload_key(row: dict) -> tuple[str, ...]:
     return tuple(row[column] for column in UPLOAD_KEY_COLUMNS)
 
 
-def build_rows(skip_keys: set[UploadKey] | None = None) -> list[dict]:
+def build_rows(skip_keys: set[tuple[str, ...]] | None = None) -> list[dict]:
     vi_rows = read_manifest(VI_MANIFEST)
     en_rows = read_manifest(EN_MANIFEST)
     shared_indexes = sorted(set(vi_rows) & set(en_rows))
+    skip_keys = skip_keys or set()
 
     rows = []
     skipped_existing = 0
@@ -81,8 +96,7 @@ def build_rows(skip_keys: set[UploadKey] | None = None) -> list[dict]:
     for index in shared_indexes:
         vi_row = vi_rows[index]
         en_row = en_rows[index]
-        upload_key = (en_row["text"], vi_row["text"])
-        if skip_keys and upload_key in skip_keys:
+        if (en_row["text"], vi_row["text"]) in skip_keys:
             skipped_existing += 1
             continue
 
@@ -124,7 +138,8 @@ def build_rows(skip_keys: set[UploadKey] | None = None) -> list[dict]:
 
     if not rows and not skipped_existing:
         raise ValueError(
-            "No paired rows found. Generate both English and Vietnamese audio for the same indexes first."
+            "No paired rows found. Generate both English and Vietnamese "
+            "audio for the same indexes first."
         )
 
     return rows
@@ -132,10 +147,9 @@ def build_rows(skip_keys: set[UploadKey] | None = None) -> list[dict]:
 
 def build_dataset(rows: list[dict]) -> Dataset:
     dataset = Dataset.from_list(rows)
-    dataset = dataset.cast_column("audio_en", Audio(decode=False))
-    dataset = dataset.cast_column("audio_vi", Audio(decode=False))
-    dataset = dataset.cast_column("audio_en", Audio())
-    dataset = dataset.cast_column("audio_vi", Audio())
+    for decode in (False, True):
+        for column in ("audio_en", "audio_vi"):
+            dataset = dataset.cast_column(column, Audio(decode=decode))
     return dataset
 
 
@@ -153,7 +167,7 @@ def list_existing_split_files(api: HfApi) -> list[str]:
     )
 
 
-def load_existing_upload_state() -> tuple[set[UploadKey], int]:
+def load_existing_upload_state() -> tuple[set[tuple[str, ...]], int]:
     existing_dataset = load_dataset(
         DATASET_REPO,
         split=SPLIT,
@@ -163,35 +177,24 @@ def load_existing_upload_state() -> tuple[set[UploadKey], int]:
     return {get_upload_key(row) for row in existing_dataset}, len(existing_dataset)
 
 
-def make_append_run_id() -> str:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{timestamp}-{uuid.uuid4().hex[:8]}"
-
-
-def get_num_append_shards(dataset: Dataset) -> int:
-    max_shard_size = convert_file_size_to_int(APPEND_MAX_SHARD_SIZE)
-    dataset_nbytes = dataset._estimate_nbytes()
-    return max(1, int(dataset_nbytes / max_shard_size) + 1)
-
-
 def embed_external_files(dataset: Dataset) -> Dataset:
     dataset_format = dataset.format
-    dataset = dataset.with_format("arrow")
-    dataset = dataset.map(
+    embedded = dataset.with_format("arrow").map(
         embed_table_storage,
         batched=True,
         batch_size=1000,
         keep_in_memory=True,
     )
-    return dataset.with_format(**dataset_format)
+    return embedded.with_format(**dataset_format)
 
 
 def build_append_operations(
     dataset: Dataset, temp_dir: Path
 ) -> tuple[list[CommitOperationAdd], int, int]:
-    run_id = make_append_run_id()
-    num_shards = get_num_append_shards(dataset)
+    run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
     dataset_nbytes = dataset._estimate_nbytes()
+    max_shard_size = convert_file_size_to_int(APPEND_MAX_SHARD_SIZE)
+    num_shards = max(1, int(dataset_nbytes / max_shard_size) + 1)
     uploaded_size = 0
     operations = []
 
@@ -214,11 +217,7 @@ def build_append_operations(
 
 def load_dataset_card(api: HfApi) -> DatasetCard | None:
     try:
-        card_path = api.hf_hub_download(
-            DATASET_REPO,
-            DATASET_CARD_FILE,
-            repo_type="dataset",
-        )
+        card_path = api.hf_hub_download(DATASET_REPO, DATASET_CARD_FILE, repo_type="dataset")
     except EntryNotFoundError:
         return None
 
@@ -232,16 +231,13 @@ def get_dataset_info_for_card(
     uploaded_size: int,
     dataset_nbytes: int,
 ) -> DatasetInfo:
-    dataset_infos = DatasetInfosDict.from_dataset_card_data(dataset_card_data)
-    dataset_info = dataset_infos.get(CONFIG_NAME)
+    dataset_info = DatasetInfosDict.from_dataset_card_data(dataset_card_data).get(CONFIG_NAME)
     dataset_name = DATASET_REPO.split("/")[-1]
 
     if dataset_info is None:
         dataset_info = dataset.info.copy()
         dataset_info.splits = SplitDict()
-        previous_download_size = 0
-        previous_dataset_size = 0
-        previous_split_bytes = 0
+        previous_download_size = previous_dataset_size = previous_split_bytes = 0
     else:
         dataset_info = dataset_info.copy()
         previous_download_size = dataset_info.download_size or 0
@@ -319,17 +315,20 @@ def append_dataset_to_hub(dataset: Dataset, api: HfApi, existing_num_rows: int) 
             dataset,
             Path(temp_dir),
         )
-        card_operation = build_dataset_card_operation(
-            api=api,
-            dataset=dataset,
-            existing_num_rows=existing_num_rows,
-            uploaded_size=uploaded_size,
-            dataset_nbytes=dataset_nbytes,
+        shard_count = len(shard_operations)
+        shard_operations.append(
+            build_dataset_card_operation(
+                api=api,
+                dataset=dataset,
+                existing_num_rows=existing_num_rows,
+                uploaded_size=uploaded_size,
+                dataset_nbytes=dataset_nbytes,
+            )
         )
         api.create_commit(
             repo_id=DATASET_REPO,
             repo_type="dataset",
-            operations=shard_operations + [card_operation],
+            operations=shard_operations,
             commit_message=f"Append {len(dataset)} {SPLIT} rows",
             commit_description=(
                 "Resume upload: add new parquet shard files and leave existing "
@@ -338,7 +337,7 @@ def append_dataset_to_hub(dataset: Dataset, api: HfApi, existing_num_rows: int) 
         )
 
     print(
-        f"Appended {len(dataset)} rows in {len(shard_operations)} shard(s) to "
+        f"Appended {len(dataset)} rows in {shard_count} shard(s) to "
         f"https://huggingface.co/datasets/{DATASET_REPO}"
     )
 
@@ -358,24 +357,24 @@ def upload_to_hub() -> None:
         rows = build_rows(skip_keys=existing_keys)
         if not rows:
             print("No new rows to upload.")
-            return
-
+        else:
+            dataset = build_dataset(rows)
+            print(dataset)
+            append_dataset_to_hub(dataset, api, existing_num_rows=existing_num_rows)
+    else:
+        rows = build_rows()
         dataset = build_dataset(rows)
         print(dataset)
-        append_dataset_to_hub(dataset, api, existing_num_rows=existing_num_rows)
-        return
+        dataset.push_to_hub(
+            DATASET_REPO,
+            private=PRIVATE,
+            config_name=CONFIG_NAME,
+            split=SPLIT,
+            data_dir=DATA_DIR,
+        )
+        print(f"Pushed to https://huggingface.co/datasets/{DATASET_REPO}")
 
-    rows = build_rows()
-    dataset = build_dataset(rows)
-    print(dataset)
-    dataset.push_to_hub(
-        DATASET_REPO,
-        private=PRIVATE,
-        config_name=CONFIG_NAME,
-        split=SPLIT,
-        data_dir=DATA_DIR,
-    )
-    print(f"Pushed to https://huggingface.co/datasets/{DATASET_REPO}")
+    print_next_start_index_hint()
 
 
 def main() -> None:
@@ -387,6 +386,7 @@ def main() -> None:
         print(dataset)
         dataset.save_to_disk(str(LOCAL_SAVE_DIR))
         print(f"Saved local dataset to: {LOCAL_SAVE_DIR}")
+        print_next_start_index_hint()
         print("Set PUSH_TO_HUB = True to upload.")
 
 
