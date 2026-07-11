@@ -18,19 +18,20 @@ from typing import Iterable
 # =========================
 
 # Pick one or both: ("vi",), ("en",), or ("vi", "en").
-LANGUAGES = ("vi", "en")
+LANGUAGES = ("vi",)
 
 # Run selected languages in separate Python processes.
-# VI_WORKERS > 1 shards Vietnamese across multiple processes; each loads its own model.
+# *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
-VI_WORKERS = 3                                                                                                                                    
+VI_WORKERS = 3
+EN_WORKERS = 2
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
-START_INDEX = 10240
+START_INDEX = 51200
 END_INDEX: int | None = None
 
 # N_SAMPLES = 262000 # Total need to 1000 hours.
-N_SAMPLES = 10240 # Total need to 1000 hours.
+N_SAMPLES = 51200 # Total need to 1000 hours.
 
 # Batch generation by voice when the TTS backend supports batched inference.
 BATCH_SIZE = 16
@@ -204,6 +205,7 @@ MANIFEST_FIELDNAMES = [
     "style",
     "speed",
     "sample_rate",
+    "duration_s",
     "status",
 ]
 
@@ -550,6 +552,8 @@ def supports_real_batch(tts) -> bool:
 def get_language_worker_count(language: str) -> int:
     if language == "vi":
         return max(1, VI_WORKERS)
+    if language == "en":
+        return max(1, EN_WORKERS)
     return 1
 
 
@@ -620,7 +624,11 @@ def synthesize_language(
     existing_manifest.update(worker_manifest)
 
     paths: list[Path] = []
-    manifest_rows = existing_manifest.copy() if manifest_path == final_manifest_path else worker_manifest.copy()
+    manifest_rows = (
+        existing_manifest.copy()
+        if manifest_path == final_manifest_path
+        else worker_manifest.copy()
+    )
     generated_count = 0
     skipped_count = 0
 
@@ -655,6 +663,7 @@ def synthesize_language(
                     spec,
                     speed,
                     "skipped",
+                    duration_s=existing_row.get("duration_s") if existing_row else None,
                 )
                 continue
 
@@ -709,6 +718,9 @@ def synthesize_language(
                             spec,
                             speed,
                             "generated",
+                            duration_s=get_audio_array_duration_seconds(
+                                audio, config.sample_rate
+                            ),
                         )
                     write_manifest(manifest_path, list(manifest_rows.values()))
                     continue
@@ -739,6 +751,9 @@ def synthesize_language(
                         spec,
                         speed,
                         "generated",
+                        duration_s=get_audio_array_duration_seconds(
+                            audio, config.sample_rate
+                        ),
                     )
                 write_manifest(manifest_path, list(manifest_rows.values()))
     finally:
@@ -780,6 +795,12 @@ def read_manifest(path: Path) -> dict[int, dict]:
         return {int(row["index"]): row for row in csv.DictReader(file)}
 
 
+def get_audio_array_duration_seconds(audio, sample_rate: int) -> float:
+    shape = getattr(audio, "shape", None)
+    frames = int(shape[-1]) if shape else len(audio)
+    return frames / sample_rate
+
+
 def make_manifest_row(
     index: int,
     language: str,
@@ -790,6 +811,7 @@ def make_manifest_row(
     spec: VoiceSpec,
     speed: float | None,
     status: str,
+    duration_s: float | str | None = None,
 ) -> dict:
     return {
         "index": index,
@@ -803,6 +825,7 @@ def make_manifest_row(
         "style": spec.style,
         "speed": "" if speed is None else f"{speed:g}",
         "sample_rate": config.sample_rate,
+        "duration_s": "" if duration_s in (None, "") else f"{float(duration_s):.9g}",
         "status": status,
     }
 

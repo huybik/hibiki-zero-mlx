@@ -16,6 +16,7 @@ dependencies = [
     "onnxruntime<1.24",
     "torch==2.9.1",
     "en-core-web-sm",
+    "hf-xet>=1.2.0",
 ]
 
 [tool.setuptools.dynamic]
