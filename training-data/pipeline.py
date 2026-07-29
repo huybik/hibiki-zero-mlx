@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import logging
 import os
 import random
@@ -34,12 +35,9 @@ END_INDEX: int | None = None
 N_SAMPLES = 12800 # Total need to 1000 hours.
 
 # Batch generation by voice when the TTS backend supports batched inference.
+# vieneu >= 3.2 batches natively on the PyTorch backend (chunks from all texts
+# share forward steps, max_batch_size=32 by default).
 BATCH_SIZE = 16
-
-# VieNeu's public infer_batch is sequential; its v3_turbo_serve engine is real
-# CUDA batching. Keep this on for VI throughput, and fall back safely otherwise.
-VI_USE_BATCH_ENGINE = True
-VI_BATCH_USE_CUDAGRAPH = False
 
 RANDOMIZE_VOICE = True
 MATCH_VOICE_GENDER = True
@@ -162,6 +160,22 @@ KOKORO_EN_VOICE_SPEEDS = {
     "am_michael": 1.10,
 }
 
+# Cloned VIVOS speakers enrolled by build_voice_bank.py; merged into the VI
+# voice pool (and registered into the engine at load) when the bank exists.
+VI_VOICE_BANK_JSON = DATASETS_DIR / "voice_bank" / "vi_voices.json"
+
+
+def load_voice_bank_specs() -> dict[str, VoiceSpec]:
+    if not VI_VOICE_BANK_JSON.exists():
+        return {}
+    presets = json.loads(VI_VOICE_BANK_JSON.read_text(encoding="utf-8")).get("presets", {})
+    return {
+        name: VoiceSpec(gender=preset.get("gender") or "unknown", style=preset.get("style") or "cloned")
+        for name, preset in presets.items()
+        if name not in VIE_NEU_VOICES
+    }
+
+
 VI_TTS = TTSConfig(
     name="vieNeu",
     provider="vieneu",
@@ -175,7 +189,7 @@ VI_TTS = TTSConfig(
     sample_rate=48_000,
     cache_dir=HF_CACHE_DIR,
     output_dir=DATASETS_DIR / "vieNeu" / "outputs" / "vi",
-    voices=VIE_NEU_VOICES,
+    voices={**VIE_NEU_VOICES, **load_voice_bank_specs()},
 )
 
 EN_TTS = TTSConfig(
@@ -269,98 +283,6 @@ class KokoroTTS:
         sf.write(output_path, audio, self.sample_rate)
 
 
-class BatchedVieneuTTS:
-    supports_real_batch = True
-
-    def __init__(self, tts, *, use_cudagraph: bool = VI_BATCH_USE_CUDAGRAPH):
-        if getattr(tts, "backend", None) != "pytorch":
-            raise ValueError("VieNeu batch engine requires the PyTorch backend.")
-
-        from vieneu.v3_turbo_serve.engine import V3TurboBatchEngine
-
-        self.tts = tts
-        self.batch_engine = V3TurboBatchEngine(tts.engine)
-        self.use_cudagraph = use_cudagraph
-        self.sample_rate = tts.sample_rate
-
-    def infer(self, text: str, **kwargs):
-        return self.infer_batch([text], **kwargs)[0]
-
-    def infer_batch(
-        self,
-        texts: list[str],
-        ref_audio=None,
-        ref_codes=None,
-        ref_text=None,  # noqa: ARG002 - v3 turbo ignores reference text.
-        voice=None,
-        emotion: str = "natural",
-        temperature: float = 0.8,
-        top_k: int = 25,
-        top_p: float = 0.95,
-        max_new_frames: int = 300,
-        repetition_penalty: float = 1.2,
-        max_chars: int = 384,
-        silence_p: float = 0.15,
-        crossfade_p: float = 0.0,
-        apply_watermark: bool = True,
-        **kwargs,
-    ) -> list:
-        import numpy as np
-        from vieneu_utils.core_utils import join_audio_chunks
-        from vieneu_utils.phonemize_text import (
-            normalize_to_chunks_v3,
-            phonemize_text_with_emotions,
-        )
-
-        ref_codes, voice_token_id = self.tts._resolve_v3_ref(
-            voice, ref_audio, ref_codes
-        )
-        grouped_wavs: list[list] = [[] for _ in texts]
-        requests = []
-        request_text_indexes = []
-
-        for text_index, text in enumerate(texts):
-            for chunk in normalize_to_chunks_v3(text, max_chars=max_chars):
-                requests.append(
-                    {
-                        "text": "",
-                        "phonemes": phonemize_text_with_emotions(chunk),
-                        "ref_codes": ref_codes,
-                        "emotion": emotion,
-                        "voice_token_id": voice_token_id,
-                    }
-                )
-                request_text_indexes.append(text_index)
-
-        if requests:
-            chunk_wavs = self.batch_engine.generate_batch(
-                requests,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                max_new_frames=max_new_frames,
-                use_cudagraph=self.use_cudagraph,
-            )
-            for text_index, wav in zip(request_text_indexes, chunk_wavs):
-                grouped_wavs[text_index].append(wav)
-
-        outputs = []
-        for wavs in grouped_wavs:
-            wav = (
-                join_audio_chunks(wavs, self.sample_rate, silence_p, crossfade_p)
-                if wavs
-                else np.zeros(0, dtype=np.float32)
-            )
-            outputs.append(self.tts._apply_watermark(wav) if apply_watermark else wav)
-        return outputs
-
-    def save(self, audio, output_path: str) -> None:
-        self.tts.save(audio, output_path)
-
-    def close(self) -> None:
-        self.tts.close()
-
 
 def resolve_device(requested: str) -> str:
     valid_devices = {"auto", "cpu", "cuda", "mps"}
@@ -413,14 +335,29 @@ def load_tts(config: TTSConfig):
         backend=backend,
         dtype=config.dtype,
     )
-    # V3TurboBatchEngine is CUDA-specific batching; MPS/CPU use VieNeu's sequential path.
-    if (
-        VI_USE_BATCH_ENGINE
-        and device == "cuda"
-        and getattr(tts, "backend", None) == "pytorch"
-    ):
-        return BatchedVieneuTTS(tts)
+    if VI_VOICE_BANK_JSON.exists():
+        register_voice_bank(tts, VI_VOICE_BANK_JSON)
+    # vieneu >= 3.2 batches natively on the PyTorch backend: infer_batch flattens
+    # chunks across texts through its static-batching engine. ONNX/CPU is sequential.
+    tts.supports_real_batch = getattr(tts, "backend", None) == "pytorch"
     return tts
+
+
+def register_voice_bank(tts, path: Path) -> None:
+    """Load bank presets (build_voice_bank.py / vieneu save_voices format) into the engine."""
+    import numpy as np
+
+    presets = json.loads(path.read_text(encoding="utf-8")).get("presets", {})
+    for name, preset in presets.items():
+        emb = preset.get("speaker_emb")
+        codes = preset.get("codes")
+        tts._preset_voices[name] = {
+            "description": preset.get("description", ""),
+            "gender": preset.get("gender", ""),
+            "style": preset.get("style", "tu_nhien"),
+            "speaker_emb": None if emb is None else np.asarray(emb, dtype=np.float32),
+            "codes": None if codes is None else np.asarray(codes, dtype=np.int64),
+        }
 
 
 def close_tts(tts) -> None:
