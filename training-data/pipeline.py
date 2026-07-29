@@ -24,15 +24,15 @@ LANGUAGES = ("vi","en")
 # Run selected languages in separate Python processes.
 # *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
-VI_WORKERS = 3
-EN_WORKERS = 2
+VI_WORKERS = 1
+EN_WORKERS = 4
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
-START_INDEX = 140800
+START_INDEX = 153600
 END_INDEX: int | None = None
 
-# N_SAMPLES = 262000 # Total need to 1000 hours.
-N_SAMPLES = 12800 # Total need to 1000 hours.
+# Hub has 148,148 rows ≈ 234 VI-h (mean 5.69 s); 1000 VI-h total needs ~485k more rows.
+N_SAMPLES = 96000
 
 # Batch generation by voice when the TTS backend supports batched inference.
 # vieneu >= 3.2 batches natively on the PyTorch backend (chunks from all texts
@@ -53,7 +53,11 @@ EN_VOICE: str | None = None
 # Device control: "auto" picks cuda > mps > cpu; or force "cuda", "mps", "cpu".
 TTS_DEVICE = "auto"
 VI_DEVICE = TTS_DEVICE
-EN_DEVICE = TTS_DEVICE
+# Kokoro is faster on CPU than MPS here, and keeping it off the GPU leaves MPS to vieneu.
+EN_DEVICE = "cpu"
+
+# Run the vieneu backbone/acoustic decoder in fp16 (vieneu_mps_patch.apply_fp16).
+VI_FP16 = True
 
 # Kokoro hits a few ops MPS doesn't implement; fall back to CPU for those only.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -231,8 +235,6 @@ MANIFEST_FIELDNAMES = [
 
 
 class KokoroTTS:
-    supports_real_batch = True
-
     def __init__(self, config: TTSConfig, device: str):
         try:
             from kokoro import KPipeline
@@ -245,18 +247,6 @@ class KokoroTTS:
         self.pipeline = KPipeline(lang_code=config.lang_code, repo_id=repo_id, device=device)
         self.default_voice = config.default_voice
         self.sample_rate = config.sample_rate
-
-    def infer(self, text: str, voice: str | None = None, speed: float = 1.0, **kwargs):
-        import numpy as np
-
-        parts = []
-        for result in self.pipeline(text, voice=voice or self.default_voice, speed=speed, **kwargs):
-            if result.audio is not None:
-                parts.append(result.audio.detach().cpu().numpy())
-
-        if not parts:
-            return np.zeros(0, dtype=np.float32)
-        return np.concatenate(parts)
 
     def infer_batch(
         self, texts: list[str], voice: str | None = None, speed: float = 1.0, **kwargs
@@ -337,9 +327,12 @@ def load_tts(config: TTSConfig):
     )
     if VI_VOICE_BANK_JSON.exists():
         register_voice_bank(tts, VI_VOICE_BANK_JSON)
-    # vieneu >= 3.2 batches natively on the PyTorch backend: infer_batch flattens
-    # chunks across texts through its static-batching engine. ONNX/CPU is sequential.
-    tts.supports_real_batch = getattr(tts, "backend", None) == "pytorch"
+
+    import vieneu_mps_patch
+
+    vieneu_mps_patch.apply(tts)
+    if VI_FP16:
+        vieneu_mps_patch.apply_fp16(tts)
     return tts
 
 
@@ -468,21 +461,6 @@ def get_fixed_matched_gender(languages: tuple[str, ...]) -> str | None:
     return next(iter(fixed_genders), None)
 
 
-def infer_one_or_batch(tts, texts: list[str], voice: str, **infer_kwargs) -> list:
-    kwargs = {**infer_kwargs, "voice": voice}
-    if len(texts) == 1:
-        return [tts.infer(texts[0], **kwargs)]
-
-    if supports_real_batch(tts):
-        return tts.infer_batch(texts, **kwargs)
-
-    return [tts.infer(text, **kwargs) for text in texts]
-
-
-def supports_real_batch(tts) -> bool:
-    return bool(getattr(tts, "supports_real_batch", False))
-
-
 def get_language_worker_count(language: str) -> int:
     if language == "vi":
         return max(1, VI_WORKERS)
@@ -603,68 +581,80 @@ def synthesize_language(
 
             generation_jobs.append((index, text, voice, speed, output_path, spec))
 
-        jobs_by_voice = {}
-        for generation_job in generation_jobs:
-            jobs_by_voice.setdefault((generation_job[2], generation_job[3]), []).append(
-                generation_job
+        if config.provider == "vieneu":
+            # Global length-sorted batches (voices mixed per batch): every batch
+            # runs to its longest member, so grouping similar lengths kills the
+            # per-voice tail waste.
+            generation_jobs.sort(key=lambda job: len(job[1]), reverse=True)
+            job_batches = list(batched(generation_jobs, batch_size))
+        else:
+            jobs_by_voice: dict = {}
+            for generation_job in generation_jobs:
+                jobs_by_voice.setdefault(
+                    (generation_job[2], generation_job[3]), []
+                ).append(generation_job)
+            job_batches = [
+                voice_batch
+                for voice_jobs in jobs_by_voice.values()
+                for voice_batch in batched(voice_jobs, batch_size)
+            ]
+
+        for batch_number, job_batch in enumerate(job_batches, 1):
+            batch_indexes = [job[0] for job in job_batch]
+            print(
+                f"{worker_label}: batch {batch_number}/{len(job_batches)} "
+                f"indexes {min(batch_indexes)}-{max(batch_indexes)} "
+                f"({len(job_batch)} files)",
+                flush=True,
             )
 
-        total_batches = sum(
-            (len(voice_jobs) + batch_size - 1) // batch_size
-            for voice_jobs in jobs_by_voice.values()
-        )
-        batch_number = 0
+            if tts is None:
+                tts = load_tts(config)
 
-        for (voice, speed), voice_jobs in jobs_by_voice.items():
-            voice_infer_kwargs = dict(infer_kwargs)
-            if speed is not None:
-                voice_infer_kwargs["speed"] = speed
+            texts = [job[1] for job in job_batch]
+            if config.provider == "vieneu":
+                import vieneu_mps_patch
 
-            for voice_batch in batched(voice_jobs, batch_size):
-                batch_number += 1
-                batch_indexes = [job[0] for job in voice_batch]
-                speed_text = "" if speed is None else f", speed={speed:g}"
-                print(
-                    f"{worker_label}: batch {batch_number}/{total_batches} "
-                    f"indexes {min(batch_indexes)}-{max(batch_indexes)} "
-                    f"({len(voice_batch)} files), voice={voice}{speed_text}",
-                    flush=True,
+                audios = vieneu_mps_patch.infer_batch_voices(
+                    tts, texts, [job[2] for job in job_batch]
+                )
+            else:
+                voice, speed = job_batch[0][2], job_batch[0][3]
+                voice_infer_kwargs = dict(infer_kwargs)
+                if speed is not None:
+                    voice_infer_kwargs["speed"] = speed
+                audios = tts.infer_batch(texts, voice=voice, **voice_infer_kwargs)
+
+            if len(audios) != len(job_batch):
+                raise RuntimeError(
+                    f"{config.name} returned {len(audios)} audio outputs "
+                    f"for {len(job_batch)} texts."
                 )
 
-                if tts is None:
-                    tts = load_tts(config)
-
-                texts = [job[1] for job in voice_batch]
-                audios = infer_one_or_batch(
-                    tts, texts, voice=voice, **voice_infer_kwargs
+            batch_rows = []
+            for (index, text, voice, speed, output_path, spec), audio in zip(
+                job_batch, audios
+            ):
+                tts.save(audio, str(output_path))
+                generated_count += 1
+                paths.append(output_path)
+                row = make_manifest_row(
+                    index,
+                    language,
+                    text,
+                    output_path,
+                    config,
+                    voice,
+                    spec,
+                    speed,
+                    "generated",
+                    duration_s=get_audio_array_duration_seconds(
+                        audio, config.sample_rate
+                    ),
                 )
-                if len(audios) != len(voice_batch):
-                    raise RuntimeError(
-                        f"{config.name} returned {len(audios)} audio outputs "
-                        f"for {len(voice_batch)} texts."
-                    )
-
-                for (index, text, voice, speed, output_path, spec), audio in zip(
-                    voice_batch, audios
-                ):
-                    tts.save(audio, str(output_path))
-                    generated_count += 1
-                    paths.append(output_path)
-                    manifest_rows[index] = make_manifest_row(
-                        index,
-                        language,
-                        text,
-                        output_path,
-                        config,
-                        voice,
-                        spec,
-                        speed,
-                        "generated",
-                        duration_s=get_audio_array_duration_seconds(
-                            audio, config.sample_rate
-                        ),
-                    )
-                write_manifest(manifest_path, list(manifest_rows.values()))
+                manifest_rows[index] = row
+                batch_rows.append(row)
+            append_manifest_rows(manifest_path, batch_rows)
     finally:
         if tts is not None:
             close_tts(tts)
@@ -745,6 +735,19 @@ def write_manifest(path: Path, rows: list[dict]) -> None:
         writer = csv.DictWriter(file, fieldnames=MANIFEST_FIELDNAMES)
         writer.writeheader()
         writer.writerows(sorted(rows, key=lambda row: int(row["index"])))
+
+
+def append_manifest_rows(path: Path, rows: list[dict]) -> None:
+    """Append rows without rewriting the file; read_manifest last-wins on dupes."""
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=MANIFEST_FIELDNAMES)
+        if new_file:
+            writer.writeheader()
+        writer.writerows(rows)
 
 
 def format_audio_duration(seconds: float) -> str:
@@ -859,6 +862,9 @@ def start_language_process(
     worker_count: int = 1,
 ) -> subprocess.Popen:
     env = os.environ.copy()
+    if language == "en":
+        # Kokoro runs on CPU; cap threads so 4 workers don't oversubscribe the cores.
+        env["OMP_NUM_THREADS"] = "4"
     env[PIPELINE_LANGUAGE_ENV] = language
     env[PIPELINE_WORKER_INDEX_ENV] = str(worker_index)
     env[PIPELINE_WORKER_COUNT_ENV] = str(worker_count)
