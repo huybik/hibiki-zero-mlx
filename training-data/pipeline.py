@@ -127,17 +127,22 @@ class TTSConfig:
     voices: dict[str, VoiceSpec]
 
 
+# vieneu 3.2.3 v3-turbo preset roster (from the package's voices_v3_turbo.json).
 VIE_NEU_VOICES = {
-    "Ngọc Lan": VoiceSpec(gender="female", style="soft / gentle"),
-    "Ngọc Linh": VoiceSpec(gender="female", style="bright"),
-    "Trúc Ly": VoiceSpec(gender="female", style="youthful"),
-    "Mỹ Duyên": VoiceSpec(gender="female", style="smooth"),
-    "Xuân Vĩnh": VoiceSpec(gender="male", style="upbeat"),
-    "Thái Sơn": VoiceSpec(gender="male", style="firm"),
-    "Gia Bảo": VoiceSpec(gender="male", style="smooth"),
-    "Đức Trí": VoiceSpec(gender="male", style="clear"),
-    "Trọng Hữu": VoiceSpec(gender="male", style="knowledgeable"),
-    "Bình An": VoiceSpec(gender="male", style="even / calm"),
+    "Trúc Ly": VoiceSpec(gender="female", style="natural / Bắc"),
+    "Ngọc Linh": VoiceSpec(gender="female", style="storytelling / Bắc"),
+    "Đoan Trang": VoiceSpec(gender="female", style="natural / Bắc"),
+    "Mai Anh": VoiceSpec(gender="female", style="news / Bắc"),
+    "Thục Đoan": VoiceSpec(gender="female", style="storytelling / Nam"),
+    "Thùy Dung": VoiceSpec(gender="female", style="news / Nam"),
+    "Ngọc Trân": VoiceSpec(gender="female", style="natural / Trung"),
+    "Minh Đức": VoiceSpec(gender="male", style="news / Bắc"),
+    "Phạm Tuyên": VoiceSpec(gender="male", style="natural / Bắc"),
+    "Thanh Bình": VoiceSpec(gender="male", style="storytelling / Bắc"),
+    "Thái Sơn": VoiceSpec(gender="male", style="storytelling / Nam"),
+    "Xuân Vĩnh": VoiceSpec(gender="male", style="natural / Nam"),
+    "Minh Triết": VoiceSpec(gender="male", style="news / Nam"),
+    "Quang Sơn": VoiceSpec(gender="male", style="natural / Trung"),
 }
 
 KOKORO_EN_VOICES = {
@@ -163,7 +168,7 @@ VI_TTS = TTSConfig(
     model_repo="pnnbao-ump/VieNeu-TTS-v3-Turbo",
     mode="v3turbo",
     lang_code="vi",
-    default_voice="Ngọc Lan",
+    default_voice="Ngọc Linh",
     device=VI_DEVICE,
     backend=VI_BACKEND,
     dtype=VI_DTYPE,
