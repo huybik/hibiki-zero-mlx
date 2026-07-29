@@ -14,11 +14,16 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import random
 import re
 import time
 from pathlib import Path
 from typing import Any
+
+# moshi lazily torch.compile's ops on CUDA (no-op on MPS); the compiled graphs
+# break autograd during training (invalid gradient shape in backward).
+os.environ.setdefault("NO_TORCH_COMPILE", "1")
 
 import numpy as np
 import sphn
