@@ -16,7 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from finetune.utils import DEFAULT_PAIRS_DIR, repo_display_path, write_pair_file  # noqa: E402
+from finetune.utils import (  # noqa: E402
+    DEFAULT_PAIRS_DIR,
+    read_pair_file,
+    repo_display_path,
+    write_pair_file,
+)
 
 DATASET = "anquachdev/PhoMT-en-vi-speech"
 DEFAULT_AUDIO_DIR = REPO_ROOT / "remote_dataset" / "phomt_en_vi"
@@ -49,7 +54,17 @@ def parse_args() -> argparse.Namespace:
         help="Drop rows with VI audio longer than this (protects MPS memory). 0 disables.",
     )
     parser.add_argument("--limit", type=int, default=0, help="Stop after keeping N pairs; 0=all.")
+    parser.add_argument(
+        "--resume-from",
+        type=Path,
+        help="Existing pairs jsonl: skip rows already fetched (keyed on texts+durations, "
+        "survives HF resharding) and continue id numbering. --out gets only the new rows.",
+    )
     return parser.parse_args()
+
+
+def row_key(text_vi: str, text_en: str, vi_dur: str, en_dur: str) -> tuple[str, str, str, str]:
+    return (text_vi.strip(), text_en.strip(), vi_dur, en_dur)
 
 
 def main() -> None:
@@ -71,8 +86,20 @@ def main() -> None:
     )
     print(f"{len(shards)} parquet shards in {DATASET}")
 
+    seen: set[tuple[str, str, str, str]] = set()
+    start_idx = 0
+    if args.resume_from:
+        existing = read_pair_file(args.resume_from)
+        seen = {
+            row_key(r["text_vi"], r["text_en"], r["vi_duration_s"], r["en_duration_s"])
+            for r in existing
+        }
+        start_idx = 1 + max(int(r["id"].rsplit("_", 1)[1]) for r in existing)
+        print(f"Resuming past {len(seen)} existing pairs, new ids start at {start_idx}")
+
     rows: list[dict[str, str]] = []
     dropped = 0
+    skipped = 0
     for shard in shards:
         if args.limit and len(rows) >= args.limit:
             break
@@ -85,8 +112,17 @@ def main() -> None:
             if args.max_source_duration_s and vi_dur > args.max_source_duration_s:
                 dropped += 1
                 continue
-            idx = len(rows)
-            stem = f"phomt_{idx:05d}"
+            key = row_key(
+                str(table.column("vi")[i].as_py()),
+                str(table.column("en")[i].as_py()),
+                f"{vi_dur:.2f}",
+                f"{float(table.column('duration_en_s')[i].as_py()):.2f}",
+            )
+            if key in seen:
+                skipped += 1
+                continue
+            seen.add(key)
+            stem = f"phomt_{start_idx + len(rows):05d}"
             en_wav = en_dir / f"{stem}.wav"
             vi_wav = vi_dir / f"{stem}.wav"
             en_wav.write_bytes(table.column("audio_en")[i].as_py()["bytes"])
@@ -107,8 +143,8 @@ def main() -> None:
     write_pair_file(rows, args.out, "jsonl")
     hours = sum(float(r["vi_duration_s"]) for r in rows) / 3600.0
     print(
-        f"Wrote {len(rows)} pairs ({hours:.2f} VI source hours, dropped {dropped} long) -> "
-        f"{repo_display_path(args.out)}"
+        f"Wrote {len(rows)} pairs ({hours:.2f} VI source hours, dropped {dropped} long, "
+        f"skipped {skipped} already fetched) -> {repo_display_path(args.out)}"
     )
 
 
