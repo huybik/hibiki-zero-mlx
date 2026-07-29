@@ -18,7 +18,7 @@ from typing import Iterable
 # =========================
 
 # Pick one or both: ("vi",), ("en",), or ("vi", "en").
-LANGUAGES = ("vi",)
+LANGUAGES = ("vi","en")
 
 # Run selected languages in separate Python processes.
 # *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
@@ -27,11 +27,11 @@ VI_WORKERS = 3
 EN_WORKERS = 2
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
-START_INDEX = 51200
+START_INDEX = 140800
 END_INDEX: int | None = None
 
 # N_SAMPLES = 262000 # Total need to 1000 hours.
-N_SAMPLES = 51200 # Total need to 1000 hours.
+N_SAMPLES = 12800 # Total need to 1000 hours.
 
 # Batch generation by voice when the TTS backend supports batched inference.
 BATCH_SIZE = 16
