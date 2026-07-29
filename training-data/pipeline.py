@@ -25,7 +25,7 @@ LANGUAGES = ("vi","en")
 # *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
 VI_WORKERS = 1
-EN_WORKERS = 4
+EN_WORKERS = 6
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
 START_INDEX = 153600
@@ -863,8 +863,8 @@ def start_language_process(
 ) -> subprocess.Popen:
     env = os.environ.copy()
     if language == "en":
-        # Kokoro runs on CPU; cap threads so 4 workers don't oversubscribe the cores.
-        env["OMP_NUM_THREADS"] = "4"
+        # Kokoro runs on CPU; cap threads so 6 workers don't oversubscribe the cores.
+        env["OMP_NUM_THREADS"] = "3"
     env[PIPELINE_LANGUAGE_ENV] = language
     env[PIPELINE_WORKER_INDEX_ENV] = str(worker_index)
     env[PIPELINE_WORKER_COUNT_ENV] = str(worker_count)
