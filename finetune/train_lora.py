@@ -124,6 +124,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-id-column", default="id")
     # Bookkeeping.
     parser.add_argument("--save-every", type=int, default=50, help="Steps between saves.")
+    parser.add_argument(
+        "--keep-checkpoints",
+        type=int,
+        default=2,
+        help="Keep only the newest N step checkpoints (best/final untouched); 0=keep all. "
+        "Full-finetune saves are ~35 GB each — rotation is essential on rented disks.",
+    )
     parser.add_argument("--log-every", type=int, default=1, help="Steps between logs.")
     parser.add_argument(
         "--mps-empty-cache-every",
@@ -178,6 +185,10 @@ def save_checkpoint(
         },
         out_dir / f"trainer_step{step:06d}.pt",
     )
+    if args.keep_checkpoints > 0:
+        for pattern in (f"{checkpoint_prefix(args)}_step*.safetensors", "trainer_step*.pt"):
+            for stale in sorted(out_dir.glob(pattern))[: -args.keep_checkpoints]:
+                stale.unlink()
     return adapter_path
 
 
@@ -227,6 +238,10 @@ def main() -> None:
 
     device = common.check_device(args.device)
     dtype = common.dtype_from_name(args.dtype)
+    if device.type == "cuda":
+        # TF32 matmuls: fp32 master weights (needed for full-finetune Adam updates —
+        # bf16 weights round away lr~1e-5 updates) without paying full-fp32 speed.
+        torch.set_float32_matmul_precision("high")
 
     cache_dir = [require_dir(d, "code cache directory") for d in args.cache_dir]
     val_cache_dir = (

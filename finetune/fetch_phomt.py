@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
         default=25.0,
         help="Drop rows with VI audio longer than this (protects MPS memory). 0 disables.",
     )
+    parser.add_argument("--limit", type=int, default=0, help="Stop after keeping N pairs; 0=all.")
     return parser.parse_args()
 
 
@@ -56,21 +57,30 @@ def main() -> None:
     load_hf_token()
 
     import pyarrow.parquet as pq
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, list_repo_files
 
     en_dir = args.audio_dir / "en"
     vi_dir = args.audio_dir / "vi"
     en_dir.mkdir(parents=True, exist_ok=True)
     vi_dir.mkdir(parents=True, exist_ok=True)
 
+    shards = sorted(
+        name
+        for name in list_repo_files(DATASET, repo_type="dataset")
+        if name.startswith("data/") and name.endswith(".parquet")
+    )
+    print(f"{len(shards)} parquet shards in {DATASET}")
+
     rows: list[dict[str, str]] = []
     dropped = 0
-    for shard in (0, 1):
-        path = hf_hub_download(
-            DATASET, f"data/train-0000{shard}-of-00002.parquet", repo_type="dataset"
-        )
+    for shard in shards:
+        if args.limit and len(rows) >= args.limit:
+            break
+        path = hf_hub_download(DATASET, shard, repo_type="dataset")
         table = pq.ParquetFile(path).read()
         for i in range(table.num_rows):
+            if args.limit and len(rows) >= args.limit:
+                break
             vi_dur = float(table.column("duration_vi_s")[i].as_py())
             if args.max_source_duration_s and vi_dur > args.max_source_duration_s:
                 dropped += 1
