@@ -37,7 +37,7 @@ N_SAMPLES = 12800 # Total need to 1000 hours.
 # Batch generation by voice when the TTS backend supports batched inference.
 # vieneu >= 3.2 batches natively on the PyTorch backend (chunks from all texts
 # share forward steps, max_batch_size=32 by default).
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 
 RANDOMIZE_VOICE = True
 MATCH_VOICE_GENDER = True
