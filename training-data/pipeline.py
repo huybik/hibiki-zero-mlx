@@ -28,7 +28,7 @@ VI_WORKERS = 1
 EN_WORKERS = 5
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
-START_INDEX = 153600
+START_INDEX = 249600
 END_INDEX: int | None = None
 
 # Hub has 148,148 rows ≈ 234 VI-h (mean 5.69 s); 1000 VI-h total needs ~485k more rows.
