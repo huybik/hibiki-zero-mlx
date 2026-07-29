@@ -154,7 +154,13 @@ def _generate_batch_fast(
     out = self.tts.audio_tokenizer.batch_decode(codes_list)
     audio = out.audio.float().mean(1).cpu().numpy()             # (B, S_max), channels averaged
     audio_lens = out.audio_lengths.tolist()
-    return [audio[b, : audio_lens[b]].copy() for b in range(B)]
+    results = [audio[b, : audio_lens[b]].copy() for b in range(B)]
+    if dev.type == "mps":
+        # The KV cache reallocates a new block every decode step; the MPS caching
+        # allocator hoards every freed size class, ballooning to swap over a long
+        # run. Release after each batch (costs ~ms, saves tens of GB).
+        torch.mps.empty_cache()
+    return results
 
 
 def apply(tts) -> None:
