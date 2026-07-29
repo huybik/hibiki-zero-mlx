@@ -25,7 +25,7 @@ LANGUAGES = ("vi","en")
 # *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
 VI_WORKERS = 1
-EN_WORKERS = 6
+EN_WORKERS = 4
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
 START_INDEX = 153600
