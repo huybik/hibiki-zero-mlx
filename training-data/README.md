@@ -48,7 +48,20 @@ conda activate phomt-data
 
 On CUDA machines install the matching CUDA wheel of torch instead (`--index-url https://download.pytorch.org/whl/cu126`).
 
-Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS; VieNeu uses its PyTorch backend there (the `V3TurboBatchEngine` real-batching path stays CUDA-only, MPS generates sequentially).
+Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS with VieNeu's PyTorch backend; vieneu >= 3.2 batches natively on both CUDA and MPS (measured on M4 Pro: batch 8 -> 6.1x real-time vs 3.1x sequential).
+
+## Voice Bank (VI speaker diversity)
+
+```bash
+python training-data/build_voice_bank.py
+```
+
+Downloads VIVOS (46 Vietnamese speakers, CC BY-NC-SA), picks one 6-12 s reference
+clip per speaker, enrolls each with VieNeu voice cloning, and saves the bank to
+`<PHOMT_DATA_DIR>/voice_bank/vi_voices.json`. When that file exists, `pipeline.py`
+automatically registers the cloned voices and merges them (with genders) into the
+VI voice pool — 48 voices instead of the 14 built-in presets. Delete the JSON to
+revert to presets only.
 
 ## Preview Raw PhoMT
 
