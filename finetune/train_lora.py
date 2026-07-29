@@ -9,6 +9,7 @@ checkpoint selection. All schedules degrade to the old static flags when their
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import sys
@@ -315,7 +316,14 @@ def main() -> None:
         if args.full_finetune
         else common.build_param_groups(lm, lr_specs)
     )
-    optimizer = torch.optim.AdamW(groups, lr=args.lr)
+    optimizer = torch.optim.AdamW(groups, lr=args.lr, fused=device.type == "cuda")
+    # fp32 master weights + bf16 autocast forward = standard mixed precision:
+    # bf16-speed matmuls, fp32 grads/Adam updates. CE already upcasts logits.
+    autocast = (
+        torch.autocast("cuda", dtype=torch.bfloat16)
+        if device.type == "cuda" and dtype == torch.float32
+        else contextlib.nullcontext()
+    )
 
     # Optional greedy-eval resources (Mimi is loaded only when selection is on).
     mimi = None
@@ -474,9 +482,10 @@ def main() -> None:
                 condition_cache[batch_size] = common.batch_condition_tensors(
                     lm, checkpoint_info.model_type, batch_size
                 )
-            losses = common.compute_batch_losses(
-                lm, codes, condition_cache[batch_size], audio_w, text_w
-            )
+            with autocast:
+                losses = common.compute_batch_losses(
+                    lm, codes, condition_cache[batch_size], audio_w, text_w
+                )
             loss = losses["loss"]
             if not bool(torch.isfinite(loss.detach()).cpu()):
                 raise RuntimeError(
