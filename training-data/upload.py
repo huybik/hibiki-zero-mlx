@@ -44,9 +44,9 @@ UPLOAD_STATE_FILE = "upload-state.json"
 UPLOAD_KEY_COLUMNS = ("en", "vi")
 
 # A sampled pair is about 800 KB, so 500 rows produces a roughly 400 MB shard.
+# datasets >= 5 picks parquet compression itself (audio columns uncompressed for
+# Xet dedup); passing compression kwargs conflicts with its ParquetWriter call.
 ROWS_PER_SHARD = 500
-PARQUET_COMPRESSION = "zstd"
-PARQUET_COMPRESSION_LEVEL = 3
 DURATION_WORKERS = 8
 DURATION_PROGRESS_INTERVAL = 2_000
 
@@ -475,11 +475,7 @@ def append_rows_to_hub(
             dataset = build_dataset(shard_rows)
             embedded_dataset = embed_external_files(dataset)
             dataset_nbytes = embedded_dataset._estimate_nbytes()
-            embedded_dataset.to_parquet(
-                local_path,
-                compression=PARQUET_COMPRESSION,
-                compression_level=PARQUET_COMPRESSION_LEVEL,
-            )
+            embedded_dataset.to_parquet(local_path)
             uploaded_size = local_path.stat().st_size
             uploaded_at = datetime.now(timezone.utc).isoformat()
 
