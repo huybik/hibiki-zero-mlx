@@ -22,37 +22,34 @@ en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 
 ## Files
 
+- `paths.py` shared data locations (override the data root with `PHOMT_DATA_DIR`).
 - `load_raw.py` loads raw PhoMT text data from Hugging Face.
 - `pipeline.py` generates Vietnamese and English audio from PhoMT rows.
-- `process.py` is a backward-compatible entry point that runs `pipeline.py`.
 - `upload.py` builds the paired audio dataset and pushes it to Hugging Face.
 - `load_train_data.py` loads the uploaded speech dataset for training or coworker preview.
 
-Generated audio, local cache, and preview folders are written outside the repo under:
-
-```text
-D:\Code\datasets
-```
+Generated audio, local cache, and preview folders are written outside the repo under `PHOMT_DATA_DIR` (default: `D:\Code\datasets` on Windows, `~/datasets` elsewhere).
 
 ## Setup
 
-Run commands from the repo root:
+The pipeline runs in its own conda env `phomt-data` (torch 2.13 — its MPS ops run as native Metal kernels, a free speedup on Apple Silicon):
 
-```powershell
-uv sync
+```bash
+conda create -y -n phomt-data python=3.12
+conda run -n phomt-data pip install "torch==2.13.*" "kokoro>=0.9.2" "vieneu>=3.0.9" \
+    datasets soundfile "onnxruntime<1.24" hf-xet \
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+conda activate phomt-data
 ```
 
-For CUDA generation, make sure the environment has a CUDA-enabled PyTorch build. The current project is configured for:
+On CUDA machines install the matching CUDA wheel of torch instead (`--index-url https://download.pytorch.org/whl/cu126`).
 
-```text
-torch==2.9.1
-PyTorch CUDA index: https://download.pytorch.org/whl/cu128
-```
+Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS; VieNeu uses its PyTorch backend there (the `V3TurboBatchEngine` real-batching path stays CUDA-only, MPS generates sequentially).
 
 ## Preview Raw PhoMT
 
-```powershell
-uv run python training-data/load_raw.py
+```bash
+python training-data/load_raw.py
 ```
 
 This prints a small preview from the raw PhoMT train split.
@@ -66,21 +63,21 @@ START_INDEX = 0
 N_SAMPLES = 128
 BATCH_SIZE = 8
 LANGUAGES = ("vi","en")
-TTS_DEVICE = "cuda"
+TTS_DEVICE = "auto"
 PARALLEL_LANGUAGES = True
 ```
 
 Then run:
 
-```powershell
-uv run python training-data/pipeline.py
+```bash
+python training-data/pipeline.py
 ```
 
 When `PARALLEL_LANGUAGES = True`, the parent command launches separate child processes:
 
 ```text
-vi worker -> D:\Code\datasets\vieNeu\outputs\vi\
-en worker -> D:\Code\datasets\english\outputs\en\
+vi workers -> <PHOMT_DATA_DIR>/vieNeu/outputs/vi/
+en workers -> <PHOMT_DATA_DIR>/english/outputs/en/
 ```
 
 Each output folder contains WAV files and a `manifest.csv`.
@@ -88,22 +85,23 @@ Each output folder contains WAV files and a `manifest.csv`.
 Kokoro `af_nicole` is generated faster than the default because it is otherwise
 much slower than the paired Vietnamese speech.
 
-If GPU memory is tight, set:
+If GPU memory is tight (each worker loads its own model copy — on a Mac start
+with 1 worker per language), set:
 
 ```python
-PARALLEL_LANGUAGES = False
+PARALLEL_LANGUAGES = False   # or VI_WORKERS = 1, EN_WORKERS = 1
 ```
 
 ## Upload Dataset
 
 After both Vietnamese and English audio are generated for matching indexes:
 
-```powershell
-uv run python training-data/upload.py
+```bash
+python training-data/upload.py
 ```
 
-The uploader reads manifests from `D:\Code\datasets\vieNeu\outputs\vi\` and
-`D:\Code\datasets\english\outputs\en\`.
+The uploader reads manifests from `<PHOMT_DATA_DIR>/vieNeu/outputs/vi/` and
+`<PHOMT_DATA_DIR>/english/outputs/en/`.
 
 This builds rows with:
 
@@ -137,23 +135,23 @@ Use a `START_INDEX` that is after the rows already generated or uploaded. Keep
 
 2. Generate only that batch:
 
-```powershell
-uv run python training-data/pipeline.py
+```bash
+python training-data/pipeline.py
 ```
 
 This creates the current batch under:
 
 ```text
-D:\Code\datasets\vieNeu\outputs\vi\
-D:\Code\datasets\english\outputs\en\
+<PHOMT_DATA_DIR>/vieNeu/outputs/vi/
+<PHOMT_DATA_DIR>/english/outputs/en/
 ```
 
 Each folder must contain its current batch WAV files and `manifest.csv`.
 
 3. Upload the current batch immediately:
 
-```powershell
-uv run python training-data/upload.py
+```bash
+python training-data/upload.py
 ```
 
 With `RESUME_UPLOAD = True`, `upload.py` checks the existing Hugging Face
@@ -172,10 +170,10 @@ Pushed to https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
 5. After upload success, delete local generated data for the finished batch:
 
 ```text
-D:\Code\datasets\vieNeu\outputs\vi\
-D:\Code\datasets\english\outputs\en\
-D:\Code\datasets\phomt-en-vi-speech\
-D:\Code\datasets\.hf_cache\
+<PHOMT_DATA_DIR>/vieNeu/outputs/vi/
+<PHOMT_DATA_DIR>/english/outputs/en/
+<PHOMT_DATA_DIR>/phomt-en-vi-speech/
+<PHOMT_DATA_DIR>/.hf_cache/
 ```
 
 Do not delete the current batch's WAV files or manifests before upload finishes.
@@ -189,7 +187,7 @@ The safe loop is:
 generate one batch -> upload that batch -> delete local batch -> generate next batch
 ```
 
-The Hugging Face dataset is the permanent copy. `D:\Code\datasets` can be
+The Hugging Face dataset is the permanent copy. `<PHOMT_DATA_DIR>` can be
 treated as temporary working storage for the next batch once the upload has
 succeeded.
 
@@ -201,8 +199,8 @@ replacing the existing Hugging Face row.
 
 For training or coworker preview:
 
-```powershell
-uv run python training-data/load_train_data.py
+```bash
+python training-data/load_train_data.py
 ```
 
 The loader keeps audio as raw file/bytes by default with:
@@ -214,7 +212,7 @@ Audio(decode=False)
 This avoids requiring `torchcodec` just to inspect or copy audio samples. It writes a few preview WAV files to:
 
 ```text
-D:\Code\datasets\audios\
+<PHOMT_DATA_DIR>/audios/
 ```
 
 ## Notes

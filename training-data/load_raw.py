@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from datasets import Dataset, DatasetDict, load_dataset
+
+from paths import HF_CACHE_DIR as CACHE_DIR
 
 
 DATASET_ID = "ura-hcmut/PhoMT"
-DATASETS_DIR = Path(r"D:\Code\datasets")
-CACHE_DIR = DATASETS_DIR / ".hf_cache"
 
 
 # Load raw text to text machine translation

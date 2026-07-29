@@ -52,10 +52,13 @@ SCAN_AUDIO_TOTALS = False
 VI_VOICE: str | None = None
 EN_VOICE: str | None = None
 
-# Device control. Use "cuda" to require GPU, "cpu" to force CPU, or "auto" to let the model choose.
-TTS_DEVICE = "cuda"
+# Device control: "auto" picks cuda > mps > cpu; or force "cuda", "mps", "cpu".
+TTS_DEVICE = "auto"
 VI_DEVICE = TTS_DEVICE
 EN_DEVICE = TTS_DEVICE
+
+# Kokoro hits a few ops MPS doesn't implement; fall back to CPU for those only.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 # VieNeu uses PyTorch on CUDA and ONNX on CPU when backend is "auto".
 VI_BACKEND = "auto"
@@ -89,18 +92,16 @@ if QUIET_HF_DOWNLOADS:
 # =========================
 
 TRAINING_DATA_DIR = Path(__file__).resolve().parent
-DATASETS_DIR = Path(r"D:\Code\datasets")
-HF_CACHE_DIR = DATASETS_DIR / ".hf_cache"
-os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
-PIPELINE_LANGUAGE_ENV = "PHOMT_PIPELINE_LANGUAGE"
-PIPELINE_FIXED_GENDER_ENV = "PHOMT_PIPELINE_FIXED_GENDER"
-PIPELINE_WORKER_INDEX_ENV = "PHOMT_PIPELINE_WORKER_INDEX"
-PIPELINE_WORKER_COUNT_ENV = "PHOMT_PIPELINE_WORKER_COUNT"
-
 if str(TRAINING_DATA_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DATA_DIR))
 
 from load_raw import load_train_samples
+from paths import DATASETS_DIR, HF_CACHE_DIR
+
+PIPELINE_LANGUAGE_ENV = "PHOMT_PIPELINE_LANGUAGE"
+PIPELINE_FIXED_GENDER_ENV = "PHOMT_PIPELINE_FIXED_GENDER"
+PIPELINE_WORKER_INDEX_ENV = "PHOMT_PIPELINE_WORKER_INDEX"
+PIPELINE_WORKER_COUNT_ENV = "PHOMT_PIPELINE_WORKER_COUNT"
 
 
 @dataclass(frozen=True)
@@ -213,19 +214,14 @@ MANIFEST_FIELDNAMES = [
 class KokoroTTS:
     supports_real_batch = True
 
-    def __init__(self, config: TTSConfig):
-        config.cache_dir.mkdir(parents=True, exist_ok=True)
-
+    def __init__(self, config: TTSConfig, device: str):
         try:
             from kokoro import KPipeline
         except ImportError as error:
             raise ImportError(
-                "Kokoro is not installed in this Python environment. "
-                "Run this script with `uv run python training-data/pipeline.py` "
-                "or run `uv sync` first."
+                "Kokoro is not installed; see training-data/README.md for env setup."
             ) from error
 
-        device = None if config.device == "auto" else config.device
         repo_id = config.model_repo or None
         self.pipeline = KPipeline(lang_code=config.lang_code, repo_id=repo_id, device=device)
         self.default_voice = config.default_voice
@@ -263,14 +259,7 @@ class KokoroTTS:
         ]
 
     def save(self, audio, output_path: str) -> None:
-        try:
-            import soundfile as sf
-        except ImportError as error:
-            raise ImportError(
-                "soundfile is not installed in this Python environment. "
-                "Run this script with `uv run python training-data/pipeline.py` "
-                "or run `uv sync` first."
-            ) from error
+        import soundfile as sf
 
         sf.write(output_path, audio, self.sample_rate)
 
@@ -368,13 +357,32 @@ class BatchedVieneuTTS:
         self.tts.close()
 
 
-def load_tts(config: TTSConfig):
-    validate_tts_runtime(config)
+def resolve_device(requested: str) -> str:
+    valid_devices = {"auto", "cpu", "cuda", "mps"}
+    if requested not in valid_devices:
+        raise ValueError(f"TTS device must be one of {sorted(valid_devices)}")
 
+    import torch
+
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is False.")
+    if requested == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("MPS was requested, but torch.backends.mps.is_available() is False.")
+    return requested
+
+
+def load_tts(config: TTSConfig):
+    device = resolve_device(config.device)
     config.cache_dir.mkdir(parents=True, exist_ok=True)
 
     if config.provider == "kokoro":
-        return KokoroTTS(config)
+        return KokoroTTS(config, device)
 
     if config.provider != "vieneu":
         raise ValueError(f"Unsupported TTS provider: {config.provider}")
@@ -383,47 +391,31 @@ def load_tts(config: TTSConfig):
         from vieneu import Vieneu
     except ImportError as error:
         raise ImportError(
-            "VieNeu is not installed in this Python environment. "
-            "Run this script with `uv run python training-data/pipeline.py` or run `uv sync` first."
+            "VieNeu is not installed; see training-data/README.md for env setup."
         ) from error
+
+    # ONNX is VieNeu's CPU path; GPU devices need the PyTorch backend.
+    backend = config.backend
+    if device in ("cuda", "mps"):
+        if backend == "onnx":
+            raise ValueError("VieNeu on cuda/mps requires backend='auto' or 'pytorch'.")
+        backend = "pytorch"
 
     tts = Vieneu(
         mode=config.mode,
         backbone_repo=config.model_repo,
-        device=config.device,
-        backend=config.backend,
+        device=device,
+        backend=backend,
         dtype=config.dtype,
     )
+    # V3TurboBatchEngine is CUDA-specific batching; MPS/CPU use VieNeu's sequential path.
     if (
         VI_USE_BATCH_ENGINE
-        and config.provider == "vieneu"
+        and device == "cuda"
         and getattr(tts, "backend", None) == "pytorch"
     ):
         return BatchedVieneuTTS(tts)
     return tts
-
-
-def validate_tts_runtime(config: TTSConfig) -> None:
-    valid_devices = {"auto", "cpu", "cuda"}
-    if config.device not in valid_devices:
-        raise ValueError(f"{config.name} device must be one of {sorted(valid_devices)}")
-
-    if config.provider == "vieneu" and config.device == "cuda" and config.backend == "onnx":
-        raise ValueError("VieNeu CUDA requires backend='auto' or backend='pytorch'.")
-
-    if config.device != "cuda":
-        return
-
-    try:
-        import torch
-    except ImportError as error:
-        raise RuntimeError("CUDA was requested, but torch is not installed.") from error
-
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "CUDA was requested, but torch.cuda.is_available() is False. "
-            "Install a CUDA-enabled PyTorch build or set TTS_DEVICE = 'auto'/'cpu'."
-        )
 
 
 def close_tts(tts) -> None:
@@ -700,31 +692,6 @@ def synthesize_language(
                 if tts is None:
                     tts = load_tts(config)
 
-                if len(voice_batch) > 1 and not supports_real_batch(tts):
-                    for index, text, voice, speed, output_path, spec in voice_batch:
-                        audio = infer_one_or_batch(
-                            tts, [text], voice=voice, **voice_infer_kwargs
-                        )[0]
-                        tts.save(audio, str(output_path))
-                        generated_count += 1
-                        paths.append(output_path)
-                        manifest_rows[index] = make_manifest_row(
-                            index,
-                            language,
-                            text,
-                            output_path,
-                            config,
-                            voice,
-                            spec,
-                            speed,
-                            "generated",
-                            duration_s=get_audio_array_duration_seconds(
-                                audio, config.sample_rate
-                            ),
-                        )
-                    write_manifest(manifest_path, list(manifest_rows.values()))
-                    continue
-
                 texts = [job[1] for job in voice_batch]
                 audios = infer_one_or_batch(
                     tts, texts, voice=voice, **voice_infer_kwargs
@@ -980,27 +947,6 @@ def run_pipeline_worker() -> None:
     )
     if worker_count == 1 and SCAN_AUDIO_TOTALS:
         current_generated_audio_totals((language,))
-
-
-def run_language(language: str) -> list[Path]:
-    fixed_voice = get_fixed_voice(language)
-    fixed_matched_gender = get_fixed_matched_gender((language,))
-    return synthesize_language(
-        language, fixed_voice=fixed_voice, fixed_matched_gender=fixed_matched_gender
-    )
-
-
-# Backward-compatible helpers.
-def synthesize_vi_train_samples(
-    n: int = N_SAMPLES, start_index: int = START_INDEX, **kwargs
-) -> list[Path]:
-    return synthesize_language("vi", n_samples=n, start_index=start_index, **kwargs)
-
-
-def synthesize_en_train_samples(
-    n: int = N_SAMPLES, start_index: int = START_INDEX, **kwargs
-) -> list[Path]:
-    return synthesize_language("en", n_samples=n, start_index=start_index, **kwargs)
 
 
 def pipeline_main() -> None:

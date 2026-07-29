@@ -5,6 +5,8 @@ from pathlib import Path
 
 from datasets import Audio, Dataset, load_dataset
 
+from paths import DATASETS_DIR, HF_CACHE_DIR as CACHE_DIR
+
 
 # =========================
 # Config
@@ -15,8 +17,6 @@ SPLIT = "train"
 START_INDEX = 0
 N_SAMPLES = 20
 
-DATASETS_DIR = Path(r"D:\Code\datasets")
-CACHE_DIR = DATASETS_DIR / ".hf_cache"
 PREVIEW_DIR = DATASETS_DIR / "audios"
 
 
