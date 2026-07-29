@@ -24,6 +24,8 @@ from datasets.utils.metadata import MetadataConfigs
 from huggingface_hub import CommitOperationAdd, DatasetCard, DatasetCardData, HfApi
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
+from paths import DATASETS_DIR
+
 
 # =========================
 # Config
@@ -48,7 +50,6 @@ PARQUET_COMPRESSION_LEVEL = 3
 DURATION_WORKERS = 8
 DURATION_PROGRESS_INTERVAL = 2_000
 
-DATASETS_DIR = Path(r"D:\Code\datasets")
 VI_MANIFEST = DATASETS_DIR / "vieNeu" / "outputs" / "vi" / "manifest.csv"
 EN_MANIFEST = DATASETS_DIR / "english" / "outputs" / "en" / "manifest.csv"
 LOCAL_SAVE_DIR = DATASETS_DIR / "phomt-en-vi-speech"
