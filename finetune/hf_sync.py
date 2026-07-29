@@ -39,15 +39,22 @@ def main() -> None:
         pair = newest_pair(run_dir)
         if pair and pair[1].name != uploaded:
             adapter, trainer = pair
-            print(f"uploading {adapter.name} + {trainer.name}", flush=True)
-            for f in (adapter, trainer):
-                api.upload_file(path_or_fileobj=str(f), path_in_repo=f.name, repo_id=repo)
-            keep = {adapter.name, trainer.name}
-            for remote in api.list_repo_files(repo):
-                if remote.endswith((".safetensors", ".pt")) and remote not in keep:
-                    api.delete_file(remote, repo_id=repo)
-            uploaded = trainer.name
-            print(f"synced step {uploaded}", flush=True)
+            try:
+                # Free quota first: HF's private-storage limit counts LFS objects
+                # across history, so stale checkpoints must be deleted AND squashed
+                # away before the new pair fits.
+                keep = {adapter.name, trainer.name}
+                for remote in api.list_repo_files(repo):
+                    if remote.endswith((".safetensors", ".pt")) and remote not in keep:
+                        api.delete_file(remote, repo_id=repo)
+                api.super_squash_history(repo_id=repo)
+                print(f"uploading {adapter.name} + {trainer.name}", flush=True)
+                for f in (adapter, trainer):
+                    api.upload_file(path_or_fileobj=str(f), path_in_repo=f.name, repo_id=repo)
+                uploaded = trainer.name
+                print(f"synced step {uploaded}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - keep the loop alive, retry next poll
+                print(f"sync failed, will retry: {exc}", flush=True)
         time.sleep(POLL_S)
 
 
