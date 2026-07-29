@@ -103,9 +103,8 @@ def read_audio(path: Path, sphn: Any, torch: Any, device: Any, left_pad_s: float
         wav = wav.mean(dim=0, keepdim=True)
     if left_pad_s:
         pad = int(round(left_pad_s * SAMPLE_RATE))
-        if pad <= 0:
-            raise RuntimeError(f"Non-zero left_pad_s produced no samples: {left_pad_s}")
-        wav = torch.nn.functional.pad(wav, (pad, 0))
+        if pad > 0:
+            wav = torch.nn.functional.pad(wav, (pad, 0))
     return wav[None].to(device)
 
 
