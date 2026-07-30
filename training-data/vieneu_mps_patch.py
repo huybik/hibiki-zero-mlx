@@ -25,7 +25,10 @@ import torch.nn.functional as F
 # length-sorted batches (padding + O(T^2) attention; ~28x under the EN workers'
 # CPU load) — below the LM pace it must hide behind, a net loss. In-process
 # async GPU decode crashes: torch MPS forbids concurrent command encoding from
-# two threads (MTLCommandBuffer assertion).
+# two threads (MTLCommandBuffer assertion). Free-threaded py3.14 re-check
+# (.venv314t): identical to GIL py3.12 — torch CPU kernels release the GIL, so
+# the limiter is the CPU codec itself (~56x one thread vs ~110x LM pace), not
+# GIL contention. See docs/vieneu_optimizations.md.
 
 from vieneu_utils.phonemize_text import (
     phonemize_text_with_emotions,
