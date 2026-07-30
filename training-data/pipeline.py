@@ -25,7 +25,9 @@ LANGUAGES = ("vi","en")
 # *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
 VI_WORKERS = 1
-EN_WORKERS = 5
+# Kokoro CPU throughput is memory-bandwidth-bound (~22-26x aggregate on M4 Pro
+# no matter the layout); 10 single-thread workers edge out fewer multi-thread ones.
+EN_WORKERS = 10
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
 START_INDEX = 249600
@@ -62,6 +64,11 @@ EN_DEVICE = "cpu"
 
 # Run the vieneu backbone/acoustic decoder in fp16 (vieneu_mps_patch.apply_fp16).
 VI_FP16 = True
+
+# Fold weight_norm and torch.compile Kokoro's iSTFTNet decoder (~92% of EN CPU
+# time); inductor's elementwise fusion buys ~+20% aggregate on the bandwidth-bound
+# M-series. Warmup ~50s/worker with a warm inductor cache (~8 min cold).
+EN_COMPILE = True
 
 # Kokoro hits a few ops MPS doesn't implement; fall back to CPU for those only.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -251,6 +258,22 @@ class KokoroTTS:
         self.pipeline = KPipeline(lang_code=config.lang_code, repo_id=repo_id, device=device)
         self.default_voice = config.default_voice
         self.sample_rate = config.sample_rate
+
+        if EN_COMPILE and device == "cpu" and self.pipeline.model is not None:
+            import torch
+            from torch.nn.utils import remove_weight_norm
+            from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
+
+            model = self.pipeline.model
+            for mod in model.modules():
+                if is_parametrized(mod, "weight"):
+                    remove_parametrizations(mod, "weight")
+                else:
+                    try:
+                        remove_weight_norm(mod)
+                    except ValueError:
+                        pass
+            model.decoder = torch.compile(model.decoder, dynamic=True)
 
     def infer_batch(
         self, texts: list[str], voice: str | None = None, speed: float = 1.0, **kwargs
@@ -870,8 +893,13 @@ def start_language_process(
 ) -> subprocess.Popen:
     env = os.environ.copy()
     if language == "en":
-        # Kokoro runs on CPU; cap threads so 6 workers don't oversubscribe the cores.
-        env["OMP_NUM_THREADS"] = "3"
+        # Kokoro runs on CPU; 1 thread per worker is the most core-efficient layout.
+        env["OMP_NUM_THREADS"] = "1"
+        # Persist inductor artifacts across reboots (default TMPDIR cache is wiped).
+        env.setdefault(
+            "TORCHINDUCTOR_CACHE_DIR",
+            str(Path.home() / ".cache" / "torchinductor-kokoro"),
+        )
     env[PIPELINE_LANGUAGE_ENV] = language
     env[PIPELINE_WORKER_INDEX_ENV] = str(worker_index)
     env[PIPELINE_WORKER_COUNT_ENV] = str(worker_count)
