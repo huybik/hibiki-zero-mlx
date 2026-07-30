@@ -39,6 +39,10 @@ N_SAMPLES = 96000
 # share forward steps, max_batch_size=32 by default).
 BATCH_SIZE = 32
 
+# CUDA per-frame cost is launch-bound (graphed) and nearly flat in batch size;
+# used as both the vieneu engine max_batch_size and the per-call text batch.
+CUDA_BATCH_SIZE = 128
+
 RANDOMIZE_VOICE = True
 MATCH_VOICE_GENDER = True
 MATCH_GENDERS = ("female", "male")
@@ -324,6 +328,7 @@ def load_tts(config: TTSConfig):
         device=device,
         backend=backend,
         dtype=config.dtype,
+        max_batch_size=CUDA_BATCH_SIZE if device == "cuda" else BATCH_SIZE,
     )
     if VI_VOICE_BANK_JSON.exists():
         register_voice_bank(tts, VI_VOICE_BANK_JSON)
@@ -582,6 +587,8 @@ def synthesize_language(
             generation_jobs.append((index, text, voice, speed, output_path, spec))
 
         if config.provider == "vieneu":
+            if resolve_device(config.device) == "cuda":
+                batch_size = max(batch_size, CUDA_BATCH_SIZE)
             # Global length-sorted batches (voices mixed per batch): every batch
             # runs to its longest member, so grouping similar lengths kills the
             # per-voice tail waste.

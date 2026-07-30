@@ -1,8 +1,11 @@
-"""MPS throughput patch for vieneu v3-turbo batched inference.
+"""MPS/CUDA throughput patch for vieneu v3-turbo batched inference.
 
 Replaces V3TurboBatchEngine.generate_batch on the live engine with a version that
 avoids per-frame GPU->CPU syncs (vectorized repetition penalty, device-side EOS
 tracking) and decodes all rows through the MOSS codec in one batched call.
+On CUDA the whole per-frame acoustic step (16 sequential decoder steps + sampling
++ EOS head) replays as ONE CUDA graph — unlike stock vieneu's graph path, the
+repetition penalty survives capture because its history is a static device tensor.
 Also provides fp16 conversion and a per-text-voice batch entrypoint.
 """
 from __future__ import annotations
@@ -86,6 +89,70 @@ def _generate_frame_fast(model, backbone_hidden, *, temperature, top_k, top_p,
     return torch.stack(codes, dim=1), prefill_out
 
 
+class _GraphedFrameFast:
+    """CUDA-graph capture of _generate_frame_fast (+ EOS head) for a fixed batch.
+
+    The `seen` repetition-penalty history is a static buffer read AND scatter_-
+    updated inside the graph, so it persists across replays within a batch;
+    zero it before each new batch."""
+
+    def __init__(self, model, batch_size: int, *, temperature: float, top_k: int,
+                 top_p: float, repetition_penalty: float, warmup: int = 3):
+        cfg = model.config
+        dev = next(model.parameters()).device
+        dt = next(model.acoustic_decoder.parameters()).dtype
+        self.model = model
+        self.eos_id = int(cfg.speech_generation_end_token_id)
+        self._sampling = dict(temperature=temperature, top_k=top_k, top_p=top_p,
+                              repetition_penalty=repetition_penalty)
+        self.static_hidden = torch.zeros(batch_size, cfg.hidden_size, device=dev, dtype=dt)
+        self.seen = (
+            torch.zeros(batch_size, cfg.n_vq, cfg.audio_vocab_size, dtype=torch.bool, device=dev)
+            if not math.isclose(repetition_penalty, 1.0) else None
+        )
+
+        # Warm up on a side stream, then capture (capture records without executing,
+        # so `seen` stays clean after the post-warmup zero).
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s), torch.no_grad():
+            for _ in range(warmup):
+                self._run_once()
+        torch.cuda.current_stream().wait_stream(s)
+        if self.seen is not None:
+            self.seen.zero_()
+
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph), torch.no_grad():
+            self.static_codes, self.static_eos = self._run_once()
+
+    def _run_once(self):
+        codes, prefill_out = _generate_frame_fast(
+            self.model, self.static_hidden, seen=self.seen, **self._sampling
+        )
+        is_eos = self.model.text_lm_head(prefill_out[:, 0]).float().argmax(-1) == self.eos_id
+        return codes, is_eos
+
+    @torch.no_grad()
+    def run(self, backbone_hidden: torch.Tensor):
+        self.static_hidden.copy_(backbone_hidden)
+        self.graph.replay()
+        return self.static_codes.clone(), self.static_eos.clone()
+
+
+def _get_fast_graph(engine, B, temperature, top_k, top_p, repetition_penalty):
+    graphs = getattr(engine, "_fast_graphs", None)
+    if graphs is None:
+        graphs = engine._fast_graphs = {}
+    key = (B, round(temperature, 4), top_k, round(top_p, 4), round(repetition_penalty, 4))
+    if key not in graphs:
+        graphs[key] = _GraphedFrameFast(
+            engine.model, B, temperature=temperature, top_k=top_k, top_p=top_p,
+            repetition_penalty=repetition_penalty,
+        )
+    return graphs[key]
+
+
 @torch.no_grad()
 def _generate_batch_fast(
     self,
@@ -96,7 +163,7 @@ def _generate_batch_fast(
     top_p: float = 0.95,
     repetition_penalty: float = 1.2,
     max_new_frames: int = 300,
-    use_cudagraph: bool = False,
+    use_cudagraph: bool = True,
 ) -> List[np.ndarray]:
     """Drop-in replacement for V3TurboBatchEngine.generate_batch.
 
@@ -119,8 +186,15 @@ def _generate_batch_fast(
     batch_spk = torch.cat(spk_list, dim=0) if (spk_list and spk_list[0] is not None) else None
 
     use_rep = not math.isclose(repetition_penalty, 1.0)
-    seen = (torch.zeros(B, n_vq, cfg.audio_vocab_size, dtype=torch.bool, device=dev)
-            if use_rep else None)
+    graphed = None
+    if use_cudagraph and dev.type == "cuda":
+        graphed = _get_fast_graph(self, B, temperature, top_k, top_p, repetition_penalty)
+        seen = graphed.seen
+        if seen is not None:
+            seen.zero_()
+    else:
+        seen = (torch.zeros(B, n_vq, cfg.audio_vocab_size, dtype=torch.bool, device=dev)
+                if use_rep else None)
 
     h, cache, mask, pos = self.bb.prefill(embeds_list)
     finished = torch.zeros(B, dtype=torch.bool, device=dev)
@@ -128,11 +202,14 @@ def _generate_batch_fast(
     frames: List[torch.Tensor] = []
 
     for step in range(max_new_frames):
-        codes, prefill_out = _generate_frame_fast(
-            self.model, h, temperature=temperature, top_k=top_k, top_p=top_p,
-            repetition_penalty=repetition_penalty, seen=seen,
-        )
-        is_eos = self.model.text_lm_head(prefill_out[:, 0]).float().argmax(-1) == eos_id
+        if graphed is not None:
+            codes, is_eos = graphed.run(h)
+        else:
+            codes, prefill_out = _generate_frame_fast(
+                self.model, h, temperature=temperature, top_k=top_k, top_p=top_p,
+                repetition_penalty=repetition_penalty, seen=seen,
+            )
+            is_eos = self.model.text_lm_head(prefill_out[:, 0]).float().argmax(-1) == eos_id
         frames.append(codes)
         lengths += (~finished).long()   # active rows record this frame (incl. their EOS frame)
         finished |= is_eos
@@ -238,10 +315,15 @@ def infer_batch_voices(
             "style": "tu_nhien", "use_ref_codes": True,
         })
 
-    wavs: List[np.ndarray] = []
+    # Batch chunks by phoneme length, not text order: each batch runs to its
+    # longest member, so mixing lengths burns tail compute on finished rows.
+    order = sorted(range(len(requests)), key=lambda i: len(requests[i]["phonemes"]), reverse=True)
+    wavs: List[np.ndarray] = [empty] * len(requests)
     bs = tts.max_batch_size
-    for i in range(0, len(requests), bs):
-        wavs.extend(engine.generate_batch(requests[i : i + bs], **sampling))
+    for i in range(0, len(order), bs):
+        idx = order[i : i + bs]
+        for j, wav in zip(idx, engine.generate_batch([requests[k] for k in idx], **sampling)):
+            wavs[j] = wav
 
     grouped: List[List[np.ndarray]] = [[] for _ in texts]
     for wav, (_, ti) in zip(wavs, flat):
