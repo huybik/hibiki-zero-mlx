@@ -56,8 +56,8 @@ LOCAL_SAVE_DIR = DATASETS_DIR / "phomt-en-vi-speech"
 
 # Keep pairs with broadly similar lengths. The current generated data has slow
 # English outliers, mostly af_nicole at Kokoro speed 1.0.
-MIN_DURATION_RATIO = 0.5
-MAX_DURATION_RATIO = 1.6
+MIN_DURATION_RATIO = 0.4
+MAX_DURATION_RATIO = 1.8
 
 
 def read_manifest(path: Path) -> dict[int, dict]:
