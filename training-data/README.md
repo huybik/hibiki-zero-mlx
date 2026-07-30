@@ -37,8 +37,10 @@ The pipeline runs in its own conda env `phomt-data` (torch 2.13 — its MPS ops 
 ```bash
 conda create -y -n phomt-data python=3.12
 conda run -n phomt-data pip install "torch==2.13.*" "kokoro>=0.9.2" "vieneu>=3.0.9" \
-    datasets soundfile "onnxruntime<1.24" hf-xet \
+    datasets soundfile "onnxruntime<1.24" hf-xet coremltools \
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+# coremltools powers the Kokoro Core ML/Metal GPU decoder (kokoro_coreml.py);
+# macOS-only, harmless to skip on CUDA boxes (set EN_COREML_WORKERS = 0).
 # torchaudio ended at 2.11 (maintenance mode); VieNeu only needs its pure-Python
 # kaldi fbank, which works fine against torch 2.13 — install without deps so
 # torch is not downgraded.
