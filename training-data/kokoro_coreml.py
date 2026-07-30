@@ -24,7 +24,14 @@ The .mlpackage converts once and is cached on disk.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import importlib.metadata
+import json
 import os
+import shutil
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -33,13 +40,24 @@ import torch.nn.functional as F
 
 HAR_PER_FRAME = 120  # har STFT frames per asr frame (decode 2x, rates 10*6, hop 5)
 SAMPLES_PER_FRAME = 600
-MAX_T = 2048         # 51 s of audio; Kokoro chunks are <=510 tokens, well under
+DECODER_FRAMES_PER_SECOND = 40  # Kokoro output is 24 kHz / 600 samples per frame
+MAX_DECODER_SECONDS = 60
+MAX_T = MAX_DECODER_SECONDS * DECODER_FRAMES_PER_SECOND
 T_BUCKET = 32        # pad T up to a multiple of this to bound the Metal shape set
 
 CACHE_DIR = Path(
     os.environ.get("KOKORO_COREML_CACHE", Path.home() / ".cache" / "kokoro-coreml")
 )
-MODEL_PATH = CACHE_DIR / "kokoro-decoder-core-v2.mlpackage"
+CONVERSION_LOCK_PATH = CACHE_DIR / "kokoro-decoder-core.lock"
+CONVERSION_SCHEMA = {
+    "version": 3,
+    "format": "mlprogram",
+    "minimum_deployment_target": "macOS14",
+    "compute_units": "CPU_AND_GPU",
+    "har_per_frame": HAR_PER_FRAME,
+    "max_decoder_frames": MAX_T,
+    "masked_adain_eps": 1e-4,
+}
 
 
 # Per-call masked-norm context: trace-time dict {stage length -> (mask, inv_n)}.
@@ -223,8 +241,40 @@ def make_har(generator, F0_curve: torch.Tensor) -> torch.Tensor:
         return torch.cat([har_spec, har_phase], dim=1)
 
 
-def convert(decoder):
-    """Trace + convert the (weight-norm-folded) decoder; cache the mlpackage."""
+def cache_path(decoder) -> Path:
+    schema = {
+        **CONVERSION_SCHEMA,
+        "decoder_class": (
+            f"{decoder.__class__.__module__}.{decoder.__class__.__qualname__}"
+        ),
+        "kokoro_version": importlib.metadata.version("kokoro"),
+        "coremltools_version": importlib.metadata.version("coremltools"),
+        "torch_version": str(torch.__version__),
+    }
+    digest = hashlib.sha256(
+        json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
+    )
+    for name, value in sorted(decoder.state_dict().items()):
+        tensor = value.detach().cpu().contiguous()
+        metadata = (name, str(tensor.dtype), list(tensor.shape))
+        digest.update(json.dumps(metadata, separators=(",", ":")).encode())
+        digest.update(tensor.reshape(-1).view(torch.uint8).numpy().tobytes())
+    return CACHE_DIR / f"kokoro-decoder-core-{digest.hexdigest()}.mlpackage"
+
+
+@contextmanager
+def conversion_lock():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with CONVERSION_LOCK_PATH.open("a+b") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def convert(decoder, output_path: Path) -> None:
+    """Trace + convert the weight-norm-folded decoder to an mlpackage."""
     import coremltools as ct
 
     patch_rsqrt()
@@ -250,7 +300,9 @@ def convert(decoder):
     with torch.no_grad():
         traced = torch.jit.trace(core, example)
 
-    rd = lambda hi, default: ct.RangeDim(lower_bound=8, upper_bound=hi, default=default)
+    def rd(hi, default):
+        return ct.RangeDim(lower_bound=8, upper_bound=hi, default=default)
+
     mlm = ct.convert(
         traced,
         inputs=[
@@ -270,8 +322,21 @@ def convert(decoder):
         compute_units=ct.ComputeUnit.CPU_AND_GPU,
         convert_to="mlprogram",
     )
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    mlm.save(str(MODEL_PATH))
+    mlm.save(str(output_path))
+
+
+def ensure_cached(decoder, model_path: Path) -> None:
+    with conversion_lock():
+        if model_path.exists():
+            return
+        fold_weight_norm(decoder)
+        temp_dir = Path(tempfile.mkdtemp(prefix=".kokoro-coreml-", dir=CACHE_DIR))
+        temp_path = temp_dir / model_path.name
+        try:
+            convert(decoder, temp_path)
+            os.replace(temp_path, model_path)
+        finally:
+            shutil.rmtree(temp_dir)
 
 
 class CoreMLDecoder(torch.nn.Module):
@@ -282,17 +347,24 @@ class CoreMLDecoder(torch.nn.Module):
 
         super().__init__()
         self.generator = decoder.generator
-        if not MODEL_PATH.exists():
-            fold_weight_norm(decoder)
-            convert(decoder)
+        self.model_path = cache_path(decoder)
+        ensure_cached(decoder, self.model_path)
         self.mlm = ct.models.MLModel(
-            str(MODEL_PATH), compute_units=ct.ComputeUnit.CPU_AND_GPU
+            str(self.model_path), compute_units=ct.ComputeUnit.CPU_AND_GPU
         )
         self._cpu_mlm = None
 
     def forward(self, asr, F0_curve, N, s):
-        t = asr.shape[-1]
+        t = int(asr.shape[-1])
         pad = -t % T_BUCKET
+        padded_t = t + pad
+        if padded_t > MAX_T:
+            duration = t / DECODER_FRAMES_PER_SECOND
+            raise ValueError(
+                "Kokoro Core ML decoder supports at most "
+                f"{MAX_T} padded frames ({MAX_DECODER_SECONDS} s); received "
+                f"{t} frames ({duration:.2f} s), which pads to {padded_t}."
+            )
         # har from the UNPADDED F0 (then zero-padded): its tail STFT frames and
         # its RNG draws exactly match the stock CPU decoder's
         har = make_har(self.generator, F0_curve)
@@ -346,6 +418,6 @@ class CoreMLDecoder(torch.nn.Module):
 
         if self._cpu_mlm is None:
             self._cpu_mlm = ct.models.MLModel(
-                str(MODEL_PATH), compute_units=ct.ComputeUnit.CPU_ONLY
+                str(self.model_path), compute_units=ct.ComputeUnit.CPU_ONLY
             )
         return self._cpu_mlm.predict(feed)

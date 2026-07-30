@@ -37,15 +37,19 @@ The pipeline runs in its own conda env `phomt-data` (torch 2.13 — its MPS ops 
 ```bash
 conda create -y -n phomt-data python=3.12
 conda run -n phomt-data pip install "torch==2.13.*" "kokoro>=0.9.2" "vieneu>=3.0.9" \
-    datasets soundfile "onnxruntime<1.24" hf-xet coremltools \
+    datasets soundfile "onnxruntime<1.24" hf-xet \
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
-# coremltools powers the Kokoro Core ML/Metal GPU decoder (kokoro_coreml.py);
-# macOS-only, harmless to skip on CUDA boxes (set EN_COREML_WORKERS = 0).
 # torchaudio ended at 2.11 (maintenance mode); VieNeu only needs its pure-Python
 # kaldi fbank, which works fine against torch 2.13 — install without deps so
 # torch is not downgraded.
 conda run -n phomt-data pip install --no-deps torchaudio==2.11.0
 conda activate phomt-data
+```
+
+On macOS, install `coremltools` for the Kokoro Core ML/Metal decoder:
+
+```bash
+conda run -n phomt-data pip install coremltools
 ```
 
 On CUDA machines install the matching CUDA wheel of torch instead (`--index-url https://download.pytorch.org/whl/cu126`).
@@ -102,7 +106,8 @@ en workers -> <PHOMT_DATA_DIR>/english/outputs/en/
 Each output folder contains WAV files and a `manifest.csv`.
 
 Kokoro `af_nicole` is generated faster than the default because it is otherwise
-much slower than the paired Vietnamese speech.
+much slower than the paired Vietnamese speech. English generation defaults to
+7 Core ML workers on macOS and 10 compiled-CPU workers on other platforms.
 
 If GPU memory is tight (each worker loads its own model copy — on a Mac start
 with 1 worker per language), set:

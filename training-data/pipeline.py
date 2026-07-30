@@ -25,11 +25,9 @@ LANGUAGES = ("vi","en")
 # *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
 VI_WORKERS = 1
-# EN workers run the Core ML GPU decoder (see EN_COREML_WORKERS): ~16x RT each,
-# GPU-saturated at ~75x aggregate with 7 workers on the M4 Pro. Rows shard
-# uniformly across workers, so don't mix in slow compiled-CPU workers (2.5x
-# each under contention) — they drag the wall clock while fast workers idle.
-EN_WORKERS = 7
+# Seven Core ML workers saturate the M4 Pro GPU; non-macOS keeps the
+# bandwidth-bound compiled-CPU layout at ten single-thread workers.
+EN_WORKERS = 7 if sys.platform == "darwin" else 10
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
 START_INDEX = 249600
@@ -71,13 +69,6 @@ VI_FP16 = True
 # time); inductor's elementwise fusion buys ~+20% aggregate on the bandwidth-bound
 # M-series. Warmup ~50s/worker with a warm inductor cache (~8 min cold).
 EN_COMPILE = True
-
-# Run the decoder as a Core ML mlprogram on the Metal GPU for the first N EN
-# workers (see kokoro_coreml.py); workers beyond N use the compiled-CPU path.
-# All-CoreML is the fastest layout (EN ~75x aggregate alone); it shares the
-# GPU with vieneu's MPS work in a joint tranche, which roughly balances EN and
-# VI instead of EN being the 2x long pole, and leaves the CPU to VI's codec.
-EN_COREML_WORKERS = EN_WORKERS
 
 # Kokoro hits a few ops MPS doesn't implement; fall back to CPU for those only.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -255,7 +246,7 @@ MANIFEST_FIELDNAMES = [
 
 
 class KokoroTTS:
-    def __init__(self, config: TTSConfig, device: str, use_coreml: bool = False):
+    def __init__(self, config: TTSConfig, device: str):
         try:
             from kokoro import KPipeline
         except ImportError as error:
@@ -268,7 +259,7 @@ class KokoroTTS:
         self.default_voice = config.default_voice
         self.sample_rate = config.sample_rate
 
-        if use_coreml and self.pipeline.model is not None:
+        if sys.platform == "darwin" and self.pipeline.model is not None:
             from kokoro_coreml import CoreMLDecoder
 
             self.pipeline.model.decoder = CoreMLDecoder(self.pipeline.model.decoder)
@@ -334,13 +325,12 @@ def resolve_device(requested: str) -> str:
     return requested
 
 
-def load_tts(config: TTSConfig, worker_index: int = 0):
+def load_tts(config: TTSConfig):
     device = resolve_device(config.device)
     config.cache_dir.mkdir(parents=True, exist_ok=True)
 
     if config.provider == "kokoro":
-        use_coreml = worker_index < EN_COREML_WORKERS and sys.platform == "darwin"
-        return KokoroTTS(config, device, use_coreml=use_coreml)
+        return KokoroTTS(config, device)
 
     if config.provider != "vieneu":
         raise ValueError(f"Unsupported TTS provider: {config.provider}")
@@ -653,7 +643,7 @@ def synthesize_language(
             )
 
             if tts is None:
-                tts = load_tts(config, worker_index)
+                tts = load_tts(config)
 
             texts = [job[1] for job in job_batch]
             if config.provider == "vieneu":
