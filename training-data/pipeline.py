@@ -180,19 +180,30 @@ KOKORO_EN_VOICE_SPEEDS = {
 
 
 def kokoro_blend_voices() -> dict[str, VoiceSpec]:
-    """Pairwise same-gender blends; KPipeline mean-blends comma-separated packs."""
+    """Same-gender pair blends at 25/50/75 weights. Plain "a,b" names use
+    KPipeline's mean blend; "a:0.75,b:0.25" is resolved by KokoroTTS."""
     by_gender: dict[str, list[str]] = {}
     for name, spec in KOKORO_EN_VOICES.items():
         by_gender.setdefault(spec.gender, []).append(name)
-    return {
-        f"{first},{second}": VoiceSpec(gender=gender, style="blend")
-        for gender, names in by_gender.items()
-        for first, second in combinations(names, 2)
-    }
+    blends: dict[str, VoiceSpec] = {}
+    for gender, names in by_gender.items():
+        for first, second in combinations(names, 2):
+            blends[f"{first},{second}"] = VoiceSpec(gender=gender, style="blend")
+            blends[f"{first}:0.75,{second}:0.25"] = VoiceSpec(gender=gender, style="blend")
+            blends[f"{first}:0.25,{second}:0.75"] = VoiceSpec(gender=gender, style="blend")
+    return blends
 
 # Cloned VIVOS speakers enrolled by build_voice_bank.py; merged into the VI
 # voice pool (and registered into the engine at load) when the bank exists.
 VI_VOICE_BANK_JSON = DATASETS_DIR / "voice_bank" / "vi_voices.json"
+
+# QA-pruned voices (qa_vi_voices.py scorecard, confirmed on a second pass):
+# Xuân Vĩnh / Quang Sơn / SPK22 have unstable pronunciation (CER); the rest
+# drag under 12 chars/s and chronically produce EN/VI duration-ratio outliers.
+VI_VOICE_BLOCKLIST = {
+    "Xuân Vĩnh", "Quang Sơn", "VIVOSSPK22",
+    "VIVOSSPK07", "VIVOSSPK15", "VIVOSSPK21", "VIVOSSPK30", "VIVOSSPK45",
+}
 
 # Speaker-embedding-matched EN voice per VI voice, built by match_voices.py; the
 # EN side derives its voice from the row's VI voice so paired rows share timbre.
@@ -232,7 +243,11 @@ VI_TTS = TTSConfig(
     sample_rate=48_000,
     cache_dir=HF_CACHE_DIR,
     output_dir=DATASETS_DIR / "vieNeu" / "outputs" / "vi",
-    voices={**VIE_NEU_VOICES, **load_voice_bank_specs()},
+    voices={
+        name: spec
+        for name, spec in {**VIE_NEU_VOICES, **load_voice_bank_specs()}.items()
+        if name not in VI_VOICE_BLOCKLIST
+    },
 )
 
 EN_TTS = TTSConfig(
@@ -286,6 +301,7 @@ class KokoroTTS:
         self.pipeline = KPipeline(lang_code=config.lang_code, repo_id=repo_id, device=device)
         self.default_voice = config.default_voice
         self.sample_rate = config.sample_rate
+        self._voice_cache: dict = {}
 
         if sys.platform == "darwin" and self.pipeline.model is not None:
             from kokoro_coreml import CoreMLDecoder
@@ -307,6 +323,19 @@ class KokoroTTS:
                         pass
             model.decoder = torch.compile(model.decoder, dynamic=True)
 
+    def resolve_voice(self, voice: str):
+        """Weighted blend names ("a:0.75,b:0.25") -> pack tensor; others pass through."""
+        if ":" not in voice:
+            return voice
+        cached = self._voice_cache.get(voice)
+        if cached is None:
+            cached = sum(
+                self.pipeline.load_single_voice(name) * float(weight)
+                for name, _, weight in (part.partition(":") for part in voice.split(","))
+            )
+            self._voice_cache[voice] = cached
+        return cached
+
     def infer_batch(
         self, texts: list[str], voice: str | None = None, speed: float = 1.0, **kwargs
     ) -> list:
@@ -314,7 +343,7 @@ class KokoroTTS:
 
         grouped: list[list] = [[] for _ in texts]
         for result in self.pipeline(
-            texts, voice=voice or self.default_voice, speed=speed, **kwargs
+            texts, voice=self.resolve_voice(voice or self.default_voice), speed=speed, **kwargs
         ):
             if result.audio is None:
                 continue
@@ -500,8 +529,13 @@ def get_voice_spec(config: TTSConfig, voice: str) -> VoiceSpec:
 def get_voice_speed(config: TTSConfig, voice: str) -> float | None:
     if config.provider != "kokoro":
         return None
-    parts = voice.split(",")
-    return sum(KOKORO_EN_VOICE_SPEEDS.get(part, 1.0) for part in parts) / len(parts)
+    total = weight_total = 0.0
+    for part in voice.split(","):
+        name, _, weight_text = part.partition(":")
+        weight = float(weight_text) if weight_text else 1.0
+        total += KOKORO_EN_VOICE_SPEEDS.get(name, 1.0) * weight
+        weight_total += weight
+    return total / weight_total
 
 
 def speed_matches(existing_speed: str | None, speed: float | None) -> bool:

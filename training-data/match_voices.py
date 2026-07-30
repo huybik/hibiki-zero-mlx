@@ -1,11 +1,13 @@
 """Build the VI→EN voice map by speaker-embedding similarity.
 
 One-time offline step: synthesizes calibration audio for every EN voice in the
-pipeline pool (Kokoro singles + pairwise blends), embeds it with VieNeu's 192-d
-speaker encoder, and pairs each VI voice (v3-turbo presets + VIVOS bank) with
-its most similar same-gender EN voice by cosine. pipeline.py derives each row's
-EN voice from its VI voice through this map, so paired rows share a timbre.
-Rerun after changing the EN pool or re-enrolling the VIVOS bank.
+pipeline pool (Kokoro singles + weighted same-gender blends) and embeds both
+sides with VieNeu's 192-d speaker encoder — the VI side from the synthesized
+calibration wavs written by qa_vi_voices.py, so the match measures what the
+training data actually sounds like, not the raw enrollment clips. Each VI voice
+pairs with its most similar same-gender EN candidate by cosine. pipeline.py
+derives each row's EN voice from its VI voice through this map.
+Rerun after changing the EN pool, the blocklist, or re-running qa_vi_voices.py.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ if str(TRAINING_DATA_DIR) not in sys.path:
 import pipeline
 from build_voice_bank import patch_torchaudio_load
 from paths import DATASETS_DIR
+from qa_vi_voices import SYNTH_DIR, cosine
 
 # Phonetically rich Harvard sentences; ~10 s per voice is plenty for the encoder.
 CALIBRATION_TEXTS = [
@@ -34,12 +37,16 @@ CALIBRATION_TEXTS = [
 EN_REFS_DIR = DATASETS_DIR / "voice_bank" / "en_refs"
 
 
+def en_ref_path(voice: str) -> Path:
+    return EN_REFS_DIR / (voice.replace(":", "").replace(",", "+") + ".wav")
+
+
 def synthesize_en_references() -> dict[str, Path]:
     tts = pipeline.load_tts(pipeline.EN_TTS)
     EN_REFS_DIR.mkdir(parents=True, exist_ok=True)
     refs: dict[str, Path] = {}
     for number, voice in enumerate(pipeline.EN_TTS.voices, start=1):
-        path = EN_REFS_DIR / f"{voice.replace(',', '+')}.wav"
+        path = en_ref_path(voice)
         speed = pipeline.get_voice_speed(pipeline.EN_TTS, voice)
         audios = tts.infer_batch(CALIBRATION_TEXTS, voice=voice, speed=speed)
         gap = np.zeros(int(0.3 * tts.sample_rate), dtype=np.float32)
@@ -49,26 +56,23 @@ def synthesize_en_references() -> dict[str, Path]:
     return refs
 
 
-def cosine(a, b) -> float:
-    a = np.asarray(a, dtype=np.float32).reshape(-1)
-    b = np.asarray(b, dtype=np.float32).reshape(-1)
-    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
-
-
 def main() -> None:
     en_refs = synthesize_en_references()
 
     patch_torchaudio_load()
     vi = pipeline.load_tts(pipeline.VI_TTS)
-    en_embs = {
-        voice: vi.engine.prepare_reference(str(path), denoise=False, use_ref_codes=False)[0]
-        for voice, path in en_refs.items()
-    }
+    embed = lambda path: vi.engine.prepare_reference(
+        str(path), denoise=False, use_ref_codes=False
+    )[0]
+    en_embs = {voice: embed(path) for voice, path in en_refs.items()}
 
     mapping: dict[str, str] = {}
     scores: dict[str, dict[str, float]] = {}
     for vi_voice, spec in pipeline.VI_TTS.voices.items():
-        emb = vi._preset_voices[vi_voice]["speaker_emb"]
+        synth_wav = SYNTH_DIR / f"{vi_voice}.wav"
+        if not synth_wav.exists():
+            raise FileNotFoundError(f"{synth_wav} missing; run qa_vi_voices.py first.")
+        emb = embed(synth_wav)
         sims = {
             en_voice: cosine(emb, en_emb)
             for en_voice, en_emb in en_embs.items()
