@@ -10,6 +10,7 @@ import subprocess
 import sys
 import warnings
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Iterable
 
@@ -25,16 +26,18 @@ LANGUAGES = ("vi","en")
 # *_WORKERS > 1 shards that language across multiple processes; each loads its own model.
 PARALLEL_LANGUAGES = True
 VI_WORKERS = 1
-# Seven Core ML workers saturate the M4 Pro GPU; non-macOS keeps the
-# bandwidth-bound compiled-CPU layout at ten single-thread workers.
-EN_WORKERS = 7 if sys.platform == "darwin" else 10
+# Five Core ML workers trade a little EN throughput for ~3-4GB RAM headroom
+# (EN finishes before VI anyway); non-macOS keeps the bandwidth-bound
+# compiled-CPU layout at ten single-thread workers.
+EN_WORKERS = 5 if sys.platform == "darwin" else 10
 
 # Dataset range. If END_INDEX is None, the pipeline uses START_INDEX + N_SAMPLES.
-START_INDEX = 249600
+START_INDEX = 345600
 END_INDEX: int | None = None
 
-# Hub has 148,148 rows ≈ 234 VI-h (mean 5.69 s); 1000 VI-h total needs ~485k more rows.
-N_SAMPLES = 96000
+# Hub has 337,519 rows ≈ 568 VI-h; this tranche (mean 6.35 s, ~98.6% in-band)
+# adds ~634 VI-h to land ~1,200 VI-h total (200 h safety over the 1k goal).
+N_SAMPLES = 364800
 
 # Batch generation by voice when the TTS backend supports batched inference.
 # vieneu >= 3.2 batches natively on the PyTorch backend (chunks from all texts
@@ -175,9 +178,25 @@ KOKORO_EN_VOICE_SPEEDS = {
     "am_michael": 1.10,
 }
 
+
+def kokoro_blend_voices() -> dict[str, VoiceSpec]:
+    """Pairwise same-gender blends; KPipeline mean-blends comma-separated packs."""
+    by_gender: dict[str, list[str]] = {}
+    for name, spec in KOKORO_EN_VOICES.items():
+        by_gender.setdefault(spec.gender, []).append(name)
+    return {
+        f"{first},{second}": VoiceSpec(gender=gender, style="blend")
+        for gender, names in by_gender.items()
+        for first, second in combinations(names, 2)
+    }
+
 # Cloned VIVOS speakers enrolled by build_voice_bank.py; merged into the VI
 # voice pool (and registered into the engine at load) when the bank exists.
 VI_VOICE_BANK_JSON = DATASETS_DIR / "voice_bank" / "vi_voices.json"
+
+# Speaker-embedding-matched EN voice per VI voice, built by match_voices.py; the
+# EN side derives its voice from the row's VI voice so paired rows share timbre.
+VI_TO_EN_JSON = DATASETS_DIR / "voice_bank" / "vi_to_en_voices.json"
 
 
 def load_voice_bank_specs() -> dict[str, VoiceSpec]:
@@ -189,6 +208,15 @@ def load_voice_bank_specs() -> dict[str, VoiceSpec]:
         for name, preset in presets.items()
         if name not in VIE_NEU_VOICES
     }
+
+
+def load_vi_to_en_map() -> dict[str, str]:
+    if not VI_TO_EN_JSON.exists():
+        return {}
+    return json.loads(VI_TO_EN_JSON.read_text(encoding="utf-8"))["map"]
+
+
+VI_TO_EN_MAP = load_vi_to_en_map()
 
 
 VI_TTS = TTSConfig(
@@ -220,7 +248,7 @@ EN_TTS = TTSConfig(
     sample_rate=24_000,
     cache_dir=HF_CACHE_DIR,
     output_dir=DATASETS_DIR / "english" / "outputs" / "en",
-    voices=KOKORO_EN_VOICES,
+    voices={**KOKORO_EN_VOICES, **kokoro_blend_voices()},
 )
 
 LANGUAGE_CONFIGS = {
@@ -437,6 +465,27 @@ def pick_voice(
     return config.default_voice
 
 
+def pick_row_voice(
+    language: str,
+    dataset_index: int,
+    seed: int | None,
+    fixed_voice: str | None,
+    target_gender: str | None,
+) -> str:
+    """VI picks freely; EN follows the row's VI voice through the embedding map."""
+    if fixed_voice:
+        return fixed_voice
+    vi_rng = stable_rng(seed, dataset_index, "vi", "voice")
+    vi_voice = pick_voice(LANGUAGE_CONFIGS["vi"], vi_rng, VI_VOICE, target_gender)
+    if language == "vi":
+        return vi_voice
+    if not VI_TO_EN_MAP:
+        raise RuntimeError(
+            f"{VI_TO_EN_JSON} missing; run training-data/match_voices.py first."
+        )
+    return VI_TO_EN_MAP[vi_voice]
+
+
 def get_voice_spec(config: TTSConfig, voice: str) -> VoiceSpec:
     if voice in config.voices:
         return config.voices[voice]
@@ -451,7 +500,8 @@ def get_voice_spec(config: TTSConfig, voice: str) -> VoiceSpec:
 def get_voice_speed(config: TTSConfig, voice: str) -> float | None:
     if config.provider != "kokoro":
         return None
-    return KOKORO_EN_VOICE_SPEEDS.get(voice, 1.0)
+    parts = voice.split(",")
+    return sum(KOKORO_EN_VOICE_SPEEDS.get(part, 1.0) for part in parts) / len(parts)
 
 
 def speed_matches(existing_speed: str | None, speed: float | None) -> bool:
@@ -549,8 +599,7 @@ def synthesize_language(
 
         output_path = config.output_dir / f"{language}_{dataset_index:06d}.wav"
         target_gender = pick_target_gender(dataset_index, seed, fixed_matched_gender)
-        voice_rng = stable_rng(seed, dataset_index, language, "voice")
-        voice = pick_voice(config, voice_rng, fixed_voice, target_gender)
+        voice = pick_row_voice(language, dataset_index, seed, fixed_voice, target_gender)
         speed = get_voice_speed(config, voice)
         if "speed" in infer_kwargs and config.provider == "kokoro":
             speed = float(infer_kwargs["speed"])
