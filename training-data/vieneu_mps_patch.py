@@ -89,6 +89,219 @@ def _generate_frame_fast(model, backbone_hidden, *, temperature, top_k, top_p,
     return torch.stack(codes, dim=1), prefill_out
 
 
+# A/B kill-switch for the static-KV MPS decode loop below.
+MPS_FAST = True
+
+
+def _rot_half(x):
+    h = x.shape[-1] // 2
+    return torch.cat((-x[..., h:], x[..., :h]), dim=-1)
+
+
+class _MPSFastDecoder:
+    """Static-KV per-frame decode loop for MPS (the MPS analog of the CUDA graph).
+
+    Replaces the HF Qwen3 per-step forward (DynamicCache torch.cat re-copies the
+    whole KV every frame and each call pays HF mask/rope/dispatch overhead) with a
+    hand-rolled step over preallocated KV buffers written in place. Attention
+    kv-length is bucketed to KV_BUCKET so MPS sees a handful of kernel shapes
+    instead of one per frame, and KV allocations are bucketed to T_BUCKET so the
+    caching allocator reuses a few size classes across batches. Also owns the
+    lean acoustic frame (precomputed slot constants, static 17-slot KV) and
+    sort-free sampling (top-k -> nucleus within candidates -> exponential-race
+    argmax; same distribution as the stock sampler, no full-vocab sort and no
+    multinomial)."""
+
+    KV_BUCKET = 64
+    T_BUCKET = 128
+
+    def __init__(self, engine):
+        model = engine.model
+        cfg = model.config
+        bb = model.semantic_backbone
+        self.model = model
+        self.cfg = cfg
+        self.dev = engine.tts.device
+        self.dt = next(bb.parameters()).dtype
+        self.layers = list(bb.layers)
+        self.final_norm = bb.norm
+        qcfg = bb.config
+        self.n_heads = qcfg.num_attention_heads
+        self.n_kv = qcfg.num_key_value_heads
+        self.hd = qcfg.head_dim
+        self.scale = self.hd ** -0.5
+
+        pos = torch.arange(qcfg.max_position_embeddings, device=self.dev).unsqueeze(0)
+        cos, sin = bb.rotary_emb(torch.zeros(1, dtype=self.dt, device=self.dev), pos)
+        self.rope_cos = cos[0].to(self.dt)                      # (T_max, hd)
+        self.rope_sin = sin[0].to(self.dt)
+
+        emb_w = torch.stack([e.weight for e in model.audio_embeddings])
+        self.audio_emb_flat = emb_w.reshape(-1, cfg.hidden_size).to(self.dt)
+        self.ch_offsets = (
+            torch.arange(cfg.n_vq, device=self.dev) * cfg.audio_vocab_size
+        ).view(1, -1)
+        sgs = torch.tensor([cfg.speech_generation_start_token_id], device=self.dev)
+        self.sgs_text_emb = model.text_embeddings(sgs)[0].to(self.dt)
+
+        dec = model.acoustic_decoder
+        self.dec_layers = list(dec.layers)
+        self.dec_norm = dec.norm
+        self.dec_pos = dec.slot_pos_emb.weight[: cfg.n_vq + 1].to(self.dt)  # (n_vq+1, H)
+        a0 = dec.layers[0].attn
+        self.a_heads, self.a_hd = a0.num_heads, a0.head_dim
+
+    # ── backbone ────────────────────────────────────────────────────────────
+
+    @torch.no_grad()
+    def prefill(self, bb_wrap, embeds_list, batch_spk, max_new_frames):
+        h, cache, mask, cur_pos = bb_wrap.prefill(embeds_list)
+        B, P = mask.shape
+        L = len(self.layers)
+        T = -(-(P + max_new_frames + 2) // self.T_BUCKET) * self.T_BUCKET
+        self.kc = torch.zeros(L, B, self.n_kv, T, self.hd, dtype=self.dt, device=self.dev)
+        self.vc = torch.zeros_like(self.kc)
+        for i in range(L):
+            self.kc[i, :, :, :P] = cache.layers[i].keys
+            self.vc[i, :, :, :P] = cache.layers[i].values
+        neg = torch.finfo(self.dt).min
+        amask = torch.full((B, 1, 1, T), neg, dtype=self.dt, device=self.dev)
+        amask[:, 0, 0, :P] = torch.where(
+            mask.bool(), torch.zeros((), dtype=self.dt, device=self.dev),
+            torch.full((), neg, dtype=self.dt, device=self.dev),
+        )
+        self.amask = amask
+        self.col = P
+        self.positions = cur_pos.clone()
+        slot_const = self.sgs_text_emb
+        if self.model.xvec_proj is not None and batch_spk is not None:
+            slot_const = slot_const + self.model.xvec_proj(batch_spk.to(self.dt))
+        self.slot_const = slot_const                            # (H,) or (B, H)
+        return h
+
+    @torch.no_grad()
+    def slot_embed(self, codes):
+        """Decode-slot embedding: sgs text emb + sum of audio embs + speaker anchor.
+        Generated codes are always < audio_vocab_size, so no pad masking needed."""
+        B = codes.shape[0]
+        flat = (codes + self.ch_offsets).reshape(-1)
+        emb = F.embedding(flat, self.audio_emb_flat).view(B, self.cfg.n_vq, -1).sum(1)
+        return emb + self.slot_const
+
+    @torch.no_grad()
+    def bb_step(self, x):
+        """One backbone decode step. x is (B, H); returns final-norm hidden (B, H)."""
+        B = x.shape[0]
+        col = self.col
+        self.positions += 1
+        self.amask[:, 0, 0, col] = 0.0
+        S = min(-(-(col + 1) // self.KV_BUCKET) * self.KV_BUCKET, self.kc.shape[3])
+        cos = self.rope_cos[self.positions].view(B, 1, self.hd)
+        sin = self.rope_sin[self.positions].view(B, 1, self.hd)
+        amask = self.amask[..., :S]
+
+        for i, layer in enumerate(self.layers):
+            a = layer.self_attn
+            h = layer.input_layernorm(x)
+            q = a.q_norm(a.q_proj(h).view(B, self.n_heads, self.hd))
+            k = a.k_norm(a.k_proj(h).view(B, self.n_kv, self.hd))
+            v = a.v_proj(h).view(B, self.n_kv, self.hd)
+            q = q * cos + _rot_half(q) * sin
+            k = k * cos + _rot_half(k) * sin
+            self.kc[i, :, :, col] = k
+            self.vc[i, :, :, col] = v
+            o = F.scaled_dot_product_attention(
+                q.unsqueeze(2), self.kc[i, :, :, :S], self.vc[i, :, :, :S],
+                attn_mask=amask, enable_gqa=True,
+            ).reshape(B, -1)
+            x = x + a.o_proj(o)
+            h2 = layer.post_attention_layernorm(x)
+            mlp = layer.mlp
+            x = x + mlp.down_proj(F.silu(mlp.gate_proj(h2)) * mlp.up_proj(h2))
+        self.col = col + 1
+        return self.final_norm(x)
+
+    # ── acoustic frame ──────────────────────────────────────────────────────
+
+    def _dec_step(self, x, pk, pv):
+        """One acoustic-decoder step; x is (B, S, H) with pos emb already added.
+        Functional KV (torch.cat is cheap at this size and keeps SDPA fused).
+        S=2 is the aligned prefill (is_causal), S=1 steps attend everything."""
+        B, Sq, _ = x.shape
+        nk, nv = [], []
+        for i, layer in enumerate(self.dec_layers):
+            a = layer.attn
+            h = layer.norm1(x)
+            qkv = a.qkv(h).view(B, Sq, 3, self.a_heads, self.a_hd)
+            q, k, v = qkv.unbind(dim=2)
+            q = a.q_norm(q.transpose(1, 2))
+            k = a.k_norm(k.transpose(1, 2))
+            v = v.transpose(1, 2)
+            if pk[i] is not None:
+                k = torch.cat([pk[i], k], dim=2)
+                v = torch.cat([pv[i], v], dim=2)
+            nk.append(k)
+            nv.append(v)
+            o = F.scaled_dot_product_attention(q, k, v, is_causal=Sq > 1)
+            x = x + a.o_proj(o.transpose(1, 2).reshape(B, Sq, -1))
+            n2 = layer.norm2(x)
+            x = x + layer.ff_down(F.silu(layer.ff_gate(n2)) * layer.ff_up(n2))
+        return self.dec_norm(x), nk, nv
+
+    def _sample(self, logits, temperature, top_k, top_p, repetition_penalty, seen_ch):
+        """Distribution-identical to _sample_fast: top-k first, nucleus within the
+        candidates, then exponential-race argmax instead of multinomial."""
+        if seen_ch is not None:
+            pen = torch.where(logits < 0, logits * repetition_penalty, logits / repetition_penalty)
+            logits = torch.where(seen_ch, pen, logits)
+        if temperature <= 0:
+            return logits.argmax(dim=-1)
+        k = min(top_k, logits.shape[-1]) if top_k and top_k > 0 else logits.shape[-1]
+        cand, idx = torch.topk(logits, k, dim=-1)
+        probs = (cand / max(temperature, 1e-6)).softmax(-1)
+        if 0.0 < top_p < 1.0:
+            probs = probs * (probs.cumsum(-1) - probs < top_p)
+        race = probs / torch.empty_like(probs).exponential_()
+        return idx.gather(-1, race.argmax(-1, keepdim=True)).squeeze(-1)
+
+    @torch.no_grad()
+    def frame(self, h, *, temperature, top_k, top_p, repetition_penalty, seen):
+        """Sample one frame's n_vq codes + the EOS flag from backbone hidden (B, H)."""
+        cfg = self.cfg
+        B = h.shape[0]
+        L = len(self.dec_layers)
+
+        def sample_ch(ch, vec):
+            logits = self.model.audio_lm_heads[ch](vec).float()
+            code = self._sample(logits, temperature, top_k, top_p, repetition_penalty,
+                                seen[:, ch] if seen is not None else None)
+            if seen is not None:
+                seen[:, ch].scatter_(1, code.unsqueeze(1), True)
+            return code
+
+        tok = torch.stack([h.to(self.dt), self.sgs_text_emb.expand(B, -1)], dim=1)
+        tok = tok + self.dec_pos[:2]
+        hidden, pk, pv = self._dec_step(tok, [None] * L, [None] * L)
+        is_eos = (
+            self.model.text_lm_head(hidden[:, 0]).float().argmax(-1)
+            == cfg.speech_generation_end_token_id
+        )
+        codes = [sample_ch(0, hidden[:, 1])]
+        for ch in range(1, cfg.n_vq):
+            emb = F.embedding(codes[-1], self.model.audio_embeddings[ch - 1].weight).to(self.dt)
+            x = (emb + self.dec_pos[ch + 1]).view(B, 1, -1)
+            hidden, pk, pv = self._dec_step(x, pk, pv)
+            codes.append(sample_ch(ch, hidden[:, 0]))
+        return torch.stack(codes, dim=1), is_eos
+
+
+def _get_mps_fast(engine) -> _MPSFastDecoder:
+    fast = getattr(engine, "_mps_fast", None)
+    if fast is None:
+        fast = engine._mps_fast = _MPSFastDecoder(engine)
+    return fast
+
+
 class _GraphedFrameFast:
     """CUDA-graph capture of _generate_frame_fast (+ EOS head) for a fixed batch.
 
@@ -186,17 +399,21 @@ def _generate_batch_fast(
     batch_spk = torch.cat(spk_list, dim=0) if (spk_list and spk_list[0] is not None) else None
 
     use_rep = not math.isclose(repetition_penalty, 1.0)
-    graphed = None
+    seen = (torch.zeros(B, n_vq, cfg.audio_vocab_size, dtype=torch.bool, device=dev)
+            if use_rep else None)
+    graphed = fast = None
     if use_cudagraph and dev.type == "cuda":
         graphed = _get_fast_graph(self, B, temperature, top_k, top_p, repetition_penalty)
         seen = graphed.seen
         if seen is not None:
             seen.zero_()
-    else:
-        seen = (torch.zeros(B, n_vq, cfg.audio_vocab_size, dtype=torch.bool, device=dev)
-                if use_rep else None)
+    elif MPS_FAST and dev.type == "mps":
+        fast = _get_mps_fast(self)
 
-    h, cache, mask, pos = self.bb.prefill(embeds_list)
+    if fast is not None:
+        h = fast.prefill(self.bb, embeds_list, batch_spk, max_new_frames)
+    else:
+        h, cache, mask, pos = self.bb.prefill(embeds_list)
     finished = torch.zeros(B, dtype=torch.bool, device=dev)
     lengths = torch.zeros(B, dtype=torch.long, device=dev)
     frames: List[torch.Tensor] = []
@@ -204,6 +421,11 @@ def _generate_batch_fast(
     for step in range(max_new_frames):
         if graphed is not None:
             codes, is_eos = graphed.run(h)
+        elif fast is not None:
+            codes, is_eos = fast.frame(
+                h, temperature=temperature, top_k=top_k, top_p=top_p,
+                repetition_penalty=repetition_penalty, seen=seen,
+            )
         else:
             codes, prefill_out = _generate_frame_fast(
                 self.model, h, temperature=temperature, top_k=top_k, top_p=top_p,
@@ -216,6 +438,9 @@ def _generate_batch_fast(
         if (step + 1) % 8 == 0 and bool(finished.all()):
             break
 
+        if fast is not None:
+            h = fast.bb_step(fast.slot_embed(codes))
+            continue
         slot = torch.full((B, 1, n_vq + 1), pad, dtype=torch.long, device=dev)
         slot[:, :, 0] = sgs
         slot[:, 0, 1:] = codes
@@ -226,12 +451,22 @@ def _generate_batch_fast(
         return [np.zeros(0, dtype=np.float32) for _ in range(B)]
 
     codes_all = torch.stack(frames, dim=1)                      # (B, T, n_vq)
-    lens = lengths.tolist()
-    codes_list = [codes_all[b, : lens[b]].transpose(0, 1) for b in range(B)]  # (n_vq, T_b)
+    T = codes_all.shape[1]
+    # Give every row the SAME decode length by repeating its last valid frame:
+    # shorter rows in a mixed batch otherwise hit fully-masked fp16 attention
+    # rows inside the codec, whose NaNs poison the entire row (the historical
+    # ~0.45% "all-silent" wavs). The codec is causal, so the first lens[b]
+    # frames decode identically; the repeated tail is trimmed below.
+    gather_idx = torch.minimum(
+        torch.arange(T, device=dev).unsqueeze(0), lengths.unsqueeze(1) - 1
+    )
+    codes_uniform = codes_all.gather(1, gather_idx.unsqueeze(-1).expand(-1, -1, n_vq))
+    codes_list = [codes_uniform[b].transpose(0, 1) for b in range(B)]  # (n_vq, T)
     out = self.tts.audio_tokenizer.batch_decode(codes_list)
     audio = out.audio.float().mean(1).cpu().numpy()             # (B, S_max), channels averaged
-    audio_lens = out.audio_lengths.tolist()
-    results = [audio[b, : audio_lens[b]].copy() for b in range(B)]
+    spf = int(out.audio_lengths[0].item()) // T                 # samples per frame
+    lens = lengths.tolist()
+    results = [audio[b, : lens[b] * spf].copy() for b in range(B)]
     if dev.type == "mps":
         # The KV cache reallocates a new block every decode step; the MPS caching
         # allocator hoards every freed size class, ballooning to swap over a long
@@ -250,11 +485,13 @@ def apply(tts) -> None:
 
 def apply_fp16(tts) -> None:
     """Convert the backbone + acoustic decoder + lm heads to fp16 and run the MOSS
-    codec in fp16 autocast (its autocast helper is CUDA-only upstream)."""
+    codec in bf16 autocast (its autocast helper is CUDA-only upstream). The codec
+    uses bf16, not fp16: fp16's narrow exponent occasionally overflows to NaN in
+    the codec convs, which writes out as an all-silent wav."""
     tts.engine.model.half()
 
     tok = tts.engine.audio_tokenizer
-    tok.set_compute_dtype("fp16")
+    tok.set_compute_dtype("bf16")
 
     @contextmanager
     def _codec_autocast():
