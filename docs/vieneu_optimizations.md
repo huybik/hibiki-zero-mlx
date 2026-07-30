@@ -89,6 +89,19 @@ The iSTFTNet decoder (94% of EN wall) now runs as a Core ML mlprogram on the Met
 - **Layout**: macOS uses 7 all-CoreML EN workers and saturates the GPU at **~70–75× RT aggregate** (16.4×/worker warm; near-linear to 4 workers). Other platforms retain the 10-worker compiled-CPU layout.
 - **Contention with VI is negligible**: EN 65.6× (vs 68.5× solo) while VI runs at ~90% of solo — vieneu's launch-bound MPS kernels and Core ML's predicts interleave. The tranche long pole flips from EN (26×) to VI (~53×): ~2× faster tranches.
 
+## Concurrent-pipeline profiling: the GPU-saturation ceiling (2026-07-30, E1–E14)
+
+Instrumented production-shaped runs (512 rows each, sync-fenced stage timers; solo bench numbers above do NOT survive concurrency):
+
+- **Baseline concurrent (1 VI + 7 EN): VI 33×, EN ~40–50× — the M4 Pro GPU is fully allocated.** EN contention costs VI ~40% (33× vs 55× solo), not the ~10% previously believed. A 96k-row tranche ≈ 5.3 h (was 17 h on the pre-optimization overnight run).
+- **Scheduling-level ideas are dead ends, all measured:** a second VI worker adds nothing (34× combined, +6 GB swap); EN worker count barely matters (5 ≈ 7 for both languages); so rebalancing shuffles who waits, not throughput.
+- **Codec placement, all measured:** CPU-offloaded codec (dedicated subprocess; threads+GIL version even worse) reaches only ~40× RT on real length-sorted batches (padding waste + O(T²) attention; 82× on the uniform microbench) and ~28× under the EN workers' CPU load — below the LM pace it must hide behind, a net loss (solo 34×, concurrent 23×). In-process **async GPU decode crashes**: torch MPS forbids command encoding from two threads (`MTLCommandBuffer` assertion). GPU-synchronous is the optimum.
+- **Shared codec attention mask** (kept): our decodes are always uniform-length, so the per-row `(B,1,S,S)` bool SDPA masks collapse to one broadcast `(1,1,S,S)` row — ~330 MB less per batch at T=100, −26% codec on uniform microbench, ~−8% on real batches, end-to-end within noise but free memory relief.
+
+## Silent-wav mechanism #2: all-zero Metal rows (2026-07-30, found by full-tranche scan)
+
+Scanning all 21k VI rows generated tonight found **0.44% all-zero wavs on the stock path** (232 total; biased to long rows, up to ~4% of 8 s+ rows; every voice affected; EN clean). Signature: full-length, exactly-zero PCM — Metal silently returns zero rows for some long-T decodes (stage-7 seq = 32T ≈ 4–10k, multi-GB mask/workspace pressure), the same failure class as the Kokoro Core ML buffer bug. This is a **new mechanism, not the historical NaN one**: the 96k-row 249600–345599 tranche (generated on the pre-Phase-3-day stack) scanned fully clean, so the corruption arrived with today's higher GPU memory pressure (Phase-3 static-KV buffers + 7 Core ML EN workers co-resident). CPU-codec rows and (small-n) shared-mask rows showed none. Fix in `_generate_batch_fast`: every decoded row is gated on finite + max|x| > 0; corrupt rows re-decode on a lazily-created **CPU clone** of the codec (immune, ~40× RT, rare) and the run raises if a row fails both. Tonight's 232 rows were regenerated and verified.
+
 ## Current balance & next levers
 
-VI ~53× on MPS, EN **~70× aggregate on Core ML/Metal GPU** on macOS (2026-07-30 pass above) — **VI is now the fresh-tranche long pole**. Remaining VI ideas, in value order: per-voice prefix-KV prefill cache; codec-stage work (now ~28%). Remaining EN idea if ever needed: batch chunks through one predict (the masked-norm design already supports per-row masks) to amortize the ~250 ms/chunk CoreML dispatch overhead.
+Concurrent VI 33× + EN ~40–50× is the measured GPU-saturation ceiling on the M4 Pro; only removing GPU work per audio-second can move it. Untested ideas, in value order: MOSS codec as Core ML on the **ANE** (the only idle silicon; transformer stack is ANE-friendly unlike iSTFTNet, but the O(T²) sliding-window masks need banded attention or fixed-T buckets, and ANE fp16 reopens the overflow question); EN batched predict (amortize the ~250 ms/chunk dispatch; masked-norm design already supports per-row masks); per-voice prefix-KV prefill cache (~10% of VI GPU).

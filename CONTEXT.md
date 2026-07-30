@@ -55,9 +55,10 @@ Self-distill a **parallel** head to replace the AR depformer's 16 sequential lau
 
 ## PhoMT synthetic speech (`training-data/`)
 - Full history is in `docs/vieneu_optimizations.md`; the published artifact is HF `anquachdev/PhoMT-en-vi-speech`, consumed by `finetune/fetch_phomt.py`. The pipeline runs in its own `phomt-data` env and writes under `PHOMT_DATA_DIR`.
-- VieNeu's MPS path sustains ~53× RT at batch 32 and supports the 48-voice VI bank; uniform-length bf16 codec decode fixed the historical silent-wav bug. The CUDA graph path uses batch 128 and still needs a CUDA smoke test.
+- **Concurrent EN+VI throughput is GPU-saturation-limited at VI ~33× / EN ~40–50× (96k tranche ≈ 5.3 h); solo benches (VI 53×, EN 70×) don't survive concurrency.** E1–E14 profiling closed the scheduling levers: extra VI workers, EN worker count, CPU-offloaded codec (subprocess ~40×/28× — too slow at real batch shapes), and threaded GPU decode (torch MPS forbids cross-thread encoding) all lose; the codec stays GPU-synchronous with a shared uniform-length attention mask. The CUDA graph path uses batch 128 and still needs a CUDA smoke test.
+- **Silent-wav mechanism #2 (new with today's stack, not the old NaN bug):** under the Phase-3 + Core ML-EN memory pressure, Metal silently emits all-zero rows for ~0.4% of MPS codec decodes (long-T biased). Every decoded row is now gated (finite + nonzero) with automatic CPU-clone rescue; tonight's 232 hits regenerated. The 96k-row 249600–345599 tranche scanned fully clean (safe to upload).
 - Kokoro's iSTFTNet decoder runs through Core ML/Metal on macOS at ~70–75× aggregate with 7 workers; non-macOS retains 10 compiled-CPU workers. The 60 s decoder-frame bound covers the observed 49.75 s outlier. Core ML packages are keyed by conversion schema, dependency versions, and exact weights, built under an interprocess lock, and atomically published before each worker opens its own model instance.
-- The 1000 VI-h campaign is active from `START_INDEX=249600`; validate audio before resumable 500-row-shard uploads. Changing worker counts between resumes requires merging old worker manifests and deleting stale worker CSVs.
+- The 1000 VI-h campaign is active from `START_INDEX=345600`; validate audio before resumable 500-row-shard uploads. Changing worker counts between resumes requires merging old worker manifests and deleting stale worker CSVs.
 
 ## Gotchas
 - Input must be FR/ES/PT/DE. `sphn.read(sr=24000)` resamples on load, so 16 kHz wavs run directly.

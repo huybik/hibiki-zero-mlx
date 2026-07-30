@@ -10,6 +10,7 @@ Also provides fp16 conversion and a per-text-voice batch entrypoint.
 """
 from __future__ import annotations
 
+import copy
 import math
 import types
 from contextlib import contextmanager
@@ -18,6 +19,13 @@ from typing import List, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+# Codec placement, all measured (2026-07-30): stays on the GPU, synchronous.
+# CPU offload (subprocess, 6-10 threads) reaches only ~40x RT on real
+# length-sorted batches (padding + O(T^2) attention; ~28x under the EN workers'
+# CPU load) — below the LM pace it must hide behind, a net loss. In-process
+# async GPU decode crashes: torch MPS forbids concurrent command encoding from
+# two threads (MTLCommandBuffer assertion).
 
 from vieneu_utils.phonemize_text import (
     phonemize_text_with_emotions,
@@ -467,6 +475,32 @@ def _generate_batch_fast(
     spf = int(out.audio_lengths[0].item()) // T                 # samples per frame
     lens = lengths.tolist()
     results = [audio[b, : lens[b] * spf].copy() for b in range(B)]
+
+    corrupt = [
+        b for b, r in enumerate(results)
+        if r.size and (not np.isfinite(r).all() or float(np.abs(r).max()) == 0.0)
+    ]
+    if corrupt:
+        # Metal silently emits all-zero rows for ~0.4% of MPS decodes (biased to
+        # long-T batches; multi-GB mask/workspace pressure) — the same failure
+        # class as the kokoro Core ML buffer bug, and the residual cause of the
+        # historical "silent wav"s after the NaN fix. Re-decode those rows on a
+        # CPU clone of the codec; CPU execution is immune.
+        tok_cpu = getattr(self, "_codec_cpu", None)
+        if tok_cpu is None:
+            tok_cpu = copy.deepcopy(self.tts.audio_tokenizer).to("cpu").eval()
+            self._codec_cpu = tok_cpu
+        cpu_codes = codes_uniform[corrupt].cpu()
+        out_cpu = tok_cpu.batch_decode(
+            [cpu_codes[i].transpose(0, 1) for i in range(len(corrupt))]
+        )
+        audio_cpu = out_cpu.audio.float().mean(1).numpy()
+        for i, b in enumerate(corrupt):
+            r = audio_cpu[i, : lens[b] * spf].copy()
+            if not r.size or not np.isfinite(r).all() or float(np.abs(r).max()) == 0.0:
+                raise RuntimeError("codec produced silent/NaN row on both GPU and CPU")
+            results[b] = r
+
     if dev.type == "mps":
         # The KV cache reallocates a new block every decode step; the MPS caching
         # allocator hoards every freed size class, ballooning to swap over a long
@@ -475,12 +509,33 @@ def _generate_batch_fast(
     return results
 
 
+def _patch_shared_codec_mask(tok) -> None:
+    """All our codec decodes are uniform-length (silent-wav fix), so the per-row
+    (B,1,S,S) bool attention masks collapse to one broadcast (1,1,S,S) row —
+    the stock builder allocates ~330 MB of masks per batch at T=100."""
+    for module in tok.modules():
+        cls = type(module)
+        if cls.__name__ != "MossAudioTokenizerMultiheadAttention":
+            continue
+        if getattr(cls, "_shared_mask_patched", False):
+            return
+        orig = cls._build_non_streaming_sdpa_bias
+
+        def build(self, input_lengths, T, device, _orig=orig):
+            return _orig(self, input_lengths[:1], T, device)
+
+        cls._build_non_streaming_sdpa_bias = build
+        cls._shared_mask_patched = True
+        return
+
+
 def apply(tts) -> None:
     """Patch the tts instance's batch engine with the MPS-optimized generate_batch."""
     engine = tts._get_batch_engine()
     if engine is None:
         raise RuntimeError("vieneu batch engine unavailable (PyTorch backend required).")
     engine.generate_batch = types.MethodType(_generate_batch_fast, engine)
+    _patch_shared_codec_mask(engine.tts.audio_tokenizer)
 
 
 def apply_fp16(tts) -> None:
