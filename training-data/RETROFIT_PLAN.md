@@ -49,6 +49,7 @@ it is the EN pick that changed.
 
 ## Estimates
 
-- EN synthesis: ~339k clips ≈ ~600 audio-h at ~40× RT concurrent ≈ **15 h generation**.
+- EN synthesis: ~339k clips ≈ ~600 audio-h at ~70× RT (7 Kokoro+CoreML workers, no VI
+  contention) ≈ **8–9 h generation**.
 - Transfer: ~170 GB down + ~170 GB up (~25 MB/s Xet up) ≈ **4–5 h**.
 - Wall clock ≈ 1 day with synthesis and transfer overlapped; disk needs only scratch (~5 GB).
