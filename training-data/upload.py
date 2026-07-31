@@ -15,6 +15,8 @@ from pathlib import Path
 
 # hf_xet reads this at upload time. It is harmless when hf_xet is not installed.
 os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+# Claim this before importing pipeline, whose QUIET_HF_DOWNLOADS would set it to 1.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "0")
 
 from datasets import Audio, Dataset, DatasetInfo, load_dataset
 from datasets.info import DatasetInfosDict
@@ -25,6 +27,8 @@ from huggingface_hub import CommitOperationAdd, DatasetCard, DatasetCardData, Hf
 from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
 from paths import DATASETS_DIR
+
+import pipeline
 
 
 # =========================
@@ -50,8 +54,14 @@ ROWS_PER_SHARD = 500
 DURATION_WORKERS = 8
 DURATION_PROGRESS_INTERVAL = 2_000
 
-VI_MANIFEST = DATASETS_DIR / "vieNeu" / "outputs" / "vi" / "manifest.csv"
-EN_MANIFEST = DATASETS_DIR / "english" / "outputs" / "en" / "manifest.csv"
+# Env overrides let a mid-generation upload read frozen manifest snapshots so
+# the validated row set and the uploaded row set are identical.
+VI_MANIFEST = Path(
+    os.environ.get("UPLOAD_VI_MANIFEST", DATASETS_DIR / "vieNeu" / "outputs" / "vi" / "manifest.csv")
+)
+EN_MANIFEST = Path(
+    os.environ.get("UPLOAD_EN_MANIFEST", DATASETS_DIR / "english" / "outputs" / "en" / "manifest.csv")
+)
 LOCAL_SAVE_DIR = DATASETS_DIR / "phomt-en-vi-speech"
 
 # Keep pairs with broadly similar lengths. The current generated data has slow
@@ -119,6 +129,21 @@ def get_upload_key(row: dict) -> tuple[str, ...]:
     return tuple(row[column] for column in UPLOAD_KEY_COLUMNS)
 
 
+def pair_voices_current(index: int, vi_row: dict, en_row: dict) -> bool:
+    """Rows generated before a voice-assignment change are pending regeneration;
+    uploading them would freeze the old voice on the Hub."""
+    target_gender = pipeline.pick_target_gender(index, pipeline.SEED)
+    vi_voice = pipeline.pick_row_voice("vi", index, pipeline.SEED, pipeline.VI_VOICE, target_gender)
+    en_voice = pipeline.pick_row_voice("en", index, pipeline.SEED, pipeline.EN_VOICE, target_gender)
+    return (
+        vi_row["voice"] == vi_voice
+        and en_row["voice"] == en_voice
+        and pipeline.speed_matches(
+            en_row.get("speed"), pipeline.get_voice_speed(pipeline.EN_TTS, en_voice)
+        )
+    )
+
+
 def build_rows(
     vi_rows: dict[int, dict],
     en_rows: dict[int, dict],
@@ -134,6 +159,7 @@ def build_rows(
     skipped_state = 0
     skipped_existing = 0
     skipped_missing = 0
+    skipped_stale_voice = 0
 
     for index in shared_indexes:
         if index in skip_source_indexes or (
@@ -149,6 +175,10 @@ def build_rows(
             skipped_existing += 1
             continue
 
+        if not pair_voices_current(index, vi_row, en_row):
+            skipped_stale_voice += 1
+            continue
+
         audio_en = Path(en_row["audio_path"])
         audio_vi = Path(vi_row["audio_path"])
         if not audio_en.exists() or not audio_vi.exists():
@@ -161,6 +191,11 @@ def build_rows(
         print(f"Skipped {skipped_state} source indexes recorded in upload state.")
     if skipped_existing:
         print(f"Skipped {skipped_existing} already-uploaded text pairs.")
+    if skipped_stale_voice:
+        print(
+            f"Skipped {skipped_stale_voice} pairs whose voices predate the current "
+            "assignment (pending regeneration)."
+        )
     if skipped_missing:
         print(f"Skipped {skipped_missing} pairs with missing audio.")
 
