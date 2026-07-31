@@ -51,6 +51,9 @@ UPLOAD_KEY_COLUMNS = ("en", "vi")
 # datasets >= 5 picks parquet compression itself (audio columns uncompressed for
 # Xet dedup); passing compression kwargs conflicts with its ParquetWriter call.
 ROWS_PER_SHARD = 500
+# The Hub rate-limits repository commits to 128/hour; batching shards per commit
+# keeps a fast upload well under it (~30 commits/hour at 5 x ~400 MB shards).
+SHARDS_PER_COMMIT = 5
 DURATION_WORKERS = 8
 DURATION_PROGRESS_INTERVAL = 2_000
 
@@ -521,54 +524,61 @@ def append_rows_to_hub(
     ) as builder:
         temp_dir_path = Path(temp_dir)
         next_shard = builder.submit(build_shard, rows, 0, total_shards, run_id, temp_dir_path)
+        pending = []
+        group_started_at = time.perf_counter()
         for shard_number in range(total_shards):
-            shard_started_at = time.perf_counter()
-            (
-                dataset,
-                local_path,
-                path_in_repo,
-                dataset_nbytes,
-                uploaded_size,
-                source_indexes,
-            ) = next_shard.result()
+            pending.append(next_shard.result())
             if shard_number + 1 < total_shards:
                 next_shard = builder.submit(
                     build_shard, rows, shard_number + 1, total_shards, run_id, temp_dir_path
                 )
-            uploaded_at = datetime.now(timezone.utc).isoformat()
+            if len(pending) < SHARDS_PER_COMMIT and shard_number + 1 < total_shards:
+                continue
 
+            uploaded_at = datetime.now(timezone.utc).isoformat()
+            group_indexes = set().union(*(built[5] for built in pending))
+            group_rows = sum(len(built[0]) for built in pending)
             proposed_state = dict(upload_state)
             proposed_state["uploaded_source_ranges"] = indexes_to_ranges(
-                uploaded_indexes | source_indexes
+                uploaded_indexes | group_indexes
             )
             proposed_state["shards"] = [
                 *upload_state["shards"],
-                {
-                    "path": path_in_repo,
-                    "rows": len(dataset),
-                    "source_index_min": min(source_indexes),
-                    "source_index_max": max(source_indexes),
-                    "uploaded_at": uploaded_at,
-                },
+                *(
+                    {
+                        "path": path_in_repo,
+                        "rows": len(dataset),
+                        "source_index_min": min(source_indexes),
+                        "source_index_max": max(source_indexes),
+                        "uploaded_at": uploaded_at,
+                    }
+                    for dataset, _, path_in_repo, _, _, source_indexes in pending
+                ),
             ]
             proposed_state["updated_at"] = uploaded_at
 
-            dataset_card, card_operation = build_dataset_card_operation(
-                dataset_card,
-                dataset,
-                existing_num_rows,
-                uploaded_size,
-                dataset_nbytes,
-            )
+            for dataset, _, _, dataset_nbytes, uploaded_size, _ in pending:
+                dataset_card, card_operation = build_dataset_card_operation(
+                    dataset_card,
+                    dataset,
+                    existing_num_rows,
+                    uploaded_size,
+                    dataset_nbytes,
+                )
+                existing_num_rows += len(dataset)
             operations = [
-                CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=str(local_path)),
+                *(
+                    CommitOperationAdd(path_in_repo=built[2], path_or_fileobj=str(built[1]))
+                    for built in pending
+                ),
                 card_operation,
                 build_upload_state_operation(proposed_state),
             ]
 
+            group_size = sum(built[4] for built in pending)
             print(
-                f"Shard {shard_number + 1}/{total_shards}: uploading "
-                f"{format_size(uploaded_size)}...",
+                f"Shards {shard_number + 2 - len(pending)}-{shard_number + 1}/{total_shards}: "
+                f"uploading {format_size(group_size)} in one commit...",
                 flush=True,
             )
             api.create_commit(
@@ -576,25 +586,27 @@ def append_rows_to_hub(
                 repo_type="dataset",
                 operations=operations,
                 commit_message=(
-                    f"Append {SPLIT} shard {shard_number + 1}/{total_shards} "
-                    f"({len(dataset)} rows)"
+                    f"Append {SPLIT} shards {shard_number + 2 - len(pending)}-"
+                    f"{shard_number + 1}/{total_shards} ({group_rows} rows)"
                 ),
                 commit_description=(
-                    "Atomic resumable upload: append one Parquet shard and refresh "
+                    "Atomic resumable upload: append Parquet shards and refresh "
                     "dataset metadata plus source-index upload state."
                 ),
             )
 
             upload_state = proposed_state
-            uploaded_indexes.update(source_indexes)
-            existing_num_rows += len(dataset)
-            local_path.unlink(missing_ok=True)
-            elapsed = time.perf_counter() - shard_started_at
+            uploaded_indexes.update(group_indexes)
+            for _, local_path, _, _, _, _ in pending:
+                local_path.unlink(missing_ok=True)
+            elapsed = time.perf_counter() - group_started_at
             print(
-                f"Shard {shard_number + 1}/{total_shards}: committed in "
-                f"{elapsed / 60:.1f} minutes. Temporary shard removed.",
+                f"Shards {shard_number + 2 - len(pending)}-{shard_number + 1}/{total_shards}: "
+                f"committed in {elapsed / 60:.1f} minutes. Temporary shards removed.",
                 flush=True,
             )
+            pending = []
+            group_started_at = time.perf_counter()
 
     elapsed = time.perf_counter() - overall_started_at
     print(
