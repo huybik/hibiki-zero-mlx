@@ -474,6 +474,34 @@ def format_size(num_bytes: int) -> str:
     return f"{num_bytes / 1_000_000:.1f} MB"
 
 
+def build_shard(
+    rows: list[dict],
+    shard_number: int,
+    total_shards: int,
+    run_id: str,
+    temp_dir_path: Path,
+) -> tuple[Dataset, Path, str, int, int, set[int]]:
+    shard_rows = rows[shard_number * ROWS_PER_SHARD : (shard_number + 1) * ROWS_PER_SHARD]
+    source_indexes = {int(row["_source_index"]) for row in shard_rows}
+    filename = (
+        f"{SPLIT}-append-{run_id}-{shard_number:05d}-of-{total_shards:05d}.parquet"
+    )
+    local_path = temp_dir_path / filename
+    path_in_repo = f"{DATA_DIR}/{filename}"
+
+    print(
+        f"Shard {shard_number + 1}/{total_shards}: building {len(shard_rows)} rows "
+        f"(indexes {min(source_indexes)}-{max(source_indexes)})...",
+        flush=True,
+    )
+    dataset = build_dataset(shard_rows)
+    embedded_dataset = embed_external_files(dataset)
+    dataset_nbytes = embedded_dataset._estimate_nbytes()
+    embedded_dataset.to_parquet(local_path)
+    uploaded_size = local_path.stat().st_size
+    return dataset, local_path, path_in_repo, dataset_nbytes, uploaded_size, source_indexes
+
+
 def append_rows_to_hub(
     rows: list[dict],
     api: HfApi,
@@ -486,32 +514,27 @@ def append_rows_to_hub(
     uploaded_indexes = ranges_to_indexes(upload_state["uploaded_source_ranges"])
     overall_started_at = time.perf_counter()
 
-    with tempfile.TemporaryDirectory(prefix="phomt_hf_append_") as temp_dir:
+    # One builder thread packs shard N+1 while the main thread uploads shard N;
+    # the network transfer is the bottleneck, so packing rides along for free.
+    with tempfile.TemporaryDirectory(prefix="phomt_hf_append_") as temp_dir, ThreadPoolExecutor(
+        max_workers=1
+    ) as builder:
         temp_dir_path = Path(temp_dir)
+        next_shard = builder.submit(build_shard, rows, 0, total_shards, run_id, temp_dir_path)
         for shard_number in range(total_shards):
-            shard_rows = rows[
-                shard_number * ROWS_PER_SHARD : (shard_number + 1) * ROWS_PER_SHARD
-            ]
-            source_indexes = {int(row["_source_index"]) for row in shard_rows}
-            filename = (
-                f"{SPLIT}-append-{run_id}-{shard_number:05d}-of-"
-                f"{total_shards:05d}.parquet"
-            )
-            local_path = temp_dir_path / filename
-            path_in_repo = f"{DATA_DIR}/{filename}"
             shard_started_at = time.perf_counter()
-
-            print(
-                f"Shard {shard_number + 1}/{total_shards}: building "
-                f"{len(shard_rows)} rows "
-                f"(indexes {min(source_indexes)}-{max(source_indexes)})...",
-                flush=True,
-            )
-            dataset = build_dataset(shard_rows)
-            embedded_dataset = embed_external_files(dataset)
-            dataset_nbytes = embedded_dataset._estimate_nbytes()
-            embedded_dataset.to_parquet(local_path)
-            uploaded_size = local_path.stat().st_size
+            (
+                dataset,
+                local_path,
+                path_in_repo,
+                dataset_nbytes,
+                uploaded_size,
+                source_indexes,
+            ) = next_shard.result()
+            if shard_number + 1 < total_shards:
+                next_shard = builder.submit(
+                    build_shard, rows, shard_number + 1, total_shards, run_id, temp_dir_path
+                )
             uploaded_at = datetime.now(timezone.utc).isoformat()
 
             proposed_state = dict(upload_state)
@@ -522,7 +545,7 @@ def append_rows_to_hub(
                 *upload_state["shards"],
                 {
                     "path": path_in_repo,
-                    "rows": len(shard_rows),
+                    "rows": len(dataset),
                     "source_index_min": min(source_indexes),
                     "source_index_max": max(source_indexes),
                     "uploaded_at": uploaded_at,
@@ -554,7 +577,7 @@ def append_rows_to_hub(
                 operations=operations,
                 commit_message=(
                     f"Append {SPLIT} shard {shard_number + 1}/{total_shards} "
-                    f"({len(shard_rows)} rows)"
+                    f"({len(dataset)} rows)"
                 ),
                 commit_description=(
                     "Atomic resumable upload: append one Parquet shard and refresh "
