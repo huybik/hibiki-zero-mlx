@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-CHUNK_ROWS = 128  # rows buffered per batched-encode flush (2 clips/row)
+CHUNK_ROWS = 512  # rows buffered per batched-encode flush (2 clips/row); covers a whole 500-row parquet shard so the length sort packs batches shard-wide
 # Mimi's SEANet convs are ~512-wide at raw 24 kHz, so activation memory scales
 # with batch total samples: cap padded B*T per encode (~83 s audio ≈ a few GB
 # peak) instead of clip count — short clips batch wide, long clips narrow.
