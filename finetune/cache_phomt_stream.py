@@ -215,6 +215,8 @@ def main() -> None:
                 for row in pair_lines:
                     fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
         delete_from_hf_cache(local)
+        if device.type == "mps":
+            torch.mps.empty_cache()
         print(
             f"[w{args.worker}] {shard_name}: {len(samples)}/{table.num_rows} rows -> "
             f"{repo_display_path(out_path)} (total {kept} rows / {kept_hours:.1f} VI-h)",
