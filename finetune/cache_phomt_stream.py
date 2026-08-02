@@ -19,6 +19,7 @@ count, so target-delay RNG and resume never depend on process layout.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import tempfile
 from pathlib import Path
@@ -33,7 +34,7 @@ from finetune.cache_codes import (  # noqa: E402
     SAMPLE_RATE,
     assemble_codes,
     check_device,
-    encode_audio,
+    read_audio,
     require_runtime_deps,
     save_shard,
     target_delay_s,
@@ -78,7 +79,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-delay-ratio", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all.")
+    parser.add_argument("--batch-size", type=int, default=16, help="Clips per batched Mimi encode.")
     return parser.parse_args()
+
+
+CHUNK_ROWS = 128  # rows buffered per batched-encode flush (2 clips/row)
+# Mimi's SEANet convs are ~512-wide at raw 24 kHz, so activation memory scales
+# with batch total samples: cap padded B*T per encode (~83 s audio ≈ a few GB
+# peak) instead of clip count — short clips batch wide, long clips narrow.
+BATCH_SAMPLE_BUDGET = 2_000_000
+
+
+def encode_batch(wavs: list, mimi, torch, batch_size: int) -> list:
+    """Batched Mimi encode of variable-length mono cpu wavs -> per-clip codes.
+
+    Clips are length-sorted into batches, zero right-padded to a shared
+    16-frame-bucket length (bounds Metal per-shape kernel-graph variety),
+    then trimmed back to each clip's own frame count. Mimi is causal, so
+    the trimmed prefix matches a solo encode bit-exact (A/B-verified).
+    """
+    device = next(mimi.parameters()).device
+    frame = int(mimi.frame_size)
+    bucket = frame * 16
+    out: list = [None] * len(wavs)
+    order = sorted(range(len(wavs)), key=lambda i: int(wavs[i].shape[0]))
+    s = 0
+    while s < len(order):
+        idxs = [order[s]]
+        pad_t = math.ceil(int(wavs[order[s]].shape[0]) / bucket) * bucket
+        while (
+            len(idxs) < batch_size
+            and s + len(idxs) < len(order)
+            and (len(idxs) + 1)
+            * (math.ceil(int(wavs[order[s + len(idxs)]].shape[0]) / bucket) * bucket)
+            <= BATCH_SAMPLE_BUDGET
+        ):
+            idxs.append(order[s + len(idxs)])
+            pad_t = math.ceil(int(wavs[idxs[-1]].shape[0]) / bucket) * bucket
+        s += len(idxs)
+        batch = torch.zeros(len(idxs), 1, pad_t)
+        for j, i in enumerate(idxs):
+            batch[j, 0, : wavs[i].shape[0]] = wavs[i]
+        with torch.no_grad():
+            codes = mimi.encode(batch.to(device)).cpu()
+        for j, i in enumerate(idxs):
+            out[i] = codes[j, :, : math.ceil(int(wavs[i].shape[0]) / frame)].long()
+    return out
 
 
 def delete_from_hf_cache(path: Path) -> None:
@@ -141,6 +187,45 @@ def main() -> None:
         table = pq.ParquetFile(local).read()
         samples = []
         pair_lines = []
+        chunk: list[dict] = []
+        cpu = torch.device("cpu")
+
+        def flush_chunk() -> None:
+            if not chunk:
+                return
+            codes = encode_batch(
+                [c["vi_wav"] for c in chunk] + [c["en_wav"] for c in chunk],
+                mimi,
+                torch,
+                args.batch_size,
+            )
+            n = len(chunk)
+            for k, c in enumerate(chunk):
+                vi_codes, en_codes = codes[k], codes[n + k]
+                row = c["row"]
+                tokens = text_tokens(row["text_en"], tokenizer)
+                assembled = assemble_codes(torch, row, vi_codes, en_codes, tokens, cfg, c["delay_frames"])
+                samples.append(
+                    {
+                        "id": row["id"],
+                        "split": row["split"],
+                        "codes": assembled,
+                        "frames": int(assembled.shape[1]),
+                        "vi_frames": int(vi_codes.shape[1]),
+                        "en_frames": int(en_codes.shape[1]),
+                        "text_tokens": len(tokens),
+                        "target_delay_s": c["delay_s"],
+                        "target_delay_frames": c["delay_frames"],
+                        "vi_audio": row["vi_audio"],
+                        "en_audio": row["en_audio"],
+                        "text_en": row["text_en"],
+                        "text_vi": row["text_vi"],
+                    }
+                )
+            chunk.clear()
+            if device.type == "mps":
+                torch.mps.empty_cache()
+
         for i in range(table.num_rows):
             if args.limit and kept >= args.limit:
                 break
@@ -174,34 +259,17 @@ def main() -> None:
                 vi_tmp.flush()
                 en_tmp.write(table.column("audio_en")[i].as_py()["bytes"])
                 en_tmp.flush()
-                vi_codes = encode_audio(Path(vi_tmp.name), mimi, sphn, torch, device)
-                en_codes = encode_audio(Path(en_tmp.name), mimi, sphn, torch, device, left_pad_s=delay_s)
-            tokens = text_tokens(text_en, tokenizer)
-            codes = assemble_codes(torch, row, vi_codes, en_codes, tokens, cfg, delay_frames)
-            samples.append(
-                {
-                    "id": row["id"],
-                    "split": row["split"],
-                    "codes": codes,
-                    "frames": int(codes.shape[1]),
-                    "vi_frames": int(vi_codes.shape[1]),
-                    "en_frames": int(en_codes.shape[1]),
-                    "text_tokens": len(tokens),
-                    "target_delay_s": delay_s,
-                    "target_delay_frames": delay_frames,
-                    "vi_audio": row["vi_audio"],
-                    "en_audio": row["en_audio"],
-                    "text_en": text_en,
-                    "text_vi": text_vi,
-                }
+                vi_wav = read_audio(Path(vi_tmp.name), sphn, torch, cpu)[0, 0]
+                en_wav = read_audio(Path(en_tmp.name), sphn, torch, cpu, left_pad_s=delay_s)[0, 0]
+            chunk.append(
+                {"row": row, "delay_s": delay_s, "delay_frames": delay_frames, "vi_wav": vi_wav, "en_wav": en_wav}
             )
-            pair_lines.append(row)
             kept += 1
             kept_hours += vi_dur / 3600.0
-            # MPS caches a Metal kernel graph per distinct clip length; flush
-            # every 100 rows or per-worker RSS balloons to >10 GB within a shard.
-            if device.type == "mps" and kept % 100 == 0:
-                torch.mps.empty_cache()
+            pair_lines.append(row)
+            if len(chunk) >= CHUNK_ROWS:
+                flush_chunk()
+        flush_chunk()
 
         payload = {
             "format": CACHE_FORMAT,
