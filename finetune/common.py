@@ -171,7 +171,9 @@ class CachedCodeDataset(Dataset):
                 self.samples.append(
                     {
                         "id": str(sample["id"]),
-                        "codes": codes.long(),
+                        # int32 in host RAM (halves footprint at ~700k samples);
+                        # collate_cached casts to long on batch assembly.
+                        "codes": codes.to(torch.int32),
                         "frames": int(codes.shape[1]),
                     }
                 )
@@ -185,6 +187,17 @@ class CachedCodeDataset(Dataset):
             self.samples = self.samples[:max_samples]
             if not self.samples:
                 raise RuntimeError("--max-samples selected no cached samples")
+
+    def shuffle_batch_order(self, batch_size: int, seed: int = 1234) -> None:
+        """Shuffle length-sorted samples in whole-batch blocks.
+
+        Batches stay near-uniform length (minimal padding, few MPS shapes) but
+        the epoch is no longer an ascending-length curriculum replayed in the
+        same order every epoch. Deterministic, so sorted-resume skip still works.
+        """
+        blocks = [self.samples[i : i + batch_size] for i in range(0, len(self.samples), batch_size)]
+        random.Random(seed).shuffle(blocks)
+        self.samples = [sample for block in blocks for sample in block]
 
     def __len__(self) -> int:
         return len(self.samples)

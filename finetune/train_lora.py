@@ -262,6 +262,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples, args.max_frames)
+    if args.sort_by_length:
+        dataset.shuffle_batch_order(args.batch_size)
     print(
         f"Loaded {len(dataset)} cached samples from "
         f"{', '.join(repo_display_path(d) for d in cache_dir)}"
