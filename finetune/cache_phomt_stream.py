@@ -198,6 +198,10 @@ def main() -> None:
             pair_lines.append(row)
             kept += 1
             kept_hours += vi_dur / 3600.0
+            # MPS caches a Metal kernel graph per distinct clip length; flush
+            # every 100 rows or per-worker RSS balloons to >10 GB within a shard.
+            if device.type == "mps" and kept % 100 == 0:
+                torch.mps.empty_cache()
 
         payload = {
             "format": CACHE_FORMAT,
