@@ -13,6 +13,7 @@ import contextlib
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -441,6 +442,7 @@ def main() -> None:
     data_iter = None
     current_replay_weight = None
     rebuild_count = 0
+    last_log_time = time.time()
     optimizer.zero_grad(set_to_none=True)
 
     while global_step < total_steps:
@@ -489,17 +491,15 @@ def main() -> None:
                     lm, codes, condition_cache[batch_size], audio_w, text_w
                 )
             loss = losses["loss"]
-            if not bool(torch.isfinite(loss.detach()).cpu()):
-                raise RuntimeError(
-                    f"Non-finite loss at micro_step={micro_step + 1}. "
-                    "On MPS, use --dtype bfloat16 or lower --lr."
-                )
             (loss / args.grad_accum_steps).backward()
             micro_step += 1
-            step_loss += float(loss.detach().cpu())
-            step_audio += float(losses["audio_loss"].detach().cpu())
-            step_text += float(losses["text_loss"].detach().cpu())
-            step_text_tokens += int(losses["text_tokens"])
+            # Accumulate on-device; host sync (and the non-finite check) happens
+            # only at --log-every boundaries. Per-micro-step .cpu() reads stalled
+            # the CUDA pipeline every step.
+            step_loss = step_loss + loss.detach()
+            step_audio = step_audio + losses["audio_loss"].detach()
+            step_text = step_text + losses["text_loss"].detach()
+            step_text_tokens = step_text_tokens + losses["text_tokens"]
 
         if args.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
@@ -520,13 +520,21 @@ def main() -> None:
         log_text_tokens += step_text_tokens
 
         if args.log_every and global_step % args.log_every == 0:
+            loss_avg = float(log_sums["loss"]) / log_steps
+            if not math.isfinite(loss_avg):
+                raise RuntimeError(
+                    f"Non-finite loss by step {global_step}. "
+                    "On MPS, use --dtype bfloat16 or lower --lr."
+                )
+            now = time.time()
             item = {
                 "epoch": (global_step - 1) // steps_per_epoch + 1,
                 "step": global_step,
-                "loss": log_sums["loss"] / log_steps,
-                "audio_loss": log_sums["audio_loss"] / log_steps,
-                "text_loss": log_sums["text_loss"] / log_steps,
-                "text_tokens": log_text_tokens,
+                "loss": loss_avg,
+                "audio_loss": float(log_sums["audio_loss"]) / log_steps,
+                "text_loss": float(log_sums["text_loss"]) / log_steps,
+                "text_tokens": int(log_text_tokens),
+                "sec_per_step": (now - last_log_time) / log_steps,
                 "log_steps": log_steps,
                 "lr": lr_value,
                 "text_weight": text_w,
@@ -541,11 +549,13 @@ def main() -> None:
                 memory_msg = f" mps={item['mps_allocated_gb']:.1f}/{item['mps_driver_gb']:.1f}GB"
             print(
                 f"step={global_step} loss={item['loss']:.4f} audio={item['audio_loss']:.4f} "
-                f"text={item['text_loss']:.4f} tw={text_w:g} rw={replay_w:g}{memory_msg}"
+                f"text={item['text_loss']:.4f} tw={text_w:g} rw={replay_w:g} "
+                f"s/step={item['sec_per_step']:.3f}{memory_msg}"
             )
             log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
             log_steps = 0
             log_text_tokens = 0
+            last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:
             save_checkpoint(lm, optimizer, args, global_step, out_dir)

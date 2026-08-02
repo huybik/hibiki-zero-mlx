@@ -103,6 +103,57 @@ def empty_device_cache(device: torch.device) -> None:
     torch.mps.empty_cache()
 
 
+class _CausalSDPA:
+    """Namespace proxy injected as moshi.modules.transformer.F (rebinds only that
+    module's global, not torch.nn.functional itself).
+
+    moshi's causal attention passes a boolean attn_bias to SDPA, which blocks the
+    flash kernel and falls back to the slower mem-efficient backend. In training
+    (offset 0, T << cfg.context) that mask is exactly lower-triangular causal, so
+    we rewrite it to is_causal=True. The verdict is verified by tril comparison
+    ONCE per mask shape then cached (re-checking every call would reintroduce a
+    host sync per layer) — sound here because every same-shape bool mask moshi
+    builds at offset 0 is identical, and streaming decode has T_q=1 != T_k so it
+    always falls through. Do not reuse this proxy where same-shape masks differ.
+    """
+
+    def __init__(self):
+        self._causal_shapes: dict[tuple[int, ...], bool] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(torch.nn.functional, name)
+
+    def scaled_dot_product_attention(self, q, k, v, attn_mask=None, **kwargs):
+        if (
+            attn_mask is not None
+            and attn_mask.dtype == torch.bool
+            and q.shape[-2] == k.shape[-2]
+            and attn_mask.shape[-2:] == (q.shape[-2], k.shape[-2])
+        ):
+            key = tuple(attn_mask.shape)
+            causal = self._causal_shapes.get(key)
+            if causal is None:
+                T = q.shape[-2]
+                tril = torch.ones(T, T, dtype=torch.bool, device=attn_mask.device).tril()
+                causal = bool((attn_mask == tril).all())
+                self._causal_shapes[key] = causal
+            if causal:
+                return torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v, is_causal=True, **kwargs
+                )
+        return torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask, **kwargs)
+
+
+def enable_causal_sdpa() -> None:
+    import moshi.modules.transformer as _moshi_transformer
+
+    _moshi_transformer.F = _CausalSDPA()
+
+
+if os.environ.get("HIBIKI_SDPA_CAUSAL"):
+    enable_causal_sdpa()
+
+
 # --------------------------------------------------------------------------- #
 # Schedules: piecewise-constant "value@fraction" specs
 # --------------------------------------------------------------------------- #
@@ -210,8 +261,9 @@ class CachedCodeDataset(Dataset):
 # Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
 # lengths, which balloons the GPU working set (26 GB wired, swap-thrash). Bucketing
 # collapses that to ~9 shapes. Loss-neutral: extra frames are -1 == zero_token_id,
-# masked out of both CE terms (see LMModel.forward logits_mask).
-FRAME_BUCKET = 32
+# masked out of both CE terms (see LMModel.forward logits_mask). CUDA doesn't
+# need the shape cap — HIBIKI_FRAME_BUCKET=1 pads to the exact batch max.
+FRAME_BUCKET = int(os.environ.get("HIBIKI_FRAME_BUCKET", "32"))
 
 
 def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -484,12 +536,16 @@ def apply_lr_schedule(
 # --------------------------------------------------------------------------- #
 # Teacher-forced losses
 # --------------------------------------------------------------------------- #
-def masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> tuple[Any, int]:
-    token_count = int(mask.sum().detach().cpu())
-    if token_count == 0:
-        return logits.float().sum() * 0.0, 0
-    loss = torch.nn.functional.cross_entropy(logits[mask].float(), targets[mask].long())
-    return loss, token_count
+def masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> tuple[Any, Any]:
+    # Sum/clamp form keeps everything on-GPU: no host sync mid-forward (the old
+    # int(mask.sum().cpu()) stalled the CUDA pipeline twice per micro-batch).
+    # Empty mask -> sum CE is 0.0, clamp avoids 0/0. Token count is a tensor;
+    # callers int() it only at log/eval time.
+    token_count = mask.sum()
+    loss_sum = torch.nn.functional.cross_entropy(
+        logits[mask].float(), targets[mask].long(), reduction="sum"
+    )
+    return loss_sum / token_count.clamp(min=1), token_count
 
 
 def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int) -> Any:
