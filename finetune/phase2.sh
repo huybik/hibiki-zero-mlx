@@ -6,6 +6,7 @@
 #          causal-SDPA + torch.compile), hf_sync alongside.
 set -e
 cd "$(dirname "$0")/.."
+[ -f /venv/main/bin/activate ] && source /venv/main/bin/activate
 set -a; source .env; set +a
 export HF_HUB_DISABLE_XET=1 HF_HUB_DOWNLOAD_TIMEOUT=120
 
@@ -20,8 +21,9 @@ restore)
     done
   fi
   if [ ! -d finetune/cache/train ]; then
-    hf download huybik/hibiki-zero-vi-full-sft mimi_caches.tar.gz --local-dir /workspace/model_dl
-    tar -xzf /workspace/model_dl/mimi_caches.tar.gz -C finetune
+    hf download huybik/hibiki-zero-vi-full-sft fleurs_cache.tar.zst --repo-type dataset \
+      --local-dir /workspace/cache_dl
+    tar --zstd -xf /workspace/cache_dl/fleurs_cache.tar.zst -C finetune
   fi
   if [ ! -f finetune/runs/init/model_step055284.safetensors ]; then
     hf download huybik/hibiki-zero-vi-full-sft model_step055284.safetensors \
