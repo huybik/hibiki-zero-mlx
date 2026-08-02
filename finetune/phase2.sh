@@ -33,7 +33,7 @@ restore)
   echo RESTORE_DONE
   ;;
 train)
-  export HIBIKI_SDPA_CAUSAL=1 NO_TORCH_COMPILE=
+  # causal-SDPA + torch.compile are default-on for CUDA in finetune/common.py
   python finetune/hf_sync.py finetune/runs/vi_full_p2 huybik/hibiki-zero-vi-full-sft &
   SYNC_PID=$!
   python finetune/train_lora.py \
