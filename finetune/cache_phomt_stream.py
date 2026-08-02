@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import math
+import queue
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -191,12 +193,9 @@ def main() -> None:
         table = pq.ParquetFile(local).read()
         samples = []
         pair_lines = []
-        chunk: list[dict] = []
         cpu = torch.device("cpu")
 
-        def flush_chunk() -> None:
-            if not chunk:
-                return
+        def encode_chunk(chunk: list[dict]) -> None:
             codes = encode_batch(
                 [c["vi_wav"] for c in chunk] + [c["en_wav"] for c in chunk],
                 mimi,
@@ -226,54 +225,84 @@ def main() -> None:
                         "text_vi": row["text_vi"],
                     }
                 )
-            chunk.clear()
             if device.type == "mps":
                 torch.mps.empty_cache()
 
-        for i in range(table.num_rows):
-            if args.limit and kept >= args.limit:
-                break
-            vi_dur = float(table.column("duration_vi_s")[i].as_py())
-            if args.max_source_duration_s and vi_dur > args.max_source_duration_s:
-                continue
-            en_dur = float(table.column("duration_en_s")[i].as_py())
-            text_vi = str(table.column("vi")[i].as_py()).strip()
-            text_en = str(table.column("en")[i].as_py()).strip()
-            key = row_key(text_vi, text_en, f"{vi_dur:.2f}", f"{en_dur:.2f}")
-            if key in skip:
-                continue
-            skip.add(key)
-            row = {
-                "id": f"phomt_s{parquet_idx:05d}r{i:05d}",
-                "split": "train",
-                "vi_audio": f"hf://{DATASET}/{shard_name}#r{i}",
-                "en_audio": f"hf://{DATASET}/{shard_name}#r{i}",
-                "vi_duration_s": f"{vi_dur:.2f}",
-                "en_duration_s": f"{en_dur:.2f}",
-                "text_vi": text_vi,
-                "text_en": text_en,
-            }
-            delay_s = target_delay_s(row, args.target_delay_ratio, args.seed)
-            delay_frames = int(round(delay_s * FRAME_RATE))
-            with (
-                tempfile.NamedTemporaryFile(suffix=".wav", dir=tmp_dir) as vi_tmp,
-                tempfile.NamedTemporaryFile(suffix=".wav", dir=tmp_dir) as en_tmp,
-            ):
-                vi_tmp.write(table.column("audio_vi")[i].as_py()["bytes"])
-                vi_tmp.flush()
-                en_tmp.write(table.column("audio_en")[i].as_py()["bytes"])
-                en_tmp.flush()
-                vi_wav = read_audio(Path(vi_tmp.name), sphn, torch, cpu)[0, 0]
-                en_wav = read_audio(Path(en_tmp.name), sphn, torch, cpu, left_pad_s=delay_s)[0, 0]
-            chunk.append(
-                {"row": row, "delay_s": delay_s, "delay_frames": delay_frames, "vi_wav": vi_wav, "en_wav": en_wav}
-            )
-            kept += 1
-            kept_hours += vi_dur / 3600.0
-            pair_lines.append(row)
-            if len(chunk) >= CHUNK_ROWS:
-                flush_chunk()
-        flush_chunk()
+        # Producer thread preps chunks (parquet reads, wav decode, delay pad)
+        # while the main thread keeps the GPU busy encoding the previous chunk.
+        # All GPU work stays on the main thread.
+        chunk_q: queue.Queue = queue.Queue(maxsize=2)
+        DONE = object()
+        prep_err: list[BaseException] = []
+
+        def producer() -> None:
+            nonlocal kept, kept_hours
+            chunk: list[dict] = []
+            try:
+                for i in range(table.num_rows):
+                    if args.limit and kept >= args.limit:
+                        break
+                    vi_dur = float(table.column("duration_vi_s")[i].as_py())
+                    if args.max_source_duration_s and vi_dur > args.max_source_duration_s:
+                        continue
+                    en_dur = float(table.column("duration_en_s")[i].as_py())
+                    text_vi = str(table.column("vi")[i].as_py()).strip()
+                    text_en = str(table.column("en")[i].as_py()).strip()
+                    key = row_key(text_vi, text_en, f"{vi_dur:.2f}", f"{en_dur:.2f}")
+                    if key in skip:
+                        continue
+                    skip.add(key)
+                    row = {
+                        "id": f"phomt_s{parquet_idx:05d}r{i:05d}",
+                        "split": "train",
+                        "vi_audio": f"hf://{DATASET}/{shard_name}#r{i}",
+                        "en_audio": f"hf://{DATASET}/{shard_name}#r{i}",
+                        "vi_duration_s": f"{vi_dur:.2f}",
+                        "en_duration_s": f"{en_dur:.2f}",
+                        "text_vi": text_vi,
+                        "text_en": text_en,
+                    }
+                    delay_s = target_delay_s(row, args.target_delay_ratio, args.seed)
+                    delay_frames = int(round(delay_s * FRAME_RATE))
+                    with (
+                        tempfile.NamedTemporaryFile(suffix=".wav", dir=tmp_dir) as vi_tmp,
+                        tempfile.NamedTemporaryFile(suffix=".wav", dir=tmp_dir) as en_tmp,
+                    ):
+                        vi_tmp.write(table.column("audio_vi")[i].as_py()["bytes"])
+                        vi_tmp.flush()
+                        en_tmp.write(table.column("audio_en")[i].as_py()["bytes"])
+                        en_tmp.flush()
+                        vi_wav = read_audio(Path(vi_tmp.name), sphn, torch, cpu)[0, 0]
+                        en_wav = read_audio(Path(en_tmp.name), sphn, torch, cpu, left_pad_s=delay_s)[0, 0]
+                    chunk.append(
+                        {
+                            "row": row,
+                            "delay_s": delay_s,
+                            "delay_frames": delay_frames,
+                            "vi_wav": vi_wav,
+                            "en_wav": en_wav,
+                        }
+                    )
+                    kept += 1
+                    kept_hours += vi_dur / 3600.0
+                    pair_lines.append(row)
+                    if len(chunk) >= CHUNK_ROWS:
+                        chunk_q.put(chunk)
+                        chunk = []
+                if chunk:
+                    chunk_q.put(chunk)
+            except BaseException as exc:
+                prep_err.append(exc)
+            finally:
+                chunk_q.put(DONE)
+
+        prep = threading.Thread(target=producer, daemon=True)
+        prep.start()
+        while (pending := chunk_q.get()) is not DONE:
+            encode_chunk(pending)
+        prep.join()
+        if prep_err:
+            raise prep_err[0]
 
         payload = {
             "format": CACHE_FORMAT,
