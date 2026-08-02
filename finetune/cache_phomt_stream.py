@@ -115,7 +115,11 @@ def encode_batch(wavs: list, mimi, torch, batch_size: int) -> list:
             <= BATCH_SAMPLE_BUDGET
         ):
             idxs.append(order[s + len(idxs)])
-            pad_t = math.ceil(int(wavs[idxs[-1]].shape[0]) / bucket) * bucket
+        # power-of-2 batch sizes: (B, pad_t) shape combos each compile a Metal
+        # kernel graph for the whole conv stack; unquantized B explodes variety.
+        while len(idxs) & (len(idxs) - 1):
+            idxs.pop()
+        pad_t = math.ceil(int(wavs[idxs[-1]].shape[0]) / bucket) * bucket
         s += len(idxs)
         batch = torch.zeros(len(idxs), 1, pad_t)
         for j, i in enumerate(idxs):
@@ -124,6 +128,8 @@ def encode_batch(wavs: list, mimi, torch, batch_size: int) -> list:
             codes = mimi.encode(batch.to(device)).cpu()
         for j, i in enumerate(idxs):
             out[i] = codes[j, :, : math.ceil(int(wavs[i].shape[0]) / frame)].long()
+        if device.type == "mps":
+            torch.mps.empty_cache()
     return out
 
 
