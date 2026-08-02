@@ -128,8 +128,6 @@ def encode_batch(wavs: list, mimi, torch, batch_size: int) -> list:
             codes = mimi.encode(batch.to(device)).cpu()
         for j, i in enumerate(idxs):
             out[i] = codes[j, :, : math.ceil(int(wavs[i].shape[0]) / frame)].long()
-        if device.type == "mps":
-            torch.mps.empty_cache()
     return out
 
 
