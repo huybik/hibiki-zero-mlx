@@ -9,6 +9,9 @@ cd "$(dirname "$0")/.."
 [ -f /venv/main/bin/activate ] && source /venv/main/bin/activate
 set -a; source .env; set +a
 export HF_HUB_DISABLE_XET=1 HF_HUB_DOWNLOAD_TIMEOUT=120
+# multi-stream transfers (single connection throttles at ~16 MB/s; checkpoint
+# pairs are ~37 GB) — needs `uv pip install hf_transfer`
+export HF_HUB_ENABLE_HF_TRANSFER=1
 
 case "$1" in
 restore)
