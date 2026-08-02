@@ -69,6 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--keep-parquet",
+        action="store_true",
+        help="Keep downloaded parquet in the HF cache (Mac run with pre-synced external disk).",
+    )
     parser.add_argument("--max-source-duration-s", type=float, default=25.0)
     parser.add_argument("--target-delay-ratio", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=1234)
@@ -214,7 +219,8 @@ def main() -> None:
             with pairs_path.open("a", encoding="utf-8") as fh:
                 for row in pair_lines:
                     fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-        delete_from_hf_cache(local)
+        if not args.keep_parquet:
+            delete_from_hf_cache(local)
         if device.type == "mps":
             torch.mps.empty_cache()
         print(
