@@ -48,7 +48,7 @@ train)
     --init-adapter finetune/runs/init/model_step055284.safetensors \
     --batch-size 16 --max-frames 280 --epochs 2 \
     --lr-schedule "5e-5@0,2e-5@0.5,1e-5@0.8" --warmup-steps 500 \
-    --text-weight-schedule "3@0,2@0.5" \
+    --text-weight-schedule "3@0,2@0.5" --text-prefix-pad-weight 0.5 \
     --val-every 2000 --eval-every 9000 --save-every 5000 --keep-checkpoints 2 \
     --log-every 10 \
     --out-dir finetune/runs/vi_full_p2

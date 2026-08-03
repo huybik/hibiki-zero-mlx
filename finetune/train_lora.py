@@ -104,6 +104,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-weight-schedule", default="", help="Audio loss-weight schedule.")
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-weight-schedule", default="", help='Text loss-weight schedule "5@0,2@0.6".')
+    parser.add_argument(
+        "--text-prefix-pad-weight",
+        type=float,
+        default=1.0,
+        help="Per-token CE weight for supervised prefix PAD; content/EOS stay at 1.0.",
+    )
     parser.add_argument("--max-steps", type=int, default=0, help="Optimizer steps, 0 means all.")
     # Teacher-forced CE validation (cheap, cached).
     parser.add_argument("--val-every", type=int, default=0, help="Steps between teacher-forced val; 0=final.")
@@ -240,6 +246,8 @@ def main() -> None:
         raise ValueError("--replay-weight must be positive")
     if args.text_head_lr < 0 or args.audio_head_lr < 0:
         raise ValueError("Custom LR values must be non-negative")
+    if args.text_prefix_pad_weight < 0:
+        raise ValueError("--text-prefix-pad-weight must be non-negative")
     if args.resume_checkpoint is not None and args.init_adapter is not None:
         raise ValueError("--resume-checkpoint and --init-adapter are mutually exclusive")
 
@@ -504,7 +512,12 @@ def main() -> None:
                 )
             with autocast:
                 losses = common.compute_batch_losses(
-                    lm, codes, condition_cache[batch_size], audio_w, text_w
+                    lm,
+                    codes,
+                    condition_cache[batch_size],
+                    audio_w,
+                    text_w,
+                    text_prefix_pad_weight=args.text_prefix_pad_weight,
                 )
             loss = losses["loss"]
             (loss / args.grad_accum_steps).backward()

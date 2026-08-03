@@ -560,6 +560,19 @@ def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int) -> Any:
     return base_mask & (non_pad | prefix_pad)
 
 
+def weighted_text_cross_entropy(
+    logits: Any, targets: Any, mask: Any, pad_id: int, prefix_pad_weight: float
+) -> tuple[Any, Any]:
+    token_count = mask.sum()
+    selected_targets = targets[mask].long()
+    token_losses = torch.nn.functional.cross_entropy(
+        logits[mask].float(), selected_targets, reduction="none"
+    )
+    weights = torch.where(selected_targets == pad_id, prefix_pad_weight, 1.0)
+    loss = (token_losses * weights).sum() / weights.sum().clamp(min=1)
+    return loss, token_count
+
+
 def batch_condition_tensors(lm: Any, model_type: str, batch_size: int) -> Any | None:
     if lm.fuser is None:
         return None
@@ -572,6 +585,7 @@ def compute_batch_losses(
     condition_tensors: Any | None,
     audio_loss_weight: float,
     text_loss_weight: float,
+    text_prefix_pad_weight: float = 1.0,
     return_output: bool = False,
 ) -> dict[str, Any]:
     output = lm(codes, condition_tensors=condition_tensors)
@@ -579,7 +593,13 @@ def compute_batch_losses(
     text_targets = codes[:, :1]
     audio_loss, audio_tokens = masked_cross_entropy(output.logits, audio_targets, output.mask)
     text_mask = text_supervision_mask(output.text_mask, text_targets, lm.text_padding_token_id)
-    text_loss, text_tokens = masked_cross_entropy(output.text_logits, text_targets, text_mask)
+    text_loss, text_tokens = weighted_text_cross_entropy(
+        output.text_logits,
+        text_targets,
+        text_mask,
+        lm.text_padding_token_id,
+        text_prefix_pad_weight,
+    )
     loss = audio_loss_weight * audio_loss + text_loss_weight * text_loss
     result = {
         "loss": loss,
