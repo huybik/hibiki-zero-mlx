@@ -69,8 +69,9 @@ the flag.
    **Rule: continuation training resumes at ≤ the prior run's final LR.**
 2. **Pad-dominated text CE masks generation collapse.** Only dense greedy evals
    (`--eval-every 9000`) caught it — at step 9k, 40 min in, instead of at the end.
-   Keep them; consider adding a content-only text CE (mask prefix pads) to the
-   val logging so TF metrics can see this failure mode too.
+   Keep them. (Content-only text CE was later implemented and A/B-tested — it is
+   ALSO blind to the collapse; see the metrics section. Greedy evals are
+   irreplaceable.)
 3. **Epoch-2 synthetic-voice overfit.** Train = Kokoro TTS synthetic speech;
    val128 = real FLEURS audio. Val text CE rising after ~1 epoch over the full
    synthetic set while train loss falls is the same train/val divergence phase 1
@@ -103,11 +104,31 @@ logged to `val_log.jsonl` and by `validate_lora.py`):
 - **Content-only text CE** (`content_text_loss`) — CE over non-pad target tokens
   only. Plain text CE is 57% prefix pads and improved straight through the collapse.
 - **Silence score** (`silence_score`) — at each target's first-content-token
-  position, model probability mass on the pad token. Measures the pad/silence
-  attractor directly; flags a collapse at the next val (2k steps) instead of the
-  next greedy eval (9k).
+  position, model probability mass on the pad token. Intended as a direct
+  pad-attractor probe; the A/B below shows it does NOT discriminate (timing
+  freedom dominates at the reference onset).
 - **Content token accuracy** (`content_acc`, top-1 on non-pad positions) —
   human-readable companion.
+
+**A/B reality check (CPU, same 32 shortest val samples, 2026-08-03):** warm start
+(healthy, chrF 19.6) vs epoch-2 final (collapsed, 55/128 empty):
+
+| | text CE | content CE | content acc | silence score |
+|---|---|---|---|---|
+| warm start (healthy) | 2.97 | 6.22 | 0.148 | 0.994 |
+| epoch-2 final (collapsed) | 2.70 | 5.64 | 0.186 | 0.978 |
+
+Sobering: **all TF metrics are BETTER for the collapsed model, including the new
+ones.** Silence score sits near 1.0 for both — at the *reference's* onset frame
+even a healthy streaming translator prefers to keep waiting (timing freedom
+dominates), so pad mass there measures alignment preference, not collapse. And
+content CE improves with training even as generation goes silent, because
+teacher forcing feeds the reference's own content tokens back in — the collapse
+lives in free-running mode (model conditioned on its own pads at its own chosen
+onset), which TF conditioned on reference text cannot reach. Conclusion: keep
+the TF metrics as cheap overfit/adequacy trackers (content CE divergence is the
+epoch-2 overfit signal without pad dilution), but **the greedy eval remains the
+only collapse detector; do not relax `--eval-every` in exchange for TF metrics.**
 
 Text (greedy eval):
 - **nonempty_chrf** now logged next to nonempty count in `greedy_eval_log.jsonl`
