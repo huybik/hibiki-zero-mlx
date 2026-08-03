@@ -210,6 +210,7 @@ class CachedCodeDataset(Dataset):
         max_frames: int = 0,
     ):
         self.samples: list[dict[str, Any]] = []
+        self.frame_rate: float | None = None
         dropped = 0
         cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
         shard_paths = [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]
@@ -217,6 +218,13 @@ class CachedCodeDataset(Dataset):
             payload = torch.load(shard_path, map_location="cpu")
             if payload.get("format") != CACHE_FORMAT:
                 raise RuntimeError(f"Unsupported cache format in {shard_path}")
+            frame_rate = float(payload["frame_rate"])
+            if self.frame_rate is None:
+                self.frame_rate = frame_rate
+            elif frame_rate != self.frame_rate:
+                raise RuntimeError(
+                    f"Cache frame-rate mismatch in {shard_path}: {frame_rate} != {self.frame_rate}"
+                )
             for sample in payload["samples"]:
                 codes = sample["codes"]
                 if codes.ndim != 2:
@@ -231,6 +239,7 @@ class CachedCodeDataset(Dataset):
                         # collate_cached casts to long on batch assembly.
                         "codes": codes.to(torch.int32),
                         "frames": int(codes.shape[1]),
+                        "source_frames": int(sample["vi_frames"]),
                     }
                 )
         if not self.samples:
@@ -261,6 +270,94 @@ class CachedCodeDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         return self.samples[index]
 
+    def exposure(self) -> dict[str, float | int]:
+        source_frames = sum(sample["source_frames"] for sample in self.samples)
+        return {
+            "samples": len(self.samples),
+            "assembled_frames": sum(sample["frames"] for sample in self.samples),
+            "source_frames": source_frames,
+            "source_hours": source_frames / float(self.frame_rate) / 3600,
+        }
+
+
+def parse_frame_batch_schedule(spec: str) -> list[tuple[int, int]]:
+    """Parse cumulative max-frame buckets, e.g. ``288:10,384:8,512:5``."""
+    buckets: list[tuple[int, int]] = []
+    for part in spec.split(","):
+        fields = part.strip().split(":")
+        if len(fields) != 2:
+            raise ValueError("--frame-batch-schedule must use MAX_FRAMES:BATCH_SIZE entries")
+        try:
+            max_frames, batch_size = (int(field) for field in fields)
+        except ValueError as exc:
+            raise ValueError("--frame-batch-schedule values must be positive integers") from exc
+        if max_frames <= 0 or batch_size <= 0:
+            raise ValueError("--frame-batch-schedule values must be positive integers")
+        if buckets and max_frames <= buckets[-1][0]:
+            raise ValueError("--frame-batch-schedule frame limits must strictly increase")
+        buckets.append((max_frames, batch_size))
+    if not buckets:
+        raise ValueError("--frame-batch-schedule cannot be empty")
+    return buckets
+
+
+class FrameBudgetBatchSampler:
+    """Length-homogeneous batches shuffled only as whole blocks per epoch."""
+
+    def __init__(
+        self,
+        dataset: CachedCodeDataset,
+        schedule: list[tuple[int, int]],
+        seed: int,
+    ):
+        self.dataset = dataset
+        self.schedule = schedule
+        self.seed = seed
+        self.epoch = 0
+        self.batches: list[list[int]] = []
+        self.bucket_exposure: list[dict[str, float | int]] = []
+
+        lower = 0
+        for upper, batch_size in schedule:
+            indices = sorted(
+                (
+                    index
+                    for index, sample in enumerate(dataset.samples)
+                    if lower < sample["frames"] <= upper
+                ),
+                key=lambda index: dataset.samples[index]["frames"],
+            )
+            batches = [
+                indices[start : start + batch_size] for start in range(0, len(indices), batch_size)
+            ]
+            self.batches.extend(batches)
+            source_frames = sum(dataset.samples[index]["source_frames"] for index in indices)
+            self.bucket_exposure.append(
+                {
+                    "min_frames": lower + 1,
+                    "max_frames": upper,
+                    "batch_size": batch_size,
+                    "samples": len(indices),
+                    "batches": len(batches),
+                    "assembled_frames": sum(dataset.samples[index]["frames"] for index in indices),
+                    "source_hours": source_frames / float(dataset.frame_rate) / 3600,
+                }
+            )
+            lower = upper
+        if sum(len(batch) for batch in self.batches) != len(dataset):
+            raise ValueError("--frame-batch-schedule does not cover every selected cache sample")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        order = list(range(len(self.batches)))
+        random.Random(f"{self.seed}:{self.epoch}").shuffle(order)
+        return iter(self.batches[index] for index in order)
+
+    def __len__(self) -> int:
+        return len(self.batches)
+
 
 # Pad each batch's frame length up to a multiple of this. MPS compiles+caches a
 # Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
@@ -281,7 +378,12 @@ def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
         codes = sample["codes"]
         batch[index, :, : codes.shape[1]] = codes
         ids.append(sample["id"])
-    return {"codes": batch, "ids": ids}
+    return {
+        "codes": batch,
+        "ids": ids,
+        "frames": torch.tensor([sample["frames"] for sample in samples]),
+        "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
+    }
 
 
 def parse_ids(value: str) -> set[str]:
@@ -320,7 +422,21 @@ def make_cached_dataloader(
     num_workers: int,
     sort_by_length: bool,
     sampler: Any | None = None,
+    batch_sampler: Any | None = None,
+    seed: int = 0,
 ) -> DataLoader:
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    if batch_sampler is not None:
+        if sampler is not None:
+            raise ValueError("sampler and batch_sampler are mutually exclusive")
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=collate_cached,
+            generator=generator,
+        )
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -328,6 +444,7 @@ def make_cached_dataloader(
         sampler=sampler,
         num_workers=num_workers,
         collate_fn=collate_cached,
+        generator=generator,
     )
 
 

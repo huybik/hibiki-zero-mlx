@@ -65,9 +65,15 @@ def parse_args() -> argparse.Namespace:
         help="Model/LoRA dtype. bfloat16 is the stable smoke-test default on MPS.",
     )
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=1, help="Fixed batch size.")
     parser.add_argument("--max-samples", type=int, default=0, help="First N cached samples; 0=all.")
     parser.add_argument("--max-frames", type=int, default=0, help="Drop cached samples longer than N Mimi frames; 0=off.")
+    parser.add_argument(
+        "--frame-batch-schedule",
+        default="",
+        help='Cumulative length buckets "MAX_FRAMES:BATCH_SIZE,...", e.g. "288:10,384:8,512:5". '
+        "Requires matching --max-frames and replaces --batch-size.",
+    )
     parser.add_argument("--replay-ids", default="", help="Comma-separated ids to upweight.")
     parser.add_argument(
         "--replay-weight", type=float, default=1.0, help="Static replay weight; 1 disables replay."
@@ -148,6 +154,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--resume-checkpoint", type=Path, help="trainer_step*.pt to resume from.")
     parser.add_argument("--init-adapter", type=Path, help="Load adapter weights without optimizer resume.")
+    parser.add_argument("--seed", type=int, default=1234, help="Training and data-order RNG seed.")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
         "--gradient-checkpointing", action="store_true", help="Pass gradient_checkpointing=True."
@@ -236,10 +243,17 @@ def lr_schedule_specs(args: argparse.Namespace) -> dict[str, list[tuple[float, f
 
 def main() -> None:
     args = parse_args()
+    frame_batch_schedule = (
+        common.parse_frame_batch_schedule(args.frame_batch_schedule)
+        if args.frame_batch_schedule
+        else []
+    )
     if args.epochs <= 0:
         raise ValueError("--epochs must be positive")
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
+    if args.max_frames < 0:
+        raise ValueError("--max-frames must be non-negative")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
     if args.replay_weight <= 0:
@@ -250,6 +264,17 @@ def main() -> None:
         raise ValueError("--text-prefix-pad-weight must be non-negative")
     if args.resume_checkpoint is not None and args.init_adapter is not None:
         raise ValueError("--resume-checkpoint and --init-adapter are mutually exclusive")
+    if frame_batch_schedule:
+        if args.max_frames <= 0 or frame_batch_schedule[-1][0] != args.max_frames:
+            raise ValueError("--frame-batch-schedule final limit must equal positive --max-frames")
+        if args.batch_size != 1:
+            raise ValueError("Omit --batch-size when --frame-batch-schedule is set")
+        if not args.sort_by_length:
+            raise ValueError("--frame-batch-schedule requires --sort-by-length")
+        if args.replay_ids.strip() or args.replay_weight_schedule or args.replay_weight != 1.0:
+            raise ValueError("--frame-batch-schedule does not support replay sampling")
+
+    common.seed_all(args.seed)
 
     device = common.check_device(args.device)
     dtype = common.dtype_from_name(args.dtype)
@@ -276,12 +301,26 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples, args.max_frames)
-    if args.sort_by_length:
-        dataset.shuffle_batch_order(args.batch_size)
+    frame_batch_sampler = None
+    if frame_batch_schedule:
+        frame_batch_sampler = common.FrameBudgetBatchSampler(dataset, frame_batch_schedule, args.seed)
+    elif args.sort_by_length:
+        dataset.shuffle_batch_order(args.batch_size, args.seed)
+    exposure = dataset.exposure()
     print(
         f"Loaded {len(dataset)} cached samples from "
-        f"{', '.join(repo_display_path(d) for d in cache_dir)}"
+        f"{', '.join(repo_display_path(d) for d in cache_dir)}; "
+        f"assembled_frames={exposure['assembled_frames']:,} "
+        f"source_hours={exposure['source_hours']:.2f}"
     )
+    if frame_batch_sampler is not None:
+        for bucket in frame_batch_sampler.bucket_exposure:
+            print(
+                f"[frame batch] {bucket['min_frames']}-{bucket['max_frames']} frames: "
+                f"batch={bucket['batch_size']} samples={bucket['samples']:,} "
+                f"batches={bucket['batches']:,} assembled_frames={bucket['assembled_frames']:,} "
+                f"source_hours={bucket['source_hours']:.2f}"
+            )
     replay_ids = common.parse_ids(args.replay_ids)
 
     # Schedules (static flag becomes a single-point schedule).
@@ -292,8 +331,17 @@ def main() -> None:
     if args.replay_weight_schedule and not replay_ids:
         raise ValueError("--replay-weight-schedule requires --replay-ids")
 
-    batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
-    steps_per_epoch = max(1, batches_per_epoch // args.grad_accum_steps)
+    batches_per_epoch = (
+        len(frame_batch_sampler)
+        if frame_batch_sampler is not None
+        else math.ceil(len(dataset) / args.batch_size)
+    )
+    steps_per_epoch = max(
+        1,
+        math.ceil(batches_per_epoch / args.grad_accum_steps)
+        if frame_batch_sampler is not None
+        else batches_per_epoch // args.grad_accum_steps,
+    )
     total_steps = args.max_steps if args.max_steps else args.epochs * steps_per_epoch
 
     val_dataloader = None
@@ -301,7 +349,7 @@ def main() -> None:
     if val_cache_dir is not None:
         val_dataset = common.CachedCodeDataset(val_cache_dir, args.sort_by_length, args.val_max_samples)
         val_dataloader = common.make_cached_dataloader(
-            val_dataset, args.batch_size, args.num_workers, args.sort_by_length
+            val_dataset, args.batch_size, args.num_workers, args.sort_by_length, seed=args.seed
         )
         print(f"Loaded {len(val_dataset)} val cached samples from {repo_display_path(val_cache_dir)}")
 
@@ -373,11 +421,19 @@ def main() -> None:
 
     global_step = 0
     micro_step = 0
+    data_epoch = 0
     resume_skip_batches = 0
     if args.resume_checkpoint is not None:
         global_step = load_resume_checkpoint(lm, optimizer, args.resume_checkpoint, device, dtype)
         micro_step = global_step * args.grad_accum_steps
-        if args.sort_by_length and not replay_ids:
+        if frame_batch_sampler is not None:
+            data_epoch, resume_skip_batches = divmod(micro_step, batches_per_epoch)
+            if resume_skip_batches:
+                print(
+                    f"Resuming frame-batch epoch {data_epoch}; skipping "
+                    f"{resume_skip_batches} covered batches."
+                )
+        elif args.sort_by_length and not replay_ids:
             resume_skip_batches = (global_step * args.grad_accum_steps) % batches_per_epoch
             if resume_skip_batches:
                 print(f"Skipping {resume_skip_batches} sorted batches already covered by resume.")
@@ -393,6 +449,8 @@ def main() -> None:
 
     run_config = {k: _jsonable(v) for k, v in vars(args).items()}
     run_config["total_steps"] = total_steps
+    run_config["batches_per_epoch"] = batches_per_epoch
+    run_config["steps_per_epoch"] = steps_per_epoch
     (out_dir / "run_config.json").write_text(json.dumps(run_config, indent=2, sort_keys=True), "utf-8")
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
@@ -401,6 +459,14 @@ def main() -> None:
     log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
     log_steps = 0
     log_text_tokens = 0
+    log_microbatches = 0
+    log_samples = 0
+    log_assembled_frames = 0
+    log_padded_frames = 0
+    log_source_frames = 0
+    log_min_batch_size = math.inf
+    log_max_batch_size = 0
+    log_max_frames = 0
     best_chrf = -1.0
 
     def run_teacher_forced_val(step: int) -> None:
@@ -473,20 +539,32 @@ def main() -> None:
         replay_w = common.schedule_value(replay_points, global_step, total_steps)
         if dataloader is None or replay_w != current_replay_weight:
             current_replay_weight = replay_w
+            loader_seed = args.seed + rebuild_count
             sampler = (
                 common.make_replay_sampler(dataset, replay_ids, replay_w, args.replay_seed + rebuild_count)
                 if replay_ids
                 else None
             )
             rebuild_count += 1
+            if frame_batch_sampler is not None:
+                frame_batch_sampler.set_epoch(data_epoch)
             dataloader = common.make_cached_dataloader(
-                dataset, args.batch_size, args.num_workers, args.sort_by_length, sampler
+                dataset,
+                args.batch_size,
+                args.num_workers,
+                args.sort_by_length,
+                sampler,
+                frame_batch_sampler,
+                loader_seed,
             )
             data_iter = iter(dataloader)
             while resume_skip_batches > 0:
                 try:
                     next(data_iter)
                 except StopIteration:
+                    if frame_batch_sampler is not None:
+                        data_epoch += 1
+                        frame_batch_sampler.set_epoch(data_epoch)
                     data_iter = iter(dataloader)
                     next(data_iter)
                 resume_skip_batches -= 1
@@ -502,10 +580,22 @@ def main() -> None:
             try:
                 batch = next(data_iter)
             except StopIteration:
+                if frame_batch_sampler is not None:
+                    data_epoch += 1
+                    frame_batch_sampler.set_epoch(data_epoch)
                 data_iter = iter(dataloader)
                 batch = next(data_iter)
             codes = batch["codes"].to(device=device, dtype=torch.long)
             batch_size = int(codes.shape[0])
+            actual_max_frames = int(batch["frames"].max())
+            log_microbatches += 1
+            log_samples += batch_size
+            log_assembled_frames += int(batch["frames"].sum())
+            log_padded_frames += batch_size * int(codes.shape[-1])
+            log_source_frames += int(batch["source_frames"].sum())
+            log_min_batch_size = min(log_min_batch_size, batch_size)
+            log_max_batch_size = max(log_max_batch_size, batch_size)
+            log_max_frames = max(log_max_frames, actual_max_frames)
             if batch_size not in condition_cache:
                 condition_cache[batch_size] = common.batch_condition_tensors(
                     lm, checkpoint_info.model_type, batch_size
@@ -563,6 +653,14 @@ def main() -> None:
                 "audio_loss": float(log_sums["audio_loss"]) / log_steps,
                 "text_loss": float(log_sums["text_loss"]) / log_steps,
                 "text_tokens": int(log_text_tokens),
+                "microbatches": log_microbatches,
+                "samples": log_samples,
+                "assembled_frames": log_assembled_frames,
+                "padded_frames": log_padded_frames,
+                "source_hours": log_source_frames / float(dataset.frame_rate) / 3600,
+                "min_batch_size": int(log_min_batch_size),
+                "max_batch_size": log_max_batch_size,
+                "max_frames": log_max_frames,
                 "sec_per_step": (now - last_log_time) / log_steps,
                 "log_steps": log_steps,
                 "lr": lr_value,
@@ -579,11 +677,21 @@ def main() -> None:
             print(
                 f"step={global_step} loss={item['loss']:.4f} audio={item['audio_loss']:.4f} "
                 f"text={item['text_loss']:.4f} tw={text_w:g} rw={replay_w:g} "
+                f"B={item['samples'] / item['microbatches']:.1f} "
+                f"[{item['min_batch_size']}-{item['max_batch_size']}] T<={item['max_frames']} "
                 f"s/step={item['sec_per_step']:.3f}{memory_msg}"
             )
             log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
             log_steps = 0
             log_text_tokens = 0
+            log_microbatches = 0
+            log_samples = 0
+            log_assembled_frames = 0
+            log_padded_frames = 0
+            log_source_frames = 0
+            log_min_batch_size = math.inf
+            log_max_batch_size = 0
+            log_max_frames = 0
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:

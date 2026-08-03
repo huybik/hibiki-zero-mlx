@@ -15,6 +15,10 @@ $PY finetune/build_pairs.py --splits train validation test
 $PY finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
 $PY finetune/cache_codes.py --pairs finetune/pairs/validation.jsonl --out-dir finetune/cache/validation
 $PY finetune/train_lora.py --cache-dir finetune/cache/train --max-steps 10
+$PY finetune/train_lora.py \
+  --cache-dir finetune/cache/phomt_stream finetune/cache/train \
+  --max-frames 512 --frame-batch-schedule "288:10,384:8,512:5" --seed 42 \
+  --max-steps 10
 $PY finetune/validate_lora.py \
   --cache-dir finetune/cache/validation \
   --adapter finetune/runs/vn_lora/adapter_step000010.safetensors \
@@ -62,6 +66,10 @@ AutoResearch protocol, and recommended 128 / 512 / 1449 / CUDA commands.
   degrading to the matching static flag. `--eval-every N` runs an in-training batched
   greedy val eval and saves `adapter_best.safetensors` on chrF improvement. Default
   dtype is `bfloat16`; MPS `float16` can go non-finite after the first optimizer step.
+  `--seed` controls model and data-order randomness. For long CUDA batches,
+  `--frame-batch-schedule` filters at `--max-frames`, builds length-sorted batches in
+  cumulative frame buckets, and shuffles only whole batches per seeded epoch. It replaces
+  `--batch-size` and is intentionally incompatible with the row-level replay sampler.
 - `validate_lora.py` computes teacher-forced CE on cached rows for the base model or
   an adapter. It tracks adequacy/overfit but cannot detect free-running collapse;
   greedy evaluation is mandatory for that failure mode.
