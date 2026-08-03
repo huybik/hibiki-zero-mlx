@@ -11,7 +11,11 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
-from importlib.metadata import PackageNotFoundError, version as package_version
+from importlib.metadata import (
+    PackageNotFoundError,
+    distribution,
+    version as package_version,
+)
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +38,42 @@ GENERATION_CONFIG = {
     "subtalker_top_k": 50,
     "subtalker_top_p": 1.0,
     "subtalker_temperature": 0.9,
+}
+
+MLX_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_pilot_v1"
+MLX_PACKAGE_VERSION = "0.4.7"
+MLX_PACKAGE_COMMIT = "2c9461f5d8315fa8e7013ab2729495b2bb83d384"
+MLX_MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+MLX_MODEL_REVISION = "a6eb4f68e4b056f1215157bb696209bc82a6db48"
+MLX_SOURCE_MODEL_ID = MODEL_ID
+MLX_SOURCE_MODEL_REVISION = MODEL_REVISION
+# mlx-audio v0.4.7 raises ICL repetition penalty to at least 1.5 internally.
+MLX_GENERATION_CONFIG = {
+    "max_tokens": 2048,
+    "temperature": 0.9,
+    "top_k": 50,
+    "top_p": 1.0,
+    "repetition_penalty_requested": 1.05,
+    "repetition_penalty_effective_icl": 1.5,
+    "lang_code": "English",
+    "split_pattern": "\n",
+    "stream": False,
+}
+MLX_MODEL_FILES_SHA256 = {
+    ".gitattributes": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+    "README.md": "cf921813a02b37002f73b636991a52d9385bb4a81a9ff2dc61a178d1f6e27587",
+    "config.json": "39ffdadc03c1a7c7f8116ee8830d6a577ac87039edcbd88759b4fcc4db272070",
+    "generation_config.json": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa",
+    "merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+    "model.safetensors": "81fb76175ff74e69be25fef2cc3e54f016df3034f1514c8e1c89da06a3510cff",
+    "model.safetensors.index.json": "f5bb337c2f77c5046024c7342ed8d6ade28fdfbab862baf9f13269743b920005",
+    "preprocessor_config.json": "efdde1022ea9d76928bf7a9cd53139138f5ba2e466e837f08f6105ab1af1c119",
+    "speech_tokenizer/config.json": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+    "speech_tokenizer/configuration.json": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd",
+    "speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+    "speech_tokenizer/preprocessor_config.json": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb",
+    "tokenizer_config.json": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+    "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
 }
 
 # The pilot is deliberately explicit: five train and three dev speakers; four
@@ -119,12 +159,28 @@ def parse_args() -> argparse.Namespace:
     prepare.add_argument("--dataset-root", type=Path)
     prepare.add_argument("--kokoro-voice-map", type=Path, required=True)
 
+    prepare_mlx = subparsers.add_parser(
+        "prepare-mlx", help="Build the distinct immutable MLX-Audio pilot plan."
+    )
+    prepare_mlx.add_argument("manifests", type=Path, nargs="+")
+    prepare_mlx.add_argument("--out-dir", type=Path, required=True)
+    prepare_mlx.add_argument("--dataset-root", type=Path)
+    prepare_mlx.add_argument("--kokoro-voice-map", type=Path, required=True)
+
     generate = subparsers.add_parser(
         "generate", help="Run the prepared plan in a qwen-tts CUDA environment."
     )
     generate.add_argument("plan", type=Path)
     generate.add_argument("--device", default="cuda:0")
     generate.add_argument("--dataset-root", type=Path)
+
+    generate_mlx = subparsers.add_parser(
+        "generate-mlx",
+        help="Run the prepared plan with pinned MLX-Audio on Apple Silicon.",
+    )
+    generate_mlx.add_argument("plan", type=Path)
+    generate_mlx.add_argument("--device", default="mps")
+    generate_mlx.add_argument("--dataset-root", type=Path)
 
     kokoro = subparsers.add_parser(
         "generate-kokoro", help="Generate the pinned matched-Kokoro baseline."
@@ -185,13 +241,19 @@ def immutable_write(path: Path, value: bytes) -> None:
 
 
 def atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    atomic_write_bytes(path, "".join(canonical_json(row) + "\n" for row in rows).encode("utf-8"))
+    atomic_write_bytes(
+        path, "".join(canonical_json(row) + "\n" for row in rows).encode("utf-8")
+    )
 
 
 def git_commit() -> str:
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return result.stdout.strip()
 
@@ -237,7 +299,9 @@ def translation_record(row: dict[str, Any]) -> dict[str, Any]:
     )
     missing = [field for field in required if not translation.get(field)]
     if missing or translation.get("finish_reason") != "STOP":
-        raise RuntimeError(f"Invalid accepted translation for {row['id']}: missing={missing}")
+        raise RuntimeError(
+            f"Invalid accepted translation for {row['id']}: missing={missing}"
+        )
     input_sha = sha256_bytes(str(row["text_vi"]).encode("utf-8"))
     target_sha = sha256_bytes(str(row["text_en"]).encode("utf-8"))
     if (
@@ -264,6 +328,8 @@ def prepare(
     out_dir: Path,
     dataset_root: Path | None,
     kokoro_voice_map: Path,
+    *,
+    mlx: bool = False,
 ) -> None:
     out_dir = out_dir.expanduser().resolve()
     resolved_manifests = [path.expanduser().resolve() for path in manifests]
@@ -310,7 +376,8 @@ def prepare(
         voice = str(voice_map.get(spec["speaker_id"], ""))
         expected_prefix = "af_" if spec["gender"] == "female" else "am_"
         if not voice or any(
-            not part.partition(":")[0].startswith(expected_prefix) for part in voice.split(",")
+            not part.partition(":")[0].startswith(expected_prefix)
+            for part in voice.split(",")
         ):
             raise RuntimeError(
                 f"Missing or gender-mismatched Kokoro voice for {spec['speaker_id']}"
@@ -327,11 +394,42 @@ def prepare(
             "translation": translation_record(target),
         }
         for seed in SEEDS:
-            pilot_id = f"{target['id']}|qwen|seed={seed}"
-            filename = f"{str(target['id']).replace(':', '_')}.qwen.seed{seed}.wav"
+            backend_name = "qwen_mlx" if mlx else "qwen"
+            pilot_id = f"{target['id']}|{backend_name}|seed={seed}"
+            filename = (
+                f"{str(target['id']).replace(':', '_')}.{backend_name}.seed{seed}.wav"
+            )
+            synthesis = (
+                {
+                    "package": "mlx-audio",
+                    "package_version": MLX_PACKAGE_VERSION,
+                    "package_commit": MLX_PACKAGE_COMMIT,
+                    "model_id": MLX_MODEL_ID,
+                    "model_revision": MLX_MODEL_REVISION,
+                    "source_model_id": MLX_SOURCE_MODEL_ID,
+                    "source_model_revision": MLX_SOURCE_MODEL_REVISION,
+                    "weight_dtype": "bfloat16",
+                    "language": "English",
+                    "clone_mode": "icl_reference_audio_and_text",
+                    "reference_cache": "mlx_audio_internal_icl_cache",
+                    "seed": seed,
+                    "generation_config": MLX_GENERATION_CONFIG,
+                }
+                if mlx
+                else {
+                    "package": "qwen-tts",
+                    "package_version": QWEN_PACKAGE_VERSION,
+                    "model_id": MODEL_ID,
+                    "model_revision": MODEL_REVISION,
+                    "language": "English",
+                    "x_vector_only_mode": False,
+                    "seed": seed,
+                    "generation_config": GENERATION_CONFIG,
+                }
+            )
             plan_rows.append(
                 {
-                    "schema_version": SCHEMA,
+                    "schema_version": MLX_SCHEMA if mlx else SCHEMA,
                     "pilot_id": pilot_id,
                     "speaker_id": spec["speaker_id"],
                     "gender": spec["gender"],
@@ -348,16 +446,7 @@ def prepare(
                         "accepted_manifest": reference_manifest,
                     },
                     "provenance": provenance,
-                    "synthesis": {
-                        "package": "qwen-tts",
-                        "package_version": QWEN_PACKAGE_VERSION,
-                        "model_id": MODEL_ID,
-                        "model_revision": MODEL_REVISION,
-                        "language": "English",
-                        "x_vector_only_mode": False,
-                        "seed": seed,
-                        "generation_config": GENERATION_CONFIG,
-                    },
+                    "synthesis": synthesis,
                     "kokoro_baseline": {
                         "package": "kokoro",
                         "package_version": KOKORO_PACKAGE_VERSION,
@@ -376,10 +465,12 @@ def prepare(
             )
 
     plan_rows.sort(key=lambda row: str(row["pilot_id"]))
-    plan_bytes = "".join(canonical_json(row) + "\n" for row in plan_rows).encode("utf-8")
+    plan_bytes = "".join(canonical_json(row) + "\n" for row in plan_rows).encode(
+        "utf-8"
+    )
     plan_path = out_dir / "pilot_plan.jsonl"
     config = {
-        "schema_version": SCHEMA,
+        "schema_version": MLX_SCHEMA if mlx else SCHEMA,
         "repository_commit": git_commit(),
         "script_sha256": sha256_file(Path(__file__).resolve()),
         "dataset_root_at_prepare": str(dataset_root),
@@ -390,13 +481,29 @@ def prepare(
         },
         "speaker_allowlist": list(PILOT_SPEAKERS),
         "seeds": list(SEEDS),
-        "synthesis": {
-            "package": "qwen-tts",
-            "package_version": QWEN_PACKAGE_VERSION,
-            "model_id": MODEL_ID,
-            "model_revision": MODEL_REVISION,
-            "generation_config": GENERATION_CONFIG,
-        },
+        "synthesis": (
+            {
+                "package": "mlx-audio",
+                "package_version": MLX_PACKAGE_VERSION,
+                "package_commit": MLX_PACKAGE_COMMIT,
+                "model_id": MLX_MODEL_ID,
+                "model_revision": MLX_MODEL_REVISION,
+                "source_model_id": MLX_SOURCE_MODEL_ID,
+                "source_model_revision": MLX_SOURCE_MODEL_REVISION,
+                "weight_dtype": "bfloat16",
+                "reference_cache": "mlx_audio_internal_icl_cache",
+                "generation_config": MLX_GENERATION_CONFIG,
+                "model_files_sha256": MLX_MODEL_FILES_SHA256,
+            }
+            if mlx
+            else {
+                "package": "qwen-tts",
+                "package_version": QWEN_PACKAGE_VERSION,
+                "model_id": MODEL_ID,
+                "model_revision": MODEL_REVISION,
+                "generation_config": GENERATION_CONFIG,
+            }
+        ),
         "kokoro_baseline": {
             "package": "kokoro",
             "package_version": KOKORO_PACKAGE_VERSION,
@@ -410,7 +517,9 @@ def prepare(
     immutable_write(plan_path, plan_bytes)
     immutable_write(
         out_dir / "pilot_config.json",
-        (json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(),
+        (
+            json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode(),
     )
     print(f"Prepared {len(plan_rows)} outputs for {len(PILOT_SPEAKERS)} speakers")
     print(f"Plan: {plan_path}")
@@ -427,12 +536,28 @@ def require_package(name: str, expected: str, purpose: str) -> str:
     return installed
 
 
+def require_mlx_audio_commit() -> None:
+    direct_url_text = distribution("mlx-audio").read_text("direct_url.json")
+    direct_url = json.loads(direct_url_text) if direct_url_text else {}
+    commit = direct_url.get("vcs_info", {}).get("commit_id")
+    if commit != MLX_PACKAGE_COMMIT:
+        raise RuntimeError(
+            "MLX generation requires mlx-audio installed from exact commit "
+            f"{MLX_PACKAGE_COMMIT}; direct_url.json records {commit!r}"
+        )
+
+
 def validate_plan(rows: list[dict[str, Any]]) -> None:
     if len(rows) != len(PILOT_SPEAKERS) * len(SEEDS):
         raise RuntimeError(f"Expected 16 pinned pilot rows, found {len(rows)}")
     ids = [str(row.get("pilot_id", "")) for row in rows]
     if len(ids) != len(set(ids)) or any(not value for value in ids):
         raise RuntimeError("Pilot plan has empty or duplicate ids")
+    schemas = {str(row.get("schema_version", "")) for row in rows}
+    if len(schemas) != 1 or not schemas <= {SCHEMA, MLX_SCHEMA}:
+        raise RuntimeError(f"Pilot schema mismatch: {sorted(schemas)}")
+    schema = schemas.pop()
+    mlx = schema == MLX_SCHEMA
     expected = {
         (
             spec["speaker_id"],
@@ -459,15 +584,25 @@ def validate_plan(rows: list[dict[str, Any]]) -> None:
     if actual != expected:
         raise RuntimeError("Pilot rows do not match the sealed train/dev allowlist")
     for row in rows:
-        if row.get("schema_version") != SCHEMA:
-            raise RuntimeError(f"Pilot schema mismatch: {row.get('schema_version')}")
         synthesis = row.get("synthesis", {})
-        if (
-            synthesis.get("model_id") != MODEL_ID
-            or synthesis.get("model_revision") != MODEL_REVISION
-            or synthesis.get("package_version") != QWEN_PACKAGE_VERSION
-            or synthesis.get("generation_config") != GENERATION_CONFIG
-        ):
+        expected_synthesis = (
+            synthesis.get("model_id") == MLX_MODEL_ID
+            and synthesis.get("model_revision") == MLX_MODEL_REVISION
+            and synthesis.get("source_model_id") == MLX_SOURCE_MODEL_ID
+            and synthesis.get("source_model_revision") == MLX_SOURCE_MODEL_REVISION
+            and synthesis.get("package") == "mlx-audio"
+            and synthesis.get("package_version") == MLX_PACKAGE_VERSION
+            and synthesis.get("package_commit") == MLX_PACKAGE_COMMIT
+            and synthesis.get("weight_dtype") == "bfloat16"
+            and synthesis.get("reference_cache") == "mlx_audio_internal_icl_cache"
+            and synthesis.get("generation_config") == MLX_GENERATION_CONFIG
+            if mlx
+            else synthesis.get("model_id") == MODEL_ID
+            and synthesis.get("model_revision") == MODEL_REVISION
+            and synthesis.get("package_version") == QWEN_PACKAGE_VERSION
+            and synthesis.get("generation_config") == GENERATION_CONFIG
+        )
+        if not expected_synthesis:
             raise RuntimeError(f"Unpinned synthesis config in {row['pilot_id']}")
         baseline = row.get("kokoro_baseline", {})
         if (
@@ -541,6 +676,8 @@ def generate(plan_path: Path, device: str, dataset_root: Path | None) -> None:
     plan_path = plan_path.expanduser().resolve()
     rows = read_jsonl(plan_path)
     validate_plan(rows)
+    if any(row["schema_version"] != SCHEMA for row in rows):
+        raise RuntimeError("generate requires the original CUDA prepare plan")
     input_paths = validate_audio_inputs(rows, dataset_root)
     plan_sha = sha256_file(plan_path)
     config_path = plan_path.parent / "pilot_config.json"
@@ -558,7 +695,9 @@ def generate(plan_path: Path, device: str, dataset_root: Path | None) -> None:
     plan_by_id = {str(row["pilot_id"]): row for row in rows}
     plan_ids = set(plan_by_id)
     if set(completed_by_id) - plan_ids:
-        raise RuntimeError(f"Generation manifest contains ids outside the plan: {manifest_path}")
+        raise RuntimeError(
+            f"Generation manifest contains ids outside the plan: {manifest_path}"
+        )
     for item in completed:
         planned = plan_by_id[str(item["pilot_id"])]
         output = planned_output_path(planned, plan_path)
@@ -571,7 +710,9 @@ def generate(plan_path: Path, device: str, dataset_root: Path | None) -> None:
             or item.get("synthesis") != planned["synthesis"]
             or sha256_file(output) != item.get("audio_sha256")
         ):
-            raise RuntimeError(f"Completed output provenance mismatch: {item['pilot_id']}")
+            raise RuntimeError(
+                f"Completed output provenance mismatch: {item['pilot_id']}"
+            )
 
     pending = [row for row in rows if row["pilot_id"] not in completed_by_id]
     if not pending:
@@ -580,7 +721,9 @@ def generate(plan_path: Path, device: str, dataset_root: Path | None) -> None:
     for row in pending:
         output = planned_output_path(row, plan_path)
         if output.exists():
-            raise RuntimeError(f"Unrecorded output exists; refusing to overwrite: {output}")
+            raise RuntimeError(
+                f"Unrecorded output exists; refusing to overwrite: {output}"
+            )
 
     qwen_version = require_package("qwen-tts", QWEN_PACKAGE_VERSION, "Qwen generation")
     try:
@@ -638,7 +781,9 @@ def generate(plan_path: Path, device: str, dataset_root: Path | None) -> None:
             raise RuntimeError(f"Expected one generated waveform for {row['pilot_id']}")
         audio = np.asarray(wavs[0], dtype=np.float32).reshape(-1)
         if audio.size == 0 or not np.isfinite(audio).all():
-            raise RuntimeError(f"Generated empty or non-finite audio for {row['pilot_id']}")
+            raise RuntimeError(
+                f"Generated empty or non-finite audio for {row['pilot_id']}"
+            )
         output_path = planned_output_path(row, plan_path)
         atomic_write_wav(output_path, audio, int(sample_rate), sf)
         result = {
@@ -676,8 +821,193 @@ def generate(plan_path: Path, device: str, dataset_root: Path | None) -> None:
             manifest_path,
             [completed_by_id[key] for key in sorted(completed_by_id)],
         )
-        print(f"[{number}/{len(pending)}] {row['pilot_id']} -> {output_path}", flush=True)
+        print(
+            f"[{number}/{len(pending)}] {row['pilot_id']} -> {output_path}", flush=True
+        )
     print(f"Generation manifest: {manifest_path}")
+
+
+def verify_mlx_snapshot(model_root: Path) -> dict[str, str]:
+    actual = {
+        str(path.relative_to(model_root)): sha256_file(path)
+        for path in sorted(model_root.rglob("*"))
+        if path.is_file()
+    }
+    if actual != MLX_MODEL_FILES_SHA256:
+        missing = sorted(set(MLX_MODEL_FILES_SHA256) - set(actual))
+        extra = sorted(set(actual) - set(MLX_MODEL_FILES_SHA256))
+        changed = sorted(
+            name
+            for name in set(actual) & set(MLX_MODEL_FILES_SHA256)
+            if actual[name] != MLX_MODEL_FILES_SHA256[name]
+        )
+        raise RuntimeError(
+            f"MLX model snapshot hash mismatch: missing={missing}, extra={extra}, "
+            f"changed={changed}"
+        )
+    return actual
+
+
+def generate_mlx(plan_path: Path, device: str, dataset_root: Path | None) -> None:
+    plan_path = plan_path.expanduser().resolve()
+    rows = read_jsonl(plan_path)
+    validate_plan(rows)
+    if any(row["schema_version"] != MLX_SCHEMA for row in rows):
+        raise RuntimeError("generate-mlx requires a prepare-mlx plan")
+    input_paths = validate_audio_inputs(rows, dataset_root)
+    plan_sha = sha256_file(plan_path)
+    config_path = plan_path.parent / "pilot_config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if config.get("plan_sha256") != plan_sha:
+        raise RuntimeError(f"Plan hash does not match {config_path}")
+    if device != "mps":
+        raise RuntimeError(
+            "MLX-Audio pilot generation is Apple-Metal-only; use --device mps"
+        )
+
+    manifest_path = plan_path.parent / "mlx_generation.jsonl"
+    completed = read_jsonl(manifest_path) if manifest_path.exists() else []
+    completed_by_id = {str(row.get("pilot_id", "")): row for row in completed}
+    if len(completed_by_id) != len(completed):
+        raise RuntimeError(f"Duplicate completed ids in {manifest_path}")
+    plan_by_id = {str(row["pilot_id"]): row for row in rows}
+    if set(completed_by_id) - set(plan_by_id):
+        raise RuntimeError(
+            f"Generation manifest contains ids outside the plan: {manifest_path}"
+        )
+    for item in completed:
+        planned = plan_by_id[str(item["pilot_id"])]
+        output = planned_output_path(planned, plan_path)
+        if (
+            item.get("plan_sha256") != plan_sha
+            or item.get("output_wav") != str(output)
+            or item.get("speaker_id") != planned["speaker_id"]
+            or item.get("target_id") != planned["target_id"]
+            or item.get("replicate_seed") != planned["synthesis"]["seed"]
+            or item.get("synthesis") != planned["synthesis"]
+            or item.get("model_snapshot", {}).get("files_sha256")
+            != MLX_MODEL_FILES_SHA256
+            or sha256_file(output) != item.get("audio_sha256")
+        ):
+            raise RuntimeError(
+                f"Completed output provenance mismatch: {item['pilot_id']}"
+            )
+
+    pending = [row for row in rows if row["pilot_id"] not in completed_by_id]
+    if not pending:
+        print(f"All {len(rows)} planned outputs already complete: {manifest_path}")
+        return
+    for row in pending:
+        output = planned_output_path(row, plan_path)
+        if output.exists():
+            raise RuntimeError(
+                f"Unrecorded output exists; refusing to overwrite: {output}"
+            )
+
+    mlx_audio_version = require_package(
+        "mlx-audio", MLX_PACKAGE_VERSION, "MLX-Audio generation"
+    )
+    require_mlx_audio_commit()
+    try:
+        import mlx.core as mx
+        import numpy as np
+        import soundfile as sf
+        from huggingface_hub import snapshot_download
+        from mlx_audio.tts.utils import load_model
+    except ImportError as error:
+        raise RuntimeError(
+            "MLX generation requires the pinned mlx-audio commit, mlx, "
+            "huggingface-hub, numpy, and soundfile"
+        ) from error
+
+    model_root = Path(
+        snapshot_download(repo_id=MLX_MODEL_ID, revision=MLX_MODEL_REVISION)
+    )
+    if model_root.name != MLX_MODEL_REVISION:
+        raise RuntimeError(f"Snapshot did not resolve to pinned revision: {model_root}")
+    model_snapshot_hashes = verify_mlx_snapshot(model_root)
+    model = load_model(model_root)
+
+    for number, row in enumerate(pending, start=1):
+        seed = int(row["synthesis"]["seed"])
+        random.seed(seed)
+        np.random.seed(seed)
+        mx.random.seed(seed)
+        reference = row["reference"]
+        started = time.monotonic()
+        results = list(
+            model.generate(
+                text=row["text_en"],
+                ref_audio=str(input_paths[reference["audio"]["path"]]),
+                ref_text=reference["text_vi"],
+                max_tokens=MLX_GENERATION_CONFIG["max_tokens"],
+                temperature=MLX_GENERATION_CONFIG["temperature"],
+                top_k=MLX_GENERATION_CONFIG["top_k"],
+                top_p=MLX_GENERATION_CONFIG["top_p"],
+                repetition_penalty=MLX_GENERATION_CONFIG[
+                    "repetition_penalty_requested"
+                ],
+                lang_code=MLX_GENERATION_CONFIG["lang_code"],
+                split_pattern=MLX_GENERATION_CONFIG["split_pattern"],
+                stream=MLX_GENERATION_CONFIG["stream"],
+            )
+        )
+        if len(results) != 1:
+            raise RuntimeError(f"Expected one generated waveform for {row['pilot_id']}")
+        mx.eval(results[0].audio)
+        audio = np.asarray(results[0].audio, dtype=np.float32).reshape(-1)
+        sample_rate = int(results[0].sample_rate)
+        if audio.size == 0 or not np.isfinite(audio).all():
+            raise RuntimeError(
+                f"Generated empty or non-finite audio for {row['pilot_id']}"
+            )
+        output_path = planned_output_path(row, plan_path)
+        atomic_write_wav(output_path, audio, sample_rate, sf)
+        result = {
+            "schema_version": MLX_SCHEMA,
+            "pilot_id": row["pilot_id"],
+            "plan_path": str(plan_path),
+            "plan_sha256": plan_sha,
+            "speaker_id": row["speaker_id"],
+            "target_id": row["target_id"],
+            "replicate_seed": seed,
+            "output_wav": str(output_path),
+            "audio_sha256": sha256_file(output_path),
+            "sample_rate_hz": sample_rate,
+            "num_samples": int(audio.size),
+            "duration_s": round(audio.size / sample_rate, 6),
+            "generation_seconds": round(time.monotonic() - started, 3),
+            "completed_utc": datetime.now(timezone.utc).isoformat(),
+            "runtime": {
+                "mlx-audio": mlx_audio_version,
+                "mlx-audio-commit": MLX_PACKAGE_COMMIT,
+                "mlx": package_version("mlx"),
+                "numpy": package_version("numpy"),
+                "soundfile": package_version("soundfile"),
+                "device": device,
+            },
+            "model_snapshot": {
+                "id": MLX_MODEL_ID,
+                "revision": MLX_MODEL_REVISION,
+                "source_id": MLX_SOURCE_MODEL_ID,
+                "source_revision": MLX_SOURCE_MODEL_REVISION,
+                "files_sha256": model_snapshot_hashes,
+            },
+            "reference_reuse": {
+                "mechanism": "mlx_audio_internal_icl_cache",
+                "scope": "model_process",
+                "key_inputs": ["reference_text", "reference_audio_size_and_sum"],
+            },
+            "synthesis": row["synthesis"],
+        }
+        completed_by_id[str(row["pilot_id"])] = result
+        atomic_write_jsonl(
+            manifest_path, [completed_by_id[key] for key in sorted(completed_by_id)]
+        )
+        print(
+            f"[{number}/{len(pending)}] {row['pilot_id']} -> {output_path}", flush=True
+        )
+    print(f"MLX generation manifest: {manifest_path}")
 
 
 def generate_kokoro(plan_path: Path, device: str) -> None:
@@ -697,7 +1027,9 @@ def generate_kokoro(plan_path: Path, device: str) -> None:
         target_id = str(row["target_id"])
         previous = unique.setdefault(target_id, row)
         if previous["kokoro_baseline"] != row["kokoro_baseline"]:
-            raise RuntimeError(f"Kokoro baseline differs across replicates: {target_id}")
+            raise RuntimeError(
+                f"Kokoro baseline differs across replicates: {target_id}"
+            )
 
     manifest_path = plan_path.parent / "kokoro_generation.jsonl"
     completed = read_jsonl(manifest_path) if manifest_path.exists() else []
@@ -716,16 +1048,24 @@ def generate_kokoro(plan_path: Path, device: str) -> None:
         ):
             raise RuntimeError(f"Completed Kokoro provenance mismatch: {target_id}")
 
-    pending = [row for target_id, row in unique.items() if target_id not in completed_by_id]
+    pending = [
+        row for target_id, row in unique.items() if target_id not in completed_by_id
+    ]
     if not pending:
-        print(f"All {len(unique)} matched-Kokoro outputs already complete: {manifest_path}")
+        print(
+            f"All {len(unique)} matched-Kokoro outputs already complete: {manifest_path}"
+        )
         return
     for row in pending:
         output = baseline_output_path(row, plan_path)
         if output.exists():
-            raise RuntimeError(f"Unrecorded Kokoro output exists; refusing to overwrite: {output}")
+            raise RuntimeError(
+                f"Unrecorded Kokoro output exists; refusing to overwrite: {output}"
+            )
 
-    kokoro_version = require_package("kokoro", KOKORO_PACKAGE_VERSION, "Kokoro baseline")
+    kokoro_version = require_package(
+        "kokoro", KOKORO_PACKAGE_VERSION, "Kokoro baseline"
+    )
     try:
         import numpy as np
         import soundfile as sf
@@ -736,7 +1076,9 @@ def generate_kokoro(plan_path: Path, device: str) -> None:
             "Kokoro baseline requires kokoro, torch, huggingface-hub, numpy, and soundfile"
         ) from error
 
-    snapshot = Path(snapshot_download(repo_id=KOKORO_MODEL_ID, revision=KOKORO_MODEL_REVISION))
+    snapshot = Path(
+        snapshot_download(repo_id=KOKORO_MODEL_ID, revision=KOKORO_MODEL_REVISION)
+    )
     config_file = snapshot / "config.json"
     model_file = snapshot / "kokoro-v1_0.pth"
     model = (
@@ -744,7 +1086,9 @@ def generate_kokoro(plan_path: Path, device: str) -> None:
         .to(device)
         .eval()
     )
-    pipeline = KPipeline(lang_code="a", repo_id=KOKORO_MODEL_ID, model=model, device=device)
+    pipeline = KPipeline(
+        lang_code="a", repo_id=KOKORO_MODEL_ID, model=model, device=device
+    )
     voice_cache: dict[str, Any] = {}
 
     def resolve_voice(voice: str) -> Any:
@@ -772,7 +1116,11 @@ def generate_kokoro(plan_path: Path, device: str) -> None:
             )
             if result.audio is not None
         ]
-        audio = np.concatenate(parts).astype(np.float32) if parts else np.zeros(0, np.float32)
+        audio = (
+            np.concatenate(parts).astype(np.float32)
+            if parts
+            else np.zeros(0, np.float32)
+        )
         if audio.size == 0 or not np.isfinite(audio).all():
             raise RuntimeError(f"Kokoro returned invalid audio for {row['target_id']}")
         output = baseline_output_path(row, plan_path)
@@ -802,14 +1150,17 @@ def generate_kokoro(plan_path: Path, device: str) -> None:
                 "voice_sha256": {
                     name: sha256_file(snapshot / "voices" / f"{name}.pt")
                     for name in sorted(
-                        part.partition(":")[0] for part in str(baseline["voice"]).split(",")
+                        part.partition(":")[0]
+                        for part in str(baseline["voice"]).split(",")
                     )
                 },
             },
             "baseline": baseline,
         }
         completed_by_id[str(row["target_id"])] = result
-        atomic_write_jsonl(manifest_path, [completed_by_id[key] for key in sorted(completed_by_id)])
+        atomic_write_jsonl(
+            manifest_path, [completed_by_id[key] for key in sorted(completed_by_id)]
+        )
         print(f"[{number}/{len(pending)}] {row['target_id']} -> {output}", flush=True)
     print(f"Kokoro generation manifest: {manifest_path}")
 
@@ -818,8 +1169,18 @@ def main() -> None:
     args = parse_args()
     if args.action == "prepare":
         prepare(args.manifests, args.out_dir, args.dataset_root, args.kokoro_voice_map)
+    elif args.action == "prepare-mlx":
+        prepare(
+            args.manifests,
+            args.out_dir,
+            args.dataset_root,
+            args.kokoro_voice_map,
+            mlx=True,
+        )
     elif args.action == "generate":
         generate(args.plan, args.device, args.dataset_root)
+    elif args.action == "generate-mlx":
+        generate_mlx(args.plan, args.device, args.dataset_root)
     else:
         generate_kokoro(args.plan, args.device)
 

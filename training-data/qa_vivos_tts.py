@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import unicodedata
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -68,7 +69,9 @@ def parse_args() -> argparse.Namespace:
 def atomic_write_json(path: Path, value: object) -> None:
     atomic_write_bytes(
         path,
-        (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(),
+        (
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode(),
     )
 
 
@@ -77,7 +80,7 @@ def require_package(name: str, expected: str) -> str:
         installed = package_version(name)
     except PackageNotFoundError as error:
         raise RuntimeError(
-            f"Scoring requires {name}=={expected} in the separate CUDA QA environment"
+            f"Scoring requires {name}=={expected} in the separate QA environment"
         ) from error
     if installed != expected:
         raise RuntimeError(f"Scoring requires {name}=={expected}, found {installed}")
@@ -92,14 +95,18 @@ def load_manual_reviews(path: Path | None) -> dict[str, dict[str, str]]:
         reader = csv.DictReader(source, delimiter="\t")
         required = {"candidate_id", "status", "prompt_leak", "notes"}
         if not reader.fieldnames or not required.issubset(reader.fieldnames):
-            raise RuntimeError(f"Manual review TSV must contain {sorted(required)}: {resolved}")
+            raise RuntimeError(
+                f"Manual review TSV must contain {sorted(required)}: {resolved}"
+            )
         reviews: dict[str, dict[str, str]] = {}
         for line_number, row in enumerate(reader, start=2):
             candidate_id = row["candidate_id"].strip()
             status = row["status"].strip().casefold()
             prompt_leak = row["prompt_leak"].strip().casefold()
             if not candidate_id or candidate_id in reviews:
-                raise RuntimeError(f"Empty or duplicate candidate_id at {resolved}:{line_number}")
+                raise RuntimeError(
+                    f"Empty or duplicate candidate_id at {resolved}:{line_number}"
+                )
             if status not in {"pass", "fail"} or prompt_leak not in {"yes", "no"}:
                 raise RuntimeError(f"Invalid review values at {resolved}:{line_number}")
             reviews[candidate_id] = {
@@ -135,11 +142,17 @@ def word_error_counts(reference: str, hypothesis: str) -> tuple[int, int]:
 
 
 def ngrams(words: list[str], size: int) -> set[tuple[str, ...]]:
-    return {tuple(words[index : index + size]) for index in range(len(words) - size + 1)}
+    return {
+        tuple(words[index : index + size]) for index in range(len(words) - size + 1)
+    }
 
 
-def prompt_leak_evidence(reference: str, target: str, auto_transcript: str) -> dict[str, Any]:
-    reference_only = ngrams(normalize_words(reference), 3) - ngrams(normalize_words(target), 3)
+def prompt_leak_evidence(
+    reference: str, target: str, auto_transcript: str
+) -> dict[str, Any]:
+    reference_only = ngrams(normalize_words(reference), 3) - ngrams(
+        normalize_words(target), 3
+    )
     matches = sorted(reference_only & ngrams(normalize_words(auto_transcript), 3))
     return {
         "asr_auto_transcript": auto_transcript,
@@ -158,9 +171,9 @@ def resample(audio: Any, source_rate: int, target_rate: int, scipy_signal: Any) 
     if source_rate == target_rate:
         return audio
     divisor = math.gcd(source_rate, target_rate)
-    return scipy_signal.resample_poly(audio, target_rate // divisor, source_rate // divisor).astype(
-        "float32"
-    )
+    return scipy_signal.resample_poly(
+        audio, target_rate // divisor, source_rate // divisor
+    ).astype("float32")
 
 
 def acoustic_metrics(audio: Any, sample_rate: int, numpy: Any) -> dict[str, Any]:
@@ -194,7 +207,9 @@ def acoustic_metrics(audio: Any, sample_rate: int, numpy: Any) -> dict[str, Any]
     speech = numpy.flatnonzero(frame_rms > 0.01)
     if speech.size:
         leading_silence_s = float(speech[0] * hop / sample_rate)
-        trailing_silence_s = float((len(frame_rms) - 1 - speech[-1]) * hop / sample_rate)
+        trailing_silence_s = float(
+            (len(frame_rms) - 1 - speech[-1]) * hop / sample_rate
+        )
     else:
         leading_silence_s = trailing_silence_s = float(audio.size / sample_rate)
     return {
@@ -257,7 +272,12 @@ def row_gate(metrics: dict[str, Any], *, qwen_candidate: bool) -> list[str]:
             "<=",
             THRESHOLDS["clipping_ratio_max"],
         ),
-        ("silence_ratio", acoustic["silence_ratio"], "<=", THRESHOLDS["silence_ratio_max"]),
+        (
+            "silence_ratio",
+            acoustic["silence_ratio"],
+            "<=",
+            THRESHOLDS["silence_ratio_max"],
+        ),
         (
             "leading_silence",
             acoustic["leading_silence_s"],
@@ -321,12 +341,18 @@ def validate_inputs(
 ) -> dict[str, dict[str, Any]]:
     plan_by_id = {str(row.get("pilot_id", "")): row for row in plan_rows}
     generation_by_id = {str(row.get("pilot_id", "")): row for row in generation_rows}
-    if len(plan_by_id) != len(plan_rows) or len(generation_by_id) != len(generation_rows):
-        raise RuntimeError("Plan or generation manifest contains empty/duplicate pilot ids")
+    if len(plan_by_id) != len(plan_rows) or len(generation_by_id) != len(
+        generation_rows
+    ):
+        raise RuntimeError(
+            "Plan or generation manifest contains empty/duplicate pilot ids"
+        )
     if set(plan_by_id) != set(generation_by_id):
         missing = sorted(set(plan_by_id) - set(generation_by_id))
         extra = sorted(set(generation_by_id) - set(plan_by_id))
-        raise RuntimeError(f"Generation is not a plan bijection: missing={missing}, extra={extra}")
+        raise RuntimeError(
+            f"Generation is not a plan bijection: missing={missing}, extra={extra}"
+        )
     for pilot_id, generated in generation_by_id.items():
         planned = plan_by_id[pilot_id]
         output = planned_output_path(planned, plan_path)
@@ -338,7 +364,9 @@ def validate_inputs(
             or generated.get("replicate_seed") != planned["synthesis"]["seed"]
             or generated.get("synthesis") != planned["synthesis"]
         ):
-            raise RuntimeError(f"Generation provenance does not match plan for {pilot_id}")
+            raise RuntimeError(
+                f"Generation provenance does not match plan for {pilot_id}"
+            )
         if sha256_file(output) != generated.get("audio_sha256"):
             raise RuntimeError(f"Generated audio hash mismatch for {pilot_id}")
     return generation_by_id
@@ -355,11 +383,15 @@ def validate_kokoro_inputs(
         target_id = str(row["target_id"])
         previous = plan_by_target.setdefault(target_id, row)
         if previous["kokoro_baseline"] != row["kokoro_baseline"]:
-            raise RuntimeError(f"Kokoro baseline differs across replicates: {target_id}")
-    generated_by_target = {str(row.get("target_id", "")): row for row in generation_rows}
-    if len(generated_by_target) != len(generation_rows) or set(generated_by_target) != set(
-        plan_by_target
-    ):
+            raise RuntimeError(
+                f"Kokoro baseline differs across replicates: {target_id}"
+            )
+    generated_by_target = {
+        str(row.get("target_id", "")): row for row in generation_rows
+    }
+    if len(generated_by_target) != len(generation_rows) or set(
+        generated_by_target
+    ) != set(plan_by_target):
         raise RuntimeError("Kokoro generation is not a one-per-target plan bijection")
     for target_id, generated in generated_by_target.items():
         planned = plan_by_target[target_id]
@@ -405,8 +437,8 @@ def score(args: argparse.Namespace) -> None:
         raise RuntimeError(
             f"Manual reviews contain ids outside the plan: {sorted(unknown_reviews)}"
         )
-    if not args.device.startswith("cuda:"):
-        raise RuntimeError("Pilot ASR/speaker scoring is CUDA-only; use --device cuda:N")
+    if args.device != "mps" and not args.device.startswith("cuda:"):
+        raise RuntimeError("Pilot scoring requires explicit --device mps or cuda:N")
 
     versions = {
         "transformers": require_package("transformers", TRANSFORMERS_VERSION),
@@ -429,36 +461,65 @@ def score(args: argparse.Namespace) -> None:
         raise RuntimeError(
             "Scoring requires torch, transformers, soundfile, scipy, numpy, and sacrebleu"
         ) from error
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is unavailable; no CPU or MPS scoring fallback is implemented")
+    if args.device == "mps":
+        if os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "0") == "1":
+            raise RuntimeError(
+                "Unset PYTORCH_ENABLE_MPS_FALLBACK; fallback is not allowed"
+            )
+        if not torch.backends.mps.is_available():
+            raise RuntimeError("MPS is unavailable; no CPU fallback is implemented")
+        model_dtype = torch.float32
+    else:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA is unavailable; no CPU or MPS fallback is implemented"
+            )
+        model_dtype = torch.bfloat16
     versions.update(
         {
             "torch": package_version("torch"),
             "soundfile": package_version("soundfile"),
             "numpy": package_version("numpy"),
             "cuda": torch.version.cuda,
+            "model_dtype": str(model_dtype),
+            "attention_implementation": "eager" if args.device == "mps" else "default",
         }
     )
 
-    asr_processor = AutoProcessor.from_pretrained(ASR_MODEL_ID, revision=ASR_MODEL_REVISION)
+    asr_processor = AutoProcessor.from_pretrained(
+        ASR_MODEL_ID, revision=ASR_MODEL_REVISION
+    )
     asr_model = WhisperForConditionalGeneration.from_pretrained(
-        ASR_MODEL_ID, revision=ASR_MODEL_REVISION, torch_dtype=torch.bfloat16
+        ASR_MODEL_ID,
+        revision=ASR_MODEL_REVISION,
+        torch_dtype=model_dtype,
+        **({"attn_implementation": "eager"} if args.device == "mps" else {}),
     ).to(args.device)
     asr_model.eval()
     speaker_features = AutoFeatureExtractor.from_pretrained(
         SPEAKER_MODEL_ID, revision=SPEAKER_MODEL_REVISION
     )
     speaker_model = WavLMForXVector.from_pretrained(
-        SPEAKER_MODEL_ID, revision=SPEAKER_MODEL_REVISION
+        SPEAKER_MODEL_ID, revision=SPEAKER_MODEL_REVISION, torch_dtype=model_dtype
     ).to(args.device)
     speaker_model.eval()
 
+    primary_backend = (
+        "qwen_mlx"
+        if plan_rows[0].get("synthesis", {}).get("package") == "mlx-audio"
+        else "qwen"
+    )
     generation_hashes = {
-        "qwen": sha256_file(generation_path),
+        primary_backend: sha256_file(generation_path),
         "kokoro": sha256_file(kokoro_generation_path),
     }
     candidates: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = [
-        (str(plan["pilot_id"]), "qwen", plan, generated_by_id[str(plan["pilot_id"])])
+        (
+            str(plan["pilot_id"]),
+            primary_backend,
+            plan,
+            generated_by_id[str(plan["pilot_id"])],
+        )
         for plan in plan_rows
     ]
     candidates.extend(
@@ -473,17 +534,21 @@ def score(args: argparse.Namespace) -> None:
 
     reference_embeddings: dict[str, Any] = {}
     scored_rows: list[dict[str, Any]] = []
-    for number, (candidate_id, backend, plan, generated) in enumerate(candidates, start=1):
+    for number, (candidate_id, backend, plan, generated) in enumerate(
+        candidates, start=1
+    ):
         output_path = Path(str(generated["output_wav"]))
         audio, sample_rate = read_audio(output_path, sf, np)
         acoustic = acoustic_metrics(audio, sample_rate, np)
         if not acoustic["finite"] or not acoustic["nonzero"]:
             raise RuntimeError(f"Cannot run ASR on invalid waveform: {output_path}")
         audio_16k = resample(audio, sample_rate, 16_000, scipy_signal)
-        asr_text = transcribe(audio_16k, asr_processor, asr_model, torch, args.device, "en")
+        asr_text = transcribe(
+            audio_16k, asr_processor, asr_model, torch, args.device, "en"
+        )
         auto_text = (
             transcribe(audio_16k, asr_processor, asr_model, torch, args.device, None)
-            if backend == "qwen"
+            if backend == primary_backend
             else asr_text
         )
         errors, reference_words = word_error_counts(plan["text_en"], asr_text)
@@ -492,7 +557,9 @@ def score(args: argparse.Namespace) -> None:
         if speaker not in reference_embeddings:
             reference_path = input_paths[plan["reference"]["audio"]["path"]]
             reference_audio, reference_rate = read_audio(reference_path, sf, np)
-            reference_16k = resample(reference_audio, reference_rate, 16_000, scipy_signal)
+            reference_16k = resample(
+                reference_audio, reference_rate, 16_000, scipy_signal
+            )
             reference_embeddings[speaker] = speaker_embedding(
                 reference_16k, speaker_features, speaker_model, torch, args.device
             )
@@ -503,13 +570,18 @@ def score(args: argparse.Namespace) -> None:
         duration_s = len(audio) / sample_rate
         manual = reviews.get(
             candidate_id,
-            {"status": "pending", "prompt_leak": "pending", "notes": "", "review_file": None},
+            {
+                "status": "pending",
+                "prompt_leak": "pending",
+                "notes": "",
+                "review_file": None,
+            },
         )
         metrics = {
             "schema_version": SCHEMA,
             "candidate_id": candidate_id,
             "backend": backend,
-            "pilot_id": str(plan["pilot_id"]) if backend == "qwen" else None,
+            "pilot_id": str(plan["pilot_id"]) if backend == primary_backend else None,
             "speaker_id": speaker,
             "gender": plan["gender"],
             "eligibility_split": plan["eligibility_split"],
@@ -519,11 +591,18 @@ def score(args: argparse.Namespace) -> None:
             "plan_path": str(plan_path),
             "plan_sha256": plan_sha,
             "generation_manifest": str(
-                generation_path if backend == "qwen" else kokoro_generation_path
+                generation_path
+                if backend == primary_backend
+                else kokoro_generation_path
             ),
             "generation_manifest_sha256": generation_hashes[backend],
             "output_wav": str(output_path),
             "audio_sha256": generated["audio_sha256"],
+            "candidate_provenance": (
+                plan["synthesis"]
+                if backend == primary_backend
+                else plan["kokoro_baseline"]
+            ),
             "duration_s": round(duration_s, 6),
             "duration_ratio_target_source": round(
                 duration_s / float(plan["source_audio"]["duration_s"]), 6
@@ -545,16 +624,20 @@ def score(args: argparse.Namespace) -> None:
             },
             "runtime": {**versions, "device": args.device},
         }
-        metrics["failure_reasons"] = row_gate(metrics, qwen_candidate=backend == "qwen")
+        metrics["failure_reasons"] = row_gate(
+            metrics, qwen_candidate=backend == primary_backend
+        )
         metrics["machine_and_manual_pass"] = not metrics["failure_reasons"]
         scored_rows.append(metrics)
-        atomic_write_json(output_path.with_suffix(output_path.suffix + ".qa.json"), metrics)
+        atomic_write_json(
+            output_path.with_suffix(output_path.suffix + ".qa.json"), metrics
+        )
         print(
             f"[{number}/{len(candidates)}] {candidate_id}: {metrics['failure_reasons']}",
             flush=True,
         )
 
-    qwen_rows = [row for row in scored_rows if row["backend"] == "qwen"]
+    qwen_rows = [row for row in scored_rows if row["backend"] == primary_backend]
     kokoro_rows = [row for row in scored_rows if row["backend"] == "kokoro"]
 
     def aggregate(rows: list[dict[str, Any]]) -> dict[str, float]:
@@ -564,7 +647,12 @@ def score(args: argparse.Namespace) -> None:
             "asr_wer": errors / words if words else 0.0,
             "asr_chrf": sacrebleu.corpus_chrf(
                 [str(row["asr_transcript_en"]) for row in rows],
-                [[str(plan_by_target[str(row["target_id"])]["text_en"]) for row in rows]],
+                [
+                    [
+                        str(plan_by_target[str(row["target_id"])]["text_en"])
+                        for row in rows
+                    ]
+                ],
             ).score,
         }
 
@@ -581,20 +669,26 @@ def score(args: argparse.Namespace) -> None:
                     **aggregate(group),
                     "rows": len(group),
                     "failed_rows": sum(bool(row["failure_reasons"]) for row in group),
-                    "speaker_cosine_median": median(float(row["speaker_cosine"]) for row in group),
+                    "speaker_cosine_median": median(
+                        float(row["speaker_cosine"]) for row in group
+                    ),
                 }
         return output
 
     slice_metrics = {
-        "qwen": slices(
+        primary_backend: slices(
             qwen_rows,
             ("gender", "eligibility_split", "duration_slice", "replicate_seed"),
         ),
-        "kokoro": slices(kokoro_rows, ("gender", "eligibility_split", "duration_slice")),
+        "kokoro": slices(
+            kokoro_rows, ("gender", "eligibility_split", "duration_slice")
+        ),
     }
     qwen_cosine_by_speaker = {
         speaker: sum(
-            float(row["speaker_cosine"]) for row in qwen_rows if row["speaker_id"] == speaker
+            float(row["speaker_cosine"])
+            for row in qwen_rows
+            if row["speaker_id"] == speaker
         )
         / sum(row["speaker_id"] == speaker for row in qwen_rows)
         for speaker in {str(row["speaker_id"]) for row in qwen_rows}
@@ -614,7 +708,9 @@ def score(args: argparse.Namespace) -> None:
     checks = {
         "plan_generation_bijections": len(qwen_rows) == len(plan_rows)
         and len(kokoro_rows) == len(plan_by_target),
-        "sealed_test_split": all(row["eligibility_split"] != "test" for row in scored_rows),
+        "sealed_test_split": all(
+            row["eligibility_split"] != "test" for row in scored_rows
+        ),
         "two_qwen_replicates_and_one_kokoro_per_speaker": all(
             sum(row["speaker_id"] == speaker for row in qwen_rows) == 2
             and sum(row["speaker_id"] == speaker for row in kokoro_rows) == 1
@@ -624,28 +720,33 @@ def score(args: argparse.Namespace) -> None:
         "qwen_wer_vs_kokoro": qwen_aggregate["asr_wer"]
         <= kokoro_aggregate["asr_wer"] + THRESHOLDS["aggregate_wer_margin_vs_kokoro"],
         "qwen_timbre_median_vs_kokoro": qwen_cosine_median > kokoro_cosine_median,
-        "qwen_timbre_speaker_win_rate": timbre_win_rate >= THRESHOLDS["qwen_timbre_win_rate_min"],
+        "qwen_timbre_speaker_win_rate": timbre_win_rate
+        >= THRESHOLDS["qwen_timbre_win_rate_min"],
         "manual_review_complete": manual_complete,
         "manual_review_pass": manual_complete
         and all(review["status"] == "pass" for review in reviews.values()),
         "manual_prompt_leak_clear": manual_complete
-        and all(reviews[str(row["pilot_id"])]["prompt_leak"] == "no" for row in plan_rows),
+        and all(
+            reviews[str(row["pilot_id"])]["prompt_leak"] == "no" for row in plan_rows
+        ),
     }
     report = {
         "schema_version": SCHEMA,
+        "candidate_backend": primary_backend,
         "decision": "go" if all(checks.values()) else "no_go",
         "checks": checks,
         "thresholds": THRESHOLDS,
-        "rows": {"qwen": len(qwen_rows), "kokoro": len(kokoro_rows)},
+        "rows": {primary_backend: len(qwen_rows), "kokoro": len(kokoro_rows)},
         "speakers": len({row["speaker_id"] for row in scored_rows}),
         "failed_rows": failed_rows,
         "metrics": {
-            "qwen": {
+            primary_backend: {
                 **qwen_aggregate,
                 "speaker_cosine_median": qwen_cosine_median,
                 "speaker_cosine_by_speaker": qwen_cosine_by_speaker,
                 "prompt_leak_matches": sum(
-                    row["prompt_leak"]["reference_only_3gram_match_count"] for row in qwen_rows
+                    row["prompt_leak"]["reference_only_3gram_match_count"]
+                    for row in qwen_rows
                 ),
             },
             "kokoro": {
@@ -654,7 +755,8 @@ def score(args: argparse.Namespace) -> None:
                 "speaker_cosine_by_speaker": kokoro_cosine_by_speaker,
             },
             "comparison": {
-                "qwen_minus_kokoro_wer": qwen_aggregate["asr_wer"] - kokoro_aggregate["asr_wer"],
+                "qwen_minus_kokoro_wer": qwen_aggregate["asr_wer"]
+                - kokoro_aggregate["asr_wer"],
                 "qwen_minus_kokoro_speaker_cosine_median": qwen_cosine_median
                 - kokoro_cosine_median,
                 "qwen_timbre_wins": timbre_wins,
@@ -669,7 +771,10 @@ def score(args: argparse.Namespace) -> None:
         "runtime": {**versions, "device": args.device},
         "plan": {"path": str(plan_path), "sha256": plan_sha},
         "generation": {
-            "qwen": {"path": str(generation_path), "sha256": generation_hashes["qwen"]},
+            primary_backend: {
+                "path": str(generation_path),
+                "sha256": generation_hashes[primary_backend],
+            },
             "kokoro": {
                 "path": str(kokoro_generation_path),
                 "sha256": generation_hashes["kokoro"],

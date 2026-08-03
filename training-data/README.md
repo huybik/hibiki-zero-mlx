@@ -32,8 +32,9 @@ en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 - `load_train_data.py` loads the uploaded speech dataset for training or coworker preview.
 - `prepare_vivos.py` pins, verifies, splits, and audits the VIVOS real-source corpus.
 - `translate_manifest.py` runs resumable, provenance-preserving Gemini Batch translation.
-- `synthesize_vivos.py` prepares and runs the pinned Qwen3-TTS VIVOS pilot.
-- `qa_vivos_tts.py` scores pilot ASR, timbre, waveform, prompt-leak, and manual gates.
+- `synthesize_vivos.py` prepares and runs the distinct CUDA and MLX-Audio Qwen3-TTS pilots.
+- `qa_vivos_tts.py` scores either pilot on CUDA or MPS without device fallback.
+- `qa_vivos_source.py` runs the pinned Vietnamese source-ASR audit and reports speaker/duration slices.
 
 Generated audio, local cache, and preview folders are written outside the repo under `PHOMT_DATA_DIR` (default: `D:\Code\datasets` on Windows, `~/datasets` elsewhere).
 
@@ -60,6 +61,30 @@ conda run -n phomt-data pip install coremltools
 ```
 
 On CUDA machines install the matching CUDA wheel of torch instead (`--index-url https://download.pytorch.org/whl/cu126`).
+
+### VIVOS MLX pilot environments
+
+MLX synthesis and PyTorch QA need separate environments because MLX-Audio
+0.4.7 requires Transformers 5.x while the frozen Whisper/WavLM scorer uses
+Transformers 4.57.3:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/conda create -y -n vivos-mlx python=3.13
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-mlx \
+  python -m pip install \
+  "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@2c9461f5d8315fa8e7013ab2729495b2bb83d384" \
+  soundfile
+
+/opt/homebrew/Caskroom/miniconda/base/bin/conda create -y -n vivos-qa-mps python=3.13
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-qa-mps \
+  python -m pip install torch==2.13.0 transformers==4.57.3 \
+  sacrebleu==2.6.0 scipy==1.16.2 soundfile
+```
+
+The exact prepare, generation, source-audit, and gate commands are in
+[`docs/data_generation_plan.md`](../docs/data_generation_plan.md). Do not start
+bulk VIVOS synthesis until all 24 pilot candidates have been manually reviewed
+and `gate_report.json` says `go`.
 
 Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS with VieNeu's PyTorch backend; vieneu >= 3.2 batches natively on both CUDA and MPS (measured on M4 Pro: batch 8 -> 6.1x real-time vs 3.1x sequential).
 
