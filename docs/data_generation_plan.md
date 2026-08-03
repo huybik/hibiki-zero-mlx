@@ -66,6 +66,46 @@ hours. If it cannot satisfy the first gate after filtering and deduplication,
 the correct next action is a licensed acquisition/recording effort, not relaxed
 QA or another VieNeu campaign.
 
+### VIVOS source preparation — complete 2026-08-03
+
+The first real-source acquisition phase is reproducible with:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python training-data/prepare_vivos.py \
+  --root /Volumes/data/datasets/hibiki_vi_v2
+```
+
+The command pins `AILAB-VNUHCM/vivos` revision
+`3cbfb2502e5e84776b4b778b020a09759f723f52`, verifies the 1,474,408,300-byte
+archive against SHA-256
+`147477f7a7702cbafc2ee3808d1c142989d0dbc8d9fce8e07d5f329d5119e4ca`, safely
+extracts it, and is resumable through the Hugging Face local-download cache.
+
+Dev is drawn only from official train. The exact policy is to sort official
+train speaker ids by `SHA-256("hibiki-vi-v2-vivos-dev-v1" + NUL + speaker_id)`
+and select the first five: `VIVOSSPK18`, `VIVOSSPK33`, `VIVOSSPK37`,
+`VIVOSSPK39`, and `VIVOSSPK41`. Official test has priority over dev, and dev has
+priority over train for normalized-transcript leakage. Conflicting official
+train rows remain in the source and excluded manifests with
+`eligibility_split=excluded_text_overlap`; they are never optimization rows.
+
+| Split | Rows | Hours | Speakers |
+|---|---:|---:|---:|
+| Eligible train | 9,845 | 12.909465 | 41 |
+| Eligible dev | 1,106 | 1.453915 | 5 |
+| Preserved official test | 760 | 0.745985 | 19 |
+| Excluded transcript overlap | 709 | 0.557707 | 32 |
+| Full official source | 12,420 | 15.667071 | 65 |
+
+The generated audit reports zero duplicate ids, missing or out-of-root audio
+paths, train/dev/test speaker overlap, normalized-text overlap, and official
+split misuse. All 12,420 files are 16 kHz mono 16-bit PCM. Versioned JSONL
+manifests live in `/Volumes/data/datasets/hibiki_vi_v2/manifests/` and the full
+audit, including manifest hashes, lives at
+`/Volumes/data/datasets/hibiki_vi_v2/audits/vivos_3cbfb250_source_v1_audit.json`.
+No English translations, target audio, or Mimi caches have been created yet,
+and nothing from this phase was uploaded.
+
 ## Alignment and target construction
 
 Two paper-derived recipes serve different stages:
