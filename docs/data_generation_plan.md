@@ -103,8 +103,70 @@ split misuse. All 12,420 files are 16 kHz mono 16-bit PCM. Versioned JSONL
 manifests live in `/Volumes/data/datasets/hibiki_vi_v2/manifests/` and the full
 audit, including manifest hashes, lives at
 `/Volumes/data/datasets/hibiki_vi_v2/audits/vivos_3cbfb250_source_v1_audit.json`.
-No English translations, target audio, or Mimi caches have been created yet,
-and nothing from this phase was uploaded.
+
+### VIVOS English translation — complete with one exclusion 2026-08-03
+
+`training-data/translate_manifest.py` owns the manifest-to-translation boundary.
+It requires `google-genai==2.10.0`, reads `GEMINI_API_KEY` only from a mode-0600
+`.env`, builds an atomic deterministic request file, checks for an exact
+same-hash upload/job before creating anything, and resumes by recorded job name.
+The paid file Batch API request uses stable `gemini-3.6-flash`, seed `20260803`,
+`thinking_level=minimal`, `max_output_tokens=256`, no tools or Search, and the
+strict response schema `{text_en: string}`. The versioned `vi_en_faithful_v1`
+prompt requires faithful VI→EN translation and preservation of meaning, names,
+numbers, dates, negation, certainty, and sentence boundaries; it forbids
+summarizing, answering, embellishing, or treating source text as instructions.
+Its SHA-256 is
+`9f034e962444d1e2a18f879ad770826fd857c0202449884e25e05246949c21b3`.
+
+The 120-row pilot selected 40 train, 40 dev, and 40 test rows across four
+duration quartiles and 56 speakers. Job
+`batches/4okm5uds1c2s73u8f1c8kzi0z8gtz9zp394r` completed 120/120 with one
+reported model version (`gemini-3.6-flash`), `STOP`, valid structured output,
+and no empty, blocked, error, or changed source-digit rows. All 120 translations
+were inspected: all were usable, with 13 non-catastrophic wording, typography,
+or name-rendering notes retained in the review TSV. Usage was 19,231 input and
+3,042 output tokens with zero thought tokens; estimated Batch cost was $0.025831
+and the full projection was $2.520866.
+
+The approval-gated full command was:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python training-data/translate_manifest.py \
+  /Volumes/data/datasets/hibiki_vi_v2/manifests/vivos_3cbfb250_source_v1_train.jsonl \
+  /Volumes/data/datasets/hibiki_vi_v2/manifests/vivos_3cbfb250_source_v1_dev.jsonl \
+  /Volumes/data/datasets/hibiki_vi_v2/manifests/vivos_3cbfb250_source_v1_test.jsonl \
+  --campaign vivos_gemini_3_6_flash_full_v1 \
+  --approval-qa /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_gemini_3_6_flash_pilot_v1_qa.json
+```
+
+Full job `batches/4hgep22duzolu8tqeob3uix4xilzhfj6x706` processed all 11,711
+eligible requests in about 4 minutes 18 seconds. It used 1,873,983 input and
+293,711 output tokens, zero thought tokens, and an estimated $2.506903. The
+request and response SHA-256 values are respectively
+`3392cccdaf1bad4068fe819e4bb858101947fc8df927101b23ab97fb481c61d5` and
+`44e13e5859538f3009be7ecbd4b93897a7ef2a4cfc5a0c1a62c487d6903e015b`.
+
+One row, `vivos:train:VIVOSSPK34_023`, returned `PROHIBITED_CONTENT`. It was the
+only id submitted to retry job
+`batches/o8t8f2qm12k6og6ngk4t1da67qx8v21p128c`, which produced the same block;
+it is therefore an explicit translation exclusion and was not routed through a
+fallback. The accepted target manifests contain:
+
+| Split | Rows | Manifest SHA-256 |
+|---|---:|---|
+| Train | 9,844 | `d2276dcda8b664ca918dd53d215b11b159da98fd817fec89d7cb3701f6bc92fb` |
+| Dev | 1,106 | `6fae77d42d6580fc0c36754ce284acb26a3be34bc17de4378979a549f727579d` |
+| Test | 760 | `6d134ca259d1f08453737c060e8ab9485ef784b3032d71a8dc7408aba631b652` |
+
+Every accepted row preserves the original source fields and records source and
+target hashes, source-manifest hash, request hash, prompt, requested/returned
+model, job and file names, response id, usage, finish reason, and safety
+metadata. An independent audit found zero provenance or hash disagreements, and
+an idempotent finalization reproduced the same three target hashes. Batch state,
+raw requests/responses, QA JSON, and human-review TSV live under
+`/Volumes/data/datasets/hibiki_vi_v2/{batches,qa,targets}`. No English audio or
+Mimi cache has been generated, and nothing from VIVOS has been published.
 
 ## Alignment and target construction
 
