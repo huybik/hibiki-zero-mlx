@@ -1,6 +1,9 @@
 # PhoMT Speech Data Pipeline
 
 This folder builds a paired English/Vietnamese speech dataset from the raw PhoMT text dataset.
+The completed campaign is now the synthetic supplement, not the next data
+strategy. New real-source, long-form, provenance, and QA work follows
+[`docs/data_generation_plan.md`](../docs/data_generation_plan.md).
 
 Source text dataset:
 

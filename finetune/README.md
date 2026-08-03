@@ -3,6 +3,10 @@
 Minimal local scaffold for the Vietnamese -> English LoRA water test. It uses the existing
 FLEURS vi/en manifests and Hibiki/Mimi weights; it does not touch inference/runtime files.
 
+This is a mechanics README, not the next quality recipe. See the linked
+[data](../docs/data_generation_plan.md), [training](../docs/training_plan.md),
+and [validation](../docs/validation_plan.md) plans before launching a scaled run.
+
 Run from the repo root with the project Python:
 
 ```bash
@@ -59,8 +63,8 @@ AutoResearch protocol, and recommended 128 / 512 / 1449 / CUDA commands.
   greedy val eval and saves `adapter_best.safetensors` on chrF improvement. Default
   dtype is `bfloat16`; MPS `float16` can go non-finite after the first optimizer step.
 - `validate_lora.py` computes teacher-forced CE on cached rows for the base model or
-  an adapter. Use this before full autoregressive eval to separate underfit from
-  free-running collapse.
+  an adapter. It tracks adequacy/overfit but cannot detect free-running collapse;
+  greedy evaluation is mandatory for that failure mode.
 - `eval_lora.py` loads an adapter, runs PyTorch generation on a pair file, writes
   references/predictions in `predictions.csv`, and writes `metrics.json` with
   nonempty/EOS/exact plus BLEU/chrF/WER when `sacrebleu` is installed. Use

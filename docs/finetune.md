@@ -1,4 +1,10 @@
-# Finetune (Track A): Vietnamese LoRA on the 3B main transformer
+# Finetune mechanics (Track A): Vietnamese adaptation
+
+This document describes the existing mechanics and historical smoke commands.
+The next campaign is governed by the [data](data_generation_plan.md),
+[training](training_plan.md), and [validation](validation_plan.md) plans. Do not
+use `finetune/phase2.sh` as the next launcher: it records the closed, failed hot
+warm-start recipe.
 
 PyTorch/MPS (CUDA-portable) LoRA stack that adapts Hibiki-Zero to a **new source
 language (Vietnamese → EN)** by fine-tuning only the main transformer (depformer /
@@ -17,7 +23,7 @@ refactor plan is **done** (consolidation + schedules + selection + val128).
   (metadata `target=full`). This is the **scaled CUDA run** (won't fit the 36 GB MPS cap).
   LoRA stays the cheap MPS plumbing/capacity probe. `eval_lora.py`/`validate_lora.py`
   auto-detect the checkpoint kind (`common.load_finetuned`) and load full weights straight
-  onto the base model. Rationale + when-to-use: `docs/vi_training_plan.md`.
+  onto the base model. Rationale + when-to-use: `docs/training_plan.md`.
 - **Cache codes once:** `cache_codes.py` writes `codes[1+n_q, T]` shards — row 0 EN
   text tokens (prefix-pad supervised, tail-pad masked), rows `1..dep_q` EN target Mimi
   codes, rows `dep_q+1..` VI source codes + source-EOS. Mimi is not in the training loop.
@@ -37,7 +43,7 @@ refactor plan is **done** (consolidation + schedules + selection + val128).
   `train_lora.py` / `eval_lora.py` / `validate_lora.py` are thin wrappers over it.
 - `build_pairs.py` FLEURS manifests → `pairs/{split}.jsonl` (+ deterministic
   `val16.jsonl` / `val128.jsonl` held-out gate subsets, first-N of validation).
-- `fetch_phomt.py` HF `anquachdev/PhoMT-en-vi-speech` (real EN+VI speech) →
+- `fetch_phomt.py` HF `anquachdev/PhoMT-en-vi-speech` (paired synthetic EN+VI TTS) →
   `remote_dataset/phomt_en_vi/{en,vi}/*.wav` + `pairs/phomt_train.jsonl` (989 pairs,
   drops vi>25 s). Reads `HF_TOKEN` from `.env`; same 8-field pair schema as `build_pairs`.
 - `cache_codes.py` → `cache/{train,validation,phomt_train,...}/shard_*.pt`.
@@ -52,6 +58,10 @@ Every static flag is the degenerate single-point schedule, so old commands run u
 
 - **Loss weights:** `--text-weight-schedule "5@0,2@0.6"`, `--audio-weight-schedule`.
   Fall back to `--text-loss-weight` / `--audio-loss-weight`.
+- **Prefix timing:** `--text-prefix-pad-weight` weights only supervised initial
+  wait PAD tokens. Content/EOS stay at 1; tail/batch pads stay ignored. Default
+  1.0 is backward-compatible; 0.5 is an implemented but untrained experiment,
+  with adoption gates in `docs/validation_plan.md`.
 - **Replay:** `--replay-weight-schedule "300@0,100@0.5"` (needs `--replay-ids`);
   reuses the WeightedRandomSampler, rebuilt at each boundary. Falls back to `--replay-weight`.
 - **Per-group LR:** `--lr-schedule` (transformer LoRA), `--text-head-lr-schedule`,
@@ -80,7 +90,10 @@ in a single run via the schedule flags above).
 Gate discipline: `seen_first3` / `short16` for smoke mechanics only; **val128 for real
 decisions**; full 1449 last. 5/16-row deltas are noise.
 
-## Recommended next commands
+## Historical scaffold commands
+
+These remain useful for local mechanics checks only. They are not the scaled
+recipe and the CUDA example predates the new plans.
 
 ```bash
 PY=/opt/homebrew/Caskroom/miniconda/base/bin/python
