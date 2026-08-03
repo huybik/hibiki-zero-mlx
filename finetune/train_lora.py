@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
         "--frame-batch-schedule",
         default="",
         help='Cumulative length buckets "MAX_FRAMES:BATCH_SIZE,...", e.g. "288:10,384:8,512:5". '
-        "Requires matching --max-frames and replaces --batch-size.",
+        "Requires matching --max-frames and replaces --batch-size; sizes must be benchmarked.",
     )
     parser.add_argument("--replay-ids", default="", help="Comma-separated ids to upweight.")
     parser.add_argument(
@@ -121,6 +121,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-every", type=int, default=0, help="Steps between teacher-forced val; 0=final.")
     parser.add_argument("--val-max-samples", type=int, default=0, help="First N val samples; 0=all.")
     parser.add_argument("--val-batches", type=int, default=0, help="First N val batches; 0=all.")
+    parser.add_argument(
+        "--val-batch-size",
+        type=int,
+        help="Teacher-forced validation batch size; defaults to --batch-size.",
+    )
     # Autoregressive greedy val eval + best-checkpoint selection.
     parser.add_argument("--eval-every", type=int, default=0, help="Steps between greedy val eval; 0=off.")
     parser.add_argument("--eval-pairs", type=Path, default=DEFAULT_PAIRS_DIR / "validation.jsonl")
@@ -252,6 +257,10 @@ def main() -> None:
         raise ValueError("--epochs must be positive")
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
+    if args.val_batch_size is None:
+        args.val_batch_size = args.batch_size
+    if args.val_batch_size <= 0:
+        raise ValueError("--val-batch-size must be positive")
     if args.max_frames < 0:
         raise ValueError("--max-frames must be non-negative")
     if args.grad_accum_steps <= 0:
@@ -336,12 +345,12 @@ def main() -> None:
         if frame_batch_sampler is not None
         else math.ceil(len(dataset) / args.batch_size)
     )
-    steps_per_epoch = max(
-        1,
-        math.ceil(batches_per_epoch / args.grad_accum_steps)
-        if frame_batch_sampler is not None
-        else batches_per_epoch // args.grad_accum_steps,
-    )
+    if frame_batch_sampler is not None and batches_per_epoch % args.grad_accum_steps:
+        raise ValueError(
+            f"--grad-accum-steps {args.grad_accum_steps} must divide the "
+            f"{batches_per_epoch} frame-budget batches per epoch"
+        )
+    steps_per_epoch = max(1, batches_per_epoch // args.grad_accum_steps)
     total_steps = args.max_steps if args.max_steps else args.epochs * steps_per_epoch
 
     val_dataloader = None
@@ -349,7 +358,7 @@ def main() -> None:
     if val_cache_dir is not None:
         val_dataset = common.CachedCodeDataset(val_cache_dir, args.sort_by_length, args.val_max_samples)
         val_dataloader = common.make_cached_dataloader(
-            val_dataset, args.batch_size, args.num_workers, args.sort_by_length, seed=args.seed
+            val_dataset, args.val_batch_size, args.num_workers, args.sort_by_length, seed=args.seed
         )
         print(f"Loaded {len(val_dataset)} val cached samples from {repo_display_path(val_cache_dir)}")
 
