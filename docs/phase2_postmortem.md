@@ -1,8 +1,12 @@
 # Phase-2 VI full-SFT post-mortem (run `vi_full_p2`, 2026-08-02/03)
 
-Status at writing: 2-epoch main run **complete and below warm-start quality**; epoch-3
-extension (flat 1e-5) running as the recovery experiment. Verdict section to be
-finalized when it ends.
+**FINAL VERDICT (2026-08-03): run closed, box destroyed.** The 2-epoch run peaked
+at chrF 13.04 @ 36k (below warm-start 19.6). The epoch-3 extension — restarted at
+a verified flat 1e-5 after the resume-schedule bug fix — was stopped at its first
+greedy read: step 90,000 chrF **7.63**, nonempty 45/128, nonempty_chrf 16.45 —
+flat vs the epoch-2 end (7.48, 55/128). Low-LR continuation does not pull the
+model back out of the silence attractor. **Next run = from scratch on the full
+1,114 h with the proven phase-1 recipe** (first bullet under Recommendations).
 
 ## Setup
 
