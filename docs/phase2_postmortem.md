@@ -79,6 +79,29 @@ throughout (93–94 GiB of 93.6, 0.25 s/step, zero crashes).
 - Keep best-on-chrF selection: it is the only reason the run's best state
   (chrF 13.0 @ 36k) survived the later collapse.
 
+## Better val metrics for the next run (planned, not yet implemented)
+
+Text (teacher-forced, free — same forward as val CE; add to `evaluate_teacher_forced`):
+- **Content-only text CE** — CE over non-pad target tokens only. Current text CE is
+  57% prefix pads and improved straight through the collapse.
+- **Silence score** — at each target's first-content-token position, model probability
+  mass on the pad token. Measures the pad/silence attractor directly; would have
+  flagged the collapse at step 2k instead of the step-9k greedy eval.
+- **Content token accuracy** (top-1 on non-pad positions) — human-readable companion.
+
+Text (greedy eval / standalone):
+- Surface **nonempty_chrf next to nonempty count** (both already computed) so
+  "collapsed" vs "bad translation" separate at a glance.
+- **COMET (`wmt22-comet-da`)** on val128 outputs (needs `unbabel-comet` + vi source
+  text from pairs; seconds on H100). Much better adequacy signal than chrF/BLEU;
+  keep chrF for phase-1 comparability.
+
+Audio (currently ZERO quality metric on the speech output — the actual product):
+- **ASR round-trip**: transcribe generated EN audio (faster-whisper on GPU),
+  score WER/chrF vs reference — the paper's own eval style; catches audio-head
+  regressions the text stream can't see. ~1–2 min per val128 pass.
+- Keep the existing loop/silence gates (rms/peak, repeat4) as cheap sanity checks.
+
 ## Artifacts
 
 - `finetune/runs/vi_full_p2/` on the box; checkpoints synced to HF model repo
