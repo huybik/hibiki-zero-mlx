@@ -233,7 +233,12 @@ def transcribe(
     device: str,
     language: str | None,
 ) -> str:
-    inputs = processor(audio_16k, sampling_rate=16_000, return_tensors="pt")
+    inputs = processor(
+        audio_16k,
+        sampling_rate=16_000,
+        return_tensors="pt",
+        return_attention_mask=True,
+    )
     model_inputs = {name: value.to(device) for name, value in inputs.items()}
     kwargs: dict[str, Any] = {"task": "transcribe", "max_new_tokens": 256}
     if language:
