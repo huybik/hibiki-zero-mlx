@@ -25,8 +25,24 @@ from qa_vivos_tts import (
     word_error_counts,
 )
 from synthesize_vivos import atomic_write_jsonl, read_jsonl, sha256_file
+from synthesize_vivos import (
+    SOURCE_AUDIT_SCHEMA,
+    canonical_json,
+    expected_pilot_sources,
+    sha256_bytes,
+    translation_record,
+    validate_plan,
+)
 
-SCHEMA = "hibiki_vivos_source_asr_audit_v1"
+SCHEMA = SOURCE_AUDIT_SCHEMA
+PROVENANCE_FIELDS = (
+    "corpus",
+    "corpus_revision",
+    "license",
+    "source_repo",
+    "source_file",
+    "source_archive_sha256",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pilot-plan",
         type=Path,
-        help="Audit only the unique target source rows selected by a TTS pilot plan.",
+        help="Audit the unique target and clone-reference rows selected by a TTS pilot plan.",
     )
     return parser.parse_args()
 
@@ -98,8 +114,14 @@ def duration_slice(duration: float, boundaries: tuple[float, float]) -> str:
 
 def load_selected_rows(
     args: argparse.Namespace,
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, str]],
+    dict[str, dict[str, str]],
+    dict[str, Any] | None,
+]:
     rows_by_id: dict[str, dict[str, Any]] = {}
+    manifest_by_id: dict[str, dict[str, str]] = {}
     manifest_records: list[dict[str, str]] = []
     for source_path in args.manifests:
         path = source_path.expanduser().resolve()
@@ -112,16 +134,59 @@ def load_selected_rows(
             if not row.get("text_vi") or not row.get("audio_sha256"):
                 raise RuntimeError(f"Incomplete source row: {row_id}")
             rows_by_id[row_id] = row
+            manifest_by_id[row_id] = record
+    pilot_context = None
     if args.pilot_plan:
-        plan = read_jsonl(args.pilot_plan.expanduser().resolve())
-        selected_ids = {str(row["target_id"]) for row in plan}
+        plan_path = args.pilot_plan.expanduser().resolve()
+        plan = read_jsonl(plan_path)
+        validate_plan(plan)
+        pilot_sources, pilot_coverage = expected_pilot_sources(plan)
+        selected_ids = {str(row["id"]) for row in pilot_sources}
         missing = selected_ids - set(rows_by_id)
         if missing:
             raise RuntimeError(
                 f"Pilot ids missing from source manifests: {sorted(missing)}"
             )
+        expected_by_id = {str(row["id"]): row for row in pilot_sources}
+        for row_id in selected_ids:
+            row = rows_by_id[row_id]
+            expected = expected_by_id[row_id]
+            record = manifest_by_id[row_id]
+            if (
+                row.get("speaker_id") != expected["speaker_id"]
+                or row.get("audio_sha256") != expected["audio_sha256"]
+                or sha256_bytes(str(row["text_vi"]).encode("utf-8"))
+                != expected["text_vi_sha256"]
+                or record["sha256"] != expected["accepted_manifest_sha256"]
+            ):
+                raise RuntimeError(f"Pilot source identity mismatch: {row_id}")
         rows_by_id = {row_id: rows_by_id[row_id] for row_id in selected_ids}
-    return [rows_by_id[key] for key in sorted(rows_by_id)], manifest_records
+        manifest_by_id = {row_id: manifest_by_id[row_id] for row_id in selected_ids}
+        pilot_context = {
+            "pilot_plan": {
+                "path": str(plan_path),
+                "sha256": sha256_file(plan_path),
+                "schema_version": plan[0]["schema_version"],
+            },
+            "pilot_coverage": pilot_coverage,
+            "pilot_sources": pilot_sources,
+        }
+    return (
+        [rows_by_id[key] for key in sorted(rows_by_id)],
+        manifest_records,
+        manifest_by_id,
+        pilot_context,
+    )
+
+
+def source_provenance(row: dict[str, Any]) -> dict[str, Any]:
+    missing = [field for field in PROVENANCE_FIELDS if not row.get(field)]
+    if missing:
+        raise RuntimeError(f"Incomplete source provenance for {row['id']}: {missing}")
+    return {
+        **{field: row[field] for field in PROVENANCE_FIELDS},
+        "translation": translation_record(row),
+    }
 
 
 def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -148,7 +213,7 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def audit(args: argparse.Namespace) -> None:
-    rows, manifests = load_selected_rows(args)
+    rows, manifests, source_manifest_by_id, pilot_context = load_selected_rows(args)
     out_dir = args.out_dir.expanduser().resolve()
     row_metrics_path = out_dir / "row_metrics.jsonl"
     report_path = out_dir / "audit_report.json"
@@ -196,20 +261,32 @@ def audit(args: argparse.Namespace) -> None:
         str(row["id"]) for row in rows
     }:
         raise RuntimeError(f"Invalid resumable row artifact: {row_metrics_path}")
-    manifest_hashes = sorted(record["sha256"] for record in manifests)
+    pilot_source_by_id = {
+        str(row["id"]): row for row in (pilot_context or {}).get("pilot_sources", [])
+    }
     for row in completed:
+        row_id = str(row.get("id", ""))
+        source = next(item for item in rows if str(item["id"]) == row_id)
+        source_record = source_manifest_by_id[row_id]
+        provenance = source_provenance(source)
         if (
             row.get("schema_version") != SCHEMA
-            or row.get("source_manifest_sha256") not in manifest_hashes
+            or row.get("source_manifest_sha256") != source_record["sha256"]
+            or row.get("audio_sha256") != source["audio_sha256"]
+            or row.get("reference_text_vi_sha256")
+            != sha256_bytes(str(source["text_vi"]).encode("utf-8"))
+            or row.get("source_provenance") != provenance
+            or row.get("source_provenance_sha256")
+            != sha256_bytes(canonical_json(provenance).encode("utf-8"))
+            or row.get("pilot_roles")
+            != pilot_source_by_id.get(row_id, {}).get("pilot_roles", [])
+            or row.get("pilot_plan_sha256")
+            != (pilot_context or {}).get("pilot_plan", {}).get("sha256")
             or row.get("models", {}).get("asr")
             != {"id": ASR_MODEL_ID, "revision": ASR_MODEL_REVISION}
+            or row.get("runtime") != runtime
         ):
             raise RuntimeError(f"Completed source provenance mismatch: {row.get('id')}")
-
-    source_manifest_by_id: dict[str, dict[str, str]] = {}
-    for record, manifest_path in zip(manifests, args.manifests):
-        for row in read_jsonl(manifest_path.expanduser().resolve()):
-            source_manifest_by_id[str(row["id"])] = record
 
     pending = [row for row in rows if row["id"] not in completed_by_id]
     for number, row in enumerate(pending, start=1):
@@ -235,6 +312,7 @@ def audit(args: argparse.Namespace) -> None:
         character_errors = edit_distance(reference_characters, hypothesis_characters)
         duration_s = len(audio) / sample_rate if sample_rate else 0.0
         record = source_manifest_by_id[str(row["id"])]
+        provenance = source_provenance(row)
         metric = {
             "schema_version": SCHEMA,
             "id": row["id"],
@@ -244,8 +322,21 @@ def audit(args: argparse.Namespace) -> None:
             "duration_slice": duration_slice(float(row["duration_s"]), boundaries),
             "source_manifest": record["path"],
             "source_manifest_sha256": record["sha256"],
+            "pilot_roles": pilot_source_by_id.get(str(row["id"]), {}).get(
+                "pilot_roles", []
+            ),
+            "pilot_plan_sha256": (pilot_context or {})
+            .get("pilot_plan", {})
+            .get("sha256"),
             "audio_path": str(path),
             "audio_sha256": row["audio_sha256"],
+            "reference_text_vi_sha256": sha256_bytes(
+                str(row["text_vi"]).encode("utf-8")
+            ),
+            "source_provenance": provenance,
+            "source_provenance_sha256": sha256_bytes(
+                canonical_json(provenance).encode("utf-8")
+            ),
             "duration_s": round(duration_s, 6),
             "manifest_duration_s": row["duration_s"],
             "duration_delta_s": round(duration_s - float(row["duration_s"]), 6),
@@ -294,10 +385,13 @@ def audit(args: argparse.Namespace) -> None:
         "models": {"asr": {"id": ASR_MODEL_ID, "revision": ASR_MODEL_REVISION}},
         "runtime": runtime,
         "source_manifests": manifests,
-        "pilot_plan": (
-            str(args.pilot_plan.expanduser().resolve()) if args.pilot_plan else None
-        ),
-        "row_metrics": str(row_metrics_path),
+        "pilot_plan": (pilot_context or {}).get("pilot_plan"),
+        "pilot_coverage": (pilot_context or {}).get("pilot_coverage"),
+        "pilot_sources": (pilot_context or {}).get("pilot_sources"),
+        "row_metrics": {
+            "path": str(row_metrics_path),
+            "sha256": sha256_file(row_metrics_path),
+        },
     }
     atomic_write_json(report_path, report)
     print(f"Source audit: {report_path}")

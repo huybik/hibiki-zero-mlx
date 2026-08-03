@@ -15,6 +15,7 @@ from statistics import median
 from typing import Any
 
 from synthesize_vivos import (
+    MLX_PILOT_SPECS,
     atomic_write_bytes,
     atomic_write_jsonl,
     baseline_output_path,
@@ -23,6 +24,7 @@ from synthesize_vivos import (
     planned_output_path,
     validate_audio_inputs,
     validate_plan,
+    validate_source_audit_report,
 )
 
 SCHEMA = "hibiki_vivos_tts_qa_v1"
@@ -63,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument("--source-audit-report", type=Path)
     return parser.parse_args()
 
 
@@ -343,6 +346,7 @@ def validate_inputs(
     generation_rows: list[dict[str, Any]],
     plan_sha: str,
     plan_path: Path,
+    source_audit_attestation: dict[str, str] | None,
 ) -> dict[str, dict[str, Any]]:
     plan_by_id = {str(row.get("pilot_id", "")): row for row in plan_rows}
     generation_by_id = {str(row.get("pilot_id", "")): row for row in generation_rows}
@@ -362,12 +366,18 @@ def validate_inputs(
         planned = plan_by_id[pilot_id]
         output = planned_output_path(planned, plan_path)
         if (
-            generated.get("plan_sha256") != plan_sha
+            generated.get("schema_version") != planned["schema_version"]
+            or generated.get("plan_sha256") != plan_sha
             or generated.get("output_wav") != str(output)
             or generated.get("speaker_id") != planned["speaker_id"]
             or generated.get("target_id") != planned["target_id"]
             or generated.get("replicate_seed") != planned["synthesis"]["seed"]
             or generated.get("synthesis") != planned["synthesis"]
+            or (
+                source_audit_attestation is not None
+                and generated.get("source_audit_attestation")
+                != source_audit_attestation
+            )
         ):
             raise RuntimeError(
                 f"Generation provenance does not match plan for {pilot_id}"
@@ -419,6 +429,18 @@ def score(args: argparse.Namespace) -> None:
     out_dir = args.out_dir.expanduser().resolve()
     plan_rows = read_jsonl(plan_path)
     validate_plan(plan_rows)
+    pilot_schema = str(plan_rows[0]["schema_version"])
+    mlx_spec = MLX_PILOT_SPECS.get(pilot_schema)
+    if mlx_spec is not None and mlx_spec["source_audit_required"]:
+        if args.source_audit_report is None:
+            raise RuntimeError("MLX pilot v2 QA requires --source-audit-report")
+        source_audit_attestation = validate_source_audit_report(
+            plan_path, plan_rows, args.source_audit_report
+        )
+    else:
+        if args.source_audit_report is not None:
+            raise RuntimeError("--source-audit-report is only valid for MLX pilot v2")
+        source_audit_attestation = None
     input_paths = validate_audio_inputs(plan_rows, args.dataset_root)
     config_path = plan_path.parent / "pilot_config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -426,7 +448,13 @@ def score(args: argparse.Namespace) -> None:
         raise RuntimeError(f"Plan hash does not match {config_path}")
     generation_rows = read_jsonl(generation_path)
     plan_sha = sha256_file(plan_path)
-    generated_by_id = validate_inputs(plan_rows, generation_rows, plan_sha, plan_path)
+    generated_by_id = validate_inputs(
+        plan_rows,
+        generation_rows,
+        plan_sha,
+        plan_path,
+        source_audit_attestation,
+    )
     kokoro_generated = validate_kokoro_inputs(
         plan_rows, read_jsonl(kokoro_generation_path), plan_sha, plan_path
     )
@@ -608,6 +636,7 @@ def score(args: argparse.Namespace) -> None:
                 if backend == primary_backend
                 else plan["kokoro_baseline"]
             ),
+            "source_audit_attestation": source_audit_attestation,
             "duration_s": round(duration_s, 6),
             "duration_ratio_target_source": round(
                 duration_s / float(plan["source_audio"]["duration_s"]), 6
@@ -775,6 +804,7 @@ def score(args: argparse.Namespace) -> None:
         },
         "runtime": {**versions, "device": args.device},
         "plan": {"path": str(plan_path), "sha256": plan_sha},
+        "source_audit_attestation": source_audit_attestation,
         "generation": {
             primary_backend: {
                 "path": str(generation_path),

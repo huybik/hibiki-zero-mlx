@@ -41,6 +41,8 @@ GENERATION_CONFIG = {
 }
 
 MLX_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_pilot_v1"
+MLX_V2_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_pilot_v2"
+SOURCE_AUDIT_SCHEMA = "hibiki_vivos_source_asr_audit_v2"
 MLX_PACKAGE_VERSION = "0.4.7"
 MLX_PACKAGE_COMMIT = "2c9461f5d8315fa8e7013ab2729495b2bb83d384"
 MLX_MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
@@ -59,6 +61,7 @@ MLX_GENERATION_CONFIG = {
     "split_pattern": "\n",
     "stream": False,
 }
+MLX_V2_GENERATION_CONFIG = {**MLX_GENERATION_CONFIG, "temperature": 0.7}
 MLX_MODEL_FILES_SHA256 = {
     ".gitattributes": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
     "README.md": "cf921813a02b37002f73b636991a52d9385bb4a81a9ff2dc61a178d1f6e27587",
@@ -146,6 +149,33 @@ PILOT_SPEAKERS = (
     },
 )
 
+MLX_V2_PILOT_SPEAKERS = tuple(
+    {
+        **speaker,
+        "reference_id": (
+            "vivos:train:VIVOSSPK26_093"
+            if speaker["speaker_id"] == "VIVOSSPK26"
+            else speaker["reference_id"]
+        ),
+    }
+    for speaker in PILOT_SPEAKERS
+)
+
+# Existing v1 constants above are immutable. New MLX pilots are registered
+# beside them so old plans retain their exact allowlist and generation config.
+MLX_PILOT_SPECS = {
+    MLX_SCHEMA: {
+        "speakers": PILOT_SPEAKERS,
+        "generation_config": MLX_GENERATION_CONFIG,
+        "source_audit_required": False,
+    },
+    MLX_V2_SCHEMA: {
+        "speakers": MLX_V2_PILOT_SPEAKERS,
+        "generation_config": MLX_V2_GENERATION_CONFIG,
+        "source_audit_required": True,
+    },
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -167,6 +197,14 @@ def parse_args() -> argparse.Namespace:
     prepare_mlx.add_argument("--dataset-root", type=Path)
     prepare_mlx.add_argument("--kokoro-voice-map", type=Path, required=True)
 
+    prepare_mlx_v2 = subparsers.add_parser(
+        "prepare-mlx-v2", help="Build the immutable remediated MLX-Audio v2 plan."
+    )
+    prepare_mlx_v2.add_argument("manifests", type=Path, nargs="+")
+    prepare_mlx_v2.add_argument("--out-dir", type=Path, required=True)
+    prepare_mlx_v2.add_argument("--dataset-root", type=Path)
+    prepare_mlx_v2.add_argument("--kokoro-voice-map", type=Path, required=True)
+
     generate = subparsers.add_parser(
         "generate", help="Run the prepared plan in a qwen-tts CUDA environment."
     )
@@ -181,6 +219,7 @@ def parse_args() -> argparse.Namespace:
     generate_mlx.add_argument("plan", type=Path)
     generate_mlx.add_argument("--device", default="mps")
     generate_mlx.add_argument("--dataset-root", type=Path)
+    generate_mlx.add_argument("--source-audit-report", type=Path)
 
     kokoro = subparsers.add_parser(
         "generate-kokoro", help="Generate the pinned matched-Kokoro baseline."
@@ -329,8 +368,16 @@ def prepare(
     dataset_root: Path | None,
     kokoro_voice_map: Path,
     *,
-    mlx: bool = False,
+    mlx_schema: str | None = None,
 ) -> None:
+    mlx_spec = MLX_PILOT_SPECS.get(mlx_schema) if mlx_schema else None
+    if mlx_schema and mlx_spec is None:
+        raise RuntimeError(f"Unknown MLX pilot schema: {mlx_schema}")
+    pilot_schema = mlx_schema or SCHEMA
+    pilot_speakers = mlx_spec["speakers"] if mlx_spec is not None else PILOT_SPEAKERS
+    mlx_generation_config = (
+        mlx_spec["generation_config"] if mlx_spec is not None else None
+    )
     out_dir = out_dir.expanduser().resolve()
     resolved_manifests = [path.expanduser().resolve() for path in manifests]
     if dataset_root is None:
@@ -357,7 +404,7 @@ def prepare(
             rows_by_id[row_id] = (row, record)
 
     plan_rows: list[dict[str, Any]] = []
-    for spec in PILOT_SPEAKERS:
+    for spec in pilot_speakers:
         try:
             target, target_manifest = rows_by_id[spec["target_id"]]
             reference, reference_manifest = rows_by_id[spec["reference_id"]]
@@ -394,7 +441,7 @@ def prepare(
             "translation": translation_record(target),
         }
         for seed in SEEDS:
-            backend_name = "qwen_mlx" if mlx else "qwen"
+            backend_name = "qwen_mlx" if mlx_spec is not None else "qwen"
             pilot_id = f"{target['id']}|{backend_name}|seed={seed}"
             filename = (
                 f"{str(target['id']).replace(':', '_')}.{backend_name}.seed{seed}.wav"
@@ -413,9 +460,9 @@ def prepare(
                     "clone_mode": "icl_reference_audio_and_text",
                     "reference_cache": "mlx_audio_internal_icl_cache",
                     "seed": seed,
-                    "generation_config": MLX_GENERATION_CONFIG,
+                    "generation_config": mlx_generation_config,
                 }
-                if mlx
+                if mlx_spec is not None
                 else {
                     "package": "qwen-tts",
                     "package_version": QWEN_PACKAGE_VERSION,
@@ -429,7 +476,7 @@ def prepare(
             )
             plan_rows.append(
                 {
-                    "schema_version": MLX_SCHEMA if mlx else SCHEMA,
+                    "schema_version": pilot_schema,
                     "pilot_id": pilot_id,
                     "speaker_id": spec["speaker_id"],
                     "gender": spec["gender"],
@@ -470,7 +517,7 @@ def prepare(
     )
     plan_path = out_dir / "pilot_plan.jsonl"
     config = {
-        "schema_version": MLX_SCHEMA if mlx else SCHEMA,
+        "schema_version": pilot_schema,
         "repository_commit": git_commit(),
         "script_sha256": sha256_file(Path(__file__).resolve()),
         "dataset_root_at_prepare": str(dataset_root),
@@ -479,7 +526,7 @@ def prepare(
             "path": str(voice_map_path),
             "sha256": sha256_file(voice_map_path),
         },
-        "speaker_allowlist": list(PILOT_SPEAKERS),
+        "speaker_allowlist": list(pilot_speakers),
         "seeds": list(SEEDS),
         "synthesis": (
             {
@@ -492,10 +539,10 @@ def prepare(
                 "source_model_revision": MLX_SOURCE_MODEL_REVISION,
                 "weight_dtype": "bfloat16",
                 "reference_cache": "mlx_audio_internal_icl_cache",
-                "generation_config": MLX_GENERATION_CONFIG,
+                "generation_config": mlx_generation_config,
                 "model_files_sha256": MLX_MODEL_FILES_SHA256,
             }
-            if mlx
+            if mlx_spec is not None
             else {
                 "package": "qwen-tts",
                 "package_version": QWEN_PACKAGE_VERSION,
@@ -548,16 +595,17 @@ def require_mlx_audio_commit() -> None:
 
 
 def validate_plan(rows: list[dict[str, Any]]) -> None:
-    if len(rows) != len(PILOT_SPEAKERS) * len(SEEDS):
-        raise RuntimeError(f"Expected 16 pinned pilot rows, found {len(rows)}")
     ids = [str(row.get("pilot_id", "")) for row in rows]
     if len(ids) != len(set(ids)) or any(not value for value in ids):
         raise RuntimeError("Pilot plan has empty or duplicate ids")
     schemas = {str(row.get("schema_version", "")) for row in rows}
-    if len(schemas) != 1 or not schemas <= {SCHEMA, MLX_SCHEMA}:
+    if len(schemas) != 1 or not schemas <= {SCHEMA, *MLX_PILOT_SPECS}:
         raise RuntimeError(f"Pilot schema mismatch: {sorted(schemas)}")
     schema = schemas.pop()
-    mlx = schema == MLX_SCHEMA
+    mlx_spec = MLX_PILOT_SPECS.get(schema)
+    pilot_speakers = mlx_spec["speakers"] if mlx_spec is not None else PILOT_SPEAKERS
+    if len(rows) != len(pilot_speakers) * len(SEEDS):
+        raise RuntimeError(f"Expected 16 pinned pilot rows, found {len(rows)}")
     expected = {
         (
             spec["speaker_id"],
@@ -567,7 +615,7 @@ def validate_plan(rows: list[dict[str, Any]]) -> None:
             spec["target_id"],
             seed,
         )
-        for spec in PILOT_SPEAKERS
+        for spec in pilot_speakers
         for seed in SEEDS
     }
     actual = {
@@ -595,8 +643,8 @@ def validate_plan(rows: list[dict[str, Any]]) -> None:
             and synthesis.get("package_commit") == MLX_PACKAGE_COMMIT
             and synthesis.get("weight_dtype") == "bfloat16"
             and synthesis.get("reference_cache") == "mlx_audio_internal_icl_cache"
-            and synthesis.get("generation_config") == MLX_GENERATION_CONFIG
-            if mlx
+            and synthesis.get("generation_config") == mlx_spec["generation_config"]
+            if mlx_spec is not None
             else synthesis.get("model_id") == MODEL_ID
             and synthesis.get("model_revision") == MODEL_REVISION
             and synthesis.get("package_version") == QWEN_PACKAGE_VERSION
@@ -613,6 +661,151 @@ def validate_plan(rows: list[dict[str, Any]]) -> None:
             or not baseline.get("voice")
         ):
             raise RuntimeError(f"Unpinned Kokoro baseline in {row['pilot_id']}")
+
+
+def expected_pilot_sources(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    validate_plan(rows)
+    sources: dict[str, dict[str, Any]] = {}
+    target_to_reference: dict[str, str] = {}
+    reference_to_target: dict[str, str] = {}
+    seeds_by_target: dict[str, set[int]] = {}
+
+    def add_source(
+        row_id: str,
+        role: str,
+        speaker_id: str,
+        text_vi: str,
+        audio: dict[str, Any],
+        manifest: dict[str, Any],
+    ) -> None:
+        identity = {
+            "id": row_id,
+            "speaker_id": speaker_id,
+            "text_vi_sha256": sha256_bytes(text_vi.encode("utf-8")),
+            "audio_sha256": str(audio["sha256"]),
+            "accepted_manifest_sha256": str(manifest["sha256"]),
+        }
+        existing = sources.setdefault(row_id, {**identity, "pilot_roles": []})
+        if any(existing[key] != value for key, value in identity.items()):
+            raise RuntimeError(f"Conflicting pilot source identity: {row_id}")
+        if role not in existing["pilot_roles"]:
+            existing["pilot_roles"].append(role)
+
+    for row in rows:
+        target_id = str(row["target_id"])
+        reference_id = str(row["reference"]["id"])
+        speaker_id = str(row["speaker_id"])
+        previous_reference = target_to_reference.setdefault(target_id, reference_id)
+        previous_target = reference_to_target.setdefault(reference_id, target_id)
+        if previous_reference != reference_id or previous_target != target_id:
+            raise RuntimeError("Pilot target/reference mapping is not a bijection")
+        seeds_by_target.setdefault(target_id, set()).add(int(row["synthesis"]["seed"]))
+        add_source(
+            target_id,
+            "target",
+            speaker_id,
+            str(row["text_vi"]),
+            row["source_audio"],
+            row["provenance"]["accepted_manifest"],
+        )
+        add_source(
+            reference_id,
+            "clone_reference",
+            speaker_id,
+            str(row["reference"]["text_vi"]),
+            row["reference"]["audio"],
+            row["reference"]["accepted_manifest"],
+        )
+
+    expected_seeds = set(SEEDS)
+    if any(seeds != expected_seeds for seeds in seeds_by_target.values()):
+        raise RuntimeError("Pilot target replicate seeds do not match the sealed seeds")
+    target_ids = set(target_to_reference)
+    reference_ids = set(reference_to_target)
+    if target_ids & reference_ids or len(target_ids) != len(reference_ids):
+        raise RuntimeError(
+            "Pilot targets and clone references are not disjoint one-to-one sets"
+        )
+    for source in sources.values():
+        source["pilot_roles"].sort()
+    coverage = {
+        "planned_generation_rows": len(rows),
+        "replicates_per_target": len(SEEDS),
+        "unique_targets": len(target_ids),
+        "unique_clone_references": len(reference_ids),
+        "unique_selected_sources": len(sources),
+        "target_role_occurrences": len(rows),
+        "clone_reference_role_occurrences": len(rows),
+        "target_reference_pairs": len(target_to_reference),
+        "target_reference_bijection": True,
+    }
+    return [sources[key] for key in sorted(sources)], coverage
+
+
+def validate_source_audit_report(
+    plan_path: Path, rows: list[dict[str, Any]], report_path: Path
+) -> dict[str, str]:
+    resolved_report = report_path.expanduser().resolve()
+    report = json.loads(resolved_report.read_text(encoding="utf-8"))
+    expected_sources, expected_coverage = expected_pilot_sources(rows)
+    plan_sha = sha256_file(plan_path)
+    if report.get("schema_version") != SOURCE_AUDIT_SCHEMA:
+        raise RuntimeError(f"Source audit schema mismatch: {resolved_report}")
+    pilot_plan = report.get("pilot_plan")
+    if not isinstance(pilot_plan, dict) or pilot_plan != {
+        "path": str(plan_path),
+        "sha256": plan_sha,
+        "schema_version": rows[0]["schema_version"],
+    }:
+        raise RuntimeError(f"Source audit plan attestation mismatch: {resolved_report}")
+    if report.get("pilot_coverage") != expected_coverage:
+        raise RuntimeError(f"Source audit coverage mismatch: {resolved_report}")
+    if report.get("pilot_sources") != expected_sources:
+        raise RuntimeError(f"Source audit source identity mismatch: {resolved_report}")
+    if report.get("rows") != len(expected_sources):
+        raise RuntimeError(f"Source audit row count mismatch: {resolved_report}")
+    row_metrics = report.get("row_metrics")
+    if not isinstance(row_metrics, dict):
+        raise RuntimeError(
+            f"Source audit row-metrics attestation missing: {resolved_report}"
+        )
+    metrics_path = Path(str(row_metrics.get("path", "")))
+    if not metrics_path.is_file() or sha256_file(metrics_path) != row_metrics.get(
+        "sha256"
+    ):
+        raise RuntimeError(f"Source audit row metrics mismatch: {resolved_report}")
+    metric_rows = read_jsonl(metrics_path)
+    metric_by_id = {str(row.get("id", "")): row for row in metric_rows}
+    expected_by_id = {str(row["id"]): row for row in expected_sources}
+    if len(metric_by_id) != len(metric_rows) or set(metric_by_id) != set(
+        expected_by_id
+    ):
+        raise RuntimeError(f"Source audit row coverage mismatch: {resolved_report}")
+    for row_id, expected in expected_by_id.items():
+        metric = metric_by_id[row_id]
+        provenance = metric.get("source_provenance")
+        if (
+            metric.get("schema_version") != SOURCE_AUDIT_SCHEMA
+            or metric.get("pilot_roles") != expected["pilot_roles"]
+            or metric.get("pilot_plan_sha256") != plan_sha
+            or metric.get("audio_sha256") != expected["audio_sha256"]
+            or metric.get("reference_text_vi_sha256") != expected["text_vi_sha256"]
+            or metric.get("source_manifest_sha256")
+            != expected["accepted_manifest_sha256"]
+            or not isinstance(provenance, dict)
+            or metric.get("source_provenance_sha256")
+            != sha256_bytes(canonical_json(provenance).encode("utf-8"))
+        ):
+            raise RuntimeError(
+                f"Source audit row attestation mismatch for {row_id}: {resolved_report}"
+            )
+    return {
+        "report_path": str(resolved_report),
+        "report_sha256": sha256_file(resolved_report),
+        "schema_version": SOURCE_AUDIT_SCHEMA,
+    }
 
 
 def validate_audio_inputs(
@@ -842,24 +1035,43 @@ def verify_mlx_snapshot(model_root: Path) -> dict[str, str]:
             if actual[name] != MLX_MODEL_FILES_SHA256[name]
         )
         raise RuntimeError(
-            f"MLX model snapshot hash mismatch: missing={missing}, extra={extra}, "
-            f"changed={changed}"
+            f"MLX model snapshot hash mismatch: missing={missing}, extra={extra}, changed={changed}"
         )
     return actual
 
 
-def generate_mlx(plan_path: Path, device: str, dataset_root: Path | None) -> None:
+def generate_mlx(
+    plan_path: Path,
+    device: str,
+    dataset_root: Path | None,
+    source_audit_report: Path | None = None,
+) -> None:
     plan_path = plan_path.expanduser().resolve()
     rows = read_jsonl(plan_path)
     validate_plan(rows)
-    if any(row["schema_version"] != MLX_SCHEMA for row in rows):
+    schemas = {str(row["schema_version"]) for row in rows}
+    if len(schemas) != 1 or not schemas <= set(MLX_PILOT_SPECS):
         raise RuntimeError("generate-mlx requires a prepare-mlx plan")
+    schema = schemas.pop()
+    mlx_spec = MLX_PILOT_SPECS[schema]
     input_paths = validate_audio_inputs(rows, dataset_root)
     plan_sha = sha256_file(plan_path)
     config_path = plan_path.parent / "pilot_config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if config.get("plan_sha256") != plan_sha:
         raise RuntimeError(f"Plan hash does not match {config_path}")
+    if mlx_spec["source_audit_required"]:
+        if source_audit_report is None:
+            raise RuntimeError(
+                "MLX pilot v2 requires --source-audit-report before generation"
+            )
+        source_audit_attestation = validate_source_audit_report(
+            plan_path, rows, source_audit_report
+        )
+    else:
+        if source_audit_report is not None:
+            raise RuntimeError("--source-audit-report is only valid for MLX pilot v2")
+        source_audit_attestation = None
     if device != "mps":
         raise RuntimeError(
             "MLX-Audio pilot generation is Apple-Metal-only; use --device mps"
@@ -887,6 +1099,10 @@ def generate_mlx(plan_path: Path, device: str, dataset_root: Path | None) -> Non
             or item.get("synthesis") != planned["synthesis"]
             or item.get("model_snapshot", {}).get("files_sha256")
             != MLX_MODEL_FILES_SHA256
+            or (
+                source_audit_attestation is not None
+                and item.get("source_audit_attestation") != source_audit_attestation
+            )
             or sha256_file(output) != item.get("audio_sha256")
         ):
             raise RuntimeError(
@@ -927,6 +1143,7 @@ def generate_mlx(plan_path: Path, device: str, dataset_root: Path | None) -> Non
         raise RuntimeError(f"Snapshot did not resolve to pinned revision: {model_root}")
     model_snapshot_hashes = verify_mlx_snapshot(model_root)
     model = load_model(model_root)
+    generation_config = mlx_spec["generation_config"]
 
     for number, row in enumerate(pending, start=1):
         seed = int(row["synthesis"]["seed"])
@@ -940,16 +1157,14 @@ def generate_mlx(plan_path: Path, device: str, dataset_root: Path | None) -> Non
                 text=row["text_en"],
                 ref_audio=str(input_paths[reference["audio"]["path"]]),
                 ref_text=reference["text_vi"],
-                max_tokens=MLX_GENERATION_CONFIG["max_tokens"],
-                temperature=MLX_GENERATION_CONFIG["temperature"],
-                top_k=MLX_GENERATION_CONFIG["top_k"],
-                top_p=MLX_GENERATION_CONFIG["top_p"],
-                repetition_penalty=MLX_GENERATION_CONFIG[
-                    "repetition_penalty_requested"
-                ],
-                lang_code=MLX_GENERATION_CONFIG["lang_code"],
-                split_pattern=MLX_GENERATION_CONFIG["split_pattern"],
-                stream=MLX_GENERATION_CONFIG["stream"],
+                max_tokens=generation_config["max_tokens"],
+                temperature=generation_config["temperature"],
+                top_k=generation_config["top_k"],
+                top_p=generation_config["top_p"],
+                repetition_penalty=generation_config["repetition_penalty_requested"],
+                lang_code=generation_config["lang_code"],
+                split_pattern=generation_config["split_pattern"],
+                stream=generation_config["stream"],
             )
         )
         if len(results) != 1:
@@ -964,7 +1179,7 @@ def generate_mlx(plan_path: Path, device: str, dataset_root: Path | None) -> Non
         output_path = planned_output_path(row, plan_path)
         atomic_write_wav(output_path, audio, sample_rate, sf)
         result = {
-            "schema_version": MLX_SCHEMA,
+            "schema_version": schema,
             "pilot_id": row["pilot_id"],
             "plan_path": str(plan_path),
             "plan_sha256": plan_sha,
@@ -1000,6 +1215,8 @@ def generate_mlx(plan_path: Path, device: str, dataset_root: Path | None) -> Non
             },
             "synthesis": row["synthesis"],
         }
+        if source_audit_attestation is not None:
+            result["source_audit_attestation"] = source_audit_attestation
         completed_by_id[str(row["pilot_id"])] = result
         atomic_write_jsonl(
             manifest_path, [completed_by_id[key] for key in sorted(completed_by_id)]
@@ -1175,12 +1392,25 @@ def main() -> None:
             args.out_dir,
             args.dataset_root,
             args.kokoro_voice_map,
-            mlx=True,
+            mlx_schema=MLX_SCHEMA,
+        )
+    elif args.action == "prepare-mlx-v2":
+        prepare(
+            args.manifests,
+            args.out_dir,
+            args.dataset_root,
+            args.kokoro_voice_map,
+            mlx_schema=MLX_V2_SCHEMA,
         )
     elif args.action == "generate":
         generate(args.plan, args.device, args.dataset_root)
     elif args.action == "generate-mlx":
-        generate_mlx(args.plan, args.device, args.dataset_root)
+        generate_mlx(
+            args.plan,
+            args.device,
+            args.dataset_root,
+            args.source_audit_report,
+        )
     else:
         generate_kokoro(args.plan, args.device)
 

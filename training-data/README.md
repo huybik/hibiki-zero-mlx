@@ -82,9 +82,13 @@ Transformers 4.57.3:
 ```
 
 The exact prepare, generation, source-audit, and gate commands are in
-[`docs/data_generation_plan.md`](../docs/data_generation_plan.md). Do not start
-bulk VIVOS synthesis until all 24 pilot candidates have been manually reviewed
-and `gate_report.json` says `go`.
+[`docs/data_generation_plan.md`](../docs/data_generation_plan.md). Immutable MLX
+v1 is a `no_go`: aggregate WER was 0.2990 and SPK26 leaked its clone prompt,
+despite a 0.9336 median speaker cosine. Preregistered v2 changes only SPK26's
+reference and temperature, and requires an attested 16-source audit plus manual
+listening to all eight references before generation. Do not start bulk VIVOS
+synthesis until all 24 v2 candidates have been manually reviewed and
+`gate_report.json` says `go`.
 
 Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS with VieNeu's PyTorch backend; vieneu >= 3.2 batches natively on both CUDA and MPS (measured on M4 Pro: batch 8 -> 6.1x real-time vs 3.1x sequential).
 
