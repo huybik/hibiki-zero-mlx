@@ -18,19 +18,27 @@ finalized when it ends.
 
 ## What happened (greedy val128, in-train, text-temp 0)
 
-| step | chrF | nonempty/128 | phase |
-|---|---|---|---|
-| 0 (warm start) | ~19.6 (phase-1 standalone) | — | baseline |
-| 9,000 | **1.24** | 17 | LR 5e-5 — **text-pad collapse** |
-| 18,000 | 11.40 | 113 | partial self-recovery |
-| 27,000 | 7.52 | 69 | oscillating, still hot |
-| 36,000 | **13.04 (run best)** | 107 | backed up as `model_best_2ep` |
-| 45,000 | 11.28 | 100 | after decay to 2e-5 |
-| 54,000 | 11.84 | 85 | |
-| 63,000 | 3.83 | 31 | epoch-2 re-collapse |
-| 72,000 | 6.09 | 37 | |
-| 81,000 | 6.40 | 43 | LR 1e-5 tail |
-| 86,258 (final) | 7.48 | 55 | end of epoch 2 |
+nonempty_chrf = chrF over only the non-empty predictions (rescored offline from
+the saved `greedy_step*/` outputs).
+
+| step | chrF | nonempty_chrf | nonempty/128 | phase |
+|---|---|---|---|---|
+| 0 (warm start) | ~19.6 (phase-1 standalone) | — | — | baseline |
+| 9,000 | **1.24** | 8.22 | 17 | LR 5e-5 — **text-pad collapse** |
+| 18,000 | 11.40 | 12.52 | 113 | partial self-recovery |
+| 27,000 | 7.52 | 11.93 | 69 | oscillating, still hot |
+| 36,000 | **13.04 (run best)** | 14.55 | 107 | backed up as `model_best_2ep` |
+| 45,000 | 11.28 | 13.17 | 100 | after decay to 2e-5 |
+| 54,000 | 11.84 | 15.48 | 85 | |
+| 63,000 | 3.83 | 12.26 | 31 | epoch-2 re-collapse |
+| 72,000 | 6.09 | **16.46** | 37 | |
+| 81,000 | 6.40 | 14.72 | 43 | LR 1e-5 tail |
+| 86,258 (final) | 7.48 | 13.67 | 55 | end of epoch 2 |
+
+The nonempty_chrf column is the key read: through the epoch-2 re-collapse it
+held at 12–16 (even peaking at 72k) while corpus chrF cratered. Translation
+quality of what the model does say never degraded — the entire failure is the
+pad/silence attractor going quiet on more and more inputs.
 
 Teacher-forced val CE meanwhile: audio 2.83 → ~2.71 plateau from ~step 45k; text
 2.61 → **bottom 2.39–2.40 @ step 40–48k → rose to 2.49 by the end** (train loss
@@ -41,6 +49,15 @@ probe) and cannot see generation quality.
 Infrastructure was NOT the cause: the identical eval path scored chrF 22.8 on the
 warm start in the pre-launch smoke (step 10), and VRAM/throughput were nominal
 throughout (93–94 GiB of 93.6, 0.25 s/step, zero crashes).
+
+**Extension false start (fixed):** the first epoch-3 launch (`--lr-schedule
+1e-5@0`) silently ran at **2e-5** — `optimizer.load_state_dict` on resume
+restored the old run's param groups *including the custom `points` schedule*,
+overriding the new flag (the old 5e-5/2e-5/1e-5 schedule re-stretched over
+129,387 steps). Caught at step ~89.6k via the train log's `lr` field; fixed in
+`train_lora.py` (resume now reasserts this run's schedule) and restarted from
+`trainer_step086258`. Rule: after any resume, verify the logged `lr` matches
+the flag.
 
 ## Diagnosis, in order of confidence
 
@@ -79,24 +96,29 @@ throughout (93–94 GiB of 93.6, 0.25 s/step, zero crashes).
 - Keep best-on-chrF selection: it is the only reason the run's best state
   (chrF 13.0 @ 36k) survived the later collapse.
 
-## Better val metrics for the next run (planned, not yet implemented)
+## Better val metrics (TF + nonempty_chrf IMPLEMENTED, live in the epoch-3 restart)
 
-Text (teacher-forced, free — same forward as val CE; add to `evaluate_teacher_forced`):
-- **Content-only text CE** — CE over non-pad target tokens only. Current text CE is
-  57% prefix pads and improved straight through the collapse.
-- **Silence score** — at each target's first-content-token position, model probability
-  mass on the pad token. Measures the pad/silence attractor directly; would have
-  flagged the collapse at step 2k instead of the step-9k greedy eval.
-- **Content token accuracy** (top-1 on non-pad positions) — human-readable companion.
+Text (teacher-forced, free — same forward as val CE; in `evaluate_teacher_forced`,
+logged to `val_log.jsonl` and by `validate_lora.py`):
+- **Content-only text CE** (`content_text_loss`) — CE over non-pad target tokens
+  only. Plain text CE is 57% prefix pads and improved straight through the collapse.
+- **Silence score** (`silence_score`) — at each target's first-content-token
+  position, model probability mass on the pad token. Measures the pad/silence
+  attractor directly; flags a collapse at the next val (2k steps) instead of the
+  next greedy eval (9k).
+- **Content token accuracy** (`content_acc`, top-1 on non-pad positions) —
+  human-readable companion.
 
-Text (greedy eval / standalone):
-- Surface **nonempty_chrf next to nonempty count** (both already computed) so
-  "collapsed" vs "bad translation" separate at a glance.
-- **COMET (`wmt22-comet-da`)** on val128 outputs (needs `unbabel-comet` + vi source
-  text from pairs; seconds on H100). Much better adequacy signal than chrF/BLEU;
-  keep chrF for phase-1 comparability.
+Text (greedy eval):
+- **nonempty_chrf** now logged next to nonempty count in `greedy_eval_log.jsonl`
+  so "collapsed" vs "bad translation" separate at a glance (validated offline —
+  see table above).
+- (still planned) **COMET (`wmt22-comet-da`)** on val128 outputs (needs
+  `unbabel-comet` + vi source text from pairs; seconds on H100). Much better
+  adequacy signal than chrF/BLEU; keep chrF for phase-1 comparability.
 
-Audio (currently ZERO quality metric on the speech output — the actual product):
+Audio (still planned — currently ZERO quality metric on the speech output, the
+actual product):
 - **ASR round-trip**: transcribe generated EN audio (faster-whisper on GPU),
   score WER/chrF vs reference — the paper's own eval style; catches audio-head
   regressions the text stream can't see. ~1–2 min per val128 pass.
