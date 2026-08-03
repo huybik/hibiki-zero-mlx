@@ -45,7 +45,14 @@ def main() -> None:
                 # away before the new pair fits.
                 keep = {adapter.name, trainer.name}
                 for remote in api.list_repo_files(repo):
-                    if remote.endswith((".safetensors", ".pt")) and remote not in keep:
+                    # Prune only root-level step checkpoints: files in subfolders
+                    # (phase1/, phase2/ archives) and non-step names are permanent.
+                    if (
+                        "/" not in remote
+                        and remote.startswith(("model_step", "trainer_step", "adapter_step"))
+                        and remote.endswith((".safetensors", ".pt"))
+                        and remote not in keep
+                    ):
                         api.delete_file(remote, repo_id=repo)
                 api.super_squash_history(repo_id=repo)
                 print(f"uploading {adapter.name} + {trainer.name}", flush=True)
