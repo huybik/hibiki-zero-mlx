@@ -94,9 +94,16 @@ def main() -> None:
     result = {
         "cache_dir": repo_display_path(cache_dir),
         "adapter": repo_display_path(adapter) if adapter is not None else "",
-        **{k: metrics[k] for k in ("loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "batches", "samples")},
+        **{k: metrics[k] for k in (
+            "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "batches", "samples",
+            "content_text_loss", "content_acc", "content_tokens", "silence_score",
+        )},
     }
-    print(f"loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} samples={metrics['samples']}")
+    print(
+        f"loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} "
+        f"content={metrics['content_text_loss']:.4f} acc={metrics['content_acc']:.3f} "
+        f"silence={metrics['silence_score']:.3f} samples={metrics['samples']}"
+    )
     if args.out_json:
         out_path = resolve_repo_path(args.out_json)
         out_path.parent.mkdir(parents=True, exist_ok=True)

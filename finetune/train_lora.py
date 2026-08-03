@@ -202,7 +202,12 @@ def load_resume_checkpoint(
     checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
     adapter_path = require_file(checkpoint["adapter"], "resume adapter")
     common.load_adapter_state(model, adapter_path, dtype)
+    # load_state_dict restores the saved run's param-group hyperparams, including
+    # our custom "points" schedule — reassert this run's --lr-schedule/names.
+    fresh_groups = [{key: group[key] for key in ("name", "points")} for group in optimizer.param_groups]
     optimizer.load_state_dict(checkpoint["optimizer"])
+    for group, fresh in zip(optimizer.param_groups, fresh_groups, strict=True):
+        group.update(fresh)
     for state in optimizer.state.values():
         for key, value in list(state.items()):
             if torch.is_tensor(value):
@@ -398,11 +403,18 @@ def main() -> None:
         metrics = common.evaluate_teacher_forced(
             lm, val_dataloader, device, checkpoint_info.model_type, audio_w, text_w, args.val_batches
         )
-        item = {"step": step, **{k: metrics[k] for k in ("loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "samples")}}
+        item = {"step": step, **{k: metrics[k] for k in (
+            "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "samples",
+            "content_text_loss", "content_acc", "content_tokens", "silence_score",
+        )}}
         item.update(common.mps_memory_stats(device))
         with val_log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(item, sort_keys=True) + "\n")
-        print(f"val step={step} loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f}")
+        print(
+            f"val step={step} loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} "
+            f"text={metrics['text_loss']:.4f} content={metrics['content_text_loss']:.4f} "
+            f"acc={metrics['content_acc']:.3f} silence={metrics['silence_score']:.3f}"
+        )
 
     def run_greedy_val(step: int) -> None:
         nonlocal best_chrf
@@ -418,6 +430,7 @@ def main() -> None:
         item = {
             "step": step,
             "chrf": chrf,
+            "nonempty_chrf": metrics.get("nonempty_chrf"),
             "bleu": metrics.get("bleu"),
             "nonempty": metrics["nonempty_predictions"],
             "num": metrics["num_predictions"],
@@ -435,7 +448,10 @@ def main() -> None:
                 json.dumps({"step": step, "chrf": chrf}, sort_keys=True) + "\n", "utf-8"
             )
             marker = " *best*"
-        print(f"greedy step={step} chrf={chrf:.3f} nonempty={item['nonempty']}/{item['num']}{marker}")
+        print(
+            f"greedy step={step} chrf={chrf:.3f} nonempty_chrf={item['nonempty_chrf']:.3f} "
+            f"nonempty={item['nonempty']}/{item['num']}{marker}"
+        )
         common.empty_device_cache(device)
 
     dataloader = None

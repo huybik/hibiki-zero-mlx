@@ -572,6 +572,7 @@ def compute_batch_losses(
     condition_tensors: Any | None,
     audio_loss_weight: float,
     text_loss_weight: float,
+    return_output: bool = False,
 ) -> dict[str, Any]:
     output = lm(codes, condition_tensors=condition_tensors)
     audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
@@ -580,13 +581,18 @@ def compute_batch_losses(
     text_mask = text_supervision_mask(output.text_mask, text_targets, lm.text_padding_token_id)
     text_loss, text_tokens = masked_cross_entropy(output.text_logits, text_targets, text_mask)
     loss = audio_loss_weight * audio_loss + text_loss_weight * text_loss
-    return {
+    result = {
         "loss": loss,
         "audio_loss": audio_loss,
         "text_loss": text_loss,
         "audio_tokens": audio_tokens,
         "text_tokens": text_tokens,
     }
+    if return_output:
+        # Only for eval: keeping logits alive an extra step in the train loop
+        # would cost ~1 GB on a full-VRAM box.
+        result["output"] = output
+    return result
 
 
 def evaluate_teacher_forced(
@@ -608,6 +614,11 @@ def evaluate_teacher_forced(
         "text_tokens": 0,
         "batches": 0,
         "samples": 0,
+        "content_loss_sum": 0.0,
+        "content_correct": 0,
+        "content_tokens": 0,
+        "silence_sum": 0.0,
+        "silence_count": 0,
     }
     with torch.no_grad():
         for batch_index, batch in enumerate(dataloader):
@@ -618,8 +629,10 @@ def evaluate_teacher_forced(
             if batch_size not in condition_cache:
                 condition_cache[batch_size] = batch_condition_tensors(lm, model_type, batch_size)
             losses = compute_batch_losses(
-                lm, codes, condition_cache[batch_size], audio_loss_weight, text_loss_weight
+                lm, codes, condition_cache[batch_size], audio_loss_weight, text_loss_weight,
+                return_output=True,
             )
+            output = losses.pop("output")
             audio_tokens = int(losses["audio_tokens"])
             text_tokens = int(losses["text_tokens"])
             totals["audio_loss_sum"] += float(losses["audio_loss"].detach().cpu()) * audio_tokens
@@ -628,6 +641,25 @@ def evaluate_teacher_forced(
             totals["text_tokens"] += text_tokens
             totals["batches"] += 1
             totals["samples"] += batch_size
+            # Post-mortem metrics: the plain text CE is 57% prefix pads and kept
+            # improving through the pad-collapse; these three see generation
+            # health directly (content-only CE/acc, pad mass at first content).
+            text_targets = codes[:, :1]
+            pad_id = lm.text_padding_token_id
+            content_mask = output.text_mask & (text_targets != pad_id)
+            content_logits = output.text_logits[content_mask].float()
+            content_targets = text_targets[content_mask].long()
+            if content_targets.numel():
+                totals["content_loss_sum"] += float(
+                    torch.nn.functional.cross_entropy(content_logits, content_targets, reduction="sum")
+                )
+                totals["content_correct"] += int((content_logits.argmax(-1) == content_targets).sum())
+                totals["content_tokens"] += int(content_targets.numel())
+            first_content = content_mask & (content_mask.long().cumsum(-1) == 1)
+            first_logits = output.text_logits[first_content].float()
+            if first_logits.shape[0]:
+                totals["silence_sum"] += float(first_logits.softmax(-1)[:, pad_id].sum())
+                totals["silence_count"] += int(first_logits.shape[0])
 
     if was_training:
         lm.train()
@@ -636,6 +668,7 @@ def evaluate_teacher_forced(
 
     audio_loss = totals["audio_loss_sum"] / totals["audio_tokens"] if totals["audio_tokens"] else 0.0
     text_loss = totals["text_loss_sum"] / totals["text_tokens"] if totals["text_tokens"] else 0.0
+    content_tokens = totals["content_tokens"]
     return {
         "loss": audio_loss_weight * audio_loss + text_loss_weight * text_loss,
         "audio_loss": audio_loss,
@@ -644,6 +677,10 @@ def evaluate_teacher_forced(
         "text_tokens": totals["text_tokens"],
         "batches": totals["batches"],
         "samples": totals["samples"],
+        "content_text_loss": totals["content_loss_sum"] / content_tokens if content_tokens else 0.0,
+        "content_acc": totals["content_correct"] / content_tokens if content_tokens else 0.0,
+        "content_tokens": content_tokens,
+        "silence_score": totals["silence_sum"] / totals["silence_count"] if totals["silence_count"] else 0.0,
     }
 
 
