@@ -32,6 +32,8 @@ en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 - `load_train_data.py` loads the uploaded speech dataset for training or coworker preview.
 - `prepare_vivos.py` pins, verifies, splits, and audits the VIVOS real-source corpus.
 - `translate_manifest.py` runs resumable, provenance-preserving Gemini Batch translation.
+- `synthesize_vivos.py` prepares and runs the pinned Qwen3-TTS VIVOS pilot.
+- `qa_vivos_tts.py` scores pilot ASR, timbre, waveform, prompt-leak, and manual gates.
 
 Generated audio, local cache, and preview folders are written outside the repo under `PHOMT_DATA_DIR` (default: `D:\Code\datasets` on Windows, `~/datasets` elsewhere).
 

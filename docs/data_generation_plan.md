@@ -56,7 +56,7 @@ to ingest it; the frozen data card records the exact revision and terms accepted
 
 | Source | Current evidence | Use decision |
 |---|---|---|
-| FLEURS `vi_vn` | The project already has 6.19 train hours. The [dataset card](https://huggingface.co/datasets/google/fleurs/blob/main/README.md) reports CC-BY-4.0 and speaker-disjoint train/dev/test. | Keep train in the real core. Preserve validation/test exclusively for model evaluation. |
+| FLEURS `vi_vn` | The project has 4.44 train hours (6.19 hours across all splits). The [dataset card](https://huggingface.co/datasets/google/fleurs/blob/main/README.md) reports CC-BY-4.0 and speaker-disjoint train/dev/test. | Keep train in the real core. Preserve validation/test exclusively for model evaluation. |
 | Common Voice Vietnamese | The live [Common Voice page](https://commonvoice.mozilla.org/vi/languages) reports 24 recorded hours, 422 speakers, and 32% validation progress; current releases are CC0. | Ingest only validated train clips. Preserve `client_id` splits and obey the download agreement, including its re-hosting restriction; publish a fetch manifest, not the audio. |
 | VIVOS | The [original catalogue record](https://live.european-language-grid.eu/catalogue/corpus/22131) reports 15 hours and CC-BY-NC-SA-4.0. | Eligible for this non-commercial research project after confirming compatibility with the model/data release. Split by speaker before target generation. Do not rely on mirrors with conflicting license metadata. |
 | VLSP/VinBigData 100 h, ViMD 102.56 h, newer conversational corpora | Reported scale is attractive, but access, redistribution, speaker metadata, and license are not yet verified in this repository. | Blocked discovery items. Promote one only after a recorded license and provenance review; do not count its advertised hours toward a launch gate. |
@@ -167,6 +167,82 @@ an idempotent finalization reproduced the same three target hashes. Batch state,
 raw requests/responses, QA JSON, and human-review TSV live under
 `/Volumes/data/datasets/hibiki_vi_v2/{batches,qa,targets}`. No English audio or
 Mimi cache has been generated, and nothing from VIVOS has been published.
+
+### VIVOS timbre-preserving TTS pilot — prepared, not executed
+
+`training-data/synthesize_vivos.py prepare` is a standard-library-only boundary.
+It requires the accepted train and dev translation manifests, verifies the
+selected source WAV hashes, and writes an immutable plan for eight pinned speakers: five
+train and three dev; four female and four male; alternating short/long
+targets. Each speaker has one pinned Vietnamese reference clip, one English
+target, two fixed Qwen replicate seeds (`20260803`, `20260804`), and one
+matched-Kokoro baseline. The official test split stays sealed:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python training-data/synthesize_vivos.py prepare \
+  /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_train.jsonl \
+  /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_dev.jsonl \
+  --kokoro-voice-map /Volumes/data/datasets/voice_bank/vi_to_en_voices.json \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_pilot_v1
+```
+
+Generation is intentionally a separate CUDA boundary with no CPU/MPS fallback.
+Use a fresh environment containing `qwen-tts==0.1.1`, its CUDA PyTorch stack,
+FlashAttention 2, NumPy, and SoundFile. The plan pins
+`Qwen/Qwen3-TTS-12Hz-1.7B-Base` revision
+`fd4b254389122332181a7c3db7f27e918eec64e3`, ICL cloning (reference audio plus
+VI transcript), and the exact sampling config. One in-memory clone prompt is
+reused per speaker. Generation writes WAVs atomically and updates its
+provenance JSONL after every output. The plan stores dataset-relative input
+paths and relative output paths so it can move to a CUDA host. Stage the 16
+verified source/reference WAVs under the same relative paths and point
+`--dataset-root` at that staging root:
+
+```bash
+python training-data/synthesize_vivos.py generate \
+  /workspace/hibiki_vi_v2/tts/vivos_qwen3_tts_pilot_v1/pilot_plan.jsonl \
+  --dataset-root /workspace/hibiki_vi_v2 --device cuda:0
+```
+
+Generate the eight CPU-pinned matched-Kokoro controls from the same plan in an
+environment with `kokoro==0.9.4` and SoundFile. This pins Kokoro-82M revision
+`f3ff3571791e39611d31c381e3a41a3af07b4987`, the voice-map hash, exact blended
+voice and speed, and model/voice weight hashes:
+
+```bash
+python training-data/synthesize_vivos.py generate-kokoro \
+  /workspace/hibiki_vi_v2/tts/vivos_qwen3_tts_pilot_v1/pilot_plan.jsonl
+```
+
+Scoring is also CUDA-only and imports its dependencies lazily. The QA environment
+requires `transformers==4.57.3`, `sacrebleu==2.6.0`, and `scipy==1.16.2`, plus
+CUDA PyTorch, NumPy, and SoundFile. It pins Whisper large-v3-turbo and WavLM
+speaker-verification revisions, writes one QA sidecar per WAV,
+`row_metrics.jsonl`, and one aggregate `gate_report.json`. Manual review is a
+TSV with `candidate_id`, `status` (`pass`/`fail`), `prompt_leak` (`yes`/`no`), and
+`notes`. Qwen candidate ids are the `pilot_id` values in the plan; each Kokoro
+candidate id is `<target_id>|kokoro`:
+
+```bash
+python training-data/qa_vivos_tts.py \
+  /workspace/hibiki_vi_v2/tts/vivos_qwen3_tts_pilot_v1/pilot_plan.jsonl \
+  /workspace/hibiki_vi_v2/tts/vivos_qwen3_tts_pilot_v1/generation.jsonl \
+  /workspace/hibiki_vi_v2/tts/vivos_qwen3_tts_pilot_v1/kokoro_generation.jsonl \
+  --out-dir /workspace/hibiki_vi_v2/tts/vivos_qwen3_tts_pilot_v1/qa \
+  --dataset-root /workspace/hibiki_vi_v2 \
+  --manual-review <pilot-review.tsv> --device cuda:0
+```
+
+The frozen hard gate requires all 16 Qwen outputs and eight Kokoro controls to
+be readable, finite, non-zero, unclipped, within the 0.4–1.8 target/source
+duration band, under 50% total silence and two seconds leading/trailing silence,
+and fully reviewed. Qwen additionally permits no WER above 50%, automatic
+reference-only transcript trigram match, or audible prompt leak. Quality is
+calibrated rather than guessed: Qwen aggregate WER may trail matched Kokoro by
+at most three absolute points, its median WavLM source/reference cosine must
+exceed Kokoro, and it must win the cosine comparison for at least six of eight
+speakers. The report includes gender, split, duration, and seed slices. Missing
+review is a `no_go`, not an implicit pass.
 
 ## Alignment and target construction
 
