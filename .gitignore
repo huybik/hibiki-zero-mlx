@@ -235,6 +235,7 @@ finetune/pairs/
 finetune/cache/
 finetune/runs/
 finetune/autoresearch/results*.tsv
+/releases/
 
 # macOS
 .DS_Store

@@ -582,6 +582,60 @@ content, EOS, ignored-tail totals and effective mass at weights 1.0/0.5; batch
 padding is schedule-dependent and deliberately unreported. No cache may be
 built before final QA says `go`.
 
+Package the finalized cache and all frozen evidence into the dedicated v2
+release. The command has one fixed local destination,
+`releases/v2/vivos_qwen3_tts_mlx_v3_full_v1`, and refuses to replace it:
+
+```bash
+BASE=/Volumes/data/datasets/hibiki_vi_v2
+CAMPAIGN=$BASE/tts/vivos_qwen3_tts_mlx_v3_full_v1
+QA=$CAMPAIGN/qa_full_v1
+CACHE=$BASE/cache/vivos_mimi_v2
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python \
+  finetune/release_vivos_cache.py prepare \
+  --cache-root "$CACHE" \
+  --source-audit-report "$BASE/qa/vivos_source_asr_mps_full_v1/audit_report.json" \
+  --source-audit-rows "$BASE/qa/vivos_source_asr_mps_full_v1/row_metrics.jsonl" \
+  --reference-map "$CAMPAIGN/reference_map.jsonl" \
+  --reference-report "$CAMPAIGN/reference_map_report.json" \
+  --campaign-config "$CAMPAIGN/campaign_config.json" \
+  --approval "$CAMPAIGN/approval_override.json" \
+  --plan "$CAMPAIGN/generation_plan.jsonl" \
+  --attempts "$CAMPAIGN/generation_attempts.jsonl" \
+  --accepted "$QA/accepted.jsonl" \
+  --rejected "$QA/rejected.jsonl" \
+  --selection "$QA/selection.jsonl" \
+  --qa-report "$QA/aggregate_report.json" \
+  --manual-required "$QA/manual_review_required.tsv" \
+  --manual-review "$QA/manual_review_required.tsv"
+```
+
+Preparation independently reloads every cache shard and reruns exact id,
+shape, range, source-EOS, degeneracy, index, supervision, and build-audit
+checks. It writes deterministic train/dev tar+zstd archives, the full frozen
+provenance chain, VIVOS attribution and CC BY-NC-SA 4.0 notice, a concise
+dataset card, a release manifest, and `SHA256SUMS`.
+
+Publish only after inspecting that local bundle:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python \
+  finetune/release_vivos_cache.py publish --env-file .env
+```
+
+Publication loads exactly one `HF_TOKEN` from a `.env` with no group/other
+permissions. It requires
+`huybik/hibiki-zero-vi-full-sft` prefix
+`v2/vivos_qwen3_tts_mlx_v3_full_v1/` to be empty at the re-queried dataset
+HEAD, then creates one add-only commit with that HEAD as `parent_commit`. It
+verifies path/size and LFS SHA-256 metadata at the returned commit, downloads
+only the new prefix at that exact OID into a fresh temporary directory, checks
+every `SHA256SUMS` entry, extracts both archives into another fresh directory,
+and reruns the complete cache audit. Only then does it create the local
+immutable `release_report.json` containing the remote commit OID. There is no
+overwrite, deletion, squash, alternate prefix, or verification fallback.
+
 ## Alignment and target construction
 
 Two paper-derived recipes serve different stages:

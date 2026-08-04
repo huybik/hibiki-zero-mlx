@@ -57,6 +57,11 @@ AutoResearch protocol, and recommended 128 / 512 / 1449 / CUDA commands.
   audits exact accepted/cache coverage, tensor/code ranges, source EOS,
   degenerate codebooks, and supervision-token accounting. `common.py` accepts
   both v1 and v2 shards; legacy v1 rows are labeled `legacy_unspecified`.
+- `release_vivos_cache.py` prepares the one immutable VIVOS cache release under
+  `releases/v2/vivos_qwen3_tts_mlx_v3_full_v1`, publishes that exact bundle in
+  one optimistic-concurrency dataset commit, and records success only after a
+  clean snapshot/extraction reruns the cache audit. It never deletes or squashes
+  Hub history and refuses an existing local release or remote prefix.
 - `train_lora.py` loads the PyTorch LM, freezes everything, applies LoRA to selected
   targets, trains CE on `LMModel.forward` masks, and saves adapter `.safetensors`
   plus optimizer checkpoints. It appends scalar logs to `train_log.jsonl`, can log
