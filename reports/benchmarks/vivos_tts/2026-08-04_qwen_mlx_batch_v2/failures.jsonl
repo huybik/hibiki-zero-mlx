@@ -1,0 +1,2 @@
+{"batch_size":32,"completed_utc":"2026-08-04T08:23:15.248903+00:00","reason":"clear_throughput_saturation_below_5%_gain","status":"not_run"}
+{"batch_size":64,"completed_utc":"2026-08-04T08:23:15.248915+00:00","reason":"clear_throughput_saturation_below_5%_gain","status":"not_run"}

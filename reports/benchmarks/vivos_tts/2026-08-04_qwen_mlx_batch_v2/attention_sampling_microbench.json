@@ -1,0 +1,12 @@
+{
+  "batch_size": 8,
+  "codec_vocabulary": 3072,
+  "steps": 256,
+  "sampling_ms_per_step": 0.5034824221183953,
+  "mask_concatenate_ms_per_step": 0.12095979673176771,
+  "preallocated_mask_slice_ms_per_step": 0.021818687400809722,
+  "mask_microbench_speedup": 5.543862218186357,
+  "observed_b8_generation_steps": 417,
+  "observed_b8_reported_talker_seconds": 69.02137684822083,
+  "interpretation": "Even granting the full isolated mask delta and sampling cost, these operations explain under 0.4% of observed talker time; a generation-loop rewrite is not the next lever."
+}
