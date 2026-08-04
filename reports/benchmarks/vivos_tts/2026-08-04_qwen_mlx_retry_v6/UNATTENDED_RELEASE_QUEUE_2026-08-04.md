@@ -48,6 +48,7 @@ The queue config binds its repository commit, repaired plan, supervisor config, 
 ## Launch command
 
 ```bash
+mkdir -p /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full/unattended_release_repair1
 tmux new-session -d -s hibiki_vivos_qwen_v6_release_repair1_20260804 \
   "zsh -lc 'cd /Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code && exec /opt/homebrew/Caskroom/miniconda/base/bin/python finetune/complete_vivos_release.py /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_plan_repair1.json --qa-root /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full --supervisor-work /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full/supervisor_repair1 --work-dir /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full/unattended_release_repair1 --cache-root /Volumes/data/datasets/hibiki_vi_v2/cache/vivos_qwen3_tts_mlx_retry_v6_mimi_v2 --dataset-root /Volumes/data/datasets/hibiki_vi_v2 --gender-files /Volumes/data/datasets/hibiki_vi_v2/raw/vivos/corpus/vivos/train/genders.txt /Volumes/data/datasets/hibiki_vi_v2/raw/vivos/corpus/vivos/test/genders.txt --env-file /Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code/.env --poll-seconds 30 > /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full/unattended_release_repair1/worker.log 2>&1'"
 ```
