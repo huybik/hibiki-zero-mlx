@@ -295,7 +295,7 @@ was 0.0539216 versus Kokoro 0.0098039, still 0.0441176 worse and outside the
 frozen 0.03 margin. The only catastrophic row was SPK13 seed `20260803` at WER
 0.6667. V2 artifacts are immutable evidence.
 
-#### MLX pilot v3 — preregistered, not generated
+#### MLX pilot v3 — immutable comparison no-go; Qwen manually approved
 
 V3 preserves the exact v2 speaker/target/reference tuple (including
 `VIVOSSPK26_093`), seeds, model/package revisions, snapshot hashes, effective
@@ -303,6 +303,19 @@ ICL repetition penalty, Kokoro controls, and frozen QA thresholds. Its only
 change is requested temperature 0.7 to 0.8. The schema is
 `hibiki_vivos_qwen3_tts_mlx_pilot_v3`; artifacts belong only under
 `vivos_qwen3_tts_mlx_pilot_v3`.
+
+V3 plan SHA-256 is
+`006a9415311a220ab63a5ff37d7ac61ac4b047f43bd98d757ee5fe2614401174`.
+All 16 Qwen rows passed automatic row gates, with zero prompt-leak matches,
+median speaker cosine 0.9440091 versus Kokoro 0.5616511, and 8/8 timbre wins.
+Aggregate Qwen WER was 0.0490196 versus Kokoro 0.00980392: the 0.0392157 gap
+still exceeds the frozen 0.03 margin. All 24 per-file manual reviews remained
+incomplete, so the immutable gate report correctly remains `no_go`.
+
+The user subsequently judged the English files very good, explicitly selected
+Qwen, and authorized the full campaign. This is a model-level manual waiver of
+the retained aggregate comparison no-go. It is not evidence that all 24 files
+were reviewed and does not relabel or modify `gate_report.json`.
 
 Prepare the distinct 8-speaker/16-output v3 plan:
 
@@ -362,9 +375,55 @@ unchanged:
   --manual-review <pilot-review.tsv> --device mps
 ```
 
-Pause again for manual review of all 24 v3 candidates: 16 MLX replicas and eight
-matched Kokoro controls. No bulk synthesis, Mimi encoding, packaging, or upload
-starts until all 24 reviews are present and `gate_report.json` says `go`.
+The commands above are the immutable v3 record. The explicit user waiver permits
+proceeding to full-campaign preparation with Qwen while preserving the `no_go`
+report and incomplete per-file review fact.
+
+#### Full VIVOS source audit and reference freeze v1
+
+Before any full synthesis, audit the exact accepted train+dev manifests: 9,844
+train plus 1,106 dev rows, 10,950 total across 46 split-contained speakers. Full
+mode freezes schema `hibiki_vivos_source_asr_mps_full_v1` and output directory
+name `vivos_source_asr_mps_full_v1`. It uses atomic per-row resume sidecars and
+publishes immutable `row_metrics.jsonl` and `audit_report.json` only after exact
+coverage. Every row retains manifest/audio/text/source/model/runtime provenance.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-qa-mps \
+  python training-data/qa_vivos_source.py \
+  /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_train.jsonl \
+  /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_dev.jsonl \
+  --full \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_full_v1 \
+  --device mps
+```
+
+The full source waveform gate requires readable, finite, nonzero audio;
+clipping ratio at most 0.0001; RMS at least 0.0001; silence ratio at most 0.50;
+leading and trailing silence at most 2 seconds; and measured/manifest duration
+agreement within 0.00001 seconds. WER above 0.50 is a manual-review flag, not an
+automatic rejection. Resolve every flagged id in a TSV with columns
+`id`, `status` (`pass`/`fail`), and `notes` before freezing references.
+
+The reference freeze selects exactly one row per speaker from that completed
+audit. Candidates must remain in their speaker's train/dev split, be 3–8
+seconds, pass every waveform gate, have WER at most 0.20, and have no unresolved
+source review. Selection order is `(asr_wer, asr_cer, abs(duration-4), id)` and
+the command stops if any speaker has no candidate:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python \
+  training-data/freeze_vivos_references.py \
+  /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_full_v1/audit_report.json \
+  --source-review <source-review.tsv> \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1
+```
+
+If the full audit flags no WER rows, omit `--source-review`. The immutable
+outputs are `reference_map.jsonl` and `reference_map_report.json`; each selected
+row carries exact WAV, VI-text, and source-audit-row hashes plus split, speaker,
+corpus revision, archive, and license provenance. Full TTS remains blocked until
+both artifacts exist and pass their frozen contracts.
 
 ## Alignment and target construction
 

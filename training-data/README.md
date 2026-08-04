@@ -35,6 +35,7 @@ en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 - `synthesize_vivos.py` prepares and runs the distinct CUDA and MLX-Audio Qwen3-TTS pilots.
 - `qa_vivos_tts.py` scores either pilot on CUDA or MPS without device fallback.
 - `qa_vivos_source.py` runs the pinned Vietnamese source-ASR audit and reports speaker/duration slices.
+- `freeze_vivos_references.py` deterministically freezes one audited 3–8 s reference per VIVOS speaker.
 
 Generated audio, local cache, and preview folders are written outside the repo under `PHOMT_DATA_DIR` (default: `D:\Code\datasets` on Windows, `~/datasets` elsewhere).
 
@@ -86,10 +87,13 @@ The exact prepare, generation, source-audit, and gate commands are in
 v1 is a `no_go`: aggregate WER was 0.2990 and SPK26 leaked its clone prompt,
 despite a 0.9336 median speaker cosine. V2 removed prompt leak and won timbre for
 all eight speakers, but remains `no_go`: WER was 0.0539216 versus Kokoro
-0.0098039, with one SPK13 row at 0.6667. Preregistered v3 keeps v2 exact except
-for temperature 0.8 and requires a new exact-plan-bound 16-source audit. Do not
-start bulk VIVOS synthesis until all 24 v3 candidates have been reviewed and
-`gate_report.json` says `go`.
+0.0098039, with one SPK13 row at 0.6667. V3 improved Qwen WER to 0.0490196,
+kept zero prompt leak and 8/8 timbre wins, but its 0.0392157 WER gap still failed
+the frozen 0.03 margin and manual review remained incomplete. The user explicitly
+approved Qwen and the full campaign without relabeling that immutable `no_go`.
+Run the exact 10,950-row `qa_vivos_source.py --full` audit and the 46-speaker
+`freeze_vivos_references.py` gate before full synthesis; exact commands and
+artifact paths are in the data-generation plan.
 
 Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS with VieNeu's PyTorch backend; vieneu >= 3.2 batches natively on both CUDA and MPS (measured on M4 Pro: batch 8 -> 6.1x real-time vs 3.1x sequential).
 
