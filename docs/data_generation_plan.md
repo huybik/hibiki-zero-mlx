@@ -555,6 +555,33 @@ passing/no-leak seeded sample, and recorded review of every failure and
 rejection. Missing review is always pending, never an implicit pass. Mimi
 encoding and publication remain blocked until this gate says `go`.
 
+After that gate passes, build the separate train/dev PyTorch-Mimi cache v2:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-qa-mps \
+  python finetune/cache_vivos_full.py \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_plan.jsonl \
+  --accepted /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1/accepted.jsonl \
+  --selection /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1/selection.jsonl \
+  --qa-report /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1/aggregate_report.json \
+  --dataset-root /Volumes/data/datasets/hibiki_vi_v2 \
+  --gender-files /Volumes/data/datasets/hibiki_vi_v2/raw/vivos/corpus/vivos/train/genders.txt \
+  --out-root /Volumes/data/datasets/hibiki_vi_v2/cache/vivos_mimi_v2 \
+  --device mps
+```
+
+Schema `hibiki_vn_lora_cache_v2` preserves complete source/translation/TTS/QA
+provenance and one deterministic single-sentence coarse delay sampled from
+`U(0, 0.5 * source_duration)`. Punctuation pauses are explicitly not applicable
+to these single-sentence rows. Atomic resumable shards and indexes remain
+separate under `train/` and `dev/`; test is never an input. `cache_audit.json`
+requires an exact accepted/cache id bijection, `[1+n_q,T]` tensors, valid code
+ranges, one source EOS per codebook, no constant audio codebook over its content
+span, and zero missing/duplicate/unexpected rows. It reports prefix PAD,
+content, EOS, ignored-tail totals and effective mass at weights 1.0/0.5; batch
+padding is schedule-dependent and deliberately unreported. No cache may be
+built before final QA says `go`.
+
 ## Alignment and target construction
 
 Two paper-derived recipes serve different stages:

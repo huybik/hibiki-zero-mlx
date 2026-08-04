@@ -51,6 +51,12 @@ AutoResearch protocol, and recommended 128 / 512 / 1449 / CUDA commands.
   English audio is left-padded by a deterministic delay sampled from
   `[0, 0.5 * vi_duration_s]`, and English text starts after the same delay. Use
   `--target-delay-ratio 0` to disable this.
+- `cache_vivos_full.py` builds `hibiki_vn_lora_cache_v2` train/dev shards only
+  after the full VIVOS QA report says `go`. It retains row-level source,
+  translation, TTS, QA, alignment, speaker/stratum, and Mimi provenance, then
+  audits exact accepted/cache coverage, tensor/code ranges, source EOS,
+  degenerate codebooks, and supervision-token accounting. `common.py` accepts
+  both v1 and v2 shards; legacy v1 rows are labeled `legacy_unspecified`.
 - `train_lora.py` loads the PyTorch LM, freezes everything, applies LoRA to selected
   targets, trains CE on `LMModel.forward` masks, and saves adapter `.safetensors`
   plus optimizer checkpoints. It appends scalar logs to `train_log.jsonl`, can log

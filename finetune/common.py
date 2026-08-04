@@ -55,6 +55,7 @@ GROUP_PREFIXES = {
     "audio_heads": ("depformer_in.", "linears."),
 }
 SUPPORTED_TARGETS = {"LMModel.transformer", "text_linear", "audio_heads"}
+SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT, "hibiki_vn_lora_cache_v2"}
 
 
 # --------------------------------------------------------------------------- #
@@ -216,7 +217,8 @@ class CachedCodeDataset(Dataset):
         shard_paths = [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]
         for shard_path in shard_paths:
             payload = torch.load(shard_path, map_location="cpu")
-            if payload.get("format") != CACHE_FORMAT:
+            cache_format = payload.get("format")
+            if cache_format not in SUPPORTED_CACHE_FORMATS:
                 raise RuntimeError(f"Unsupported cache format in {shard_path}")
             frame_rate = float(payload["frame_rate"])
             if self.frame_rate is None:
@@ -240,6 +242,11 @@ class CachedCodeDataset(Dataset):
                         "codes": codes.to(torch.int32),
                         "frames": int(codes.shape[1]),
                         "source_frames": int(sample["vi_frames"]),
+                        "cache_format": str(cache_format),
+                        "stratum": str(sample.get("stratum", "legacy_unspecified")),
+                        "split": str(sample.get("split", "")),
+                        "speaker_id": str(sample.get("speaker_id", "")),
+                        "gender": str(sample.get("gender", "")),
                     }
                 )
         if not self.samples:
@@ -374,15 +381,18 @@ def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
     max_frames = ((max_frames + FRAME_BUCKET - 1) // FRAME_BUCKET) * FRAME_BUCKET
     batch = torch.full((len(samples), codebooks, max_frames), -1, dtype=torch.long)
     ids: list[str] = []
+    strata: list[str] = []
     for index, sample in enumerate(samples):
         codes = sample["codes"]
         batch[index, :, : codes.shape[1]] = codes
         ids.append(sample["id"])
+        strata.append(sample["stratum"])
     return {
         "codes": batch,
         "ids": ids,
         "frames": torch.tensor([sample["frames"] for sample in samples]),
         "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
+        "strata": strata,
     }
 
 
