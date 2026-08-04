@@ -1,0 +1,67 @@
+{
+  "accepted_throughput": {
+    "attempt0_generation_wall_seconds": 135.1759837900754,
+    "baseline_attempt0_accepted_rows_per_minute": 20.90338653233794,
+    "candidate_attempt0_accepted_rows_per_minute": 23.5248888954894,
+    "candidate_attempt0_gain_vs_baseline": 0.12541041419752474,
+    "candidate_generation_plus_retry_accepted_rows_per_minute": 18.113308095570858,
+    "candidate_generation_plus_retry_and_qa_rows_per_minute": 9.570363675940172,
+    "qa_wall_seconds_separate": 171.49861187499482,
+    "retry_generation_wall_seconds": 56.94794970890507
+  },
+  "decision": "no_go",
+  "decision_reason": "selected corpus WER exceeds the frozen 0.08 gate",
+  "inputs": {
+    "attempt0_candidate": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_compact_recurrent_b8_t08_quality64_attempt0/candidate.json",
+      "sha256": "2a00443f551816179592bde9b0618910841a1d9bec3920878d9b9b558b46d272"
+    },
+    "attempt0_qa": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_compaction_v5/timed_row_rng_length_compact_recurrent_b8_t08_quality64_attempt0/qa_report.json",
+      "sha256": "ebe4a0ddd1d09a8dd141f4ac26d551b0d4ec1dd2569c67998cc119e15c6dc10c"
+    },
+    "attempt1_candidate": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_compact_recurrent_b8_t08_quality64_attempt1_retry/candidate.json",
+      "sha256": "fb3e946700b89ac3354be486ca12b2e4c2c206771655d0e00fc5f4089245ab1b"
+    },
+    "attempt1_qa": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_compaction_v5/timed_row_rng_length_compact_recurrent_b8_t08_quality64_attempt1_retry/qa_report.json",
+      "sha256": "76af62fb313ed3e36a38ceea545623fe4622c06526727d5b6058a320c1b70912"
+    },
+    "baseline_candidate": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_b8_t08_quality64_attempt0/candidate.json",
+      "sha256": "a932c4bd69949f23caa989b1a9da63fc8d876252a1138f012bf8e298dcddee69"
+    },
+    "baseline_qa": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_b8_t08_quality64_attempt0/qa_report.json",
+      "sha256": "5f9e032b4bc672d3834488ae459ca1e2f354669730c9d56ad16bb07aab07db99"
+    }
+  },
+  "paired_attempt0": {
+    "baseline_median_cosine": 0.9310037791728973,
+    "baseline_wer": 0.10919540229885058,
+    "candidate_median_cosine": 0.9310288727283478,
+    "candidate_wer": 0.10919540229885058,
+    "median_cosine_delta": 2.5093555450439453e-05,
+    "noninferiority_pass": true,
+    "wer_delta": 0.0
+  },
+  "rows": {
+    "path": "/Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_compaction_v5/selection_rows.jsonl",
+    "sha256": "b5fe9cb3977aa4ded0265cde41f117857f070d38df7e9d76eea4688b99efd78c"
+  },
+  "schema_version": "hibiki_vivos_qwen3_tts_mlx_selection_v5",
+  "selection": {
+    "absolute_wer_gate": 0.08,
+    "absolute_wer_pass": false,
+    "accepted_rows": 58,
+    "attempt0_rows": 64,
+    "rejected_rows": 6,
+    "retried_rows": 13,
+    "selected_attempt1_rows": 6,
+    "selected_median_cosine": 0.9335741102695465,
+    "selected_wer": 0.10285006195786865,
+    "zero_selected_prompt_leaks": true
+  },
+  "selection_rule": "lowest row WER among attempts passing waveform, duration, prompt-leak, and speaker gates; attempt 0 wins exact WER ties"
+}

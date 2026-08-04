@@ -1,0 +1,17 @@
+{
+  "all_wav_and_code_hashes_valid": true,
+  "attempt0_attempt1_root_keys_distinct": true,
+  "candidate": {
+    "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_compact_recurrent_b8_t08_quality64_attempt0/candidate.json",
+    "sha256": "2a00443f551816179592bde9b0618910841a1d9bec3920878d9b9b558b46d272"
+  },
+  "groups_validated_without_generation": 8,
+  "original_row_bijection": true,
+  "records": {
+    "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_compact_recurrent_b8_t08_quality64_attempt0/raw_results.jsonl",
+    "sha256": "e6469771d271e980d9aca1d0bfd8c5664a3d95520d00267c6b94fbe3bc8f39ec"
+  },
+  "resume_decision": "skip all completed groups",
+  "rows_validated": 64,
+  "schema_version": "hibiki_vivos_qwen3_tts_mlx_compaction_benchmark_v5"
+}

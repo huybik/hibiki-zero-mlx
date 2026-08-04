@@ -1,0 +1,129 @@
+{
+  "all_exact": false,
+  "codes_exact": 14,
+  "comparisons": [
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK13_020",
+      "left_codes_sha256": "14f2afc664bc77a8448d6a12f422a26b3a7e1680e2564e18f9be663cd9567a5a",
+      "right_codes_sha256": "47d5b849e1677645fddcf5f7353f9f10e6e1a0bb0c06de792fb0478bcc13e2c0",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK13_124",
+      "left_codes_sha256": "6fd11f2f006d09729a6af089182a1aa847acc22001f4a1580b3ae0e9fe1f07f3",
+      "right_codes_sha256": "1da335ff4c58f001dabf750373282ab6f46544b882c1507236fb40a3392621cc",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK13_135",
+      "left_codes_sha256": "46e6a861f2653029bb082068612ff9163bd560b9bcb57aaaf2ba145f18b977b7",
+      "right_codes_sha256": "978bf25d6e8af1984ec552f8c9001b934028544bcb1d5b5390730827b93ab760",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": false,
+      "id": "vivos:train:VIVOSSPK13_146",
+      "left_codes_sha256": "06123fc1d3cc9bf6cd47728bdebfbb5fbbd6b1056276d36efd5a5bbaa83fb49f",
+      "right_codes_sha256": "d2459961239e758eb6b361b143195ba6106e4321331324e9716e0d02a5640a9f",
+      "wav_sha256_exact": false
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK13_156",
+      "left_codes_sha256": "59af8344a64f8180f06df5d8957095c0f2aa9a4b8854870b62ac793d9a947101",
+      "right_codes_sha256": "4cde7adf0849c7c9e4cc65db828ae08416253453dbcb9cee074a86ee545eaf90",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK13_172",
+      "left_codes_sha256": "3c89e5a9b8fbd95aa9436e9c4135027802f5d1fba7c4e7b4ff449fd13eccc176",
+      "right_codes_sha256": "1bac4bef2bc195d2be29e35b489f9dfbab9f54b8453270af028d885e3d9eeb53",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK13_200",
+      "left_codes_sha256": "a7bfe3152de66f4e7a13c572d89ac6193faecef10ad6367ec137df8c38b74f8e",
+      "right_codes_sha256": "0b66bc7b811714db776df2cd6474e9bb4a373d4cb6008f959f02c41b44e6ae0f",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK13_275",
+      "left_codes_sha256": "1f29963a0228e2b95bc2765474bb2c01cdbf575cb9f3d34323379a14ac7abb82",
+      "right_codes_sha256": "2498cee38adf5f1b273c3dd691ae41d8321bc7a1f4dddc6821be2910b8e064bf",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK22_003",
+      "left_codes_sha256": "6d8d8eadd41b508883ed0dd658419a5b5563c134dc9460f0cf875d93436cbee3",
+      "right_codes_sha256": "d7b76dc645ec1353872e7701e26105c96b85b7f7048b2d1933f94cdfe8032d52",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK22_062",
+      "left_codes_sha256": "6d394d8bd058d4bd145124cebc31e0fec8fef4ab269bc0fa421682eda100b967",
+      "right_codes_sha256": "13bee52c8630fd9bc0ee13c075bfe05ad66e68c24ca43052e57ee76a8b55a330",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK22_066",
+      "left_codes_sha256": "b946151a49eb8b7a6095f0041b3727b24a6bea825ea7ef354c3c5b84af17f7d0",
+      "right_codes_sha256": "2b50882b063f58edcc98e90fb23fa9154905afe490be102f2678f91a2201b686",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK22_092",
+      "left_codes_sha256": "17334a45b242bbc99727d2fe99c8978d034bac3144a33452a6d106c9658131ec",
+      "right_codes_sha256": "8c5a2520a37d9ed415dba5bed9910082e7c743d4bc23d8d6b18e931b33b6878f",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK22_131",
+      "left_codes_sha256": "2d73fb576f6c30cb9cf2a70c564882da6918891b3bf76e5fb1e6c7c0b0619a42",
+      "right_codes_sha256": "b5885c4f640fea8866c3af5e1606b91399faff3fd1aa852a2dc0481653f8f6e8",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": false,
+      "id": "vivos:train:VIVOSSPK22_173",
+      "left_codes_sha256": "732fb70460a37d4901f2b8ed3a90a16ab478618be661c26b654bf4a311b0fff9",
+      "right_codes_sha256": "cae23f7b3dadf2667e6f968b825ac7b44adf2b62ec4ff2d4879c334c0e116906",
+      "wav_sha256_exact": false
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK22_179",
+      "left_codes_sha256": "4fccd9c71e7190e4dd0b0da3212672eea720e6f10daab71b7734c5f60bb5a59d",
+      "right_codes_sha256": "61ba36918d45f2db2880656930505522b14126e9ebcd6fed52422f90d7777fd7",
+      "wav_sha256_exact": true
+    },
+    {
+      "codes_exact": true,
+      "id": "vivos:train:VIVOSSPK22_292",
+      "left_codes_sha256": "4c80602330628590f507431c3124d8e8e98b1f1734a103e2d37c2109becf9000",
+      "right_codes_sha256": "972a9c743e24c29b85b7531eea5221795490ca070b492bed935a5266026ca3e6",
+      "wav_sha256_exact": true
+    }
+  ],
+  "left": {
+    "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_b8_t08_quality16_attempt0/candidate.json",
+    "sha256": "91d5ef55882963c290a3743a8fe7951584c07eae9af53e4ec1da1b5419c84fe4"
+  },
+  "right": {
+    "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_compaction_v5/row_rng_length_compact_b8_t08_quality16_attempt0/candidate.json",
+    "sha256": "de5fe3539e4c66ccc9c2dd8cc7e8c08bee2d6edc475a94ca60346dbc3a540e6b"
+  },
+  "rows": 16,
+  "schema_version": "hibiki_vivos_qwen3_tts_mlx_compaction_benchmark_v5",
+  "wav_sha256_exact": 14
+}
