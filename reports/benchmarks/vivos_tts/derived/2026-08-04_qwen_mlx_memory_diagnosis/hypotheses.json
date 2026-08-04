@@ -1,0 +1,59 @@
+{
+  "schema_version": "hibiki_vivos_qwen_mlx_memory_diagnosis_v1",
+  "diagnosis": "MLX allocator-cache retention across committed production groups",
+  "status": "confirmed_repair_not_applied",
+  "hypotheses": [
+    {
+      "name": "allocator_cache_retention",
+      "status": "confirmed",
+      "evidence": [
+        "34.2-34.3 GiB nonvolatile IOAccelerator graphics footprint versus 5.75-5.96 GiB per-group MLX peaks",
+        "no per-group mx.clear_cache in production loop",
+        "private decoder call bypasses installed public cleanup",
+        "prior v2 retain-cache control reproduced 25.25-25.59 GiB cached and a 12.2% throughput regression"
+      ]
+    },
+    {
+      "name": "active_tensor_accumulation",
+      "status": "contradicted_as_primary",
+      "evidence": "581 groups remained within a 0.203 GiB peak-MLX range while process graphics memory was about 34 GiB"
+    },
+    {
+      "name": "python_completed_record_list",
+      "status": "contradicted_as_primary",
+      "evidence": "serialized completed group records totaled 16,413,542 bytes through 581 groups"
+    },
+    {
+      "name": "file_descriptor_leak",
+      "status": "contradicted",
+      "evidence": "84 file descriptors, stable across samples"
+    },
+    {
+      "name": "speaker_reference_cache",
+      "status": "bounded_not_primary",
+      "evidence": "19 speakers observed versus about 34 GiB graphics retention; archived speaker-cache experiment did not show this mechanism"
+    },
+    {
+      "name": "predictor_width_compile_specialization",
+      "status": "bounded_not_primary",
+      "evidence": "all fixed active widths 1 through 8 were already present early; region/footprint samples plateaued"
+    },
+    {
+      "name": "unbounded_output_or_vocoder_shapes",
+      "status": "contradicted",
+      "evidence": "observed per-group maximum generated-frame statistic was bounded at 156 and maximum output duration was 12.48 seconds"
+    },
+    {
+      "name": "main_prefill_compile_contribution",
+      "status": "not_separately_measured",
+      "evidence": "isolating this component would require instrumentation or runtime mutation forbidden during the live diagnosis"
+    }
+  ],
+  "separate_defect": {
+    "name": "token_count_metadata",
+    "location": "training-data/benchmark_vivos_qwen_mlx_retry_v6.py:439",
+    "current": "len(codes) == 1 for stored [1,T,16] arrays",
+    "intended": "codes.shape[1]",
+    "impact": "metadata only; does not alter code arrays or audio and does not cause allocator retention"
+  }
+}

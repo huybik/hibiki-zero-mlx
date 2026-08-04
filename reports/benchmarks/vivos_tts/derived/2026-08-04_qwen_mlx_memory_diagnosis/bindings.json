@@ -1,0 +1,25 @@
+{
+  "schema_version": "hibiki_vivos_qwen_mlx_memory_diagnosis_bindings_v1",
+  "campaign": {
+    "production_plan": {"path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_plan.json", "sha256": "56aafbc31049cd83409f20a157327dbcd16bf70fcea720f0b4680e4ff3b2f73c"},
+    "production_attestation": {"path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_attestation.json", "sha256": "b14d428778e65292708887e5a9fd15df26c4e96c308e15addd0a63d8cc752b4e"},
+    "launch_record": {"path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/launch_record_2026-08-04T112811Z.json", "sha256": "0ce716dc8c40554780969815bc8fbfee4115805fe42002e7328655d3fe48962f"},
+    "policy": {"path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6/policy.json", "sha256": "aa147c8c2b8a5f29d9d71d3e2e9c81d0753abcb65de6abff5ac7281643a6b294"},
+    "source_plan": {"path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_plan.jsonl", "sha256": "c889310b25a29ffbb78844183b02b1ea6c9ba58126a2b140b65488051a7e2fa6"},
+    "supervisor_config": {"path": "/Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full/supervisor_r1/config.json", "sha256": "a71ba8cae6249c144bf0412bef357b520fb2f33392ceef38bea432f9c94b6b5b"}
+  },
+  "scripts": [
+    {"path": "training-data/benchmark_vivos_qwen_mlx_retry_v6.py", "sha256": "eefd76995be2550f55583c7af2cfc00a18ab7cc1e696324966ae3e984330a51d"},
+    {"path": "training-data/qwen_mlx_compaction.py", "sha256": "cb96149414e1c991c0ea29908b3d99a02dd73a12dcd849fde3d6e025eb5dbe82"},
+    {"path": "training-data/qwen_mlx_recurrent.py", "sha256": "4d0053654a0abff627971df2fa3f47fef3fe78300f4480b13c889ac2000d8569"},
+    {"path": "training-data/run_vivos_qwen_production_v6.py", "sha256": "747891edc673f3cab2850a65629b7f2ea4b495eddb13fee5f1ed998bedd3537e"},
+    {"path": "training-data/supervise_vivos_qwen_postprocess_v6.py", "sha256": "4a7acde0b8bd08340a54f758b1d057a67cc3e3b444252a0ab18213945a196df8"},
+    {"path": "/Volumes/data/envs/hibiki-vivos-mlx-0.4.7/lib/python3.13/site-packages/mlx_audio/tts/models/qwen3_tts/qwen3_tts.py", "sha256": "e4a45d38afa6718c3a209dd856db3a7c9ba2288a26d4613eb739c955b51140c6"}
+  ],
+  "prior_evidence": [
+    {"path": "reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_batch_v2/optimization_raw_results.jsonl", "sha256": "1634e7aed469584f462e6a6283b19d8509adcf23d1e748dc6481badb70e63ae3"},
+    {"path": "reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_batch_v2/metrics.md", "sha256": "3207df90c5a657c4c1b7a770a1ac1a4ccbbcf0c2fbdcb28310f8326ef8f6bd7c"},
+    {"path": "reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/metrics.md", "sha256": "4062e5ad15ee5228747d56734268841321ad7678af3f12f1bc057bb68923775b"},
+    {"path": "reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/production_attestation.json", "sha256": "b14d428778e65292708887e5a9fd15df26c4e96c308e15addd0a63d8cc752b4e"}
+  ]
+}
