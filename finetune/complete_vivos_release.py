@@ -154,12 +154,14 @@ class Completion:
         supervisor = read_json(supervisor_config)
         if supervisor.get("bindings", {}).get("production_plan") != attest(self.plan):
             raise RuntimeError("Supervisor is not bound to the repaired production plan")
+        speaker_exclusions = supervisor.get("speaker_exclusions", [])
         return {
             "schema_version": "hibiki_vivos_qwen3_tts_unattended_release_v1",
             "authorization": {
                 "source": "user request in active Codex session",
                 "instruction": "queue the necessary steps for a complete uploaded dataset",
                 "scope": "machine-GO-only manual-listening waiver, Mimi cache build, immutable release, Hub upload, and clean-room verification",
+                "speaker_exclusions": speaker_exclusions,
                 "machine_no_go_behavior": "halt_without_cache_or_upload",
             },
             "repository_commit": self.repository_commit(),

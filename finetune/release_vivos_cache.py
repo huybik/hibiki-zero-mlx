@@ -416,6 +416,8 @@ def dataset_card(cache: dict[str, Any]) -> bytes:
     train_rows, train_frames = index_summary(cache["indexes"]["train"])
     dev_rows, dev_frames = index_summary(cache["indexes"]["dev"])
     audit = cache["audit"]
+    exclusions = cache["config"]["inputs"]["speaker_exclusions"]
+    excluded = ", ".join(exclusions["speaker_ids"]) or "none"
     text = f"""---
 license: cc-by-nc-sa-4.0
 language:
@@ -444,6 +446,9 @@ zero invalid or degenerate code rows. `SHA256SUMS` covers every published file;
 `release_manifest.json` records the exact build inputs and archive toolchain.
 The release also preserves every executed generation/QA attempt and explicitly
 records which of retry rounds 1 and 2 were not executed after the terminal GO.
+Release-level quality exclusions: `{excluded}` ({exclusions["rows"]} source
+rows). Their generated artifacts and QA remain in provenance metadata but are
+not present in the training cache.
 
 Extract both archives into one directory. Keep this VIVOS real-source cache
 separate from FLEURS and PhoMT so the trainer can enforce source-aware sampling.
@@ -639,6 +644,7 @@ def prepare(args: argparse.Namespace) -> None:
             "scope": cache["config"]["scope"],
             "attempts": values["provenance"]["attempts"],
             "manual_evidence": values["provenance"]["manual_evidence"],
+            "speaker_exclusions": values["provenance"]["speaker_exclusions"],
             "source": {
                 "repo_id": SOURCE_REPO,
                 "revision": SOURCE_REVISION,

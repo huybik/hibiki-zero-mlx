@@ -99,6 +99,7 @@ class Supervisor:
         self.attempt0_session = args.attempt0_session
         self.supervisor_session = args.supervisor_session
         self.poll_seconds = args.poll_seconds
+        self.exclude_speakers = sorted(args.exclude_speaker)
         self.events_path = self.work / "events.jsonl"
         self.history_path = self.work / "command_history.jsonl"
         self.state_path = self.work / "state.json"
@@ -144,6 +145,7 @@ class Supervisor:
             "attempt0": {"pid": self.attempt0_pid, "session": self.attempt0_session},
             "supervisor_session": self.supervisor_session,
             "poll_seconds": self.poll_seconds,
+            "speaker_exclusions": self.exclude_speakers,
             "expected_scope": {"rows": EXPECTED_ROWS, "groups": EXPECTED_GROUPS},
             "python": {
                 "validator_selector_finalizer": str(BASE_PYTHON),
@@ -457,6 +459,8 @@ class Supervisor:
                 "--out-dir",
                 str(self.qa_root),
             ]
+            for speaker_id in self.exclude_speakers:
+                command.extend(["--exclude-speaker", speaker_id])
             self.state(f"selecting_round{through_round}", "running frozen v6 selector")
             returncode, _ = self.run_logged(f"select_round{through_round}", command)
             if returncode or not path.is_file():
@@ -467,6 +471,8 @@ class Supervisor:
             report.get("schema_version") != SELECTION_SCHEMA
             or report.get("production_plan") != attest(self.plan_path)
             or report.get("through_round") != through_round
+            or report.get("speaker_exclusions", {}).get("speaker_ids")
+            != self.exclude_speakers
             or report.get("decision") not in {"go", "continue", "no_go"}
             or not selection_rows.is_file()
             or report.get("selection_rows") != attest(selection_rows)
@@ -564,6 +570,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attempt0-session", required=True)
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--poll-seconds", type=int, default=30, choices=range(1, 61))
+    parser.add_argument("--exclude-speaker", action="append", default=[])
     return parser.parse_args()
 
 

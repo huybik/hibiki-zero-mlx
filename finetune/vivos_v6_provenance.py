@@ -54,6 +54,32 @@ def _canonical_sha(row: dict[str, Any]) -> str:
     return sha256_bytes(canonical_json(row).encode())
 
 
+def _speaker_exclusions(
+    source_rows: list[dict[str, Any]], record: dict[str, Any]
+) -> dict[str, Any]:
+    speaker_ids = record.get("speaker_ids", [])
+    if not isinstance(speaker_ids, list) or speaker_ids != sorted(set(speaker_ids)):
+        raise RuntimeError("Terminal speaker exclusions are not sorted and unique")
+    available = {str(row["speaker_id"]) for row in source_rows}
+    if not set(speaker_ids) <= available:
+        raise RuntimeError("Terminal selection excludes an unknown speaker")
+    expected = {
+        "speaker_ids": speaker_ids,
+        "rows": sum(str(row["speaker_id"]) in set(speaker_ids) for row in source_rows),
+        "reason": "user_requested_quality_exclusion",
+    }
+    if record != expected:
+        raise RuntimeError("Terminal speaker-exclusion scope changed")
+    return expected
+
+
+def _selection_scope_sha(policy: dict[str, Any], exclusions: dict[str, Any]) -> str:
+    value: object = policy["retry_policy"]
+    if exclusions["speaker_ids"]:
+        value = {"retry_policy": policy["retry_policy"], "speaker_exclusions": exclusions}
+    return sha256_bytes(canonical_json(value).encode())
+
+
 def _production_contract(
     production_plan: Path,
 ) -> tuple[Path, dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
@@ -355,6 +381,9 @@ def validate_finalized(
     selection_report_path = _path(report.get("selection_report", {}), "Selection report")
     manual_evidence = _validate_manual_evidence(report, plan_path, selection_report_path)
     selection_report = _json(selection_report_path)
+    exclusions = _speaker_exclusions(
+        source_rows, selection_report.get("speaker_exclusions", {})
+    )
     if (
         selection_report.get("schema_version") != SELECTION_SCHEMA
         or selection_report.get("decision") != "go"
@@ -362,6 +391,9 @@ def validate_finalized(
         or not all(selection_report.get("machine_checks", {}).values())
         or selection_report.get("production_plan") != attestation(plan_path)
         or selection_report.get("policy") != plan["policy"]
+        or selection_report.get("selection_policy_sha256")
+        != _selection_scope_sha(policy, exclusions)
+        or report.get("speaker_exclusions") != exclusions
     ):
         raise RuntimeError("Terminal selection report is not the exact v6 GO")
     terminal_selection_path = _path(
@@ -379,6 +411,7 @@ def validate_finalized(
     selection_by_id = {str(row.get("id", "")): row for row in selection}
     accepted_by_id = {str(row.get("id", "")): row for row in accepted}
     rejected_by_id = {str(row.get("id", "")): row for row in rejected}
+    excluded_speakers = set(exclusions["speaker_ids"])
     if (
         len(source_by_id) != len(source_rows)
         or [str(row.get("id", "")) for row in selection] != source_order
@@ -389,10 +422,33 @@ def validate_finalized(
         or set(accepted_by_id) | set(rejected_by_id) != set(source_by_id)
         or any(selection_by_id[row_id].get("status") != "accepted" for row_id in accepted_by_id)
         or any(selection_by_id[row_id].get("status") != "rejected" for row_id in rejected_by_id)
+        or any(row["speaker_id"] in excluded_speakers for row in accepted)
     ):
         raise RuntimeError("Source, selection, accepted, and rejected partitions disagree")
     generated, metrics, attempts = _attempt_artifacts(plan_path, plan, selection_report)
     for selected in selection:
+        source = source_by_id[str(selected.get("id", ""))]
+        expected_exclusion = (
+            {
+                "kind": "speaker",
+                "speaker_id": source["speaker_id"],
+                "reason": exclusions["reason"],
+            }
+            if source["speaker_id"] in excluded_speakers
+            else None
+        )
+        if (
+            selected.get("exclusion") != expected_exclusion
+            or (
+                expected_exclusion is not None
+                and (
+                    selected.get("status") != "rejected"
+                    or selected.get("selected_candidate_id") is not None
+                    or selected.get("selected_attempt") is not None
+                )
+            )
+        ):
+            raise RuntimeError(f"Terminal exclusion changed: {selected.get('id')}")
         for candidate in selected.get("candidates", []):
             metric = metrics.get(str(candidate.get("candidate_id", "")))
             if metric is None or candidate != _metric_summary(metric):
@@ -532,6 +588,7 @@ def validate_finalized(
         "rows": len(source_rows),
         "accepted_rows": len(accepted),
         "rejected_rows": len(rejected),
+        "speaker_exclusions": exclusions,
         "attempts": attempts,
         "source_audit_rows": source_audit_record,
         "source_audit_report": accepted[0]["source_audit"]["report"] if accepted else None,

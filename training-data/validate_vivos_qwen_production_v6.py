@@ -144,6 +144,7 @@ def _retry_scope(
         "production_plan",
         "policy",
         "selection_policy_sha256",
+        "speaker_exclusions",
         "selection_rows",
     }
     if (
@@ -162,6 +163,8 @@ def _retry_scope(
         selections = read_jsonl(selection_path)
         expected: list[tuple[str, str, int | None]] = []
         for selection in selections:
+            if selection.get("exclusion") is not None:
+                continue
             selected_id = selection.get("selected_candidate_id")
             selected = next(
                 (
@@ -468,14 +471,23 @@ def validate_production_attempt(
             or candidate_model.get("files_sha256") != contract["model"]["files_sha256"]
         ):
             raise InvalidGeneration("Candidate script/campaign/model snapshot contract mismatch")
-    selection_policy_sha256 = sha256_bytes(canonical_json(policy["retry_policy"]).encode())
-    if attempt and any(
-        row.get("production_plan") != attestation(plan_path)
-        or row.get("policy") != plan["policy"]
-        or row.get("selection_policy_sha256") != selection_policy_sha256
-        for row in result["retry_rows"]
-    ):
-        raise InvalidGeneration("Retry manifest is not bound to this plan/policy/selection rule")
+    if attempt:
+        exclusions = result["retry_rows"][0].get("speaker_exclusions")
+        selection_scope = {
+            "retry_policy": policy["retry_policy"],
+            "speaker_exclusions": exclusions,
+        }
+        selection_policy_sha256 = sha256_bytes(canonical_json(selection_scope).encode())
+        if any(
+            row.get("production_plan") != attestation(plan_path)
+            or row.get("policy") != plan["policy"]
+            or row.get("speaker_exclusions") != exclusions
+            or row.get("selection_policy_sha256") != selection_policy_sha256
+            for row in result["retry_rows"]
+        ):
+            raise InvalidGeneration(
+                "Retry manifest is not bound to this plan/policy/exclusion selection rule"
+            )
     result.update(
         {
             "production_plan": attestation(plan_path),

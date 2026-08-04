@@ -533,6 +533,34 @@ def _selection_policy_hash(policy: dict[str, Any]) -> str:
     return sha256_bytes(canonical_json(policy["retry_policy"]).encode())
 
 
+def _speaker_exclusion_record(
+    source_rows: list[dict[str, Any]], speaker_ids: list[str]
+) -> dict[str, Any]:
+    requested = sorted(speaker_ids)
+    if len(requested) != len(set(requested)):
+        raise RuntimeError("Speaker exclusions contain duplicates")
+    available = {str(row["speaker_id"]) for row in source_rows}
+    unknown = sorted(set(requested) - available)
+    if unknown:
+        raise RuntimeError(f"Unknown speaker exclusions: {unknown}")
+    rows = sum(str(row["speaker_id"]) in set(requested) for row in source_rows)
+    return {
+        "speaker_ids": requested,
+        "rows": rows,
+        "reason": "user_requested_quality_exclusion",
+    }
+
+
+def _selection_scope_hash(policy: dict[str, Any], exclusions: dict[str, Any]) -> str:
+    if not exclusions["speaker_ids"]:
+        return _selection_policy_hash(policy)
+    return sha256_bytes(
+        canonical_json(
+            {"retry_policy": policy["retry_policy"], "speaker_exclusions": exclusions}
+        ).encode()
+    )
+
+
 def select_round(args: argparse.Namespace) -> None:
     plan_path, plan, policy, source_rows, _ = load_production_plan(args.production_plan)
     qa_root = args.qa_root.expanduser().resolve()
@@ -564,10 +592,23 @@ def select_round(args: argparse.Namespace) -> None:
     selections = []
     selected_metrics = []
     retry = []
-    policy_hash = _selection_policy_hash(policy)
+    exclusions = _speaker_exclusion_record(source_rows, args.exclude_speaker)
+    excluded_speakers = set(exclusions["speaker_ids"])
+    source_by_id = {str(row["id"]): row for row in source_rows}
+    policy_hash = _selection_scope_hash(policy, exclusions)
     for row_id in source_order:
         choices = candidates[row_id]
-        selected = _select(choices, list(range(args.through_round + 1)))
+        speaker_id = str(source_by_id[row_id]["speaker_id"])
+        exclusion = (
+            {
+                "kind": "speaker",
+                "speaker_id": speaker_id,
+                "reason": exclusions["reason"],
+            }
+            if speaker_id in excluded_speakers
+            else None
+        )
+        selected = None if exclusion else _select(choices, list(range(args.through_round + 1)))
         summaries = [
             {
                 "candidate_id": metric["candidate_id"],
@@ -592,14 +633,15 @@ def select_round(args: argparse.Namespace) -> None:
                 "status": "accepted" if selected else "rejected",
                 "selected_candidate_id": selected["candidate_id"] if selected else None,
                 "selected_attempt": selected["attempt"] if selected else None,
+                "exclusion": exclusion,
                 "candidates": summaries,
             }
         )
         if selected:
             selected_metrics.append(selected)
-        if selected is None or int(selected["asr_word_errors"]) >= int(
+        if exclusion is None and (selected is None or int(selected["asr_word_errors"]) >= int(
             policy["retry_policy"]["word_errors_min"]
-        ):
+        )):
             retry.append(
                 {
                     "id": row_id,
@@ -612,6 +654,7 @@ def select_round(args: argparse.Namespace) -> None:
                     "production_plan": attestation(plan_path),
                     "policy": plan["policy"],
                     "selection_policy_sha256": policy_hash,
+                    "speaker_exclusions": exclusions,
                 }
             )
     errors = sum(int(metric["asr_word_errors"]) for metric in selected_metrics)
@@ -655,6 +698,7 @@ def select_round(args: argparse.Namespace) -> None:
         "production_plan": attestation(plan_path),
         "policy": plan["policy"],
         "selection_policy_sha256": policy_hash,
+        "speaker_exclusions": exclusions,
         "through_round": args.through_round,
         "attempts": attempt_records,
         "decision": decision,
@@ -811,11 +855,15 @@ def finalize(args: argparse.Namespace) -> None:
     plan_path, plan, policy, source_rows, _ = load_production_plan(args.production_plan)
     selection_report_path = args.selection_report.expanduser().resolve()
     report = json.loads(selection_report_path.read_text(encoding="utf-8"))
+    exclusions = _speaker_exclusion_record(
+        source_rows, list(report.get("speaker_exclusions", {}).get("speaker_ids", []))
+    )
     if (
         report.get("schema_version") != SELECTION_SCHEMA
         or report.get("production_plan") != attestation(plan_path)
         or report.get("policy") != plan["policy"]
-        or report.get("selection_policy_sha256") != _selection_policy_hash(policy)
+        or report.get("selection_policy_sha256") != _selection_scope_hash(policy, exclusions)
+        or report.get("speaker_exclusions") != exclusions
         or report.get("decision") not in {"go", "no_go"}
         or report.get("next_retry") is not None
         or report.get("selection_rows") != attestation(Path(report["selection_rows"]["path"]))
@@ -839,6 +887,7 @@ def finalize(args: argparse.Namespace) -> None:
         generation_by_attempt[attempt] = {str(row["id"]): row for row in candidate_rows}
         metric_by_candidate.update({metric["candidate_id"]: metric for metric in metrics.values()})
     source_by_id = {str(row["id"]): row for row in source_rows}
+    excluded_speakers = set(exclusions["speaker_ids"])
     selections = []
     accepted = []
     rejected = []
@@ -850,13 +899,26 @@ def finalize(args: argparse.Namespace) -> None:
         choice_metrics = [
             metric_by_candidate[candidate["candidate_id"]] for candidate in candidates
         ]
-        recomputed = _select(choice_metrics, list(range(through_round + 1)))
+        is_excluded = str(source["speaker_id"]) in excluded_speakers
+        expected_exclusion = (
+            {
+                "kind": "speaker",
+                "speaker_id": source["speaker_id"],
+                "reason": exclusions["reason"],
+            }
+            if is_excluded
+            else None
+        )
+        recomputed = (
+            None if is_excluded else _select(choice_metrics, list(range(through_round + 1)))
+        )
         recomputed_id = recomputed["candidate_id"] if recomputed else None
         if (
             selected_row.get("selected_candidate_id") != recomputed_id
             or selected_row.get("selected_attempt")
             != (recomputed["attempt"] if recomputed else None)
             or selected_row.get("status") != ("accepted" if recomputed else "rejected")
+            or selected_row.get("exclusion") != expected_exclusion
             or any(
                 candidate.get("metric_sha256")
                 != sha256_bytes(
@@ -866,10 +928,11 @@ def finalize(args: argparse.Namespace) -> None:
             )
         ):
             raise RuntimeError(f"Terminal selection differs from frozen selector: {row_id}")
-        for candidate in candidates:
-            metric = metric_by_candidate[candidate["candidate_id"]]
-            if not metric["row_gate_pass"]:
-                failed_candidates.add(candidate["candidate_id"])
+        if not is_excluded:
+            for candidate in candidates:
+                metric = metric_by_candidate[candidate["candidate_id"]]
+                if not metric["row_gate_pass"]:
+                    failed_candidates.add(candidate["candidate_id"])
         selected_id = selected_row["selected_candidate_id"]
         selections.append(selected_row)
         if selected_id is None:
@@ -980,6 +1043,8 @@ def finalize(args: argparse.Namespace) -> None:
     for candidate in failed_candidates:
         required[candidate].add("machine_failure")
     for row in rejected:
+        if row.get("exclusion") is not None:
+            continue
         for candidate in row["candidates"]:
             required[candidate["candidate_id"]].add("rejected_row")
     out = args.out_dir.expanduser().resolve()
@@ -1026,7 +1091,10 @@ def finalize(args: argparse.Namespace) -> None:
     )
     review_pass = (waived or not missing) and selected_sample_pass
     failure_review_ids = failed_candidates | {
-        candidate["candidate_id"] for row in rejected for candidate in row["candidates"]
+        candidate["candidate_id"]
+        for row in rejected
+        if row.get("exclusion") is None
+        for candidate in row["candidates"]
     }
     failures_review_complete = waived or not (failure_review_ids - set(reviews))
     status = (
@@ -1102,6 +1170,7 @@ def finalize(args: argparse.Namespace) -> None:
         "machine_selection_decision": report["decision"],
         "production_plan": attestation(plan_path),
         "selection_report": attestation(selection_report_path),
+        "speaker_exclusions": exclusions,
         "scope": {
             "plan_rows": len(source_rows),
             "accepted_rows": len(accepted),
@@ -1164,6 +1233,7 @@ def parse_args() -> argparse.Namespace:
     select.add_argument("--through-round", type=int, choices=(0, 1, 2), required=True)
     select.add_argument("--qa-root", type=Path, required=True)
     select.add_argument("--out-dir", type=Path, required=True)
+    select.add_argument("--exclude-speaker", action="append", default=[])
     final = commands.add_parser("finalize")
     final.add_argument("production_plan", type=Path)
     final.add_argument("--selection-report", type=Path, required=True)
