@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from benchmark_vivos_qwen_mlx_retry_v6 import production_attestation_path
 from synthesize_vivos import canonical_json, read_jsonl, sha256_bytes, sha256_file
 
 
@@ -66,7 +67,8 @@ def load_production_plan(
     path: Path,
 ) -> tuple[Path, dict[str, Any], dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     path = path.expanduser().resolve()
-    if path.name != "production_plan.json" or not path.is_file():
+    production_attestation_path(path)
+    if not path.is_file():
         raise InvalidGeneration(f"Unexpected production plan path: {path}")
     plan = json.loads(path.read_text(encoding="utf-8"))
     if plan.get("schema_version") != PLAN_SCHEMA or plan.get("attempt_order") != list(ATTEMPTS):
@@ -94,7 +96,7 @@ def load_production_plan(
         or plan.get("groups") != group_rows(rows, "production")
     ):
         raise InvalidGeneration("Source rows are not the exact production-plan bijection")
-    contract_path = path.parent / "production_attestation.json"
+    contract_path = production_attestation_path(path)
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     if (
         contract.get("schema_version") != ATTESTATION_SCHEMA
@@ -189,7 +191,7 @@ def _retry_scope(
     return ids, attestation(manifest), rows
 
 
-def _media_validation(row: dict[str, Any]) -> list[str]:
+def _media_validation(row: dict[str, Any], token_count_semantics: str) -> list[str]:
     issues: list[str] = []
     wav = Path(str(row.get("output_wav", ""))).expanduser().resolve()
     codes = Path(str(row.get("codes", ""))).expanduser().resolve()
@@ -228,7 +230,8 @@ def _media_validation(row: dict[str, Any]) -> list[str]:
             if (
                 array.ndim != 3
                 or array.shape[0] != 1
-                or row.get("token_count") != 1
+                or row.get("token_count")
+                != (1 if token_count_semantics == "legacy_batch_axis" else array.shape[1])
                 or array.shape[1] < 1
                 or array.shape[2] != 16
                 or array.size == 0
@@ -262,6 +265,21 @@ def _validate_group(
         or record.get("group") != expected_group
     ):
         raise InvalidGeneration(f"Group contract mismatch: {directory}")
+    implementation = record.get("implementation")
+    if implementation is None:
+        token_count_semantics = "legacy_batch_axis"
+    elif {
+        key: implementation.get(key)
+        for key in ("revision", "allocator_cache", "token_count")
+    } == {
+        "revision": "allocator-cache-repair1",
+        "allocator_cache": "clear_after_each_group",
+        "token_count": "codec_frames",
+    } and isinstance(implementation.get("script"), dict):
+        _require_attested(implementation["script"], "Group implementation script")
+        token_count_semantics = "codec_frames"
+    else:
+        raise InvalidGeneration(f"Unknown group implementation: {directory}")
     candidate_rows = record.get("rows")
     if (
         not isinstance(candidate_rows, list)
@@ -292,7 +310,7 @@ def _validate_group(
             != round(float(candidate.get("duration_s", -1)) * 24_000)
         ):
             raise InvalidGeneration(f"Candidate row provenance mismatch: {row_id}")
-        issues = _media_validation(candidate)
+        issues = _media_validation(candidate, token_count_semantics)
         if issues:
             media[row_id] = issues
     return record, media
@@ -461,7 +479,7 @@ def validate_production_attempt(
     result.update(
         {
             "production_plan": attestation(plan_path),
-            "production_attestation": attestation(plan_path.parent / "production_attestation.json"),
+            "production_attestation": attestation(production_attestation_path(plan_path)),
             "policy": plan["policy"],
             "source_plan": plan["source_plan"],
             "contract": contract,

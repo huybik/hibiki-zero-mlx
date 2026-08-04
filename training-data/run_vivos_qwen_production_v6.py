@@ -9,7 +9,10 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 
-from benchmark_vivos_qwen_mlx_retry_v6 import validate_production_path
+from benchmark_vivos_qwen_mlx_retry_v6 import (
+    production_attestation_path,
+    validate_production_path,
+)
 from synthesize_vivos import (
     MLX_MODEL_ID,
     MLX_MODEL_REVISION,
@@ -46,7 +49,7 @@ def validate(plan_path: Path) -> tuple[dict, dict]:
 
     plan_path = plan_path.expanduser().resolve()
     plan, rows = validate_production_path(plan_path)
-    contract_path = plan_path.parent / "production_attestation.json"
+    contract_path = production_attestation_path(plan_path)
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     if contract.get("schema_version") != SCHEMA:
         raise RuntimeError("Unexpected production attestation schema")

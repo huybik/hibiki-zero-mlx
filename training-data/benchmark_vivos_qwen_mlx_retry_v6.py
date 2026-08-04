@@ -19,9 +19,9 @@ from statistics import median
 from typing import Any
 
 from benchmark_vivos_qwen_mlx_batch import json_bytes, jsonl_bytes
-from benchmark_vivos_qwen_mlx_batch_v2 import RssSampler, runtime_environment, system_state
+from benchmark_vivos_qwen_mlx_batch_v2 import RssSampler, system_state
 from qa_vivos_full import CORPUS_THRESHOLDS, ROW_THRESHOLDS, select_best_passing_candidate
-from qwen_mlx_compaction import generate_lanes, rng_contract, row_root_digest
+from qwen_mlx_compaction import generate_lanes, rng_contract
 from qwen_mlx_recurrent import FunctionalCodePredictor
 from synthesize_vivos import (
     MLX_MODEL_ID,
@@ -118,6 +118,25 @@ def attest(path: Path) -> dict[str, str]:
 
 def script_attest() -> dict[str, str]:
     return attest(Path(__file__))
+
+
+def implementation_record() -> dict[str, Any]:
+    return {
+        "revision": "allocator-cache-repair1",
+        "script": script_attest(),
+        "allocator_cache": "clear_after_each_group",
+        "token_count": "codec_frames",
+    }
+
+
+def production_attestation_path(plan_path: Path) -> Path:
+    plan_path = plan_path.expanduser().resolve()
+    suffix = plan_path.stem.removeprefix("production_plan")
+    if plan_path.suffix != ".json" or (
+        suffix and not (suffix.startswith("_repair") and suffix[7:].isdigit())
+    ):
+        raise RuntimeError(f"Unexpected production plan name: {plan_path.name}")
+    return plan_path.with_name(f"production_attestation{suffix}.json")
 
 
 def source_hash(row: dict[str, Any]) -> str:
@@ -356,6 +375,9 @@ def validate_group(path: Path, group: dict[str, Any], attempt: dict[str, Any], p
     record = json.loads((path / "group.json").read_text(encoding="utf-8"))
     if record.get("group") != group or record.get("attempt_config") != attempt or record.get("policy") != policy:
         raise RuntimeError(f"Resume contract mismatch: {path}")
+    implementation = record.get("implementation")
+    if implementation is not None and implementation != implementation_record():
+        raise RuntimeError(f"Resume implementation mismatch: {path}")
     for row in record["rows"]:
         if sha256_file(Path(row["output_wav"])) != row["audio_sha256"]:
             raise RuntimeError(f"Changed v6 WAV: {row['id']}")
@@ -436,7 +458,7 @@ def run_group(
                     "sample_rate_hz": model.sample_rate,
                     "num_samples": int(audio.size),
                     "duration_s": audio.size / model.sample_rate,
-                    "token_count": len(codes),
+                    "token_count": int(codes.shape[1]),
                 }
             )
         timing = {
@@ -448,6 +470,7 @@ def run_group(
         }
         record = {
             "schema_version": SCHEMA,
+            "implementation": implementation_record(),
             "policy": policy_record,
             "attempt_config": attempt,
             "group": group,
@@ -532,18 +555,21 @@ def execute(
     mx.clear_cache()
     records = []
     for number, group in enumerate(groups, 1):
-        record = run_group(
-            model,
-            [by_id[row_id] for row_id in group["ids"]],
-            group,
-            output / "groups" / group["group_id"],
-            attempt,
-            policy_record,
-            mx,
-            np,
-            sf,
-            adapter,
-        )
+        try:
+            record = run_group(
+                model,
+                [by_id[row_id] for row_id in group["ids"]],
+                group,
+                output / "groups" / group["group_id"],
+                attempt,
+                policy_record,
+                mx,
+                np,
+                sf,
+                adapter,
+            )
+        finally:
+            mx.clear_cache()
         records.append(record)
         print(f"[{number}/{len(groups)}] {group['group_id']}", flush=True)
     flat = [row for record in records for row in record["rows"]]
@@ -828,7 +854,8 @@ def prepare_production(args: argparse.Namespace) -> None:
 def validate_production_path(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     path = path.expanduser().resolve()
     plan = json.loads(path.read_text(encoding="utf-8"))
-    if path.name != "production_plan.json" or path.parent.name != PRODUCTION_NAME or plan.get("schema_version") != PRODUCTION_SCHEMA:
+    production_attestation_path(path)
+    if path.parent.name != PRODUCTION_NAME or plan.get("schema_version") != PRODUCTION_SCHEMA:
         raise RuntimeError("Unexpected production plan")
     policy_path, policy, _, _ = load_policy(Path(plan["policy"]["path"]))
     rows = read_jsonl(Path(plan["source_plan"]["path"]))

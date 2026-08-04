@@ -12,6 +12,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from benchmark_vivos_qwen_mlx_retry_v6 import production_attestation_path
 from qa_vivos_full import (
     CORPUS_THRESHOLDS,
     MODELS,
@@ -141,7 +142,7 @@ def _binding(
     }
     value = {
         "production_plan": attestation(plan_path),
-        "production_attestation": attestation(plan_path.parent / "production_attestation.json"),
+        "production_attestation": attestation(production_attestation_path(plan_path)),
         "policy": plan["policy"],
         "source_plan": plan["source_plan"],
         "source": source,

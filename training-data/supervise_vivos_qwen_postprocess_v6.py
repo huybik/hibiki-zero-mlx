@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from benchmark_vivos_qwen_mlx_retry_v6 import production_attestation_path
 from synthesize_vivos import canonical_json, sha256_bytes, sha256_file
 
 
@@ -116,7 +117,7 @@ class Supervisor:
             raise RuntimeError("Supervisor requires the exact 10,950-row / 1,391-group plan")
         policy = Path(plan["policy"]["path"]).resolve()
         source = Path(plan["source_plan"]["path"]).resolve()
-        production_attestation = self.production_root / "production_attestation.json"
+        production_attestation = production_attestation_path(self.plan_path)
         scripts = [
             Path(__file__).resolve(),
             self.repo / "training-data/benchmark_vivos_qwen_mlx_retry_v6.py",

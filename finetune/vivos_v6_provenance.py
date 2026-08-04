@@ -14,6 +14,7 @@ if str(TRAINING_DATA) not in sys.path:
     sys.path.insert(0, str(TRAINING_DATA))
 
 from synthesize_vivos import canonical_json, read_jsonl, sha256_bytes, sha256_file  # noqa: E402
+from benchmark_vivos_qwen_mlx_retry_v6 import production_attestation_path  # noqa: E402
 from validate_vivos_qwen_production_v6 import (  # noqa: E402
     ATTEMPTS,
     attestation,
@@ -267,7 +268,7 @@ def _attempt_artifacts(
                 or binding.get("group_record") != group_by_id[row_id]
                 or metric_binding.get("production_plan") != attestation(plan_path)
                 or metric_binding.get("production_attestation")
-                != attestation(plan_path.parent / "production_attestation.json")
+                != attestation(production_attestation_path(plan_path))
                 or metric_binding.get("policy") != plan["policy"]
                 or metric_binding.get("source_plan") != plan["source_plan"]
                 or metric_binding.get("source", {}).get("source_plan_row_sha256")
@@ -516,7 +517,7 @@ def validate_finalized(
         "state": "ready",
         "schema_version": FINAL_SCHEMA,
         "production_plan": attestation(plan_path),
-        "production_attestation": attestation(plan_path.parent / "production_attestation.json"),
+        "production_attestation": attestation(production_attestation_path(plan_path)),
         "policy": plan["policy"],
         "validation_go": plan["validation_go"],
         "source_plan": plan["source_plan"],
