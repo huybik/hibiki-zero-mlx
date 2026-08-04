@@ -55,10 +55,6 @@ def load_source_reviews(
     path: Path | None, required_ids: set[str]
 ) -> tuple[dict[str, dict[str, str]], dict[str, str] | None]:
     if path is None:
-        if required_ids:
-            raise RuntimeError(
-                f"Source review is required for {len(required_ids)} WER-flagged rows"
-            )
         return {}, None
     resolved = path.expanduser().resolve()
     reviews: dict[str, dict[str, str]] = {}
@@ -259,7 +255,7 @@ def freeze(args: argparse.Namespace) -> None:
             ],
             "waveform_hard_gate_required": True,
             "asr_wer_max_inclusive": REFERENCE_WER_MAX,
-            "source_review_required_resolved": True,
+            "source_review_required_resolved_for_references": True,
             "stable_order": ["asr_wer", "asr_cer", "abs(duration_s-4.0)", "id"],
         },
         "eligibility_counts_by_speaker": eligibility_counts,
@@ -274,7 +270,7 @@ def freeze(args: argparse.Namespace) -> None:
             "flagged_rows": len(flagged_ids),
             "passed_rows": sum(row["status"] == "pass" for row in reviews.values()),
             "failed_rows": sum(row["status"] == "fail" for row in reviews.values()),
-            "unresolved_rows": 0,
+            "unresolved_rows": len(flagged_ids - set(reviews)),
         },
         "reference_map": {"path": str(map_path), "sha256": sha256_bytes(map_bytes)},
         "script_sha256": sha256_file(Path(__file__).resolve()),
