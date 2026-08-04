@@ -34,6 +34,7 @@ en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 - `translate_manifest.py` runs resumable, provenance-preserving Gemini Batch translation.
 - `synthesize_vivos.py` prepares and runs the distinct CUDA and MLX-Audio Qwen3-TTS pilots.
 - `synthesize_vivos_full.py` prepares and serially runs the immutable full VIVOS MLX v3 campaign.
+- `benchmark_vivos_qwen_mlx_batch.py` freezes and benchmarks same-speaker MLX batches and owns the separate atomic batch-production runner.
 - `qa_vivos_tts.py` scores either pilot on CUDA or MPS without device fallback.
 - `qa_vivos_full.py` resumably scores full-campaign attempts and freezes retries and final selections.
 - `qa_vivos_source.py` runs the pinned Vietnamese source-ASR audit and reports speaker/duration slices.
@@ -95,8 +96,12 @@ the frozen 0.03 margin and manual review remained incomplete. The user explicitl
 approved Qwen and the full campaign without relabeling that immutable `no_go`.
 The exact 10,950-row `qa_vivos_source.py --full` audit and 46-speaker
 `freeze_vivos_references.py` map are frozen. Full campaign preparation and
-generation/QA commands are in the data-generation plan. Attempt 0 was launched
-locally on 2026-08-04; it remains resumable and is not yet an accepted cache.
+generation/QA commands are in the data-generation plan. Attempt 0 was stopped
+on request at 1,489/10,950; its immutable outputs remain resumable. The separate
+2026-08-04 batch benchmark tested B1/2/4/8 on 64 frozen rows. B8 led throughput
+at 23.62 rows/min with 9.22 GB peak MLX memory, but remains a quality `no_go`
+pending ASR, speaker-similarity, and listening QA. Its unlaunched batch-8 full
+plan and exact commands are archived in the benchmark report.
 
 Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS with VieNeu's PyTorch backend; vieneu >= 3.2 batches natively on both CUDA and MPS (measured on M4 Pro: batch 8 -> 6.1x real-time vs 3.1x sequential).
 
