@@ -42,3 +42,50 @@ find /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/a
 ```
 
 The original launch and supervisor commands remain authoritative in their immutable external records. No command in the proposed block was run during this diagnosis.
+
+## Executed repair follow-up
+
+The earlier block remains the historical proposal. The following follow-up was executed after user authorization. The supervisor was stopped before the generator; the generator exited through `KeyboardInterrupt` and the existing exception path removed its in-flight temporary directory.
+
+```bash
+tmux kill-session -t hibiki_vivos_qwen_v6_postprocess_r1_20260804
+tmux send-keys -t hibiki_vivos_qwen_v6_attempt0_20260804 C-c
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python training-data/validate_vivos_qwen_production_v6.py production \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_plan.json --attempt 0
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m ruff check \
+  training-data/benchmark_vivos_qwen_mlx_retry_v6.py \
+  training-data/run_vivos_qwen_production_v6.py \
+  training-data/validate_vivos_qwen_production_v6.py \
+  training-data/qa_vivos_qwen_production_v6.py \
+  training-data/supervise_vivos_qwen_postprocess_v6.py \
+  finetune/vivos_v6_provenance.py
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m compileall -q \
+  training-data/benchmark_vivos_qwen_mlx_retry_v6.py \
+  training-data/run_vivos_qwen_production_v6.py \
+  training-data/validate_vivos_qwen_production_v6.py \
+  training-data/qa_vivos_qwen_production_v6.py \
+  training-data/supervise_vivos_qwen_postprocess_v6.py \
+  finetune/vivos_v6_provenance.py
+```
+
+The repair plan was constructed with the archived `repair_contract_creation.py`; it writes with exclusive-create mode and therefore cannot overwrite the original or repaired contracts. The executed inline source is semantically identical and produced the hashes in `repair.json`.
+
+```bash
+/Volumes/data/envs/hibiki-vivos-mlx-0.4.7/bin/python \
+  training-data/run_vivos_qwen_production_v6.py validate \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_plan_repair1.json
+
+tmux new-session -d -s hibiki_vivos_qwen_v6_attempt0_repair1_20260804 \
+  "zsh -lc 'cd /Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code && exec env PYTHONUNBUFFERED=1 /Volumes/data/envs/hibiki-vivos-mlx-0.4.7/bin/python training-data/run_vivos_qwen_production_v6.py run /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_plan_repair1.json --round 0 > /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/generation_attempt0_repair1_20260804.log 2>&1'"
+
+footprint -p 2778
+sysctl vm.swapusage
+
+tmux new-session -d -s hibiki_vivos_qwen_v6_postprocess_repair1_20260804 \
+  "zsh -lc 'cd /Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code && exec /opt/homebrew/Caskroom/miniconda/base/bin/python training-data/supervise_vivos_qwen_postprocess_v6.py /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_plan_repair1.json --qa-root /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full --work-dir /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full/supervisor_repair1 --attempt0-pid 2778 --attempt0-session hibiki_vivos_qwen_v6_attempt0_repair1_20260804 --supervisor-session hibiki_vivos_qwen_v6_postprocess_repair1_20260804 --poll-seconds 30 > /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_qwen3_tts_mlx_retry_v6_full/supervisor_repair1/supervisor.log 2>&1'"
+```
+
+Failed inspection retained: the first 11-group timing aggregation joined plan group IDs directly to the attempt directory and raised `FileNotFoundError` for `production_VIVOSSPK22_0024_a58d373aefaf`. The corrected read-only aggregation maps only `production_` to `attempt0_t08_`; its output is preserved in `repair.json` and `raw_samples.jsonl`.

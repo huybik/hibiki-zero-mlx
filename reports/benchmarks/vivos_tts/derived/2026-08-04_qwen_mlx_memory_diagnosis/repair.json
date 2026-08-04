@@ -1,0 +1,70 @@
+{
+  "schema_version": "hibiki_vivos_qwen_mlx_memory_repair_v1",
+  "status": "repaired_resumed_live",
+  "repository_commit": "215467efd9946ce1296f87456bbedb5b8583c9e8",
+  "changes": {
+    "allocator_cache": "mx.clear_cache() in a finally block after every production group",
+    "token_count": "codes.shape[1] codec frames",
+    "legacy_groups": "accepted unchanged with legacy batch-axis token_count semantics",
+    "new_groups": "bind allocator-cache-repair1 implementation and script hash"
+  },
+  "stop_boundary": {
+    "completed_groups": 668,
+    "completed_rows": 5266,
+    "temporary_groups": 0,
+    "media_error_rows": 0,
+    "last_completed_group": "attempt0_t08_VIVOSSPK22_0023_279c2b5ff272"
+  },
+  "repair_contract": {
+    "production_plan": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_plan_repair1.json",
+      "sha256": "10e3957e750cc4f44781619418cdfc6e601522e130461dde5214ec149be911dc"
+    },
+    "production_attestation": {
+      "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_retry_v6_full/production_attestation_repair1.json",
+      "sha256": "cc5b1694a02c8a4b4b5bbb50c5c77de0bfe1021b765db17db353ac761f056e10"
+    }
+  },
+  "verification": {
+    "new_groups_observed": 23,
+    "new_group_range": "attempt0_t08_VIVOSSPK22_0024_a58d373aefaf through attempt0_t08_VIVOSSPK24_0002_d947e833f300",
+    "worker_physical_footprint_mib": [7748, 7791, 7755, 8268],
+    "worker_graphics_footprint_mib": [7333, 7377, 7340, 7852],
+    "worker_peak_footprint": "16 GiB transient warmup peak",
+    "old_sustained_footprint": "about 35 GiB physical / 34 GiB graphics",
+    "active_to_cleared_time_series": {
+      "local_interval": "2026-08-04T20:54:36+07:00/2026-08-04T20:54:56+07:00",
+      "samples": 20,
+      "active_max": "15 GiB physical / 15 GiB graphics",
+      "clear_transition": "15 GiB physical at 20:54:45 to 6796 MiB at 20:54:46",
+      "subsequent_low_water": "7831-7832 MiB physical for nine consecutive samples",
+      "interpretation": "working memory rises within a group and is visibly released at the group boundary; the 16 GiB process peak did not increase"
+    },
+    "mixed_prefix_validation": {
+      "completed_groups": 679,
+      "completed_rows": 5349,
+      "temporary_groups": 1,
+      "temporary_group_reason": "validator ran while group 680 was being atomically generated",
+      "media_error_rows": 0
+    },
+    "corrected_group_sample": {
+      "groups": 11,
+      "rows": 83,
+      "token_count_min": 9,
+      "token_count_max": 128,
+      "sum_group_wall_seconds": 165.82272808463313,
+      "rows_per_minute_sum_group_wall": 30.032071342224526,
+      "throughput_interpretation": "short workload-dependent observation only; not an efficiency benchmark"
+    }
+  },
+  "live_processes": {
+    "generator_session": "hibiki_vivos_qwen_v6_attempt0_repair1_20260804",
+    "runner_pid_at_launch": 2713,
+    "model_worker_pid_at_launch": 2778,
+    "supervisor_session": "hibiki_vivos_qwen_v6_postprocess_repair1_20260804",
+    "supervisor_state": "waiting_attempt0"
+  },
+  "failed_checks_preserved": [
+    "The first post-repair timing-summary script used production_* plan group IDs as attempt0_t08 directory names and raised FileNotFoundError. The corrected inspection replaced only the group-id prefix and succeeded."
+  ]
+}

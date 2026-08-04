@@ -1,7 +1,7 @@
 {
   "schema_version": "hibiki_vivos_qwen_mlx_memory_diagnosis_v1",
   "diagnosis": "MLX allocator-cache retention across committed production groups",
-  "status": "confirmed_repair_not_applied",
+  "status": "confirmed_repaired_resumed_live",
   "hypotheses": [
     {
       "name": "allocator_cache_retention",
@@ -55,5 +55,12 @@
     "current": "len(codes) == 1 for stored [1,T,16] arrays",
     "intended": "codes.shape[1]",
     "impact": "metadata only; does not alter code arrays or audio and does not cause allocator retention"
+  },
+  "repair_verification": {
+    "repository_commit": "215467efd9946ce1296f87456bbedb5b8583c9e8",
+    "boundary": "mx.clear_cache after every atomic group, including exception paths",
+    "live_result": "after 23 new groups, active memory rose to 15 GiB then fell to 6.64 GiB at the next group clear and held near 7.65 GiB; process peak stayed 16 GiB versus about 35/34 GiB sustained before repair",
+    "metadata_result": "new groups declare codec_frames and recorded 9-128 frames in the first 83 repaired rows",
+    "campaign_result": "668 legacy groups preserved; repaired mixed prefix validated with zero media-error rows"
   }
 }
