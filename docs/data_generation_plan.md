@@ -422,8 +422,62 @@ the command stops if any speaker has no candidate:
 If the full audit flags no WER rows, omit `--source-review`. The immutable
 outputs are `reference_map.jsonl` and `reference_map_report.json`; each selected
 row carries exact WAV, VI-text, and source-audit-row hashes plus split, speaker,
-corpus revision, archive, and license provenance. Full TTS remains blocked until
-both artifacts exist and pass their frozen contracts.
+corpus revision, archive, and license provenance. Both full artifacts now exist
+and pass their frozen contracts. The source audit retains 162 review flags,
+while every selected reference independently passes the reference thresholds.
+
+#### Full VIVOS MLX v3 generation campaign
+
+Prepare schema `hibiki_vivos_qwen3_tts_mlx_full_v1` only from the exact frozen
+train/dev manifests, full source audit, 46-speaker reference map, and retained
+v3 `no_go` gate report:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python \
+  training-data/synthesize_vivos_full.py prepare-mlx-full \
+  /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_train.jsonl \
+  /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_dev.jsonl \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1 \
+  --dataset-root /Volumes/data/datasets/hibiki_vi_v2 \
+  --source-audit-report /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_full_v1/audit_report.json \
+  --reference-map /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/reference_map.jsonl \
+  --reference-report /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/reference_map_report.json \
+  --pilot-gate-report /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/qa/gate_report.json
+```
+
+This immutably writes `campaign_config.json`, `approval_override.json`, and
+`generation_plan.jsonl` for 9,844 train plus 1,106 dev rows; test stays sealed.
+The approval records the user's model-level waiver of only the aggregate
+Kokoro comparison and incomplete manual review. It preserves the pilot
+decision and does not claim all 24 pilot files were reviewed.
+
+Generate attempt 0 serially on Apple Metal. Rows are ordered by speaker then
+split/id to reuse MLX-Audio's internal ICL prompt cache. Every completed WAV is
+atomically written before its immutable sidecar; resume validates all source,
+reference, campaign, model-snapshot, sidecar, and output hashes before writing.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-mlx \
+  python training-data/synthesize_vivos_full.py generate-mlx-full \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_plan.jsonl \
+  --dataset-root /Volumes/data/datasets/hibiki_vi_v2 \
+  --device mps --attempt 0
+```
+
+Attempt 1 is reserved for an explicit later retry-id JSONL containing one
+`{"id":"..."}` object per selected row:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-mlx \
+  python training-data/synthesize_vivos_full.py generate-mlx-full \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_plan.jsonl \
+  --dataset-root /Volumes/data/datasets/hibiki_vi_v2 \
+  --device mps --attempt 1 --retry-ids <retry-ids.jsonl>
+```
+
+Do not select retries, run target QA, build Mimi caches, or upload artifacts in
+this phase. `generation_attempts.jsonl` is only the deterministic assembly of
+validated immutable attempt sidecars.
 
 ## Alignment and target construction
 

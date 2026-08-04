@@ -33,6 +33,7 @@ en, vi, audio_en, audio_vi, duration_en_s, duration_vi_s, duration_ratio_en_vi
 - `prepare_vivos.py` pins, verifies, splits, and audits the VIVOS real-source corpus.
 - `translate_manifest.py` runs resumable, provenance-preserving Gemini Batch translation.
 - `synthesize_vivos.py` prepares and runs the distinct CUDA and MLX-Audio Qwen3-TTS pilots.
+- `synthesize_vivos_full.py` prepares and serially runs the immutable full VIVOS MLX v3 campaign.
 - `qa_vivos_tts.py` scores either pilot on CUDA or MPS without device fallback.
 - `qa_vivos_source.py` runs the pinned Vietnamese source-ASR audit and reports speaker/duration slices.
 - `freeze_vivos_references.py` deterministically freezes one audited 3–8 s reference per VIVOS speaker.
@@ -91,9 +92,10 @@ all eight speakers, but remains `no_go`: WER was 0.0539216 versus Kokoro
 kept zero prompt leak and 8/8 timbre wins, but its 0.0392157 WER gap still failed
 the frozen 0.03 margin and manual review remained incomplete. The user explicitly
 approved Qwen and the full campaign without relabeling that immutable `no_go`.
-Run the exact 10,950-row `qa_vivos_source.py --full` audit and the 46-speaker
-`freeze_vivos_references.py` gate before full synthesis; exact commands and
-artifact paths are in the data-generation plan.
+The exact 10,950-row `qa_vivos_source.py --full` audit and 46-speaker
+`freeze_vivos_references.py` map are frozen. Full campaign preparation and
+generation commands are in the data-generation plan; no full target WAV has
+been generated yet.
 
 Device selection is automatic (`TTS_DEVICE = "auto"` in `pipeline.py`): cuda > mps > cpu. On Apple Silicon the pipeline runs on MPS with VieNeu's PyTorch backend; vieneu >= 3.2 batches natively on both CUDA and MPS (measured on M4 Pro: batch 8 -> 6.1x real-time vs 3.1x sequential).
 
