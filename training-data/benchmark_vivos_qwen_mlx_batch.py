@@ -60,6 +60,7 @@ PRODUCTION_SEED = "hibiki-vivos-qwen3-tts-mlx-batch-full-v1"
 DEFAULT_BATCH_SIZES = (1, 2, 4, 8)
 DEFAULT_SPEAKERS = 4
 DEFAULT_ROWS_PER_SPEAKER = 16
+INITIAL_SCRIPT_SHA256 = "8191098997b93e7b2e86a8c178cdfbe898c934d80fafcfec6dec516a1e57f28b"
 GENERATION = {
     "api": "Model.batch_generate",
     "same_reference_per_batch": True,
@@ -124,6 +125,13 @@ def attestation(path: Path) -> dict[str, str]:
 
 def script_path() -> Path:
     return Path(__file__).resolve()
+
+
+def compatible_script_attestation(record: dict[str, str]) -> bool:
+    return record.get("path") == str(script_path()) and record.get("sha256") in {
+        INITIAL_SCRIPT_SHA256,
+        sha256_file(script_path()),
+    }
 
 
 def seed(namespace: str, *parts: object) -> int:
@@ -345,7 +353,7 @@ def load_benchmark(
     source_by_id = {str(row["id"]): row for row in source_rows}
     if (
         config.get("schema_version") != BENCHMARK_SCHEMA
-        or config.get("script") != {"path": str(script_path()), "sha256": sha256_file(script_path())}
+        or not compatible_script_attestation(config.get("script", {}))
         or config["cohort"]["plan"] != attestation(cohort_path)
         or config["source_campaign"]["plan"]["sha256"] != plan_sha
         or config["source_campaign"]["config"]["sha256"] != config_sha
@@ -440,9 +448,13 @@ def validate_batch_dir(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     if (
         record.get("group") != expected_group
-        or record.get("plan_sha256") != plan_sha
+        or record.get("plan", {}).get("sha256") != plan_sha
         or record.get("row_schema_version") != row_schema
         or len(record.get("rows", [])) != len(expected_group["ids"])
+        or (
+            record.get("runner_script") is not None
+            and not compatible_script_attestation(record["runner_script"])
+        )
     ):
         raise RuntimeError(f"Batch provenance mismatch: {path}")
     for row in record["rows"]:
@@ -558,6 +570,10 @@ def generate_group(
             "schema_version": schema,
             "row_schema_version": row_schema,
             "plan": {"path": str(plan_path), "sha256": plan_sha},
+            "runner_script": {
+                "path": str(script_path()),
+                "sha256": sha256_file(script_path()),
+            },
             "group": group,
             "completed_utc": datetime.now(timezone.utc).isoformat(),
             "wall_seconds": round(wall_seconds, 6),
@@ -918,7 +934,7 @@ def load_production(plan_path: Path) -> tuple[dict[str, Any], list[dict[str, Any
     ids = [row_id for group in plan["groups"] for row_id in group["ids"]]
     if (
         plan.get("schema_version") != PRODUCTION_SCHEMA
-        or plan.get("script") != {"path": str(script_path()), "sha256": sha256_file(script_path())}
+        or not compatible_script_attestation(plan.get("script", {}))
         or plan["source_campaign"]["plan"]["sha256"] != source_sha
         or plan["source_campaign"]["config"]["sha256"] != config_sha
         or len(ids) != len(rows)
