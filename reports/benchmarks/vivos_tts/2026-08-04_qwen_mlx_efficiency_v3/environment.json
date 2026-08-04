@@ -1,0 +1,74 @@
+{
+  "captured_for_report": true,
+  "platform": "macOS-15.7.7-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "python_model_env": "/Volumes/data/envs/hibiki-vivos-mlx-0.4.7/bin/python",
+  "python_qa_env": "/Volumes/data/envs/hibiki-vivos-qa/bin/python",
+  "mlx_audio_version": "0.4.7",
+  "mlx_audio_commit": "2c9461f5d8315fa8e7013ab2729495b2bb83d384",
+  "mlx_version": "0.32.0",
+  "model": {
+    "files_sha256": {
+      ".gitattributes": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "README.md": "cf921813a02b37002f73b636991a52d9385bb4a81a9ff2dc61a178d1f6e27587",
+      "config.json": "39ffdadc03c1a7c7f8116ee8830d6a577ac87039edcbd88759b4fcc4db272070",
+      "generation_config.json": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa",
+      "merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+      "model.safetensors": "81fb76175ff74e69be25fef2cc3e54f016df3034f1514c8e1c89da06a3510cff",
+      "model.safetensors.index.json": "f5bb337c2f77c5046024c7342ed8d6ade28fdfbab862baf9f13269743b920005",
+      "preprocessor_config.json": "efdde1022ea9d76928bf7a9cd53139138f5ba2e466e837f08f6105ab1af1c119",
+      "speech_tokenizer/config.json": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+      "speech_tokenizer/configuration.json": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd",
+      "speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+      "speech_tokenizer/preprocessor_config.json": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb",
+      "tokenizer_config.json": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    },
+    "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    "revision": "a6eb4f68e4b056f1215157bb696209bc82a6db48",
+    "root": "/Volumes/data/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-1.7B-Base-bf16/snapshots/a6eb4f68e4b056f1215157bb696209bc82a6db48"
+  },
+  "cohort": {
+    "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_batch_v2r1_benchmark_2026-08-04/cohort_plan.jsonl",
+    "sha256": "120525e2c83e8920db2287ba843bcd6d3fcf2e21f41e27fc036a83c625d355bb"
+  },
+  "source_config": {
+    "path": "/Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_batch_v2r1_benchmark_2026-08-04/benchmark_config.json",
+    "sha256": "2dce2d74639c18d699bc97798c066753f5cc0d2a64eb5f89a28c71bdd83c90e8"
+  },
+  "scripts": [
+    {
+      "path": "/Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code/training-data/qwen_mlx_efficiency.py",
+      "sha256": "d72e62a62bc55be5823ad38d9bf41186770e45cc8fd08ae303d115ce5d41249a"
+    },
+    {
+      "path": "/Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code/training-data/benchmark_vivos_qwen_mlx_efficiency_v3.py",
+      "sha256": "047dddccd1ee9bd6e3c7bfcaae2ddae89878a2627882e66075eaa830b34425cd"
+    },
+    {
+      "path": "/Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code/training-data/qa_vivos_qwen_mlx_efficiency_v3.py",
+      "sha256": "7b4e3cb3bf40313a2a61aeb5023bc115b851fd4f99b8efb9752da7c0746475a9"
+    },
+    {
+      "path": "/Users/macoblle/MEGA/Projects/sidequest/research/hibiki-zero/code/training-data/benchmark_vivos_qwen_mlx_decoder_v3.py",
+      "sha256": "63b451d7b42e62f06f10d02d384f7d741b39226718e748f42314084004063ad3"
+    }
+  ],
+  "installed_sources": [
+    {
+      "path": "/Volumes/data/envs/hibiki-vivos-mlx-0.4.7/lib/python3.13/site-packages/mlx_audio/tts/models/qwen3_tts/qwen3_tts.py",
+      "sha256": "e4a45d38afa6718c3a209dd856db3a7c9ba2288a26d4613eb739c955b51140c6"
+    },
+    {
+      "path": "/Volumes/data/envs/hibiki-vivos-mlx-0.4.7/lib/python3.13/site-packages/mlx_audio/tts/models/qwen3_tts/talker.py",
+      "sha256": "fb6f8527970325ddcb2b535cbe7062ffe610a75e52f577475c78364c54eb06f9"
+    },
+    {
+      "path": "/Volumes/data/envs/hibiki-vivos-mlx-0.4.7/lib/python3.13/site-packages/mlx_audio/tts/models/qwen3_tts/speech_tokenizer.py",
+      "sha256": "84bdcefade003e2f79db2a0c5f4109f16aab17a419ed7e032749d1734e316de7"
+    }
+  ],
+  "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+  "swapusage": "total = 20480.00M  used = 19050.00M  free = 1430.00M  (encrypted)",
+  "power_measurement": "not available without privileged powermetrics"
+}
