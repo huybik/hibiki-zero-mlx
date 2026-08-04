@@ -51,17 +51,28 @@ AutoResearch protocol, and recommended 128 / 512 / 1449 / CUDA commands.
   English audio is left-padded by a deterministic delay sampled from
   `[0, 0.5 * vi_duration_s]`, and English text starts after the same delay. Use
   `--target-delay-ratio 0` to disable this.
-- `cache_vivos_full.py` builds `hibiki_vn_lora_cache_v2` train/dev shards only
-  after the full VIVOS QA report says `go`. It retains row-level source,
-  translation, TTS, QA, alignment, speaker/stratum, and Mimi provenance, then
-  audits exact accepted/cache coverage, tensor/code ranges, source EOS,
-  degenerate codebooks, and supervision-token accounting. `common.py` accepts
-  both v1 and v2 shards; legacy v1 rows are labeled `legacy_unspecified`.
+- `cache_vivos_full.py build` builds `hibiki_vn_lora_cache_v2` train/dev shards
+  only after the retry-v6 final report says `go` and binds either completed
+  manual review or an explicit scope-bound waiver. Its CPU-only `preflight`
+  distinguishes a valid incomplete campaign from corruption, while
+  `preflight-historical` validates the completed 64-row v6 experiment without
+  claiming production cache readiness. Each cache row retains the exact source,
+  translation, selected attempt (0/1/2), group/candidate/QA hashes, synthesis,
+  row-owned RNG erratum/root digest, alignment, speaker/stratum, and PyTorch-Mimi
+  provenance. The final audit checks exact accepted/cache coverage, tensor/code
+  ranges, source EOS, degenerate codebooks, and supervision-token accounting.
+  `common.py` accepts both v1 and v2 shards; legacy v1 rows are labeled
+  `legacy_unspecified`.
 - `release_vivos_cache.py` prepares the one immutable VIVOS cache release under
-  `releases/v2/vivos_qwen3_tts_mlx_v3_full_v1`, publishes that exact bundle in
-  one optimistic-concurrency dataset commit, and records success only after a
-  clean snapshot/extraction reruns the cache audit. It never deletes or squashes
-  Hub history and refuses an existing local release or remote prefix.
+  `/Volumes/data/datasets/hibiki_vi_v2/releases/v2/vivos_qwen3_tts_mlx_retry_v6_full`,
+  publishes it at dataset prefix `v2/vivos_qwen3_tts_mlx_retry_v6_full/` in one
+  parent-pinned add-only commit, and records success only after exact-OID remote
+  metadata/LFS verification plus clean snapshot/extraction and a repeated full
+  cache audit. The bundle preserves policy/validation GO, source/reference
+  audits, production launch/errata, every executed generation group/candidate,
+  QA metrics/reports/retries, final manual evidence, cache metadata, and explicit
+  not-executed round state. It never deletes or squashes Hub history and refuses
+  an existing local release or remote prefix.
 - `train_lora.py` loads the PyTorch LM, freezes everything, applies LoRA to selected
   targets, trains CE on `LMModel.forward` masks, and saves adapter `.safetensors`
   plus optimizer checkpoints. It appends scalar logs to `train_log.jsonl`, can log

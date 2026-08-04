@@ -31,30 +31,46 @@ from finetune.utils import (
     read_json,
     require_file,
 )
+from finetune.vivos_v6_provenance import (
+    IncompleteCampaign,
+    validate_finalized,
+    validate_historical,
+    validate_live_state,
+)
 
 CACHE_FORMAT = "hibiki_vn_lora_cache_v2"
 ALIGNMENT_SCHEMA = "hibiki_vivos_single_sentence_coarse_alignment_v1"
-QA_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_full_qa_v1"
-CAMPAIGN_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_full_v1"
 STRATUM = "real_source_st_core"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("plan", type=Path)
-    parser.add_argument("--accepted", type=Path, required=True)
-    parser.add_argument("--selection", type=Path, required=True)
-    parser.add_argument("--qa-report", type=Path, required=True)
-    parser.add_argument("--dataset-root", type=Path, required=True)
-    parser.add_argument("--gender-files", type=Path, nargs="+", required=True)
-    parser.add_argument("--out-root", type=Path, required=True)
-    parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
-    parser.add_argument("--device", default="mps")
-    parser.add_argument("--shard-size", type=int, default=32)
-    parser.add_argument("--alignment-seed", type=int, default=1234)
-    parser.add_argument("--target-delay-ratio", type=float, default=0.5)
+    commands = parser.add_subparsers(dest="action", required=True)
+
+    def final_inputs(command: argparse.ArgumentParser, *, required: bool) -> None:
+        command.add_argument("production_plan", type=Path)
+        command.add_argument("--accepted", type=Path, required=required)
+        command.add_argument("--selection", type=Path, required=required)
+        command.add_argument("--qa-report", type=Path, required=required)
+
+    preflight = commands.add_parser("preflight")
+    final_inputs(preflight, required=False)
+    historical = commands.add_parser("preflight-historical")
+    historical.add_argument("policy", type=Path)
+    historical.add_argument("--qa-root", type=Path, required=True)
+    historical.add_argument("--selection-report", type=Path, required=True)
+    build = commands.add_parser("build")
+    final_inputs(build, required=True)
+    build.add_argument("--dataset-root", type=Path, required=True)
+    build.add_argument("--gender-files", type=Path, nargs="+", required=True)
+    build.add_argument("--out-root", type=Path, required=True)
+    build.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
+    build.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
+    build.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    build.add_argument("--device", default="mps")
+    build.add_argument("--shard-size", type=int, default=32)
+    build.add_argument("--alignment-seed", type=int, default=1234)
+    build.add_argument("--target-delay-ratio", type=float, default=0.5)
     return parser.parse_args()
 
 
@@ -142,85 +158,16 @@ def load_genders(paths: list[Path]) -> tuple[dict[str, str], list[dict[str, str]
 
 
 def load_inputs(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    plan_path = args.plan.expanduser().resolve()
     accepted_path = args.accepted.expanduser().resolve()
     selection_path = args.selection.expanduser().resolve()
     report_path = args.qa_report.expanduser().resolve()
-    plan = read_jsonl(plan_path)
-    accepted = read_jsonl(accepted_path)
-    selections = read_jsonl(selection_path)
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report.get("schema_version") != QA_SCHEMA or report.get("decision") != "go":
-        raise RuntimeError("Final full QA report must have decision=go")
-    outputs = report.get("outputs", {})
-    if outputs.get("accepted") != attestation(accepted_path) or outputs.get(
-        "selection"
-    ) != attestation(selection_path):
-        raise RuntimeError("Accepted/selection manifests are not bound to the QA report")
-    plan_record = report.get("inputs", {}).get("plan", {})
-    if plan_record != attestation(plan_path):
-        raise RuntimeError("Generation plan is not bound to the QA report")
-    campaign_config = (
-        report.get("inputs", {}).get("campaign_artifacts", {}).get("campaign_config", {})
+    provenance = validate_finalized(
+        args.production_plan, accepted_path, selection_path, report_path
     )
-    if campaign_config != attestation(Path(str(campaign_config.get("path", "")))):
-        raise RuntimeError("Frozen TTS campaign config changed")
-    plan_by_id = {str(row.get("id", "")): row for row in plan}
-    accepted_by_id = {str(row.get("id", "")): row for row in accepted}
-    selection_by_id = {str(row.get("id", "")): row for row in selections}
-    if (
-        not accepted
-        or any(row.get("schema_version") != CAMPAIGN_SCHEMA for row in plan)
-        or any(row.get("eligibility_split") not in {"train", "dev"} for row in plan)
-        or len(plan_by_id) != len(plan)
-        or len(accepted_by_id) != len(accepted)
-        or len(selection_by_id) != len(selections)
-    ):
-        raise RuntimeError("Invalid scope, schema, or duplicate ids in cache inputs")
-    if set(accepted_by_id) - set(plan_by_id) or set(selection_by_id) != set(plan_by_id):
-        raise RuntimeError("Plan, selection, and accepted scopes disagree")
-    for row_id, row in accepted_by_id.items():
-        planned = plan_by_id[row_id]
-        selected = selection_by_id[row_id]
-        if (
-            selected.get("status") != "accepted"
-            or row.get("eligibility_split") not in {"train", "dev"}
-            or planned.get("eligibility_split") != row.get("eligibility_split")
-            or row.get("schema_version") != QA_SCHEMA
-        ):
-            raise RuntimeError(f"Invalid accepted cache row: {row_id}")
-        if (
-            row.get("source_audio") != planned.get("source_audio")
-            or row.get("source_provenance") != planned.get("source_provenance")
-            or row.get("reference") != planned.get("reference")
-        ):
-            raise RuntimeError(f"Accepted provenance differs from plan: {row_id}")
-        selected_candidate = next(
-            (
-                candidate
-                for candidate in selected.get("candidates", [])
-                if candidate.get("candidate_id") == selected.get("selected_candidate_id")
-            ),
-            None,
-        )
-        if (
-            selected_candidate is None
-            or selected_candidate.get("attempt") != row.get("target_audio", {}).get("attempt")
-            or selected_candidate.get("metric_sha256")
-            != row.get("target_qa", {}).get("metric_sha256")
-            or selected_candidate.get("audio_sha256") != row.get("target_audio", {}).get("sha256")
-        ):
-            raise RuntimeError(f"Accepted QA selection provenance mismatch: {row_id}")
-        target = Path(str(row.get("target_audio", {}).get("path", "")))
-        if not target.is_file() or sha256_file(target) != row.get("target_audio", {}).get("sha256"):
-            raise RuntimeError(f"Selected target audio changed: {row_id}")
-    return sorted(accepted, key=lambda row: (row["eligibility_split"], row["id"])), {
-        "plan": attestation(plan_path),
-        "accepted": attestation(accepted_path),
-        "selection": attestation(selection_path),
-        "qa_report": attestation(report_path),
-        "campaign_config": campaign_config,
-    }
+    accepted = read_jsonl(accepted_path)
+    if not accepted:
+        raise RuntimeError("A GO cache cannot have zero accepted rows")
+    return sorted(accepted, key=lambda row: (row["eligibility_split"], row["id"])), provenance
 
 
 def supervision_counts(text_start: int, token_count: int, frames: int) -> dict[str, Any]:
@@ -399,6 +346,35 @@ def write_indexes(torch: Any, out_root: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.action == "preflight-historical":
+        print(
+            json.dumps(
+                validate_historical(args.policy, args.qa_root, args.selection_report),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    if args.action == "preflight":
+        final_paths = (args.accepted, args.selection, args.qa_report)
+        if any(final_paths) and not all(final_paths):
+            raise RuntimeError(
+                "Preflight requires all or none of --accepted, --selection, and --qa-report"
+            )
+        try:
+            result = (
+                validate_finalized(
+                    args.production_plan, args.accepted, args.selection, args.qa_report
+                )
+                if all(final_paths)
+                else validate_live_state(args.production_plan)
+            )
+        except IncompleteCampaign as error:
+            result = {"state": "incomplete", "cache_ready": False, "reason": str(error)}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result.get("state") != "ready":
+            raise SystemExit(3)
+        return
     if args.device != "mps" or os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "0") == "1":
         raise RuntimeError("VIVOS cache construction requires native PyTorch Mimi on MPS")
     if args.shard_size <= 0 or args.target_delay_ratio != 0.5:
@@ -511,19 +487,6 @@ def main() -> None:
                 if gender is None:
                     raise RuntimeError(f"Missing gender for {row['speaker_id']}")
                 translation = row["source_provenance"]["translation"]
-                generation_sidecar = row["target_audio"]["generation_sidecar"]
-                sidecar_path = Path(str(generation_sidecar["path"])).resolve()
-                if sha256_file(sidecar_path) != generation_sidecar["sha256"]:
-                    raise RuntimeError(f"Generation sidecar changed: {row_id}")
-                generated = json.loads(sidecar_path.read_text(encoding="utf-8"))
-                if (
-                    generated.get("id") != row_id
-                    or generated.get("attempt") != row["target_audio"]["attempt"]
-                    or generated.get("seed") != row["target_audio"]["seed"]
-                    or generated.get("synthesis") != row["target_audio"]["synthesis"]
-                    or generated.get("audio_sha256") != row["target_audio"]["sha256"]
-                ):
-                    raise RuntimeError(f"Generation sidecar provenance mismatch: {row_id}")
                 sample = {
                     "id": row_id,
                     "split": split,
@@ -566,27 +529,33 @@ def main() -> None:
                     },
                     "translation": translation,
                     "tts": {
-                        "campaign": inputs["plan"],
-                        "campaign_config": inputs["campaign_config"],
-                        "model": row["target_audio"]["synthesis"],
+                        "production_plan": inputs["production_plan"],
+                        "production_attestation": inputs["production_attestation"],
+                        "policy": inputs["policy"],
+                        "validation_go": inputs["validation_go"],
+                        "source_plan": inputs["source_plan"],
+                        "model": row["target_audio"]["model"],
+                        "synthesis": row["target_audio"]["synthesis"],
                         "selected_attempt": row["target_audio"]["attempt"],
-                        "seed": row["target_audio"]["seed"],
+                        "selected_attempt_name": row["target_audio"]["attempt_name"],
+                        "rng": row["target_audio"]["rng"],
                         "reference_id": row["reference"]["reference_id"],
                         "reference_audio_sha256": row["reference"]["reference_audio_sha256"],
                         "reference_text_vi_sha256": row["reference"]["reference_text_vi_sha256"],
                         "reference_source_audit_row_sha256": row["reference"][
                             "source_audit_row_sha256"
                         ],
-                        "generation_sidecar": {
-                            **generation_sidecar,
-                        },
-                        "model_snapshot": generated["model_snapshot"],
-                        "generation_runtime": generated["runtime"],
+                        "generation_provenance": row["target_audio"]["generation_provenance"],
                         "target_wav": {
                             "path": str(target_path),
                             "sha256": row["target_audio"]["sha256"],
                         },
+                        "generated_codes": {
+                            "path": row["target_audio"]["codes"],
+                            "sha256": row["target_audio"]["codes_sha256"],
+                        },
                         "qa_row_sha256": row["target_qa"]["metric_sha256"],
+                        "qa": row["target_qa"],
                     },
                     "mimi": {"weights": config["weights"], "runtime": runtime},
                     "text_en": row["text_en"],
