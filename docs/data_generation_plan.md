@@ -475,9 +475,85 @@ Attempt 1 is reserved for an explicit later retry-id JSONL containing one
   --device mps --attempt 1 --retry-ids <retry-ids.jsonl>
 ```
 
-Do not select retries, run target QA, build Mimi caches, or upload artifacts in
-this phase. `generation_attempts.jsonl` is only the deterministic assembly of
-validated immutable attempt sidecars.
+`generation_attempts.jsonl` is only the deterministic assembly of validated
+immutable attempt sidecars. Attempt 0 was launched locally on 2026-08-04.
+
+#### Full VIVOS target QA and final selection v1
+
+Target QA is a separate MPS-only boundary and never edits generation outputs.
+It pins Whisper large-v3-turbo and WavLM Base+ SV at the same revisions as the
+pilot, uses float32/eager attention with explicit Whisper and WavLM attention
+masks, and checkpoints one immutable metric sidecar per generated candidate.
+It is safe to rerun after generation pauses or completes: each invocation
+scores the sidecars visible at startup and reports progress. Do not run the MLX
+generator and PyTorch scorer concurrently on the same MPS device. The final
+attempt metric manifest is frozen only when `generation_attempts.jsonl` proves
+exact coverage.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-qa-mps \
+  python training-data/qa_vivos_full.py score-attempt \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_plan.jsonl \
+  --campaign-config /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/campaign_config.json \
+  --approval /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/approval_override.json \
+  --source-audit-report /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_full_v1/audit_report.json \
+  --reference-map /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/reference_map.jsonl \
+  --reference-report /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/reference_map_report.json \
+  --generation-manifest /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_attempts.jsonl \
+  --dataset-root /Volumes/data/datasets/hibiki_vi_v2 \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1 \
+  --attempt 0 --device mps
+```
+
+Attempt-0 completion freezes `attempt0_generation.jsonl`,
+`attempt0_metrics.jsonl`, `attempt0_report.json`, and deterministic
+`retry_ids.jsonl`. A candidate is
+retried if it fails any existing waveform hard gate, target/source duration
+ratio 0.4–1.8, English WER at most 0.50, zero reference-only Vietnamese trigram
+matches, or WavLM cosine at least 0.85. There is no adaptive reference, model,
+configuration, or threshold fallback. Generate the exact retry manifest with
+the attempt-1 command above, then score it with the same command plus:
+
+```text
+--attempt 1 \
+--retry-ids /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1/retry_ids.jsonl
+```
+
+After attempt 1 completes, finalize without a review file first. This freezes
+machine selection and emits `manual_review_required.tsv`; the aggregate report
+can never say `go` and reports `pending_manual_review` when machine gates pass.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-qa-mps \
+  python training-data/qa_vivos_full.py finalize \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_plan.jsonl \
+  --campaign-config /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/campaign_config.json \
+  --approval /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/approval_override.json \
+  --source-audit-report /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_full_v1/audit_report.json \
+  --reference-map /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/reference_map.jsonl \
+  --reference-report /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/reference_map_report.json \
+  --generation-manifest /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/generation_attempts.jsonl \
+  --dataset-root /Volumes/data/datasets/hibiki_vi_v2 \
+  --attempt0-metrics /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1/attempt0_metrics.jsonl \
+  --retry-ids /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1/retry_ids.jsonl \
+  --attempt1-metrics /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1/attempt1_metrics.jsonl \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_v3_full_v1/qa_full_v1
+```
+
+If `retry_ids.jsonl` is empty, omit `--attempt1-metrics`. Review the
+hash-seeded 120 selected candidates and every failed attempt/rejected row in
+the emitted TSV. Its required editable columns are `candidate_id`, `status`
+(`pass`/`fail`), `prompt_leak` (`yes`/`no`), and `notes`. Rerun finalize with
+`--manual-review .../manual_review_required.tsv`. It selects attempt 0 when it
+passes, otherwise attempt 1 when it passes, otherwise rejects the row while
+retaining both candidates. Outputs are `selection.jsonl`, `accepted.jsonl`,
+`rejected.jsonl`, and `aggregate_report.json`.
+
+The corpus gate requires selected word-weighted WER at most 0.08, median
+selected-row cosine at least 0.90, zero accepted automatic prompt leaks, a
+passing/no-leak seeded sample, and recorded review of every failure and
+rejection. Missing review is always pending, never an implicit pass. Mimi
+encoding and publication remain blocked until this gate says `go`.
 
 ## Alignment and target construction
 
