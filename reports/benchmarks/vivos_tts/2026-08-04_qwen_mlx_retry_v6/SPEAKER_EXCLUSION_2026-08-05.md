@@ -48,3 +48,15 @@ exclusion records. Finalization, provenance validation, cache validation,
 release metadata, and the dataset card independently preserve and verify this
 scope. Failed media remain packaged as attempt/QA provenance metadata but are
 not training samples.
+
+## Pause at 05:53 ICT
+
+The user requested a full pause. The replacement QA had resumed 248 additional
+rows, bringing the immutable attempt-0 metric total to 8,993/10,950, but its
+supervisor and QA process were no longer live when the pause audit began. The
+command history has a spawned record and no completed record for this scoring
+invocation; no cause is asserted without evidence. The remaining unattended
+release waiter was explicitly stopped. At the terminal check there were no
+generation, QA, retry, cache, release, or upload processes; Mimi cache and
+release directories did not exist. Resume must audit the interrupted scoring
+record and continue from the 8,993 immutable row files.
