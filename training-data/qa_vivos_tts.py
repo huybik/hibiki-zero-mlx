@@ -433,13 +433,17 @@ def score(args: argparse.Namespace) -> None:
     mlx_spec = MLX_PILOT_SPECS.get(pilot_schema)
     if mlx_spec is not None and mlx_spec["source_audit_required"]:
         if args.source_audit_report is None:
-            raise RuntimeError("MLX pilot v2 QA requires --source-audit-report")
+            raise RuntimeError(
+                f"Audited MLX schema {pilot_schema} QA requires --source-audit-report"
+            )
         source_audit_attestation = validate_source_audit_report(
             plan_path, plan_rows, args.source_audit_report
         )
     else:
         if args.source_audit_report is not None:
-            raise RuntimeError("--source-audit-report is only valid for MLX pilot v2")
+            raise RuntimeError(
+                "--source-audit-report is only valid for registered audited MLX schemas"
+            )
         source_audit_attestation = None
     input_paths = validate_audio_inputs(plan_rows, args.dataset_root)
     config_path = plan_path.parent / "pilot_config.json"

@@ -166,8 +166,8 @@ metadata. An independent audit found zero provenance or hash disagreements, and
 an idempotent finalization reproduced the same three target hashes. Batch state,
 raw requests/responses, QA JSON, and human-review TSV live under
 `/Volumes/data/datasets/hibiki_vi_v2/{batches,qa,targets}`. Only immutable MLX
-v1 pilot English audio has been generated; no Mimi cache or VIVOS artifact has
-been published.
+v1/v2 pilot English audio has been generated; no Mimi cache or VIVOS artifact
+has been published.
 
 ### VIVOS timbre-preserving TTS pilots
 
@@ -281,73 +281,88 @@ MLX synthesis and pinned PyTorch QA require separate environments:
   torch==2.13.0 transformers==4.57.3 sacrebleu==2.6.0 scipy==1.16.2 soundfile
 ```
 
-#### MLX pilot v2 — preregistered remediation, not generated
+#### MLX pilot v2 — immutable no-go
 
 V2 keeps the same eight target ids, two seeds, model revisions, snapshot hashes,
 Kokoro controls, and frozen QA thresholds. Only two synthesis inputs change:
 SPK26 uses reference `vivos:train:VIVOSSPK26_093`, and requested temperature is
-0.7. MLX-Audio's effective ICL repetition penalty remains 1.5. The new schema is
-`hibiki_vivos_qwen3_tts_mlx_pilot_v2`; artifacts belong only under
-`vivos_qwen3_tts_mlx_pilot_v2`.
+0.7. MLX-Audio's effective ICL repetition penalty remains 1.5.
 
-Prepare the distinct 8-speaker/16-output v2 plan:
+V2 generated all 16 MLX candidates and eight controls and is also a `no_go`.
+The new reference removed the v1 failure: automatic prompt-leak matches were
+zero and MLX won the timbre comparison for all eight speakers. Aggregate WER
+was 0.0539216 versus Kokoro 0.0098039, still 0.0441176 worse and outside the
+frozen 0.03 margin. The only catastrophic row was SPK13 seed `20260803` at WER
+0.6667. V2 artifacts are immutable evidence.
+
+#### MLX pilot v3 — preregistered, not generated
+
+V3 preserves the exact v2 speaker/target/reference tuple (including
+`VIVOSSPK26_093`), seeds, model/package revisions, snapshot hashes, effective
+ICL repetition penalty, Kokoro controls, and frozen QA thresholds. Its only
+change is requested temperature 0.7 to 0.8. The schema is
+`hibiki_vivos_qwen3_tts_mlx_pilot_v3`; artifacts belong only under
+`vivos_qwen3_tts_mlx_pilot_v3`.
+
+Prepare the distinct 8-speaker/16-output v3 plan:
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python training-data/synthesize_vivos.py prepare-mlx-v2 \
+/opt/homebrew/Caskroom/miniconda/base/bin/python training-data/synthesize_vivos.py prepare-mlx-v3 \
   /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_train.jsonl \
   /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_dev.jsonl \
   --kokoro-voice-map /Volumes/data/datasets/voice_bank/vi_to_en_voices.json \
-  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3
 ```
 
 Before generation, audit all eight target clips and all eight clone references.
-The v2 report proves the plan hash, target/reference roles and bijection, audio
+The v3 report proves the plan hash, target/reference roles and bijection, audio
 and text hashes, accepted-manifest provenance, and exact 16-source coverage. It
 reports pinned-Whisper WER/CER and waveform/speaker/duration slices but freezes
-no numeric source threshold:
+no numeric source threshold. V2's report cannot be reused because audit
+attestations are bound to the exact plan path, schema, and hash:
 
 ```bash
 /opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-qa-mps \
   python training-data/qa_vivos_source.py \
   /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_train.jsonl \
   /Volumes/data/datasets/hibiki_vi_v2/targets/vivos_gemini_3_6_flash_full_v1_dev.jsonl \
-  --pilot-plan /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2/pilot_plan.jsonl \
-  --out-dir /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_pilot_v2 --device mps
+  --pilot-plan /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/pilot_plan.jsonl \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_pilot_v3 --device mps
 ```
 
 Pause here and manually listen to every one of the eight clone references while
 reading its Vietnamese transcript. The automated audit validates artifacts; it
-does not grant human acceptance. Only after this source-reference review may v2
+does not grant human acceptance. Only after this source-reference review may v3
 generation start. `generate-mlx` requires and records the audit report
 attestation in every output row:
 
 ```bash
 /opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-mlx \
   python training-data/synthesize_vivos.py generate-mlx \
-  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2/pilot_plan.jsonl \
-  --source-audit-report /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_pilot_v2/audit_report.json \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/pilot_plan.jsonl \
+  --source-audit-report /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_pilot_v3/audit_report.json \
   --dataset-root /Volumes/data/datasets/hibiki_vi_v2 --device mps
 /opt/homebrew/Caskroom/miniconda/base/bin/conda run -n phomt-data \
   python training-data/synthesize_vivos.py generate-kokoro \
-  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2/pilot_plan.jsonl
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/pilot_plan.jsonl
 ```
 
-Score v2 on MPS in explicit float32/eager mode with every existing frozen gate
+Score v3 on MPS in explicit float32/eager mode with every existing frozen gate
 unchanged:
 
 ```bash
 /opt/homebrew/Caskroom/miniconda/base/bin/conda run -n vivos-qa-mps \
   python training-data/qa_vivos_tts.py \
-  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2/pilot_plan.jsonl \
-  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2/mlx_generation.jsonl \
-  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2/kokoro_generation.jsonl \
-  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v2/qa \
-  --source-audit-report /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_pilot_v2/audit_report.json \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/pilot_plan.jsonl \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/mlx_generation.jsonl \
+  /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/kokoro_generation.jsonl \
+  --out-dir /Volumes/data/datasets/hibiki_vi_v2/tts/vivos_qwen3_tts_mlx_pilot_v3/qa \
+  --source-audit-report /Volumes/data/datasets/hibiki_vi_v2/qa/vivos_source_asr_mps_pilot_v3/audit_report.json \
   --dataset-root /Volumes/data/datasets/hibiki_vi_v2 \
   --manual-review <pilot-review.tsv> --device mps
 ```
 
-Pause again for manual review of all 24 v2 candidates: 16 MLX replicas and eight
+Pause again for manual review of all 24 v3 candidates: 16 MLX replicas and eight
 matched Kokoro controls. No bulk synthesis, Mimi encoding, packaging, or upload
 starts until all 24 reviews are present and `gate_report.json` says `go`.
 

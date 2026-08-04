@@ -42,6 +42,7 @@ GENERATION_CONFIG = {
 
 MLX_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_pilot_v1"
 MLX_V2_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_pilot_v2"
+MLX_V3_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_pilot_v3"
 SOURCE_AUDIT_SCHEMA = "hibiki_vivos_source_asr_audit_v2"
 MLX_PACKAGE_VERSION = "0.4.7"
 MLX_PACKAGE_COMMIT = "2c9461f5d8315fa8e7013ab2729495b2bb83d384"
@@ -62,6 +63,7 @@ MLX_GENERATION_CONFIG = {
     "stream": False,
 }
 MLX_V2_GENERATION_CONFIG = {**MLX_GENERATION_CONFIG, "temperature": 0.7}
+MLX_V3_GENERATION_CONFIG = {**MLX_V2_GENERATION_CONFIG, "temperature": 0.8}
 MLX_MODEL_FILES_SHA256 = {
     ".gitattributes": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
     "README.md": "cf921813a02b37002f73b636991a52d9385bb4a81a9ff2dc61a178d1f6e27587",
@@ -174,6 +176,11 @@ MLX_PILOT_SPECS = {
         "generation_config": MLX_V2_GENERATION_CONFIG,
         "source_audit_required": True,
     },
+    MLX_V3_SCHEMA: {
+        "speakers": MLX_V2_PILOT_SPEAKERS,
+        "generation_config": MLX_V3_GENERATION_CONFIG,
+        "source_audit_required": True,
+    },
 }
 
 
@@ -204,6 +211,14 @@ def parse_args() -> argparse.Namespace:
     prepare_mlx_v2.add_argument("--out-dir", type=Path, required=True)
     prepare_mlx_v2.add_argument("--dataset-root", type=Path)
     prepare_mlx_v2.add_argument("--kokoro-voice-map", type=Path, required=True)
+
+    prepare_mlx_v3 = subparsers.add_parser(
+        "prepare-mlx-v3", help="Build the immutable remediated MLX-Audio v3 plan."
+    )
+    prepare_mlx_v3.add_argument("manifests", type=Path, nargs="+")
+    prepare_mlx_v3.add_argument("--out-dir", type=Path, required=True)
+    prepare_mlx_v3.add_argument("--dataset-root", type=Path)
+    prepare_mlx_v3.add_argument("--kokoro-voice-map", type=Path, required=True)
 
     generate = subparsers.add_parser(
         "generate", help="Run the prepared plan in a qwen-tts CUDA environment."
@@ -1063,14 +1078,17 @@ def generate_mlx(
     if mlx_spec["source_audit_required"]:
         if source_audit_report is None:
             raise RuntimeError(
-                "MLX pilot v2 requires --source-audit-report before generation"
+                f"Audited MLX schema {schema} requires --source-audit-report "
+                "before generation"
             )
         source_audit_attestation = validate_source_audit_report(
             plan_path, rows, source_audit_report
         )
     else:
         if source_audit_report is not None:
-            raise RuntimeError("--source-audit-report is only valid for MLX pilot v2")
+            raise RuntimeError(
+                "--source-audit-report is only valid for registered audited MLX schemas"
+            )
         source_audit_attestation = None
     if device != "mps":
         raise RuntimeError(
@@ -1401,6 +1419,14 @@ def main() -> None:
             args.dataset_root,
             args.kokoro_voice_map,
             mlx_schema=MLX_V2_SCHEMA,
+        )
+    elif args.action == "prepare-mlx-v3":
+        prepare(
+            args.manifests,
+            args.out_dir,
+            args.dataset_root,
+            args.kokoro_voice_map,
+            mlx_schema=MLX_V3_SCHEMA,
         )
     elif args.action == "generate":
         generate(args.plan, args.device, args.dataset_root)
