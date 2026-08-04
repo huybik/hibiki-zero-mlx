@@ -22,3 +22,9 @@ The mixed prefix was validated live at 679 committed groups / 5,349 rows with ze
 Generation now runs in `hibiki_vivos_qwen_v6_attempt0_repair1_20260804`. The new supervisor `hibiki_vivos_qwen_v6_postprocess_repair1_20260804` is bound to the repaired plan and worker PID and is in `waiting_attempt0`; it will still stop before cache/publication at the manual-review gate.
 
 One failed read-only inspection is retained: the first post-repair timing-summary script treated `production_*` group IDs from the plan as attempt-directory names and raised `FileNotFoundError`. Replacing only that prefix with `attempt0_t08_` produced the 11-group summary. Generation was unaffected. Exact structured evidence is in `repair.json`, appended `raw_samples.jsonl`, `bindings.json`, and the archived one-shot contract constructor.
+
+## Live speed observation
+
+At 21:19:46 ICT, generation had completed 754/1,391 groups and 5,936 rows. The latest 25 groups ran at **20.03 rows/min and 2.72× realtime**; the latest 50 ran at **19.92 rows/min and 2.68× realtime**.
+
+The raw row rate is not comparable to the pre-fix headline without duration normalization: the latest 50 repaired groups average 8.07 seconds of generated audio per row, while the final 50 pre-fix groups average only 3.63 seconds. Their raw rates are therefore 19.92 versus 39.36 rows/min, but audio throughput is **2.68× versus 2.38× realtime**, or 12.6% higher after repair. This is an observational, speaker/workload-dependent comparison—not a controlled speed A/B—but it provides no evidence that per-group cache clearing slowed duration-normalized synthesis.

@@ -1,0 +1,44 @@
+{
+  "schema_version": "hibiki_vivos_qwen_mlx_repair_speed_observation_v1",
+  "captured_local": "2026-08-04T21:19:46+07:00",
+  "completed_scope": {
+    "groups": 754,
+    "rows": 5936
+  },
+  "post_fix_last_25_groups": {
+    "group_range": [730, 754],
+    "groups": 25,
+    "rows": 200,
+    "wall_seconds": 599.1979082935723,
+    "rows_per_minute": 20.02677217978654,
+    "generated_audio_hours": 0.4522888888888889,
+    "audio_seconds_per_row": 8.1412,
+    "realtime_factor": 2.7173659611679697
+  },
+  "post_fix_last_50_groups": {
+    "group_range": [705, 754],
+    "groups": 50,
+    "rows": 394,
+    "wall_seconds": 1186.5288191646105,
+    "rows_per_minute": 19.923662719498058,
+    "generated_audio_hours": 0.883,
+    "audio_seconds_per_row": 8.068020304568528,
+    "realtime_factor": 2.679075256038089
+  },
+  "pre_fix_last_50_groups": {
+    "group_range": [619, 668],
+    "groups": 50,
+    "rows": 396,
+    "wall_seconds": 603.6176822908456,
+    "rows_per_minute": 39.36266397933576,
+    "generated_audio_hours": 0.3990888888888889,
+    "audio_seconds_per_row": 3.628080808080808,
+    "realtime_factor": 2.380182095639363
+  },
+  "interpretation": {
+    "current_raw_rate": "about 20 rows/minute",
+    "raw_rate_confound": "post-fix outputs in the compared window average 8.07 seconds versus 3.63 seconds before the fix",
+    "duration_normalized_change_percent": 12.557574793063432,
+    "conclusion": "no observed duration-normalized slowdown; the repaired recent window generated audio 12.6% faster than real time relative to the pre-fix window, but this is an observational workload comparison rather than a controlled A/B"
+  }
+}

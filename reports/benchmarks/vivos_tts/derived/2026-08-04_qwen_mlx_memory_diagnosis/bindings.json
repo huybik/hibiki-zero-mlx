@@ -26,7 +26,8 @@
   "repair_evidence": [
     {"path": "reports/benchmarks/vivos_tts/derived/2026-08-04_qwen_mlx_memory_diagnosis/repair.json", "sha256": "5d1c926c5cc9a8112a5f1c662453cdcb6a3cd028de7cce9042a7724f87b9c655"},
     {"path": "reports/benchmarks/vivos_tts/derived/2026-08-04_qwen_mlx_memory_diagnosis/repair_contract_creation.py", "sha256": "c46c453fa2e5a0f83dafe12090c12b63d1ec6dff57958b706a7bec9b28a8b993"},
-    {"path": "reports/benchmarks/vivos_tts/derived/2026-08-04_qwen_mlx_memory_diagnosis/repair_metrics.md", "sha256": "6f1803e23dc495c03f527ef547ddb3c7b523fa1dbe0c13b90b9854cfcee6c05a"}
+    {"path": "reports/benchmarks/vivos_tts/derived/2026-08-04_qwen_mlx_memory_diagnosis/repair_metrics.md", "sha256": "9ea069cd191d29f0e754148d3e74771c82a65013d29b2fce1829d51d581cb1b6"},
+    {"path": "reports/benchmarks/vivos_tts/derived/2026-08-04_qwen_mlx_memory_diagnosis/speed_after_fix.json", "sha256": "3dcaf6ee7025ebdfe7a63e8da3d2e84b5c1bfef42dd1de8e9e9c554d3be77e41"}
   ],
   "scripts": [
     {"path": "training-data/benchmark_vivos_qwen_mlx_retry_v6.py", "sha256": "eefd76995be2550f55583c7af2cfc00a18ab7cc1e696324966ae3e984330a51d"},
