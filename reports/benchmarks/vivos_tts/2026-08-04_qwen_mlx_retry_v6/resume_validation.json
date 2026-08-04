@@ -1,0 +1,37 @@
+{
+  "candidate_validation": {
+    "attempt0_t08": {
+      "candidate_sha256": "366bc5ab99745eaca18307b98468335404f9c71285acb49a8993b672f64ab42c",
+      "raw_results_sha256": "39e6602cc1cc85b0f2cd3130c253500a2abeb674344ba3a65d75c1e3357c6bb7",
+      "rows": 64,
+      "row_bijection": true,
+      "wav_and_code_hashes_valid": true,
+      "resume_decision": "skip all completed groups"
+    },
+    "retry1_t07": {
+      "candidate_sha256": "6a8f55da92e311a322052bf223ae3bff3acd9b303e0a84f76d4655a6a17468e6",
+      "raw_results_sha256": "49e05fad3ae7145fcbd818631c68a081eda85471f2f9c7d1511b57b1911d294c",
+      "rows": 21,
+      "row_bijection": true,
+      "wav_and_code_hashes_valid": true,
+      "resume_decision": "skip all completed groups"
+    }
+  },
+  "policy": {
+    "sha256": "aa147c8c2b8a5f29d9d71d3e2e9c81d0753abcb65de6abff5ac7281643a6b294",
+    "all_script_helper_and_history_hashes_valid": true,
+    "cohort_disjoint_from_attested_history": true
+  },
+  "production": {
+    "attestation_sha256": "b14d428778e65292708887e5a9fd15df26c4e96c308e15addd0a63d8cc752b4e",
+    "generation_launched": false,
+    "groups": 1391,
+    "plan_sha256": "56aafbc31049cd83409f20a157327dbcd16bf70fcea720f0b4680e4ff3b2f73c",
+    "rows": 10950,
+    "source_row_bijection": true,
+    "model_package_script_bindings_validated": true,
+    "validated": true
+  },
+  "schema_version": "hibiki_vivos_qwen3_tts_mlx_retry_resume_validation_v6",
+  "selection_sha256": "e4243364feb2901e9490dac801ffb985f87f1f22f9386f40c81c150b5103d680"
+}

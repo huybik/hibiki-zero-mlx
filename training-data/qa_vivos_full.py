@@ -405,6 +405,40 @@ def row_failures(metric: dict[str, Any]) -> list[str]:
     return failures
 
 
+def select_best_passing_candidate(
+    candidates: list[dict[str, Any]], attempt_order: list[int]
+) -> dict[str, Any] | None:
+    """Select the lowest-error candidate that passes every frozen row gate."""
+    order = {attempt: index for index, attempt in enumerate(attempt_order)}
+    if len(order) != len(attempt_order):
+        raise RuntimeError("Candidate attempt order must be unique")
+    passing = [
+        metric
+        for metric in candidates
+        if (metric.get("retry_gate_pass") is True or metric.get("row_gate_pass") is True)
+        and metric.get("failure_reasons") == []
+        and metric.get("asr_wer") is not None
+        and float(metric["asr_wer"]) <= ROW_THRESHOLDS["asr_wer_max"]
+    ]
+    if not passing:
+        return None
+    if any(metric.get("attempt") not in order for metric in passing):
+        raise RuntimeError("Candidate is outside the immutable attempt order")
+    if any(
+        metric.get("asr_word_errors") is None or metric.get("asr_wer") is None
+        for metric in passing
+    ):
+        raise RuntimeError("Passing candidates require ASR error counts")
+    return min(
+        passing,
+        key=lambda metric: (
+            int(metric["asr_word_errors"]),
+            float(metric["asr_wer"]),
+            order[int(metric["attempt"])],
+        ),
+    )
+
+
 def speaker_embedding(audio_16k: Any, extractor: Any, model: Any, torch: Any, device: str) -> Any:
     inputs = extractor(
         audio_16k,
@@ -957,7 +991,7 @@ def finalize(args: argparse.Namespace) -> None:
         for metric in candidates:
             if not metric["retry_gate_pass"]:
                 failed_candidates.add(str(metric["candidate_id"]))
-        selected = next((metric for metric in candidates if metric["retry_gate_pass"]), None)
+        selected = select_best_passing_candidate(candidates, [0, 1])
         candidate_summaries = [
             {
                 "candidate_id": metric["candidate_id"],
