@@ -4,6 +4,7 @@ MLX runtime for Kyutai's **Hibiki-Zero** (simultaneous speech-to-speech + speech
 
 - Upstream: https://github.com/kyutai-labs/hibiki-zero · https://arxiv.org/abs/2602.11072v1 · weights CC BY-NC-SA 4.0.
 - Python env: conda base at `/opt/homebrew/Caskroom/miniconda/base/bin/python` (py3.13; mlx 0.31, torch 2.13, moshi 0.2.13, rustymimi 0.4.1; `moshi-mlx/` and `hibiki_mlx` installed editable).
+- **Research record:** Document every material pipeline and experiment step as it happens: dated commands, exact configs/seeds/model and data revisions/hashes, inputs/outputs, metrics, logs, failures, corrective actions, and decision rationale. Failed, no-go, and abandoned attempts are evidence; never erase or relabel them, and preserve enough artifacts to reproduce and cite them in a scientific paper.
 
 ## Layout (repo root = `code/`)
 - `hibiki_mlx/` — THE runtime package (installed editable). `pipeline.py` = pipelined q4 inference `load(dir, quant)`/`run()`/`make_mimi()`/`resolve_weights_dir("3b"|"1b"|path)`; honors each model's config (dep_q, n_q, delays, conditioners). No `sys.path` hacks; weights anchor on repo root (`hibiki_mlx.pipeline.W = <root>/weights`, `MODEL_DIRS`).
