@@ -161,7 +161,8 @@ The repair preserves the file paths, schema, and rows, so the existing README
 in `dataset-viewer-repair-state.json` on the dataset repository; rerun `--apply`
 after an interruption. It downloads, rewrites, uploads, and deletes one shard at
 a time without retaining the dataset in the Hugging Face cache. Peak temporary
-disk use is approximately 1-1.5 GB.
+disk use is approximately 1-1.5 GB. Downloads use a 120-second read timeout and
+resume an interrupted partial shard automatically.
 
 ## Storage-Saving Resume Workflow
 

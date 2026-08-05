@@ -24,6 +24,7 @@ from pathlib import Path
 
 os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "0")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 # Do not let Xet retain repair data in its persistent caches. The shard cache
 # otherwise has a 16 GB default soft limit.
 os.environ.setdefault("HF_XET_CHUNK_CACHE_SIZE_BYTES", "0")
@@ -37,6 +38,7 @@ REPO = "anquachdev/PhoMT-en-vi-speech"
 DATA_DIR = "data"
 ROWS_PER_ROW_GROUP = 100
 STATE_FILE = "dataset-viewer-repair-state.json"
+DOWNLOAD_ATTEMPTS = 5
 
 
 def list_parquet_shards(api: HfApi) -> list[str]:
@@ -88,11 +90,29 @@ def verify_rewrite(path: Path, expected_rows: int, expected_schema) -> None:
         raise ValueError(f"Missing Parquet page index in {path.name}")
 
 
+def download_shard(path_in_repo: str, source_dir: Path) -> Path:
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            return Path(
+                hf_hub_download(REPO, path_in_repo, repo_type="dataset", local_dir=source_dir)
+            )
+        except Exception as error:
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            delay = min(10 * 2 ** (attempt - 1), 60)
+            print(
+                f"Download interrupted ({type(error).__name__}); resuming the partial shard "
+                f"in {delay}s ({attempt}/{DOWNLOAD_ATTEMPTS})...",
+                flush=True,
+            )
+            time.sleep(delay)
+
+    raise AssertionError("unreachable")
+
+
 def rewrite_shard(path_in_repo: str, source_dir: Path, staging: Path) -> dict:
     started_at = time.perf_counter()
-    source = Path(
-        hf_hub_download(REPO, path_in_repo, repo_type="dataset", local_dir=source_dir)
-    )
+    source = download_shard(path_in_repo, source_dir)
     old_size = source.stat().st_size
     staging.mkdir(parents=True, exist_ok=True)
     destination = staging / Path(path_in_repo).name
