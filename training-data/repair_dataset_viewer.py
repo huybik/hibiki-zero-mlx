@@ -8,6 +8,9 @@ preserving its schema and rows.
 Usage:
   python repair_dataset_viewer.py --pilot  # rewrite and validate one shard locally
   python repair_dataset_viewer.py --apply  # resumable in-place Hub repair
+
+Downloads bypass the persistent Hub cache. One source shard and one rewritten
+shard exist at a time, keeping peak temporary disk use around 1-1.5 GB.
 """
 
 from __future__ import annotations
@@ -21,20 +24,19 @@ from pathlib import Path
 
 os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "0")
+# Do not let Xet retain repair data in its persistent caches. The shard cache
+# otherwise has a 16 GB default soft limit.
+os.environ.setdefault("HF_XET_CHUNK_CACHE_SIZE_BYTES", "0")
+os.environ.setdefault("HF_XET_SHARD_CACHE_SIZE_LIMIT", "0")
 
 import pyarrow.parquet as pq
 from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 
-from paths import DATASETS_DIR
-
-
 REPO = "anquachdev/PhoMT-en-vi-speech"
 DATA_DIR = "data"
 ROWS_PER_ROW_GROUP = 100
-SHARDS_PER_COMMIT = 5
 STATE_FILE = "dataset-viewer-repair-state.json"
-STAGING = DATASETS_DIR / "dataset_viewer_repair"
 
 
 def list_parquet_shards(api: HfApi) -> list[str]:
@@ -86,34 +88,40 @@ def verify_rewrite(path: Path, expected_rows: int, expected_schema) -> None:
         raise ValueError(f"Missing Parquet page index in {path.name}")
 
 
-def rewrite_shard(path_in_repo: str, staging: Path) -> dict:
+def rewrite_shard(path_in_repo: str, source_dir: Path, staging: Path) -> dict:
     started_at = time.perf_counter()
-    source = Path(hf_hub_download(REPO, path_in_repo, repo_type="dataset"))
-    table = pq.read_table(source)
+    source = Path(
+        hf_hub_download(REPO, path_in_repo, repo_type="dataset", local_dir=source_dir)
+    )
+    old_size = source.stat().st_size
     staging.mkdir(parents=True, exist_ok=True)
     destination = staging / Path(path_in_repo).name
 
-    with tempfile.NamedTemporaryFile(dir=staging, suffix=".parquet", delete=False) as file:
-        temporary = Path(file.name)
     try:
-        pq.write_table(
-            table,
-            temporary,
-            compression="NONE",
-            row_group_size=ROWS_PER_ROW_GROUP,
-            write_page_index=True,
-        )
-        verify_rewrite(temporary, table.num_rows, table.schema)
-        temporary.replace(destination)
+        table = pq.read_table(source)
+        with tempfile.NamedTemporaryFile(dir=staging, suffix=".parquet", delete=False) as file:
+            temporary = Path(file.name)
+        try:
+            pq.write_table(
+                table,
+                temporary,
+                compression="NONE",
+                row_group_size=ROWS_PER_ROW_GROUP,
+                write_page_index=True,
+            )
+            verify_rewrite(temporary, table.num_rows, table.schema)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
     finally:
-        temporary.unlink(missing_ok=True)
+        source.unlink(missing_ok=True)
 
     return {
         "path": path_in_repo,
         "staged": str(destination),
         "rows": table.num_rows,
         "row_groups": pq.ParquetFile(destination).metadata.num_row_groups,
-        "old_size": source.stat().st_size,
+        "old_size": old_size,
         "new_size": destination.stat().st_size,
         "seconds": time.perf_counter() - started_at,
     }
@@ -163,30 +171,30 @@ def main() -> None:
     if not todo:
         return
 
-    if args.pilot:
-        result = rewrite_shard(todo[0], STAGING)
-        print(
-            f"PASS {result['path']}: {result['rows']} rows, {result['row_groups']} row groups, "
-            f"{format_size(result['old_size'])} -> {format_size(result['new_size'])}"
-        )
-        Path(result["staged"]).unlink(missing_ok=True)
-        return
+    with tempfile.TemporaryDirectory(prefix="phomt_viewer_repair_") as work_dir:
+        work_dir_path = Path(work_dir)
+        source_dir = work_dir_path / "source"
+        staging = work_dir_path / "staging"
 
-    started_at = time.perf_counter()
-    batch = []
-    for index, path in enumerate(todo, start=1):
-        result = rewrite_shard(path, STAGING)
-        batch.append(result)
-        print(
-            f"{index}/{len(todo)} {path}: {result['rows']} rows, {result['row_groups']} row groups, "
-            f"{result['seconds']:.0f}s",
-            flush=True,
-        )
-        if len(batch) == SHARDS_PER_COMMIT or index == len(todo):
-            commit_batch(api, batch, state)
+        if args.pilot:
+            result = rewrite_shard(todo[0], source_dir, staging)
+            print(
+                f"PASS {result['path']}: {result['rows']} rows, {result['row_groups']} row groups, "
+                f"{format_size(result['old_size'])} -> {format_size(result['new_size'])}"
+            )
+            return
+
+        started_at = time.perf_counter()
+        for index, path in enumerate(todo, start=1):
+            result = rewrite_shard(path, source_dir, staging)
+            print(
+                f"{index}/{len(todo)} {path}: {result['rows']} rows, "
+                f"{result['row_groups']} row groups, {result['seconds']:.0f}s",
+                flush=True,
+            )
+            commit_batch(api, [result], state)
             elapsed_hours = (time.perf_counter() - started_at) / 3600
             print(f"Committed {len(state['done'])}/{len(shards)} shards in {elapsed_hours:.2f}h")
-            batch = []
 
 
 if __name__ == "__main__":

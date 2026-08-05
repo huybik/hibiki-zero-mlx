@@ -159,7 +159,9 @@ python training-data/repair_dataset_viewer.py --apply
 The repair preserves the file paths, schema, and rows, so the existing README
 `configs` entry (`default` / `data/train-*`) needs no change. It records progress
 in `dataset-viewer-repair-state.json` on the dataset repository; rerun `--apply`
-after an interruption.
+after an interruption. It downloads, rewrites, uploads, and deletes one shard at
+a time without retaining the dataset in the Hugging Face cache. Peak temporary
+disk use is approximately 1-1.5 GB.
 
 ## Storage-Saving Resume Workflow
 
