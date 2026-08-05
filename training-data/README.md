@@ -142,6 +142,25 @@ and pushes to:
 anquachdev/PhoMT-en-vi-speech
 ```
 
+### Dataset Viewer compatibility
+
+Each 500-row audio shard is serialized as five 100-row Parquet row groups with
+a page index. This lets the Hugging Face Dataset Viewer fetch individual rows
+without scanning a roughly 500 MB shard, which exceeds its 300 MB scan limit.
+
+To repair shards uploaded before this layout was added, run a local validation
+first, then the resumable in-place rewrite:
+
+```bash
+python training-data/repair_dataset_viewer.py --pilot
+python training-data/repair_dataset_viewer.py --apply
+```
+
+The repair preserves the file paths, schema, and rows, so the existing README
+`configs` entry (`default` / `data/train-*`) needs no change. It records progress
+in `dataset-viewer-repair-state.json` on the dataset repository; rerun `--apply`
+after an interruption.
+
 ## Storage-Saving Resume Workflow
 
 Use this loop when local disk space is limited and the previous batches are
