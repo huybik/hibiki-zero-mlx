@@ -417,6 +417,7 @@ def dataset_card(cache: dict[str, Any]) -> bytes:
     dev_rows, dev_frames = index_summary(cache["indexes"]["dev"])
     audit = cache["audit"]
     exclusions = cache["config"]["inputs"]["speaker_exclusions"]
+    terminal = cache["config"]["inputs"]["terminal_pruning"]
     excluded = ", ".join(exclusions["speaker_ids"]) or "none"
     text = f"""---
 license: cc-by-nc-sa-4.0
@@ -449,6 +450,10 @@ records which of retry rounds 1 and 2 were not executed after the terminal GO.
 Release-level quality exclusions: `{excluded}` ({exclusions["rows"]} source
 rows). Their generated artifacts and QA remain in provenance metadata but are
 not present in the training cache.
+The user-selected terminal/no-retry policy removed a further
+`{terminal["rows"]}` highest-error row-gate-passing targets, using the frozen
+minimum-row corpus-WER pruning rule, so the published accepted subset passes
+the 8% aggregate WER gate without additional synthesis attempts.
 
 Extract both archives into one directory. Keep this VIVOS real-source cache
 separate from FLEURS and PhoMT so the trainer can enforce source-aware sampling.
@@ -645,6 +650,8 @@ def prepare(args: argparse.Namespace) -> None:
             "attempts": values["provenance"]["attempts"],
             "manual_evidence": values["provenance"]["manual_evidence"],
             "speaker_exclusions": values["provenance"]["speaker_exclusions"],
+            "terminal_policy": values["provenance"]["terminal_policy"],
+            "terminal_pruning": values["provenance"]["terminal_pruning"],
             "source": {
                 "repo_id": SOURCE_REPO,
                 "revision": SOURCE_REVISION,

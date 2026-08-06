@@ -93,6 +93,7 @@ class Supervisor:
         self.plan_path = args.production_plan.expanduser().resolve()
         self.production_root = self.plan_path.parent
         self.qa_root = args.qa_root.expanduser().resolve()
+        self.selection_root = args.selection_dir.expanduser().resolve()
         self.work = args.work_dir.expanduser().resolve()
         self.final_root = self.qa_root / "final"
         self.attempt0_pid = args.attempt0_pid
@@ -100,6 +101,7 @@ class Supervisor:
         self.supervisor_session = args.supervisor_session
         self.poll_seconds = args.poll_seconds
         self.exclude_speakers = sorted(args.exclude_speaker)
+        self.terminal_no_retry = args.terminal_no_retry
         self.events_path = self.work / "events.jsonl"
         self.history_path = self.work / "command_history.jsonl"
         self.state_path = self.work / "state.json"
@@ -140,15 +142,18 @@ class Supervisor:
             "schema_version": "hibiki_vivos_qwen3_tts_mlx_postprocess_supervisor_config_v6",
             "production_root": str(self.production_root),
             "qa_root": str(self.qa_root),
+            "selection_root": str(self.selection_root),
             "final_root": str(self.final_root),
             "work_dir": str(self.work),
             "attempt0": {"pid": self.attempt0_pid, "session": self.attempt0_session},
             "supervisor_session": self.supervisor_session,
             "poll_seconds": self.poll_seconds,
             "speaker_exclusions": self.exclude_speakers,
+            "terminal_no_retry": self.terminal_no_retry,
             "expected_scope": {"rows": EXPECTED_ROWS, "groups": EXPECTED_GROUPS},
             "python": {
-                "validator_selector_finalizer": str(BASE_PYTHON),
+                "validator": str(BASE_PYTHON),
+                "selector_finalizer": str(QA_PYTHON),
                 "generation": str(MLX_PYTHON),
                 "qa": str(QA_PYTHON),
             },
@@ -217,13 +222,13 @@ class Supervisor:
         return self.work / f"validation_attempt{attempt}.json"
 
     def retry_path(self, attempt: int) -> Path | None:
-        return None if attempt == 0 else self.qa_root / f"retry_round{attempt}.jsonl"
+        return None if attempt == 0 else self.selection_root / f"retry_round{attempt}.jsonl"
 
     def qa_report_path(self, attempt: int) -> Path:
         return self.qa_root / ATTEMPTS[attempt] / "qa_report.json"
 
     def selection_path(self, attempt: int) -> Path:
-        return self.qa_root / f"selection_round{attempt}.json"
+        return self.selection_root / f"selection_round{attempt}.json"
 
     def _file_inputs(self, command: list[str]) -> list[dict[str, str]]:
         inputs = []
@@ -448,7 +453,7 @@ class Supervisor:
         path = self.selection_path(through_round)
         if not path.is_file():
             command = [
-                str(BASE_PYTHON),
+                str(QA_PYTHON),
                 "training-data/qa_vivos_qwen_production_v6.py",
                 "select",
                 str(self.plan_path),
@@ -457,10 +462,12 @@ class Supervisor:
                 "--qa-root",
                 str(self.qa_root),
                 "--out-dir",
-                str(self.qa_root),
+                str(self.selection_root),
             ]
             for speaker_id in self.exclude_speakers:
                 command.extend(["--exclude-speaker", speaker_id])
+            if self.terminal_no_retry:
+                command.append("--terminal-no-retry")
             self.state(f"selecting_round{through_round}", "running frozen v6 selector")
             returncode, _ = self.run_logged(f"select_round{through_round}", command)
             if returncode or not path.is_file():
@@ -479,6 +486,8 @@ class Supervisor:
         ):
             self.halt("selection report has an invalid scope binding", round=through_round)
         if report["decision"] == "continue":
+            if self.terminal_no_retry:
+                self.halt("terminal no-retry selection requested another retry")
             retry = self.retry_path(through_round + 1)
             if retry is None or report.get("next_retry") != attest(retry):
                 self.halt("continue decision lacks the exact immutable retry manifest")
@@ -514,7 +523,7 @@ class Supervisor:
         if not aggregate.is_file():
             selection = self.selection_path(int(report["through_round"]))
             command = [
-                str(BASE_PYTHON),
+                str(QA_PYTHON),
                 "training-data/qa_vivos_qwen_production_v6.py",
                 "finalize",
                 str(self.plan_path),
@@ -565,12 +574,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("production_plan", type=Path)
     parser.add_argument("--qa-root", type=Path, required=True)
+    parser.add_argument("--selection-dir", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--attempt0-pid", type=int, required=True)
     parser.add_argument("--attempt0-session", required=True)
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--poll-seconds", type=int, default=30, choices=range(1, 61))
     parser.add_argument("--exclude-speaker", action="append", default=[])
+    parser.add_argument("--terminal-no-retry", action="store_true")
     return parser.parse_args()
 
 

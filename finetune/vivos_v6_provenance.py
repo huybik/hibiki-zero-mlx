@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,15 @@ ROW_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_retry_row_v6"
 WAIVER_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_manual_waiver_v6"
 RNG_SCHEMA = "hibiki-qwen-mlx-row-rng-v1"
 RNG_HELPER_SHA256 = "cb96149414e1c991c0ea29908b3d99a02dd73a12dcd849fde3d6e025eb5dbe82"
+TERMINAL_NO_RETRY_POLICY = {
+    "enabled": True,
+    "reason": "user_requested_drop_after_attempt0_validation",
+    "corpus_wer_pruning": {
+        "objective": "minimum_rows_removed_to_pass_corpus_wer",
+        "ranking": "descending_word_error_surplus_then_row_id",
+        "threshold": 0.08,
+    },
+}
 
 
 class IncompleteCampaign(RuntimeError):
@@ -73,11 +83,82 @@ def _speaker_exclusions(
     return expected
 
 
-def _selection_scope_sha(policy: dict[str, Any], exclusions: dict[str, Any]) -> str:
+def _selection_scope_sha(
+    policy: dict[str, Any],
+    exclusions: dict[str, Any],
+    terminal_policy: dict[str, Any] | None,
+) -> str:
     value: object = policy["retry_policy"]
-    if exclusions["speaker_ids"]:
-        value = {"retry_policy": policy["retry_policy"], "speaker_exclusions": exclusions}
+    if exclusions["speaker_ids"] or terminal_policy is not None:
+        value = {"retry_policy": policy["retry_policy"]}
+        if exclusions["speaker_ids"]:
+            value["speaker_exclusions"] = exclusions
+        if terminal_policy is not None:
+            value["terminal_policy"] = terminal_policy
     return sha256_bytes(canonical_json(value).encode())
+
+
+def _select_metric(candidates: list[dict[str, Any]], through_round: int) -> dict[str, Any] | None:
+    passing = [
+        metric
+        for metric in candidates
+        if metric.get("row_gate_pass") is True
+        and metric.get("failure_reasons") == []
+        and metric.get("asr_word_errors") is not None
+        and metric.get("asr_wer") is not None
+    ]
+    return (
+        min(
+            passing,
+            key=lambda metric: (
+                int(metric["asr_word_errors"]),
+                float(metric["asr_wer"]),
+                int(metric["attempt"]),
+            ),
+        )
+        if passing
+        else None
+    )
+
+
+def _word_error_surplus(metric: dict[str, Any]) -> int:
+    threshold = Fraction(str(TERMINAL_NO_RETRY_POLICY["corpus_wer_pruning"]["threshold"]))
+    return (
+        int(metric["asr_word_errors"]) * threshold.denominator
+        - int(metric["asr_reference_words"]) * threshold.numerator
+    )
+
+
+def _terminal_prune_ids(selected: dict[str, dict[str, Any]]) -> list[str]:
+    threshold = Fraction(str(TERMINAL_NO_RETRY_POLICY["corpus_wer_pruning"]["threshold"]))
+    errors = sum(int(metric["asr_word_errors"]) for metric in selected.values())
+    words = sum(int(metric["asr_reference_words"]) for metric in selected.values())
+    ranked = sorted(selected.items(), key=lambda item: (-_word_error_surplus(item[1]), item[0]))
+    pruned = []
+    for row_id, metric in ranked:
+        if words and errors * threshold.denominator <= words * threshold.numerator:
+            break
+        if _word_error_surplus(metric) <= 0:
+            break
+        pruned.append(row_id)
+        errors -= int(metric["asr_word_errors"])
+        words -= int(metric["asr_reference_words"])
+    return pruned
+
+
+def _terminal_exclusion() -> dict[str, str]:
+    return {
+        "kind": "terminal_corpus_wer_prune",
+        "reason": TERMINAL_NO_RETRY_POLICY["reason"],
+    }
+
+
+def _terminal_pruning_record(row_ids: list[str]) -> dict[str, Any]:
+    ordered = sorted(row_ids)
+    return {
+        "rows": len(ordered),
+        "row_ids_sha256": sha256_bytes(canonical_json(ordered).encode()),
+    }
 
 
 def _production_contract(
@@ -384,6 +465,9 @@ def validate_finalized(
     exclusions = _speaker_exclusions(
         source_rows, selection_report.get("speaker_exclusions", {})
     )
+    terminal_policy = selection_report.get("terminal_policy")
+    if terminal_policy not in (None, TERMINAL_NO_RETRY_POLICY):
+        raise RuntimeError("Terminal selection policy changed")
     if (
         selection_report.get("schema_version") != SELECTION_SCHEMA
         or selection_report.get("decision") != "go"
@@ -392,8 +476,10 @@ def validate_finalized(
         or selection_report.get("production_plan") != attestation(plan_path)
         or selection_report.get("policy") != plan["policy"]
         or selection_report.get("selection_policy_sha256")
-        != _selection_scope_sha(policy, exclusions)
+        != _selection_scope_sha(policy, exclusions, terminal_policy)
         or report.get("speaker_exclusions") != exclusions
+        or report.get("terminal_policy") != terminal_policy
+        or report.get("terminal_pruning") != selection_report.get("terminal_pruning")
     ):
         raise RuntimeError("Terminal selection report is not the exact v6 GO")
     terminal_selection_path = _path(
@@ -426,6 +512,22 @@ def validate_finalized(
     ):
         raise RuntimeError("Source, selection, accepted, and rejected partitions disagree")
     generated, metrics, attempts = _attempt_artifacts(plan_path, plan, selection_report)
+    initially_selected = {}
+    through_round = int(selection_report["through_round"])
+    for selected in selection:
+        row_id = str(selected["id"])
+        if source_by_id[row_id]["speaker_id"] in excluded_speakers:
+            continue
+        choice = _select_metric(
+            [metrics[candidate["candidate_id"]] for candidate in selected["candidates"]],
+            through_round,
+        )
+        if choice is not None:
+            initially_selected[row_id] = choice
+    pruned_ids = _terminal_prune_ids(initially_selected) if terminal_policy else []
+    if selection_report.get("terminal_pruning") != _terminal_pruning_record(pruned_ids):
+        raise RuntimeError("Terminal corpus-WER pruning scope changed")
+    pruned = set(pruned_ids)
     for selected in selection:
         source = source_by_id[str(selected.get("id", ""))]
         expected_exclusion = (
@@ -435,7 +537,7 @@ def validate_finalized(
                 "reason": exclusions["reason"],
             }
             if source["speaker_id"] in excluded_speakers
-            else None
+            else (_terminal_exclusion() if str(selected["id"]) in pruned else None)
         )
         if (
             selected.get("exclusion") != expected_exclusion
@@ -589,6 +691,8 @@ def validate_finalized(
         "accepted_rows": len(accepted),
         "rejected_rows": len(rejected),
         "speaker_exclusions": exclusions,
+        "terminal_policy": terminal_policy,
+        "terminal_pruning": _terminal_pruning_record(pruned_ids),
         "attempts": attempts,
         "source_audit_rows": source_audit_record,
         "source_audit_report": accepted[0]["source_audit"]["report"] if accepted else None,

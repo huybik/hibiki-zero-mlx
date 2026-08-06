@@ -7,6 +7,7 @@ import csv
 import hashlib
 import json
 from collections import defaultdict
+from fractions import Fraction
 from importlib.metadata import version as package_version
 from pathlib import Path
 from statistics import median
@@ -53,6 +54,15 @@ SELECTION_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_production_selection_v6"
 FINAL_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_production_final_v6"
 RNG_HELPER_SHA256 = "cb96149414e1c991c0ea29908b3d99a02dd73a12dcd849fde3d6e025eb5dbe82"
 RNG_SCHEMA = "hibiki-qwen-mlx-row-rng-v1"
+TERMINAL_NO_RETRY_POLICY = {
+    "enabled": True,
+    "reason": "user_requested_drop_after_attempt0_validation",
+    "corpus_wer_pruning": {
+        "objective": "minimum_rows_removed_to_pass_corpus_wer",
+        "ranking": "descending_word_error_surplus_then_row_id",
+        "threshold": CORPUS_THRESHOLDS["selected_asr_wer_max"],
+    },
+}
 
 
 def json_bytes(value: object) -> bytes:
@@ -551,14 +561,62 @@ def _speaker_exclusion_record(
     }
 
 
-def _selection_scope_hash(policy: dict[str, Any], exclusions: dict[str, Any]) -> str:
-    if not exclusions["speaker_ids"]:
+def _selection_scope_hash(
+    policy: dict[str, Any],
+    exclusions: dict[str, Any],
+    terminal_policy: dict[str, Any] | None = None,
+) -> str:
+    if not exclusions["speaker_ids"] and terminal_policy is None:
         return _selection_policy_hash(policy)
-    return sha256_bytes(
-        canonical_json(
-            {"retry_policy": policy["retry_policy"], "speaker_exclusions": exclusions}
-        ).encode()
+    scope = {"retry_policy": policy["retry_policy"]}
+    if exclusions["speaker_ids"]:
+        scope["speaker_exclusions"] = exclusions
+    if terminal_policy is not None:
+        scope["terminal_policy"] = terminal_policy
+    return sha256_bytes(canonical_json(scope).encode())
+
+
+def _word_error_surplus(metric: dict[str, Any]) -> int:
+    threshold = Fraction(str(CORPUS_THRESHOLDS["selected_asr_wer_max"]))
+    return (
+        int(metric["asr_word_errors"]) * threshold.denominator
+        - int(metric["asr_reference_words"]) * threshold.numerator
     )
+
+
+def _terminal_prune_ids(selected: dict[str, dict[str, Any]]) -> list[str]:
+    threshold = Fraction(str(CORPUS_THRESHOLDS["selected_asr_wer_max"]))
+    errors = sum(int(metric["asr_word_errors"]) for metric in selected.values())
+    words = sum(int(metric["asr_reference_words"]) for metric in selected.values())
+    ranked = sorted(
+        selected.items(),
+        key=lambda item: (-_word_error_surplus(item[1]), item[0]),
+    )
+    pruned = []
+    for row_id, metric in ranked:
+        if words and errors * threshold.denominator <= words * threshold.numerator:
+            break
+        if _word_error_surplus(metric) <= 0:
+            break
+        pruned.append(row_id)
+        errors -= int(metric["asr_word_errors"])
+        words -= int(metric["asr_reference_words"])
+    return pruned
+
+
+def _terminal_exclusion() -> dict[str, str]:
+    return {
+        "kind": "terminal_corpus_wer_prune",
+        "reason": TERMINAL_NO_RETRY_POLICY["reason"],
+    }
+
+
+def _terminal_pruning_record(row_ids: list[str]) -> dict[str, Any]:
+    ordered = sorted(row_ids)
+    return {
+        "rows": len(ordered),
+        "row_ids_sha256": sha256_bytes(canonical_json(ordered).encode()),
+    }
 
 
 def select_round(args: argparse.Namespace) -> None:
@@ -590,12 +648,13 @@ def select_round(args: argparse.Namespace) -> None:
             }
         )
     selections = []
-    selected_metrics = []
+    selected_by_id: dict[str, dict[str, Any]] = {}
     retry = []
     exclusions = _speaker_exclusion_record(source_rows, args.exclude_speaker)
     excluded_speakers = set(exclusions["speaker_ids"])
     source_by_id = {str(row["id"]): row for row in source_rows}
-    policy_hash = _selection_scope_hash(policy, exclusions)
+    terminal_policy = TERMINAL_NO_RETRY_POLICY if args.terminal_no_retry else None
+    policy_hash = _selection_scope_hash(policy, exclusions, terminal_policy)
     for row_id in source_order:
         choices = candidates[row_id]
         speaker_id = str(source_by_id[row_id]["speaker_id"])
@@ -638,7 +697,7 @@ def select_round(args: argparse.Namespace) -> None:
             }
         )
         if selected:
-            selected_metrics.append(selected)
+            selected_by_id[row_id] = selected
         if exclusion is None and (selected is None or int(selected["asr_word_errors"]) >= int(
             policy["retry_policy"]["word_errors_min"]
         )):
@@ -657,6 +716,23 @@ def select_round(args: argparse.Namespace) -> None:
                     "speaker_exclusions": exclusions,
                 }
             )
+    pruned_ids = _terminal_prune_ids(selected_by_id) if terminal_policy else []
+    pruned = set(pruned_ids)
+    if pruned:
+        for selection in selections:
+            if selection["id"] in pruned:
+                selection.update(
+                    {
+                        "status": "rejected",
+                        "selected_candidate_id": None,
+                        "selected_attempt": None,
+                        "exclusion": _terminal_exclusion(),
+                    }
+                )
+        selected_by_id = {
+            row_id: metric for row_id, metric in selected_by_id.items() if row_id not in pruned
+        }
+    selected_metrics = list(selected_by_id.values())
     errors = sum(int(metric["asr_word_errors"]) for metric in selected_metrics)
     words = sum(int(metric["asr_reference_words"]) for metric in selected_metrics)
     cosines = [float(metric["speaker_cosine"]) for metric in selected_metrics]
@@ -675,16 +751,16 @@ def select_round(args: argparse.Namespace) -> None:
             metric["row_gate_pass"] and not metric["failure_reasons"] for metric in selected_metrics
         ),
     }
-    decision = (
-        "go"
-        if all(checks.values())
+    decision = "go" if all(checks.values()) else (
+        "no_go"
+        if terminal_policy is not None
         else (
             "continue"
             if args.through_round < int(policy["retry_policy"]["maximum_new_rounds"])
             else "no_go"
         )
     )
-    if decision == "go":
+    if decision != "continue":
         retry = []
     selection_path = out / f"selection_rows_round{args.through_round}.jsonl"
     immutable_write(selection_path, jsonl_bytes(selections))
@@ -699,6 +775,8 @@ def select_round(args: argparse.Namespace) -> None:
         "policy": plan["policy"],
         "selection_policy_sha256": policy_hash,
         "speaker_exclusions": exclusions,
+        "terminal_policy": terminal_policy,
+        "terminal_pruning": _terminal_pruning_record(pruned_ids),
         "through_round": args.through_round,
         "attempts": attempt_records,
         "decision": decision,
@@ -858,11 +936,15 @@ def finalize(args: argparse.Namespace) -> None:
     exclusions = _speaker_exclusion_record(
         source_rows, list(report.get("speaker_exclusions", {}).get("speaker_ids", []))
     )
+    terminal_policy = report.get("terminal_policy")
+    if terminal_policy not in (None, TERMINAL_NO_RETRY_POLICY):
+        raise RuntimeError("Unknown terminal selection policy")
     if (
         report.get("schema_version") != SELECTION_SCHEMA
         or report.get("production_plan") != attestation(plan_path)
         or report.get("policy") != plan["policy"]
-        or report.get("selection_policy_sha256") != _selection_scope_hash(policy, exclusions)
+        or report.get("selection_policy_sha256")
+        != _selection_scope_hash(policy, exclusions, terminal_policy)
         or report.get("speaker_exclusions") != exclusions
         or report.get("decision") not in {"go", "no_go"}
         or report.get("next_retry") is not None
@@ -888,6 +970,21 @@ def finalize(args: argparse.Namespace) -> None:
         metric_by_candidate.update({metric["candidate_id"]: metric for metric in metrics.values()})
     source_by_id = {str(row["id"]): row for row in source_rows}
     excluded_speakers = set(exclusions["speaker_ids"])
+    initially_selected = {}
+    for selected_row in selection_rows:
+        row_id = str(selected_row["id"])
+        if str(source_by_id[row_id]["speaker_id"]) in excluded_speakers:
+            continue
+        choice = _select(
+            [metric_by_candidate[candidate["candidate_id"]] for candidate in selected_row["candidates"]],
+            list(range(through_round + 1)),
+        )
+        if choice is not None:
+            initially_selected[row_id] = choice
+    pruned_ids = _terminal_prune_ids(initially_selected) if terminal_policy else []
+    if report.get("terminal_pruning") != _terminal_pruning_record(pruned_ids):
+        raise RuntimeError("Terminal corpus-WER pruning scope changed")
+    pruned = set(pruned_ids)
     selections = []
     accepted = []
     rejected = []
@@ -907,10 +1004,12 @@ def finalize(args: argparse.Namespace) -> None:
                 "reason": exclusions["reason"],
             }
             if is_excluded
-            else None
+            else (_terminal_exclusion() if row_id in pruned else None)
         )
         recomputed = (
-            None if is_excluded else _select(choice_metrics, list(range(through_round + 1)))
+            None
+            if expected_exclusion is not None
+            else _select(choice_metrics, list(range(through_round + 1)))
         )
         recomputed_id = recomputed["candidate_id"] if recomputed else None
         if (
@@ -928,7 +1027,7 @@ def finalize(args: argparse.Namespace) -> None:
             )
         ):
             raise RuntimeError(f"Terminal selection differs from frozen selector: {row_id}")
-        if not is_excluded:
+        if expected_exclusion is None:
             for candidate in candidates:
                 metric = metric_by_candidate[candidate["candidate_id"]]
                 if not metric["row_gate_pass"]:
@@ -1018,9 +1117,9 @@ def finalize(args: argparse.Namespace) -> None:
             metric["row_gate_pass"] and not metric["failure_reasons"] for metric in selected_metrics
         ),
     }
-    recomputed_decision = (
-        "go"
-        if all(recomputed_checks.values())
+    recomputed_decision = "go" if all(recomputed_checks.values()) else (
+        "no_go"
+        if terminal_policy is not None
         else (
             "continue"
             if through_round < int(policy["retry_policy"]["maximum_new_rounds"])
@@ -1171,6 +1270,8 @@ def finalize(args: argparse.Namespace) -> None:
         "production_plan": attestation(plan_path),
         "selection_report": attestation(selection_report_path),
         "speaker_exclusions": exclusions,
+        "terminal_policy": terminal_policy,
+        "terminal_pruning": _terminal_pruning_record(pruned_ids),
         "scope": {
             "plan_rows": len(source_rows),
             "accepted_rows": len(accepted),
@@ -1234,6 +1335,7 @@ def parse_args() -> argparse.Namespace:
     select.add_argument("--qa-root", type=Path, required=True)
     select.add_argument("--out-dir", type=Path, required=True)
     select.add_argument("--exclude-speaker", action="append", default=[])
+    select.add_argument("--terminal-no-retry", action="store_true")
     final = commands.add_parser("finalize")
     final.add_argument("production_plan", type=Path)
     final.add_argument("--selection-report", type=Path, required=True)

@@ -50,6 +50,16 @@ Qwen production generation uses the isolated
 `/Volumes/data/envs/hibiki-vivos-mlx-0.4.7` environment; this repair targets the
 base-interpreter selector/finalizer/cache boundary only.
 
+A later publisher preflight found that this first repair would have caused a
+different downstream failure: Transformers 4.57.3 forced
+`huggingface-hub` 0.36.2, while immutable publication requires 1.21.0, and the
+base MLX stack expects Transformers 5.x and NumPy below 2.3. Before any retry,
+cache, release, or upload, base was restored to Transformers 5.10.2, NumPy
+2.2.6, and `huggingface-hub` 1.21.0 while retaining SoundFile 0.14.0. The
+supervisor boundary was corrected so selector/finalizer use the pinned QA
+environment and validator/cache/release use base. Both installation attempts
+and their dependency-conflict output are retained as failed/corrective steps.
+
 ## Resume policy
 
 The halted work directories are preserved. Resume uses fresh supervisor and
@@ -58,3 +68,22 @@ same three speaker exclusions, the current repository commit, and the existing
 10,950 immutable QA rows. The new supervisor may reuse successfully attested
 generation and QA artifacts but must rerun round-0 selection. Cache and upload
 remain conditional on terminal machine GO.
+
+## Terminal no-retry decision
+
+During the resumed selector, the user explicitly changed the execution policy:
+do not continue retrying; drop targets that do not pass validation and proceed
+with the remaining phases. The supervisor was stopped before retry generation.
+The interrupted selector produced no artifact. A standalone, hash-validating
+round-0 selection then recorded 8,254 row-gate-passing targets and 2,696
+rejections after speaker exclusions, but the passing subset's aggregate WER
+was 0.098133, above the frozen 0.08 corpus gate.
+
+The gate is retained. Terminal/no-retry selection deterministically removes the
+smallest number of additional passing rows needed to satisfy it: candidates are
+ranked by descending `word_errors - 0.08 * reference_words`, with row id as the
+tie-break. This removes 497 rows and leaves 7,757 accepted rows with aggregate
+WER 0.079983. The fixed policy, pruned-row count, and SHA-256 of the sorted
+pruned ids are bound into selection, finalization, independent cache
+provenance validation, release metadata, and the dataset card. Retry rounds 1
+and 2 remain unexecuted.

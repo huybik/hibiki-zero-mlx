@@ -18,6 +18,7 @@ from finetune.cache_vivos_full import sha256_file
 
 
 BASE_PYTHON = Path("/opt/homebrew/Caskroom/miniconda/base/bin/python")
+QA_PYTHON = Path("/Volumes/data/envs/hibiki-vivos-qa/bin/python")
 WAIVER_SCHEMA = "hibiki_vivos_qwen3_tts_mlx_manual_waiver_v6"
 MACHINE_CHECKS = {
     "selected_corpus_wer",
@@ -155,13 +156,15 @@ class Completion:
         if supervisor.get("bindings", {}).get("production_plan") != attest(self.plan):
             raise RuntimeError("Supervisor is not bound to the repaired production plan")
         speaker_exclusions = supervisor.get("speaker_exclusions", [])
+        terminal_no_retry = supervisor.get("terminal_no_retry") is True
         return {
             "schema_version": "hibiki_vivos_qwen3_tts_unattended_release_v1",
             "authorization": {
                 "source": "user request in active Codex session",
-                "instruction": "queue the necessary steps for a complete uploaded dataset",
+                "instruction": "drop failed rows after validation, skip retries, and continue to a complete uploaded dataset",
                 "scope": "machine-GO-only manual-listening waiver, Mimi cache build, immutable release, Hub upload, and clean-room verification",
                 "speaker_exclusions": speaker_exclusions,
+                "terminal_no_retry": terminal_no_retry,
                 "machine_no_go_behavior": "halt_without_cache_or_upload",
             },
             "repository_commit": self.repository_commit(),
@@ -334,7 +337,7 @@ class Completion:
         self.run_command(
             "finalize_go",
             [
-                str(BASE_PYTHON),
+                str(QA_PYTHON),
                 "training-data/qa_vivos_qwen_production_v6.py",
                 "finalize",
                 str(self.plan),
