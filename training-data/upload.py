@@ -48,6 +48,11 @@ UPLOAD_STATE_FILE = "upload-state.json"
 UPLOAD_KEY_COLUMNS = ("en", "vi")
 
 # A sampled pair is about 800 KB, so 500 rows produces a roughly 400 MB shard.
+# Keep the files large for efficient Hub uploads, but split each one into small
+# row groups. The Dataset Viewer otherwise has to scan an entire ~500 MB row
+# group and rejects it at its 300 MB scan limit. ``batch_size`` is the row-group
+# size accepted by ``Dataset.to_parquet``.
+PARQUET_ROW_GROUP_ROWS = 100
 # datasets >= 5 picks parquet compression itself (audio columns uncompressed for
 # Xet dedup); passing compression kwargs conflicts with its ParquetWriter call.
 ROWS_PER_SHARD = 500
@@ -500,7 +505,11 @@ def build_shard(
     dataset = build_dataset(shard_rows)
     embedded_dataset = embed_external_files(dataset)
     dataset_nbytes = embedded_dataset._estimate_nbytes()
-    embedded_dataset.to_parquet(local_path)
+    embedded_dataset.to_parquet(
+        local_path,
+        batch_size=PARQUET_ROW_GROUP_ROWS,
+        write_page_index=True,
+    )
     uploaded_size = local_path.stat().st_size
     return dataset, local_path, path_in_repo, dataset_nbytes, uploaded_size, source_indexes
 
