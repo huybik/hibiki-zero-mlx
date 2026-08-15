@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Maintain rolling disaster-recovery checkpoints in a HF Storage Bucket."""
+"""Maintain rolling disaster-recovery checkpoints in a public HF model repo."""
 from __future__ import annotations
 
 import argparse
@@ -10,17 +10,13 @@ import shutil
 import time
 from pathlib import Path
 
-from huggingface_hub import (
-    batch_bucket_files,
-    bucket_info,
-    download_bucket_files,
-    list_bucket_tree,
-)
+from huggingface_hub import HfApi, hf_hub_download
 
 POLL_S = 60
 REMOTE_INTERVAL = 9_000
 REMOTE_KEEP = 2
 STAGE_ROOT = ".hf_sync"
+REMOTE_ROOT = "full_run"
 STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
@@ -29,10 +25,10 @@ STAGED_BEST = re.compile(r"best_step(\d+)$")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sync rolling recovery checkpoints to a mutable HF Storage Bucket."
+        description="Sync rolling recovery checkpoints to a public HF model repo."
     )
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("bucket", help="Existing private bucket as owner/name.")
+    parser.add_argument("repo", help="Existing public model repo as owner/name.")
     parser.add_argument(
         "--watch-pid",
         type=int,
@@ -55,11 +51,16 @@ def checkpoint_pairs(run_dir: Path) -> list[tuple[int, Path, Path]]:
     return [(step, models[step], trainers[step]) for step in sorted(models.keys() & trainers.keys())]
 
 
-def remote_files(bucket: str) -> dict[str, int]:
+def remote_path(path: str) -> str:
+    return f"{REMOTE_ROOT}/{path}"
+
+
+def remote_files(repo: str) -> dict[str, int]:
+    prefix = f"{REMOTE_ROOT}/"
     return {
-        item.path: item.size
-        for item in list_bucket_tree(bucket, recursive=True)
-        if item.type == "file"
+        item.rfilename.removeprefix(prefix): item.size
+        for item in HfApi().model_info(repo, files_metadata=True).siblings
+        if item.rfilename.startswith(prefix) and item.size is not None
     }
 
 
@@ -144,16 +145,27 @@ def clean_staging(run_dir: Path) -> None:
         shutil.rmtree(path)
 
 
-def upload_pair(bucket: str, stage: Path, step: int) -> None:
+def upload_pair(repo: str, stage: Path, step: int) -> None:
     model = stage / f"model_step{step:06d}.safetensors"
     trainer = stage / f"trainer_step{step:06d}.pt"
     remote_model = f"checkpoints/{model.name}"
     remote_trainer = f"checkpoints/{trainer.name}"
     print(f"Uploading recovery checkpoint step {step}...", flush=True)
-    batch_bucket_files(bucket, add=[(model, remote_model)])
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj=model,
+        path_in_repo=remote_path(remote_model),
+        repo_id=repo,
+        commit_message=f"Upload recovery model step {step}",
+    )
     # The trainer is the pair's commit marker: publish it only after the model.
-    batch_bucket_files(bucket, add=[(trainer, remote_trainer)])
-    files = remote_files(bucket)
+    api.upload_file(
+        path_or_fileobj=trainer,
+        path_in_repo=remote_path(remote_trainer),
+        repo_id=repo,
+        commit_message=f"Upload recovery trainer step {step}",
+    )
+    files = remote_files(repo)
     expected = {remote_model: model.stat().st_size, remote_trainer: trainer.stat().st_size}
     if any(files.get(path) != size for path, size in expected.items()):
         raise RuntimeError(f"remote checkpoint verification failed for step {step}")
@@ -161,8 +173,8 @@ def upload_pair(bucket: str, stage: Path, step: int) -> None:
     print(f"Synced recovery checkpoint step {step}.", flush=True)
 
 
-def prune_remote_pairs(bucket: str) -> None:
-    files = remote_files(bucket)
+def prune_remote_pairs(repo: str) -> None:
+    files = remote_files(repo)
     complete = remote_pairs(files)
     keep = set(complete[-REMOTE_KEEP:])
     trainer_deletes: list[str] = []
@@ -176,9 +188,15 @@ def prune_remote_pairs(bucket: str) -> None:
             model_deletes.append(path)
     # Remove trainer commit markers first so interruption leaves no usable-looking orphan.
     if trainer_deletes:
-        batch_bucket_files(bucket, delete=trainer_deletes)
+        HfApi().delete_files(
+            repo, [remote_path(path) for path in trainer_deletes],
+            commit_message="Prune old recovery trainers",
+        )
     if model_deletes:
-        batch_bucket_files(bucket, delete=model_deletes)
+        HfApi().delete_files(
+            repo, [remote_path(path) for path in model_deletes],
+            commit_message="Prune old recovery models",
+        )
 
 
 def best_state(run_dir: Path) -> dict[str, object] | None:
@@ -207,15 +225,26 @@ def remote_best_steps(files: dict[str, int]) -> list[int]:
     return sorted(models & markers)
 
 
-def upload_best(bucket: str, stage: Path, step: int) -> None:
+def upload_best(repo: str, stage: Path, step: int) -> None:
     model = stage / f"best_step{step:06d}.safetensors"
     metadata = stage / "best.json"
     remote_model = f"best/{model.name}"
     remote_metadata = f"best/best_step{step:06d}.json"
     print(f"Uploading best model from step {step}...", flush=True)
-    batch_bucket_files(bucket, add=[(model, remote_model)])
-    batch_bucket_files(bucket, add=[(metadata, remote_metadata)])
-    files = remote_files(bucket)
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj=model,
+        path_in_repo=remote_path(remote_model),
+        repo_id=repo,
+        commit_message=f"Upload best model step {step}",
+    )
+    api.upload_file(
+        path_or_fileobj=metadata,
+        path_in_repo=remote_path(remote_metadata),
+        repo_id=repo,
+        commit_message=f"Upload best metadata step {step}",
+    )
+    files = remote_files(repo)
     expected = {remote_model: model.stat().st_size, remote_metadata: metadata.stat().st_size}
     if any(files.get(path) != size for path, size in expected.items()):
         raise RuntimeError(f"remote best-model verification failed for step {step}")
@@ -223,8 +252,8 @@ def upload_best(bucket: str, stage: Path, step: int) -> None:
     print(f"Synced best model from step {step}.", flush=True)
 
 
-def prune_remote_best(bucket: str) -> None:
-    files = remote_files(bucket)
+def prune_remote_best(repo: str) -> None:
+    files = remote_files(repo)
     complete = remote_best_steps(files)
     keep = complete[-1] if complete else None
     marker_deletes = [
@@ -240,14 +269,20 @@ def prune_remote_best(bucket: str) -> None:
         and int(match.group(1)) != keep
     ]
     if marker_deletes:
-        batch_bucket_files(bucket, delete=marker_deletes)
+        HfApi().delete_files(
+            repo, [remote_path(path) for path in marker_deletes],
+            commit_message="Prune old best metadata",
+        )
     if model_deletes:
-        batch_bucket_files(bucket, delete=model_deletes)
+        HfApi().delete_files(
+            repo, [remote_path(path) for path in model_deletes],
+            commit_message="Prune old best models",
+        )
 
 
-def sync_once(run_dir: Path, bucket: str, final: bool) -> None:
+def sync_once(run_dir: Path, repo: str, final: bool) -> None:
     clean_staging(run_dir)
-    files = remote_files(bucket)
+    files = remote_files(repo)
     uploaded = set(remote_pairs(files))
     local_pairs = checkpoint_pairs(run_dir)
     stage_root = run_dir / STAGE_ROOT
@@ -277,10 +312,10 @@ def sync_once(run_dir: Path, bucket: str, final: bool) -> None:
         if stage is None:
             _, model, trainer = next(pair for pair in wanted if pair[0] == newest_pair)
             stage = stage_files(run_dir, "checkpoint", newest_pair, (model, trainer))
-        upload_pair(bucket, stage, newest_pair)
-    prune_remote_pairs(bucket)
+        upload_pair(repo, stage, newest_pair)
+    prune_remote_pairs(repo)
 
-    files = remote_files(bucket)
+    files = remote_files(repo)
     uploaded_best = set(remote_best_steps(files))
     staged_paths = list(stage_root.iterdir()) if stage_root.is_dir() else []
     staged_best = {
@@ -314,8 +349,8 @@ def sync_once(run_dir: Path, bucket: str, final: bool) -> None:
         if stage is None:
             assert local_best is not None and int(local_best["step"]) == newest_best
             stage = stage_best(run_dir, local_best)
-        upload_best(bucket, stage, newest_best)
-    prune_remote_best(bucket)
+        upload_best(repo, stage, newest_best)
+    prune_remote_best(repo)
 
 
 def process_alive(pid: int) -> bool:
@@ -328,17 +363,13 @@ def process_alive(pid: int) -> bool:
     return True
 
 
-def validate_run_identity(run_dir: Path, bucket: str) -> None:
+def validate_run_identity(run_dir: Path, repo: str) -> None:
     local = run_dir / "run_id.json"
     if not local.is_file():
         raise RuntimeError("missing local run_id.json")
-    remote = run_dir / ".remote_run_id.json.tmp"
-    try:
-        download_bucket_files(bucket, [("run.json", remote)], raise_on_missing_files=True)
-        if remote.read_bytes() != local.read_bytes():
-            raise RuntimeError("local run identity does not match the disaster-recovery bucket")
-    finally:
-        remote.unlink(missing_ok=True)
+    remote = Path(hf_hub_download(repo, remote_path("run.json")))
+    if remote.read_bytes() != local.read_bytes():
+        raise RuntimeError("local run identity does not match the disaster-recovery repo")
 
 
 def main() -> None:
@@ -346,19 +377,19 @@ def main() -> None:
     run_dir = args.run_dir.resolve()
     if not run_dir.is_dir():
         raise FileNotFoundError(f"run directory does not exist: {run_dir}")
-    info = bucket_info(args.bucket)
-    if not info.private:
-        raise RuntimeError("disaster-recovery bucket must be private")
-    validate_run_identity(run_dir, info.id)
+    info = HfApi().model_info(args.repo)
+    if info.private:
+        raise RuntimeError("disaster-recovery model repo must be public")
+    validate_run_identity(run_dir, args.repo)
 
     if args.watch_pid is None:
-        sync_once(run_dir, args.bucket, final=True)
+        sync_once(run_dir, args.repo, final=True)
         return
 
     failures = 0
     while process_alive(args.watch_pid):
         try:
-            sync_once(run_dir, args.bucket, final=False)
+            sync_once(run_dir, args.repo, final=False)
             failures = 0
         except Exception as exc:  # noqa: BLE001 - retry transient network failures during training
             failures += 1
@@ -369,7 +400,7 @@ def main() -> None:
 
     for attempt in range(1, 4):
         try:
-            sync_once(run_dir, args.bucket, final=True)
+            sync_once(run_dir, args.repo, final=True)
             return
         except Exception as exc:  # noqa: BLE001 - give the final upload bounded retries
             if attempt == 3:

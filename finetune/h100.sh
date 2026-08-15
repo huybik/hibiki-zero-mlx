@@ -119,7 +119,7 @@ memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
 if memory_gib >= 90:
     batch_size, grad_accum = 16, 1
 elif memory_gib >= 75:
-    batch_size, grad_accum = 8, 2
+    batch_size, grad_accum = 4, 4
 else:
     raise RuntimeError(f"at least 75 GiB GPU memory required, got {memory_gib:.1f} GiB")
 
@@ -349,34 +349,35 @@ run_with_sync() {
   shift 2
   (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )) \
     || die "Bash 5.1 or newer is required to supervise training and sync"
-  local bucket="${HIBIKI_HF_BUCKET:-}"
-  [[ -n "$bucket" ]] || die "set HIBIKI_HF_BUCKET=owner/private-bucket before training"
+  local repo="${HIBIKI_HF_REPO:-}"
+  [[ -n "$repo" ]] || die "set HIBIKI_HF_REPO=owner/public-model-repo before training"
   local commit
   commit="$(git rev-parse HEAD)"
-  "$PYTHON" - "$bucket" "$mode" "$out_dir" "$commit" <<'PY'
+  "$PYTHON" - "$repo" "$mode" "$out_dir" "$commit" <<'PY'
 import json
-import os
 import re
 import secrets
 import sys
 from pathlib import Path
 
-from huggingface_hub import (
-    batch_bucket_files,
-    bucket_info,
-    list_bucket_tree,
-)
+from huggingface_hub import HfApi
 
 
 def steps(paths, pattern):
     return {int(match.group(1)) for path in paths if (match := re.fullmatch(pattern, path))}
 
-info = bucket_info(sys.argv[1])
-if not info.private:
-    raise RuntimeError("disaster-recovery bucket must be private")
-remote_files = [item.path for item in list_bucket_tree(info.id, recursive=True) if item.type == "file"]
+api = HfApi()
+info = api.model_info(sys.argv[1], files_metadata=True)
+if info.private:
+    raise RuntimeError("disaster-recovery model repo must be public")
+prefix = "full_run/"
+remote_files = [
+    item.rfilename.removeprefix(prefix)
+    for item in info.siblings
+    if item.rfilename.startswith(prefix)
+]
 if sys.argv[2] == "fresh" and remote_files:
-    raise RuntimeError("fresh training requires an empty dedicated disaster-recovery bucket")
+    raise RuntimeError("fresh training requires an empty full_run/ recovery prefix")
 if sys.argv[2] == "resume":
     run_dir = Path(sys.argv[3])
     local_models = steps(
@@ -391,25 +392,22 @@ if sys.argv[2] == "resume":
     local_latest = max(local_models & local_trainers)
     remote_latest = max(remote_models & remote_trainers, default=-1)
     if remote_latest > local_latest:
-        raise RuntimeError(f"bucket checkpoint {remote_latest} is newer than local {local_latest}")
+        raise RuntimeError(f"remote checkpoint {remote_latest} is newer than local {local_latest}")
     remote_best_models = steps(remote_files, r"best/best_step(\d+)\.safetensors")
     remote_best_markers = steps(remote_files, r"best/best_step(\d+)\.json")
     remote_best = max(remote_best_models & remote_best_markers, default=-1)
     if remote_best >= 0:
         marker = run_dir / "best.json"
         if not marker.is_file():
-            raise RuntimeError("restore the bucket's best model and best.json before resume")
+            raise RuntimeError("restore the repo's best model and best.json before resume")
         state = json.loads(marker.read_text())
         if int(state["step"]) < remote_best or not (run_dir / str(state["model"])).is_file():
-            raise RuntimeError("local best model is older than the bucket best; restore it before resume")
+            raise RuntimeError("local best model is older than the repo best; restore it before resume")
     local_identity = run_dir / "run_id.json"
     if not local_identity.is_file():
-        raise RuntimeError("missing local run_id.json; restore it from the bucket before resume")
+        raise RuntimeError("missing local run_id.json; restore it from the repo before resume")
     if json.loads(local_identity.read_text())["commit"] != sys.argv[4]:
         raise RuntimeError("training code changed since this run was created")
-probe = f".hibiki_write_probe_{os.getpid()}"
-batch_bucket_files(info.id, add=[(b"ok", probe)])
-batch_bucket_files(info.id, delete=[probe])
 if sys.argv[2] == "fresh":
     run_dir = Path(sys.argv[3])
     identity = run_dir / "run_id.json"
@@ -424,28 +422,33 @@ if sys.argv[2] == "fresh":
     temp.replace(identity)
     upload_error = None
     try:
-        batch_bucket_files(info.id, add=[(identity, "run.json")])
+        api.upload_file(
+            path_or_fileobj=identity,
+            path_in_repo=f"{prefix}run.json",
+            repo_id=sys.argv[1],
+            commit_message="Start full training run",
+        )
     except Exception as exc:
         upload_error = exc
     sizes = {
-        item.path: item.size
-        for item in list_bucket_tree(info.id, recursive=True)
-        if item.type == "file"
+        item.rfilename.removeprefix(prefix): item.size
+        for item in api.model_info(sys.argv[1], files_metadata=True).siblings
+        if item.rfilename.startswith(prefix) and item.size is not None
     }
     if sizes.get("run.json") != identity.stat().st_size:
         if upload_error is not None:
             raise upload_error
         raise RuntimeError("failed to verify remote run identity")
-print(f"HF disaster recovery: {info.id}")
+print(f"HF disaster recovery: {info.id}/tree/main/{prefix.rstrip('/')}")
 PY
 
   if [[ "$mode" == "resume" ]]; then
-    "$PYTHON" finetune/hf_sync.py "$out_dir" "$bucket"
+    "$PYTHON" finetune/hf_sync.py "$out_dir" "$repo"
   fi
 
   "$@" &
   local train_pid=$!
-  "$PYTHON" finetune/hf_sync.py "$out_dir" "$bucket" --watch-pid "$train_pid" &
+  "$PYTHON" finetune/hf_sync.py "$out_dir" "$repo" --watch-pid "$train_pid" &
   local sync_pid=$!
   trap 'kill -TERM "$train_pid" "$sync_pid" 2>/dev/null || true' EXIT
   trap 'kill -TERM "$train_pid" 2>/dev/null || true' INT TERM

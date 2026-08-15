@@ -394,8 +394,9 @@ count is authoritative.
 
 Provision the documented 300 GB pod disk. Local rotation keeps two complete
 model/trainer pairs and hard-link staging can temporarily pin one additional
-pair during remote upload. The mutable Storage Bucket keeps two recovery pairs
-plus one best model without Git history.
+pair during remote upload. The public checkpoint repo keeps two recovery pairs
+plus one best model in its current `full_run/` tree; deleted checkpoints remain
+in repository history.
 Estimate wall time from the smoke's measured seconds/step and add the scheduled
 greedy-evaluation time; do not estimate it from Mac inference speed.
 
@@ -422,8 +423,9 @@ python finetune/train.py \
   --out-dir finetune/runs/vi_base_full
 ```
 
-Set `HIBIKI_HF_BUCKET` to the pre-created private Storage Bucket before starting
-`h100.sh`; the launcher supervises disaster-recovery sync automatically.
+Set `HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft` before starting `h100.sh`;
+the launcher syncs disaster-recovery files under `full_run/` without touching
+the repo's existing phase-1 artifacts.
 
 ### 8. Monitor the run
 

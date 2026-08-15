@@ -52,9 +52,10 @@ active tree in August 2026. Their history remains available in Git.
 - `finetune/validate.py` is teacher-forced diagnostics only.
   `finetune/eval.py` free-running chrF plus nonempty/EOS/loop/length gates select
   checkpoints; `sacrebleu` is required.
-- `finetune/hf_sync.py` maintains two recovery pairs plus the best model in a
-  private mutable HF Storage Bucket; `h100.sh` verifies a shared run identity,
-  supervises sync, and protects the local resume point before training restarts.
+- `finetune/hf_sync.py` maintains two recovery pairs plus the best model under
+  `full_run/` in the public `huybik/hibiki-zero-vi-full-sft` model repo;
+  `h100.sh` verifies a shared run identity, supervises sync, and protects the
+  local resume point before training restarts.
 
 The exact launch command is in `docs/training_plan.md`; qualification thresholds
 are in `docs/validation_plan.md`.

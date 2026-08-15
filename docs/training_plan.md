@@ -18,19 +18,18 @@ pinned CUDA 13.2 wheel on the 580 driver series. Then run:
 ```
 
 The launcher pins Torch 2.13.0/CUDA 13.2 and Moshi 0.2.13, verifies artifact
-hashes and evaluation audio, and chooses batch 16 on a 94 GB H100 NVL or batch 8
-with two accumulation steps on an 80 GB H100. The smoke must complete finite
+hashes and evaluation audio, and chooses batch 16 on a 94 GB H100 NVL or batch 4
+with four accumulation steps on an 80 GB H100. The smoke must complete finite
 training, save, standalone free-running evaluation, exact resume, and a VRAM
 headroom check before it writes `finetune/runs/h100_smoke/SMOKE_OK`.
 
 ## Run
 
-Create one private, empty, dedicated Storage Bucket and authenticate the pod once:
+Authenticate the pod and select the existing public checkpoint model repo:
 
 ```bash
 ./.venv/bin/hf auth login
-./.venv/bin/hf buckets create YOUR_USER/hibiki-vi-checkpoints --private
-export HIBIKI_HF_BUCKET=YOUR_USER/hibiki-vi-checkpoints
+export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ```
 
 ```bash
@@ -43,28 +42,28 @@ Recover an interrupted run in its original directory with:
 ./finetune/h100.sh resume finetune/runs/vi_base_full/trainer_stepNNNNNN.pt
 ```
 
-If the pod volume was lost, list `checkpoints/` in the bucket and copy the
+If the pod volume was lost, inspect `full_run/checkpoints/` in the repo and copy the
 newest matching model/trainer filenames into `finetune/runs/vi_base_full/`
 before running the same resume command. Restore the run identity and current
 best files too; resume verifies them before it uploads the newest local pair:
 
 ```bash
-./.venv/bin/hf buckets list "$HIBIKI_HF_BUCKET/checkpoints"
-./.venv/bin/hf buckets cp \
-  "hf://buckets/$HIBIKI_HF_BUCKET/run.json" \
-  finetune/runs/vi_base_full/run_id.json
-./.venv/bin/hf buckets cp \
-  "hf://buckets/$HIBIKI_HF_BUCKET/checkpoints/model_stepNNNNNN.safetensors" \
-  finetune/runs/vi_base_full/model_stepNNNNNN.safetensors
-./.venv/bin/hf buckets cp \
-  "hf://buckets/$HIBIKI_HF_BUCKET/checkpoints/trainer_stepNNNNNN.pt" \
-  finetune/runs/vi_base_full/trainer_stepNNNNNN.pt
-./.venv/bin/hf buckets list "$HIBIKI_HF_BUCKET/best"
-./.venv/bin/hf buckets cp \
-  "hf://buckets/$HIBIKI_HF_BUCKET/best/best_stepBBBBBB.safetensors" \
-  finetune/runs/vi_base_full/best_stepBBBBBB.safetensors
-./.venv/bin/hf buckets cp \
-  "hf://buckets/$HIBIKI_HF_BUCKET/best/best_stepBBBBBB.json" \
+recovery_dir="$(mktemp -d)"
+./.venv/bin/hf download "$HIBIKI_HF_REPO" \
+  full_run/run.json \
+  full_run/checkpoints/model_stepNNNNNN.safetensors \
+  full_run/checkpoints/trainer_stepNNNNNN.pt \
+  full_run/best/best_stepBBBBBB.safetensors \
+  full_run/best/best_stepBBBBBB.json \
+  --local-dir "$recovery_dir"
+cp "$recovery_dir/full_run/run.json" finetune/runs/vi_base_full/run_id.json
+cp "$recovery_dir/full_run/checkpoints/model_stepNNNNNN.safetensors" \
+  finetune/runs/vi_base_full/
+cp "$recovery_dir/full_run/checkpoints/trainer_stepNNNNNN.pt" \
+  finetune/runs/vi_base_full/
+cp "$recovery_dir/full_run/best/best_stepBBBBBB.safetensors" \
+  finetune/runs/vi_base_full/
+cp "$recovery_dir/full_run/best/best_stepBBBBBB.json" \
   finetune/runs/vi_base_full/best.json
 ```
 
@@ -80,15 +79,17 @@ val_every=2000, eval_every=9000, save_every=3000, keep_checkpoints=2
 
 Checkpoint rotation keeps the newest two complete model/trainer pairs. Before a
 new save it removes the oldest pair while retaining one valid recovery point,
-so checkpoint storage peaks at two pairs (about 70 GiB) rather than three. Model
-and trainer files are published atomically; interrupted writes are ignored and
-cleaned at the next save. The setup also disables pip's package cache.
+so checkpoint storage peaks at two pairs (about 70 GiB) rather than three. The
+trainer file is published only after its model and acts as the remote pair's
+commit marker; interrupted writes are ignored and cleaned at the next save. The
+setup also disables pip's package cache.
 
 The launcher runs `hf_sync.py` beside training. It uploads 9,000-step evaluation
-checkpoints, the best model, and the newest pair when training exits to the
-private mutable bucket. The bucket keeps two recovery pairs plus one best model;
-its steady checkpoint footprint is about 82 GiB, and old objects are actually
-deleted instead of retained in Git history. Hard-link
+checkpoints, the best model, and the newest pair when training exits under
+`full_run/` in the public checkpoint repo. It preserves the existing phase-1
+artifacts and keeps two recovery pairs plus one best model in the current tree.
+Because model repos retain commit history, pruning old files does not immediately
+reclaim their underlying storage. Hard-link
 staging prevents local rotation from invalidating an active upload without
 copying checkpoint bytes, though a slow or interrupted upload can temporarily
 pin one additional pair on disk. Training waits for a verified final sync before
@@ -101,5 +102,5 @@ Stop immediately on non-finite loss, checkpoint mismatch, corrupt output, or a
 logged LR that differs from `run_config.json`. Teacher-forced loss cannot select
 a model. Apply the free-running eligibility gates in
 [validation_plan.md](validation_plan.md) and preserve the best eligible
-model/trainer pair before rotation. The rolling bucket preserves the raw-chrF
+model/trainer pair before rotation. The rolling repo preserves the raw-chrF
 best model but not its matching trainer state.
