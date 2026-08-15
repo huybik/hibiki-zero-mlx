@@ -1,144 +1,44 @@
-# Finetune mechanics (Track A): Vietnamese adaptation
+# Vietnamese SFT mechanics
 
-This document describes the existing mechanics and historical smoke commands.
-The next campaign is governed by the [data](data_generation_plan.md),
-[training](training_plan.md), and [validation](validation_plan.md) plans. Do not
-use `finetune/phase2.sh` as the next launcher: it records the closed, failed hot
-warm-start recipe.
+The training stack uses the PyTorch `moshi` package and is separate from the MLX
+inference runtime. It supports one path: full-model SFT from the upstream
+Hibiki-Zero 3B base checkpoint on CUDA.
 
-PyTorch/MPS (CUDA-portable) LoRA stack that adapts Hibiki-Zero to a **new source
-language (Vietnamese → EN)** by fine-tuning only the main transformer (depformer /
-Mimi / embeddings frozen). Separate from the MLX inference runtime; uses the
-`moshi` pip package + `sphn` + `safetensors` in the conda base env. Phase 4 of the
-refactor plan is **done** (consolidation + schedules + selection + val128).
+## Inputs
 
-## Design (locked)
+Place these files in `weights/`:
 
-- **Freeze map (LoRA, default):** everything `requires_grad=False`, then LoRA on
-  `LMModel.transformer`; optional full `text_linear` (`--train-text-head`) and audio-head
-  LoRA on `depformer_in`+`linears` (`--train-audio-heads`). New LoRA `B` is **zero-init**
-  (random-init spikes loss). Audio loss still backprops through the frozen depformer.
-- **Full finetune (`--full-finetune`):** paper-faithful SFT — unfreezes **every** LM param,
-  no LoRA, one optimizer group on `--lr`/`--lr-schedule`, saves `model_step*.safetensors`
-  (metadata `target=full`). This is the **scaled CUDA run** (won't fit the 36 GB MPS cap).
-  Use `--dtype float32`: CUDA applies bf16 autocast for the forward pass while preserving
-  fp32 master weights for Adam updates at LR around 1e-5.
-  LoRA stays the cheap MPS plumbing/capacity probe. `eval_lora.py`/`validate_lora.py`
-  auto-detect the checkpoint kind (`common.load_finetuned`) and load full weights straight
-  onto the base model. Rationale + when-to-use: `docs/training_plan.md`.
-- **Cache codes once:** `cache_codes.py` writes `codes[1+n_q, T]` shards — row 0 EN
-  text tokens (prefix-pad supervised, tail-pad masked), rows `1..dep_q` EN target Mimi
-  codes, rows `dep_q+1..` VI source codes + source-EOS. Mimi is not in the training loop.
-- **MPS memory:** `--dtype bfloat16 --batch-size 2 --grad-accum-steps 2` (batch 4 spikes
-  the 48 GB driver). Eval/validate can use `--batch-size 8`. `float16` goes non-finite
-  after the first step — bf16 is the default. **`--max-frames N` drops cached samples over
-  N Mimi frames at load** — with `sort_by_length=true` the longest clips land in the final
-  batches and can OOM/BSOD the driver; use **280** (22 s) for the FLEURS+PhoMT pool.
-- **Device portability:** all `torch.mps.*` calls (empty_cache/synchronize, memory
-  stats) are gated behind `common.is_mps(device)`, so `--device cuda` runs clean.
+- `config.json`
+- `hibiki-pytorch-77f82164@110.safetensors`
+- `mimi-pytorch-e351c8d8@125.safetensors`
+- `tokenizer_spm_48k_multi6_2.model`
 
-## Layout
-
-- `common.py` — the shared toolkit: device/dtype/seed, cached-shard dataset + loader +
-  replay sampler, LoRA insertion + adapter save/load (metadata-driven), teacher-forced
-  losses, greedy generation, BLEU/chrF/WER + loop metrics, and the schedule primitives.
-  `train_lora.py` / `eval_lora.py` / `validate_lora.py` are thin wrappers over it.
-- `build_pairs.py` FLEURS manifests → `pairs/{split}.jsonl` (+ deterministic
-  `val16.jsonl` / `val128.jsonl` held-out gate subsets, first-N of validation).
-- `fetch_phomt.py` HF `anquachdev/PhoMT-en-vi-speech` (paired synthetic EN+VI TTS) →
-  `remote_dataset/phomt_en_vi/{en,vi}/*.wav` + `pairs/phomt_train.jsonl` (989 pairs,
-  drops vi>25 s). Reads `HF_TOKEN` from `.env`; same 8-field pair schema as `build_pairs`.
-- `cache_codes.py` → `cache/{train,validation,phomt_train,...}/shard_*.pt`.
-  `train_lora.py --cache-dir` accepts **multiple dirs** — shards from all are pooled, so
-  FLEURS + PhoMT train together without re-encoding FLEURS.
-- `autoresearch.py` — fixed trial runner (subprocess), TSV protocol, primary = val chrF.
-
-## Schedules (all CLI, piecewise-constant `value@fraction`)
-
-Every static flag is the degenerate single-point schedule, so old commands run unchanged.
-`fraction` is a fraction of total optimizer steps (`--max-steps`, else epochs×steps/epoch).
-
-- **Loss weights:** `--text-weight-schedule "5@0,2@0.6"`, `--audio-weight-schedule`.
-  Fall back to `--text-loss-weight` / `--audio-loss-weight`.
-- **Prefix timing:** `--text-prefix-pad-weight` weights only supervised initial
-  wait PAD tokens. Content/EOS stay at 1; tail/batch pads stay ignored. Default
-  1.0 is backward-compatible. The next full run deliberately uses 0.5 to reduce
-  the measured PAD-loss imbalance; it remains the first scaled use and is judged
-  only by the free-running gates in `docs/validation_plan.md`.
-- **Replay:** `--replay-weight-schedule "300@0,100@0.5"` (needs `--replay-ids`);
-  reuses the WeightedRandomSampler, rebuilt at each boundary. Falls back to `--replay-weight`.
-- **Per-group LR:** `--lr-schedule` (transformer LoRA), `--text-head-lr-schedule`,
-  `--audio-head-lr-schedule`, plus `--warmup-steps N` (linear warmup, all groups). Fall
-  back to `--lr` / `--text-head-lr` / `--audio-head-lr`. Groups collapse to one when
-  their schedules match.
-
-## Selection & speed
-
-- `--eval-every N` runs a **batched greedy val eval** (`--eval-pairs`, `--eval-limit`
-  128, `--eval-batch-size` 8, `--eval-text-temp 0.0`), logs chrF to
-  `greedy_eval_log.jsonl`, and saves `{adapter,model}_best.safetensors` + `best.json`
-  on chrF improvement. This raw-chrF best is a convenience artifact, not the
-  eligibility-aware final selection defined in `docs/validation_plan.md`. Mimi is
-  loaded only when `--eval-every>0`.
-- Teacher-forced CE validation stays available via `--val-cache-dir` + `--val-every`.
-
-## AutoResearch protocol (keep it)
-
-`autoresearch.py {run-trial | run-staged-trial | record-existing}` drives train →
-validate (seen3 + val CE) → greedy eval (seen3 anchors + val16/val128) → append one
-row to `finetune/autoresearch/results.tsv` (gitignored). Primary metric = val chrF;
-secondary gates = nonempty rate, EOS rate, overlong / repeated-4gram loop metrics.
-One hypothesis per commit; keep only if the primary metric improves. `run-staged-trial`
-expresses replay/text-weight staging as two chained train stages (now also expressible
-in a single run via the schedule flags above).
-
-Gate discipline: `seen_first3` / `short16` for smoke mechanics only; **val128 for real
-decisions**; full 1449 last. 5/16-row deltas are noise.
-
-## Historical scaffold commands
-
-These remain useful for local mechanics checks only. They are not the scaled
-recipe and the CUDA example predates the new plans.
+Training consumes cached `shard_*.pt` files. Each sample is `codes[1+n_q, T]`:
+English text, English target Mimi codes, then Vietnamese source Mimi codes with
+a source-EOS frame. `cache_codes.py` builds FLEURS caches;
+`cache_phomt_stream.py` builds the large published PhoMT cache one parquet shard
+at a time.
 
 ```bash
-PY=/opt/homebrew/Caskroom/miniconda/base/bin/python
-export HF_HOME="$(pwd)/.hf_cache"                                    # HF_HOME may point at a dead mount
-# One-time: build pair files + val128 gate, cache codes.
-$PY finetune/build_pairs.py --splits train validation test          # writes val16/val128 too
-$PY finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
-$PY finetune/cache_codes.py --pairs finetune/pairs/validation.jsonl --out-dir finetune/cache/validation
-# Add PhoMT real-speech data (fetch + cache into its own dir).
-$PY finetune/fetch_phomt.py
-$PY finetune/cache_codes.py --pairs finetune/pairs/phomt_train.jsonl --out-dir finetune/cache/phomt_train
-
-# Combined FLEURS+PhoMT vi->en run (pool both caches; --eval-every 0 avoids the slow
-# in-training val128 greedy, then eval audio at the end with eval_lora --stop-on-eos).
-$PY finetune/train_lora.py --cache-dir finetune/cache/train finetune/cache/phomt_train \
-  --out-dir finetune/runs/vn_phomt_combined --dtype bfloat16 --batch-size 2 --grad-accum-steps 2 \
-  --max-steps 1000 --train-text-head --train-audio-heads --lora-rank 32 \
-  --text-weight-schedule "5@0,2@0.6" --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 20 --eval-every 0
-$PY finetune/eval_lora.py --adapter finetune/runs/vn_phomt_combined/adapter_step001000.safetensors \
-  --pairs finetune/pairs/val16.jsonl --limit 16 --out-dir finetune/runs/vn_phomt_combined/eval_audio
-
-# 128-row decision run on MPS with schedules + in-training best-on-chrF selection.
-$PY finetune/train_lora.py --cache-dir finetune/cache/train --out-dir finetune/runs/vn_sched \
-  --dtype bfloat16 --batch-size 2 --grad-accum-steps 2 --max-steps 512 \
-  --train-text-head --train-audio-heads --lora-rank 32 \
-  --text-weight-schedule "5@0,2@0.6" --replay-ids 213,211,245 \
-  --replay-weight-schedule "300@0,100@0.5" --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 20 \
-  --eval-every 128 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128 --eval-batch-size 8
-
-# Scaled CUDA run — paper-faithful FULL-MODEL SFT (no LoRA, batch 16). The real run.
-$PY finetune/train_lora.py --device cuda --dtype float32 --batch-size 16 --grad-accum-steps 1 \
-  --full-finetune --cache-dir finetune/cache/train finetune/cache/phomt_train \
-  --max-steps 4000 --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 100 --gradient-checkpointing \
-  --eval-every 500 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128
+python remote_dataset/download_fleurs_vi_en.py --split train
+python remote_dataset/download_fleurs_vi_en.py --split validation
+python finetune/build_pairs.py --splits train validation
+python finetune/cache_codes.py --pairs finetune/pairs/train.jsonl
+python finetune/cache_codes.py \
+  --pairs finetune/pairs/validation.jsonl \
+  --out-dir finetune/cache/validation
 ```
 
-## Limitations
+## Trainer invariants
 
-Mechanics/optimization scaffold, not a finished quality recipe: FLEURS is small,
-source/target are only coarsely aligned by frame padding, and there is no LoRA merge or
-MLX conversion here. The depformer-frozen LoRA-on-main bet may still cap quality (per
-`distill_plan` Track A) — that is exactly the cheap hypothesis these schedules probe.
-Missing weights/data/deps fail loudly.
+- Every model parameter is trainable; there is no adapter or freeze map.
+- CUDA uses fp32 master weights and bf16 autocast.
+- `--max-frames 280` bounds memory; fixed length-sorted batches minimize padding.
+- Text prefix PAD has weight 0.5 by default; content and EOS remain weight 1.
+- Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.
+- Checkpoints contain the exact full model. Loading rejects missing or extra keys.
+- `--resume-checkpoint` is only for interruption recovery in the same run.
+
+Teacher-forced validation is diagnostic. `--eval-every` performs deterministic
+free-running evaluation and writes predictions plus generation-health metrics.
+Final selection follows [validation_plan.md](validation_plan.md).

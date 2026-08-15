@@ -176,7 +176,8 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
 
     enc_t = threading.Thread(target=encoder, daemon=True)
     dec_t = threading.Thread(target=decoder, daemon=True)
-    enc_t.start(); dec_t.start()
+    enc_t.start()
+    dec_t.start()
 
     text_pieces: list[str] = []
     processed = 0
@@ -211,7 +212,8 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
             if not enc_t.is_alive():
                 break
     dec_q.put(SENTINEL)
-    enc_t.join(); dec_t.join()
+    enc_t.join()
+    dec_t.join()
     wall = time.perf_counter() - t0
 
     Path(outfile).parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,4 @@
-# Helpers for PyTorch eval, relocated from the deleted upstream hibiki_zero package
-# (client_utils.py + inference.py). Only what finetune/eval_lora.py uses survives;
-# everything runs on the `moshi` pip package.
+# PyTorch evaluation helpers used by finetune/eval.py.
 import math
 from pathlib import Path
 

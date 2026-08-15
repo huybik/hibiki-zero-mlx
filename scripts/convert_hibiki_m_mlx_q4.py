@@ -16,8 +16,8 @@ import mlx.nn as nn
 HERE = Path(__file__).resolve().parent.parent
 os.environ.setdefault("HF_HOME", str(HERE / ".hf_cache"))
 
-from huggingface_hub import hf_hub_download
-from moshi_mlx import models
+from huggingface_hub import hf_hub_download  # noqa: E402
+from moshi_mlx import models  # noqa: E402
 
 SOURCE_REPO = "kyutai/hibiki-1b-mlx-bf16"
 SOURCE_REVISION = "b3d6291f3dcf7954e1a502e4d66f32e3556f17ae"

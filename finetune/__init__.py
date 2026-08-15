@@ -1,2 +1,1 @@
-"""Minimal Vietnamese LoRA fine-tuning helpers for Hibiki-Zero."""
-
+"""Vietnamese full-model SFT helpers for Hibiki-Zero."""

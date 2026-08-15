@@ -1,10 +1,8 @@
-"""Shared training/eval logic for the Vietnamese LoRA finetune stack.
+"""Shared training and evaluation logic for Vietnamese full-model SFT.
 
-This module owns everything that used to be duplicated across train_lora.py /
-eval_lora.py / validate_lora.py: device+dtype helpers, the cached-shard dataset
-and loader, LoRA insertion and adapter load/save, teacher-forced losses,
-autoregressive greedy generation + text metrics, and the piecewise-constant
-schedule primitives used for loss-weight / replay / per-group-LR schedules.
+This module owns device helpers, the cached-shard dataset, exact full-model
+checkpoint I/O, teacher-forced losses, autoregressive generation, text metrics,
+and the piecewise-constant schedules used by the trainer.
 
 It is a PyTorch training toolkit; torch, safetensors and the `moshi` pip package
 are hard dependencies imported at module top (the conda base env ships them).
@@ -30,11 +28,10 @@ import torch
 os.environ.setdefault("NO_TORCH_COMPILE", "" if torch.cuda.is_available() else "1")
 
 import numpy as np
+import sacrebleu
 import sphn
 from moshi.models import loaders
-from moshi.modules.lora import replace_all_linear_with_lora
 from moshi.run_inference import get_condition_tensors
-from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Dataset
 
@@ -48,14 +45,7 @@ from finetune.hibiki_helpers import (
 )
 from finetune.utils import repo_display_path, require_file, resolve_repo_path
 
-# LoRA target groups (used for freeze map, save/load and per-group LR schedules).
-GROUP_PREFIXES = {
-    "transformer": ("transformer.",),
-    "text_linear": ("text_linear.",),
-    "audio_heads": ("depformer_in.", "linears."),
-}
-SUPPORTED_TARGETS = {"LMModel.transformer", "text_linear", "audio_heads"}
-SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT, "hibiki_vn_lora_cache_v2"}
+SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT}
 
 
 # --------------------------------------------------------------------------- #
@@ -200,7 +190,7 @@ def schedule_value(points: list[tuple[float, float]], step: int, total_steps: in
 
 
 # --------------------------------------------------------------------------- #
-# Cached-shard dataset / loader / replay sampler
+# Cached-shard dataset / loader
 # --------------------------------------------------------------------------- #
 class CachedCodeDataset(Dataset):
     def __init__(
@@ -287,85 +277,6 @@ class CachedCodeDataset(Dataset):
         }
 
 
-def parse_frame_batch_schedule(spec: str) -> list[tuple[int, int]]:
-    """Parse cumulative max-frame buckets, e.g. ``288:10,384:8,512:5``."""
-    buckets: list[tuple[int, int]] = []
-    for part in spec.split(","):
-        fields = part.strip().split(":")
-        if len(fields) != 2:
-            raise ValueError("--frame-batch-schedule must use MAX_FRAMES:BATCH_SIZE entries")
-        try:
-            max_frames, batch_size = (int(field) for field in fields)
-        except ValueError as exc:
-            raise ValueError("--frame-batch-schedule values must be positive integers") from exc
-        if max_frames <= 0 or batch_size <= 0:
-            raise ValueError("--frame-batch-schedule values must be positive integers")
-        if buckets and max_frames <= buckets[-1][0]:
-            raise ValueError("--frame-batch-schedule frame limits must strictly increase")
-        buckets.append((max_frames, batch_size))
-    if not buckets:
-        raise ValueError("--frame-batch-schedule cannot be empty")
-    return buckets
-
-
-class FrameBudgetBatchSampler:
-    """Length-homogeneous batches shuffled only as whole blocks per epoch."""
-
-    def __init__(
-        self,
-        dataset: CachedCodeDataset,
-        schedule: list[tuple[int, int]],
-        seed: int,
-    ):
-        self.dataset = dataset
-        self.schedule = schedule
-        self.seed = seed
-        self.epoch = 0
-        self.batches: list[list[int]] = []
-        self.bucket_exposure: list[dict[str, float | int]] = []
-
-        lower = 0
-        for upper, batch_size in schedule:
-            indices = sorted(
-                (
-                    index
-                    for index, sample in enumerate(dataset.samples)
-                    if lower < sample["frames"] <= upper
-                ),
-                key=lambda index: dataset.samples[index]["frames"],
-            )
-            batches = [
-                indices[start : start + batch_size] for start in range(0, len(indices), batch_size)
-            ]
-            self.batches.extend(batches)
-            source_frames = sum(dataset.samples[index]["source_frames"] for index in indices)
-            self.bucket_exposure.append(
-                {
-                    "min_frames": lower + 1,
-                    "max_frames": upper,
-                    "batch_size": batch_size,
-                    "samples": len(indices),
-                    "batches": len(batches),
-                    "assembled_frames": sum(dataset.samples[index]["frames"] for index in indices),
-                    "source_hours": source_frames / float(dataset.frame_rate) / 3600,
-                }
-            )
-            lower = upper
-        if sum(len(batch) for batch in self.batches) != len(dataset):
-            raise ValueError("--frame-batch-schedule does not cover every selected cache sample")
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = epoch
-
-    def __iter__(self):
-        order = list(range(len(self.batches)))
-        random.Random(f"{self.seed}:{self.epoch}").shuffle(order)
-        return iter(self.batches[index] for index in order)
-
-    def __len__(self) -> int:
-        return len(self.batches)
-
-
 # Pad each batch's frame length up to a multiple of this. MPS compiles+caches a
 # Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
 # lengths, which balloons the GPU working set (26 GB wired, swap-thrash). Bucketing
@@ -396,62 +307,19 @@ def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def parse_ids(value: str) -> set[str]:
-    return {item.strip() for item in value.split(",") if item.strip()}
-
-
-def make_replay_sampler(
-    dataset: CachedCodeDataset,
-    replay_ids: set[str],
-    replay_weight: float,
-    seed: int,
-) -> Any | None:
-    if not replay_ids or replay_weight == 1.0:
-        return None
-    sample_ids = {str(sample["id"]) for sample in dataset.samples}
-    missing = sorted(replay_ids - sample_ids)
-    if missing:
-        raise ValueError(f"--replay-ids not present in selected cache samples: {missing[:10]}")
-    weights = [
-        float(replay_weight) if str(sample["id"]) in replay_ids else 1.0
-        for sample in dataset.samples
-    ]
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-    return torch.utils.data.WeightedRandomSampler(
-        weights=torch.DoubleTensor(weights),
-        num_samples=len(weights),
-        replacement=True,
-        generator=generator,
-    )
-
-
 def make_cached_dataloader(
     dataset: CachedCodeDataset,
     batch_size: int,
     num_workers: int,
     sort_by_length: bool,
-    sampler: Any | None = None,
-    batch_sampler: Any | None = None,
     seed: int = 0,
 ) -> DataLoader:
     generator = torch.Generator()
     generator.manual_seed(seed)
-    if batch_sampler is not None:
-        if sampler is not None:
-            raise ValueError("sampler and batch_sampler are mutually exclusive")
-        return DataLoader(
-            dataset,
-            batch_sampler=batch_sampler,
-            num_workers=num_workers,
-            collate_fn=collate_cached,
-            generator=generator,
-        )
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False if sampler is not None else not sort_by_length,
-        sampler=sampler,
+        shuffle=not sort_by_length,
         num_workers=num_workers,
         collate_fn=collate_cached,
         generator=generator,
@@ -459,67 +327,10 @@ def make_cached_dataloader(
 
 
 # --------------------------------------------------------------------------- #
-# LoRA insertion / freeze map / adapter save+load
+# Full-model checkpoint I/O
 # --------------------------------------------------------------------------- #
-def group_of(name: str) -> str | None:
-    for group, prefixes in GROUP_PREFIXES.items():
-        if name.startswith(prefixes):
-            return group
-    return None
-
-
-def zero_lora_updates(model: Any) -> None:
-    for module in model.modules():
-        lora_b = getattr(module, "lora_B", None)
-        if lora_b is not None:
-            lora_b.weight.data.zero_()
-
-
-def adapter_target(train_text_head: bool, train_audio_heads: bool) -> str:
-    targets = ["LMModel.transformer"]
-    if train_text_head:
-        targets.append("text_linear")
-    if train_audio_heads:
-        targets.append("audio_heads")
-    return "+".join(targets)
-
-
-def apply_lora_targets(
-    model: Any, lora_rank: int, lora_scaling: float, train_text_head: bool, train_audio_heads: bool
-) -> None:
-    """Freeze everything, insert zero-init LoRA on the selected targets, unfreeze them."""
-    for param in model.parameters():
-        param.requires_grad_(False)
-    replace_all_linear_with_lora(model.transformer, lora_rank, lora_scaling)
-    if train_audio_heads:
-        replace_all_linear_with_lora(model.depformer_in, lora_rank, lora_scaling)
-        replace_all_linear_with_lora(model.linears, lora_rank, lora_scaling)
-    zero_lora_updates(model)
-    for name, param in model.named_parameters():
-        is_lora = ".lora_A." in name or ".lora_B." in name
-        train_transformer = is_lora and name.startswith("transformer.")
-        train_text = train_text_head and name.startswith("text_linear.")
-        train_audio = train_audio_heads and is_lora and (
-            name.startswith("depformer_in.") or name.startswith("linears.")
-        )
-        param.requires_grad_(train_transformer or train_text or train_audio)
-
-    bad = [
-        name
-        for name, param in model.named_parameters()
-        if param.requires_grad and group_of(name) is None
-    ]
-    if bad:
-        raise RuntimeError(f"LoRA freeze map leaked trainable params outside targets: {bad[:5]}")
-
-
-def apply_full_finetune(model: Any) -> None:
-    """Full-model SFT (paper §4.6): unfreeze every LM parameter, no LoRA.
-
-    Faithful to how the paper adds a language (full finetune from the base
-    checkpoint). Saving/loading reuses the adapter helpers: with everything
-    trainable, `adapter_state_dict` captures the whole model.
-    """
+def enable_full_finetune(model: Any) -> None:
+    """Train every language-model parameter."""
     for param in model.parameters():
         param.requires_grad_(True)
 
@@ -528,123 +339,37 @@ def trainable_parameters(model: Any) -> list[Any]:
     return [param for param in model.parameters() if param.requires_grad]
 
 
-def adapter_state_dict(model: Any) -> dict[str, Any]:
-    trainable_names = {name for name, param in model.named_parameters() if param.requires_grad}
+def save_model(model: Any, path: Path, metadata: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     state = {
         name: tensor.detach().cpu().contiguous()
         for name, tensor in model.state_dict().items()
-        if name in trainable_names
     }
-    if not state:
-        raise RuntimeError("No trainable adapter tensors found to save.")
-    return state
+    save_file(state, str(path), metadata=metadata)
 
 
-def save_adapter(model: Any, adapter_path: Path, metadata: dict[str, str]) -> None:
-    adapter_path.parent.mkdir(parents=True, exist_ok=True)
-    save_file(adapter_state_dict(model), str(adapter_path), metadata=metadata)
-
-
-def load_adapter_state(model: Any, adapter_path: Path, dtype: torch.dtype) -> int:
-    """Load adapter tensors into a model that already has matching LoRA modules."""
-    state = load_file(str(adapter_path), device="cpu")
-    for key, value in state.items():
-        if value.dtype.is_floating_point:
-            state[key] = value.to(dtype=dtype)
-    result = model.load_state_dict(state, strict=False)
-    if result.unexpected_keys:
-        raise RuntimeError(f"Unexpected adapter keys in {adapter_path}: {result.unexpected_keys[:5]}")
-    return len(state)
-
-
-def adapter_metadata(adapter_path: Path) -> tuple[int, float, set[str]]:
-    with safe_open(str(adapter_path), framework="pt", device="cpu") as handle:
-        metadata = handle.metadata() or {}
-    missing = [key for key in ("target", "lora_rank", "lora_scaling") if key not in metadata]
-    if missing:
-        raise RuntimeError(f"Adapter is missing metadata: {', '.join(missing)}")
-    targets = set(metadata["target"].split("+"))
-    if "LMModel.transformer" not in targets or targets - SUPPORTED_TARGETS:
-        raise RuntimeError(f"Unsupported adapter target: {metadata['target']}")
-    return int(metadata["lora_rank"]), float(metadata["lora_scaling"]), targets
-
-
-def load_main_lora(lm: Any, adapter_path: Path, device: torch.device, dtype: torch.dtype) -> None:
-    """Insert LoRA per the adapter metadata, then load its weights (for eval/validate)."""
-    rank, scaling, targets = adapter_metadata(adapter_path)
-    replace_all_linear_with_lora(lm.transformer, rank, scaling, device=device, dtype=dtype)
-    if "audio_heads" in targets:
-        replace_all_linear_with_lora(lm.depformer_in, rank, scaling, device=device, dtype=dtype)
-        replace_all_linear_with_lora(lm.linears, rank, scaling, device=device, dtype=dtype)
-    state = load_file(str(adapter_path), device=str(device))
-    allowed = ["transformer."]
-    if "text_linear" in targets:
-        allowed.append("text_linear.")
-    if "audio_heads" in targets:
-        allowed.extend(("depformer_in.", "linears."))
-    bad = [key for key in state if not key.startswith(tuple(allowed))]
-    if bad:
-        raise RuntimeError(f"Adapter has unsupported tensors: {bad[:5]}")
-    for key, value in state.items():
-        if value.dtype.is_floating_point:
-            state[key] = value.to(dtype=dtype)
-    result = lm.load_state_dict(state, strict=False, assign=True)
-    if result.unexpected_keys:
-        raise RuntimeError(f"Unexpected adapter keys: {result.unexpected_keys[:5]}")
-    print(f"Loaded {len(state)} adapter tensors from {repo_display_path(adapter_path)}")
-
-
-def checkpoint_is_full(path: Path) -> bool:
-    with safe_open(str(path), framework="pt", device="cpu") as handle:
-        return (handle.metadata() or {}).get("target") == "full"
-
-
-def load_finetuned(lm: Any, path: Path, device: torch.device, dtype: torch.dtype) -> None:
-    """Load a checkpoint into `lm`, dispatching on its metadata target.
-
-    Full-finetune checkpoints hold every param key, so they load straight onto
-    the base model (missing keys are just buffers); LoRA adapters get the LoRA
-    modules inserted first.
-    """
-    if checkpoint_is_full(path):
-        count = load_adapter_state(lm, path, dtype)
-        print(f"Loaded {count} full-finetune tensors from {repo_display_path(path)}")
-    else:
-        load_main_lora(lm, path, device, dtype)
+def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
+    """Load an exact full-model checkpoint; partial states are rejected."""
+    state = load_file(str(path), device="cpu")
+    expected = set(model.state_dict())
+    actual = set(state)
+    if missing := sorted(expected - actual):
+        raise RuntimeError(f"Checkpoint is missing model tensors: {missing[:5]}")
+    if unexpected := sorted(actual - expected):
+        raise RuntimeError(f"Checkpoint has unexpected tensors: {unexpected[:5]}")
+    state = {
+        name: tensor.to(dtype=dtype) if tensor.dtype.is_floating_point else tensor
+        for name, tensor in state.items()
+    }
+    model.load_state_dict(state, strict=True)
+    print(f"Loaded {len(state)} model tensors from {repo_display_path(path)}")
 
 
 # --------------------------------------------------------------------------- #
-# Optimizer param groups + per-group LR scheduling
+# Optimizer LR scheduling
 # --------------------------------------------------------------------------- #
-def build_param_groups(model: Any, lr_schedules: dict[str, list[tuple[float, float]]]) -> list[dict[str, Any]]:
-    """One optimizer group per LoRA target that has trainable params.
-
-    Collapses to a single unnamed group when all three groups share the same
-    schedule, so plain `--lr` runs behave exactly as before.
-    """
-    buckets: dict[str, list[Any]] = {name: [] for name in GROUP_PREFIXES}
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        group = group_of(name)
-        if group is None:
-            raise RuntimeError(f"Unexpected trainable parameter outside groups: {name}")
-        buckets[group].append(param)
-
-    active = {name: params for name, params in buckets.items() if params}
-    specs = {name: lr_schedules[name] for name in active}
-    uniform = len({tuple(points) for points in specs.values()}) <= 1
-    if uniform:
-        merged = [param for params in active.values() for param in params]
-        return [{"name": "all", "params": merged, "points": next(iter(specs.values()))}]
-    return [
-        {"name": name, "params": params, "points": lr_schedules[name]}
-        for name, params in active.items()
-    ]
-
-
-def full_param_groups(model: Any, lr_points: list[tuple[float, float]]) -> list[dict[str, Any]]:
-    """One optimizer group over all trainable params (full finetune = one LR schedule)."""
+def param_groups(model: Any, lr_points: list[tuple[float, float]]) -> list[dict[str, Any]]:
+    """One optimizer group over every trainable parameter."""
     params = [param for param in model.parameters() if param.requires_grad]
     return [{"name": "all", "params": params, "points": lr_points}]
 
@@ -988,11 +713,6 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "wer": word_error_rate(references, hypotheses),
     }
     metrics.update(length_repetition_metrics(references, hypotheses))
-    try:
-        import sacrebleu
-    except ImportError:
-        metrics["sacrebleu"] = "missing"
-        return metrics
     metrics["bleu"] = sacrebleu.corpus_bleu(hypotheses, [references]).score
     metrics["chrf"] = sacrebleu.corpus_chrf(hypotheses, [references]).score
     if nonempty_pairs:

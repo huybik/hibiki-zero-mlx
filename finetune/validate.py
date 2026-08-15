@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Teacher-forced CE on cached codes for a base model or LoRA adapter."""
+"""Teacher-forced CE on cached codes for a base or full-SFT model."""
 from __future__ import annotations
 
 import argparse
@@ -27,11 +27,11 @@ from finetune.utils import (  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute teacher-forced CE on cached codes for a base model or LoRA adapter."
+        description="Compute teacher-forced CE on cached codes for a base or full-SFT model."
     )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_ROOT / "validation")
     parser.add_argument(
-        "--adapter", type=Path, help="Optional LoRA adapter or full-finetune .safetensors checkpoint."
+        "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
     )
     parser.add_argument("--out-json", type=Path, help="Optional metrics JSON path.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--device", default="mps")
     parser.add_argument(
-        "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model/LoRA dtype."
+        "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model dtype."
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-samples", type=int, default=0, help="0 means all.")
@@ -67,7 +67,7 @@ def main() -> None:
     dtype = common.dtype_from_name(args.dtype)
 
     cache_dir = require_dir(args.cache_dir, "code cache directory")
-    adapter = require_file(args.adapter, "checkpoint") if args.adapter else None
+    checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
@@ -82,10 +82,10 @@ def main() -> None:
     checkpoint_info = common.load_checkpoint_info(args)
     print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
     lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
-    if adapter is not None:
-        common.load_finetuned(lm, adapter, device, dtype)
+    if checkpoint is not None:
+        common.load_model(lm, checkpoint, dtype)
     else:
-        print("Using base model without adapter.")
+        print("Using the base model.")
 
     metrics = common.evaluate_teacher_forced(
         lm, dataloader, device, checkpoint_info.model_type,
@@ -93,7 +93,7 @@ def main() -> None:
     )
     result = {
         "cache_dir": repo_display_path(cache_dir),
-        "adapter": repo_display_path(adapter) if adapter is not None else "",
+        "checkpoint": repo_display_path(checkpoint) if checkpoint is not None else "",
         **{k: metrics[k] for k in (
             "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "batches", "samples",
             "content_text_loss", "content_acc", "content_tokens", "silence_score",

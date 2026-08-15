@@ -17,6 +17,16 @@ dependencies = [
 [tool.ruff]
 line-length = 100
 
+[project.optional-dependencies]
+training = [
+    "datasets",
+    "huggingface-hub",
+    "pyarrow",
+    "sacrebleu",
+    "safetensors",
+    "soundfile",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

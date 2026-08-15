@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET_DIR = REPO_ROOT / "remote_dataset" / "fleurs_vi_en"
 DEFAULT_PAIRS_DIR = REPO_ROOT / "finetune" / "pairs"
 DEFAULT_CACHE_ROOT = REPO_ROOT / "finetune" / "cache"
-DEFAULT_RUN_DIR = REPO_ROOT / "finetune" / "runs" / "vn_lora"
+DEFAULT_RUN_DIR = REPO_ROOT / "finetune" / "runs" / "vi_base_full"
 
 DEFAULT_CONFIG_PATH = REPO_ROOT / "weights" / "config.json"
 DEFAULT_MODEL_WEIGHT = REPO_ROOT / "weights" / "hibiki-pytorch-77f82164@110.safetensors"

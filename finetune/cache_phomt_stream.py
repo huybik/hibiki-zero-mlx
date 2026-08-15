@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import queue
 import sys
 import tempfile
@@ -42,7 +43,6 @@ from finetune.cache_codes import (  # noqa: E402
     target_delay_s,
     text_tokens,
 )
-from finetune.fetch_phomt import DATASET, load_hf_token, row_key  # noqa: E402
 from finetune.utils import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
     DEFAULT_CONFIG_PATH,
@@ -54,6 +54,26 @@ from finetune.utils import (  # noqa: E402
     require_file,
     resolve_repo_path,
 )
+
+DATASET = "anquachdev/PhoMT-en-vi-speech"
+
+
+def load_hf_token() -> None:
+    """Load a local HF token and anchor a broken external cache to the repo."""
+    if not os.environ.get("HF_TOKEN"):
+        env = REPO_ROOT / ".env"
+        if env.is_file():
+            for line in env.read_text().splitlines():
+                if line.startswith("HF_TOKEN="):
+                    os.environ["HF_TOKEN"] = line.split("=", 1)[1].strip()
+    if not Path(os.environ.get("HF_HOME", "")).is_dir():
+        os.environ["HF_HOME"] = str(REPO_ROOT / ".hf_cache")
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+
+
+def row_key(text_vi: str, text_en: str, vi_dur: str, en_dur: str) -> tuple[str, str, str, str]:
+    return (text_vi.strip(), text_en.strip(), vi_dur, en_dur)
 
 
 def parse_args() -> argparse.Namespace:

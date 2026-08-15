@@ -33,7 +33,7 @@ CACHE_FORMAT = "hibiki_vn_lora_cache_v1"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Cache Mimi audio codes and English text tokens for vi->en LoRA training."
+        description="Cache Mimi audio codes and English text tokens for vi->en full-model SFT."
     )
     parser.add_argument(
         "--pairs",
