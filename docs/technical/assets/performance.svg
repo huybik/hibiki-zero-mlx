@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Hibiki-Zero performance charts</title>
+  <desc id="desc">Left chart shows real-time factor improving from PyTorch MPS to MLX q4 and pipelining. Right chart shows measured main and codebook-head latency for 3B AR, 1B AR, and 3B parallel-smoke configurations.</desc>
+  <defs>
+    <linearGradient id="bar1" x1="0" y1="1" x2="0" y2="0"><stop stop-color="#6878e8"/><stop offset="1" stop-color="#9ba8ff"/></linearGradient>
+    <linearGradient id="bar2" x1="0" y1="1" x2="0" y2="0"><stop stop-color="#159a82"/><stop offset="1" stop-color="#63d7be"/></linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#20305a" flood-opacity="0.10"/></filter>
+  </defs>
+  <rect width="1200" height="650" rx="26" fill="#fbfcff"/>
+  <text x="60" y="58" fill="#18213d" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="31" font-weight="800">Measured performance: schedule first, architecture next</text>
+  <text x="60" y="87" fill="#66708b" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="16">M4 Pro measurements. Parallel head is smoke-scale and not quality-qualified.</text>
+
+  <g filter="url(#shadow)"><rect x="45" y="120" width="545" height="475" rx="22" fill="#ffffff" stroke="#e2e7f2"/><rect x="610" y="120" width="545" height="475" rx="22" fill="#ffffff" stroke="#e2e7f2"/></g>
+  <text x="78" y="163" fill="#253050" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="20" font-weight="750">End-to-end real-time factor</text>
+  <text x="78" y="187" fill="#7a8299" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="13">Higher is better • 1.0x is the real-time line</text>
+
+  <line x1="100" y1="510" x2="550" y2="510" stroke="#cfd6e6"/>
+  <line x1="100" y1="444" x2="550" y2="444" stroke="#e8ebf3"/>
+  <line x1="100" y1="378" x2="550" y2="378" stroke="#e8ebf3"/>
+  <line x1="100" y1="312" x2="550" y2="312" stroke="#e8ebf3"/>
+  <line x1="100" y1="246" x2="550" y2="246" stroke="#e8ebf3"/>
+  <text x="88" y="515" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">0</text>
+  <text x="88" y="449" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">1x</text>
+  <text x="88" y="383" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">2x</text>
+  <text x="88" y="317" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">3x</text>
+  <text x="88" y="251" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">4x</text>
+  <line x1="100" y1="444" x2="550" y2="444" stroke="#dc765e" stroke-width="2" stroke-dasharray="7 6"/>
+  <text x="540" y="436" text-anchor="end" fill="#b75540" font-family="Arial,sans-serif" font-size="12" font-weight="700">real-time threshold</text>
+
+  <rect x="125" y="464" width="72" height="46" rx="10" fill="url(#bar1)"/>
+  <rect x="230" y="421" width="72" height="89" rx="10" fill="url(#bar1)"/>
+  <rect x="335" y="312" width="72" height="198" rx="10" fill="url(#bar2)"/>
+  <rect x="440" y="240" width="72" height="270" rx="10" fill="url(#bar2)"/>
+  <text x="161" y="454" text-anchor="middle" fill="#4d5fae" font-family="Arial,sans-serif" font-size="15" font-weight="800">0.7x</text>
+  <text x="266" y="411" text-anchor="middle" fill="#4d5fae" font-family="Arial,sans-serif" font-size="15" font-weight="800">1.35x</text>
+  <text x="371" y="302" text-anchor="middle" fill="#14836f" font-family="Arial,sans-serif" font-size="15" font-weight="800">3.0x</text>
+  <text x="476" y="230" text-anchor="middle" fill="#14836f" font-family="Arial,sans-serif" font-size="15" font-weight="800">4.1x</text>
+  <text x="161" y="535" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">PyTorch</text><text x="161" y="552" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">MPS 3B</text>
+  <text x="266" y="535" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">MLX q4</text><text x="266" y="552" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">sequential 3B</text>
+  <text x="371" y="535" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">MLX q4</text><text x="371" y="552" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">pipeline 3B</text>
+  <text x="476" y="535" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">MLX q4</text><text x="476" y="552" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="12">pipeline 1B</text>
+
+  <text x="645" y="163" fill="#253050" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="20" font-weight="750">LM latency per 80 ms frame</text>
+  <text x="645" y="187" fill="#7a8299" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="13">Stacked milliseconds • lower is better</text>
+  <g transform="translate(655 225)">
+    <text x="0" y="28" fill="#4c5673" font-family="Arial,sans-serif" font-size="14" font-weight="700">3B AR</text>
+    <rect x="105" y="8" width="246" height="32" rx="8" fill="#7b89eb"/>
+    <rect x="351" y="8" width="198" height="32" rx="8" fill="#39b99e"/>
+    <text x="228" y="29" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="13" font-weight="700">main 12.32</text>
+    <text x="450" y="29" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="13" font-weight="700">AR head 9.90</text>
+    <text x="559" y="29" fill="#26304f" font-family="Arial,sans-serif" font-size="13" font-weight="800">22.21</text>
+
+    <text x="0" y="106" fill="#4c5673" font-family="Arial,sans-serif" font-size="14" font-weight="700">1B AR</text>
+    <rect x="105" y="86" width="161" height="32" rx="8" fill="#7b89eb"/>
+    <rect x="266" y="86" width="140" height="32" rx="8" fill="#39b99e"/>
+    <text x="185" y="107" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="13" font-weight="700">main 8.05</text>
+    <text x="336" y="107" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="13" font-weight="700">AR 7.02</text>
+    <text x="416" y="107" fill="#26304f" font-family="Arial,sans-serif" font-size="13" font-weight="800">15.06</text>
+
+    <text x="0" y="184" fill="#4c5673" font-family="Arial,sans-serif" font-size="14" font-weight="700">3B parallel</text>
+    <rect x="105" y="164" width="264" height="32" rx="8" fill="#7b89eb"/>
+    <rect x="369" y="164" width="106" height="32" rx="8" fill="#f0a951"/>
+    <text x="237" y="185" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="13" font-weight="700">main 13.2</text>
+    <text x="422" y="185" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="12" font-weight="700">parallel 5.28</text>
+    <text x="485" y="185" fill="#26304f" font-family="Arial,sans-serif" font-size="13" font-weight="800">18.5</text>
+  </g>
+  <g transform="translate(650 480)">
+    <circle cx="8" cy="8" r="7" fill="#7b89eb"/><text x="22" y="13" fill="#5b657f" font-family="Arial,sans-serif" font-size="13">main Transformer</text>
+    <circle cx="180" cy="8" r="7" fill="#39b99e"/><text x="194" y="13" fill="#5b657f" font-family="Arial,sans-serif" font-size="13">AR depformer</text>
+    <circle cx="335" cy="8" r="7" fill="#f0a951"/><text x="349" y="13" fill="#5b657f" font-family="Arial,sans-serif" font-size="13">parallel smoke</text>
+  </g>
+  <rect x="650" y="525" width="465" height="48" rx="14" fill="#fff6e8"/>
+  <text x="670" y="554" fill="#8b6232" font-family="Arial,sans-serif" font-size="14" font-weight="700">The 80 ms frame budget is generous on Mac; the proof must move to a phone.</text>
+</svg>

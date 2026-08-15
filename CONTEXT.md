@@ -8,9 +8,8 @@ This repository maintains two paths only:
 The mobile target is a future distilled 1B Hibiki-Zero student with parallel
 target-codebook heads. It is not implemented yet.
 
-Obsolete experiments and generated research artifacts were removed from the
-active tree in August 2026. Generated FLEURS data is excluded from both the
-active tree and Git history.
+Historical design, vision, and report documentation is retained under `docs/`.
+Generated FLEURS data is excluded from both the active tree and Git history.
 
 ## Inference
 

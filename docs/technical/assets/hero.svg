@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">Hibiki-Zero MLX technical report cover</title>
+  <desc id="desc">A flowing waveform moves through codec, translation model, and voice output stages from MacBook to phone.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#10162f"/>
+      <stop offset="0.55" stop-color="#202a5a"/>
+      <stop offset="1" stop-color="#0d6b72"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8ee7ff"/>
+      <stop offset="0.5" stop-color="#a9a2ff"/>
+      <stop offset="1" stop-color="#70ffd5"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity="0.045"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="520" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="520" rx="28" fill="url(#grid)"/>
+  <circle cx="1090" cy="80" r="150" fill="#44ffd2" opacity="0.07"/>
+  <circle cx="130" cy="440" r="210" fill="#6f72ff" opacity="0.09"/>
+
+  <text x="70" y="95" fill="#9ff3ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" letter-spacing="3">TECHNICAL REPORT / AUGUST 2026</text>
+  <text x="70" y="162" fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="58" font-weight="800">Hibiki-Zero MLX</text>
+  <text x="70" y="205" fill="#d7dcff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="23">Simultaneous speech translation, rebuilt for Apple Silicon</text>
+
+  <g transform="translate(70 275)">
+    <rect width="250" height="116" rx="20" fill="#ffffff" fill-opacity="0.09" stroke="#bdeeff" stroke-opacity="0.28"/>
+    <text x="22" y="33" fill="#a5edff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" letter-spacing="1.5">MEASURED ON M4 PRO</text>
+    <text x="22" y="77" fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="36" font-weight="800">3.0x RT</text>
+    <text x="22" y="99" fill="#cbd5ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="14">3B q4 file translation</text>
+  </g>
+  <g transform="translate(340 275)">
+    <rect width="250" height="116" rx="20" fill="#ffffff" fill-opacity="0.09" stroke="#c6c2ff" stroke-opacity="0.28"/>
+    <text x="22" y="33" fill="#c6c2ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" letter-spacing="1.5">MODEL SIZE</text>
+    <text x="22" y="77" fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="36" font-weight="800">5.8 -> 2.2 GB</text>
+    <text x="22" y="99" fill="#cbd5ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="14">bf16 to MLX q4</text>
+  </g>
+  <g transform="translate(610 275)">
+    <rect width="250" height="116" rx="20" fill="#ffffff" fill-opacity="0.09" stroke="#83ffda" stroke-opacity="0.28"/>
+    <text x="22" y="33" fill="#83ffda" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" letter-spacing="1.5">VIETNAMESE</text>
+    <text x="22" y="77" fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="36" font-weight="800">19.61 chrF</text>
+    <text x="22" y="99" fill="#cbd5ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="14">phase-1 full SFT, val128</text>
+  </g>
+
+  <g transform="translate(900 115)">
+    <rect x="0" y="0" width="220" height="270" rx="34" fill="#0b1025" stroke="#8affdb" stroke-width="3"/>
+    <rect x="18" y="30" width="184" height="205" rx="20" fill="#151f43"/>
+    <rect x="75" y="12" width="70" height="7" rx="4" fill="#566080"/>
+    <circle cx="110" cy="252" r="8" fill="#7fffd8"/>
+    <path d="M34 134 C45 134 45 91 56 91 S68 176 80 176 92 69 104 69 116 159 128 159 140 104 152 104 164 143 186 143" fill="none" stroke="url(#line)" stroke-width="5" stroke-linecap="round" filter="url(#glow)"/>
+    <text x="110" y="204" text-anchor="middle" fill="#bfe9ff" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="14">80 ms streaming frame</text>
+  </g>
+
+  <path d="M70 450 C130 425 165 482 225 455 S320 425 380 452 475 486 540 445 635 419 700 452 790 487 850 440 920 418 980 445 1060 482 1130 447" fill="none" stroke="url(#line)" stroke-width="4" stroke-linecap="round" opacity="0.85" filter="url(#glow)"/>
+  <text x="70" y="495" fill="#b5c0e8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="16">Runtime  •  Vietnamese SFT  •  Distillation  •  Desktop  •  Apple + Qualcomm mobile</text>
+</svg>

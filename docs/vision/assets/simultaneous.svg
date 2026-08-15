@@ -1,0 +1,123 @@
+<svg viewBox="0 0 1200 470" xmlns="http://www.w3.org/2000/svg" font-family="Inter, Segoe UI, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="abg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1020"/><stop offset="1" stop-color="#161C33"/>
+    </linearGradient>
+    <radialGradient id="aglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#6366F1" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#6366F1" stop-opacity="0"/>
+    </radialGradient>
+    <!-- one typing-wipe clip per scene (width grows L→R inside the scene's window, 18s loop) -->
+    <clipPath id="clip0"><rect x="496" y="360" width="0" height="28">
+      <animate attributeName="width" values="0;0;260;260;0;0" keyTimes="0;0.0222;0.1222;0.2306;0.25;1" dur="18s" repeatCount="indefinite"/></rect></clipPath>
+    <clipPath id="clip1"><rect x="488" y="360" width="0" height="28">
+      <animate attributeName="width" values="0;0;0;260;260;0;0" keyTimes="0;0.25;0.2722;0.3722;0.4806;0.5;1" dur="18s" repeatCount="indefinite"/></rect></clipPath>
+    <clipPath id="clip2"><rect x="482" y="360" width="0" height="28">
+      <animate attributeName="width" values="0;0;0;260;260;0;0" keyTimes="0;0.5;0.5222;0.6222;0.7306;0.75;1" dur="18s" repeatCount="indefinite"/></rect></clipPath>
+    <clipPath id="clip3"><rect x="502" y="360" width="0" height="28">
+      <animate attributeName="width" values="0;0;0;260;260;0" keyTimes="0;0.75;0.7722;0.8722;0.9806;1" dur="18s" repeatCount="indefinite"/></rect></clipPath>
+  </defs>
+
+  <rect width="1200" height="470" rx="24" fill="url(#abg)"/>
+  <circle cx="600" cy="225" r="240" fill="url(#aglow)">
+    <animate attributeName="r" values="200;260;200" dur="4s" repeatCount="indefinite"/>
+  </circle>
+
+  <text x="600" y="40" font-size="22" font-weight="800" text-anchor="middle" fill="#E5E7EB">One model. Every conversation.</text>
+  <text x="600" y="64" font-size="13" text-anchor="middle" fill="#94A3B8">Simultaneous · on-device · in any language</text>
+
+  <!-- ============ constant frame: speakers, waveforms, engine ============ -->
+  <g transform="translate(120,225)">
+    <circle r="44" fill="#161C33" stroke="#22D3EE" stroke-width="2"/>
+    <text x="0" y="12" font-size="28" text-anchor="middle">🗣️</text>
+  </g>
+  <g transform="translate(1080,225)">
+    <circle r="44" fill="#161C33" stroke="#F472B6" stroke-width="2"/>
+    <text x="0" y="12" font-size="28" text-anchor="middle">👂</text>
+  </g>
+
+  <!-- input waveform (cyan, always running) -->
+  <g fill="#22D3EE">
+    <g transform="translate(190,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 0.4;1 1.8;1 0.6;1 1.3;1 0.4" dur="0.9s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(214,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 1.4;1 0.5;1 1.7;1 0.7;1 1.4" dur="1.1s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(238,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 0.6;1 1.5;1 0.5;1 1.9;1 0.6" dur="0.8s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(262,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 1.6;1 0.6;1 1.2;1 0.5;1 1.6" dur="1.0s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(286,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 0.5;1 1.7;1 0.7;1 1.4;1 0.5" dur="0.95s" repeatCount="indefinite"/></rect></g>
+  </g>
+  <!-- output waveform (pink, lags input by ~0.9s => simultaneous, not turn-based) -->
+  <g fill="#F472B6">
+    <g transform="translate(906,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 0.4;1 1.7;1 0.6;1 1.3;1 0.4" dur="0.9s" begin="0.9s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(930,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 1.5;1 0.5;1 1.8;1 0.7;1 1.5" dur="1.1s" begin="0.9s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(954,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 0.6;1 1.6;1 0.5;1 1.9;1 0.6" dur="0.8s" begin="0.9s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(978,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 1.6;1 0.6;1 1.2;1 0.5;1 1.6" dur="1.0s" begin="0.9s" repeatCount="indefinite"/></rect></g>
+    <g transform="translate(1002,225)"><rect x="-3" y="-17" width="6" height="34" rx="3"><animateTransform attributeName="transform" type="scale" values="1 0.5;1 1.7;1 0.7;1 1.4;1 0.5" dur="0.95s" begin="0.9s" repeatCount="indefinite"/></rect></g>
+  </g>
+
+  <!-- engine -->
+  <g transform="translate(470,118)">
+    <rect width="260" height="196" rx="20" fill="#11182E" stroke="#6366F1" stroke-width="2"/>
+    <text x="130" y="30" font-size="14" font-weight="700" text-anchor="middle" fill="#E5E7EB">On-device engine</text>
+    <g transform="translate(30,44)">
+      <rect width="200" height="40" rx="10" fill="#0B1020" stroke="#22D3EE" stroke-width="1.2"/>
+      <text x="100" y="25" font-size="12.5" text-anchor="middle" fill="#67E8F9">Mimi codec · 12.5 Hz</text>
+      <rect width="200" height="40" rx="10" fill="#22D3EE" opacity="0"><animate attributeName="opacity" values="0;0.30;0;0;0" keyTimes="0;0.12;0.28;0.8;1" dur="2.4s" begin="0s" repeatCount="indefinite"/></rect>
+    </g>
+    <g transform="translate(30,96)">
+      <rect width="200" height="40" rx="10" fill="#0B1020" stroke="#6366F1" stroke-width="1.2"/>
+      <text x="100" y="25" font-size="12.5" text-anchor="middle" fill="#A5B4FC">Translation LM</text>
+      <rect width="200" height="40" rx="10" fill="#6366F1" opacity="0"><animate attributeName="opacity" values="0;0.35;0;0;0" keyTimes="0;0.12;0.28;0.8;1" dur="2.4s" begin="0.5s" repeatCount="indefinite"/></rect>
+    </g>
+    <g transform="translate(30,148)">
+      <rect width="200" height="40" rx="10" fill="#0B1020" stroke="#F472B6" stroke-width="1.2"/>
+      <text x="100" y="25" font-size="12.5" text-anchor="middle" fill="#F9A8D4">Voice-preserving decoder</text>
+      <rect width="200" height="40" rx="10" fill="#F472B6" opacity="0"><animate attributeName="opacity" values="0;0.35;0;0;0" keyTimes="0;0.12;0.28;0.8;1" dur="2.4s" begin="1.0s" repeatCount="indefinite"/></rect>
+    </g>
+  </g>
+
+  <!-- traveling pulses -->
+  <circle r="6" fill="#22D3EE"><animateMotion path="M305,225 H470" dur="1.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.85;1" dur="1.2s" repeatCount="indefinite"/></circle>
+  <circle r="6" fill="#F472B6"><animateMotion path="M730,225 H895" dur="1.2s" begin="0.9s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.85;1" dur="1.2s" begin="0.9s" repeatCount="indefinite"/></circle>
+
+  <!-- ============ SCENE 0 — Vietnamese → English ============ -->
+  <g opacity="1">
+    <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.2306;0.25;0.9806;1" dur="18s" repeatCount="indefinite"/>
+    <text x="120" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#22D3EE">Tiếng Việt</text>
+    <text x="1080" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#F472B6">English</text>
+    <text x="600" y="345" font-size="13" text-anchor="middle" fill="#94A3B8" font-style="italic">Meeting someone new</text>
+    <text x="500" y="380" font-size="19" fill="#E5E7EB" clip-path="url(#clip0)">I'm so glad to meet you</text>
+  </g>
+  <!-- ============ SCENE 1 — English → Spanish ============ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.2306;0.25;0.4806;0.5;1" dur="18s" repeatCount="indefinite"/>
+    <text x="120" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#22D3EE">English</text>
+    <text x="1080" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#F472B6">Español</text>
+    <text x="600" y="345" font-size="13" text-anchor="middle" fill="#94A3B8" font-style="italic">Asking for directions</text>
+    <text x="492" y="380" font-size="19" fill="#E5E7EB" clip-path="url(#clip1)">¿Dónde está la estación?</text>
+  </g>
+  <!-- ============ SCENE 2 — French → English ============ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.4806;0.5;0.7306;0.75;1" dur="18s" repeatCount="indefinite"/>
+    <text x="120" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#22D3EE">Français</text>
+    <text x="1080" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#F472B6">English</text>
+    <text x="600" y="345" font-size="13" text-anchor="middle" fill="#94A3B8" font-style="italic">At work</text>
+    <text x="486" y="380" font-size="19" fill="#E5E7EB" clip-path="url(#clip2)">The meeting starts at noon</text>
+  </g>
+  <!-- ============ SCENE 3 — Japanese → English ============ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.7306;0.75;0.9806;1" dur="18s" repeatCount="indefinite"/>
+    <text x="120" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#22D3EE">日本語</text>
+    <text x="1080" y="300" font-size="15" font-weight="600" text-anchor="middle" fill="#F472B6">English</text>
+    <text x="600" y="345" font-size="13" text-anchor="middle" fill="#94A3B8" font-style="italic">At the shop</text>
+    <text x="506" y="380" font-size="19" fill="#E5E7EB" clip-path="url(#clip3)">Thank you for waiting</text>
+  </g>
+
+  <!-- scene dots -->
+  <g>
+    <circle cx="561" cy="418" r="5" fill="#6366F1"><animate attributeName="opacity" values="1;1;0.25;0.25;1" keyTimes="0;0.2306;0.25;0.9806;1" dur="18s" repeatCount="indefinite"/></circle>
+    <circle cx="587" cy="418" r="5" fill="#6366F1"><animate attributeName="opacity" values="0.25;0.25;1;1;0.25;0.25" keyTimes="0;0.2306;0.25;0.4806;0.5;1" dur="18s" repeatCount="indefinite"/></circle>
+    <circle cx="613" cy="418" r="5" fill="#6366F1"><animate attributeName="opacity" values="0.25;0.25;1;1;0.25;0.25" keyTimes="0;0.4806;0.5;0.7306;0.75;1" dur="18s" repeatCount="indefinite"/></circle>
+    <circle cx="639" cy="418" r="5" fill="#6366F1"><animate attributeName="opacity" values="0.25;0.25;1;1;0.25" keyTimes="0;0.7306;0.75;0.9806;1" dur="18s" repeatCount="indefinite"/></circle>
+  </g>
+
+  <text x="600" y="450" font-size="13" text-anchor="middle" fill="#64748B">On-device · real-time · &lt;1s lag · keeps your voice</text>
+</svg>

@@ -1,0 +1,83 @@
+<svg viewBox="0 0 1200 560" xmlns="http://www.w3.org/2000/svg" font-family="Inter, Segoe UI, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B1020"/><stop offset="1" stop-color="#10162B"/>
+    </linearGradient>
+    <marker id="a4" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto">
+      <path d="M0 0 L7 3 L0 6 Z" fill="#6366F1"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="560" rx="24" fill="url(#bg4)"/>
+  <text x="600" y="48" font-size="26" font-weight="700" text-anchor="middle" fill="#E5E7EB">How we shrink it without losing the conversation</text>
+
+  <!-- four levers as columns -->
+  <g transform="translate(40,90)">
+    <!-- 1 -->
+    <g>
+      <rect width="260" height="180" rx="16" fill="#161C33" stroke="#22D3EE" stroke-width="1.5"/>
+      <text x="130" y="40" font-size="34" text-anchor="middle">🌏</text>
+      <text x="130" y="78" font-size="17" font-weight="700" text-anchor="middle" fill="#22D3EE">1 · Add Vietnamese</text>
+      <text x="130" y="106" font-size="12.5" text-anchor="middle" fill="#94A3B8">Fine-tune VI⇄EN both ways</text>
+      <text x="130" y="126" font-size="12.5" text-anchor="middle" fill="#94A3B8">on paired + synthetic speech</text>
+      <text x="130" y="146" font-size="12.5" text-anchor="middle" fill="#94A3B8">extend the SPM tokenizer</text>
+      <text x="130" y="166" font-size="12.5" text-anchor="middle" fill="#94A3B8">keep voice transfer</text>
+    </g>
+    <!-- 2 -->
+    <g transform="translate(300,0)">
+      <rect width="260" height="180" rx="16" fill="#161C33" stroke="#6366F1" stroke-width="1.5"/>
+      <text x="130" y="40" font-size="34" text-anchor="middle">🧬</text>
+      <text x="130" y="78" font-size="17" font-weight="700" text-anchor="middle" fill="#A5B4FC">2 · Distill</text>
+      <text x="130" y="106" font-size="12.5" text-anchor="middle" fill="#94A3B8">3B teacher → small student</text>
+      <text x="130" y="126" font-size="12.5" text-anchor="middle" fill="#94A3B8">match logits + audio tokens</text>
+      <text x="130" y="146" font-size="12.5" text-anchor="middle" fill="#94A3B8">fewer layers / smaller dim</text>
+      <text x="130" y="166" font-size="12.5" text-anchor="middle" fill="#94A3B8">keep streaming behaviour</text>
+    </g>
+    <!-- 3 -->
+    <g transform="translate(600,0)">
+      <rect width="260" height="180" rx="16" fill="#161C33" stroke="#F472B6" stroke-width="1.5"/>
+      <text x="130" y="40" font-size="34" text-anchor="middle">⚙️</text>
+      <text x="130" y="78" font-size="17" font-weight="700" text-anchor="middle" fill="#F9A8D4">3 · Restructure</text>
+      <text x="130" y="106" font-size="12.5" text-anchor="middle" fill="#94A3B8">parallel-codebook audio head</text>
+      <text x="130" y="126" font-size="12.5" text-anchor="middle" fill="#94A3B8">kills 16 serial depformer passes</text>
+      <text x="130" y="146" font-size="12.5" text-anchor="middle" fill="#94A3B8">fuse kernels · cut launches</text>
+      <text x="130" y="166" font-size="12.5" text-anchor="middle" fill="#94A3B8">the #1 on-device bottleneck</text>
+    </g>
+    <!-- 4 -->
+    <g transform="translate(900,0)">
+      <rect width="260" height="180" rx="16" fill="#161C33" stroke="#34D399" stroke-width="1.5"/>
+      <text x="130" y="40" font-size="34" text-anchor="middle">📦</text>
+      <text x="130" y="78" font-size="17" font-weight="700" text-anchor="middle" fill="#6EE7B7">4 · Quantize</text>
+      <text x="130" y="106" font-size="12.5" text-anchor="middle" fill="#94A3B8">4-bit main · 3-bit depformer</text>
+      <text x="130" y="126" font-size="12.5" text-anchor="middle" fill="#94A3B8">NPU / ANE-friendly kernels</text>
+      <text x="130" y="146" font-size="12.5" text-anchor="middle" fill="#94A3B8">fewer codebooks where safe</text>
+      <text x="130" y="166" font-size="12.5" text-anchor="middle" fill="#94A3B8">silence-in fidelity gate</text>
+    </g>
+  </g>
+
+  <!-- flow row -->
+  <g transform="translate(0,360)">
+    <g transform="translate(120,40)">
+      <rect width="200" height="70" rx="12" fill="#11182E" stroke="#F472B6" stroke-width="1.5"/>
+      <text x="100" y="32" font-size="15" font-weight="700" text-anchor="middle" fill="#F9A8D4">3B teacher</text>
+      <text x="100" y="54" font-size="12" text-anchor="middle" fill="#94A3B8">accurate, heavy</text>
+    </g>
+    <path d="M325 75 H 445" stroke="#6366F1" stroke-width="3" marker-end="url(#a4)"/>
+    <text x="385" y="62" font-size="12" text-anchor="middle" fill="#A5B4FC">distill</text>
+
+    <g transform="translate(450,40)">
+      <rect width="200" height="70" rx="12" fill="#11182E" stroke="#6366F1" stroke-width="1.5"/>
+      <text x="100" y="32" font-size="15" font-weight="700" text-anchor="middle" fill="#A5B4FC">small student</text>
+      <text x="100" y="54" font-size="12" text-anchor="middle" fill="#94A3B8">restructured head</text>
+    </g>
+    <path d="M655 75 H 775" stroke="#6366F1" stroke-width="3" marker-end="url(#a4)"/>
+    <text x="715" y="62" font-size="12" text-anchor="middle" fill="#A5B4FC">quantize</text>
+
+    <g transform="translate(780,40)">
+      <rect width="200" height="70" rx="12" fill="#11182E" stroke="#34D399" stroke-width="1.5"/>
+      <text x="100" y="32" font-size="15" font-weight="700" text-anchor="middle" fill="#6EE7B7">phone build</text>
+      <text x="100" y="54" font-size="12" text-anchor="middle" fill="#94A3B8">~0.5–1 GB, real-time</text>
+    </g>
+    <path d="M985 75 H 1080" stroke="#34D399" stroke-width="3" marker-end="url(#a4)"/>
+    <text x="1090" y="80" font-size="22" text-anchor="middle">📱</text>
+  </g>
+</svg>
