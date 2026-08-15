@@ -345,7 +345,13 @@ def save_model(model: Any, path: Path, metadata: dict[str, str]) -> None:
         name: tensor.detach().cpu().contiguous()
         for name, tensor in model.state_dict().items()
     }
-    save_file(state, str(path), metadata=metadata)
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.unlink(missing_ok=True)
+    try:
+        save_file(state, str(temp_path), metadata=metadata)
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:

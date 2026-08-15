@@ -1,59 +1,381 @@
 #!/usr/bin/env python
-"""Periodically upload the newest complete checkpoint pair to a HF model repo.
-
-Run detached alongside training so an instance recycle does not lose the latest
-model and optimizer state. Existing Hub files and history are never deleted.
-"""
+"""Maintain rolling disaster-recovery checkpoints in a HF Storage Bucket."""
 from __future__ import annotations
 
-import sys
+import argparse
+import json
+import os
+import re
+import shutil
 import time
 from pathlib import Path
 
-from huggingface_hub import CommitOperationAdd, HfApi
+from huggingface_hub import (
+    batch_bucket_files,
+    bucket_info,
+    download_bucket_files,
+    list_bucket_tree,
+)
 
-POLL_S = 600
-SETTLE_S = 120  # skip files still being written
+POLL_S = 60
+REMOTE_INTERVAL = 9_000
+REMOTE_KEEP = 2
+STAGE_ROOT = ".hf_sync"
+STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
+STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
+STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
+STAGED_BEST = re.compile(r"best_step(\d+)$")
 
 
-def newest_pair(run_dir: Path) -> tuple[Path, Path] | None:
-    trainers = sorted(run_dir.glob("trainer_step*.pt"))
-    for trainer in reversed(trainers):
-        step = trainer.stem.removeprefix("trainer_")
-        model = run_dir / f"model_{step}.safetensors"
-        if not model.is_file():
-            continue
-        now = time.time()
-        if all(now - f.stat().st_mtime > SETTLE_S for f in (trainer, model)):
-            return model, trainer
-    return None
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Sync rolling recovery checkpoints to a mutable HF Storage Bucket."
+    )
+    parser.add_argument("run_dir", type=Path)
+    parser.add_argument("bucket", help="Existing private bucket as owner/name.")
+    parser.add_argument(
+        "--watch-pid",
+        type=int,
+        help="Poll while this training PID lives, then sync the newest final pair and exit.",
+    )
+    return parser.parse_args()
+
+
+def checkpoint_pairs(run_dir: Path) -> list[tuple[int, Path, Path]]:
+    models = {
+        int(match.group(1)): path
+        for path in run_dir.glob("model_step*.safetensors")
+        if (match := STEP_MODEL.fullmatch(path.name))
+    }
+    trainers = {
+        int(match.group(1)): path
+        for path in run_dir.glob("trainer_step*.pt")
+        if (match := STEP_TRAINER.fullmatch(path.name))
+    }
+    return [(step, models[step], trainers[step]) for step in sorted(models.keys() & trainers.keys())]
+
+
+def remote_files(bucket: str) -> dict[str, int]:
+    return {
+        item.path: item.size
+        for item in list_bucket_tree(bucket, recursive=True)
+        if item.type == "file"
+    }
+
+
+def remote_pairs(files: dict[str, int]) -> list[int]:
+    models = {
+        int(match.group(1))
+        for path in files
+        if (match := re.fullmatch(r"checkpoints/model_step(\d+)\.safetensors", path))
+    }
+    trainers = {
+        int(match.group(1))
+        for path in files
+        if (match := re.fullmatch(r"checkpoints/trainer_step(\d+)\.pt", path))
+    }
+    return sorted(models & trainers)
+
+
+def staged_pair_matches(files: dict[str, int], stage: Path, step: int) -> bool:
+    model = stage / f"model_step{step:06d}.safetensors"
+    trainer = stage / f"trainer_step{step:06d}.pt"
+    return (
+        files.get(f"checkpoints/{model.name}") == model.stat().st_size
+        and files.get(f"checkpoints/{trainer.name}") == trainer.stat().st_size
+    )
+
+
+def stage_files(run_dir: Path, kind: str, step: int, sources: tuple[Path, ...]) -> Path:
+    root = run_dir / STAGE_ROOT
+    root.mkdir(exist_ok=True)
+    target = root / f"{kind}_step{step:06d}"
+    if target.is_dir():
+        return target
+    temp = root / f".{target.name}.tmp"
+    if temp.exists():
+        shutil.rmtree(temp)
+    temp.mkdir()
+    try:
+        for source in sources:
+            os.link(source, temp / source.name)
+        temp.replace(target)
+    except BaseException:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise
+    return target
+
+
+def stage_best(run_dir: Path, state: dict[str, object]) -> Path:
+    step = int(state["step"])
+    root = run_dir / STAGE_ROOT
+    root.mkdir(exist_ok=True)
+    target = root / f"best_step{step:06d}"
+    if target.is_dir():
+        return target
+    temp = root / f".{target.name}.tmp"
+    if temp.exists():
+        shutil.rmtree(temp)
+    temp.mkdir()
+    try:
+        model = run_dir / str(state["model"])
+        os.link(model, temp / model.name)
+        (temp / "best.json").write_text(
+            json.dumps(state, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        temp.replace(target)
+    except BaseException:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise
+    return target
+
+
+def remove_stage(path: Path) -> None:
+    for child in path.iterdir():
+        child.unlink()
+    path.rmdir()
+
+
+def clean_staging(run_dir: Path) -> None:
+    root = run_dir / STAGE_ROOT
+    if not root.is_dir():
+        return
+    for path in root.glob(".*.tmp"):
+        shutil.rmtree(path)
+
+
+def upload_pair(bucket: str, stage: Path, step: int) -> None:
+    model = stage / f"model_step{step:06d}.safetensors"
+    trainer = stage / f"trainer_step{step:06d}.pt"
+    remote_model = f"checkpoints/{model.name}"
+    remote_trainer = f"checkpoints/{trainer.name}"
+    print(f"Uploading recovery checkpoint step {step}...", flush=True)
+    batch_bucket_files(bucket, add=[(model, remote_model)])
+    # The trainer is the pair's commit marker: publish it only after the model.
+    batch_bucket_files(bucket, add=[(trainer, remote_trainer)])
+    files = remote_files(bucket)
+    expected = {remote_model: model.stat().st_size, remote_trainer: trainer.stat().st_size}
+    if any(files.get(path) != size for path, size in expected.items()):
+        raise RuntimeError(f"remote checkpoint verification failed for step {step}")
+    remove_stage(stage)
+    print(f"Synced recovery checkpoint step {step}.", flush=True)
+
+
+def prune_remote_pairs(bucket: str) -> None:
+    files = remote_files(bucket)
+    complete = remote_pairs(files)
+    keep = set(complete[-REMOTE_KEEP:])
+    trainer_deletes: list[str] = []
+    model_deletes: list[str] = []
+    for path in files:
+        trainer_match = re.fullmatch(r"checkpoints/trainer_step(\d+)\.pt", path)
+        model_match = re.fullmatch(r"checkpoints/model_step(\d+)\.safetensors", path)
+        if trainer_match and int(trainer_match.group(1)) not in keep:
+            trainer_deletes.append(path)
+        if model_match and int(model_match.group(1)) not in keep:
+            model_deletes.append(path)
+    # Remove trainer commit markers first so interruption leaves no usable-looking orphan.
+    if trainer_deletes:
+        batch_bucket_files(bucket, delete=trainer_deletes)
+    if model_deletes:
+        batch_bucket_files(bucket, delete=model_deletes)
+
+
+def best_state(run_dir: Path) -> dict[str, object] | None:
+    path = run_dir / "best.json"
+    if not path.is_file():
+        return None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    step = int(state["step"])
+    model_name = str(state["model"])
+    if model_name != f"best_step{step:06d}.safetensors" or not (run_dir / model_name).is_file():
+        raise RuntimeError("best.json does not reference a valid sibling model")
+    return {"step": step, "chrf": float(state["chrf"]), "model": model_name}
+
+
+def remote_best_steps(files: dict[str, int]) -> list[int]:
+    models = {
+        int(match.group(1))
+        for path in files
+        if (match := re.fullmatch(r"best/best_step(\d+)\.safetensors", path))
+    }
+    markers = {
+        int(match.group(1))
+        for path in files
+        if (match := re.fullmatch(r"best/best_step(\d+)\.json", path))
+    }
+    return sorted(models & markers)
+
+
+def upload_best(bucket: str, stage: Path, step: int) -> None:
+    model = stage / f"best_step{step:06d}.safetensors"
+    metadata = stage / "best.json"
+    remote_model = f"best/{model.name}"
+    remote_metadata = f"best/best_step{step:06d}.json"
+    print(f"Uploading best model from step {step}...", flush=True)
+    batch_bucket_files(bucket, add=[(model, remote_model)])
+    batch_bucket_files(bucket, add=[(metadata, remote_metadata)])
+    files = remote_files(bucket)
+    expected = {remote_model: model.stat().st_size, remote_metadata: metadata.stat().st_size}
+    if any(files.get(path) != size for path, size in expected.items()):
+        raise RuntimeError(f"remote best-model verification failed for step {step}")
+    remove_stage(stage)
+    print(f"Synced best model from step {step}.", flush=True)
+
+
+def prune_remote_best(bucket: str) -> None:
+    files = remote_files(bucket)
+    complete = remote_best_steps(files)
+    keep = complete[-1] if complete else None
+    marker_deletes = [
+        path
+        for path in files
+        if (match := re.fullmatch(r"best/best_step(\d+)\.json", path))
+        and int(match.group(1)) != keep
+    ]
+    model_deletes = [
+        path
+        for path in files
+        if (match := re.fullmatch(r"best/best_step(\d+)\.safetensors", path))
+        and int(match.group(1)) != keep
+    ]
+    if marker_deletes:
+        batch_bucket_files(bucket, delete=marker_deletes)
+    if model_deletes:
+        batch_bucket_files(bucket, delete=model_deletes)
+
+
+def sync_once(run_dir: Path, bucket: str, final: bool) -> None:
+    clean_staging(run_dir)
+    files = remote_files(bucket)
+    uploaded = set(remote_pairs(files))
+    local_pairs = checkpoint_pairs(run_dir)
+    stage_root = run_dir / STAGE_ROOT
+    staged_paths = list(stage_root.iterdir()) if stage_root.is_dir() else []
+    staged_pairs = {
+        int(match.group(1)): path
+        for path in staged_paths
+        if (match := STAGED_PAIR.fullmatch(path.name))
+    }
+    for step, stage in list(staged_pairs.items()):
+        if step in uploaded and staged_pair_matches(files, stage, step):
+            remove_stage(stage)
+            del staged_pairs[step]
+        elif step in uploaded:
+            uploaded.remove(step)
+    remote_latest = max(uploaded, default=-1)
+    wanted = [pair for pair in local_pairs if pair[0] % REMOTE_INTERVAL == 0]
+    if final and local_pairs and local_pairs[-1] not in wanted:
+        wanted.append(local_pairs[-1])
+    wanted = [pair for pair in wanted if pair[0] > remote_latest]
+    newest_pair = max([*staged_pairs, *(pair[0] for pair in wanted)], default=None)
+    for step, stage in staged_pairs.items():
+        if step != newest_pair or step < remote_latest:
+            remove_stage(stage)
+    if newest_pair is not None and newest_pair > remote_latest:
+        stage = staged_pairs.get(newest_pair)
+        if stage is None:
+            _, model, trainer = next(pair for pair in wanted if pair[0] == newest_pair)
+            stage = stage_files(run_dir, "checkpoint", newest_pair, (model, trainer))
+        upload_pair(bucket, stage, newest_pair)
+    prune_remote_pairs(bucket)
+
+    files = remote_files(bucket)
+    uploaded_best = set(remote_best_steps(files))
+    staged_paths = list(stage_root.iterdir()) if stage_root.is_dir() else []
+    staged_best = {
+        int(match.group(1)): path
+        for path in staged_paths
+        if (match := STAGED_BEST.fullmatch(path.name))
+    }
+    for step, stage in list(staged_best.items()):
+        model = stage / f"best_step{step:06d}.safetensors"
+        marker = stage / "best.json"
+        if (
+            step in uploaded_best
+            and files.get(f"best/{model.name}") == model.stat().st_size
+            and files.get(f"best/best_step{step:06d}.json") == marker.stat().st_size
+        ):
+            remove_stage(stage)
+            del staged_best[step]
+        elif step in uploaded_best:
+            uploaded_best.remove(step)
+    remote_best = max(uploaded_best, default=-1)
+    local_best = best_state(run_dir)
+    candidates = [*staged_best]
+    if local_best is not None and int(local_best["step"]) > remote_best:
+        candidates.append(int(local_best["step"]))
+    newest_best = max(candidates, default=None)
+    for step, stage in staged_best.items():
+        if step != newest_best or step < remote_best:
+            remove_stage(stage)
+    if newest_best is not None and newest_best > remote_best:
+        stage = staged_best.get(newest_best)
+        if stage is None:
+            assert local_best is not None and int(local_best["step"]) == newest_best
+            stage = stage_best(run_dir, local_best)
+        upload_best(bucket, stage, newest_best)
+    prune_remote_best(bucket)
+
+
+def process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def validate_run_identity(run_dir: Path, bucket: str) -> None:
+    local = run_dir / "run_id.json"
+    if not local.is_file():
+        raise RuntimeError("missing local run_id.json")
+    remote = run_dir / ".remote_run_id.json.tmp"
+    try:
+        download_bucket_files(bucket, [("run.json", remote)], raise_on_missing_files=True)
+        if remote.read_bytes() != local.read_bytes():
+            raise RuntimeError("local run identity does not match the disaster-recovery bucket")
+    finally:
+        remote.unlink(missing_ok=True)
 
 
 def main() -> None:
-    run_dir = Path(sys.argv[1])
-    repo = sys.argv[2]
-    api = HfApi()
-    uploaded: str | None = None
-    while True:
-        pair = newest_pair(run_dir)
-        if pair and pair[1].name != uploaded:
-            model, trainer = pair
-            try:
-                print(f"uploading {model.name} + {trainer.name}", flush=True)
-                api.create_commit(
-                    repo_id=repo,
-                    repo_type="model",
-                    operations=[
-                        CommitOperationAdd(path_in_repo=f.name, path_or_fileobj=str(f))
-                        for f in (model, trainer)
-                    ],
-                    commit_message=f"Sync {trainer.stem.removeprefix('trainer_')}",
-                )
-                uploaded = trainer.name
-                print(f"synced step {uploaded}", flush=True)
-            except Exception as exc:  # noqa: BLE001 - keep the loop alive, retry next poll
-                print(f"sync failed, will retry: {exc}", flush=True)
+    args = parse_args()
+    run_dir = args.run_dir.resolve()
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"run directory does not exist: {run_dir}")
+    info = bucket_info(args.bucket)
+    if not info.private:
+        raise RuntimeError("disaster-recovery bucket must be private")
+    validate_run_identity(run_dir, info.id)
+
+    if args.watch_pid is None:
+        sync_once(run_dir, args.bucket, final=True)
+        return
+
+    failures = 0
+    while process_alive(args.watch_pid):
+        try:
+            sync_once(run_dir, args.bucket, final=False)
+            failures = 0
+        except Exception as exc:  # noqa: BLE001 - retry transient network failures during training
+            failures += 1
+            if failures == 3:
+                raise RuntimeError("checkpoint sync failed three consecutive times") from exc
+            print(f"Sync failed, will retry: {exc}", flush=True)
         time.sleep(POLL_S)
+
+    for attempt in range(1, 4):
+        try:
+            sync_once(run_dir, args.bucket, final=True)
+            return
+        except Exception as exc:  # noqa: BLE001 - give the final upload bounded retries
+            if attempt == 3:
+                raise
+            print(f"Final sync failed ({attempt}/3), will retry: {exc}", flush=True)
+            time.sleep(POLL_S)
 
 
 if __name__ == "__main__":

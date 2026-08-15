@@ -102,7 +102,7 @@ def parse_args() -> argparse.Namespace:
         "--keep-checkpoints",
         type=int,
         default=2,
-        help="Keep only the newest N step checkpoints (best/final untouched); 0=keep all. "
+        help="Keep only the newest N complete step pairs (versioned best untouched); 0=keep all. "
         "Full-finetune saves are ~35 GB each — rotation is essential on rented disks.",
     )
     parser.add_argument("--log-every", type=int, default=1, help="Steps between logs.")
@@ -128,34 +128,132 @@ def build_metadata(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
+def checkpoint_pairs(out_dir: Path) -> list[tuple[int, Path, Path]]:
+    models = {
+        int(path.stem.removeprefix("model_step")): path
+        for path in out_dir.glob("model_step*.safetensors")
+        if path.stem.removeprefix("model_step").isdigit()
+    }
+    trainers = {
+        int(path.stem.removeprefix("trainer_step")): path
+        for path in out_dir.glob("trainer_step*.pt")
+        if path.stem.removeprefix("trainer_step").isdigit()
+    }
+    return [(step, models[step], trainers[step]) for step in sorted(models.keys() & trainers.keys())]
+
+
+def load_best_state(out_dir: Path) -> dict[str, Any] | None:
+    marker = out_dir / "best.json"
+    if not marker.is_file():
+        return None
+    state = json.loads(marker.read_text(encoding="utf-8"))
+    step = int(state["step"])
+    chrf = float(state["chrf"])
+    model_name = str(state["model"])
+    if model_name != f"best_step{step:06d}.safetensors":
+        raise RuntimeError("best.json model does not match its step")
+    model = out_dir / model_name
+    if not model.is_file():
+        raise RuntimeError(f"best.json references a missing model: {model}")
+    return {"step": step, "chrf": chrf, "model": model_name}
+
+
+def clean_incomplete_checkpoints(out_dir: Path) -> None:
+    pairs = checkpoint_pairs(out_dir)
+    paired_models = {model for _, model, _ in pairs}
+    paired_trainers = {trainer for _, _, trainer in pairs}
+    for trainer in out_dir.glob("trainer_step*.pt"):
+        if trainer not in paired_trainers:
+            trainer.unlink()
+    for model in out_dir.glob("model_step*.safetensors"):
+        if model not in paired_models:
+            model.unlink()
+    for pattern in (
+        ".model_step*.safetensors.tmp",
+        ".trainer_step*.pt.tmp",
+        ".best_step*.safetensors.tmp",
+        ".best.json.tmp",
+    ):
+        for temp_path in out_dir.glob(pattern):
+            temp_path.unlink()
+    best_state = load_best_state(out_dir)
+    best_model = out_dir / best_state["model"] if best_state is not None else None
+    for model in out_dir.glob("best_step*.safetensors"):
+        if model != best_model:
+            model.unlink()
+
+
+def prune_checkpoint_pairs(out_dir: Path, keep: int) -> None:
+    if keep <= 0:
+        return
+    pairs = checkpoint_pairs(out_dir)
+    for _, model, trainer in pairs[: max(0, len(pairs) - keep)]:
+        trainer.unlink()
+        model.unlink()
+
+
+def atomic_torch_save(payload: Any, path: Path) -> None:
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.unlink(missing_ok=True)
+    try:
+        torch.save(payload, temp_path)
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_text(text: str, path: Path) -> None:
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.unlink(missing_ok=True)
+    try:
+        temp_path.write_text(text, encoding="utf-8")
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def save_checkpoint(
     model: Any, optimizer: Any, args: argparse.Namespace, step: int, out_dir: Path
 ) -> Path:
     model_path = out_dir / f"model_step{step:06d}.safetensors"
-    common.save_model(model, model_path, build_metadata(args))
-    torch.save(
-        {
-            "step": step,
-            "optimizer": optimizer.state_dict(),
-            "model": str(model_path),
-            "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-        },
-        out_dir / f"trainer_step{step:06d}.pt",
-    )
+    trainer_path = out_dir / f"trainer_step{step:06d}.pt"
+    clean_incomplete_checkpoints(out_dir)
+    if model_path.is_file() and trainer_path.is_file():
+        prune_checkpoint_pairs(out_dir, args.keep_checkpoints)
+        print(f"Checkpoint step {step} already complete; skipping duplicate save.")
+        return model_path
     if args.keep_checkpoints > 0:
-        for pattern in ("model_step*.safetensors", "trainer_step*.pt"):
-            for stale in sorted(out_dir.glob(pattern))[: -args.keep_checkpoints]:
-                stale.unlink()
+        # Keep one known-good recovery pair while writing the next. For keep>=2,
+        # pre-pruning avoids the old N+1-pair transient disk spike.
+        prune_checkpoint_pairs(out_dir, max(1, args.keep_checkpoints - 1))
+    common.save_model(model, model_path, build_metadata(args))
+    try:
+        atomic_torch_save(
+            {
+                "step": step,
+                "optimizer": optimizer.state_dict(),
+                "model": model_path.name,
+                "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+            },
+            trainer_path,
+        )
+    except BaseException:
+        model_path.unlink(missing_ok=True)
+        raise
+    prune_checkpoint_pairs(out_dir, args.keep_checkpoints)
     return model_path
 
 
 def load_resume_checkpoint(
     model: Any, optimizer: Any, resume_path: Path, device: torch.device, dtype: torch.dtype
 ) -> int:
+    pairs = checkpoint_pairs(resume_path.parent)
+    if not pairs or pairs[-1][2].resolve() != resume_path.resolve():
+        raise RuntimeError("--resume-checkpoint must be the newest complete pair in its directory")
     # weights_only=False: our own trusted checkpoint; its `args` dict holds Path
     # objects that PyTorch 2.6's default weights_only=True refuses to unpickle.
     checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
-    model_path = require_file(checkpoint["model"], "resume model")
+    model_path = require_file(resume_path.parent / checkpoint["model"], "resume model")
     common.load_model(model, model_path, dtype)
     # load_state_dict restores the saved run's param-group hyperparams, including
     # our custom "points" schedule — reassert this run's --lr-schedule/names.
@@ -212,6 +310,7 @@ def main() -> None:
         args.resume_checkpoint = require_file(args.resume_checkpoint, "resume checkpoint")
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    clean_incomplete_checkpoints(out_dir)
 
     dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples, args.max_frames)
     if args.sort_by_length:
@@ -336,6 +435,13 @@ def main() -> None:
     log_max_batch_size = 0
     log_max_frames = 0
     best_chrf = -1.0
+    best_state = load_best_state(out_dir)
+    if args.resume_checkpoint is not None and best_state is not None:
+        best_step = int(best_state["step"])
+        if best_step > global_step:
+            raise RuntimeError("best.json is newer than the resume checkpoint")
+        best_chrf = float(best_state["chrf"])
+        print(f"Restored best greedy val chrF={best_chrf:.3f} from step {best_step}.")
 
     def run_teacher_forced_val(step: int) -> None:
         if val_dataloader is None:
@@ -384,11 +490,19 @@ def main() -> None:
             fh.write(json.dumps(item, sort_keys=True) + "\n")
         marker = ""
         if chrf > best_chrf:
+            previous_best = load_best_state(out_dir)
             best_chrf = chrf
-            common.save_model(lm, out_dir / "model_best.safetensors", build_metadata(args))
-            (out_dir / "best.json").write_text(
-                json.dumps({"step": step, "chrf": chrf}, sort_keys=True) + "\n", "utf-8"
+            best_model = out_dir / f"best_step{step:06d}.safetensors"
+            common.save_model(lm, best_model, build_metadata(args))
+            atomic_write_text(
+                json.dumps(
+                    {"step": step, "chrf": chrf, "model": best_model.name}, sort_keys=True
+                )
+                + "\n",
+                out_dir / "best.json",
             )
+            if previous_best is not None and previous_best["model"] != best_model.name:
+                (out_dir / previous_best["model"]).unlink()
             marker = " *best*"
         print(
             f"greedy step={step} chrf={chrf:.3f} nonempty_chrf={item['nonempty_chrf']:.3f} "
@@ -544,7 +658,9 @@ def main() -> None:
         run_greedy_val(global_step)
     save_checkpoint(lm, optimizer, args, global_step, out_dir)
     if best_chrf >= 0.0:
-        best_path = out_dir / "model_best.safetensors"
+        final_best = load_best_state(out_dir)
+        assert final_best is not None
+        best_path = out_dir / final_best["model"]
         print(f"Best greedy val chrF={best_chrf:.3f} -> {repo_display_path(best_path)}")
     print(f"Saved final full-model checkpoint at step {global_step} in {repo_display_path(out_dir)}")
 

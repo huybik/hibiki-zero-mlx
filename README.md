@@ -48,7 +48,17 @@ The maintained inference utilities are:
 
 ## Training
 
-Install a CUDA-compatible PyTorch build, then the training dependencies:
+For an H100 pod, use the checked and pinned CUDA 13.2 workflow:
+
+```bash
+./finetune/h100.sh setup
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+For other CUDA development environments, install PyTorch followed by the
+training dependencies:
 
 ```bash
 pip install -e '.[training]'

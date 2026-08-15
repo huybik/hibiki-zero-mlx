@@ -29,8 +29,9 @@ eligible only when all of these gates pass:
 | Length | Mean prediction/reference word ratio at most 2.0 |
 
 Rank eligible checkpoints by corpus chrF. Nonempty chrF must not fall by more
-than one absolute point while corpus chrF rises. `model_best.safetensors` tracks
-raw chrF only, so perform this eligibility check before final selection.
+than one absolute point while corpus chrF rises. The versioned best model named
+by `best.json` tracks raw chrF only, so perform this eligibility check before
+final selection.
 
 ## Diagnostics and final test
 

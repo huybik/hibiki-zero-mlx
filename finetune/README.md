@@ -13,7 +13,7 @@ Core files:
 - `cache_codes.py`: FLEURS pair audio to cached Mimi/text codes.
 - `cache_phomt_stream.py`: published PhoMT parquet to cached codes without staging WAVs.
 - `build_pairs.py`: FLEURS manifests to deterministic pair files and val subsets.
-- `hf_sync.py`: add-only upload of the latest complete model/trainer pair.
+- `hf_sync.py`: rolling recovery pairs and best-model backup in a HF Storage Bucket.
 
 See [the mechanics](../docs/finetune.md), [training recipe](../docs/training_plan.md),
 and [validation contract](../docs/validation_plan.md).

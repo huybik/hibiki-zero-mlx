@@ -38,18 +38,23 @@ active tree in August 2026. Their history remains available in Git.
   `--resume-checkpoint` is only for interruption recovery within the same run.
 - CUDA uses fp32 master weights, bf16 autocast, fused AdamW, causal SDPA, fixed
   length-sorted batches, and `--max-frames 280` in the current recipe.
+- `finetune/h100.sh` pins the pod environment, verifies staged artifacts and
+  evaluation audio, selects the 80/94 GB batch recipe, and gates training on a
+  save/eval/resume smoke.
 - Text prefix PAD weight defaults to 0.5. Content/EOS remain weight 1.0.
 - `finetune/common.py` owns cached data, losses, schedules, exact full-model
-  checkpoint I/O, greedy generation, and metrics. Checkpoint loading rejects
-  missing and unexpected tensor keys.
+  checkpoint I/O, greedy generation, and metrics. Complete checkpoint pairs are
+  published atomically and pre-rotated to avoid transient disk spikes; loading
+  rejects missing and unexpected tensor keys.
 - `finetune/cache_phomt_stream.py` builds the published PhoMT cache directly
   from parquet. `remote_dataset/download_fleurs_vi_en.py` →
   `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.
 - `finetune/validate.py` is teacher-forced diagnostics only.
   `finetune/eval.py` free-running chrF plus nonempty/EOS/loop/length gates select
   checkpoints; `sacrebleu` is required.
-- `finetune/hf_sync.py` uploads the latest complete model/trainer pair without
-  deleting remote files or rewriting Hub history.
+- `finetune/hf_sync.py` maintains two recovery pairs plus the best model in a
+  private mutable HF Storage Bucket; `h100.sh` verifies a shared run identity,
+  supervises sync, and protects the local resume point before training restarts.
 
 The exact launch command is in `docs/training_plan.md`; qualification thresholds
 are in `docs/validation_plan.md`.

@@ -77,7 +77,7 @@ Mac scaling assumption; an actual device trace is the release gate.
 - The current SFT optimizes translation/audio likelihood, not simultaneous
   translation latency. Hibiki-Zero's published recipe uses a coarse SFT stage
   followed by GRPO latency optimization.
-- Checkpoint selection in `train.py` writes `model_best.safetensors` on raw chrF
+- Checkpoint selection in `train.py` writes a versioned best model on raw chrF
   alone, even though `docs/validation_plan.md` says eligibility must be applied
   first. It also does not preserve the matching trainer state for that raw best.
 - Swift compatibility currently proves artifact shape/load compatibility on a
@@ -309,7 +309,7 @@ Make only two training-control changes before launch:
 1. **Gate-aware promotion.** Encode the four eligibility checks from
    `docs/validation_plan.md` in the free-running evaluator and promote the exact
    model/trainer pair only when eligible. Rank eligible pairs by chrF and apply
-   the nonempty-chrF regression rule. Stop using raw `model_best.safetensors` as
+   the nonempty-chrF regression rule. Stop using the raw-chrF best model as
    the campaign answer.
 2. **Run identity.** Store and validate the base/config/Mimi/tokenizer/cache
    hashes, repository commit, and schedule/data arguments on start and resume.
@@ -392,9 +392,10 @@ If all roughly 696,000 published PhoMT rows plus 1,449 FLEURS train rows
 survived, the run would be about 87,182 optimizer steps. The actual frozen cache
 count is authoritative.
 
-Provision space for caches plus at least four complete model/trainer pair
-footprints. The trainer notes that one full pair is roughly 35 GB. The add-only
-Hub sync retains history, so remote quota must cover every pair it uploads.
+Provision the documented 300 GB pod disk. Local rotation keeps two complete
+model/trainer pairs and hard-link staging can temporarily pin one additional
+pair during remote upload. The mutable Storage Bucket keeps two recovery pairs
+plus one best model without Git history.
 Estimate wall time from the smoke's measured seconds/step and add the scheduled
 greedy-evaluation time; do not estimate it from Mac inference speed.
 
@@ -417,12 +418,12 @@ python finetune/train.py \
   --eval-every 9000 \
   --eval-pairs finetune/pairs/val128.jsonl \
   --eval-limit 128 --eval-batch-size 8 --eval-text-temp 0 \
-  --save-every 3000 --keep-checkpoints 3 --log-every 10 \
+  --save-every 3000 --keep-checkpoints 2 --log-every 10 \
   --out-dir finetune/runs/vi_base_full
 ```
 
-Start `hf_sync.py` only after confirming repository/quota ownership and the
-first complete pair. It is disaster recovery, not checkpoint selection.
+Set `HIBIKI_HF_BUCKET` to the pre-created private Storage Bucket before starting
+`h100.sh`; the launcher supervises disaster-recovery sync automatically.
 
 ### 8. Monitor the run
 
