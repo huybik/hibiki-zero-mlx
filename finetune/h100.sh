@@ -25,8 +25,8 @@ require_cuda_driver() {
   local driver_version
   driver_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"
   [[ "$driver_version" =~ ^[0-9]+\. ]] || die "invalid NVIDIA driver version: $driver_version"
-  [[ "$(printf '%s\n' 595.45.04 "$driver_version" | sort -V | head -n 1)" == "595.45.04" ]] \
-    || die "CUDA 13.2 requires NVIDIA driver 595.45.04 or newer, got $driver_version"
+  [[ "$(printf '%s\n' 580 "$driver_version" | sort -V | head -n 1)" == "580" ]] \
+    || die "CUDA 13.x minor-version compatibility requires NVIDIA driver 580 or newer, got $driver_version"
 }
 
 require_empty_dir() {

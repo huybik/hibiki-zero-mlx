@@ -7,8 +7,9 @@ Use `--resume-checkpoint` only to recover this same run after interruption.
 ## Preflight
 
 Stage the repository, weights, caches, pair manifests, and FLEURS validation/test
-audio on a pod with one visible H100, NVIDIA driver 595.45.04 or newer, at least
-128 GB host RAM, and 300 GB disk. Then run:
+audio on a pod with one visible H100, NVIDIA driver 580 or newer, at least 128 GB
+host RAM, and 300 GB disk. CUDA 13.x minor-version compatibility supports the
+pinned CUDA 13.2 wheel on the 580 driver series. Then run:
 
 ```bash
 ./finetune/h100.sh setup
