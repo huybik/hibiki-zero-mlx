@@ -179,7 +179,8 @@ one source shard at a time.
 
 - Every model parameter is trainable; there is no adapter or freeze map.
 - CUDA uses fp32 master weights and bf16 autocast.
-- `--max-frames 280` bounds memory; fixed length-sorted batches minimize padding.
+- `--max-frames 280` bounds memory; length-sorted 16-frame buckets minimize padding
+  while keeping compiled CUDA shapes stable.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
 - Text prefix PAD has weight 0.5; content and EOS remain weight 1.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.

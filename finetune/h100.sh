@@ -197,7 +197,7 @@ PY
   read -r BATCH_SIZE GRAD_ACCUM_STEPS GPU_GIB HOST_GIB FREE_GIB <<< "$profile"
   export BATCH_SIZE GRAD_ACCUM_STEPS
   export NO_TORCH_COMPILE=
-  export HIBIKI_FRAME_BUCKET=32
+  export HIBIKI_FRAME_BUCKET=16
   echo "Preflight passed: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
   echo "GPU=${GPU_GIB}GiB host=${HOST_GIB}GiB free_disk=${FREE_GIB}GiB batch=$BATCH_SIZE accum=$GRAD_ACCUM_STEPS"
 }

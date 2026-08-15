@@ -40,8 +40,8 @@ Generated FLEURS data is excluded from both the active tree and Git history.
 - Training starts from `weights/hibiki-pytorch-77f82164@110.safetensors`.
   `--resume-checkpoint` is only for interruption recovery within the same run.
 - CUDA uses fp32 master weights, bf16 autocast, fused AdamW, causal SDPA, fixed
-  length-sorted batches, and `--max-frames 280`; 80 GB H100s run batch 8 with
-  two accumulation steps.
+  length-sorted 16-frame buckets, and `--max-frames 280`; 80 GB H100s run batch
+  8 with two accumulation steps.
 - `finetune/h100.sh` pins the pod environment, verifies staged artifacts and
   evaluation audio, selects the 80/94 GB batch recipe, and gates training on a
   save/eval/resume smoke.

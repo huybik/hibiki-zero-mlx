@@ -281,8 +281,8 @@ class CachedCodeDataset(Dataset):
 # Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
 # lengths, which balloons the GPU working set (26 GB wired, swap-thrash). Bucketing
 # collapses that to ~9 shapes. Loss-neutral: extra frames are -1 == zero_token_id,
-# masked out of both CE terms (see LMModel.forward logits_mask). CUDA doesn't
-# need the shape cap — HIBIKI_FRAME_BUCKET=1 pads to the exact batch max.
+# masked out of both CE terms (see LMModel.forward logits_mask). CUDA launch
+# recipes override this to balance padding against compiled-shape reuse.
 FRAME_BUCKET = int(os.environ.get("HIBIKI_FRAME_BUCKET", "32"))
 
 
