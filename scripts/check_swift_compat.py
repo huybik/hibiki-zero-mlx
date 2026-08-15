@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Validate a staged artifact the way moshi-swift / moshi_mlx.run_inference loads it.
+"""Validate a staged artifact the way the stock moshi-swift loader loads it.
 
 No device (iPhone) needed: it reproduces the exact stock loader path on the Mac —
   LmConfig.from_config_dict(config) -> Lm -> set_dtype(bf16)
   -> nn.quantize(bits=4, group_size=32, predicate=weight.shape[-1] % 32 == 0)
   -> load_weights(strict=True)
-(see moshi-mlx/moshi_mlx/run_inference.py). A strict gs32 q4 load succeeding IS the
-compatibility proof: any other group size or a shape/name mismatch throws.
+A strict gs32 q4 load succeeding is the compatibility proof: any other group
+size or a shape/name mismatch throws.
 
   python scripts/check_swift_compat.py [artifact_dir]     # default weights/hibiki-m-mlx-q4
 
@@ -23,7 +23,6 @@ import rustymimi
 import sentencepiece
 
 from moshi_mlx import models
-from moshi_mlx.run_inference import quantization_predicate
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,6 +38,15 @@ REQUIRED_CONFIG_KEYS = [
 # Hibiki-Zero deltas the vendored fork honours (have defaults, but wrong values
 # silently break audio) — reported for visibility, not gated on presence.
 HIBIKI_DELTA_KEYS = ["hidden_scale", "kv_repeat"]
+
+
+def q4_compatible(_: str, module: object) -> bool:
+    weight = getattr(module, "weight", None)
+    return (
+        weight is not None
+        and hasattr(module, "to_quantized")
+        and weight.shape[-1] % 32 == 0
+    )
 
 
 def _header(path: Path) -> dict:
@@ -104,22 +112,22 @@ def check_q4_weights(art: Path, cfg: dict, results: list) -> None:
         + ("" if gs_ok else f"  bad: {bad[:3]}"),
     ))
 
-    # (b) Definitive: reproduce run_inference.py's build + strict gs32 q4 load.
+    # (b) Definitive: reproduce the stock build + strict gs32 q4 load.
     try:
         lm_config = models.LmConfig.from_config_dict(cfg)
         model = models.Lm(lm_config)
         model.set_dtype(mx.bfloat16)
-        nn.quantize(model, bits=4, group_size=32, class_predicate=quantization_predicate(32))
+        nn.quantize(model, bits=4, group_size=32, class_predicate=q4_compatible)
         model.load_weights(str(wpath), strict=True)
         mx.eval(model.parameters())
         results.append((
-            "strict gs32 q4 load (== run_inference.py path)",
+            "strict gs32 q4 load",
             True,
             f"{wpath.name}: all tensor names+shapes match a gs32 q4 build",
         ))
     except Exception as e:  # naming/shape/group-size mismatch surfaces here
         results.append((
-            "strict gs32 q4 load (== run_inference.py path)", False,
+            "strict gs32 q4 load", False,
             f"{type(e).__name__}: {e}"[:300],
         ))
 

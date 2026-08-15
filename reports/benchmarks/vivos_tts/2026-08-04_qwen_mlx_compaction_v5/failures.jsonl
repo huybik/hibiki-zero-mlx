@@ -1,9 +1,0 @@
-{"data_changed":false,"date":"2026-08-04","phase":"length_fit_preflight","reason":"sidecar shasum manifest serialized path before digest; corrected to the frozen shasum digest-then-path format","status":"failed"}
-{"date":"2026-08-04","phase":"first_candidate_preflight","reason":"temporary group parent directory was not created; fixed before any output group was published","status":"failed"}
-{"date":"2026-08-04","phase":"plan_preflight","reason":"development runner hash changed after immutable prepare; loader now binds schema/path while every execution archives its actual source hash","status":"failed"}
-{"date":"2026-08-04","phase":"length_scheduling","reason":"dead-lane waste increased 24.6% to 26.6% on throughput64","status":"rejected"}
-{"date":"2026-08-04","phase":"compaction_exactness","reason":"58/64 exact; batch-width numeric drift changed six stochastic trajectories; paired QA required","status":"not_exact"}
-{"date":"2026-08-04","phase":"temperature_0.7","reason":"n64 WER, cosine, and throughput regressed versus 0.8","status":"rejected"}
-{"date":"2026-08-04","phase":"attempt1_retry","reason":"58/64 accepted but selected WER 0.10285 exceeds 0.08","status":"no_go"}
-{"date":"2026-08-04","phase":"production_plan","reason":"no candidate passed the absolute corpus WER gate","status":"not_run"}
-{"date":"2026-08-04","phase":"full_campaign","reason":"explicitly gated on an approved production plan","status":"not_run"}

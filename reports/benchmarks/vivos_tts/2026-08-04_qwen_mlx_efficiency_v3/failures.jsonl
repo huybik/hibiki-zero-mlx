@@ -1,9 +1,0 @@
-{"attempt":"selective_quantization_top_level_model","status":"failed_before_generation","error":"TypeError: argument of type 'mlx.gc_func' is not iterable","cause":"nn.quantize traversed the non-MLX tokenizer object","correction":"quantize model.talker only while retaining full-path module provenance"}
-{"attempt":"fresh_prefix_cache_n64_timing","status":"invalid_for_speed_conclusion","baseline_rows_per_minute":38.49972114388264,"candidate_rows_per_minute":23.22383402938854,"reason":"strong within-run drift despite 64/64 exact code and WAV hashes; host had 17.1 GiB swap in use"}
-{"attempt":"all_q8_candidates","status":"rejected","reason":"none passed absolute plus paired WER/cosine non-inferiority gates"}
-{"attempt":"main_mlp_q6_rest_q8_g64","status":"not_run","reason":"lower precision not justified after every q8 candidate failed non-inferiority"}
-{"attempt":"main_mlp_q4_rest_q8_g64","status":"not_run","reason":"lower precision not justified after every q8 candidate failed non-inferiority"}
-{"attempt":"cpu_decoder_pipeline_v1","status":"failed","reason":"consumer error exited the worker while producer filled bounded queue and deadlocked","corrective_action":"surface consumer failure through timed queue puts and permit duration comparison"}
-{"attempt":"cpu_decoder_pipeline_v2","status":"terminated_infeasible","completed_rows":2,"planned_rows":32,"elapsed_seconds_lower_bound":264,"bf16_metal_32_row_seconds":56.36927499901503,"reason":"already more than 4.7x slower before completing 6.25% of scope"}
-{"attempt":"two_metal_streams","status":"not_run","reason":"unsafe ownership: mlx-audio clears the global allocator per batch and MLX lazy arrays/streams are thread-bound"}
-{"attempt":"throughput_per_watt","status":"not_reported","reason":"authoritative powermetrics requires privileges unavailable to this run"}

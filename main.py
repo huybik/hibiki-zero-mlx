@@ -28,11 +28,11 @@ ROOT = Path(__file__).resolve().parent
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 
 
-def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4, quant: str = "q4"):
+def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
     import sounddevice as sd
 
     print("loading q4 weights ...")
-    model, lm_config, text_tok, mimi_enc, mimi_dec = f.load(weights_dir, quant)
+    model, lm_config, text_tok, mimi_enc, mimi_dec = f.load(weights_dir)
     ct = None
     if model.condition_provider is not None:
         ct = model.condition_provider.condition_tensor("description", "very_good")
@@ -130,7 +130,6 @@ def main():
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
     p.add_argument("--model", default="3b", help="model size (3b|1b) or a q4 model directory (default 3b)")
-    p.add_argument("--quant", default="q4", choices=["q4", "q4-depq3"], help="quant variant (default q4)")
     p.add_argument("--text-temp", type=float, default=0.4, help="text sampling temperature (default 0.4)")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()
@@ -142,7 +141,6 @@ def main():
             max_steps=int(args.minutes * 60 * 12.5) + 8,
             weights_dir=weights_dir,
             text_temp=args.text_temp,
-            quant=args.quant,
         )
     elif args.input:
         infile = args.input
@@ -154,7 +152,6 @@ def main():
             weights_dir=weights_dir,
             text_outfile=args.text_out,
             text_temp=args.text_temp,
-            quant=args.quant,
         )
     else:
         p.error("give an audio file path, or --mic for realtime")

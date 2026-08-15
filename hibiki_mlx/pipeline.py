@@ -11,7 +11,6 @@ sequential loop; we just stop letting the CPU and GPU idle on each other.
 Usage: python scripts/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
 import json
-import os
 import queue
 import sys
 import threading
@@ -60,25 +59,10 @@ def _q4_compatible(_: str, module: object) -> bool:
     )
 
 
-def _quant_predicate(quant: str):
-    # "q4": everything 4-bit gs32. "q4-depq3": the depformer slice transformers at
-    # 3-bit (smaller artifact for phone bandwidth), rest 4-bit. The slice embeddings
-    # and linear_out stay q4 — q3 there makes the 3B babble through the tail flush.
-    def predicate(path: str, module: object):
-        if not _q4_compatible(path, module):
-            return False
-        if quant == "q4-depq3" and path.startswith("depformer") and ".transformer." in path:
-            return {"bits": 3, "group_size": 32}
-        return True
-    return predicate
-
-
-def _q4_model_name(cfg: dict, quant: str = "q4") -> str:
+def _q4_model_name(cfg: dict) -> str:
     name = cfg.get("moshi_name")
     if not (isinstance(name, str) and name.endswith(".q4.safetensors")):
         name = "hibiki.q4.safetensors"
-    if quant != "q4":
-        name = name.replace(".q4.safetensors", f".{quant}.safetensors")
     return name
 
 
@@ -86,14 +70,14 @@ def resolve_weights_dir(model: str | Path = "3b") -> Path:
     return MODEL_DIRS.get(str(model), Path(model))
 
 
-def load(weights_dir: Path, quant: str = "q4"):
+def load(weights_dir: Path):
     cfg_path = weights_dir / "config.json"
     _require_file(
         cfg_path,
         "Use a q4 model directory containing config.json.",
     )
     cfg = json.loads(cfg_path.read_text())
-    model_name = _q4_model_name(cfg, quant)
+    model_name = _q4_model_name(cfg)
     tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
     _require_file(
         weights_dir / model_name,
@@ -106,33 +90,12 @@ def load(weights_dir: Path, quant: str = "q4"):
     lm_config = models.LmConfig.from_config_dict(cfg)
     model = models.Lm(lm_config)
     model.set_dtype(mx.bfloat16)
-    nn.quantize(model, bits=4, group_size=32, class_predicate=_quant_predicate(quant))
+    nn.quantize(model, bits=4, group_size=32, class_predicate=_q4_compatible)
     model.load_weights(str(weights_dir / model_name), strict=True)
     mx.eval(model.parameters())
-    _maybe_attach_parallel_head(model, lm_config)
     tok = sentencepiece.SentencePieceProcessor(str(weights_dir / tokenizer_name))
     mimi_enc, mimi_dec = make_mimi(weights_dir, lm_config)
     return model, lm_config, tok, mimi_enc, mimi_dec
-
-
-def _maybe_attach_parallel_head(model, lm_config) -> None:
-    # Track B: opt-in parallel codebook head (distill_plan §3). Default stays the
-    # AR depformer. HIBIKI_HEAD=parallel [+ HIBIKI_HEAD_CKPT=<head.safetensors>
-    # HIBIKI_HEAD_PASSES=N] swaps in the trained bf16 head. It attaches AFTER
-    # nn.quantize, so the head stays bf16 (q4 head is a scale-up step).
-    if os.environ.get("HIBIKI_HEAD") != "parallel":
-        return
-    from mlx.utils import tree_unflatten
-    from distill.parallel_head import build_head
-    passes = int(os.environ.get("HIBIKI_HEAD_PASSES", "1"))
-    head = build_head(lm_config, num_passes=passes)
-    ckpt = os.environ.get("HIBIKI_HEAD_CKPT")
-    if ckpt:
-        head.update(tree_unflatten(list(mx.load(ckpt).items())))
-    mx.eval(head.parameters())
-    model.parallel_head = head
-    print(f"[parallel head attached: {passes} pass(es), ckpt={ckpt}]")
-
 
 def make_mimi(weights_dir: Path, lm_config):
     # Separate codec instances per thread: a single rustymimi.Tokenizer can't be
@@ -153,9 +116,9 @@ def make_mimi(weights_dir: Path, lm_config):
 
 
 def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | None = None,
-        tail_s: float = 8.0, preloaded=None, text_temp: float = 0.4, quant: str = "q4"):
+        tail_s: float = 8.0, preloaded=None, text_temp: float = 0.4):
     infile = _resolve_audio_path(infile)
-    model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir, quant)
+    model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir)
     if model.condition_provider is not None:
         ct = model.condition_provider.condition_tensor("description", "very_good")
     else:
@@ -180,9 +143,6 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         cfg_coef=1.0, check=False,
     )
     model.warmup(ct)
-    if getattr(model, "parallel_head", None) is not None:
-        model.parallel_head.reset()  # drop the warmup frame's streaming state
-
     enc_q: queue.Queue = queue.Queue(maxsize=64)   # encoder -> main
     dec_q: queue.Queue = queue.Queue(maxsize=64)   # main -> decoder
     out_pcm: list = []

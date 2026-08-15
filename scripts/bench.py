@@ -2,7 +2,6 @@
 """Unified per-stage benchmark for the MLX hibiki runtime.
 
   python scripts/bench.py --model 3b                 # per-stage ms table + projections
-  python scripts/bench.py --model 1b --quant q4-depq3
   python scripts/bench.py --model 1b --silence       # silence-in gate (rms/peak)
 
 Splits each frame into mimi encode / LM main transformer / LM depformer /
@@ -29,7 +28,6 @@ ROOT = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model", default="3b", help="model size (3b|1b) or a q4 model directory")
-    p.add_argument("--quant", default="q4", choices=["q4", "q4-depq3"], help="quant variant")
     p.add_argument("--frames", type=int, default=150, help="timed frames (default 150)")
     p.add_argument("--warmup", type=int, default=15, help="untimed warmup frames (default 15)")
     p.add_argument("--scale", type=float, default=0.5,
@@ -40,7 +38,7 @@ def main() -> None:
 
     mx.random.seed(299792458)
     weights_dir = pl.resolve_weights_dir(args.model)
-    model, lm_config, _tok, mimi_enc, mimi_dec = pl.load(weights_dir, args.quant)
+    model, lm_config, _tok, mimi_enc, mimi_dec = pl.load(weights_dir)
     ct = None
     if model.condition_provider is not None:
         ct = model.condition_provider.condition_tensor("description", "very_good")
@@ -60,35 +58,20 @@ def main() -> None:
                        audio_sampler=utils.Sampler(top_k=250, temp=0.8),
                        cfg_coef=1.0, check=False)
 
-    # Time the codebook head inside the LM step with eval barriers on both sides.
-    # Parallel head (Track B) if attached, else the AR depformer.
-    head = getattr(model, "parallel_head", None)
-    dep_label = f"LM parallel head ({n_slices}x, 1 pass)" if head else f"LM depformer ({n_slices}x)"
+    # Time the autoregressive depformer inside the LM step with eval barriers.
+    dep_label = f"LM depformer ({n_slices}x)"
     dep_t = [0.0]
-    if head is not None:
-        _orig_dep = head.sample
-        def timed_dep(*a, **k):
-            mx.eval(a[0])
-            t0 = time.perf_counter()
-            r = _orig_dep(*a, **k)
-            mx.eval(r)
-            dep_t[0] += time.perf_counter() - t0
-            return r
-        head.sample = timed_dep
-    else:
-        _orig_dep = model.depformer.sample
-        def timed_dep(*a, **k):
-            mx.eval(a[0])           # barrier: main transformer out is ready
-            t0 = time.perf_counter()
-            r = _orig_dep(*a, **k)
-            mx.eval(r)              # barrier: all codebooks sampled
-            dep_t[0] += time.perf_counter() - t0
-            return r
-        model.depformer.sample = timed_dep
+    _orig_dep = model.depformer.sample
+    def timed_dep(*a, **k):
+        mx.eval(a[0])           # barrier: main transformer out is ready
+        t0 = time.perf_counter()
+        r = _orig_dep(*a, **k)
+        mx.eval(r)              # barrier: all codebooks sampled
+        dep_t[0] += time.perf_counter() - t0
+        return r
+    model.depformer.sample = timed_dep
 
     model.warmup(ct)
-    if head is not None:
-        head.reset()
     mx.eval(model.parameters())
 
     enc_t = dec_t = step_t = 0.0
@@ -119,9 +102,9 @@ def main() -> None:
     main_t = step_t - dep_t[0]
     lm_ms = 1000 * step_t / n
     cfg = json.loads((weights_dir / "config.json").read_text())
-    size_gb = (weights_dir / pl._q4_model_name(cfg, args.quant)).stat().st_size / 1e9
+    size_gb = (weights_dir / pl._q4_model_name(cfg)).stat().st_size / 1e9
 
-    print(f"\n=== {args.model} {args.quant} | {n} frames, wall {wall:.2f}s "
+    print(f"\n=== {args.model} q4 | {n} frames, wall {wall:.2f}s "
           f"-> {n / wall:.1f} frames/s ({n / wall / 12.5:.2f}x RT sequential) ===")
     print(f"{'stage':<26}{'ms/frame':>10}{'% of wall':>10}")
     for name, t in [("mimi encode", enc_t), ("LM main transformer", main_t),

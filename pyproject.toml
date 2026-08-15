@@ -10,6 +10,7 @@ dependencies = [
     "numpy",
     "rustymimi>=0.4.1",
     "sentencepiece",
+    "sounddevice>=0.5.0",
     "sphn>=0.2.0",
 ]
 

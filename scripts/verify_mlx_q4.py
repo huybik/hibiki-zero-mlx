@@ -2,8 +2,7 @@
 """Verify the 4-bit MLX hibiki-zero weights by translating a sample clip.
 
 Uses the pipelined inference path (hibiki_mlx.pipeline), which overlaps the CPU
-Mimi codec with the GPU LM (~3x real-time vs ~1.3x for the sequential
-run_inference loop). Output is identical; this is just the fast MLX entry point.
+Mimi codec with the GPU LM. This is the canonical MLX entry point.
 """
 from pathlib import Path
 

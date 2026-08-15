@@ -1,3 +1,0 @@
-{"date":"2026-08-04","data_changed":false,"phase":"prepare_production_preflight","reason":"The first invocation used conda base, where mlx-audio package metadata is absent; PackageNotFoundError occurred before any production artifact was written. Corrective rerun used the pinned MLX environment and passed.","status":"failed_corrected"}
-{"date":"2026-08-04","phase":"retry_round2","reason":"The frozen corpus stop gate passed after retry round 1; round 2 was not run.","status":"not_run_early_stop"}
-{"date":"2026-08-04","phase":"production_generation","reason":"The validated production runner/plan was prepared as required, but the full campaign was not launched during untouched validation.","status":"not_launched"}

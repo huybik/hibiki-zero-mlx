@@ -1,9 +1,0 @@
-speaker_id,gender,split,duration_slice,qwen_rows,qwen_wer,qwen_speaker_cosine,kokoro_wer,kokoro_speaker_cosine,qwen_machine_failures
-VIVOSSPK06,female,train,long,2,0.071429,0.972443,0.000000,0.558869,
-VIVOSSPK08,male,train,short,2,0.062500,0.887609,0.000000,0.575959,
-VIVOSSPK13,female,train,short,2,0.166667,0.896529,0.166667,0.515647,
-VIVOSSPK26,female,train,short,2,2.777778,0.271751,0.000000,0.523686,catastrophic_wer|duration_ratio_above_max|prompt_leak
-VIVOSSPK33,male,dev,long,2,0.000000,0.932302,0.000000,0.402633,
-VIVOSSPK37,male,dev,short,2,0.083333,0.944299,0.000000,0.555077,
-VIVOSSPK39,male,dev,long,2,0.000000,0.934867,0.000000,0.457709,
-VIVOSSPK42,female,train,long,2,0.166667,0.949573,0.000000,0.609251,
