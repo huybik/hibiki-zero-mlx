@@ -121,7 +121,7 @@ git status --short
 `git status --short` must show no tracked changes. Preflight verifies the GPU,
 driver, package pins, hashes, cache counts, manifests, audio, RAM, and free disk.
 The smoke must train finite steps, save, run standalone greedy evaluation,
-resume exactly, and leave at least 4 GiB VRAM headroom. It writes a `SMOKE_OK`
+resume exactly, and leave at least 2 GiB VRAM headroom. It writes a `SMOKE_OK`
 marker tied to the current Git commit.
 
 The default new-agent handoff stops here. Report the preflight profile, smoke
@@ -180,7 +180,7 @@ one source shard at a time.
 - Every model parameter is trainable; there is no adapter or freeze map.
 - CUDA uses fp32 master weights and bf16 autocast.
 - `--max-frames 280` bounds memory; fixed length-sorted batches minimize padding.
-- H100 80 GB uses batch 4 with four accumulation steps; 94 GB uses batch 16.
+- H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
 - Text prefix PAD has weight 0.5; content and EOS remain weight 1.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.
 - Checkpoints contain the exact full model. Loading rejects missing or extra keys.

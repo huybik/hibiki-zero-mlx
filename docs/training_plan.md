@@ -18,8 +18,8 @@ pinned CUDA 13.2 wheel on the 580 driver series. Then run:
 ```
 
 The launcher pins Torch 2.13.0/CUDA 13.2 and Moshi 0.2.13, verifies artifact
-hashes and evaluation audio, and chooses batch 16 on a 94 GB H100 NVL or batch 4
-with four accumulation steps on an 80 GB H100. The smoke must complete finite
+hashes and evaluation audio, and chooses batch 16 on a 94 GB H100 NVL or batch 8
+with two accumulation steps on an 80 GB H100. The smoke must complete finite
 training, save, standalone free-running evaluation, exact resume, and a VRAM
 headroom check before it writes `finetune/runs/h100_smoke/SMOKE_OK`.
 

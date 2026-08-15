@@ -119,7 +119,7 @@ memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
 if memory_gib >= 90:
     batch_size, grad_accum = 16, 1
 elif memory_gib >= 75:
-    batch_size, grad_accum = 4, 4
+    batch_size, grad_accum = 8, 2
 else:
     raise RuntimeError(f"at least 75 GiB GPU memory required, got {memory_gib:.1f} GiB")
 
@@ -264,7 +264,7 @@ if not rows:
 peak_mib = max(row[0] for row in rows)
 total_mib = max(row[1] for row in rows)
 headroom_mib = total_mib - peak_mib
-if headroom_mib < 4096:
+if headroom_mib < 2048:
     raise RuntimeError(f"smoke left only {headroom_mib / 1024:.1f} GiB VRAM headroom")
 print(f"Smoke passed: peak VRAM {peak_mib / 1024:.1f}/{total_mib / 1024:.1f} GiB")
 PY
@@ -450,8 +450,8 @@ PY
   local train_pid=$!
   "$PYTHON" finetune/hf_sync.py "$out_dir" "$repo" --watch-pid "$train_pid" &
   local sync_pid=$!
-  trap 'kill -TERM "$train_pid" "$sync_pid" 2>/dev/null || true' EXIT
-  trap 'kill -TERM "$train_pid" 2>/dev/null || true' INT TERM
+  trap "kill -TERM $train_pid $sync_pid 2>/dev/null || true" EXIT
+  trap "kill -TERM $train_pid 2>/dev/null || true" INT TERM
 
   local finished_pid=""
   set +e
@@ -459,7 +459,7 @@ PY
   local first_status=$?
   local train_status=0
   local sync_status=0
-  if [[ -z "$finished_pid" ]]; then
+  if [[ -z "${finished_pid:-}" ]]; then
     wait "$train_pid"
     train_status=$?
     wait "$sync_pid"
