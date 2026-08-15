@@ -21,6 +21,8 @@ refactor plan is **done** (consolidation + schedules + selection + val128).
 - **Full finetune (`--full-finetune`):** paper-faithful SFT — unfreezes **every** LM param,
   no LoRA, one optimizer group on `--lr`/`--lr-schedule`, saves `model_step*.safetensors`
   (metadata `target=full`). This is the **scaled CUDA run** (won't fit the 36 GB MPS cap).
+  Use `--dtype float32`: CUDA applies bf16 autocast for the forward pass while preserving
+  fp32 master weights for Adam updates at LR around 1e-5.
   LoRA stays the cheap MPS plumbing/capacity probe. `eval_lora.py`/`validate_lora.py`
   auto-detect the checkpoint kind (`common.load_finetuned`) and load full weights straight
   onto the base model. Rationale + when-to-use: `docs/training_plan.md`.
@@ -60,8 +62,9 @@ Every static flag is the degenerate single-point schedule, so old commands run u
   Fall back to `--text-loss-weight` / `--audio-loss-weight`.
 - **Prefix timing:** `--text-prefix-pad-weight` weights only supervised initial
   wait PAD tokens. Content/EOS stay at 1; tail/batch pads stay ignored. Default
-  1.0 is backward-compatible; 0.5 is an implemented but untrained experiment,
-  with adoption gates in `docs/validation_plan.md`.
+  1.0 is backward-compatible. The next full run deliberately uses 0.5 to reduce
+  the measured PAD-loss imbalance; it remains the first scaled use and is judged
+  only by the free-running gates in `docs/validation_plan.md`.
 - **Replay:** `--replay-weight-schedule "300@0,100@0.5"` (needs `--replay-ids`);
   reuses the WeightedRandomSampler, rebuilt at each boundary. Falls back to `--replay-weight`.
 - **Per-group LR:** `--lr-schedule` (transformer LoRA), `--text-head-lr-schedule`,
@@ -73,8 +76,10 @@ Every static flag is the degenerate single-point schedule, so old commands run u
 
 - `--eval-every N` runs a **batched greedy val eval** (`--eval-pairs`, `--eval-limit`
   128, `--eval-batch-size` 8, `--eval-text-temp 0.0`), logs chrF to
-  `greedy_eval_log.jsonl`, and saves `adapter_best.safetensors` + `best.json` on chrF
-  improvement. Mimi is loaded only when `--eval-every>0`.
+  `greedy_eval_log.jsonl`, and saves `{adapter,model}_best.safetensors` + `best.json`
+  on chrF improvement. This raw-chrF best is a convenience artifact, not the
+  eligibility-aware final selection defined in `docs/validation_plan.md`. Mimi is
+  loaded only when `--eval-every>0`.
 - Teacher-forced CE validation stays available via `--val-cache-dir` + `--val-every`.
 
 ## AutoResearch protocol (keep it)
@@ -124,7 +129,7 @@ $PY finetune/train_lora.py --cache-dir finetune/cache/train --out-dir finetune/r
   --eval-every 128 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128 --eval-batch-size 8
 
 # Scaled CUDA run — paper-faithful FULL-MODEL SFT (no LoRA, batch 16). The real run.
-$PY finetune/train_lora.py --device cuda --dtype bfloat16 --batch-size 16 --grad-accum-steps 1 \
+$PY finetune/train_lora.py --device cuda --dtype float32 --batch-size 16 --grad-accum-steps 1 \
   --full-finetune --cache-dir finetune/cache/train finetune/cache/phomt_train \
   --max-steps 4000 --lr-schedule "1e-4@0,3e-5@0.6" --warmup-steps 100 --gradient-checkpointing \
   --eval-every 500 --eval-pairs finetune/pairs/val128.jsonl --eval-limit 128

@@ -1,244 +1,204 @@
 # Vietnamese validation plan
 
-This plan is the decision contract for the [data generation](data_generation_plan.md)
-and [training](training_plan.md) plans. Its central rule comes directly from the
-phase-2 post-mortem: teacher-forced validation can improve while free-running
-generation collapses to silence, so only free-running outputs can qualify a
-checkpoint.
+This is the decision contract for the
+[base-start training plan](training_plan.md). Its central rule is unchanged:
+teacher-forced validation can improve while free-running generation collapses
+to silence, so only free-running outputs can qualify a checkpoint.
 
-## Goal and non-goals
+## Evaluation sets
 
-The goal is to distinguish five failure modes: no Vietnamese grounding, silent
-generation, bad translation when non-silent, bad English speech, and excessive
-lag/over-generation. It must also catch regression on languages already
-supported by the base model.
-
-This suite does not tune on the test set, use synthetic speech as the primary
-quality signal, collapse all failures into one BLEU number, or replace generated
-outputs with teacher-forced predictions.
-
-## Frozen evaluation sets
-
-| Set | Role | Selection rule |
+| Set | Use | Selection status |
 |---|---|---|
-| `finetune/pairs/val16.jsonl` | Frequent collapse sentinel | Existing deterministic first 16 FLEURS validation rows. Fast alert only; never rank final checkpoints from 16 rows. |
-| `finetune/pairs/val128.jsonl` | Checkpoint decision gate | Existing deterministic first 128 FLEURS validation rows. Keep fixed for historical comparison. |
-| Full FLEURS validation | Milestone development result | Real VI speech only; evaluate less often than val128. |
-| FLEURS test (347 pairs) | Final one-time report | Do not use for checkpoint selection, thresholds, or reward tuning. |
-| New real-speech dev suite | Domain, speaker, accent, noise, and duration slices | Freeze speakers and normalized text hashes before training; no overlap with any train corpus. |
-| Long-form/latency suite | Multi-sentence timing and silence recovery | 30–120 s real-source examples with sentence/word timing metadata. Required before T3. |
-| Synthetic regression slice | Pipeline and memorization diagnostics | Report separately; it can never qualify a checkpoint. |
-| Existing-language suite | Catastrophic-forgetting gate | Fixed FR/ES/PT/DE real-speech manifests, scored with the same runtime settings as their archived baseline. |
+| `finetune/pairs/val128.jsonl` | Deterministic in-training health and historical comparison | Primary frequent gate; fixed 128-row FLEURS subset. |
+| Full FLEURS validation (149 rows) | End-of-epoch VI→EN development result | Primary development domain. |
+| VIVOS dev (1,106 rows, 5 held-out speakers) | Independent corpus/speaker/domain result | Required milestone domain after a flat eval manifest is built. |
+| FLEURS test (347 rows) | Final report | Sealed until checkpoint selection is frozen. |
+| VIVOS official test (760 rows) | Final independent-domain report | Sealed until checkpoint selection is frozen. |
+| Synthetic slice | Pipeline and memorization diagnostics | Never qualifies a checkpoint. |
+| FR/ES/PT/DE suite | Catastrophic-forgetting check | Required for release after manifests/reporting exist. |
 
-The new data builder must emit a train↔dev/test normalized-text overlap report.
-Speaker-disjoint splits are required where corpus metadata permits. All ids and
-ordering are immutable once the first training run begins.
+The VIVOS development evaluator must use all 1,106 approved source rows and
+their accepted Gemini English translations. Do not restrict text evaluation to
+the 733 rows whose synthesized target audio passed training-cache QA; that
+filter measures target TTS quality and would bias the speech-translation set.
+Create `finetune/pairs/vivos_dev.jsonl` in the evaluator's existing flat schema:
+`id`, `vi_audio`, and `text_en`, with immutable ordering and source/reference
+hashes recorded beside the manifest.
 
-## Evaluation ladder
+## V0 — preflight baselines
 
-### V0 — data and cache integrity
+Run the unadapted base model and the archived phase-1 checkpoint through the
+same deterministic val128 command, on the same box and commit used for the new
+run. The base result confirms the unsupported-language floor; phase 1 is the
+healthy comparison baseline.
 
-Run the D0–D4 gates from the data plan: waveform validity, transcript/translation
-QA, split leakage, manifest/cache id agreement, and degenerate-code scan. A
-model result is invalid if its data version cannot reproduce these artifacts.
+```bash
+# Base model: intentionally omit --adapter.
+python finetune/eval_lora.py \
+  --device cuda --dtype float32 \
+  --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
+  --pairs finetune/pairs/val128.jsonl \
+  --limit 128 --batch-size 8 --text-temp 0 \
+  --stop-on-eos --text-only --seed 42 \
+  --out-dir finetune/runs/baselines/base_val128_greedy
 
-### V1 — teacher-forced diagnostics
+# Repeat with the archived phase-1 full-model checkpoint.
+python finetune/eval_lora.py \
+  --device cuda --dtype float32 \
+  --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
+  --adapter <phase1_model_step055284.safetensors> \
+  --pairs finetune/pairs/val128.jsonl \
+  --limit 128 --batch-size 8 --text-temp 0 \
+  --stop-on-eos --text-only --seed 42 \
+  --out-dir finetune/runs/baselines/phase1_val128_greedy
+```
 
-The existing command reports audio/text CE, content-only text CE, content
-accuracy, and `silence_score`. On the H100 pod, activate `/venv/main` and use
-`python`; locally substitute the mandated conda interpreter:
+The archived phase-1 reference is chrF 19.61, 128/128 nonempty, 126/128 EOS,
+and 8/128 repeated-4gram failures. Recompute it in the new environment instead
+of assuming the archived numbers are bit-identical.
+
+## V1 — teacher-forced diagnostics
+
+Training computes cached teacher-forced validation every 2k steps. Standalone:
 
 ```bash
 python finetune/validate_lora.py \
   --device cuda --dtype float32 \
   --cache-dir finetune/cache/validation \
   --adapter <checkpoint.safetensors> \
-  --batch-size 8 --out-json <run>/validation_teacher_forced.json
+  --batch-size 8 \
+  --out-json <run>/validation_teacher_forced.json
 ```
 
-This path deliberately keeps prefix-PAD weight 1.0 even if training used 0.5,
-so its CE remains comparable across arms. The weighted training `text_loss`
-does not. These metrics diagnose train/real divergence. They are explicitly ineligible
-for checkpoint selection: the collapsed phase-2 model scored better than the
-healthy phase-1 checkpoint on every teacher-forced metric, including content CE
-and the proposed silence score.
+Record total/audio/text CE, content-only text CE, content accuracy, and
+`silence_score`. These diagnose optimization and train/dev divergence only.
+They cannot select or qualify a checkpoint: the collapsed phase-2 model scored
+better than the healthy phase-1 model on all of them.
 
-### V2 — deterministic free-running text
+## V2 — deterministic free-running selection
 
-This is the mandatory generation gate. Use text temperature 0, fixed ordering,
-EOS stopping, and text-only output:
+The trainer runs text-temperature-0 val128 every 9k steps. Its compact log is an
+alert and raw-chrF tracker. For every candidate checkpoint, rerun the standalone
+evaluator because its `metrics.json` also includes the full length and loop
+metrics used by eligibility:
 
 ```bash
 python finetune/eval_lora.py \
   --device cuda --dtype float32 \
-  --pairs finetune/pairs/val128.jsonl \
+  --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
   --adapter <checkpoint.safetensors> \
+  --pairs finetune/pairs/val128.jsonl \
   --limit 128 --batch-size 8 --text-temp 0 \
-  --stop-on-eos --text-only \
-  --out-dir <run>/eval_val128_greedy
+  --stop-on-eos --text-only --seed 42 \
+  --out-dir <run>/eval_val128_stepNNNNNN
 ```
 
 Record corpus chrF/BLEU/WER, nonempty chrF, nonempty count, EOS count, mean
-length ratio, overlong count, repeated-4gram count, and every prediction. Corpus
-chrF answers "does the system translate?"; nonempty chrF separates translation
-quality from silence collapse.
+prediction/reference length ratio, overlong count, repeated-4gram failures, and
+every prediction. Corpus chrF captures the combined translation-and-silence
+result; nonempty chrF separates adequacy from silence collapse.
 
-Use val16 every 3k steps as an alert and val128 every 9k steps or at each saved
-milestone as the decision read. The current trainer accepts one in-process eval
-set, so the second cadence requires a checkpoint watcher or trainer support;
-running val128 every 3k is unnecessary cost.
+### Eligibility gates
 
-Also run the production sampling configuration (`--text-temp 0.4 --audio-temp
-0.8 --top-k 250 --top-k-text 250`) with a fixed seed at milestones. It measures
-shipping behavior but does not replace deterministic V2 selection.
+Freeze these thresholds before training:
 
-### Prefix-PAD weighting A/B
+| Gate | Requirement on val128 |
+|---|---|
+| Nonempty | At least 122/128 (95%). |
+| EOS | At least 116/128 (90%). |
+| Loops | At most 12/128 repeated-4gram failures (10%). |
+| Length | Mean prediction/reference word ratio at most 2.0; overlong count must not regress materially from the recomputed phase-1 baseline. |
+| Adequacy | Rank eligible checkpoints by corpus chrF; nonempty chrF must not fall by more than one absolute point while corpus chrF rises. |
 
-`--text-prefix-pad-weight` is a project experiment, not a paper setting. Weight
-1.0 is the backward-compatible control; 0.5 reduces supervised prefix-PAD CE
-mass while leaving content/EOS at 1.0, ignored tail/batch pads unchanged, and
-audio loss unchanged. Static implementation checks have passed, but there is no
-training evidence.
+The percentages and one-point tolerance are project controls, not paper
+thresholds. Adjust them only during V0 if the recomputed healthy phase-1
+baseline fails for a documented measurement reason, then freeze them.
 
-Compare T1A (1.0) and T1B (0.5) from the same base, data order, schedule, 9k-step
-budget, and evaluation ids. Training must expose a seed before the formal A/B;
-keep it identical. Report the
-prefix-PAD/content/EOS counts for the exact cache variant alongside each run.
+The full run uses prefix-PAD weight 0.5. It is acceptable only if these
+free-running EOS, loop, length, nonempty, and adequacy gates pass. The expected
+reduction in weighted training loss is not evidence of success; reject a model
+that produces more text but becomes prematurely verbose, repetitive, or less
+source-grounded.
 
-The 0.5 arm passes the pilot only if the final val128 read shows:
+`model_best.safetensors` is not the final selection because the trainer saves it
+on raw chrF without eligibility checks. Select manually from saved 9k-step
+checkpoints and preserve the paired trainer state.
 
-- corpus chrF and nonempty rate improve over the 1.0 arm at matched steps;
-- nonempty chrF is no more than one absolute point below the control;
-- EOS, loops, and mean length ratio still pass checkpoint eligibility;
-- generated-audio ASR chrF is no more than one absolute point below the control,
-  with no new silence, clipping, or non-finite failures;
-- the improvement appears on the real-speech suite, not only synthetic rows.
+## V3 — milestone real-speech validation
 
-The one-point tolerances are project proposals frozen before launch. A lower
-weighted teacher-forced CE, lower pad probability under teacher forcing, or the
-expected 45/55→29/71 loss-mass shift is not a win. Prefix weighting mitigates a
-gradient imbalance; it does not test the free-running state where the model is
-conditioned on its own pads.
+At every epoch boundary and before protecting a final candidate, run standalone
+deterministic evaluation on:
 
-### V3 — generated-audio round trip
+1. full FLEURS validation; and
+2. all 1,106 VIVOS dev rows.
 
-Run `eval_lora.py` without `--text-only` to emit English audio:
+Use the same command as V2 with the corresponding pair manifest and limit. Keep
+per-corpus metrics separate and report a simple unweighted macro average only as
+a summary; do not let the larger VIVOS set numerically erase a FLEURS regression.
+A candidate must remain eligible on each domain. Among eligible candidates,
+prefer the one with the stronger macro chrF, using val128 chrF for historical
+tie-breaking.
+
+The VIVOS manifest does not exist in the required flat schema today. Building
+and hash-freezing it is required before final selection, but it does not block
+the B1 training process from starting with val128 monitoring.
+
+## V4 — production sampling and generated audio
+
+For milestone candidates, repeat val128 with shipping text/audio sampling:
 
 ```bash
 python finetune/eval_lora.py \
   --device cuda --dtype float32 \
-  --pairs finetune/pairs/val128.jsonl \
+  --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
   --adapter <checkpoint.safetensors> \
-  --limit 128 --batch-size 8 --text-temp 0 \
-  --stop-on-eos --out-dir <run>/eval_val128_audio
+  --pairs finetune/pairs/val128.jsonl \
+  --limit 128 --batch-size 8 \
+  --text-temp 0.4 --audio-temp 0.8 \
+  --top-k 250 --top-k-text 250 \
+  --stop-on-eos --seed 42 \
+  --out-dir <run>/eval_val128_production
 ```
 
-The current command writes WAV files but does **not** score their speech quality.
-Required work: transcribe generated EN with a pinned ASR model and write ASR
-WER/chrF/BLEU against the reference, plus per-row RMS, peak, clipping, duration,
-silence ratio, and failure reason. The paper reports ASR-BLEU; it does not
-provide our ASR model or thresholds, so those are frozen from phase-1 and base
-audio baselines before comparing new checkpoints.
+The current evaluator writes WAVs but does not score their speech quality. Until
+an audio scorer is implemented, require manual audition of a frozen sample and
+basic file integrity, but do not claim ASR or acoustic gates. Release validation
+still requires a pinned English ASR round trip plus per-row finite/RMS/peak,
+clipping, duration, silence, and failure metrics.
 
-### V4 — streaming timing and long-form behavior
+## Stop rules
 
-Required instrumentation must record, per generation frame:
+- One failed early 9k read is a red alert, not an immediate kill for a base-start
+  model. Stop if the next two reads do not recover eligibility, or if nonempty
+  chrF also declines.
+- Stop after validation content CE rises and two consecutive free-running reads
+  fail to improve.
+- Stop immediately on non-finite loss, corrupt output, checkpoint reload
+  mismatch, or logged LR/config disagreement.
+- Do not overwrite an earlier eligible checkpoint when a later epoch collapses.
+- Do not use test sets, synthetic rows, or teacher-forced metrics to rescue a
+  failed development decision.
 
-- first non-pad text time and first non-silent audio time;
-- text EOS and audio-tail time;
-- prefix hypotheses at fixed source progress points;
-- sentence-boundary pause and recovery behavior;
-- source duration, output duration, and target reference timing.
+## Final test and release boundary
 
-From these, report first-content latency, end lag, output/input duration ratio,
-prefix chrF, and a standard lag metric once the required word alignment exists.
-The Hibiki-Zero reward scores every eight input words, but that interval is a
-paper control, not evidence that one timing metric is sufficient for this
-project. Current `eval_lora.py` retains only the final text and has no V4
-instrumentation.
+After selecting one checkpoint without looking at test data, run FLEURS test and
+VIVOS official test exactly once. Report both separately. A research candidate
+may be declared from V0–V4; a release candidate additionally needs the currently
+missing generated-audio scorer and automated FR/ES/PT/DE forgetting suite.
 
-### V5 — robustness and forgetting
-
-At milestone checkpoints, evaluate fixed real-speech slices for:
-
-- clean versus noisy/reverberant source speech;
-- short, medium, and long durations;
-- speaker, gender, accent/region, and recording-corpus coverage where metadata
-  permits responsible reporting;
-- leading, internal, and trailing silence;
-- FR/ES/PT/DE translation using archived baselines.
-
-Report every slice even when small; do not hide a failed long/noisy slice inside
-the aggregate. Old-language manifests and an automated comparison report are
-required work.
-
-## Checkpoint eligibility and stop rules
-
-The following are project-proposed controls, frozen before T1 begins:
-
-| Gate | Eligible checkpoint |
-|---|---|
-| Nonempty | At least 95% on val128 and no concentrated empty slice |
-| EOS | At least 90% on val128 |
-| Loops | Repeated-4gram failures at most 10% |
-| Length | Mean prediction/reference word ratio at most 2.0 and no regression in overlong count |
-| Adequacy | Corpus chrF is the primary selector among eligible checkpoints; nonempty chrF must not fall while corpus chrF rises |
-| Audio | No non-finite/all-zero output; ASR and acoustic gates pass their pre-frozen baselines |
-| Long-form | No systematic silence after an internal pause; timing metrics pass the T3 baseline |
-| Forgetting | No more than 10% relative chrF regression on an existing-language aggregate |
-
-The percentages are project proposals, not paper thresholds. Before the first
-new run, score the archived phase-1 checkpoint and adjust a threshold only if it
-would reject that known baseline for a documented measurement reason; then
-freeze it for all comparisons.
-
-Operational stop rules:
-
-- A single low-nonempty read during early from-scratch grounding is a red alert,
-  not an automatic kill. Stop if it fails to recover for two subsequent greedy
-  reads or if nonempty chrF also degrades.
-- Stop after real-val content CE turns upward and two free-running reads fail to
-  improve. Falling train loss is not a reason to continue.
-- Roll back immediately on non-finite loss, corrupt audio, checkpoint reload
-  mismatch, or an LR that differs from `run_config.json`.
-- Never overwrite the current best eligible checkpoint when a later epoch
-  collapses.
-
-## Stage decisions
-
-| Transition | Go | No-go |
-|---|---|---|
-| T1 A/B → T2 mixed | 0.5 passes the matched pilot gates, or the result is inconclusive and the conservative 1.0 control is retained | Either arm has an implementation/audio regression, or the comparison was not seeded and matched. |
-| T2 → T3 long-form | Real-speech aggregate and slices improve over T1 without forgetting | Gains exist only on synthetic rows or silence/loops worsen. |
-| T3 → T4 free-running optimization | Translation is adequate, but a measured silence/latency defect remains | SFT does not translate; RL must not hide a grounding failure. |
-| Candidate → release | Full V0–V5 report passes, including untouched test and existing languages | Any mandatory artifact or gate is missing. |
-
-## Required implementation work
-
-1. Extend best-checkpoint selection beyond chrF to the frozen eligibility gates.
-2. Expose and log the training RNG seed so the prefix-PAD A/B is reproducible.
-3. Add row-level audio/ASR scoring for WAVs produced by `eval_lora.py`.
-4. Retain frame-level text/audio emission timing and compute V4 metrics.
-5. Build immutable real-speech long-form and old-language manifests.
-6. Add a comparison command that joins metrics by checkpoint and slice and emits
-   one machine-readable decision report.
-7. If COMET is added, pin its model/version and treat it as a secondary adequacy
-   metric. It is not installed or implemented today.
+Long-form latency and streaming-prefix metrics remain separate future work.
+They are not claimed by the short-form B1 experiment.
 
 ## Reproducibility artifacts
 
-Every evaluated checkpoint keeps:
+For every evaluated candidate retain:
 
 - checkpoint and base-model SHA-256 hashes;
-- repository commit, environment/package manifest, device, dtype, and generation
-  parameters;
-- data/cache version and pair-manifest hashes;
+- repository commit, environment manifest, device, dtype, and generation args;
+- cache and pair-manifest hashes plus ordered evaluation ids;
 - `run_config.json`, `train_log.jsonl`, `val_log.jsonl`, and
   `greedy_eval_log.jsonl`;
-- prediction CSVs, metrics JSON, generated WAVs for V3, ASR transcripts, and
-  timing traces for V4;
-- aggregate and per-slice comparison reports against phase 1, T1, and the base
-  old-language model;
-- random seed and ordered ids for every sampled evaluation;
-- a final signed-off go/no-go record naming the selected checkpoint and failed
-  alternatives.
+- prediction CSVs, metrics JSON, and generated WAVs where applicable;
+- protected model/trainer pair and sync evidence;
+- per-domain comparison against the recomputed phase-1 baseline; and
+- the final go/no-go record, including failed and abandoned candidates.
