@@ -5,10 +5,10 @@
   python main.py --mic                  # mic   -> speakers, live (Ctrl-C to stop)
 
 Speak/record FR/ES/PT/DE; you get streamed EN text + 24 kHz EN audio. Both modes
-use the 4-bit weights via hibiki_mlx.pipeline (load()/run()); --model picks the
-3B (default) or the Hibiki-M 1B (FR->EN only). File mode is the 3-thread
+use the 4-bit weights via hibiki_mlx.pipeline (load()/run()); --model accepts the
+3B default or a staged Hibiki-Zero model directory. File mode is the 3-thread
 pipelined path; mic mode pipelines encode->LM->decode across threads so the live
-critical path is just the LM step (3B ~22 ms / 1B ~15 ms on M4, budget 80 ms).
+critical path is just the LM step (~22 ms on M4 for 3B, budget 80 ms).
 """
 import argparse
 import queue
@@ -129,7 +129,7 @@ def main():
     p.add_argument("--mic", action="store_true", help="realtime mic -> speakers")
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
-    p.add_argument("--model", default="3b", help="model size (3b|1b) or a q4 model directory (default 3b)")
+    p.add_argument("--model", default="3b", help="3b or a q4 Hibiki-Zero model directory")
     p.add_argument("--text-temp", type=float, default=0.4, help="text sampling temperature (default 0.4)")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()

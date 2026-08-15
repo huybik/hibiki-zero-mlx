@@ -8,7 +8,7 @@ No device (iPhone) needed: it reproduces the exact stock loader path on the Mac 
 A strict gs32 q4 load succeeding is the compatibility proof: any other group
 size or a shape/name mismatch throws.
 
-  python scripts/check_swift_compat.py [artifact_dir]     # default weights/hibiki-m-mlx-q4
+  python scripts/check_swift_compat.py [artifact_dir]     # default weights/
 
 Prints PASS/FAIL per check and a summary; exit 0 iff every check passes.
 """
@@ -157,7 +157,7 @@ def check_sidecars(art: Path, cfg: dict, results: list) -> None:
 
 
 def main() -> None:
-    art = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "weights" / "hibiki-m-mlx-q4"
+    art = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "weights"
     print(f"=== moshi-swift compat check: {art} ===\n")
     results: list[tuple[str, bool, str]] = []
     cfg = check_config(art, results)

@@ -2,7 +2,7 @@
 """Unified per-stage benchmark for the MLX hibiki runtime.
 
   python scripts/bench.py --model 3b                 # per-stage ms table + projections
-  python scripts/bench.py --model 1b --silence       # silence-in gate (rms/peak)
+  python scripts/bench.py --model 3b --silence       # silence-in gate (rms/peak)
 
 Splits each frame into mimi encode / LM main transformer / LM depformer /
 mimi decode using mx.eval barriers, then reports RT factor, artifact size and a
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", default="3b", help="model size (3b|1b) or a q4 model directory")
+    p.add_argument("--model", default="3b", help="3b or a q4 Hibiki-Zero model directory")
     p.add_argument("--frames", type=int, default=150, help="timed frames (default 150)")
     p.add_argument("--warmup", type=int, default=15, help="untimed warmup frames (default 15)")
     p.add_argument("--scale", type=float, default=0.5,

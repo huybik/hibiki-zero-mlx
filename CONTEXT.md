@@ -2,8 +2,11 @@
 
 This repository maintains two paths only:
 
-1. q4 MLX inference for Hibiki-Zero/Hibiki-M on Apple Silicon;
+1. q4 MLX inference for Hibiki-Zero on Apple Silicon;
 2. base-start, full-model Vietnamese-to-English SFT on CUDA.
+
+The mobile target is a future distilled 1B Hibiki-Zero student with parallel
+target-codebook heads. It is not implemented yet.
 
 Obsolete experiments and generated research artifacts were removed from the
 active tree in August 2026. Their history remains available in Git.
@@ -17,13 +20,13 @@ active tree in August 2026. Their history remains available in Git.
   Hibiki deltas are GQA (`kv_repeat`), configurable `hidden_scale`,
   `rope_concat`, and per-slice depformer output LayerNorm.
 - Supported weights are q4 with `group_size=32`. `3b` resolves to `weights/`;
-  `1b` resolves to `weights/hibiki-m-mlx-q4/`.
+  custom staged Hibiki-Zero directories can be passed explicitly.
 - Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
   arrays because lazy MLX graphs cannot move across creating threads.
 - File inference adds an 8-second silence tail and stops after 12 sustained PAD
   frames to flush translation lag without extended hallucination.
 - Runtime gates are `scripts/verify_mlx_q4.py` and
-  `scripts/bench.py --model {3b,1b} --silence`.
+  `scripts/bench.py --model 3b --silence`.
 - `scripts/check_swift_compat.py` requires strict q4 group-size-32 reload plus
   valid config, tokenizer, and Mimi sidecars.
 

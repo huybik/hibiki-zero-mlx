@@ -241,8 +241,8 @@ class DepFormerSlice(nn.Module):
         self.linear_in = nn.Linear(main_transformer_dim, dim, bias=False)
         self.linear_out = nn.Linear(dim, out_vocab_size, bias=False)
         self.transformer = Transformer(cfg.transformer)
-        # hibiki-zero: learned per-slice output LayerNorm applied before linear_out.
-        # Hibiki-M does not have these tensors.
+        # Hibiki-Zero: learned per-slice output LayerNorm applied before linear_out
+        # when requested by the model config.
         self.norm = nn.LayerNorm(dim, 1e-5) if cfg.output_layer_norm else None
         self._step_c = None
 

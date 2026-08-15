@@ -29,7 +29,6 @@ from moshi_mlx import models, utils
 ROOT = Path(__file__).resolve().parent.parent  # repo root (hibiki_mlx/ -> ..)
 
 W = ROOT / "weights"
-MODEL_DIRS = {"3b": W, "1b": W / "hibiki-m-mlx-q4"}  # 3b = Mac/teacher, 1b = phone candidate
 SENTINEL = object()
 PAD_STOP = 12  # frames (~1 s) of sustained pad after audio ends => translation flushed
 
@@ -67,7 +66,7 @@ def _q4_model_name(cfg: dict) -> str:
 
 
 def resolve_weights_dir(model: str | Path = "3b") -> Path:
-    return MODEL_DIRS.get(str(model), Path(model))
+    return W if str(model) == "3b" else Path(model)
 
 
 def load(weights_dir: Path):

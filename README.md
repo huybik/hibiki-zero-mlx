@@ -32,17 +32,16 @@ Run file or microphone translation:
 ```bash
 python main.py assets/samples/leon.wav
 python main.py --mic
-python main.py --model 1b --mic
 ```
 
 `main.py` and `hibiki_mlx.pipeline` are the only inference entry points. They
 use 4-bit, group-size-32 weights and overlap the CPU Mimi encoder/decoder with
-the GPU language model. `--model` accepts `3b`, `1b`, or a staged model directory.
+the GPU language model. `--model` accepts `3b` or a staged Hibiki-Zero model
+directory.
 
 The maintained inference utilities are:
 
 - `scripts/convert_mlx_q4.py`: convert the 3B PyTorch LM to MLX q4.
-- `scripts/convert_hibiki_m_mlx_q4.py`: stage the 1B Hibiki-M q4 artifact.
 - `scripts/verify_mlx_q4.py`: translate the checked-in sample as a quality gate.
 - `scripts/bench.py`: stage timing and silence-input gate.
 - `scripts/check_swift_compat.py`: strict group-size-32 artifact validation.
