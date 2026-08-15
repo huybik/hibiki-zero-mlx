@@ -14,7 +14,7 @@ MLX runtime for Kyutai's **Hibiki-Zero** (simultaneous speech-to-speech + speech
 - `assets/samples/` — test clips: `leon.wav` (~64 s FR Olympics), `crepes.mp3`, 12 s cuts.
 - `weights/` (gitignored) — 3B checkpoint (`config.json`, `hibiki-pytorch-77f82164@110.safetensors` 5.8 GB, `hibiki.q4.safetensors` 2.2 GB, mimi 367 MB, tokenizer) + `hibiki-m-mlx-{bf16,q4}/`.
 - `finetune/` — PyTorch LoRA training stack (uses the `moshi` pip package; PyTorch eval helpers live in `finetune/hibiki_helpers.py`, relocated from the deleted upstream `hibiki_zero` package).
-- `remote_dataset/` — CoVoST2 + FLEURS eval data & scripts. `training-data/` — PhoMT TTS pipeline. `docs/`, `vision/`.
+- `remote_dataset/` — CoVoST2 + FLEURS eval data & scripts. `training-data/` — PhoMT TTS pipeline. `docs/technical/` — submission-ready technical report source, five SVG figures, and reproducible PDF builder; final artifact is `output/pdf/hibiki-zero-mlx-technical-report.pdf`.
 - Published artifacts: [`huybik/hibiki-zero-3b-mlx-q4`](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4) (weights + portable stock-pkg patch shim), [`huybik/hibiki-1b-mlx-q4`](https://huggingface.co/huybik/hibiki-1b-mlx-q4) `@9649ed0`.
 
 ## Runtime facts (M4 Pro; full matrix in `reports/inference_matrix.md`)

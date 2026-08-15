@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="660" viewBox="0 0 1200 660" role="img" aria-labelledby="title desc">
+  <title id="title">Vietnamese training history and data scale</title>
+  <desc id="desc">Left chart shows chrF results for phase-1 and failed phase-2 checkpoints. Right chart compares FLEURS, phase-1 PhoMT, full PhoMT, and accepted VIVOS source hours.</desc>
+  <defs>
+    <linearGradient id="good" x1="0" y1="1" x2="0" y2="0"><stop stop-color="#148f78"/><stop offset="1" stop-color="#67d6bb"/></linearGradient>
+    <linearGradient id="warn" x1="0" y1="1" x2="0" y2="0"><stop stop-color="#c0644e"/><stop offset="1" stop-color="#efab83"/></linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#20305a" flood-opacity="0.10"/></filter>
+  </defs>
+  <rect width="1200" height="660" rx="26" fill="#fbfcff"/>
+  <text x="60" y="58" fill="#18213d" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="31" font-weight="800">Vietnamese: one success, one instructive failure</text>
+  <text x="60" y="87" fill="#66708b" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="16">Full SFT established source grounding; a hot warm start collapsed into silence.</text>
+  <g filter="url(#shadow)"><rect x="45" y="120" width="560" height="490" rx="22" fill="#ffffff" stroke="#e2e7f2"/><rect x="625" y="120" width="530" height="490" rx="22" fill="#ffffff" stroke="#e2e7f2"/></g>
+
+  <text x="78" y="163" fill="#253050" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="20" font-weight="750">Free-running val128 chrF</text>
+  <text x="78" y="187" fill="#7a8299" font-family="Arial,sans-serif" font-size="13">Same historical gate • higher is better</text>
+  <line x1="100" y1="505" x2="565" y2="505" stroke="#cfd6e6"/>
+  <line x1="100" y1="430" x2="565" y2="430" stroke="#e8ebf3"/>
+  <line x1="100" y1="355" x2="565" y2="355" stroke="#e8ebf3"/>
+  <line x1="100" y1="280" x2="565" y2="280" stroke="#e8ebf3"/>
+  <line x1="100" y1="205" x2="565" y2="205" stroke="#e8ebf3"/>
+  <text x="88" y="510" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">0</text>
+  <text x="88" y="435" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">5</text>
+  <text x="88" y="360" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">10</text>
+  <text x="88" y="285" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">15</text>
+  <text x="88" y="210" text-anchor="end" fill="#7b849d" font-family="Arial,sans-serif" font-size="12">20</text>
+
+  <rect x="125" y="367" width="68" height="138" rx="9" fill="#9ca8d5"/>
+  <rect x="215" y="211" width="68" height="294" rx="9" fill="url(#good)"/>
+  <rect x="305" y="309" width="68" height="196" rx="9" fill="url(#warn)"/>
+  <rect x="395" y="393" width="68" height="112" rx="9" fill="url(#warn)"/>
+  <rect x="485" y="391" width="68" height="114" rx="9" fill="url(#warn)"/>
+  <text x="159" y="357" text-anchor="middle" fill="#6573a8" font-family="Arial,sans-serif" font-size="14" font-weight="800">9.2</text>
+  <text x="249" y="201" text-anchor="middle" fill="#13826e" font-family="Arial,sans-serif" font-size="14" font-weight="800">19.61</text>
+  <text x="339" y="299" text-anchor="middle" fill="#a54d39" font-family="Arial,sans-serif" font-size="14" font-weight="800">13.04</text>
+  <text x="429" y="383" text-anchor="middle" fill="#a54d39" font-family="Arial,sans-serif" font-size="14" font-weight="800">7.48</text>
+  <text x="519" y="381" text-anchor="middle" fill="#a54d39" font-family="Arial,sans-serif" font-size="14" font-weight="800">7.63</text>
+  <text x="159" y="530" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">phase-1</text><text x="159" y="547" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">early</text>
+  <text x="249" y="530" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">phase-1</text><text x="249" y="547" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">final</text>
+  <text x="339" y="530" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">phase-2</text><text x="339" y="547" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">best</text>
+  <text x="429" y="530" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">phase-2</text><text x="429" y="547" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">final</text>
+  <text x="519" y="530" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">low-LR</text><text x="519" y="547" text-anchor="middle" fill="#4b5570" font-family="Arial,sans-serif" font-size="11">extension</text>
+  <text x="100" y="585" fill="#a04b39" font-family="Arial,sans-serif" font-size="13" font-weight="700">Teacher-forced metrics improved during the collapse.</text>
+
+  <text x="658" y="163" fill="#253050" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="20" font-weight="750">Source-speech hours available</text>
+  <text x="658" y="187" fill="#7a8299" font-family="Arial,sans-serif" font-size="13">Log scale • real and synthetic remain separate strata</text>
+  <g transform="translate(665 225)">
+    <text x="0" y="28" fill="#4c5673" font-family="Arial,sans-serif" font-size="14" font-weight="700">FLEURS train (real)</text>
+    <rect x="185" y="8" width="70" height="30" rx="8" fill="#5ca7d9"/><text x="266" y="28" fill="#34536f" font-family="Arial,sans-serif" font-size="13" font-weight="800">4.44 h</text>
+    <text x="0" y="103" fill="#4c5673" font-family="Arial,sans-serif" font-size="14" font-weight="700">VIVOS accepted (real)</text>
+    <rect x="185" y="83" width="120" height="30" rx="8" fill="#5ca7d9"/><text x="316" y="103" fill="#34536f" font-family="Arial,sans-serif" font-size="13" font-weight="800">11.15 h</text>
+    <text x="0" y="178" fill="#4c5673" font-family="Arial,sans-serif" font-size="14" font-weight="700">Phase-1 PhoMT (synthetic)</text>
+    <rect x="185" y="158" width="245" height="30" rx="8" fill="#8e83e4"/><text x="441" y="178" fill="#514a91" font-family="Arial,sans-serif" font-size="13" font-weight="800">224 h</text>
+    <text x="0" y="253" fill="#4c5673" font-family="Arial,sans-serif" font-size="14" font-weight="700">Full PhoMT cache (synthetic)</text>
+    <rect x="185" y="233" width="315" height="30" rx="8" fill="#8e83e4"/><text x="429" y="253" text-anchor="end" fill="#ffffff" font-family="Arial,sans-serif" font-size="13" font-weight="800">1,114 h</text>
+  </g>
+  <rect x="655" y="520" width="470" height="65" rx="16" fill="#eef9f6"/>
+  <text x="675" y="547" fill="#226a5a" font-family="Arial,sans-serif" font-size="13" font-weight="750">Next run: base-start full SFT</text>
+  <text x="675" y="568" fill="#4f766e" font-family="Arial,sans-serif" font-size="13">Prefix-PAD weight 0.5 + deterministic free-running selection.</text>
+</svg>
