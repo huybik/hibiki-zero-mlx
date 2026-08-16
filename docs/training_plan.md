@@ -199,8 +199,16 @@ exporting `HIBIKI_HIGH_DELAY_PILOT=1` for cache, preflight, smoke, train, and
 resume. This mode samples deterministic uniform delay ratios in `[0.75, 1.0]`
 with seed 1234 and owns only `*_grounded_v2_pilot_high_delay` paths plus the
 `grounded_v2_pilot_high_delay/` recovery prefix. Do not reuse ordinary pilot
-caches. The unchanged 280-frame cap is applied after delay assembly, so compare
-the two sample manifests and report membership overlap. Only then try a
-contrastive shuffled-source loss; consider Vietnamese acoustic preadaptation
-after that. A high-delay cache remains a curriculum, never the final timing
-policy, because sentence-delay supervision can leave persistent lag.
+caches. It requires the ordinary pilot manifest at SHA-256
+`52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f` and
+reconstructs its exact ordered 50,000 entries: 47,500 PhoMT plus 2,500 FLEURS,
+48,892 unique. Repeats and order are preserved; cache-weight sampling,
+max-sample selection, sorting, and production shuffling are forbidden. The
+post-reconstruction frame gate is 480 because the cohort's high-delay maximum
+is 478. Use physical batch 8 with two-step accumulation; the smoke feeds the
+longest rows first without changing the persisted manifest. Run configuration
+records the delay bounds, cache seed, membership SHA, and frame cap. Only then
+try a contrastive shuffled-source loss; consider Vietnamese acoustic
+preadaptation after that. A high-delay cache remains a curriculum, never the
+final timing policy, because sentence-delay supervision can leave persistent
+lag.

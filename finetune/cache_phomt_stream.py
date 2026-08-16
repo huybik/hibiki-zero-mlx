@@ -51,6 +51,7 @@ from finetune.cache_codes import (  # noqa: E402
     target_delay_policy,
     target_delay_s,
     text_tokens,
+    validate_existing_shards,
 )
 from finetune.utils import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
@@ -112,8 +113,8 @@ def parse_args() -> argparse.Namespace:
         help="Keep downloaded parquet in the HF cache (Mac run with pre-synced external disk).",
     )
     parser.add_argument("--max-source-duration-s", type=float, default=25.0)
+    parser.add_argument("--target-delay-ratio", type=float, default=0.5)
     parser.add_argument("--target-delay-min-ratio", type=float, default=0.0)
-    parser.add_argument("--target-delay-max-ratio", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument(
         "--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all."
@@ -266,8 +267,9 @@ def main() -> None:
     if args.alignment_sample_budget < 0:
         raise ValueError("--alignment-sample-budget must be non-negative")
     delay_policy = target_delay_policy(
-        args.target_delay_min_ratio, args.target_delay_max_ratio, args.seed
+        args.target_delay_min_ratio, args.target_delay_ratio, args.seed
     )
+    explicit_delay_policy = delay_policy if args.target_delay_min_ratio > 0 else None
     load_hf_token()
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
@@ -355,15 +357,7 @@ def main() -> None:
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     expected_format = GROUNDED_CACHE_FORMAT if aligner is not None else CACHE_FORMAT
-    if existing := next(iter(sorted(out_dir.glob("shard_*.pt"))), None):
-        existing_payload = torch.load(existing, map_location="cpu")
-        actual_format = existing_payload.get("format")
-        if actual_format != expected_format:
-            raise RuntimeError(
-                f"Refusing to mix cache formats in {out_dir}: {actual_format} != {expected_format}"
-            )
-        if existing_payload.get("target_delay") != delay_policy:
-            raise RuntimeError(f"Refusing to mix target-delay policies in {out_dir}")
+    validate_existing_shards(torch, out_dir, expected_format, explicit_delay_policy)
     pairs_path = out_dir / f"pairs_w{args.worker}.jsonl"
     rejects_path = out_dir / f"alignment_rejects_w{args.worker}.jsonl"
     shm = Path("/dev/shm")
@@ -587,9 +581,9 @@ def main() -> None:
                     }
                     delay_s = target_delay_s(
                         row,
-                        args.target_delay_min_ratio,
-                        args.target_delay_max_ratio,
+                        args.target_delay_ratio,
                         args.seed,
+                        args.target_delay_min_ratio,
                     )
                     delay_frames = int(round(delay_s * FRAME_RATE))
                     with (
@@ -647,7 +641,6 @@ def main() -> None:
             "frame_rate": FRAME_RATE,
             "dataset_revision": DATASET_REVISION,
             "alignment_min_score": args.min_alignment_score if aligner is not None else None,
-            "target_delay": delay_policy,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),
@@ -657,6 +650,8 @@ def main() -> None:
             },
             "samples": samples,
         }
+        if explicit_delay_policy is not None:
+            payload["target_delay"] = explicit_delay_policy
         save_shard(torch, payload, out_path)
         if pair_lines:
             with pairs_path.open("a", encoding="utf-8") as fh:

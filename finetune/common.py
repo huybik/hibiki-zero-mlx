@@ -35,7 +35,7 @@ import sphn
 from moshi.models import loaders
 from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from finetune.cache_codes import CACHE_FORMAT, GROUNDED_CACHE_FORMAT
 from finetune.hibiki_helpers import (
@@ -229,11 +229,47 @@ class CachedCodeDataset(Dataset):
         cache_weights: list[float] | None = None,
         seed: int = 0,
         expected_target_delay: dict[str, float | int] | None = None,
+        sample_manifest: Path | None = None,
+        sample_manifest_sha256: str | None = None,
     ):
         self.samples: list[dict[str, Any]] = []
         self.frame_rate: float | None = None
         dropped = 0
         cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
+        if (sample_manifest is None) != (sample_manifest_sha256 is None):
+            raise ValueError("Input sample manifest and SHA-256 must be set together")
+        manifest_keys: list[tuple[int, str]] | None = None
+        samples_by_key: dict[tuple[int, str], dict[str, Any]] = {}
+        if sample_manifest is not None and sample_manifest_sha256 is not None:
+            if max_samples or cache_weights is not None:
+                raise ValueError("Input sample manifest forbids max-sample and cache-weight sampling")
+            if sort_by_length:
+                raise ValueError("Input sample manifest requires exact order; disable length sorting")
+            content = sample_manifest.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            if digest != sample_manifest_sha256:
+                raise RuntimeError(
+                    f"Input sample manifest SHA-256 mismatch: {digest} != "
+                    f"{sample_manifest_sha256}"
+                )
+            manifest_keys = []
+            for line_no, line in enumerate(content.decode("utf-8").splitlines(), 1):
+                row = json.loads(line)
+                if not isinstance(row, dict) or set(row) != {"cache_index", "id"}:
+                    raise ValueError(f"Invalid input sample manifest row {line_no}")
+                cache_index = row["cache_index"]
+                sample_id = row["id"]
+                if (
+                    isinstance(cache_index, bool)
+                    or not isinstance(cache_index, int)
+                    or not 0 <= cache_index < len(cache_dirs)
+                    or not isinstance(sample_id, str)
+                    or not sample_id
+                ):
+                    raise ValueError(f"Invalid input sample manifest row {line_no}")
+                manifest_keys.append((cache_index, sample_id))
+            if not manifest_keys:
+                raise ValueError("Input sample manifest is empty")
         shard_paths = [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]
         for shard_path in shard_paths:
             cache_index = next(
@@ -262,24 +298,41 @@ class CachedCodeDataset(Dataset):
                 codes = sample["codes"]
                 if codes.ndim != 2:
                     raise RuntimeError(f"{shard_path} id={sample.get('id')} codes must be [K,T]")
-                if max_frames and codes.shape[1] > max_frames:
+                if manifest_keys is None and max_frames and codes.shape[1] > max_frames:
                     dropped += 1
                     continue
-                self.samples.append(
-                    {
-                        "id": str(sample["id"]),
-                        # int32 in host RAM (halves footprint at ~700k samples);
-                        # collate_cached casts to long on batch assembly.
-                        "codes": codes.to(torch.int32),
-                        "frames": int(codes.shape[1]),
-                        "source_frames": int(sample["vi_frames"]),
-                        "cache_format": str(cache_format),
-                        "stratum": str(sample.get("stratum", "legacy_unspecified")),
-                        "split": str(sample.get("split", "")),
-                        "speaker_id": str(sample.get("speaker_id", "")),
-                        "gender": str(sample.get("gender", "")),
-                        "cache_index": cache_index,
-                    }
+                item = {
+                    "id": str(sample["id"]),
+                    # int32 in host RAM (halves footprint at ~700k samples);
+                    # collate_cached casts to long on batch assembly.
+                    "codes": codes.to(torch.int32),
+                    "frames": int(codes.shape[1]),
+                    "source_frames": int(sample["vi_frames"]),
+                    "cache_format": str(cache_format),
+                    "stratum": str(sample.get("stratum", "legacy_unspecified")),
+                    "split": str(sample.get("split", "")),
+                    "speaker_id": str(sample.get("speaker_id", "")),
+                    "gender": str(sample.get("gender", "")),
+                    "cache_index": cache_index,
+                }
+                if manifest_keys is None:
+                    self.samples.append(item)
+                else:
+                    key = (cache_index, item["id"])
+                    if key in samples_by_key:
+                        raise RuntimeError(f"Duplicate cached sample for cache_index,id={key}")
+                    samples_by_key[key] = item
+        if manifest_keys is not None:
+            missing = [key for key in manifest_keys if key not in samples_by_key]
+            if missing:
+                raise RuntimeError(f"Input sample manifest references missing samples: {missing[:10]}")
+            self.samples = [samples_by_key[key] for key in manifest_keys]
+            observed_max_frames = max(sample["frames"] for sample in self.samples)
+            if max_frames and observed_max_frames > max_frames:
+                over = sum(sample["frames"] > max_frames for sample in self.samples)
+                raise RuntimeError(
+                    f"Input sample manifest exceeds --max-frames={max_frames}: "
+                    f"{over} entries, max T={observed_max_frames}"
                 )
         if not self.samples:
             raise RuntimeError(f"No shard_*.pt cache files found in {cache_dir}")
@@ -388,13 +441,20 @@ def make_cached_dataloader(
     num_workers: int,
     sort_by_length: bool,
     seed: int = 0,
+    shuffle: bool | None = None,
+    sample_order: list[int] | None = None,
 ) -> DataLoader:
     generator = torch.Generator()
     generator.manual_seed(seed)
+    loader_dataset: Dataset = dataset
+    if sample_order is not None:
+        loader_dataset = Subset(dataset, sample_order)
+    if shuffle is None:
+        shuffle = not sort_by_length
     return DataLoader(
-        dataset,
+        loader_dataset,
         batch_size=batch_size,
-        shuffle=not sort_by_length,
+        shuffle=shuffle,
         num_workers=num_workers,
         collate_fn=collate_cached,
         generator=generator,

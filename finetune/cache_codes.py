@@ -58,12 +58,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--shard-size", type=int, default=32, help="Samples per shard.")
     parser.add_argument("--limit", type=int, default=0, help="Max pairs to cache, 0 means all.")
-    parser.add_argument("--target-delay-min-ratio", type=float, default=0.0)
     parser.add_argument(
-        "--target-delay-max-ratio",
+        "--target-delay-ratio",
         type=float,
         default=0.5,
-        help="Deterministically sample target delay in [min, max] * vi_duration_s.",
+        help="Maximum target delay as a ratio of Vietnamese source duration.",
+    )
+    parser.add_argument(
+        "--target-delay-min-ratio",
+        type=float,
+        default=0.0,
+        help="Minimum target delay ratio; nonzero values create an explicit delay policy.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
     parser.add_argument(
@@ -208,16 +213,14 @@ def target_delay_policy(min_ratio: float, max_ratio: float, seed: int) -> dict[s
 
 
 def target_delay_s(
-    row: dict[str, str], min_ratio: float, max_ratio: float, seed: int
+    row: dict[str, str], ratio: float, seed: int, min_ratio: float = 0.0
 ) -> float:
-    target_delay_policy(min_ratio, max_ratio, seed)
-    source_duration_s = float(row["vi_duration_s"])
-    if not math.isfinite(source_duration_s) or source_duration_s <= 0:
-        raise ValueError(f"Source duration must be positive and finite for id={row['id']}")
-    if max_ratio == 0:
+    target_delay_policy(min_ratio, ratio, seed)
+    if ratio == 0:
         return 0.0
+    source_duration_s = float(row["vi_duration_s"])
     rng = random.Random(f"{seed}:{row['split']}:{row['id']}")
-    return rng.uniform(min_ratio * source_duration_s, max_ratio * source_duration_s)
+    return rng.uniform(min_ratio * source_duration_s, ratio * source_duration_s)
 
 
 def shard_path(out_dir: Path, shard_index: int) -> Path:
@@ -228,6 +231,24 @@ def save_shard(torch: Any, payload: dict[str, Any], path: Path) -> None:
     tmp_path = path.with_name(path.name + ".tmp")
     torch.save(payload, tmp_path)
     tmp_path.replace(path)
+
+
+def validate_existing_shards(
+    torch: Any,
+    out_dir: Path,
+    expected_format: str,
+    explicit_delay_policy: dict[str, float | int] | None,
+) -> None:
+    paths = sorted(out_dir.glob("shard_*.pt"))
+    for path in paths if explicit_delay_policy is not None else paths[:1]:
+        payload = torch.load(path, map_location="cpu")
+        if payload.get("format") != expected_format:
+            raise RuntimeError(f"Refusing to mix cache formats in {out_dir}")
+        if (
+            explicit_delay_policy is not None
+            and payload.get("target_delay") != explicit_delay_policy
+        ):
+            raise RuntimeError(f"Refusing to mix target-delay policies in {out_dir}: {path.name}")
 
 
 def write_index(torch: Any, out_dir: Path) -> None:
@@ -281,8 +302,9 @@ def main() -> None:
     if args.shard_size <= 0:
         raise ValueError("--shard-size must be positive")
     delay_policy = target_delay_policy(
-        args.target_delay_min_ratio, args.target_delay_max_ratio, args.seed
+        args.target_delay_min_ratio, args.target_delay_ratio, args.seed
     )
+    explicit_delay_policy = delay_policy if args.target_delay_min_ratio > 0 else None
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
     device = check_device(torch, args.device)
@@ -301,15 +323,7 @@ def main() -> None:
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     expected_format = GROUNDED_CACHE_FORMAT if args.recipe == "grounded-v2" else CACHE_FORMAT
-    if existing := next(iter(sorted(out_dir.glob("shard_*.pt"))), None):
-        existing_payload = torch.load(existing, map_location="cpu")
-        actual_format = existing_payload.get("format")
-        if actual_format != expected_format:
-            raise RuntimeError(
-                f"Refusing to mix cache formats in {out_dir}: {actual_format} != {expected_format}"
-            )
-        if existing_payload.get("target_delay") != delay_policy:
-            raise RuntimeError(f"Refusing to mix target-delay policies in {out_dir}")
+    validate_existing_shards(torch, out_dir, expected_format, explicit_delay_policy)
 
     print(f"Loading Mimi on {device} from {repo_display_path(mimi_weight)}")
     num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
@@ -345,9 +359,9 @@ def main() -> None:
 
             delay_s = target_delay_s(
                 row,
-                args.target_delay_min_ratio,
-                args.target_delay_max_ratio,
+                args.target_delay_ratio,
                 args.seed,
+                args.target_delay_min_ratio,
             )
             delay_frames = int(round(delay_s * FRAME_RATE))
             vi_codes = encode_audio(vi_audio, mimi, sphn, torch, device)
@@ -417,7 +431,6 @@ def main() -> None:
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
             "alignment_min_score": args.min_alignment_score if aligner is not None else None,
-            "target_delay": delay_policy,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),
@@ -427,6 +440,8 @@ def main() -> None:
             },
             "samples": samples,
         }
+        if explicit_delay_policy is not None:
+            payload["target_delay"] = explicit_delay_policy
         save_shard(torch, payload, out_path)
         print(f"Wrote {len(samples)} samples -> {repo_display_path(out_path)}")
 
