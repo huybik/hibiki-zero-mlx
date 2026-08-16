@@ -14,6 +14,7 @@ HIGH_DELAY_PILOT="${HIBIKI_HIGH_DELAY_PILOT:-0}"
 CONTRASTIVE_PILOT="${HIBIKI_CONTRASTIVE_PILOT:-0}"
 ASR_PREADAPT="${HIBIKI_ASR_PREADAPT:-0}"
 ASR_ONE_EPOCH="${HIBIKI_ASR_ONE_EPOCH:-0}"
+ASR_ASCII="${HIBIKI_ASR_ASCII:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
 
@@ -31,6 +32,8 @@ die() {
   || die "HIBIKI_ASR_PREADAPT must be 0 or 1"
 [[ "$ASR_ONE_EPOCH" == 0 || "$ASR_ONE_EPOCH" == 1 ]] \
   || die "HIBIKI_ASR_ONE_EPOCH must be 0 or 1"
+[[ "$ASR_ASCII" == 0 || "$ASR_ASCII" == 1 ]] \
+  || die "HIBIKI_ASR_ASCII must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
   || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
 [[ "$HIGH_DELAY_PILOT" == 0 || ( "$PILOT" == 1 && "$RECIPE" == "grounded-v2" ) ]] \
@@ -43,6 +46,8 @@ die() {
   || die "ASR preadaptation and contrastive translation are exclusive"
 [[ "$ASR_ONE_EPOCH" == 0 || "$ASR_PREADAPT" == 1 ]] \
   || die "HIBIKI_ASR_ONE_EPOCH=1 requires HIBIKI_ASR_PREADAPT=1"
+[[ "$ASR_ASCII" == 0 || ( "$ASR_PREADAPT" == 1 && "$ASR_ONE_EPOCH" == 1 ) ]] \
+  || die "HIBIKI_ASR_ASCII=1 requires the one-epoch ASR diagnostic"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
@@ -70,6 +75,9 @@ case "$RECIPE" in
       fi
       if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
         pilot_namespace=grounded_v2_pilot_vi_asr_preadapt_epoch1
+      fi
+      if [[ "$ASR_ASCII" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_vi_asr_ascii_epoch1
       fi
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
@@ -590,6 +598,9 @@ common_args() {
             --min-correct-chrf 50
             --max-correct-wer 0.6
           )
+          if [[ "$ASR_ASCII" == 1 ]]; then
+            TRAIN_ARGS+=(--source-asr-ascii)
+          fi
         fi
       else
         TRAIN_ARGS+=(--max-samples 50000)
@@ -613,7 +624,7 @@ stop_monitor() {
 check_smoke_outputs() {
   "$PYTHON" - \
     "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" \
-    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" <<'PY'
+    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_ASCII" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -628,6 +639,7 @@ high_delay_pilot = bool(int(sys.argv[2]))
 baseline_manifest_sha256 = sys.argv[3]
 contrastive_pilot = bool(int(sys.argv[4]))
 source_asr = bool(int(sys.argv[5]))
+source_asr_ascii = bool(int(sys.argv[6]))
 logs = [json.loads(line) for line in (root / "train_log.jsonl").read_text().splitlines() if line]
 if not logs or logs[-1]["step"] != 11:
     raise RuntimeError("resume smoke did not reach step 11")
@@ -707,6 +719,7 @@ if high_delay_pilot:
     if source_asr:
         expected_asr = {
             "source_asr_pretrain": True,
+            "source_asr_ascii": source_asr_ascii,
             "eval_reference_column": "text_vi",
             "eval_tail_s": 24.0,
             "min_correct_chrf": 50.0,
@@ -722,10 +735,18 @@ if high_delay_pilot:
         ).hexdigest()
         if digest != document["sha256"] or digest != config.get("source_asr_sha256"):
             raise RuntimeError("source-ASR policy hash mismatch")
-        if payload.get("strategy") != "full_sentence_vi_asr_after_source_eos":
+        expected_strategy = (
+            "full_sentence_ascii_vi_asr_after_source_eos"
+            if source_asr_ascii
+            else "full_sentence_vi_asr_after_source_eos"
+        )
+        if payload.get("strategy") != expected_strategy:
             raise RuntimeError("source-ASR strategy mismatch")
-        if payload.get("rows") != 50_000 or payload.get("observed_max_frames") != 668:
+        observed_max_frames = int(payload.get("observed_max_frames", 0))
+        if payload.get("rows") != 50_000 or not 0 < observed_max_frames <= 672:
             raise RuntimeError("source-ASR cohort shape mismatch")
+        if not source_asr_ascii and observed_max_frames != 668:
+            raise RuntimeError("source-ASR raw-text shape mismatch")
 
 eval_dir = root / "standalone_eval_step10"
 metrics = json.loads((eval_dir / "metrics.json").read_text())
@@ -793,6 +814,9 @@ smoke() {
     local smoke_eval_args=()
     if [[ "$ASR_PREADAPT" == 1 ]]; then
       smoke_eval_args=(--reference-column text_vi --tail-s 24)
+      if [[ "$ASR_ASCII" == 1 ]]; then
+        smoke_eval_args+=(--ascii-reference)
+      fi
     fi
     "$PYTHON" finetune/eval.py \
       --device cuda --dtype float32 \

@@ -303,7 +303,30 @@ export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
 ./finetune/h100.sh train
 ```
 
-This run owns only `*_grounded_v2_pilot_vi_asr_preadapt_epoch1` artifacts. It
-starts from the upstream base, runs exactly 3,125 optimizer steps, evaluates
-paired ASR at 0/2,000/3,125, validates every 1,000 steps, and saves recovery at
-2,000 plus the final step.
+This run completed but failed absolute ASR: final chrF was 26.72 despite healthy
+generation and 6.65 BLEU / 15.43 chrF source gaps. Corrected
+diacritic-insensitive WER is 0.775; the recorded 0.639 used the obsolete
+ASCII-only word normalizer. Raw Vietnamese requires 4.14 tokenizer pieces/word
+and produced replacement characters in 110/128 hypotheses.
+
+Repeat the same base-start one-epoch contract with tokenizer-compatible ASCII
+Vietnamese (1.87 pieces/word) in a fresh namespace:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_HIGH_DELAY_PILOT=1
+unset HIBIKI_CONTRASTIVE_PILOT
+export HIBIKI_ASR_PREADAPT=1
+export HIBIKI_ASR_ONE_EPOCH=1
+export HIBIKI_ASR_ASCII=1
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+This mode owns only `*_grounded_v2_pilot_vi_asr_ascii_epoch1`; all cohort,
+schedule, batch, evaluation, and recovery settings remain identical.

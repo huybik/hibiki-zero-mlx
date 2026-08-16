@@ -89,6 +89,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Emit Vietnamese text after source EOS with no target-audio supervision.",
     )
+    parser.add_argument(
+        "--source-asr-ascii",
+        action="store_true",
+        help="Strip Vietnamese diacritics from source-ASR targets and eval references.",
+    )
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-weight-schedule", default="", help='Text loss-weight schedule "5@0,2@0.6".')
     parser.add_argument(
@@ -433,6 +438,8 @@ def main() -> None:
         raise ValueError("Source-ASR preadaptation requires authoritative input membership")
     if args.source_asr_pretrain and args.contrastive_source_weight:
         raise ValueError("Source-ASR preadaptation and contrastive translation are exclusive")
+    if args.source_asr_ascii and not args.source_asr_pretrain:
+        raise ValueError("--source-asr-ascii requires --source-asr-pretrain")
     if args.source_asr_pretrain and args.eval_every and args.eval_reference_column != "text_vi":
         raise ValueError("Source-ASR evaluation requires --eval-reference-column text_vi")
     if args.cache_weights is not None and len(args.cache_weights) != len(args.cache_dir):
@@ -506,7 +513,10 @@ def main() -> None:
     source_asr_sha256 = None
     if args.source_asr_pretrain:
         source_asr_sha256 = common.prepare_source_asr(
-            dataset, args.tokenizer, out_dir / "source_asr.json"
+            dataset,
+            args.tokenizer,
+            out_dir / "source_asr.json",
+            ascii_target=args.source_asr_ascii,
         )
         dataset.require_max_frames(args.max_frames, "Source-ASR training data")
     if args.sort_by_length:
@@ -554,7 +564,9 @@ def main() -> None:
             retain_source_text=args.source_asr_pretrain,
         )
         if args.source_asr_pretrain:
-            common.prepare_source_asr(val_dataset, args.tokenizer)
+            common.prepare_source_asr(
+                val_dataset, args.tokenizer, ascii_target=args.source_asr_ascii
+            )
         val_dataset.require_max_frames(args.val_max_frames, "Validation cache")
         val_dataloader = common.make_cached_dataloader(
             val_dataset,
@@ -629,6 +641,11 @@ def main() -> None:
             args.eval_id_column,
             args.eval_duration_column,
         )
+        if args.source_asr_ascii:
+            for row in eval_rows:
+                row[args.eval_reference_column] = common.ascii_text(
+                    row[args.eval_reference_column]
+                )
         print(f"Paired val eval every {args.eval_every} steps on {len(eval_rows)} rows.")
 
     global_step = 0

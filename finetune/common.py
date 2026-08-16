@@ -18,6 +18,7 @@ import os
 import random
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,15 @@ from finetune.utils import repo_display_path, require_file, resolve_repo_path
 
 SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT, GROUNDED_CACHE_FORMAT}
 SOURCE_DERANGEMENT_BLOCK_SIZE = 256
+
+
+def ascii_text(text: str) -> str:
+    """Remove Latin diacritics for tokenizer-compatible diagnostic targets."""
+    text = text.replace("đ", "d").replace("Đ", "D")
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in decomposed if not unicodedata.combining(char)).encode(
+        "ascii", "ignore"
+    ).decode("ascii")
 
 
 # --------------------------------------------------------------------------- #
@@ -429,6 +439,7 @@ def prepare_source_asr(
     dataset: CachedCodeDataset,
     tokenizer_path: Path,
     document_path: Path | None = None,
+    ascii_target: bool = False,
 ) -> str:
     """Replace translation targets with Vietnamese text emitted after source EOS."""
     import sentencepiece
@@ -441,13 +452,14 @@ def prepare_source_asr(
     transformed: set[int] = set()
     for sample in dataset.samples:
         text_vi = sample["text_vi"]
+        target_text = ascii_text(text_vi) if ascii_target else text_vi
         ordered_text.update(
             (
                 json.dumps(
                     {
                         "cache_index": sample["cache_index"],
                         "id": sample["id"],
-                        "text_vi": text_vi,
+                        "text_vi": target_text,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -469,7 +481,7 @@ def prepare_source_asr(
         source_end = source_frames + 1
         if source_end > old_codes.shape[1]:
             raise RuntimeError(f"Source EOS falls outside cached codes for {sample['id']}")
-        tokens = list(tokenizer.encode(text_vi, out_type=int)) + [eos_id]
+        tokens = list(tokenizer.encode(target_text, out_type=int)) + [eos_id]
         if not tokens or any(token < 0 for token in tokens):
             raise RuntimeError(f"Invalid Vietnamese text tokens for {sample['id']}")
         text_start = source_end
@@ -490,8 +502,12 @@ def prepare_source_asr(
         sample.pop("text_padding_id", None)
     tokenizer_digest = hashlib.sha256(tokenizer_path.read_bytes()).hexdigest()
     payload = {
-        "version": 1,
-        "strategy": "full_sentence_vi_asr_after_source_eos",
+        "version": 2 if ascii_target else 1,
+        "strategy": (
+            "full_sentence_ascii_vi_asr_after_source_eos"
+            if ascii_target
+            else "full_sentence_vi_asr_after_source_eos"
+        ),
         "rows": len(dataset),
         "tokenizer_sha256": tokenizer_digest,
         "ordered_source_text_sha256": ordered_text.hexdigest(),
@@ -1258,7 +1274,7 @@ def load_or_create_derangement(
 # Text metrics (autoregressive greedy eval)
 # --------------------------------------------------------------------------- #
 def normalize(text: str) -> str:
-    text = text.lower()
+    text = ascii_text(text).lower()
     text = re.sub(r"[^a-z0-9']+", " ", text)
     return " ".join(text.split())
 

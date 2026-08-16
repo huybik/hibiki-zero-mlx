@@ -275,12 +275,21 @@ The completed 1,000-step ASR pilot covered only 16,000 of 50,000 ordered sample
 positions. At step 1,000 it passed output health and both source gaps (1.18 BLEU
 and 7.64 chrF), demonstrating learnable Vietnamese acoustic routing, but correct
 chrF was only 18.31 and WER was 0.678. Do not initialize translation from it.
-The next diagnostic must be a separate base-start one-epoch run: 3,125 optimizer
-steps at effective batch 16, so every frozen cohort position is consumed once.
-Add `HIBIKI_ASR_ONE_EPOCH=1`; it owns
-`*_grounded_v2_pilot_vi_asr_preadapt_epoch1` paths, evaluates paired generation
-at 0/2,000/3,125, validates teacher-forced ASR every 1,000 steps, and saves a
-recovery pair at step 2,000 plus the final pair.
+The separate base-start one-epoch run consumed every frozen cohort position. At
+step 3,125 it passed health and source dependence (6.65 BLEU / 15.43 chrF gaps)
+but failed absolute ASR at chrF 26.72. Its recorded WER 0.639 is invalid because
+the old word normalizer deleted accented Vietnamese letters; corrected
+diacritic-insensitive WER is 0.775. The fixed tokenizer encodes raw Vietnamese
+at 4.14 pieces/word, and 110/128 final hypotheses contain invalid-byte
+replacement characters.
+
+The next base-start diagnostic keeps the exact one-epoch contract but adds
+`HIBIKI_ASR_ASCII=1`. It strips Vietnamese diacritics deterministically in both
+training targets and evaluation references, reducing the target to 1.87
+pieces/word. It owns `*_grounded_v2_pilot_vi_asr_ascii_epoch1`, still evaluates
+at 0/2,000/3,125, and uses the same health, source-gap, chrF, and WER gates.
+Metric word normalization now strips Latin diacritics instead of deleting
+accented letters.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled

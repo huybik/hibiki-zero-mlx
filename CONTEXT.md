@@ -126,8 +126,18 @@ multilingual audio pretraining. The 1,000-step pilot saw only 16,000/50,000
 ordered positions. At step 1,000 it passed health and source dependence
 (BLEU/chrF gaps 1.18/7.64) but failed absolute ASR (chrF 18.31, WER 0.678).
 It proves learnable Vietnamese routing but cannot initialize translation. The
-next isolated base-start diagnostic is `HIBIKI_ASR_ONE_EPOCH=1` and covers one
-exact epoch (3,125 steps).
+exact raw-Vietnamese one-epoch retry also failed promotion. At step 3,125 it
+passed health (128/128 nonempty and EOS, two repetition failures, 0.79 length
+ratio) and source dependence (6.65 BLEU / 15.43 chrF gaps), but correct chrF was
+26.72. Its recorded WER 0.639 used the old ASCII-only normalizer; corrected
+diacritic-insensitive WER is 0.775. The tokenizer itself is the bottleneck for
+this diagnostic: raw Vietnamese costs 4.14 pieces/word and 110/128 hypotheses
+contain invalid-byte replacement characters. Deterministic ASCII Vietnamese
+costs 1.87 pieces/word. The next isolated base-start diagnostic therefore adds
+`HIBIKI_ASR_ASCII=1` to the one-epoch contract and owns the
+`*_grounded_v2_pilot_vi_asr_ascii_epoch1` namespace. Text metrics now strip
+Latin diacritics before word normalization. Do not initialize translation until
+this corrected acoustic diagnostic qualifies.
 
 ## Canonical resources
 

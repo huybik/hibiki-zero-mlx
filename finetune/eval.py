@@ -72,6 +72,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-column", default="vi_audio")
     parser.add_argument("--duration-column", default="vi_duration_s")
     parser.add_argument("--reference-column", default="text_en")
+    parser.add_argument(
+        "--ascii-reference",
+        action="store_true",
+        help="Strip Latin diacritics from references before scoring.",
+    )
     parser.add_argument("--id-column", default="id")
     parser.add_argument(
         "--derangement",
@@ -94,6 +99,9 @@ def main() -> None:
 
     ids = common.ids_from_args(args.ids, args.ids_file)
     rows = common.select_eval_rows(common.read_eval_rows(args.pairs), ids, args.id_column, args.limit)
+    if args.ascii_reference:
+        for row in rows:
+            row[args.reference_column] = common.ascii_text(row[args.reference_column])
     common.validate_eval_rows(
         rows,
         args.source_column,

@@ -155,12 +155,18 @@ The 1,000-step diagnostic produced:
 | 750 | 127 | 128 | 0 | 0.566 | 16.78 | 0.697 | 0.495 | 6.26 |
 | 1,000 | 128 | 128 | 2 | 1.243 | 18.31 | 0.678 | 1.179 | 7.64 |
 
-Step 1,000 passed health and both source-gap gates but failed the absolute chrF
-and WER gates. It establishes learnable source routing, not adequate ASR. Because
-1,000 effective-batch-16 steps cover only 16,000/50,000 ordered positions, the
-next diagnostic is a separate base-start one-epoch run of exactly 3,125 steps.
-It uses `HIBIKI_ASR_ONE_EPOCH=1` and evaluates paired ASR at steps 0, 2,000,
-and 3,125 under the identical qualification gates.
+Step 1,000 passed health and both source-gap gates but failed absolute chrF. The
+raw one-epoch retry likewise passed health and source dependence at step 3,125
+(chrF 26.72; gaps 6.65 BLEU / 15.43 chrF) but failed promotion. Historical WER
+values above used a normalizer that deleted accented Vietnamese letters; the
+corrected final WER is 0.775, not the recorded 0.639.
+
+The raw target costs 4.14 fixed-tokenizer pieces/word and generated replacement
+characters in 110/128 hypotheses. The next diagnostic uses
+`HIBIKI_ASR_ASCII=1`, reducing targets to 1.87 pieces/word while preserving the
+same frozen cohort and 3,125-step base-start contract. References are transformed
+identically before chrF and WER scoring. Qualification remains health, 1.0/5.0
+source gaps, chrF at least 50, and WER at most 0.60.
 
 ## Diagnostics and final test
 
