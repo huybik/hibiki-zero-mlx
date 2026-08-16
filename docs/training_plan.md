@@ -194,7 +194,13 @@ one another. Full grounded-v2 rejects the obsolete `HIBIKI_MAX_SAMPLES`,
 The current early target timing is a diagnostic policy, not established
 causality: many rows emit English supervision before enough Vietnamese evidence
 exists. Keep the first corrected pilot on the current cache. If source dependence
-remains near zero, repeat the same contract with 75--100% delay. Only then try a
+remains near zero, repeat the same contract with 75--100% delay by additionally
+exporting `HIBIKI_HIGH_DELAY_PILOT=1` for cache, preflight, smoke, train, and
+resume. This mode samples deterministic uniform delay ratios in `[0.75, 1.0]`
+with seed 1234 and owns only `*_grounded_v2_pilot_high_delay` paths plus the
+`grounded_v2_pilot_high_delay/` recovery prefix. Do not reuse ordinary pilot
+caches. The unchanged 280-frame cap is applied after delay assembly, so compare
+the two sample manifests and report membership overlap. Only then try a
 contrastive shuffled-source loss; consider Vietnamese acoustic preadaptation
 after that. A high-delay cache remains a curriculum, never the final timing
 policy, because sentence-delay supervision can leave persistent lag.

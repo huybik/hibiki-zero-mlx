@@ -58,14 +58,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--shard-size", type=int, default=32, help="Samples per shard.")
     parser.add_argument("--limit", type=int, default=0, help="Max pairs to cache, 0 means all.")
+    parser.add_argument("--target-delay-min-ratio", type=float, default=0.0)
     parser.add_argument(
-        "--target-delay-ratio",
+        "--target-delay-max-ratio",
         type=float,
         default=0.5,
-        help=(
-            "Deterministically sample English target delay in [0, ratio * vi_duration_s]. "
-            "Set 0 to disable coarse alignment."
-        ),
+        help="Deterministically sample target delay in [min, max] * vi_duration_s.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
     parser.add_argument(
@@ -201,14 +199,25 @@ def assemble_codes(
     return codes
 
 
-def target_delay_s(row: dict[str, str], ratio: float, seed: int) -> float:
-    if ratio < 0:
-        raise ValueError("--target-delay-ratio must be non-negative")
-    if ratio == 0:
+def target_delay_policy(min_ratio: float, max_ratio: float, seed: int) -> dict[str, float | int]:
+    if not math.isfinite(min_ratio) or not math.isfinite(max_ratio):
+        raise ValueError("Target-delay ratios must be finite")
+    if not 0 <= min_ratio <= max_ratio:
+        raise ValueError("Target-delay ratios must satisfy 0 <= min <= max")
+    return {"min_ratio": min_ratio, "max_ratio": max_ratio, "seed": seed}
+
+
+def target_delay_s(
+    row: dict[str, str], min_ratio: float, max_ratio: float, seed: int
+) -> float:
+    target_delay_policy(min_ratio, max_ratio, seed)
+    source_duration_s = float(row["vi_duration_s"])
+    if not math.isfinite(source_duration_s) or source_duration_s <= 0:
+        raise ValueError(f"Source duration must be positive and finite for id={row['id']}")
+    if max_ratio == 0:
         return 0.0
-    max_delay_s = ratio * float(row["vi_duration_s"])
     rng = random.Random(f"{seed}:{row['split']}:{row['id']}")
-    return rng.uniform(0.0, max_delay_s)
+    return rng.uniform(min_ratio * source_duration_s, max_ratio * source_duration_s)
 
 
 def shard_path(out_dir: Path, shard_index: int) -> Path:
@@ -271,6 +280,9 @@ def main() -> None:
     args = parse_args()
     if args.shard_size <= 0:
         raise ValueError("--shard-size must be positive")
+    delay_policy = target_delay_policy(
+        args.target_delay_min_ratio, args.target_delay_max_ratio, args.seed
+    )
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
     device = check_device(torch, args.device)
@@ -290,11 +302,14 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     expected_format = GROUNDED_CACHE_FORMAT if args.recipe == "grounded-v2" else CACHE_FORMAT
     if existing := next(iter(sorted(out_dir.glob("shard_*.pt"))), None):
-        actual_format = torch.load(existing, map_location="cpu").get("format")
+        existing_payload = torch.load(existing, map_location="cpu")
+        actual_format = existing_payload.get("format")
         if actual_format != expected_format:
             raise RuntimeError(
                 f"Refusing to mix cache formats in {out_dir}: {actual_format} != {expected_format}"
             )
+        if existing_payload.get("target_delay") != delay_policy:
+            raise RuntimeError(f"Refusing to mix target-delay policies in {out_dir}")
 
     print(f"Loading Mimi on {device} from {repo_display_path(mimi_weight)}")
     num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
@@ -328,7 +343,12 @@ def main() -> None:
             if not en_audio.is_file():
                 raise FileNotFoundError(f"Missing English audio for id={row['id']}: {en_audio}")
 
-            delay_s = target_delay_s(row, args.target_delay_ratio, args.seed)
+            delay_s = target_delay_s(
+                row,
+                args.target_delay_min_ratio,
+                args.target_delay_max_ratio,
+                args.seed,
+            )
             delay_frames = int(round(delay_s * FRAME_RATE))
             vi_codes = encode_audio(vi_audio, mimi, sphn, torch, device)
             en_codes = encode_audio(en_audio, mimi, sphn, torch, device, left_pad_s=delay_s)
@@ -397,6 +417,7 @@ def main() -> None:
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
             "alignment_min_score": args.min_alignment_score if aligner is not None else None,
+            "target_delay": delay_policy,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),

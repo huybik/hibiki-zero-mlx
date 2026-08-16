@@ -48,6 +48,7 @@ from finetune.cache_codes import (  # noqa: E402
     read_audio,
     require_runtime_deps,
     save_shard,
+    target_delay_policy,
     target_delay_s,
     text_tokens,
 )
@@ -111,7 +112,8 @@ def parse_args() -> argparse.Namespace:
         help="Keep downloaded parquet in the HF cache (Mac run with pre-synced external disk).",
     )
     parser.add_argument("--max-source-duration-s", type=float, default=25.0)
-    parser.add_argument("--target-delay-ratio", type=float, default=0.5)
+    parser.add_argument("--target-delay-min-ratio", type=float, default=0.0)
+    parser.add_argument("--target-delay-max-ratio", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument(
         "--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all."
@@ -263,6 +265,9 @@ def main() -> None:
         raise ValueError("--alignment-batch-size must be positive")
     if args.alignment_sample_budget < 0:
         raise ValueError("--alignment-sample-budget must be non-negative")
+    delay_policy = target_delay_policy(
+        args.target_delay_min_ratio, args.target_delay_max_ratio, args.seed
+    )
     load_hf_token()
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
@@ -351,11 +356,14 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     expected_format = GROUNDED_CACHE_FORMAT if aligner is not None else CACHE_FORMAT
     if existing := next(iter(sorted(out_dir.glob("shard_*.pt"))), None):
-        actual_format = torch.load(existing, map_location="cpu").get("format")
+        existing_payload = torch.load(existing, map_location="cpu")
+        actual_format = existing_payload.get("format")
         if actual_format != expected_format:
             raise RuntimeError(
                 f"Refusing to mix cache formats in {out_dir}: {actual_format} != {expected_format}"
             )
+        if existing_payload.get("target_delay") != delay_policy:
+            raise RuntimeError(f"Refusing to mix target-delay policies in {out_dir}")
     pairs_path = out_dir / f"pairs_w{args.worker}.jsonl"
     rejects_path = out_dir / f"alignment_rejects_w{args.worker}.jsonl"
     shm = Path("/dev/shm")
@@ -577,7 +585,12 @@ def main() -> None:
                         "text_vi": text_vi,
                         "text_en": text_en,
                     }
-                    delay_s = target_delay_s(row, args.target_delay_ratio, args.seed)
+                    delay_s = target_delay_s(
+                        row,
+                        args.target_delay_min_ratio,
+                        args.target_delay_max_ratio,
+                        args.seed,
+                    )
                     delay_frames = int(round(delay_s * FRAME_RATE))
                     with (
                         tempfile.NamedTemporaryFile(suffix=".wav", dir=tmp_dir) as vi_tmp,
@@ -634,6 +647,7 @@ def main() -> None:
             "frame_rate": FRAME_RATE,
             "dataset_revision": DATASET_REVISION,
             "alignment_min_score": args.min_alignment_score if aligner is not None else None,
+            "target_delay": delay_policy,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),
