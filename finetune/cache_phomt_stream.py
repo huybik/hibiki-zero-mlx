@@ -365,16 +365,27 @@ def main() -> None:
                 )
                 for index, alignment in zip(valid_indices, valid_alignments, strict=True):
                     alignments[index] = alignment
+            encode_indices = []
+            for index, item in enumerate(chunk):
+                alignment = alignments[index] if alignments is not None else None
+                if isinstance(alignment, Exception):
+                    rejected += 1
+                    print(f"[w{args.worker}] rejecting {item['row']['id']}: {alignment}", flush=True)
+                    reject_lines.append({"id": item["row"]["id"], "reason": str(alignment)})
+                else:
+                    encode_indices.append(index)
             codes = encode_batch(
-                [c["vi_wav"] for c in chunk] + [c["en_wav"] for c in chunk],
+                [chunk[index]["vi_wav"] for index in encode_indices]
+                + [chunk[index]["en_wav"] for index in encode_indices],
                 mimi,
                 torch,
                 args.batch_size,
                 args.batch_sample_budget,
             )
-            n = len(chunk)
-            for k, c in enumerate(chunk):
-                vi_codes, en_codes = codes[k], codes[n + k]
+            n = len(encode_indices)
+            for code_index, k in enumerate(encode_indices):
+                c = chunk[k]
+                vi_codes, en_codes = codes[code_index], codes[n + code_index]
                 row = c["row"]
                 text_frames = None
                 alignment_score = None
@@ -384,11 +395,6 @@ def main() -> None:
                     from finetune.text_timing import timed_sentencepiece_tokens
 
                     alignment = alignments[k]
-                    if isinstance(alignment, Exception):
-                        rejected += 1
-                        print(f"[w{args.worker}] rejecting {row['id']}: {alignment}", flush=True)
-                        reject_lines.append({"id": row["id"], "reason": str(alignment)})
-                        continue
                     if alignment is None or groups_batch[k] is None:
                         raise RuntimeError(f"Missing CTC alignment result for {row['id']}")
                     try:
