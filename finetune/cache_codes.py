@@ -341,7 +341,11 @@ def main() -> None:
 
                 raw_en = read_audio(en_audio, sphn, torch, torch.device("cpu"))[0, 0].numpy()
                 wav16 = sphn.resample(raw_en, SAMPLE_RATE, 16_000)
-                groups = sentencepiece_groups(row["text_en"], tokenizer)
+                try:
+                    groups = sentencepiece_groups(row["text_en"], tokenizer)
+                except ValueError as exc:
+                    print(f"Rejecting id={row['id']}: {exc}")
+                    continue
                 alignment = aligner.align_many([wav16], [groups], args.alignment_batch_size)[0]
                 if isinstance(alignment, Exception):
                     print(f"Rejecting id={row['id']}: {alignment}")
