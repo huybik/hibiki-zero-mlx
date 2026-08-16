@@ -91,16 +91,21 @@ Paired controls lock text temperature 0.4 and source-gap gates of 1.0 BLEU plus
 5.0 chrF. Healthy French passed at 23.08/38.80; Vietnamese base and phase-1
 failed source dependence at -0.07/1.23 and 0.01/1.03. Phase-1's 19.57 absolute
 chrF was therefore mostly target-side modeling. Treat current early text timing
-as a diagnostic: run 0/250/500/1,000 first, then try 75--100% delay, contrastive
-shuffled-source loss, and only afterward Vietnamese acoustic preadaptation. The
-high-delay retry is explicit `HIBIKI_HIGH_DELAY_PILOT=1`, uses deterministic
+as a diagnostic. The corrected ordinary pilot failed promotion at every
+0/250/500/750/1,000 milestone; final health was 126/128 nonempty, 116 EOS, and
+24 repeated-4gram failures, with BLEU/chrF gaps -0.07/0.22. Its exact 50k
+manifest SHA is `52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f`.
+The high-delay retry is explicit `HIBIKI_HIGH_DELAY_PILOT=1`, uses deterministic
 uniform ratios `[0.75, 1.0]`, and owns isolated `*_pilot_high_delay` artifacts.
-It reconstructs the SHA-pinned ordinary 50k membership exactly, hard-gates at
-480 frames, preserves production order, and uses physical batch 8 / accumulation 2.
+It reconstructs that membership exactly, hard-gates at 480 frames, preserves
+production order, and uses physical batch 8 / accumulation 2. Try contrastive
+shuffled-source loss only if this retry also fails, then acoustic preadaptation.
 
 ## Environment
 
 - Local Python work uses `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
+- The ignored `.env` contains the HF credential used for downloads and recovery
+  sync. Source it when needed; never print, log, or commit its value.
 - Inference requires MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, and
   sounddevice for microphone mode.
 - Training additionally requires a CUDA-compatible PyTorch build, `moshi`

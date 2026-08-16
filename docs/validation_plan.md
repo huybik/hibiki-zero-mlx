@@ -63,6 +63,23 @@ minimums. Rank qualified checkpoints lexicographically by correct-source
 `(BLEU, chrF)`. `best.json` contains the complete paired metrics and thresholds;
 the recovery sync preserves it unchanged.
 
+## Corrected ordinary-pilot result
+
+The exact-cohort ordinary pilot produced no promotable checkpoint:
+
+| Step | Nonempty | EOS | Repeat-4 failures | BLEU | chrF | BLEU gap | chrF gap |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 128 | 120 | 13 | 0.218 | 14.62 | 0.111 | 1.144 |
+| 250 | 52 | 122 | 14 | 0.064 | 4.95 | 0.011 | 0.208 |
+| 500 | 128 | 114 | 26 | 0.072 | 9.12 | -0.023 | -0.587 |
+| 750 | 105 | 119 | 19 | 0.102 | 8.26 | -0.029 | 0.446 |
+| 1,000 | 126 | 116 | 24 | 0.069 | 9.86 | -0.071 | 0.225 |
+
+The final shuffled BLEU was 0.140, above correct-source BLEU 0.069. All paired
+artifacts and the final model/trainer pair are preserved under the model repo's
+isolated `grounded_v2_pilot/` prefix. This result triggers the exact-membership
+75--100% delay repeat; it does not justify full training.
+
 ## Diagnostics and final test
 
 For the masked text/source-only pilot, teacher-forced validation must also pass
