@@ -75,7 +75,6 @@ def load_hf_token() -> None:
     hf_home = os.environ.get("HF_HOME")
     if not hf_home or not Path(hf_home).is_dir():
         os.environ["HF_HOME"] = str(REPO_ROOT / ".hf_cache")
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 
 
