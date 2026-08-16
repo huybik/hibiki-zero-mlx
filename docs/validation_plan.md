@@ -80,6 +80,28 @@ artifacts and the final model/trainer pair are preserved under the model repo's
 isolated `grounded_v2_pilot/` prefix. This result triggers the exact-membership
 75--100% delay repeat; it does not justify full training.
 
+## High-delay pilot result
+
+The exact same ordered 50,000-entry cohort was rebuilt with deterministic
+75--100% source-duration delay. Training used batch 8 / accumulation 2 under a
+480-frame cap; the observed maximum was 479. Complete teacher-forced validation
+used batch 1 under a separate 704-frame cap and observed a 701-frame maximum.
+The worst-case smoke peaked at 89.9/93.6 GiB and passed save/eval/resume.
+
+| Step | Nonempty | EOS | Repeat-4 failures | Length ratio | BLEU | chrF | BLEU gap | chrF gap |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 128 | 120 | 13 | 1.06 | 0.218 | 14.62 | 0.111 | 1.144 |
+| 250 | 128 | 64 | 85 | 4.61 | 0.024 | 11.74 | -0.012 | 1.249 |
+| 500 | 128 | 34 | 109 | 7.38 | 0.024 | 9.48 | 0.008 | 0.393 |
+| 750 | 128 | 41 | 99 | 6.16 | 0.032 | 9.68 | 0.014 | 0.523 |
+| 1,000 | 128 | 31 | 111 | 7.03 | 0.033 | 9.34 | 0.008 | 0.725 |
+
+No checkpoint was healthy or source-dependent. Increasing delay made output
+termination and repetition materially worse without moving the calibrated
+source gaps. This rejects delay alone as the cause and triggers an isolated
+duration-matched shuffled-source margin-loss pilot; it still does not justify
+full training.
+
 ## Diagnostics and final test
 
 For the masked text/source-only pilot, teacher-forced validation must also pass

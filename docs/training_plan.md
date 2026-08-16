@@ -210,7 +210,9 @@ feeds the longest rows first without changing the persisted manifest. The
 independent teacher-forced validation set is deterministically length-sorted and retains
 all rows at batch 1 under a 704-frame hard cap; its observed maximum is 701.
 Run configuration records the delay bounds, cache seed, membership SHA, and
-frame caps. Only then try a contrastive shuffled-source loss; consider Vietnamese acoustic
-preadaptation after that. A high-delay cache remains a curriculum, never the
-final timing policy, because sentence-delay supervision can leave persistent
-lag.
+frame caps. This exact high-delay pilot failed all health and source-dependence
+gates through step 1,000, so delay alone is rejected. The next isolated pilot
+adds a duration-matched shuffled-source margin loss; consider Vietnamese
+acoustic preadaptation only if that also fails. A high-delay cache remains a
+curriculum, never the final timing policy, because sentence-delay supervision
+can leave persistent lag.

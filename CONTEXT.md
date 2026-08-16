@@ -100,8 +100,11 @@ uniform ratios `[0.75, 1.0]`, and owns isolated `*_pilot_high_delay` artifacts.
 It reconstructs that membership exactly, hard-gates training at 480 frames,
 preserves production order, and uses physical batch 8 / accumulation 2.
 Teacher-forced validation retains all rows under a separate 704-frame cap at
-batch 1. Try contrastive shuffled-source loss only if this retry also fails,
-then acoustic preadaptation.
+batch 1. The exact high-delay retry also failed every promotion gate: at step
+1,000 it produced BLEU/chrF 0.03/9.34, gaps 0.01/0.72, 31 EOS, and 111
+repetition failures. Delay alone is rejected; the next isolated pilot adds a
+duration-matched shuffled-source margin loss before considering acoustic
+preadaptation.
 
 ## Canonical resources
 
