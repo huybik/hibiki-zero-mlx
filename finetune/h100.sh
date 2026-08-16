@@ -11,6 +11,8 @@ PYTHON="$VENV/bin/python"
 RECIPE="${HIBIKI_RECIPE:-legacy}"
 PILOT="${HIBIKI_PILOT:-0}"
 HIGH_DELAY_PILOT="${HIBIKI_HIGH_DELAY_PILOT:-0}"
+BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
+BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
 
 die() {
   echo "error: $*" >&2
@@ -84,6 +86,16 @@ require_python() {
   [[ -x "$PYTHON" ]] || die "run '$0 setup' first"
 }
 
+require_baseline_pilot_manifest() {
+  [[ "$HIGH_DELAY_PILOT" == 1 ]] || return
+  [[ -f "$BASELINE_PILOT_MANIFEST" ]] || die "missing baseline pilot sample manifest"
+  command -v sha256sum >/dev/null || die "sha256sum is required"
+  local actual
+  actual="$(sha256sum "$BASELINE_PILOT_MANIFEST" | cut -d' ' -f1)"
+  [[ "$actual" == "$BASELINE_PILOT_MANIFEST_SHA256" ]] \
+    || die "baseline pilot sample manifest hash mismatch: $actual"
+}
+
 require_cuda_driver() {
   command -v nvidia-smi >/dev/null || die "nvidia-smi is required"
   local driver_version
@@ -146,6 +158,7 @@ cache_grounded() {
   [[ "$RECIPE" == "grounded-v2" ]] \
     || die "cache-grounded requires HIBIKI_RECIPE=grounded-v2"
   require_python
+  require_baseline_pilot_manifest
   require_cuda_driver
   require_h100_gpu
   [[ -f finetune/pairs/train.jsonl ]] || die "missing finetune/pairs/train.jsonl"
@@ -157,11 +170,14 @@ cache_grounded() {
   if [[ "$PILOT" == 1 ]]; then
     sample_shards=104
   fi
-  local delay_args=(
-    --target-delay-min-ratio "$TARGET_DELAY_MIN_RATIO"
-    --target-delay-max-ratio "$TARGET_DELAY_MAX_RATIO"
-    --seed "$TARGET_DELAY_SEED"
-  )
+  local delay_args=()
+  if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
+    delay_args=(
+      --target-delay-ratio "$TARGET_DELAY_MAX_RATIO"
+      --target-delay-min-ratio "$TARGET_DELAY_MIN_RATIO"
+      --seed "$TARGET_DELAY_SEED"
+    )
+  fi
   local cache_args=(
     --recipe grounded-v2 --device cuda --profile h100 --out-dir "$PHOMT_CACHE"
     "${delay_args[@]}"
@@ -227,6 +243,7 @@ PY
 preflight() {
   local minimum_free_gib="${1:-190}"
   require_python
+  require_baseline_pilot_manifest
   if [[ "$RECIPE" == "grounded-v2" ]]; then
     source_gap_args
   fi
@@ -284,7 +301,9 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if memory_gib >= 90:
+if high_delay_pilot and memory_gib >= 75:
+    batch_size, grad_accum = 8, 2
+elif memory_gib >= 90:
     batch_size, grad_accum = 16, 1
 elif memory_gib >= 75:
     batch_size, grad_accum = 8, 2
@@ -361,6 +380,10 @@ for relative, expected in expected_shards.items():
             raise RuntimeError(f"{relative}: missing word-aligned text timing")
         if any(float(sample.get("alignment_score") or 0) < 0.5 for sample in payload["samples"]):
             raise RuntimeError(f"{relative}: contains a below-threshold CTC alignment")
+        if high_delay_pilot:
+            for path in paths[1:]:
+                if torch.load(path, map_location="cpu").get("target_delay") != target_delay:
+                    raise RuntimeError(f"{relative}: target-delay policy mismatch in {path.name}")
 
 if recipe == "grounded-v2" and pilot:
     phomt_rows = sum(
@@ -432,8 +455,14 @@ PY
 
 common_args() {
   local max_steps="${HIBIKI_MAX_STEPS:-0}"
+  local max_frames=280
+  local sort_args=(--sort-by-length)
   if [[ "$PILOT" == 1 ]]; then
     max_steps=1000
+  fi
+  if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
+    max_frames=480
+    sort_args=(--no-sort-by-length)
   fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
   source_gap_args
@@ -444,8 +473,8 @@ common_args() {
     --batch-size "$BATCH_SIZE"
     --grad-accum-steps "$GRAD_ACCUM_STEPS"
     --max-steps "$max_steps"
-    --max-frames 280
-    --sort-by-length
+    --max-frames "$max_frames"
+    "${sort_args[@]}"
     --seed 42
     --val-batch-size 8
     --eval-pairs finetune/pairs/val128.jsonl
@@ -468,7 +497,6 @@ common_args() {
     fi
     TRAIN_ARGS+=(
       --cache-dir "$PHOMT_CACHE" "$TRAIN_CACHE"
-      --cache-weights 0.95 0.05
       --val-cache-dir "$VAL_CACHE"
       --epochs 1
       --text-pad-loss-weight 0.05
@@ -476,9 +504,11 @@ common_args() {
       --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
       --eval-at-start
     )
+    if [[ "$HIGH_DELAY_PILOT" == 0 ]]; then
+      TRAIN_ARGS+=(--cache-weights 0.95 0.05)
+    fi
     if [[ "$PILOT" == 1 ]]; then
       TRAIN_ARGS+=(
-        --max-samples 50000
         --text-pad-mode prefix
         --audio-loss-weight 0
         --mask-target-audio-input
@@ -486,10 +516,14 @@ common_args() {
       )
       if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
         TRAIN_ARGS+=(
+          --input-sample-manifest "$BASELINE_PILOT_MANIFEST"
+          --input-sample-manifest-sha256 "$BASELINE_PILOT_MANIFEST_SHA256"
           --expected-target-delay-min-ratio "$TARGET_DELAY_MIN_RATIO"
           --expected-target-delay-max-ratio "$TARGET_DELAY_MAX_RATIO"
           --expected-target-delay-seed "$TARGET_DELAY_SEED"
         )
+      else
+        TRAIN_ARGS+=(--max-samples 50000)
       fi
     else
       TRAIN_ARGS+=(
@@ -508,16 +542,19 @@ stop_monitor() {
 }
 
 check_smoke_outputs() {
-  "$PYTHON" - "$SMOKE_DIR" <<'PY'
+  "$PYTHON" - "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" <<'PY'
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+high_delay_pilot = bool(int(sys.argv[2]))
+baseline_manifest_sha256 = sys.argv[3]
 logs = [json.loads(line) for line in (root / "train_log.jsonl").read_text().splitlines() if line]
 if not logs or logs[-1]["step"] != 11:
     raise RuntimeError("resume smoke did not reach step 11")
@@ -525,6 +562,33 @@ for item in logs:
     for key in ("loss", "audio_loss", "text_loss", "lr"):
         if not math.isfinite(float(item[key])):
             raise RuntimeError(f"non-finite {key} at step {item['step']}")
+
+if high_delay_pilot:
+    config = json.loads((root / "run_config_step10.json").read_text())
+    expected = {
+        "batch_size": 8,
+        "grad_accum_steps": 2,
+        "max_frames": 480,
+        "max_samples": 0,
+        "cache_weights": None,
+        "sort_by_length": False,
+        "smoke_longest_first": True,
+        "input_sample_manifest_sha256": baseline_manifest_sha256,
+        "sample_manifest_sha256": baseline_manifest_sha256,
+        "expected_target_delay_min_ratio": 0.75,
+        "expected_target_delay_max_ratio": 1.0,
+        "expected_target_delay_seed": 1234,
+    }
+    for key, value in expected.items():
+        if config.get(key) != value:
+            raise RuntimeError(f"high-delay smoke config mismatch for {key}: {config.get(key)}")
+    manifest_digest = hashlib.sha256((root / "sample_manifest.jsonl").read_bytes()).hexdigest()
+    if manifest_digest != baseline_manifest_sha256:
+        raise RuntimeError("high-delay smoke changed authoritative sample membership")
+    if max(int(item["max_batch_size"]) for item in logs) != 8:
+        raise RuntimeError("high-delay smoke did not exercise physical batch 8")
+    if max(int(item["max_frames"]) for item in logs) != 478:
+        raise RuntimeError("high-delay smoke did not exercise the longest manifest row")
 
 eval_dir = root / "standalone_eval_step10"
 metrics = json.loads((eval_dir / "metrics.json").read_text())
@@ -567,6 +631,10 @@ smoke() {
   set +e
   (
     set -Eeuo pipefail
+    local smoke_data_args=()
+    if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
+      smoke_data_args=(--smoke-longest-first)
+    fi
     local smoke_lr=(--lr-schedule "1e-4@0" --warmup-steps 500 --text-weight-schedule "5@0")
     if [[ "$RECIPE" == "grounded-v2" ]]; then
       smoke_lr=(--lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 --text-weight-schedule "2@0")
@@ -577,6 +645,7 @@ smoke() {
     "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
       "${smoke_lr[@]}" \
+      "${smoke_data_args[@]}" \
       --max-steps 10 \
       --val-every 10 --val-batches 1 \
       --eval-every 10 --eval-limit 8 \
@@ -596,6 +665,7 @@ smoke() {
     "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
       "${smoke_lr[@]}" \
+      "${smoke_data_args[@]}" \
       --max-steps 11 \
       --val-every 0 --val-batches 1 --eval-every 0 \
       --save-every 11 --keep-checkpoints 1 --log-every 1 \

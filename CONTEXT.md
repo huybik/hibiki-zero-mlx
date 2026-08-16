@@ -95,6 +95,8 @@ as a diagnostic: run 0/250/500/1,000 first, then try 75--100% delay, contrastive
 shuffled-source loss, and only afterward Vietnamese acoustic preadaptation. The
 high-delay retry is explicit `HIBIKI_HIGH_DELAY_PILOT=1`, uses deterministic
 uniform ratios `[0.75, 1.0]`, and owns isolated `*_pilot_high_delay` artifacts.
+It reconstructs the SHA-pinned ordinary 50k membership exactly, hard-gates at
+480 frames, preserves production order, and uses physical batch 8 / accumulation 2.
 
 ## Environment
 

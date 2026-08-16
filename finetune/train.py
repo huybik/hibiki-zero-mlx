@@ -159,6 +159,17 @@ def parse_args() -> argparse.Namespace:
         help="Freeze ordered cache_index/id training membership and verify it on resume.",
     )
     parser.add_argument(
+        "--input-sample-manifest",
+        type=Path,
+        help="Authoritative ordered cache_index/id membership, including repeats.",
+    )
+    parser.add_argument("--input-sample-manifest-sha256")
+    parser.add_argument(
+        "--smoke-longest-first",
+        action="store_true",
+        help="Smoke only: feed longest manifest rows first without changing persisted membership.",
+    )
+    parser.add_argument(
         "--gradient-checkpointing", action="store_true", help="Pass gradient_checkpointing=True."
     )
     parser.add_argument(
@@ -383,6 +394,14 @@ def main() -> None:
             "max_ratio": args.expected_target_delay_max_ratio,
             "seed": args.expected_target_delay_seed,
         }
+    if (args.input_sample_manifest is None) != (args.input_sample_manifest_sha256 is None):
+        raise ValueError("--input-sample-manifest and its SHA-256 must be set together")
+    if args.input_sample_manifest is not None and not args.persist_sample_manifest:
+        raise ValueError("Authoritative input membership requires --persist-sample-manifest")
+    if args.smoke_longest_first and (
+        args.input_sample_manifest is None or not args.max_steps or args.max_steps > 11
+    ):
+        raise ValueError("--smoke-longest-first requires manifest input and at most 11 steps")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
     if args.text_pad_loss_weight < 0:
@@ -428,6 +447,10 @@ def main() -> None:
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
     if args.resume_checkpoint is not None:
         args.resume_checkpoint = require_file(args.resume_checkpoint, "resume checkpoint")
+    if args.input_sample_manifest is not None:
+        args.input_sample_manifest = require_file(
+            args.input_sample_manifest, "input sample manifest"
+        )
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     clean_incomplete_checkpoints(out_dir)
@@ -440,6 +463,8 @@ def main() -> None:
         args.cache_weights,
         args.seed,
         expected_target_delay,
+        args.input_sample_manifest,
+        args.input_sample_manifest_sha256,
     )
     if args.sort_by_length:
         dataset.shuffle_batch_order(args.batch_size, args.seed)
@@ -546,10 +571,10 @@ def main() -> None:
     if args.resume_checkpoint is not None:
         global_step = load_resume_checkpoint(lm, optimizer, args.resume_checkpoint, device, dtype)
         micro_step = global_step * args.grad_accum_steps
-        if args.sort_by_length:
+        if args.sort_by_length or args.input_sample_manifest is not None:
             resume_skip_batches = (global_step * args.grad_accum_steps) % batches_per_epoch
             if resume_skip_batches:
-                print(f"Skipping {resume_skip_batches} sorted batches already covered by resume.")
+                print(f"Skipping {resume_skip_batches} ordered batches already covered by resume.")
         else:
             print("Resume with shuffled data starts a fresh sampler order.")
 
@@ -565,6 +590,11 @@ def main() -> None:
         sample_manifest_sha256 = freeze_sample_manifest(
             dataset, out_dir, args.resume_checkpoint is not None
         )
+        if (
+            args.input_sample_manifest_sha256 is not None
+            and sample_manifest_sha256 != args.input_sample_manifest_sha256
+        ):
+            raise RuntimeError("Persisted sample manifest differs from authoritative input")
         if args.resume_checkpoint is not None:
             previous_config_path = out_dir / "run_config.json"
             if not previous_config_path.is_file():
@@ -718,12 +748,19 @@ def main() -> None:
     if args.eval_at_start and global_step == 0:
         run_greedy_val(0, allow_promotion=False)
 
+    sample_order = None
+    if args.smoke_longest_first:
+        sample_order = sorted(
+            range(len(dataset)), key=lambda index: dataset.samples[index]["frames"], reverse=True
+        )
     dataloader = common.make_cached_dataloader(
         dataset,
         args.batch_size,
         args.num_workers,
         args.sort_by_length,
         seed=args.seed,
+        shuffle=False if args.input_sample_manifest is not None else None,
+        sample_order=sample_order,
     )
     data_iter = iter(dataloader)
     while resume_skip_batches > 0:

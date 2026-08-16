@@ -198,7 +198,12 @@ After the ordinary pilot fails source dependence, add
 deterministic uniform target delay in 75--100% of source duration. The launcher
 forces separate `*_grounded_v2_pilot_high_delay` cache/run/smoke paths and the
 `grounded_v2_pilot_high_delay/` recovery prefix. Cache metadata, preflight, and
-the trainer run config verify delay ratios 0.75/1.0 and cache seed 1234.
+the trainer run config verify delay ratios 0.75/1.0 and cache seed 1234. It also
+requires the ordinary pilot's
+`finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl` at SHA-256
+`52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f`.
+Training reconstructs that exact ordered 50,000-entry cohort, including repeats,
+then hard-gates it at 480 frames. It does not resample, sort, or shuffle it.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
@@ -213,8 +218,8 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 
 - Every model parameter is trainable; there is no adapter or freeze map.
 - CUDA uses fp32 master weights and bf16 autocast.
-- `--max-frames 280` bounds memory; length-sorted 16-frame buckets minimize padding
-  while keeping compiled CUDA shapes stable.
+- `--max-frames 280` bounds ordinary-run memory; the exact-membership high-delay
+  pilot uses 480. Sixteen-frame buckets bound compiled CUDA shapes.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
 - Text content, PAD, and first-content losses are reduced independently before
   weighting, so PAD prevalence cannot change its aggregate gradient budget.
