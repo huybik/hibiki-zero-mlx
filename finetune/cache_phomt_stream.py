@@ -19,6 +19,7 @@ count, so target-delay RNG and resume never depend on process layout.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
@@ -70,7 +71,8 @@ def load_hf_token() -> None:
             for line in env.read_text().splitlines():
                 if line.startswith("HF_TOKEN="):
                     os.environ["HF_TOKEN"] = line.split("=", 1)[1].strip()
-    if not Path(os.environ.get("HF_HOME", "")).is_dir():
+    hf_home = os.environ.get("HF_HOME")
+    if not hf_home or not Path(hf_home).is_dir():
         os.environ["HF_HOME"] = str(REPO_ROOT / ".hf_cache")
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
@@ -270,21 +272,42 @@ def main() -> None:
     shm = Path("/dev/shm")
     tmp_dir = str(shm) if shm.is_dir() else None
 
-    kept = 0
-    accepted = 0
-    rejected = 0
-    kept_hours = 0.0
-    for parquet_idx, shard_name in mine:
-        if args.limit and kept >= args.limit:
-            break
-        out_path = out_dir / f"shard_{parquet_idx:05d}.pt"
-        if out_path.exists():
-            continue
-        local = Path(
+    pending = [
+        (parquet_idx, shard_name)
+        for parquet_idx, shard_name in mine
+        if not (out_dir / f"shard_{parquet_idx:05d}.pt").exists()
+    ]
+
+    def download_parquet(shard_name: str) -> Path:
+        return Path(
             hf_hub_download(
                 DATASET, shard_name, repo_type="dataset", revision=DATASET_REVISION
             )
         )
+
+    def iter_parquet():
+        if args.limit:
+            for parquet_idx, shard_name in pending:
+                yield parquet_idx, shard_name, download_parquet(shard_name)
+            return
+        if not pending:
+            return
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(download_parquet, pending[0][1])
+            for index, (parquet_idx, shard_name) in enumerate(pending):
+                local = future.result()
+                if index + 1 < len(pending):
+                    future = pool.submit(download_parquet, pending[index + 1][1])
+                yield parquet_idx, shard_name, local
+
+    kept = 0
+    accepted = 0
+    rejected = 0
+    kept_hours = 0.0
+    for parquet_idx, shard_name, local in iter_parquet():
+        if args.limit and kept >= args.limit:
+            break
+        out_path = out_dir / f"shard_{parquet_idx:05d}.pt"
         table = pq.ParquetFile(local).read()
         samples = []
         pair_lines = []
