@@ -271,6 +271,17 @@ at least 1.0 BLEU and 5.0 chrF, correct-source chrF at least 50, and WER at most
 0.60. Even a passing ASR checkpoint only authorizes a separate warm-start
 translation pilot; it does not authorize the full run.
 
+The completed 1,000-step ASR pilot covered only 16,000 of 50,000 ordered sample
+positions. At step 1,000 it passed output health and both source gaps (1.18 BLEU
+and 7.64 chrF), demonstrating learnable Vietnamese acoustic routing, but correct
+chrF was only 18.31 and WER was 0.678. Do not initialize translation from it.
+The next diagnostic must be a separate base-start one-epoch run: 3,125 optimizer
+steps at effective batch 16, so every frozen cohort position is consumed once.
+Add `HIBIKI_ASR_ONE_EPOCH=1`; it owns
+`*_grounded_v2_pilot_vi_asr_preadapt_epoch1` paths, evaluates paired generation
+at 0/2,000/3,125, validates teacher-forced ASR every 1,000 steps, and saves a
+recovery pair at step 2,000 plus the final pair.
+
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
 conditions, and evaluation restores training RNG afterward. Calibrate explicit

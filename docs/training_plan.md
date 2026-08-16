@@ -279,3 +279,31 @@ gaps at least 1.0 BLEU / 5.0 chrF, correct-source chrF at least 50, and WER at
 most 0.60. This diagnoses Vietnamese acoustic learnability; it is not a complete
 audio-pretraining stage. A pass authorizes only a fresh isolated translation
 pilot initialized from the selected ASR checkpoint.
+
+The 1,000-step run consumed only 16,000/50,000 ordered positions. It passed
+health and source dependence at step 1,000 (1.18 BLEU / 7.64 chrF gaps) but
+failed absolute ASR with chrF 18.31 and WER 0.678. This proves that the backbone
+can learn Vietnamese acoustic routing, but the checkpoint is not qualified for
+translation initialization. Run a separate base-start 3,125-step diagnostic to
+cover one exact cohort epoch; do not extend the completed run under a changed LR
+horizon or reuse its recovery namespace.
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_HIGH_DELAY_PILOT=1
+unset HIBIKI_CONTRASTIVE_PILOT
+export HIBIKI_ASR_PREADAPT=1
+export HIBIKI_ASR_ONE_EPOCH=1
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+This run owns only `*_grounded_v2_pilot_vi_asr_preadapt_epoch1` artifacts. It
+starts from the upstream base, runs exactly 3,125 optimizer steps, evaluates
+paired ASR at 0/2,000/3,125, validates every 1,000 steps, and saves recovery at
+2,000 plus the final step.

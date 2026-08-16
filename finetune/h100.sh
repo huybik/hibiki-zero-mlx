@@ -13,6 +13,7 @@ PILOT="${HIBIKI_PILOT:-0}"
 HIGH_DELAY_PILOT="${HIBIKI_HIGH_DELAY_PILOT:-0}"
 CONTRASTIVE_PILOT="${HIBIKI_CONTRASTIVE_PILOT:-0}"
 ASR_PREADAPT="${HIBIKI_ASR_PREADAPT:-0}"
+ASR_ONE_EPOCH="${HIBIKI_ASR_ONE_EPOCH:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
 
@@ -28,6 +29,8 @@ die() {
   || die "HIBIKI_CONTRASTIVE_PILOT must be 0 or 1"
 [[ "$ASR_PREADAPT" == 0 || "$ASR_PREADAPT" == 1 ]] \
   || die "HIBIKI_ASR_PREADAPT must be 0 or 1"
+[[ "$ASR_ONE_EPOCH" == 0 || "$ASR_ONE_EPOCH" == 1 ]] \
+  || die "HIBIKI_ASR_ONE_EPOCH must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
   || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
 [[ "$HIGH_DELAY_PILOT" == 0 || ( "$PILOT" == 1 && "$RECIPE" == "grounded-v2" ) ]] \
@@ -38,6 +41,8 @@ die() {
   || die "HIBIKI_ASR_PREADAPT=1 requires the high-delay pilot cache"
 [[ "$ASR_PREADAPT" == 0 || "$CONTRASTIVE_PILOT" == 0 ]] \
   || die "ASR preadaptation and contrastive translation are exclusive"
+[[ "$ASR_ONE_EPOCH" == 0 || "$ASR_PREADAPT" == 1 ]] \
+  || die "HIBIKI_ASR_ONE_EPOCH=1 requires HIBIKI_ASR_PREADAPT=1"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
@@ -62,6 +67,9 @@ case "$RECIPE" in
       fi
       if [[ "$ASR_PREADAPT" == 1 ]]; then
         pilot_namespace=grounded_v2_pilot_vi_asr_preadapt
+      fi
+      if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_vi_asr_preadapt_epoch1
       fi
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
@@ -503,6 +511,9 @@ common_args() {
     max_frames=672
     val_max_frames=640
   fi
+  if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
+    max_steps=3125
+  fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
   source_gap_args
   EVAL_EVERY=9000
@@ -534,6 +545,9 @@ common_args() {
     EVAL_EVERY=3000
     if [[ "$PILOT" == 1 ]]; then
       EVAL_EVERY=250
+    fi
+    if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
+      EVAL_EVERY=2000
     fi
     TRAIN_ARGS+=(
       --cache-dir "$PHOMT_CACHE" "$TRAIN_CACHE"
@@ -985,9 +999,14 @@ train() {
   else
     local grounded_warmup=1000
     local grounded_val_every=1000
+    local grounded_save_every=3000
     if [[ "$PILOT" == 1 ]]; then
       grounded_warmup=100
       grounded_val_every=250
+    fi
+    if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
+      grounded_val_every=1000
+      grounded_save_every=2000
     fi
     run_with_sync "$RUN_DIR" fresh "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
@@ -995,7 +1014,7 @@ train() {
       --text-weight-schedule "2@0" \
       --val-every "$grounded_val_every" \
       --eval-every "$EVAL_EVERY" --eval-limit 128 \
-      --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+      --save-every "$grounded_save_every" --keep-checkpoints 2 --log-every 10 \
       --out-dir "$RUN_DIR"
   fi
 }
@@ -1023,9 +1042,14 @@ resume() {
   else
     local grounded_warmup=1000
     local grounded_val_every=1000
+    local grounded_save_every=3000
     if [[ "$PILOT" == 1 ]]; then
       grounded_warmup=100
       grounded_val_every=250
+    fi
+    if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
+      grounded_val_every=1000
+      grounded_save_every=2000
     fi
     run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
@@ -1033,7 +1057,7 @@ resume() {
       --text-weight-schedule "2@0" \
       --val-every "$grounded_val_every" \
       --eval-every "$EVAL_EVERY" --eval-limit 128 \
-      --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+      --save-every "$grounded_save_every" --keep-checkpoints 2 --log-every 10 \
       --resume-checkpoint "$checkpoint" \
       --out-dir "$out_dir"
   fi

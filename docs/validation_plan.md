@@ -145,6 +145,23 @@ Persist both conditions, consolidated predictions, metrics, and
 `source_asr.json`. A passing checkpoint qualifies only a separate warm-start
 translation pilot; it cannot directly select the full-run initialization.
 
+The 1,000-step diagnostic produced:
+
+| Step | Nonempty | EOS | Repeat-4 failures | BLEU | chrF | WER | BLEU gap | chrF gap |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 128 | 126 | 18 | 0.017 | 8.46 | 0.987 | 0.002 | 1.01 |
+| 250 | 111 | 128 | 2 | 0.063 | 7.01 | 0.852 | 0.042 | 1.10 |
+| 500 | 128 | 128 | 3 | 0.385 | 13.07 | 0.753 | 0.354 | 3.87 |
+| 750 | 127 | 128 | 0 | 0.566 | 16.78 | 0.697 | 0.495 | 6.26 |
+| 1,000 | 128 | 128 | 2 | 1.243 | 18.31 | 0.678 | 1.179 | 7.64 |
+
+Step 1,000 passed health and both source-gap gates but failed the absolute chrF
+and WER gates. It establishes learnable source routing, not adequate ASR. Because
+1,000 effective-batch-16 steps cover only 16,000/50,000 ordered positions, the
+next diagnostic is a separate base-start one-epoch run of exactly 3,125 steps.
+It uses `HIBIKI_ASR_ONE_EPOCH=1` and evaluates paired ASR at steps 0, 2,000,
+and 3,125 under the identical qualification gates.
+
 ## Diagnostics and final test
 
 For the masked text/source-only pilot, teacher-forced validation must also pass

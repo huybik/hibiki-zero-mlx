@@ -122,7 +122,12 @@ accumulation 4 on the 94 GB H100, and hard-gates train/validation at 672/640
 frames. Paired Vietnamese ASR must pass normal health, 1.0 BLEU / 5.0 chrF
 source gaps, correct chrF at least 50, and WER at most 0.60. This tests whether
 the temporal backbone can learn Vietnamese acoustics; it is not Kyutai's
-multilingual audio pretraining and cannot yet initialize a full translation run.
+multilingual audio pretraining. The 1,000-step pilot saw only 16,000/50,000
+ordered positions. At step 1,000 it passed health and source dependence
+(BLEU/chrF gaps 1.18/7.64) but failed absolute ASR (chrF 18.31, WER 0.678).
+It proves learnable Vietnamese routing but cannot initialize translation. The
+next isolated base-start diagnostic is `HIBIKI_ASR_ONE_EPOCH=1` and covers one
+exact epoch (3,125 steps).
 
 ## Canonical resources
 
