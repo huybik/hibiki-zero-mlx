@@ -19,6 +19,7 @@ EXPECTED_SHARDS = 1_377
 ARCHIVE_COUNT = 8
 CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
 DATASET_REVISION = "33400f73dde07da539e8326313cbabe20b757740"
+FLEURS_CACHE_DIRS = {"train_grounded_v2": 46, "validation_grounded_v2": 5}
 SAMPLE_ID = re.compile(r"phomt_s(\d{5})r\d{5}")
 EXPECTED_CONFIG = {
     "n_q": 32,
@@ -144,6 +145,29 @@ def validate_cache(cache_dir: Path) -> dict[str, object]:
     }
 
 
+def validate_fleurs_cache(cache_root: Path) -> dict[str, int]:
+    stats = {}
+    for name, expected in FLEURS_CACHE_DIRS.items():
+        cache_dir = cache_root / name
+        paths = sorted(cache_dir.glob("shard_*.pt"))
+        expected_names = [f"shard_{index:05d}.pt" for index in range(expected)]
+        if [path.name for path in paths] != expected_names:
+            raise RuntimeError(f"expected {expected} contiguous FLEURS shards in {cache_dir}")
+        for path in paths:
+            payload = torch.load(path, map_location="cpu")
+            if payload.get("format") != CACHE_FORMAT or not payload.get("samples"):
+                raise RuntimeError(f"invalid grounded-v2 FLEURS cache: {path}")
+            if payload.get("alignment_min_score") != 0.5:
+                raise RuntimeError(f"wrong FLEURS alignment threshold: {path}")
+            for sample in payload["samples"]:
+                if sample.get("text_timing") != "wav2vec2_ctc_word_v1":
+                    raise RuntimeError(f"wrong FLEURS text timing: {sample['id']}")
+                if float(sample.get("alignment_score") or 0) < 0.5:
+                    raise RuntimeError(f"invalid FLEURS alignment score: {sample['id']}")
+        stats[f"{name}_shards"] = expected
+    return stats
+
+
 def archive_info(path: Path, first_shard: int, last_shard: int) -> dict[str, object]:
     return {
         "path": path.name,
@@ -155,7 +179,12 @@ def archive_info(path: Path, first_shard: int, last_shard: int) -> dict[str, obj
     }
 
 
-def prepare_stage(cache_dir: Path, prefix: str, stats: dict[str, object]) -> tuple[Path, dict]:
+def prepare_stage(
+    cache_dir: Path,
+    prefix: str,
+    stats: dict[str, object],
+    fleurs_stats: dict[str, int],
+) -> tuple[Path, dict]:
     stage_root = cache_dir / ".publish"
     if stage_root.exists():
         raise RuntimeError(f"publish staging already exists: {stage_root}")
@@ -176,6 +205,29 @@ def prepare_stage(cache_dir: Path, prefix: str, stats: dict[str, object]) -> tup
         archives.append(archive_info(archive, first, stop - 1))
         print(f"Prepared {archive.name}", flush=True)
 
+    fleurs_archive = stage / "fleurs_cache.tar.zst"
+    finetune_dir = cache_dir.parent.parent
+    subprocess.run(
+        [
+            "tar",
+            "--zstd",
+            "-C",
+            str(finetune_dir),
+            "-cf",
+            str(fleurs_archive),
+            *[f"cache/{name}" for name in FLEURS_CACHE_DIRS],
+        ],
+        check=True,
+        env=env,
+    )
+    fleurs = {
+        "path": fleurs_archive.name,
+        "bytes": fleurs_archive.stat().st_size,
+        "sha256": sha256_file(fleurs_archive),
+        **fleurs_stats,
+    }
+    print(f"Prepared {fleurs_archive.name}", flush=True)
+
     auxiliary = []
     for source in sorted(
         [*cache_dir.glob("pairs_w*.jsonl"), *cache_dir.glob("alignment_rejects_w*.jsonl")]
@@ -191,6 +243,7 @@ def prepare_stage(cache_dir: Path, prefix: str, stats: dict[str, object]) -> tup
             ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent.parent, text=True
         ).strip(),
         "archives": archives,
+        "fleurs_archive": fleurs,
         "auxiliary_files": auxiliary,
     }
     (stage / "manifest.json").write_text(
@@ -208,6 +261,8 @@ def prepare_stage(cache_dir: Path, prefix: str, stats: dict[str, object]) -> tup
         "  tar --zstd --exclude='._*' --exclude='*/._*' " + "\\\n"
         "    -xf \"$archive\" -C finetune/cache/phomt_grounded_v2\n"
         "done\n"
+        "tar --zstd --exclude='._*' --exclude='*/._*' " + "\\\n"
+        "  -xf grounded-v2/fleurs_cache.tar.zst -C finetune\n"
         "```\n\n"
         "See `manifest.json` for shard ranges and SHA-256 checksums.\n",
         encoding="utf-8",
@@ -218,7 +273,11 @@ def prepare_stage(cache_dir: Path, prefix: str, stats: dict[str, object]) -> tup
 def verify_remote(api: HfApi, repo: str, prefix: str, stage: Path, manifest: dict) -> None:
     expected = {
         item["path"]: item
-        for item in [*manifest["archives"], *manifest["auxiliary_files"]]
+        for item in [
+            *manifest["archives"],
+            manifest["fleurs_archive"],
+            *manifest["auxiliary_files"],
+        ]
     }
     remote = {
         item.path.removeprefix(f"{prefix}/"): item
@@ -270,6 +329,7 @@ def publish(cache_dir: Path, repo: str, prefix: str) -> None:
         raise ValueError("prefix must be a non-empty relative repository path")
     cache_dir = cache_dir.resolve()
     stats = validate_cache(cache_dir)
+    fleurs_stats = validate_fleurs_cache(cache_dir.parent)
     api = HfApi(token=os.environ.get("HF_TOKEN"))
     existing = [
         path
@@ -279,7 +339,7 @@ def publish(cache_dir: Path, repo: str, prefix: str) -> None:
     if existing:
         raise RuntimeError(f"refusing to overwrite non-empty remote namespace: {prefix}")
 
-    stage_root, manifest = prepare_stage(cache_dir, prefix, stats)
+    stage_root, manifest = prepare_stage(cache_dir, prefix, stats, fleurs_stats)
     stage = stage_root / prefix
     api.upload_folder(
         repo_id=repo,
@@ -288,6 +348,7 @@ def publish(cache_dir: Path, repo: str, prefix: str) -> None:
         repo_type="dataset",
         allow_patterns=[
             "cache_chunk_*.tar.zst",
+            "fleurs_cache.tar.zst",
             "pairs_w*.jsonl",
             "alignment_rejects_w*.jsonl",
         ],

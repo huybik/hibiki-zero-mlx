@@ -190,6 +190,9 @@ source-shuffle reads.
 On an H100, `./finetune/h100.sh cache-grounded` is the cache-build entrypoint;
 it uses the H100 batching profile and also builds the grounded FLEURS train and
 validation caches.
+After all caches validate, `publish_grounded_cache.py` stores eight PhoMT chunks,
+one grounded FLEURS archive, manifests, and checksums under the isolated dataset
+`grounded-v2/` prefix. The legacy dataset-root archives remain unchanged.
 
 ## Trainer invariants
 
