@@ -109,6 +109,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all.")
     parser.add_argument("--batch-size", type=int, default=16, help="Clips per batched Mimi encode.")
     parser.add_argument(
+        "--batch-sample-budget",
+        type=int,
+        default=2_000_000,
+        help="Maximum padded raw-audio samples per Mimi encode batch.",
+    )
+    parser.add_argument(
+        "--chunk-rows",
+        type=int,
+        default=512,
+        help="Rows buffered per encode flush; use 128 for concurrent MPS workers.",
+    )
+    parser.add_argument(
         "--prefetch-shards",
         type=int,
         default=1,
@@ -136,14 +148,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-CHUNK_ROWS = 512  # rows buffered per batched-encode flush (2 clips/row); covers a whole 500-row parquet shard so the length sort packs batches shard-wide
 # Mimi's SEANet convs are ~512-wide at raw 24 kHz, so activation memory scales
 # with batch total samples: cap padded B*T per encode (~83 s audio ≈ a few GB
 # peak) instead of clip count — short clips batch wide, long clips narrow.
-BATCH_SAMPLE_BUDGET = 2_000_000
-
-
-def encode_batch(wavs: list, mimi, torch, batch_size: int) -> list:
+def encode_batch(wavs: list, mimi, torch, batch_size: int, sample_budget: int) -> list:
     """Batched Mimi encode of variable-length mono cpu wavs -> per-clip codes.
 
     Clips are length-sorted into batches, zero right-padded to a shared
@@ -165,7 +173,7 @@ def encode_batch(wavs: list, mimi, torch, batch_size: int) -> list:
             and s + len(idxs) < len(order)
             and (len(idxs) + 1)
             * (math.ceil(int(wavs[order[s + len(idxs)]].shape[0]) / bucket) * bucket)
-            <= BATCH_SAMPLE_BUDGET
+            <= sample_budget
         ):
             idxs.append(order[s + len(idxs)])
         # power-of-2 batch sizes: (B, pad_t) shape combos each compile a Metal
@@ -197,6 +205,10 @@ def main() -> None:
         raise ValueError("--worker must be in [0, --num-workers)")
     if args.prefetch_shards <= 0:
         raise ValueError("--prefetch-shards must be positive")
+    if args.chunk_rows <= 0:
+        raise ValueError("--chunk-rows must be positive")
+    if args.batch_sample_budget <= 0:
+        raise ValueError("--batch-sample-budget must be positive")
     load_hf_token()
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
@@ -325,6 +337,7 @@ def main() -> None:
         table = pq.ParquetFile(local).read()
         samples = []
         pair_lines = []
+        reject_lines = []
         cpu = torch.device("cpu")
 
         def encode_chunk(chunk: list[dict]) -> None:
@@ -334,17 +347,30 @@ def main() -> None:
             if aligner is not None:
                 from finetune.text_timing import sentencepiece_groups
 
-                groups_batch = [sentencepiece_groups(c["row"]["text_en"], tokenizer) for c in chunk]
-                alignments = aligner.align_many(
-                    [c["en_align_wav"] for c in chunk],
-                    groups_batch,
+                groups_batch = [None] * len(chunk)
+                alignments = [None] * len(chunk)
+                valid_indices = []
+                for index, item in enumerate(chunk):
+                    try:
+                        groups_batch[index] = sentencepiece_groups(
+                            item["row"]["text_en"], tokenizer
+                        )
+                        valid_indices.append(index)
+                    except ValueError as exc:
+                        alignments[index] = exc
+                valid_alignments = aligner.align_many(
+                    [chunk[index]["en_align_wav"] for index in valid_indices],
+                    [groups_batch[index] for index in valid_indices],
                     args.alignment_batch_size,
                 )
+                for index, alignment in zip(valid_indices, valid_alignments, strict=True):
+                    alignments[index] = alignment
             codes = encode_batch(
                 [c["vi_wav"] for c in chunk] + [c["en_wav"] for c in chunk],
                 mimi,
                 torch,
                 args.batch_size,
+                args.batch_sample_budget,
             )
             n = len(chunk)
             for k, c in enumerate(chunk):
@@ -361,16 +387,10 @@ def main() -> None:
                     if isinstance(alignment, Exception):
                         rejected += 1
                         print(f"[w{args.worker}] rejecting {row['id']}: {alignment}", flush=True)
-                        with rejects_path.open("a", encoding="utf-8") as fh:
-                            fh.write(
-                                json.dumps(
-                                    {"id": row["id"], "reason": str(alignment)},
-                                    ensure_ascii=False,
-                                    sort_keys=True,
-                                )
-                                + "\n"
-                            )
+                        reject_lines.append({"id": row["id"], "reason": str(alignment)})
                         continue
+                    if alignment is None or groups_batch[k] is None:
+                        raise RuntimeError(f"Missing CTC alignment result for {row['id']}")
                     try:
                         tokens, text_frames = timed_sentencepiece_tokens(
                             groups_batch[k],
@@ -382,15 +402,7 @@ def main() -> None:
                     except ValueError as exc:
                         rejected += 1
                         print(f"[w{args.worker}] rejecting {row['id']}: {exc}", flush=True)
-                        with rejects_path.open("a", encoding="utf-8") as fh:
-                            fh.write(
-                                json.dumps(
-                                    {"id": row["id"], "reason": str(exc)},
-                                    ensure_ascii=False,
-                                    sort_keys=True,
-                                )
-                                + "\n"
-                            )
+                        reject_lines.append({"id": row["id"], "reason": str(exc)})
                         continue
                     alignment_score = alignment.score
                 assembled = assemble_codes(
@@ -525,7 +537,7 @@ def main() -> None:
                     )
                     kept += 1
                     kept_hours += vi_dur / 3600.0
-                    if len(chunk) >= CHUNK_ROWS:
+                    if len(chunk) >= args.chunk_rows:
                         chunk_q.put(chunk)
                         chunk = []
                 if chunk:
@@ -564,6 +576,10 @@ def main() -> None:
         if pair_lines:
             with pairs_path.open("a", encoding="utf-8") as fh:
                 for row in pair_lines:
+                    fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        if reject_lines:
+            with rejects_path.open("a", encoding="utf-8") as fh:
+                for row in reject_lines:
                     fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
         if not args.keep_parquet:
             delete_from_hf_cache(local)

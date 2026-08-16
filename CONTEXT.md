@@ -57,7 +57,9 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   published atomically and pre-rotated to avoid transient disk spikes; loading
   rejects missing and unexpected tensor keys.
 - `finetune/cache_phomt_stream.py` builds the published PhoMT cache directly
-  from parquet with bounded download prefetch and Hugging Face Xet. `remote_dataset/download_fleurs_vi_en.py` →
+  from parquet with bounded download prefetch and Hugging Face Xet. MPS runs
+  release each CTC batch and can bound concurrent workers by row and audio-sample
+  budgets. `remote_dataset/download_fleurs_vi_en.py` →
   `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.
 - `finetune/validate.py` is teacher-forced diagnostics only.
   `finetune/eval.py` free-running chrF plus nonempty/EOS/loop/length gates select

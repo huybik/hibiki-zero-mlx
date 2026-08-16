@@ -208,6 +208,9 @@ class EnglishCTCAligner:
                     results.append(Alignment(spans=spans, score=score))
                 except (KeyError, RuntimeError, ValueError) as exc:
                     results.append(exc)
+            if self.device.type == "mps":
+                del inputs, input_values, attention_mask, logits, input_lengths, emission
+                torch.mps.empty_cache()
         return results
 
 
