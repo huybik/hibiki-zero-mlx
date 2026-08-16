@@ -102,14 +102,25 @@ def _ctc_token_frames(log_probs: Any, targets: list[int], blank_id: int) -> tupl
     path.reverse()
 
     frames: list[list[int]] = [[] for _ in targets]
-    probabilities: list[float] = []
+    probability_times = []
+    probability_tokens = []
     for time_index, state in enumerate(path):
         if state % 2:
             target_index = state // 2
             frames[target_index].append(time_index)
-            probabilities.append(float(log_probs[time_index, targets[target_index]].exp()))
+            probability_times.append(time_index)
+            probability_tokens.append(targets[target_index])
     if any(not item for item in frames):
         raise RuntimeError("CTC alignment omitted a transcript token")
+    probabilities = (
+        log_probs[
+            torch.tensor(probability_times, device=log_probs.device),
+            torch.tensor(probability_tokens, device=log_probs.device),
+        ]
+        .exp()
+        .cpu()
+        .tolist()
+    )
     return frames, sum(probabilities) / len(probabilities)
 
 
