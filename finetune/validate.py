@@ -49,7 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-pad-mode", choices=("prefix", "all"), default="prefix")
-    parser.add_argument("--text-prefix-pad-weight", type=float, default=1.0)
+    parser.add_argument("--text-pad-loss-weight", type=float, default=0.05)
+    parser.add_argument("--first-content-loss-weight", type=float, default=0.0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
         "--sort-by-length",
@@ -95,19 +96,24 @@ def main() -> None:
         args.text_loss_weight,
         args.max_batches,
         args.text_pad_mode,
-        args.text_prefix_pad_weight,
+        args.text_pad_loss_weight,
+        args.first_content_loss_weight,
     )
     result = {
         "cache_dir": repo_display_path(cache_dir),
         "checkpoint": repo_display_path(checkpoint) if checkpoint is not None else "",
         **{k: metrics[k] for k in (
             "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "batches", "samples",
-            "content_text_loss", "content_acc", "content_tokens", "silence_score",
+            "content_text_loss", "content_acc", "content_tokens", "pad_text_loss", "pad_acc",
+            "pad_tokens", "first_content_loss", "first_content_tokens",
+            "first_content_margin", "silence_score",
         )},
     }
     print(
         f"loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} "
-        f"content={metrics['content_text_loss']:.4f} acc={metrics['content_acc']:.3f} "
+        f"content={metrics['content_text_loss']:.4f} first={metrics['first_content_loss']:.4f} "
+        f"pad={metrics['pad_text_loss']:.4f} acc={metrics['content_acc']:.3f} "
+        f"pad_acc={metrics['pad_acc']:.3f} margin={metrics['first_content_margin']:.3f} "
         f"silence={metrics['silence_score']:.3f} samples={metrics['samples']}"
     )
     if args.out_json:

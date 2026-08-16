@@ -324,11 +324,15 @@ PY
 }
 
 common_args() {
+  local max_steps="${HIBIKI_MAX_STEPS:-0}"
+  [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
+  EVAL_EVERY=9000
   TRAIN_ARGS=(
     --device cuda
     --model-weight weights/hibiki-pytorch-77f82164@110.safetensors
     --batch-size "$BATCH_SIZE"
     --grad-accum-steps "$GRAD_ACCUM_STEPS"
+    --max-steps "$max_steps"
     --max-frames 280
     --sort-by-length
     --seed 42
@@ -342,19 +346,31 @@ common_args() {
       --cache-dir finetune/cache/phomt_stream finetune/cache/train
       --val-cache-dir finetune/cache/validation
       --epochs 2
-      --text-prefix-pad-weight 0.5
+      --text-pad-loss-weight 0.5
     )
   else
+    local audio_loss_weight=1
+    local text_pad_mode=all
+    if (( ${HIBIKI_MAX_SAMPLES:-0} > 0 )); then
+      audio_loss_weight=0
+      text_pad_mode=prefix
+    fi
+    EVAL_EVERY=3000
+    if (( max_steps > 0 && max_steps <= 1000 )); then
+      EVAL_EVERY=250
+    fi
     TRAIN_ARGS+=(
       --cache-dir finetune/cache/phomt_grounded_v2 finetune/cache/train_grounded_v2
       --cache-weights 0.95 0.05
       --val-cache-dir finetune/cache/validation_grounded_v2
       --epochs 1
       --max-samples "${HIBIKI_MAX_SAMPLES:-0}"
-      --text-prefix-pad-weight 0.1
-      --text-pad-mode all
+      --text-pad-loss-weight 0.05
+      --first-content-loss-weight 1.0
+      --text-pad-mode "$text_pad_mode"
+      --audio-loss-weight "$audio_loss_weight"
       --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
-      --eval-shuffled-source --best-requires-gates
+      --eval-at-start --eval-shuffled-source --best-requires-gates
     )
   fi
 }
@@ -632,7 +648,7 @@ train() {
       --lr-schedule "1e-4@0,3e-5@0.5" --warmup-steps 500 \
       --text-weight-schedule "5@0,2@0.6" \
       --val-every 2000 \
-      --eval-every 9000 --eval-limit 128 \
+      --eval-every "$EVAL_EVERY" --eval-limit 128 \
       --save-every 3000 --keep-checkpoints 2 --log-every 10 \
       --out-dir "$RUN_DIR"
   else
@@ -641,7 +657,7 @@ train() {
       --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 \
       --text-weight-schedule "2@0" \
       --val-every 1000 \
-      --eval-every 3000 --eval-limit 128 \
+      --eval-every "$EVAL_EVERY" --eval-limit 128 \
       --save-every 3000 --keep-checkpoints 2 --log-every 10 \
       --out-dir "$RUN_DIR"
   fi
@@ -663,7 +679,7 @@ resume() {
       --lr-schedule "1e-4@0,3e-5@0.5" --warmup-steps 500 \
       --text-weight-schedule "5@0,2@0.6" \
       --val-every 2000 \
-      --eval-every 9000 --eval-limit 128 \
+      --eval-every "$EVAL_EVERY" --eval-limit 128 \
       --save-every 3000 --keep-checkpoints 2 --log-every 10 \
       --resume-checkpoint "$checkpoint" \
       --out-dir "$out_dir"
@@ -673,7 +689,7 @@ resume() {
       --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 \
       --text-weight-schedule "2@0" \
       --val-every 1000 \
-      --eval-every 3000 --eval-limit 128 \
+      --eval-every "$EVAL_EVERY" --eval-limit 128 \
       --save-every 3000 --keep-checkpoints 2 --log-every 10 \
       --resume-checkpoint "$checkpoint" \
       --out-dir "$out_dir"

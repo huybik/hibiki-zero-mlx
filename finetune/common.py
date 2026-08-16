@@ -486,17 +486,64 @@ def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int, pad_mode: s
     return base_mask & (non_pad | prefix_pad)
 
 
-def weighted_text_cross_entropy(
-    logits: Any, targets: Any, mask: Any, pad_id: int, prefix_pad_weight: float
-) -> tuple[Any, Any]:
+def combine_text_losses(
+    content_loss: Any,
+    pad_loss: Any,
+    first_content_loss: Any,
+    pad_loss_weight: float,
+    first_content_loss_weight: float,
+) -> Any:
+    weight_total = 1.0 + pad_loss_weight + first_content_loss_weight
+    return (
+        content_loss + pad_loss_weight * pad_loss + first_content_loss_weight * first_content_loss
+    ) / weight_total
+
+
+def balanced_text_cross_entropy(
+    logits: Any,
+    targets: Any,
+    mask: Any,
+    pad_id: int,
+    pad_loss_weight: float,
+    first_content_loss_weight: float,
+) -> dict[str, Any]:
+    """Keep PAD pressure independent of the number of PAD frames."""
     token_count = mask.sum()
     selected_targets = targets[mask].long()
     token_losses = torch.nn.functional.cross_entropy(
         logits[mask].float(), selected_targets, reduction="none"
     )
-    weights = torch.where(selected_targets == pad_id, prefix_pad_weight, 1.0)
-    loss = (token_losses * weights).sum() / weights.sum().clamp(min=1)
-    return loss, token_count
+    selected_pad = selected_targets == pad_id
+    selected_content = ~selected_pad
+    content_mask = mask & (targets != pad_id)
+    first_content_mask = content_mask & (content_mask.long().cumsum(dim=-1) == 1)
+    selected_first_content = first_content_mask[mask]
+
+    pad_tokens = selected_pad.sum()
+    content_tokens = selected_content.sum()
+    first_content_tokens = selected_first_content.sum()
+    pad_loss = token_losses[selected_pad].sum() / pad_tokens.clamp(min=1)
+    content_loss = token_losses[selected_content].sum() / content_tokens.clamp(min=1)
+    first_content_loss = token_losses[selected_first_content].sum() / first_content_tokens.clamp(
+        min=1
+    )
+    loss = combine_text_losses(
+        content_loss,
+        pad_loss,
+        first_content_loss,
+        pad_loss_weight,
+        first_content_loss_weight,
+    )
+    return {
+        "loss": loss,
+        "tokens": token_count,
+        "pad_loss": pad_loss,
+        "pad_tokens": pad_tokens,
+        "content_loss": content_loss,
+        "content_tokens": content_tokens,
+        "first_content_loss": first_content_loss,
+        "first_content_tokens": first_content_tokens,
+    }
 
 
 def batch_condition_tensors(lm: Any, model_type: str, batch_size: int) -> Any | None:
@@ -511,7 +558,8 @@ def compute_batch_losses(
     condition_tensors: Any | None,
     audio_loss_weight: float,
     text_loss_weight: float,
-    text_prefix_pad_weight: float = 1.0,
+    text_pad_loss_weight: float = 0.05,
+    first_content_loss_weight: float = 0.0,
     text_pad_mode: str = "prefix",
     return_output: bool = False,
 ) -> dict[str, Any]:
@@ -522,20 +570,28 @@ def compute_batch_losses(
     text_mask = text_supervision_mask(
         output.text_mask, text_targets, lm.text_padding_token_id, text_pad_mode
     )
-    text_loss, text_tokens = weighted_text_cross_entropy(
+    text_losses = balanced_text_cross_entropy(
         output.text_logits,
         text_targets,
         text_mask,
         lm.text_padding_token_id,
-        text_prefix_pad_weight,
+        text_pad_loss_weight,
+        first_content_loss_weight,
     )
+    text_loss = text_losses["loss"]
     loss = audio_loss_weight * audio_loss + text_loss_weight * text_loss
     result = {
         "loss": loss,
         "audio_loss": audio_loss,
         "text_loss": text_loss,
         "audio_tokens": audio_tokens,
-        "text_tokens": text_tokens,
+        "text_tokens": text_losses["tokens"],
+        "pad_text_loss": text_losses["pad_loss"],
+        "pad_text_tokens": text_losses["pad_tokens"],
+        "content_text_loss": text_losses["content_loss"],
+        "content_text_tokens": text_losses["content_tokens"],
+        "first_content_loss": text_losses["first_content_loss"],
+        "first_content_tokens": text_losses["first_content_tokens"],
     }
     if return_output:
         # Only for eval: keeping logits alive an extra step in the train loop
@@ -553,14 +609,14 @@ def evaluate_teacher_forced(
     text_loss_weight: float,
     max_batches: int = 0,
     text_pad_mode: str = "prefix",
-    text_prefix_pad_weight: float = 1.0,
+    text_pad_loss_weight: float = 0.05,
+    first_content_loss_weight: float = 0.0,
 ) -> dict[str, float | int]:
     was_training = bool(lm.training)
     lm.eval()
     condition_cache: dict[int, Any | None] = {}
     totals = {
         "audio_loss_sum": 0.0,
-        "text_loss_sum": 0.0,
         "audio_tokens": 0,
         "text_tokens": 0,
         "batches": 0,
@@ -568,6 +624,12 @@ def evaluate_teacher_forced(
         "content_loss_sum": 0.0,
         "content_correct": 0,
         "content_tokens": 0,
+        "pad_loss_sum": 0.0,
+        "pad_correct": 0,
+        "pad_tokens": 0,
+        "first_content_loss_sum": 0.0,
+        "first_content_tokens": 0,
+        "first_content_margin_sum": 0.0,
         "silence_sum": 0.0,
         "silence_count": 0,
     }
@@ -581,7 +643,8 @@ def evaluate_teacher_forced(
                 condition_cache[batch_size] = batch_condition_tensors(lm, model_type, batch_size)
             losses = compute_batch_losses(
                 lm, codes, condition_cache[batch_size], audio_loss_weight, text_loss_weight,
-                text_prefix_pad_weight=text_prefix_pad_weight,
+                text_pad_loss_weight=text_pad_loss_weight,
+                first_content_loss_weight=first_content_loss_weight,
                 text_pad_mode=text_pad_mode,
                 return_output=True,
             )
@@ -589,29 +652,44 @@ def evaluate_teacher_forced(
             audio_tokens = int(losses["audio_tokens"])
             text_tokens = int(losses["text_tokens"])
             totals["audio_loss_sum"] += float(losses["audio_loss"].detach().cpu()) * audio_tokens
-            totals["text_loss_sum"] += float(losses["text_loss"].detach().cpu()) * text_tokens
             totals["audio_tokens"] += audio_tokens
             totals["text_tokens"] += text_tokens
+            component_keys = {
+                "content": ("content_text_loss", "content_text_tokens"),
+                "pad": ("pad_text_loss", "pad_text_tokens"),
+                "first_content": ("first_content_loss", "first_content_tokens"),
+            }
+            for prefix, (loss_key, count_key) in component_keys.items():
+                count = int(losses[count_key])
+                totals[f"{prefix}_loss_sum"] += float(losses[loss_key].detach().cpu()) * count
+                totals[f"{prefix}_tokens"] += count
             totals["batches"] += 1
             totals["samples"] += batch_size
-            # Post-mortem metrics: the plain text CE is 57% prefix pads and kept
-            # improving through the pad-collapse; these three see generation
-            # health directly (content-only CE/acc, pad mass at first content).
+            # Diagnostics for content quality, PAD behavior, and the critical
+            # PAD-to-first-content transition.
             text_targets = codes[:, :1]
             pad_id = lm.text_padding_token_id
             content_mask = output.text_mask & (text_targets != pad_id)
             content_logits = output.text_logits[content_mask].float()
             content_targets = text_targets[content_mask].long()
             if content_targets.numel():
-                totals["content_loss_sum"] += float(
-                    torch.nn.functional.cross_entropy(content_logits, content_targets, reduction="sum")
-                )
                 totals["content_correct"] += int((content_logits.argmax(-1) == content_targets).sum())
-                totals["content_tokens"] += int(content_targets.numel())
+            supervised_text_mask = text_supervision_mask(
+                output.text_mask, text_targets, pad_id, text_pad_mode
+            )
+            pad_mask = supervised_text_mask & (text_targets == pad_id)
+            pad_logits = output.text_logits[pad_mask].float()
+            if pad_logits.shape[0]:
+                totals["pad_correct"] += int((pad_logits.argmax(-1) == pad_id).sum())
             first_content = content_mask & (content_mask.long().cumsum(-1) == 1)
             first_logits = output.text_logits[first_content].float()
             if first_logits.shape[0]:
                 totals["silence_sum"] += float(first_logits.softmax(-1)[:, pad_id].sum())
+                first_targets = text_targets[first_content].long()
+                target_logits = first_logits.gather(1, first_targets[:, None]).squeeze(1)
+                totals["first_content_margin_sum"] += float(
+                    (target_logits - first_logits[:, pad_id]).sum()
+                )
                 totals["silence_count"] += int(first_logits.shape[0])
 
     if was_training:
@@ -620,8 +698,21 @@ def evaluate_teacher_forced(
         raise RuntimeError("Validation dataloader produced no batches.")
 
     audio_loss = totals["audio_loss_sum"] / totals["audio_tokens"] if totals["audio_tokens"] else 0.0
-    text_loss = totals["text_loss_sum"] / totals["text_tokens"] if totals["text_tokens"] else 0.0
     content_tokens = totals["content_tokens"]
+    pad_tokens = totals["pad_tokens"]
+    first_content_tokens = totals["first_content_tokens"]
+    content_loss = totals["content_loss_sum"] / content_tokens if content_tokens else 0.0
+    pad_loss = totals["pad_loss_sum"] / pad_tokens if pad_tokens else 0.0
+    first_content_loss = (
+        totals["first_content_loss_sum"] / first_content_tokens if first_content_tokens else 0.0
+    )
+    text_loss = combine_text_losses(
+        content_loss,
+        pad_loss,
+        first_content_loss,
+        text_pad_loss_weight,
+        first_content_loss_weight,
+    )
     return {
         "loss": audio_loss_weight * audio_loss + text_loss_weight * text_loss,
         "audio_loss": audio_loss,
@@ -630,9 +721,19 @@ def evaluate_teacher_forced(
         "text_tokens": totals["text_tokens"],
         "batches": totals["batches"],
         "samples": totals["samples"],
-        "content_text_loss": totals["content_loss_sum"] / content_tokens if content_tokens else 0.0,
+        "content_text_loss": content_loss,
         "content_acc": totals["content_correct"] / content_tokens if content_tokens else 0.0,
         "content_tokens": content_tokens,
+        "pad_text_loss": pad_loss,
+        "pad_acc": totals["pad_correct"] / pad_tokens if pad_tokens else 0.0,
+        "pad_tokens": pad_tokens,
+        "first_content_loss": first_content_loss,
+        "first_content_tokens": first_content_tokens,
+        "first_content_margin": (
+            totals["first_content_margin_sum"] / totals["silence_count"]
+            if totals["silence_count"]
+            else 0.0
+        ),
         "silence_score": totals["silence_sum"] / totals["silence_count"] if totals["silence_count"] else 0.0,
     }
 

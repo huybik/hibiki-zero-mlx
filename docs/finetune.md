@@ -184,6 +184,9 @@ gender-consistent pairs, and low-score CTC rows are rejected. The v2 launcher
 reads only `*_grounded_v2` caches and uses the independent `grounded_v2/`
 Hugging Face recovery prefix; see
 [training_plan.md](training_plan.md) for exact commands and hyperparameters.
+Its spend-control pilot uses independently reduced content/PAD/first-content
+losses, prefix-only PAD supervision, no audio loss, and step-0/250-step greedy
+source-shuffle reads.
 On an H100, `./finetune/h100.sh cache-grounded` is the cache-build entrypoint;
 it uses the H100 batching profile and also builds the grounded FLEURS train and
 validation caches.
@@ -195,7 +198,8 @@ validation caches.
 - `--max-frames 280` bounds memory; length-sorted 16-frame buckets minimize padding
   while keeping compiled CUDA shapes stable.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
-- Text prefix PAD has weight 0.5; content and EOS remain weight 1.
+- Text content, PAD, and first-content losses are reduced independently before
+  weighting, so PAD prevalence cannot change its aggregate gradient budget.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.
 - Checkpoints contain the exact full model. Loading rejects missing or extra keys.
 - `--resume-checkpoint` is only for interruption recovery in the same run.

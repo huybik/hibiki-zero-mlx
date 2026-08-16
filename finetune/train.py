@@ -76,10 +76,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-weight-schedule", default="", help='Text loss-weight schedule "5@0,2@0.6".')
     parser.add_argument(
-        "--text-prefix-pad-weight",
+        "--text-pad-loss-weight",
         type=float,
-        default=0.5,
-        help="Per-token CE weight for supervised prefix PAD; content/EOS stay at 1.0.",
+        default=0.05,
+        help="Aggregate PAD-loss weight after PAD and content are reduced independently.",
+    )
+    parser.add_argument(
+        "--first-content-loss-weight",
+        type=float,
+        default=0.0,
+        help="Extra aggregate weight for the first non-PAD target token in each row.",
     )
     parser.add_argument(
         "--text-pad-mode",
@@ -99,6 +105,11 @@ def parse_args() -> argparse.Namespace:
     )
     # Autoregressive greedy val eval + best-checkpoint selection.
     parser.add_argument("--eval-every", type=int, default=0, help="Steps between greedy val eval; 0=off.")
+    parser.add_argument(
+        "--eval-at-start",
+        action="store_true",
+        help="Run a non-promotable step-0 greedy baseline before training.",
+    )
     parser.add_argument("--eval-pairs", type=Path, default=DEFAULT_PAIRS_DIR / "validation.jsonl")
     parser.add_argument("--eval-limit", type=int, default=128, help="Greedy val rows (val128 gate).")
     parser.add_argument("--eval-ids-file", type=Path, help="Optional id file for the greedy eval set.")
@@ -310,8 +321,10 @@ def main() -> None:
         raise ValueError("--max-frames must be non-negative")
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
-    if args.text_prefix_pad_weight < 0:
-        raise ValueError("--text-prefix-pad-weight must be non-negative")
+    if args.text_pad_loss_weight < 0:
+        raise ValueError("--text-pad-loss-weight must be non-negative")
+    if args.first_content_loss_weight < 0:
+        raise ValueError("--first-content-loss-weight must be non-negative")
     if args.cache_weights is not None and len(args.cache_weights) != len(args.cache_dir):
         raise ValueError("--cache-weights must match --cache-dir")
     if not 0 < args.adam_beta1 < 1 or not 0 < args.adam_beta2 < 1:
@@ -466,7 +479,14 @@ def main() -> None:
     val_log_path = out_dir / "val_log.jsonl"
     greedy_log_path = out_dir / "greedy_eval_log.jsonl"
     condition_cache: dict[int, Any | None] = {}
-    log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
+    log_sums = {
+        "loss": 0.0,
+        "audio_loss": 0.0,
+        "text_loss": 0.0,
+        "content_text_loss": 0.0,
+        "pad_text_loss": 0.0,
+        "first_content_loss": 0.0,
+    }
     log_steps = 0
     log_text_tokens = 0
     log_microbatches = 0
@@ -500,11 +520,14 @@ def main() -> None:
             text_w,
             args.val_batches,
             args.text_pad_mode,
-            args.text_prefix_pad_weight,
+            args.text_pad_loss_weight,
+            args.first_content_loss_weight,
         )
         item = {"step": step, **{k: metrics[k] for k in (
             "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "samples",
-            "content_text_loss", "content_acc", "content_tokens", "silence_score",
+            "content_text_loss", "content_acc", "content_tokens", "pad_text_loss", "pad_acc",
+            "pad_tokens", "first_content_loss", "first_content_tokens",
+            "first_content_margin", "silence_score",
         )}}
         item.update(common.mps_memory_stats(device))
         with val_log_path.open("a", encoding="utf-8") as fh:
@@ -512,10 +535,12 @@ def main() -> None:
         print(
             f"val step={step} loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} "
             f"text={metrics['text_loss']:.4f} content={metrics['content_text_loss']:.4f} "
-            f"acc={metrics['content_acc']:.3f} silence={metrics['silence_score']:.3f}"
+            f"first={metrics['first_content_loss']:.4f} pad={metrics['pad_text_loss']:.4f} "
+            f"acc={metrics['content_acc']:.3f} pad_acc={metrics['pad_acc']:.3f} "
+            f"margin={metrics['first_content_margin']:.3f} silence={metrics['silence_score']:.3f}"
         )
 
-    def run_greedy_val(step: int) -> None:
+    def run_greedy_val(step: int, allow_promotion: bool = True) -> None:
         nonlocal best_chrf
         if not args.eval_every:
             return
@@ -566,7 +591,7 @@ def main() -> None:
         with greedy_log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(item, sort_keys=True) + "\n")
         marker = ""
-        if chrf > best_chrf and (eligible or not args.best_requires_gates):
+        if allow_promotion and chrf > best_chrf and (eligible or not args.best_requires_gates):
             previous_best = load_best_state(out_dir)
             best_chrf = chrf
             best_model = out_dir / f"best_step{step:06d}.safetensors"
@@ -586,6 +611,9 @@ def main() -> None:
             f"nonempty={item['nonempty']}/{item['num']}{marker}"
         )
         common.empty_device_cache(device)
+
+    if args.eval_at_start and global_step == 0:
+        run_greedy_val(0, allow_promotion=False)
 
     dataloader = common.make_cached_dataloader(
         dataset,
@@ -623,6 +651,7 @@ def main() -> None:
 
         optimizer.zero_grad(set_to_none=True)
         step_loss = step_audio = step_text = 0.0
+        step_content = step_pad = step_first = 0.0
         step_text_tokens = 0
         for _ in range(args.grad_accum_steps):
             try:
@@ -652,7 +681,8 @@ def main() -> None:
                     condition_cache[batch_size],
                     audio_w,
                     text_w,
-                    text_prefix_pad_weight=args.text_prefix_pad_weight,
+                    text_pad_loss_weight=args.text_pad_loss_weight,
+                    first_content_loss_weight=args.first_content_loss_weight,
                     text_pad_mode=args.text_pad_mode,
                 )
             loss = losses["loss"]
@@ -664,6 +694,9 @@ def main() -> None:
             step_loss = step_loss + loss.detach()
             step_audio = step_audio + losses["audio_loss"].detach()
             step_text = step_text + losses["text_loss"].detach()
+            step_content = step_content + losses["content_text_loss"].detach()
+            step_pad = step_pad + losses["pad_text_loss"].detach()
+            step_first = step_first + losses["first_content_loss"].detach()
             step_text_tokens = step_text_tokens + losses["text_tokens"]
 
         if args.grad_clip > 0:
@@ -674,6 +707,9 @@ def main() -> None:
         log_sums["loss"] += step_loss / args.grad_accum_steps
         log_sums["audio_loss"] += step_audio / args.grad_accum_steps
         log_sums["text_loss"] += step_text / args.grad_accum_steps
+        log_sums["content_text_loss"] += step_content / args.grad_accum_steps
+        log_sums["pad_text_loss"] += step_pad / args.grad_accum_steps
+        log_sums["first_content_loss"] += step_first / args.grad_accum_steps
         log_steps += 1
         log_text_tokens += step_text_tokens
 
@@ -691,6 +727,9 @@ def main() -> None:
                 "loss": loss_avg,
                 "audio_loss": float(log_sums["audio_loss"]) / log_steps,
                 "text_loss": float(log_sums["text_loss"]) / log_steps,
+                "content_text_loss": float(log_sums["content_text_loss"]) / log_steps,
+                "pad_text_loss": float(log_sums["pad_text_loss"]) / log_steps,
+                "first_content_loss": float(log_sums["first_content_loss"]) / log_steps,
                 "text_tokens": int(log_text_tokens),
                 "microbatches": log_microbatches,
                 "samples": log_samples,
@@ -705,6 +744,8 @@ def main() -> None:
                 "lr": lr_value,
                 "text_weight": text_w,
                 "audio_weight": audio_w,
+                "pad_loss_weight": args.text_pad_loss_weight,
+                "first_content_loss_weight": args.first_content_loss_weight,
             }
             item.update(common.mps_memory_stats(device))
             with log_path.open("a", encoding="utf-8") as fh:
@@ -714,12 +755,20 @@ def main() -> None:
                 memory_msg = f" mps={item['mps_allocated_gb']:.1f}/{item['mps_driver_gb']:.1f}GB"
             print(
                 f"step={global_step} loss={item['loss']:.4f} audio={item['audio_loss']:.4f} "
-                f"text={item['text_loss']:.4f} tw={text_w:g} "
+                f"text={item['text_loss']:.4f} content={item['content_text_loss']:.4f} "
+                f"first={item['first_content_loss']:.4f} pad={item['pad_text_loss']:.4f} tw={text_w:g} "
                 f"B={item['samples'] / item['microbatches']:.1f} "
                 f"[{item['min_batch_size']}-{item['max_batch_size']}] T<={item['max_frames']} "
                 f"s/step={item['sec_per_step']:.3f}{memory_msg}"
             )
-            log_sums = {"loss": 0.0, "audio_loss": 0.0, "text_loss": 0.0}
+            log_sums = {
+                "loss": 0.0,
+                "audio_loss": 0.0,
+                "text_loss": 0.0,
+                "content_text_loss": 0.0,
+                "pad_text_loss": 0.0,
+                "first_content_loss": 0.0,
+            }
             log_steps = 0
             log_text_tokens = 0
             log_microbatches = 0

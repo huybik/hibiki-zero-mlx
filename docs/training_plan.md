@@ -74,7 +74,7 @@ size and accumulation factor.
 ```text
 epochs=2, max_frames=280, effective_batch=16
 lr=1e-4@0,3e-5@0.5, warmup_steps=500
-text_weight=5@0,2@0.6, text_prefix_pad_weight=0.5
+text_weight=5@0,2@0.6, text_pad_loss_weight=0.5
 val_every=2000, eval_every=9000, save_every=3000, keep_checkpoints=2
 ```
 
@@ -147,12 +147,14 @@ the Wav2Vec2 model's correct no-attention-mask batching, scores ranged from
 0.814 to 0.987.
 
 The recipe uses one epoch, 95% PhoMT / 5% FLEURS sampling, effective batch 16,
-AdamW `(beta1=0.9, beta2=0.95, weight_decay=0.1)`, 1,000 warmup steps, cosine
-LR `1e-5 -> 1e-6`, text weight 2, and prefix-PAD weight 0.1. Greedy validation
-runs every 3,000 steps and includes a cyclic source-shuffle control. Best-model
-saves require all generation eligibility gates. A full run includes every
-usable PhoMT row once before any repeats and repeats the smaller FLEURS pool to
-make its exposure 5%.
+AdamW `(beta1=0.9, beta2=0.95, weight_decay=0.1)`, 1,000 warmup steps, and cosine
+LR `1e-5 -> 1e-6`. Text loss reduces content, PAD, and first-content tokens
+independently, then combines them with aggregate weights `1.0 / 0.05 / 1.0`.
+Only prefix PAD is supervised during source grounding; inter-word PAD returns
+after grounding qualifies. Greedy validation includes a step-0 baseline and a
+cyclic source-shuffle control. Best-model saves require all generation
+eligibility gates. A full run includes every usable PhoMT row once before any
+repeats and repeats the smaller FLEURS pool to make its exposure 5%.
 
 For the 50k-row spend-control pilot, build at least 50k PhoMT rows into the v2
 cache. To sample 104 shards across the corpus instead of building all of it,
@@ -164,6 +166,7 @@ export HIBIKI_CACHE_SAMPLE_SHARDS=104
 ./finetune/h100.sh cache-grounded
 unset HIBIKI_CACHE_SAMPLE_SHARDS
 export HIBIKI_MAX_SAMPLES=50000
+export HIBIKI_MAX_STEPS=1000
 export HIBIKI_HF_PREFIX=grounded_v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh preflight
@@ -171,7 +174,9 @@ export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh train
 ```
 
-Omit `HIBIKI_MAX_SAMPLES` to train on the full cache. A 50k pilot remains the
-recommended spend gate: proceed to all rows only after the 1k/3k generations
-show source-conditioned translation and the shuffled-source score is materially
-worse.
+When `HIBIKI_MAX_SAMPLES` is set, the launcher disables audio loss so the pilot
+isolates text grounding. At 1,000 steps it generates at step 0, every 250 steps,
+and final. Omit both `HIBIKI_MAX_SAMPLES` and `HIBIKI_MAX_STEPS` only after the
+pilot qualifies; that restores audio loss and the 3,000-step generation cadence.
+Proceed only when BLEU rises and correct-source generation is materially better
+than cyclically shuffled-source generation.

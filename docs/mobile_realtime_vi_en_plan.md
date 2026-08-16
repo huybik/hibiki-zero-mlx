@@ -413,7 +413,7 @@ python finetune/train.py \
   --epochs 2 \
   --lr-schedule "1e-4@0,3e-5@0.5" --warmup-steps 500 \
   --text-weight-schedule "5@0,2@0.6" \
-  --text-prefix-pad-weight 0.5 \
+  --text-pad-loss-weight 0.5 \
   --seed 42 \
   --val-every 2000 --val-batch-size 8 \
   --eval-every 9000 \
