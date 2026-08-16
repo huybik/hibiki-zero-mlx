@@ -621,6 +621,9 @@ def main() -> None:
     run_config["total_steps"] = total_steps
     run_config["batches_per_epoch"] = batches_per_epoch
     run_config["steps_per_epoch"] = steps_per_epoch
+    run_config["observed_train_max_frames"] = max(
+        int(sample["frames"]) for sample in dataset.samples
+    )
     if sample_manifest_sha256 is not None:
         run_config["sample_manifest_sha256"] = sample_manifest_sha256
     run_config_path = out_dir / "run_config.json"

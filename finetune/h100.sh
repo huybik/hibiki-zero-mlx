@@ -594,7 +594,10 @@ if high_delay_pilot:
         raise RuntimeError("high-delay smoke changed authoritative sample membership")
     if max(int(item["max_batch_size"]) for item in logs) != 8:
         raise RuntimeError("high-delay smoke did not exercise physical batch 8")
-    if max(int(item["max_frames"]) for item in logs) != 478:
+    observed_train_max_frames = int(config.get("observed_train_max_frames", 0))
+    if not 0 < observed_train_max_frames <= int(config["max_frames"]):
+        raise RuntimeError("high-delay observed training maximum exceeds its frame cap")
+    if max(int(item["max_frames"]) for item in logs) != observed_train_max_frames:
         raise RuntimeError("high-delay smoke did not exercise the longest manifest row")
 
 eval_dir = root / "standalone_eval_step10"
