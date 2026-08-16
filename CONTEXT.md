@@ -109,7 +109,11 @@ but owns `*_pilot_high_delay_contrastive` smoke/run/HF artifacts. It freezes a
 no-duplicate-ID donor permutation, preserves each target's source duration/EOS,
 and adds weight-1 `relu(0.5 + correct_nll - shuffled_nll)` over English content.
 The sequential correct/shuffled forwards use physical batch 4 / accumulation 4
-on the 94 GB H100 while preserving effective batch 16.
+on the 94 GB H100 while preserving effective batch 16. That pilot also failed:
+by step 1,000 its teacher-forced shuffled-minus-correct NLL gap reached 1.04,
+but free-running BLEU/chrF gaps remained 0.04/0.61 with 69 repetition failures
+and mean length ratio 2.95. Contrastive text ranking is rejected; Vietnamese
+acoustic preadaptation is the next diagnostic before any full SFT.
 
 ## Canonical resources
 

@@ -108,6 +108,27 @@ verify that the intervention is operating but do not qualify a checkpoint.
 Promotion still requires free-running correct-source health plus the calibrated
 1.0 BLEU and 5.0 chrF paired gaps, ranked by correct-source `(BLEU, chrF)`.
 
+## Contrastive pilot result
+
+The exact high-delay cohort was trained with the frozen duration-matched
+shuffled-source margin loss. The objective learned a strong teacher-forced
+separation: at step 1,000, shuffled-minus-correct English-content NLL was 1.04,
+margin loss was 0.039, and 18.8% of rows remained active. Free-running routing
+did not follow:
+
+| Step | Nonempty | EOS | Repeat-4 failures | Length ratio | BLEU | chrF | BLEU gap | chrF gap |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 128 | 120 | 13 | 1.06 | 0.218 | 14.62 | 0.111 | 1.144 |
+| 250 | 126 | 74 | 80 | 4.17 | 0.060 | 13.40 | 0.021 | -0.264 |
+| 500 | 128 | 115 | 69 | 3.01 | 0.082 | 13.54 | 0.027 | 0.554 |
+| 750 | 128 | 116 | 62 | 2.93 | 0.099 | 15.31 | 0.055 | 1.009 |
+| 1,000 | 128 | 118 | 69 | 2.95 | 0.115 | 14.68 | 0.041 | 0.609 |
+
+No checkpoint was healthy or cleared either calibrated source-gap threshold.
+This localizes the failure to transfer from teacher-forced source ranking into
+stable autoregressive decoding and rejects contrastive text-only SFT as the full
+recipe. The next diagnostic is Vietnamese acoustic preadaptation.
+
 ## Diagnostics and final test
 
 For the masked text/source-only pilot, teacher-forced validation must also pass

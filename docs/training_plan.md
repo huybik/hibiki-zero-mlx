@@ -242,3 +242,11 @@ negative forwards use physical batch 4 / accumulation 4 on the 94 GB H100 while
 preserving effective batch 16. A high-delay cache remains a curriculum, never
 the final timing policy, because sentence-delay supervision can leave
 persistent lag.
+
+The exact contrastive pilot failed all promotion gates. Its teacher-forced NLL
+gap reached 1.04 by step 1,000, proving that the ranking objective operated, but
+paired free-running gaps were only 0.04 BLEU / 0.61 chrF and generation remained
+overlong and repetitive. Reject text-only contrastive SFT as the full recipe.
+The next diagnostic is Vietnamese acoustic preadaptation from the upstream base,
+followed by a fresh isolated translation pilot; do not warm-start the full run
+from this checkpoint.

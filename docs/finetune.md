@@ -243,6 +243,14 @@ Because each microbatch performs sequential correct and shuffled forwards, the
 94 GB H100 recipe uses physical batch 4 / accumulation 4 while preserving
 effective batch 16.
 
+The completed 1,000-step contrastive pilot learned its teacher-forced objective
+but failed free-running qualification. At step 1,000, shuffled-minus-correct
+English-content NLL was 1.04, margin loss was 0.039, and 18.8% of rows remained
+active. Paired generation still produced only 0.04 BLEU / 0.61 chrF gaps, 69
+repeated-4gram failures, and mean length ratio 2.95. Do not extend or use this
+checkpoint for full training; proceed to a Vietnamese acoustic-preadaptation
+diagnostic.
+
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
 conditions, and evaluation restores training RNG afterward. Calibrate explicit
