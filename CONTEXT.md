@@ -108,6 +108,8 @@ preadaptation. `HIBIKI_CONTRASTIVE_PILOT=1` reuses the verified high-delay cache
 but owns `*_pilot_high_delay_contrastive` smoke/run/HF artifacts. It freezes a
 no-duplicate-ID donor permutation, preserves each target's source duration/EOS,
 and adds weight-1 `relu(0.5 + correct_nll - shuffled_nll)` over English content.
+The sequential correct/shuffled forwards use physical batch 4 / accumulation 4
+on the 94 GB H100 while preserving effective batch 16.
 
 ## Canonical resources
 

@@ -268,6 +268,7 @@ preflight() {
   local profile
   profile="$("$PYTHON" - \
     "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "$PILOT" "$HIGH_DELAY_PILOT" \
+    "$CONTRASTIVE_PILOT" \
     "$TARGET_DELAY_MIN_RATIO" "$TARGET_DELAY_MAX_RATIO" "$TARGET_DELAY_SEED" \
     "$PHOMT_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" <<'PY'
 from __future__ import annotations
@@ -286,12 +287,13 @@ minimum_free_gib = float(sys.argv[2])
 recipe = sys.argv[3]
 pilot = bool(int(sys.argv[4]))
 high_delay_pilot = bool(int(sys.argv[5]))
+contrastive_pilot = bool(int(sys.argv[6]))
 target_delay = {
-    "min_ratio": float(sys.argv[6]),
-    "max_ratio": float(sys.argv[7]),
-    "seed": int(sys.argv[8]),
+    "min_ratio": float(sys.argv[7]),
+    "max_ratio": float(sys.argv[8]),
+    "seed": int(sys.argv[9]),
 }
-phomt_cache, train_cache, val_cache = sys.argv[9:12]
+phomt_cache, train_cache, val_cache = sys.argv[10:13]
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -315,7 +317,9 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if high_delay_pilot and memory_gib >= 75:
+if contrastive_pilot and memory_gib >= 75:
+    batch_size, grad_accum = 4, 4
+elif high_delay_pilot and memory_gib >= 75:
     batch_size, grad_accum = 8, 2
 elif memory_gib >= 90:
     batch_size, grad_accum = 16, 1
@@ -593,9 +597,11 @@ for item in logs:
 
 if high_delay_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
+    expected_batch_size = 4 if contrastive_pilot else 8
+    expected_grad_accum = 4 if contrastive_pilot else 2
     expected = {
-        "batch_size": 8,
-        "grad_accum_steps": 2,
+        "batch_size": expected_batch_size,
+        "grad_accum_steps": expected_grad_accum,
         "max_frames": 480,
         "val_max_frames": 704,
         "val_batch_size": 1,
@@ -615,8 +621,10 @@ if high_delay_pilot:
     manifest_digest = hashlib.sha256((root / "sample_manifest.jsonl").read_bytes()).hexdigest()
     if manifest_digest != baseline_manifest_sha256:
         raise RuntimeError("high-delay smoke changed authoritative sample membership")
-    if max(int(item["max_batch_size"]) for item in logs) != 8:
-        raise RuntimeError("high-delay smoke did not exercise physical batch 8")
+    if max(int(item["max_batch_size"]) for item in logs) != expected_batch_size:
+        raise RuntimeError(
+            f"high-delay smoke did not exercise physical batch {expected_batch_size}"
+        )
     observed_train_max_frames = int(config.get("observed_train_max_frames", 0))
     if not 0 < observed_train_max_frames <= int(config["max_frames"]):
         raise RuntimeError("high-delay observed training maximum exceeds its frame cap")

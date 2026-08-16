@@ -239,6 +239,9 @@ EOS. The added English-content loss is
 `relu(0.5 + correct_nll - shuffled_nll)` at weight 1. The smoke verifies the
 mapping hash/permutation and finite contrastive loss, shuffled-minus-correct
 NLL gap, and active-margin fraction.
+Because each microbatch performs sequential correct and shuffled forwards, the
+94 GB H100 recipe uses physical batch 4 / accumulation 4 while preserving
+effective batch 16.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
@@ -257,6 +260,8 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
   pilot uses 480 for training and a separate 704 validation cap at batch 1.
   Sixteen-frame buckets bound compiled CUDA shapes.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
+  The high-delay pilot uses batch 8 / accumulation 2, while its contrastive
+  variant uses batch 4 / accumulation 4 on the 94 GB H100.
 - Text content, PAD, and first-content losses are reduced independently before
   weighting, so PAD prevalence cannot change its aggregate gradient budget.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.

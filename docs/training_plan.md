@@ -237,6 +237,8 @@ ordinary correct-source CE remains unchanged; a sequential shuffled forward
 adds weight-1 `relu(0.5 + correct_nll - shuffled_nll)` over per-row English
 content NLL. Persist and verify the mapping SHA, contrastive loss,
 shuffled-minus-correct NLL gap, and active-margin fraction. Consider Vietnamese
-acoustic preadaptation only if this pilot also fails. A high-delay cache remains
-a curriculum, never the final timing policy, because sentence-delay
-supervision can leave persistent lag.
+acoustic preadaptation only if this pilot also fails. Sequential positive and
+negative forwards use physical batch 4 / accumulation 4 on the 94 GB H100 while
+preserving effective batch 16. A high-delay cache remains a curriculum, never
+the final timing policy, because sentence-delay supervision can leave
+persistent lag.
