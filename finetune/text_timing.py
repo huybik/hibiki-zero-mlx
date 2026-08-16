@@ -76,7 +76,7 @@ def _ctc_token_frames(log_probs: Any, targets: list[int], blank_id: int) -> tupl
     score = torch.full((states,), -torch.inf, device=log_probs.device)
     score[0] = log_probs[0, blank_id]
     score[1] = log_probs[0, targets[0]]
-    back = torch.zeros((time_steps, states), dtype=torch.int8, device="cpu")
+    back = torch.zeros((time_steps, states), dtype=torch.int8, device=log_probs.device)
 
     for time_index in range(1, time_steps):
         candidates = torch.stack(
@@ -91,9 +91,10 @@ def _ctc_token_frames(log_probs: Any, targets: list[int], blank_id: int) -> tupl
         candidates[2, ~can_skip] = -torch.inf
         best_score, choice = candidates.max(dim=0)
         score = best_score + log_probs[time_index, symbols]
-        back[time_index] = choice.to(device="cpu", dtype=torch.int8)
+        back[time_index] = choice.to(dtype=torch.int8)
 
     state = states - 1 if score[-1] >= score[-2] else states - 2
+    back = back.cpu()
     path = [state]
     for time_index in range(time_steps - 1, 0, -1):
         state -= int(back[time_index, state])
