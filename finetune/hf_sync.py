@@ -23,7 +23,7 @@ STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
 STAGED_BEST = re.compile(r"best_step(\d+)$")
-RUN_METADATA = ("run_config.json", "sample_manifest.jsonl")
+RUN_METADATA = ("run_config.json", "sample_manifest.jsonl", "source_derangement.json")
 
 
 def parse_args() -> argparse.Namespace:

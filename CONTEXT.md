@@ -55,9 +55,9 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   PhoMT is pinned and CTC rows below 0.5 are rejected. Legacy remains default.
 - `finetune/common.py` owns cached data, losses, schedules, exact full-model
   checkpoint I/O, free-running generation, paired metrics, RNG isolation, and
-  frozen duration-matched derangements. Complete checkpoint pairs are
-  published atomically and pre-rotated to avoid transient disk spikes; loading
-  rejects missing and unexpected tensor keys.
+  frozen duration-matched evaluation/training derangements. Complete checkpoint
+  pairs are published atomically and pre-rotated to avoid transient disk spikes;
+  loading rejects missing and unexpected tensor keys.
 - `finetune/cache_phomt_stream.py` builds the published PhoMT cache directly
   from parquet with bounded download prefetch and Hugging Face Xet. MPS runs keep
   the CTC dynamic program on-device with one result transfer, release each batch,
@@ -104,7 +104,10 @@ batch 1. The exact high-delay retry also failed every promotion gate: at step
 1,000 it produced BLEU/chrF 0.03/9.34, gaps 0.01/0.72, 31 EOS, and 111
 repetition failures. Delay alone is rejected; the next isolated pilot adds a
 duration-matched shuffled-source margin loss before considering acoustic
-preadaptation.
+preadaptation. `HIBIKI_CONTRASTIVE_PILOT=1` reuses the verified high-delay cache
+but owns `*_pilot_high_delay_contrastive` smoke/run/HF artifacts. It freezes a
+no-duplicate-ID donor permutation, preserves each target's source duration/EOS,
+and adds weight-1 `relu(0.5 + correct_nll - shuffled_nll)` over English content.
 
 ## Canonical resources
 

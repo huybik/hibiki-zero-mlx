@@ -82,6 +82,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Replace teacher-forced target-audio inputs with zero tokens; requires zero audio weight.",
     )
+    parser.add_argument("--contrastive-source-weight", type=float, default=0.0)
+    parser.add_argument("--contrastive-source-margin", type=float, default=0.5)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-weight-schedule", default="", help='Text loss-weight schedule "5@0,2@0.6".')
     parser.add_argument(
@@ -416,6 +418,10 @@ def main() -> None:
         raise ValueError("--text-pad-loss-weight must be non-negative")
     if args.first_content_loss_weight < 0:
         raise ValueError("--first-content-loss-weight must be non-negative")
+    if args.contrastive_source_weight < 0 or args.contrastive_source_margin < 0:
+        raise ValueError("Contrastive source weight and margin must be non-negative")
+    if args.contrastive_source_weight and args.input_sample_manifest is None:
+        raise ValueError("Contrastive source loss requires authoritative input membership")
     if args.cache_weights is not None and len(args.cache_weights) != len(args.cache_dir):
         raise ValueError("--cache-weights must match --cache-dir")
     if args.eval_every and (
@@ -489,6 +495,15 @@ def main() -> None:
     lr_points = common.parse_schedule(args.lr_schedule or args.lr)
     if args.mask_target_audio_input and any(weight != 0.0 for _, weight in audio_points):
         raise ValueError("--mask-target-audio-input requires every audio weight to be zero")
+    if args.contrastive_source_weight and (
+        not args.mask_target_audio_input or any(weight != 0.0 for _, weight in audio_points)
+    ):
+        raise ValueError("Contrastive source loss requires masked target audio and zero audio loss")
+    source_derangement_sha256 = None
+    if args.contrastive_source_weight:
+        source_derangement_sha256 = common.attach_source_derangement(
+            dataset, out_dir / "source_derangement.json"
+        )
 
     batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
     steps_per_epoch = max(1, batches_per_epoch // args.grad_accum_steps)
@@ -617,6 +632,8 @@ def main() -> None:
             previous_config = json.loads(previous_config_path.read_text(encoding="utf-8"))
             if previous_config.get("sample_manifest_sha256") != sample_manifest_sha256:
                 raise RuntimeError("sample_manifest.jsonl SHA-256 differs from run_config.json")
+            if previous_config.get("source_derangement_sha256") != source_derangement_sha256:
+                raise RuntimeError("Source derangement differs from run_config.json")
     run_config = {k: _jsonable(v) for k, v in vars(args).items()}
     run_config["total_steps"] = total_steps
     run_config["batches_per_epoch"] = batches_per_epoch
@@ -626,6 +643,8 @@ def main() -> None:
     )
     if sample_manifest_sha256 is not None:
         run_config["sample_manifest_sha256"] = sample_manifest_sha256
+    if source_derangement_sha256 is not None:
+        run_config["source_derangement_sha256"] = source_derangement_sha256
     run_config_path = out_dir / "run_config.json"
     if args.resume_checkpoint is None:
         atomic_write_text(
@@ -644,6 +663,8 @@ def main() -> None:
         "content_text_loss": 0.0,
         "pad_text_loss": 0.0,
         "first_content_loss": 0.0,
+        "contrastive_source_loss": 0.0,
+        "source_text_nll_gap": 0.0,
     }
     log_steps = 0
     log_text_tokens = 0
@@ -655,6 +676,7 @@ def main() -> None:
     log_min_batch_size = math.inf
     log_max_batch_size = 0
     log_max_frames = 0
+    log_contrastive_active = 0.0
     best_key = (-1.0, -1.0)
     best_state = load_best_state(out_dir)
     if args.resume_checkpoint is not None and best_state is not None:
@@ -810,6 +832,7 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         step_loss = step_audio = step_text = 0.0
         step_content = step_pad = step_first = 0.0
+        step_contrastive = step_source_gap = step_contrastive_active = 0.0
         step_text_tokens = 0
         for _ in range(args.grad_accum_steps):
             try:
@@ -843,19 +866,64 @@ def main() -> None:
                     first_content_loss_weight=args.first_content_loss_weight,
                     text_pad_mode=args.text_pad_mode,
                     mask_target_audio_input=args.mask_target_audio_input,
+                    return_per_sample_content_loss=bool(args.contrastive_source_weight),
                 )
             loss = losses["loss"]
             (loss / args.grad_accum_steps).backward()
+            contrastive_loss = loss.detach().new_zeros(())
+            source_text_nll_gap = loss.detach().new_zeros(())
+            contrastive_active = loss.detach().new_zeros(())
+            if args.contrastive_source_weight:
+                if "shuffled_codes" not in batch:
+                    raise RuntimeError("Contrastive source batch is missing donor codes")
+                correct_content_losses = losses.pop("per_sample_content_text_loss").detach()
+                shuffled_codes = batch["shuffled_codes"].to(device=device, dtype=torch.long)
+                with autocast:
+                    shuffled_losses = common.compute_batch_losses(
+                        lm,
+                        shuffled_codes,
+                        condition_cache[batch_size],
+                        0.0,
+                        1.0,
+                        text_pad_loss_weight=args.text_pad_loss_weight,
+                        first_content_loss_weight=args.first_content_loss_weight,
+                        text_pad_mode=args.text_pad_mode,
+                        mask_target_audio_input=True,
+                        return_per_sample_content_loss=True,
+                    )
+                shuffled_content_losses = shuffled_losses["per_sample_content_text_loss"]
+                hinge = torch.relu(
+                    args.contrastive_source_margin
+                    + correct_content_losses
+                    - shuffled_content_losses
+                )
+                contrastive_loss = hinge.mean()
+                (
+                    args.contrastive_source_weight
+                    * contrastive_loss
+                    / args.grad_accum_steps
+                ).backward()
+                source_text_nll_gap = (
+                    shuffled_content_losses.detach() - correct_content_losses
+                ).mean()
+                contrastive_active = (hinge.detach() > 0).sum()
             micro_step += 1
             # Accumulate on-device; host sync (and the non-finite check) happens
             # only at --log-every boundaries. Per-micro-step .cpu() reads stalled
             # the CUDA pipeline every step.
-            step_loss = step_loss + loss.detach()
+            step_loss = (
+                step_loss
+                + loss.detach()
+                + args.contrastive_source_weight * contrastive_loss.detach()
+            )
             step_audio = step_audio + losses["audio_loss"].detach()
             step_text = step_text + losses["text_loss"].detach()
             step_content = step_content + losses["content_text_loss"].detach()
             step_pad = step_pad + losses["pad_text_loss"].detach()
             step_first = step_first + losses["first_content_loss"].detach()
+            step_contrastive = step_contrastive + contrastive_loss.detach()
+            step_source_gap = step_source_gap + source_text_nll_gap.detach()
+            step_contrastive_active = step_contrastive_active + contrastive_active
             step_text_tokens = step_text_tokens + losses["text_tokens"]
 
         if args.grad_clip > 0:
@@ -869,6 +937,9 @@ def main() -> None:
         log_sums["content_text_loss"] += step_content / args.grad_accum_steps
         log_sums["pad_text_loss"] += step_pad / args.grad_accum_steps
         log_sums["first_content_loss"] += step_first / args.grad_accum_steps
+        log_sums["contrastive_source_loss"] += step_contrastive / args.grad_accum_steps
+        log_sums["source_text_nll_gap"] += step_source_gap / args.grad_accum_steps
+        log_contrastive_active += step_contrastive_active
         log_steps += 1
         log_text_tokens += step_text_tokens
 
@@ -889,6 +960,12 @@ def main() -> None:
                 "content_text_loss": float(log_sums["content_text_loss"]) / log_steps,
                 "pad_text_loss": float(log_sums["pad_text_loss"]) / log_steps,
                 "first_content_loss": float(log_sums["first_content_loss"]) / log_steps,
+                "contrastive_source_loss": float(log_sums["contrastive_source_loss"])
+                / log_steps,
+                "source_text_nll_gap": float(log_sums["source_text_nll_gap"]) / log_steps,
+                "contrastive_active_fraction": (
+                    float(log_contrastive_active) / log_samples if log_samples else 0.0
+                ),
                 "text_tokens": int(log_text_tokens),
                 "microbatches": log_microbatches,
                 "samples": log_samples,
@@ -905,6 +982,8 @@ def main() -> None:
                 "audio_weight": audio_w,
                 "pad_loss_weight": args.text_pad_loss_weight,
                 "first_content_loss_weight": args.first_content_loss_weight,
+                "contrastive_source_weight": args.contrastive_source_weight,
+                "contrastive_source_margin": args.contrastive_source_margin,
             }
             item.update(common.mps_memory_stats(device))
             with log_path.open("a", encoding="utf-8") as fh:
@@ -916,6 +995,9 @@ def main() -> None:
                 f"step={global_step} loss={item['loss']:.4f} audio={item['audio_loss']:.4f} "
                 f"text={item['text_loss']:.4f} content={item['content_text_loss']:.4f} "
                 f"first={item['first_content_loss']:.4f} pad={item['pad_text_loss']:.4f} tw={text_w:g} "
+                f"contrast={item['contrastive_source_loss']:.4f} "
+                f"source_gap={item['source_text_nll_gap']:.4f} "
+                f"active={item['contrastive_active_fraction']:.3f} "
                 f"B={item['samples'] / item['microbatches']:.1f} "
                 f"[{item['min_batch_size']}-{item['max_batch_size']}] T<={item['max_frames']} "
                 f"s/step={item['sec_per_step']:.3f}{memory_msg}"
@@ -927,6 +1009,8 @@ def main() -> None:
                 "content_text_loss": 0.0,
                 "pad_text_loss": 0.0,
                 "first_content_loss": 0.0,
+                "contrastive_source_loss": 0.0,
+                "source_text_nll_gap": 0.0,
             }
             log_steps = 0
             log_text_tokens = 0
@@ -938,6 +1022,7 @@ def main() -> None:
             log_min_batch_size = math.inf
             log_max_batch_size = 0
             log_max_frames = 0
+            log_contrastive_active = 0.0
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:

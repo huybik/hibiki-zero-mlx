@@ -48,6 +48,7 @@ from finetune.hibiki_helpers import (
 from finetune.utils import repo_display_path, require_file, resolve_repo_path
 
 SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT, GROUNDED_CACHE_FORMAT}
+SOURCE_DERANGEMENT_BLOCK_SIZE = 256
 
 
 # --------------------------------------------------------------------------- #
@@ -410,6 +411,98 @@ class CachedCodeDataset(Dataset):
         }
 
 
+def _source_derangement_payload(
+    dataset: CachedCodeDataset,
+    block_size: int = SOURCE_DERANGEMENT_BLOCK_SIZE,
+) -> dict[str, Any]:
+    if len(dataset) < 2 or block_size < 2:
+        raise ValueError("Source derangement requires at least two samples and block size >= 2")
+    order = sorted(
+        range(len(dataset)),
+        key=lambda index: (
+            dataset.samples[index]["source_frames"],
+            dataset.samples[index]["id"],
+            index,
+        ),
+    )
+    blocks = [order[start : start + block_size] for start in range(0, len(order), block_size)]
+    if len(blocks) > 1 and len(blocks[-1]) == 1:
+        blocks[-2].extend(blocks.pop())
+    donors = [-1] * len(dataset)
+    for block in blocks:
+        ids = [dataset.samples[index]["id"] for index in block]
+        frames = [dataset.samples[index]["source_frames"] for index in block]
+        choices = []
+        for offset in range(1, len(block)):
+            if all(ids[pos] != ids[(pos + offset) % len(block)] for pos in range(len(block))):
+                distance = sum(
+                    abs(frames[pos] - frames[(pos + offset) % len(block)])
+                    for pos in range(len(block))
+                )
+                choices.append((distance, offset))
+        if not choices:
+            raise RuntimeError("Cannot construct a source derangement without duplicate-id donors")
+        _, offset = min(choices)
+        for pos, target_index in enumerate(block):
+            donors[target_index] = block[(pos + offset) % len(block)]
+    if sorted(donors) != list(range(len(dataset))):
+        raise RuntimeError("Source donor mapping is not a permutation")
+    pairs = []
+    for target_index, source_index in enumerate(donors):
+        target = dataset.samples[target_index]
+        source = dataset.samples[source_index]
+        if target["id"] == source["id"]:
+            raise RuntimeError("Source donor mapping contains a duplicate-id fixed point")
+        pairs.append(
+            {
+                "target_index": target_index,
+                "target_cache_index": target["cache_index"],
+                "target_id": target["id"],
+                "target_source_frames": target["source_frames"],
+                "source_index": source_index,
+                "source_cache_index": source["cache_index"],
+                "source_id": source["id"],
+                "source_frames": source["source_frames"],
+            }
+        )
+    return {
+        "version": 1,
+        "strategy": "duration_block_rotation",
+        "block_size": block_size,
+        "pairs": pairs,
+    }
+
+
+def attach_source_derangement(dataset: CachedCodeDataset, path: Path) -> str:
+    """Freeze duration-matched donor sources and attach them without copying host tensors."""
+    expected = _source_derangement_payload(dataset)
+    digest = _payload_sha256(expected)
+    if path.is_file():
+        document = json.loads(path.read_text(encoding="utf-8"))
+        payload = document.get("mapping")
+        if document.get("sha256") != _payload_sha256(payload) or payload != expected:
+            raise RuntimeError(f"Frozen source derangement does not match training data: {path}")
+    else:
+        path.write_text(
+            json.dumps({"sha256": digest, "mapping": expected}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    deltas = []
+    for pair in expected["pairs"]:
+        target = dataset.samples[pair["target_index"]]
+        source = dataset.samples[pair["source_index"]]
+        target["source_donor_codes"] = source["codes"]
+        target["source_donor_frames"] = source["source_frames"]
+        deltas.append(abs(target["source_frames"] - source["source_frames"]))
+    deltas.sort()
+    p95 = deltas[round(0.95 * (len(deltas) - 1))]
+    print(
+        f"Attached source derangement {digest}: "
+        f"median/p95/max frame delta={deltas[len(deltas) // 2]}/{p95}/{deltas[-1]}"
+    )
+    return digest
+
+
 # Pad each batch's frame length up to a multiple of this. MPS compiles+caches a
 # Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
 # lengths, which balloons the GPU working set (26 GB wired, swap-thrash). Bucketing
@@ -431,13 +524,34 @@ def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
         batch[index, :, : codes.shape[1]] = codes
         ids.append(sample["id"])
         strata.append(sample["stratum"])
-    return {
+    result = {
         "codes": batch,
         "ids": ids,
         "frames": torch.tensor([sample["frames"] for sample in samples]),
         "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
         "strata": strata,
     }
+    donor_flags = ["source_donor_codes" in sample for sample in samples]
+    if any(donor_flags):
+        if not all(donor_flags) or (codebooks - 1) % 2:
+            raise RuntimeError("Invalid contrastive source batch")
+        source_start = 1 + (codebooks - 1) // 2
+        shuffled = batch.clone()
+        for index, sample in enumerate(samples):
+            target_frames = int(sample["source_frames"])
+            donor_frames = int(sample["source_donor_frames"])
+            if target_frames >= sample["codes"].shape[1]:
+                raise RuntimeError("Cached source EOS falls outside the assembled sample")
+            shuffled[index, source_start:] = -1
+            copy_frames = min(target_frames, donor_frames)
+            shuffled[index, source_start:, :copy_frames] = sample["source_donor_codes"][
+                source_start:, :copy_frames
+            ]
+            shuffled[index, source_start:, target_frames] = sample["codes"][
+                source_start:, target_frames
+            ]
+        result["shuffled_codes"] = shuffled
+    return result
 
 
 def make_cached_dataloader(
@@ -575,6 +689,23 @@ def masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> tuple[Any, Any
     return loss_sum / token_count.clamp(min=1), token_count
 
 
+def per_sample_masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> Any:
+    token_losses = torch.nn.functional.cross_entropy(
+        logits[mask].float(), targets[mask].long(), reduction="none"
+    )
+    batch_indices = (
+        torch.arange(mask.shape[0], device=mask.device)[:, None, None]
+        .expand_as(mask)[mask]
+    )
+    loss_sums = torch.zeros(
+        mask.shape[0], device=token_losses.device, dtype=token_losses.dtype
+    ).scatter_add_(0, batch_indices, token_losses)
+    token_counts = torch.zeros_like(loss_sums).scatter_add_(
+        0, batch_indices, torch.ones_like(token_losses)
+    )
+    return loss_sums / token_counts.clamp(min=1)
+
+
 def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int, pad_mode: str) -> Any:
     if pad_mode == "all":
         return base_mask
@@ -663,6 +794,7 @@ def compute_batch_losses(
     text_pad_mode: str = "prefix",
     mask_target_audio_input: bool = False,
     return_output: bool = False,
+    return_per_sample_content_loss: bool = False,
 ) -> dict[str, Any]:
     model_inputs = codes
     if mask_target_audio_input:
@@ -698,6 +830,11 @@ def compute_batch_losses(
         "first_content_loss": text_losses["first_content_loss"],
         "first_content_tokens": text_losses["first_content_tokens"],
     }
+    if return_per_sample_content_loss:
+        content_mask = text_mask & (text_targets != lm.text_padding_token_id)
+        result["per_sample_content_text_loss"] = per_sample_masked_cross_entropy(
+            output.text_logits, text_targets, content_mask
+        )
     if return_output:
         # Only for eval: keeping logits alive an extra step in the train loop
         # would cost ~1 GB on a full-VRAM box.

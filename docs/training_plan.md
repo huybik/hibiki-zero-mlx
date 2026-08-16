@@ -212,7 +212,31 @@ all rows at batch 1 under a 704-frame hard cap; its observed maximum is 701.
 Run configuration records the delay bounds, cache seed, membership SHA, and
 frame caps. This exact high-delay pilot failed all health and source-dependence
 gates through step 1,000, so delay alone is rejected. The next isolated pilot
-adds a duration-matched shuffled-source margin loss; consider Vietnamese
-acoustic preadaptation only if that also fails. A high-delay cache remains a
-curriculum, never the final timing policy, because sentence-delay supervision
-can leave persistent lag.
+adds a duration-matched shuffled-source margin loss. It reuses the verified
+high-delay cache; do not run `cache-grounded` again:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_HIGH_DELAY_PILOT=1
+export HIBIKI_CONTRASTIVE_PILOT=1
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+The contrastive run owns only
+`*_grounded_v2_pilot_high_delay_contrastive` smoke/run paths and the matching
+HF prefix. A frozen duration-block permutation assigns a different-ID,
+duration-matched Vietnamese donor to every target. Collation preserves target
+timing and source EOS, so duration cannot reveal which source is shuffled. The
+ordinary correct-source CE remains unchanged; a sequential shuffled forward
+adds weight-1 `relu(0.5 + correct_nll - shuffled_nll)` over per-row English
+content NLL. Persist and verify the mapping SHA, contrastive loss,
+shuffled-minus-correct NLL gap, and active-margin fraction. Consider Vietnamese
+acoustic preadaptation only if this pilot also fails. A high-delay cache remains
+a curriculum, never the final timing policy, because sentence-delay
+supervision can leave persistent lag.

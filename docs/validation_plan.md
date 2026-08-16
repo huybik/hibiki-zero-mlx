@@ -102,6 +102,12 @@ source gaps. This rejects delay alone as the cause and triggers an isolated
 duration-matched shuffled-source margin-loss pilot; it still does not justify
 full training.
 
+For that pilot, teacher-forced logs record contrastive margin loss,
+shuffled-minus-correct English-content NLL, and active-margin fraction. These
+verify that the intervention is operating but do not qualify a checkpoint.
+Promotion still requires free-running correct-source health plus the calibrated
+1.0 BLEU and 5.0 chrF paired gaps, ranked by correct-source `(BLEU, chrF)`.
+
 ## Diagnostics and final test
 
 For the masked text/source-only pilot, teacher-forced validation must also pass

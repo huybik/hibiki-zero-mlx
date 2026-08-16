@@ -12,9 +12,11 @@ A Vast pod is disposable. Keep the three durable resources distinct:
   training change before relying on a remote recovery checkpoint.
 - HF dataset `huybik/hibiki-zero-vi-full-sft`: immutable PhoMT/FLEURS caches.
 - HF model `huybik/hibiki-zero-vi-full-sft`: published checkpoints. The current
-  legacy, grounded full, grounded pilot, and high-delay pilot runs own only
-  `full_run/`, `grounded_v2/`, `grounded_v2_pilot/`, and
-  `grounded_v2_pilot_high_delay/` respectively; phase-1 is preserved.
+  legacy, grounded full, grounded pilot, high-delay pilot, and contrastive pilot
+  runs own only `full_run/`, `grounded_v2/`, `grounded_v2_pilot/`,
+  `grounded_v2_pilot_high_delay/`, and
+  `grounded_v2_pilot_high_delay_contrastive/` respectively; phase-1 is
+  preserved.
 
 Never put a token, SSH endpoint, or pod-specific path in Git. A new agent should
 first read `AGENTS.md`, `CONTEXT.md`, and the pod's `/etc/vast-agents-guide.md`.
@@ -154,8 +156,9 @@ Before launch, inspect the public model repo's `full_run/` directory:
 
 `h100.sh` enforces the empty-prefix rule for a fresh run and the shared run
 identity for recovery. It supervises checkpoint sync and stops training after
-three consecutive sync failures. Recovery sync also preserves `run_config.json`
-and the pilot's frozen `sample_manifest.jsonl` under `metadata/`.
+three consecutive sync failures. Recovery sync also preserves `run_config.json`,
+the pilot's frozen `sample_manifest.jsonl`, and the optional
+`source_derangement.json` under `metadata/`.
 
 ## Cache format and rebuild path
 
@@ -224,6 +227,18 @@ find "$manifest_restore" -depth -delete
 High-delay teacher-forced validation is independently length-sorted, never
 shuffled, and retains every row with batch 1 under a separate 704-frame hard
 cap; the observed maximum is 701.
+
+After the high-delay pilot fails, add `HIBIKI_CONTRASTIVE_PILOT=1` for
+preflight, smoke, train, and resume. Do not rebuild the cache: this mode reuses
+the verified high-delay cache and exact membership while isolating smoke, run,
+and recovery artifacts under `*_grounded_v2_pilot_high_delay_contrastive`.
+It freezes a deterministic 256-row duration-block donor permutation with no
+duplicate-ID donors, replaces only Vietnamese source codes, and trims or
+silence-pads each donor to the target source duration while preserving source
+EOS. The added English-content loss is
+`relu(0.5 + correct_nll - shuffled_nll)` at weight 1. The smoke verifies the
+mapping hash/permutation and finite contrastive loss, shuffled-minus-correct
+NLL gap, and active-margin fraction.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled

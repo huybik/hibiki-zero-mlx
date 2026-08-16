@@ -11,6 +11,7 @@ PYTHON="$VENV/bin/python"
 RECIPE="${HIBIKI_RECIPE:-legacy}"
 PILOT="${HIBIKI_PILOT:-0}"
 HIGH_DELAY_PILOT="${HIBIKI_HIGH_DELAY_PILOT:-0}"
+CONTRASTIVE_PILOT="${HIBIKI_CONTRASTIVE_PILOT:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
 
@@ -22,10 +23,14 @@ die() {
 [[ "$PILOT" == 0 || "$PILOT" == 1 ]] || die "HIBIKI_PILOT must be 0 or 1"
 [[ "$HIGH_DELAY_PILOT" == 0 || "$HIGH_DELAY_PILOT" == 1 ]] \
   || die "HIBIKI_HIGH_DELAY_PILOT must be 0 or 1"
+[[ "$CONTRASTIVE_PILOT" == 0 || "$CONTRASTIVE_PILOT" == 1 ]] \
+  || die "HIBIKI_CONTRASTIVE_PILOT must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
   || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
 [[ "$HIGH_DELAY_PILOT" == 0 || ( "$PILOT" == 1 && "$RECIPE" == "grounded-v2" ) ]] \
   || die "HIBIKI_HIGH_DELAY_PILOT=1 requires the grounded-v2 pilot"
+[[ "$CONTRASTIVE_PILOT" == 0 || "$HIGH_DELAY_PILOT" == 1 ]] \
+  || die "HIBIKI_CONTRASTIVE_PILOT=1 requires the high-delay pilot"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
@@ -40,12 +45,19 @@ case "$RECIPE" in
   grounded-v2)
     if [[ "$PILOT" == 1 ]]; then
       pilot_namespace=grounded_v2_pilot
-      [[ "$HIGH_DELAY_PILOT" == 0 ]] || pilot_namespace=grounded_v2_pilot_high_delay
+      cache_namespace="$pilot_namespace"
+      if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_high_delay
+        cache_namespace="$pilot_namespace"
+      fi
+      if [[ "$CONTRASTIVE_PILOT" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_high_delay_contrastive
+      fi
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
-      PHOMT_CACHE="finetune/cache/phomt_$pilot_namespace"
-      TRAIN_CACHE="finetune/cache/train_$pilot_namespace"
-      VAL_CACHE="finetune/cache/validation_$pilot_namespace"
+      PHOMT_CACHE="finetune/cache/phomt_$cache_namespace"
+      TRAIN_CACHE="finetune/cache/train_$cache_namespace"
+      VAL_CACHE="finetune/cache/validation_$cache_namespace"
       [[ -z "${HIBIKI_HF_PREFIX:-}" || "$HIBIKI_HF_PREFIX" == "$pilot_namespace" ]] \
         || die "pilot recovery prefix must be $pilot_namespace"
       HIBIKI_HF_PREFIX="$pilot_namespace"
@@ -157,6 +169,8 @@ setup() {
 cache_grounded() {
   [[ "$RECIPE" == "grounded-v2" ]] \
     || die "cache-grounded requires HIBIKI_RECIPE=grounded-v2"
+  [[ "$CONTRASTIVE_PILOT" == 0 ]] \
+    || die "the contrastive pilot reuses the verified high-delay caches"
   require_python
   require_baseline_pilot_manifest
   require_cuda_driver
@@ -527,6 +541,12 @@ common_args() {
           --expected-target-delay-max-ratio "$TARGET_DELAY_MAX_RATIO"
           --expected-target-delay-seed "$TARGET_DELAY_SEED"
         )
+        if [[ "$CONTRASTIVE_PILOT" == 1 ]]; then
+          TRAIN_ARGS+=(
+            --contrastive-source-weight 1.0
+            --contrastive-source-margin 0.5
+          )
+        fi
       else
         TRAIN_ARGS+=(--max-samples 50000)
       fi
@@ -547,7 +567,9 @@ stop_monitor() {
 }
 
 check_smoke_outputs() {
-  "$PYTHON" - "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" <<'PY'
+  "$PYTHON" - \
+    "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" \
+    "$CONTRASTIVE_PILOT" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -560,6 +582,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 high_delay_pilot = bool(int(sys.argv[2]))
 baseline_manifest_sha256 = sys.argv[3]
+contrastive_pilot = bool(int(sys.argv[4]))
 logs = [json.loads(line) for line in (root / "train_log.jsonl").read_text().splitlines() if line]
 if not logs or logs[-1]["step"] != 11:
     raise RuntimeError("resume smoke did not reach step 11")
@@ -599,6 +622,39 @@ if high_delay_pilot:
         raise RuntimeError("high-delay observed training maximum exceeds its frame cap")
     if max(int(item["max_frames"]) for item in logs) != observed_train_max_frames:
         raise RuntimeError("high-delay smoke did not exercise the longest manifest row")
+    if contrastive_pilot:
+        expected_contrastive = {
+            "contrastive_source_weight": 1.0,
+            "contrastive_source_margin": 0.5,
+        }
+        for key, value in expected_contrastive.items():
+            if config.get(key) != value:
+                raise RuntimeError(f"contrastive smoke config mismatch for {key}")
+        mapping_path = root / "source_derangement.json"
+        document = json.loads(mapping_path.read_text())
+        mapping = document["mapping"]
+        digest = hashlib.sha256(
+            json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if digest != document["sha256"] or digest != config.get("source_derangement_sha256"):
+            raise RuntimeError("contrastive source derangement hash mismatch")
+        pairs = mapping["pairs"]
+        if len(pairs) != 50_000:
+            raise RuntimeError("contrastive source derangement has the wrong cohort size")
+        if sorted(pair["source_index"] for pair in pairs) != list(range(len(pairs))):
+            raise RuntimeError("contrastive source donors are not a permutation")
+        if any(pair["source_id"] == pair["target_id"] for pair in pairs):
+            raise RuntimeError("contrastive source derangement contains a duplicate-id donor")
+        for item in logs:
+            for key in (
+                "contrastive_source_loss",
+                "source_text_nll_gap",
+                "contrastive_active_fraction",
+            ):
+                if not math.isfinite(float(item[key])):
+                    raise RuntimeError(f"non-finite {key} at step {item['step']}")
+        if max(float(item["contrastive_active_fraction"]) for item in logs) <= 0:
+            raise RuntimeError("contrastive source margin was never active")
 
 eval_dir = root / "standalone_eval_step10"
 metrics = json.loads((eval_dir / "metrics.json").read_text())
