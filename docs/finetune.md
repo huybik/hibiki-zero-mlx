@@ -222,7 +222,8 @@ find "$manifest_restore" -depth -delete
 ```
 
 High-delay teacher-forced validation is independently length-sorted, never
-shuffled, and hard-fails rather than dropping rows above the 480-frame cap.
+shuffled, and retains every row with batch 1 under a separate 704-frame hard
+cap; the observed maximum is 701.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
@@ -238,7 +239,8 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 - Every model parameter is trainable; there is no adapter or freeze map.
 - CUDA uses fp32 master weights and bf16 autocast.
 - `--max-frames 280` bounds ordinary-run memory; the exact-membership high-delay
-  pilot uses 480. Sixteen-frame buckets bound compiled CUDA shapes.
+  pilot uses 480 for training and a separate 704 validation cap at batch 1.
+  Sixteen-frame buckets bound compiled CUDA shapes.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
 - Text content, PAD, and first-content losses are reduced independently before
   weighting, so PAD prevalence cannot change its aggregate gradient budget.

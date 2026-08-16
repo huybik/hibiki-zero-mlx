@@ -206,9 +206,11 @@ reconstructs its exact ordered 50,000 entries: 47,500 PhoMT plus 2,500 FLEURS,
 max-sample selection, sorting, and production shuffling are forbidden. The
 post-reconstruction frame gate is 480 because the cohort's high-delay maximum
 is 478. Use physical batch 8 with two-step accumulation; the smoke feeds the
-longest rows first without changing the persisted manifest. Run configuration
-records the delay bounds, cache seed, membership SHA, and frame cap. Only then
-try a contrastive shuffled-source loss; consider Vietnamese acoustic
+longest rows first without changing the persisted manifest. The independent
+teacher-forced validation set is deterministically length-sorted and retains
+all rows at batch 1 under a 704-frame hard cap; its observed maximum is 701.
+Run configuration records the delay bounds, cache seed, membership SHA, and
+frame caps. Only then try a contrastive shuffled-source loss; consider Vietnamese acoustic
 preadaptation after that. A high-delay cache remains a curriculum, never the
 final timing policy, because sentence-delay supervision can leave persistent
 lag.

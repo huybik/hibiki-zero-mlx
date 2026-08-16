@@ -108,6 +108,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-max-samples", type=int, default=0, help="First N val samples; 0=all.")
     parser.add_argument("--val-batches", type=int, default=0, help="First N val batches; 0=all.")
     parser.add_argument(
+        "--val-max-frames",
+        type=int,
+        default=0,
+        help="Hard maximum validation length in Mimi frames; 0=off.",
+    )
+    parser.add_argument(
         "--val-batch-size",
         type=int,
         help="Teacher-forced validation batch size; defaults to --batch-size.",
@@ -370,6 +376,8 @@ def main() -> None:
         raise ValueError("--val-batch-size must be positive")
     if args.max_frames < 0:
         raise ValueError("--max-frames must be non-negative")
+    if args.val_max_frames < 0:
+        raise ValueError("--val-max-frames must be non-negative")
     delay_values = (
         args.expected_target_delay_min_ratio,
         args.expected_target_delay_max_ratio,
@@ -496,8 +504,7 @@ def main() -> None:
             args.val_max_samples,
             expected_target_delay=expected_target_delay,
         )
-        if args.input_sample_manifest is not None:
-            val_dataset.require_max_frames(args.max_frames, "Validation cache")
+        val_dataset.require_max_frames(args.val_max_frames, "Validation cache")
         val_dataloader = common.make_cached_dataloader(
             val_dataset,
             args.val_batch_size,

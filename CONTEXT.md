@@ -97,9 +97,11 @@ as a diagnostic. The corrected ordinary pilot failed promotion at every
 manifest SHA is `52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f`.
 The high-delay retry is explicit `HIBIKI_HIGH_DELAY_PILOT=1`, uses deterministic
 uniform ratios `[0.75, 1.0]`, and owns isolated `*_pilot_high_delay` artifacts.
-It reconstructs that membership exactly, hard-gates at 480 frames, preserves
-production order, and uses physical batch 8 / accumulation 2. Try contrastive
-shuffled-source loss only if this retry also fails, then acoustic preadaptation.
+It reconstructs that membership exactly, hard-gates training at 480 frames,
+preserves production order, and uses physical batch 8 / accumulation 2.
+Teacher-forced validation retains all rows under a separate 704-frame cap at
+batch 1. Try contrastive shuffled-source loss only if this retry also fails,
+then acoustic preadaptation.
 
 ## Canonical resources
 

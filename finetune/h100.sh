@@ -456,12 +456,16 @@ PY
 common_args() {
   local max_steps="${HIBIKI_MAX_STEPS:-0}"
   local max_frames=280
+  local val_max_frames=0
+  local val_batch_size=8
   local sort_args=(--sort-by-length)
   if [[ "$PILOT" == 1 ]]; then
     max_steps=1000
   fi
   if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
     max_frames=480
+    val_max_frames=704
+    val_batch_size=1
     sort_args=(--no-sort-by-length)
   fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
@@ -474,9 +478,10 @@ common_args() {
     --grad-accum-steps "$GRAD_ACCUM_STEPS"
     --max-steps "$max_steps"
     --max-frames "$max_frames"
+    --val-max-frames "$val_max_frames"
     "${sort_args[@]}"
     --seed 42
-    --val-batch-size 8
+    --val-batch-size "$val_batch_size"
     --eval-pairs finetune/pairs/val128.jsonl
     --eval-batch-size 8
     --eval-text-temp 0.4
@@ -569,6 +574,8 @@ if high_delay_pilot:
         "batch_size": 8,
         "grad_accum_steps": 2,
         "max_frames": 480,
+        "val_max_frames": 704,
+        "val_batch_size": 1,
         "max_samples": 0,
         "cache_weights": None,
         "sort_by_length": False,
