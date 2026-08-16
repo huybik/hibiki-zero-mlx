@@ -19,6 +19,7 @@ count, so target-delay RNG and resume never depend on process layout.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
@@ -109,6 +110,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all.")
     parser.add_argument("--batch-size", type=int, default=16, help="Clips per batched Mimi encode.")
     parser.add_argument(
+        "--prefetch-shards",
+        type=int,
+        default=1,
+        help="Parquet shards to download ahead while encoding; use 2 for a single Mac worker.",
+    )
+    parser.add_argument(
         "--recipe",
         choices=("legacy", "grounded-v2"),
         default="legacy",
@@ -189,6 +196,8 @@ def main() -> None:
     args = parse_args()
     if not 0 <= args.worker < args.num_workers:
         raise ValueError("--worker must be in [0, --num-workers)")
+    if args.prefetch_shards <= 0:
+        raise ValueError("--prefetch-shards must be positive")
     load_hf_token()
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
@@ -292,12 +301,16 @@ def main() -> None:
             return
         if not pending:
             return
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(download_parquet, pending[0][1])
+        with ThreadPoolExecutor(max_workers=args.prefetch_shards) as pool:
+            futures = deque(
+                pool.submit(download_parquet, shard_name)
+                for _, shard_name in pending[: args.prefetch_shards]
+            )
             for index, (parquet_idx, shard_name) in enumerate(pending):
-                local = future.result()
-                if index + 1 < len(pending):
-                    future = pool.submit(download_parquet, pending[index + 1][1])
+                local = futures.popleft().result()
+                next_index = index + args.prefetch_shards
+                if next_index < len(pending):
+                    futures.append(pool.submit(download_parquet, pending[next_index][1]))
                 yield parquet_idx, shard_name, local
 
     kept = 0
