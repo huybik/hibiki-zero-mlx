@@ -281,12 +281,17 @@ def publish(cache_dir: Path, repo: str, prefix: str) -> None:
 
     stage_root, manifest = prepare_stage(cache_dir, prefix, stats)
     stage = stage_root / prefix
-    api.upload_large_folder(
-        repo,
-        stage_root,
+    api.upload_folder(
+        repo_id=repo,
+        folder_path=stage,
+        path_in_repo=prefix,
         repo_type="dataset",
-        allow_patterns=f"{prefix}/*",
-        ignore_patterns=[f"{prefix}/manifest.json", f"{prefix}/README.md"],
+        allow_patterns=[
+            "cache_chunk_*.tar.zst",
+            "pairs_w*.jsonl",
+            "alignment_rejects_w*.jsonl",
+        ],
+        commit_message="Upload grounded-v2 cache data",
     )
     api.create_commit(
         repo,
