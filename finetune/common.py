@@ -254,14 +254,22 @@ class CachedCodeDataset(Dataset):
             if len(cache_weights) != len(cache_dirs) or any(weight <= 0 for weight in cache_weights):
                 raise ValueError("--cache-weights must provide one positive weight per --cache-dir")
             weight_total = sum(cache_weights)
-            target_total = max_samples or len(self.samples)
+            pools = [
+                [sample for sample in self.samples if sample["cache_index"] == cache_index]
+                for cache_index in range(len(cache_dirs))
+            ]
+            if any(not pool for pool in pools):
+                raise RuntimeError("Every weighted cache directory must have usable samples")
+            target_total = max_samples or max(
+                math.ceil(len(pool) * weight_total / weight)
+                for pool, weight in zip(pools, cache_weights, strict=True)
+            )
             rng = random.Random(seed)
             balanced: list[dict[str, Any]] = []
             remaining = target_total
-            for cache_index, weight in enumerate(cache_weights):
-                pool = [sample for sample in self.samples if sample["cache_index"] == cache_index]
-                if not pool:
-                    raise RuntimeError(f"Cache directory {cache_dirs[cache_index]} has no usable samples")
+            for cache_index, (pool, weight) in enumerate(
+                zip(pools, cache_weights, strict=True)
+            ):
                 count = (
                     remaining
                     if cache_index == len(cache_weights) - 1
@@ -271,7 +279,8 @@ class CachedCodeDataset(Dataset):
                 if count <= len(pool):
                     balanced.extend(rng.sample(pool, count))
                 else:
-                    balanced.extend(rng.choices(pool, k=count))
+                    balanced.extend(pool)
+                    balanced.extend(rng.choices(pool, k=count - len(pool)))
             self.samples = balanced
             max_samples = 0
         if sort_by_length:

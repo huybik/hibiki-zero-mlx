@@ -75,6 +75,12 @@ def parse_args() -> argparse.Namespace:
         help="grounded-v2 CTC-aligns the text stream to target speech.",
     )
     parser.add_argument("--alignment-batch-size", type=int, default=8)
+    parser.add_argument(
+        "--min-alignment-score",
+        type=float,
+        default=0.5,
+        help="Reject grounded-v2 rows below this mean forced-alignment posterior.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
     return parser.parse_args()
 
@@ -232,6 +238,9 @@ def write_index(torch: Any, out_dir: Path) -> None:
                 "target_delay_frames",
                 "vi_audio",
                 "en_audio",
+                "text_timing",
+                "alignment_score",
+                "alignment_text",
             ],
         )
         writer.writeheader()
@@ -251,6 +260,9 @@ def write_index(torch: Any, out_dir: Path) -> None:
                         "target_delay_frames": sample["target_delay_frames"],
                         "vi_audio": sample["vi_audio"],
                         "en_audio": sample["en_audio"],
+                        "text_timing": sample.get("text_timing"),
+                        "alignment_score": sample.get("alignment_score"),
+                        "alignment_text": sample.get("alignment_text"),
                     }
                 )
 
@@ -296,7 +308,7 @@ def main() -> None:
     if args.recipe == "grounded-v2":
         from finetune.text_timing import EnglishCTCAligner
 
-        aligner = EnglishCTCAligner(device)
+        aligner = EnglishCTCAligner(device, args.min_alignment_score)
 
     shard_count = math.ceil(len(pairs) / args.shard_size)
     for shard_index in range(shard_count):
@@ -331,14 +343,21 @@ def main() -> None:
                 wav16 = sphn.resample(raw_en, SAMPLE_RATE, 16_000)
                 groups = sentencepiece_groups(row["text_en"], tokenizer)
                 alignment = aligner.align_many([wav16], [groups], args.alignment_batch_size)[0]
+                if isinstance(alignment, Exception):
+                    print(f"Rejecting id={row['id']}: {alignment}")
+                    continue
                 raw_target_frames = int(en_codes.shape[1]) - delay_frames
-                tokens, text_frames = timed_sentencepiece_tokens(
-                    groups,
-                    alignment,
-                    raw_target_frames,
-                    delay_frames,
-                    int(tokenizer.eos_id()),
-                )
+                try:
+                    tokens, text_frames = timed_sentencepiece_tokens(
+                        groups,
+                        alignment,
+                        raw_target_frames,
+                        delay_frames,
+                        int(tokenizer.eos_id()),
+                    )
+                except ValueError as exc:
+                    print(f"Rejecting id={row['id']}: {exc}")
+                    continue
                 alignment_score = alignment.score
             codes = assemble_codes(
                 torch, row, vi_codes, en_codes, tokens, cfg, delay_frames, text_frames
@@ -360,13 +379,20 @@ def main() -> None:
                     "text_vi": row["text_vi"],
                     "text_timing": "contiguous" if aligner is None else "wav2vec2_ctc_word_v1",
                     "alignment_score": alignment_score,
+                    "alignment_text": (
+                        None if aligner is None else " ".join(spoken for _, spoken in groups)
+                    ),
                 }
             )
+
+        if not samples:
+            raise RuntimeError(f"Every row in cache shard {shard_index} failed CTC alignment")
 
         payload = {
             "format": expected_format,
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
+            "alignment_min_score": args.min_alignment_score if aligner is not None else None,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),

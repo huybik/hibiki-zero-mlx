@@ -47,7 +47,10 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   save/eval/resume smoke.
 - `HIBIKI_RECIPE=grounded-v2` selects isolated CTC word-timed caches, 95/5
   PhoMT/FLEURS sampling, conservative cosine SFT, eligibility-only best saves,
-  and a shuffled-source dependency control. Legacy behavior remains the default.
+  and a shuffled-source dependency control. PhoMT is pinned, later timbre-matched
+  source ranges are labeled without excluding earlier gender-matched pairs, and
+  CTC rows below the calibrated 0.5 score are rejected. Legacy behavior remains
+  the default. Full weighted runs cover every PhoMT row before repeating data.
 - Text prefix PAD weight defaults to 0.5. Content/EOS remain weight 1.0.
 - `finetune/common.py` owns cached data, losses, schedules, exact full-model
   checkpoint I/O, greedy generation, and metrics. Complete checkpoint pairs are

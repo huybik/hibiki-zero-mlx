@@ -19,6 +19,7 @@ count, so target-delay RNG and resume never depend on process layout.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import queue
@@ -57,6 +58,8 @@ from finetune.utils import (  # noqa: E402
 )
 
 DATASET = "anquachdev/PhoMT-en-vi-speech"
+DATASET_REVISION = "33400f73dde07da539e8326313cbabe20b757740"
+TIMBRE_MATCHED_MIN_INDEX = 345_600
 
 
 def load_hf_token() -> None:
@@ -110,6 +113,18 @@ def parse_args() -> argparse.Namespace:
         help="grounded-v2 CTC-aligns English text tokens to target speech.",
     )
     parser.add_argument("--alignment-batch-size", type=int, default=8)
+    parser.add_argument(
+        "--min-alignment-score",
+        type=float,
+        default=0.5,
+        help="Reject grounded-v2 rows below this mean forced-alignment posterior.",
+    )
+    parser.add_argument(
+        "--sample-shards",
+        type=int,
+        default=0,
+        help="Evenly sample this many dataset shards for a grounded-v2 pilot; 0=all.",
+    )
     return parser.parse_args()
 
 
@@ -180,13 +195,43 @@ def main() -> None:
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download, list_repo_files
 
-    shards = sorted(
+    all_shards = sorted(
         name
-        for name in list_repo_files(DATASET, repo_type="dataset")
+        for name in list_repo_files(DATASET, repo_type="dataset", revision=DATASET_REVISION)
         if name.startswith("data/") and name.endswith(".parquet")
     )
-    mine = [(idx, name) for idx, name in enumerate(shards) if idx % args.num_workers == args.worker]
-    print(f"[w{args.worker}] {len(mine)}/{len(shards)} parquet shards assigned")
+    indexed_shards = list(enumerate(all_shards))
+    source_ranges: dict[str, tuple[int, int]] = {}
+    if args.recipe == "grounded-v2":
+        state_path = hf_hub_download(
+            DATASET, "upload-state.json", repo_type="dataset", revision=DATASET_REVISION
+        )
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        source_ranges = {
+            item["path"]: (int(item["source_index_min"]), int(item["source_index_max"]))
+            for item in state["shards"]
+        }
+    elif args.sample_shards:
+        raise ValueError("--sample-shards is only valid with --recipe grounded-v2")
+    if args.sample_shards:
+        if args.sample_shards > len(indexed_shards):
+            raise ValueError(
+                f"--sample-shards={args.sample_shards} exceeds {len(indexed_shards)} eligible shards"
+            )
+        if args.sample_shards == 1:
+            indexed_shards = [indexed_shards[len(indexed_shards) // 2]]
+        else:
+            last = len(indexed_shards) - 1
+            indexed_shards = [
+                indexed_shards[index * last // (args.sample_shards - 1)]
+                for index in range(args.sample_shards)
+            ]
+    mine = [
+        item
+        for ordinal, item in enumerate(indexed_shards)
+        if ordinal % args.num_workers == args.worker
+    ]
+    print(f"[w{args.worker}] {len(mine)}/{len(indexed_shards)} dataset shards assigned")
 
     skip: set[tuple[str, str, str, str]] = set()
     for pairs_path in args.skip_pairs:
@@ -207,7 +252,7 @@ def main() -> None:
     if args.recipe == "grounded-v2":
         from finetune.text_timing import EnglishCTCAligner
 
-        aligner = EnglishCTCAligner(device)
+        aligner = EnglishCTCAligner(device, args.min_alignment_score)
 
     if args.recipe == "grounded-v2" and args.out_dir == DEFAULT_CACHE_ROOT / "phomt_stream":
         args.out_dir = DEFAULT_CACHE_ROOT / "phomt_grounded_v2"
@@ -221,10 +266,13 @@ def main() -> None:
                 f"Refusing to mix cache formats in {out_dir}: {actual_format} != {expected_format}"
             )
     pairs_path = out_dir / f"pairs_w{args.worker}.jsonl"
+    rejects_path = out_dir / f"alignment_rejects_w{args.worker}.jsonl"
     shm = Path("/dev/shm")
     tmp_dir = str(shm) if shm.is_dir() else None
 
     kept = 0
+    accepted = 0
+    rejected = 0
     kept_hours = 0.0
     for parquet_idx, shard_name in mine:
         if args.limit and kept >= args.limit:
@@ -232,13 +280,18 @@ def main() -> None:
         out_path = out_dir / f"shard_{parquet_idx:05d}.pt"
         if out_path.exists():
             continue
-        local = Path(hf_hub_download(DATASET, shard_name, repo_type="dataset"))
+        local = Path(
+            hf_hub_download(
+                DATASET, shard_name, repo_type="dataset", revision=DATASET_REVISION
+            )
+        )
         table = pq.ParquetFile(local).read()
         samples = []
         pair_lines = []
         cpu = torch.device("cpu")
 
         def encode_chunk(chunk: list[dict]) -> None:
+            nonlocal accepted, rejected
             alignments = None
             groups_batch = None
             if aligner is not None:
@@ -268,13 +321,40 @@ def main() -> None:
                     from finetune.text_timing import timed_sentencepiece_tokens
 
                     alignment = alignments[k]
-                    tokens, text_frames = timed_sentencepiece_tokens(
-                        groups_batch[k],
-                        alignment,
-                        int(en_codes.shape[1]) - c["delay_frames"],
-                        c["delay_frames"],
-                        int(tokenizer.eos_id()),
-                    )
+                    if isinstance(alignment, Exception):
+                        rejected += 1
+                        print(f"[w{args.worker}] rejecting {row['id']}: {alignment}", flush=True)
+                        with rejects_path.open("a", encoding="utf-8") as fh:
+                            fh.write(
+                                json.dumps(
+                                    {"id": row["id"], "reason": str(alignment)},
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                                + "\n"
+                            )
+                        continue
+                    try:
+                        tokens, text_frames = timed_sentencepiece_tokens(
+                            groups_batch[k],
+                            alignment,
+                            int(en_codes.shape[1]) - c["delay_frames"],
+                            c["delay_frames"],
+                            int(tokenizer.eos_id()),
+                        )
+                    except ValueError as exc:
+                        rejected += 1
+                        print(f"[w{args.worker}] rejecting {row['id']}: {exc}", flush=True)
+                        with rejects_path.open("a", encoding="utf-8") as fh:
+                            fh.write(
+                                json.dumps(
+                                    {"id": row["id"], "reason": str(exc)},
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                                + "\n"
+                            )
+                        continue
                     alignment_score = alignment.score
                 assembled = assemble_codes(
                     torch,
@@ -286,27 +366,60 @@ def main() -> None:
                     c["delay_frames"],
                     text_frames,
                 )
-                samples.append(
-                    {
-                        "id": row["id"],
-                        "split": row["split"],
-                        "codes": assembled,
-                        "frames": int(assembled.shape[1]),
-                        "vi_frames": int(vi_codes.shape[1]),
-                        "en_frames": int(en_codes.shape[1]),
-                        "text_tokens": len(tokens),
-                        "target_delay_s": c["delay_s"],
-                        "target_delay_frames": c["delay_frames"],
-                        "vi_audio": row["vi_audio"],
-                        "en_audio": row["en_audio"],
-                        "text_en": row["text_en"],
-                        "text_vi": row["text_vi"],
-                        "text_timing": (
-                            "contiguous" if alignments is None else "wav2vec2_ctc_word_v1"
-                        ),
+                sample = {
+                    "id": row["id"],
+                    "split": row["split"],
+                    "codes": assembled,
+                    "frames": int(assembled.shape[1]),
+                    "vi_frames": int(vi_codes.shape[1]),
+                    "en_frames": int(en_codes.shape[1]),
+                    "text_tokens": len(tokens),
+                    "target_delay_s": c["delay_s"],
+                    "target_delay_frames": c["delay_frames"],
+                    "vi_audio": row["vi_audio"],
+                    "en_audio": row["en_audio"],
+                    "text_en": row["text_en"],
+                    "text_vi": row["text_vi"],
+                    "text_timing": (
+                        "contiguous" if alignments is None else "wav2vec2_ctc_word_v1"
+                    ),
+                    "alignment_score": alignment_score,
+                }
+                if aligner is not None:
+                    sample.update(
+                        {
+                            "alignment_text": " ".join(
+                                spoken for _, spoken in groups_batch[k]
+                            ),
+                            "phomt_index_range": (
+                                list(source_ranges[shard_name])
+                                if shard_name in source_ranges
+                                else None
+                            ),
+                            "cross_lingual_timbre_matched": (
+                                shard_name in source_ranges
+                                and source_ranges[shard_name][0] >= TIMBRE_MATCHED_MIN_INDEX
+                            ),
+                        }
+                    )
+                samples.append(sample)
+                pair_row = row
+                if aligner is not None:
+                    pair_row = row | {
                         "alignment_score": alignment_score,
+                        "alignment_text": " ".join(
+                            spoken for _, spoken in groups_batch[k]
+                        ),
+                        "phomt_index_range": (
+                            list(source_ranges[shard_name]) if shard_name in source_ranges else None
+                        ),
+                        "cross_lingual_timbre_matched": (
+                            shard_name in source_ranges
+                            and source_ranges[shard_name][0] >= TIMBRE_MATCHED_MIN_INDEX
+                        ),
                     }
-                )
+                pair_lines.append(pair_row)
+                accepted += 1
             if device.type == "mps":
                 torch.mps.empty_cache()
 
@@ -375,7 +488,6 @@ def main() -> None:
                     )
                     kept += 1
                     kept_hours += vi_dur / 3600.0
-                    pair_lines.append(row)
                     if len(chunk) >= CHUNK_ROWS:
                         chunk_q.put(chunk)
                         chunk = []
@@ -393,11 +505,15 @@ def main() -> None:
         prep.join()
         if prep_err:
             raise prep_err[0]
+        if not samples:
+            raise RuntimeError(f"Every row in {shard_name} failed CTC alignment")
 
         payload = {
             "format": expected_format,
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
+            "dataset_revision": DATASET_REVISION,
+            "alignment_min_score": args.min_alignment_score if aligner is not None else None,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),
@@ -409,8 +525,6 @@ def main() -> None:
         }
         save_shard(torch, payload, out_path)
         if pair_lines:
-            import json
-
             with pairs_path.open("a", encoding="utf-8") as fh:
                 for row in pair_lines:
                     fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
@@ -424,7 +538,10 @@ def main() -> None:
             flush=True,
         )
 
-    print(f"[w{args.worker}] done: {kept} rows / {kept_hours:.1f} VI source hours")
+    print(
+        f"[w{args.worker}] done: {accepted} accepted / {rejected} rejected / "
+        f"{kept} attempted / {kept_hours:.1f} VI source hours"
+    )
 
 
 if __name__ == "__main__":

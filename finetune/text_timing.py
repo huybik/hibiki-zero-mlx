@@ -11,6 +11,7 @@ import numpy as np
 
 ALIGNER_REPO = "facebook/wav2vec2-base-960h"
 ALIGNMENT_NAME = "wav2vec2_ctc_word_v1"
+DEFAULT_MIN_ALIGNMENT_SCORE = 0.5
 
 
 def _ascii(text: str) -> str:
@@ -112,17 +113,19 @@ def _ctc_token_frames(log_probs: Any, targets: list[int], blank_id: int) -> tupl
 
 
 class EnglishCTCAligner:
-    def __init__(self, device: Any):
+    def __init__(self, device: Any, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
         import torch
         from transformers import AutoModelForCTC, AutoProcessor
 
+        if not 0 <= min_score <= 1:
+            raise ValueError("Minimum CTC alignment score must be in [0, 1]")
         self.device = torch.device(device)
+        self.min_score = min_score
         self.processor = AutoProcessor.from_pretrained(ALIGNER_REPO)
         self.model = AutoModelForCTC.from_pretrained(ALIGNER_REPO).to(self.device).eval()
         tokenizer = self.processor.tokenizer
         self.vocab = tokenizer.get_vocab()
         self.blank_id = int(tokenizer.pad_token_id)
-        self.unk_id = int(tokenizer.unk_token_id)
         self.delimiter = str(tokenizer.word_delimiter_token)
 
     def _targets(self, groups: list[tuple[list[int], str]]) -> tuple[list[int], list[tuple[int, int]]]:
@@ -133,7 +136,9 @@ class EnglishCTCAligner:
                 target_ids.append(self.vocab[self.delimiter])
             start = len(target_ids)
             for char in spoken.replace(" ", self.delimiter):
-                target_ids.append(int(self.vocab.get(char, self.unk_id)))
+                if char not in self.vocab:
+                    raise ValueError(f"CTC transcript contains unsupported character: {char!r}")
+                target_ids.append(int(self.vocab[char]))
             ranges.append((start, len(target_ids)))
         return target_ids, ranges
 
@@ -142,19 +147,21 @@ class EnglishCTCAligner:
         waveforms_16khz: list[np.ndarray],
         grouped_text: list[list[tuple[list[int], str]]],
         batch_size: int,
-    ) -> list[Alignment]:
+    ) -> list[Alignment | Exception]:
         import torch
 
-        results: list[Alignment] = []
+        results: list[Alignment | Exception] = []
         for start in range(0, len(waveforms_16khz), batch_size):
             wavs = waveforms_16khz[start : start + batch_size]
             groups_batch = grouped_text[start : start + batch_size]
+            # wav2vec2-base uses group-normalized features and was not trained
+            # with attention masks; layer-normalized variants require them.
             inputs = self.processor(
                 wavs,
                 sampling_rate=16_000,
                 return_tensors="pt",
                 padding=True,
-                return_attention_mask=True,
+                return_attention_mask=self.model.config.feat_extract_norm == "layer",
             )
             input_values = inputs.input_values.to(self.device)
             attention_mask = getattr(inputs, "attention_mask", None)
@@ -166,27 +173,41 @@ class EnglishCTCAligner:
                 enabled=self.device.type == "cuda",
             ):
                 logits = self.model(input_values, attention_mask=attention_mask).logits
-            if attention_mask is None:
-                input_lengths = torch.tensor([len(wav) for wav in wavs], device=self.device)
-            else:
-                input_lengths = attention_mask.sum(-1)
+            input_lengths = torch.tensor([len(wav) for wav in wavs], device=self.device)
             output_lengths = self.model._get_feat_extract_output_lengths(input_lengths).tolist()
             for local_index, (groups, output_length) in enumerate(
                 zip(groups_batch, output_lengths, strict=True)
             ):
-                emission = logits[local_index, : int(output_length)].float().log_softmax(-1)
-                targets, ranges = self._targets(groups)
-                token_frames, score = _ctc_token_frames(emission, targets, self.blank_id)
-                denom = max(1, int(output_length))
-                spans = [
-                    (
-                        min(frame for frames in token_frames[left:right] for frame in frames) / denom,
-                        (max(frame for frames in token_frames[left:right] for frame in frames) + 1)
-                        / denom,
-                    )
-                    for left, right in ranges
-                ]
-                results.append(Alignment(spans=spans, score=score))
+                try:
+                    emission = logits[local_index, : int(output_length)].float().log_softmax(-1)
+                    targets, ranges = self._targets(groups)
+                    token_frames, score = _ctc_token_frames(emission, targets, self.blank_id)
+                    if score < self.min_score:
+                        raise ValueError(
+                            f"CTC alignment score {score:.3f} is below {self.min_score:.3f}"
+                        )
+                    denom = max(1, int(output_length))
+                    spans = [
+                        (
+                            min(frame for frames in token_frames[left:right] for frame in frames)
+                            / denom,
+                            (
+                                max(frame for frames in token_frames[left:right] for frame in frames)
+                                + 1
+                            )
+                            / denom,
+                        )
+                        for left, right in ranges
+                    ]
+                    if any(
+                        not (0 <= left < right <= 1)
+                        or (index and left < spans[index - 1][0])
+                        for index, (left, right) in enumerate(spans)
+                    ):
+                        raise ValueError("CTC alignment produced invalid word spans")
+                    results.append(Alignment(spans=spans, score=score))
+                except (KeyError, RuntimeError, ValueError) as exc:
+                    results.append(exc)
         return results
 
 

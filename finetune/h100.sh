@@ -209,10 +209,14 @@ for relative, expected in expected_shards.items():
         payload = torch.load(paths[0], map_location="cpu")
         if payload.get("format") != "hibiki_vn_grounded_cache_v2":
             raise RuntimeError(f"{relative}: not a grounded-v2 cache")
+        if not payload.get("samples"):
+            raise RuntimeError(f"{relative}: first grounded-v2 shard is empty")
+        if float(payload.get("alignment_min_score") or 0) != 0.5:
+            raise RuntimeError(f"{relative}: CTC threshold is not 0.5")
         if any(sample.get("text_timing") != "wav2vec2_ctc_word_v1" for sample in payload["samples"]):
             raise RuntimeError(f"{relative}: missing word-aligned text timing")
-        if any(float(sample.get("alignment_score") or 0) <= 0 for sample in payload["samples"]):
-            raise RuntimeError(f"{relative}: missing CTC alignment scores")
+        if any(float(sample.get("alignment_score") or 0) < 0.5 for sample in payload["samples"]):
+            raise RuntimeError(f"{relative}: contains a below-threshold CTC alignment")
 
 expected_rows = {
     "finetune/pairs/val128.jsonl": 128,

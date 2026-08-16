@@ -178,8 +178,11 @@ one source shard at a time.
 Set `HIBIKI_RECIPE=grounded-v2` only for the experimental word-timed recipe.
 Its cache builders run an English Wav2Vec2 CTC forced alignment and place each
 SentencePiece group at the corresponding target-speech frames, with text EOS at
-the target-audio end. The v2 launcher reads only `*_grounded_v2` caches and uses
-the independent `grounded_v2/` Hugging Face recovery prefix; see
+the target-audio end. PhoMT input is pinned; its publisher-recorded source ranges
+label the later timbre-matched subset without excluding the earlier
+gender-consistent pairs, and low-score CTC rows are rejected. The v2 launcher
+reads only `*_grounded_v2` caches and uses the independent `grounded_v2/`
+Hugging Face recovery prefix; see
 [training_plan.md](training_plan.md) for exact commands and hyperparameters.
 
 ## Trainer invariants

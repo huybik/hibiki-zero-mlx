@@ -118,12 +118,19 @@ export HIBIKI_HF_PREFIX=grounded_v2
 ```
 
 Build CTC word-timed caches; grounded mode refuses to mix them with legacy
-contiguous-text shards:
+contiguous-text shards. PhoMT is pinned to one dataset revision. All pairs are
+used: earlier pairs are gender-consistent but independently voiced, while source
+indexes at or above 345,600 have additional cross-lingual timbre matching. The
+cache records that distinction as metadata; neither group establishes speaker
+identity. Build all 1,377 shards with:
 
 ```bash
-./.venv/bin/python finetune/cache_phomt_stream.py \
-  --recipe grounded-v2 --device cuda \
-  --skip-pairs finetune/pairs/phomt_train.jsonl
+for worker in $(seq 0 7); do
+  ./.venv/bin/python finetune/cache_phomt_stream.py \
+    --recipe grounded-v2 --device cuda \
+    --worker "$worker" --num-workers 8 &
+done
+wait
 ./.venv/bin/python finetune/cache_codes.py \
   --recipe grounded-v2 --pairs finetune/pairs/train.jsonl
 ./.venv/bin/python finetune/cache_codes.py \
@@ -131,18 +138,37 @@ contiguous-text shards:
   --out-dir finetune/cache/validation_grounded_v2
 ```
 
+Both builders reject CTC alignments below mean posterior 0.5 and store the
+alignment score plus normalized spoken transcript. Inspect the rejected rows
+and the lowest-scoring accepted tail before launch. The threshold was checked
+on 48 decoded PhoMT English clips spanning both generation phases; after using
+the Wav2Vec2 model's correct no-attention-mask batching, scores ranged from
+0.814 to 0.987.
+
 The recipe uses one epoch, 95% PhoMT / 5% FLEURS sampling, effective batch 16,
 AdamW `(beta1=0.9, beta2=0.95, weight_decay=0.1)`, 1,000 warmup steps, cosine
 LR `1e-5 -> 1e-6`, text weight 2, and prefix-PAD weight 0.1. Greedy validation
 runs every 3,000 steps and includes a cyclic source-shuffle control. Best-model
-saves require all generation eligibility gates.
+saves require all generation eligibility gates. A full run includes every
+usable PhoMT row once before any repeats and repeats the smaller FLEURS pool to
+make its exposure 5%.
 
 For the 50k-row spend-control pilot, build at least 50k PhoMT rows into the v2
-cache and launch with:
+cache. To sample 104 shards across the corpus instead of building all of it, add
+`--sample-shards 104` to each `cache_phomt_stream.py` worker above. Then launch
+with:
 
 ```bash
 export HIBIKI_MAX_SAMPLES=50000
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_HF_PREFIX=grounded_v2
+export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh preflight
 ./finetune/h100.sh smoke
 ./finetune/h100.sh train
 ```
+
+Omit `HIBIKI_MAX_SAMPLES` to train on the full cache. A 50k pilot remains the
+recommended spend gate: proceed to all rows only after the 1k/3k generations
+show source-conditioned translation and the shuffled-source score is materially
+worse.
