@@ -92,7 +92,9 @@ Paired controls lock text temperature 0.4 and source-gap gates of 1.0 BLEU plus
 failed source dependence at -0.07/1.23 and 0.01/1.03. Phase-1's 19.57 absolute
 chrF was therefore mostly target-side modeling. Treat current early text timing
 as a diagnostic: run 0/250/500/1,000 first, then try 75--100% delay, contrastive
-shuffled-source loss, and only afterward Vietnamese acoustic preadaptation.
+shuffled-source loss, and only afterward Vietnamese acoustic preadaptation. The
+high-delay retry is explicit `HIBIKI_HIGH_DELAY_PILOT=1`, uses deterministic
+uniform ratios `[0.75, 1.0]`, and owns isolated `*_pilot_high_delay` artifacts.
 
 ## Environment
 

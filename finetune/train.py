@@ -63,6 +63,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1, help="Fixed batch size.")
     parser.add_argument("--max-samples", type=int, default=0, help="First N cached samples; 0=all.")
     parser.add_argument("--max-frames", type=int, default=0, help="Drop cached samples longer than N Mimi frames; 0=off.")
+    parser.add_argument("--expected-target-delay-min-ratio", type=float)
+    parser.add_argument("--expected-target-delay-max-ratio", type=float)
+    parser.add_argument("--expected-target-delay-seed", type=int)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lr-schedule", default="", help='Learning-rate schedule "lr@frac,...".')
     parser.add_argument("--warmup-steps", type=int, default=0, help="Linear LR warmup steps; 0=off.")
@@ -356,6 +359,30 @@ def main() -> None:
         raise ValueError("--val-batch-size must be positive")
     if args.max_frames < 0:
         raise ValueError("--max-frames must be non-negative")
+    delay_values = (
+        args.expected_target_delay_min_ratio,
+        args.expected_target_delay_max_ratio,
+        args.expected_target_delay_seed,
+    )
+    if any(value is not None for value in delay_values) and any(
+        value is None for value in delay_values
+    ):
+        raise ValueError("Expected target-delay min, max, and seed must be set together")
+    expected_target_delay = None
+    if all(value is not None for value in delay_values):
+        if not (
+            math.isfinite(args.expected_target_delay_min_ratio)
+            and math.isfinite(args.expected_target_delay_max_ratio)
+            and 0
+            <= args.expected_target_delay_min_ratio
+            <= args.expected_target_delay_max_ratio
+        ):
+            raise ValueError("Expected target-delay ratios must satisfy finite 0 <= min <= max")
+        expected_target_delay = {
+            "min_ratio": args.expected_target_delay_min_ratio,
+            "max_ratio": args.expected_target_delay_max_ratio,
+            "seed": args.expected_target_delay_seed,
+        }
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
     if args.text_pad_loss_weight < 0:
@@ -412,6 +439,7 @@ def main() -> None:
         args.max_frames,
         args.cache_weights,
         args.seed,
+        expected_target_delay,
     )
     if args.sort_by_length:
         dataset.shuffle_batch_order(args.batch_size, args.seed)
@@ -436,7 +464,12 @@ def main() -> None:
     val_dataloader = None
     checkpoint_info = common.load_checkpoint_info(args)
     if val_cache_dir is not None:
-        val_dataset = common.CachedCodeDataset(val_cache_dir, args.sort_by_length, args.val_max_samples)
+        val_dataset = common.CachedCodeDataset(
+            val_cache_dir,
+            args.sort_by_length,
+            args.val_max_samples,
+            expected_target_delay=expected_target_delay,
+        )
         val_dataloader = common.make_cached_dataloader(
             val_dataset, args.val_batch_size, args.num_workers, args.sort_by_length, seed=args.seed
         )

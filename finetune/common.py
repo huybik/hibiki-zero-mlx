@@ -228,6 +228,7 @@ class CachedCodeDataset(Dataset):
         max_frames: int = 0,
         cache_weights: list[float] | None = None,
         seed: int = 0,
+        expected_target_delay: dict[str, float | int] | None = None,
     ):
         self.samples: list[dict[str, Any]] = []
         self.frame_rate: float | None = None
@@ -242,6 +243,14 @@ class CachedCodeDataset(Dataset):
             cache_format = payload.get("format")
             if cache_format not in SUPPORTED_CACHE_FORMATS:
                 raise RuntimeError(f"Unsupported cache format in {shard_path}")
+            if (
+                expected_target_delay is not None
+                and payload.get("target_delay") != expected_target_delay
+            ):
+                raise RuntimeError(
+                    f"Target-delay policy mismatch in {shard_path}: "
+                    f"{payload.get('target_delay')} != {expected_target_delay}"
+                )
             frame_rate = float(payload["frame_rate"])
             if self.frame_rate is None:
                 self.frame_rate = frame_rate

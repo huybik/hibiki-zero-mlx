@@ -10,6 +10,7 @@ VENV="$REPO_ROOT/.venv"
 PYTHON="$VENV/bin/python"
 RECIPE="${HIBIKI_RECIPE:-legacy}"
 PILOT="${HIBIKI_PILOT:-0}"
+HIGH_DELAY_PILOT="${HIBIKI_HIGH_DELAY_PILOT:-0}"
 
 die() {
   echo "error: $*" >&2
@@ -17,8 +18,12 @@ die() {
 }
 
 [[ "$PILOT" == 0 || "$PILOT" == 1 ]] || die "HIBIKI_PILOT must be 0 or 1"
+[[ "$HIGH_DELAY_PILOT" == 0 || "$HIGH_DELAY_PILOT" == 1 ]] \
+  || die "HIBIKI_HIGH_DELAY_PILOT must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
   || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
+[[ "$HIGH_DELAY_PILOT" == 0 || ( "$PILOT" == 1 && "$RECIPE" == "grounded-v2" ) ]] \
+  || die "HIBIKI_HIGH_DELAY_PILOT=1 requires the grounded-v2 pilot"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
@@ -32,14 +37,16 @@ case "$RECIPE" in
     ;;
   grounded-v2)
     if [[ "$PILOT" == 1 ]]; then
-      SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2_pilot"
-      RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot"
-      PHOMT_CACHE="finetune/cache/phomt_grounded_v2_pilot"
-      TRAIN_CACHE="finetune/cache/train_grounded_v2_pilot"
-      VAL_CACHE="finetune/cache/validation_grounded_v2_pilot"
-      [[ -z "${HIBIKI_HF_PREFIX:-}" || "$HIBIKI_HF_PREFIX" == grounded_v2_pilot ]] \
-        || die "pilot recovery prefix must be grounded_v2_pilot"
-      HIBIKI_HF_PREFIX=grounded_v2_pilot
+      pilot_namespace=grounded_v2_pilot
+      [[ "$HIGH_DELAY_PILOT" == 0 ]] || pilot_namespace=grounded_v2_pilot_high_delay
+      SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
+      RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
+      PHOMT_CACHE="finetune/cache/phomt_$pilot_namespace"
+      TRAIN_CACHE="finetune/cache/train_$pilot_namespace"
+      VAL_CACHE="finetune/cache/validation_$pilot_namespace"
+      [[ -z "${HIBIKI_HF_PREFIX:-}" || "$HIBIKI_HF_PREFIX" == "$pilot_namespace" ]] \
+        || die "pilot recovery prefix must be $pilot_namespace"
+      HIBIKI_HF_PREFIX="$pilot_namespace"
     else
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2"
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2"
@@ -57,6 +64,14 @@ case "$RECIPE" in
     ;;
 esac
 export HIBIKI_HF_PREFIX
+
+TARGET_DELAY_MIN_RATIO=0
+TARGET_DELAY_MAX_RATIO=0.5
+TARGET_DELAY_SEED=1234
+if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
+  TARGET_DELAY_MIN_RATIO=0.75
+  TARGET_DELAY_MAX_RATIO=1.0
+fi
 
 if [[ "$RECIPE" == "grounded-v2" && "$PILOT" == 0 ]]; then
   [[ -z "${HIBIKI_MAX_SAMPLES:-}" ]] || die "full grounded-v2 rejects HIBIKI_MAX_SAMPLES"
@@ -142,8 +157,14 @@ cache_grounded() {
   if [[ "$PILOT" == 1 ]]; then
     sample_shards=104
   fi
+  local delay_args=(
+    --target-delay-min-ratio "$TARGET_DELAY_MIN_RATIO"
+    --target-delay-max-ratio "$TARGET_DELAY_MAX_RATIO"
+    --seed "$TARGET_DELAY_SEED"
+  )
   local cache_args=(
     --recipe grounded-v2 --device cuda --profile h100 --out-dir "$PHOMT_CACHE"
+    "${delay_args[@]}"
   )
   if (( sample_shards > 0 )); then
     cache_args+=(--sample-shards "$sample_shards")
@@ -192,10 +213,10 @@ PY
 
   "$PYTHON" finetune/cache_codes.py \
     --recipe grounded-v2 --device cuda --pairs finetune/pairs/train.jsonl \
-    --out-dir "$TRAIN_CACHE"
+    --out-dir "$TRAIN_CACHE" "${delay_args[@]}"
   "$PYTHON" finetune/cache_codes.py \
     --recipe grounded-v2 --device cuda --pairs finetune/pairs/validation.jsonl \
-    --out-dir "$VAL_CACHE"
+    --out-dir "$VAL_CACHE" "${delay_args[@]}"
   if (( sample_shards > 0 )); then
     echo "Grounded-v2 pilot caches complete: $sample_shards sampled PhoMT shards"
   else
@@ -215,7 +236,8 @@ preflight() {
 
   local profile
   profile="$("$PYTHON" - \
-    "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "$PILOT" \
+    "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "$PILOT" "$HIGH_DELAY_PILOT" \
+    "$TARGET_DELAY_MIN_RATIO" "$TARGET_DELAY_MAX_RATIO" "$TARGET_DELAY_SEED" \
     "$PHOMT_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" <<'PY'
 from __future__ import annotations
 
@@ -232,7 +254,13 @@ root = Path(sys.argv[1])
 minimum_free_gib = float(sys.argv[2])
 recipe = sys.argv[3]
 pilot = bool(int(sys.argv[4]))
-phomt_cache, train_cache, val_cache = sys.argv[5:8]
+high_delay_pilot = bool(int(sys.argv[5]))
+target_delay = {
+    "min_ratio": float(sys.argv[6]),
+    "max_ratio": float(sys.argv[7]),
+    "seed": int(sys.argv[8]),
+}
+phomt_cache, train_cache, val_cache = sys.argv[9:12]
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -327,6 +355,8 @@ for relative, expected in expected_shards.items():
             raise RuntimeError(f"{relative}: first grounded-v2 shard is empty")
         if float(payload.get("alignment_min_score") or 0) != 0.5:
             raise RuntimeError(f"{relative}: CTC threshold is not 0.5")
+        if high_delay_pilot and payload.get("target_delay") != target_delay:
+            raise RuntimeError(f"{relative}: not a deterministic 75--100% delay cache")
         if any(sample.get("text_timing") != "wav2vec2_ctc_word_v1" for sample in payload["samples"]):
             raise RuntimeError(f"{relative}: missing word-aligned text timing")
         if any(float(sample.get("alignment_score") or 0) < 0.5 for sample in payload["samples"]):
@@ -454,6 +484,13 @@ common_args() {
         --mask-target-audio-input
         --persist-sample-manifest
       )
+      if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
+        TRAIN_ARGS+=(
+          --expected-target-delay-min-ratio "$TARGET_DELAY_MIN_RATIO"
+          --expected-target-delay-max-ratio "$TARGET_DELAY_MAX_RATIO"
+          --expected-target-delay-seed "$TARGET_DELAY_SEED"
+        )
+      fi
     else
       TRAIN_ARGS+=(
         --max-samples 0

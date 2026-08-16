@@ -12,8 +12,9 @@ A Vast pod is disposable. Keep the three durable resources distinct:
   training change before relying on a remote recovery checkpoint.
 - HF dataset `huybik/hibiki-zero-vi-full-sft`: immutable PhoMT/FLEURS caches.
 - HF model `huybik/hibiki-zero-vi-full-sft`: published checkpoints. The current
-  legacy, grounded full, and grounded pilot runs own only `full_run/`,
-  `grounded_v2/`, and `grounded_v2_pilot/` respectively; phase-1 is preserved.
+  legacy, grounded full, grounded pilot, and high-delay pilot runs own only
+  `full_run/`, `grounded_v2/`, `grounded_v2_pilot/`, and
+  `grounded_v2_pilot_high_delay/` respectively; phase-1 is preserved.
 
 Never put a token, SSH endpoint, or pod-specific path in Git. A new agent should
 first read `AGENTS.md`, `CONTEXT.md`, and the pod's `/etc/vast-agents-guide.md`.
@@ -191,6 +192,13 @@ warmup, evaluates at step 0 and every 250 steps, disables audio loss, and masks
 target-audio teacher inputs. The ordered sampled membership and SHA-256 are
 persisted and checked on resume. Full grounded-v2 keeps 1,000-step warmup and
 rejects the old pilot limit environment variables.
+
+After the ordinary pilot fails source dependence, add
+`HIBIKI_HIGH_DELAY_PILOT=1` to run the otherwise identical pilot with a
+deterministic uniform target delay in 75--100% of source duration. The launcher
+forces separate `*_grounded_v2_pilot_high_delay` cache/run/smoke paths and the
+`grounded_v2_pilot_high_delay/` recovery prefix. Cache metadata, preflight, and
+the trainer run config verify delay ratios 0.75/1.0 and cache seed 1234.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
