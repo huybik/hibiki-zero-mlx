@@ -280,7 +280,7 @@ def main() -> None:
     shm = Path("/dev/shm")
     tmp_dir = str(shm) if shm.is_dir() else None
 
-    pending = [
+    pending_shards = [
         (parquet_idx, shard_name)
         for parquet_idx, shard_name in mine
         if not (out_dir / f"shard_{parquet_idx:05d}.pt").exists()
@@ -295,21 +295,23 @@ def main() -> None:
 
     def iter_parquet():
         if args.limit:
-            for parquet_idx, shard_name in pending:
+            for parquet_idx, shard_name in pending_shards:
                 yield parquet_idx, shard_name, download_parquet(shard_name)
             return
-        if not pending:
+        if not pending_shards:
             return
         with ThreadPoolExecutor(max_workers=args.prefetch_shards) as pool:
             futures = deque(
                 pool.submit(download_parquet, shard_name)
-                for _, shard_name in pending[: args.prefetch_shards]
+                for _, shard_name in pending_shards[: args.prefetch_shards]
             )
-            for index, (parquet_idx, shard_name) in enumerate(pending):
+            for index, (parquet_idx, shard_name) in enumerate(pending_shards):
                 local = futures.popleft().result()
                 next_index = index + args.prefetch_shards
-                if next_index < len(pending):
-                    futures.append(pool.submit(download_parquet, pending[next_index][1]))
+                if next_index < len(pending_shards):
+                    futures.append(
+                        pool.submit(download_parquet, pending_shards[next_index][1])
+                    )
                 yield parquet_idx, shard_name, local
 
     kept = 0
@@ -535,8 +537,8 @@ def main() -> None:
 
         prep = threading.Thread(target=producer, daemon=True)
         prep.start()
-        while (pending := chunk_q.get()) is not DONE:
-            encode_chunk(pending)
+        while (ready_chunk := chunk_q.get()) is not DONE:
+            encode_chunk(ready_chunk)
         prep.join()
         if prep_err:
             raise prep_err[0]
