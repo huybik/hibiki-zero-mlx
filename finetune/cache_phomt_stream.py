@@ -34,6 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 from finetune.cache_codes import (  # noqa: E402
     CACHE_FORMAT,
     FRAME_RATE,
+    GROUNDED_CACHE_FORMAT,
     SAMPLE_RATE,
     assemble_codes,
     check_device,
@@ -102,6 +103,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all.")
     parser.add_argument("--batch-size", type=int, default=16, help="Clips per batched Mimi encode.")
+    parser.add_argument(
+        "--recipe",
+        choices=("legacy", "grounded-v2"),
+        default="legacy",
+        help="grounded-v2 CTC-aligns English text tokens to target speech.",
+    )
+    parser.add_argument("--alignment-batch-size", type=int, default=8)
     return parser.parse_args()
 
 
@@ -195,8 +203,23 @@ def main() -> None:
     if int(cfg["card"]) != int(mimi.cardinality):
         raise RuntimeError(f"Config card={cfg['card']} != Mimi cardinality={mimi.cardinality}")
 
+    aligner = None
+    if args.recipe == "grounded-v2":
+        from finetune.text_timing import EnglishCTCAligner
+
+        aligner = EnglishCTCAligner(device)
+
+    if args.recipe == "grounded-v2" and args.out_dir == DEFAULT_CACHE_ROOT / "phomt_stream":
+        args.out_dir = DEFAULT_CACHE_ROOT / "phomt_grounded_v2"
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    expected_format = GROUNDED_CACHE_FORMAT if aligner is not None else CACHE_FORMAT
+    if existing := next(iter(sorted(out_dir.glob("shard_*.pt"))), None):
+        actual_format = torch.load(existing, map_location="cpu").get("format")
+        if actual_format != expected_format:
+            raise RuntimeError(
+                f"Refusing to mix cache formats in {out_dir}: {actual_format} != {expected_format}"
+            )
     pairs_path = out_dir / f"pairs_w{args.worker}.jsonl"
     shm = Path("/dev/shm")
     tmp_dir = str(shm) if shm.is_dir() else None
@@ -216,6 +239,17 @@ def main() -> None:
         cpu = torch.device("cpu")
 
         def encode_chunk(chunk: list[dict]) -> None:
+            alignments = None
+            groups_batch = None
+            if aligner is not None:
+                from finetune.text_timing import sentencepiece_groups
+
+                groups_batch = [sentencepiece_groups(c["row"]["text_en"], tokenizer) for c in chunk]
+                alignments = aligner.align_many(
+                    [c["en_align_wav"] for c in chunk],
+                    groups_batch,
+                    args.alignment_batch_size,
+                )
             codes = encode_batch(
                 [c["vi_wav"] for c in chunk] + [c["en_wav"] for c in chunk],
                 mimi,
@@ -226,8 +260,32 @@ def main() -> None:
             for k, c in enumerate(chunk):
                 vi_codes, en_codes = codes[k], codes[n + k]
                 row = c["row"]
-                tokens = text_tokens(row["text_en"], tokenizer)
-                assembled = assemble_codes(torch, row, vi_codes, en_codes, tokens, cfg, c["delay_frames"])
+                text_frames = None
+                alignment_score = None
+                if alignments is None or groups_batch is None:
+                    tokens = text_tokens(row["text_en"], tokenizer)
+                else:
+                    from finetune.text_timing import timed_sentencepiece_tokens
+
+                    alignment = alignments[k]
+                    tokens, text_frames = timed_sentencepiece_tokens(
+                        groups_batch[k],
+                        alignment,
+                        int(en_codes.shape[1]) - c["delay_frames"],
+                        c["delay_frames"],
+                        int(tokenizer.eos_id()),
+                    )
+                    alignment_score = alignment.score
+                assembled = assemble_codes(
+                    torch,
+                    row,
+                    vi_codes,
+                    en_codes,
+                    tokens,
+                    cfg,
+                    c["delay_frames"],
+                    text_frames,
+                )
                 samples.append(
                     {
                         "id": row["id"],
@@ -243,6 +301,10 @@ def main() -> None:
                         "en_audio": row["en_audio"],
                         "text_en": row["text_en"],
                         "text_vi": row["text_vi"],
+                        "text_timing": (
+                            "contiguous" if alignments is None else "wav2vec2_ctc_word_v1"
+                        ),
+                        "alignment_score": alignment_score,
                     }
                 )
             if device.type == "mps":
@@ -293,7 +355,10 @@ def main() -> None:
                         en_tmp.write(table.column("audio_en")[i].as_py()["bytes"])
                         en_tmp.flush()
                         vi_wav = read_audio(Path(vi_tmp.name), sphn, torch, cpu)[0, 0]
-                        en_wav = read_audio(Path(en_tmp.name), sphn, torch, cpu, left_pad_s=delay_s)[0, 0]
+                        en_raw_wav = read_audio(Path(en_tmp.name), sphn, torch, cpu)[0, 0]
+                        en_wav = torch.nn.functional.pad(
+                            en_raw_wav, (int(round(delay_s * SAMPLE_RATE)), 0)
+                        )
                     chunk.append(
                         {
                             "row": row,
@@ -301,6 +366,11 @@ def main() -> None:
                             "delay_frames": delay_frames,
                             "vi_wav": vi_wav,
                             "en_wav": en_wav,
+                            "en_align_wav": (
+                                sphn.resample(en_raw_wav.numpy(), SAMPLE_RATE, 16_000)
+                                if aligner is not None
+                                else None
+                            ),
                         }
                     )
                     kept += 1
@@ -325,7 +395,7 @@ def main() -> None:
             raise prep_err[0]
 
         payload = {
-            "format": CACHE_FORMAT,
+            "format": expected_format,
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
             "config": {

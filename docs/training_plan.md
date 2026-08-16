@@ -105,3 +105,44 @@ a model. Apply the free-running eligibility gates in
 [validation_plan.md](validation_plan.md) and preserve the best eligible
 model/trainer pair before rotation. The rolling repo preserves the raw-chrF
 best model but not its matching trainer state.
+
+## Experimental grounded-v2 recipe
+
+The legacy recipe remains the default. `grounded-v2` is isolated behind
+`HIBIKI_RECIPE` and uses separate cache, run, smoke, and Hugging Face paths:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_HF_PREFIX=grounded_v2
+./finetune/h100.sh setup
+```
+
+Build CTC word-timed caches; grounded mode refuses to mix them with legacy
+contiguous-text shards:
+
+```bash
+./.venv/bin/python finetune/cache_phomt_stream.py \
+  --recipe grounded-v2 --device cuda \
+  --skip-pairs finetune/pairs/phomt_train.jsonl
+./.venv/bin/python finetune/cache_codes.py \
+  --recipe grounded-v2 --pairs finetune/pairs/train.jsonl
+./.venv/bin/python finetune/cache_codes.py \
+  --recipe grounded-v2 --pairs finetune/pairs/validation.jsonl \
+  --out-dir finetune/cache/validation_grounded_v2
+```
+
+The recipe uses one epoch, 95% PhoMT / 5% FLEURS sampling, effective batch 16,
+AdamW `(beta1=0.9, beta2=0.95, weight_decay=0.1)`, 1,000 warmup steps, cosine
+LR `1e-5 -> 1e-6`, text weight 2, and prefix-PAD weight 0.1. Greedy validation
+runs every 3,000 steps and includes a cyclic source-shuffle control. Best-model
+saves require all generation eligibility gates.
+
+For the 50k-row spend-control pilot, build at least 50k PhoMT rows into the v2
+cache and launch with:
+
+```bash
+export HIBIKI_MAX_SAMPLES=50000
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```

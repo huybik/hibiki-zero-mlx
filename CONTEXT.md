@@ -45,6 +45,9 @@ Generated FLEURS data is excluded from both the active tree and Git history.
 - `finetune/h100.sh` pins the pod environment, verifies staged artifacts and
   evaluation audio, selects the 80/94 GB batch recipe, and gates training on a
   save/eval/resume smoke.
+- `HIBIKI_RECIPE=grounded-v2` selects isolated CTC word-timed caches, 95/5
+  PhoMT/FLEURS sampling, conservative cosine SFT, eligibility-only best saves,
+  and a shuffled-source dependency control. Legacy behavior remains the default.
 - Text prefix PAD weight defaults to 0.5. Content/EOS remain weight 1.0.
 - `finetune/common.py` owns cached data, losses, schedules, exact full-model
   checkpoint I/O, greedy generation, and metrics. Complete checkpoint pairs are

@@ -8,8 +8,24 @@ cd "$REPO_ROOT"
 
 VENV="$REPO_ROOT/.venv"
 PYTHON="$VENV/bin/python"
-SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
-RUN_DIR="$REPO_ROOT/finetune/runs/vi_base_full"
+RECIPE="${HIBIKI_RECIPE:-legacy}"
+case "$RECIPE" in
+  legacy)
+    SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
+    RUN_DIR="$REPO_ROOT/finetune/runs/vi_base_full"
+    : "${HIBIKI_HF_PREFIX:=full_run}"
+    ;;
+  grounded-v2)
+    SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2"
+    RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2"
+    : "${HIBIKI_HF_PREFIX:=grounded_v2}"
+    ;;
+  *)
+    echo "error: HIBIKI_RECIPE must be legacy or grounded-v2" >&2
+    exit 1
+    ;;
+esac
+export HIBIKI_HF_PREFIX
 
 die() {
   echo "error: $*" >&2
@@ -66,6 +82,9 @@ setup() {
     soundfile==0.14.0 \
     sphn==0.2.1 \
     tqdm==4.67.1
+  if [[ "$RECIPE" == "grounded-v2" ]]; then
+    "$PYTHON" -m pip install num2words==0.5.14 transformers==5.14.1
+  fi
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
   echo "H100 environment installed in $VENV"
@@ -79,7 +98,7 @@ preflight() {
   git diff --cached --quiet || die "staged changes must be committed before training"
 
   local profile
-  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_free_gib" <<'PY'
+  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "${HIBIKI_MAX_SAMPLES:-0}" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -93,6 +112,8 @@ import torch
 
 root = Path(sys.argv[1])
 minimum_free_gib = float(sys.argv[2])
+recipe = sys.argv[3]
+max_samples = int(sys.argv[4])
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -160,17 +181,38 @@ for relative, expected in expected_hashes.items():
     if digest != expected:
         raise RuntimeError(f"hash mismatch for {relative}: {digest}")
 
-expected_shards = {
-    "finetune/cache/phomt_stream": 1377,
-    "finetune/cache/train": 46,
-    "finetune/cache/validation": 5,
-}
+expected_shards = (
+    {
+        "finetune/cache/phomt_stream": 1377,
+        "finetune/cache/train": 46,
+        "finetune/cache/validation": 5,
+    }
+    if recipe == "legacy"
+    else {
+        "finetune/cache/phomt_grounded_v2": 1377,
+        "finetune/cache/train_grounded_v2": 46,
+        "finetune/cache/validation_grounded_v2": 5,
+    }
+)
 for relative, expected in expected_shards.items():
     paths = sorted((root / relative).glob("shard_*.pt"))
-    if len(paths) != expected:
+    partial_phomt = recipe == "grounded-v2" and relative.endswith("phomt_grounded_v2") and max_samples
+    if partial_phomt:
+        minimum = max(1, (max_samples + 499) // 500)
+        if len(paths) < minimum:
+            raise RuntimeError(f"{relative}: expected at least {minimum} pilot shards, got {len(paths)}")
+    elif len(paths) != expected:
         raise RuntimeError(f"{relative}: expected {expected} shards, got {len(paths)}")
     if any(path.stat().st_size == 0 for path in paths):
         raise RuntimeError(f"{relative}: found an empty shard")
+    if recipe == "grounded-v2":
+        payload = torch.load(paths[0], map_location="cpu")
+        if payload.get("format") != "hibiki_vn_grounded_cache_v2":
+            raise RuntimeError(f"{relative}: not a grounded-v2 cache")
+        if any(sample.get("text_timing") != "wav2vec2_ctc_word_v1" for sample in payload["samples"]):
+            raise RuntimeError(f"{relative}: missing word-aligned text timing")
+        if any(float(sample.get("alignment_score") or 0) <= 0 for sample in payload["samples"]):
+            raise RuntimeError(f"{relative}: missing CTC alignment scores")
 
 expected_rows = {
     "finetune/pairs/val128.jsonl": 128,
@@ -206,20 +248,36 @@ common_args() {
   TRAIN_ARGS=(
     --device cuda
     --model-weight weights/hibiki-pytorch-77f82164@110.safetensors
-    --cache-dir finetune/cache/phomt_stream finetune/cache/train
-    --val-cache-dir finetune/cache/validation
     --batch-size "$BATCH_SIZE"
     --grad-accum-steps "$GRAD_ACCUM_STEPS"
     --max-frames 280
     --sort-by-length
-    --epochs 2
-    --text-prefix-pad-weight 0.5
     --seed 42
     --val-batch-size 8
     --eval-pairs finetune/pairs/val128.jsonl
     --eval-batch-size 8
     --eval-text-temp 0
   )
+  if [[ "$RECIPE" == "legacy" ]]; then
+    TRAIN_ARGS+=(
+      --cache-dir finetune/cache/phomt_stream finetune/cache/train
+      --val-cache-dir finetune/cache/validation
+      --epochs 2
+      --text-prefix-pad-weight 0.5
+    )
+  else
+    TRAIN_ARGS+=(
+      --cache-dir finetune/cache/phomt_grounded_v2 finetune/cache/train_grounded_v2
+      --cache-weights 0.95 0.05
+      --val-cache-dir finetune/cache/validation_grounded_v2
+      --epochs 1
+      --max-samples "${HIBIKI_MAX_SAMPLES:-0}"
+      --text-prefix-pad-weight 0.1
+      --text-pad-mode all
+      --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
+      --eval-shuffled-source --best-requires-gates
+    )
+  fi
 }
 
 stop_monitor() {
@@ -284,10 +342,13 @@ smoke() {
   set +e
   (
     set -Eeuo pipefail
+    local smoke_lr=(--lr-schedule "1e-4@0" --warmup-steps 500 --text-weight-schedule "5@0")
+    if [[ "$RECIPE" == "grounded-v2" ]]; then
+      smoke_lr=(--lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 --text-weight-schedule "2@0")
+    fi
     "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
-      --lr-schedule "1e-4@0" --warmup-steps 500 \
-      --text-weight-schedule "5@0" \
+      "${smoke_lr[@]}" \
       --max-steps 10 \
       --val-every 10 --val-batches 1 \
       --eval-every 10 --eval-limit 8 \
@@ -306,8 +367,7 @@ smoke() {
 
     "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
-      --lr-schedule "1e-4@0" --warmup-steps 500 \
-      --text-weight-schedule "5@0" \
+      "${smoke_lr[@]}" \
       --max-steps 11 \
       --val-every 0 --val-batches 1 --eval-every 0 \
       --save-every 11 --keep-checkpoints 1 --log-every 1 \
@@ -353,7 +413,7 @@ run_with_sync() {
   [[ -n "$repo" ]] || die "set HIBIKI_HF_REPO=owner/public-model-repo before training"
   local commit
   commit="$(git rev-parse HEAD)"
-  "$PYTHON" - "$repo" "$mode" "$out_dir" "$commit" <<'PY'
+  "$PYTHON" - "$repo" "$mode" "$out_dir" "$commit" "$HIBIKI_HF_PREFIX" <<'PY'
 import json
 import re
 import secrets
@@ -370,7 +430,7 @@ api = HfApi()
 info = api.model_info(sys.argv[1], files_metadata=True)
 if info.private:
     raise RuntimeError("disaster-recovery model repo must be public")
-prefix = "full_run/"
+prefix = sys.argv[5].strip("/") + "/"
 remote_files = [
     item.rfilename.removeprefix(prefix)
     for item in info.siblings
@@ -487,14 +547,25 @@ train() {
   require_current_smoke
   require_empty_dir "$RUN_DIR"
   common_args
-  run_with_sync "$RUN_DIR" fresh "$PYTHON" finetune/train.py \
-    "${TRAIN_ARGS[@]}" \
-    --lr-schedule "1e-4@0,3e-5@0.5" --warmup-steps 500 \
-    --text-weight-schedule "5@0,2@0.6" \
-    --val-every 2000 \
-    --eval-every 9000 --eval-limit 128 \
-    --save-every 3000 --keep-checkpoints 2 --log-every 10 \
-    --out-dir "$RUN_DIR"
+  if [[ "$RECIPE" == "legacy" ]]; then
+    run_with_sync "$RUN_DIR" fresh "$PYTHON" finetune/train.py \
+      "${TRAIN_ARGS[@]}" \
+      --lr-schedule "1e-4@0,3e-5@0.5" --warmup-steps 500 \
+      --text-weight-schedule "5@0,2@0.6" \
+      --val-every 2000 \
+      --eval-every 9000 --eval-limit 128 \
+      --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+      --out-dir "$RUN_DIR"
+  else
+    run_with_sync "$RUN_DIR" fresh "$PYTHON" finetune/train.py \
+      "${TRAIN_ARGS[@]}" \
+      --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 \
+      --text-weight-schedule "2@0" \
+      --val-every 1000 \
+      --eval-every 3000 --eval-limit 128 \
+      --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+      --out-dir "$RUN_DIR"
+  fi
 }
 
 resume() {
@@ -507,15 +578,27 @@ resume() {
   local out_dir
   out_dir="$(dirname "$checkpoint")"
   common_args
-  run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
-    "${TRAIN_ARGS[@]}" \
-    --lr-schedule "1e-4@0,3e-5@0.5" --warmup-steps 500 \
-    --text-weight-schedule "5@0,2@0.6" \
-    --val-every 2000 \
-    --eval-every 9000 --eval-limit 128 \
-    --save-every 3000 --keep-checkpoints 2 --log-every 10 \
-    --resume-checkpoint "$checkpoint" \
-    --out-dir "$out_dir"
+  if [[ "$RECIPE" == "legacy" ]]; then
+    run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
+      "${TRAIN_ARGS[@]}" \
+      --lr-schedule "1e-4@0,3e-5@0.5" --warmup-steps 500 \
+      --text-weight-schedule "5@0,2@0.6" \
+      --val-every 2000 \
+      --eval-every 9000 --eval-limit 128 \
+      --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+      --resume-checkpoint "$checkpoint" \
+      --out-dir "$out_dir"
+  else
+    run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
+      "${TRAIN_ARGS[@]}" \
+      --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 \
+      --text-weight-schedule "2@0" \
+      --val-every 1000 \
+      --eval-every 3000 --eval-limit 128 \
+      --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+      --resume-checkpoint "$checkpoint" \
+      --out-dir "$out_dir"
+  fi
 }
 
 case "${1:-}" in

@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-batches", type=int, default=0, help="0 means all selected batches.")
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
+    parser.add_argument("--text-pad-mode", choices=("prefix", "all"), default="prefix")
+    parser.add_argument("--text-prefix-pad-weight", type=float, default=1.0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
         "--sort-by-length",
@@ -89,7 +91,11 @@ def main() -> None:
 
     metrics = common.evaluate_teacher_forced(
         lm, dataloader, device, checkpoint_info.model_type,
-        args.audio_loss_weight, args.text_loss_weight, args.max_batches,
+        args.audio_loss_weight,
+        args.text_loss_weight,
+        args.max_batches,
+        args.text_pad_mode,
+        args.text_prefix_pad_weight,
     )
     result = {
         "cache_dir": repo_display_path(cache_dir),

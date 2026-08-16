@@ -44,6 +44,12 @@ def parse_args() -> argparse.Namespace:
         default=[DEFAULT_CACHE_ROOT / "train"],
         help="One or more cache dirs; shards from all are pooled (e.g. FLEURS + PhoMT).",
     )
+    parser.add_argument(
+        "--cache-weights",
+        type=float,
+        nargs="+",
+        help="Target sampling proportions, one per --cache-dir.",
+    )
     parser.add_argument("--val-cache-dir", type=Path, help="Cached val split for teacher-forced CE.")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -59,6 +65,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lr-schedule", default="", help='Learning-rate schedule "lr@frac,...".')
     parser.add_argument("--warmup-steps", type=int, default=0, help="Linear LR warmup steps; 0=off.")
+    parser.add_argument("--cosine-lr-end", type=float, default=0.0)
+    parser.add_argument("--adam-beta1", type=float, default=0.9)
+    parser.add_argument("--adam-beta2", type=float, default=0.999)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
@@ -70,6 +80,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="Per-token CE weight for supervised prefix PAD; content/EOS stay at 1.0.",
+    )
+    parser.add_argument(
+        "--text-pad-mode",
+        choices=("prefix", "all"),
+        default="prefix",
+        help="Supervise prefix PAD only, or all valid PAD timing positions.",
     )
     parser.add_argument("--max-steps", type=int, default=0, help="Optimizer steps, 0 means all.")
     # Teacher-forced CE validation (cheap, cached).
@@ -96,6 +112,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-source-column", default="vi_audio")
     parser.add_argument("--eval-reference-column", default="text_en")
     parser.add_argument("--eval-id-column", default="id")
+    parser.add_argument(
+        "--eval-shuffled-source",
+        action="store_true",
+        help="Also evaluate a cyclic source permutation to measure source dependence.",
+    )
+    parser.add_argument(
+        "--best-requires-gates",
+        action="store_true",
+        help="Save best only after nonempty/EOS/loop/length eligibility gates pass.",
+    )
     # Bookkeeping.
     parser.add_argument("--save-every", type=int, default=50, help="Steps between saves.")
     parser.add_argument(
@@ -286,6 +312,10 @@ def main() -> None:
         raise ValueError("--grad-accum-steps must be positive")
     if args.text_prefix_pad_weight < 0:
         raise ValueError("--text-prefix-pad-weight must be non-negative")
+    if args.cache_weights is not None and len(args.cache_weights) != len(args.cache_dir):
+        raise ValueError("--cache-weights must match --cache-dir")
+    if not 0 < args.adam_beta1 < 1 or not 0 < args.adam_beta2 < 1:
+        raise ValueError("Adam betas must be in (0, 1)")
 
     common.seed_all(args.seed)
 
@@ -312,7 +342,14 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     clean_incomplete_checkpoints(out_dir)
 
-    dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples, args.max_frames)
+    dataset = common.CachedCodeDataset(
+        cache_dir,
+        args.sort_by_length,
+        args.max_samples,
+        args.max_frames,
+        args.cache_weights,
+        args.seed,
+    )
     if args.sort_by_length:
         dataset.shuffle_batch_order(args.batch_size, args.seed)
     exposure = dataset.exposure()
@@ -355,7 +392,13 @@ def main() -> None:
     print(f"Trainable params: {sum(p.numel() for p in params):,} / {sum(p.numel() for p in lm.parameters()):,}")
 
     groups = common.param_groups(lm, lr_points)
-    optimizer = torch.optim.AdamW(groups, lr=args.lr, fused=device.type == "cuda")
+    optimizer = torch.optim.AdamW(
+        groups,
+        lr=args.lr,
+        betas=(args.adam_beta1, args.adam_beta2),
+        weight_decay=args.weight_decay,
+        fused=device.type == "cuda",
+    )
     # fp32 master weights + bf16 autocast forward = standard mixed precision:
     # bf16-speed matmuls, fp32 grads/Adam updates. CE already upcasts logits.
     autocast = (
@@ -449,7 +492,15 @@ def main() -> None:
         text_w = common.schedule_value(text_points, step, total_steps)
         audio_w = common.schedule_value(audio_points, step, total_steps)
         metrics = common.evaluate_teacher_forced(
-            lm, val_dataloader, device, checkpoint_info.model_type, audio_w, text_w, args.val_batches
+            lm,
+            val_dataloader,
+            device,
+            checkpoint_info.model_type,
+            audio_w,
+            text_w,
+            args.val_batches,
+            args.text_pad_mode,
+            args.text_prefix_pad_weight,
         )
         item = {"step": step, **{k: metrics[k] for k in (
             "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "samples",
@@ -473,8 +524,13 @@ def main() -> None:
         records, metrics = common.run_greedy_eval(
             eval_rows, eval_cfg, args.eval_batch_size, mimi, lm, text_tokenizer, checkpoint_info, eval_out
         )
-        lm.train()
         chrf = float(metrics.get("chrf", 0.0))
+        eligible = (
+            metrics["nonempty_predictions"] >= 122
+            and metrics["eos_found"] >= 116
+            and metrics["repeated_4gram_predictions"] <= 12
+            and metrics["mean_length_ratio"] <= 2.0
+        )
         item = {
             "step": step,
             "chrf": chrf,
@@ -485,11 +541,32 @@ def main() -> None:
             "eos": metrics["eos_found"],
             "overlong": metrics["overlong_predictions"],
             "repeat4": metrics["repeated_4gram_predictions"],
+            "mean_length_ratio": metrics["mean_length_ratio"],
+            "eligible": eligible,
         }
+        if args.eval_shuffled_source:
+            shuffled_rows = [dict(row) for row in eval_rows]
+            shuffled_sources = [row[args.eval_source_column] for row in eval_rows[1:] + eval_rows[:1]]
+            for row, source in zip(shuffled_rows, shuffled_sources, strict=True):
+                row[args.eval_source_column] = source
+            _, shuffled = common.run_greedy_eval(
+                shuffled_rows,
+                eval_cfg,
+                args.eval_batch_size,
+                mimi,
+                lm,
+                text_tokenizer,
+                checkpoint_info,
+                out_dir / f"greedy_step{step:06d}_source_shuffled",
+            )
+            item["shuffled_chrf"] = shuffled["chrf"]
+            item["source_chrf_gap"] = chrf - float(shuffled["chrf"])
+            item["shuffled_nonempty"] = shuffled["nonempty_predictions"]
+        lm.train()
         with greedy_log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(item, sort_keys=True) + "\n")
         marker = ""
-        if chrf > best_chrf:
+        if chrf > best_chrf and (eligible or not args.best_requires_gates):
             previous_best = load_best_state(out_dir)
             best_chrf = chrf
             best_model = out_dir / f"best_step{step:06d}.safetensors"
@@ -531,7 +608,18 @@ def main() -> None:
     while global_step < total_steps:
         text_w = common.schedule_value(text_points, global_step, total_steps)
         audio_w = common.schedule_value(audio_points, global_step, total_steps)
-        lr_value = common.apply_lr_schedule(optimizer, global_step, total_steps, args.warmup_steps)
+        if args.cosine_lr_end:
+            lr_value = common.apply_cosine_lr_schedule(
+                optimizer,
+                global_step,
+                total_steps,
+                args.warmup_steps,
+                args.cosine_lr_end,
+            )
+        else:
+            lr_value = common.apply_lr_schedule(
+                optimizer, global_step, total_steps, args.warmup_steps
+            )
 
         optimizer.zero_grad(set_to_none=True)
         step_loss = step_audio = step_text = 0.0
@@ -565,6 +653,7 @@ def main() -> None:
                     audio_w,
                     text_w,
                     text_prefix_pad_weight=args.text_prefix_pad_weight,
+                    text_pad_mode=args.text_pad_mode,
                 )
             loss = losses["loss"]
             (loss / args.grad_accum_steps).backward()

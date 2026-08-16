@@ -16,7 +16,9 @@ POLL_S = 60
 REMOTE_INTERVAL = 9_000
 REMOTE_KEEP = 2
 STAGE_ROOT = ".hf_sync"
-REMOTE_ROOT = "full_run"
+REMOTE_ROOT = os.environ.get("HIBIKI_HF_PREFIX", "full_run").strip("/")
+if not REMOTE_ROOT or ".." in REMOTE_ROOT.split("/"):
+    raise ValueError("HIBIKI_HF_PREFIX must be a non-empty relative repository path")
 STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")

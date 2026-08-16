@@ -29,6 +29,7 @@ from finetune.utils import (  # noqa: E402
 SAMPLE_RATE = 24000
 FRAME_RATE = 12.5
 CACHE_FORMAT = "hibiki_vn_lora_cache_v1"
+GROUNDED_CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +68,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
+    parser.add_argument(
+        "--recipe",
+        choices=("legacy", "grounded-v2"),
+        default="legacy",
+        help="grounded-v2 CTC-aligns the text stream to target speech.",
+    )
+    parser.add_argument("--alignment-batch-size", type=int, default=8)
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
     return parser.parse_args()
 
@@ -134,6 +142,7 @@ def assemble_codes(
     tokens: list[int],
     cfg: dict[str, Any],
     text_start: int,
+    text_frames: list[int] | None = None,
 ) -> Any:
     n_q = int(cfg["n_q"])
     dep_q = int(cfg["dep_q"])
@@ -157,13 +166,23 @@ def assemble_codes(
     text_len = len(tokens)
     target_len = int(en_codes.shape[1])
     source_len = int(vi_codes.shape[1])
-    total_frames = max(text_start + text_len, target_len, source_len + 1)
+    if text_frames is not None:
+        if len(text_frames) != text_len or len(set(text_frames)) != text_len:
+            raise ValueError(f"Text frames must be unique and match tokens for id={row['id']}")
+        if text_frames != sorted(text_frames) or text_frames[0] < 0:
+            raise ValueError(f"Text frames must be sorted and non-negative for id={row['id']}")
+    text_end = text_start + text_len if text_frames is None else text_frames[-1] + 1
+    total_frames = max(text_end, target_len, source_len + 1)
     if total_frames <= 0:
         raise RuntimeError(f"Empty cache sample for id={row['id']}")
 
     codes = torch.full((1 + n_q, total_frames), zero_id, dtype=torch.int32)
     codes[0].fill_(text_pad_id)
-    codes[0, text_start : text_start + text_len] = torch.tensor(tokens, dtype=torch.int32)
+    if text_frames is None:
+        codes[0, text_start : text_start + text_len] = torch.tensor(tokens, dtype=torch.int32)
+    else:
+        codes[0, torch.tensor(text_frames, dtype=torch.long)] = torch.tensor(tokens, dtype=torch.int32)
+        codes[0, text_frames[-1] + 1 :] = zero_id
     codes[1 : 1 + dep_q, :target_len] = en_codes.to(torch.int32)
 
     source_start = 1 + dep_q
@@ -253,8 +272,17 @@ def main() -> None:
     if not pairs:
         raise RuntimeError(f"No pairs to cache from {args.pairs}")
 
+    if args.recipe == "grounded-v2" and args.out_dir == DEFAULT_CACHE_ROOT / "train":
+        args.out_dir = DEFAULT_CACHE_ROOT / "train_grounded_v2"
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    expected_format = GROUNDED_CACHE_FORMAT if args.recipe == "grounded-v2" else CACHE_FORMAT
+    if existing := next(iter(sorted(out_dir.glob("shard_*.pt"))), None):
+        actual_format = torch.load(existing, map_location="cpu").get("format")
+        if actual_format != expected_format:
+            raise RuntimeError(
+                f"Refusing to mix cache formats in {out_dir}: {actual_format} != {expected_format}"
+            )
 
     print(f"Loading Mimi on {device} from {repo_display_path(mimi_weight)}")
     num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
@@ -264,6 +292,11 @@ def main() -> None:
             f"Config card={cfg['card']} does not match Mimi cardinality={mimi.cardinality}"
         )
     tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer_path))
+    aligner = None
+    if args.recipe == "grounded-v2":
+        from finetune.text_timing import EnglishCTCAligner
+
+        aligner = EnglishCTCAligner(device)
 
     shard_count = math.ceil(len(pairs) / args.shard_size)
     for shard_index in range(shard_count):
@@ -287,8 +320,29 @@ def main() -> None:
             delay_frames = int(round(delay_s * FRAME_RATE))
             vi_codes = encode_audio(vi_audio, mimi, sphn, torch, device)
             en_codes = encode_audio(en_audio, mimi, sphn, torch, device, left_pad_s=delay_s)
-            tokens = text_tokens(row["text_en"], tokenizer)
-            codes = assemble_codes(torch, row, vi_codes, en_codes, tokens, cfg, delay_frames)
+            alignment_score = None
+            text_frames = None
+            if aligner is None:
+                tokens = text_tokens(row["text_en"], tokenizer)
+            else:
+                from finetune.text_timing import sentencepiece_groups, timed_sentencepiece_tokens
+
+                raw_en = read_audio(en_audio, sphn, torch, torch.device("cpu"))[0, 0].numpy()
+                wav16 = sphn.resample(raw_en, SAMPLE_RATE, 16_000)
+                groups = sentencepiece_groups(row["text_en"], tokenizer)
+                alignment = aligner.align_many([wav16], [groups], args.alignment_batch_size)[0]
+                raw_target_frames = int(en_codes.shape[1]) - delay_frames
+                tokens, text_frames = timed_sentencepiece_tokens(
+                    groups,
+                    alignment,
+                    raw_target_frames,
+                    delay_frames,
+                    int(tokenizer.eos_id()),
+                )
+                alignment_score = alignment.score
+            codes = assemble_codes(
+                torch, row, vi_codes, en_codes, tokens, cfg, delay_frames, text_frames
+            )
             samples.append(
                 {
                     "id": row["id"],
@@ -304,11 +358,13 @@ def main() -> None:
                     "en_audio": repo_display_path(en_audio),
                     "text_en": row["text_en"],
                     "text_vi": row["text_vi"],
+                    "text_timing": "contiguous" if aligner is None else "wav2vec2_ctc_word_v1",
+                    "alignment_score": alignment_score,
                 }
             )
 
         payload = {
-            "format": CACHE_FORMAT,
+            "format": expected_format,
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
             "config": {

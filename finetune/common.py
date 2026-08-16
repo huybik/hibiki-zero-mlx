@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import random
 import re
@@ -35,7 +36,7 @@ from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Dataset
 
-from finetune.cache_codes import CACHE_FORMAT
+from finetune.cache_codes import CACHE_FORMAT, GROUNDED_CACHE_FORMAT
 from finetune.hibiki_helpers import (
     audio_read,
     decode_outputs,
@@ -45,7 +46,7 @@ from finetune.hibiki_helpers import (
 )
 from finetune.utils import repo_display_path, require_file, resolve_repo_path
 
-SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT}
+SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT, GROUNDED_CACHE_FORMAT}
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +200,8 @@ class CachedCodeDataset(Dataset):
         sort_by_length: bool,
         max_samples: int,
         max_frames: int = 0,
+        cache_weights: list[float] | None = None,
+        seed: int = 0,
     ):
         self.samples: list[dict[str, Any]] = []
         self.frame_rate: float | None = None
@@ -206,6 +209,9 @@ class CachedCodeDataset(Dataset):
         cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
         shard_paths = [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]
         for shard_path in shard_paths:
+            cache_index = next(
+                index for index, directory in enumerate(cache_dirs) if shard_path.parent == directory
+            )
             payload = torch.load(shard_path, map_location="cpu")
             cache_format = payload.get("format")
             if cache_format not in SUPPORTED_CACHE_FORMATS:
@@ -237,12 +243,37 @@ class CachedCodeDataset(Dataset):
                         "split": str(sample.get("split", "")),
                         "speaker_id": str(sample.get("speaker_id", "")),
                         "gender": str(sample.get("gender", "")),
+                        "cache_index": cache_index,
                     }
                 )
         if not self.samples:
             raise RuntimeError(f"No shard_*.pt cache files found in {cache_dir}")
         if max_frames and dropped:
             print(f"[dataset] dropped {dropped} samples over {max_frames} frames; kept {len(self.samples)}")
+        if cache_weights is not None:
+            if len(cache_weights) != len(cache_dirs) or any(weight <= 0 for weight in cache_weights):
+                raise ValueError("--cache-weights must provide one positive weight per --cache-dir")
+            weight_total = sum(cache_weights)
+            target_total = max_samples or len(self.samples)
+            rng = random.Random(seed)
+            balanced: list[dict[str, Any]] = []
+            remaining = target_total
+            for cache_index, weight in enumerate(cache_weights):
+                pool = [sample for sample in self.samples if sample["cache_index"] == cache_index]
+                if not pool:
+                    raise RuntimeError(f"Cache directory {cache_dirs[cache_index]} has no usable samples")
+                count = (
+                    remaining
+                    if cache_index == len(cache_weights) - 1
+                    else round(target_total * weight / weight_total)
+                )
+                remaining -= count
+                if count <= len(pool):
+                    balanced.extend(rng.sample(pool, count))
+                else:
+                    balanced.extend(rng.choices(pool, k=count))
+            self.samples = balanced
+            max_samples = 0
         if sort_by_length:
             self.samples.sort(key=lambda sample: sample["frames"])
         if max_samples:
@@ -396,6 +427,30 @@ def apply_lr_schedule(
     return lrs
 
 
+def apply_cosine_lr_schedule(
+    optimizer: Any,
+    step: int,
+    total_steps: int,
+    warmup_steps: int,
+    end_lr: float,
+) -> float | dict[str, float]:
+    if end_lr < 0:
+        raise ValueError("Cosine end LR must be non-negative")
+    lrs: dict[str, float] = {}
+    for group in optimizer.param_groups:
+        start_lr = float(group["points"][0][1])
+        if step < warmup_steps:
+            lr = start_lr * (step + 1) / max(1, warmup_steps)
+        else:
+            progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps - 1))
+            lr = end_lr + 0.5 * (start_lr - end_lr) * (1.0 + math.cos(math.pi * progress))
+        group["lr"] = lr
+        lrs[str(group.get("name", "group"))] = lr
+    if len(lrs) == 1:
+        return next(iter(lrs.values()))
+    return lrs
+
+
 # --------------------------------------------------------------------------- #
 # Teacher-forced losses
 # --------------------------------------------------------------------------- #
@@ -411,7 +466,11 @@ def masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> tuple[Any, Any
     return loss_sum / token_count.clamp(min=1), token_count
 
 
-def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int) -> Any:
+def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int, pad_mode: str) -> Any:
+    if pad_mode == "all":
+        return base_mask
+    if pad_mode != "prefix":
+        raise ValueError(f"Unsupported text PAD mode: {pad_mode}")
     non_pad = targets != pad_id
     seen_text = non_pad.long().cumsum(dim=-1) > 0
     prefix_pad = (targets == pad_id) & ~seen_text
@@ -444,13 +503,16 @@ def compute_batch_losses(
     audio_loss_weight: float,
     text_loss_weight: float,
     text_prefix_pad_weight: float = 1.0,
+    text_pad_mode: str = "prefix",
     return_output: bool = False,
 ) -> dict[str, Any]:
     output = lm(codes, condition_tensors=condition_tensors)
     audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
     text_targets = codes[:, :1]
     audio_loss, audio_tokens = masked_cross_entropy(output.logits, audio_targets, output.mask)
-    text_mask = text_supervision_mask(output.text_mask, text_targets, lm.text_padding_token_id)
+    text_mask = text_supervision_mask(
+        output.text_mask, text_targets, lm.text_padding_token_id, text_pad_mode
+    )
     text_loss, text_tokens = weighted_text_cross_entropy(
         output.text_logits,
         text_targets,
@@ -481,6 +543,8 @@ def evaluate_teacher_forced(
     audio_loss_weight: float,
     text_loss_weight: float,
     max_batches: int = 0,
+    text_pad_mode: str = "prefix",
+    text_prefix_pad_weight: float = 1.0,
 ) -> dict[str, float | int]:
     was_training = bool(lm.training)
     lm.eval()
@@ -508,6 +572,8 @@ def evaluate_teacher_forced(
                 condition_cache[batch_size] = batch_condition_tensors(lm, model_type, batch_size)
             losses = compute_batch_losses(
                 lm, codes, condition_cache[batch_size], audio_loss_weight, text_loss_weight,
+                text_prefix_pad_weight=text_prefix_pad_weight,
+                text_pad_mode=text_pad_mode,
                 return_output=True,
             )
             output = losses.pop("output")

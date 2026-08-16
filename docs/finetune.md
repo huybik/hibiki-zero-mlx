@@ -175,6 +175,13 @@ launch path. Rebuild only when intentionally replacing the dataset:
 `cache_phomt_stream.py` rebuilds the large PhoMT cache directly from parquet,
 one source shard at a time.
 
+Set `HIBIKI_RECIPE=grounded-v2` only for the experimental word-timed recipe.
+Its cache builders run an English Wav2Vec2 CTC forced alignment and place each
+SentencePiece group at the corresponding target-speech frames, with text EOS at
+the target-audio end. The v2 launcher reads only `*_grounded_v2` caches and uses
+the independent `grounded_v2/` Hugging Face recovery prefix; see
+[training_plan.md](training_plan.md) for exact commands and hyperparameters.
+
 ## Trainer invariants
 
 - Every model parameter is trainable; there is no adapter or freeze map.
