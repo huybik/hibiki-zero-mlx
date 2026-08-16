@@ -101,6 +101,12 @@ It reconstructs that membership exactly, hard-gates at 480 frames, preserves
 production order, and uses physical batch 8 / accumulation 2. Try contrastive
 shuffled-source loss only if this retry also fails, then acoustic preadaptation.
 
+## Canonical resources
+
+- Published training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft/tree/main
+- Training checkpoints and recovery artifacts: https://huggingface.co/huybik/hibiki-zero-vi-full-sft
+- Source PhoMT Vietnamese–English speech dataset: https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
+
 ## Environment
 
 - Local Python work uses `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
