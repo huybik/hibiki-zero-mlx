@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import math
 import sys
@@ -73,6 +74,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--audio-weight-schedule", default="", help="Audio loss-weight schedule.")
+    parser.add_argument(
+        "--mask-target-audio-input",
+        action="store_true",
+        help="Replace teacher-forced target-audio inputs with zero tokens; requires zero audio weight.",
+    )
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-weight-schedule", default="", help='Text loss-weight schedule "5@0,2@0.6".')
     parser.add_argument(
@@ -103,36 +109,34 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Teacher-forced validation batch size; defaults to --batch-size.",
     )
-    # Autoregressive greedy val eval + best-checkpoint selection.
-    parser.add_argument("--eval-every", type=int, default=0, help="Steps between greedy val eval; 0=off.")
+    # Paired free-running val eval + best-checkpoint selection.
+    parser.add_argument("--eval-every", type=int, default=0, help="Steps between paired val eval; 0=off.")
     parser.add_argument(
         "--eval-at-start",
         action="store_true",
         help="Run a non-promotable step-0 greedy baseline before training.",
     )
     parser.add_argument("--eval-pairs", type=Path, default=DEFAULT_PAIRS_DIR / "validation.jsonl")
-    parser.add_argument("--eval-limit", type=int, default=128, help="Greedy val rows (val128 gate).")
+    parser.add_argument("--eval-limit", type=int, default=128, help="Paired val rows (val128 gate).")
     parser.add_argument("--eval-ids-file", type=Path, help="Optional id file for the greedy eval set.")
     parser.add_argument("--eval-batch-size", type=int, default=8)
-    parser.add_argument("--eval-text-temp", type=float, default=0.0, help="Greedy text temp for selection.")
+    parser.add_argument("--eval-text-temp", type=float, default=0.4)
     parser.add_argument("--eval-audio-temp", type=float, default=0.8)
     parser.add_argument("--eval-top-k", type=int, default=250)
     parser.add_argument("--eval-top-k-text", type=int, default=250)
     parser.add_argument("--eval-tail-s", type=float, default=8.0)
     parser.add_argument("--eval-gen-duration", type=float, default=0.0)
     parser.add_argument("--eval-source-column", default="vi_audio")
+    parser.add_argument("--eval-duration-column", default="vi_duration_s")
     parser.add_argument("--eval-reference-column", default="text_en")
     parser.add_argument("--eval-id-column", default="id")
     parser.add_argument(
-        "--eval-shuffled-source",
-        action="store_true",
-        help="Also evaluate a cyclic source permutation to measure source dependence.",
+        "--eval-derangement",
+        type=Path,
+        help="Frozen duration-matched derangement; default <out-dir>/eval_derangement.json.",
     )
-    parser.add_argument(
-        "--best-requires-gates",
-        action="store_true",
-        help="Save best only after nonempty/EOS/loop/length eligibility gates pass.",
-    )
+    parser.add_argument("--min-source-bleu-gap", type=float, default=None)
+    parser.add_argument("--min-source-chrf-gap", type=float, default=None)
     # Bookkeeping.
     parser.add_argument("--save-every", type=int, default=50, help="Steps between saves.")
     parser.add_argument(
@@ -146,6 +150,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-checkpoint", type=Path, help="trainer_step*.pt to resume from.")
     parser.add_argument("--seed", type=int, default=1234, help="Training and data-order RNG seed.")
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--persist-sample-manifest",
+        action="store_true",
+        help="Freeze ordered cache_index/id training membership and verify it on resume.",
+    )
     parser.add_argument(
         "--gradient-checkpointing", action="store_true", help="Pass gradient_checkpointing=True."
     )
@@ -185,14 +194,17 @@ def load_best_state(out_dir: Path) -> dict[str, Any] | None:
         return None
     state = json.loads(marker.read_text(encoding="utf-8"))
     step = int(state["step"])
-    chrf = float(state["chrf"])
+    float(state["correct"]["bleu"])
+    float(state["correct"]["chrf"])
     model_name = str(state["model"])
     if model_name != f"best_step{step:06d}.safetensors":
         raise RuntimeError("best.json model does not match its step")
     model = out_dir / model_name
     if not model.is_file():
         raise RuntimeError(f"best.json references a missing model: {model}")
-    return {"step": step, "chrf": chrf, "model": model_name}
+    if not state.get("promotion_eligible"):
+        raise RuntimeError("best.json references an ineligible checkpoint")
+    return state
 
 
 def clean_incomplete_checkpoints(out_dir: Path) -> None:
@@ -247,6 +259,31 @@ def atomic_write_text(text: str, path: Path) -> None:
         temp_path.replace(path)
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+def freeze_sample_manifest(
+    dataset: common.CachedCodeDataset, out_dir: Path, resume: bool
+) -> str:
+    content = "".join(
+        json.dumps(
+            {"cache_index": sample["cache_index"], "id": sample["id"]},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+        for sample in dataset.samples
+    )
+    encoded = content.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    path = out_dir / "sample_manifest.jsonl"
+    if resume:
+        if not path.is_file():
+            raise RuntimeError("Resume requires the original sample_manifest.jsonl")
+        if path.read_bytes() != encoded:
+            raise RuntimeError("Selected training membership differs from sample_manifest.jsonl")
+    else:
+        atomic_write_text(content, path)
+    return digest
 
 
 def save_checkpoint(
@@ -327,6 +364,19 @@ def main() -> None:
         raise ValueError("--first-content-loss-weight must be non-negative")
     if args.cache_weights is not None and len(args.cache_weights) != len(args.cache_dir):
         raise ValueError("--cache-weights must match --cache-dir")
+    if args.eval_every and (
+        args.min_source_bleu_gap is None or args.min_source_chrf_gap is None
+    ):
+        raise ValueError(
+            "Best promotion requires explicit --min-source-bleu-gap and --min-source-chrf-gap"
+        )
+    if args.eval_every and args.eval_batch_size <= 0:
+        raise ValueError("--eval-batch-size must be positive")
+    if any(
+        value is not None and not math.isfinite(value)
+        for value in (args.min_source_bleu_gap, args.min_source_chrf_gap)
+    ):
+        raise ValueError("Source-gap thresholds must be finite")
     if not 0 < args.adam_beta1 < 1 or not 0 < args.adam_beta2 < 1:
         raise ValueError("Adam betas must be in (0, 1)")
 
@@ -376,6 +426,8 @@ def main() -> None:
     text_points = common.parse_schedule(args.text_weight_schedule or args.text_loss_weight)
     audio_points = common.parse_schedule(args.audio_weight_schedule or args.audio_loss_weight)
     lr_points = common.parse_schedule(args.lr_schedule or args.lr)
+    if args.mask_target_audio_input and any(weight != 0.0 for _, weight in audio_points):
+        raise ValueError("--mask-target-audio-input requires every audio weight to be zero")
 
     batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
     steps_per_epoch = max(1, batches_per_epoch // args.grad_accum_steps)
@@ -426,6 +478,7 @@ def main() -> None:
     eval_rows: list[dict[str, str]] = []
     eval_cfg = argparse.Namespace(
         source_column=args.eval_source_column,
+        duration_column=args.eval_duration_column,
         reference_column=args.eval_reference_column,
         id_column=args.eval_id_column,
         gen_duration=args.eval_gen_duration,
@@ -446,9 +499,13 @@ def main() -> None:
             common.read_eval_rows(args.eval_pairs), eval_ids, args.eval_id_column, args.eval_limit
         )
         common.validate_eval_rows(
-            eval_rows, args.eval_source_column, args.eval_reference_column, args.eval_id_column
+            eval_rows,
+            args.eval_source_column,
+            args.eval_reference_column,
+            args.eval_id_column,
+            args.eval_duration_column,
         )
-        print(f"Greedy val eval every {args.eval_every} steps on {len(eval_rows)} rows.")
+        print(f"Paired val eval every {args.eval_every} steps on {len(eval_rows)} rows.")
 
     global_step = 0
     micro_step = 0
@@ -470,11 +527,31 @@ def main() -> None:
             return [_jsonable(x) for x in v]
         return v
 
+    sample_manifest_sha256 = None
+    if args.persist_sample_manifest:
+        sample_manifest_sha256 = freeze_sample_manifest(
+            dataset, out_dir, args.resume_checkpoint is not None
+        )
+        if args.resume_checkpoint is not None:
+            previous_config_path = out_dir / "run_config.json"
+            if not previous_config_path.is_file():
+                raise RuntimeError("Resume requires the original run_config.json")
+            previous_config = json.loads(previous_config_path.read_text(encoding="utf-8"))
+            if previous_config.get("sample_manifest_sha256") != sample_manifest_sha256:
+                raise RuntimeError("sample_manifest.jsonl SHA-256 differs from run_config.json")
     run_config = {k: _jsonable(v) for k, v in vars(args).items()}
     run_config["total_steps"] = total_steps
     run_config["batches_per_epoch"] = batches_per_epoch
     run_config["steps_per_epoch"] = steps_per_epoch
-    (out_dir / "run_config.json").write_text(json.dumps(run_config, indent=2, sort_keys=True), "utf-8")
+    if sample_manifest_sha256 is not None:
+        run_config["sample_manifest_sha256"] = sample_manifest_sha256
+    run_config_path = out_dir / "run_config.json"
+    if args.resume_checkpoint is None:
+        atomic_write_text(
+            json.dumps(run_config, indent=2, sort_keys=True) + "\n", run_config_path
+        )
+    elif not run_config_path.is_file():
+        raise RuntimeError("Resume requires the original run_config.json")
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
     greedy_log_path = out_dir / "greedy_eval_log.jsonl"
@@ -497,14 +574,20 @@ def main() -> None:
     log_min_batch_size = math.inf
     log_max_batch_size = 0
     log_max_frames = 0
-    best_chrf = -1.0
+    best_key = (-1.0, -1.0)
     best_state = load_best_state(out_dir)
     if args.resume_checkpoint is not None and best_state is not None:
         best_step = int(best_state["step"])
         if best_step > global_step:
             raise RuntimeError("best.json is newer than the resume checkpoint")
-        best_chrf = float(best_state["chrf"])
-        print(f"Restored best greedy val chrF={best_chrf:.3f} from step {best_step}.")
+        best_key = (
+            float(best_state["correct"]["bleu"]),
+            float(best_state["correct"]["chrf"]),
+        )
+        print(
+            f"Restored best paired val BLEU={best_key[0]:.3f} "
+            f"chrF={best_key[1]:.3f} from step {best_step}."
+        )
 
     def run_teacher_forced_val(step: int) -> None:
         if val_dataloader is None:
@@ -522,6 +605,7 @@ def main() -> None:
             args.text_pad_mode,
             args.text_pad_loss_weight,
             args.first_content_loss_weight,
+            args.mask_target_audio_input,
         )
         item = {"step": step, **{k: metrics[k] for k in (
             "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "samples",
@@ -541,74 +625,60 @@ def main() -> None:
         )
 
     def run_greedy_val(step: int, allow_promotion: bool = True) -> None:
-        nonlocal best_chrf
+        nonlocal best_key
         if not args.eval_every:
             return
         lm.eval()
         eval_out = out_dir / f"greedy_step{step:06d}"
-        records, metrics = common.run_greedy_eval(
-            eval_rows, eval_cfg, args.eval_batch_size, mimi, lm, text_tokenizer, checkpoint_info, eval_out
+        _, metrics = common.run_paired_eval(
+            eval_rows,
+            eval_cfg,
+            args.eval_batch_size,
+            mimi,
+            lm,
+            text_tokenizer,
+            checkpoint_info,
+            eval_out,
+            resolve_repo_path(args.eval_derangement)
+            if args.eval_derangement is not None
+            else out_dir / "eval_derangement.json",
+            args.seed,
         )
-        chrf = float(metrics.get("chrf", 0.0))
-        eligible = (
-            metrics["nonempty_predictions"] >= 122
-            and metrics["eos_found"] >= 116
-            and metrics["repeated_4gram_predictions"] <= 12
-            and metrics["mean_length_ratio"] <= 2.0
+        lm.train()
+        correct = metrics["correct"]
+        score_key = (float(correct["bleu"]), float(correct["chrf"]))
+        promotion_eligible = (
+            bool(metrics["health_eligible"])
+            and float(metrics["source_bleu_gap"]) >= args.min_source_bleu_gap
+            and float(metrics["source_chrf_gap"]) >= args.min_source_chrf_gap
         )
         item = {
             "step": step,
-            "chrf": chrf,
-            "nonempty_chrf": metrics.get("nonempty_chrf"),
-            "bleu": metrics.get("bleu"),
-            "nonempty": metrics["nonempty_predictions"],
-            "num": metrics["num_predictions"],
-            "eos": metrics["eos_found"],
-            "overlong": metrics["overlong_predictions"],
-            "repeat4": metrics["repeated_4gram_predictions"],
-            "mean_length_ratio": metrics["mean_length_ratio"],
-            "eligible": eligible,
+            **metrics,
+            "min_source_bleu_gap": args.min_source_bleu_gap,
+            "min_source_chrf_gap": args.min_source_chrf_gap,
+            "promotion_eligible": promotion_eligible,
         }
-        if args.eval_shuffled_source:
-            shuffled_rows = [dict(row) for row in eval_rows]
-            shuffled_sources = [row[args.eval_source_column] for row in eval_rows[1:] + eval_rows[:1]]
-            for row, source in zip(shuffled_rows, shuffled_sources, strict=True):
-                row[args.eval_source_column] = source
-            _, shuffled = common.run_greedy_eval(
-                shuffled_rows,
-                eval_cfg,
-                args.eval_batch_size,
-                mimi,
-                lm,
-                text_tokenizer,
-                checkpoint_info,
-                out_dir / f"greedy_step{step:06d}_source_shuffled",
-            )
-            item["shuffled_chrf"] = shuffled["chrf"]
-            item["source_chrf_gap"] = chrf - float(shuffled["chrf"])
-            item["shuffled_nonempty"] = shuffled["nonempty_predictions"]
-        lm.train()
         with greedy_log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(item, sort_keys=True) + "\n")
         marker = ""
-        if allow_promotion and chrf > best_chrf and (eligible or not args.best_requires_gates):
+        if allow_promotion and promotion_eligible and score_key > best_key:
             previous_best = load_best_state(out_dir)
-            best_chrf = chrf
+            best_key = score_key
             best_model = out_dir / f"best_step{step:06d}.safetensors"
             common.save_model(lm, best_model, build_metadata(args))
+            best_metadata = {**item, "model": best_model.name}
             atomic_write_text(
-                json.dumps(
-                    {"step": step, "chrf": chrf, "model": best_model.name}, sort_keys=True
-                )
-                + "\n",
+                json.dumps(best_metadata, indent=2, sort_keys=True) + "\n",
                 out_dir / "best.json",
             )
             if previous_best is not None and previous_best["model"] != best_model.name:
                 (out_dir / previous_best["model"]).unlink()
             marker = " *best*"
         print(
-            f"greedy step={step} chrf={chrf:.3f} nonempty_chrf={item['nonempty_chrf']:.3f} "
-            f"nonempty={item['nonempty']}/{item['num']}{marker}"
+            f"paired step={step} bleu={score_key[0]:.3f} chrf={score_key[1]:.3f} "
+            f"source_gap={metrics['source_bleu_gap']:.3f}/{metrics['source_chrf_gap']:.3f} "
+            f"nonempty={correct['nonempty_predictions']}/{correct['num_predictions']}{marker}"
         )
         common.empty_device_cache(device)
 
@@ -684,6 +754,7 @@ def main() -> None:
                     text_pad_loss_weight=args.text_pad_loss_weight,
                     first_content_loss_weight=args.first_content_loss_weight,
                     text_pad_mode=args.text_pad_mode,
+                    mask_target_audio_input=args.mask_target_audio_input,
                 )
             loss = losses["loss"]
             (loss / args.grad_accum_steps).backward()
@@ -795,11 +866,14 @@ def main() -> None:
     if args.eval_every and global_step % args.eval_every != 0:
         run_greedy_val(global_step)
     save_checkpoint(lm, optimizer, args, global_step, out_dir)
-    if best_chrf >= 0.0:
+    if best_key[0] >= 0.0:
         final_best = load_best_state(out_dir)
         assert final_best is not None
         best_path = out_dir / final_best["model"]
-        print(f"Best greedy val chrF={best_chrf:.3f} -> {repo_display_path(best_path)}")
+        print(
+            f"Best paired val BLEU={best_key[0]:.3f} chrF={best_key[1]:.3f} "
+            f"-> {repo_display_path(best_path)}"
+        )
     print(f"Saved final full-model checkpoint at step {global_step} in {repo_display_path(out_dir)}")
 
 

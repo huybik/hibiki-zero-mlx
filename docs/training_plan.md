@@ -52,12 +52,15 @@ best files too; resume verifies them before it uploads the newest local pair:
 recovery_dir="$(mktemp -d)"
 ./.venv/bin/hf download "$HIBIKI_HF_REPO" \
   full_run/run.json \
+  full_run/metadata/run_config.json \
   full_run/checkpoints/model_stepNNNNNN.safetensors \
   full_run/checkpoints/trainer_stepNNNNNN.pt \
   full_run/best/best_stepBBBBBB.safetensors \
   full_run/best/best_stepBBBBBB.json \
   --local-dir "$recovery_dir"
 cp "$recovery_dir/full_run/run.json" finetune/runs/vi_base_full/run_id.json
+cp "$recovery_dir/full_run/metadata/run_config.json" \
+  finetune/runs/vi_base_full/run_config.json
 cp "$recovery_dir/full_run/checkpoints/model_stepNNNNNN.safetensors" \
   finetune/runs/vi_base_full/
 cp "$recovery_dir/full_run/checkpoints/trainer_stepNNNNNN.pt" \
@@ -101,21 +104,30 @@ training instead of continuing without disaster recovery.
 
 Stop immediately on non-finite loss, checkpoint mismatch, corrupt output, or a
 logged LR that differs from `run_config.json`. Teacher-forced loss cannot select
-a model. Apply the free-running eligibility gates in
-[validation_plan.md](validation_plan.md) and preserve the best eligible
-model/trainer pair before rotation. The rolling repo preserves the raw-chrF
-best model but not its matching trainer state.
+a model. Promotion always requires the paired health and calibrated source-gap
+gates in [validation_plan.md](validation_plan.md). Qualified checkpoints rank by
+correct-source BLEU, with chrF as the secondary key. The rolling repo preserves
+the complete `best.json` metadata with the selected model.
 
 ## Experimental grounded-v2 recipe
 
-The legacy recipe remains the default. `grounded-v2` is isolated behind
-`HIBIKI_RECIPE` and uses separate cache, run, smoke, and Hugging Face paths:
+The legacy recipe remains the default. `grounded-v2` full training is isolated
+behind `HIBIKI_RECIPE`. Its pilot is a separate explicit mode; for pilot setup:
 
 ```bash
 export HIBIKI_RECIPE=grounded-v2
-export HIBIKI_HF_PREFIX=grounded_v2
+export HIBIKI_PILOT=1
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=<calibrated-value>
+export HIBIKI_MIN_SOURCE_CHRF_GAP=<calibrated-value>
 ./finetune/h100.sh setup
 ```
+
+Do not set `HIBIKI_HF_PREFIX` in pilot mode; the launcher forces
+`grounded_v2_pilot`. It also forces the pilot cache directories
+`phomt_grounded_v2_pilot`, `train_grounded_v2_pilot`, and
+`validation_grounded_v2_pilot`, smoke directory
+`h100_smoke_grounded_v2_pilot`, and run directory `vi_grounded_v2_pilot`.
 
 Build CTC word-timed caches; grounded mode refuses to mix them with legacy
 contiguous-text shards. PhoMT is pinned to one dataset revision. All pairs are
@@ -127,6 +139,7 @@ on the H100 with:
 
 ```bash
 export HIBIKI_RECIPE=grounded-v2
+unset HIBIKI_PILOT
 ./finetune/h100.sh cache-grounded
 ```
 
@@ -146,37 +159,42 @@ on 48 decoded PhoMT English clips spanning both generation phases; after using
 the Wav2Vec2 model's correct no-attention-mask batching, scores ranged from
 0.814 to 0.987.
 
-The recipe uses one epoch, 95% PhoMT / 5% FLEURS sampling, effective batch 16,
-AdamW `(beta1=0.9, beta2=0.95, weight_decay=0.1)`, 1,000 warmup steps, and cosine
-LR `1e-5 -> 1e-6`. Text loss reduces content, PAD, and first-content tokens
-independently, then combines them with aggregate weights `1.0 / 0.05 / 1.0`.
-Only prefix PAD is supervised during source grounding; inter-word PAD returns
-after grounding qualifies. Greedy validation includes a step-0 baseline and a
-cyclic source-shuffle control. Best-model saves require all generation
-eligibility gates. A full run includes every usable PhoMT row once before any
-repeats and repeats the smaller FLEURS pool to make its exposure 5%.
+The full recipe uses one epoch, 95% PhoMT / 5% FLEURS sampling, effective batch
+16, AdamW `(beta1=0.9, beta2=0.95, weight_decay=0.1)`, 1,000 warmup steps, and
+cosine LR `1e-5 -> 1e-6`. The pilot keeps the optimizer recipe but uses 100
+warmup steps and exactly 50,000 samples / 1,000 optimizer steps. It sets audio
+loss to zero and masks only the target-audio input codebooks, leaving Vietnamese
+source codes, English text history, and English text targets intact. Its ordered
+`cache_index,id` membership (including repeats) is frozen in
+`sample_manifest.jsonl`; resume requires identical bytes and SHA-256.
 
-For the 50k-row spend-control pilot, build at least 50k PhoMT rows into the v2
-cache. To sample 104 shards across the corpus instead of building all of it,
-run the cache launcher with `HIBIKI_CACHE_SAMPLE_SHARDS=104`. Then launch with:
+Build and run the pilot with:
 
 ```bash
 export HIBIKI_RECIPE=grounded-v2
-export HIBIKI_CACHE_SAMPLE_SHARDS=104
+export HIBIKI_PILOT=1
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=<calibrated-value>
+export HIBIKI_MIN_SOURCE_CHRF_GAP=<calibrated-value>
 ./finetune/h100.sh cache-grounded
-unset HIBIKI_CACHE_SAMPLE_SHARDS
-export HIBIKI_MAX_SAMPLES=50000
-export HIBIKI_MAX_STEPS=1000
-export HIBIKI_HF_PREFIX=grounded_v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh preflight
 ./finetune/h100.sh smoke
 ./finetune/h100.sh train
 ```
 
-When `HIBIKI_MAX_SAMPLES` is set, the launcher disables audio loss so the pilot
-isolates text grounding. At 1,000 steps it generates at step 0, every 250 steps,
-and final. Omit both `HIBIKI_MAX_SAMPLES` and `HIBIKI_MAX_STEPS` only after the
-pilot qualifies; that restores audio loss and the 3,000-step generation cadence.
-Proceed only when BLEU rises and correct-source generation is materially better
-than cyclically shuffled-source generation.
+Pilot cache construction always selects exactly 104 evenly spaced PhoMT shards
+and builds explicit pilot FLEURS caches. Preflight requires exactly those cache
+counts and at least 47,500 accepted PhoMT rows. The evaluator runs at steps
+0/250/500/1,000 using fixed-seed temperature 0.4 correct and duration-matched
+shuffled conditions. Pilot and full recovery namespaces can never warm-start
+one another. Full grounded-v2 rejects the obsolete `HIBIKI_MAX_SAMPLES`,
+`HIBIKI_MAX_STEPS`, and `HIBIKI_CACHE_SAMPLE_SHARDS` controls.
+
+The current early target timing is a diagnostic policy, not established
+causality: many rows emit English supervision before enough Vietnamese evidence
+exists. Keep the first corrected pilot on the current cache. If source dependence
+remains near zero, repeat the same contract with 75--100% delay. Only then try a
+contrastive shuffled-source loss; consider Vietnamese acoustic preadaptation
+after that. A high-delay cache remains a curriculum, never the final timing
+policy, because sentence-delay supervision can leave persistent lag.

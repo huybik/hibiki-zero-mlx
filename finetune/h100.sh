@@ -9,16 +9,47 @@ cd "$REPO_ROOT"
 VENV="$REPO_ROOT/.venv"
 PYTHON="$VENV/bin/python"
 RECIPE="${HIBIKI_RECIPE:-legacy}"
+PILOT="${HIBIKI_PILOT:-0}"
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+[[ "$PILOT" == 0 || "$PILOT" == 1 ]] || die "HIBIKI_PILOT must be 0 or 1"
+[[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
+  || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
     RUN_DIR="$REPO_ROOT/finetune/runs/vi_base_full"
-    : "${HIBIKI_HF_PREFIX:=full_run}"
+    PHOMT_CACHE="finetune/cache/phomt_stream"
+    TRAIN_CACHE="finetune/cache/train"
+    VAL_CACHE="finetune/cache/validation"
+    [[ -z "${HIBIKI_HF_PREFIX:-}" || "$HIBIKI_HF_PREFIX" == full_run ]] \
+      || die "legacy recovery prefix must be full_run"
+    HIBIKI_HF_PREFIX=full_run
     ;;
   grounded-v2)
-    SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2"
-    RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2"
-    : "${HIBIKI_HF_PREFIX:=grounded_v2}"
+    if [[ "$PILOT" == 1 ]]; then
+      SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2_pilot"
+      RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot"
+      PHOMT_CACHE="finetune/cache/phomt_grounded_v2_pilot"
+      TRAIN_CACHE="finetune/cache/train_grounded_v2_pilot"
+      VAL_CACHE="finetune/cache/validation_grounded_v2_pilot"
+      [[ -z "${HIBIKI_HF_PREFIX:-}" || "$HIBIKI_HF_PREFIX" == grounded_v2_pilot ]] \
+        || die "pilot recovery prefix must be grounded_v2_pilot"
+      HIBIKI_HF_PREFIX=grounded_v2_pilot
+    else
+      SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2"
+      RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2"
+      PHOMT_CACHE="finetune/cache/phomt_grounded_v2"
+      TRAIN_CACHE="finetune/cache/train_grounded_v2"
+      VAL_CACHE="finetune/cache/validation_grounded_v2"
+      [[ -z "${HIBIKI_HF_PREFIX:-}" || "$HIBIKI_HF_PREFIX" == grounded_v2 ]] \
+        || die "full grounded-v2 recovery prefix must be grounded_v2"
+      HIBIKI_HF_PREFIX=grounded_v2
+    fi
     ;;
   *)
     echo "error: HIBIKI_RECIPE must be legacy or grounded-v2" >&2
@@ -27,10 +58,12 @@ case "$RECIPE" in
 esac
 export HIBIKI_HF_PREFIX
 
-die() {
-  echo "error: $*" >&2
-  exit 1
-}
+if [[ "$RECIPE" == "grounded-v2" && "$PILOT" == 0 ]]; then
+  [[ -z "${HIBIKI_MAX_SAMPLES:-}" ]] || die "full grounded-v2 rejects HIBIKI_MAX_SAMPLES"
+  [[ -z "${HIBIKI_MAX_STEPS:-}" ]] || die "full grounded-v2 rejects HIBIKI_MAX_STEPS"
+  [[ -z "${HIBIKI_CACHE_SAMPLE_SHARDS:-}" ]] \
+    || die "full grounded-v2 rejects HIBIKI_CACHE_SAMPLE_SHARDS"
+fi
 
 require_python() {
   [[ -x "$PYTHON" ]] || die "run '$0 setup' first"
@@ -105,10 +138,13 @@ cache_grounded() {
 
   local workers="${HIBIKI_CACHE_WORKERS:-4}"
   [[ "$workers" =~ ^[1-9][0-9]*$ ]] || die "HIBIKI_CACHE_WORKERS must be a positive integer"
-  local sample_shards="${HIBIKI_CACHE_SAMPLE_SHARDS:-0}"
-  [[ "$sample_shards" =~ ^[0-9]+$ ]] \
-    || die "HIBIKI_CACHE_SAMPLE_SHARDS must be a non-negative integer"
-  local cache_args=(--recipe grounded-v2 --device cuda --profile h100)
+  local sample_shards=0
+  if [[ "$PILOT" == 1 ]]; then
+    sample_shards=104
+  fi
+  local cache_args=(
+    --recipe grounded-v2 --device cuda --profile h100 --out-dir "$PHOMT_CACHE"
+  )
   if (( sample_shards > 0 )); then
     cache_args+=(--sample-shards "$sample_shards")
   fi
@@ -140,12 +176,13 @@ cache_grounded() {
   trap - INT TERM EXIT
 
   if (( sample_shards == 0 )); then
-    "$PYTHON" - <<'PY'
+    "$PYTHON" - "$PHOMT_CACHE" <<'PY'
+import sys
 from pathlib import Path
 
 from finetune.publish_grounded_cache import validate_cache
 
-stats = validate_cache(Path("finetune/cache/phomt_grounded_v2"))
+stats = validate_cache(Path(sys.argv[1]))
 print(
     f"Validated PhoMT cache: {stats['shards']} shards / "
     f"{stats['accepted_samples']} accepted / {stats['rejected_samples']} rejected"
@@ -154,10 +191,11 @@ PY
   fi
 
   "$PYTHON" finetune/cache_codes.py \
-    --recipe grounded-v2 --device cuda --pairs finetune/pairs/train.jsonl
+    --recipe grounded-v2 --device cuda --pairs finetune/pairs/train.jsonl \
+    --out-dir "$TRAIN_CACHE"
   "$PYTHON" finetune/cache_codes.py \
     --recipe grounded-v2 --device cuda --pairs finetune/pairs/validation.jsonl \
-    --out-dir finetune/cache/validation_grounded_v2
+    --out-dir "$VAL_CACHE"
   if (( sample_shards > 0 )); then
     echo "Grounded-v2 pilot caches complete: $sample_shards sampled PhoMT shards"
   else
@@ -168,12 +206,17 @@ PY
 preflight() {
   local minimum_free_gib="${1:-190}"
   require_python
+  if [[ "$RECIPE" == "grounded-v2" ]]; then
+    source_gap_args
+  fi
   require_cuda_driver
   git diff --quiet || die "tracked worktree changes must be committed before training"
   git diff --cached --quiet || die "staged changes must be committed before training"
 
   local profile
-  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "${HIBIKI_MAX_SAMPLES:-0}" <<'PY'
+  profile="$("$PYTHON" - \
+    "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "$PILOT" \
+    "$PHOMT_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -188,7 +231,8 @@ import torch
 root = Path(sys.argv[1])
 minimum_free_gib = float(sys.argv[2])
 recipe = sys.argv[3]
-max_samples = int(sys.argv[4])
+pilot = bool(int(sys.argv[4]))
+phomt_cache, train_cache, val_cache = sys.argv[5:8]
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -258,25 +302,20 @@ for relative, expected in expected_hashes.items():
 
 expected_shards = (
     {
-        "finetune/cache/phomt_stream": 1377,
-        "finetune/cache/train": 46,
-        "finetune/cache/validation": 5,
+        phomt_cache: 1377,
+        train_cache: 46,
+        val_cache: 5,
     }
     if recipe == "legacy"
     else {
-        "finetune/cache/phomt_grounded_v2": 1377,
-        "finetune/cache/train_grounded_v2": 46,
-        "finetune/cache/validation_grounded_v2": 5,
+        phomt_cache: 104 if pilot else 1377,
+        train_cache: 46,
+        val_cache: 5,
     }
 )
 for relative, expected in expected_shards.items():
     paths = sorted((root / relative).glob("shard_*.pt"))
-    partial_phomt = recipe == "grounded-v2" and relative.endswith("phomt_grounded_v2") and max_samples
-    if partial_phomt:
-        minimum = max(1, (max_samples + 499) // 500)
-        if len(paths) < minimum:
-            raise RuntimeError(f"{relative}: expected at least {minimum} pilot shards, got {len(paths)}")
-    elif len(paths) != expected:
+    if len(paths) != expected:
         raise RuntimeError(f"{relative}: expected {expected} shards, got {len(paths)}")
     if any(path.stat().st_size == 0 for path in paths):
         raise RuntimeError(f"{relative}: found an empty shard")
@@ -292,6 +331,20 @@ for relative, expected in expected_shards.items():
             raise RuntimeError(f"{relative}: missing word-aligned text timing")
         if any(float(sample.get("alignment_score") or 0) < 0.5 for sample in payload["samples"]):
             raise RuntimeError(f"{relative}: contains a below-threshold CTC alignment")
+
+if recipe == "grounded-v2" and pilot:
+    phomt_rows = sum(
+        len(torch.load(path, map_location="cpu")["samples"])
+        for path in sorted((root / phomt_cache).glob("shard_*.pt"))
+    )
+    fleurs_rows = sum(
+        len(torch.load(path, map_location="cpu")["samples"])
+        for path in sorted((root / train_cache).glob("shard_*.pt"))
+    )
+    if phomt_rows < 47_500:
+        raise RuntimeError(f"pilot PhoMT cache needs at least 47,500 rows, got {phomt_rows}")
+    if fleurs_rows < 1:
+        raise RuntimeError("pilot FLEURS train cache is empty")
 
 expected_rows = {
     "finetune/pairs/val128.jsonl": 128,
@@ -323,9 +376,37 @@ PY
   echo "GPU=${GPU_GIB}GiB host=${HOST_GIB}GiB free_disk=${FREE_GIB}GiB batch=$BATCH_SIZE accum=$GRAD_ACCUM_STEPS"
 }
 
+source_gap_args() {
+  local bleu_gap="${HIBIKI_MIN_SOURCE_BLEU_GAP:-}"
+  local chrf_gap="${HIBIKI_MIN_SOURCE_CHRF_GAP:-}"
+  if [[ "$RECIPE" == "grounded-v2" ]]; then
+    [[ -n "$bleu_gap" ]] || die "set calibrated HIBIKI_MIN_SOURCE_BLEU_GAP"
+    [[ -n "$chrf_gap" ]] || die "set calibrated HIBIKI_MIN_SOURCE_CHRF_GAP"
+  else
+    bleu_gap="${bleu_gap:-0}"
+    chrf_gap="${chrf_gap:-0}"
+  fi
+  "$PYTHON" - "$bleu_gap" "$chrf_gap" <<'PY'
+import math
+import sys
+
+for name, value in zip(("BLEU", "chrF"), sys.argv[1:], strict=True):
+    if not math.isfinite(float(value)):
+        raise ValueError(f"source {name} gap must be finite")
+PY
+  SOURCE_GAP_ARGS=(
+    --min-source-bleu-gap "$bleu_gap"
+    --min-source-chrf-gap "$chrf_gap"
+  )
+}
+
 common_args() {
   local max_steps="${HIBIKI_MAX_STEPS:-0}"
+  if [[ "$PILOT" == 1 ]]; then
+    max_steps=1000
+  fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
+  source_gap_args
   EVAL_EVERY=9000
   TRAIN_ARGS=(
     --device cuda
@@ -339,39 +420,47 @@ common_args() {
     --val-batch-size 8
     --eval-pairs finetune/pairs/val128.jsonl
     --eval-batch-size 8
-    --eval-text-temp 0
+    --eval-text-temp 0.4
+    --eval-duration-column vi_duration_s
+    "${SOURCE_GAP_ARGS[@]}"
   )
   if [[ "$RECIPE" == "legacy" ]]; then
     TRAIN_ARGS+=(
-      --cache-dir finetune/cache/phomt_stream finetune/cache/train
-      --val-cache-dir finetune/cache/validation
+      --cache-dir "$PHOMT_CACHE" "$TRAIN_CACHE"
+      --val-cache-dir "$VAL_CACHE"
       --epochs 2
       --text-pad-loss-weight 0.5
     )
   else
-    local audio_loss_weight=1
-    local text_pad_mode=all
-    if (( ${HIBIKI_MAX_SAMPLES:-0} > 0 )); then
-      audio_loss_weight=0
-      text_pad_mode=prefix
-    fi
     EVAL_EVERY=3000
-    if (( max_steps > 0 && max_steps <= 1000 )); then
+    if [[ "$PILOT" == 1 ]]; then
       EVAL_EVERY=250
     fi
     TRAIN_ARGS+=(
-      --cache-dir finetune/cache/phomt_grounded_v2 finetune/cache/train_grounded_v2
+      --cache-dir "$PHOMT_CACHE" "$TRAIN_CACHE"
       --cache-weights 0.95 0.05
-      --val-cache-dir finetune/cache/validation_grounded_v2
+      --val-cache-dir "$VAL_CACHE"
       --epochs 1
-      --max-samples "${HIBIKI_MAX_SAMPLES:-0}"
       --text-pad-loss-weight 0.05
       --first-content-loss-weight 1.0
-      --text-pad-mode "$text_pad_mode"
-      --audio-loss-weight "$audio_loss_weight"
       --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
-      --eval-at-start --eval-shuffled-source --best-requires-gates
+      --eval-at-start
     )
+    if [[ "$PILOT" == 1 ]]; then
+      TRAIN_ARGS+=(
+        --max-samples 50000
+        --text-pad-mode prefix
+        --audio-loss-weight 0
+        --mask-target-audio-input
+        --persist-sample-manifest
+      )
+    else
+      TRAIN_ARGS+=(
+        --max-samples 0
+        --text-pad-mode all
+        --audio-loss-weight 1
+      )
+    fi
   fi
 }
 
@@ -404,8 +493,12 @@ eval_dir = root / "standalone_eval_step10"
 metrics = json.loads((eval_dir / "metrics.json").read_text())
 with (eval_dir / "predictions.csv").open(newline="", encoding="utf-8") as handle:
     predictions = list(csv.DictReader(handle))
-if metrics["num_predictions"] != 8 or len(predictions) != 8:
+if metrics["correct"]["num_predictions"] != 8 or len(predictions) != 8:
     raise RuntimeError("standalone smoke eval did not produce eight predictions")
+if not (eval_dir / "correct" / "metrics.json").is_file():
+    raise RuntimeError("standalone smoke eval is missing correct-condition artifacts")
+if not (eval_dir / "shuffled" / "metrics.json").is_file():
+    raise RuntimeError("standalone smoke eval is missing shuffled-condition artifacts")
 
 rows = []
 with (root / "vram.csv").open(newline="", encoding="utf-8") as handle:
@@ -440,6 +533,9 @@ smoke() {
     local smoke_lr=(--lr-schedule "1e-4@0" --warmup-steps 500 --text-weight-schedule "5@0")
     if [[ "$RECIPE" == "grounded-v2" ]]; then
       smoke_lr=(--lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 --text-weight-schedule "2@0")
+      if [[ "$PILOT" == 1 ]]; then
+        smoke_lr=(--lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 100 --text-weight-schedule "2@0")
+      fi
     fi
     "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
@@ -456,7 +552,7 @@ smoke() {
       --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
       --checkpoint "$SMOKE_DIR/model_step000010.safetensors" \
       --pairs finetune/pairs/val128.jsonl \
-      --limit 8 --batch-size 8 --text-temp 0 \
+      --limit 8 --batch-size 8 --text-temp 0.4 \
       --stop-on-eos --text-only --seed 42 \
       --out-dir "$SMOKE_DIR/standalone_eval_step10"
 
@@ -532,7 +628,7 @@ remote_files = [
     if item.rfilename.startswith(prefix)
 ]
 if sys.argv[2] == "fresh" and remote_files:
-    raise RuntimeError("fresh training requires an empty full_run/ recovery prefix")
+    raise RuntimeError(f"fresh training requires an empty {prefix} recovery prefix")
 if sys.argv[2] == "resume":
     run_dir = Path(sys.argv[3])
     local_models = steps(
@@ -652,11 +748,17 @@ train() {
       --save-every 3000 --keep-checkpoints 2 --log-every 10 \
       --out-dir "$RUN_DIR"
   else
+    local grounded_warmup=1000
+    local grounded_val_every=1000
+    if [[ "$PILOT" == 1 ]]; then
+      grounded_warmup=100
+      grounded_val_every=250
+    fi
     run_with_sync "$RUN_DIR" fresh "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
-      --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 \
+      --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps "$grounded_warmup" \
       --text-weight-schedule "2@0" \
-      --val-every 1000 \
+      --val-every "$grounded_val_every" \
       --eval-every "$EVAL_EVERY" --eval-limit 128 \
       --save-every 3000 --keep-checkpoints 2 --log-every 10 \
       --out-dir "$RUN_DIR"
@@ -684,11 +786,17 @@ resume() {
       --resume-checkpoint "$checkpoint" \
       --out-dir "$out_dir"
   else
+    local grounded_warmup=1000
+    local grounded_val_every=1000
+    if [[ "$PILOT" == 1 ]]; then
+      grounded_warmup=100
+      grounded_val_every=250
+    fi
     run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
-      --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps 1000 \
+      --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps "$grounded_warmup" \
       --text-weight-schedule "2@0" \
-      --val-every 1000 \
+      --val-every "$grounded_val_every" \
       --eval-every "$EVAL_EVERY" --eval-limit 128 \
       --save-every 3000 --keep-checkpoints 2 --log-every 10 \
       --resume-checkpoint "$checkpoint" \

@@ -47,15 +47,15 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   save/eval/resume smoke.
 - `HIBIKI_RECIPE=grounded-v2` selects isolated CTC word-timed caches, 95/5
   PhoMT/FLEURS sampling, conservative cosine SFT, eligibility-only best saves,
-  and a shuffled-source dependency control. Its grounding pilot independently
-  reduces content/PAD/first-content losses, supervises prefix PAD at aggregate
-  weight 0.05, emphasizes the first content token, and disables audio loss when
-  `HIBIKI_MAX_SAMPLES` is set. PhoMT is pinned and CTC rows below 0.5 are
-  rejected. Legacy behavior remains the default.
-- `HIBIKI_MAX_STEPS=1000` gives the grounded pilot step-0 and 250-step greedy
-  reads. Omit both pilot limits only after text grounding qualifies.
+  and paired source-dependence evaluation. `HIBIKI_PILOT=1` forces separate
+  `*_grounded_v2_pilot` caches, smoke/run directories, and HF prefix; exactly
+  104 evenly sampled PhoMT shards feed a frozen 50k-row membership for 1,000
+  steps with 100-step warmup. Pilot target-audio inputs are masked and audio
+  loss is zero. Full grounded keeps 1,000-step warmup and rejects pilot limits.
+  PhoMT is pinned and CTC rows below 0.5 are rejected. Legacy remains default.
 - `finetune/common.py` owns cached data, losses, schedules, exact full-model
-  checkpoint I/O, greedy generation, and metrics. Complete checkpoint pairs are
+  checkpoint I/O, free-running generation, paired metrics, RNG isolation, and
+  frozen duration-matched derangements. Complete checkpoint pairs are
   published atomically and pre-rotated to avoid transient disk spikes; loading
   rejects missing and unexpected tensor keys.
 - `finetune/cache_phomt_stream.py` builds the published PhoMT cache directly
@@ -67,22 +67,30 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   `finetune/publish_grounded_cache.py` validates and checksum-publishes
   the complete cache under an isolated dataset prefix. `remote_dataset/download_fleurs_vi_en.py` →
   `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.
+  `remote_dataset/download_covost2.py` materializes the pinned healthy FR→EN
+  evaluator control.
 - The grounded-v2 PhoMT rebuild resumed on an H100 from the SHA-verified,
   contiguous 90-shard Mac prefix (`shard_00000.pt` through `shard_00089.pt`).
   Four CUDA workers run from commit `45a1327`; the detached pipeline validates
   all 1,377 shards, builds grounded FLEURS caches, then publishes and verifies
   the isolated dataset `grounded-v2/` prefix. The Mac retains the ignored
   90-shard recovery copy until remote publication succeeds.
-- `finetune/validate.py` is teacher-forced diagnostics only.
-  `finetune/eval.py` free-running chrF plus nonempty/EOS/loop/length gates select
-  checkpoints; `sacrebleu` is required.
+- `finetune/validate.py` is teacher-forced diagnostics only. `finetune/eval.py`
+  evaluates correct and shuffled sources at fixed-seed text temperature 0.4,
+  writing condition and consolidated artifacts. Promotion requires correct-source
+  health plus calibrated BLEU/chrF gaps, then ranks by `(BLEU, chrF)`.
 - `finetune/hf_sync.py` maintains two recovery pairs plus the best model under
   `full_run/` in the public `huybik/hibiki-zero-vi-full-sft` model repo;
-  `h100.sh` verifies a shared run identity, supervises sync, and protects the
-  local resume point before training restarts.
+  it also preserves run configuration and pilot membership metadata. `h100.sh`
+  verifies a shared run identity, supervises sync, and protects the local resume
+  point before training restarts.
 
 After the `docs/finetune.md` handoff, use `docs/training_plan.md` for the exact
 recipe and `docs/validation_plan.md` for qualification thresholds.
+Calibrate source-gap thresholds on Vietnamese base, the old phase-1 checkpoint,
+and healthy French before the pilot. Treat current early text timing as a
+diagnostic: run 0/250/500/1,000 first, then try 75--100% delay, contrastive
+shuffled-source loss, and only afterward Vietnamese acoustic preadaptation.
 
 ## Environment
 

@@ -12,7 +12,8 @@ A Vast pod is disposable. Keep the three durable resources distinct:
   training change before relying on a remote recovery checkpoint.
 - HF dataset `huybik/hibiki-zero-vi-full-sft`: immutable PhoMT/FLEURS caches.
 - HF model `huybik/hibiki-zero-vi-full-sft`: published checkpoints. The current
-  run owns only `full_run/`; existing phase-1 artifacts are preserved.
+  legacy, grounded full, and grounded pilot runs own only `full_run/`,
+  `grounded_v2/`, and `grounded_v2_pilot/` respectively; phase-1 is preserved.
 
 Never put a token, SSH endpoint, or pod-specific path in Git. A new agent should
 first read `AGENTS.md`, `CONTEXT.md`, and the pod's `/etc/vast-agents-guide.md`.
@@ -120,7 +121,7 @@ git status --short
 
 `git status --short` must show no tracked changes. Preflight verifies the GPU,
 driver, package pins, hashes, cache counts, manifests, audio, RAM, and free disk.
-The smoke must train finite steps, save, run standalone greedy evaluation,
+The smoke must train finite steps, save, run standalone paired evaluation,
 resume exactly, and leave at least 2 GiB VRAM headroom. It writes a `SMOKE_OK`
 marker tied to the current Git commit.
 
@@ -152,7 +153,8 @@ Before launch, inspect the public model repo's `full_run/` directory:
 
 `h100.sh` enforces the empty-prefix rule for a fresh run and the shared run
 identity for recovery. It supervises checkpoint sync and stops training after
-three consecutive sync failures.
+three consecutive sync failures. Recovery sync also preserves `run_config.json`
+and the pilot's frozen `sample_manifest.jsonl` under `metadata/`.
 
 ## Cache format and rebuild path
 
@@ -176,20 +178,25 @@ launch path. Rebuild only when intentionally replacing the dataset:
 one source shard at a time.
 
 Set `HIBIKI_RECIPE=grounded-v2` only for the experimental word-timed recipe.
-Its cache builders run an English Wav2Vec2 CTC forced alignment and place each
-SentencePiece group at the corresponding target-speech frames, with text EOS at
-the target-audio end. PhoMT input is pinned; its publisher-recorded source ranges
-label the later timbre-matched subset without excluding the earlier
-gender-consistent pairs, and low-score CTC rows are rejected. The v2 launcher
-reads only `*_grounded_v2` caches and uses the independent `grounded_v2/`
-Hugging Face recovery prefix; see
-[training_plan.md](training_plan.md) for exact commands and hyperparameters.
-Its spend-control pilot uses independently reduced content/PAD/first-content
-losses, prefix-only PAD supervision, no audio loss, and step-0/250-step greedy
-source-shuffle reads.
-On an H100, `./finetune/h100.sh cache-grounded` is the cache-build entrypoint;
-it uses the H100 batching profile and also builds the grounded FLEURS train and
-validation caches.
+Its cache builders use English Wav2Vec2 CTC word timing, pinned PhoMT input, and
+a 0.5 alignment threshold. On an H100, `./finetune/h100.sh cache-grounded` is
+the cache-build entrypoint and also builds explicit FLEURS train/validation
+caches.
+
+The spend-control run additionally requires `HIBIKI_PILOT=1`. That mode forces
+isolated `*_grounded_v2_pilot` caches, smoke/run directories, and the
+`grounded_v2_pilot/` Hugging Face prefix. It builds exactly 104 evenly sampled
+PhoMT shards, trains exactly 50,000 selected rows for 1,000 steps with 100-step
+warmup, evaluates at step 0 and every 250 steps, disables audio loss, and masks
+target-audio teacher inputs. The ordered sampled membership and SHA-256 are
+persisted and checked on resume. Full grounded-v2 keeps 1,000-step warmup and
+rejects the old pilot limit environment variables.
+
+All selection evaluation is paired at fixed seed and text temperature 0.4. A
+SHA-verified duration-matched derangement is reused for correct and shuffled
+conditions, and evaluation restores training RNG afterward. Calibrate explicit
+minimum BLEU/chrF source gaps from Vietnamese base, phase-1, and healthy French
+controls before grounded preflight; see [validation_plan.md](validation_plan.md).
 After all caches validate, `publish_grounded_cache.py` stores eight PhoMT chunks,
 one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 `grounded-v2/` prefix. The legacy dataset-root archives remain unchanged.
@@ -207,7 +214,7 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 - Checkpoints contain the exact full model. Loading rejects missing or extra keys.
 - `--resume-checkpoint` is only for interruption recovery in the same run.
 
-Teacher-forced validation is diagnostic. `--eval-every` performs deterministic
-free-running evaluation and writes predictions plus generation-health metrics.
+Teacher-forced validation is diagnostic. `--eval-every` performs paired
+free-running evaluation and writes condition plus consolidated artifacts.
 The exact recipe is in [training_plan.md](training_plan.md); final selection
 follows [validation_plan.md](validation_plan.md).

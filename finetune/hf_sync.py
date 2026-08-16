@@ -23,6 +23,7 @@ STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
 STAGED_BEST = re.compile(r"best_step(\d+)$")
+RUN_METADATA = ("run_config.json", "sample_manifest.jsonl")
 
 
 def parse_args() -> argparse.Namespace:
@@ -210,7 +211,11 @@ def best_state(run_dir: Path) -> dict[str, object] | None:
     model_name = str(state["model"])
     if model_name != f"best_step{step:06d}.safetensors" or not (run_dir / model_name).is_file():
         raise RuntimeError("best.json does not reference a valid sibling model")
-    return {"step": step, "chrf": float(state["chrf"]), "model": model_name}
+    float(state["correct"]["bleu"])
+    float(state["correct"]["chrf"])
+    if not state.get("promotion_eligible"):
+        raise RuntimeError("best.json references an ineligible checkpoint")
+    return state
 
 
 def remote_best_steps(files: dict[str, int]) -> list[int]:
@@ -282,8 +287,29 @@ def prune_remote_best(repo: str) -> None:
         )
 
 
+def sync_run_metadata(run_dir: Path, repo: str, files: dict[str, int]) -> None:
+    api = HfApi()
+    for name in RUN_METADATA:
+        source = run_dir / name
+        if not source.is_file():
+            continue
+        destination = f"metadata/{name}"
+        if files.get(destination) == source.stat().st_size:
+            continue
+        api.upload_file(
+            path_or_fileobj=source,
+            path_in_repo=remote_path(destination),
+            repo_id=repo,
+            commit_message=f"Upload run metadata {name}",
+        )
+        if remote_files(repo).get(destination) != source.stat().st_size:
+            raise RuntimeError(f"remote run metadata verification failed for {name}")
+
+
 def sync_once(run_dir: Path, repo: str, final: bool) -> None:
     clean_staging(run_dir)
+    files = remote_files(repo)
+    sync_run_metadata(run_dir, repo, files)
     files = remote_files(repo)
     uploaded = set(remote_pairs(files))
     local_pairs = checkpoint_pairs(run_dir)

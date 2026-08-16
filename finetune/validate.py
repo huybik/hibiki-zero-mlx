@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=0, help="0 means all.")
     parser.add_argument("--max-batches", type=int, default=0, help="0 means all selected batches.")
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
+    parser.add_argument("--mask-target-audio-input", action="store_true")
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-pad-mode", choices=("prefix", "all"), default="prefix")
     parser.add_argument("--text-pad-loss-weight", type=float, default=0.05)
@@ -65,6 +66,8 @@ def main() -> None:
     args = parse_args()
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
+    if args.mask_target_audio_input and args.audio_loss_weight != 0.0:
+        raise ValueError("--mask-target-audio-input requires --audio-loss-weight 0")
 
     device = common.check_device(args.device)
     dtype = common.dtype_from_name(args.dtype)
@@ -98,6 +101,7 @@ def main() -> None:
         args.text_pad_mode,
         args.text_pad_loss_weight,
         args.first_content_loss_weight,
+        args.mask_target_audio_input,
     )
     result = {
         "cache_dir": repo_display_path(cache_dir),

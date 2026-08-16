@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -72,8 +73,33 @@ def seed_all(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if torch.backends.mps.is_available() and hasattr(torch.mps, "manual_seed"):
+        torch.mps.manual_seed(seed)
     random.seed(seed)
     np.random.seed(seed)
+
+
+def snapshot_rng() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    if torch.backends.mps.is_available() and hasattr(torch.mps, "get_rng_state"):
+        state["mps"] = torch.mps.get_rng_state()
+    return state
+
+
+def restore_rng(state: dict[str, Any]) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state:
+        torch.cuda.set_rng_state_all(state["cuda"])
+    if "mps" in state:
+        torch.mps.set_rng_state(state["mps"])
 
 
 def is_mps(device: torch.device) -> bool:
@@ -561,9 +587,14 @@ def compute_batch_losses(
     text_pad_loss_weight: float = 0.05,
     first_content_loss_weight: float = 0.0,
     text_pad_mode: str = "prefix",
+    mask_target_audio_input: bool = False,
     return_output: bool = False,
 ) -> dict[str, Any]:
-    output = lm(codes, condition_tensors=condition_tensors)
+    model_inputs = codes
+    if mask_target_audio_input:
+        model_inputs = codes.clone()
+        model_inputs[:, lm.audio_offset : lm.audio_offset + lm.dep_q] = lm.zero_token_id
+    output = lm(model_inputs, condition_tensors=condition_tensors)
     audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
     text_targets = codes[:, :1]
     audio_loss, audio_tokens = masked_cross_entropy(output.logits, audio_targets, output.mask)
@@ -611,6 +642,7 @@ def evaluate_teacher_forced(
     text_pad_mode: str = "prefix",
     text_pad_loss_weight: float = 0.05,
     first_content_loss_weight: float = 0.0,
+    mask_target_audio_input: bool = False,
 ) -> dict[str, float | int]:
     was_training = bool(lm.training)
     lm.eval()
@@ -646,6 +678,7 @@ def evaluate_teacher_forced(
                 text_pad_loss_weight=text_pad_loss_weight,
                 first_content_loss_weight=first_content_loss_weight,
                 text_pad_mode=text_pad_mode,
+                mask_target_audio_input=mask_target_audio_input,
                 return_output=True,
             )
             output = losses.pop("output")
@@ -762,13 +795,33 @@ def read_eval_rows(path: Path) -> list[dict[str, str]]:
 
 
 def validate_eval_rows(
-    rows: list[dict[str, str]], source_column: str, reference_column: str, id_column: str
+    rows: list[dict[str, str]],
+    source_column: str,
+    reference_column: str,
+    id_column: str,
+    duration_column: str | None = None,
 ) -> None:
     if not rows:
         return
-    missing = [c for c in (source_column, reference_column, id_column) if c not in rows[0]]
-    if missing:
-        raise ValueError(f"Eval rows are missing columns: {', '.join(missing)}")
+    required = [source_column, reference_column, id_column]
+    if duration_column is not None:
+        required.append(duration_column)
+    for index, row in enumerate(rows):
+        missing = [column for column in required if column not in row]
+        if missing:
+            raise ValueError(
+                f"Eval row {index} is missing columns: {', '.join(missing)}"
+            )
+    ids = [row[id_column] for row in rows]
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"Eval rows must have unique {id_column!r} values")
+    if duration_column is not None:
+        for row in rows:
+            duration = float(row[duration_column])
+            if duration <= 0:
+                raise ValueError(
+                    f"Eval duration must be positive for {id_column}={row[id_column]}"
+                )
 
 
 def select_eval_rows(
@@ -793,6 +846,92 @@ def ids_from_args(ids: str, ids_file: Path | None) -> list[str]:
     if len(selected) != len(set(selected)):
         raise ValueError("Duplicate ids in --ids/--ids-file")
     return selected
+
+
+def _mapping_payload(
+    rows: list[dict[str, str]], id_column: str, duration_column: str
+) -> dict[str, Any]:
+    if len(rows) < 2:
+        raise ValueError("Paired evaluation requires at least two rows")
+    order = sorted(
+        range(len(rows)),
+        key=lambda index: (float(rows[index][duration_column]), rows[index][id_column]),
+    )
+    donor_for: dict[int, int] = {}
+    paired_end = len(order) if len(order) % 2 == 0 else len(order) - 3
+    for start in range(0, paired_end, 2):
+        left, right = order[start : start + 2]
+        donor_for[left] = right
+        donor_for[right] = left
+    if len(order) % 2:
+        first, second, third = order[-3:]
+        donor_for[first] = second
+        donor_for[second] = third
+        donor_for[third] = first
+    pairs = []
+    for target_index, target in enumerate(rows):
+        source = rows[donor_for[target_index]]
+        pairs.append(
+            {
+                "target_id": target[id_column],
+                "target_duration_s": float(target[duration_column]),
+                "source_id": source[id_column],
+                "source_duration_s": float(source[duration_column]),
+            }
+        )
+    return {
+        "version": 1,
+        "id_column": id_column,
+        "duration_column": duration_column,
+        "pairs": pairs,
+    }
+
+
+def _payload_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def load_or_create_derangement(
+    rows: list[dict[str, str]],
+    id_column: str,
+    source_column: str,
+    duration_column: str,
+    path: Path,
+) -> tuple[list[dict[str, str]], str]:
+    """Load or freeze the duration-neighbor source derangement for an eval set."""
+    expected = _mapping_payload(rows, id_column, duration_column)
+    if path.is_file():
+        document = json.loads(path.read_text(encoding="utf-8"))
+        payload = document.get("mapping")
+        digest = str(document.get("sha256", ""))
+        if not isinstance(payload, dict) or digest != _payload_sha256(payload):
+            raise RuntimeError(f"Invalid derangement hash in {path}")
+        if payload != expected:
+            raise RuntimeError(f"Frozen derangement does not match the selected eval rows: {path}")
+    else:
+        payload = expected
+        digest = _payload_sha256(payload)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"sha256": digest, "mapping": payload}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    by_id = {row[id_column]: row for row in rows}
+    source_ids = [pair["source_id"] for pair in payload["pairs"]]
+    target_ids = [pair["target_id"] for pair in payload["pairs"]]
+    if sorted(source_ids) != sorted(target_ids) or any(
+        source_id == target_id for source_id, target_id in zip(source_ids, target_ids, strict=True)
+    ):
+        raise RuntimeError(f"Frozen mapping is not a derangement: {path}")
+    shuffled: list[dict[str, str]] = []
+    for pair in payload["pairs"]:
+        row = dict(by_id[pair["target_id"]])
+        donor = by_id[pair["source_id"]]
+        row[source_column] = donor[source_column]
+        row[duration_column] = donor[duration_column]
+        shuffled.append(row)
+    return shuffled, digest
 
 
 # --------------------------------------------------------------------------- #
@@ -1087,10 +1226,13 @@ def run_greedy_eval(
     text_tokenizer: Any,
     checkpoint_info: Any,
     out_dir: Path,
+    evaluation_seed: int | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """Batched greedy eval over `rows`; returns (records, scored metrics)."""
+    """Batched free-running eval; optionally reseed each batch deterministically."""
     records: list[dict[str, str]] = []
-    for start in range(0, len(rows), batch_size):
+    for batch_index, start in enumerate(range(0, len(rows), batch_size)):
+        if evaluation_seed is not None:
+            seed_all(evaluation_seed + batch_index)
         records.extend(
             generate_batch(
                 rows[start : start + batch_size], start, cfg, mimi, lm, text_tokenizer,
@@ -1098,6 +1240,139 @@ def run_greedy_eval(
             )
         )
     return records, score_records(records)
+
+
+def generation_health(metrics: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    count = int(metrics["num_predictions"])
+    gates = {
+        "min_nonempty_predictions": math.ceil(count * 122 / 128),
+        "min_eos_found": math.ceil(count * 116 / 128),
+        "max_repeated_4gram_predictions": math.floor(count * 12 / 128),
+        "max_mean_length_ratio": 2.0,
+    }
+    eligible = (
+        int(metrics["nonempty_predictions"]) >= gates["min_nonempty_predictions"]
+        and int(metrics["eos_found"]) >= gates["min_eos_found"]
+        and int(metrics["repeated_4gram_predictions"])
+        <= gates["max_repeated_4gram_predictions"]
+        and float(metrics["mean_length_ratio"]) <= gates["max_mean_length_ratio"]
+    )
+    return eligible, gates
+
+
+def write_paired_predictions(
+    path: Path,
+    correct: list[dict[str, Any]],
+    shuffled: list[dict[str, Any]],
+) -> None:
+    rows: list[dict[str, Any]] = []
+    for correct_record, shuffled_record in zip(correct, shuffled, strict=True):
+        if correct_record["id"] != shuffled_record["id"]:
+            raise RuntimeError("Paired predictions are not aligned by target id")
+        rows.append(
+            {
+                "id": correct_record["id"],
+                "reference_text": correct_record["reference_text"],
+                "correct_source_audio": correct_record["source_audio"],
+                "shuffled_source_audio": shuffled_record["source_audio"],
+                "correct_prediction_text": correct_record["prediction_text"],
+                "shuffled_prediction_text": shuffled_record["prediction_text"],
+                "correct_eos_found": correct_record["eos_found"],
+                "shuffled_eos_found": shuffled_record["eos_found"],
+                "correct_generated_text_tokens": correct_record["generated_text_tokens"],
+                "shuffled_generated_text_tokens": shuffled_record["generated_text_tokens"],
+            }
+        )
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def run_paired_eval(
+    rows: list[dict[str, str]],
+    cfg: Any,
+    batch_size: int,
+    mimi: Any,
+    lm: Any,
+    text_tokenizer: Any,
+    checkpoint_info: Any,
+    out_dir: Path,
+    mapping_path: Path,
+    evaluation_seed: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Evaluate correct and frozen shuffled sources under identical sampling RNG."""
+    validate_eval_rows(
+        rows,
+        cfg.source_column,
+        cfg.reference_column,
+        cfg.id_column,
+        cfg.duration_column,
+    )
+    shuffled_rows, mapping_sha256 = load_or_create_derangement(
+        rows,
+        cfg.id_column,
+        cfg.source_column,
+        cfg.duration_column,
+        mapping_path,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rng_state = snapshot_rng()
+    try:
+        correct_records, correct_metrics = run_greedy_eval(
+            rows,
+            cfg,
+            batch_size,
+            mimi,
+            lm,
+            text_tokenizer,
+            checkpoint_info,
+            out_dir / "correct",
+            evaluation_seed,
+        )
+        shuffled_records, shuffled_metrics = run_greedy_eval(
+            shuffled_rows,
+            cfg,
+            batch_size,
+            mimi,
+            lm,
+            text_tokenizer,
+            checkpoint_info,
+            out_dir / "shuffled",
+            evaluation_seed,
+        )
+    finally:
+        restore_rng(rng_state)
+
+    for condition, records, metrics in (
+        ("correct", correct_records, correct_metrics),
+        ("shuffled", shuffled_records, shuffled_metrics),
+    ):
+        condition_dir = out_dir / condition
+        write_predictions(condition_dir / "predictions.csv", records)
+        (condition_dir / "metrics.json").write_text(
+            json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    health_eligible, health_gates = generation_health(correct_metrics)
+    metrics = {
+        "evaluation_seed": evaluation_seed,
+        "derangement_sha256": mapping_sha256,
+        "correct": correct_metrics,
+        "shuffled": shuffled_metrics,
+        "source_bleu_gap": float(correct_metrics["bleu"]) - float(shuffled_metrics["bleu"]),
+        "source_chrf_gap": float(correct_metrics["chrf"]) - float(shuffled_metrics["chrf"]),
+        "source_nonempty_bleu_gap": float(correct_metrics["nonempty_bleu"])
+        - float(shuffled_metrics["nonempty_bleu"]),
+        "source_nonempty_chrf_gap": float(correct_metrics["nonempty_chrf"])
+        - float(shuffled_metrics["nonempty_chrf"]),
+        "health_gates": health_gates,
+        "health_eligible": health_eligible,
+    }
+    write_paired_predictions(out_dir / "predictions.csv", correct_records, shuffled_records)
+    (out_dir / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return correct_records, metrics
 
 
 def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
