@@ -489,14 +489,22 @@ def main() -> None:
     val_dataloader = None
     checkpoint_info = common.load_checkpoint_info(args)
     if val_cache_dir is not None:
+        val_sort_by_length = args.sort_by_length or args.input_sample_manifest is not None
         val_dataset = common.CachedCodeDataset(
             val_cache_dir,
-            args.sort_by_length,
+            val_sort_by_length,
             args.val_max_samples,
             expected_target_delay=expected_target_delay,
         )
+        if args.input_sample_manifest is not None:
+            val_dataset.require_max_frames(args.max_frames, "Validation cache")
         val_dataloader = common.make_cached_dataloader(
-            val_dataset, args.val_batch_size, args.num_workers, args.sort_by_length, seed=args.seed
+            val_dataset,
+            args.val_batch_size,
+            args.num_workers,
+            val_sort_by_length,
+            seed=args.seed,
+            shuffle=False if args.input_sample_manifest is not None else None,
         )
         print(f"Loaded {len(val_dataset)} val cached samples from {repo_display_path(val_cache_dir)}")
 
