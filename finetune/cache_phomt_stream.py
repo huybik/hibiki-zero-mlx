@@ -664,8 +664,8 @@ def main() -> None:
             f"{kept} rows / {kept_hours:.1f} VI-h)",
             flush=True,
         )
-        del payload, samples, pair_lines, reject_lines, table, prep, producer, chunk_q
-        del encode_chunk
+        payload = samples = pair_lines = reject_lines = table = prep = chunk_q = None
+        encode_chunk = producer = None
         release_host_memory()
 
     elapsed = time.monotonic() - started
