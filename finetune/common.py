@@ -232,6 +232,7 @@ class CachedCodeDataset(Dataset):
         expected_target_delay: dict[str, float | int] | None = None,
         sample_manifest: Path | None = None,
         sample_manifest_sha256: str | None = None,
+        retain_source_text: bool = False,
     ):
         self.samples: list[dict[str, Any]] = []
         self.frame_rate: float | None = None
@@ -316,6 +317,19 @@ class CachedCodeDataset(Dataset):
                     "gender": str(sample.get("gender", "")),
                     "cache_index": cache_index,
                 }
+                if retain_source_text:
+                    text_vi = str(sample.get("text_vi", "")).strip()
+                    if not text_vi:
+                        raise RuntimeError(f"{shard_path} id={sample.get('id')} has no text_vi")
+                    item.update(
+                        {
+                            "text_vi": text_vi,
+                            "dep_q": int(payload["config"]["dep_q"]),
+                            "text_padding_id": int(
+                                payload["config"]["existing_text_padding_id"]
+                            ),
+                        }
+                    )
                 if manifest_keys is None:
                     self.samples.append(item)
                 else:
@@ -409,6 +423,101 @@ class CachedCodeDataset(Dataset):
             "source_frames": source_frames,
             "source_hours": source_frames / float(self.frame_rate) / 3600,
         }
+
+
+def prepare_source_asr(
+    dataset: CachedCodeDataset,
+    tokenizer_path: Path,
+    document_path: Path | None = None,
+) -> str:
+    """Replace translation targets with Vietnamese text emitted after source EOS."""
+    import sentencepiece
+
+    tokenizer = sentencepiece.SentencePieceProcessor(model_file=str(tokenizer_path))
+    eos_id = int(tokenizer.eos_id())
+    if eos_id < 0:
+        raise RuntimeError("Tokenizer has no EOS id")
+    ordered_text = hashlib.sha256()
+    transformed: set[int] = set()
+    for sample in dataset.samples:
+        text_vi = sample["text_vi"]
+        ordered_text.update(
+            (
+                json.dumps(
+                    {
+                        "cache_index": sample["cache_index"],
+                        "id": sample["id"],
+                        "text_vi": text_vi,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+        object_id = id(sample)
+        if object_id in transformed:
+            continue
+        transformed.add(object_id)
+        dep_q = int(sample["dep_q"])
+        text_padding_id = int(sample["text_padding_id"])
+        old_codes = sample["codes"]
+        if old_codes.shape[0] != 1 + 2 * dep_q:
+            raise RuntimeError(f"Unexpected source/target codebook layout for {sample['id']}")
+        source_frames = int(sample["source_frames"])
+        source_end = source_frames + 1
+        if source_end > old_codes.shape[1]:
+            raise RuntimeError(f"Source EOS falls outside cached codes for {sample['id']}")
+        tokens = list(tokenizer.encode(text_vi, out_type=int)) + [eos_id]
+        if not tokens or any(token < 0 for token in tokens):
+            raise RuntimeError(f"Invalid Vietnamese text tokens for {sample['id']}")
+        text_start = source_end
+        codes = torch.full(
+            (old_codes.shape[0], text_start + len(tokens)),
+            -1,
+            dtype=torch.int32,
+        )
+        codes[0, :text_start] = text_padding_id
+        codes[0, text_start:] = torch.tensor(tokens, dtype=torch.int32)
+        source_start = 1 + dep_q
+        codes[source_start:, :source_end] = old_codes[source_start:, :source_end]
+        sample["codes"] = codes
+        sample["frames"] = int(codes.shape[1])
+    for sample in dataset.samples:
+        sample.pop("text_vi", None)
+        sample.pop("dep_q", None)
+        sample.pop("text_padding_id", None)
+    tokenizer_digest = hashlib.sha256(tokenizer_path.read_bytes()).hexdigest()
+    payload = {
+        "version": 1,
+        "strategy": "full_sentence_vi_asr_after_source_eos",
+        "rows": len(dataset),
+        "tokenizer_sha256": tokenizer_digest,
+        "ordered_source_text_sha256": ordered_text.hexdigest(),
+        "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
+    }
+    digest = _payload_sha256(payload)
+    if document_path is not None:
+        if document_path.is_file():
+            document = json.loads(document_path.read_text(encoding="utf-8"))
+            if document != {"sha256": digest, "source_asr": payload}:
+                raise RuntimeError(
+                    f"Frozen source-ASR policy does not match training data: {document_path}"
+                )
+        else:
+            document_path.write_text(
+                json.dumps(
+                    {"sha256": digest, "source_asr": payload}, indent=2, sort_keys=True
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+    print(
+        f"Prepared source ASR {digest}: rows={len(dataset)} "
+        f"max_frames={payload['observed_max_frames']}"
+    )
+    return digest
 
 
 def _source_derangement_payload(

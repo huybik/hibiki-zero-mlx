@@ -84,6 +84,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--contrastive-source-weight", type=float, default=0.0)
     parser.add_argument("--contrastive-source-margin", type=float, default=0.5)
+    parser.add_argument(
+        "--source-asr-pretrain",
+        action="store_true",
+        help="Emit Vietnamese text after source EOS with no target-audio supervision.",
+    )
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-weight-schedule", default="", help='Text loss-weight schedule "5@0,2@0.6".')
     parser.add_argument(
@@ -148,6 +153,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--min-source-bleu-gap", type=float, default=None)
     parser.add_argument("--min-source-chrf-gap", type=float, default=None)
+    parser.add_argument("--min-correct-chrf", type=float)
+    parser.add_argument("--max-correct-wer", type=float)
     # Bookkeeping.
     parser.add_argument("--save-every", type=int, default=50, help="Steps between saves.")
     parser.add_argument(
@@ -422,6 +429,12 @@ def main() -> None:
         raise ValueError("Contrastive source weight and margin must be non-negative")
     if args.contrastive_source_weight and args.input_sample_manifest is None:
         raise ValueError("Contrastive source loss requires authoritative input membership")
+    if args.source_asr_pretrain and args.input_sample_manifest is None:
+        raise ValueError("Source-ASR preadaptation requires authoritative input membership")
+    if args.source_asr_pretrain and args.contrastive_source_weight:
+        raise ValueError("Source-ASR preadaptation and contrastive translation are exclusive")
+    if args.source_asr_pretrain and args.eval_every and args.eval_reference_column != "text_vi":
+        raise ValueError("Source-ASR evaluation requires --eval-reference-column text_vi")
     if args.cache_weights is not None and len(args.cache_weights) != len(args.cache_dir):
         raise ValueError("--cache-weights must match --cache-dir")
     if args.eval_every and (
@@ -434,9 +447,18 @@ def main() -> None:
         raise ValueError("--eval-batch-size must be positive")
     if any(
         value is not None and not math.isfinite(value)
-        for value in (args.min_source_bleu_gap, args.min_source_chrf_gap)
+        for value in (
+            args.min_source_bleu_gap,
+            args.min_source_chrf_gap,
+            args.min_correct_chrf,
+            args.max_correct_wer,
+        )
     ):
-        raise ValueError("Source-gap thresholds must be finite")
+        raise ValueError("Evaluation thresholds must be finite")
+    if args.min_correct_chrf is not None and args.min_correct_chrf < 0:
+        raise ValueError("--min-correct-chrf must be non-negative")
+    if args.max_correct_wer is not None and args.max_correct_wer < 0:
+        raise ValueError("--max-correct-wer must be non-negative")
     if not 0 < args.adam_beta1 < 1 or not 0 < args.adam_beta2 < 1:
         raise ValueError("Adam betas must be in (0, 1)")
 
@@ -479,7 +501,14 @@ def main() -> None:
         expected_target_delay,
         args.input_sample_manifest,
         args.input_sample_manifest_sha256,
+        args.source_asr_pretrain,
     )
+    source_asr_sha256 = None
+    if args.source_asr_pretrain:
+        source_asr_sha256 = common.prepare_source_asr(
+            dataset, args.tokenizer, out_dir / "source_asr.json"
+        )
+        dataset.require_max_frames(args.max_frames, "Source-ASR training data")
     if args.sort_by_length:
         dataset.shuffle_batch_order(args.batch_size, args.seed)
     exposure = dataset.exposure()
@@ -499,6 +528,10 @@ def main() -> None:
         not args.mask_target_audio_input or any(weight != 0.0 for _, weight in audio_points)
     ):
         raise ValueError("Contrastive source loss requires masked target audio and zero audio loss")
+    if args.source_asr_pretrain and (
+        not args.mask_target_audio_input or any(weight != 0.0 for _, weight in audio_points)
+    ):
+        raise ValueError("Source-ASR preadaptation requires masked target audio and zero audio loss")
     source_derangement_sha256 = None
     if args.contrastive_source_weight:
         source_derangement_sha256 = common.attach_source_derangement(
@@ -518,7 +551,10 @@ def main() -> None:
             val_sort_by_length,
             args.val_max_samples,
             expected_target_delay=expected_target_delay,
+            retain_source_text=args.source_asr_pretrain,
         )
+        if args.source_asr_pretrain:
+            common.prepare_source_asr(val_dataset, args.tokenizer)
         val_dataset.require_max_frames(args.val_max_frames, "Validation cache")
         val_dataloader = common.make_cached_dataloader(
             val_dataset,
@@ -634,6 +670,8 @@ def main() -> None:
                 raise RuntimeError("sample_manifest.jsonl SHA-256 differs from run_config.json")
             if previous_config.get("source_derangement_sha256") != source_derangement_sha256:
                 raise RuntimeError("Source derangement differs from run_config.json")
+            if previous_config.get("source_asr_sha256") != source_asr_sha256:
+                raise RuntimeError("Source-ASR policy differs from run_config.json")
     run_config = {k: _jsonable(v) for k, v in vars(args).items()}
     run_config["total_steps"] = total_steps
     run_config["batches_per_epoch"] = batches_per_epoch
@@ -645,6 +683,8 @@ def main() -> None:
         run_config["sample_manifest_sha256"] = sample_manifest_sha256
     if source_derangement_sha256 is not None:
         run_config["source_derangement_sha256"] = source_derangement_sha256
+    if source_asr_sha256 is not None:
+        run_config["source_asr_sha256"] = source_asr_sha256
     run_config_path = out_dir / "run_config.json"
     if args.resume_checkpoint is None:
         atomic_write_text(
@@ -754,12 +794,22 @@ def main() -> None:
             bool(metrics["health_eligible"])
             and float(metrics["source_bleu_gap"]) >= args.min_source_bleu_gap
             and float(metrics["source_chrf_gap"]) >= args.min_source_chrf_gap
+            and (
+                args.min_correct_chrf is None
+                or float(correct["chrf"]) >= args.min_correct_chrf
+            )
+            and (
+                args.max_correct_wer is None
+                or float(correct["wer"]) <= args.max_correct_wer
+            )
         )
         item = {
             "step": step,
             **metrics,
             "min_source_bleu_gap": args.min_source_bleu_gap,
             "min_source_chrf_gap": args.min_source_chrf_gap,
+            "min_correct_chrf": args.min_correct_chrf,
+            "max_correct_wer": args.max_correct_wer,
             "promotion_eligible": promotion_eligible,
         }
         with greedy_log_path.open("a", encoding="utf-8") as fh:

@@ -250,3 +250,32 @@ overlong and repetitive. Reject text-only contrastive SFT as the full recipe.
 The next diagnostic is Vietnamese acoustic preadaptation from the upstream base,
 followed by a fresh isolated translation pilot; do not warm-start the full run
 from this checkpoint.
+
+Run the diagnostic on the verified high-delay cache and exact frozen membership;
+do not run `cache-grounded` again:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_HIGH_DELAY_PILOT=1
+unset HIBIKI_CONTRASTIVE_PILOT
+export HIBIKI_ASR_PREADAPT=1
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+This mode derives full-sentence Vietnamese ASR examples in memory: Vietnamese
+source codes remain through source EOS, the Vietnamese transcript follows, and
+English text plus target audio are absent. It owns only
+`*_grounded_v2_pilot_vi_asr_preadapt` artifacts and freezes the tokenizer plus
+ordered source-text policy in `source_asr.json`. Use physical batch 4 /
+accumulation 4 with train/validation caps 672/640 on the 94 GB H100. Paired
+Vietnamese evaluation uses a 24-second tail and requires normal health, source
+gaps at least 1.0 BLEU / 5.0 chrF, correct-source chrF at least 50, and WER at
+most 0.60. This diagnoses Vietnamese acoustic learnability; it is not a complete
+audio-pretraining stage. A pass authorizes only a fresh isolated translation
+pilot initialized from the selected ASR checkpoint.

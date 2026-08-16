@@ -113,7 +113,16 @@ on the 94 GB H100 while preserving effective batch 16. That pilot also failed:
 by step 1,000 its teacher-forced shuffled-minus-correct NLL gap reached 1.04,
 but free-running BLEU/chrF gaps remained 0.04/0.61 with 69 repetition failures
 and mean length ratio 2.95. Contrastive text ranking is rejected; Vietnamese
-acoustic preadaptation is the next diagnostic before any full SFT.
+acoustic preadaptation is the next diagnostic before any full SFT. The bounded
+diagnostic is `HIBIKI_ASR_PREADAPT=1`: reuse the exact high-delay 50k cohort,
+discard English targets, keep Vietnamese source codes through source EOS, then
+supervise the Vietnamese transcript with target audio absent. It owns the
+`*_grounded_v2_pilot_vi_asr_preadapt` namespace, uses physical batch 4 /
+accumulation 4 on the 94 GB H100, and hard-gates train/validation at 672/640
+frames. Paired Vietnamese ASR must pass normal health, 1.0 BLEU / 5.0 chrF
+source gaps, correct chrF at least 50, and WER at most 0.60. This tests whether
+the temporal backbone can learn Vietnamese acoustics; it is not Kyutai's
+multilingual audio pretraining and cannot yet initialize a full translation run.
 
 ## Canonical resources
 

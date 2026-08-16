@@ -129,6 +129,22 @@ This localizes the failure to transfer from teacher-forced source ranking into
 stable autoregressive decoding and rejects contrastive text-only SFT as the full
 recipe. The next diagnostic is Vietnamese acoustic preadaptation.
 
+## Vietnamese source-ASR diagnostic
+
+Use the exact frozen 50k cohort and verified high-delay cache, but derive
+full-sentence Vietnamese ASR examples in memory. Keep Vietnamese source codes
+through source EOS, emit `text_vi` afterward, and remove English text and target
+audio. This isolates whether the temporal backbone can learn Vietnamese
+acoustics; it is not a reproduction of multilingual audio pretraining.
+
+Evaluate correct and duration-matched shuffled sources against Vietnamese
+references at fixed-seed temperature 0.4 with a 24-second tail. Promotion
+requires all ordinary generation-health gates, BLEU/chrF source gaps of at least
+1.0/5.0, correct-source chrF at least 50, and correct-source WER at most 0.60.
+Persist both conditions, consolidated predictions, metrics, and
+`source_asr.json`. A passing checkpoint qualifies only a separate warm-start
+translation pilot; it cannot directly select the full-run initialization.
+
 ## Diagnostics and final test
 
 For the masked text/source-only pilot, teacher-forced validation must also pass

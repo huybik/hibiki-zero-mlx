@@ -15,8 +15,8 @@ A Vast pod is disposable. Keep the three durable resources distinct:
   legacy, grounded full, grounded pilot, high-delay pilot, and contrastive pilot
   runs own only `full_run/`, `grounded_v2/`, `grounded_v2_pilot/`,
   `grounded_v2_pilot_high_delay/`, and
-  `grounded_v2_pilot_high_delay_contrastive/` respectively; phase-1 is
-  preserved.
+  `grounded_v2_pilot_high_delay_contrastive/` respectively. The Vietnamese-ASR
+  diagnostic owns `grounded_v2_pilot_vi_asr_preadapt/`; phase-1 is preserved.
 
 Never put a token, SSH endpoint, or pod-specific path in Git. A new agent should
 first read `AGENTS.md`, `CONTEXT.md`, and the pod's `/etc/vast-agents-guide.md`.
@@ -158,7 +158,7 @@ Before launch, inspect the public model repo's `full_run/` directory:
 identity for recovery. It supervises checkpoint sync and stops training after
 three consecutive sync failures. Recovery sync also preserves `run_config.json`,
 the pilot's frozen `sample_manifest.jsonl`, and the optional
-`source_derangement.json` under `metadata/`.
+`source_derangement.json` or `source_asr.json` under `metadata/`.
 
 ## Cache format and rebuild path
 
@@ -251,6 +251,26 @@ repeated-4gram failures, and mean length ratio 2.95. Do not extend or use this
 checkpoint for full training; proceed to a Vietnamese acoustic-preadaptation
 diagnostic.
 
+For that diagnostic, unset the contrastive flag and add
+`HIBIKI_ASR_PREADAPT=1` to preflight, smoke, train, and resume. Do not rebuild
+the cache. The mode reuses the verified high-delay cache and exact frozen 50k
+membership but owns isolated `*_grounded_v2_pilot_vi_asr_preadapt` smoke/run/HF
+artifacts. In memory it removes English text and target audio, retains only the
+Vietnamese source codebooks through source EOS, then emits the cached Vietnamese
+transcript. Text before that point is supervised PAD, target-audio input is
+masked, and audio loss remains zero. The ordered source-text policy and tokenizer
+hash are frozen in `source_asr.json` and checked on resume.
+
+This is a bounded full-sentence Vietnamese ASR preadaptation test, not a
+reproduction of Kyutai's multilingual audio pretraining. Exact simulated cohort
+lengths require 672 training and 640 validation frame caps; observed maxima are
+668 and 627. The 94 GB H100 uses physical batch 4 / accumulation 4 and validation
+batch 1. Paired free-running evaluation uses Vietnamese references, temperature
+0.4, and a 24-second tail. Qualification requires normal health, source gaps of
+at least 1.0 BLEU and 5.0 chrF, correct-source chrF at least 50, and WER at most
+0.60. Even a passing ASR checkpoint only authorizes a separate warm-start
+translation pilot; it does not authorize the full run.
+
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
 conditions, and evaluation restores training RNG afterward. Calibrate explicit
@@ -266,10 +286,12 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 - CUDA uses fp32 master weights and bf16 autocast.
 - `--max-frames 280` bounds ordinary-run memory; the exact-membership high-delay
   pilot uses 480 for training and a separate 704 validation cap at batch 1.
+  The source-ASR diagnostic uses 672/640 train/validation caps.
   Sixteen-frame buckets bound compiled CUDA shapes.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
   The high-delay pilot uses batch 8 / accumulation 2, while its contrastive
-  variant uses batch 4 / accumulation 4 on the 94 GB H100.
+  variant and source-ASR diagnostic use batch 4 / accumulation 4 on the 94 GB
+  H100.
 - Text content, PAD, and first-content losses are reduced independently before
   weighting, so PAD prevalence cannot change its aggregate gradient budget.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.

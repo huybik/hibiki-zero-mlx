@@ -12,6 +12,7 @@ RECIPE="${HIBIKI_RECIPE:-legacy}"
 PILOT="${HIBIKI_PILOT:-0}"
 HIGH_DELAY_PILOT="${HIBIKI_HIGH_DELAY_PILOT:-0}"
 CONTRASTIVE_PILOT="${HIBIKI_CONTRASTIVE_PILOT:-0}"
+ASR_PREADAPT="${HIBIKI_ASR_PREADAPT:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
 
@@ -25,12 +26,18 @@ die() {
   || die "HIBIKI_HIGH_DELAY_PILOT must be 0 or 1"
 [[ "$CONTRASTIVE_PILOT" == 0 || "$CONTRASTIVE_PILOT" == 1 ]] \
   || die "HIBIKI_CONTRASTIVE_PILOT must be 0 or 1"
+[[ "$ASR_PREADAPT" == 0 || "$ASR_PREADAPT" == 1 ]] \
+  || die "HIBIKI_ASR_PREADAPT must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
   || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
 [[ "$HIGH_DELAY_PILOT" == 0 || ( "$PILOT" == 1 && "$RECIPE" == "grounded-v2" ) ]] \
   || die "HIBIKI_HIGH_DELAY_PILOT=1 requires the grounded-v2 pilot"
 [[ "$CONTRASTIVE_PILOT" == 0 || "$HIGH_DELAY_PILOT" == 1 ]] \
   || die "HIBIKI_CONTRASTIVE_PILOT=1 requires the high-delay pilot"
+[[ "$ASR_PREADAPT" == 0 || "$HIGH_DELAY_PILOT" == 1 ]] \
+  || die "HIBIKI_ASR_PREADAPT=1 requires the high-delay pilot cache"
+[[ "$ASR_PREADAPT" == 0 || "$CONTRASTIVE_PILOT" == 0 ]] \
+  || die "ASR preadaptation and contrastive translation are exclusive"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
@@ -52,6 +59,9 @@ case "$RECIPE" in
       fi
       if [[ "$CONTRASTIVE_PILOT" == 1 ]]; then
         pilot_namespace=grounded_v2_pilot_high_delay_contrastive
+      fi
+      if [[ "$ASR_PREADAPT" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_vi_asr_preadapt
       fi
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
@@ -171,6 +181,8 @@ cache_grounded() {
     || die "cache-grounded requires HIBIKI_RECIPE=grounded-v2"
   [[ "$CONTRASTIVE_PILOT" == 0 ]] \
     || die "the contrastive pilot reuses the verified high-delay caches"
+  [[ "$ASR_PREADAPT" == 0 ]] \
+    || die "ASR preadaptation reuses the verified high-delay caches"
   require_python
   require_baseline_pilot_manifest
   require_cuda_driver
@@ -268,7 +280,7 @@ preflight() {
   local profile
   profile="$("$PYTHON" - \
     "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "$PILOT" "$HIGH_DELAY_PILOT" \
-    "$CONTRASTIVE_PILOT" \
+    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" \
     "$TARGET_DELAY_MIN_RATIO" "$TARGET_DELAY_MAX_RATIO" "$TARGET_DELAY_SEED" \
     "$PHOMT_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" <<'PY'
 from __future__ import annotations
@@ -288,12 +300,13 @@ recipe = sys.argv[3]
 pilot = bool(int(sys.argv[4]))
 high_delay_pilot = bool(int(sys.argv[5]))
 contrastive_pilot = bool(int(sys.argv[6]))
+source_asr = bool(int(sys.argv[7]))
 target_delay = {
-    "min_ratio": float(sys.argv[7]),
-    "max_ratio": float(sys.argv[8]),
-    "seed": int(sys.argv[9]),
+    "min_ratio": float(sys.argv[8]),
+    "max_ratio": float(sys.argv[9]),
+    "seed": int(sys.argv[10]),
 }
-phomt_cache, train_cache, val_cache = sys.argv[10:13]
+phomt_cache, train_cache, val_cache = sys.argv[11:14]
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -317,7 +330,7 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if contrastive_pilot and memory_gib >= 75:
+if (contrastive_pilot or source_asr) and memory_gib >= 75:
     batch_size, grad_accum = 4, 4
 elif high_delay_pilot and memory_gib >= 75:
     batch_size, grad_accum = 8, 2
@@ -486,6 +499,10 @@ common_args() {
     val_batch_size=1
     sort_args=(--no-sort-by-length)
   fi
+  if [[ "$ASR_PREADAPT" == 1 ]]; then
+    max_frames=672
+    val_max_frames=640
+  fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
   source_gap_args
   EVAL_EVERY=9000
@@ -551,6 +568,15 @@ common_args() {
             --contrastive-source-margin 0.5
           )
         fi
+        if [[ "$ASR_PREADAPT" == 1 ]]; then
+          TRAIN_ARGS+=(
+            --source-asr-pretrain
+            --eval-reference-column text_vi
+            --eval-tail-s 24
+            --min-correct-chrf 50
+            --max-correct-wer 0.6
+          )
+        fi
       else
         TRAIN_ARGS+=(--max-samples 50000)
       fi
@@ -573,7 +599,7 @@ stop_monitor() {
 check_smoke_outputs() {
   "$PYTHON" - \
     "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" \
-    "$CONTRASTIVE_PILOT" <<'PY'
+    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -587,6 +613,7 @@ root = Path(sys.argv[1])
 high_delay_pilot = bool(int(sys.argv[2]))
 baseline_manifest_sha256 = sys.argv[3]
 contrastive_pilot = bool(int(sys.argv[4]))
+source_asr = bool(int(sys.argv[5]))
 logs = [json.loads(line) for line in (root / "train_log.jsonl").read_text().splitlines() if line]
 if not logs or logs[-1]["step"] != 11:
     raise RuntimeError("resume smoke did not reach step 11")
@@ -597,13 +624,13 @@ for item in logs:
 
 if high_delay_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
-    expected_batch_size = 4 if contrastive_pilot else 8
-    expected_grad_accum = 4 if contrastive_pilot else 2
+    expected_batch_size = 4 if contrastive_pilot or source_asr else 8
+    expected_grad_accum = 4 if contrastive_pilot or source_asr else 2
     expected = {
         "batch_size": expected_batch_size,
         "grad_accum_steps": expected_grad_accum,
-        "max_frames": 480,
-        "val_max_frames": 704,
+        "max_frames": 672 if source_asr else 480,
+        "val_max_frames": 640 if source_asr else 704,
         "val_batch_size": 1,
         "max_samples": 0,
         "cache_weights": None,
@@ -663,6 +690,28 @@ if high_delay_pilot:
                     raise RuntimeError(f"non-finite {key} at step {item['step']}")
         if max(float(item["contrastive_active_fraction"]) for item in logs) <= 0:
             raise RuntimeError("contrastive source margin was never active")
+    if source_asr:
+        expected_asr = {
+            "source_asr_pretrain": True,
+            "eval_reference_column": "text_vi",
+            "eval_tail_s": 24.0,
+            "min_correct_chrf": 50.0,
+            "max_correct_wer": 0.6,
+        }
+        for key, value in expected_asr.items():
+            if config.get(key) != value:
+                raise RuntimeError(f"source-ASR smoke config mismatch for {key}")
+        document = json.loads((root / "source_asr.json").read_text())
+        payload = document["source_asr"]
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if digest != document["sha256"] or digest != config.get("source_asr_sha256"):
+            raise RuntimeError("source-ASR policy hash mismatch")
+        if payload.get("strategy") != "full_sentence_vi_asr_after_source_eos":
+            raise RuntimeError("source-ASR strategy mismatch")
+        if payload.get("rows") != 50_000 or payload.get("observed_max_frames") != 668:
+            raise RuntimeError("source-ASR cohort shape mismatch")
 
 eval_dir = root / "standalone_eval_step10"
 metrics = json.loads((eval_dir / "metrics.json").read_text())
@@ -727,6 +776,10 @@ smoke() {
       --out-dir "$SMOKE_DIR"
 
     cp "$SMOKE_DIR/run_config.json" "$SMOKE_DIR/run_config_step10.json"
+    local smoke_eval_args=()
+    if [[ "$ASR_PREADAPT" == 1 ]]; then
+      smoke_eval_args=(--reference-column text_vi --tail-s 24)
+    fi
     "$PYTHON" finetune/eval.py \
       --device cuda --dtype float32 \
       --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
@@ -734,6 +787,7 @@ smoke() {
       --pairs finetune/pairs/val128.jsonl \
       --limit 8 --batch-size 8 --text-temp 0.4 \
       --stop-on-eos --text-only --seed 42 \
+      "${smoke_eval_args[@]}" \
       --out-dir "$SMOKE_DIR/standalone_eval_step10"
 
     "$PYTHON" finetune/train.py \
