@@ -327,13 +327,7 @@ class CachedCodeDataset(Dataset):
             if missing:
                 raise RuntimeError(f"Input sample manifest references missing samples: {missing[:10]}")
             self.samples = [samples_by_key[key] for key in manifest_keys]
-            observed_max_frames = max(sample["frames"] for sample in self.samples)
-            if max_frames and observed_max_frames > max_frames:
-                over = sum(sample["frames"] > max_frames for sample in self.samples)
-                raise RuntimeError(
-                    f"Input sample manifest exceeds --max-frames={max_frames}: "
-                    f"{over} entries, max T={observed_max_frames}"
-                )
+            self.require_max_frames(max_frames, "Input sample manifest")
         if not self.samples:
             raise RuntimeError(f"No shard_*.pt cache files found in {cache_dir}")
         if max_frames and dropped:
@@ -377,6 +371,17 @@ class CachedCodeDataset(Dataset):
             self.samples = self.samples[:max_samples]
             if not self.samples:
                 raise RuntimeError("--max-samples selected no cached samples")
+
+    def require_max_frames(self, max_frames: int, label: str) -> None:
+        if not max_frames or not self.samples:
+            return
+        observed = max(sample["frames"] for sample in self.samples)
+        if observed > max_frames:
+            over = sum(sample["frames"] > max_frames for sample in self.samples)
+            raise RuntimeError(
+                f"{label} exceeds --max-frames={max_frames}: "
+                f"{over} entries, observed max T={observed}"
+            )
 
     def shuffle_batch_order(self, batch_size: int, seed: int = 1234) -> None:
         """Shuffle length-sorted samples in whole-batch blocks.

@@ -204,6 +204,25 @@ requires the ordinary pilot's
 `52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f`.
 Training reconstructs that exact ordered 50,000-entry cohort, including repeats,
 then hard-gates it at 480 frames. It does not resample, sort, or shuffle it.
+On a fresh pod, restore the pinned input before high-delay cache or preflight;
+the ignored `.env` supplies `HF_TOKEN`:
+
+```bash
+set -a
+source .env
+set +a
+manifest_restore="$(mktemp -d /workspace/hibiki-manifest.XXXXXX)"
+./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft \
+  grounded_v2_pilot/metadata/sample_manifest.jsonl \
+  --local-dir "$manifest_restore"
+mkdir -p finetune/runs/vi_grounded_v2_pilot
+cp "$manifest_restore/grounded_v2_pilot/metadata/sample_manifest.jsonl" \
+  finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl
+find "$manifest_restore" -depth -delete
+```
+
+High-delay teacher-forced validation is independently length-sorted, never
+shuffled, and hard-fails rather than dropping rows above the 480-frame cap.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
