@@ -22,6 +22,8 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
+import gc
 import json
 import math
 import os
@@ -64,6 +66,7 @@ from finetune.utils import (  # noqa: E402
 DATASET = "anquachdev/PhoMT-en-vi-speech"
 DATASET_REVISION = "33400f73dde07da539e8326313cbabe20b757740"
 TIMBRE_MATCHED_MIN_INDEX = 345_600
+LIBC = ctypes.CDLL(None) if sys.platform.startswith("linux") else None
 
 
 def load_hf_token() -> None:
@@ -237,6 +240,13 @@ def delete_from_hf_cache(path: Path) -> None:
     path.unlink(missing_ok=True)
     if blob != path:
         blob.unlink(missing_ok=True)
+
+
+def release_host_memory() -> None:
+    """Return completed-shard allocations instead of retaining prep-thread arenas."""
+    gc.collect()
+    if LIBC is not None:
+        LIBC.malloc_trim(0)
 
 
 def main() -> None:
@@ -654,6 +664,9 @@ def main() -> None:
             f"{kept} rows / {kept_hours:.1f} VI-h)",
             flush=True,
         )
+        del payload, samples, pair_lines, reject_lines, table, prep, producer, chunk_q
+        del encode_chunk
+        release_host_memory()
 
     elapsed = time.monotonic() - started
     print(
