@@ -67,13 +67,12 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   `finetune/publish_grounded_cache.py` validates and checksum-publishes
   the complete cache under an isolated dataset prefix. `remote_dataset/download_fleurs_vi_en.py` →
   `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.
-- The grounded-v2 PhoMT rebuild is paused at a verified, contiguous 90-shard
-  prefix (`shard_00000.pt` through `shard_00089.pt`) in the ignored local
-  `finetune/cache/phomt_grounded_v2/` directory. Both Mac workers and the
-  automatic publisher are stopped; nothing was uploaded. Transfer that whole
-  directory, including `pairs_w*.jsonl` and `alignment_rejects_w*.jsonl`, to the
-  H100 before resuming. The builder skips existing shards even if worker count
-  changes; publish only after all 1,377 shards validate.
+- The grounded-v2 PhoMT rebuild resumed on an H100 from the SHA-verified,
+  contiguous 90-shard Mac prefix (`shard_00000.pt` through `shard_00089.pt`).
+  Four CUDA workers run from commit `45a1327`; the detached pipeline validates
+  all 1,377 shards, builds grounded FLEURS caches, then publishes and verifies
+  the isolated dataset `grounded-v2/` prefix. The Mac retains the ignored
+  90-shard recovery copy until remote publication succeeds.
 - `finetune/validate.py` is teacher-forced diagnostics only.
   `finetune/eval.py` free-running chrF plus nonempty/EOS/loop/length gates select
   checkpoints; `sacrebleu` is required.
