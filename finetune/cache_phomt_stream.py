@@ -16,6 +16,7 @@ Run N workers as separate processes (worker k takes parquet shards k::N):
 Sample ids are phomt_s{parquet}r{row} — deterministic regardless of worker
 count, so target-delay RNG and resume never depend on process layout.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,6 +29,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +85,9 @@ def row_key(text_vi: str, text_en: str, vi_dur: str, en_dur: str) -> tuple[str, 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Stream PhoMT parquet -> Mimi cache, no wavs on disk.")
+    parser = argparse.ArgumentParser(
+        description="Stream PhoMT parquet -> Mimi cache, no wavs on disk."
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_CACHE_ROOT / "phomt_stream")
     parser.add_argument("--worker", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=1)
@@ -106,24 +110,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-source-duration-s", type=float, default=25.0)
     parser.add_argument("--target-delay-ratio", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all.")
-    parser.add_argument("--batch-size", type=int, default=16, help="Clips per batched Mimi encode.")
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all."
+    )
+    parser.add_argument(
+        "--profile",
+        choices=("default", "h100"),
+        default="default",
+        help="Hardware-tuned execution profile with bounded H100 batches.",
+    )
+    parser.add_argument("--batch-size", type=int, help="Clips per batched Mimi encode.")
     parser.add_argument(
         "--batch-sample-budget",
         type=int,
-        default=2_000_000,
+        default=None,
         help="Maximum padded raw-audio samples per Mimi encode batch.",
     )
     parser.add_argument(
         "--chunk-rows",
         type=int,
-        default=512,
+        default=None,
         help="Rows buffered per encode flush; use 128 for concurrent MPS workers.",
     )
     parser.add_argument(
         "--prefetch-shards",
         type=int,
-        default=1,
+        default=None,
         help="Parquet shards to download ahead while encoding; use 2 for a single Mac worker.",
     )
     parser.add_argument(
@@ -132,7 +144,12 @@ def parse_args() -> argparse.Namespace:
         default="legacy",
         help="grounded-v2 CTC-aligns English text tokens to target speech.",
     )
-    parser.add_argument("--alignment-batch-size", type=int, default=8)
+    parser.add_argument("--alignment-batch-size", type=int)
+    parser.add_argument(
+        "--alignment-sample-budget",
+        type=int,
+        help="Maximum padded 16 kHz samples per CTC batch; 0 disables the cap.",
+    )
     parser.add_argument(
         "--min-alignment-score",
         type=float,
@@ -145,7 +162,30 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Evenly sample this many dataset shards for a grounded-v2 pilot; 0=all.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    defaults = (
+        {
+            "batch_size": 64,
+            "batch_sample_budget": 4_000_000,
+            "chunk_rows": 512,
+            "prefetch_shards": 2,
+            "alignment_batch_size": 32,
+            "alignment_sample_budget": 4_000_000,
+        }
+        if args.profile == "h100"
+        else {
+            "batch_size": 16,
+            "batch_sample_budget": 2_000_000,
+            "chunk_rows": 512,
+            "prefetch_shards": 1,
+            "alignment_batch_size": 8,
+            "alignment_sample_budget": 0,
+        }
+    )
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    return args
 
 
 # Mimi's SEANet convs are ~512-wide at raw 24 kHz, so activation memory scales
@@ -209,10 +249,21 @@ def main() -> None:
         raise ValueError("--chunk-rows must be positive")
     if args.batch_sample_budget <= 0:
         raise ValueError("--batch-sample-budget must be positive")
+    if args.alignment_batch_size <= 0:
+        raise ValueError("--alignment-batch-size must be positive")
+    if args.alignment_sample_budget < 0:
+        raise ValueError("--alignment-sample-budget must be non-negative")
     load_hf_token()
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
     device = check_device(torch, args.device)
+    if args.profile == "h100":
+        if (
+            device.type != "cuda"
+            or torch.cuda.get_device_capability(device) != (9, 0)
+            or "H100" not in torch.cuda.get_device_name(device).upper()
+        ):
+            raise RuntimeError("--profile h100 requires an NVIDIA H100 (CUDA capability 9.0)")
 
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download, list_repo_files
@@ -258,13 +309,17 @@ def main() -> None:
     skip: set[tuple[str, str, str, str]] = set()
     for pairs_path in args.skip_pairs:
         for row in read_pair_file(pairs_path):
-            skip.add(row_key(row["text_vi"], row["text_en"], row["vi_duration_s"], row["en_duration_s"]))
+            skip.add(
+                row_key(row["text_vi"], row["text_en"], row["vi_duration_s"], row["en_duration_s"])
+            )
     if skip:
         print(f"[w{args.worker}] skipping {len(skip)} already-cached rows")
 
     cfg = read_json(args.config_path)
     mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    tokenizer = sentencepiece.SentencePieceProcessor(str(require_file(args.tokenizer, "text tokenizer")))
+    tokenizer = sentencepiece.SentencePieceProcessor(
+        str(require_file(args.tokenizer, "text tokenizer"))
+    )
     num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
     mimi = loaders.get_mimi(mimi_weight, num_codebooks=num_codebooks, device=device)
     if int(cfg["card"]) != int(mimi.cardinality):
@@ -274,7 +329,11 @@ def main() -> None:
     if args.recipe == "grounded-v2":
         from finetune.text_timing import EnglishCTCAligner
 
-        aligner = EnglishCTCAligner(device, args.min_alignment_score)
+        aligner = EnglishCTCAligner(
+            device,
+            args.min_alignment_score,
+            alignment_backend="batched" if args.profile == "h100" else "serial",
+        )
 
     if args.recipe == "grounded-v2" and args.out_dir == DEFAULT_CACHE_ROOT / "phomt_stream":
         args.out_dir = DEFAULT_CACHE_ROOT / "phomt_grounded_v2"
@@ -300,9 +359,7 @@ def main() -> None:
 
     def download_parquet(shard_name: str) -> Path:
         return Path(
-            hf_hub_download(
-                DATASET, shard_name, repo_type="dataset", revision=DATASET_REVISION
-            )
+            hf_hub_download(DATASET, shard_name, repo_type="dataset", revision=DATASET_REVISION)
         )
 
     def iter_parquet():
@@ -321,19 +378,20 @@ def main() -> None:
                 local = futures.popleft().result()
                 next_index = index + args.prefetch_shards
                 if next_index < len(pending_shards):
-                    futures.append(
-                        pool.submit(download_parquet, pending_shards[next_index][1])
-                    )
+                    futures.append(pool.submit(download_parquet, pending_shards[next_index][1]))
                 yield parquet_idx, shard_name, local
 
     kept = 0
     accepted = 0
     rejected = 0
     kept_hours = 0.0
+    started = time.monotonic()
     for parquet_idx, shard_name, local in iter_parquet():
         if args.limit and kept >= args.limit:
             break
         out_path = out_dir / f"shard_{parquet_idx:05d}.pt"
+        shard_started = time.monotonic()
+        shard_kept_start = kept
         table = pq.ParquetFile(local).read()
         samples = []
         pair_lines = []
@@ -362,6 +420,7 @@ def main() -> None:
                     [chunk[index]["en_align_wav"] for index in valid_indices],
                     [groups_batch[index] for index in valid_indices],
                     args.alignment_batch_size,
+                    args.alignment_sample_budget,
                 )
                 for index, alignment in zip(valid_indices, valid_alignments, strict=True):
                     alignments[index] = alignment
@@ -370,7 +429,9 @@ def main() -> None:
                 alignment = alignments[index] if alignments is not None else None
                 if isinstance(alignment, Exception):
                     rejected += 1
-                    print(f"[w{args.worker}] rejecting {item['row']['id']}: {alignment}", flush=True)
+                    print(
+                        f"[w{args.worker}] rejecting {item['row']['id']}: {alignment}", flush=True
+                    )
                     reject_lines.append({"id": item["row"]["id"], "reason": str(alignment)})
                 else:
                     encode_indices.append(index)
@@ -435,17 +496,13 @@ def main() -> None:
                     "en_audio": row["en_audio"],
                     "text_en": row["text_en"],
                     "text_vi": row["text_vi"],
-                    "text_timing": (
-                        "contiguous" if alignments is None else "wav2vec2_ctc_word_v1"
-                    ),
+                    "text_timing": ("contiguous" if alignments is None else "wav2vec2_ctc_word_v1"),
                     "alignment_score": alignment_score,
                 }
                 if aligner is not None:
                     sample.update(
                         {
-                            "alignment_text": " ".join(
-                                spoken for _, spoken in groups_batch[k]
-                            ),
+                            "alignment_text": " ".join(spoken for _, spoken in groups_batch[k]),
                             "phomt_index_range": (
                                 list(source_ranges[shard_name])
                                 if shard_name in source_ranges
@@ -462,9 +519,7 @@ def main() -> None:
                 if aligner is not None:
                     pair_row = row | {
                         "alignment_score": alignment_score,
-                        "alignment_text": " ".join(
-                            spoken for _, spoken in groups_batch[k]
-                        ),
+                        "alignment_text": " ".join(spoken for _, spoken in groups_batch[k]),
                         "phomt_index_range": (
                             list(source_ranges[shard_name]) if shard_name in source_ranges else None
                         ),
@@ -593,13 +648,18 @@ def main() -> None:
             torch.mps.empty_cache()
         print(
             f"[w{args.worker}] {shard_name}: {len(samples)}/{table.num_rows} rows -> "
-            f"{repo_display_path(out_path)} (total {kept} rows / {kept_hours:.1f} VI-h)",
+            f"{repo_display_path(out_path)} "
+            f"({(kept - shard_kept_start) / max(time.monotonic() - shard_started, 1e-6):.1f} "
+            f"rows/s shard, {kept / max(time.monotonic() - started, 1e-6):.1f} rows/s total; "
+            f"{kept} rows / {kept_hours:.1f} VI-h)",
             flush=True,
         )
 
+    elapsed = time.monotonic() - started
     print(
         f"[w{args.worker}] done: {accepted} accepted / {rejected} rejected / "
-        f"{kept} attempted / {kept_hours:.1f} VI source hours"
+        f"{kept} attempted / {kept_hours:.1f} VI source hours in {elapsed / 60:.1f} min "
+        f"({kept / max(elapsed, 1e-6):.1f} rows/s)"
     )
 
 

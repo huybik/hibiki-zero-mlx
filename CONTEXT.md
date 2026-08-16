@@ -59,7 +59,9 @@ Generated FLEURS data is excluded from both the active tree and Git history.
 - `finetune/cache_phomt_stream.py` builds the published PhoMT cache directly
   from parquet with bounded download prefetch and Hugging Face Xet. MPS runs keep
   the CTC dynamic program on-device with one result transfer, release each batch,
-  and bound concurrent workers by row and audio-sample budgets.
+  and bound concurrent workers by row and audio-sample budgets. Its H100 profile
+  batches CTC Viterbi across rows; `h100.sh cache-grounded` supervises four
+  workers and builds all grounded-v2 PhoMT/FLEURS caches.
   `finetune/publish_grounded_cache.py` validates and checksum-publishes
   the complete cache under an isolated dataset prefix. `remote_dataset/download_fleurs_vi_en.py` →
   `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.

@@ -184,6 +184,9 @@ gender-consistent pairs, and low-score CTC rows are rejected. The v2 launcher
 reads only `*_grounded_v2` caches and uses the independent `grounded_v2/`
 Hugging Face recovery prefix; see
 [training_plan.md](training_plan.md) for exact commands and hyperparameters.
+On an H100, `./finetune/h100.sh cache-grounded` is the cache-build entrypoint;
+it uses the H100 batching profile and also builds the grounded FLEURS train and
+validation caches.
 
 ## Trainer invariants
 

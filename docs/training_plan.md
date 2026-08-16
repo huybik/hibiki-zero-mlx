@@ -122,21 +122,22 @@ contiguous-text shards. PhoMT is pinned to one dataset revision. All pairs are
 used: earlier pairs are gender-consistent but independently voiced, while source
 indexes at or above 345,600 have additional cross-lingual timbre matching. The
 cache records that distinction as metadata; neither group establishes speaker
-identity. Build all 1,377 shards with:
+identity. Build all 1,377 PhoMT shards plus the FLEURS train/validation caches
+on the H100 with:
 
 ```bash
-for worker in $(seq 0 7); do
-  ./.venv/bin/python finetune/cache_phomt_stream.py \
-    --recipe grounded-v2 --device cuda \
-    --worker "$worker" --num-workers 8 &
-done
-wait
-./.venv/bin/python finetune/cache_codes.py \
-  --recipe grounded-v2 --pairs finetune/pairs/train.jsonl
-./.venv/bin/python finetune/cache_codes.py \
-  --recipe grounded-v2 --pairs finetune/pairs/validation.jsonl \
-  --out-dir finetune/cache/validation_grounded_v2
+export HIBIKI_RECIPE=grounded-v2
+./finetune/h100.sh cache-grounded
 ```
+
+The launcher defaults to four supervised workers and fails the whole cache job
+if any worker exits nonzero. Its `h100` profile batches the forced-alignment
+Viterbi pass, bounds Wav2Vec2 and Mimi batches by padded audio samples, and logs
+per-worker rows/second. It keeps Mimi in fp32. Set `HIBIKI_CACHE_WORKERS` only
+after measuring GPU and host headroom. A cold full build cannot finish within
+two hours unless the pod sustains roughly 80 MB/s from Hugging Face. Treat an
+aggregate rate above 100 attempted rows/s after downloads warm as the two-hour
+launch gate.
 
 Both builders reject CTC alignments below mean posterior 0.5 and store the
 alignment score plus normalized spoken transcript. Inspect the rejected rows
@@ -154,13 +155,15 @@ usable PhoMT row once before any repeats and repeats the smaller FLEURS pool to
 make its exposure 5%.
 
 For the 50k-row spend-control pilot, build at least 50k PhoMT rows into the v2
-cache. To sample 104 shards across the corpus instead of building all of it, add
-`--sample-shards 104` to each `cache_phomt_stream.py` worker above. Then launch
-with:
+cache. To sample 104 shards across the corpus instead of building all of it,
+run the cache launcher with `HIBIKI_CACHE_SAMPLE_SHARDS=104`. Then launch with:
 
 ```bash
-export HIBIKI_MAX_SAMPLES=50000
 export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_CACHE_SAMPLE_SHARDS=104
+./finetune/h100.sh cache-grounded
+unset HIBIKI_CACHE_SAMPLE_SHARDS
+export HIBIKI_MAX_SAMPLES=50000
 export HIBIKI_HF_PREFIX=grounded_v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh preflight

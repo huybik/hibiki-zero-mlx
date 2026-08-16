@@ -45,6 +45,13 @@ require_cuda_driver() {
     || die "CUDA 13.x minor-version compatibility requires NVIDIA driver 580 or newer, got $driver_version"
 }
 
+require_h100_gpu() {
+  local gpu_names
+  gpu_names="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
+  [[ -n "$gpu_names" && "$gpu_names" != *$'\n'* ]] || die "exactly one visible GPU is required"
+  [[ "${gpu_names^^}" == *H100* ]] || die "H100 required, got $gpu_names"
+}
+
 require_empty_dir() {
   local path="$1"
   if [[ -d "$path" ]] && find "$path" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
@@ -57,10 +64,7 @@ setup() {
   [[ "$(uname -s)" == "Linux" ]] || die "setup must run on the Linux H100 pod"
   command -v python3 >/dev/null || die "python3 is required"
   require_cuda_driver
-  local gpu_names
-  gpu_names="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
-  [[ -n "$gpu_names" && "$gpu_names" != *$'\n'* ]] || die "exactly one visible GPU is required"
-  [[ "${gpu_names^^}" == *H100* ]] || die "H100 required, got $gpu_names"
+  require_h100_gpu
   python3 -c 'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 14)))' \
     || die "Python 3.10-3.13 is required"
   [[ ! -e "$VENV" ]] || die "refusing to reuse existing environment: $VENV"
@@ -88,6 +92,77 @@ setup() {
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
   echo "H100 environment installed in $VENV"
+}
+
+cache_grounded() {
+  [[ "$RECIPE" == "grounded-v2" ]] \
+    || die "cache-grounded requires HIBIKI_RECIPE=grounded-v2"
+  require_python
+  require_cuda_driver
+  require_h100_gpu
+  [[ -f finetune/pairs/train.jsonl ]] || die "missing finetune/pairs/train.jsonl"
+  [[ -f finetune/pairs/validation.jsonl ]] || die "missing finetune/pairs/validation.jsonl"
+
+  local workers="${HIBIKI_CACHE_WORKERS:-4}"
+  [[ "$workers" =~ ^[1-9][0-9]*$ ]] || die "HIBIKI_CACHE_WORKERS must be a positive integer"
+  local sample_shards="${HIBIKI_CACHE_SAMPLE_SHARDS:-0}"
+  [[ "$sample_shards" =~ ^[0-9]+$ ]] \
+    || die "HIBIKI_CACHE_SAMPLE_SHARDS must be a non-negative integer"
+  local cache_args=(--recipe grounded-v2 --device cuda --profile h100)
+  if (( sample_shards > 0 )); then
+    cache_args+=(--sample-shards "$sample_shards")
+  fi
+  local pids=()
+  local worker
+  for ((worker = 0; worker < workers; worker++)); do
+    "$PYTHON" finetune/cache_phomt_stream.py \
+      "${cache_args[@]}" \
+      --worker "$worker" --num-workers "$workers" &
+    pids+=("$!")
+  done
+  trap 'kill "${pids[@]}" 2>/dev/null || true' INT TERM EXIT
+
+  local remaining="$workers"
+  local status
+  while (( remaining > 0 )); do
+    set +e
+    wait -n
+    status=$?
+    set -e
+    if (( status != 0 )); then
+      kill "${pids[@]}" 2>/dev/null || true
+      wait "${pids[@]}" 2>/dev/null || true
+      trap - INT TERM EXIT
+      return "$status"
+    fi
+    remaining=$((remaining - 1))
+  done
+  trap - INT TERM EXIT
+
+  if (( sample_shards == 0 )); then
+    "$PYTHON" - <<'PY'
+from pathlib import Path
+
+from finetune.publish_grounded_cache import validate_cache
+
+stats = validate_cache(Path("finetune/cache/phomt_grounded_v2"))
+print(
+    f"Validated PhoMT cache: {stats['shards']} shards / "
+    f"{stats['accepted_samples']} accepted / {stats['rejected_samples']} rejected"
+)
+PY
+  fi
+
+  "$PYTHON" finetune/cache_codes.py \
+    --recipe grounded-v2 --device cuda --pairs finetune/pairs/train.jsonl
+  "$PYTHON" finetune/cache_codes.py \
+    --recipe grounded-v2 --device cuda --pairs finetune/pairs/validation.jsonl \
+    --out-dir finetune/cache/validation_grounded_v2
+  if (( sample_shards > 0 )); then
+    echo "Grounded-v2 pilot caches complete: $sample_shards sampled PhoMT shards"
+  else
+    echo "Grounded-v2 caches complete"
+  fi
 }
 
 preflight() {
@@ -609,6 +684,9 @@ case "${1:-}" in
   setup)
     setup
     ;;
+  cache-grounded)
+    cache_grounded
+    ;;
   preflight)
     preflight 190
     ;;
@@ -623,7 +701,7 @@ case "${1:-}" in
     resume "$@"
     ;;
   *)
-    echo "usage: $0 setup|preflight|smoke|train|resume <trainer checkpoint>" >&2
+    echo "usage: $0 setup|cache-grounded|preflight|smoke|train|resume <trainer checkpoint>" >&2
     exit 1
     ;;
 esac
