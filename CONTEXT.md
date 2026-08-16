@@ -87,9 +87,11 @@ Generated FLEURS data is excluded from both the active tree and Git history.
 
 After the `docs/finetune.md` handoff, use `docs/training_plan.md` for the exact
 recipe and `docs/validation_plan.md` for qualification thresholds.
-Calibrate source-gap thresholds on Vietnamese base, the old phase-1 checkpoint,
-and healthy French before the pilot. Treat current early text timing as a
-diagnostic: run 0/250/500/1,000 first, then try 75--100% delay, contrastive
+Paired controls lock text temperature 0.4 and source-gap gates of 1.0 BLEU plus
+5.0 chrF. Healthy French passed at 23.08/38.80; Vietnamese base and phase-1
+failed source dependence at -0.07/1.23 and 0.01/1.03. Phase-1's 19.57 absolute
+chrF was therefore mostly target-side modeling. Treat current early text timing
+as a diagnostic: run 0/250/500/1,000 first, then try 75--100% delay, contrastive
 shuffled-source loss, and only afterward Vietnamese acoustic preadaptation.
 
 ## Environment

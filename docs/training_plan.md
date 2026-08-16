@@ -118,8 +118,8 @@ behind `HIBIKI_RECIPE`. Its pilot is a separate explicit mode; for pilot setup:
 export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_PILOT=1
 unset HIBIKI_HF_PREFIX
-export HIBIKI_MIN_SOURCE_BLEU_GAP=<calibrated-value>
-export HIBIKI_MIN_SOURCE_CHRF_GAP=<calibrated-value>
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
 ./finetune/h100.sh setup
 ```
 
@@ -174,8 +174,8 @@ Build and run the pilot with:
 export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_PILOT=1
 unset HIBIKI_HF_PREFIX
-export HIBIKI_MIN_SOURCE_BLEU_GAP=<calibrated-value>
-export HIBIKI_MIN_SOURCE_CHRF_GAP=<calibrated-value>
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
 ./finetune/h100.sh cache-grounded
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh preflight

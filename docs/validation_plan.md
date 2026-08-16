@@ -25,9 +25,16 @@ the control evidence disproves it. The French invocation adds:
 --reference-column text_en --id-column id
 ```
 
-Set `HIBIKI_MIN_SOURCE_BLEU_GAP` and `HIBIKI_MIN_SOURCE_CHRF_GAP` only after
-examining the correct-minus-shuffled distributions from all three controls.
+The paired controls lock fixed-seed temperature 0.4 and minimum source gaps of
+`HIBIKI_MIN_SOURCE_BLEU_GAP=1.0` and `HIBIKI_MIN_SOURCE_CHRF_GAP=5.0`.
 Grounded-v2 preflight, smoke, training, and resume reject unspecified values.
+On 128 rows, healthy French passed health with gaps 23.08 BLEU / 38.80 chrF;
+Vietnamese base failed health with gaps -0.07 / 1.23; phase-1 passed health but
+had gaps only 0.01 / 1.03. Thus phase-1's 19.57 correct-source chrF was mostly
+target-side modeling, not Vietnamese routing. In a 10,000-resample paired
+bootstrap, the largest Vietnamese-null upper bounds were 0.04 BLEU and 2.32
+chrF, while healthy French lower bounds were 19.51 and 35.56. Greedy French
+failed health; temperature 0.4 passed.
 
 ## Paired selection run
 
