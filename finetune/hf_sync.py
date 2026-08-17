@@ -32,6 +32,7 @@ RUN_METADATA = (
     "source_asr.json",
     "source_asr_replay.json",
     "post_source_eos_translation.json",
+    "post_source_eos_extension.json",
 )
 RUN_ARTIFACTS = (
     "eval_derangement.json",
@@ -199,10 +200,14 @@ def upload_pair(repo: str, stage: Path, step: int) -> None:
     print(f"Synced recovery checkpoint step {step}.", flush=True)
 
 
-def prune_remote_pairs(repo: str) -> None:
+def prune_remote_pairs(run_dir: Path, repo: str) -> None:
     files = remote_files(repo)
     complete = remote_pairs(files)
     keep = set(complete[-REMOTE_KEEP:])
+    if (run_dir / "post_source_eos_extension.json").is_file():
+        if 1_000 not in complete:
+            raise RuntimeError("remote step-1000 extension anchor is missing")
+        keep.add(1_000)
     trainer_deletes: list[str] = []
     model_deletes: list[str] = []
     for path in files:
@@ -398,7 +403,7 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
             _, model, trainer = next(pair for pair in wanted if pair[0] == newest_pair)
             stage = stage_files(run_dir, "checkpoint", newest_pair, (model, trainer))
         upload_pair(repo, stage, newest_pair)
-    prune_remote_pairs(repo)
+    prune_remote_pairs(run_dir, repo)
 
     files = remote_files(repo)
     uploaded_best = set(remote_best_steps(files))

@@ -161,7 +161,8 @@ identity for recovery. It supervises checkpoint sync and stops training after
 three consecutive sync failures. Recovery sync also preserves `run_config.json`,
 the pilot's frozen `sample_manifest.jsonl`, and the optional
 `source_derangement.json`, `source_asr.json`, `source_asr_replay.json`, or
-`post_source_eos_translation.json` under `metadata/`.
+`post_source_eos_translation.json` under `metadata/`; an active exact extension
+also preserves `post_source_eos_extension.json`.
 
 ## Cache format and rebuild path
 
@@ -319,6 +320,33 @@ uses physical batch 8 / accumulation 2, 100-step warmup, and paired evaluation a
 `*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts. Recovery saves
 at steps 500 and 1,000 are the two rolling HF checkpoint pairs.
 
+An explicit `HIBIKI_POST_SOURCE_EOS_EXTENSION=1` resumes that exact run from
+step 1,000 through step 3,125, completing the frozen 50k order once. It is not a
+fresh mode: `train` is rejected, and the production run directory, HF prefix,
+run identity, optimizer state, original `run_config.json`, membership, and
+iterator position remain unchanged. The verified historical 1,000-step cosine
+horizon stays frozen, so LR remains at `1e-6`; val, paired eval, and recovery
+saves run at 1,500/2,000/2,500/3,000 plus the mandatory final 3,125. The frozen
+`post_source_eos_extension.json` records this contract and extension commit.
+Step 1,000 remains an immutable remote anchor alongside the latest two rolling
+pairs, while compact evaluation artifacts remain in the original HF prefix.
+
+On a replacement pod, restore `run.json`, the original metadata, the newest
+complete pair, `post_source_eos_extension.json` when resuming past step 1,000,
+and the remote `artifacts/` logs plus `eval_derangement.json` into the original
+run directory. Then use the extension-only smoke directory and resume:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1
+export HIBIKI_POST_SOURCE_EOS_EXTENSION=1
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh resume \
+  finetune/runs/vi_grounded_v2_pilot_vi_post_source_eos_translation/trainer_stepNNNNNN.pt
+```
+
 On a fresh pod, restore both pinned inputs before preflight (the ignored `.env`
 provides the HF token when required):
 
@@ -364,6 +392,8 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.
 - Checkpoints contain the exact full model. Loading rejects missing or extra keys.
 - `--resume-checkpoint` is only for interruption recovery in the same run.
+  The explicit post-source-EOS extension is the sole bounded exception to the
+  original stop step; it still resumes the same run and freezes a separate receipt.
 
 Teacher-forced validation is diagnostic. `--eval-every` performs paired
 free-running evaluation and writes condition plus consolidated artifacts.

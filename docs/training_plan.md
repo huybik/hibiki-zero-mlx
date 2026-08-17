@@ -408,4 +408,28 @@ hash, row count, and observed maximum. Warmup is 100 steps; paired evaluation is
 fixed at 0/250/500/750/1,000 with a 24-second generation tail. Exact resume also
 locks the parent SHA, objective, and LR/warmup schedule. The step-500 recovery
 save and final step-1,000 save are retained as the two rolling HF checkpoint
-pairs. A failure still does not authorize full training.
+pairs.
+
+To complete one exact pass after the step-1,000 receipt, preserve the original
+run directory, HF prefix, `run_id.json`, `run_config.json`, logs, evaluation
+derangement, and newest trainer/model pair, then run:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1
+export HIBIKI_POST_SOURCE_EOS_EXTENSION=1
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh resume \
+  finetune/runs/vi_grounded_v2_pilot_vi_post_source_eos_translation/trainer_step001000.pt
+```
+
+The launcher rejects a fresh extension. It consumes ordered positions 16,000
+through 49,999 using the restored optimizer, freezes the old cosine horizon at
+step 1,000 so LR stays `1e-6`, and stops at step 3,125. Val, paired eval, and
+saves run every 500 steps plus final step 3,125. The original 1,000-step
+`run_config.json` remains immutable; `post_source_eos_extension.json` freezes
+the extension commit and contract. Recovery retains step 1,000 as a remote
+anchor plus the latest two rolling pairs and syncs compact evaluation artifacts
+under the existing prefix. A failure still does not authorize full training.

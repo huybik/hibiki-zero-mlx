@@ -16,6 +16,7 @@ ASR_PREADAPT="${HIBIKI_ASR_PREADAPT:-0}"
 ASR_ONE_EPOCH="${HIBIKI_ASR_ONE_EPOCH:-0}"
 ASR_ASCII="${HIBIKI_ASR_ASCII:-0}"
 POST_SOURCE_EOS_TRANSLATION_PILOT="${HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT:-0}"
+POST_SOURCE_EOS_EXTENSION="${HIBIKI_POST_SOURCE_EOS_EXTENSION:-0}"
 ASR_REPLAY_TRANSLATION_PILOT="${HIBIKI_ASR_REPLAY_TRANSLATION_PILOT:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
@@ -43,6 +44,8 @@ die() {
 [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0 || \
   "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]] \
   || die "HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT must be 0 or 1"
+[[ "$POST_SOURCE_EOS_EXTENSION" == 0 || "$POST_SOURCE_EOS_EXTENSION" == 1 ]] \
+  || die "HIBIKI_POST_SOURCE_EOS_EXTENSION must be 0 or 1"
 [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] \
   || die "HIBIKI_ASR_REPLAY_TRANSLATION_PILOT must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
@@ -64,6 +67,8 @@ die() {
   "$CONTRASTIVE_PILOT" == 0 && "$ASR_PREADAPT" == 0 && "$ASR_ONE_EPOCH" == 0 &&
   "$ASR_ASCII" == 0 && "$ASR_REPLAY_TRANSLATION_PILOT" == 0
 ) ]] || die "HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1 requires the ordinary grounded pilot alone"
+[[ "$POST_SOURCE_EOS_EXTENSION" == 0 || "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]] \
+  || die "HIBIKI_POST_SOURCE_EOS_EXTENSION=1 requires the post-source-EOS pilot"
 [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 || (
   "$RECIPE" == grounded-v2 && "$PILOT" == 1 && "$HIGH_DELAY_PILOT" == 0 &&
   "$CONTRASTIVE_PILOT" == 0 && "$ASR_PREADAPT" == 0 && "$ASR_ONE_EPOCH" == 0 &&
@@ -107,6 +112,9 @@ case "$RECIPE" in
         pilot_namespace=grounded_v2_pilot_vi_asr_replay
       fi
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
+      if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
+        SMOKE_DIR="${SMOKE_DIR}_extension"
+      fi
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
       PHOMT_CACHE="finetune/cache/phomt_$cache_namespace"
       TRAIN_CACHE="finetune/cache/train_$cache_namespace"
@@ -133,8 +141,14 @@ esac
 export HIBIKI_HF_PREFIX
 if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
   export HIBIKI_HF_SYNC_INTERVAL=500
+  if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
+    export HIBIKI_EXTENSION_COMMIT="$(git rev-parse HEAD)"
+  else
+    unset HIBIKI_EXTENSION_COMMIT
+  fi
 else
   unset HIBIKI_HF_SYNC_INTERVAL
+  unset HIBIKI_EXTENSION_COMMIT
 fi
 
 TARGET_DELAY_MIN_RATIO=0
@@ -586,6 +600,9 @@ common_args() {
   elif [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
     sort_args=(--no-sort-by-length)
   fi
+  if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
+    max_steps=3125
+  fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
   source_gap_args
   EVAL_EVERY=9000
@@ -617,6 +634,9 @@ common_args() {
     EVAL_EVERY=3000
     if [[ "$PILOT" == 1 ]]; then
       EVAL_EVERY=250
+    fi
+    if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
+      EVAL_EVERY=500
     fi
     if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
       EVAL_EVERY=2000
@@ -1095,7 +1115,8 @@ run_with_sync() {
   [[ -n "$repo" ]] || die "set HIBIKI_HF_REPO=owner/public-model-repo before training"
   local commit
   commit="$(git rev-parse HEAD)"
-  "$PYTHON" - "$repo" "$mode" "$out_dir" "$commit" "$HIBIKI_HF_PREFIX" <<'PY'
+  "$PYTHON" - "$repo" "$mode" "$out_dir" "$commit" "$HIBIKI_HF_PREFIX" \
+    "$POST_SOURCE_EOS_EXTENSION" <<'PY'
 import json
 import re
 import secrets
@@ -1113,6 +1134,7 @@ info = api.model_info(sys.argv[1], files_metadata=True)
 if info.private:
     raise RuntimeError("disaster-recovery model repo must be public")
 prefix = sys.argv[5].strip("/") + "/"
+post_source_eos_extension = bool(int(sys.argv[6]))
 remote_files = [
     item.rfilename.removeprefix(prefix)
     for item in info.siblings
@@ -1132,6 +1154,16 @@ if sys.argv[2] == "resume":
     remote_models = steps(remote_files, r"checkpoints/model_step(\d+)\.safetensors")
     remote_trainers = steps(remote_files, r"checkpoints/trainer_step(\d+)\.pt")
     local_latest = max(local_models & local_trainers)
+    extension_receipt = run_dir / "post_source_eos_extension.json"
+    if post_source_eos_extension and local_latest > 1000 and not extension_receipt.is_file():
+        raise RuntimeError("restore post_source_eos_extension.json before extension resume")
+    if post_source_eos_extension:
+        required_artifacts = (
+            "train_log.jsonl", "val_log.jsonl", "greedy_eval_log.jsonl",
+            "eval_derangement.json",
+        )
+        if missing := [name for name in required_artifacts if not (run_dir / name).is_file()]:
+            raise RuntimeError(f"restore extension run artifacts before resume: {missing}")
     remote_latest = max(remote_models & remote_trainers, default=-1)
     if remote_latest > local_latest:
         raise RuntimeError(f"remote checkpoint {remote_latest} is newer than local {local_latest}")
@@ -1148,7 +1180,8 @@ if sys.argv[2] == "resume":
     local_identity = run_dir / "run_id.json"
     if not local_identity.is_file():
         raise RuntimeError("missing local run_id.json; restore it from the repo before resume")
-    if json.loads(local_identity.read_text())["commit"] != sys.argv[4]:
+    original_commit = json.loads(local_identity.read_text())["commit"]
+    if original_commit != sys.argv[4] and not post_source_eos_extension:
         raise RuntimeError("training code changed since this run was created")
 if sys.argv[2] == "fresh":
     run_dir = Path(sys.argv[3])
@@ -1225,6 +1258,8 @@ PY
 }
 
 train() {
+  [[ "$POST_SOURCE_EOS_EXTENSION" == 0 ]] \
+    || die "HIBIKI_POST_SOURCE_EOS_EXTENSION=1 requires resume, not train"
   preflight 190
   require_current_smoke
   require_empty_dir "$RUN_DIR"
@@ -1274,6 +1309,10 @@ resume() {
   local out_dir
   out_dir="$(dirname "$checkpoint")"
   common_args
+  local extension_args=()
+  if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
+    extension_args=(--post-source-eos-extension)
+  fi
   if [[ "$RECIPE" == "legacy" ]]; then
     run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
@@ -1299,8 +1338,12 @@ resume() {
     if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
       grounded_save_every=500
     fi
+    if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
+      grounded_val_every=500
+    fi
     run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
+      "${extension_args[@]}" \
       --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps "$grounded_warmup" \
       --text-weight-schedule "2@0" \
       --val-every "$grounded_val_every" \

@@ -34,6 +34,9 @@ from finetune.utils import (  # noqa: E402
     resolve_repo_path,
 )
 
+POST_SOURCE_EOS_EXTENSION_START_STEP = 1_000
+POST_SOURCE_EOS_EXTENSION_END_STEP = 3_125
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -105,6 +108,11 @@ def parse_args() -> argparse.Namespace:
         "--post-source-eos-translation",
         action="store_true",
         help="Emit cached English text only after Vietnamese source EOS.",
+    )
+    parser.add_argument(
+        "--post-source-eos-extension",
+        action="store_true",
+        help="Resume the exact 1,000-step post-source-EOS run through one 50k pass.",
     )
     parser.add_argument("--source-asr-replay-weight", type=float, default=0.0)
     parser.add_argument("--source-asr-replay-batch-size", type=int, default=4)
@@ -404,6 +412,23 @@ def load_resume_checkpoint(
     return step
 
 
+def freeze_post_source_eos_extension(
+    path: Path, payload: dict[str, Any], global_step: int
+) -> None:
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    expected = {"sha256": digest, "post_source_eos_extension": payload}
+    if path.is_file() and json.loads(path.read_text(encoding="utf-8")) != expected:
+        raise RuntimeError("Post-source-EOS extension contract changed")
+    if not path.is_file() and global_step != POST_SOURCE_EOS_EXTENSION_START_STEP:
+        raise RuntimeError(
+            "First post-source-EOS extension resume requires the exact step-1000 pair"
+        )
+    if not path.is_file():
+        atomic_write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n", path)
+
+
 def order_validation_samples(
     dataset: common.CachedCodeDataset, sort_by_length: bool, longest_first: bool
 ) -> int:
@@ -460,6 +485,20 @@ def main() -> None:
         raise ValueError("--init-checkpoint and its SHA-256 must be set together")
     if args.input_sample_manifest is not None and not args.persist_sample_manifest:
         raise ValueError("Authoritative input membership requires --persist-sample-manifest")
+    if args.post_source_eos_extension and (
+        not args.post_source_eos_translation
+        or args.resume_checkpoint is None
+        or args.smoke_longest_first
+        or args.max_steps != POST_SOURCE_EOS_EXTENSION_END_STEP
+        or args.val_every != 500
+        or args.eval_every != 500
+        or args.save_every != 500
+        or args.keep_checkpoints != 2
+    ):
+        raise ValueError(
+            "--post-source-eos-extension requires a production post-source-EOS resume "
+            "through step 3125 with val/eval/save cadence 500 and keep-checkpoints 2"
+        )
     if args.smoke_longest_first and (
         args.input_sample_manifest is None or not args.max_steps or args.max_steps > 11
     ):
@@ -576,6 +615,9 @@ def main() -> None:
         )
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    extension_path = out_dir / "post_source_eos_extension.json"
+    if extension_path.is_file() and not args.post_source_eos_extension:
+        raise RuntimeError("This run requires explicit --post-source-eos-extension")
     clean_incomplete_checkpoints(out_dir)
 
     retained_text_column = None
@@ -679,6 +721,7 @@ def main() -> None:
     batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
     steps_per_epoch = max(1, batches_per_epoch // args.grad_accum_steps)
     total_steps = args.max_steps if args.max_steps else args.epochs * steps_per_epoch
+    lr_horizon_steps = total_steps
 
     val_dataloader = None
     validation_sort_by_length = None
@@ -876,13 +919,62 @@ def main() -> None:
                     "weight_decay": args.weight_decay,
                     "grad_clip": args.grad_clip,
                 }
-                if not args.smoke_longest_first:
+                if not args.smoke_longest_first and not args.post_source_eos_extension:
                     translation_resume_contract["max_steps"] = args.max_steps
                 for key, value in translation_resume_contract.items():
                     if previous_config.get(key) != value:
                         raise RuntimeError(
                             f"Post-source-EOS translation resume contract changed: {key}"
                         )
+                if args.post_source_eos_extension:
+                    effective_batch = args.batch_size * args.grad_accum_steps
+                    if not (
+                        previous_config.get("max_steps")
+                        == previous_config.get("total_steps")
+                        == POST_SOURCE_EOS_EXTENSION_START_STEP
+                        and len(dataset) == 50_000
+                        and effective_batch == 16
+                        and total_steps * effective_batch == len(dataset)
+                        and global_step
+                        in range(
+                            POST_SOURCE_EOS_EXTENSION_START_STEP,
+                            POST_SOURCE_EOS_EXTENSION_END_STEP,
+                        )
+                    ):
+                        raise RuntimeError(
+                            "Run does not match the exact step-1000 to step-3125 extension"
+                        )
+                    lr_horizon_steps = POST_SOURCE_EOS_EXTENSION_START_STEP
+                    extension_commit = os.environ.get("HIBIKI_EXTENSION_COMMIT", "")
+                    if len(extension_commit) != 40 or any(
+                        character not in "0123456789abcdef"
+                        for character in extension_commit
+                    ):
+                        raise RuntimeError("Missing exact extension Git commit")
+                    extension_receipt = {
+                        "version": 1,
+                        "strategy": "continue_exact_post_source_eos_run_to_one_pass",
+                        "code_commit": extension_commit,
+                        "start_step": POST_SOURCE_EOS_EXTENSION_START_STEP,
+                        "end_step": POST_SOURCE_EOS_EXTENSION_END_STEP,
+                        "lr_horizon_steps": lr_horizon_steps,
+                        "end_lr": args.cosine_lr_end,
+                        "val_every": args.val_every,
+                        "eval_every": args.eval_every,
+                        "save_every": args.save_every,
+                        "keep_checkpoints": args.keep_checkpoints,
+                        "dataset_rows": len(dataset),
+                        "effective_batch_size": effective_batch,
+                        "sample_manifest_sha256": sample_manifest_sha256,
+                        "post_source_eos_translation_sha256": (
+                            post_source_eos_translation_sha256
+                        ),
+                        "init_checkpoint_sha256": args.init_checkpoint_sha256,
+                        "original_run_config_sha256": sha256_file(previous_config_path),
+                    }
+                    freeze_post_source_eos_extension(
+                        extension_path, extension_receipt, global_step
+                    )
             if args.source_asr_replay_weight or previous_config.get(
                 "source_asr_replay_weight", 0.0
             ):
@@ -1145,7 +1237,7 @@ def main() -> None:
             lr_value = common.apply_cosine_lr_schedule(
                 optimizer,
                 global_step,
-                total_steps,
+                lr_horizon_steps,
                 args.warmup_steps,
                 args.cosine_lr_end,
             )

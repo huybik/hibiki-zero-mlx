@@ -164,9 +164,14 @@ hard-gates transformed train/validation lengths at 400/480, uses physical batch
 validation, and paired evaluation at 0/250/500/750/1,000 with a 24-second
 generation tail. Smoke reverses validation to exercise its observed longest row.
 The frozen policy persists tokenizer, ordered English-text hash, row count, and
-observed cohort maximum; recovery checkpoints are retained at steps 500 and
-1,000. Do not start full SFT until this receipt is decided and the complete
-grounded cache is published and verified.
+observed cohort maximum. Explicit `HIBIKI_POST_SOURCE_EOS_EXTENSION=1` is the
+only authorized continuation: resume the same optimizer/run identity at step
+1,000 and stop at 3,125 after exactly one frozen 50k pass. The historical cosine
+horizon remains 1,000 so LR stays at `1e-6`; val/eval/save cadence is 500 plus
+final 3,125. The original run config stays immutable, a separate extension
+receipt freezes intent and code, and remote recovery pins step 1,000 plus the
+latest two pairs. Do not start full SFT until this receipt is decided and the
+complete grounded cache is published and verified.
 
 ## Canonical resources
 
