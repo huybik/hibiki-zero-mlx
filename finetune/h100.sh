@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# H100 pod setup and launcher for the base-start Vietnamese full-model SFT.
+# H100 pod setup and launcher for Vietnamese full-model SFT.
 
 set -Eeuo pipefail
 
@@ -22,6 +22,11 @@ BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_ma
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
 ASR_PARENT_CHECKPOINT="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot_vi_asr_ascii_epoch1/best_step003125.safetensors"
 ASR_PARENT_CHECKPOINT_SHA256=d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca
+FULL_DATA_DIR="$REPO_ROOT/finetune/runs/grounded_v2_full_post_source_eos_receipt"
+FULL_DATA_RECEIPT="$FULL_DATA_DIR/full_data_receipt.json"
+FULL_DATA_RECEIPT_SHA256=ece5948ddb72f11f14048351f170c4c5218503c484db9c623ea6b4f52796ff0d
+FULL_MANIFEST="$FULL_DATA_DIR/sample_manifest.jsonl"
+FULL_MANIFEST_SHA256=63f584a43dc5cba59fb948d5aa294ed72bc29634910968f9cda947c70019d1b5
 
 die() {
   echo "error: $*" >&2
@@ -123,14 +128,15 @@ case "$RECIPE" in
         || die "pilot recovery prefix must be $pilot_namespace"
       HIBIKI_HF_PREFIX="$pilot_namespace"
     else
-      SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2"
-      RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2"
+      SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2_full_post_source_eos"
+      RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2_full_post_source_eos"
       PHOMT_CACHE="finetune/cache/phomt_grounded_v2"
       TRAIN_CACHE="finetune/cache/train_grounded_v2"
       VAL_CACHE="finetune/cache/validation_grounded_v2"
-      [[ -z "${HIBIKI_HF_PREFIX:-}" || "$HIBIKI_HF_PREFIX" == grounded_v2 ]] \
-        || die "full grounded-v2 recovery prefix must be grounded_v2"
-      HIBIKI_HF_PREFIX=grounded_v2
+      [[ -z "${HIBIKI_HF_PREFIX:-}" || \
+        "$HIBIKI_HF_PREFIX" == grounded_v2_full_post_source_eos ]] \
+        || die "full grounded-v2 recovery prefix must be grounded_v2_full_post_source_eos"
+      HIBIKI_HF_PREFIX=grounded_v2_full_post_source_eos
     fi
     ;;
   *)
@@ -139,7 +145,10 @@ case "$RECIPE" in
     ;;
 esac
 export HIBIKI_HF_PREFIX
-if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+if [[ "$RECIPE" == grounded-v2 && "$PILOT" == 0 ]]; then
+  export HIBIKI_HF_SYNC_INTERVAL=8989
+  unset HIBIKI_EXTENSION_COMMIT
+elif [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
   export HIBIKI_HF_SYNC_INTERVAL=500
   if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
     export HIBIKI_EXTENSION_COMMIT="$(git rev-parse HEAD)"
@@ -182,7 +191,8 @@ require_baseline_pilot_manifest() {
 }
 
 require_asr_parent_checkpoint() {
-  [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
+  [[ ( "$RECIPE" == grounded-v2 && "$PILOT" == 0 ) || \
+    "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
     "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return 0
   [[ -f "$ASR_PARENT_CHECKPOINT" ]] || die "missing qualified ASR parent checkpoint"
 }
@@ -407,7 +417,13 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if asr_replay_translation_pilot or post_source_eos_translation_pilot:
+if recipe == "grounded-v2" and not pilot:
+    if memory_gib < 90:
+        raise RuntimeError(
+            f"full grounded-v2 requires B16 on at least 90 GiB, got {memory_gib:.1f} GiB"
+        )
+    batch_size, grad_accum = 16, 1
+elif asr_replay_translation_pilot or post_source_eos_translation_pilot:
     if memory_gib < 75:
         raise RuntimeError(
             f"post-ASR translation requires at least 75 GiB GPU memory, got {memory_gib:.1f} GiB"
@@ -537,6 +553,18 @@ PY
 )"
   read -r BATCH_SIZE GRAD_ACCUM_STEPS GPU_GIB HOST_GIB FREE_GIB <<< "$profile"
   export BATCH_SIZE GRAD_ACCUM_STEPS
+  if [[ "$RECIPE" == grounded-v2 && "$PILOT" == 0 ]]; then
+    "$PYTHON" finetune/freeze_full_data_receipt.py \
+      --phomt-cache "$PHOMT_CACHE" \
+      --fleurs-train-cache "$TRAIN_CACHE" \
+      --fleurs-validation-cache "$VAL_CACHE" \
+      --config-path weights/config.json \
+      --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
+      --mimi-weight weights/mimi-pytorch-e351c8d8@125.safetensors \
+      --tokenizer weights/tokenizer_spm_48k_multi6_2.model \
+      --init-checkpoint "$ASR_PARENT_CHECKPOINT" \
+      --out-dir "$FULL_DATA_DIR"
+  fi
   if [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
     export NO_TORCH_COMPILE=1
   else
@@ -550,7 +578,14 @@ PY
 source_gap_args() {
   local bleu_gap="${HIBIKI_MIN_SOURCE_BLEU_GAP:-}"
   local chrf_gap="${HIBIKI_MIN_SOURCE_CHRF_GAP:-}"
-  if [[ "$RECIPE" == "grounded-v2" ]]; then
+  if [[ "$RECIPE" == grounded-v2 && "$PILOT" == 0 ]]; then
+    bleu_gap="${bleu_gap:-1}"
+    chrf_gap="${chrf_gap:-5}"
+    [[ "$bleu_gap" == 1 || "$bleu_gap" == 1.0 ]] \
+      || die "full grounded-v2 requires HIBIKI_MIN_SOURCE_BLEU_GAP=1"
+    [[ "$chrf_gap" == 5 || "$chrf_gap" == 5.0 ]] \
+      || die "full grounded-v2 requires HIBIKI_MIN_SOURCE_CHRF_GAP=5"
+  elif [[ "$RECIPE" == "grounded-v2" ]]; then
     [[ -n "$bleu_gap" ]] || die "set calibrated HIBIKI_MIN_SOURCE_BLEU_GAP"
     [[ -n "$chrf_gap" ]] || die "set calibrated HIBIKI_MIN_SOURCE_CHRF_GAP"
   else
@@ -577,6 +612,7 @@ common_args() {
   local val_max_frames=0
   local val_batch_size=8
   local sort_args=(--sort-by-length)
+  local grounded_epochs=1
   if [[ "$PILOT" == 1 ]]; then
     max_steps=1000
   fi
@@ -598,6 +634,12 @@ common_args() {
     val_max_frames=480
     sort_args=(--no-sort-by-length)
   elif [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
+    sort_args=(--no-sort-by-length)
+  fi
+  if [[ "$RECIPE" == grounded-v2 && "$PILOT" == 0 ]]; then
+    val_max_frames=470
+    val_batch_size=4
+    grounded_epochs=6
     sort_args=(--no-sort-by-length)
   fi
   if [[ "$POST_SOURCE_EOS_EXTENSION" == 1 ]]; then
@@ -632,6 +674,9 @@ common_args() {
     )
   else
     EVAL_EVERY=3000
+    if [[ "$PILOT" == 0 ]]; then
+      EVAL_EVERY=8989
+    fi
     if [[ "$PILOT" == 1 ]]; then
       EVAL_EVERY=250
     fi
@@ -644,13 +689,14 @@ common_args() {
     TRAIN_ARGS+=(
       --cache-dir "$PHOMT_CACHE" "$TRAIN_CACHE"
       --val-cache-dir "$VAL_CACHE"
-      --epochs 1
+      --epochs "$grounded_epochs"
       --text-pad-loss-weight 0.05
       --first-content-loss-weight 1.0
       --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
       --eval-at-start
     )
-    if [[ "$HIGH_DELAY_PILOT" == 0 && "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0 && \
+    if [[ "$PILOT" == 1 && "$HIGH_DELAY_PILOT" == 0 && \
+      "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0 && \
       "$ASR_REPLAY_TRANSLATION_PILOT" == 0 ]]; then
       TRAIN_ARGS+=(--cache-weights 0.95 0.05)
     fi
@@ -713,8 +759,20 @@ common_args() {
     else
       TRAIN_ARGS+=(
         --max-samples 0
-        --text-pad-mode all
-        --audio-loss-weight 1
+        --text-pad-mode prefix
+        --audio-loss-weight 0
+        --mask-target-audio-input
+        --persist-sample-manifest
+        --input-sample-manifest "$FULL_MANIFEST"
+        --input-sample-manifest-sha256 "$FULL_MANIFEST_SHA256"
+        --init-checkpoint "$ASR_PARENT_CHECKPOINT"
+        --init-checkpoint-sha256 "$ASR_PARENT_CHECKPOINT_SHA256"
+        --post-source-eos-translation
+        --full-post-source-eos-curriculum
+        --full-data-receipt "$FULL_DATA_RECEIPT"
+        --full-data-receipt-sha256 "$FULL_DATA_RECEIPT_SHA256"
+        --epoch-gated
+        --eval-tail-s 24
       )
     fi
   fi
@@ -732,7 +790,8 @@ check_smoke_outputs() {
     "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_ASCII" \
     "$POST_SOURCE_EOS_TRANSLATION_PILOT" "$ASR_REPLAY_TRANSLATION_PILOT" \
     "$ASR_PARENT_CHECKPOINT" \
-    "$ASR_PARENT_CHECKPOINT_SHA256" <<'PY'
+    "$ASR_PARENT_CHECKPOINT_SHA256" "$RECIPE" "$PILOT" \
+    "$FULL_DATA_RECEIPT_SHA256" "$FULL_MANIFEST_SHA256" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -752,6 +811,9 @@ post_source_eos_translation_pilot = bool(int(sys.argv[7]))
 asr_replay_translation_pilot = bool(int(sys.argv[8]))
 asr_parent_checkpoint = sys.argv[9]
 asr_parent_checkpoint_sha256 = sys.argv[10]
+full_curriculum = sys.argv[11] == "grounded-v2" and not bool(int(sys.argv[12]))
+full_receipt_sha256 = sys.argv[13]
+full_manifest_sha256 = sys.argv[14]
 logs = [json.loads(line) for line in (root / "train_log.jsonl").read_text().splitlines() if line]
 if not logs or logs[-1]["step"] != 11:
     raise RuntimeError("resume smoke did not reach step 11")
@@ -759,6 +821,93 @@ for item in logs:
     for key in ("loss", "audio_loss", "text_loss", "lr"):
         if not math.isfinite(float(item[key])):
             raise RuntimeError(f"non-finite {key} at step {item['step']}")
+
+if full_curriculum:
+    config = json.loads((root / "run_config_step10.json").read_text())
+    expected = {
+        "batch_size": 16,
+        "grad_accum_steps": 1,
+        "max_frames": 280,
+        "val_max_frames": 470,
+        "val_batch_size": 4,
+        "max_samples": 0,
+        "cache_weights": None,
+        "sort_by_length": False,
+        "smoke_longest_first": True,
+        "input_sample_manifest_sha256": full_manifest_sha256,
+        "sample_manifest_sha256": full_manifest_sha256,
+        "sample_manifest_rows": 719_120,
+        "sample_manifest_cache_counts": [683_164, 35_956],
+        "init_checkpoint": asr_parent_checkpoint,
+        "init_checkpoint_sha256": asr_parent_checkpoint_sha256,
+        "post_source_eos_translation": True,
+        "full_post_source_eos_curriculum": True,
+        "full_data_receipt_sha256": full_receipt_sha256,
+        "mask_target_audio_input": True,
+        "audio_loss_weight": 0.0,
+        "epochs": 6,
+        "steps_per_epoch": 44_945,
+        "epoch_gated": True,
+        "frame_bucket": 16,
+        "torch_compile_enabled": True,
+        "eval_tail_s": 24.0,
+        "min_source_bleu_gap": 1.0,
+        "min_source_chrf_gap": 5.0,
+        "observed_train_max_frames": 280,
+        "observed_val_max_frames": 470,
+        "validation_sort_by_length": True,
+        "validation_shuffle": False,
+    }
+    for key, value in expected.items():
+        if config.get(key) != value:
+            raise RuntimeError(f"full-curriculum smoke config mismatch for {key}")
+    if hashlib.sha256((root / "sample_manifest.jsonl").read_bytes()).hexdigest() != full_manifest_sha256:
+        raise RuntimeError("full-curriculum smoke changed authoritative membership")
+    receipt = json.loads((root / "full_data_receipt.json").read_text())
+    receipt_payload = receipt["full_data_receipt"]
+    receipt_digest = hashlib.sha256(
+        json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if receipt.get("sha256") != receipt_digest or receipt_digest != full_receipt_sha256:
+        raise RuntimeError("full-data receipt hash mismatch")
+    policies = (
+        (
+            "post_source_eos_translation.json",
+            "post_source_eos_translation",
+            receipt_payload["post_source_eos_translation_sha256"],
+        ),
+        (
+            "validation_post_source_eos_translation.json",
+            "post_source_eos_translation",
+            receipt_payload["validation"]["post_source_eos_translation_sha256"],
+        ),
+    )
+    for name, key, expected_digest in policies:
+        document = json.loads((root / name).read_text())
+        digest = hashlib.sha256(
+            json.dumps(document[key], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if document.get("sha256") != digest or digest != expected_digest:
+            raise RuntimeError(f"{name} differs from the full-data receipt")
+    if any(int(item["samples"]) != 16 or int(item["microbatches"]) != 1 for item in logs):
+        raise RuntimeError("full-curriculum smoke did not use physical B16")
+    if max(int(item["max_frames"]) for item in logs) != 280:
+        raise RuntimeError("full-curriculum smoke missed the longest training row")
+    if max(int(item["max_padded_frames"]) for item in logs) != 288:
+        raise RuntimeError("longest training batch was not padded to T=288")
+    val_logs = [
+        json.loads(line)
+        for line in (root / "val_log.jsonl").read_text().splitlines()
+        if line
+    ]
+    if max(int(item["max_frames"]) for item in val_logs) != 470:
+        raise RuntimeError("full-curriculum smoke missed the longest validation row")
+    if max(int(item["max_padded_frames"]) for item in val_logs) != 480:
+        raise RuntimeError("longest validation batch was not padded to T=480")
+    if not (root / "model_step000011.safetensors").is_file() or not (
+        root / "trainer_step000011.pt"
+    ).is_file():
+        raise RuntimeError("full-curriculum save/resume smoke is incomplete")
 
 if high_delay_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
@@ -1025,7 +1174,8 @@ smoke() {
   (
     set -Eeuo pipefail
     local smoke_data_args=()
-    if [[ "$HIGH_DELAY_PILOT" == 1 || "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
+    if [[ ( "$RECIPE" == grounded-v2 && "$PILOT" == 0 ) || \
+      "$HIGH_DELAY_PILOT" == 1 || "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
       "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
       smoke_data_args=(--smoke-longest-first)
     fi
@@ -1053,7 +1203,8 @@ smoke() {
       if [[ "$ASR_ASCII" == 1 ]]; then
         smoke_eval_args+=(--ascii-reference)
       fi
-    elif [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+    elif [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
+      ( "$RECIPE" == grounded-v2 && "$PILOT" == 0 ) ]]; then
       smoke_eval_args=(--tail-s 24)
     fi
     "$PYTHON" finetune/eval.py \
@@ -1277,6 +1428,10 @@ train() {
     local grounded_warmup=1000
     local grounded_val_every=1000
     local grounded_save_every=3000
+    if [[ "$PILOT" == 0 ]]; then
+      grounded_val_every=8989
+      grounded_save_every=8989
+    fi
     if [[ "$PILOT" == 1 ]]; then
       grounded_warmup=100
       grounded_val_every=250
@@ -1327,6 +1482,10 @@ resume() {
     local grounded_warmup=1000
     local grounded_val_every=1000
     local grounded_save_every=3000
+    if [[ "$PILOT" == 0 ]]; then
+      grounded_val_every=8989
+      grounded_save_every=8989
+    fi
     if [[ "$PILOT" == 1 ]]; then
       grounded_warmup=100
       grounded_val_every=250

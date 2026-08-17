@@ -1,8 +1,12 @@
-# Vietnamese base-start training recipe
+# Vietnamese training recipes
 
-Train the full Hibiki-Zero 3B model from the upstream base weight on the frozen
-PhoMT and FLEURS caches. Do not initialize from another finetuned checkpoint.
-Use `--resume-checkpoint` only to recover this same run after interruption.
+The authorized run is the frozen grounded-v2 post-source-EOS curriculum below.
+The older base-start recipe is retained only for legacy recovery.
+
+## Legacy base-start recipe
+
+This historical mode trains the upstream base weight on legacy caches.
+Use `--resume-checkpoint` only to recover that same run after interruption.
 
 ## Preflight
 
@@ -109,7 +113,21 @@ gates in [validation_plan.md](validation_plan.md). Qualified checkpoints rank by
 correct-source BLEU, with chrF as the secondary key. The rolling repo preserves
 the complete `best.json` metadata with the selected model.
 
-## Experimental grounded-v2 recipe
+## Authorized grounded-v2 recipe
+
+The authorized full grounded-v2 run is no longer base-start. It initializes the
+qualified ASCII-ASR parent, applies the English post-source-EOS transform before
+length selection, and consumes the frozen 719,120-row manifest (683,164 PhoMT +
+35,956 FLEURS). The immutable manifest SHA is
+`63f584a43dc5cba59fb948d5aa294ed72bc29634910968f9cda947c70019d1b5` and
+the full receipt SHA is
+`ece5948ddb72f11f14048351f170c4c5218503c484db9c623ea6b4f52796ff0d`.
+It requires physical B16 with no accumulation, train T≤280, all 148 validation
+rows at B4/T≤470, 44,945 steps per epoch, and val/eval/save/HF sync every 8,989
+steps. LR is cosine 1e-5→1e-6 with 1,000-step warmup. Six epochs is a hard upper
+bound; the launcher pauses at every epoch boundary and continuation requires
+improved validation or source dependence. Promotion requires healthy generation
+and source gaps of at least 1 BLEU and 5 chrF.
 
 The legacy recipe remains the default. `grounded-v2` full training is isolated
 behind `HIBIKI_RECIPE`. Its pilot is a separate explicit mode; for pilot setup:
@@ -159,9 +177,8 @@ on 48 decoded PhoMT English clips spanning both generation phases; after using
 the Wav2Vec2 model's correct no-attention-mask batching, scores ranged from
 0.814 to 0.987.
 
-The full recipe uses one epoch, 95% PhoMT / 5% FLEURS sampling, effective batch
-16, AdamW `(beta1=0.9, beta2=0.95, weight_decay=0.1)`, 1,000 warmup steps, and
-cosine LR `1e-5 -> 1e-6`. The pilot keeps the optimizer recipe but uses 100
+The retired pre-receipt full draft used one epoch and dynamic 95/5 sampling;
+the frozen full contract above supersedes it. The pilot uses 100
 warmup steps and exactly 50,000 samples / 1,000 optimizer steps. It sets audio
 loss to zero and masks only the target-audio input codebooks, leaving Vietnamese
 source codes, English text history, and English text targets intact. Its ordered

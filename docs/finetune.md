@@ -1,8 +1,8 @@
 # Vietnamese SFT mechanics and pod handoff
 
 The training stack uses the PyTorch `moshi` package and is separate from the MLX
-inference runtime. It supports one path: full-model SFT from the upstream
-Hibiki-Zero 3B base checkpoint on one H100.
+inference runtime. The final path is full-model post-source-EOS SFT from the
+qualified ASCII-ASR checkpoint on one 94 GB H100.
 
 ## Durable handoff contract
 
@@ -18,6 +18,7 @@ A Vast pod is disposable. Keep the three durable resources distinct:
   `grounded_v2_pilot_high_delay_contrastive/` respectively. The Vietnamese-ASR
   diagnostic owns `grounded_v2_pilot_vi_asr_preadapt/`; the final translation
   diagnostic owns `grounded_v2_pilot_vi_post_source_eos_translation/`.
+  The authorized full run owns `grounded_v2_full_post_source_eos/`.
   Phase-1 is preserved.
 
 Never put a token, SSH endpoint, or pod-specific path in Git. A new agent should
@@ -25,7 +26,7 @@ first read `AGENTS.md`, `CONTEXT.md`, and the pod's `/etc/vast-agents-guide.md`.
 
 ## New H100 pod from zero
 
-Rent one H100 with at least 79 GB VRAM, NVIDIA driver 580 or newer, 128 GB host
+Rent one H100 with at least 94 GB VRAM, NVIDIA driver 580 or newer, 128 GB host
 RAM, and 300 GB disk. Give the new agent the current SSH command, then run the
 following from the pod.
 
@@ -37,18 +38,19 @@ git clone https://github.com/huybik/hibiki-zero-mlx.git hibiki-zero
 cd hibiki-zero
 ```
 
-Before installing, inspect `full_run/` in the public checkpoint model repo. If
+Before installing, inspect `grounded_v2_full_post_source_eos/` in the public
+checkpoint model repo. If
 `run.json` exists, this is a recovery rather than a fresh run. Check out its
 recorded commit first:
 
 ```bash
 recovery_commit="$(curl -fsSL \
-  https://huggingface.co/huybik/hibiki-zero-vi-full-sft/resolve/main/full_run/run.json \
+  https://huggingface.co/huybik/hibiki-zero-vi-full-sft/resolve/main/grounded_v2_full_post_source_eos/run.json \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["commit"])')"
 git checkout "$recovery_commit"
 ```
 
-Skip that command only when `full_run/` is empty. The recorded commit must exist
+Skip that command only when the full-run prefix is empty. The recorded commit must exist
 on GitHub; this is why training changes must be pushed before launch. Now install:
 
 ```bash
@@ -136,9 +138,30 @@ until explicitly requested.
 
 ## Fresh run versus recovery
 
-Before launch, inspect the public model repo's `full_run/` directory:
+For the authorized full run, use:
 
-- If `full_run/` is empty, start once with:
+```bash
+export HIBIKI_RECIPE=grounded-v2
+unset HIBIKI_PILOT HIBIKI_HF_PREFIX
+export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+Preflight rebuilds and verifies the immutable full-data receipt. It transforms
+before filtering, freezes 719,120 rows at exact 95/5 counts, checks every cache
+and model hash, and preserves all 148 validation rows. Smoke must prove the
+longest B16 train batch at padded T=288 and the longest B4 validation batch at
+padded T=480 with at least 2 GiB free VRAM. Full training has 44,945 steps per
+epoch, runs at most six epochs, and pauses at each epoch boundary for an explicit
+metric-based continue decision. Use `resume` on the newest complete pair only
+when validation or source dependence improved.
+
+Before launch, inspect the public model repo's
+`grounded_v2_full_post_source_eos/` directory:
+
+- If that prefix is empty, start once with:
 
   ```bash
   export HF_HOME=/workspace/.hf_home
@@ -146,20 +169,20 @@ Before launch, inspect the public model repo's `full_run/` directory:
   ./finetune/h100.sh train
   ```
 
-- If `full_run/` contains `run.json`, do not use `train`. Restore the newest
+- If that prefix contains `run.json`, do not use `train`. Restore the newest
   complete model/trainer pair, `run.json`, and current best files by following
   [training_plan.md](training_plan.md). The recorded commit must have been
   checked out before `setup`; run preflight/smoke on the new pod, then use:
 
   ```bash
   ./finetune/h100.sh resume \
-    finetune/runs/vi_base_full/trainer_stepNNNNNN.pt
+    finetune/runs/vi_grounded_v2_full_post_source_eos/trainer_stepNNNNNN.pt
   ```
 
 `h100.sh` enforces the empty-prefix rule for a fresh run and the shared run
 identity for recovery. It supervises checkpoint sync and stops training after
 three consecutive sync failures. Recovery sync also preserves `run_config.json`,
-the pilot's frozen `sample_manifest.jsonl`, and the optional
+the frozen manifest, full-data receipt, validation transform, and the optional
 `source_derangement.json`, `source_asr.json`, `source_asr_replay.json`, or
 `post_source_eos_translation.json` under `metadata/`; an active exact extension
 also preserves `post_source_eos_extension.json`.
@@ -185,7 +208,7 @@ launch path. Rebuild only when intentionally replacing the dataset:
 `cache_phomt_stream.py` rebuilds the large PhoMT cache directly from parquet,
 one source shard at a time.
 
-Set `HIBIKI_RECIPE=grounded-v2` only for the experimental word-timed recipe.
+Set `HIBIKI_RECIPE=grounded-v2` for the word-timed recipe.
 Its cache builders use English Wav2Vec2 CTC word timing, pinned PhoMT input, and
 a 0.5 alignment threshold. On an H100, `./finetune/h100.sh cache-grounded` is
 the cache-build entrypoint and also builds explicit FLEURS train/validation
@@ -383,6 +406,8 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
   The source-ASR diagnostic uses 672/640 train/validation caps; post-source-EOS
   translation uses hard post-transform 400/480 caps.
   Sixteen-frame buckets bound compiled CUDA shapes.
+- The final full receipt contains 719,120 transformed rows at T≤280, uses
+  physical B16 with no accumulation, and validates all 148 rows at B4/T≤470.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
   The high-delay pilot uses batch 8 / accumulation 2, while its contrastive
   variant and source-ASR diagnostic use batch 4 / accumulation 4 on the 94 GB

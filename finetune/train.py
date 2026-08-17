@@ -20,6 +20,21 @@ if str(REPO_ROOT) not in sys.path:
 import torch  # noqa: E402
 
 from finetune import common  # noqa: E402
+from finetune.freeze_full_data_receipt import (  # noqa: E402
+    BATCH_SIZE as FULL_BATCH_SIZE,
+    CACHE_COUNTS as FULL_CACHE_COUNTS,
+    EXPECTED_ARTIFACTS as FULL_ARTIFACTS,
+    EXPECTED_MANIFEST_SHA256 as FULL_MANIFEST_SHA256,
+    EXPECTED_RECEIPT_SHA256 as FULL_RECEIPT_SHA256,
+    EXPECTED_TRANSFORM_SHA256 as FULL_TRANSFORM_SHA256,
+    EXPECTED_VALIDATION_TRANSFORM_SHA256 as FULL_VALIDATION_TRANSFORM_SHA256,
+    MAX_FRAMES as FULL_MAX_FRAMES,
+    ROWS as FULL_ROWS,
+    SEED as FULL_SEED,
+    VALIDATION_BATCH_SIZE as FULL_VALIDATION_BATCH_SIZE,
+    VALIDATION_MAX_FRAMES as FULL_VALIDATION_MAX_FRAMES,
+    VALIDATION_ROWS as FULL_VALIDATION_ROWS,
+)
 from finetune.utils import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
     DEFAULT_CONFIG_PATH,
@@ -113,6 +128,18 @@ def parse_args() -> argparse.Namespace:
         "--post-source-eos-extension",
         action="store_true",
         help="Resume the exact 1,000-step post-source-EOS run through one 50k pass.",
+    )
+    parser.add_argument(
+        "--full-post-source-eos-curriculum",
+        action="store_true",
+        help="Enforce the frozen 719,120-row full-data contract.",
+    )
+    parser.add_argument("--full-data-receipt", type=Path)
+    parser.add_argument("--full-data-receipt-sha256")
+    parser.add_argument(
+        "--epoch-gated",
+        action="store_true",
+        help="Pause after each complete epoch for an explicit scientific continue decision.",
     )
     parser.add_argument("--source-asr-replay-weight", type=float, default=0.0)
     parser.add_argument("--source-asr-replay-batch-size", type=int, default=4)
@@ -332,16 +359,7 @@ def atomic_write_text(text: str, path: Path) -> None:
 def freeze_sample_manifest(
     dataset: common.CachedCodeDataset, out_dir: Path, resume: bool
 ) -> str:
-    content = "".join(
-        json.dumps(
-            {"cache_index": sample["cache_index"], "id": sample["id"]},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-        for sample in dataset.samples
-    )
-    encoded = content.encode("utf-8")
+    encoded = common.sample_manifest_bytes(dataset)
     digest = hashlib.sha256(encoded).hexdigest()
     path = out_dir / "sample_manifest.jsonl"
     if resume:
@@ -350,8 +368,24 @@ def freeze_sample_manifest(
         if path.read_bytes() != encoded:
             raise RuntimeError("Selected training membership differs from sample_manifest.jsonl")
     else:
-        atomic_write_text(content, path)
+        atomic_write_text(encoded.decode("utf-8"), path)
     return digest
+
+
+def load_full_data_receipt(path: Path, expected_sha256: str) -> tuple[dict[str, Any], bytes]:
+    encoded = path.read_bytes()
+    document = json.loads(encoded)
+    if set(document) != {"sha256", "full_data_receipt"}:
+        raise RuntimeError("Invalid full-data receipt wrapper")
+    payload = document["full_data_receipt"]
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if digest != document["sha256"] or digest != expected_sha256:
+        raise RuntimeError("Full-data receipt SHA-256 mismatch")
+    if digest != FULL_RECEIPT_SHA256:
+        raise RuntimeError("Full-data receipt is not the frozen full curriculum")
+    return payload, encoded
 
 
 def save_checkpoint(
@@ -483,6 +517,12 @@ def main() -> None:
         raise ValueError("--input-sample-manifest and its SHA-256 must be set together")
     if (args.init_checkpoint is None) != (args.init_checkpoint_sha256 is None):
         raise ValueError("--init-checkpoint and its SHA-256 must be set together")
+    if (args.full_data_receipt is None) != (args.full_data_receipt_sha256 is None):
+        raise ValueError("--full-data-receipt and its SHA-256 must be set together")
+    if args.full_post_source_eos_curriculum != (args.full_data_receipt is not None):
+        raise ValueError("The full curriculum requires its full-data receipt")
+    if args.epoch_gated and not args.full_post_source_eos_curriculum:
+        raise ValueError("--epoch-gated is reserved for the frozen full curriculum")
     if args.input_sample_manifest is not None and not args.persist_sample_manifest:
         raise ValueError("Authoritative input membership requires --persist-sample-manifest")
     if args.post_source_eos_extension and (
@@ -503,6 +543,70 @@ def main() -> None:
         args.input_sample_manifest is None or not args.max_steps or args.max_steps > 11
     ):
         raise ValueError("--smoke-longest-first requires manifest input and at most 11 steps")
+    if args.full_post_source_eos_curriculum:
+        full_contract = {
+            "batch_size": FULL_BATCH_SIZE,
+            "grad_accum_steps": 1,
+            "max_samples": 0,
+            "max_frames": FULL_MAX_FRAMES,
+            "val_max_samples": 0,
+            "val_max_frames": FULL_VALIDATION_MAX_FRAMES,
+            "val_batch_size": FULL_VALIDATION_BATCH_SIZE,
+            "sort_by_length": False,
+            "seed": FULL_SEED,
+            "epochs": 6,
+            "epoch_gated": True,
+            "post_source_eos_translation": True,
+            "persist_sample_manifest": True,
+            "mask_target_audio_input": True,
+            "audio_loss_weight": 0.0,
+            "audio_weight_schedule": "",
+            "text_loss_weight": 1.0,
+            "text_weight_schedule": "2@0",
+            "text_pad_mode": "prefix",
+            "text_pad_loss_weight": 0.05,
+            "first_content_loss_weight": 1.0,
+            "eval_tail_s": 24.0,
+            "eval_at_start": True,
+            "eval_text_temp": 0.4,
+            "min_source_bleu_gap": 1.0,
+            "min_source_chrf_gap": 5.0,
+            "lr_schedule": "1e-5@0",
+            "cosine_lr_end": 1e-6,
+            "warmup_steps": 1_000,
+            "adam_beta1": 0.9,
+            "adam_beta2": 0.95,
+            "weight_decay": 0.1,
+            "grad_clip": 1.0,
+            "gradient_checkpointing": False,
+        }
+        for key, expected in full_contract.items():
+            if getattr(args, key) != expected:
+                raise ValueError(f"Frozen full curriculum requires {key}={expected}")
+        if args.cache_weights is not None:
+            raise ValueError("Frozen full curriculum membership is supplied only by its manifest")
+        if args.input_sample_manifest_sha256 != FULL_MANIFEST_SHA256:
+            raise ValueError("Frozen full curriculum manifest SHA-256 changed")
+        if args.init_checkpoint_sha256 != FULL_ARTIFACTS["qualified_ascii_asr_parent"]:
+            raise ValueError("Frozen full curriculum requires the qualified ASCII-ASR parent")
+        if args.full_data_receipt_sha256 != FULL_RECEIPT_SHA256:
+            raise ValueError("Frozen full curriculum receipt SHA-256 changed")
+        if common.FRAME_BUCKET != 16 or not torch_compile_enabled:
+            raise ValueError("Frozen full curriculum requires compile and 16-frame buckets")
+        if not args.smoke_longest_first and (
+            args.max_steps != 0
+            or not args.epoch_gated
+            or args.val_every != 8_989
+            or args.eval_every != 8_989
+            or args.save_every != 8_989
+            or args.keep_checkpoints != 2
+            or args.val_batches != 0
+            or args.eval_limit != 128
+        ):
+            raise ValueError(
+                "Full training requires six epoch-gated passes with val/eval/save every "
+                "8,989 steps and two recovery pairs"
+            )
     if args.grad_accum_steps <= 0:
         raise ValueError("--grad-accum-steps must be positive")
     if args.text_pad_loss_weight < 0:
@@ -618,8 +722,32 @@ def main() -> None:
         args.input_sample_manifest = require_file(
             args.input_sample_manifest, "input sample manifest"
         )
+    full_data_receipt = None
+    full_data_receipt_encoded = None
+    if args.full_data_receipt is not None:
+        args.full_data_receipt = require_file(args.full_data_receipt, "full-data receipt")
+        full_data_receipt, full_data_receipt_encoded = load_full_data_receipt(
+            args.full_data_receipt, args.full_data_receipt_sha256
+        )
+        artifact_hashes = {
+            "config": sha256_file(args.config_path),
+            "model": sha256_file(args.model_weight),
+            "mimi": sha256_file(args.mimi_weight),
+            "tokenizer": sha256_file(args.tokenizer),
+            "qualified_ascii_asr_parent": args.init_checkpoint_sha256,
+        }
+        if artifact_hashes != full_data_receipt["artifacts"]:
+            raise RuntimeError("Training artifacts differ from the full-data receipt")
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = out_dir / "full_data_receipt.json"
+    if full_data_receipt_encoded is not None:
+        if receipt_path.is_file() and receipt_path.read_bytes() != full_data_receipt_encoded:
+            raise RuntimeError("Run full_data_receipt.json differs from the supplied receipt")
+        if not receipt_path.is_file():
+            atomic_write_text(full_data_receipt_encoded.decode("utf-8"), receipt_path)
+    elif receipt_path.is_file():
+        raise RuntimeError("This run requires explicit --full-data-receipt")
     extension_path = out_dir / "post_source_eos_extension.json"
     if extension_path.is_file() and not args.post_source_eos_extension:
         raise RuntimeError("This run requires explicit --post-source-eos-extension")
@@ -685,6 +813,19 @@ def main() -> None:
             )
         )
         dataset.require_max_frames(args.max_frames, "Post-source-EOS translation data")
+    if args.full_post_source_eos_curriculum:
+        full_cache_counts = [
+            sum(sample["cache_index"] == cache_index for sample in dataset.samples)
+            for cache_index in range(dataset.cache_count)
+        ]
+        if (
+            len(dataset) != FULL_ROWS
+            or full_cache_counts != FULL_CACHE_COUNTS
+            or post_source_eos_translation_sha256 != FULL_TRANSFORM_SHA256
+            or post_source_eos_translation_sha256
+            != full_data_receipt["post_source_eos_translation_sha256"]
+        ):
+            raise RuntimeError("Loaded training data differs from the full-data receipt")
     if transforms_cached_shape and args.sort_by_length:
         dataset.samples.sort(key=lambda sample: sample["frames"])
     if args.sort_by_length:
@@ -728,6 +869,8 @@ def main() -> None:
 
     batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
     steps_per_epoch = max(1, batches_per_epoch // args.grad_accum_steps)
+    if args.full_post_source_eos_curriculum and steps_per_epoch != 44_945:
+        raise RuntimeError(f"Full curriculum steps per epoch changed: {steps_per_epoch}")
     total_steps = args.max_steps if args.max_steps else args.epochs * steps_per_epoch
     lr_horizon_steps = total_steps
 
@@ -742,7 +885,7 @@ def main() -> None:
         validation_shuffle = False if args.input_sample_manifest is not None else None
         val_dataset = common.CachedCodeDataset(
             val_cache_dir,
-            val_sort_by_length,
+            val_sort_by_length and not transforms_cached_shape,
             args.val_max_samples,
             expected_target_delay=expected_target_delay,
             retained_text_column=retained_text_column,
@@ -752,7 +895,28 @@ def main() -> None:
                 val_dataset, args.tokenizer, ascii_target=args.source_asr_ascii
             )
         if args.post_source_eos_translation:
-            common.prepare_post_source_eos_translation(val_dataset, args.tokenizer)
+            if args.full_post_source_eos_curriculum:
+                tokenizer_sha256 = common.transform_post_source_eos_translation(
+                    val_dataset, args.tokenizer
+                )
+                val_dataset.samples.sort(key=lambda sample: sample["frames"])
+                validation_transform_sha256 = common.freeze_post_source_eos_translation(
+                    val_dataset,
+                    tokenizer_sha256,
+                    out_dir / "validation_post_source_eos_translation.json",
+                )
+                if (
+                    len(val_dataset) != FULL_VALIDATION_ROWS
+                    or validation_transform_sha256
+                    != FULL_VALIDATION_TRANSFORM_SHA256
+                    or validation_transform_sha256
+                    != full_data_receipt["validation"][
+                        "post_source_eos_translation_sha256"
+                    ]
+                ):
+                    raise RuntimeError("Validation data differs from the full-data receipt")
+            else:
+                common.prepare_post_source_eos_translation(val_dataset, args.tokenizer)
         val_dataset.require_max_frames(args.val_max_frames, "Validation cache")
         observed_val_max_frames = order_validation_samples(
             val_dataset, val_sort_by_length, args.smoke_longest_first
@@ -766,6 +930,11 @@ def main() -> None:
             shuffle=validation_shuffle,
         )
         print(f"Loaded {len(val_dataset)} val cached samples from {repo_display_path(val_cache_dir)}")
+    if (
+        args.full_post_source_eos_curriculum
+        and observed_val_max_frames != FULL_VALIDATION_MAX_FRAMES
+    ):
+        raise RuntimeError("Observed validation maximum differs from the full-data receipt")
 
     print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
     lm = checkpoint_info.get_moshi(
@@ -948,6 +1117,37 @@ def main() -> None:
                         raise RuntimeError(
                             f"Post-source-EOS translation resume contract changed: {key}"
                         )
+                if args.full_post_source_eos_curriculum or previous_config.get(
+                    "full_post_source_eos_curriculum", False
+                ):
+                    full_resume_contract = {
+                        "full_post_source_eos_curriculum": (
+                            args.full_post_source_eos_curriculum
+                        ),
+                        "full_data_receipt_sha256": args.full_data_receipt_sha256,
+                        "input_sample_manifest_sha256": (
+                            args.input_sample_manifest_sha256
+                        ),
+                        "epochs": args.epochs,
+                        "val_batch_size": args.val_batch_size,
+                        "val_max_frames": args.val_max_frames,
+                        "min_source_bleu_gap": args.min_source_bleu_gap,
+                        "min_source_chrf_gap": args.min_source_chrf_gap,
+                        "frame_bucket": common.FRAME_BUCKET,
+                    }
+                    if not args.smoke_longest_first:
+                        full_resume_contract.update(
+                            {
+                                "epoch_gated": args.epoch_gated,
+                                "val_every": args.val_every,
+                                "eval_every": args.eval_every,
+                                "save_every": args.save_every,
+                                "keep_checkpoints": args.keep_checkpoints,
+                            }
+                        )
+                    for key, value in full_resume_contract.items():
+                        if previous_config.get(key) != value:
+                            raise RuntimeError(f"Full-data resume contract changed: {key}")
                 if args.post_source_eos_extension:
                     effective_batch = args.batch_size * args.grad_accum_steps
                     if not (
@@ -1020,6 +1220,7 @@ def main() -> None:
     run_config["batches_per_epoch"] = batches_per_epoch
     run_config["steps_per_epoch"] = steps_per_epoch
     run_config["torch_compile_enabled"] = torch_compile_enabled
+    run_config["frame_bucket"] = common.FRAME_BUCKET
     run_config["validation_sort_by_length"] = validation_sort_by_length
     run_config["validation_shuffle"] = validation_shuffle
     run_config["observed_val_max_frames"] = observed_val_max_frames
@@ -1075,6 +1276,7 @@ def main() -> None:
     log_min_batch_size = math.inf
     log_max_batch_size = 0
     log_max_frames = 0
+    log_max_padded_frames = 0
     log_contrastive_active = 0.0
     log_source_asr_replay_tokens = 0
     log_source_asr_replay_samples = 0
@@ -1115,7 +1317,8 @@ def main() -> None:
         item = {"step": step, **{k: metrics[k] for k in (
             "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "samples",
             "content_text_loss", "content_acc", "content_tokens", "pad_text_loss", "pad_acc",
-            "pad_tokens", "first_content_loss", "first_content_tokens",
+            "pad_tokens", "first_content_loss", "first_content_tokens", "max_frames",
+            "max_padded_frames",
             "first_content_margin", "silence_score",
         )}}
         item.update(common.mps_memory_stats(device))
@@ -1294,6 +1497,7 @@ def main() -> None:
             log_min_batch_size = min(log_min_batch_size, batch_size)
             log_max_batch_size = max(log_max_batch_size, batch_size)
             log_max_frames = max(log_max_frames, actual_max_frames)
+            log_max_padded_frames = max(log_max_padded_frames, int(codes.shape[-1]))
             if batch_size not in condition_cache:
                 condition_cache[batch_size] = common.batch_condition_tensors(
                     lm, checkpoint_info.model_type, batch_size
@@ -1462,6 +1666,7 @@ def main() -> None:
                 "min_batch_size": int(log_min_batch_size),
                 "max_batch_size": log_max_batch_size,
                 "max_frames": log_max_frames,
+                "max_padded_frames": log_max_padded_frames,
                 "sec_per_step": (now - last_log_time) / log_steps,
                 "log_steps": log_steps,
                 "lr": lr_value,
@@ -1511,6 +1716,7 @@ def main() -> None:
             log_min_batch_size = math.inf
             log_max_batch_size = 0
             log_max_frames = 0
+            log_max_padded_frames = 0
             log_contrastive_active = 0.0
             log_source_asr_replay_tokens = 0
             log_source_asr_replay_samples = 0
@@ -1523,6 +1729,13 @@ def main() -> None:
             run_teacher_forced_val(global_step)
         if args.eval_every and global_step % args.eval_every == 0:
             run_greedy_val(global_step)
+        if (
+            args.epoch_gated
+            and global_step % steps_per_epoch == 0
+            and global_step < total_steps
+        ):
+            print(f"Epoch {global_step // steps_per_epoch} complete; pausing at scientific gate.")
+            break
 
     if global_step == 0:
         raise RuntimeError("Training ended before any optimizer step. Check cache size and grad accum.")

@@ -3,7 +3,7 @@
 This repository maintains two paths only:
 
 1. q4 MLX inference for Hibiki-Zero on Apple Silicon;
-2. base-start, full-model Vietnamese-to-English SFT on CUDA.
+2. full-model Vietnamese-to-English SFT on CUDA.
 
 The mobile target is a future distilled 1B Hibiki-Zero student with parallel
 target-codebook heads. It is not implemented yet.
@@ -36,23 +36,28 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   `docs/finetune.md`. It is the copy-paste handoff for fresh setup, artifact
   restore, preflight/smoke, the stop-before-launch boundary, and exact recovery.
 - `finetune/train.py` always trains every model parameter. There is no LoRA or
-  adapter path; isolated pilot-only warm-start/replay modes remain while the
-  final full-training receipt is being locked.
-- Training starts from `weights/hibiki-pytorch-77f82164@110.safetensors`.
-  `--resume-checkpoint` is only for interruption recovery within the same run.
-- CUDA uses fp32 master weights, bf16 autocast, fused AdamW, causal SDPA, fixed
-  length-sorted 16-frame buckets, and `--max-frames 280`; 80 GB H100s run batch
-  8 with two accumulation steps.
+  adapter path; isolated pilot-only warm-start/replay modes remain for history,
+  while the final full-data receipt is frozen.
+- The final grounded run starts from the qualified ASCII-ASR checkpoint
+  `best_step003125.safetensors` at SHA
+  `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
+  The upstream base remains a required architecture artifact;
+  `--resume-checkpoint` is only for recovery within the same full run.
+- CUDA uses fp32 master weights, bf16 autocast, fused AdamW, causal SDPA, and
+  16-frame buckets. The frozen full receipt requires a 94 GB H100, physical
+  batch 16, no accumulation, transformed train T≤280, and validation B4/T≤470.
 - `finetune/h100.sh` pins the pod environment, verifies staged artifacts and
   evaluation audio, selects the 80/94 GB batch recipe, and gates training on a
   save/eval/resume smoke.
 - `HIBIKI_RECIPE=grounded-v2` selects isolated CTC word-timed caches, 95/5
   PhoMT/FLEURS sampling, conservative cosine SFT, eligibility-only best saves,
-  and paired source-dependence evaluation. `HIBIKI_PILOT=1` forces separate
+  and paired source-dependence evaluation. The final full namespace is
+  `grounded_v2_full_post_source_eos`; `HIBIKI_PILOT=1` forces separate
   `*_grounded_v2_pilot` caches, smoke/run directories, and HF prefix; exactly
   104 evenly sampled PhoMT shards feed a frozen 50k-row membership for 1,000
   steps with 100-step warmup. Pilot target-audio inputs are masked and audio
-  loss is zero. Full grounded keeps 1,000-step warmup and rejects pilot limits.
+  loss is zero. Full grounded uses the post-source-EOS objective, 1,000-step
+  warmup, and rejects pilot limits.
   PhoMT is pinned and CTC rows below 0.5 are rejected. Legacy remains default.
 - `finetune/common.py` owns cached data, losses, schedules, exact full-model
   checkpoint I/O, free-running generation, paired metrics, RNG isolation, and
@@ -77,13 +82,19 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   headroom. The rebuild resumed from the SHA-verified 90-shard Mac prefix whose
   aggregate manifest SHA is
   `7b76432f7034284d440c27a433e48c791ca4e1f5c6daa6e92e8c23bcef2b4e56`.
+- `finetune/freeze_full_data_receipt.py` hashes every extracted cache shard and
+  model artifact, transforms before filtering, then freezes 719,120 ordered
+  rows: 683,164 PhoMT and 35,956 FLEURS. Manifest SHA is
+  `63f584a43dc5cba59fb948d5aa294ed72bc29634910968f9cda947c70019d1b5`;
+  receipt SHA is
+  `ece5948ddb72f11f14048351f170c4c5218503c484db9c623ea6b4f52796ff0d`.
 - `finetune/validate.py` is teacher-forced diagnostics only. `finetune/eval.py`
   evaluates correct and shuffled sources at fixed-seed text temperature 0.4,
   writing condition and consolidated artifacts. Promotion requires correct-source
   health plus calibrated BLEU/chrF gaps, then ranks by `(BLEU, chrF)`.
 - `finetune/hf_sync.py` maintains two recovery pairs plus the best model under
-  `full_run/` in the public `huybik/hibiki-zero-vi-full-sft` model repo;
-  final sync also preserves run configuration, pilot membership, and compact
+  the run's isolated prefix in the public `huybik/hibiki-zero-vi-full-sft`
+  model repo. Final sync also preserves run configuration, membership, and compact
   paired-evaluation CSV/JSON artifacts. `h100.sh` verifies a shared run identity,
   supervises sync, and protects the local resume point before training restarts.
 
@@ -175,6 +186,14 @@ inconsistent source routing and promoted no checkpoint: final BLEU/chrF was
 1.87/16.56 with 1.69/3.34 gaps; the strongest step was 2,000 at 2.06/18.27 and
 1.81/4.31 gaps. All milestones passed health, but none passed both calibrated
 1.0/5.0 source gates. Do not initialize full SFT from this rejected receipt.
+
+The authorized full run uses the qualified ASCII-ASR parent directly, never the
+rejected translation checkpoint. It preserves all 148 validation rows, runs
+44,945 steps per epoch for at most six epochs, and evaluates/saves/syncs every
+8,989 steps. LR is cosine 1e-5→1e-6 with 1,000-step warmup. Training pauses at
+each epoch boundary; resume is allowed only after validation or source
+dependence improves. Promotion still requires healthy generation plus BLEU gap
+≥1 and chrF gap ≥5.
 
 ## Canonical resources
 

@@ -248,6 +248,7 @@ class CachedCodeDataset(Dataset):
         self.frame_rate: float | None = None
         dropped = 0
         cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
+        self.cache_count = len(cache_dirs)
         if retained_text_column not in (None, "text_vi", "text_en"):
             raise ValueError("Retained text column must be text_vi or text_en")
         if (sample_manifest is None) != (sample_manifest_sha256 is None):
@@ -364,51 +365,7 @@ class CachedCodeDataset(Dataset):
         if max_frames and dropped:
             print(f"[dataset] dropped {dropped} samples over {max_frames} frames; kept {len(self.samples)}")
         if cache_weights is not None:
-            if len(cache_weights) != len(cache_dirs) or any(weight <= 0 for weight in cache_weights):
-                raise ValueError("--cache-weights must provide one positive weight per --cache-dir")
-            weight_total = sum(cache_weights)
-            pools = [
-                [sample for sample in self.samples if sample["cache_index"] == cache_index]
-                for cache_index in range(len(cache_dirs))
-            ]
-            if any(not pool for pool in pools):
-                raise RuntimeError("Every weighted cache directory must have usable samples")
-            target_total = max_samples or max(
-                math.ceil(len(pool) * weight_total / weight)
-                for pool, weight in zip(pools, cache_weights, strict=True)
-            )
-            counts: list[int] = []
-            if max_samples:
-                quotas = [target_total * weight / weight_total for weight in cache_weights]
-                if any(
-                    not math.isclose(quota, round(quota), rel_tol=0.0, abs_tol=1e-8)
-                    for quota in quotas
-                ):
-                    raise ValueError(
-                        "--max-samples must permit exact integer --cache-weights counts"
-                    )
-                counts = [round(quota) for quota in quotas]
-                if sum(counts) != target_total:
-                    raise RuntimeError("Exact cache-weight counts do not sum to --max-samples")
-            else:
-                remaining = target_total
-                for cache_index, weight in enumerate(cache_weights):
-                    count = (
-                        remaining
-                        if cache_index == len(cache_weights) - 1
-                        else round(target_total * weight / weight_total)
-                    )
-                    counts.append(count)
-                    remaining -= count
-            rng = random.Random(seed)
-            balanced: list[dict[str, Any]] = []
-            for pool, count in zip(pools, counts, strict=True):
-                if count <= len(pool):
-                    balanced.extend(rng.sample(pool, count))
-                else:
-                    balanced.extend(pool)
-                    balanced.extend(rng.choices(pool, k=count - len(pool)))
-            self.samples = balanced
+            self.select_weighted(cache_weights, max_samples, seed)
             max_samples = 0
         if sort_by_length:
             self.samples.sort(key=lambda sample: sample["frames"])
@@ -416,6 +373,69 @@ class CachedCodeDataset(Dataset):
             self.samples = self.samples[:max_samples]
             if not self.samples:
                 raise RuntimeError("--max-samples selected no cached samples")
+
+    def select_weighted(
+        self, cache_weights: list[float], max_samples: int, seed: int
+    ) -> None:
+        if len(cache_weights) != self.cache_count or any(
+            weight <= 0 for weight in cache_weights
+        ):
+            raise ValueError("--cache-weights must provide one positive weight per --cache-dir")
+        weight_total = sum(cache_weights)
+        pools = [
+            [sample for sample in self.samples if sample["cache_index"] == cache_index]
+            for cache_index in range(len(cache_weights))
+        ]
+        if any(not pool for pool in pools):
+            raise RuntimeError("Every weighted cache directory must have usable samples")
+        target_total = max_samples or max(
+            math.ceil(len(pool) * weight_total / weight)
+            for pool, weight in zip(pools, cache_weights, strict=True)
+        )
+        counts: list[int] = []
+        if max_samples:
+            quotas = [target_total * weight / weight_total for weight in cache_weights]
+            if any(
+                not math.isclose(quota, round(quota), rel_tol=0.0, abs_tol=1e-8)
+                for quota in quotas
+            ):
+                raise ValueError(
+                    "--max-samples must permit exact integer --cache-weights counts"
+                )
+            counts = [round(quota) for quota in quotas]
+            if sum(counts) != target_total:
+                raise RuntimeError("Exact cache-weight counts do not sum to --max-samples")
+        else:
+            remaining = target_total
+            for cache_index, weight in enumerate(cache_weights):
+                count = (
+                    remaining
+                    if cache_index == len(cache_weights) - 1
+                    else round(target_total * weight / weight_total)
+                )
+                counts.append(count)
+                remaining -= count
+        rng = random.Random(seed)
+        balanced: list[dict[str, Any]] = []
+        for pool, count in zip(pools, counts, strict=True):
+            if count <= len(pool):
+                balanced.extend(rng.sample(pool, count))
+            else:
+                balanced.extend(pool)
+                balanced.extend(rng.choices(pool, k=count - len(pool)))
+        self.samples = balanced
+
+    def filter_max_frames(self, max_frames: int, label: str) -> None:
+        if max_frames <= 0:
+            raise ValueError("Frame filtering requires a positive maximum")
+        before = len(self.samples)
+        self.samples = [sample for sample in self.samples if sample["frames"] <= max_frames]
+        if not self.samples:
+            raise RuntimeError(f"{label} selected no samples at T<={max_frames}")
+        print(
+            f"[dataset] {label}: dropped {before - len(self.samples)} samples over "
+            f"{max_frames} frames; kept {len(self.samples)}"
+        )
 
     def require_max_frames(self, max_frames: int, label: str) -> None:
         if not max_frames or not self.samples:
@@ -455,11 +475,23 @@ class CachedCodeDataset(Dataset):
         }
 
 
+def sample_manifest_bytes(dataset: CachedCodeDataset) -> bytes:
+    return "".join(
+        json.dumps(
+            {"cache_index": sample["cache_index"], "id": sample["id"]},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+        for sample in dataset.samples
+    ).encode("utf-8")
+
+
 def _transform_post_source_eos_text(
     dataset: CachedCodeDataset,
     tokenizer_path: Path,
     ascii_target: bool = False,
-) -> dict[str, Any]:
+) -> str:
     """Keep source audio through EOS and emit retained text only afterwards."""
     import sentencepiece
 
@@ -467,28 +499,12 @@ def _transform_post_source_eos_text(
     eos_id = int(tokenizer.eos_id())
     if eos_id < 0:
         raise RuntimeError("Tokenizer has no EOS id")
-    ordered_text = hashlib.sha256()
     transformed: set[int] = set()
     for sample in dataset.samples:
         target_text = sample["post_source_eos_text"]
         if ascii_target:
             target_text = ascii_text(target_text)
-        text_column = sample["post_source_eos_text_column"]
-        ordered_text.update(
-            (
-                json.dumps(
-                    {
-                        "cache_index": sample["cache_index"],
-                        "id": sample["id"],
-                        text_column: target_text,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            ).encode("utf-8")
-        )
+        sample["post_source_eos_text"] = target_text
         object_id = id(sample)
         if object_id in transformed:
             continue
@@ -517,16 +533,40 @@ def _transform_post_source_eos_text(
         codes[source_start:, :source_end] = old_codes[source_start:, :source_end]
         sample["codes"] = codes
         sample["frames"] = int(codes.shape[1])
+    return hashlib.sha256(tokenizer_path.read_bytes()).hexdigest()
+
+
+def _post_source_eos_text_summary(dataset: CachedCodeDataset) -> dict[str, Any]:
+    ordered_text = hashlib.sha256()
+    for sample in dataset.samples:
+        text_column = sample["post_source_eos_text_column"]
+        ordered_text.update(
+            (
+                json.dumps(
+                    {
+                        "cache_index": sample["cache_index"],
+                        "id": sample["id"],
+                        text_column: sample["post_source_eos_text"],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+    return {
+        "ordered_text_sha256": ordered_text.hexdigest(),
+        "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
+    }
+
+
+def _clear_post_source_eos_text(dataset: CachedCodeDataset) -> None:
     for sample in dataset.samples:
         sample.pop("post_source_eos_text", None)
         sample.pop("post_source_eos_text_column", None)
         sample.pop("dep_q", None)
         sample.pop("text_padding_id", None)
-    return {
-        "tokenizer_sha256": hashlib.sha256(tokenizer_path.read_bytes()).hexdigest(),
-        "ordered_text_sha256": ordered_text.hexdigest(),
-        "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
-    }
 
 
 def _freeze_post_source_eos_policy(
@@ -560,7 +600,10 @@ def prepare_source_asr(
     ascii_target: bool = False,
 ) -> str:
     """Replace translation targets with Vietnamese text emitted after source EOS."""
-    transformed = _transform_post_source_eos_text(dataset, tokenizer_path, ascii_target)
+    tokenizer_sha256 = _transform_post_source_eos_text(
+        dataset, tokenizer_path, ascii_target
+    )
+    summary = _post_source_eos_text_summary(dataset)
     payload = {
         "version": 2 if ascii_target else 1,
         "strategy": (
@@ -569,13 +612,56 @@ def prepare_source_asr(
             else "full_sentence_vi_asr_after_source_eos"
         ),
         "rows": len(dataset),
-        "tokenizer_sha256": transformed["tokenizer_sha256"],
-        "ordered_source_text_sha256": transformed["ordered_text_sha256"],
-        "observed_max_frames": transformed["observed_max_frames"],
+        "tokenizer_sha256": tokenizer_sha256,
+        "ordered_source_text_sha256": summary["ordered_text_sha256"],
+        "observed_max_frames": summary["observed_max_frames"],
     }
-    return _freeze_post_source_eos_policy(
+    digest = _freeze_post_source_eos_policy(
         document_path, "source_asr", "source ASR", payload
     )
+    _clear_post_source_eos_text(dataset)
+    return digest
+
+
+def transform_post_source_eos_translation(
+    dataset: CachedCodeDataset, tokenizer_path: Path
+) -> str:
+    """Transform the unique pool before full-curriculum filtering and sampling."""
+    return _transform_post_source_eos_text(dataset, tokenizer_path)
+
+
+def post_source_eos_translation_payload(
+    dataset: CachedCodeDataset, tokenizer_sha256: str
+) -> dict[str, Any]:
+    summary = _post_source_eos_text_summary(dataset)
+    return {
+        "version": 1,
+        "strategy": "full_sentence_en_translation_after_source_eos",
+        "text_column": "text_en",
+        "source_audio": "through_source_eos",
+        "target_audio": "absent",
+        "text_start": "after_source_eos",
+        "rows": len(dataset),
+        "tokenizer_sha256": tokenizer_sha256,
+        "ordered_target_text_sha256": summary["ordered_text_sha256"],
+        "observed_max_frames": summary["observed_max_frames"],
+    }
+
+
+def freeze_post_source_eos_translation(
+    dataset: CachedCodeDataset,
+    tokenizer_sha256: str,
+    document_path: Path | None = None,
+) -> str:
+    payload = post_source_eos_translation_payload(dataset, tokenizer_sha256)
+    digest = _freeze_post_source_eos_policy(
+        document_path,
+        "post_source_eos_translation",
+        "post-source-EOS translation",
+        payload,
+    )
+    _clear_post_source_eos_text(dataset)
+    return digest
 
 
 def prepare_post_source_eos_translation(
@@ -584,24 +670,9 @@ def prepare_post_source_eos_translation(
     document_path: Path | None = None,
 ) -> str:
     """Replace streaming targets with English text emitted after source EOS."""
-    transformed = _transform_post_source_eos_text(dataset, tokenizer_path)
-    payload = {
-        "version": 1,
-        "strategy": "full_sentence_en_translation_after_source_eos",
-        "text_column": "text_en",
-        "source_audio": "through_source_eos",
-        "target_audio": "absent",
-        "text_start": "after_source_eos",
-        "rows": len(dataset),
-        "tokenizer_sha256": transformed["tokenizer_sha256"],
-        "ordered_target_text_sha256": transformed["ordered_text_sha256"],
-        "observed_max_frames": transformed["observed_max_frames"],
-    }
-    return _freeze_post_source_eos_policy(
-        document_path,
-        "post_source_eos_translation",
-        "post-source-EOS translation",
-        payload,
+    tokenizer_sha256 = transform_post_source_eos_translation(dataset, tokenizer_path)
+    return freeze_post_source_eos_translation(
+        dataset, tokenizer_sha256, document_path
     )
 
 
@@ -1058,6 +1129,8 @@ def evaluate_teacher_forced(
         "text_tokens": 0,
         "batches": 0,
         "samples": 0,
+        "max_frames": 0,
+        "max_padded_frames": 0,
         "content_loss_sum": 0.0,
         "content_correct": 0,
         "content_tokens": 0,
@@ -1103,6 +1176,10 @@ def evaluate_teacher_forced(
                 totals[f"{prefix}_tokens"] += count
             totals["batches"] += 1
             totals["samples"] += batch_size
+            totals["max_frames"] = max(totals["max_frames"], int(batch["frames"].max()))
+            totals["max_padded_frames"] = max(
+                totals["max_padded_frames"], int(codes.shape[-1])
+            )
             # Diagnostics for content quality, PAD behavior, and the critical
             # PAD-to-first-content transition.
             text_targets = codes[:, :1]
@@ -1159,6 +1236,8 @@ def evaluate_teacher_forced(
         "text_tokens": totals["text_tokens"],
         "batches": totals["batches"],
         "samples": totals["samples"],
+        "max_frames": totals["max_frames"],
+        "max_padded_frames": totals["max_padded_frames"],
         "content_text_loss": content_loss,
         "content_acc": totals["content_correct"] / content_tokens if content_tokens else 0.0,
         "content_tokens": content_tokens,

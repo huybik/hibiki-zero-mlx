@@ -32,6 +32,8 @@ RUN_METADATA = (
     "source_asr.json",
     "source_asr_replay.json",
     "post_source_eos_translation.json",
+    "validation_post_source_eos_translation.json",
+    "full_data_receipt.json",
     "post_source_eos_extension.json",
 )
 RUN_ARTIFACTS = (
