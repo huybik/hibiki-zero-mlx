@@ -35,8 +35,9 @@ Generated FLEURS data is excluded from both the active tree and Git history.
 - Start every new-agent or new-pod training session with
   `docs/finetune.md`. It is the copy-paste handoff for fresh setup, artifact
   restore, preflight/smoke, the stop-before-launch boundary, and exact recovery.
-- `finetune/train.py` always trains every model parameter. There is no LoRA,
-  warm-start adapter, replay sampler, or alternate batch scheduler.
+- `finetune/train.py` always trains every model parameter. There is no LoRA or
+  adapter path; isolated pilot-only warm-start/replay modes remain while the
+  final full-training receipt is being locked.
 - Training starts from `weights/hibiki-pytorch-77f82164@110.safetensors`.
   `--resume-checkpoint` is only for interruption recovery within the same run.
 - CUDA uses fp32 master weights, bf16 autocast, fused AdamW, causal SDPA, fixed
@@ -69,12 +70,14 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.
   `remote_dataset/download_covost2.py` materializes the pinned healthy FR→EN
   evaluator control.
-- The grounded-v2 PhoMT rebuild resumed on an H100 from the SHA-verified,
+- The grounded-v2 PhoMT rebuild is running on the H100 from the SHA-verified,
   contiguous 90-shard Mac prefix (`shard_00000.pt` through `shard_00089.pt`).
-  Four CUDA workers run from commit `45a1327`; the detached pipeline validates
+  It contains 52,939 accepted rows and has aggregate manifest SHA
+  `7b76432f7034284d440c27a433e48c791ca4e1f5c6daa6e92e8c23bcef2b4e56`.
+  Four CUDA workers run from commit `8e310ff`; the detached pipeline validates
   all 1,377 shards, builds grounded FLEURS caches, then publishes and verifies
-  the isolated dataset `grounded-v2/` prefix. The Mac retains the ignored
-  90-shard recovery copy until remote publication succeeds.
+  the isolated dataset `grounded-v2/` prefix. The Mac copy remains until remote
+  publication succeeds.
 - `finetune/validate.py` is teacher-forced diagnostics only. `finetune/eval.py`
   evaluates correct and shuffled sources at fixed-seed text temperature 0.4,
   writing condition and consolidated artifacts. Promotion requires correct-source
@@ -144,18 +147,13 @@ parent. Its isolated `*_grounded_v2_pilot_vi_asr_warmstart` run failed: at step
 1,000, correct-source BLEU/chrF was 0.06/8.44, source gaps were 0.01/-0.36, and
 24 rows failed the repetition gate, so no best checkpoint was promoted. A plain
 fresh-optimizer switch from qualified ASCII ASR to English translation is
-rejected. The next bounded recipe test must preserve the ASCII-ASR objective
-jointly while training translation. `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1`
-does that in an isolated namespace: each ordinary batch-16 translation step is
-implemented as two physical batch-8 microbatches followed by a deterministic
-batch-4, weight-1 ASCII-ASR replay forward from the same exact cohort. Replay has zero PAD pressure, a 434-frame hard cap, frozen
-policy metadata, and exact resume position. Torch compilation is disabled for
-this dual-shape mode: compiled graph caches reached 94.5/95.8 GiB by step 30,
-and uncompiled physical batch 16 still emitted an allocator failure warning by
-step 20. Do not start full SFT until this or a later translation pilot qualifies
-and the complete grounded cache is published and verified; the current 94 GB
-H100 NVL full run is still planned at physical batch 16 because it has no replay
-forward.
+rejected. `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1` then jointly trained the same
+translation objective with a deterministic batch-4, weight-1 ASCII-ASR replay
+forward. The memory-safe run peaked near 80 GiB and completed, but failed every
+paired milestone. At step 1,000, correct-source BLEU/chrF was 0.13/7.73 and the
+source gaps were -0.04/-0.24; no checkpoint qualified. Joint ASR replay is
+rejected. Do not start full SFT until a final translation receipt is frozen and
+the complete grounded cache is published and verified.
 
 ## Canonical resources
 
