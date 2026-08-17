@@ -525,11 +525,16 @@ def main() -> None:
         raise ValueError(
             "Post-source-EOS translation is exclusive with ASR and contrastive objectives"
         )
-    if args.post_source_eos_translation and (
-        args.input_sample_manifest is None or args.init_checkpoint is None
+    if args.post_source_eos_translation and args.init_checkpoint is None:
+        raise ValueError("Post-source-EOS translation requires exact initialization")
+    if args.post_source_eos_translation and args.input_sample_manifest is None and (
+        not args.persist_sample_manifest
+        or args.cache_weights is None
+        or args.max_samples <= 0
     ):
         raise ValueError(
-            "Post-source-EOS translation requires authoritative membership and initialization"
+            "Post-source-EOS translation without input membership requires an exact "
+            "weighted sample count and persisted manifest"
         )
     if args.source_asr_replay_weight < 0:
         raise ValueError("--source-asr-replay-weight must be non-negative")
@@ -625,11 +630,12 @@ def main() -> None:
         retained_text_column = "text_vi"
     elif args.post_source_eos_translation:
         retained_text_column = "text_en"
+    transforms_cached_shape = args.source_asr_pretrain or args.post_source_eos_translation
     dataset = common.CachedCodeDataset(
         cache_dir,
-        args.sort_by_length,
+        args.sort_by_length and not transforms_cached_shape,
         args.max_samples,
-        args.max_frames,
+        0 if transforms_cached_shape else args.max_frames,
         args.cache_weights,
         args.seed,
         expected_target_delay,
@@ -679,6 +685,8 @@ def main() -> None:
             )
         )
         dataset.require_max_frames(args.max_frames, "Post-source-EOS translation data")
+    if transforms_cached_shape and args.sort_by_length:
+        dataset.samples.sort(key=lambda sample: sample["frames"])
     if args.sort_by_length:
         dataset.shuffle_batch_order(args.batch_size, args.seed)
     exposure = dataset.exposure()
@@ -853,10 +861,17 @@ def main() -> None:
         return v
 
     sample_manifest_sha256 = None
+    sample_manifest_rows = None
+    sample_manifest_cache_counts = None
     if args.persist_sample_manifest:
         sample_manifest_sha256 = freeze_sample_manifest(
             dataset, out_dir, args.resume_checkpoint is not None
         )
+        sample_manifest_rows = len(dataset)
+        sample_manifest_cache_counts = [
+            sum(sample["cache_index"] == cache_index for sample in dataset.samples)
+            for cache_index in range(len(cache_dir))
+        ]
         if (
             args.input_sample_manifest_sha256 is not None
             and sample_manifest_sha256 != args.input_sample_manifest_sha256
@@ -880,6 +895,13 @@ def main() -> None:
                     raise RuntimeError(f"Ordered-data resume contract changed: {key}")
             if previous_config.get("sample_manifest_sha256") != sample_manifest_sha256:
                 raise RuntimeError("sample_manifest.jsonl SHA-256 differs from run_config.json")
+            if previous_config.get("sample_manifest_rows") != sample_manifest_rows:
+                raise RuntimeError("Sample manifest row count differs from run_config.json")
+            if (
+                previous_config.get("sample_manifest_cache_counts")
+                != sample_manifest_cache_counts
+            ):
+                raise RuntimeError("Sample manifest cache counts differ from run_config.json")
             if previous_config.get("source_derangement_sha256") != source_derangement_sha256:
                 raise RuntimeError("Source derangement differs from run_config.json")
             if previous_config.get("source_asr_sha256") != source_asr_sha256:
@@ -1006,6 +1028,8 @@ def main() -> None:
     )
     if sample_manifest_sha256 is not None:
         run_config["sample_manifest_sha256"] = sample_manifest_sha256
+        run_config["sample_manifest_rows"] = sample_manifest_rows
+        run_config["sample_manifest_cache_counts"] = sample_manifest_cache_counts
     if source_derangement_sha256 is not None:
         run_config["source_derangement_sha256"] = source_derangement_sha256
     if source_asr_sha256 is not None:

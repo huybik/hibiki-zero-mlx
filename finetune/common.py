@@ -377,18 +377,32 @@ class CachedCodeDataset(Dataset):
                 math.ceil(len(pool) * weight_total / weight)
                 for pool, weight in zip(pools, cache_weights, strict=True)
             )
+            counts: list[int] = []
+            if max_samples:
+                quotas = [target_total * weight / weight_total for weight in cache_weights]
+                if any(
+                    not math.isclose(quota, round(quota), rel_tol=0.0, abs_tol=1e-8)
+                    for quota in quotas
+                ):
+                    raise ValueError(
+                        "--max-samples must permit exact integer --cache-weights counts"
+                    )
+                counts = [round(quota) for quota in quotas]
+                if sum(counts) != target_total:
+                    raise RuntimeError("Exact cache-weight counts do not sum to --max-samples")
+            else:
+                remaining = target_total
+                for cache_index, weight in enumerate(cache_weights):
+                    count = (
+                        remaining
+                        if cache_index == len(cache_weights) - 1
+                        else round(target_total * weight / weight_total)
+                    )
+                    counts.append(count)
+                    remaining -= count
             rng = random.Random(seed)
             balanced: list[dict[str, Any]] = []
-            remaining = target_total
-            for cache_index, (pool, weight) in enumerate(
-                zip(pools, cache_weights, strict=True)
-            ):
-                count = (
-                    remaining
-                    if cache_index == len(cache_weights) - 1
-                    else round(target_total * weight / weight_total)
-                )
-                remaining -= count
+            for pool, count in zip(pools, counts, strict=True):
                 if count <= len(pool):
                     balanced.extend(rng.sample(pool, count))
                 else:
