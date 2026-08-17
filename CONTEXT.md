@@ -159,10 +159,12 @@ inputs at the shared dataset boundary, retain Vietnamese codes through source
 EOS, then supervise only the English sentence. It uses no ASR replay, owns
 isolated `*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts,
 hard-gates transformed train/validation lengths at 400/480, uses physical batch
-8 / accumulation 2, 100-step warmup, deterministic transformed validation, and
-paired evaluation at 0/250/500/750/1,000 with a 24-second generation tail. The
-frozen policy persists tokenizer, ordered English-text hash, row count, and
-observed cohort maximum. Do not start
+8 / accumulation 2, 100-step warmup, deterministic ascending transformed
+validation, and paired evaluation at 0/250/500/750/1,000 with a 24-second
+generation tail. Smoke reverses validation to exercise its observed longest row.
+The frozen policy persists tokenizer, ordered English-text hash, row count, and
+observed cohort maximum; recovery checkpoints are retained at steps 500 and
+1,000. Do not start
 full SFT until this receipt is decided and the complete grounded cache is
 published and verified.
 
