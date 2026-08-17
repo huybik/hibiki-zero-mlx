@@ -187,13 +187,15 @@ inconsistent source routing and promoted no checkpoint: final BLEU/chrF was
 1.81/4.31 gaps. All milestones passed health, but none passed both calibrated
 1.0/5.0 source gates. Do not initialize full SFT from this rejected receipt.
 
-The authorized full run uses the qualified ASCII-ASR parent directly, never the
-rejected translation checkpoint. It preserves all 148 validation rows, runs
-44,945 steps per epoch for at most six epochs, and evaluates/saves/syncs every
-8,989 steps. LR is cosine 1e-5→1e-6 with 1,000-step warmup. Training pauses at
-each epoch boundary; resume is allowed only after validation or source
-dependence improves. Promotion still requires healthy generation plus BLEU gap
-≥1 and chrF gap ≥5.
+The authorized full run used the qualified ASCII-ASR parent directly, never the
+rejected translation checkpoint. It completed exactly epoch 1 / step 44,945 and
+was stopped by user decision; do not resume it. The final healthy paired
+evaluation promoted `best_step044945.safetensors`: correct-source BLEU/chrF was
+4.003/26.300 versus shuffled 0.180/16.777, for gaps of 3.824/9.523. All 148
+teacher-forced validation rows were retained; final content accuracy was 0.405
+and content loss was 4.762. This receipt proves partial source-conditioned text
+translation, not speech generation: target audio was absent, with zero audio
+tokens and zero audio loss throughout the run.
 
 ## Canonical resources
 
