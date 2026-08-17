@@ -162,11 +162,16 @@ values above used a normalizer that deleted accented Vietnamese letters; the
 corrected final WER is 0.775, not the recorded 0.639.
 
 The raw target costs 4.14 fixed-tokenizer pieces/word and generated replacement
-characters in 110/128 hypotheses. The next diagnostic uses
-`HIBIKI_ASR_ASCII=1`, reducing targets to 1.87 pieces/word while preserving the
-same frozen cohort and 3,125-step base-start contract. References are transformed
-identically before chrF and WER scoring. Qualification remains health, 1.0/5.0
-source gaps, chrF at least 50, and WER at most 0.60.
+characters in 110/128 hypotheses. ASCII targets reduce this to 1.87 pieces/word.
+That corrected one-epoch run qualified at step 3,125:
+
+| Nonempty | EOS | Repeat-4 failures | BLEU | chrF | WER | BLEU gap | chrF gap |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 127 | 128 | 0 | 27.845 | 53.260 | 0.514 | 27.739 | 34.481 |
+
+The exact promoted parent is now eligible only for the isolated ordinary-timing
+translation pilot. That pilot keeps the translation health and 1.0/5.0 source
+gap gates and ranks qualified checkpoints by BLEU, then chrF.
 
 ## Diagnostics and final test
 

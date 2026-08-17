@@ -55,6 +55,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
+    parser.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        help="Optional full-model initialization; optimizer always starts fresh.",
+    )
+    parser.add_argument("--init-checkpoint-sha256")
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
@@ -202,10 +208,21 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_metadata(args: argparse.Namespace) -> dict[str, str]:
-    return {
+    metadata = {
         "target": "full",
         "base_model": repo_display_path(args.model_weight),
     }
+    if args.init_checkpoint is not None:
+        metadata["init_checkpoint_sha256"] = args.init_checkpoint_sha256
+    return metadata
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def checkpoint_pairs(out_dir: Path) -> list[tuple[int, Path, Path]]:
@@ -418,6 +435,8 @@ def main() -> None:
         }
     if (args.input_sample_manifest is None) != (args.input_sample_manifest_sha256 is None):
         raise ValueError("--input-sample-manifest and its SHA-256 must be set together")
+    if (args.init_checkpoint is None) != (args.init_checkpoint_sha256 is None):
+        raise ValueError("--init-checkpoint and its SHA-256 must be set together")
     if args.input_sample_manifest is not None and not args.persist_sample_manifest:
         raise ValueError("Authoritative input membership requires --persist-sample-manifest")
     if args.smoke_longest_first and (
@@ -486,6 +505,14 @@ def main() -> None:
     )
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "model weight")
+    if args.init_checkpoint is not None:
+        args.init_checkpoint = require_file(args.init_checkpoint, "initialization checkpoint")
+        digest = sha256_file(args.init_checkpoint)
+        if digest != args.init_checkpoint_sha256:
+            raise RuntimeError(
+                f"Initialization checkpoint SHA-256 mismatch: {digest} != "
+                f"{args.init_checkpoint_sha256}"
+            )
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
     if args.resume_checkpoint is not None:
@@ -584,6 +611,9 @@ def main() -> None:
         dtype=dtype,
         lm_kwargs_overrides={"gradient_checkpointing": args.gradient_checkpointing},
     )
+    if args.init_checkpoint is not None and args.resume_checkpoint is None:
+        common.load_model(lm, args.init_checkpoint, dtype)
+        print(f"Initialized full model from {repo_display_path(args.init_checkpoint)}")
     lm.train()
     common.enable_full_finetune(lm)
 

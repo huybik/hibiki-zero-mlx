@@ -15,8 +15,11 @@ CONTRASTIVE_PILOT="${HIBIKI_CONTRASTIVE_PILOT:-0}"
 ASR_PREADAPT="${HIBIKI_ASR_PREADAPT:-0}"
 ASR_ONE_EPOCH="${HIBIKI_ASR_ONE_EPOCH:-0}"
 ASR_ASCII="${HIBIKI_ASR_ASCII:-0}"
+ASR_TRANSLATION_PILOT="${HIBIKI_ASR_TRANSLATION_PILOT:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
+ASR_PARENT_CHECKPOINT="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot_vi_asr_ascii_epoch1/best_step003125.safetensors"
+ASR_PARENT_CHECKPOINT_SHA256=d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca
 
 die() {
   echo "error: $*" >&2
@@ -34,6 +37,8 @@ die() {
   || die "HIBIKI_ASR_ONE_EPOCH must be 0 or 1"
 [[ "$ASR_ASCII" == 0 || "$ASR_ASCII" == 1 ]] \
   || die "HIBIKI_ASR_ASCII must be 0 or 1"
+[[ "$ASR_TRANSLATION_PILOT" == 0 || "$ASR_TRANSLATION_PILOT" == 1 ]] \
+  || die "HIBIKI_ASR_TRANSLATION_PILOT must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
   || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
 [[ "$HIGH_DELAY_PILOT" == 0 || ( "$PILOT" == 1 && "$RECIPE" == "grounded-v2" ) ]] \
@@ -48,6 +53,11 @@ die() {
   || die "HIBIKI_ASR_ONE_EPOCH=1 requires HIBIKI_ASR_PREADAPT=1"
 [[ "$ASR_ASCII" == 0 || ( "$ASR_PREADAPT" == 1 && "$ASR_ONE_EPOCH" == 1 ) ]] \
   || die "HIBIKI_ASR_ASCII=1 requires the one-epoch ASR diagnostic"
+[[ "$ASR_TRANSLATION_PILOT" == 0 || (
+  "$RECIPE" == grounded-v2 && "$PILOT" == 1 && "$HIGH_DELAY_PILOT" == 0 &&
+  "$CONTRASTIVE_PILOT" == 0 && "$ASR_PREADAPT" == 0 && "$ASR_ONE_EPOCH" == 0 &&
+  "$ASR_ASCII" == 0
+) ]] || die "HIBIKI_ASR_TRANSLATION_PILOT=1 requires the ordinary grounded pilot alone"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
@@ -78,6 +88,9 @@ case "$RECIPE" in
       fi
       if [[ "$ASR_ASCII" == 1 ]]; then
         pilot_namespace=grounded_v2_pilot_vi_asr_ascii_epoch1
+      fi
+      if [[ "$ASR_TRANSLATION_PILOT" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_vi_asr_warmstart
       fi
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
@@ -125,13 +138,18 @@ require_python() {
 }
 
 require_baseline_pilot_manifest() {
-  [[ "$HIGH_DELAY_PILOT" == 1 ]] || return
+  [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 ]] || return
   [[ -f "$BASELINE_PILOT_MANIFEST" ]] || die "missing baseline pilot sample manifest"
   command -v sha256sum >/dev/null || die "sha256sum is required"
   local actual
   actual="$(sha256sum "$BASELINE_PILOT_MANIFEST" | cut -d' ' -f1)"
   [[ "$actual" == "$BASELINE_PILOT_MANIFEST_SHA256" ]] \
     || die "baseline pilot sample manifest hash mismatch: $actual"
+}
+
+require_asr_parent_checkpoint() {
+  [[ "$ASR_TRANSLATION_PILOT" == 1 ]] || return
+  [[ -f "$ASR_PARENT_CHECKPOINT" ]] || die "missing qualified ASR parent checkpoint"
 }
 
 require_cuda_driver() {
@@ -199,6 +217,8 @@ cache_grounded() {
     || die "the contrastive pilot reuses the verified high-delay caches"
   [[ "$ASR_PREADAPT" == 0 ]] \
     || die "ASR preadaptation reuses the verified high-delay caches"
+  [[ "$ASR_TRANSLATION_PILOT" == 0 ]] \
+    || die "the ASR warm-start pilot reuses the verified ordinary caches"
   require_python
   require_baseline_pilot_manifest
   require_cuda_driver
@@ -286,6 +306,7 @@ preflight() {
   local minimum_free_gib="${1:-190}"
   require_python
   require_baseline_pilot_manifest
+  require_asr_parent_checkpoint
   if [[ "$RECIPE" == "grounded-v2" ]]; then
     source_gap_args
   fi
@@ -522,6 +543,9 @@ common_args() {
   if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
     max_steps=3125
   fi
+  if [[ "$ASR_TRANSLATION_PILOT" == 1 ]]; then
+    sort_args=(--no-sort-by-length)
+  fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
   source_gap_args
   EVAL_EVERY=9000
@@ -566,7 +590,7 @@ common_args() {
       --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
       --eval-at-start
     )
-    if [[ "$HIGH_DELAY_PILOT" == 0 ]]; then
+    if [[ "$HIGH_DELAY_PILOT" == 0 && "$ASR_TRANSLATION_PILOT" == 0 ]]; then
       TRAIN_ARGS+=(--cache-weights 0.95 0.05)
     fi
     if [[ "$PILOT" == 1 ]]; then
@@ -602,6 +626,13 @@ common_args() {
             TRAIN_ARGS+=(--source-asr-ascii)
           fi
         fi
+      elif [[ "$ASR_TRANSLATION_PILOT" == 1 ]]; then
+        TRAIN_ARGS+=(
+          --input-sample-manifest "$BASELINE_PILOT_MANIFEST"
+          --input-sample-manifest-sha256 "$BASELINE_PILOT_MANIFEST_SHA256"
+          --init-checkpoint "$ASR_PARENT_CHECKPOINT"
+          --init-checkpoint-sha256 "$ASR_PARENT_CHECKPOINT_SHA256"
+        )
       else
         TRAIN_ARGS+=(--max-samples 50000)
       fi
@@ -624,7 +655,9 @@ stop_monitor() {
 check_smoke_outputs() {
   "$PYTHON" - \
     "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" \
-    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_ASCII" <<'PY'
+    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_ASCII" \
+    "$ASR_TRANSLATION_PILOT" "$ASR_PARENT_CHECKPOINT" \
+    "$ASR_PARENT_CHECKPOINT_SHA256" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -640,6 +673,9 @@ baseline_manifest_sha256 = sys.argv[3]
 contrastive_pilot = bool(int(sys.argv[4]))
 source_asr = bool(int(sys.argv[5]))
 source_asr_ascii = bool(int(sys.argv[6]))
+asr_translation_pilot = bool(int(sys.argv[7]))
+asr_parent_checkpoint = sys.argv[8]
+asr_parent_checkpoint_sha256 = sys.argv[9]
 logs = [json.loads(line) for line in (root / "train_log.jsonl").read_text().splitlines() if line]
 if not logs or logs[-1]["step"] != 11:
     raise RuntimeError("resume smoke did not reach step 11")
@@ -748,6 +784,38 @@ if high_delay_pilot:
         if not source_asr_ascii and observed_max_frames != 668:
             raise RuntimeError("source-ASR raw-text shape mismatch")
 
+if asr_translation_pilot:
+    config = json.loads((root / "run_config_step10.json").read_text())
+    expected = {
+        "batch_size": 16,
+        "grad_accum_steps": 1,
+        "max_frames": 280,
+        "val_max_frames": 0,
+        "val_batch_size": 8,
+        "max_samples": 0,
+        "cache_weights": None,
+        "sort_by_length": False,
+        "smoke_longest_first": True,
+        "input_sample_manifest_sha256": baseline_manifest_sha256,
+        "sample_manifest_sha256": baseline_manifest_sha256,
+        "init_checkpoint": asr_parent_checkpoint,
+        "init_checkpoint_sha256": asr_parent_checkpoint_sha256,
+        "source_asr_pretrain": False,
+    }
+    for key, value in expected.items():
+        if config.get(key) != value:
+            raise RuntimeError(f"ASR warm-start smoke config mismatch for {key}")
+    manifest_digest = hashlib.sha256((root / "sample_manifest.jsonl").read_bytes()).hexdigest()
+    if manifest_digest != baseline_manifest_sha256:
+        raise RuntimeError("ASR warm-start changed authoritative sample membership")
+    if max(int(item["max_batch_size"]) for item in logs) != 16:
+        raise RuntimeError("ASR warm-start smoke did not exercise physical batch 16")
+    observed_max_frames = int(config.get("observed_train_max_frames", 0))
+    if not 0 < observed_max_frames <= 280:
+        raise RuntimeError("ASR warm-start training maximum exceeds its frame cap")
+    if max(int(item["max_frames"]) for item in logs) != observed_max_frames:
+        raise RuntimeError("ASR warm-start smoke did not exercise the longest row")
+
 eval_dir = root / "standalone_eval_step10"
 metrics = json.loads((eval_dir / "metrics.json").read_text())
 with (eval_dir / "predictions.csv").open(newline="", encoding="utf-8") as handle:
@@ -790,7 +858,7 @@ smoke() {
   (
     set -Eeuo pipefail
     local smoke_data_args=()
-    if [[ "$HIGH_DELAY_PILOT" == 1 ]]; then
+    if [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 ]]; then
       smoke_data_args=(--smoke-longest-first)
     fi
     local smoke_lr=(--lr-schedule "1e-4@0" --warmup-steps 500 --text-weight-schedule "5@0")

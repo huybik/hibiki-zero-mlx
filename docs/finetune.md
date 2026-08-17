@@ -283,13 +283,19 @@ diacritic-insensitive WER is 0.775. The fixed tokenizer encodes raw Vietnamese
 at 4.14 pieces/word, and 110/128 final hypotheses contain invalid-byte
 replacement characters.
 
-The next base-start diagnostic keeps the exact one-epoch contract but adds
-`HIBIKI_ASR_ASCII=1`. It strips Vietnamese diacritics deterministically in both
-training targets and evaluation references, reducing the target to 1.87
-pieces/word. It owns `*_grounded_v2_pilot_vi_asr_ascii_epoch1`, still evaluates
-at 0/2,000/3,125, and uses the same health, source-gap, chrF, and WER gates.
-Metric word normalization now strips Latin diacritics instead of deleting
-accented letters.
+The corrected `HIBIKI_ASR_ASCII=1` run qualified at step 3,125: 127/128
+nonempty, 128 EOS, no repetition failures, BLEU 27.85, chrF 53.26, WER 0.514,
+and 27.74 BLEU / 34.48 chrF source gaps. Its promoted model SHA is
+`d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
+
+The next experiment is `HIBIKI_ASR_TRANSLATION_PILOT=1`. Restore that exact
+promoted model under the ASCII-ASR run directory before preflight. The mode
+rejects high-delay, contrastive, and ASR objectives; it reconstructs the exact
+ordinary-timing 50k cohort, starts a fresh optimizer from the pinned parent,
+uses physical batch 16, masks target-audio input, keeps audio loss zero, and runs
+the ordinary 1,000-step translation pilot. It owns
+`*_grounded_v2_pilot_vi_asr_warmstart` smoke/run/HF artifacts. A pass selects a
+text-translation recipe candidate; it does not authorize full training.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled

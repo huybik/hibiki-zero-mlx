@@ -328,5 +328,27 @@ export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
 ./finetune/h100.sh train
 ```
 
-This mode owns only `*_grounded_v2_pilot_vi_asr_ascii_epoch1`; all cohort,
-schedule, batch, evaluation, and recovery settings remain identical.
+This mode qualified at step 3,125 with BLEU/chrF 27.85/53.26, WER 0.514, and
+27.74/34.48 source gaps. Its promoted model SHA is
+`d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
+
+Run the next isolated translation pilot from that exact parent:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_ASR_TRANSLATION_PILOT=1
+unset HIBIKI_HIGH_DELAY_PILOT HIBIKI_CONTRASTIVE_PILOT
+unset HIBIKI_ASR_PREADAPT HIBIKI_ASR_ONE_EPOCH HIBIKI_ASR_ASCII
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+This mode owns `*_grounded_v2_pilot_vi_asr_warmstart`, reconstructs the exact
+ordinary-timing 50k membership, pins the qualified parent SHA, starts a fresh
+optimizer, and uses physical batch 16 for 1,000 masked-audio translation steps.
+Evaluation remains paired at 0/250/500/750/1,000 with unchanged promotion gates.

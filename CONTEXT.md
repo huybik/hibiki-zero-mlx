@@ -133,11 +133,15 @@ ratio) and source dependence (6.65 BLEU / 15.43 chrF gaps), but correct chrF was
 diacritic-insensitive WER is 0.775. The tokenizer itself is the bottleneck for
 this diagnostic: raw Vietnamese costs 4.14 pieces/word and 110/128 hypotheses
 contain invalid-byte replacement characters. Deterministic ASCII Vietnamese
-costs 1.87 pieces/word. The next isolated base-start diagnostic therefore adds
-`HIBIKI_ASR_ASCII=1` to the one-epoch contract and owns the
-`*_grounded_v2_pilot_vi_asr_ascii_epoch1` namespace. Text metrics now strip
-Latin diacritics before word normalization. Do not initialize translation until
-this corrected acoustic diagnostic qualifies.
+costs 1.87 pieces/word. The corrected `HIBIKI_ASR_ASCII=1` one-epoch run
+qualified at step 3,125: 127/128 nonempty, 128 EOS, zero repetition failures,
+BLEU/chrF 27.85/53.26, WER 0.514, and source gaps 27.74/34.48. Its promoted
+parent SHA is `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
+`HIBIKI_ASR_TRANSLATION_PILOT=1` now owns the next isolated experiment: fresh
+optimizer, ordinary-timing exact 50k cohort, physical batch 16, masked target
+audio, zero audio loss, and 1,000 translation steps initialized from that exact
+parent. It owns `*_grounded_v2_pilot_vi_asr_warmstart`; a pass authorizes recipe
+selection, not the full run.
 
 ## Canonical resources
 
