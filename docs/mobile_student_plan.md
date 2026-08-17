@@ -23,10 +23,10 @@ lacks `parallel_v1` and must not be called compatible.
 
 | Workstream | Code | Run status | Next exit evidence |
 |---|---|---|---|
-| Contract and pack | Complete | Synthetic checks pass | Frozen FR set and baseline receipt |
-| AR student | Complete | No CUDA mechanics/full run | Qualified BF16 AR checkpoint + receipt |
-| Parallel head | Complete | Blocked on qualified AR | Qualified BF16 parallel checkpoint + fixture |
-| MLX q4 | Complete | No full-model conversion | Hash-valid q4 pack + numerical/clip parity |
+| Contract and pack | Complete | Synthetic checks pass | Frozen FR set, listening rubric, and baseline receipt |
+| AR student | Complete | No CUDA mechanics/full run | Qualified BF16 AR checkpoint + listening receipt |
+| Parallel head | Complete | Blocked on qualified AR | Qualified BF16 parallel checkpoint + fixture/listen |
+| MLX q4 | Complete | No full-model conversion | Hash-valid q4 pack + numerical/listening parity |
 | Swift phone runtime | Not implemented here | Official 1B baseline pending | `parallel_v1` fixture parity on device |
 | Device qualification | Instrumentation plan only | Not run | Ten-minute trace + joint release receipt |
 
@@ -77,6 +77,32 @@ The 64 ms gate leaves 20% of the 80 ms frame budget. Because encode, LM, and
 decode are pipelined, the relevant steady-state budget is the slowest stage,
 not the sum of all three.
 
+### Manual listening gates
+
+Manual listening is required promotion evidence, not an informal final check.
+Use one frozen clip manifest covering clean speech, accents, noise, silence,
+long pauses, long-form speech, and end-of-stream flushes. Preserve the exact
+input, generation settings, model hash, and output audio for every comparison.
+
+At each gate, randomize model labels and record translation correctness,
+intelligibility, voice continuity, pacing, clipping, metallic/noisy artifacts,
+silence behavior, loops, and text/speech agreement per clip. Any persistent
+loop, silence collapse, severe clipping, unintelligible output, or spoken/text
+semantic mismatch is a hard failure even if aggregate text metrics pass.
+
+Required comparisons:
+
+1. official 1B and 3B Zero establish the fixed-set listening reference;
+2. AR BF16 must pass against those references before its qualification receipt;
+3. one-pass parallel BF16 must pass against the qualified AR output; test two
+   passes only if one pass misses this gate;
+4. q4 MLX must show no new listening regression against parallel BF16;
+5. Swift/device output must show no runtime-specific regression against q4 MLX.
+
+Store a compact listening receipt with clip manifest hash, artifact hashes,
+listener, randomized labels, per-clip findings, hard failures, and the promotion
+decision. Borderline or release decisions require a second independent listen.
+
 ## Remaining work by track
 
 ```mermaid
@@ -90,10 +116,13 @@ flowchart TD
         direction TB
         M0[Stage pinned artifacts, FR pairs and fixed clips]
         M1[Run CUDA cache and train/resume mechanics smoke]
-        M2[Train and qualify the 12-layer AR BF16 student]
-        M3[Capture, train and qualify parallel_v1 BF16]
+        M2[Train the 12-layer AR BF16 student]
+        M2L[Metrics plus blind AR listening gate]
+        M3[Capture and train parallel_v1 BF16]
+        M3L[Blind AR versus parallel listening gate]
         M4[Convert and verify one MLX q4 pack]
-        M0 --> M1 --> M2 --> M3 --> M4
+        M4L[BF16 versus q4 listening regression gate]
+        M0 --> M1 --> M2 --> M2L --> M3 --> M3L --> M4 --> M4L
     end
 
     subgraph PHONE[Phone track]
@@ -102,11 +131,11 @@ flowchart TD
         P1[Instrument encode, LM, decode, RSS, thermal and underruns]
         P2[Make the loader config-driven]
         P3[Implement parallel_v1 and raw previous-head state]
-        P4[Qualify sustained live audio]
+        P4[Validate the live-audio harness with official 1B]
         P0 --> P1 --> P2 --> P3 --> P4
     end
 
-    M4 --> JOIN[Drop the new pack into the same runtime]
+    M4L --> JOIN[Drop the new pack into the same runtime]
     P4 --> JOIN
     JOIN --> PASS{Quality, parity, memory and sustained speed pass?}
     PASS -->|yes| BETA[FR-to-EN phone beta]
@@ -203,21 +232,24 @@ bottleneck by creating another.
 flowchart TD
     P0[0. Contract and baselines]
     P1[1. Small AR student]
+    L1[Blind listening: references versus AR BF16]
     G1{Quality retained?}
     P2[2. Parallel head]
+    L2[Blind listening: AR versus parallel BF16]
     G2{Speech and speed pass?}
     P3[3. q4 export and parity]
+    L3[Blind listening: BF16 versus q4 MLX and Swift]
     G3{Phone pack passes?}
     P4[4. Sustained device qualification]
     DONE[FR-to-EN beta and reusable recipe]
 
-    P0 --> P1 --> G1
+    P0 --> P1 --> L1 --> G1
     G1 -->|yes| P2
     G1 -->|no| P1
-    P2 --> G2
+    P2 --> L2 --> G2
     G2 -->|yes| P3
     G2 -->|no| P2
-    P3 --> G3
+    P3 --> L3 --> G3
     G3 -->|yes| P4 --> DONE
     G3 -->|no| P3
 ```
@@ -271,8 +303,8 @@ Run order:
    and fixed evaluation clips;
 2. build a small strict cache and prove initialize → train → save → resume;
 3. materialize compact teacher targets and run one short overfit/mechanics job;
-4. build the full cache, train one 12-layer AR candidate, and evaluate it
-   against both fixed references;
+4. build the full cache, train one 12-layer AR candidate, and evaluate its
+   metrics and randomized listening outputs against both fixed references;
 5. write `hibiki_student_ar_qualification_v1` only after every quality gate
    passes.
 
@@ -314,6 +346,8 @@ real conversion. Swift parity remains phone-track work.
 - Quantize only after BF16 quality passes.
 - Compare BF16 PyTorch, q4 MLX, and q4 MLX Swift on the same fixture and fixed
   clips.
+- Run the randomized BF16-versus-q4 listening comparison before accepting the
+  pack; numerical parity alone is insufficient.
 - Reject silent tensor-name remapping and shape guessing; the pack config owns
   the architecture.
 
@@ -383,23 +417,25 @@ contract is preserved, the application work carries over unchanged.
 
 ## Immediate next actions
 
-1. Shared: freeze the exact FR train/evaluation manifests, fixed clips, metrics,
-   3B/1B artifact hashes, and baseline commands.
+1. Shared: freeze the exact FR train/evaluation manifests, fixed listening
+   clips and rubric, metrics, 3B/1B artifact hashes, and baseline commands.
 2. Model: stage those pinned artifacts on CUDA and run the strict cache plus
    initialize/train/save/resume mechanics smoke documented in
    [`student/README.md`](../student/README.md).
-3. Model: train and qualify one 12-layer AR BF16 candidate; do not begin head
-   capture until its exact qualification receipt exists.
+3. Model: train and qualify one 12-layer AR BF16 candidate with metrics and a
+   recorded blind listen; do not begin head capture until both receipts exist.
 4. Model: capture the qualified AR distributions, train one-pass
-   `parallel_v1`, add two passes only if required, and qualify/export BF16.
+   `parallel_v1`, run the AR-versus-parallel listen, add two passes only if
+   required, and qualify/export BF16.
 5. Model: generate the frozen fixture, convert one q4 group-size-32 MLX pack,
-   then pass manifest, numerical parity, fixed clips, silence, and Mac profiling.
+   then pass manifest, numerical parity, BF16-versus-q4 listening, silence, and
+   Mac profiling.
 6. Phone: in parallel with model execution, record the official 1B device
    baseline, make the loader config-driven, and implement `parallel_v1` with the
    same raw previous-head state and fixture.
 7. Shared: run the exact q4 pack on iPhone 16 Pro for ten minutes and issue the
-   beta receipt only if quality, parity, memory, thermal, queue, and p95 gates
-   all pass.
+   beta receipt only if listening, quality, parity, memory, thermal, queue, and
+   p95 gates all pass.
 
 Do not quantize before BF16 qualification, claim Swift compatibility before its
 fixture passes, start a width/depth grid, or promote a pack from Mac timing
