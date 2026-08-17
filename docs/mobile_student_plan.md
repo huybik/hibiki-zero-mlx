@@ -1,7 +1,34 @@
 # Phone student plan: Hibiki-Zero 3B -> sub-1B FR-to-EN
 
-Status: high-level execution plan. French-to-English is the first route; a
-Vietnamese checkpoint is not a prerequisite.
+Status: implementation complete; model runs and device qualification remain.
+French-to-English is the first route; a Vietnamese checkpoint is not a
+prerequisite.
+
+## Current status
+
+The model-side implementation is committed on `feat/mobile-student-model`:
+
+- the frozen 12-layer AR and `parallel_v1` configs, shape receipts, and strict
+  artifact contracts;
+- CUDA cache construction, compact teacher targets, full AR distillation,
+  deterministic resume, parallel-head capture/training, and BF16 export;
+- MLX q4 group-size-32 conversion, strict pack loading, `parallel_v1`
+  inference, and PyTorch/MLX parity tooling.
+
+Local synthetic checks pass, including one/two-pass PyTorch/MLX head parity and
+the raw pre-undelay previous-head state. No full CUDA run or qualified student
+artifact exists yet. The remaining work is therefore execution and
+qualification, not architecture implementation. Stock `moshi-swift` still
+lacks `parallel_v1` and must not be called compatible.
+
+| Workstream | Code | Run status | Next exit evidence |
+|---|---|---|---|
+| Contract and pack | Complete | Synthetic checks pass | Frozen FR set and baseline receipt |
+| AR student | Complete | No CUDA mechanics/full run | Qualified BF16 AR checkpoint + receipt |
+| Parallel head | Complete | Blocked on qualified AR | Qualified BF16 parallel checkpoint + fixture |
+| MLX q4 | Complete | No full-model conversion | Hash-valid q4 pack + numerical/clip parity |
+| Swift phone runtime | Not implemented here | Official 1B baseline pending | `parallel_v1` fixture parity on device |
+| Device qualification | Instrumentation plan only | Not run | Ten-minute trace + joint release receipt |
 
 ## Decision
 
@@ -50,22 +77,22 @@ The 64 ms gate leaves 20% of the 80 ms frame budget. Because encode, LM, and
 decode are pipelined, the relevant steady-state budget is the slowest stage,
 not the sum of all three.
 
-## Two tracks that can run now
+## Remaining work by track
 
 ```mermaid
 flowchart TD
-    START[Freeze the phone/model contract and fixed FR evaluation set]
+    START[Committed model implementation and frozen contract]
 
     START --> MODEL
     START --> PHONE
 
     subgraph MODEL[Model track]
         direction TB
-        M0[Benchmark 3B teacher and official 1B]
-        M1[Train 12-layer AR student]
-        M2[Freeze the qualified student backbone]
-        M3[Distill a parallel eight-codebook head]
-        M4[Quantize and export one model pack]
+        M0[Stage pinned artifacts, FR pairs and fixed clips]
+        M1[Run CUDA cache and train/resume mechanics smoke]
+        M2[Train and qualify the 12-layer AR BF16 student]
+        M3[Capture, train and qualify parallel_v1 BF16]
+        M4[Convert and verify one MLX q4 pack]
         M0 --> M1 --> M2 --> M3 --> M4
     end
 
@@ -74,7 +101,7 @@ flowchart TD
         P0[Run official Hibiki-M 1B in moshi-swift]
         P1[Instrument encode, LM, decode, RSS, thermal and underruns]
         P2[Make the loader config-driven]
-        P3[Implement parallel_v1 against a deterministic fixture]
+        P3[Implement parallel_v1 and raw previous-head state]
         P4[Qualify sustained live audio]
         P0 --> P1 --> P2 --> P3 --> P4
     end
@@ -141,7 +168,7 @@ per-codebook KL is only valid after codebook identity has been demonstrated.
 flowchart TD
     H[Current student hidden state]
     TXT[Current English text token]
-    PREV[Previous-frame target codes: 8]
+    PREV[Previous raw pre-undelay head output: 8]
 
     H --> TRUNK[Small shared trunk]
     TXT --> TRUNK
@@ -197,6 +224,10 @@ flowchart TD
 
 ### Phase 0 - freeze the contract and remeasure
 
+Implementation status: the configs, parameter receipts, cache boundary, pack
+schema, and parity schema are frozen. The fixed FR evaluation set and real
+baseline receipts remain.
+
 - Pin teacher, official 1B, Mimi, tokenizer, data, and repository revisions.
 - Run the same FR set through 3B and official 1B. The 3B is not automatically a
   better FR teacher; use distillation only where it improves the fixed-set
@@ -212,6 +243,10 @@ Exit: the quality reference, latency bottleneck, student config, and exchange
 format are fixed.
 
 ### Phase 1 - train the smaller AR student
+
+Implementation status: initialization, cache validation, losses, rollouts,
+checkpoint pairs, and deterministic resume are complete. CUDA execution and
+qualification remain.
 
 - Initialize compatible embeddings, projections, and uniformly selected
   backbone layers from the official 1B model. Keep width 2048 and remove four
@@ -230,23 +265,49 @@ student widths and depths. Only consider ten layers after the 12-layer model has
 passed quality and the device trace shows that the main transformer still owns
 the missed budget.
 
+Run order:
+
+1. stage the exact pinned 1B/3B checkpoints, Mimi, tokenizer, aligned FR pairs,
+   and fixed evaluation clips;
+2. build a small strict cache and prove initialize → train → save → resume;
+3. materialize compact teacher targets and run one short overfit/mechanics job;
+4. build the full cache, train one 12-layer AR candidate, and evaluate it
+   against both fixed references;
+5. write `hibiki_student_ar_qualification_v1` only after every quality gate
+   passes.
+
 Exit: a BF16 AR student passes text, speech, EOS, silence, and loop gates.
 
 ### Phase 2 - replace the serial head
+
+Implementation status: pre-undelay capture, the exact 7,346,176-parameter head,
+head-only CUDA training, lineage-checked export, and one/two-pass runtime support
+are complete. This phase is blocked only on a qualified AR checkpoint.
 
 - Freeze the qualified student main, text head, and embeddings.
 - Run its AR head over real French audio and capture the conditioning state,
   text token, prior-frame codes, teacher tokens, and compact top-k targets.
 - Train `parallel_v1` with codebook CE plus teacher KL.
-- Sweep only one and two passes. Select the fastest candidate that passes the
-  fixed listening and intelligibility gates.
+- Evaluate one pass first, then the fixed two-pass candidate only if needed.
+  Select the fastest candidate that passes the fixed listening and
+  intelligibility gates.
 - Profile the compiled graph to confirm all eight output heads execute in
   parallel.
+
+Train and evaluate one pass first. Run the fixed two-pass candidate only if one
+pass misses the listening/intelligibility gate; do not launch a wider head
+grid. The captured previous state is the prior raw pre-undelay eight-token head
+output, not a delayed LM input or post-undelay Mimi frame.
 
 Exit: BF16 parallel audio stays inside the agreed quality delta and is faster
 than the AR student on the target device or its exact MLX graph.
 
 ### Phase 3 - q4 pack and cross-runtime parity
+
+Implementation status: BF16 export, deterministic fixture generation, strict
+q4 conversion, manifest/hash validation, MLX loading, and MLX parity checks are
+complete. A qualified parallel BF16 checkpoint is required before the first
+real conversion. Swift parity remains phone-track work.
 
 - Export one config-driven pack containing q4 group-size-32 LM weights, Mimi,
   tokenizer, manifest, hashes, and qualification receipt.
@@ -256,10 +317,13 @@ than the AR student on the target device or its exact MLX graph.
 - Reject silent tensor-name remapping and shape guessing; the pack config owns
   the architecture.
 
-Exit: replacing the official 1B pack requires no app code change and preserves
-the accepted BF16 behavior.
+Exit: the config-driven app accepts the exact student pack without
+pack-specific glue and preserves the accepted BF16 behavior.
 
 ### Phase 4 - device qualification
+
+Implementation status: not run. Start only after the exact q4 pack passes local
+MLX parity and the Swift runtime passes the same frozen fixture.
 
 - Run clean speech, accents, noise, silence, long pauses, and end-of-stream
   flushes.
@@ -284,7 +348,7 @@ Freeze these fields before the tracks split:
 | Context | Read from config; never hardcode it in the app |
 | Head | `ar` or `parallel_v1`; fixed `head_passes` in config |
 | Quantization | q4, group size 32 |
-| State | Explicit Mimi, LM KV, and head state shapes |
+| State | Explicit Mimi, LM KV, and previous raw pre-undelay head-output shapes |
 | Files | weights, config, Mimi, tokenizer, manifest, hashes, receipt |
 | Parity | Frozen input/state/output fixture for each architecture revision |
 
@@ -296,16 +360,16 @@ silently loaded by the eight+eight student.
 
 | Owner | Work | First deliverable | Final deliverable |
 |---|---|---|---|
-| Model | student config, data conversion, full distillation, parallel head, q4 export | config + parity fixture + untrained shape-valid pack | qualified q4 pack |
+| Model | student config, data conversion, full distillation, parallel head, q4 export | qualified AR BF16 checkpoint + receipt | qualified q4 pack |
 | Phone | moshi-swift baseline, audio pipeline, config loader, parallel graph, profiling | sustained official-1B device trace | qualified app build |
-| Shared | fixed clips, metrics schema, artifact manifest, release gates | signed-off contract | joint qualification receipt |
+| Shared | fixed clips, metrics schema, artifact manifest, release gates | frozen FR manifests + baseline receipt | joint qualification receipt |
 
 Handoffs happen at four stable points:
 
-1. shape-valid untrained pack, for loader and memory work;
-2. short-run BF16 pack, for numerical parity;
-3. qualified AR q4 pack, for full pipeline measurement;
-4. qualified parallel q4 pack, for final device selection.
+1. frozen configs, shape receipts, and parity schema, already committed;
+2. qualified AR BF16 checkpoint and receipt, for head capture;
+3. qualified parallel BF16 checkpoint and frozen fixture, for conversion;
+4. qualified parallel q4 pack and joint receipt, for final device selection.
 
 ## What FR-to-EN proves, and what it does not
 
@@ -319,12 +383,27 @@ contract is preserved, the application work carries over unchanged.
 
 ## Immediate next actions
 
-1. Phone owner: build and profile the official Hibiki-M 1B checkpoint on the
-   first device using the upstream MLX Swift path.
-2. Model owner: write and freeze the 12-layer student config and parameter/size
-   receipt, then run a short FR distillation smoke.
-3. Both owners: agree on the model-pack manifest and one parity fixture before
-   either track adds architecture-specific glue.
+1. Shared: freeze the exact FR train/evaluation manifests, fixed clips, metrics,
+   3B/1B artifact hashes, and baseline commands.
+2. Model: stage those pinned artifacts on CUDA and run the strict cache plus
+   initialize/train/save/resume mechanics smoke documented in
+   [`student/README.md`](../student/README.md).
+3. Model: train and qualify one 12-layer AR BF16 candidate; do not begin head
+   capture until its exact qualification receipt exists.
+4. Model: capture the qualified AR distributions, train one-pass
+   `parallel_v1`, add two passes only if required, and qualify/export BF16.
+5. Model: generate the frozen fixture, convert one q4 group-size-32 MLX pack,
+   then pass manifest, numerical parity, fixed clips, silence, and Mac profiling.
+6. Phone: in parallel with model execution, record the official 1B device
+   baseline, make the loader config-driven, and implement `parallel_v1` with the
+   same raw previous-head state and fixture.
+7. Shared: run the exact q4 pack on iPhone 16 Pro for ten minutes and issue the
+   beta receipt only if quality, parity, memory, thermal, queue, and p95 gates
+   all pass.
+
+Do not quantize before BF16 qualification, claim Swift compatibility before its
+fixture passes, start a width/depth grid, or promote a pack from Mac timing
+projections alone.
 
 ## References
 
