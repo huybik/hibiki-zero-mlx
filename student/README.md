@@ -39,3 +39,52 @@ fixture, and both receipts exist and match `manifest.json`:
 /opt/homebrew/Caskroom/miniconda/base/bin/python student/contract.py manifest PACK_DIR
 /opt/homebrew/Caskroom/miniconda/base/bin/python student/contract.py validate PACK_DIR
 ```
+
+Build strict hard-pair caches from JSONL or CSV rows containing `id`, `split`,
+`source_audio`, `target_audio`, `target_text`, and `text_frames`. `text_frames`
+is a sorted JSON list locating every SentencePiece token, including EOS, on the
+12.5 Hz aligned timeline; the builder rejects unaligned text. Cache construction
+and model distillation are CUDA-only; MLX is reserved for quantization and
+inference.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/cache.py build \
+  --pairs PAIRS.jsonl --out-dir CACHE
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/cache.py validate \
+  CACHE --role student_hard
+```
+
+Build the matching 32-stream teacher context from the same aligned pairs. This
+cache exists only to run the 3B text head; its audio logits are never exported:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/cache.py build \
+  --pairs PAIRS.jsonl --out-dir TEACHER_CACHE --role teacher_context \
+  --config TEACHER/config.json --weights TEACHER/model.safetensors \
+  --repo kyutai/hibiki-zero-3b-pytorch-bf16 \
+  --revision 73175ce6243f8ad66b2138b0264a80044b35c1bd \
+  --mimi TEACHER/mimi.safetensors --tokenizer TEACHER/tokenizer.model
+```
+
+Every shard repeats one exact metadata object: the full model config and its
+SHA-256, Mimi and tokenizer SHA-256 values, the 24 kHz/12.5 Hz contract, and the
+17-row layout. The validator checks every shard and sample; legacy 32-stream 3B
+caches fail. A teacher cache uses the same format with role `teacher_context`,
+33 rows, full teacher config, and a teacher weights SHA-256.
+
+Materialize only compact teacher text distributions; teacher audio heads are
+never mapped to student heads:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/dump_teacher.py \
+  --teacher-cache TEACHER_CACHE --student-cache CACHE \
+  --teacher-config TEACHER/config.json --teacher-weights TEACHER/model.safetensors \
+  --teacher-repo kyutai/hibiki-zero-3b-pytorch-bf16 \
+  --teacher-revision 73175ce6243f8ad66b2138b0264a80044b35c1bd \
+  --out-dir DISTILL_CACHE --top-k 32
+```
+
+`teacher_sequence_codes`, when present, is a separately produced `[8, T]`
+integer field containing teacher-waveform audio re-encoded by the student Mimi.
+It is preserved by the dumper and strictly validated, but this phase does not
+generate teacher speech or mislabel hard target audio as teacher audio.

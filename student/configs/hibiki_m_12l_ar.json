@@ -2,7 +2,7 @@
   "artifact_format": "hibiki_student_pack_v1",
   "architecture": "hibiki_m_12l",
   "parent_repo": "kyutai/hibiki-1b-pytorch-bf16",
-  "parent_revision": "main",
+  "parent_revision": "65dee9b6a682393d4e9b193ccbe314e401e230c9",
   "selected_parent_layers": [
     0,
     1,
