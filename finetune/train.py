@@ -100,6 +100,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Strip Vietnamese diacritics from source-ASR targets and eval references.",
     )
+    parser.add_argument("--source-asr-replay-weight", type=float, default=0.0)
+    parser.add_argument("--source-asr-replay-batch-size", type=int, default=4)
+    parser.add_argument("--source-asr-replay-max-frames", type=int, default=0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-weight-schedule", default="", help='Text loss-weight schedule "5@0,2@0.6".')
     parser.add_argument(
@@ -457,8 +460,28 @@ def main() -> None:
         raise ValueError("Source-ASR preadaptation requires authoritative input membership")
     if args.source_asr_pretrain and args.contrastive_source_weight:
         raise ValueError("Source-ASR preadaptation and contrastive translation are exclusive")
-    if args.source_asr_ascii and not args.source_asr_pretrain:
-        raise ValueError("--source-asr-ascii requires --source-asr-pretrain")
+    if args.source_asr_replay_weight < 0:
+        raise ValueError("--source-asr-replay-weight must be non-negative")
+    if args.source_asr_replay_weight and (
+        args.source_asr_pretrain or args.contrastive_source_weight
+    ):
+        raise ValueError("Source-ASR replay is exclusive with ASR preadaptation and contrastive loss")
+    if args.source_asr_replay_weight and (
+        args.input_sample_manifest is None or args.init_checkpoint is None
+    ):
+        raise ValueError("Source-ASR replay requires authoritative membership and initialization")
+    if args.source_asr_replay_weight and args.grad_accum_steps != 1:
+        raise ValueError("Source-ASR replay requires --grad-accum-steps 1")
+    if args.source_asr_replay_weight and (
+        args.source_asr_replay_batch_size <= 0 or args.source_asr_replay_max_frames <= 0
+    ):
+        raise ValueError("Source-ASR replay requires a positive batch size and frame cap")
+    if args.source_asr_ascii and not (
+        args.source_asr_pretrain or args.source_asr_replay_weight
+    ):
+        raise ValueError("--source-asr-ascii requires source-ASR preadaptation or replay")
+    if args.source_asr_replay_weight and not args.source_asr_ascii:
+        raise ValueError("Source-ASR replay requires --source-asr-ascii")
     if args.source_asr_pretrain and args.eval_every and args.eval_reference_column != "text_vi":
         raise ValueError("Source-ASR evaluation requires --eval-reference-column text_vi")
     if args.cache_weights is not None and len(args.cache_weights) != len(args.cache_dir):
@@ -537,6 +560,29 @@ def main() -> None:
         args.input_sample_manifest_sha256,
         args.source_asr_pretrain,
     )
+    source_asr_replay_dataset = None
+    source_asr_replay_sha256 = None
+    if args.source_asr_replay_weight:
+        source_asr_replay_dataset = common.CachedCodeDataset(
+            cache_dir,
+            False,
+            0,
+            args.source_asr_replay_max_frames,
+            seed=args.seed,
+            expected_target_delay=expected_target_delay,
+            sample_manifest=args.input_sample_manifest,
+            sample_manifest_sha256=args.input_sample_manifest_sha256,
+            retain_source_text=True,
+        )
+        source_asr_replay_sha256 = common.prepare_source_asr(
+            source_asr_replay_dataset,
+            args.tokenizer,
+            out_dir / "source_asr_replay.json",
+            ascii_target=True,
+        )
+        source_asr_replay_dataset.require_max_frames(
+            args.source_asr_replay_max_frames, "Source-ASR replay data"
+        )
     source_asr_sha256 = None
     if args.source_asr_pretrain:
         source_asr_sha256 = common.prepare_source_asr(
@@ -569,6 +615,10 @@ def main() -> None:
         not args.mask_target_audio_input or any(weight != 0.0 for _, weight in audio_points)
     ):
         raise ValueError("Source-ASR preadaptation requires masked target audio and zero audio loss")
+    if args.source_asr_replay_weight and (
+        not args.mask_target_audio_input or any(weight != 0.0 for _, weight in audio_points)
+    ):
+        raise ValueError("Source-ASR replay requires masked target audio and zero audio loss")
     source_derangement_sha256 = None
     if args.contrastive_source_weight:
         source_derangement_sha256 = common.attach_source_derangement(
@@ -671,7 +721,7 @@ def main() -> None:
             args.eval_id_column,
             args.eval_duration_column,
         )
-        if args.source_asr_ascii:
+        if args.source_asr_pretrain and args.source_asr_ascii:
             for row in eval_rows:
                 row[args.eval_reference_column] = common.ascii_text(
                     row[args.eval_reference_column]
@@ -713,12 +763,45 @@ def main() -> None:
             if not previous_config_path.is_file():
                 raise RuntimeError("Resume requires the original run_config.json")
             previous_config = json.loads(previous_config_path.read_text(encoding="utf-8"))
+            ordered_resume_contract = {
+                "batch_size": args.batch_size,
+                "grad_accum_steps": args.grad_accum_steps,
+                "sort_by_length": args.sort_by_length,
+                "smoke_longest_first": args.smoke_longest_first,
+                "seed": args.seed,
+                "max_frames": args.max_frames,
+            }
+            for key, value in ordered_resume_contract.items():
+                if previous_config.get(key) != value:
+                    raise RuntimeError(f"Ordered-data resume contract changed: {key}")
             if previous_config.get("sample_manifest_sha256") != sample_manifest_sha256:
                 raise RuntimeError("sample_manifest.jsonl SHA-256 differs from run_config.json")
             if previous_config.get("source_derangement_sha256") != source_derangement_sha256:
                 raise RuntimeError("Source derangement differs from run_config.json")
             if previous_config.get("source_asr_sha256") != source_asr_sha256:
                 raise RuntimeError("Source-ASR policy differs from run_config.json")
+            if (
+                previous_config.get("source_asr_replay_sha256")
+                != source_asr_replay_sha256
+            ):
+                raise RuntimeError("Source-ASR replay policy differs from run_config.json")
+            if args.source_asr_replay_weight or previous_config.get(
+                "source_asr_replay_weight", 0.0
+            ):
+                replay_resume_contract = {
+                    "source_asr_replay_weight": args.source_asr_replay_weight,
+                    "source_asr_replay_batch_size": args.source_asr_replay_batch_size,
+                    "source_asr_replay_max_frames": args.source_asr_replay_max_frames,
+                    "source_asr_ascii": args.source_asr_ascii,
+                    "init_checkpoint_sha256": args.init_checkpoint_sha256,
+                    "mask_target_audio_input": args.mask_target_audio_input,
+                    "text_pad_mode": args.text_pad_mode,
+                    "text_pad_loss_weight": args.text_pad_loss_weight,
+                    "first_content_loss_weight": args.first_content_loss_weight,
+                }
+                for key, value in replay_resume_contract.items():
+                    if previous_config.get(key) != value:
+                        raise RuntimeError(f"Source-ASR replay resume contract changed: {key}")
     run_config = {k: _jsonable(v) for k, v in vars(args).items()}
     run_config["total_steps"] = total_steps
     run_config["batches_per_epoch"] = batches_per_epoch
@@ -732,6 +815,11 @@ def main() -> None:
         run_config["source_derangement_sha256"] = source_derangement_sha256
     if source_asr_sha256 is not None:
         run_config["source_asr_sha256"] = source_asr_sha256
+    if source_asr_replay_sha256 is not None:
+        run_config["source_asr_replay_sha256"] = source_asr_replay_sha256
+        run_config["observed_source_asr_replay_max_frames"] = max(
+            int(sample["frames"]) for sample in source_asr_replay_dataset.samples
+        )
     run_config_path = out_dir / "run_config.json"
     if args.resume_checkpoint is None:
         atomic_write_text(
@@ -752,6 +840,7 @@ def main() -> None:
         "first_content_loss": 0.0,
         "contrastive_source_loss": 0.0,
         "source_text_nll_gap": 0.0,
+        "source_asr_replay_loss": 0.0,
     }
     log_steps = 0
     log_text_tokens = 0
@@ -764,6 +853,9 @@ def main() -> None:
     log_max_batch_size = 0
     log_max_frames = 0
     log_contrastive_active = 0.0
+    log_source_asr_replay_tokens = 0
+    log_source_asr_replay_samples = 0
+    log_source_asr_replay_max_frames = 0
     best_key = (-1.0, -1.0)
     best_state = load_best_state(out_dir)
     if args.resume_checkpoint is not None and best_state is not None:
@@ -907,6 +999,35 @@ def main() -> None:
             data_iter = iter(dataloader)
             next(data_iter)
         resume_skip_batches -= 1
+    source_asr_replay_iter = None
+    if source_asr_replay_dataset is not None:
+        replay_order = None
+        if args.smoke_longest_first:
+            replay_order = sorted(
+                range(len(source_asr_replay_dataset)),
+                key=lambda index: source_asr_replay_dataset.samples[index]["frames"],
+                reverse=True,
+            )
+        source_asr_replay_dataloader = common.make_cached_dataloader(
+            source_asr_replay_dataset,
+            args.source_asr_replay_batch_size,
+            args.num_workers,
+            False,
+            seed=args.seed,
+            shuffle=False,
+            sample_order=replay_order,
+        )
+        source_asr_replay_iter = iter(source_asr_replay_dataloader)
+        replay_skip_batches = global_step % math.ceil(
+            len(source_asr_replay_dataset) / args.source_asr_replay_batch_size
+        )
+        while replay_skip_batches > 0:
+            try:
+                next(source_asr_replay_iter)
+            except StopIteration:
+                source_asr_replay_iter = iter(source_asr_replay_dataloader)
+                next(source_asr_replay_iter)
+            replay_skip_batches -= 1
     last_log_time = time.time()
     optimizer.zero_grad(set_to_none=True)
 
@@ -930,6 +1051,8 @@ def main() -> None:
         step_loss = step_audio = step_text = 0.0
         step_content = step_pad = step_first = 0.0
         step_contrastive = step_source_gap = step_contrastive_active = 0.0
+        step_source_asr_replay = 0.0
+        step_source_asr_replay_tokens = 0
         step_text_tokens = 0
         for _ in range(args.grad_accum_steps):
             try:
@@ -1023,6 +1146,40 @@ def main() -> None:
             step_contrastive_active = step_contrastive_active + contrastive_active
             step_text_tokens = step_text_tokens + losses["text_tokens"]
 
+        if source_asr_replay_iter is not None:
+            try:
+                replay_batch = next(source_asr_replay_iter)
+            except StopIteration:
+                source_asr_replay_iter = iter(source_asr_replay_dataloader)
+                replay_batch = next(source_asr_replay_iter)
+            replay_codes = replay_batch["codes"].to(device=device, dtype=torch.long)
+            replay_batch_size = int(replay_codes.shape[0])
+            if replay_batch_size not in condition_cache:
+                condition_cache[replay_batch_size] = common.batch_condition_tensors(
+                    lm, checkpoint_info.model_type, replay_batch_size
+                )
+            with autocast:
+                replay_losses = common.compute_batch_losses(
+                    lm,
+                    replay_codes,
+                    condition_cache[replay_batch_size],
+                    0.0,
+                    1.0,
+                    text_pad_loss_weight=0.0,
+                    first_content_loss_weight=args.first_content_loss_weight,
+                    text_pad_mode=args.text_pad_mode,
+                    mask_target_audio_input=True,
+                )
+            replay_loss = replay_losses["loss"]
+            (args.source_asr_replay_weight * replay_loss).backward()
+            step_loss = step_loss + args.source_asr_replay_weight * replay_loss.detach()
+            step_source_asr_replay = replay_loss.detach()
+            step_source_asr_replay_tokens = replay_losses["text_tokens"]
+            log_source_asr_replay_samples += replay_batch_size
+            log_source_asr_replay_max_frames = max(
+                log_source_asr_replay_max_frames, int(replay_batch["frames"].max())
+            )
+
         if args.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
         optimizer.step()
@@ -1036,9 +1193,11 @@ def main() -> None:
         log_sums["first_content_loss"] += step_first / args.grad_accum_steps
         log_sums["contrastive_source_loss"] += step_contrastive / args.grad_accum_steps
         log_sums["source_text_nll_gap"] += step_source_gap / args.grad_accum_steps
+        log_sums["source_asr_replay_loss"] += step_source_asr_replay
         log_contrastive_active += step_contrastive_active
         log_steps += 1
         log_text_tokens += step_text_tokens
+        log_source_asr_replay_tokens += step_source_asr_replay_tokens
 
         if args.log_every and global_step % args.log_every == 0:
             loss_avg = float(log_sums["loss"]) / log_steps
@@ -1060,6 +1219,12 @@ def main() -> None:
                 "contrastive_source_loss": float(log_sums["contrastive_source_loss"])
                 / log_steps,
                 "source_text_nll_gap": float(log_sums["source_text_nll_gap"]) / log_steps,
+                "source_asr_replay_loss": float(log_sums["source_asr_replay_loss"])
+                / log_steps,
+                "source_asr_replay_weight": args.source_asr_replay_weight,
+                "source_asr_replay_tokens": int(log_source_asr_replay_tokens),
+                "source_asr_replay_samples": log_source_asr_replay_samples,
+                "source_asr_replay_max_frames": log_source_asr_replay_max_frames,
                 "contrastive_active_fraction": (
                     float(log_contrastive_active) / log_samples if log_samples else 0.0
                 ),
@@ -1094,6 +1259,7 @@ def main() -> None:
                 f"first={item['first_content_loss']:.4f} pad={item['pad_text_loss']:.4f} tw={text_w:g} "
                 f"contrast={item['contrastive_source_loss']:.4f} "
                 f"source_gap={item['source_text_nll_gap']:.4f} "
+                f"asr_replay={item['source_asr_replay_loss']:.4f} "
                 f"active={item['contrastive_active_fraction']:.3f} "
                 f"B={item['samples'] / item['microbatches']:.1f} "
                 f"[{item['min_batch_size']}-{item['max_batch_size']}] T<={item['max_frames']} "
@@ -1108,6 +1274,7 @@ def main() -> None:
                 "first_content_loss": 0.0,
                 "contrastive_source_loss": 0.0,
                 "source_text_nll_gap": 0.0,
+                "source_asr_replay_loss": 0.0,
             }
             log_steps = 0
             log_text_tokens = 0
@@ -1120,6 +1287,9 @@ def main() -> None:
             log_max_batch_size = 0
             log_max_frames = 0
             log_contrastive_active = 0.0
+            log_source_asr_replay_tokens = 0
+            log_source_asr_replay_samples = 0
+            log_source_asr_replay_max_frames = 0
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:

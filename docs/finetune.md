@@ -158,7 +158,8 @@ Before launch, inspect the public model repo's `full_run/` directory:
 identity for recovery. It supervises checkpoint sync and stops training after
 three consecutive sync failures. Recovery sync also preserves `run_config.json`,
 the pilot's frozen `sample_manifest.jsonl`, and the optional
-`source_derangement.json` or `source_asr.json` under `metadata/`.
+`source_derangement.json`, `source_asr.json`, or `source_asr_replay.json` under
+`metadata/`.
 
 ## Cache format and rebuild path
 
@@ -288,14 +289,22 @@ nonempty, 128 EOS, no repetition failures, BLEU 27.85, chrF 53.26, WER 0.514,
 and 27.74 BLEU / 34.48 chrF source gaps. Its promoted model SHA is
 `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
 
-The next experiment is `HIBIKI_ASR_TRANSLATION_PILOT=1`. Restore that exact
-promoted model under the ASCII-ASR run directory before preflight. The mode
-rejects high-delay, contrastive, and ASR objectives; it reconstructs the exact
-ordinary-timing 50k cohort, starts a fresh optimizer from the pinned parent,
-uses physical batch 16, masks target-audio input, keeps audio loss zero, and runs
-the ordinary 1,000-step translation pilot. It owns
-`*_grounded_v2_pilot_vi_asr_warmstart` smoke/run/HF artifacts. A pass selects a
-text-translation recipe candidate; it does not authorize full training.
+The isolated `HIBIKI_ASR_TRANSLATION_PILOT=1` test reconstructed the exact
+ordinary-timing 50k cohort and started a fresh optimizer from that qualified
+parent. It failed: at step 1,000, correct-source BLEU/chrF was 0.06/8.44,
+source gaps were 0.01/-0.36, and 24 rows failed the repetition gate. No best
+checkpoint was promoted. A plain ASR-to-translation switch is rejected.
+
+The next bounded test is `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1`. It keeps the
+same parent, translation cohort, timing, masked target audio, zero audio loss,
+batch 16, and 1,000-step schedule, but adds one deterministic four-row ASCII-ASR
+batch per optimizer step at weight 1. Replay PAD has zero loss weight, so the
+auxiliary objective preserves Vietnamese content routing after source EOS
+without teaching translation frames to remain silent. Replay uses the same
+ordered manifest, hard-gates its measured maximum at 434 frames, freezes its
+policy in `source_asr_replay.json`, resumes both iterators exactly, and owns
+`*_grounded_v2_pilot_vi_asr_replay` artifacts. A pass selects a text-translation
+recipe candidate; it still does not authorize full training.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
@@ -317,7 +326,8 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
   The high-delay pilot uses batch 8 / accumulation 2, while its contrastive
   variant and source-ASR diagnostic use batch 4 / accumulation 4 on the 94 GB
-  H100.
+  H100. The ASR-replay pilot performs sequential batch-16 translation and
+  batch-4 replay forwards with one optimizer update.
 - Text content, PAD, and first-content losses are reduced independently before
   weighting, so PAD prevalence cannot change its aggregate gradient budget.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.

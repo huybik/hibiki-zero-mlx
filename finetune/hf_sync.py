@@ -28,6 +28,7 @@ RUN_METADATA = (
     "sample_manifest.jsonl",
     "source_derangement.json",
     "source_asr.json",
+    "source_asr_replay.json",
 )
 
 

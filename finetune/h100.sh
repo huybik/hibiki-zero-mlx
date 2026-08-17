@@ -16,6 +16,7 @@ ASR_PREADAPT="${HIBIKI_ASR_PREADAPT:-0}"
 ASR_ONE_EPOCH="${HIBIKI_ASR_ONE_EPOCH:-0}"
 ASR_ASCII="${HIBIKI_ASR_ASCII:-0}"
 ASR_TRANSLATION_PILOT="${HIBIKI_ASR_TRANSLATION_PILOT:-0}"
+ASR_REPLAY_TRANSLATION_PILOT="${HIBIKI_ASR_REPLAY_TRANSLATION_PILOT:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
 ASR_PARENT_CHECKPOINT="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot_vi_asr_ascii_epoch1/best_step003125.safetensors"
@@ -39,6 +40,8 @@ die() {
   || die "HIBIKI_ASR_ASCII must be 0 or 1"
 [[ "$ASR_TRANSLATION_PILOT" == 0 || "$ASR_TRANSLATION_PILOT" == 1 ]] \
   || die "HIBIKI_ASR_TRANSLATION_PILOT must be 0 or 1"
+[[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] \
+  || die "HIBIKI_ASR_REPLAY_TRANSLATION_PILOT must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
   || die "HIBIKI_PILOT=1 requires HIBIKI_RECIPE=grounded-v2"
 [[ "$HIGH_DELAY_PILOT" == 0 || ( "$PILOT" == 1 && "$RECIPE" == "grounded-v2" ) ]] \
@@ -58,6 +61,11 @@ die() {
   "$CONTRASTIVE_PILOT" == 0 && "$ASR_PREADAPT" == 0 && "$ASR_ONE_EPOCH" == 0 &&
   "$ASR_ASCII" == 0
 ) ]] || die "HIBIKI_ASR_TRANSLATION_PILOT=1 requires the ordinary grounded pilot alone"
+[[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 || (
+  "$RECIPE" == grounded-v2 && "$PILOT" == 1 && "$HIGH_DELAY_PILOT" == 0 &&
+  "$CONTRASTIVE_PILOT" == 0 && "$ASR_PREADAPT" == 0 && "$ASR_ONE_EPOCH" == 0 &&
+  "$ASR_ASCII" == 0 && "$ASR_TRANSLATION_PILOT" == 0
+) ]] || die "HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1 requires the ordinary grounded pilot alone"
 case "$RECIPE" in
   legacy)
     SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke"
@@ -91,6 +99,9 @@ case "$RECIPE" in
       fi
       if [[ "$ASR_TRANSLATION_PILOT" == 1 ]]; then
         pilot_namespace=grounded_v2_pilot_vi_asr_warmstart
+      fi
+      if [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_vi_asr_replay
       fi
       SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_$pilot_namespace"
       RUN_DIR="$REPO_ROOT/finetune/runs/vi_$pilot_namespace"
@@ -138,7 +149,8 @@ require_python() {
 }
 
 require_baseline_pilot_manifest() {
-  [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 ]] || return
+  [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 || \
+    "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return
   [[ -f "$BASELINE_PILOT_MANIFEST" ]] || die "missing baseline pilot sample manifest"
   command -v sha256sum >/dev/null || die "sha256sum is required"
   local actual
@@ -148,7 +160,7 @@ require_baseline_pilot_manifest() {
 }
 
 require_asr_parent_checkpoint() {
-  [[ "$ASR_TRANSLATION_PILOT" == 1 ]] || return
+  [[ "$ASR_TRANSLATION_PILOT" == 1 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return
   [[ -f "$ASR_PARENT_CHECKPOINT" ]] || die "missing qualified ASR parent checkpoint"
 }
 
@@ -219,6 +231,8 @@ cache_grounded() {
     || die "ASR preadaptation reuses the verified high-delay caches"
   [[ "$ASR_TRANSLATION_PILOT" == 0 ]] \
     || die "the ASR warm-start pilot reuses the verified ordinary caches"
+  [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 ]] \
+    || die "the ASR-replay pilot reuses the verified ordinary caches"
   require_python
   require_baseline_pilot_manifest
   require_cuda_driver
@@ -317,7 +331,8 @@ preflight() {
   local profile
   profile="$("$PYTHON" - \
     "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "$PILOT" "$HIGH_DELAY_PILOT" \
-    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" \
+    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_TRANSLATION_PILOT" \
+    "$ASR_REPLAY_TRANSLATION_PILOT" \
     "$TARGET_DELAY_MIN_RATIO" "$TARGET_DELAY_MAX_RATIO" "$TARGET_DELAY_SEED" \
     "$PHOMT_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" <<'PY'
 from __future__ import annotations
@@ -338,12 +353,14 @@ pilot = bool(int(sys.argv[4]))
 high_delay_pilot = bool(int(sys.argv[5]))
 contrastive_pilot = bool(int(sys.argv[6]))
 source_asr = bool(int(sys.argv[7]))
+asr_translation_pilot = bool(int(sys.argv[8]))
+asr_replay_translation_pilot = bool(int(sys.argv[9]))
 target_delay = {
-    "min_ratio": float(sys.argv[8]),
-    "max_ratio": float(sys.argv[9]),
-    "seed": int(sys.argv[10]),
+    "min_ratio": float(sys.argv[10]),
+    "max_ratio": float(sys.argv[11]),
+    "seed": int(sys.argv[12]),
 }
-phomt_cache, train_cache, val_cache = sys.argv[11:14]
+phomt_cache, train_cache, val_cache = sys.argv[13:16]
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -367,7 +384,13 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if (contrastive_pilot or source_asr) and memory_gib >= 75:
+if asr_translation_pilot or asr_replay_translation_pilot:
+    if memory_gib < 90:
+        raise RuntimeError(
+            f"ASR translation pilots require at least 90 GiB GPU memory, got {memory_gib:.1f} GiB"
+        )
+    batch_size, grad_accum = 16, 1
+elif (contrastive_pilot or source_asr) and memory_gib >= 75:
     batch_size, grad_accum = 4, 4
 elif high_delay_pilot and memory_gib >= 75:
     batch_size, grad_accum = 8, 2
@@ -543,7 +566,7 @@ common_args() {
   if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
     max_steps=3125
   fi
-  if [[ "$ASR_TRANSLATION_PILOT" == 1 ]]; then
+  if [[ "$ASR_TRANSLATION_PILOT" == 1 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
     sort_args=(--no-sort-by-length)
   fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
@@ -590,7 +613,8 @@ common_args() {
       --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
       --eval-at-start
     )
-    if [[ "$HIGH_DELAY_PILOT" == 0 && "$ASR_TRANSLATION_PILOT" == 0 ]]; then
+    if [[ "$HIGH_DELAY_PILOT" == 0 && "$ASR_TRANSLATION_PILOT" == 0 && \
+      "$ASR_REPLAY_TRANSLATION_PILOT" == 0 ]]; then
       TRAIN_ARGS+=(--cache-weights 0.95 0.05)
     fi
     if [[ "$PILOT" == 1 ]]; then
@@ -633,6 +657,17 @@ common_args() {
           --init-checkpoint "$ASR_PARENT_CHECKPOINT"
           --init-checkpoint-sha256 "$ASR_PARENT_CHECKPOINT_SHA256"
         )
+      elif [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
+        TRAIN_ARGS+=(
+          --input-sample-manifest "$BASELINE_PILOT_MANIFEST"
+          --input-sample-manifest-sha256 "$BASELINE_PILOT_MANIFEST_SHA256"
+          --init-checkpoint "$ASR_PARENT_CHECKPOINT"
+          --init-checkpoint-sha256 "$ASR_PARENT_CHECKPOINT_SHA256"
+          --source-asr-ascii
+          --source-asr-replay-weight 1.0
+          --source-asr-replay-batch-size 4
+          --source-asr-replay-max-frames 434
+        )
       else
         TRAIN_ARGS+=(--max-samples 50000)
       fi
@@ -656,7 +691,8 @@ check_smoke_outputs() {
   "$PYTHON" - \
     "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" \
     "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_ASCII" \
-    "$ASR_TRANSLATION_PILOT" "$ASR_PARENT_CHECKPOINT" \
+    "$ASR_TRANSLATION_PILOT" "$ASR_REPLAY_TRANSLATION_PILOT" \
+    "$ASR_PARENT_CHECKPOINT" \
     "$ASR_PARENT_CHECKPOINT_SHA256" <<'PY'
 from __future__ import annotations
 
@@ -674,8 +710,9 @@ contrastive_pilot = bool(int(sys.argv[4]))
 source_asr = bool(int(sys.argv[5]))
 source_asr_ascii = bool(int(sys.argv[6]))
 asr_translation_pilot = bool(int(sys.argv[7]))
-asr_parent_checkpoint = sys.argv[8]
-asr_parent_checkpoint_sha256 = sys.argv[9]
+asr_replay_translation_pilot = bool(int(sys.argv[8]))
+asr_parent_checkpoint = sys.argv[9]
+asr_parent_checkpoint_sha256 = sys.argv[10]
 logs = [json.loads(line) for line in (root / "train_log.jsonl").read_text().splitlines() if line]
 if not logs or logs[-1]["step"] != 11:
     raise RuntimeError("resume smoke did not reach step 11")
@@ -816,6 +853,63 @@ if asr_translation_pilot:
     if max(int(item["max_frames"]) for item in logs) != observed_max_frames:
         raise RuntimeError("ASR warm-start smoke did not exercise the longest row")
 
+if asr_replay_translation_pilot:
+    config = json.loads((root / "run_config_step10.json").read_text())
+    expected = {
+        "batch_size": 16,
+        "grad_accum_steps": 1,
+        "max_frames": 280,
+        "val_max_frames": 0,
+        "val_batch_size": 8,
+        "max_samples": 0,
+        "cache_weights": None,
+        "sort_by_length": False,
+        "smoke_longest_first": True,
+        "input_sample_manifest_sha256": baseline_manifest_sha256,
+        "sample_manifest_sha256": baseline_manifest_sha256,
+        "init_checkpoint": asr_parent_checkpoint,
+        "init_checkpoint_sha256": asr_parent_checkpoint_sha256,
+        "source_asr_pretrain": False,
+        "source_asr_ascii": True,
+        "source_asr_replay_weight": 1.0,
+        "source_asr_replay_batch_size": 4,
+        "source_asr_replay_max_frames": 434,
+        "observed_source_asr_replay_max_frames": 434,
+    }
+    for key, value in expected.items():
+        if config.get(key) != value:
+            raise RuntimeError(f"ASR-replay smoke config mismatch for {key}")
+    manifest_digest = hashlib.sha256((root / "sample_manifest.jsonl").read_bytes()).hexdigest()
+    if manifest_digest != baseline_manifest_sha256:
+        raise RuntimeError("ASR replay changed authoritative translation membership")
+    document = json.loads((root / "source_asr_replay.json").read_text())
+    payload = document["source_asr"]
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if digest != document["sha256"] or digest != config.get("source_asr_replay_sha256"):
+        raise RuntimeError("ASR-replay policy hash mismatch")
+    if (
+        payload.get("strategy") != "full_sentence_ascii_vi_asr_after_source_eos"
+        or payload.get("rows") != 50_000
+        or payload.get("observed_max_frames") != 434
+    ):
+        raise RuntimeError("ASR-replay cohort shape mismatch")
+    if max(int(item["max_batch_size"]) for item in logs) != 16:
+        raise RuntimeError("ASR-replay smoke did not exercise translation batch 16")
+    observed_train_max_frames = int(config.get("observed_train_max_frames", 0))
+    if not 0 < observed_train_max_frames <= 280:
+        raise RuntimeError("ASR-replay translation maximum exceeds its frame cap")
+    if max(int(item["max_frames"]) for item in logs) != observed_train_max_frames:
+        raise RuntimeError("ASR-replay smoke did not exercise the longest translation row")
+    for item in logs:
+        if not math.isfinite(float(item["source_asr_replay_loss"])):
+            raise RuntimeError(f"non-finite ASR-replay loss at step {item['step']}")
+        if int(item["source_asr_replay_samples"]) != 4:
+            raise RuntimeError("ASR-replay smoke did not use one replay batch per step")
+    if max(int(item["source_asr_replay_max_frames"]) for item in logs) != 434:
+        raise RuntimeError("ASR-replay smoke did not exercise the longest replay row")
+
 eval_dir = root / "standalone_eval_step10"
 metrics = json.loads((eval_dir / "metrics.json").read_text())
 with (eval_dir / "predictions.csv").open(newline="", encoding="utf-8") as handle:
@@ -858,7 +952,8 @@ smoke() {
   (
     set -Eeuo pipefail
     local smoke_data_args=()
-    if [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 ]]; then
+    if [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 || \
+      "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
       smoke_data_args=(--smoke-longest-first)
     fi
     local smoke_lr=(--lr-schedule "1e-4@0" --warmup-steps 500 --text-weight-schedule "5@0")

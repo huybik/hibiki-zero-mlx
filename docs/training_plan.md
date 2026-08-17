@@ -352,3 +352,32 @@ This mode owns `*_grounded_v2_pilot_vi_asr_warmstart`, reconstructs the exact
 ordinary-timing 50k membership, pins the qualified parent SHA, starts a fresh
 optimizer, and uses physical batch 16 for 1,000 masked-audio translation steps.
 Evaluation remains paired at 0/250/500/750/1,000 with unchanged promotion gates.
+It failed at step 1,000: correct-source BLEU/chrF was 0.06/8.44, source gaps
+were 0.01/-0.36, 24 rows failed the repetition gate, and no best checkpoint was
+promoted. Do not extend or initialize full training from this run.
+
+Repeat the isolated translation contract while preserving the qualified
+acoustic objective with deterministic ASCII-ASR replay:
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1
+unset HIBIKI_ASR_TRANSLATION_PILOT
+unset HIBIKI_HIGH_DELAY_PILOT HIBIKI_CONTRASTIVE_PILOT
+unset HIBIKI_ASR_PREADAPT HIBIKI_ASR_ONE_EPOCH HIBIKI_ASR_ASCII
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+This mode owns `*_grounded_v2_pilot_vi_asr_replay` artifacts. Every optimizer
+step processes the unchanged batch-16 English-translation objective followed
+by a four-row, weight-1 ASCII-Vietnamese ASR batch from the same frozen cohort.
+Replay supervises content after source EOS but gives PAD zero loss weight. Its
+ordered iterator resumes from `global_step`, its hard maximum is the measured
+434 frames, and `source_asr_replay.json` freezes the tokenizer/text policy. The
+English paired evaluation and promotion gates remain unchanged.

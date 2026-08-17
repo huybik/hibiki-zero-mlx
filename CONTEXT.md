@@ -140,8 +140,19 @@ parent SHA is `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`
 `HIBIKI_ASR_TRANSLATION_PILOT=1` now owns the next isolated experiment: fresh
 optimizer, ordinary-timing exact 50k cohort, physical batch 16, masked target
 audio, zero audio loss, and 1,000 translation steps initialized from that exact
-parent. It owns `*_grounded_v2_pilot_vi_asr_warmstart`; a pass authorizes recipe
-selection, not the full run.
+parent. Its isolated `*_grounded_v2_pilot_vi_asr_warmstart` run failed: at step
+1,000, correct-source BLEU/chrF was 0.06/8.44, source gaps were 0.01/-0.36, and
+24 rows failed the repetition gate, so no best checkpoint was promoted. A plain
+fresh-optimizer switch from qualified ASCII ASR to English translation is
+rejected. The next bounded recipe test must preserve the ASCII-ASR objective
+jointly while training translation. `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1`
+does that in an isolated namespace: each ordinary batch-16 translation step is
+followed by a deterministic batch-4, weight-1 ASCII-ASR replay forward from the
+same exact cohort. Replay has zero PAD pressure, a 434-frame hard cap, frozen
+policy metadata, and exact resume position. Do not start full SFT until this or
+a later translation pilot qualifies and the complete grounded cache is
+published and verified; the current 94 GB H100 NVL full run is planned at
+physical batch 16.
 
 ## Canonical resources
 
