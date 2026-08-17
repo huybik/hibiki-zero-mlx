@@ -21,12 +21,17 @@ import torch  # noqa: E402
 from finetune import common  # noqa: E402
 from finetune.freeze_full_data_receipt import (  # noqa: E402
     BATCH_SIZE,
+    BEST_METRIC,
     CACHE_COUNTS,
+    CADENCE_STEPS,
+    EPOCHS,
     EXPECTED_ARTIFACTS,
     EXPECTED_CACHE,
     MAX_FRAMES,
     ROWS,
     SEED,
+    STEPS_PER_EPOCH,
+    TOTAL_STEPS,
     VALIDATION_BATCH_SIZE,
     VALIDATION_MAX_FRAMES,
     VALIDATION_OBSERVED_MAX_FRAMES,
@@ -64,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--full-data-receipt", type=Path, required=True)
     parser.add_argument("--input-sample-manifest", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--max-frames", type=int, default=MAX_FRAMES)
@@ -79,9 +84,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-pad-loss-weight", type=float, default=0.05)
     parser.add_argument("--val-max-frames", type=int, default=VALIDATION_MAX_FRAMES)
     parser.add_argument("--val-batch-size", type=int, default=VALIDATION_BATCH_SIZE)
-    parser.add_argument("--val-every", type=int, default=0)
+    parser.add_argument("--val-every", type=int, default=CADENCE_STEPS)
     parser.add_argument("--val-batches", type=int, default=0)
-    parser.add_argument("--save-every", type=int, default=3_000)
+    parser.add_argument("--save-every", type=int, default=CADENCE_STEPS)
     parser.add_argument("--keep-checkpoints", type=int, default=2)
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--resume-checkpoint", type=Path)
@@ -139,7 +144,7 @@ def load_receipt(path: Path) -> tuple[dict[str, Any], bytes]:
     if digest != document["sha256"]:
         raise RuntimeError("Full-data receipt SHA-256 mismatch")
     expected = {
-        "version": 2,
+        "version": 3,
         "strategy": "direct_voice_preserving_simultaneous_translation",
         "artifacts": EXPECTED_ARTIFACTS,
         "cache": EXPECTED_CACHE,
@@ -164,6 +169,12 @@ def load_receipt(path: Path) -> tuple[dict[str, Any], bytes]:
         "selection_seed": SEED,
         "batch_size": BATCH_SIZE,
         "max_frames": MAX_FRAMES,
+        "epochs": EPOCHS,
+        "steps_per_epoch": STEPS_PER_EPOCH,
+        "total_steps": TOTAL_STEPS,
+        "validation_every_steps": CADENCE_STEPS,
+        "checkpoint_every_steps": CADENCE_STEPS,
+        "best_metric": BEST_METRIC,
     }
     for key, value in expected.items():
         if receipt.get(key) != value:
@@ -230,6 +241,59 @@ def build_metadata(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
+def load_best_state(out_dir: Path) -> dict[str, Any] | None:
+    path = out_dir / "best.json"
+    if not path.is_file():
+        return None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if set(state) != {"step", "model", "metric", "validation_loss"}:
+        raise RuntimeError("Invalid best-checkpoint metadata")
+    step = int(state["step"])
+    if state["metric"] != BEST_METRIC:
+        raise RuntimeError("Best-checkpoint metric changed")
+    model = out_dir / str(state["model"])
+    if model.name != f"best_step{step:06d}.safetensors" or not model.is_file():
+        raise RuntimeError("Best-checkpoint metadata references a missing model")
+    float(state["validation_loss"])
+    return state
+
+
+def promote_best(
+    step: int,
+    validation_loss: float,
+    out_dir: Path,
+    previous: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if previous is not None and validation_loss >= float(previous["validation_loss"]):
+        return previous
+    checkpoint_path = require_file(
+        out_dir / f"model_step{step:06d}.safetensors",
+        "validation-cadence model checkpoint",
+    )
+    model_path = out_dir / f"best_step{step:06d}.safetensors"
+    model_path.unlink(missing_ok=True)
+    os.link(checkpoint_path, model_path)
+    state = {
+        "step": step,
+        "model": model_path.name,
+        "metric": BEST_METRIC,
+        "validation_loss": validation_loss,
+    }
+    atomic_write_text(
+        json.dumps(state, indent=2, sort_keys=True) + "\n", out_dir / "best.json"
+    )
+    if previous is not None:
+        (out_dir / str(previous["model"])).unlink(missing_ok=True)
+    for path in out_dir.glob("best_step*.safetensors"):
+        if path != model_path:
+            path.unlink()
+    print(
+        f"Promoted best validation loss={validation_loss:.4f} at step {step} "
+        f"-> {repo_display_path(model_path)}"
+    )
+    return state
+
+
 def save_checkpoint(
     model: Any, optimizer: Any, args: argparse.Namespace, step: int, out_dir: Path
 ) -> Path:
@@ -287,7 +351,7 @@ def load_resume_checkpoint(
 
 def validate_args(args: argparse.Namespace) -> None:
     fixed = {
-        "epochs": 1,
+        "epochs": EPOCHS,
         "batch_size": BATCH_SIZE,
         "grad_accum_steps": 1,
         "max_frames": MAX_FRAMES,
@@ -314,6 +378,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--grad-clip must be non-negative")
     if args.keep_checkpoints < 0:
         raise ValueError("--keep-checkpoints must be non-negative")
+    if not args.smoke_longest_first and (
+        args.val_every != CADENCE_STEPS or args.save_every != CADENCE_STEPS
+    ):
+        raise ValueError(
+            f"Direct production requires validation/checkpoints every {CADENCE_STEPS} steps"
+        )
     if common.FRAME_BUCKET != 16 or os.environ.get("NO_TORCH_COMPILE") == "1":
         raise ValueError("Direct full-data training requires compile and 16-frame buckets")
 
@@ -365,6 +435,11 @@ def main() -> None:
     if not run_receipt.is_file():
         atomic_write_text(receipt_encoded.decode(), run_receipt)
     clean_incomplete_checkpoints(out_dir)
+    best_state = load_best_state(out_dir)
+    best_model = None if best_state is None else out_dir / str(best_state["model"])
+    for path in out_dir.glob("best_step*.safetensors"):
+        if path != best_model:
+            path.unlink()
 
     dataset = common.CachedCodeDataset(
         cache_dirs,
@@ -411,9 +486,11 @@ def main() -> None:
 
     batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
     steps_per_epoch = batches_per_epoch // args.grad_accum_steps
-    if steps_per_epoch != 44_945:
+    if steps_per_epoch != STEPS_PER_EPOCH:
         raise RuntimeError(f"Direct full-data steps per epoch changed: {steps_per_epoch}")
-    total_steps = args.max_steps or steps_per_epoch
+    total_steps = args.max_steps or steps_per_epoch * args.epochs
+    if not args.max_steps and total_steps != TOTAL_STEPS:
+        raise RuntimeError(f"Direct full-data total steps changed: {total_steps}")
 
     checkpoint_info = common.load_checkpoint_info(args)
     print(f"Loading upstream Hibiki-Zero from {repo_display_path(args.model_weight)}")
@@ -448,6 +525,8 @@ def main() -> None:
         )
     if global_step >= total_steps:
         raise RuntimeError("Resume checkpoint is already at or beyond the requested stop")
+    if args.resume_checkpoint is not None and global_step >= CADENCE_STEPS and best_state is None:
+        raise RuntimeError("Production resume requires the previously promoted best checkpoint")
 
     manifest_path = out_dir / "sample_manifest.jsonl"
     manifest_encoded = args.input_sample_manifest.read_bytes()
@@ -480,6 +559,7 @@ def main() -> None:
             "audio_ce": True,
             "post_source_transform": None,
             "validation_shuffle": False,
+            "best_metric": BEST_METRIC,
             "observed_train_max_frames": max(
                 sample["frames"] for sample in dataset.samples
             ),
@@ -528,6 +608,10 @@ def main() -> None:
             "audio_ce",
             "post_source_transform",
             "validation_shuffle",
+            "best_metric",
+            "val_every",
+            "save_every",
+            "keep_checkpoints",
         )
         for key in resume_keys:
             if previous.get(key) != run_config.get(key):
@@ -581,6 +665,7 @@ def main() -> None:
     last_log_time = time.time()
 
     def run_teacher_forced_val(step: int) -> None:
+        nonlocal best_state
         metrics = common.evaluate_teacher_forced(
             lm,
             val_dataloader,
@@ -617,6 +702,9 @@ def main() -> None:
             f"audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} "
             f"content={metrics['content_text_loss']:.4f} "
             f"acc={metrics['content_acc']:.3f} pad_acc={metrics['pad_acc']:.3f}"
+        )
+        best_state = promote_best(
+            step, float(metrics["loss"]), out_dir, best_state
         )
 
     optimizer.zero_grad(set_to_none=True)
@@ -674,7 +762,7 @@ def main() -> None:
                 raise RuntimeError(f"Non-finite loss by step {global_step}")
             now = time.time()
             item = {
-                "epoch": 1,
+                "epoch": (global_step - 1) // steps_per_epoch + 1,
                 "step": global_step,
                 "loss": loss_average,
                 "audio_loss": float(log_sums["audio_loss"]) / log_steps,
@@ -728,9 +816,9 @@ def main() -> None:
         if args.val_every and global_step % args.val_every == 0:
             run_teacher_forced_val(global_step)
 
+    save_checkpoint(lm, optimizer, args, global_step, out_dir)
     if not args.val_every or global_step % args.val_every:
         run_teacher_forced_val(global_step)
-    save_checkpoint(lm, optimizer, args, global_step, out_dir)
     print(
         f"Saved final direct full-model checkpoint at step {global_step} "
         f"in {repo_display_path(out_dir)}"

@@ -63,7 +63,7 @@ exercise the longest row; production never shuffles it.
 The fixed production arguments are:
 
 ```text
-epochs=1, total_steps=44945
+epochs=5, total_steps=224725
 batch_size=16, grad_accum_steps=1
 max_frames=280, val_max_frames=280, val_batch_size=4
 lr=1e-6
@@ -71,11 +71,11 @@ optimizer=fused AdamW, betas=(0.9,0.95), weight_decay=0.1
 grad_clip=1.0
 audio_loss_weight=1.0, text_loss_weight=1.0, text_pad_loss_weight=0.05
 seed=42, frame_bucket=16, torch_compile=true
-val_every=1000, save_every=3000, keep_checkpoints=2, log_every=10
+val_every=9000, save_every=9000, keep_checkpoints=2, log_every=10
 ```
 
 All parameters train. CUDA holds fp32 master weights and uses bf16 autocast.
-There is no LR schedule, warmup, accumulation, gradient checkpointing, or second
+There is no LR schedule, warmup, accumulation, gradient checkpointing, or sixth
 epoch.
 
 ## Preflight and launch
@@ -93,19 +93,20 @@ export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ```
 
 `train` is allowed only after a commit-matched smoke and only when the remote
-`grounded_v2_full_direct_voice/` prefix is empty. The full run directory is
-`finetune/runs/vi_grounded_v2_full_direct_voice`.
+`grounded_v2_full_direct_voice_5epoch/` prefix is empty. The full run directory is
+`finetune/runs/vi_grounded_v2_full_direct_voice_5epoch`.
 
 ## Validation and checkpoints
 
-Teacher-forced validation runs every 1,000 steps and at the final step when it
+Teacher-forced validation runs every 9,000 steps and at the final step when it
 is not already on cadence. It covers all 138 rows and logs total, audio, text,
-content, and PAD loss/accuracy. It does not promote a best model.
+content, and PAD loss/accuracy. The lowest total teacher-forced validation loss
+is promoted and uploaded as the current best model.
 
 A complete recovery point is a matching
 `model_stepNNNNNN.safetensors` / `trainer_stepNNNNNN.pt` pair. The trainer is
 published after the model and acts as the remote completion marker. The newest
-two complete pairs are retained. The final step 44,945 is always saved and
+two complete pairs are retained. The final step 224,725 is always saved and
 synced even though it is off the 3,000-step cadence.
 
 The remote prefix also stores:
@@ -115,13 +116,15 @@ The remote prefix also stores:
 - `metadata/sample_manifest.jsonl`;
 - `metadata/full_data_receipt.json`;
 - compact train and validation logs under `artifacts/` at final sync.
+- the latest complete `best/best_stepNNNNNN.safetensors` plus its JSON marker.
 
 Resume requires the newest complete pair in the original run directory, exact
-metadata, exact optimizer state, and the commit recorded by `run.json`:
+metadata, exact optimizer state, the current promoted best model/marker after
+step 9,000, and the commit recorded by `run.json`:
 
 ```bash
 ./finetune/h100.sh resume \
-  finetune/runs/vi_grounded_v2_full_direct_voice/trainer_stepNNNNNN.pt
+  finetune/runs/vi_grounded_v2_full_direct_voice_5epoch/trainer_stepNNNNNN.pt
 ```
 
 See [finetune.md](finetune.md) for complete restore commands.

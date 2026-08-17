@@ -28,7 +28,7 @@ The active training handoff is `docs/finetune.md`.
 
 - The only launcher recipe is direct full-data SFT from the upstream
   Hibiki-Zero weight. ASCII-ASR and all pilot, replay, post-source, contrastive,
-  anti-repetition, and multi-epoch curricula are obsolete and rejected.
+  anti-repetition, and six-epoch curricula are obsolete and rejected.
 - Cached streams are used unchanged: English target Mimi audio, CTC-timed
   English text ending in tokenizer EOS, and Vietnamese source Mimi audio ending
   in explicit codec-card EOS. There is no dataset transform.
@@ -37,20 +37,20 @@ The active training handoff is `docs/finetune.md`.
 - The frozen train receipt has 719,120 rows: 683,164 PhoMT and 35,956 FLEURS.
   Raw train and validation are capped at 280 frames. Validation retains 138
   rows, has observed maximum 277, uses batch 4, and never shuffles.
-- The run uses physical batch 16, accumulation 1, one epoch / 44,945 steps,
+- The run uses physical batch 16, accumulation 1, five epochs / 224,725 steps,
   fixed LR `1e-6`, and fused AdamW with betas `(0.9, 0.95)` and weight decay
   `0.1`. CUDA uses fp32 master weights, bf16 autocast, compile, and 16-frame
   buckets.
 - `finetune/h100.sh` pins Torch `2.8.0+cu128` and Moshi `0.2.13`, verifies one
   H100 with at least 90 GiB VRAM and driver 570+, freezes the receipt, and gates
   launch on a longest-row save/resume smoke.
-- `finetune/train.py` runs teacher-forced validation every 1,000 steps and saves
-  every 3,000 steps plus the final step. `finetune/eval.py` is an optional
+- `finetune/train.py` validates and saves every 9,000 steps plus the final step,
+  promoting the lowest teacher-forced validation loss. `finetune/eval.py` is an optional
   correct-source-only free-running check; shuffled-source evaluation is not part
   of this receipt.
-- `finetune/hf_sync.py` keeps the newest two complete recovery pairs plus run
-  metadata and logs under the public model prefix
-  `grounded_v2_full_direct_voice`. Loading requires an exact same-run model,
+- `finetune/hf_sync.py` keeps the newest two complete recovery pairs, the latest
+  promoted best model, run metadata, and logs under the public model prefix
+  `grounded_v2_full_direct_voice_5epoch`. Loading requires an exact same-run model,
   optimizer, manifest, receipt, run identity, and code commit.
 - Published caches live under the dataset prefix `grounded-v2/`. The launcher
   expects `finetune/cache/phomt_grounded_v2`,
@@ -64,7 +64,7 @@ free-running evaluation.
 ## Canonical resources
 
 - Caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft/tree/main/grounded-v2
-- Recovery: https://huggingface.co/huybik/hibiki-zero-vi-full-sft/tree/main/grounded_v2_full_direct_voice
+- Recovery: https://huggingface.co/huybik/hibiki-zero-vi-full-sft/tree/main/grounded_v2_full_direct_voice_5epoch
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - PhoMT speech data: https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
 

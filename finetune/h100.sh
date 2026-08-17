@@ -9,16 +9,16 @@ cd "$REPO_ROOT"
 VENV="$REPO_ROOT/.venv"
 PYTHON="$VENV/bin/python"
 RECIPE="${HIBIKI_RECIPE:-grounded-v2}"
-SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2_full_direct_voice"
-RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2_full_direct_voice"
+SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2_full_direct_voice_5epoch"
+RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2_full_direct_voice_5epoch"
 PHOMT_CACHE="finetune/cache/phomt_grounded_v2"
 TRAIN_CACHE="finetune/cache/train_grounded_v2"
 VAL_CACHE="finetune/cache/validation_grounded_v2"
-FULL_DATA_DIR="$REPO_ROOT/finetune/runs/grounded_v2_full_direct_receipt"
+FULL_DATA_DIR="$REPO_ROOT/finetune/runs/grounded_v2_full_direct_5epoch_receipt"
 FULL_DATA_RECEIPT="$FULL_DATA_DIR/full_data_receipt.json"
 FULL_MANIFEST="$FULL_DATA_DIR/sample_manifest.jsonl"
-HIBIKI_HF_PREFIX="grounded_v2_full_direct_voice"
-export HIBIKI_HF_PREFIX HIBIKI_HF_SYNC_INTERVAL=3000 HIBIKI_FRAME_BUCKET=16
+HIBIKI_HF_PREFIX="grounded_v2_full_direct_voice_5epoch"
+export HIBIKI_HF_PREFIX HIBIKI_HF_SYNC_INTERVAL=9000 HIBIKI_FRAME_BUCKET=16
 unset NO_TORCH_COMPILE
 
 die() {
@@ -282,7 +282,7 @@ common_args() {
     --val-cache-dir "$VAL_CACHE"
     --full-data-receipt "$FULL_DATA_RECEIPT"
     --input-sample-manifest "$FULL_MANIFEST"
-    --epochs 1
+    --epochs 5
     --batch-size 16
     --grad-accum-steps 1
     --max-frames 280
@@ -341,7 +341,7 @@ expected = {
     "max_frames": 280,
     "val_max_frames": 280,
     "val_batch_size": 4,
-    "epochs": 1,
+    "epochs": 5,
     "lr": 1e-6,
     "adam_beta1": 0.9,
     "adam_beta2": 0.95,
@@ -350,11 +350,13 @@ expected = {
     "initialization": "upstream_hibiki_zero",
     "target_audio_teacher_forcing": True,
     "audio_ce": True,
+    "best_metric": "teacher_forced_loss",
     "post_source_transform": None,
     "validation_shuffle": False,
     "sample_manifest_rows": 719_120,
     "sample_manifest_cache_counts": [683_164, 35_956],
     "steps_per_epoch": 44_945,
+    "total_steps": 10,
     "frame_bucket": 16,
     "torch_compile_enabled": True,
     "smoke_longest_first": True,
@@ -372,6 +374,16 @@ if digest != receipt_document["sha256"]:
     raise RuntimeError("full-data receipt hash mismatch")
 if receipt["strategy"] != "direct_voice_preserving_simultaneous_translation":
     raise RuntimeError("smoke used the wrong training receipt")
+if (
+    receipt["version"] != 3
+    or receipt["epochs"] != 5
+    or receipt["steps_per_epoch"] != 44_945
+    or receipt["total_steps"] != 224_725
+    or receipt["validation_every_steps"] != 9_000
+    or receipt["checkpoint_every_steps"] != 9_000
+    or receipt["best_metric"] != "teacher_forced_loss"
+):
+    raise RuntimeError("smoke changed the five-epoch horizon or cadence")
 if receipt["streams"]["transform"] is not None:
     raise RuntimeError("smoke applied a post-source transform")
 expected_streams = {
@@ -420,6 +432,15 @@ if not (root / "model_step000011.safetensors").is_file() or not (
     root / "trainer_step000011.pt"
 ).is_file():
     raise RuntimeError("save/resume smoke is incomplete")
+best = json.loads((root / "best.json").read_text())
+best_model = root / best["model"]
+if (
+    best["metric"] != "teacher_forced_loss"
+    or not best_model.is_file()
+    or float(best["validation_loss"])
+    != min(float(item["loss"]) for item in val_logs)
+):
+    raise RuntimeError("best-checkpoint promotion is invalid")
 
 rows = []
 with (root / "vram.csv").open(newline="", encoding="utf-8") as handle:
@@ -460,8 +481,8 @@ smoke() {
     "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
       --smoke-longest-first --max-steps 11 \
-      --val-every 0 --val-batches 1 \
-      --save-every 11 --keep-checkpoints 1 --log-every 1 \
+      --val-every 10 --val-batches 1 \
+      --save-every 10 --keep-checkpoints 1 --log-every 1 \
       --resume-checkpoint "$SMOKE_DIR/trainer_step000010.pt" \
       --out-dir "$SMOKE_DIR"
   )
@@ -474,7 +495,9 @@ smoke() {
   check_smoke_outputs
   rm -f \
     "$SMOKE_DIR/model_step000011.safetensors" \
-    "$SMOKE_DIR/trainer_step000011.pt"
+    "$SMOKE_DIR/trainer_step000011.pt" \
+    "$SMOKE_DIR"/best_step*.safetensors \
+    "$SMOKE_DIR/best.json"
   {
     echo "commit=$(git rev-parse HEAD)"
     echo "batch_size=16"
@@ -609,8 +632,8 @@ train() {
   common_args
   run_with_sync "$RUN_DIR" fresh "$PYTHON" finetune/train.py \
     "${TRAIN_ARGS[@]}" \
-    --val-every 1000 --val-batches 0 \
-    --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+    --val-every 9000 --val-batches 0 \
+    --save-every 9000 --keep-checkpoints 2 --log-every 10 \
     --out-dir "$RUN_DIR"
 }
 
@@ -627,8 +650,8 @@ resume() {
   common_args
   run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
     "${TRAIN_ARGS[@]}" \
-    --val-every 1000 --val-batches 0 \
-    --save-every 3000 --keep-checkpoints 2 --log-every 10 \
+    --val-every 9000 --val-batches 0 \
+    --save-every 9000 --keep-checkpoints 2 --log-every 10 \
     --resume-checkpoint "$checkpoint" \
     --out-dir "$out_dir"
 }

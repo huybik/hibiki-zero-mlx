@@ -22,6 +22,11 @@ CACHE_WEIGHTS = [0.95, 0.05]
 SEED = 42
 BATCH_SIZE = 16
 MAX_FRAMES = 280
+EPOCHS = 5
+STEPS_PER_EPOCH = 44_945
+TOTAL_STEPS = EPOCHS * STEPS_PER_EPOCH
+CADENCE_STEPS = 9_000
+BEST_METRIC = "teacher_forced_loss"
 VALIDATION_ROWS = 138
 VALIDATION_BATCH_SIZE = 4
 VALIDATION_MAX_FRAMES = 280
@@ -182,7 +187,7 @@ def main() -> None:
         )
 
     receipt = {
-        "version": 2,
+        "version": 3,
         "strategy": "direct_voice_preserving_simultaneous_translation",
         "artifacts": artifacts,
         "cache": cache,
@@ -208,6 +213,12 @@ def main() -> None:
         "selection_seed": SEED,
         "batch_size": BATCH_SIZE,
         "max_frames": MAX_FRAMES,
+        "epochs": EPOCHS,
+        "steps_per_epoch": STEPS_PER_EPOCH,
+        "total_steps": TOTAL_STEPS,
+        "validation_every_steps": CADENCE_STEPS,
+        "checkpoint_every_steps": CADENCE_STEPS,
+        "best_metric": BEST_METRIC,
         "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
         "sample_manifest_sha256": manifest_sha256,
         "validation": {

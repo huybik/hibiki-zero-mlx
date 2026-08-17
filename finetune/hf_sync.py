@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -23,6 +24,7 @@ if not REMOTE_ROOT or ".." in REMOTE_ROOT.split("/"):
 STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
+STAGED_BEST = re.compile(r"best_step(\d+)$")
 RUN_METADATA = (
     "run_config.json",
     "sample_manifest.jsonl",
@@ -89,12 +91,54 @@ def remote_pairs(files: dict[str, int]) -> list[int]:
     return sorted(models & trainers)
 
 
+def best_state(run_dir: Path) -> dict[str, object] | None:
+    path = run_dir / "best.json"
+    if not path.is_file():
+        return None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if set(state) != {"step", "model", "metric", "validation_loss"}:
+        raise RuntimeError("invalid local best-checkpoint metadata")
+    step = int(state["step"])
+    model = run_dir / str(state["model"])
+    if (
+        state["metric"] != "teacher_forced_loss"
+        or model.name != f"best_step{step:06d}.safetensors"
+        or not model.is_file()
+    ):
+        raise RuntimeError("local best-checkpoint metadata is inconsistent")
+    float(state["validation_loss"])
+    return state
+
+
+def remote_best_steps(files: dict[str, int]) -> list[int]:
+    models = {
+        int(match.group(1))
+        for path in files
+        if (match := re.fullmatch(r"best/best_step(\d+)\.safetensors", path))
+    }
+    markers = {
+        int(match.group(1))
+        for path in files
+        if (match := re.fullmatch(r"best/best_step(\d+)\.json", path))
+    }
+    return sorted(models & markers)
+
+
 def staged_pair_matches(files: dict[str, int], stage: Path, step: int) -> bool:
     model = stage / f"model_step{step:06d}.safetensors"
     trainer = stage / f"trainer_step{step:06d}.pt"
     return (
         files.get(f"checkpoints/{model.name}") == model.stat().st_size
         and files.get(f"checkpoints/{trainer.name}") == trainer.stat().st_size
+    )
+
+
+def staged_best_matches(files: dict[str, int], stage: Path, step: int) -> bool:
+    model = stage / f"best_step{step:06d}.safetensors"
+    marker = stage / "best.json"
+    return (
+        files.get(f"best/{model.name}") == model.stat().st_size
+        and files.get(f"best/best_step{step:06d}.json") == marker.stat().st_size
     )
 
 
@@ -160,6 +204,36 @@ def upload_pair(repo: str, stage: Path, step: int) -> None:
     print(f"Synced recovery checkpoint step {step}.", flush=True)
 
 
+def upload_best(repo: str, stage: Path, step: int) -> None:
+    model = stage / f"best_step{step:06d}.safetensors"
+    marker = stage / "best.json"
+    remote_model = f"best/{model.name}"
+    remote_marker = f"best/best_step{step:06d}.json"
+    print(f"Uploading best checkpoint step {step}...", flush=True)
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj=model,
+        path_in_repo=remote_path(remote_model),
+        repo_id=repo,
+        commit_message=f"Upload best model step {step}",
+    )
+    api.upload_file(
+        path_or_fileobj=marker,
+        path_in_repo=remote_path(remote_marker),
+        repo_id=repo,
+        commit_message=f"Upload best metadata step {step}",
+    )
+    files = remote_files(repo)
+    expected = {
+        remote_model: model.stat().st_size,
+        remote_marker: marker.stat().st_size,
+    }
+    if any(files.get(path) != size for path, size in expected.items()):
+        raise RuntimeError(f"remote best-checkpoint verification failed for step {step}")
+    remove_stage(stage)
+    print(f"Synced best checkpoint step {step}.", flush=True)
+
+
 def prune_remote_pairs(repo: str) -> None:
     files = remote_files(repo)
     complete = remote_pairs(files)
@@ -183,6 +257,33 @@ def prune_remote_pairs(repo: str) -> None:
         HfApi().delete_files(
             repo, [remote_path(path) for path in model_deletes],
             commit_message="Prune old recovery models",
+        )
+
+
+def prune_remote_best(repo: str) -> None:
+    files = remote_files(repo)
+    complete = remote_best_steps(files)
+    keep = complete[-1] if complete else None
+    marker_deletes: list[str] = []
+    model_deletes: list[str] = []
+    for path in files:
+        marker = re.fullmatch(r"best/best_step(\d+)\.json", path)
+        model = re.fullmatch(r"best/best_step(\d+)\.safetensors", path)
+        if marker and int(marker.group(1)) != keep:
+            marker_deletes.append(path)
+        if model and int(model.group(1)) != keep:
+            model_deletes.append(path)
+    if marker_deletes:
+        HfApi().delete_files(
+            repo,
+            [remote_path(path) for path in marker_deletes],
+            commit_message="Prune old best metadata",
+        )
+    if model_deletes:
+        HfApi().delete_files(
+            repo,
+            [remote_path(path) for path in model_deletes],
+            commit_message="Prune old best models",
         )
 
 
@@ -268,6 +369,40 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
             stage = stage_files(run_dir, "checkpoint", newest_pair, (model, trainer))
         upload_pair(repo, stage, newest_pair)
     prune_remote_pairs(repo)
+
+    files = remote_files(repo)
+    uploaded_best = set(remote_best_steps(files))
+    staged_paths = list(stage_root.iterdir()) if stage_root.is_dir() else []
+    staged_best = {
+        int(match.group(1)): path
+        for path in staged_paths
+        if (match := STAGED_BEST.fullmatch(path.name))
+    }
+    for step, stage in list(staged_best.items()):
+        if step in uploaded_best and staged_best_matches(files, stage, step):
+            remove_stage(stage)
+            del staged_best[step]
+        elif step in uploaded_best:
+            uploaded_best.remove(step)
+    remote_best = max(uploaded_best, default=-1)
+    local_best = best_state(run_dir)
+    candidates = [*staged_best]
+    if local_best is not None and int(local_best["step"]) > remote_best:
+        candidates.append(int(local_best["step"]))
+    newest_best = max(candidates, default=None)
+    for step, stage in staged_best.items():
+        if step != newest_best or step < remote_best:
+            remove_stage(stage)
+    if newest_best is not None and newest_best > remote_best:
+        stage = staged_best.get(newest_best)
+        if stage is None:
+            assert local_best is not None and int(local_best["step"]) == newest_best
+            model = run_dir / str(local_best["model"])
+            stage = stage_files(
+                run_dir, "best", newest_best, (model, run_dir / "best.json")
+            )
+        upload_best(repo, stage, newest_best)
+    prune_remote_best(repo)
 
     if final:
         sync_run_artifacts(run_dir, repo)

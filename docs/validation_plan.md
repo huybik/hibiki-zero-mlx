@@ -7,7 +7,7 @@ derangement, contrastive metric, or source-gap promotion gate.
 
 ## Teacher-forced validation
 
-Training validates every 1,000 steps and at step 44,945. The frozen receipt is:
+Training validates every 9,000 steps and at step 224,725. The frozen receipt is:
 
 - 138 eligible rows at raw `max_frames=280`;
 - observed maximum 277 frames;
@@ -24,9 +24,10 @@ losses, token counts, accuracies, and maximum frame sizes. During the run verify
 - `max_frames` is 277;
 - training remains at physical B16, fixed LR `1e-6`, and audio weight `1.0`.
 
-Teacher-forced loss is a monitoring signal. The direct recipe does not maintain
-or promote a separate best checkpoint; the final one-epoch checkpoint is always
-saved, along with the newest two recovery pairs.
+Teacher-forced total loss is the best-checkpoint metric. Whenever a 9,000-step
+validation improves it, the trainer replaces the local best model and the sync
+worker publishes it under `best/`. The final five-epoch checkpoint is also
+validated and eligible, while the newest two recovery pairs remain separate.
 
 ## Optional correct-source free-running evaluation
 
@@ -40,7 +41,7 @@ Then evaluate a checkpoint directly against its Vietnamese inputs:
 
 ```bash
 step=NNNNNN
-run_dir=finetune/runs/vi_grounded_v2_full_direct_voice
+run_dir=finetune/runs/vi_grounded_v2_full_direct_voice_5epoch
 ./.venv/bin/python finetune/eval.py \
   --device cuda --dtype bfloat16 \
   --checkpoint "$run_dir/model_step${step}.safetensors" \
@@ -59,20 +60,20 @@ and WER, and listen to generated speech when evaluating the audio path.
 
 Do not run a shuffled-source condition or use a correct-minus-shuffled score.
 This optional evaluation does not change training order, checkpoints, or the
-one-epoch stop.
+five-epoch stop.
 
 ## Final integrity check
 
 At completion require:
 
-- `model_step044945.safetensors` and `trainer_step044945.pt` form a complete
+- `model_step224725.safetensors` and `trainer_step224725.pt` form a complete
   pair;
 - `run_config.json` records upstream initialization, target-audio teacher
   forcing, audio CE, no transform, B16/accum1, both 280-frame caps, fixed LR and
-  AdamW settings, 719,120 rows, 44,945 steps, and validation shuffle false;
+  AdamW settings, 719,120 rows per epoch, 224,725 steps, and validation shuffle false;
 - `sample_manifest.jsonl` and `full_data_receipt.json` match the frozen receipt;
-- the remote `grounded_v2_full_direct_voice/` prefix contains the final pair or
-  newest two recovery pairs plus run metadata and final logs.
+- the remote `grounded_v2_full_direct_voice_5epoch/` prefix contains the final pair or
+  newest two recovery pairs, the promoted best model, run metadata, and final logs.
 
 Any integrity mismatch is a stop condition, not permission to modify the
 receipt. Recover the same run as documented in [finetune.md](finetune.md).
