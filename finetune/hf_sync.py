@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -24,31 +23,14 @@ if not REMOTE_ROOT or ".." in REMOTE_ROOT.split("/"):
 STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
-STAGED_BEST = re.compile(r"best_step(\d+)$")
 RUN_METADATA = (
     "run_config.json",
     "sample_manifest.jsonl",
-    "source_derangement.json",
-    "source_asr.json",
-    "source_asr_replay.json",
-    "post_source_eos_translation.json",
-    "validation_post_source_eos_translation.json",
     "full_data_receipt.json",
-    "post_source_eos_extension.json",
 )
 RUN_ARTIFACTS = (
-    "eval_derangement.json",
-    "greedy_eval_log.jsonl",
     "train_log.jsonl",
     "val_log.jsonl",
-)
-EVAL_ARTIFACTS = (
-    "metrics.json",
-    "predictions.csv",
-    "correct/metrics.json",
-    "correct/predictions.csv",
-    "shuffled/metrics.json",
-    "shuffled/predictions.csv",
 )
 
 
@@ -136,30 +118,6 @@ def stage_files(run_dir: Path, kind: str, step: int, sources: tuple[Path, ...]) 
     return target
 
 
-def stage_best(run_dir: Path, state: dict[str, object]) -> Path:
-    step = int(state["step"])
-    root = run_dir / STAGE_ROOT
-    root.mkdir(exist_ok=True)
-    target = root / f"best_step{step:06d}"
-    if target.is_dir():
-        return target
-    temp = root / f".{target.name}.tmp"
-    if temp.exists():
-        shutil.rmtree(temp)
-    temp.mkdir()
-    try:
-        model = run_dir / str(state["model"])
-        os.link(model, temp / model.name)
-        (temp / "best.json").write_text(
-            json.dumps(state, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        temp.replace(target)
-    except BaseException:
-        shutil.rmtree(temp, ignore_errors=True)
-        raise
-    return target
-
-
 def remove_stage(path: Path) -> None:
     for child in path.iterdir():
         child.unlink()
@@ -202,14 +160,10 @@ def upload_pair(repo: str, stage: Path, step: int) -> None:
     print(f"Synced recovery checkpoint step {step}.", flush=True)
 
 
-def prune_remote_pairs(run_dir: Path, repo: str) -> None:
+def prune_remote_pairs(repo: str) -> None:
     files = remote_files(repo)
     complete = remote_pairs(files)
     keep = set(complete[-REMOTE_KEEP:])
-    if (run_dir / "post_source_eos_extension.json").is_file():
-        if 1_000 not in complete:
-            raise RuntimeError("remote step-1000 extension anchor is missing")
-        keep.add(1_000)
     trainer_deletes: list[str] = []
     model_deletes: list[str] = []
     for path in files:
@@ -229,91 +183,6 @@ def prune_remote_pairs(run_dir: Path, repo: str) -> None:
         HfApi().delete_files(
             repo, [remote_path(path) for path in model_deletes],
             commit_message="Prune old recovery models",
-        )
-
-
-def best_state(run_dir: Path) -> dict[str, object] | None:
-    path = run_dir / "best.json"
-    if not path.is_file():
-        return None
-    state = json.loads(path.read_text(encoding="utf-8"))
-    step = int(state["step"])
-    model_name = str(state["model"])
-    if model_name != f"best_step{step:06d}.safetensors" or not (run_dir / model_name).is_file():
-        raise RuntimeError("best.json does not reference a valid sibling model")
-    float(state["correct"]["bleu"])
-    float(state["correct"]["chrf"])
-    if not state.get("promotion_eligible"):
-        raise RuntimeError("best.json references an ineligible checkpoint")
-    return state
-
-
-def remote_best_steps(files: dict[str, int]) -> list[int]:
-    models = {
-        int(match.group(1))
-        for path in files
-        if (match := re.fullmatch(r"best/best_step(\d+)\.safetensors", path))
-    }
-    markers = {
-        int(match.group(1))
-        for path in files
-        if (match := re.fullmatch(r"best/best_step(\d+)\.json", path))
-    }
-    return sorted(models & markers)
-
-
-def upload_best(repo: str, stage: Path, step: int) -> None:
-    model = stage / f"best_step{step:06d}.safetensors"
-    metadata = stage / "best.json"
-    remote_model = f"best/{model.name}"
-    remote_metadata = f"best/best_step{step:06d}.json"
-    print(f"Uploading best model from step {step}...", flush=True)
-    api = HfApi()
-    api.upload_file(
-        path_or_fileobj=model,
-        path_in_repo=remote_path(remote_model),
-        repo_id=repo,
-        commit_message=f"Upload best model step {step}",
-    )
-    api.upload_file(
-        path_or_fileobj=metadata,
-        path_in_repo=remote_path(remote_metadata),
-        repo_id=repo,
-        commit_message=f"Upload best metadata step {step}",
-    )
-    files = remote_files(repo)
-    expected = {remote_model: model.stat().st_size, remote_metadata: metadata.stat().st_size}
-    if any(files.get(path) != size for path, size in expected.items()):
-        raise RuntimeError(f"remote best-model verification failed for step {step}")
-    remove_stage(stage)
-    print(f"Synced best model from step {step}.", flush=True)
-
-
-def prune_remote_best(repo: str) -> None:
-    files = remote_files(repo)
-    complete = remote_best_steps(files)
-    keep = complete[-1] if complete else None
-    marker_deletes = [
-        path
-        for path in files
-        if (match := re.fullmatch(r"best/best_step(\d+)\.json", path))
-        and int(match.group(1)) != keep
-    ]
-    model_deletes = [
-        path
-        for path in files
-        if (match := re.fullmatch(r"best/best_step(\d+)\.safetensors", path))
-        and int(match.group(1)) != keep
-    ]
-    if marker_deletes:
-        HfApi().delete_files(
-            repo, [remote_path(path) for path in marker_deletes],
-            commit_message="Prune old best metadata",
-        )
-    if model_deletes:
-        HfApi().delete_files(
-            repo, [remote_path(path) for path in model_deletes],
-            commit_message="Prune old best models",
         )
 
 
@@ -337,14 +206,7 @@ def sync_run_metadata(run_dir: Path, repo: str, files: dict[str, int]) -> None:
 
 
 def compact_artifact_paths(run_dir: Path) -> list[Path]:
-    paths = [run_dir / name for name in RUN_ARTIFACTS if (run_dir / name).is_file()]
-    for eval_dir in sorted(run_dir.glob("greedy_step[0-9][0-9][0-9][0-9][0-9][0-9]")):
-        eval_paths = [eval_dir / name for name in EVAL_ARTIFACTS]
-        missing = [path.relative_to(run_dir) for path in eval_paths if not path.is_file()]
-        if missing:
-            raise RuntimeError(f"incomplete paired evaluation artifacts: {missing}")
-        paths.extend(eval_paths)
-    return paths
+    return [run_dir / name for name in RUN_ARTIFACTS if (run_dir / name).is_file()]
 
 
 def sync_run_artifacts(run_dir: Path, repo: str) -> None:
@@ -357,7 +219,7 @@ def sync_run_artifacts(run_dir: Path, repo: str) -> None:
         path_in_repo=remote_path("artifacts"),
         repo_id=repo,
         allow_patterns=relatives,
-        commit_message="Upload training evaluation artifacts",
+        commit_message="Upload training logs",
     )
     files = remote_files(repo)
     mismatches = {
@@ -366,8 +228,8 @@ def sync_run_artifacts(run_dir: Path, repo: str) -> None:
         if files.get(f"artifacts/{relative}") != path.stat().st_size
     }
     if mismatches:
-        raise RuntimeError(f"remote evaluation artifact verification failed: {mismatches}")
-    print(f"Synced {len(paths)} compact evaluation artifacts.", flush=True)
+        raise RuntimeError(f"remote training-log verification failed: {mismatches}")
+    print(f"Synced {len(paths)} training logs.", flush=True)
 
 
 def sync_once(run_dir: Path, repo: str, final: bool) -> None:
@@ -405,44 +267,8 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
             _, model, trainer = next(pair for pair in wanted if pair[0] == newest_pair)
             stage = stage_files(run_dir, "checkpoint", newest_pair, (model, trainer))
         upload_pair(repo, stage, newest_pair)
-    prune_remote_pairs(run_dir, repo)
+    prune_remote_pairs(repo)
 
-    files = remote_files(repo)
-    uploaded_best = set(remote_best_steps(files))
-    staged_paths = list(stage_root.iterdir()) if stage_root.is_dir() else []
-    staged_best = {
-        int(match.group(1)): path
-        for path in staged_paths
-        if (match := STAGED_BEST.fullmatch(path.name))
-    }
-    for step, stage in list(staged_best.items()):
-        model = stage / f"best_step{step:06d}.safetensors"
-        marker = stage / "best.json"
-        if (
-            step in uploaded_best
-            and files.get(f"best/{model.name}") == model.stat().st_size
-            and files.get(f"best/best_step{step:06d}.json") == marker.stat().st_size
-        ):
-            remove_stage(stage)
-            del staged_best[step]
-        elif step in uploaded_best:
-            uploaded_best.remove(step)
-    remote_best = max(uploaded_best, default=-1)
-    local_best = best_state(run_dir)
-    candidates = [*staged_best]
-    if local_best is not None and int(local_best["step"]) > remote_best:
-        candidates.append(int(local_best["step"]))
-    newest_best = max(candidates, default=None)
-    for step, stage in staged_best.items():
-        if step != newest_best or step < remote_best:
-            remove_stage(stage)
-    if newest_best is not None and newest_best > remote_best:
-        stage = staged_best.get(newest_best)
-        if stage is None:
-            assert local_best is not None and int(local_best["step"]) == newest_best
-            stage = stage_best(run_dir, local_best)
-        upload_best(repo, stage, newest_best)
-    prune_remote_best(repo)
     if final:
         sync_run_artifacts(run_dir, repo)
 

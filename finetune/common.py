@@ -2,7 +2,7 @@
 
 This module owns device helpers, the cached-shard dataset, exact full-model
 checkpoint I/O, teacher-forced losses, autoregressive generation, text metrics,
-and the piecewise-constant schedules used by the trainer.
+and correct-source generation health diagnostics.
 
 It is a PyTorch training toolkit; torch, safetensors and the `moshi` pip package
 are hard dependencies imported at module top (the conda base env ships them).
@@ -25,8 +25,8 @@ from typing import Any
 import torch
 
 # moshi reads NO_TORCH_COMPILE once at import. Default-enable compile on CUDA:
-# torch 2.13 fixed the 2.12 autograd break (invalid gradient shape in backward)
-# and it's ~10% faster (measured H100). Keep it off elsewhere (no gain on MPS).
+# The pinned CUDA build supports compiled H100 training. Keep it off elsewhere
+# (no gain on MPS).
 # Override with NO_TORCH_COMPILE=1.
 os.environ.setdefault("NO_TORCH_COMPILE", "" if torch.cuda.is_available() else "1")
 
@@ -49,11 +49,10 @@ from finetune.hibiki_helpers import (
 from finetune.utils import repo_display_path, require_file, resolve_repo_path
 
 SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT, GROUNDED_CACHE_FORMAT}
-SOURCE_DERANGEMENT_BLOCK_SIZE = 256
 
 
 def ascii_text(text: str) -> str:
-    """Remove Latin diacritics for tokenizer-compatible diagnostic targets."""
+    """Remove Latin diacritics for stable word-metric normalization."""
     text = text.replace("đ", "d").replace("Đ", "D")
     decomposed = unicodedata.normalize("NFKD", text)
     return "".join(char for char in decomposed if not unicodedata.combining(char)).encode(
@@ -88,29 +87,6 @@ def seed_all(seed: int) -> None:
         torch.mps.manual_seed(seed)
     random.seed(seed)
     np.random.seed(seed)
-
-
-def snapshot_rng() -> dict[str, Any]:
-    state: dict[str, Any] = {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-    }
-    if torch.cuda.is_available():
-        state["cuda"] = torch.cuda.get_rng_state_all()
-    if torch.backends.mps.is_available() and hasattr(torch.mps, "get_rng_state"):
-        state["mps"] = torch.mps.get_rng_state()
-    return state
-
-
-def restore_rng(state: dict[str, Any]) -> None:
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"])
-    if "cuda" in state:
-        torch.cuda.set_rng_state_all(state["cuda"])
-    if "mps" in state:
-        torch.mps.set_rng_state(state["mps"])
 
 
 def is_mps(device: torch.device) -> bool:
@@ -189,45 +165,6 @@ if torch.cuda.is_available():
 
 
 # --------------------------------------------------------------------------- #
-# Schedules: piecewise-constant "value@fraction" specs
-# --------------------------------------------------------------------------- #
-def parse_schedule(spec: str | float | int) -> list[tuple[float, float]]:
-    """Parse "5@0,2@0.6" -> [(0.0, 5.0), (0.6, 2.0)] sorted by fraction.
-
-    A bare number ("5" or 5.0) is the degenerate single-point schedule [(0.0, 5.0)]
-    so all old static flags keep working unchanged.
-    """
-    text = str(spec).strip()
-    if not text:
-        raise ValueError("Empty schedule spec")
-    points: list[tuple[float, float]] = []
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "@" in part:
-            value_s, frac_s = part.split("@", 1)
-            points.append((float(frac_s), float(value_s)))
-        else:
-            points.append((0.0, float(part)))
-    points.sort(key=lambda item: item[0])
-    if not points or points[0][0] != 0.0:
-        raise ValueError(f"Schedule must define a value at fraction 0: {spec!r}")
-    return points
-
-
-def schedule_value(points: list[tuple[float, float]], step: int, total_steps: int) -> float:
-    frac = step / total_steps if total_steps > 0 else 0.0
-    value = points[0][1]
-    for boundary, boundary_value in points:
-        if frac >= boundary:
-            value = boundary_value
-        else:
-            break
-    return value
-
-
-# --------------------------------------------------------------------------- #
 # Cached-shard dataset / loader
 # --------------------------------------------------------------------------- #
 class CachedCodeDataset(Dataset):
@@ -239,18 +176,14 @@ class CachedCodeDataset(Dataset):
         max_frames: int = 0,
         cache_weights: list[float] | None = None,
         seed: int = 0,
-        expected_target_delay: dict[str, float | int] | None = None,
         sample_manifest: Path | None = None,
         sample_manifest_sha256: str | None = None,
-        retained_text_column: str | None = None,
     ):
         self.samples: list[dict[str, Any]] = []
         self.frame_rate: float | None = None
         dropped = 0
         cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
         self.cache_count = len(cache_dirs)
-        if retained_text_column not in (None, "text_vi", "text_en"):
-            raise ValueError("Retained text column must be text_vi or text_en")
         if (sample_manifest is None) != (sample_manifest_sha256 is None):
             raise ValueError("Input sample manifest and SHA-256 must be set together")
         manifest_keys: list[tuple[int, str]] | None = None
@@ -294,14 +227,6 @@ class CachedCodeDataset(Dataset):
             cache_format = payload.get("format")
             if cache_format not in SUPPORTED_CACHE_FORMATS:
                 raise RuntimeError(f"Unsupported cache format in {shard_path}")
-            if (
-                expected_target_delay is not None
-                and payload.get("target_delay") != expected_target_delay
-            ):
-                raise RuntimeError(
-                    f"Target-delay policy mismatch in {shard_path}: "
-                    f"{payload.get('target_delay')} != {expected_target_delay}"
-                )
             frame_rate = float(payload["frame_rate"])
             if self.frame_rate is None:
                 self.frame_rate = frame_rate
@@ -330,23 +255,6 @@ class CachedCodeDataset(Dataset):
                     "gender": str(sample.get("gender", "")),
                     "cache_index": cache_index,
                 }
-                if retained_text_column is not None:
-                    target_text = str(sample.get(retained_text_column, "")).strip()
-                    if not target_text:
-                        raise RuntimeError(
-                            f"{shard_path} id={sample.get('id')} has no "
-                            f"{retained_text_column}"
-                        )
-                    item.update(
-                        {
-                            "post_source_eos_text": target_text,
-                            "post_source_eos_text_column": retained_text_column,
-                            "dep_q": int(payload["config"]["dep_q"]),
-                            "text_padding_id": int(
-                                payload["config"]["existing_text_padding_id"]
-                            ),
-                        }
-                    )
                 if manifest_keys is None:
                     self.samples.append(item)
                 else:
@@ -487,287 +395,6 @@ def sample_manifest_bytes(dataset: CachedCodeDataset) -> bytes:
     ).encode("utf-8")
 
 
-def _transform_post_source_eos_text(
-    dataset: CachedCodeDataset,
-    tokenizer_path: Path,
-    ascii_target: bool = False,
-) -> str:
-    """Keep source audio through EOS and emit retained text only afterwards."""
-    import sentencepiece
-
-    tokenizer = sentencepiece.SentencePieceProcessor(model_file=str(tokenizer_path))
-    eos_id = int(tokenizer.eos_id())
-    if eos_id < 0:
-        raise RuntimeError("Tokenizer has no EOS id")
-    transformed: set[int] = set()
-    for sample in dataset.samples:
-        target_text = sample["post_source_eos_text"]
-        if ascii_target:
-            target_text = ascii_text(target_text)
-        sample["post_source_eos_text"] = target_text
-        object_id = id(sample)
-        if object_id in transformed:
-            continue
-        transformed.add(object_id)
-        dep_q = int(sample["dep_q"])
-        text_padding_id = int(sample["text_padding_id"])
-        old_codes = sample["codes"]
-        if old_codes.shape[0] != 1 + 2 * dep_q:
-            raise RuntimeError(f"Unexpected source/target codebook layout for {sample['id']}")
-        source_frames = int(sample["source_frames"])
-        source_end = source_frames + 1
-        if source_end > old_codes.shape[1]:
-            raise RuntimeError(f"Source EOS falls outside cached codes for {sample['id']}")
-        tokens = list(tokenizer.encode(target_text, out_type=int)) + [eos_id]
-        if not tokens or any(token < 0 for token in tokens):
-            raise RuntimeError(f"Invalid post-source-EOS text tokens for {sample['id']}")
-        text_start = source_end
-        codes = torch.full(
-            (old_codes.shape[0], text_start + len(tokens)),
-            -1,
-            dtype=torch.int32,
-        )
-        codes[0, :text_start] = text_padding_id
-        codes[0, text_start:] = torch.tensor(tokens, dtype=torch.int32)
-        source_start = 1 + dep_q
-        codes[source_start:, :source_end] = old_codes[source_start:, :source_end]
-        sample["codes"] = codes
-        sample["frames"] = int(codes.shape[1])
-    return hashlib.sha256(tokenizer_path.read_bytes()).hexdigest()
-
-
-def _post_source_eos_text_summary(dataset: CachedCodeDataset) -> dict[str, Any]:
-    ordered_text = hashlib.sha256()
-    for sample in dataset.samples:
-        text_column = sample["post_source_eos_text_column"]
-        ordered_text.update(
-            (
-                json.dumps(
-                    {
-                        "cache_index": sample["cache_index"],
-                        "id": sample["id"],
-                        text_column: sample["post_source_eos_text"],
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            ).encode("utf-8")
-        )
-    return {
-        "ordered_text_sha256": ordered_text.hexdigest(),
-        "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
-    }
-
-
-def _clear_post_source_eos_text(dataset: CachedCodeDataset) -> None:
-    for sample in dataset.samples:
-        sample.pop("post_source_eos_text", None)
-        sample.pop("post_source_eos_text_column", None)
-        sample.pop("dep_q", None)
-        sample.pop("text_padding_id", None)
-
-
-def _freeze_post_source_eos_policy(
-    path: Path | None,
-    key: str,
-    label: str,
-    payload: dict[str, Any],
-) -> str:
-    digest = _payload_sha256(payload)
-    if path is not None:
-        expected = {"sha256": digest, key: payload}
-        if path.is_file():
-            if json.loads(path.read_text(encoding="utf-8")) != expected:
-                raise RuntimeError(f"Frozen {label} policy does not match training data: {path}")
-        else:
-            path.write_text(
-                json.dumps(expected, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-    print(
-        f"Prepared {label} {digest}: rows={payload['rows']} "
-        f"max_frames={payload['observed_max_frames']}"
-    )
-    return digest
-
-
-def prepare_source_asr(
-    dataset: CachedCodeDataset,
-    tokenizer_path: Path,
-    document_path: Path | None = None,
-    ascii_target: bool = False,
-) -> str:
-    """Replace translation targets with Vietnamese text emitted after source EOS."""
-    tokenizer_sha256 = _transform_post_source_eos_text(
-        dataset, tokenizer_path, ascii_target
-    )
-    summary = _post_source_eos_text_summary(dataset)
-    payload = {
-        "version": 2 if ascii_target else 1,
-        "strategy": (
-            "full_sentence_ascii_vi_asr_after_source_eos"
-            if ascii_target
-            else "full_sentence_vi_asr_after_source_eos"
-        ),
-        "rows": len(dataset),
-        "tokenizer_sha256": tokenizer_sha256,
-        "ordered_source_text_sha256": summary["ordered_text_sha256"],
-        "observed_max_frames": summary["observed_max_frames"],
-    }
-    digest = _freeze_post_source_eos_policy(
-        document_path, "source_asr", "source ASR", payload
-    )
-    _clear_post_source_eos_text(dataset)
-    return digest
-
-
-def transform_post_source_eos_translation(
-    dataset: CachedCodeDataset, tokenizer_path: Path
-) -> str:
-    """Transform the unique pool before full-curriculum filtering and sampling."""
-    return _transform_post_source_eos_text(dataset, tokenizer_path)
-
-
-def post_source_eos_translation_payload(
-    dataset: CachedCodeDataset, tokenizer_sha256: str
-) -> dict[str, Any]:
-    summary = _post_source_eos_text_summary(dataset)
-    return {
-        "version": 1,
-        "strategy": "full_sentence_en_translation_after_source_eos",
-        "text_column": "text_en",
-        "source_audio": "through_source_eos",
-        "target_audio": "absent",
-        "text_start": "after_source_eos",
-        "rows": len(dataset),
-        "tokenizer_sha256": tokenizer_sha256,
-        "ordered_target_text_sha256": summary["ordered_text_sha256"],
-        "observed_max_frames": summary["observed_max_frames"],
-    }
-
-
-def freeze_post_source_eos_translation(
-    dataset: CachedCodeDataset,
-    tokenizer_sha256: str,
-    document_path: Path | None = None,
-) -> str:
-    payload = post_source_eos_translation_payload(dataset, tokenizer_sha256)
-    digest = _freeze_post_source_eos_policy(
-        document_path,
-        "post_source_eos_translation",
-        "post-source-EOS translation",
-        payload,
-    )
-    _clear_post_source_eos_text(dataset)
-    return digest
-
-
-def prepare_post_source_eos_translation(
-    dataset: CachedCodeDataset,
-    tokenizer_path: Path,
-    document_path: Path | None = None,
-) -> str:
-    """Replace streaming targets with English text emitted after source EOS."""
-    tokenizer_sha256 = transform_post_source_eos_translation(dataset, tokenizer_path)
-    return freeze_post_source_eos_translation(
-        dataset, tokenizer_sha256, document_path
-    )
-
-
-def _source_derangement_payload(
-    dataset: CachedCodeDataset,
-    block_size: int = SOURCE_DERANGEMENT_BLOCK_SIZE,
-) -> dict[str, Any]:
-    if len(dataset) < 2 or block_size < 2:
-        raise ValueError("Source derangement requires at least two samples and block size >= 2")
-    order = sorted(
-        range(len(dataset)),
-        key=lambda index: (
-            dataset.samples[index]["source_frames"],
-            dataset.samples[index]["id"],
-            index,
-        ),
-    )
-    blocks = [order[start : start + block_size] for start in range(0, len(order), block_size)]
-    if len(blocks) > 1 and len(blocks[-1]) == 1:
-        blocks[-2].extend(blocks.pop())
-    donors = [-1] * len(dataset)
-    for block in blocks:
-        ids = [dataset.samples[index]["id"] for index in block]
-        frames = [dataset.samples[index]["source_frames"] for index in block]
-        choices = []
-        for offset in range(1, len(block)):
-            if all(ids[pos] != ids[(pos + offset) % len(block)] for pos in range(len(block))):
-                distance = sum(
-                    abs(frames[pos] - frames[(pos + offset) % len(block)])
-                    for pos in range(len(block))
-                )
-                choices.append((distance, offset))
-        if not choices:
-            raise RuntimeError("Cannot construct a source derangement without duplicate-id donors")
-        _, offset = min(choices)
-        for pos, target_index in enumerate(block):
-            donors[target_index] = block[(pos + offset) % len(block)]
-    if sorted(donors) != list(range(len(dataset))):
-        raise RuntimeError("Source donor mapping is not a permutation")
-    pairs = []
-    for target_index, source_index in enumerate(donors):
-        target = dataset.samples[target_index]
-        source = dataset.samples[source_index]
-        if target["id"] == source["id"]:
-            raise RuntimeError("Source donor mapping contains a duplicate-id fixed point")
-        pairs.append(
-            {
-                "target_index": target_index,
-                "target_cache_index": target["cache_index"],
-                "target_id": target["id"],
-                "target_source_frames": target["source_frames"],
-                "source_index": source_index,
-                "source_cache_index": source["cache_index"],
-                "source_id": source["id"],
-                "source_frames": source["source_frames"],
-            }
-        )
-    return {
-        "version": 1,
-        "strategy": "duration_block_rotation",
-        "block_size": block_size,
-        "pairs": pairs,
-    }
-
-
-def attach_source_derangement(dataset: CachedCodeDataset, path: Path) -> str:
-    """Freeze duration-matched donor sources and attach them without copying host tensors."""
-    expected = _source_derangement_payload(dataset)
-    digest = _payload_sha256(expected)
-    if path.is_file():
-        document = json.loads(path.read_text(encoding="utf-8"))
-        payload = document.get("mapping")
-        if document.get("sha256") != _payload_sha256(payload) or payload != expected:
-            raise RuntimeError(f"Frozen source derangement does not match training data: {path}")
-    else:
-        path.write_text(
-            json.dumps({"sha256": digest, "mapping": expected}, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    deltas = []
-    for pair in expected["pairs"]:
-        target = dataset.samples[pair["target_index"]]
-        source = dataset.samples[pair["source_index"]]
-        target["source_donor_codes"] = source["codes"]
-        target["source_donor_frames"] = source["source_frames"]
-        deltas.append(abs(target["source_frames"] - source["source_frames"]))
-    deltas.sort()
-    p95 = deltas[round(0.95 * (len(deltas) - 1))]
-    print(
-        f"Attached source derangement {digest}: "
-        f"median/p95/max frame delta={deltas[len(deltas) // 2]}/{p95}/{deltas[-1]}"
-    )
-    return digest
-
-
 # Pad each batch's frame length up to a multiple of this. MPS compiles+caches a
 # Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
 # lengths, which balloons the GPU working set (26 GB wired, swap-thrash). Bucketing
@@ -789,34 +416,13 @@ def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
         batch[index, :, : codes.shape[1]] = codes
         ids.append(sample["id"])
         strata.append(sample["stratum"])
-    result = {
+    return {
         "codes": batch,
         "ids": ids,
         "frames": torch.tensor([sample["frames"] for sample in samples]),
         "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
         "strata": strata,
     }
-    donor_flags = ["source_donor_codes" in sample for sample in samples]
-    if any(donor_flags):
-        if not all(donor_flags) or (codebooks - 1) % 2:
-            raise RuntimeError("Invalid contrastive source batch")
-        source_start = 1 + (codebooks - 1) // 2
-        shuffled = batch.clone()
-        for index, sample in enumerate(samples):
-            target_frames = int(sample["source_frames"])
-            donor_frames = int(sample["source_donor_frames"])
-            if target_frames >= sample["codes"].shape[1]:
-                raise RuntimeError("Cached source EOS falls outside the assembled sample")
-            shuffled[index, source_start:] = -1
-            copy_frames = min(target_frames, donor_frames)
-            shuffled[index, source_start:, :copy_frames] = sample["source_donor_codes"][
-                source_start:, :copy_frames
-            ]
-            shuffled[index, source_start:, target_frames] = sample["codes"][
-                source_start:, target_frames
-            ]
-        result["shuffled_codes"] = shuffled
-    return result
 
 
 def make_cached_dataloader(
@@ -891,55 +497,6 @@ def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Optimizer LR scheduling
-# --------------------------------------------------------------------------- #
-def param_groups(model: Any, lr_points: list[tuple[float, float]]) -> list[dict[str, Any]]:
-    """One optimizer group over every trainable parameter."""
-    params = [param for param in model.parameters() if param.requires_grad]
-    return [{"name": "all", "params": params, "points": lr_points}]
-
-
-def apply_lr_schedule(
-    optimizer: Any, step: int, total_steps: int, warmup_steps: int
-) -> float | dict[str, float]:
-    warmup = 1.0
-    if warmup_steps > 0:
-        warmup = min(1.0, (step + 1) / warmup_steps)
-    lrs: dict[str, float] = {}
-    for group in optimizer.param_groups:
-        base = schedule_value(group["points"], step, total_steps)
-        group["lr"] = base * warmup
-        lrs[str(group.get("name", "group"))] = group["lr"]
-    if len(lrs) == 1:
-        return next(iter(lrs.values()))
-    return lrs
-
-
-def apply_cosine_lr_schedule(
-    optimizer: Any,
-    step: int,
-    total_steps: int,
-    warmup_steps: int,
-    end_lr: float,
-) -> float | dict[str, float]:
-    if end_lr < 0:
-        raise ValueError("Cosine end LR must be non-negative")
-    lrs: dict[str, float] = {}
-    for group in optimizer.param_groups:
-        start_lr = float(group["points"][0][1])
-        if step < warmup_steps:
-            lr = start_lr * (step + 1) / max(1, warmup_steps)
-        else:
-            progress = min(1.0, (step - warmup_steps) / max(1, total_steps - warmup_steps - 1))
-            lr = end_lr + 0.5 * (start_lr - end_lr) * (1.0 + math.cos(math.pi * progress))
-        group["lr"] = lr
-        lrs[str(group.get("name", "group"))] = lr
-    if len(lrs) == 1:
-        return next(iter(lrs.values()))
-    return lrs
-
-
-# --------------------------------------------------------------------------- #
 # Teacher-forced losses
 # --------------------------------------------------------------------------- #
 def masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> tuple[Any, Any]:
@@ -952,23 +509,6 @@ def masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> tuple[Any, Any
         logits[mask].float(), targets[mask].long(), reduction="sum"
     )
     return loss_sum / token_count.clamp(min=1), token_count
-
-
-def per_sample_masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> Any:
-    token_losses = torch.nn.functional.cross_entropy(
-        logits[mask].float(), targets[mask].long(), reduction="none"
-    )
-    batch_indices = (
-        torch.arange(mask.shape[0], device=mask.device)[:, None, None]
-        .expand_as(mask)[mask]
-    )
-    loss_sums = torch.zeros(
-        mask.shape[0], device=token_losses.device, dtype=token_losses.dtype
-    ).scatter_add_(0, batch_indices, token_losses)
-    token_counts = torch.zeros_like(loss_sums).scatter_add_(
-        0, batch_indices, torch.ones_like(token_losses)
-    )
-    return loss_sums / token_counts.clamp(min=1)
 
 
 def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int, pad_mode: str) -> Any:
@@ -985,14 +525,9 @@ def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int, pad_mode: s
 def combine_text_losses(
     content_loss: Any,
     pad_loss: Any,
-    first_content_loss: Any,
     pad_loss_weight: float,
-    first_content_loss_weight: float,
 ) -> Any:
-    weight_total = 1.0 + pad_loss_weight + first_content_loss_weight
-    return (
-        content_loss + pad_loss_weight * pad_loss + first_content_loss_weight * first_content_loss
-    ) / weight_total
+    return (content_loss + pad_loss_weight * pad_loss) / (1.0 + pad_loss_weight)
 
 
 def balanced_text_cross_entropy(
@@ -1001,7 +536,6 @@ def balanced_text_cross_entropy(
     mask: Any,
     pad_id: int,
     pad_loss_weight: float,
-    first_content_loss_weight: float,
 ) -> dict[str, Any]:
     """Keep PAD pressure independent of the number of PAD frames."""
     token_count = mask.sum()
@@ -1026,9 +560,7 @@ def balanced_text_cross_entropy(
     loss = combine_text_losses(
         content_loss,
         pad_loss,
-        first_content_loss,
         pad_loss_weight,
-        first_content_loss_weight,
     )
     return {
         "loss": loss,
@@ -1055,17 +587,10 @@ def compute_batch_losses(
     audio_loss_weight: float,
     text_loss_weight: float,
     text_pad_loss_weight: float = 0.05,
-    first_content_loss_weight: float = 0.0,
     text_pad_mode: str = "prefix",
-    mask_target_audio_input: bool = False,
     return_output: bool = False,
-    return_per_sample_content_loss: bool = False,
 ) -> dict[str, Any]:
-    model_inputs = codes
-    if mask_target_audio_input:
-        model_inputs = codes.clone()
-        model_inputs[:, lm.audio_offset : lm.audio_offset + lm.dep_q] = lm.zero_token_id
-    output = lm(model_inputs, condition_tensors=condition_tensors)
+    output = lm(codes, condition_tensors=condition_tensors)
     audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
     text_targets = codes[:, :1]
     audio_loss, audio_tokens = masked_cross_entropy(output.logits, audio_targets, output.mask)
@@ -1078,7 +603,6 @@ def compute_batch_losses(
         text_mask,
         lm.text_padding_token_id,
         text_pad_loss_weight,
-        first_content_loss_weight,
     )
     text_loss = text_losses["loss"]
     loss = audio_loss_weight * audio_loss + text_loss_weight * text_loss
@@ -1095,11 +619,6 @@ def compute_batch_losses(
         "first_content_loss": text_losses["first_content_loss"],
         "first_content_tokens": text_losses["first_content_tokens"],
     }
-    if return_per_sample_content_loss:
-        content_mask = text_mask & (text_targets != lm.text_padding_token_id)
-        result["per_sample_content_text_loss"] = per_sample_masked_cross_entropy(
-            output.text_logits, text_targets, content_mask
-        )
     if return_output:
         # Only for eval: keeping logits alive an extra step in the train loop
         # would cost ~1 GB on a full-VRAM box.
@@ -1117,8 +636,6 @@ def evaluate_teacher_forced(
     max_batches: int = 0,
     text_pad_mode: str = "prefix",
     text_pad_loss_weight: float = 0.05,
-    first_content_loss_weight: float = 0.0,
-    mask_target_audio_input: bool = False,
 ) -> dict[str, float | int]:
     was_training = bool(lm.training)
     lm.eval()
@@ -1154,9 +671,7 @@ def evaluate_teacher_forced(
             losses = compute_batch_losses(
                 lm, codes, condition_cache[batch_size], audio_loss_weight, text_loss_weight,
                 text_pad_loss_weight=text_pad_loss_weight,
-                first_content_loss_weight=first_content_loss_weight,
                 text_pad_mode=text_pad_mode,
-                mask_target_audio_input=mask_target_audio_input,
                 return_output=True,
             )
             output = losses.pop("output")
@@ -1224,9 +739,7 @@ def evaluate_teacher_forced(
     text_loss = combine_text_losses(
         content_loss,
         pad_loss,
-        first_content_loss,
         text_pad_loss_weight,
-        first_content_loss_weight,
     )
     return {
         "loss": audio_loss_weight * audio_loss + text_loss_weight * text_loss,
@@ -1330,92 +843,6 @@ def ids_from_args(ids: str, ids_file: Path | None) -> list[str]:
     if len(selected) != len(set(selected)):
         raise ValueError("Duplicate ids in --ids/--ids-file")
     return selected
-
-
-def _mapping_payload(
-    rows: list[dict[str, str]], id_column: str, duration_column: str
-) -> dict[str, Any]:
-    if len(rows) < 2:
-        raise ValueError("Paired evaluation requires at least two rows")
-    order = sorted(
-        range(len(rows)),
-        key=lambda index: (float(rows[index][duration_column]), rows[index][id_column]),
-    )
-    donor_for: dict[int, int] = {}
-    paired_end = len(order) if len(order) % 2 == 0 else len(order) - 3
-    for start in range(0, paired_end, 2):
-        left, right = order[start : start + 2]
-        donor_for[left] = right
-        donor_for[right] = left
-    if len(order) % 2:
-        first, second, third = order[-3:]
-        donor_for[first] = second
-        donor_for[second] = third
-        donor_for[third] = first
-    pairs = []
-    for target_index, target in enumerate(rows):
-        source = rows[donor_for[target_index]]
-        pairs.append(
-            {
-                "target_id": target[id_column],
-                "target_duration_s": float(target[duration_column]),
-                "source_id": source[id_column],
-                "source_duration_s": float(source[duration_column]),
-            }
-        )
-    return {
-        "version": 1,
-        "id_column": id_column,
-        "duration_column": duration_column,
-        "pairs": pairs,
-    }
-
-
-def _payload_sha256(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def load_or_create_derangement(
-    rows: list[dict[str, str]],
-    id_column: str,
-    source_column: str,
-    duration_column: str,
-    path: Path,
-) -> tuple[list[dict[str, str]], str]:
-    """Load or freeze the duration-neighbor source derangement for an eval set."""
-    expected = _mapping_payload(rows, id_column, duration_column)
-    if path.is_file():
-        document = json.loads(path.read_text(encoding="utf-8"))
-        payload = document.get("mapping")
-        digest = str(document.get("sha256", ""))
-        if not isinstance(payload, dict) or digest != _payload_sha256(payload):
-            raise RuntimeError(f"Invalid derangement hash in {path}")
-        if payload != expected:
-            raise RuntimeError(f"Frozen derangement does not match the selected eval rows: {path}")
-    else:
-        payload = expected
-        digest = _payload_sha256(payload)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"sha256": digest, "mapping": payload}, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    by_id = {row[id_column]: row for row in rows}
-    source_ids = [pair["source_id"] for pair in payload["pairs"]]
-    target_ids = [pair["target_id"] for pair in payload["pairs"]]
-    if sorted(source_ids) != sorted(target_ids) or any(
-        source_id == target_id for source_id, target_id in zip(source_ids, target_ids, strict=True)
-    ):
-        raise RuntimeError(f"Frozen mapping is not a derangement: {path}")
-    shuffled: list[dict[str, str]] = []
-    for pair in payload["pairs"]:
-        row = dict(by_id[pair["target_id"]])
-        donor = by_id[pair["source_id"]]
-        row[source_column] = donor[source_column]
-        row[duration_column] = donor[duration_column]
-        shuffled.append(row)
-    return shuffled, digest
 
 
 # --------------------------------------------------------------------------- #
@@ -1742,121 +1169,6 @@ def generation_health(metrics: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         and float(metrics["mean_length_ratio"]) <= gates["max_mean_length_ratio"]
     )
     return eligible, gates
-
-
-def write_paired_predictions(
-    path: Path,
-    correct: list[dict[str, Any]],
-    shuffled: list[dict[str, Any]],
-) -> None:
-    rows: list[dict[str, Any]] = []
-    for correct_record, shuffled_record in zip(correct, shuffled, strict=True):
-        if correct_record["id"] != shuffled_record["id"]:
-            raise RuntimeError("Paired predictions are not aligned by target id")
-        rows.append(
-            {
-                "id": correct_record["id"],
-                "reference_text": correct_record["reference_text"],
-                "correct_source_audio": correct_record["source_audio"],
-                "shuffled_source_audio": shuffled_record["source_audio"],
-                "correct_prediction_text": correct_record["prediction_text"],
-                "shuffled_prediction_text": shuffled_record["prediction_text"],
-                "correct_eos_found": correct_record["eos_found"],
-                "shuffled_eos_found": shuffled_record["eos_found"],
-                "correct_generated_text_tokens": correct_record["generated_text_tokens"],
-                "shuffled_generated_text_tokens": shuffled_record["generated_text_tokens"],
-            }
-        )
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def run_paired_eval(
-    rows: list[dict[str, str]],
-    cfg: Any,
-    batch_size: int,
-    mimi: Any,
-    lm: Any,
-    text_tokenizer: Any,
-    checkpoint_info: Any,
-    out_dir: Path,
-    mapping_path: Path,
-    evaluation_seed: int,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Evaluate correct and frozen shuffled sources under identical sampling RNG."""
-    validate_eval_rows(
-        rows,
-        cfg.source_column,
-        cfg.reference_column,
-        cfg.id_column,
-        cfg.duration_column,
-    )
-    shuffled_rows, mapping_sha256 = load_or_create_derangement(
-        rows,
-        cfg.id_column,
-        cfg.source_column,
-        cfg.duration_column,
-        mapping_path,
-    )
-    out_dir.mkdir(parents=True, exist_ok=True)
-    rng_state = snapshot_rng()
-    try:
-        correct_records, correct_metrics = run_greedy_eval(
-            rows,
-            cfg,
-            batch_size,
-            mimi,
-            lm,
-            text_tokenizer,
-            checkpoint_info,
-            out_dir / "correct",
-            evaluation_seed,
-        )
-        shuffled_records, shuffled_metrics = run_greedy_eval(
-            shuffled_rows,
-            cfg,
-            batch_size,
-            mimi,
-            lm,
-            text_tokenizer,
-            checkpoint_info,
-            out_dir / "shuffled",
-            evaluation_seed,
-        )
-    finally:
-        restore_rng(rng_state)
-
-    for condition, records, metrics in (
-        ("correct", correct_records, correct_metrics),
-        ("shuffled", shuffled_records, shuffled_metrics),
-    ):
-        condition_dir = out_dir / condition
-        write_predictions(condition_dir / "predictions.csv", records)
-        (condition_dir / "metrics.json").write_text(
-            json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-    health_eligible, health_gates = generation_health(correct_metrics)
-    metrics = {
-        "evaluation_seed": evaluation_seed,
-        "derangement_sha256": mapping_sha256,
-        "correct": correct_metrics,
-        "shuffled": shuffled_metrics,
-        "source_bleu_gap": float(correct_metrics["bleu"]) - float(shuffled_metrics["bleu"]),
-        "source_chrf_gap": float(correct_metrics["chrf"]) - float(shuffled_metrics["chrf"]),
-        "source_nonempty_bleu_gap": float(correct_metrics["nonempty_bleu"])
-        - float(shuffled_metrics["nonempty_bleu"]),
-        "source_nonempty_chrf_gap": float(correct_metrics["nonempty_chrf"])
-        - float(shuffled_metrics["nonempty_chrf"]),
-        "health_gates": health_gates,
-        "health_eligible": health_eligible,
-    }
-    write_paired_predictions(out_dir / "predictions.csv", correct_records, shuffled_records)
-    (out_dir / "metrics.json").write_text(
-        json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return correct_records, metrics
 
 
 def write_predictions(path: Path, records: list[dict[str, str]]) -> None:

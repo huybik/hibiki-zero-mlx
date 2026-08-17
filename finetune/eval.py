@@ -70,19 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tag", default="sft")
     parser.add_argument("--source-column", default="vi_audio")
-    parser.add_argument("--duration-column", default="vi_duration_s")
     parser.add_argument("--reference-column", default="text_en")
-    parser.add_argument(
-        "--ascii-reference",
-        action="store_true",
-        help="Strip Latin diacritics from references before scoring.",
-    )
     parser.add_argument("--id-column", default="id")
-    parser.add_argument(
-        "--derangement",
-        type=Path,
-        help="Frozen duration-matched mapping; default <out-dir>/derangement.json.",
-    )
     return parser.parse_args()
 
 
@@ -99,15 +88,11 @@ def main() -> None:
 
     ids = common.ids_from_args(args.ids, args.ids_file)
     rows = common.select_eval_rows(common.read_eval_rows(args.pairs), ids, args.id_column, args.limit)
-    if args.ascii_reference:
-        for row in rows:
-            row[args.reference_column] = common.ascii_text(row[args.reference_column])
     common.validate_eval_rows(
         rows,
         args.source_column,
         args.reference_column,
         args.id_column,
-        args.duration_column,
     )
     if not rows:
         raise RuntimeError(f"No rows selected from {args.pairs}")
@@ -136,7 +121,7 @@ def main() -> None:
         print("Using the base model.")
     lm.eval()
 
-    records, metrics = common.run_paired_eval(
+    records, metrics = common.run_greedy_eval(
         rows,
         args,
         args.batch_size,
@@ -145,27 +130,28 @@ def main() -> None:
         text_tokenizer,
         checkpoint_info,
         out_dir,
-        resolve_repo_path(args.derangement) if args.derangement else out_dir / "derangement.json",
         args.seed,
     )
+    health_eligible, health_gates = common.generation_health(metrics)
+    metrics["health_eligible"] = health_eligible
+    metrics["health_gates"] = health_gates
 
     predictions_path = out_dir / "predictions.csv"
+    common.write_predictions(predictions_path, records)
     print(f"Wrote {len(records)} predictions -> {repo_display_path(predictions_path)}")
     metrics_path = resolve_repo_path(args.metrics_json) if args.metrics_json else out_dir / "metrics.json"
-    if metrics_path != out_dir / "metrics.json":
-        metrics_path.parent.mkdir(parents=True, exist_ok=True)
-        metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    correct = metrics["correct"]
-    summary = (
-        f"nonempty={correct['nonempty_predictions']}/{correct['num_predictions']} "
-        f"eos={correct['eos_found']}/{correct['num_predictions']} "
-        f"exact={correct['exact_matches']}/{correct['num_predictions']} "
-        f"wer={100 * correct['wer']:.2f}% overlong={correct['overlong_predictions']} "
-        f"repeat4={correct['repeated_4gram_predictions']}"
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path.write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    summary += (
-        f" bleu={correct['bleu']:.2f} chrf={correct['chrf']:.2f} "
-        f"source_gap={metrics['source_bleu_gap']:.2f}/{metrics['source_chrf_gap']:.2f}"
+    summary = (
+        f"nonempty={metrics['nonempty_predictions']}/{metrics['num_predictions']} "
+        f"eos={metrics['eos_found']}/{metrics['num_predictions']} "
+        f"exact={metrics['exact_matches']}/{metrics['num_predictions']} "
+        f"wer={100 * metrics['wer']:.2f}% overlong={metrics['overlong_predictions']} "
+        f"repeat4={metrics['repeated_4gram_predictions']} "
+        f"bleu={metrics['bleu']:.2f} chrf={metrics['chrf']:.2f} "
+        f"health={'pass' if health_eligible else 'fail'}"
     )
     print(f"Metrics: {summary}")
     print(f"Wrote metrics -> {repo_display_path(metrics_path)}")

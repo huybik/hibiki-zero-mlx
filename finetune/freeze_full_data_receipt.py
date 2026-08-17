@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Freeze the exact full post-source-EOS training curriculum."""
+"""Freeze the direct full-data simultaneous-translation curriculum."""
 from __future__ import annotations
 
 import argparse
@@ -18,19 +18,14 @@ from finetune.utils import require_dir, require_file, resolve_repo_path  # noqa:
 
 ROWS = 719_120
 CACHE_COUNTS = [683_164, 35_956]
-ELIGIBLE_CACHE_COUNTS = [683_114, 1_393]
 CACHE_WEIGHTS = [0.95, 0.05]
 SEED = 42
 BATCH_SIZE = 16
 MAX_FRAMES = 280
-VALIDATION_ROWS = 148
+VALIDATION_ROWS = 138
 VALIDATION_BATCH_SIZE = 4
-VALIDATION_MAX_FRAMES = 470
-EXPECTED_MANIFEST_SHA256 = "63f584a43dc5cba59fb948d5aa294ed72bc29634910968f9cda947c70019d1b5"
-EXPECTED_TRANSFORM_SHA256 = "ad0bbcbeb7e14cab0647cae025a5a24110f99613bef692e1643c36d4a88f2dc7"
-EXPECTED_VALIDATION_TRANSFORM_SHA256 = (
-    "f563ef582207462c90b300c38d08f3907cd00081d5fea3da0180d140c596d3e6"
-)
+VALIDATION_MAX_FRAMES = 280
+VALIDATION_OBSERVED_MAX_FRAMES = 277
 EXPECTED_CACHE = {
     "phomt": {
         "shards": 1_377,
@@ -53,11 +48,7 @@ EXPECTED_ARTIFACTS = {
     "model": "cd78e453b3b80299255bea02be439bcc2552b57c03cd82dbf0e9792e20100db8",
     "mimi": "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50",
     "tokenizer": "c22110fb855aa049e17346ea2e88355bdd664f06cbfd09948380ab5e85b39697",
-    "qualified_ascii_asr_parent": (
-        "d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca"
-    ),
 }
-EXPECTED_RECEIPT_SHA256 = "ece5948ddb72f11f14048351f170c4c5218503c484db9c623ea6b4f52796ff0d"
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,7 +60,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-weight", type=Path, required=True)
     parser.add_argument("--mimi-weight", type=Path, required=True)
     parser.add_argument("--tokenizer", type=Path, required=True)
-    parser.add_argument("--init-checkpoint", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -120,6 +110,14 @@ def atomic_write(path: Path, content: str | bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def freeze_file(path: Path, content: str | bytes) -> None:
+    encoded = content.encode() if isinstance(content, str) else content
+    if path.is_file() and path.read_bytes() != encoded:
+        raise RuntimeError(f"Frozen receipt changed: {path}")
+    if not path.is_file():
+        atomic_write(path, content)
+
+
 def cache_counts(dataset: common.CachedCodeDataset) -> list[int]:
     return [
         sum(sample["cache_index"] == cache_index for sample in dataset.samples)
@@ -139,138 +137,101 @@ def main() -> None:
         "model": require_file(args.model_weight, "model weight"),
         "mimi": require_file(args.mimi_weight, "Mimi weight"),
         "tokenizer": require_file(args.tokenizer, "tokenizer"),
-        "qualified_ascii_asr_parent": require_file(
-            args.init_checkpoint, "qualified ASCII-ASR parent"
-        ),
     }
     artifacts = {name: sha256_file(path) for name, path in artifact_paths.items()}
     if artifacts != EXPECTED_ARTIFACTS:
-        raise RuntimeError(f"Artifact hashes changed: {artifacts} != {EXPECTED_ARTIFACTS}")
-    tokenizer = artifact_paths["tokenizer"]
-    out_dir = resolve_repo_path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+        raise RuntimeError(f"Upstream artifact hashes changed: {artifacts}")
 
     cache = {
         "phomt": cache_receipt(phomt_cache, 0),
         "fleurs_train": cache_receipt(fleurs_train_cache, 1),
         "fleurs_validation": cache_receipt(fleurs_validation_cache, 0),
     }
-    for name, expected in EXPECTED_CACHE.items():
-        actual = {key: cache[name][key] for key in ("shards", "bytes", "sha256")}
-        if actual != expected:
-            raise RuntimeError(f"{name} cache receipt mismatch: {actual} != {expected}")
+    if cache != EXPECTED_CACHE:
+        raise RuntimeError("Published grounded-v2 cache receipt changed")
 
     dataset = common.CachedCodeDataset(
-        [phomt_cache, fleurs_train_cache],
-        False,
-        0,
-        0,
-        retained_text_column="text_en",
+        [phomt_cache, fleurs_train_cache], False, 0, MAX_FRAMES
     )
-    tokenizer_sha256 = common.transform_post_source_eos_translation(dataset, tokenizer)
-    dataset.filter_max_frames(MAX_FRAMES, "full post-source-EOS pool")
-    if cache_counts(dataset) != ELIGIBLE_CACHE_COUNTS:
-        raise RuntimeError(
-            f"Eligible cache counts changed: {cache_counts(dataset)} != "
-            f"{ELIGIBLE_CACHE_COUNTS}"
-        )
+    eligible_cache_counts = cache_counts(dataset)
     dataset.select_weighted(CACHE_WEIGHTS, ROWS, SEED)
     dataset.samples.sort(key=lambda sample: sample["frames"])
     dataset.shuffle_batch_order(BATCH_SIZE, SEED)
     if len(dataset) != ROWS or cache_counts(dataset) != CACHE_COUNTS:
-        raise RuntimeError("Final weighted curriculum counts changed")
-    dataset.require_max_frames(MAX_FRAMES, "Full post-source-EOS curriculum")
+        raise RuntimeError("Direct full-data weighted membership changed")
+    dataset.require_max_frames(MAX_FRAMES, "Direct simultaneous curriculum")
 
     manifest = common.sample_manifest_bytes(dataset)
     manifest_sha256 = hashlib.sha256(manifest).hexdigest()
-    if manifest_sha256 != EXPECTED_MANIFEST_SHA256:
-        raise RuntimeError(
-            f"Sample manifest SHA-256 changed: {manifest_sha256} != "
-            f"{EXPECTED_MANIFEST_SHA256}"
-        )
-    transform_payload = common.post_source_eos_translation_payload(
-        dataset, tokenizer_sha256
-    )
-    transform_sha256 = payload_sha256(transform_payload)
-    if transform_sha256 != EXPECTED_TRANSFORM_SHA256:
-        raise RuntimeError(
-            f"Training transform SHA-256 changed: {transform_sha256} != "
-            f"{EXPECTED_TRANSFORM_SHA256}"
-        )
-    common.freeze_post_source_eos_translation(
-        dataset, tokenizer_sha256, out_dir / "post_source_eos_translation.json"
-    )
 
     validation = common.CachedCodeDataset(
-        fleurs_validation_cache,
-        False,
-        0,
-        0,
-        retained_text_column="text_en",
+        fleurs_validation_cache, True, 0, VALIDATION_MAX_FRAMES
     )
-    validation_tokenizer_sha256 = common.transform_post_source_eos_translation(
-        validation, tokenizer
+    if len(validation) != VALIDATION_ROWS:
+        raise RuntimeError(
+            f"Direct validation must retain {VALIDATION_ROWS} rows, got {len(validation)}"
+        )
+    validation.require_max_frames(VALIDATION_MAX_FRAMES, "Direct validation")
+    observed_validation_max_frames = max(
+        sample["frames"] for sample in validation.samples
     )
-    validation.samples.sort(key=lambda sample: sample["frames"])
-    validation_payload = common.post_source_eos_translation_payload(
-        validation, validation_tokenizer_sha256
-    )
-    validation_transform_sha256 = payload_sha256(validation_payload)
-    if (
-        len(validation) != VALIDATION_ROWS
-        or validation_payload["observed_max_frames"] != VALIDATION_MAX_FRAMES
-        or validation_transform_sha256 != EXPECTED_VALIDATION_TRANSFORM_SHA256
-    ):
-        raise RuntimeError("Validation transform receipt changed")
-    common.freeze_post_source_eos_translation(
-        validation,
-        validation_tokenizer_sha256,
-        out_dir / "validation_post_source_eos_translation.json",
-    )
+    if observed_validation_max_frames != VALIDATION_OBSERVED_MAX_FRAMES:
+        raise RuntimeError(
+            "Direct validation observed maximum changed: "
+            f"{observed_validation_max_frames} != {VALIDATION_OBSERVED_MAX_FRAMES}"
+        )
 
     receipt = {
-        "version": 1,
-        "strategy": "full_post_source_eos_translation_curriculum",
+        "version": 2,
+        "strategy": "direct_voice_preserving_simultaneous_translation",
         "artifacts": artifacts,
         "cache": cache,
-        "eligible_cache_counts": ELIGIBLE_CACHE_COUNTS,
+        "streams": {
+            "target_audio": {
+                "content": "cached_english_mimi",
+                "termination": "native_minus_one_mask",
+            },
+            "target_text": {
+                "content": "cached_ctc_timed_english",
+                "termination": "tokenizer_eos",
+            },
+            "source_audio": {
+                "content": "cached_vietnamese_mimi",
+                "termination": "explicit_card_eos",
+            },
+            "transform": None,
+        },
+        "eligible_cache_counts": eligible_cache_counts,
         "rows": ROWS,
         "cache_counts": CACHE_COUNTS,
         "cache_weights": CACHE_WEIGHTS,
         "selection_seed": SEED,
         "batch_size": BATCH_SIZE,
         "max_frames": MAX_FRAMES,
-        "observed_max_frames": transform_payload["observed_max_frames"],
+        "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
         "sample_manifest_sha256": manifest_sha256,
-        "post_source_eos_translation_sha256": transform_sha256,
         "validation": {
             "rows": VALIDATION_ROWS,
             "batch_size": VALIDATION_BATCH_SIZE,
             "max_frames": VALIDATION_MAX_FRAMES,
-            "observed_max_frames": validation_payload["observed_max_frames"],
-            "post_source_eos_translation_sha256": validation_transform_sha256,
+            "observed_max_frames": observed_validation_max_frames,
+            "shuffle": False,
         },
     }
     receipt_sha256 = payload_sha256(receipt)
-    if receipt_sha256 != EXPECTED_RECEIPT_SHA256:
-        raise RuntimeError(
-            f"Full-data receipt SHA-256 changed: {receipt_sha256} != "
-            f"{EXPECTED_RECEIPT_SHA256}"
-        )
-    atomic_write(out_dir / "sample_manifest.jsonl", manifest)
-    atomic_write(
-        out_dir / "full_data_receipt.json",
-        json.dumps(
-            {"sha256": receipt_sha256, "full_data_receipt": receipt},
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-    )
+    document = json.dumps(
+        {"sha256": receipt_sha256, "full_data_receipt": receipt},
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+
+    out_dir = resolve_repo_path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    freeze_file(out_dir / "sample_manifest.jsonl", manifest)
+    freeze_file(out_dir / "full_data_receipt.json", document)
     print(
-        f"Full-data receipt passed: rows={ROWS} counts={CACHE_COUNTS} "
-        f"manifest={manifest_sha256} transform={transform_sha256} "
-        f"receipt={receipt_sha256}"
+        f"Direct full-data receipt passed: rows={ROWS} counts={CACHE_COUNTS} "
+        f"manifest={manifest_sha256} receipt={receipt_sha256}"
     )
 
 
