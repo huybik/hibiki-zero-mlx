@@ -63,7 +63,7 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   from parquet with bounded download prefetch and Hugging Face Xet. MPS runs keep
   the CTC dynamic program on-device with one result transfer, release each batch,
   and bound concurrent workers by row and audio-sample budgets. Its H100 profile
-  batches CTC Viterbi across rows; `h100.sh cache-grounded` supervises four
+  batches CTC Viterbi across rows; `h100.sh cache-grounded` supervises bounded
   workers and builds all grounded-v2 PhoMT/FLEURS caches.
   `finetune/publish_grounded_cache.py` validates and checksum-publishes
   the complete cache under an isolated dataset prefix. `remote_dataset/download_fleurs_vi_en.py` →
@@ -74,10 +74,11 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   contiguous 90-shard Mac prefix (`shard_00000.pt` through `shard_00089.pt`).
   It contains 52,939 accepted rows and has aggregate manifest SHA
   `7b76432f7034284d440c27a433e48c791ca4e1f5c6daa6e92e8c23bcef2b4e56`.
-  Four CUDA workers run from commit `8e310ff`; the detached pipeline validates
-  all 1,377 shards, builds grounded FLEURS caches, then publishes and verifies
-  the isolated dataset `grounded-v2/` prefix. The Mac copy remains until remote
-  publication succeeds.
+  Five CUDA workers run from commit `8e310ff` at a measured 7.0 shards/min with
+  about 5 GiB GPU headroom; the detached pipeline validates all 1,377 shards,
+  builds grounded FLEURS caches, then publishes and verifies the isolated
+  dataset `grounded-v2/` prefix. The Mac copy remains until remote publication
+  succeeds.
 - `finetune/validate.py` is teacher-forced diagnostics only. `finetune/eval.py`
   evaluates correct and shuffled sources at fixed-seed text temperature 0.4,
   writing condition and consolidated artifacts. Promotion requires correct-source
@@ -164,9 +165,8 @@ validation, and paired evaluation at 0/250/500/750/1,000 with a 24-second
 generation tail. Smoke reverses validation to exercise its observed longest row.
 The frozen policy persists tokenizer, ordered English-text hash, row count, and
 observed cohort maximum; recovery checkpoints are retained at steps 500 and
-1,000. Do not start
-full SFT until this receipt is decided and the complete grounded cache is
-published and verified.
+1,000. Do not start full SFT until this receipt is decided and the complete
+grounded cache is published and verified.
 
 ## Canonical resources
 
