@@ -834,8 +834,8 @@ if high_delay_pilot:
 if asr_translation_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
     expected = {
-        "batch_size": 8,
-        "grad_accum_steps": 2,
+        "batch_size": 16,
+        "grad_accum_steps": 1,
         "max_frames": 280,
         "val_max_frames": 0,
         "val_batch_size": 8,
@@ -866,8 +866,8 @@ if asr_translation_pilot:
 if asr_replay_translation_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
     expected = {
-        "batch_size": 16,
-        "grad_accum_steps": 1,
+        "batch_size": 8,
+        "grad_accum_steps": 2,
         "max_frames": 280,
         "val_max_frames": 0,
         "val_batch_size": 8,
