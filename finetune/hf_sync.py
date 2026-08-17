@@ -29,6 +29,7 @@ RUN_METADATA = (
     "source_derangement.json",
     "source_asr.json",
     "source_asr_replay.json",
+    "post_source_eos_translation.json",
 )
 RUN_ARTIFACTS = (
     "eval_derangement.json",

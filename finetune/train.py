@@ -101,6 +101,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Strip Vietnamese diacritics from source-ASR targets and eval references.",
     )
+    parser.add_argument(
+        "--post-source-eos-translation",
+        action="store_true",
+        help="Emit cached English text only after Vietnamese source EOS.",
+    )
     parser.add_argument("--source-asr-replay-weight", type=float, default=0.0)
     parser.add_argument("--source-asr-replay-batch-size", type=int, default=4)
     parser.add_argument("--source-asr-replay-max-frames", type=int, default=0)
@@ -462,6 +467,20 @@ def main() -> None:
         raise ValueError("Source-ASR preadaptation requires authoritative input membership")
     if args.source_asr_pretrain and args.contrastive_source_weight:
         raise ValueError("Source-ASR preadaptation and contrastive translation are exclusive")
+    if args.post_source_eos_translation and (
+        args.source_asr_pretrain
+        or args.contrastive_source_weight
+        or args.source_asr_replay_weight
+    ):
+        raise ValueError(
+            "Post-source-EOS translation is exclusive with ASR and contrastive objectives"
+        )
+    if args.post_source_eos_translation and (
+        args.input_sample_manifest is None or args.init_checkpoint is None
+    ):
+        raise ValueError(
+            "Post-source-EOS translation requires authoritative membership and initialization"
+        )
     if args.source_asr_replay_weight < 0:
         raise ValueError("--source-asr-replay-weight must be non-negative")
     if args.source_asr_replay_weight and (
@@ -548,6 +567,11 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     clean_incomplete_checkpoints(out_dir)
 
+    retained_text_column = None
+    if args.source_asr_pretrain:
+        retained_text_column = "text_vi"
+    elif args.post_source_eos_translation:
+        retained_text_column = "text_en"
     dataset = common.CachedCodeDataset(
         cache_dir,
         args.sort_by_length,
@@ -558,7 +582,7 @@ def main() -> None:
         expected_target_delay,
         args.input_sample_manifest,
         args.input_sample_manifest_sha256,
-        args.source_asr_pretrain,
+        retained_text_column,
     )
     source_asr_replay_dataset = None
     source_asr_replay_sha256 = None
@@ -572,7 +596,7 @@ def main() -> None:
             expected_target_delay=expected_target_delay,
             sample_manifest=args.input_sample_manifest,
             sample_manifest_sha256=args.input_sample_manifest_sha256,
-            retain_source_text=True,
+            retained_text_column="text_vi",
         )
         source_asr_replay_sha256 = common.prepare_source_asr(
             source_asr_replay_dataset,
@@ -592,6 +616,16 @@ def main() -> None:
             ascii_target=args.source_asr_ascii,
         )
         dataset.require_max_frames(args.max_frames, "Source-ASR training data")
+    post_source_eos_translation_sha256 = None
+    if args.post_source_eos_translation:
+        post_source_eos_translation_sha256 = (
+            common.prepare_post_source_eos_translation(
+                dataset,
+                args.tokenizer,
+                out_dir / "post_source_eos_translation.json",
+            )
+        )
+        dataset.require_max_frames(args.max_frames, "Post-source-EOS translation data")
     if args.sort_by_length:
         dataset.shuffle_batch_order(args.batch_size, args.seed)
     exposure = dataset.exposure()
@@ -619,6 +653,12 @@ def main() -> None:
         not args.mask_target_audio_input or any(weight != 0.0 for _, weight in audio_points)
     ):
         raise ValueError("Source-ASR replay requires masked target audio and zero audio loss")
+    if args.post_source_eos_translation and (
+        not args.mask_target_audio_input or any(weight != 0.0 for _, weight in audio_points)
+    ):
+        raise ValueError(
+            "Post-source-EOS translation requires masked target audio and zero audio loss"
+        )
     source_derangement_sha256 = None
     if args.contrastive_source_weight:
         source_derangement_sha256 = common.attach_source_derangement(
@@ -630,20 +670,28 @@ def main() -> None:
     total_steps = args.max_steps if args.max_steps else args.epochs * steps_per_epoch
 
     val_dataloader = None
+    validation_sort_by_length = None
+    validation_shuffle = None
     checkpoint_info = common.load_checkpoint_info(args)
     if val_cache_dir is not None:
         val_sort_by_length = args.sort_by_length or args.input_sample_manifest is not None
+        validation_sort_by_length = val_sort_by_length
+        validation_shuffle = False if args.input_sample_manifest is not None else None
         val_dataset = common.CachedCodeDataset(
             val_cache_dir,
             val_sort_by_length,
             args.val_max_samples,
             expected_target_delay=expected_target_delay,
-            retain_source_text=args.source_asr_pretrain,
+            retained_text_column=retained_text_column,
         )
         if args.source_asr_pretrain:
             common.prepare_source_asr(
                 val_dataset, args.tokenizer, ascii_target=args.source_asr_ascii
             )
+        if args.post_source_eos_translation:
+            common.prepare_post_source_eos_translation(val_dataset, args.tokenizer)
+        if args.source_asr_pretrain or args.post_source_eos_translation:
+            val_dataset.samples.sort(key=lambda sample: sample["frames"])
         val_dataset.require_max_frames(args.val_max_frames, "Validation cache")
         val_dataloader = common.make_cached_dataloader(
             val_dataset,
@@ -651,7 +699,7 @@ def main() -> None:
             args.num_workers,
             val_sort_by_length,
             seed=args.seed,
-            shuffle=False if args.input_sample_manifest is not None else None,
+            shuffle=validation_shuffle,
         )
         print(f"Loaded {len(val_dataset)} val cached samples from {repo_display_path(val_cache_dir)}")
 
@@ -781,6 +829,13 @@ def main() -> None:
             if previous_config.get("source_asr_sha256") != source_asr_sha256:
                 raise RuntimeError("Source-ASR policy differs from run_config.json")
             if (
+                previous_config.get("post_source_eos_translation_sha256")
+                != post_source_eos_translation_sha256
+            ):
+                raise RuntimeError(
+                    "Post-source-EOS translation policy differs from run_config.json"
+                )
+            if (
                 previous_config.get("source_asr_replay_sha256")
                 != source_asr_replay_sha256
             ):
@@ -808,6 +863,8 @@ def main() -> None:
     run_config["batches_per_epoch"] = batches_per_epoch
     run_config["steps_per_epoch"] = steps_per_epoch
     run_config["torch_compile_enabled"] = torch_compile_enabled
+    run_config["validation_sort_by_length"] = validation_sort_by_length
+    run_config["validation_shuffle"] = validation_shuffle
     run_config["observed_train_max_frames"] = max(
         int(sample["frames"]) for sample in dataset.samples
     )
@@ -817,6 +874,10 @@ def main() -> None:
         run_config["source_derangement_sha256"] = source_derangement_sha256
     if source_asr_sha256 is not None:
         run_config["source_asr_sha256"] = source_asr_sha256
+    if post_source_eos_translation_sha256 is not None:
+        run_config["post_source_eos_translation_sha256"] = (
+            post_source_eos_translation_sha256
+        )
     if source_asr_replay_sha256 is not None:
         run_config["source_asr_replay_sha256"] = source_asr_replay_sha256
         run_config["observed_source_asr_replay_max_frames"] = max(

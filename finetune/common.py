@@ -242,12 +242,14 @@ class CachedCodeDataset(Dataset):
         expected_target_delay: dict[str, float | int] | None = None,
         sample_manifest: Path | None = None,
         sample_manifest_sha256: str | None = None,
-        retain_source_text: bool = False,
+        retained_text_column: str | None = None,
     ):
         self.samples: list[dict[str, Any]] = []
         self.frame_rate: float | None = None
         dropped = 0
         cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
+        if retained_text_column not in (None, "text_vi", "text_en"):
+            raise ValueError("Retained text column must be text_vi or text_en")
         if (sample_manifest is None) != (sample_manifest_sha256 is None):
             raise ValueError("Input sample manifest and SHA-256 must be set together")
         manifest_keys: list[tuple[int, str]] | None = None
@@ -327,13 +329,17 @@ class CachedCodeDataset(Dataset):
                     "gender": str(sample.get("gender", "")),
                     "cache_index": cache_index,
                 }
-                if retain_source_text:
-                    text_vi = str(sample.get("text_vi", "")).strip()
-                    if not text_vi:
-                        raise RuntimeError(f"{shard_path} id={sample.get('id')} has no text_vi")
+                if retained_text_column is not None:
+                    target_text = str(sample.get(retained_text_column, "")).strip()
+                    if not target_text:
+                        raise RuntimeError(
+                            f"{shard_path} id={sample.get('id')} has no "
+                            f"{retained_text_column}"
+                        )
                     item.update(
                         {
-                            "text_vi": text_vi,
+                            "post_source_eos_text": target_text,
+                            "post_source_eos_text_column": retained_text_column,
                             "dep_q": int(payload["config"]["dep_q"]),
                             "text_padding_id": int(
                                 payload["config"]["existing_text_padding_id"]
@@ -435,13 +441,12 @@ class CachedCodeDataset(Dataset):
         }
 
 
-def prepare_source_asr(
+def _transform_post_source_eos_text(
     dataset: CachedCodeDataset,
     tokenizer_path: Path,
-    document_path: Path | None = None,
     ascii_target: bool = False,
-) -> str:
-    """Replace translation targets with Vietnamese text emitted after source EOS."""
+) -> dict[str, Any]:
+    """Keep source audio through EOS and emit retained text only afterwards."""
     import sentencepiece
 
     tokenizer = sentencepiece.SentencePieceProcessor(model_file=str(tokenizer_path))
@@ -451,15 +456,17 @@ def prepare_source_asr(
     ordered_text = hashlib.sha256()
     transformed: set[int] = set()
     for sample in dataset.samples:
-        text_vi = sample["text_vi"]
-        target_text = ascii_text(text_vi) if ascii_target else text_vi
+        target_text = sample["post_source_eos_text"]
+        if ascii_target:
+            target_text = ascii_text(target_text)
+        text_column = sample["post_source_eos_text_column"]
         ordered_text.update(
             (
                 json.dumps(
                     {
                         "cache_index": sample["cache_index"],
                         "id": sample["id"],
-                        "text_vi": target_text,
+                        text_column: target_text,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -483,7 +490,7 @@ def prepare_source_asr(
             raise RuntimeError(f"Source EOS falls outside cached codes for {sample['id']}")
         tokens = list(tokenizer.encode(target_text, out_type=int)) + [eos_id]
         if not tokens or any(token < 0 for token in tokens):
-            raise RuntimeError(f"Invalid Vietnamese text tokens for {sample['id']}")
+            raise RuntimeError(f"Invalid post-source-EOS text tokens for {sample['id']}")
         text_start = source_end
         codes = torch.full(
             (old_codes.shape[0], text_start + len(tokens)),
@@ -497,10 +504,49 @@ def prepare_source_asr(
         sample["codes"] = codes
         sample["frames"] = int(codes.shape[1])
     for sample in dataset.samples:
-        sample.pop("text_vi", None)
+        sample.pop("post_source_eos_text", None)
+        sample.pop("post_source_eos_text_column", None)
         sample.pop("dep_q", None)
         sample.pop("text_padding_id", None)
-    tokenizer_digest = hashlib.sha256(tokenizer_path.read_bytes()).hexdigest()
+    return {
+        "tokenizer_sha256": hashlib.sha256(tokenizer_path.read_bytes()).hexdigest(),
+        "ordered_text_sha256": ordered_text.hexdigest(),
+        "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
+    }
+
+
+def _freeze_post_source_eos_policy(
+    path: Path | None,
+    key: str,
+    label: str,
+    payload: dict[str, Any],
+) -> str:
+    digest = _payload_sha256(payload)
+    if path is not None:
+        expected = {"sha256": digest, key: payload}
+        if path.is_file():
+            if json.loads(path.read_text(encoding="utf-8")) != expected:
+                raise RuntimeError(f"Frozen {label} policy does not match training data: {path}")
+        else:
+            path.write_text(
+                json.dumps(expected, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+    print(
+        f"Prepared {label} {digest}: rows={payload['rows']} "
+        f"max_frames={payload['observed_max_frames']}"
+    )
+    return digest
+
+
+def prepare_source_asr(
+    dataset: CachedCodeDataset,
+    tokenizer_path: Path,
+    document_path: Path | None = None,
+    ascii_target: bool = False,
+) -> str:
+    """Replace translation targets with Vietnamese text emitted after source EOS."""
+    transformed = _transform_post_source_eos_text(dataset, tokenizer_path, ascii_target)
     payload = {
         "version": 2 if ascii_target else 1,
         "strategy": (
@@ -509,31 +555,40 @@ def prepare_source_asr(
             else "full_sentence_vi_asr_after_source_eos"
         ),
         "rows": len(dataset),
-        "tokenizer_sha256": tokenizer_digest,
-        "ordered_source_text_sha256": ordered_text.hexdigest(),
-        "observed_max_frames": max(sample["frames"] for sample in dataset.samples),
+        "tokenizer_sha256": transformed["tokenizer_sha256"],
+        "ordered_source_text_sha256": transformed["ordered_text_sha256"],
+        "observed_max_frames": transformed["observed_max_frames"],
     }
-    digest = _payload_sha256(payload)
-    if document_path is not None:
-        if document_path.is_file():
-            document = json.loads(document_path.read_text(encoding="utf-8"))
-            if document != {"sha256": digest, "source_asr": payload}:
-                raise RuntimeError(
-                    f"Frozen source-ASR policy does not match training data: {document_path}"
-                )
-        else:
-            document_path.write_text(
-                json.dumps(
-                    {"sha256": digest, "source_asr": payload}, indent=2, sort_keys=True
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-    print(
-        f"Prepared source ASR {digest}: rows={len(dataset)} "
-        f"max_frames={payload['observed_max_frames']}"
+    return _freeze_post_source_eos_policy(
+        document_path, "source_asr", "source ASR", payload
     )
-    return digest
+
+
+def prepare_post_source_eos_translation(
+    dataset: CachedCodeDataset,
+    tokenizer_path: Path,
+    document_path: Path | None = None,
+) -> str:
+    """Replace streaming targets with English text emitted after source EOS."""
+    transformed = _transform_post_source_eos_text(dataset, tokenizer_path)
+    payload = {
+        "version": 1,
+        "strategy": "full_sentence_en_translation_after_source_eos",
+        "text_column": "text_en",
+        "source_audio": "through_source_eos",
+        "target_audio": "absent",
+        "text_start": "after_source_eos",
+        "rows": len(dataset),
+        "tokenizer_sha256": transformed["tokenizer_sha256"],
+        "ordered_target_text_sha256": transformed["ordered_text_sha256"],
+        "observed_max_frames": transformed["observed_max_frames"],
+    }
+    return _freeze_post_source_eos_policy(
+        document_path,
+        "post_source_eos_translation",
+        "post-source-EOS translation",
+        payload,
+    )
 
 
 def _source_derangement_payload(

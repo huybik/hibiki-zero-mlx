@@ -16,7 +16,9 @@ A Vast pod is disposable. Keep the three durable resources distinct:
   runs own only `full_run/`, `grounded_v2/`, `grounded_v2_pilot/`,
   `grounded_v2_pilot_high_delay/`, and
   `grounded_v2_pilot_high_delay_contrastive/` respectively. The Vietnamese-ASR
-  diagnostic owns `grounded_v2_pilot_vi_asr_preadapt/`; phase-1 is preserved.
+  diagnostic owns `grounded_v2_pilot_vi_asr_preadapt/`; the final translation
+  diagnostic owns `grounded_v2_pilot_vi_post_source_eos_translation/`.
+  Phase-1 is preserved.
 
 Never put a token, SSH endpoint, or pod-specific path in Git. A new agent should
 first read `AGENTS.md`, `CONTEXT.md`, and the pod's `/etc/vast-agents-guide.md`.
@@ -158,8 +160,8 @@ Before launch, inspect the public model repo's `full_run/` directory:
 identity for recovery. It supervises checkpoint sync and stops training after
 three consecutive sync failures. Recovery sync also preserves `run_config.json`,
 the pilot's frozen `sample_manifest.jsonl`, and the optional
-`source_derangement.json`, `source_asr.json`, or `source_asr_replay.json` under
-`metadata/`.
+`source_derangement.json`, `source_asr.json`, `source_asr_replay.json`, or
+`post_source_eos_translation.json` under `metadata/`.
 
 ## Cache format and rebuild path
 
@@ -289,28 +291,47 @@ nonempty, 128 EOS, no repetition failures, BLEU 27.85, chrF 53.26, WER 0.514,
 and 27.74 BLEU / 34.48 chrF source gaps. Its promoted model SHA is
 `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
 
-The isolated `HIBIKI_ASR_TRANSLATION_PILOT=1` test reconstructed the exact
+The retired `HIBIKI_ASR_TRANSLATION_PILOT=1` test reconstructed the exact
 ordinary-timing 50k cohort and started a fresh optimizer from that qualified
 parent. It failed: at step 1,000, correct-source BLEU/chrF was 0.06/8.44,
 source gaps were 0.01/-0.36, and 24 rows failed the repetition gate. No best
 checkpoint was promoted. A plain ASR-to-translation switch is rejected.
 
-The next bounded test is `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1`. It keeps the
-same parent, translation cohort, timing, masked target audio, zero audio loss,
-effective batch 16, and 1,000-step schedule. Each optimizer step uses two
-physical batch-8 translation microbatches plus one deterministic four-row
-ASCII-ASR batch at weight 1. Replay PAD has zero loss weight, so the
-auxiliary objective preserves Vietnamese content routing after source EOS
-without teaching translation frames to remain silent. Replay uses the same
-ordered manifest, hard-gates its measured maximum at 434 frames, freezes its
-policy in `source_asr_replay.json`, resumes both iterators exactly, and owns
-`*_grounded_v2_pilot_vi_asr_replay` artifacts. A pass selects a text-translation
-recipe candidate; it still does not authorize full training. This mode disables
-Torch compilation because its translation/replay graph caches filled 94.5/95.8
-GiB by production step 30. Uncompiled physical batch 16 still emitted an
-allocator failure warning by step 20, which is why replay uses physical batch 8
-with two-step accumulation. The compile choice is persisted and checked on
-resume.
+The subsequent `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1` test also failed every
+paired milestone; at step 1,000 its BLEU/chrF was 0.13/7.73 and source gaps were
+-0.04/-0.24. Do not repeat the ambiguous same-context Vietnamese/English replay
+objective.
+
+The final bounded test is `HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1`. It
+reconstructs the exact ordinary-timing 50k manifest, initializes the exact
+qualified ASCII-ASR parent, removes every English target-audio codebook, keeps
+Vietnamese source codes through source EOS, and only then emits the cached
+English sentence. There is no ASR replay. The shared dataset-boundary transform
+is frozen in `post_source_eos_translation.json`; a post-transform 400-frame
+training gate and 480-frame validation gate fail rather than change membership.
+Production keeps manifest order, validation is deterministically length-sorted,
+and smoke feeds the longest rows first. The 1,000-step pilot uses physical batch
+8 / accumulation 2, 100-step warmup, and paired evaluation at
+0/250/500/750/1,000 with a 24-second post-source generation tail under isolated
+`*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts.
+
+On a fresh pod, restore both pinned inputs before preflight (the ignored `.env`
+provides the HF token when required):
+
+```bash
+source .env
+restore_dir="$(mktemp -d)"
+./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft \
+  grounded_v2_pilot/metadata/sample_manifest.jsonl \
+  grounded_v2_pilot_vi_asr_ascii_epoch1/best/best_step003125.safetensors \
+  --local-dir "$restore_dir"
+mkdir -p finetune/runs/vi_grounded_v2_pilot \
+  finetune/runs/vi_grounded_v2_pilot_vi_asr_ascii_epoch1
+cp "$restore_dir/grounded_v2_pilot/metadata/sample_manifest.jsonl" \
+  finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl
+cp "$restore_dir/grounded_v2_pilot_vi_asr_ascii_epoch1/best/best_step003125.safetensors" \
+  finetune/runs/vi_grounded_v2_pilot_vi_asr_ascii_epoch1/best_step003125.safetensors
+```
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
@@ -327,13 +348,13 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 - CUDA uses fp32 master weights and bf16 autocast.
 - `--max-frames 280` bounds ordinary-run memory; the exact-membership high-delay
   pilot uses 480 for training and a separate 704 validation cap at batch 1.
-  The source-ASR diagnostic uses 672/640 train/validation caps.
+  The source-ASR diagnostic uses 672/640 train/validation caps; post-source-EOS
+  translation uses hard post-transform 400/480 caps.
   Sixteen-frame buckets bound compiled CUDA shapes.
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
   The high-delay pilot uses batch 8 / accumulation 2, while its contrastive
   variant and source-ASR diagnostic use batch 4 / accumulation 4 on the 94 GB
-  H100. The ASR-replay pilot performs two batch-8 translation forwards and one
-  batch-4 replay forward per optimizer update, preserving effective batch 16.
+  H100. Post-source-EOS translation uses batch 8 / accumulation 2.
 - Text content, PAD, and first-content losses are reduced independently before
   weighting, so PAD prevalence cannot change its aggregate gradient budget.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.
