@@ -169,9 +169,12 @@ horizon remains 1,000 so LR stays at `1e-6`; val/eval/save cadence is 500 plus
 final 3,125. The original run config stays immutable, a separate extension
 receipt freezes intent and code, and remote recovery pins step 1,000 plus the
 latest two pairs. The step-1,000 receipt passed output health at BLEU/chrF
-0.67/14.48 and showed emerging paired gaps of 0.48/1.80. This clears the bounded
-continuation threshold but not the 1.0/5.0 promotion gates. Do not start full
-SFT until the one-epoch receipt is decided.
+0.67/14.48 and showed emerging paired gaps of 0.48/1.80, which cleared the
+bounded continuation threshold. The exact one-epoch extension proved real but
+inconsistent source routing and promoted no checkpoint: final BLEU/chrF was
+1.87/16.56 with 1.69/3.34 gaps; the strongest step was 2,000 at 2.06/18.27 and
+1.81/4.31 gaps. All milestones passed health, but none passed both calibrated
+1.0/5.0 source gates. Do not initialize full SFT from this rejected receipt.
 
 ## Canonical resources
 
