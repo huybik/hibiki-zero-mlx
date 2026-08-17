@@ -150,7 +150,7 @@ require_python() {
 
 require_baseline_pilot_manifest() {
   [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 || \
-    "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return
+    "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return 0
   [[ -f "$BASELINE_PILOT_MANIFEST" ]] || die "missing baseline pilot sample manifest"
   command -v sha256sum >/dev/null || die "sha256sum is required"
   local actual
@@ -160,7 +160,7 @@ require_baseline_pilot_manifest() {
 }
 
 require_asr_parent_checkpoint() {
-  [[ "$ASR_TRANSLATION_PILOT" == 1 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return
+  [[ "$ASR_TRANSLATION_PILOT" == 1 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return 0
   [[ -f "$ASR_PARENT_CHECKPOINT" ]] || die "missing qualified ASR parent checkpoint"
 }
 
