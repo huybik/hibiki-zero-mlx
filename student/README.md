@@ -88,3 +88,56 @@ never mapped to student heads:
 integer field containing teacher-waveform audio re-encoded by the student Mimi.
 It is preserved by the dumper and strictly validated, but this phase does not
 generate teacher speech or mislabel hard target audio as teacher audio.
+
+Train every parameter of the 12-layer AR student on CUDA. The trainer accepts
+only `student_text_distillation`, re-hashes every cache shard, verifies the
+embedded config/Mimi/tokenizer identities, and requires the initialized (or
+qualified) checkpoint SHA explicitly. It keeps fp32 master parameters under
+bf16 autocast and uses fused AdamW with fixed-size batches and gradient
+accumulation:
+
+```bash
+INIT_SHA=$(sha256sum RUN/init.safetensors | cut -d' ' -f1)
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/train.py train \
+  --cache-dir DISTILL_CACHE \
+  --init-checkpoint RUN/init.safetensors --init-sha256 "$INIT_SHA" \
+  --out-dir RUN/ar_distill --steps 10000 \
+  --batch-size 4 --grad-accum-steps 4 \
+  --hard-audio-weight 1 --hard-text-weight 1 \
+  --teacher-sequence-weight 1 --teacher-text-weight 1 \
+  --rollout-start 0.8 --rollout-fraction 0.25
+```
+
+The Hugging Face token in `.env` is for staging the pinned inputs; the trainer
+does not print it or download artifacts implicitly. `teacher_sequence_codes`
+contributes only when actually present. It always means teacher speech decoded
+and re-encoded with the student Mimi, never the hard target audio.
+
+Check the loss and rollout mechanics without CUDA or model allocation:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/train.py self-check
+```
+
+Gradient checkpointing is on by default. Every save is an exact
+`model_stepNNNNNN.safetensors` and `optimizer_stepNNNNNN.pt` pair; the newest
+two pairs are retained by default. Resume only from the newest optimizer file
+in the same run directory; changed cache shards, artifact identities,
+initialization SHA, training settings, missing tensors, or incomplete pairs are
+rejected:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/train.py train \
+  --cache-dir DISTILL_CACHE \
+  --init-checkpoint RUN/init.safetensors --init-sha256 "$INIT_SHA" \
+  --out-dir RUN/ar_distill --steps 10000 \
+  --batch-size 4 --grad-accum-steps 4 \
+  --hard-audio-weight 1 --hard-text-weight 1 \
+  --teacher-sequence-weight 1 --teacher-text-weight 1 \
+  --rollout-start 0.8 --rollout-fraction 0.25 \
+  --resume-optimizer RUN/ar_distill/optimizer_step001000.pt
+```
+
+Training and teacher materialization are CUDA-only. Quantization and inference
+belong to the MLX phase after the BF16 AR checkpoint qualifies; this trainer
+does not generate evaluation audio, quantize weights, or run experiment grids.

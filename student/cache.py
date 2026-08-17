@@ -294,6 +294,8 @@ def validate_sample(sample: Any, metadata: dict[str, Any], location: str) -> Non
         if (
             not isinstance(ids, torch.Tensor)
             or not isinstance(values, torch.Tensor)
+            or ids.dtype not in integers
+            or not values.is_floating_point()
             or ids.ndim != 2
             or ids.shape != values.shape
         ):
@@ -309,6 +311,17 @@ def validate_sample(sample: Any, metadata: dict[str, Any], location: str) -> Non
         tensor_range(ids[mask], 0, int(cfg["text_card"]) - 1, "teacher top-k ids")
         if not torch.isfinite(values[mask]).all() or ((ids[~mask] != -1).any()):
             raise RuntimeError(f"{location} has invalid teacher top-k values")
+        valid_ids = ids[mask]
+        valid_logprobs = values[mask].float()
+        sorted_ids = valid_ids.sort(-1).values
+        if valid_ids.shape[0] and (
+            (valid_logprobs > 1e-3).any()
+            or (valid_logprobs.exp().sum(-1) > 1.001).any()
+            or (sorted_ids[:, 1:] == sorted_ids[:, :-1]).any()
+        ):
+            raise RuntimeError(
+                f"{location} teacher top-k IDs/probabilities are not an absolute distribution"
+            )
 
 
 def load_cache(
