@@ -141,3 +141,40 @@ rejected:
 Training and teacher materialization are CUDA-only. Quantization and inference
 belong to the MLX phase after the BF16 AR checkpoint qualifies; this trainer
 does not generate evaluation audio, quantize weights, or run experiment grids.
+
+After the AR student qualifies, freeze its exact SHA in a receipt with format
+`hibiki_student_ar_qualification_v1`, architecture `hibiki_m_12l`, head `ar`,
+decision `pass`, and the exact config/checkpoint SHA-256 values. Capture the AR
+depformer distributions on its pre-undelay pattern timeline:
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/capture_parallel.py \
+  --cache-dir DISTILL_CACHE --ar-checkpoint RUN/qualified.safetensors \
+  --ar-sha256 "$AR_SHA" --qualification-receipt RUN/qualification_receipt.json \
+  --out-dir RUN/parallel_cache
+```
+
+Train only the 7,346,176-parameter `parallel_v1` head. `text_emb.weight` is read
+from that exact AR checkpoint, kept frozen, and excluded from checkpoints and
+the optimizer. The supplied config fixes either one or two passes.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/train_parallel.py self-check
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/train_parallel.py train \
+  --cache-dir RUN/parallel_cache --ar-checkpoint RUN/qualified.safetensors \
+  --ar-sha256 "$AR_SHA" --qualification-receipt RUN/qualification_receipt.json \
+  --out-dir RUN/parallel_head --steps 10000
+```
+
+Merge the qualified backbone with an exact head only after both explicit hashes
+and the head's embedded base/config lineage agree. The output remains BF16/fp32
+PyTorch safetensors; MLX owns subsequent q4 quantization and inference.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/export_parallel.py \
+  --base-checkpoint RUN/qualified.safetensors --base-sha256 "$AR_SHA" \
+  --qualification-receipt RUN/qualification_receipt.json \
+  --head-checkpoint RUN/parallel_head/head_step010000.safetensors \
+  --head-sha256 "$HEAD_SHA" --output-weights RUN/parallel/model.safetensors \
+  --output-config RUN/parallel/config.json
+```

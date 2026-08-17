@@ -5,8 +5,10 @@ This repository maintains two paths only:
 1. q4 MLX inference for Hibiki-Zero on Apple Silicon;
 2. base-start, full-model Vietnamese-to-English SFT on CUDA.
 
-The mobile target is a future distilled 1B Hibiki-Zero student with parallel
-target-codebook heads. It is not implemented yet.
+The mobile CUDA model track now has the frozen 12-layer contract, strict
+distillation caches, full AR training, and qualified-backbone parallel-head
+capture/training/export under `student/`. MLX quantization and inference for the
+student remain later phases.
 
 Historical design, vision, and report documentation is retained under `docs/`.
 Generated FLEURS data is excluded from both the active tree and Git history.
