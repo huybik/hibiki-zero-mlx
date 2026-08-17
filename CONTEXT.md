@@ -140,10 +140,10 @@ costs 1.87 pieces/word. The corrected `HIBIKI_ASR_ASCII=1` one-epoch run
 qualified at step 3,125: 127/128 nonempty, 128 EOS, zero repetition failures,
 BLEU/chrF 27.85/53.26, WER 0.514, and source gaps 27.74/34.48. Its promoted
 parent SHA is `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
-`HIBIKI_ASR_TRANSLATION_PILOT=1` now owns the next isolated experiment: fresh
-optimizer, ordinary-timing exact 50k cohort, physical batch 16, masked target
-audio, zero audio loss, and 1,000 translation steps initialized from that exact
-parent. Its isolated `*_grounded_v2_pilot_vi_asr_warmstart` run failed: at step
+The retired `HIBIKI_ASR_TRANSLATION_PILOT=1` experiment used a fresh optimizer,
+ordinary-timing exact 50k cohort, physical batch 16, masked target audio, zero
+audio loss, and 1,000 translation steps initialized from that exact parent. Its
+isolated `*_grounded_v2_pilot_vi_asr_warmstart` run failed: at step
 1,000, correct-source BLEU/chrF was 0.06/8.44, source gaps were 0.01/-0.36, and
 24 rows failed the repetition gate, so no best checkpoint was promoted. A plain
 fresh-optimizer switch from qualified ASCII ASR to English translation is
@@ -152,8 +152,19 @@ translation objective with a deterministic batch-4, weight-1 ASCII-ASR replay
 forward. The memory-safe run peaked near 80 GiB and completed, but failed every
 paired milestone. At step 1,000, correct-source BLEU/chrF was 0.13/7.73 and the
 source gaps were -0.04/-0.24; no checkpoint qualified. Joint ASR replay is
-rejected. Do not start full SFT until a final translation receipt is frozen and
-the complete grounded cache is published and verified.
+rejected. The final bounded diagnostic is
+`HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1`: reconstruct the exact ordinary 50k
+manifest, initialize the exact qualified ASCII-ASR parent, delete target-audio
+inputs at the shared dataset boundary, retain Vietnamese codes through source
+EOS, then supervise only the English sentence. It uses no ASR replay, owns
+isolated `*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts,
+hard-gates transformed train/validation lengths at 400/480, uses physical batch
+8 / accumulation 2, 100-step warmup, deterministic transformed validation, and
+paired evaluation at 0/250/500/750/1,000 with a 24-second generation tail. The
+frozen policy persists tokenizer, ordered English-text hash, row count, and
+observed cohort maximum. Do not start
+full SFT until this receipt is decided and the complete grounded cache is
+published and verified.
 
 ## Canonical resources
 

@@ -15,7 +15,7 @@ CONTRASTIVE_PILOT="${HIBIKI_CONTRASTIVE_PILOT:-0}"
 ASR_PREADAPT="${HIBIKI_ASR_PREADAPT:-0}"
 ASR_ONE_EPOCH="${HIBIKI_ASR_ONE_EPOCH:-0}"
 ASR_ASCII="${HIBIKI_ASR_ASCII:-0}"
-ASR_TRANSLATION_PILOT="${HIBIKI_ASR_TRANSLATION_PILOT:-0}"
+POST_SOURCE_EOS_TRANSLATION_PILOT="${HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT:-0}"
 ASR_REPLAY_TRANSLATION_PILOT="${HIBIKI_ASR_REPLAY_TRANSLATION_PILOT:-0}"
 BASELINE_PILOT_MANIFEST="$REPO_ROOT/finetune/runs/vi_grounded_v2_pilot/sample_manifest.jsonl"
 BASELINE_PILOT_MANIFEST_SHA256=52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f
@@ -38,8 +38,9 @@ die() {
   || die "HIBIKI_ASR_ONE_EPOCH must be 0 or 1"
 [[ "$ASR_ASCII" == 0 || "$ASR_ASCII" == 1 ]] \
   || die "HIBIKI_ASR_ASCII must be 0 or 1"
-[[ "$ASR_TRANSLATION_PILOT" == 0 || "$ASR_TRANSLATION_PILOT" == 1 ]] \
-  || die "HIBIKI_ASR_TRANSLATION_PILOT must be 0 or 1"
+[[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0 || \
+  "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]] \
+  || die "HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT must be 0 or 1"
 [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] \
   || die "HIBIKI_ASR_REPLAY_TRANSLATION_PILOT must be 0 or 1"
 [[ "$PILOT" == 0 || "$RECIPE" == "grounded-v2" ]] \
@@ -56,15 +57,15 @@ die() {
   || die "HIBIKI_ASR_ONE_EPOCH=1 requires HIBIKI_ASR_PREADAPT=1"
 [[ "$ASR_ASCII" == 0 || ( "$ASR_PREADAPT" == 1 && "$ASR_ONE_EPOCH" == 1 ) ]] \
   || die "HIBIKI_ASR_ASCII=1 requires the one-epoch ASR diagnostic"
-[[ "$ASR_TRANSLATION_PILOT" == 0 || (
+[[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0 || (
   "$RECIPE" == grounded-v2 && "$PILOT" == 1 && "$HIGH_DELAY_PILOT" == 0 &&
   "$CONTRASTIVE_PILOT" == 0 && "$ASR_PREADAPT" == 0 && "$ASR_ONE_EPOCH" == 0 &&
-  "$ASR_ASCII" == 0
-) ]] || die "HIBIKI_ASR_TRANSLATION_PILOT=1 requires the ordinary grounded pilot alone"
+  "$ASR_ASCII" == 0 && "$ASR_REPLAY_TRANSLATION_PILOT" == 0
+) ]] || die "HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1 requires the ordinary grounded pilot alone"
 [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 || (
   "$RECIPE" == grounded-v2 && "$PILOT" == 1 && "$HIGH_DELAY_PILOT" == 0 &&
   "$CONTRASTIVE_PILOT" == 0 && "$ASR_PREADAPT" == 0 && "$ASR_ONE_EPOCH" == 0 &&
-  "$ASR_ASCII" == 0 && "$ASR_TRANSLATION_PILOT" == 0
+  "$ASR_ASCII" == 0 && "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0
 ) ]] || die "HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1 requires the ordinary grounded pilot alone"
 case "$RECIPE" in
   legacy)
@@ -97,8 +98,8 @@ case "$RECIPE" in
       if [[ "$ASR_ASCII" == 1 ]]; then
         pilot_namespace=grounded_v2_pilot_vi_asr_ascii_epoch1
       fi
-      if [[ "$ASR_TRANSLATION_PILOT" == 1 ]]; then
-        pilot_namespace=grounded_v2_pilot_vi_asr_warmstart
+      if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+        pilot_namespace=grounded_v2_pilot_vi_post_source_eos_translation
       fi
       if [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
         pilot_namespace=grounded_v2_pilot_vi_asr_replay
@@ -149,7 +150,7 @@ require_python() {
 }
 
 require_baseline_pilot_manifest() {
-  [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 || \
+  [[ "$HIGH_DELAY_PILOT" == 1 || "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
     "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return 0
   [[ -f "$BASELINE_PILOT_MANIFEST" ]] || die "missing baseline pilot sample manifest"
   command -v sha256sum >/dev/null || die "sha256sum is required"
@@ -160,7 +161,8 @@ require_baseline_pilot_manifest() {
 }
 
 require_asr_parent_checkpoint() {
-  [[ "$ASR_TRANSLATION_PILOT" == 1 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return 0
+  [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
+    "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]] || return 0
   [[ -f "$ASR_PARENT_CHECKPOINT" ]] || die "missing qualified ASR parent checkpoint"
 }
 
@@ -229,8 +231,8 @@ cache_grounded() {
     || die "the contrastive pilot reuses the verified high-delay caches"
   [[ "$ASR_PREADAPT" == 0 ]] \
     || die "ASR preadaptation reuses the verified high-delay caches"
-  [[ "$ASR_TRANSLATION_PILOT" == 0 ]] \
-    || die "the ASR warm-start pilot reuses the verified ordinary caches"
+  [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0 ]] \
+    || die "the post-source-EOS translation pilot reuses the verified ordinary caches"
   [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 0 ]] \
     || die "the ASR-replay pilot reuses the verified ordinary caches"
   require_python
@@ -331,7 +333,7 @@ preflight() {
   local profile
   profile="$("$PYTHON" - \
     "$REPO_ROOT" "$minimum_free_gib" "$RECIPE" "$PILOT" "$HIGH_DELAY_PILOT" \
-    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_TRANSLATION_PILOT" \
+    "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$POST_SOURCE_EOS_TRANSLATION_PILOT" \
     "$ASR_REPLAY_TRANSLATION_PILOT" \
     "$TARGET_DELAY_MIN_RATIO" "$TARGET_DELAY_MAX_RATIO" "$TARGET_DELAY_SEED" \
     "$PHOMT_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" <<'PY'
@@ -353,7 +355,7 @@ pilot = bool(int(sys.argv[4]))
 high_delay_pilot = bool(int(sys.argv[5]))
 contrastive_pilot = bool(int(sys.argv[6]))
 source_asr = bool(int(sys.argv[7]))
-asr_translation_pilot = bool(int(sys.argv[8]))
+post_source_eos_translation_pilot = bool(int(sys.argv[8]))
 asr_replay_translation_pilot = bool(int(sys.argv[9]))
 target_delay = {
     "min_ratio": float(sys.argv[10]),
@@ -384,18 +386,12 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if asr_replay_translation_pilot:
+if asr_replay_translation_pilot or post_source_eos_translation_pilot:
     if memory_gib < 75:
         raise RuntimeError(
-            f"ASR replay requires at least 75 GiB GPU memory, got {memory_gib:.1f} GiB"
+            f"post-ASR translation requires at least 75 GiB GPU memory, got {memory_gib:.1f} GiB"
         )
     batch_size, grad_accum = 8, 2
-elif asr_translation_pilot:
-    if memory_gib < 90:
-        raise RuntimeError(
-            f"ASR translation pilots require at least 90 GiB GPU memory, got {memory_gib:.1f} GiB"
-        )
-    batch_size, grad_accum = 16, 1
 elif (contrastive_pilot or source_asr) and memory_gib >= 75:
     batch_size, grad_accum = 4, 4
 elif high_delay_pilot and memory_gib >= 75:
@@ -576,7 +572,11 @@ common_args() {
   if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
     max_steps=3125
   fi
-  if [[ "$ASR_TRANSLATION_PILOT" == 1 || "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
+  if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+    max_frames=400
+    val_max_frames=480
+    sort_args=(--no-sort-by-length)
+  elif [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
     sort_args=(--no-sort-by-length)
   fi
   [[ "$max_steps" =~ ^[0-9]+$ ]] || die "HIBIKI_MAX_STEPS must be a non-negative integer"
@@ -623,7 +623,7 @@ common_args() {
       --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.1
       --eval-at-start
     )
-    if [[ "$HIGH_DELAY_PILOT" == 0 && "$ASR_TRANSLATION_PILOT" == 0 && \
+    if [[ "$HIGH_DELAY_PILOT" == 0 && "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 0 && \
       "$ASR_REPLAY_TRANSLATION_PILOT" == 0 ]]; then
       TRAIN_ARGS+=(--cache-weights 0.95 0.05)
     fi
@@ -660,12 +660,14 @@ common_args() {
             TRAIN_ARGS+=(--source-asr-ascii)
           fi
         fi
-      elif [[ "$ASR_TRANSLATION_PILOT" == 1 ]]; then
+      elif [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
         TRAIN_ARGS+=(
           --input-sample-manifest "$BASELINE_PILOT_MANIFEST"
           --input-sample-manifest-sha256 "$BASELINE_PILOT_MANIFEST_SHA256"
           --init-checkpoint "$ASR_PARENT_CHECKPOINT"
           --init-checkpoint-sha256 "$ASR_PARENT_CHECKPOINT_SHA256"
+          --post-source-eos-translation
+          --eval-tail-s 24
         )
       elif [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
         TRAIN_ARGS+=(
@@ -701,7 +703,7 @@ check_smoke_outputs() {
   "$PYTHON" - \
     "$SMOKE_DIR" "$HIGH_DELAY_PILOT" "$BASELINE_PILOT_MANIFEST_SHA256" \
     "$CONTRASTIVE_PILOT" "$ASR_PREADAPT" "$ASR_ASCII" \
-    "$ASR_TRANSLATION_PILOT" "$ASR_REPLAY_TRANSLATION_PILOT" \
+    "$POST_SOURCE_EOS_TRANSLATION_PILOT" "$ASR_REPLAY_TRANSLATION_PILOT" \
     "$ASR_PARENT_CHECKPOINT" \
     "$ASR_PARENT_CHECKPOINT_SHA256" <<'PY'
 from __future__ import annotations
@@ -719,7 +721,7 @@ baseline_manifest_sha256 = sys.argv[3]
 contrastive_pilot = bool(int(sys.argv[4]))
 source_asr = bool(int(sys.argv[5]))
 source_asr_ascii = bool(int(sys.argv[6]))
-asr_translation_pilot = bool(int(sys.argv[7]))
+post_source_eos_translation_pilot = bool(int(sys.argv[7]))
 asr_replay_translation_pilot = bool(int(sys.argv[8]))
 asr_parent_checkpoint = sys.argv[9]
 asr_parent_checkpoint_sha256 = sys.argv[10]
@@ -831,13 +833,13 @@ if high_delay_pilot:
         if not source_asr_ascii and observed_max_frames != 668:
             raise RuntimeError("source-ASR raw-text shape mismatch")
 
-if asr_translation_pilot:
+if post_source_eos_translation_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
     expected = {
-        "batch_size": 16,
-        "grad_accum_steps": 1,
-        "max_frames": 280,
-        "val_max_frames": 0,
+        "batch_size": 8,
+        "grad_accum_steps": 2,
+        "max_frames": 400,
+        "val_max_frames": 480,
         "val_batch_size": 8,
         "max_samples": 0,
         "cache_weights": None,
@@ -848,20 +850,48 @@ if asr_translation_pilot:
         "init_checkpoint": asr_parent_checkpoint,
         "init_checkpoint_sha256": asr_parent_checkpoint_sha256,
         "source_asr_pretrain": False,
+        "source_asr_replay_weight": 0.0,
+        "post_source_eos_translation": True,
+        "mask_target_audio_input": True,
+        "audio_loss_weight": 0.0,
+        "eval_tail_s": 24.0,
+        "validation_sort_by_length": True,
+        "validation_shuffle": False,
     }
     for key, value in expected.items():
         if config.get(key) != value:
-            raise RuntimeError(f"ASR warm-start smoke config mismatch for {key}")
+            raise RuntimeError(f"post-source-EOS smoke config mismatch for {key}")
     manifest_digest = hashlib.sha256((root / "sample_manifest.jsonl").read_bytes()).hexdigest()
     if manifest_digest != baseline_manifest_sha256:
-        raise RuntimeError("ASR warm-start changed authoritative sample membership")
-    if max(int(item["max_batch_size"]) for item in logs) != 16:
-        raise RuntimeError("ASR warm-start smoke did not exercise physical batch 16")
+        raise RuntimeError("post-source-EOS translation changed authoritative membership")
+    if max(int(item["max_batch_size"]) for item in logs) != 8:
+        raise RuntimeError("post-source-EOS smoke did not exercise physical batch 8")
+    if any(int(item["samples"]) != 16 or int(item["microbatches"]) != 2 for item in logs):
+        raise RuntimeError("post-source-EOS smoke did not preserve effective batch 16")
     observed_max_frames = int(config.get("observed_train_max_frames", 0))
-    if not 0 < observed_max_frames <= 280:
-        raise RuntimeError("ASR warm-start training maximum exceeds its frame cap")
+    if not 0 < observed_max_frames <= 400:
+        raise RuntimeError("post-source-EOS training maximum exceeds its frame cap")
     if max(int(item["max_frames"]) for item in logs) != observed_max_frames:
-        raise RuntimeError("ASR warm-start smoke did not exercise the longest row")
+        raise RuntimeError("post-source-EOS smoke did not exercise the longest row")
+    document = json.loads((root / "post_source_eos_translation.json").read_text())
+    payload = document["post_source_eos_translation"]
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if digest != document["sha256"] or digest != config.get(
+        "post_source_eos_translation_sha256"
+    ):
+        raise RuntimeError("post-source-EOS translation policy hash mismatch")
+    if (
+        payload.get("strategy") != "full_sentence_en_translation_after_source_eos"
+        or payload.get("text_column") != "text_en"
+        or payload.get("source_audio") != "through_source_eos"
+        or payload.get("target_audio") != "absent"
+        or payload.get("text_start") != "after_source_eos"
+        or payload.get("rows") != 50_000
+        or payload.get("observed_max_frames") != observed_max_frames
+    ):
+        raise RuntimeError("post-source-EOS translation policy mismatch")
 
 if asr_replay_translation_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
@@ -965,7 +995,7 @@ smoke() {
   (
     set -Eeuo pipefail
     local smoke_data_args=()
-    if [[ "$HIGH_DELAY_PILOT" == 1 || "$ASR_TRANSLATION_PILOT" == 1 || \
+    if [[ "$HIGH_DELAY_PILOT" == 1 || "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 || \
       "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
       smoke_data_args=(--smoke-longest-first)
     fi
@@ -993,6 +1023,8 @@ smoke() {
       if [[ "$ASR_ASCII" == 1 ]]; then
         smoke_eval_args+=(--ascii-reference)
       fi
+    elif [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+      smoke_eval_args=(--tail-s 24)
     fi
     "$PYTHON" finetune/eval.py \
       --device cuda --dtype float32 \

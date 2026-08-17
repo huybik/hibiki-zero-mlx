@@ -332,38 +332,23 @@ This mode qualified at step 3,125 with BLEU/chrF 27.85/53.26, WER 0.514, and
 27.74/34.48 source gaps. Its promoted model SHA is
 `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
 
-Run the next isolated translation pilot from that exact parent:
-
-```bash
-export HIBIKI_RECIPE=grounded-v2
-export HIBIKI_PILOT=1
-export HIBIKI_ASR_TRANSLATION_PILOT=1
-unset HIBIKI_HIGH_DELAY_PILOT HIBIKI_CONTRASTIVE_PILOT
-unset HIBIKI_ASR_PREADAPT HIBIKI_ASR_ONE_EPOCH HIBIKI_ASR_ASCII
-unset HIBIKI_HF_PREFIX
-export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
-export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
-./finetune/h100.sh preflight
-./finetune/h100.sh smoke
-./finetune/h100.sh train
-```
-
-This mode owns `*_grounded_v2_pilot_vi_asr_warmstart`, reconstructs the exact
-ordinary-timing 50k membership, pins the qualified parent SHA, starts a fresh
-optimizer, and uses physical batch 16 for 1,000 masked-audio translation steps.
-Evaluation remains paired at 0/250/500/750/1,000 with unchanged promotion gates.
+The retired ordinary ASR warm-start test owned
+`*_grounded_v2_pilot_vi_asr_warmstart`, reconstructed the exact
+ordinary-timing 50k membership, pinned the qualified parent SHA, started a fresh
+optimizer, and used physical batch 16 for 1,000 masked-audio translation steps.
+Evaluation remained paired at 0/250/500/750/1,000 with unchanged promotion gates.
 It failed at step 1,000: correct-source BLEU/chrF was 0.06/8.44, source gaps
 were 0.01/-0.36, 24 rows failed the repetition gate, and no best checkpoint was
 promoted. Do not extend or initialize full training from this run.
 
-Repeat the isolated translation contract while preserving the qualified
-acoustic objective with deterministic ASCII-ASR replay:
+The subsequent isolated replay test used the qualified acoustic objective with
+deterministic ASCII-ASR replay:
 
 ```bash
 export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_PILOT=1
 export HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1
-unset HIBIKI_ASR_TRANSLATION_PILOT
+unset HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT
 unset HIBIKI_HIGH_DELAY_PILOT HIBIKI_CONTRASTIVE_PILOT
 unset HIBIKI_ASR_PREADAPT HIBIKI_ASR_ONE_EPOCH HIBIKI_ASR_ASCII
 unset HIBIKI_HF_PREFIX
@@ -386,3 +371,38 @@ compilation is disabled and recorded for this dual-shape mode: compiled graph
 caches reached 94.5/95.8 GiB by step 30. Uncompiled physical batch 16 still
 emitted an allocator failure warning by step 20, so replay uses batch 8 with
 two-step accumulation.
+
+Replay also failed every paired milestone. At step 1,000, correct-source
+BLEU/chrF was 0.13/7.73 and source gaps were -0.04/-0.24. Do not rerun it: the
+same source context was supervised with incompatible ASCII-Vietnamese and
+English targets.
+
+Run the final post-source-EOS translation diagnostic after restoring the pinned
+manifest and parent as documented in [finetune.md](finetune.md):
+
+```bash
+export HIBIKI_RECIPE=grounded-v2
+export HIBIKI_PILOT=1
+export HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1
+unset HIBIKI_ASR_REPLAY_TRANSLATION_PILOT
+unset HIBIKI_HIGH_DELAY_PILOT HIBIKI_CONTRASTIVE_PILOT
+unset HIBIKI_ASR_PREADAPT HIBIKI_ASR_ONE_EPOCH HIBIKI_ASR_ASCII
+unset HIBIKI_HF_PREFIX
+export HIBIKI_MIN_SOURCE_BLEU_GAP=1.0
+export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
+./finetune/h100.sh preflight
+./finetune/h100.sh smoke
+./finetune/h100.sh train
+```
+
+This mode owns `*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts.
+At the cached-dataset boundary it deletes English target-audio inputs, preserves
+Vietnamese source codes through source EOS, and emits the cached English text
+only after EOS. It uses no ASR replay. Exact manifest order is preserved for
+production; validation is independently length-sorted with `shuffle=False`.
+The post-transform training/validation gates are 400/480 frames, and smoke feeds
+the exact longest rows first before accepting physical batch 8 / accumulation 2.
+`post_source_eos_translation.json` freezes the strategy, tokenizer, ordered-text
+hash, row count, and observed maximum. Warmup is 100 steps; paired evaluation is
+fixed at 0/250/500/750/1,000 with a 24-second generation tail. A failure still
+does not authorize full training.
