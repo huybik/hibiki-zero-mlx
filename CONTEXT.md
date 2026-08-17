@@ -70,15 +70,13 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.
   `remote_dataset/download_covost2.py` materializes the pinned healthy FR→EN
   evaluator control.
-- The grounded-v2 PhoMT rebuild is running on the H100 from the SHA-verified,
-  contiguous 90-shard Mac prefix (`shard_00000.pt` through `shard_00089.pt`).
-  It contains 52,939 accepted rows and has aggregate manifest SHA
+- The grounded-v2 cache is complete and published under the verified
+  `grounded-v2/` dataset prefix: 1,377 PhoMT shards contain 690,067 accepted and
+  4,364 rejected rows; FLEURS contains 1,448 train and 148 validation rows in
+  46/5 shards. Five CUDA workers sustained 7.0 shards/min with about 5 GiB GPU
+  headroom. The rebuild resumed from the SHA-verified 90-shard Mac prefix whose
+  aggregate manifest SHA is
   `7b76432f7034284d440c27a433e48c791ca4e1f5c6daa6e92e8c23bcef2b4e56`.
-  Five CUDA workers run from commit `8e310ff` at a measured 7.0 shards/min with
-  about 5 GiB GPU headroom; the detached pipeline validates all 1,377 shards,
-  builds grounded FLEURS caches, then publishes and verifies the isolated
-  dataset `grounded-v2/` prefix. The Mac copy remains until remote publication
-  succeeds.
 - `finetune/validate.py` is teacher-forced diagnostics only. `finetune/eval.py`
   evaluates correct and shuffled sources at fixed-seed text temperature 0.4,
   writing condition and consolidated artifacts. Promotion requires correct-source
@@ -170,8 +168,10 @@ only authorized continuation: resume the same optimizer/run identity at step
 horizon remains 1,000 so LR stays at `1e-6`; val/eval/save cadence is 500 plus
 final 3,125. The original run config stays immutable, a separate extension
 receipt freezes intent and code, and remote recovery pins step 1,000 plus the
-latest two pairs. Do not start full SFT until this receipt is decided and the
-complete grounded cache is published and verified.
+latest two pairs. The step-1,000 receipt passed output health at BLEU/chrF
+0.67/14.48 and showed emerging paired gaps of 0.48/1.80. This clears the bounded
+continuation threshold but not the 1.0/5.0 promotion gates. Do not start full
+SFT until the one-epoch receipt is decided.
 
 ## Canonical resources
 
