@@ -304,7 +304,10 @@ without teaching translation frames to remain silent. Replay uses the same
 ordered manifest, hard-gates its measured maximum at 434 frames, freezes its
 policy in `source_asr_replay.json`, resumes both iterators exactly, and owns
 `*_grounded_v2_pilot_vi_asr_replay` artifacts. A pass selects a text-translation
-recipe candidate; it still does not authorize full training.
+recipe candidate; it still does not authorize full training. This mode disables
+Torch compilation because its batch-16 translation and batch-4 replay shapes
+filled 94.5/95.8 GiB with compiled graph caches by production step 30 despite
+the short smoke passing. The compile choice is persisted and checked on resume.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled

@@ -514,7 +514,11 @@ PY
 )"
   read -r BATCH_SIZE GRAD_ACCUM_STEPS GPU_GIB HOST_GIB FREE_GIB <<< "$profile"
   export BATCH_SIZE GRAD_ACCUM_STEPS
-  export NO_TORCH_COMPILE=
+  if [[ "$ASR_REPLAY_TRANSLATION_PILOT" == 1 ]]; then
+    export NO_TORCH_COMPILE=1
+  else
+    export NO_TORCH_COMPILE=
+  fi
   export HIBIKI_FRAME_BUCKET=16
   echo "Preflight passed: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
   echo "GPU=${GPU_GIB}GiB host=${HOST_GIB}GiB free_disk=${FREE_GIB}GiB batch=$BATCH_SIZE accum=$GRAD_ACCUM_STEPS"
@@ -875,6 +879,7 @@ if asr_replay_translation_pilot:
         "source_asr_replay_batch_size": 4,
         "source_asr_replay_max_frames": 434,
         "observed_source_asr_replay_max_frames": 434,
+        "torch_compile_enabled": False,
     }
     for key, value in expected.items():
         if config.get(key) != value:

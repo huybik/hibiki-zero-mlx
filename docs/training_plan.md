@@ -380,4 +380,6 @@ by a four-row, weight-1 ASCII-Vietnamese ASR batch from the same frozen cohort.
 Replay supervises content after source EOS but gives PAD zero loss weight. Its
 ordered iterator resumes from `global_step`, its hard maximum is the measured
 434 frames, and `source_asr_replay.json` freezes the tokenizer/text policy. The
-English paired evaluation and promotion gates remain unchanged.
+English paired evaluation and promotion gates remain unchanged. Torch
+compilation is disabled and recorded for this dual-shape mode: compiled graph
+caches reached 94.5/95.8 GiB by step 30 even though the 11-step smoke passed.

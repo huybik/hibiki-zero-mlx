@@ -149,8 +149,10 @@ jointly while training translation. `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1`
 does that in an isolated namespace: each ordinary batch-16 translation step is
 followed by a deterministic batch-4, weight-1 ASCII-ASR replay forward from the
 same exact cohort. Replay has zero PAD pressure, a 434-frame hard cap, frozen
-policy metadata, and exact resume position. Do not start full SFT until this or
-a later translation pilot qualifies and the complete grounded cache is
+policy metadata, and exact resume position. Torch compilation is disabled for
+this dual-shape mode: compiled graph caches reached 94.5/95.8 GiB by step 30,
+while the uncompiled contract must retain smoke-verified headroom. Do not start
+full SFT until this or a later translation pilot qualifies and the complete grounded cache is
 published and verified; the current 94 GB H100 NVL full run is planned at
 physical batch 16.
 

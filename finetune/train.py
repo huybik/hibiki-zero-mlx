@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -400,6 +401,7 @@ def load_resume_checkpoint(
 
 def main() -> None:
     args = parse_args()
+    torch_compile_enabled = os.environ.get("NO_TORCH_COMPILE") != "1"
     if args.epochs <= 0:
         raise ValueError("--epochs must be positive")
     if args.batch_size <= 0:
@@ -798,6 +800,7 @@ def main() -> None:
                     "text_pad_mode": args.text_pad_mode,
                     "text_pad_loss_weight": args.text_pad_loss_weight,
                     "first_content_loss_weight": args.first_content_loss_weight,
+                    "torch_compile_enabled": torch_compile_enabled,
                 }
                 for key, value in replay_resume_contract.items():
                     if previous_config.get(key) != value:
@@ -806,6 +809,7 @@ def main() -> None:
     run_config["total_steps"] = total_steps
     run_config["batches_per_epoch"] = batches_per_epoch
     run_config["steps_per_epoch"] = steps_per_epoch
+    run_config["torch_compile_enabled"] = torch_compile_enabled
     run_config["observed_train_max_frames"] = max(
         int(sample["frames"]) for sample in dataset.samples
     )
