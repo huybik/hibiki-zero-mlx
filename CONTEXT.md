@@ -1,215 +1,79 @@
 # Hibiki MLX — project context
 
-This repository maintains two paths only:
+This repository maintains two paths:
 
 1. q4 MLX inference for Hibiki-Zero on Apple Silicon;
-2. full-model Vietnamese-to-English SFT on CUDA.
+2. direct full-model Vietnamese-to-English voice-preserving simultaneous
+   translation SFT on CUDA.
 
-The mobile target is a future distilled 1B Hibiki-Zero student with parallel
-target-codebook heads. It is not implemented yet.
-
-Historical design, vision, and report documentation is retained under `docs/`.
-Generated FLEURS data is excluded from both the active tree and Git history.
+Historical design, experiment, and report documentation remains under `docs/`.
+The active training handoff is `docs/finetune.md`.
 
 ## Inference
 
-- `main.py` is the CLI for file and microphone translation.
-- `hibiki_mlx/pipeline.py` owns model loading and the three-thread
-  Mimi-encode → LM → Mimi-decode pipeline.
-- `moshi-mlx/` is the minimal vendored MLX language-model runtime. Its required
-  Hibiki deltas are GQA (`kv_repeat`), configurable `hidden_scale`,
-  `rope_concat`, and per-slice depformer output LayerNorm.
-- Supported weights are q4 with `group_size=32`. `3b` resolves to `weights/`;
-  custom staged Hibiki-Zero directories can be passed explicitly.
+- `main.py` is the file and microphone translation CLI.
+- `hibiki_mlx/pipeline.py` owns the Mimi-encode → LM → Mimi-decode pipeline.
+- `moshi-mlx/` is the minimal vendored MLX runtime. Its required Hibiki deltas
+  are GQA (`kv_repeat`), configurable `hidden_scale`, `rope_concat`, and
+  per-slice depformer output LayerNorm.
+- Supported weights are q4 with `group_size=32`; `3b` resolves to `weights/`.
 - Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
-  arrays because lazy MLX graphs cannot move across creating threads.
+  arrays because lazy MLX graphs cannot cross their creating threads.
 - File inference adds an 8-second silence tail and stops after 12 sustained PAD
-  frames to flush translation lag without extended hallucination.
+  frames.
 - Runtime gates are `scripts/verify_mlx_q4.py` and
   `scripts/bench.py --model 3b --silence`.
-- `scripts/check_swift_compat.py` requires strict q4 group-size-32 reload plus
-  valid config, tokenizer, and Mimi sidecars.
 
 ## Training
 
-- Start every new-agent or new-pod training session with
-  `docs/finetune.md`. It is the copy-paste handoff for fresh setup, artifact
-  restore, preflight/smoke, the stop-before-launch boundary, and exact recovery.
-- `finetune/train.py` always trains every model parameter. There is no LoRA or
-  adapter path; isolated pilot-only warm-start/replay modes remain for history,
-  while the final full-data receipt is frozen.
-- The final grounded run starts from the qualified ASCII-ASR checkpoint
-  `best_step003125.safetensors` at SHA
-  `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
-  The upstream base remains a required architecture artifact;
-  `--resume-checkpoint` is only for recovery within the same full run.
-- CUDA uses fp32 master weights, bf16 autocast, fused AdamW, causal SDPA, and
-  16-frame buckets. The frozen full receipt requires a 94 GB H100, physical
-  batch 16, no accumulation, transformed train T≤280, and validation B4/T≤470.
-- `finetune/h100.sh` pins the pod environment, verifies staged artifacts and
-  evaluation audio, selects the 80/94 GB batch recipe, and gates training on a
-  save/eval/resume smoke.
-- `HIBIKI_RECIPE=grounded-v2` selects isolated CTC word-timed caches, 95/5
-  PhoMT/FLEURS sampling, conservative cosine SFT, eligibility-only best saves,
-  and paired source-dependence evaluation. The final full namespace is
-  `grounded_v2_full_post_source_eos`; `HIBIKI_PILOT=1` forces separate
-  `*_grounded_v2_pilot` caches, smoke/run directories, and HF prefix; exactly
-  104 evenly sampled PhoMT shards feed a frozen 50k-row membership for 1,000
-  steps with 100-step warmup. Pilot target-audio inputs are masked and audio
-  loss is zero. Full grounded uses the post-source-EOS objective, 1,000-step
-  warmup, and rejects pilot limits.
-  PhoMT is pinned and CTC rows below 0.5 are rejected. Legacy remains default.
-- `finetune/common.py` owns cached data, losses, schedules, exact full-model
-  checkpoint I/O, free-running generation, paired metrics, RNG isolation, and
-  frozen duration-matched evaluation/training derangements. Complete checkpoint
-  pairs are published atomically and pre-rotated to avoid transient disk spikes;
-  loading rejects missing and unexpected tensor keys.
-- `finetune/cache_phomt_stream.py` builds the published PhoMT cache directly
-  from parquet with bounded download prefetch and Hugging Face Xet. MPS runs keep
-  the CTC dynamic program on-device with one result transfer, release each batch,
-  and bound concurrent workers by row and audio-sample budgets. Its H100 profile
-  batches CTC Viterbi across rows; `h100.sh cache-grounded` supervises bounded
-  workers and builds all grounded-v2 PhoMT/FLEURS caches.
-  `finetune/publish_grounded_cache.py` validates and checksum-publishes
-  the complete cache under an isolated dataset prefix. `remote_dataset/download_fleurs_vi_en.py` →
-  `finetune/build_pairs.py` → `finetune/cache_codes.py` builds FLEURS inputs.
-  `remote_dataset/download_covost2.py` materializes the pinned healthy FR→EN
-  evaluator control.
-- The grounded-v2 cache is complete and published under the verified
-  `grounded-v2/` dataset prefix: 1,377 PhoMT shards contain 690,067 accepted and
-  4,364 rejected rows; FLEURS contains 1,448 train and 148 validation rows in
-  46/5 shards. Five CUDA workers sustained 7.0 shards/min with about 5 GiB GPU
-  headroom. The rebuild resumed from the SHA-verified 90-shard Mac prefix whose
-  aggregate manifest SHA is
-  `7b76432f7034284d440c27a433e48c791ca4e1f5c6daa6e92e8c23bcef2b4e56`.
-- `finetune/freeze_full_data_receipt.py` hashes every extracted cache shard and
-  model artifact, transforms before filtering, then freezes 719,120 ordered
-  rows: 683,164 PhoMT and 35,956 FLEURS. Manifest SHA is
-  `63f584a43dc5cba59fb948d5aa294ed72bc29634910968f9cda947c70019d1b5`;
-  receipt SHA is
-  `ece5948ddb72f11f14048351f170c4c5218503c484db9c623ea6b4f52796ff0d`.
-- `finetune/validate.py` is teacher-forced diagnostics only. `finetune/eval.py`
-  evaluates correct and shuffled sources at fixed-seed text temperature 0.4,
-  writing condition and consolidated artifacts. Promotion requires correct-source
-  health plus calibrated BLEU/chrF gaps, then ranks by `(BLEU, chrF)`.
-- `finetune/hf_sync.py` maintains two recovery pairs plus the best model under
-  the run's isolated prefix in the public `huybik/hibiki-zero-vi-full-sft`
-  model repo. Final sync also preserves run configuration, membership, and compact
-  paired-evaluation CSV/JSON artifacts. `h100.sh` verifies a shared run identity,
-  supervises sync, and protects the local resume point before training restarts.
+- The only launcher recipe is direct full-data SFT from the upstream
+  Hibiki-Zero weight. ASCII-ASR and all pilot, replay, post-source, contrastive,
+  anti-repetition, and multi-epoch curricula are obsolete and rejected.
+- Cached streams are used unchanged: English target Mimi audio, CTC-timed
+  English text ending in tokenizer EOS, and Vietnamese source Mimi audio ending
+  in explicit codec-card EOS. There is no dataset transform.
+- English target audio is teacher-forced and trained with audio CE. Every model
+  parameter is trainable.
+- The frozen train receipt has 719,120 rows: 683,164 PhoMT and 35,956 FLEURS.
+  Raw train and validation are capped at 280 frames. Validation retains 138
+  rows, has observed maximum 277, uses batch 4, and never shuffles.
+- The run uses physical batch 16, accumulation 1, one epoch / 44,945 steps,
+  fixed LR `1e-6`, and fused AdamW with betas `(0.9, 0.95)` and weight decay
+  `0.1`. CUDA uses fp32 master weights, bf16 autocast, compile, and 16-frame
+  buckets.
+- `finetune/h100.sh` pins Torch `2.8.0+cu128` and Moshi `0.2.13`, verifies one
+  H100 with at least 90 GiB VRAM and driver 570+, freezes the receipt, and gates
+  launch on a longest-row save/resume smoke.
+- `finetune/train.py` runs teacher-forced validation every 1,000 steps and saves
+  every 3,000 steps plus the final step. `finetune/eval.py` is an optional
+  correct-source-only free-running check; shuffled-source evaluation is not part
+  of this receipt.
+- `finetune/hf_sync.py` keeps the newest two complete recovery pairs plus run
+  metadata and logs under the public model prefix
+  `grounded_v2_full_direct_voice`. Loading requires an exact same-run model,
+  optimizer, manifest, receipt, run identity, and code commit.
+- Published caches live under the dataset prefix `grounded-v2/`. The launcher
+  expects `finetune/cache/phomt_grounded_v2`,
+  `finetune/cache/train_grounded_v2`, and
+  `finetune/cache/validation_grounded_v2`.
 
-After the `docs/finetune.md` handoff, use `docs/training_plan.md` for the exact
-recipe and `docs/validation_plan.md` for qualification thresholds.
-Paired controls lock text temperature 0.4 and source-gap gates of 1.0 BLEU plus
-5.0 chrF. Healthy French passed at 23.08/38.80; Vietnamese base and phase-1
-failed source dependence at -0.07/1.23 and 0.01/1.03. Phase-1's 19.57 absolute
-chrF was therefore mostly target-side modeling. Treat current early text timing
-as a diagnostic. The corrected ordinary pilot failed promotion at every
-0/250/500/750/1,000 milestone; final health was 126/128 nonempty, 116 EOS, and
-24 repeated-4gram failures, with BLEU/chrF gaps -0.07/0.22. Its exact 50k
-manifest SHA is `52ef91a79dc09fb6c00a6f800bf087f2228b7c0842ecb2705ac873d3ef3a458f`.
-The high-delay retry is explicit `HIBIKI_HIGH_DELAY_PILOT=1`, uses deterministic
-uniform ratios `[0.75, 1.0]`, and owns isolated `*_pilot_high_delay` artifacts.
-It reconstructs that membership exactly, hard-gates training at 480 frames,
-preserves production order, and uses physical batch 8 / accumulation 2.
-Teacher-forced validation retains all rows under a separate 704-frame cap at
-batch 1. The exact high-delay retry also failed every promotion gate: at step
-1,000 it produced BLEU/chrF 0.03/9.34, gaps 0.01/0.72, 31 EOS, and 111
-repetition failures. Delay alone is rejected; the next isolated pilot adds a
-duration-matched shuffled-source margin loss before considering acoustic
-preadaptation. `HIBIKI_CONTRASTIVE_PILOT=1` reuses the verified high-delay cache
-but owns `*_pilot_high_delay_contrastive` smoke/run/HF artifacts. It freezes a
-no-duplicate-ID donor permutation, preserves each target's source duration/EOS,
-and adds weight-1 `relu(0.5 + correct_nll - shuffled_nll)` over English content.
-The sequential correct/shuffled forwards use physical batch 4 / accumulation 4
-on the 94 GB H100 while preserving effective batch 16. That pilot also failed:
-by step 1,000 its teacher-forced shuffled-minus-correct NLL gap reached 1.04,
-but free-running BLEU/chrF gaps remained 0.04/0.61 with 69 repetition failures
-and mean length ratio 2.95. Contrastive text ranking is rejected; Vietnamese
-acoustic preadaptation is the next diagnostic before any full SFT. The bounded
-diagnostic is `HIBIKI_ASR_PREADAPT=1`: reuse the exact high-delay 50k cohort,
-discard English targets, keep Vietnamese source codes through source EOS, then
-supervise the Vietnamese transcript with target audio absent. It owns the
-`*_grounded_v2_pilot_vi_asr_preadapt` namespace, uses physical batch 4 /
-accumulation 4 on the 94 GB H100, and hard-gates train/validation at 672/640
-frames. Paired Vietnamese ASR must pass normal health, 1.0 BLEU / 5.0 chrF
-source gaps, correct chrF at least 50, and WER at most 0.60. This tests whether
-the temporal backbone can learn Vietnamese acoustics; it is not Kyutai's
-multilingual audio pretraining. The 1,000-step pilot saw only 16,000/50,000
-ordered positions. At step 1,000 it passed health and source dependence
-(BLEU/chrF gaps 1.18/7.64) but failed absolute ASR (chrF 18.31, WER 0.678).
-It proves learnable Vietnamese routing but cannot initialize translation. The
-exact raw-Vietnamese one-epoch retry also failed promotion. At step 3,125 it
-passed health (128/128 nonempty and EOS, two repetition failures, 0.79 length
-ratio) and source dependence (6.65 BLEU / 15.43 chrF gaps), but correct chrF was
-26.72. Its recorded WER 0.639 used the old ASCII-only normalizer; corrected
-diacritic-insensitive WER is 0.775. The tokenizer itself is the bottleneck for
-this diagnostic: raw Vietnamese costs 4.14 pieces/word and 110/128 hypotheses
-contain invalid-byte replacement characters. Deterministic ASCII Vietnamese
-costs 1.87 pieces/word. The corrected `HIBIKI_ASR_ASCII=1` one-epoch run
-qualified at step 3,125: 127/128 nonempty, 128 EOS, zero repetition failures,
-BLEU/chrF 27.85/53.26, WER 0.514, and source gaps 27.74/34.48. Its promoted
-parent SHA is `d37d69103bff8f128b9b69fc9634a018d8ab5c5c58dbb0b5cc98ecf5a26f92ca`.
-The retired `HIBIKI_ASR_TRANSLATION_PILOT=1` experiment used a fresh optimizer,
-ordinary-timing exact 50k cohort, physical batch 16, masked target audio, zero
-audio loss, and 1,000 translation steps initialized from that exact parent. Its
-isolated `*_grounded_v2_pilot_vi_asr_warmstart` run failed: at step
-1,000, correct-source BLEU/chrF was 0.06/8.44, source gaps were 0.01/-0.36, and
-24 rows failed the repetition gate, so no best checkpoint was promoted. A plain
-fresh-optimizer switch from qualified ASCII ASR to English translation is
-rejected. `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1` then jointly trained the same
-translation objective with a deterministic batch-4, weight-1 ASCII-ASR replay
-forward. The memory-safe run peaked near 80 GiB and completed, but failed every
-paired milestone. At step 1,000, correct-source BLEU/chrF was 0.13/7.73 and the
-source gaps were -0.04/-0.24; no checkpoint qualified. Joint ASR replay is
-rejected. The final bounded diagnostic is
-`HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1`: reconstruct the exact ordinary 50k
-manifest, initialize the exact qualified ASCII-ASR parent, delete target-audio
-inputs at the shared dataset boundary, retain Vietnamese codes through source
-EOS, then supervise only the English sentence. It uses no ASR replay, owns
-isolated `*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts,
-hard-gates transformed train/validation lengths at 400/480, uses physical batch
-8 / accumulation 2, 100-step warmup, deterministic ascending transformed
-validation, and paired evaluation at 0/250/500/750/1,000 with a 24-second
-generation tail. Smoke reverses validation to exercise its observed longest row.
-The frozen policy persists tokenizer, ordered English-text hash, row count, and
-observed cohort maximum. Explicit `HIBIKI_POST_SOURCE_EOS_EXTENSION=1` is the
-only authorized continuation: resume the same optimizer/run identity at step
-1,000 and stop at 3,125 after exactly one frozen 50k pass. The historical cosine
-horizon remains 1,000 so LR stays at `1e-6`; val/eval/save cadence is 500 plus
-final 3,125. The original run config stays immutable, a separate extension
-receipt freezes intent and code, and remote recovery pins step 1,000 plus the
-latest two pairs. The step-1,000 receipt passed output health at BLEU/chrF
-0.67/14.48 and showed emerging paired gaps of 0.48/1.80, which cleared the
-bounded continuation threshold. The exact one-epoch extension proved real but
-inconsistent source routing and promoted no checkpoint: final BLEU/chrF was
-1.87/16.56 with 1.69/3.34 gaps; the strongest step was 2,000 at 2.06/18.27 and
-1.81/4.31 gaps. All milestones passed health, but none passed both calibrated
-1.0/5.0 source gates. Do not initialize full SFT from this rejected receipt.
-
-The authorized full run used the qualified ASCII-ASR parent directly, never the
-rejected translation checkpoint. It completed exactly epoch 1 / step 44,945 and
-was stopped by user decision; do not resume it. The final healthy paired
-evaluation promoted `best_step044945.safetensors`: correct-source BLEU/chrF was
-4.003/26.300 versus shuffled 0.180/16.777, for gaps of 3.824/9.523. All 148
-teacher-forced validation rows were retained; final content accuracy was 0.405
-and content loss was 4.762. This receipt proves partial source-conditioned text
-translation, not speech generation: target audio was absent, with zero audio
-tokens and zero audio loss throughout the run.
+Use `docs/finetune.md` for pod setup and recovery, `docs/training_plan.md` for
+the frozen recipe, and `docs/validation_plan.md` for monitoring and optional
+free-running evaluation.
 
 ## Canonical resources
 
-- Published training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft/tree/main
-- Training checkpoints and recovery artifacts: https://huggingface.co/huybik/hibiki-zero-vi-full-sft
-- Source PhoMT Vietnamese–English speech dataset: https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
+- Caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft/tree/main/grounded-v2
+- Recovery: https://huggingface.co/huybik/hibiki-zero-vi-full-sft/tree/main/grounded_v2_full_direct_voice
+- Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
+- PhoMT speech data: https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
 
 ## Environment
 
 - Local Python work uses `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
-- The ignored `.env` contains the HF credential used for downloads and recovery
-  sync. Source it when needed; never print, log, or commit its value.
+- The ignored `.env` may contain the HF credential. Never print, log, or commit
+  its value.
 - Inference requires MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, and
   sounddevice for microphone mode.
-- Training additionally requires a CUDA-compatible PyTorch build, `moshi`
-  0.2.13, safetensors, sacrebleu, datasets, soundfile, pyarrow, and
-  huggingface-hub.
+- Training uses Python 3.10–3.13, Torch `2.8.0+cu128`, Moshi `0.2.13`, and the
+  exact dependencies installed by `./finetune/h100.sh setup`.
