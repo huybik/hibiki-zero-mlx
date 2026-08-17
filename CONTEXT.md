@@ -147,14 +147,15 @@ fresh-optimizer switch from qualified ASCII ASR to English translation is
 rejected. The next bounded recipe test must preserve the ASCII-ASR objective
 jointly while training translation. `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1`
 does that in an isolated namespace: each ordinary batch-16 translation step is
-followed by a deterministic batch-4, weight-1 ASCII-ASR replay forward from the
-same exact cohort. Replay has zero PAD pressure, a 434-frame hard cap, frozen
+implemented as two physical batch-8 microbatches followed by a deterministic
+batch-4, weight-1 ASCII-ASR replay forward from the same exact cohort. Replay has zero PAD pressure, a 434-frame hard cap, frozen
 policy metadata, and exact resume position. Torch compilation is disabled for
 this dual-shape mode: compiled graph caches reached 94.5/95.8 GiB by step 30,
-while the uncompiled contract must retain smoke-verified headroom. Do not start
-full SFT until this or a later translation pilot qualifies and the complete grounded cache is
-published and verified; the current 94 GB H100 NVL full run is planned at
-physical batch 16.
+and uncompiled physical batch 16 still emitted an allocator failure warning by
+step 20. Do not start full SFT until this or a later translation pilot qualifies
+and the complete grounded cache is published and verified; the current 94 GB
+H100 NVL full run is still planned at physical batch 16 because it has no replay
+forward.
 
 ## Canonical resources
 

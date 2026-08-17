@@ -375,11 +375,14 @@ export HIBIKI_MIN_SOURCE_CHRF_GAP=5.0
 ```
 
 This mode owns `*_grounded_v2_pilot_vi_asr_replay` artifacts. Every optimizer
-step processes the unchanged batch-16 English-translation objective followed
-by a four-row, weight-1 ASCII-Vietnamese ASR batch from the same frozen cohort.
-Replay supervises content after source EOS but gives PAD zero loss weight. Its
+step processes the unchanged effective batch-16 English-translation objective
+as two physical batch-8 microbatches, followed by a four-row, weight-1
+ASCII-Vietnamese ASR batch from the same frozen cohort. Replay supervises
+content after source EOS but gives PAD zero loss weight. Its
 ordered iterator resumes from `global_step`, its hard maximum is the measured
 434 frames, and `source_asr_replay.json` freezes the tokenizer/text policy. The
 English paired evaluation and promotion gates remain unchanged. Torch
 compilation is disabled and recorded for this dual-shape mode: compiled graph
-caches reached 94.5/95.8 GiB by step 30 even though the 11-step smoke passed.
+caches reached 94.5/95.8 GiB by step 30. Uncompiled physical batch 16 still
+emitted an allocator failure warning by step 20, so replay uses batch 8 with
+two-step accumulation.

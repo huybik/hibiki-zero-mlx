@@ -384,7 +384,13 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if asr_translation_pilot or asr_replay_translation_pilot:
+if asr_replay_translation_pilot:
+    if memory_gib < 75:
+        raise RuntimeError(
+            f"ASR replay requires at least 75 GiB GPU memory, got {memory_gib:.1f} GiB"
+        )
+    batch_size, grad_accum = 8, 2
+elif asr_translation_pilot:
     if memory_gib < 90:
         raise RuntimeError(
             f"ASR translation pilots require at least 90 GiB GPU memory, got {memory_gib:.1f} GiB"
@@ -828,8 +834,8 @@ if high_delay_pilot:
 if asr_translation_pilot:
     config = json.loads((root / "run_config_step10.json").read_text())
     expected = {
-        "batch_size": 16,
-        "grad_accum_steps": 1,
+        "batch_size": 8,
+        "grad_accum_steps": 2,
         "max_frames": 280,
         "val_max_frames": 0,
         "val_batch_size": 8,
@@ -900,8 +906,8 @@ if asr_replay_translation_pilot:
         or payload.get("observed_max_frames") != 434
     ):
         raise RuntimeError("ASR-replay cohort shape mismatch")
-    if max(int(item["max_batch_size"]) for item in logs) != 16:
-        raise RuntimeError("ASR-replay smoke did not exercise translation batch 16")
+    if max(int(item["max_batch_size"]) for item in logs) != 8:
+        raise RuntimeError("ASR-replay smoke did not exercise translation batch 8")
     observed_train_max_frames = int(config.get("observed_train_max_frames", 0))
     if not 0 < observed_train_max_frames <= 280:
         raise RuntimeError("ASR-replay translation maximum exceeds its frame cap")
@@ -910,6 +916,8 @@ if asr_replay_translation_pilot:
     for item in logs:
         if not math.isfinite(float(item["source_asr_replay_loss"])):
             raise RuntimeError(f"non-finite ASR-replay loss at step {item['step']}")
+        if int(item["samples"]) != 16 or int(item["microbatches"]) != 2:
+            raise RuntimeError("ASR-replay smoke did not preserve effective batch 16")
         if int(item["source_asr_replay_samples"]) != 4:
             raise RuntimeError("ASR-replay smoke did not use one replay batch per step")
     if max(int(item["source_asr_replay_max_frames"]) for item in logs) != 434:

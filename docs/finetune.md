@@ -297,17 +297,20 @@ checkpoint was promoted. A plain ASR-to-translation switch is rejected.
 
 The next bounded test is `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1`. It keeps the
 same parent, translation cohort, timing, masked target audio, zero audio loss,
-batch 16, and 1,000-step schedule, but adds one deterministic four-row ASCII-ASR
-batch per optimizer step at weight 1. Replay PAD has zero loss weight, so the
+effective batch 16, and 1,000-step schedule. Each optimizer step uses two
+physical batch-8 translation microbatches plus one deterministic four-row
+ASCII-ASR batch at weight 1. Replay PAD has zero loss weight, so the
 auxiliary objective preserves Vietnamese content routing after source EOS
 without teaching translation frames to remain silent. Replay uses the same
 ordered manifest, hard-gates its measured maximum at 434 frames, freezes its
 policy in `source_asr_replay.json`, resumes both iterators exactly, and owns
 `*_grounded_v2_pilot_vi_asr_replay` artifacts. A pass selects a text-translation
 recipe candidate; it still does not authorize full training. This mode disables
-Torch compilation because its batch-16 translation and batch-4 replay shapes
-filled 94.5/95.8 GiB with compiled graph caches by production step 30 despite
-the short smoke passing. The compile choice is persisted and checked on resume.
+Torch compilation because its translation/replay graph caches filled 94.5/95.8
+GiB by production step 30. Uncompiled physical batch 16 still emitted an
+allocator failure warning by step 20, which is why replay uses physical batch 8
+with two-step accumulation. The compile choice is persisted and checked on
+resume.
 
 All selection evaluation is paired at fixed seed and text temperature 0.4. A
 SHA-verified duration-matched derangement is reused for correct and shuffled
@@ -329,8 +332,8 @@ one grounded FLEURS archive, manifests, and checksums under the isolated dataset
 - H100 80 GB uses batch 8 with two accumulation steps; 94 GB uses batch 16.
   The high-delay pilot uses batch 8 / accumulation 2, while its contrastive
   variant and source-ASR diagnostic use batch 4 / accumulation 4 on the 94 GB
-  H100. The ASR-replay pilot performs sequential batch-16 translation and
-  batch-4 replay forwards with one optimizer update.
+  H100. The ASR-replay pilot performs two batch-8 translation forwards and one
+  batch-4 replay forward per optimizer update, preserving effective batch 16.
 - Text content, PAD, and first-content losses are reduced independently before
   weighting, so PAD prevalence cannot change its aggregate gradient budget.
 - Learning-rate, text-loss, and audio-loss schedules use `value@fraction` syntax.

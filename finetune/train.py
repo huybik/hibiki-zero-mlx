@@ -472,8 +472,6 @@ def main() -> None:
         args.input_sample_manifest is None or args.init_checkpoint is None
     ):
         raise ValueError("Source-ASR replay requires authoritative membership and initialization")
-    if args.source_asr_replay_weight and args.grad_accum_steps != 1:
-        raise ValueError("Source-ASR replay requires --grad-accum-steps 1")
     if args.source_asr_replay_weight and (
         args.source_asr_replay_batch_size <= 0 or args.source_asr_replay_max_frames <= 0
     ):
@@ -1176,7 +1174,6 @@ def main() -> None:
                 )
             replay_loss = replay_losses["loss"]
             (args.source_asr_replay_weight * replay_loss).backward()
-            step_loss = step_loss + args.source_asr_replay_weight * replay_loss.detach()
             step_source_asr_replay = replay_loss.detach()
             step_source_asr_replay_tokens = replay_losses["text_tokens"]
             log_source_asr_replay_samples += replay_batch_size
@@ -1189,7 +1186,10 @@ def main() -> None:
         optimizer.step()
         global_step += 1
 
-        log_sums["loss"] += step_loss / args.grad_accum_steps
+        log_sums["loss"] += (
+            step_loss / args.grad_accum_steps
+            + args.source_asr_replay_weight * step_source_asr_replay
+        )
         log_sums["audio_loss"] += step_audio / args.grad_accum_steps
         log_sums["text_loss"] += step_text / args.grad_accum_steps
         log_sums["content_text_loss"] += step_content / args.grad_accum_steps
