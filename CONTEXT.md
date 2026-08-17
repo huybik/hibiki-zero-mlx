@@ -84,9 +84,9 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   health plus calibrated BLEU/chrF gaps, then ranks by `(BLEU, chrF)`.
 - `finetune/hf_sync.py` maintains two recovery pairs plus the best model under
   `full_run/` in the public `huybik/hibiki-zero-vi-full-sft` model repo;
-  it also preserves run configuration and pilot membership metadata. `h100.sh`
-  verifies a shared run identity, supervises sync, and protects the local resume
-  point before training restarts.
+  final sync also preserves run configuration, pilot membership, and compact
+  paired-evaluation CSV/JSON artifacts. `h100.sh` verifies a shared run identity,
+  supervises sync, and protects the local resume point before training restarts.
 
 After the `docs/finetune.md` handoff, use `docs/training_plan.md` for the exact
 recipe and `docs/validation_plan.md` for qualification thresholds.

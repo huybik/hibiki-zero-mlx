@@ -30,6 +30,20 @@ RUN_METADATA = (
     "source_asr.json",
     "source_asr_replay.json",
 )
+RUN_ARTIFACTS = (
+    "eval_derangement.json",
+    "greedy_eval_log.jsonl",
+    "train_log.jsonl",
+    "val_log.jsonl",
+)
+EVAL_ARTIFACTS = (
+    "metrics.json",
+    "predictions.csv",
+    "correct/metrics.json",
+    "correct/predictions.csv",
+    "shuffled/metrics.json",
+    "shuffled/predictions.csv",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -312,6 +326,40 @@ def sync_run_metadata(run_dir: Path, repo: str, files: dict[str, int]) -> None:
             raise RuntimeError(f"remote run metadata verification failed for {name}")
 
 
+def compact_artifact_paths(run_dir: Path) -> list[Path]:
+    paths = [run_dir / name for name in RUN_ARTIFACTS if (run_dir / name).is_file()]
+    for eval_dir in sorted(run_dir.glob("greedy_step[0-9][0-9][0-9][0-9][0-9][0-9]")):
+        eval_paths = [eval_dir / name for name in EVAL_ARTIFACTS]
+        missing = [path.relative_to(run_dir) for path in eval_paths if not path.is_file()]
+        if missing:
+            raise RuntimeError(f"incomplete paired evaluation artifacts: {missing}")
+        paths.extend(eval_paths)
+    return paths
+
+
+def sync_run_artifacts(run_dir: Path, repo: str) -> None:
+    paths = compact_artifact_paths(run_dir)
+    if not paths:
+        return
+    relatives = [path.relative_to(run_dir).as_posix() for path in paths]
+    HfApi().upload_folder(
+        folder_path=run_dir,
+        path_in_repo=remote_path("artifacts"),
+        repo_id=repo,
+        allow_patterns=relatives,
+        commit_message="Upload training evaluation artifacts",
+    )
+    files = remote_files(repo)
+    mismatches = {
+        relative: (path.stat().st_size, files.get(f"artifacts/{relative}"))
+        for path, relative in zip(paths, relatives, strict=True)
+        if files.get(f"artifacts/{relative}") != path.stat().st_size
+    }
+    if mismatches:
+        raise RuntimeError(f"remote evaluation artifact verification failed: {mismatches}")
+    print(f"Synced {len(paths)} compact evaluation artifacts.", flush=True)
+
+
 def sync_once(run_dir: Path, repo: str, final: bool) -> None:
     clean_staging(run_dir)
     files = remote_files(repo)
@@ -385,6 +433,8 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
             stage = stage_best(run_dir, local_best)
         upload_best(repo, stage, newest_best)
     prune_remote_best(repo)
+    if final:
+        sync_run_artifacts(run_dir, repo)
 
 
 def process_alive(pid: int) -> bool:
