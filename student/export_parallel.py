@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
@@ -131,9 +130,7 @@ def export(args: argparse.Namespace) -> None:
                 "head_passes": str(parallel_cfg["head_passes"]),
             },
         )
-        temporary_config.write_text(
-            json.dumps(parallel_cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        temporary_config.write_bytes(args.parallel_config.read_bytes())
         temporary_weights.replace(args.output_weights)
         temporary_config.replace(args.output_config)
     finally:

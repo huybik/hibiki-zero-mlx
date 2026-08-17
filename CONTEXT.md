@@ -5,10 +5,12 @@ This repository maintains two paths only:
 1. q4 MLX inference for Hibiki-Zero on Apple Silicon;
 2. base-start, full-model Vietnamese-to-English SFT on CUDA.
 
-The mobile CUDA model track now has the frozen 12-layer contract, strict
-distillation caches, full AR training, and qualified-backbone parallel-head
-capture/training/export under `student/`. MLX quantization and inference for the
-student remain later phases.
+The mobile model track now has the frozen 12-layer contract, strict CUDA AR and
+parallel-head training, BF16 qualification/export gates, deterministic
+PyTorch/MLX parity tooling, and strict MLX q4 group-size-32 pack
+conversion/inference. Student packs use an explicit raw pre-undelay
+previous-head frame; stock Swift still lacks `parallel_v1` and must not be
+called compatible.
 
 Historical design, vision, and report documentation is retained under `docs/`.
 Generated FLEURS data is excluded from both the active tree and Git history.
@@ -20,17 +22,21 @@ Generated FLEURS data is excluded from both the active tree and Git history.
   Mimi-encode → LM → Mimi-decode pipeline.
 - `moshi-mlx/` is the minimal vendored MLX language-model runtime. Its required
   Hibiki deltas are GQA (`kv_repeat`), configurable `hidden_scale`,
-  `rope_concat`, and per-slice depformer output LayerNorm.
+  `rope_concat`, per-slice depformer output LayerNorm, and the compact
+  one/two-pass `parallel_v1` head.
 - Supported weights are q4 with `group_size=32`. `3b` resolves to `weights/`;
-  custom staged Hibiki-Zero directories can be passed explicitly.
+  legacy custom directories remain supported, while student directories require
+  the complete hash-validated pack contract.
 - Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
   arrays because lazy MLX graphs cannot move across creating threads.
 - File inference adds an 8-second silence tail and stops after 12 sustained PAD
   frames to flush translation lag without extended hallucination.
 - Runtime gates are `scripts/verify_mlx_q4.py` and
-  `scripts/bench.py --model 3b --silence`.
+  `scripts/bench.py --model 3b --silence`; student packs additionally use
+  `scripts/verify_student_parity.py`.
 - `scripts/check_swift_compat.py` requires strict q4 group-size-32 reload plus
-  valid config, tokenizer, and Mimi sidecars.
+  valid config, tokenizer, and Mimi sidecars, and deliberately rejects
+  `parallel_v1` as unsupported by stock Swift.
 
 ## Training
 

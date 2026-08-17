@@ -178,3 +178,37 @@ PyTorch safetensors; MLX owns subsequent q4 quantization and inference.
   --head-sha256 "$HEAD_SHA" --output-weights RUN/parallel/model.safetensors \
   --output-config RUN/parallel/config.json
 ```
+
+After BF16 listening/intelligibility qualification, record an exact
+`hibiki_student_parallel_qualification_v1` receipt with decision `pass`, head
+`parallel_v1`, and the SHA-256 values of that exported checkpoint and config.
+Generate the deterministic PyTorch head fixture, then build one explicit MLX q4
+group-size-32 pack. Conversion never downloads inputs or overwrites its output.
+
+```bash
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/make_parallel_parity.py \
+  --config RUN/parallel/config.json --checkpoint RUN/parallel/model.safetensors \
+  --checkpoint-sha256 "$PARALLEL_BF16_SHA" \
+  --qualification-receipt RUN/parallel/qualification_receipt.json \
+  --output RUN/parallel/parity_fixture.npz
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python scripts/convert_mlx_q4.py \
+  --checkpoint RUN/parallel/model.safetensors \
+  --checkpoint-sha256 "$PARALLEL_BF16_SHA" \
+  --config RUN/parallel/config.json \
+  --qualification-receipt RUN/parallel/qualification_receipt.json \
+  --shape-receipt student/receipts/hibiki_m_12l_parallel_v1.json \
+  --parity-fixture RUN/parallel/parity_fixture.npz \
+  --mimi weights/mimi-pytorch-e351c8d8@125.safetensors \
+  --tokenizer weights/tokenizer_spm_48k_multi6_2.model \
+  --out-dir RUN/parallel_q4
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python student/contract.py validate RUN/parallel_q4
+/opt/homebrew/Caskroom/miniconda/base/bin/python scripts/verify_student_parity.py RUN/parallel_q4
+```
+
+The pack loader re-hashes the manifest and every selected file, validates the
+config, shape and qualification receipts, inspects q4 group size, validates the
+parity fixture, then performs a strict MLX weight load. Stock `moshi-swift` does
+not yet implement `parallel_v1`; `scripts/check_swift_compat.py` reports that
+gap instead of claiming compatibility.

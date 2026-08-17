@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Freeze and validate the mobile-student architecture and model-pack contract."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from hibiki_mlx.student_pack import make_student_manifest, validate_student_pack
 from moshi.models import loaders
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = REPO_ROOT / "student" / "configs" / "hibiki_m_12l_ar.json"
 FORMAT = "hibiki_student_pack_v1"
-MANIFEST_FORMAT = "hibiki_student_manifest_v1"
 RECEIPT_FORMAT = "hibiki_student_shape_receipt_v1"
 
 LOADER_METADATA_KEYS = {
@@ -203,46 +204,12 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def pack_files(pack_dir: Path, cfg: dict[str, Any]) -> list[str]:
-    return [
-        "config.json",
-        str(cfg["moshi_name"]),
-        str(cfg["mimi_name"]),
-        str(cfg["tokenizer_name"]),
-        str(cfg["parity_fixture_name"]),
-        "shape_receipt.json",
-        "qualification_receipt.json",
-    ]
-
-
 def make_manifest(pack_dir: Path) -> dict[str, Any]:
-    cfg_path = pack_dir / "config.json"
-    cfg = read_config(cfg_path)
-    validate_config(cfg)
-    files = pack_files(pack_dir, cfg)
-    missing = [name for name in files if not (pack_dir / name).is_file()]
-    if missing:
-        raise FileNotFoundError(f"Incomplete model pack; missing: {', '.join(missing)}")
-    return {
-        "format": MANIFEST_FORMAT,
-        "architecture": cfg["architecture"],
-        "head": cfg["head"],
-        "head_passes": cfg["head_passes"],
-        "files": {
-            name: {"bytes": (pack_dir / name).stat().st_size, "sha256": sha256(pack_dir / name)}
-            for name in files
-        },
-    }
+    return make_student_manifest(pack_dir)
 
 
 def validate_manifest(pack_dir: Path) -> None:
-    manifest_path = pack_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != MANIFEST_FORMAT:
-        raise ValueError(f"Unsupported manifest format in {manifest_path}")
-    expected = make_manifest(pack_dir)
-    if manifest != expected:
-        raise RuntimeError(f"Manifest content or a model-pack hash changed in {pack_dir}")
+    validate_student_pack(pack_dir)
 
 
 def parse_args() -> argparse.Namespace:

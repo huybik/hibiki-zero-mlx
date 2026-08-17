@@ -4,12 +4,13 @@
   python scripts/bench.py --model 3b                 # per-stage ms table + projections
   python scripts/bench.py --model 3b --silence       # silence-in gate (rms/peak)
 
-Splits each frame into mimi encode / LM main transformer / LM depformer /
+Splits each frame into mimi encode / LM main transformer / configured audio head /
 mimi decode using mx.eval barriers, then reports RT factor, artifact size and a
 projected iPhone frame time. The projection is a documented assumption, not a
 measurement: --scale is the assumed A18 Pro / M4 Pro GPU throughput ratio for
 these kernels (default 0.5, plausible range 0.4-0.6).
 """
+
 import argparse
 import json
 import time
@@ -30,10 +31,17 @@ def main() -> None:
     p.add_argument("--model", default="3b", help="3b or a q4 Hibiki-Zero model directory")
     p.add_argument("--frames", type=int, default=150, help="timed frames (default 150)")
     p.add_argument("--warmup", type=int, default=15, help="untimed warmup frames (default 15)")
-    p.add_argument("--scale", type=float, default=0.5,
-                   help="assumed iPhone/M4 GPU throughput ratio (default 0.5)")
-    p.add_argument("--silence", action="store_true",
-                   help="feed zeros instead of speech and gate rms<0.10, peak<1.1")
+    p.add_argument(
+        "--scale",
+        type=float,
+        default=0.5,
+        help="assumed iPhone/M4 GPU throughput ratio (default 0.5)",
+    )
+    p.add_argument(
+        "--silence",
+        action="store_true",
+        help="feed zeros instead of speech and gate rms<0.10, peak<1.1",
+    )
     args = p.parse_args()
 
     mx.random.seed(299792458)
@@ -53,23 +61,34 @@ def main() -> None:
     total = args.warmup + args.frames
     assert in_pcms.shape[-1] >= total * 1920, "sample too short for --frames"
 
-    gen = models.LmGen(model=model, max_steps=total + 8,
-                       text_sampler=utils.Sampler(top_k=25, temp=0.4),
-                       audio_sampler=utils.Sampler(top_k=250, temp=0.8),
-                       cfg_coef=1.0, check=False)
+    gen = models.LmGen(
+        model=model,
+        max_steps=total + 8,
+        text_sampler=utils.Sampler(top_k=25, temp=0.4),
+        audio_sampler=utils.Sampler(top_k=250, temp=0.8),
+        cfg_coef=1.0,
+        check=False,
+    )
 
-    # Time the autoregressive depformer inside the LM step with eval barriers.
-    dep_label = f"LM depformer ({n_slices}x)"
-    dep_t = [0.0]
-    _orig_dep = model.depformer.sample
-    def timed_dep(*a, **k):
-        mx.eval(a[0])           # barrier: main transformer out is ready
+    # Time the selected audio head inside the LM step with eval barriers.
+    if model.depformer is not None:
+        head_label = f"LM depformer ({n_slices}x)"
+        audio_head = model.depformer
+    else:
+        head_label = f"LM parallel_v1 ({lm_config.parallel_head.passes} pass)"
+        audio_head = model.parallel_head
+    head_t = [0.0]
+    original_sample = audio_head.sample
+
+    def timed_head(*a, **k):
+        mx.eval(a[0])  # barrier: main transformer out is ready
         t0 = time.perf_counter()
-        r = _orig_dep(*a, **k)
-        mx.eval(r)              # barrier: all codebooks sampled
-        dep_t[0] += time.perf_counter() - t0
+        r = original_sample(*a, **k)
+        mx.eval(r)  # barrier: all codebooks sampled
+        head_t[0] += time.perf_counter() - t0
         return r
-    model.depformer.sample = timed_dep
+
+    audio_head.sample = timed_head
 
     model.warmup(ct)
     mx.eval(model.parameters())
@@ -79,16 +98,16 @@ def main() -> None:
     t_all0 = time.perf_counter()
     for idx in range(total):
         if idx == args.warmup:  # discard warmup frames from every accumulator
-            enc_t = dec_t = step_t = dep_t[0] = 0.0
+            enc_t = dec_t = step_t = head_t[0] = 0.0
             t_all0 = time.perf_counter()
-        pcm = in_pcms[:, idx * 1920:(idx + 1) * 1920]
+        pcm = in_pcms[:, idx * 1920 : (idx + 1) * 1920]
         t0 = time.perf_counter()
         oat = mimi_enc.encode_step(pcm[None, 0:1])
         enc_t += time.perf_counter() - t0
         oat = np.transpose(oat, (0, 2, 1))[0, :, :other_cb]
         t0 = time.perf_counter()
         tt = gen.step(mx.array(oat), ct)
-        tt[0].item()                 # barrier: full LM step (main + dep) forced
+        tt[0].item()  # barrier: full LM step (main + dep) forced
         step_t += time.perf_counter() - t0
         at = gen.last_audio_tokens()
         if at is not None:
@@ -99,30 +118,41 @@ def main() -> None:
     wall = time.perf_counter() - t_all0
 
     n = args.frames
-    main_t = step_t - dep_t[0]
+    main_t = step_t - head_t[0]
     lm_ms = 1000 * step_t / n
     cfg = json.loads((weights_dir / "config.json").read_text())
     size_gb = (weights_dir / pl._q4_model_name(cfg)).stat().st_size / 1e9
 
-    print(f"\n=== {args.model} q4 | {n} frames, wall {wall:.2f}s "
-          f"-> {n / wall:.1f} frames/s ({n / wall / 12.5:.2f}x RT sequential) ===")
+    print(
+        f"\n=== {args.model} q4 | {n} frames, wall {wall:.2f}s "
+        f"-> {n / wall:.1f} frames/s ({n / wall / 12.5:.2f}x RT sequential) ==="
+    )
     print(f"{'stage':<26}{'ms/frame':>10}{'% of wall':>10}")
-    for name, t in [("mimi encode", enc_t), ("LM main transformer", main_t),
-                    (dep_label, dep_t[0]), ("mimi decode", dec_t)]:
+    for name, t in [
+        ("mimi encode", enc_t),
+        ("LM main transformer", main_t),
+        (head_label, head_t[0]),
+        ("mimi decode", dec_t),
+    ]:
         print(f"{name:<26}{1000 * t / n:>10.2f}{100 * t / wall:>9.1f}%")
     print(f"{'LM total':<26}{lm_ms:>10.2f}")
-    print(f"depformer per slice: {1000 * dep_t[0] / n / max(n_slices, 1):.2f} ms")
+    if model.depformer is not None:
+        print(f"depformer per slice: {1000 * head_t[0] / n / max(n_slices, 1):.2f} ms")
     print(f"artifact (LM weights): {size_gb:.2f} GB")
-    print(f"pipelined critical path = LM total {lm_ms:.1f} ms/frame "
-          f"-> {80 / lm_ms:.1f}x RT live ({1000 / lm_ms:.0f} frames/s)")
-    print(f"projected iPhone LM step @ scale {args.scale:.2f} (A18 Pro ~= {args.scale:.2f}x M4 Pro "
-          f"assumption): {lm_ms / args.scale:.1f} ms vs 80 ms budget "
-          f"-> {'FITS' if lm_ms / args.scale < 80 else 'OVER'}")
+    print(
+        f"pipelined critical path = LM total {lm_ms:.1f} ms/frame "
+        f"-> {80 / lm_ms:.1f}x RT live ({1000 / lm_ms:.0f} frames/s)"
+    )
+    print(
+        f"projected iPhone LM step @ scale {args.scale:.2f} (A18 Pro ~= {args.scale:.2f}x M4 Pro "
+        f"assumption): {lm_ms / args.scale:.1f} ms vs 80 ms budget "
+        f"-> {'FITS' if lm_ms / args.scale < 80 else 'OVER'}"
+    )
 
     if args.silence:
         if out_pcm:
             pcm = np.concatenate(out_pcm)
-            rms = float(np.sqrt((pcm ** 2).mean()))
+            rms = float(np.sqrt((pcm**2).mean()))
             peak = float(np.abs(pcm).max())
         else:
             rms = peak = 0.0
