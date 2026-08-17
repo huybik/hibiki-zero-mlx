@@ -27,6 +27,8 @@ die() {
   exit 1
 }
 
+[[ "${HIBIKI_ASR_TRANSLATION_PILOT:-0}" == 0 ]] \
+  || die "HIBIKI_ASR_TRANSLATION_PILOT is retired; use HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT=1"
 [[ "$PILOT" == 0 || "$PILOT" == 1 ]] || die "HIBIKI_PILOT must be 0 or 1"
 [[ "$HIGH_DELAY_PILOT" == 0 || "$HIGH_DELAY_PILOT" == 1 ]] \
   || die "HIBIKI_HIGH_DELAY_PILOT must be 0 or 1"
@@ -129,6 +131,11 @@ case "$RECIPE" in
     ;;
 esac
 export HIBIKI_HF_PREFIX
+if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+  export HIBIKI_HF_SYNC_INTERVAL=500
+else
+  unset HIBIKI_HF_SYNC_INTERVAL
+fi
 
 TARGET_DELAY_MIN_RATIO=0
 TARGET_DELAY_MAX_RATIO=0.5
@@ -871,6 +878,9 @@ if post_source_eos_translation_pilot:
     observed_max_frames = int(config.get("observed_train_max_frames", 0))
     if not 0 < observed_max_frames <= 400:
         raise RuntimeError("post-source-EOS training maximum exceeds its frame cap")
+    observed_val_max_frames = int(config.get("observed_val_max_frames", 0))
+    if not 0 < observed_val_max_frames <= 480:
+        raise RuntimeError("post-source-EOS validation maximum exceeds its frame cap")
     if max(int(item["max_frames"]) for item in logs) != observed_max_frames:
         raise RuntimeError("post-source-EOS smoke did not exercise the longest row")
     document = json.loads((root / "post_source_eos_translation.json").read_text())
@@ -1240,6 +1250,9 @@ train() {
       grounded_val_every=1000
       grounded_save_every=2000
     fi
+    if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+      grounded_save_every=500
+    fi
     run_with_sync "$RUN_DIR" fresh "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \
       --lr-schedule "1e-5@0" --cosine-lr-end 1e-6 --warmup-steps "$grounded_warmup" \
@@ -1282,6 +1295,9 @@ resume() {
     if [[ "$ASR_ONE_EPOCH" == 1 ]]; then
       grounded_val_every=1000
       grounded_save_every=2000
+    fi
+    if [[ "$POST_SOURCE_EOS_TRANSLATION_PILOT" == 1 ]]; then
+      grounded_save_every=500
     fi
     run_with_sync "$out_dir" resume "$PYTHON" finetune/train.py \
       "${TRAIN_ARGS[@]}" \

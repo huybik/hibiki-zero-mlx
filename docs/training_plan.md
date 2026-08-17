@@ -400,9 +400,12 @@ At the cached-dataset boundary it deletes English target-audio inputs, preserves
 Vietnamese source codes through source EOS, and emits the cached English text
 only after EOS. It uses no ASR replay. Exact manifest order is preserved for
 production; validation is independently length-sorted with `shuffle=False`.
-The post-transform training/validation gates are 400/480 frames, and smoke feeds
-the exact longest rows first before accepting physical batch 8 / accumulation 2.
+The post-transform training/validation gates are 400/480 frames; their observed
+maxima are persisted, and smoke reverses validation to feed the exact longest
+batch first before accepting physical batch 8 / accumulation 2.
 `post_source_eos_translation.json` freezes the strategy, tokenizer, ordered-text
 hash, row count, and observed maximum. Warmup is 100 steps; paired evaluation is
-fixed at 0/250/500/750/1,000 with a 24-second generation tail. A failure still
-does not authorize full training.
+fixed at 0/250/500/750/1,000 with a 24-second generation tail. Exact resume also
+locks the parent SHA, objective, and LR/warmup schedule. The step-500 recovery
+save and final step-1,000 save are retained as the two rolling HF checkpoint
+pairs. A failure still does not authorize full training.

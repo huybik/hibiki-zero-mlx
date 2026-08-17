@@ -404,6 +404,17 @@ def load_resume_checkpoint(
     return step
 
 
+def order_validation_samples(
+    dataset: common.CachedCodeDataset, sort_by_length: bool, longest_first: bool
+) -> int:
+    if sort_by_length:
+        dataset.samples.sort(key=lambda sample: sample["frames"])
+    observed_max_frames = max(int(sample["frames"]) for sample in dataset.samples)
+    if longest_first:
+        dataset.samples.reverse()
+    return observed_max_frames
+
+
 def main() -> None:
     args = parse_args()
     torch_compile_enabled = os.environ.get("NO_TORCH_COMPILE") != "1"
@@ -672,6 +683,7 @@ def main() -> None:
     val_dataloader = None
     validation_sort_by_length = None
     validation_shuffle = None
+    observed_val_max_frames = None
     checkpoint_info = common.load_checkpoint_info(args)
     if val_cache_dir is not None:
         val_sort_by_length = args.sort_by_length or args.input_sample_manifest is not None
@@ -690,9 +702,10 @@ def main() -> None:
             )
         if args.post_source_eos_translation:
             common.prepare_post_source_eos_translation(val_dataset, args.tokenizer)
-        if args.source_asr_pretrain or args.post_source_eos_translation:
-            val_dataset.samples.sort(key=lambda sample: sample["frames"])
         val_dataset.require_max_frames(args.val_max_frames, "Validation cache")
+        observed_val_max_frames = order_validation_samples(
+            val_dataset, val_sort_by_length, args.smoke_longest_first
+        )
         val_dataloader = common.make_cached_dataloader(
             val_dataset,
             args.val_batch_size,
@@ -840,6 +853,36 @@ def main() -> None:
                 != source_asr_replay_sha256
             ):
                 raise RuntimeError("Source-ASR replay policy differs from run_config.json")
+            if args.post_source_eos_translation or previous_config.get(
+                "post_source_eos_translation", False
+            ):
+                translation_resume_contract = {
+                    "post_source_eos_translation": args.post_source_eos_translation,
+                    "init_checkpoint_sha256": args.init_checkpoint_sha256,
+                    "mask_target_audio_input": args.mask_target_audio_input,
+                    "audio_loss_weight": args.audio_loss_weight,
+                    "audio_weight_schedule": args.audio_weight_schedule,
+                    "text_loss_weight": args.text_loss_weight,
+                    "text_weight_schedule": args.text_weight_schedule,
+                    "text_pad_mode": args.text_pad_mode,
+                    "text_pad_loss_weight": args.text_pad_loss_weight,
+                    "first_content_loss_weight": args.first_content_loss_weight,
+                    "lr": args.lr,
+                    "lr_schedule": args.lr_schedule,
+                    "cosine_lr_end": args.cosine_lr_end,
+                    "warmup_steps": args.warmup_steps,
+                    "adam_beta1": args.adam_beta1,
+                    "adam_beta2": args.adam_beta2,
+                    "weight_decay": args.weight_decay,
+                    "grad_clip": args.grad_clip,
+                }
+                if not args.smoke_longest_first:
+                    translation_resume_contract["max_steps"] = args.max_steps
+                for key, value in translation_resume_contract.items():
+                    if previous_config.get(key) != value:
+                        raise RuntimeError(
+                            f"Post-source-EOS translation resume contract changed: {key}"
+                        )
             if args.source_asr_replay_weight or previous_config.get(
                 "source_asr_replay_weight", 0.0
             ):
@@ -865,6 +908,7 @@ def main() -> None:
     run_config["torch_compile_enabled"] = torch_compile_enabled
     run_config["validation_sort_by_length"] = validation_sort_by_length
     run_config["validation_shuffle"] = validation_shuffle
+    run_config["observed_val_max_frames"] = observed_val_max_frames
     run_config["observed_train_max_frames"] = max(
         int(sample["frames"]) for sample in dataset.samples
     )

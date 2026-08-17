@@ -13,7 +13,9 @@ from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
 
 POLL_S = 60
-REMOTE_INTERVAL = 9_000
+REMOTE_INTERVAL = int(os.environ.get("HIBIKI_HF_SYNC_INTERVAL", "9000"))
+if REMOTE_INTERVAL <= 0:
+    raise ValueError("HIBIKI_HF_SYNC_INTERVAL must be positive")
 REMOTE_KEEP = 2
 STAGE_ROOT = ".hf_sync"
 REMOTE_ROOT = os.environ.get("HIBIKI_HF_PREFIX", "full_run").strip("/")

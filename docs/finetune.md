@@ -295,7 +295,8 @@ The retired `HIBIKI_ASR_TRANSLATION_PILOT=1` test reconstructed the exact
 ordinary-timing 50k cohort and started a fresh optimizer from that qualified
 parent. It failed: at step 1,000, correct-source BLEU/chrF was 0.06/8.44,
 source gaps were 0.01/-0.36, and 24 rows failed the repetition gate. No best
-checkpoint was promoted. A plain ASR-to-translation switch is rejected.
+checkpoint was promoted. A plain ASR-to-translation switch is rejected, and the
+launcher rejects that retired flag rather than aliasing it.
 
 The subsequent `HIBIKI_ASR_REPLAY_TRANSLATION_PILOT=1` test also failed every
 paired milestone; at step 1,000 its BLEU/chrF was 0.13/7.73 and source gaps were
@@ -310,10 +311,13 @@ English sentence. There is no ASR replay. The shared dataset-boundary transform
 is frozen in `post_source_eos_translation.json`; a post-transform 400-frame
 training gate and 480-frame validation gate fail rather than change membership.
 Production keeps manifest order, validation is deterministically length-sorted,
-and smoke feeds the longest rows first. The 1,000-step pilot uses physical batch
-8 / accumulation 2, 100-step warmup, and paired evaluation at
+and smoke reverses validation so its single batch also feeds the longest rows
+first. `run_config.json` records both observed frame maxima and exact resume
+locks the parent SHA, objective, and LR/warmup schedule. The 1,000-step pilot
+uses physical batch 8 / accumulation 2, 100-step warmup, and paired evaluation at
 0/250/500/750/1,000 with a 24-second post-source generation tail under isolated
-`*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts.
+`*_grounded_v2_pilot_vi_post_source_eos_translation` artifacts. Recovery saves
+at steps 500 and 1,000 are the two rolling HF checkpoint pairs.
 
 On a fresh pod, restore both pinned inputs before preflight (the ignored `.env`
 provides the HF token when required):
