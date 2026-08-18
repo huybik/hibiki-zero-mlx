@@ -6,6 +6,13 @@ This repository maintains two paths:
 2. direct full-model Vietnamese-to-English voice-preserving simultaneous
    translation SFT on CUDA.
 
+The mobile model track now has the frozen 12-layer contract, strict CUDA AR and
+parallel-head training, BF16 qualification/export gates, deterministic
+PyTorch/MLX parity tooling, and strict MLX q4 group-size-32 pack
+conversion/inference. Student packs use an explicit raw pre-undelay
+previous-head frame; stock Swift still lacks `parallel_v1` and must not be
+called compatible.
+
 Historical design, experiment, and report documentation remains under `docs/`.
 The active training handoff is `docs/finetune.md`.
 
@@ -14,15 +21,22 @@ The active training handoff is `docs/finetune.md`.
 - `main.py` is the file and microphone translation CLI.
 - `hibiki_mlx/pipeline.py` owns the Mimi-encode → LM → Mimi-decode pipeline.
 - `moshi-mlx/` is the minimal vendored MLX runtime. Its required Hibiki deltas
-  are GQA (`kv_repeat`), configurable `hidden_scale`, `rope_concat`, and
-  per-slice depformer output LayerNorm.
-- Supported weights are q4 with `group_size=32`; `3b` resolves to `weights/`.
+  are GQA (`kv_repeat`), configurable `hidden_scale`, `rope_concat`,
+  per-slice depformer output LayerNorm, and the compact one/two-pass
+  `parallel_v1` head.
+- Supported weights are q4 with `group_size=32`; `3b` resolves to `weights/`;
+  legacy custom directories remain supported, while student directories require
+  the complete hash-validated pack contract.
 - Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
   arrays because lazy MLX graphs cannot cross their creating threads.
 - File inference adds an 8-second silence tail and stops after 12 sustained PAD
   frames.
 - Runtime gates are `scripts/verify_mlx_q4.py` and
-  `scripts/bench.py --model 3b --silence`.
+  `scripts/bench.py --model 3b --silence`; student packs additionally use
+  `scripts/verify_student_parity.py`.
+- `scripts/check_swift_compat.py` requires strict q4 group-size-32 reload plus
+  valid config, tokenizer, and Mimi sidecars, and deliberately rejects
+  `parallel_v1` as unsupported by stock Swift.
 
 ## Training
 

@@ -1,0 +1,107 @@
+{
+  "artifact_format": "hibiki_student_pack_v1",
+  "architecture": "hibiki_m_12l",
+  "parent_repo": "kyutai/hibiki-1b-pytorch-bf16",
+  "parent_revision": "65dee9b6a682393d4e9b193ccbe314e401e230c9",
+  "selected_parent_layers": [
+    0,
+    1,
+    3,
+    4,
+    5,
+    7,
+    8,
+    10,
+    11,
+    12,
+    14,
+    15
+  ],
+  "head": "ar",
+  "head_passes": 1,
+  "sample_rate": 24000,
+  "frame_rate": 12.5,
+  "frame_samples": 1920,
+  "quantization_bits": 4,
+  "quantization_group_size": 32,
+  "parity_fixture_name": "parity_fixture.npz",
+  "card": 2048,
+  "n_q": 16,
+  "dep_q": 8,
+  "delays": [
+    0,
+    0,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    0,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "dim": 2048,
+  "text_card": 48000,
+  "existing_text_padding_id": 3,
+  "num_heads": 16,
+  "num_layers": 12,
+  "hidden_scale": 4.125,
+  "causal": true,
+  "layer_scale": null,
+  "context": 1500,
+  "max_period": 100000.0,
+  "gating": "silu",
+  "norm": "rms_norm_f32",
+  "positional_embedding": "rope",
+  "depformer_dim": 1024,
+  "depformer_num_heads": 16,
+  "depformer_num_layers": 6,
+  "depformer_dim_feedforward": null,
+  "depformer_multi_linear": true,
+  "depformer_pos_emb": "none",
+  "depformer_weights_per_step": true,
+  "conditioners": {
+    "description": {
+      "type": "lut",
+      "lut": {
+        "n_bins": 31,
+        "dim": 16,
+        "tokenizer": "noop",
+        "possible_values": [
+          "very_bad",
+          "bad",
+          "neutral",
+          "good",
+          "very_good"
+        ]
+      }
+    }
+  },
+  "fuser": {
+    "cross_attention_pos_emb": false,
+    "cross_attention_pos_emb_scale": 1,
+    "sum": [
+      "description"
+    ],
+    "prepend": [],
+    "cross": []
+  },
+  "cross_attention": false,
+  "model_type": "hibiki",
+  "lm_gen_config": {
+    "temp": 0.8,
+    "temp_text": 0.4,
+    "top_k": 250,
+    "top_k_text": 25
+  },
+  "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors",
+  "tokenizer_name": "tokenizer_spm_48k_multi6_2.model",
+  "moshi_name": "model.q4.safetensors"
+}

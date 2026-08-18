@@ -1,17 +1,19 @@
 #!/usr/bin/env python
-"""Validate a staged artifact the way the stock moshi-swift loader loads it.
+"""Validate AR stock-Swift compatibility and report parallel packs honestly.
 
 No device (iPhone) needed: it reproduces the exact stock loader path on the Mac —
   LmConfig.from_config_dict(config) -> Lm -> set_dtype(bf16)
   -> nn.quantize(bits=4, group_size=32, predicate=weight.shape[-1] % 32 == 0)
   -> load_weights(strict=True)
-A strict gs32 q4 load succeeding is the compatibility proof: any other group
-size or a shape/name mismatch throws.
+The Python strict load checks the shared q4 tensor contract. Stock moshi-swift
+does not yet implement `parallel_v1`, so a parallel student pack is reported as
+not stock-compatible even when its vendored MLX load passes.
 
   python scripts/check_swift_compat.py [artifact_dir]     # default weights/
 
 Prints PASS/FAIL per check and a summary; exit 0 iff every check passes.
 """
+
 import json
 import struct
 import sys
@@ -22,6 +24,7 @@ import mlx.nn as nn
 import rustymimi
 import sentencepiece
 
+from hibiki_mlx.student_pack import PACK_FORMAT, validate_student_pack
 from moshi_mlx import models
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,9 +33,22 @@ ROOT = Path(__file__).resolve().parent.parent
 # absent => KeyError at build time; plus the three loader-required file pointers.
 REQUIRED_LOADER_KEYS = ["moshi_name", "mimi_name", "tokenizer_name"]
 REQUIRED_CONFIG_KEYS = [
-    "dim", "num_heads", "num_layers", "causal", "layer_scale", "context",
-    "max_period", "positional_embedding", "text_card", "card", "n_q", "delays",
-    "dep_q", "depformer_dim", "depformer_num_heads", "depformer_num_layers",
+    "dim",
+    "num_heads",
+    "num_layers",
+    "causal",
+    "layer_scale",
+    "context",
+    "max_period",
+    "positional_embedding",
+    "text_card",
+    "card",
+    "n_q",
+    "delays",
+    "dep_q",
+    "depformer_dim",
+    "depformer_num_heads",
+    "depformer_num_layers",
     "depformer_pos_emb",
 ]
 # Hibiki-Zero deltas the vendored fork honours (have defaults, but wrong values
@@ -42,11 +58,7 @@ HIBIKI_DELTA_KEYS = ["hidden_scale", "kv_repeat"]
 
 def q4_compatible(_: str, module: object) -> bool:
     weight = getattr(module, "weight", None)
-    return (
-        weight is not None
-        and hasattr(module, "to_quantized")
-        and weight.shape[-1] % 32 == 0
-    )
+    return weight is not None and hasattr(module, "to_quantized") and weight.shape[-1] % 32 == 0
 
 
 def _header(path: Path) -> dict:
@@ -71,11 +83,14 @@ def check_config(art: Path, results: list) -> dict | None:
 
     moshi = cfg.get("moshi_name", "")
     q4_ok = isinstance(moshi, str) and moshi.endswith(".q4.safetensors")
-    results.append((
-        "moshi_name -> .q4.safetensors (triggers gs32 q4 loader)",
-        q4_ok,
-        f"moshi_name={moshi!r}" + ("" if q4_ok else "  (stock loader only q4-loads a *.q4.safetensors)"),
-    ))
+    results.append(
+        (
+            "moshi_name -> .q4.safetensors (triggers gs32 q4 loader)",
+            q4_ok,
+            f"moshi_name={moshi!r}"
+            + ("" if q4_ok else "  (stock loader only q4-loads a *.q4.safetensors)"),
+        )
+    )
     deltas = ", ".join(f"{k}={cfg.get(k)}" for k in HIBIKI_DELTA_KEYS)
     results.append(("hibiki deltas honoured (informational)", True, deltas))
     return cfg
@@ -105,12 +120,14 @@ def check_q4_weights(art: Path, cfg: dict, results: list) -> None:
         if gs != 32:
             bad.append(f"{base}: group_size {gs}")
     gs_ok = gsizes == {32} and not bad
-    results.append((
-        "q4 weights group_size == 32 (moshi-swift hardcodes gs32)",
-        gs_ok,
-        f"{len(bases)} quantized tensors, group_sizes={sorted(gsizes)}"
-        + ("" if gs_ok else f"  bad: {bad[:3]}"),
-    ))
+    results.append(
+        (
+            "q4 weights group_size == 32 (moshi-swift hardcodes gs32)",
+            gs_ok,
+            f"{len(bases)} quantized tensors, group_sizes={sorted(gsizes)}"
+            + ("" if gs_ok else f"  bad: {bad[:3]}"),
+        )
+    )
 
     # (b) Definitive: reproduce the stock build + strict gs32 q4 load.
     try:
@@ -120,16 +137,21 @@ def check_q4_weights(art: Path, cfg: dict, results: list) -> None:
         nn.quantize(model, bits=4, group_size=32, class_predicate=q4_compatible)
         model.load_weights(str(wpath), strict=True)
         mx.eval(model.parameters())
-        results.append((
-            "strict gs32 q4 load",
-            True,
-            f"{wpath.name}: all tensor names+shapes match a gs32 q4 build",
-        ))
+        results.append(
+            (
+                "strict gs32 q4 MLX load",
+                True,
+                f"{wpath.name}: all tensor names+shapes match a gs32 q4 build",
+            )
+        )
     except Exception as e:  # naming/shape/group-size mismatch surfaces here
-        results.append((
-            "strict gs32 q4 load", False,
-            f"{type(e).__name__}: {e}"[:300],
-        ))
+        results.append(
+            (
+                "strict gs32 q4 MLX load",
+                False,
+                f"{type(e).__name__}: {e}"[:300],
+            )
+        )
 
 
 def check_sidecars(art: Path, cfg: dict, results: list) -> None:
@@ -162,8 +184,22 @@ def main() -> None:
     results: list[tuple[str, bool, str]] = []
     cfg = check_config(art, results)
     if cfg is not None:
+        if cfg.get("artifact_format") == PACK_FORMAT:
+            try:
+                validate_student_pack(art)
+                results.append(("strict student pack", True, "manifest/hashes/receipts/q4/parity"))
+            except Exception as e:
+                results.append(("strict student pack", False, f"{type(e).__name__}: {e}"[:300]))
         check_q4_weights(art, cfg, results)
         check_sidecars(art, cfg, results)
+        if cfg.get("head", "ar") == "parallel_v1":
+            results.append(
+                (
+                    "stock moshi-swift audio head",
+                    False,
+                    "parallel_v1 requires the pending Swift implementation; vendored MLX only",
+                )
+            )
 
     for name, ok, detail in results:
         print(f"[{'PASS' if ok else 'FAIL'}] {name}\n       {detail}")

@@ -10,6 +10,7 @@ sequential loop; we just stop letting the CPU and GPU idle on each other.
 
 Usage: python scripts/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
+
 import json
 import queue
 import sys
@@ -24,6 +25,7 @@ import rustymimi
 import sentencepiece
 import sphn
 
+from hibiki_mlx.student_pack import PACK_FORMAT, validate_student_pack
 from moshi_mlx import models, utils
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root (hibiki_mlx/ -> ..)
@@ -51,11 +53,7 @@ def _resolve_audio_path(infile: str) -> str:
 
 def _q4_compatible(_: str, module: object) -> bool:
     weight = getattr(module, "weight", None)
-    return (
-        weight is not None
-        and hasattr(module, "to_quantized")
-        and weight.shape[-1] % 32 == 0
-    )
+    return weight is not None and hasattr(module, "to_quantized") and weight.shape[-1] % 32 == 0
 
 
 def _q4_model_name(cfg: dict) -> str:
@@ -76,6 +74,9 @@ def load(weights_dir: Path):
         "Use a q4 model directory containing config.json.",
     )
     cfg = json.loads(cfg_path.read_text())
+    is_student = cfg.get("artifact_format") == PACK_FORMAT
+    if is_student:
+        cfg = validate_student_pack(weights_dir)
     model_name = _q4_model_name(cfg)
     tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
     _require_file(
@@ -93,8 +94,11 @@ def load(weights_dir: Path):
     model.load_weights(str(weights_dir / model_name), strict=True)
     mx.eval(model.parameters())
     tok = sentencepiece.SentencePieceProcessor(str(weights_dir / tokenizer_name))
+    if is_student and tok.vocab_size() != cfg["text_card"]:
+        raise RuntimeError("Student tokenizer vocabulary does not match config.json")
     mimi_enc, mimi_dec = make_mimi(weights_dir, lm_config)
     return model, lm_config, tok, mimi_enc, mimi_dec
+
 
 def make_mimi(weights_dir: Path, lm_config):
     # Separate codec instances per thread: a single rustymimi.Tokenizer can't be
@@ -110,12 +114,21 @@ def make_mimi(weights_dir: Path, lm_config):
     )
     mimi_path = str(weights_dir / mimi_name)
     nq = max(lm_config.other_codebooks, lm_config.generated_codebooks)
-    return (rustymimi.Tokenizer(mimi_path, num_codebooks=nq),
-            rustymimi.Tokenizer(mimi_path, num_codebooks=nq))
+    return (
+        rustymimi.Tokenizer(mimi_path, num_codebooks=nq),
+        rustymimi.Tokenizer(mimi_path, num_codebooks=nq),
+    )
 
 
-def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | None = None,
-        tail_s: float = 8.0, preloaded=None, text_temp: float = 0.4):
+def run(
+    infile: str,
+    outfile: str,
+    weights_dir: Path = W,
+    text_outfile: str | None = None,
+    tail_s: float = 8.0,
+    preloaded=None,
+    text_temp: float = 0.4,
+):
     infile = _resolve_audio_path(infile)
     model, lm_config, text_tok, mimi_enc, mimi_dec = preloaded or load(weights_dir)
     if model.condition_provider is not None:
@@ -136,14 +149,16 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
     tail = int(round(tail_s * 12.5))
 
     gen = models.LmGen(
-        model=model, max_steps=steps + tail + 8,
+        model=model,
+        max_steps=steps + tail + 8,
         text_sampler=utils.Sampler(top_k=25, temp=text_temp),
         audio_sampler=utils.Sampler(top_k=250, temp=0.8),
-        cfg_coef=1.0, check=False,
+        cfg_coef=1.0,
+        check=False,
     )
     model.warmup(ct)
-    enc_q: queue.Queue = queue.Queue(maxsize=64)   # encoder -> main
-    dec_q: queue.Queue = queue.Queue(maxsize=64)   # main -> decoder
+    enc_q: queue.Queue = queue.Queue(maxsize=64)  # encoder -> main
+    dec_q: queue.Queue = queue.Queue(maxsize=64)  # main -> decoder
     out_pcm: list = []
 
     stop = threading.Event()
@@ -153,13 +168,14 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         # numpy (not mx) arrays: lazy mx graphs are bound to the creating
         # thread's stream and can't be evaluated from the LM thread.
         def emit(pcm_frame):
-            codes = mimi_enc.encode_step(pcm_frame)           # CPU, GIL released
+            codes = mimi_enc.encode_step(pcm_frame)  # CPU, GIL released
             enc_q.put(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
+
         silence = np.zeros((1, 1, 1920), dtype=in_pcms.dtype)  # flush the lag tail
         for idx in range(steps):
             if stop.is_set():
                 break
-            emit(in_pcms[None, 0:1, idx * 1920:(idx + 1) * 1920])
+            emit(in_pcms[None, 0:1, idx * 1920 : (idx + 1) * 1920])
         for _ in range(tail):
             if stop.is_set():
                 break
@@ -171,7 +187,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
             item = dec_q.get()
             if item is SENTINEL:
                 break
-            out_pcm.append(mimi_dec.decode_step(item))        # CPU, GIL released
+            out_pcm.append(mimi_dec.decode_step(item))  # CPU, GIL released
 
     enc_t = threading.Thread(target=encoder, daemon=True)
     dec_t = threading.Thread(target=decoder, daemon=True)
@@ -187,7 +203,7 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
         if oat is SENTINEL:
             break
         text_token = gen.step(mx.array(oat), ct)
-        tt = text_token[0].item()                             # sync this frame's LM
+        tt = text_token[0].item()  # sync this frame's LM
         processed += 1
         if tt not in (0, 3):
             piece = text_tok.id_to_piece(tt).replace("▁", " ")
@@ -224,8 +240,10 @@ def run(infile: str, outfile: str, weights_dir: Path = W, text_outfile: str | No
     text_path.parent.mkdir(parents=True, exist_ok=True)
     text_path.write_text(text + "\n")
     print(text)
-    print(f"\n[{processed} frames ({steps} audio) in {wall:.2f}s -> {processed/wall:.1f} frames/s "
-          f"({steps/wall/12.5:.2f}x RT), out: {outfile}, text: {text_path}]")
+    print(
+        f"\n[{processed} frames ({steps} audio) in {wall:.2f}s -> {processed / wall:.1f} frames/s "
+        f"({steps / wall / 12.5:.2f}x RT), out: {outfile}, text: {text_path}]"
+    )
 
 
 if __name__ == "__main__":

@@ -27,9 +27,19 @@ class DepFormerConfig:
 
 
 @dataclass
+class ParallelHeadConfig:
+    dim: int
+    num_layers: int
+    num_codebooks: int
+    passes: int
+
+
+@dataclass
 class LmConfig:
     transformer: TransformerConfig
-    depformer: DepFormerConfig
+    head: str
+    depformer: DepFormerConfig | None
+    parallel_head: ParallelHeadConfig | None
     text_in_vocab_size: int
     text_out_vocab_size: int
     audio_vocab_size: int
@@ -42,9 +52,11 @@ class LmConfig:
 
     @property
     def generated_codebooks(self):
-        if self.depformer is None:
-            return 0
-        return self.depformer.num_slices
+        if self.head == "ar":
+            assert self.depformer is not None
+            return self.depformer.num_slices
+        assert self.parallel_head is not None
+        return self.parallel_head.num_codebooks
 
     @property
     def other_codebooks(self):
@@ -55,6 +67,7 @@ class LmConfig:
         # hibiki-zero: feedforward width is `hidden_scale * dim` (not 4*dim) and
         # the main transformer uses grouped-query attention (`kv_repeat` > 1).
         hidden_scale = data.get("hidden_scale", 4)
+
         def scaled_dimension(dim: int) -> int:
             return int(round(hidden_scale * dim))
 
@@ -81,42 +94,60 @@ class LmConfig:
             kv_repeat=data.get("kv_repeat", 1),
             max_seq_len=4096,
         )
-        depformer = DepFormerConfig(
-            transformer=TransformerConfig(
-                d_model=data["depformer_dim"],
-                num_heads=data["depformer_num_heads"],
-                num_layers=data["depformer_num_layers"],
-                dim_feedforward=(
-                    data.get("depformer_dim_feedforward")
-                    or scaled_dimension(data["depformer_dim"])
+        head = data.get("head", "ar")
+        if head not in ("ar", "parallel_v1"):
+            raise ValueError(f"unsupported audio head {head!r}")
+        depformer = None
+        parallel_head = None
+        if head == "ar":
+            if data.get("head_passes", 1) != 1:
+                raise ValueError("the AR head has exactly one pass")
+            depformer = DepFormerConfig(
+                transformer=TransformerConfig(
+                    d_model=data["depformer_dim"],
+                    num_heads=data["depformer_num_heads"],
+                    num_layers=data["depformer_num_layers"],
+                    dim_feedforward=(
+                        data.get("depformer_dim_feedforward")
+                        or scaled_dimension(data["depformer_dim"])
+                    ),
+                    causal=data.get("depformer_causal", True),
+                    norm_first=True,
+                    bias_ff=False,
+                    bias_attn=data.get("depformer_layer_scale", False),
+                    layer_scale=None,
+                    context=data.get("depformer_context", data["dep_q"]),
+                    max_period=data.get("depformer_max_period", 8),
+                    use_conv_block=False,
+                    use_conv_bias=True,
+                    cross_attention=False,
+                    gating=True,
+                    norm="rms_norm",
+                    positional_embedding=data["depformer_pos_emb"],
+                    conv_layout=False,
+                    conv_kernel_size=3,
+                    kv_repeat=1,
+                    max_seq_len=4096,
                 ),
-                causal=data.get("depformer_causal", True),
-                norm_first=True,
-                bias_ff=False,
-                bias_attn=data.get("depformer_layer_scale", False),
-                layer_scale=None,
-                context=data.get("depformer_context", data["dep_q"]),
-                max_period=data.get("depformer_max_period", 8),
-                use_conv_block=False,
-                use_conv_bias=True,
-                cross_attention=False,
-                gating=True,
-                norm="rms_norm",
-                positional_embedding=data["depformer_pos_emb"],
-                conv_layout=False,
-                conv_kernel_size=3,
-                kv_repeat=1,
-                max_seq_len=4096,
-            ),
-            num_slices=data["dep_q"],
-            weights_per_step_schedule=data.get(
-                "depformer_weights_per_step_schedule", None
-            ),
-            low_rank_embeddings=data.get("depformer_low_rank_embeddings", None),
-            output_layer_norm=data.get(
-                "depformer_output_layer_norm", "depformer_norm" in data
-            ),
-        )
+                num_slices=data["dep_q"],
+                weights_per_step_schedule=data.get("depformer_weights_per_step_schedule", None),
+                low_rank_embeddings=data.get("depformer_low_rank_embeddings", None),
+                output_layer_norm=data.get("depformer_output_layer_norm", "depformer_norm" in data),
+            )
+        else:
+            shape = (
+                data.get("parallel_head_dim"),
+                data.get("parallel_head_layers"),
+                data.get("dep_q"),
+            )
+            if shape != (512, 2, 8) or data.get("head_passes") not in (1, 2):
+                raise ValueError("parallel_v1 shape or fixed pass count changed")
+            parallel_head = ParallelHeadConfig(
+                dim=shape[0],
+                num_layers=shape[1],
+                num_codebooks=shape[2],
+                passes=data["head_passes"],
+            )
         conditioners = {}
         if "conditioners" in data:
             for _name, _cfg in data["conditioners"].items():
@@ -138,7 +169,9 @@ class LmConfig:
                 conditioners[_name] = _cfg
         return LmConfig(
             transformer=transformer,
+            head=head,
             depformer=depformer,
+            parallel_head=parallel_head,
             text_in_vocab_size=data["text_card"] + 1,
             text_out_vocab_size=data["text_card"],
             audio_vocab_size=data["card"] + 1,
@@ -190,9 +223,7 @@ class ScaledEmbedding(nn.Embedding):
             self.low_rank = nn.Linear(low_rank, embedding_dim, bias=False)
 
         self.demux_second_stream = demux_second_stream
-        assert self.zero_idx == -1, (
-            "When demuxing a second stream, zero_idx must be -1."
-        )
+        assert self.zero_idx == -1, "When demuxing a second stream, zero_idx must be -1."
         if self.demux_second_stream:
             self.out1 = nn.Linear(low_rank or embedding_dim, embedding_dim, bias=False)
             self.out2 = nn.Linear(low_rank or embedding_dim, embedding_dim, bias=False)
@@ -276,6 +307,7 @@ class DepFormer(nn.Module):
     def __init__(self, cfg: LmConfig):
         super().__init__()
 
+        assert cfg.depformer is not None
         self.slices: list[DepFormerSlice] = []
         for slice_idx in range(cfg.depformer.num_slices):
             in_vs = cfg.text_in_vocab_size if slice_idx == 0 else cfg.audio_vocab_size
@@ -338,13 +370,88 @@ class DepFormer(nn.Module):
         return tokens
 
 
+class ParallelResidualBlock(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.norm = nn.RMSNorm(dim, 1e-5)
+        self.in_proj = nn.Linear(dim, 4 * dim, bias=False)
+        self.out_proj = nn.Linear(4 * dim, dim, bias=False)
+
+    def __call__(self, value: mx.array) -> mx.array:
+        return value + self.out_proj(nn.silu(self.in_proj(self.norm(value))))
+
+
+class ParallelHead(nn.Module):
+    """Exact MLX mirror of student.parallel.ParallelHead."""
+
+    def __init__(self, cfg: LmConfig):
+        super().__init__()
+        assert cfg.parallel_head is not None
+        head_cfg = cfg.parallel_head
+        self.card = cfg.audio_vocab_size - 1
+        self.num_codebooks = head_cfg.num_codebooks
+        self.passes = head_cfg.passes
+        self.context_projection = nn.Linear(cfg.transformer.d_model, head_cfg.dim, bias=False)
+        self.previous_embedding = nn.Embedding(self.card + 1, head_cfg.dim)
+        self.position_embedding = mx.zeros((self.num_codebooks, head_cfg.dim))
+        self.blocks = [ParallelResidualBlock(head_cfg.dim) for _ in range(head_cfg.num_layers)]
+        self.final_norm = nn.RMSNorm(head_cfg.dim, 1e-5)
+        self.output_projection = nn.Linear(head_cfg.dim, self.card, bias=False)
+
+    def _predict(
+        self,
+        base: mx.array,
+        refinement_codes: mx.array | None = None,
+    ) -> mx.array:
+        value = base
+        if refinement_codes is not None:
+            value = value + self.previous_embedding(refinement_codes)
+        for block in self.blocks:
+            value = block(value)
+        return self.output_projection(self.final_norm(value))
+
+    def __call__(
+        self,
+        hidden: mx.array,
+        text_embedding: mx.array,
+        previous_codes: mx.array,
+    ) -> mx.array:
+        if hidden.shape != text_embedding.shape or hidden.shape[-1] != 2048:
+            raise ValueError("parallel hidden/text_embedding must be [B, T, 2048]")
+        expected_codes = (*hidden.shape[:2], self.num_codebooks)
+        if previous_codes.shape != expected_codes:
+            raise ValueError(f"parallel previous_codes must be {expected_codes}")
+        context = mx.expand_dims(self.context_projection(hidden + text_embedding), axis=2)
+        base = (
+            context + self.previous_embedding(previous_codes) + self.position_embedding[None, None]
+        )
+        logits = self._predict(base)
+        if self.passes == 2:
+            logits = self._predict(base, mx.argmax(logits, axis=-1))
+        return logits
+
+    def sample(
+        self,
+        hidden: mx.array,
+        text_embedding: mx.array,
+        previous_codes: mx.array,
+        sampler: sampling.Sampler,
+    ) -> mx.array:
+        logits = self(hidden, text_embedding, previous_codes[:, None])
+        tokens, _ = sampler(logits)
+        return tokens.transpose(0, 2, 1)
+
+
 class Lm(nn.Module):
     def __init__(self, cfg: LmConfig):
         super().__init__()
 
         dim = cfg.transformer.d_model
         self.transformer: Transformer = Transformer(cfg.transformer)
-        self.depformer: DepFormer = DepFormer(cfg)
+        if (cfg.depformer is None) == (cfg.parallel_head is None):
+            raise ValueError("LM config must select exactly one audio head")
+        self.depformer = DepFormer(cfg) if cfg.depformer is not None else None
+        self.parallel_head = ParallelHead(cfg) if cfg.parallel_head is not None else None
         self.text_emb = ScaledEmbedding(
             cfg.text_in_vocab_size, dim, demux_second_stream=cfg.demux_second_stream
         )
@@ -359,8 +466,7 @@ class Lm(nn.Module):
 
         self.text_linear = nn.Linear(dim, cfg.text_out_vocab_size, bias=False)
         self.audio_embs = [
-            ScaledEmbedding(cfg.audio_vocab_size, dim)
-            for _ in range(cfg.audio_codebooks)
+            ScaledEmbedding(cfg.audio_vocab_size, dim) for _ in range(cfg.audio_codebooks)
         ]
         self.extra_heads = [
             nn.Linear(dim, cfg.extra_heads_dim, bias=False)
@@ -368,7 +474,7 @@ class Lm(nn.Module):
         ]
         self.transformer_cache: list[LayerCache] = self.transformer.make_rot_cache()
 
-        if len(self.depformer.slices) > 0:
+        if self.depformer is not None and len(self.depformer.slices) > 0:
             self.depformer_cache: list[LayerCache] = self.depformer.slices[
                 0
             ].transformer.make_cache()
@@ -376,9 +482,7 @@ class Lm(nn.Module):
             self.depformer_cache = []
 
         if len(cfg.conditioners) > 0:
-            self.condition_provider = ConditionProvider(
-                cfg.transformer.d_model, cfg.conditioners
-            )
+            self.condition_provider = ConditionProvider(cfg.transformer.d_model, cfg.conditioners)
         else:
             self.condition_provider = None
 
@@ -389,9 +493,6 @@ class Lm(nn.Module):
         strict: bool = True,
     ) -> nn.Module:
         pth_t = mx.load(file)
-        depformer_chunks = lm_config.depformer.num_slices
-        if lm_config.depformer.weights_per_step_schedule is not None:
-            depformer_chunks = max(lm_config.depformer.weights_per_step_schedule) + 1
 
         mlx_t = {}
         mlx_t["out_norm.weight"] = pth_t["out_norm.alpha"][0, 0]
@@ -415,56 +516,60 @@ class Lm(nn.Module):
             if k.startswith("condition_provider.") or k.startswith("extra_heads."):
                 mlx_t[k] = v
 
-        for slice_idx in range(lm_config.depformer.num_slices):
-            pth_idx = slice_idx
+        if lm_config.depformer is not None:
+            depformer_chunks = lm_config.depformer.num_slices
             if lm_config.depformer.weights_per_step_schedule is not None:
-                pth_idx = lm_config.depformer.weights_per_step_schedule[slice_idx]
-            slice_p = f"depformer.slices.{slice_idx}"
-            mlx_t[f"{slice_p}.linear_in.weight"] = pth_t[
-                f"depformer_in.{pth_idx}.weight"
-            ]
-            mlx_t[f"{slice_p}.linear_out.weight"] = pth_t[f"linears.{slice_idx}.weight"]
-            for _p in ("weight", "bias"):
-                _k = f"depformer_norms.{slice_idx}.{_p}"
-                if _k in pth_t:
-                    mlx_t[f"{slice_p}.norm.{_p}"] = pth_t[_k]
-            if slice_idx == 0:
-                mlx_t[f"{slice_p}.emb.weight"] = pth_t["depformer_text_emb.weight"]
-                for _n in ["low_rank", "out1", "out2"]:
-                    if f"depformer_text_emb.{_n}.weight" in pth_t:
-                        mlx_t[f"{slice_p}.emb.{_n}.weight"] = pth_t[
-                            f"depformer_text_emb.{_n}.weight"
+                depformer_chunks = max(lm_config.depformer.weights_per_step_schedule) + 1
+            for slice_idx in range(lm_config.depformer.num_slices):
+                pth_idx = slice_idx
+                if lm_config.depformer.weights_per_step_schedule is not None:
+                    pth_idx = lm_config.depformer.weights_per_step_schedule[slice_idx]
+                slice_p = f"depformer.slices.{slice_idx}"
+                mlx_t[f"{slice_p}.linear_in.weight"] = pth_t[f"depformer_in.{pth_idx}.weight"]
+                mlx_t[f"{slice_p}.linear_out.weight"] = pth_t[f"linears.{slice_idx}.weight"]
+                for _p in ("weight", "bias"):
+                    _k = f"depformer_norms.{slice_idx}.{_p}"
+                    if _k in pth_t:
+                        mlx_t[f"{slice_p}.norm.{_p}"] = pth_t[_k]
+                if slice_idx == 0:
+                    mlx_t[f"{slice_p}.emb.weight"] = pth_t["depformer_text_emb.weight"]
+                    for _n in ["low_rank", "out1", "out2"]:
+                        if f"depformer_text_emb.{_n}.weight" in pth_t:
+                            mlx_t[f"{slice_p}.emb.{_n}.weight"] = pth_t[
+                                f"depformer_text_emb.{_n}.weight"
+                            ]
+                else:
+                    mlx_t[f"{slice_p}.emb.weight"] = pth_t[f"depformer_emb.{slice_idx - 1}.weight"]
+                    if f"depformer_emb.{slice_idx - 1}.low_rank.weight" in pth_t:
+                        mlx_t[f"{slice_p}.emb.low_rank.weight"] = pth_t[
+                            f"depformer_emb.{slice_idx - 1}.low_rank.weight"
                         ]
-            else:
-                mlx_t[f"{slice_p}.emb.weight"] = pth_t[
-                    f"depformer_emb.{slice_idx - 1}.weight"
-                ]
-                if f"depformer_emb.{slice_idx - 1}.low_rank.weight" in pth_t:
-                    mlx_t[f"{slice_p}.emb.low_rank.weight"] = pth_t[
-                        f"depformer_emb.{slice_idx - 1}.low_rank.weight"
+                for layer_idx in range(lm_config.depformer.transformer.num_layers):
+                    p = f"{slice_p}.transformer.layers.{layer_idx}"
+                    mlx_t[f"{p}.norm1.weight"] = pth_t[f"depformer.layers.{layer_idx}.norm1.alpha"][
+                        0, 0
                     ]
-            for layer_idx in range(lm_config.depformer.transformer.num_layers):
-                p = f"{slice_p}.transformer.layers.{layer_idx}"
-                mlx_t[f"{p}.norm1.weight"] = pth_t[
-                    f"depformer.layers.{layer_idx}.norm1.alpha"
-                ][0, 0]
-                mlx_t[f"{p}.norm2.weight"] = pth_t[
-                    f"depformer.layers.{layer_idx}.norm2.alpha"
-                ][0, 0]
-                mlx_t[f"{p}.gating.linear_in.weight"] = pth_t[
-                    f"depformer.layers.{layer_idx}.gating.{pth_idx}.linear_in.weight"
-                ]
-                mlx_t[f"{p}.gating.linear_out.weight"] = pth_t[
-                    f"depformer.layers.{layer_idx}.gating.{pth_idx}.linear_out.weight"
-                ]
-                mlx_t[f"{p}.self_attn.in_proj.weight"] = mx.split(
-                    pth_t[f"depformer.layers.{layer_idx}.self_attn.in_proj_weight"],
-                    depformer_chunks,
-                )[pth_idx]
-                mlx_t[f"{p}.self_attn.out_proj.weight"] = mx.split(
-                    pth_t[f"depformer.layers.{layer_idx}.self_attn.out_proj.weight"],
-                    depformer_chunks,
-                )[pth_idx]
+                    mlx_t[f"{p}.norm2.weight"] = pth_t[f"depformer.layers.{layer_idx}.norm2.alpha"][
+                        0, 0
+                    ]
+                    mlx_t[f"{p}.gating.linear_in.weight"] = pth_t[
+                        f"depformer.layers.{layer_idx}.gating.{pth_idx}.linear_in.weight"
+                    ]
+                    mlx_t[f"{p}.gating.linear_out.weight"] = pth_t[
+                        f"depformer.layers.{layer_idx}.gating.{pth_idx}.linear_out.weight"
+                    ]
+                    mlx_t[f"{p}.self_attn.in_proj.weight"] = mx.split(
+                        pth_t[f"depformer.layers.{layer_idx}.self_attn.in_proj_weight"],
+                        depformer_chunks,
+                    )[pth_idx]
+                    mlx_t[f"{p}.self_attn.out_proj.weight"] = mx.split(
+                        pth_t[f"depformer.layers.{layer_idx}.self_attn.out_proj.weight"],
+                        depformer_chunks,
+                    )[pth_idx]
+        else:
+            for name, value in pth_t.items():
+                if name.startswith("parallel_head."):
+                    mlx_t[name] = value
         return self.load_weights(list(mlx_t.items()), strict=strict)
 
     @property
@@ -473,7 +578,7 @@ class Lm(nn.Module):
 
     @property
     def dep_q(self) -> int:
-        return self.cfg.depformer.num_slices
+        return self.cfg.generated_codebooks
 
     @property
     def audio_offset(self) -> int:
@@ -522,12 +627,11 @@ class Lm(nn.Module):
         cfg_coef: float = 1.0,
         on_text_hook=None,
         on_audio_hook=None,
+        previous_audio_tokens: mx.array | None = None,
     ) -> tuple[mx.array, mx.array | None, mx.array]:
         xs = self.text_emb(text_token_ids)
         for token_ids, emb in zip(audio_token_ids, self.audio_embs):
-            _emb = emb(token_ids)
-            _emb = _emb.transpose(1, 0, 2)
-            xs = xs + _emb
+            xs = xs + emb(token_ids)
         if ct is not None:
             xs = xs + mx.expand_dims(ct.tensor, axis=1)
         if cfg_coef != 1:
@@ -545,7 +649,7 @@ class Lm(nn.Module):
         text_token, _ = text_sampler(text_logits)
         if on_text_hook is not None:
             on_text_hook(text_token)
-        if len(self.depformer.slices) > 0:
+        if self.depformer is not None:
             audio_tokens = self.depformer.sample(
                 transformer_out,
                 audio_sampler,
@@ -553,10 +657,20 @@ class Lm(nn.Module):
                 self.depformer_cache,
                 cfg_coef=cfg_coef,
             )
-            if on_audio_hook is not None:
-                on_audio_hook(audio_tokens)
         else:
-            audio_tokens = None
+            assert self.parallel_head is not None
+            if cfg_coef != 1:
+                raise ValueError("parallel_v1 does not support classifier-free guidance")
+            if previous_audio_tokens is None:
+                raise ValueError("parallel_v1 requires explicit previous raw head output")
+            audio_tokens = self.parallel_head.sample(
+                transformer_out,
+                self.text_emb(text_token),
+                previous_audio_tokens,
+                audio_sampler,
+            )
+        if on_audio_hook is not None:
+            on_audio_hook(audio_tokens)
         return text_token, audio_tokens, transformer_out
 
     def sample(
@@ -570,6 +684,7 @@ class Lm(nn.Module):
         cfg_coef: float = 1.0,
         on_text_hook=None,
         on_audio_hook=None,
+        previous_audio_tokens: mx.array | None = None,
     ) -> tuple[mx.array, mx.array | None]:
         text, audio, _ = self._sample(
             text_token_ids,
@@ -581,16 +696,23 @@ class Lm(nn.Module):
             cfg_coef,
             on_text_hook,
             on_audio_hook,
+            previous_audio_tokens,
         )
         return text, audio
 
     def warmup(self, ct: ConditionTensor | None = None):
+        previous = mx.full(
+            (1, self.cfg.generated_codebooks),
+            self.cfg.audio_padding_token,
+            dtype=mx.int32,
+        )
         text, audio = self.sample(
             mx.array([[self.cfg.text_out_vocab_size]]),
             [mx.array([[0]])] * self.cfg.other_codebooks,
             text_sampler=sampling.Sampler(),
             audio_sampler=sampling.Sampler(),
             ct=ct,
+            previous_audio_tokens=previous,
         )
         if text.sum().item() == 42:
             raise ValueError(42)
