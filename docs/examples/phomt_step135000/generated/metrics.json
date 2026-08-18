@@ -1,0 +1,27 @@
+{
+  "bleu": 2.071005887604106,
+  "chrf": 18.852279814975066,
+  "empty_predictions": 0,
+  "eos_found": 4,
+  "eos_missing": 2,
+  "exact_matches": 0,
+  "health_eligible": false,
+  "health_gates": {
+    "max_mean_length_ratio": 2.0,
+    "max_repeated_4gram_predictions": 0,
+    "min_eos_found": 6,
+    "min_nonempty_predictions": 6
+  },
+  "max_repeated_4gram_count": 1,
+  "mean_length_ratio": 1.9690656565656566,
+  "mean_prediction_words": 15.0,
+  "mean_reference_words": 8.166666666666666,
+  "nonempty_bleu": 2.071005887604106,
+  "nonempty_chrf": 18.852279814975066,
+  "nonempty_predictions": 6,
+  "normalized_exact_matches": 0,
+  "num_predictions": 6,
+  "overlong_predictions": 0,
+  "repeated_4gram_predictions": 0,
+  "wer": 1.5918367346938775
+}
