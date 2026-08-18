@@ -469,7 +469,7 @@ def build(args: argparse.Namespace) -> None:
     import sentencepiece
     from moshi.models import loaders
 
-    device = torch.device("cuda")
+    device = torch.device(args.device)
     codebooks = int(cfg["dep_q"])
     mimi = loaders.get_mimi(args.mimi, num_codebooks=codebooks, device=device)
     if (mimi.sample_rate, mimi.frame_rate, mimi.cardinality) != (24_000, 12.5, cfg["card"]):

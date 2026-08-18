@@ -10,7 +10,7 @@ import mlx.core as mx
 import numpy as np
 
 from hibiki_mlx import pipeline
-from hibiki_mlx.student_pack import validate_student_pack
+from hibiki_mlx.student_pack import read_json
 from moshi_mlx import models, utils
 
 
@@ -27,7 +27,9 @@ def main() -> None:
     parser.add_argument("--logits-mean", type=float, default=0.15)
     args = parser.parse_args()
 
-    cfg = validate_student_pack(args.pack_dir)
+    # pipeline.load() performs the single full strict pack validation (manifest,
+    # receipts, q4, parity); read only the config here for the fixture paths.
+    cfg = read_json(args.pack_dir / "config.json")
     model, lm_config, _tokenizer, _mimi_enc, _mimi_dec = pipeline.load(args.pack_dir)
     if model.parallel_head is None or model.depformer is not None:
         raise RuntimeError("Student pack did not instantiate exactly one parallel_v1 head")

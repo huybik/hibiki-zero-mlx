@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from safetensors import safe_open
 from torch import nn
 
 from contract import build_meta_ar_model, read_config, sha256, validate_config
+from harness import checkpoint_shapes, require_exact_shapes
 
 PARALLEL_PARAMETERS = 7_346_176
 AR_QUALIFICATION_FORMAT = "hibiki_student_ar_qualification_v1"
@@ -144,26 +144,15 @@ def require_compatible_configs(ar_cfg: dict[str, Any], parallel_cfg: dict[str, A
         raise RuntimeError("AR and parallel configs differ outside the frozen head boundary")
 
 
-def checkpoint_shapes(path: Path) -> dict[str, tuple[int, ...]]:
-    with safe_open(path, framework="pt", device="cpu") as handle:
-        return {name: tuple(handle.get_slice(name).get_shape()) for name in handle.keys()}
-
-
 def require_exact_ar_checkpoint(path: Path, cfg: dict[str, Any]) -> None:
     expected = {
         name: tuple(tensor.shape) for name, tensor in build_meta_ar_model(cfg).state_dict().items()
     }
-    actual = checkpoint_shapes(path)
-    if actual != expected:
-        missing = sorted(set(expected) - set(actual))
-        unexpected = sorted(set(actual) - set(expected))
-        wrong = sorted(
-            name for name in set(actual) & set(expected) if actual[name] != expected[name]
-        )
-        raise RuntimeError(
-            "Checkpoint does not exactly match the qualified 12-layer AR config: "
-            f"missing={missing[:5]} unexpected={unexpected[:5]} shape={wrong[:5]}"
-        )
+    require_exact_shapes(
+        expected,
+        checkpoint_shapes(path),
+        "Checkpoint does not exactly match the qualified 12-layer AR config:",
+    )
 
 
 def validate_qualified_ar(

@@ -11,10 +11,10 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from contract import read_config, sha256
+from harness import checkpoint_shapes, require_exact_shapes
 from parallel import (
     PARALLEL_PARAMETERS,
     ParallelHead,
-    checkpoint_shapes,
     require_compatible_configs,
     validate_qualified_ar,
 )
@@ -40,18 +40,7 @@ def validate_head_checkpoint(
         for name, value in ParallelHead.from_config(cfg).state_dict().items()
     }
     actual_shapes = checkpoint_shapes(path)
-    if actual_shapes != expected_shapes:
-        missing = sorted(set(expected_shapes) - set(actual_shapes))
-        unexpected = sorted(set(actual_shapes) - set(expected_shapes))
-        wrong = sorted(
-            name
-            for name in set(actual_shapes) & set(expected_shapes)
-            if actual_shapes[name] != expected_shapes[name]
-        )
-        raise RuntimeError(
-            "Parallel head checkpoint is not exact: "
-            f"missing={missing[:5]} unexpected={unexpected[:5]} shape={wrong[:5]}"
-        )
+    require_exact_shapes(expected_shapes, actual_shapes, "Parallel head checkpoint is not exact:")
     with safe_open(path, framework="pt", device="cpu") as handle:
         metadata = handle.metadata()
     expected_keys = {

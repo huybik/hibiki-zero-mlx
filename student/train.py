@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import random
-import re
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +14,9 @@ import torch
 import torch.nn.functional as F
 from moshi.models import loaders
 from moshi.run_inference import get_condition_tensors
-from safetensors import safe_open
 from safetensors.torch import save_file
 
-from cache import DISTILL_ROLE, load_cache
+from cache import DISTILL_ROLE, artifact_identity, load_cache
 from contract import (
     DEFAULT_CONFIG,
     build_meta_ar_model,
@@ -28,6 +25,19 @@ from contract import (
     torch_lm_config,
     validate_config,
 )
+from harness import (
+    atomic_torch_save,
+    cache_identity,
+    checkpoint_pairs,
+    checkpoint_shapes,
+    masked_cross_entropy,
+    prepare_run_dir,
+    prune_checkpoints,
+    require_exact_shapes,
+    restore_optimizer_rng,
+    topk_residual_kl,
+    validate_common_hyperparams,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MIMI = ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"
@@ -35,61 +45,6 @@ DEFAULT_TOKENIZER = ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 RUN_FORMAT = "hibiki_student_ar_run_v1"
 CHECKPOINT_FORMAT = "hibiki_student_ar_checkpoint_v1"
 OPTIMIZER_FORMAT = "hibiki_student_ar_optimizer_v1"
-MODEL_RE = re.compile(r"model_step(\d+)\.safetensors")
-OPTIMIZER_RE = re.compile(r"optimizer_step(\d+)\.pt")
-
-
-def canonical_sha256(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def artifact_identity(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    return {"name": path.name, "sha256": sha256(path)}
-
-
-def masked_cross_entropy(
-    logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = mask & (targets >= 0)
-    count = mask.sum()
-    loss = F.cross_entropy(logits[mask].float(), targets[mask].long(), reduction="sum")
-    return loss / count.clamp(min=1), count
-
-
-def topk_teacher_kl(
-    student_logits: torch.Tensor,
-    teacher_ids: torch.Tensor,
-    teacher_logprobs: torch.Tensor,
-    mask: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """KL over stored top-k atoms plus one aggregate residual-mass atom.
-
-    Teacher values are absolute log-probabilities. The omitted probability mass
-    is retained as one event; the top-k values are never renormalized.
-    """
-    if student_logits.ndim != 3 or teacher_ids.shape != teacher_logprobs.shape:
-        raise ValueError("Malformed student or teacher text tensors")
-    if teacher_ids.shape[:2] != student_logits.shape[:2] or mask.shape != teacher_ids.shape[:2]:
-        raise ValueError("Teacher text targets are not aligned with student logits")
-    count = mask.sum()
-    safe_ids = teacher_ids.clamp_min(0).long()
-    logits = student_logits.float()
-    log_z = torch.logsumexp(logits, dim=-1)
-    student_top_logprobs = logits.gather(-1, safe_ids) - log_z.unsqueeze(-1)
-    teacher_logprobs = teacher_logprobs.float()
-    teacher_probs = teacher_logprobs.exp()
-
-    teacher_top_mass = teacher_probs.sum(-1).clamp(max=1.0)
-    student_top_mass = student_top_logprobs.exp().sum(-1).clamp(max=1.0 - 1e-7)
-    teacher_other = 1.0 - teacher_top_mass
-    student_other_logprob = torch.log1p(-student_top_mass)
-    top_terms = (teacher_probs * (teacher_logprobs - student_top_logprobs)).sum(-1)
-    other_terms = teacher_other * (teacher_other.clamp_min(1e-30).log() - student_other_logprob)
-    frame_kl = top_terms + other_terms
-    return frame_kl[mask].sum() / count.clamp(min=1), count
 
 
 def rollout_conditioning(
@@ -147,37 +102,15 @@ def collate(samples: list[dict[str, Any]], cfg: dict[str, Any], top_k: int) -> d
     }
 
 
-def checkpoint_shapes(path: Path) -> dict[str, tuple[int, ...]]:
-    with safe_open(path, framework="pt", device="cpu") as handle:
-        return {name: tuple(handle.get_slice(name).get_shape()) for name in handle.keys()}
-
-
 def require_exact_checkpoint(path: Path, cfg: dict[str, Any]) -> None:
     expected = {
         name: tuple(tensor.shape) for name, tensor in build_meta_ar_model(cfg).state_dict().items()
     }
-    actual = checkpoint_shapes(path)
-    if actual != expected:
-        missing = sorted(set(expected) - set(actual))
-        unexpected = sorted(set(actual) - set(expected))
-        wrong = sorted(
-            name for name in set(actual) & set(expected) if actual[name] != expected[name]
-        )
-        raise RuntimeError(
-            "Checkpoint does not exactly match the 12-layer AR config: "
-            f"missing={missing[:5]} unexpected={unexpected[:5]} shape={wrong[:5]}"
-        )
-
-
-def cache_identity(cache_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
-    shards = [
-        {"name": path.name, "sha256": sha256(path)} for path in sorted(cache_dir.glob("shard_*.pt"))
-    ]
-    return {
-        "metadata_sha256": canonical_sha256(metadata),
-        "shards_sha256": canonical_sha256(shards),
-        "shards": shards,
-    }
+    require_exact_shapes(
+        expected,
+        checkpoint_shapes(path),
+        "Checkpoint does not exactly match the 12-layer AR config:",
+    )
 
 
 def run_contract(
@@ -217,31 +150,6 @@ def run_contract(
         "cache": cache_hashes,
         "training": {key: getattr(args, key) for key in training_keys},
     }
-
-
-def prepare_run_dir(out_dir: Path, contract: dict[str, Any], resume: bool) -> str:
-    path = out_dir / "run.json"
-    encoded = json.dumps(contract, indent=2, sort_keys=True) + "\n"
-    if resume:
-        if not path.is_file() or path.read_text(encoding="utf-8") != encoded:
-            raise RuntimeError("Resume contract differs from the original run.json")
-    else:
-        if out_dir.exists() and any(out_dir.iterdir()):
-            raise FileExistsError(f"Refusing to overwrite non-empty run directory: {out_dir}")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(encoded, encoding="utf-8")
-    return canonical_sha256(contract)
-
-
-def atomic_torch_save(payload: Any, path: Path) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    if path.exists() or temporary.exists():
-        raise FileExistsError(f"Refusing to overwrite checkpoint: {path}")
-    try:
-        torch.save(payload, temporary)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def save_checkpoint(
@@ -294,37 +202,13 @@ def save_checkpoint(
     return optimizer_path
 
 
-def prune_checkpoints(out_dir: Path, keep: int) -> None:
-    pairs = checkpoint_pairs(out_dir)
-    for step in sorted(pairs)[: max(0, len(pairs) - keep)]:
-        model_path, optimizer_path = pairs[step]
-        model_path.unlink()
-        optimizer_path.unlink()
-
-
-def checkpoint_pairs(out_dir: Path) -> dict[int, tuple[Path, Path]]:
-    models = {
-        int(match.group(1)): path
-        for path in out_dir.glob("model_step*.safetensors")
-        if (match := MODEL_RE.fullmatch(path.name)) is not None
-    }
-    optimizers = {
-        int(match.group(1)): path
-        for path in out_dir.glob("optimizer_step*.pt")
-        if (match := OPTIMIZER_RE.fullmatch(path.name)) is not None
-    }
-    if models.keys() != optimizers.keys():
-        raise RuntimeError("Run directory contains an incomplete checkpoint pair")
-    return {step: (models[step], optimizers[step]) for step in models}
-
-
 def load_resume(
     model: Any,
     optimizer: torch.optim.Optimizer,
     path: Path,
     contract_hash: str,
 ) -> int:
-    pairs = checkpoint_pairs(path.parent)
+    pairs = checkpoint_pairs(path.parent, "model")
     if not pairs or path.resolve() != pairs[max(pairs)][1].resolve():
         raise RuntimeError("--resume-optimizer must be the newest complete checkpoint pair")
     payload = torch.load(path, map_location="cpu", weights_only=False)
@@ -352,14 +236,7 @@ def load_resume(
         or sha256(model_path) != payload["model_sha256"]
     ):
         raise RuntimeError("Resume checkpoint pair or run contract changed")
-    optimizer.load_state_dict(payload["optimizer"])
-    for state in optimizer.state.values():
-        for key, value in state.items():
-            if torch.is_tensor(value):
-                state[key] = value.cuda()
-    random.setstate(payload["python_rng"])
-    torch.set_rng_state(payload["torch_rng"])
-    torch.cuda.set_rng_state_all(payload["cuda_rng"])
+    restore_optimizer_rng(optimizer, payload)
     return step
 
 
@@ -372,25 +249,7 @@ def condition_tensors(model: Any, cfg: dict[str, Any], batch_size: int) -> Any |
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    positive = (
-        "steps",
-        "batch_size",
-        "grad_accum_steps",
-        "save_every",
-        "keep_checkpoints",
-        "log_every",
-    )
-    if any(getattr(args, key) <= 0 for key in positive):
-        names = ", ".join("--" + key.replace("_", "-") for key in positive)
-        raise ValueError(f"{names} must be positive")
-    if not math.isfinite(args.lr) or args.lr <= 0:
-        raise ValueError("--lr must be finite and positive")
-    if not 0 <= args.adam_beta1 < 1 or not 0 <= args.adam_beta2 < 1:
-        raise ValueError("Adam betas must be in [0, 1)")
-    if not math.isfinite(args.weight_decay) or args.weight_decay < 0:
-        raise ValueError("--weight-decay must be finite and non-negative")
-    if not math.isfinite(args.grad_clip) or args.grad_clip <= 0:
-        raise ValueError("--grad-clip must be finite and positive")
+    validate_common_hyperparams(args)
     weights = (
         args.hard_audio_weight,
         args.hard_text_weight,
@@ -463,7 +322,7 @@ def train(args: argparse.Namespace) -> None:
     contract = run_contract(args, metadata, cache_hashes)
     initial_path = args.init_checkpoint
     if args.resume_optimizer is not None:
-        pairs = checkpoint_pairs(args.out_dir)
+        pairs = checkpoint_pairs(args.out_dir, "model")
         if not pairs:
             raise RuntimeError("No complete checkpoint pair to resume")
         initial_path = pairs[max(pairs)][0]
@@ -562,11 +421,12 @@ def train(args: argparse.Namespace) -> None:
                         codes[:, :1],
                         output.text_mask,
                     )
-                    teacher_text, _ = topk_teacher_kl(
+                    teacher_text, _ = topk_residual_kl(
                         output.text_logits[:, 0],
                         batch["teacher_ids"],
                         batch["teacher_logprobs"],
                         batch["teacher_mask"] & output.text_mask[:, 0],
+                        "text",
                     )
                     loss = (
                         args.hard_audio_weight * hard_audio
@@ -620,7 +480,7 @@ def train(args: argparse.Namespace) -> None:
             )
         if step % args.save_every == 0 or step == args.steps:
             saved = save_checkpoint(model, optimizer, args.out_dir, step, contract, contract_hash)
-            prune_checkpoints(args.out_dir, args.keep_checkpoints)
+            prune_checkpoints(checkpoint_pairs(args.out_dir, "model"), args.keep_checkpoints)
             last_saved = step
             print(f"Saved exact checkpoint pair through {saved}", flush=True)
     assert last_saved == args.steps
@@ -639,8 +499,8 @@ def self_check() -> None:
     ids = torch.tensor([[[0, 1]]])
     teacher_logprobs = teacher_distribution[:2].log().reshape(1, 1, 2)
     student_logits = torch.tensor([[[1.2, 0.1, -0.7]]])
-    actual_kl, count = topk_teacher_kl(
-        student_logits, ids, teacher_logprobs, torch.ones(1, 1, dtype=torch.bool)
+    actual_kl, count = topk_residual_kl(
+        student_logits, ids, teacher_logprobs, torch.ones(1, 1, dtype=torch.bool), "text"
     )
     student_distribution = student_logits.softmax(-1)[0, 0]
     coarse_teacher = torch.tensor([0.6, 0.3, 0.1])

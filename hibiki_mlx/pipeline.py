@@ -76,14 +76,9 @@ def load(weights_dir: Path):
     cfg = json.loads(cfg_path.read_text())
     is_student = cfg.get("artifact_format") == PACK_FORMAT
     if is_student:
-        validated = validate_student_pack(weights_dir)
-        if validated != cfg:
-            raise RuntimeError("Validated student config differs from config.json")
-        model_name = cfg["moshi_name"]
-        tokenizer_name = cfg["tokenizer_name"]
-    else:
-        model_name = _q4_model_name(cfg)
-        tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
+        cfg = validate_student_pack(weights_dir)
+    model_name = _q4_model_name(cfg)
+    tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
     _require_file(
         weights_dir / model_name,
         "Use a staged q4 model directory, or run the matching q4 conversion script.",

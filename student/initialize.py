@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Strictly initialize the 12-layer AR student from official Hibiki-M 1B."""
+
 from __future__ import annotations
 
 import argparse
@@ -14,6 +15,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from contract import read_config, sha256, torch_lm_config, validate_config
+from harness import checkpoint_shapes, require_exact_shapes
 
 LAYER_RE = re.compile(r"^transformer\.layers\.(\d+)\.(.+)$")
 
@@ -33,11 +35,6 @@ def source_name(target_name: str, selected_layers: list[int]) -> str:
         return target_name
     target_index = int(match.group(1))
     return f"transformer.layers.{selected_layers[target_index]}.{match.group(2)}"
-
-
-def tensor_shapes(path: Path) -> dict[str, tuple[int, ...]]:
-    with safe_open(path, framework="pt", device="cpu") as handle:
-        return {name: tuple(handle.get_slice(name).get_shape()) for name in handle.keys()}
 
 
 def expected_shapes(model: Any) -> dict[str, tuple[int, ...]]:
@@ -82,19 +79,10 @@ def initialize(
     validate_parent(target_cfg, parent_cfg)
 
     parent_expected = expected_shapes(build_meta_model(parent_cfg))
-    parent_actual = tensor_shapes(parent_weights)
-    if parent_actual != parent_expected:
-        missing = sorted(set(parent_expected) - set(parent_actual))
-        unexpected = sorted(set(parent_actual) - set(parent_expected))
-        wrong = sorted(
-            name
-            for name in set(parent_actual) & set(parent_expected)
-            if parent_actual[name] != parent_expected[name]
-        )
-        raise RuntimeError(
-            "Parent checkpoint does not exactly match its config: "
-            f"missing={missing[:5]} unexpected={unexpected[:5]} shape={wrong[:5]}"
-        )
+    parent_actual = checkpoint_shapes(parent_weights)
+    require_exact_shapes(
+        parent_expected, parent_actual, "Parent checkpoint does not exactly match its config:"
+    )
 
     target_expected = expected_shapes(build_meta_model(target_cfg))
     selected = list(target_cfg["selected_parent_layers"])

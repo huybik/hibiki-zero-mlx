@@ -86,10 +86,6 @@ def main() -> None:
         raise RuntimeError("Teacher cache does not match the requested teacher config and weights")
     if teacher_metadata["tokenizer"]["sha256"] != student_metadata["tokenizer"]["sha256"]:
         raise RuntimeError("Teacher and student tokenizer hashes differ")
-    if float(teacher_metadata["audio"]["frame_rate"]) != float(
-        student_metadata["audio"]["frame_rate"]
-    ):
-        raise RuntimeError("Teacher/student frame rates differ; same-frame alignment is invalid")
     text_card = int(teacher_cfg["text_card"])
     if text_card != int(student_metadata["model"]["config"]["text_card"]):
         raise RuntimeError("Teacher/student text vocabularies differ")

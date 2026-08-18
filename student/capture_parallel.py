@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +12,9 @@ from moshi.models import loaders
 from moshi.models.lm_utils import _delay_sequence
 from moshi.run_inference import get_condition_tensors
 
-from cache import DISTILL_ROLE, artifact_identity, load_cache
+from cache import DISTILL_ROLE, artifact_identity, exact_keys, load_cache
 from contract import DEFAULT_CONFIG, sha256, torch_lm_config
+from harness import canonical_sha256
 from parallel import validate_qualified_ar
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,11 +34,6 @@ SAMPLE_FIELDS = {
     "teacher_topk_logprobs",
     "teacher_mask",
 }
-
-
-def canonical_sha256(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def input_cache_identity(cache_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -90,11 +84,6 @@ def make_metadata(
             "excluded": "3b_audio_logits",
         },
     }
-
-
-def exact_keys(value: Any, keys: set[str], label: str) -> None:
-    if not isinstance(value, dict) or set(value) != keys:
-        raise RuntimeError(f"{label} must have exactly {sorted(keys)}")
 
 
 def validate_metadata(metadata: Any) -> None:
@@ -218,13 +207,14 @@ def validate_sample(sample: Any, metadata: dict[str, Any], location: str) -> Non
         raise RuntimeError(f"{location} unmasked teacher storage is not empty")
     valid_ids = ids[mask]
     valid_values = values[mask].float()
+    sorted_ids = valid_ids.sort(-1).values
     if valid_ids.numel() and (
         (valid_ids < 0).any()
         or (valid_ids >= 2048).any()
         or not torch.isfinite(valid_values).all()
         or (valid_values > 1e-3).any()
         or (valid_values.exp().sum(-1) > 1.001).any()
-        or (valid_ids.sort(-1).values[:, 1:] == valid_ids.sort(-1).values[:, :-1]).any()
+        or (sorted_ids[:, 1:] == sorted_ids[:, :-1]).any()
     ):
         raise RuntimeError(f"{location} top-k values are not an absolute distribution")
 
