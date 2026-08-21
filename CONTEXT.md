@@ -31,6 +31,8 @@ The active training handoff is `docs/finetune.md`.
   `weight_dtype=bfloat16`.
 - Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
   arrays because lazy MLX graphs cannot cross their creating threads.
+- Microphone inference keeps the MLX model and generator on their owning main
+  thread; only the CPU Mimi encoder and decoder run in worker threads.
 - File inference adds an 8-second silence tail and stops on text EOS or after
   12 sustained PAD frames.
 - The student listening path is BF16 export → `scripts/convert_mlx_bf16.py` →
