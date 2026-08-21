@@ -178,7 +178,7 @@ class TechnicalDocTemplate(BaseDocTemplate):
         canvas.line(20 * mm, 13 * mm, page_w - 20 * mm, 13 * mm)
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(MUTED)
-        canvas.drawString(20 * mm, 8.5 * mm, "Evidence current to 15 August 2026")
+        canvas.drawString(20 * mm, 8.5 * mm, "Evidence current to 21 August 2026")
         canvas.drawRightString(page_w - 20 * mm, 8.5 * mm, str(doc.page))
         canvas.restoreState()
 
@@ -589,7 +589,7 @@ def cover_story(ast: dict, renderer: ReportRenderer) -> list[Flowable]:
         stats,
         Spacer(1, 10 * mm),
         Paragraph(
-            f"<b>{escape(date)}</b><br/>Repository evidence at commit <font face='Courier'>3b8e394</font>. Measured, derived, and projected results are labeled separately.",
+            f"<b>{escape(date)}</b><br/>Repository evidence at commit <font face='Courier'>92f31b8</font>. Measured, derived, and projected results are labeled separately.",
             renderer.s["CoverSubtitle"],
         ),
         NextPageTemplate("body"),

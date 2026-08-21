@@ -7,12 +7,14 @@ date: "Technical report - evidence current to 21 August 2026"
 
 ![Hibiki-Zero MLX: translate while the speaker is still speaking](assets/hero.svg)
 
-> **One-line result.** We ported Kyutai's 3B Hibiki-Zero simultaneous speech translator to Apple Silicon, reduced it from 5.8 GB to 2.2 GB, and reached about 3x real-time on an M4 Pro. For Vietnamese, we produced 696,243 PhoMT speech pairs, introduced cross-lingual timbre matching for the final roughly 51%, built a grounded 719,120-row training receipt, and completed several full-model SFT campaigns. The latest direct run improved teacher-forced PhoMT fit but regressed on real FLEURS speech and still failed free-running PhoMT generation; no Vietnamese checkpoint is production-qualified yet.
+> **One-line result.** We ported Kyutai's 3B Hibiki-Zero simultaneous speech translator to Apple Silicon, reduced it from 5.8 GB to 2.2 GB, and reached about 3x real-time on an M4 Pro. The runtime now has a native macOS test shell, while co-contributor An Quách has built a separate native MLX Swift iOS prototype for the 1B French-to-English model. For Vietnamese, we produced 696,243 PhoMT speech pairs, introduced cross-lingual timbre matching for the final roughly 51%, built a grounded 719,120-row training receipt, and completed several full-model SFT campaigns. The latest direct run improved teacher-forced PhoMT fit but regressed on real FLEURS speech and still failed free-running PhoMT generation; no Vietnamese checkpoint is production-qualified yet.
 
 | Evidence snapshot | Result | Confidence |
 |---|---:|---|
 | 3B q4 file inference, M4 Pro | about **3.0x real-time** | measured |
 | 1B q4 file inference, M4 Pro | about **4.1x real-time** | measured |
+| Native macOS prototype | file and live-microphone modes through the Python/MLX engine | implemented, not product-qualified |
+| Co-contributor iOS prototype | native MLX Swift, offline 1B FR->EN file translation | implemented externally, device performance not qualified |
 | 3B LM step | **22.21 ms/frame** | measured |
 | 1B LM step | **15.06 ms/frame** | measured |
 | CoVoST2 fr->en, n=30 | 3B **25.7 BLEU**; 1B **28.4 BLEU** | measured, small set |
@@ -29,7 +31,7 @@ date: "Technical report - evidence current to 21 August 2026"
 | 1B phone artifact | **7/7 loader checks pass** | compatibility only |
 | 1B projected iPhone LM step | about **30 ms** at the stated 0.5x scale | projection, no phone measured |
 
-**Repository state used for this report:** commit `0331f33`; core evidence is linked throughout. Numbers are labeled **measured**, **derived**, or **projected**. A projection is never presented as a device result.
+**Repository state used for this report:** commit `92f31b8`; core evidence is linked throughout. The external iOS implementation was inspected at `e149a27`. Numbers are labeled **measured**, **derived**, or **projected**. A projection is never presented as a device result.
 
 ---
 
@@ -54,10 +56,13 @@ Kyutai contributed the model, training method, Mimi codec, reference inference s
 - a native MLX q4 runtime and model-conversion path;
 - Hibiki-Zero architectural support in the vendored `moshi-mlx` implementation;
 - a three-stage streaming scheduler for Mimi encode, LM inference, and Mimi decode;
+- a native SwiftUI macOS prototype for file and live-microphone translation;
 - reproducible speed, silence, translation, memory, and compatibility gates;
 - a Vietnamese data, cache, full-SFT, and free-running evaluation stack;
 - a smoke-proven parallel codebook head; and
 - published MLX artifacts and research records for accepted and rejected experiments.
+
+In a complementary repository, co-contributor [An Quách](https://github.com/anthoai97) has built **Hibiki Edge**, a native iOS application and clean MLX Swift implementation of the 1B French-to-English inference path [R15]. It is credited separately because it does not wrap or ship this repository's Python runtime.
 
 ## 1.2 Current scope and non-claims
 
@@ -636,16 +641,33 @@ These are not embarrassing footnotes. Each failure identified an ownership bound
 
 **Exit gate:** FLEURS and PhoMT held-out metrics no longer diverge materially; nonempty, EOS, repetition, length, BLEU/chrF, English audio, and source-speaker similarity pass; and the multilingual retention suite does not regress beyond its frozen tolerances.
 
-## 9.2 Milestone B - create the desktop application
+## 9.2 Milestone B - desktop prototype implemented
 
-**Deliverable:** a presentable macOS application with file and live modes, subtitles, output-device selection, and an inspectable latency panel.
+**Current deliverable:** a native SwiftUI macOS 14 test application that wraps the proven local Python/MLX engine for file and live-microphone translation.
 
-The fastest product sequence is:
+![Native Hibiki Test macOS prototype](assets/macos-prototype.png)
 
-1. **Prototype UI around the proven Python engine.** Keep inference in one local process and expose a narrow IPC contract: start/stop session, PCM input/output, partial text, model status, and per-stage timing. This gets user feedback without simultaneously rewriting the runtime.
-2. **Make the session contract explicit.** Backpressure, audio-device changes, model warmup, interruption, input language, transcript export, and failure states should be visible rather than hidden.
-3. **Move to a native Swift engine.** Port model deltas to `moshi-swift`/MLX Swift after UX stabilizes; run byte/metric comparisons against the Python engine. Kyutai's Swift repository already includes experimental Hibiki support and an iOS proof of concept [R7].
-4. **Package responsibly.** The model license is CC BY-NC-SA 4.0; the app and model card must preserve attribution, non-commercial scope, and share-alike obligations.
+The screenshot shows the repository-built prototype running with the Vietnamese MLX checkpoint and a FLEURS validation clip; it demonstrates application integration, not Vietnamese model qualification. [`macos/HibikiTestApp/`](../../macos/HibikiTestApp/) implements the first desktop stage as a small native shell. It locates the repository, launches [`main.py`](../../main.py) through the project's fixed conda Python, and keeps inference in a separate local process. The prototype provides:
+
+- selection of a staged q4 or bf16 MLX model and a WAV, MP3, or FLAC input;
+- file translation with English transcript capture, output playback, and Finder reveal;
+- live translation through the current macOS input and output devices, with start/stop control and streaming English text;
+- visible run status and an expandable combined backend log; and
+- a release-mode build script that produces an ad-hoc-signed `Hibiki Test.app` bundle.
+
+This is intentionally a development prototype, not a standalone product. It still depends on a repository checkout and `/opt/homebrew/Caskroom/miniconda/base/bin/python`; process output and files act as the integration contract; output-device selection, framed IPC, latency instrumentation, robust partial-text events, and portable model/runtime packaging remain open.
+
+The next desktop sequence is:
+
+**1. Make the session contract explicit.** Add structured events for warmup, partial text, timing, backpressure, interruption, audio-device changes, and failures instead of parsing combined process output.
+
+**2. Complete the product controls.** Add output-device selection, transcript/session export, and an inspectable per-stage latency panel.
+
+**3. Package the runtime.** Remove the fixed checkout and conda-path assumptions while retaining a reproducible model-selection boundary.
+
+**4. Move to a native Swift engine after UX stabilizes.** Port model deltas to `moshi-swift`/MLX Swift and run byte/metric comparisons against the Python engine. Kyutai's Swift repository already includes experimental Hibiki support and an iOS proof of concept [R7].
+
+**5. Package responsibly.** The model license is CC BY-NC-SA 4.0; the app and model card must preserve attribution, non-commercial scope, and share-alike obligations.
 
 **Exit gate:** a 30-minute live conversation on an M-series Mac without queue underflow, state corruption, memory growth, or audible discontinuity; transcript and WAV export reproduce the session.
 
@@ -671,13 +693,26 @@ After the final 1B main is frozen, dump 10-20 hours of teacher states, train the
 
 **Exit gate:** 1B student passes Vietnamese and FR retention; parallel head stays within an agreed ASR/translation and speaker-quality delta from the AR teacher; q4 artifact stays under the memory target and passes silence-in.
 
-## 9.4 Milestone D - Apple mobile application
+## 9.4 Milestone D - native iOS prototype implemented
 
-**First execution path:** MLX Swift on Metal, because it is closest to the measured Python MLX graph and `moshi-swift` already targets iOS. Use `AVAudioEngine` or Audio Units for 24 kHz capture/playback, preallocate ring buffers, keep encode/LM/decode ownership separate, and expose thermal/memory counters.
+**Current deliverable:** co-contributor An Quách's [Hibiki Edge](https://github.com/anthoai97/hibiki-inference) app runs the 1B French-to-English path through a clean native MLX Swift implementation, without Python or a network inference service [R15]. This is a separate implementation from the macOS shell in Section 9.2.
 
-**Second execution path:** evaluate Core ML only after parity. Core ML can place work across CPU, GPU, and Neural Engine and supports state buffers for KV caches [R12-R13]. Conversion should be attempted module-by-module - main Transformer, parallel head, Mimi encoder, Mimi decoder - with static 80 ms frame shapes. The AR depformer is a poor first ANE target because its sequential tiny launches are exactly the architecture being removed.
+The external repository contains two explicit layers.
 
-**Device matrix:** at minimum test a base 6 GB iPhone and an 8 GB Pro device. Measure cold load, first audio, steady-state frame p50/p95/p99, memory high-water, dropped audio callbacks, battery, and 30-minute thermals. Do not promote the current 30 ms projection to a result until this matrix passes.
+**`HibikiCore`.** A reusable Swift package that validates and loads a pinned artifact bundle, implements Mimi encode/decode and the Hibiki temporal/depth Transformers in MLX, owns KV and delayed-stream state in an inference session, and carries numerical parity fixtures.
+
+**`HibikiEdge`.** An iOS application that downloads the pinned q8 bundle, selects and plays bundled French recordings, performs inference off the main thread, streams English text and audio, displays source/target timelines and model-versus-compute timing, and replays the generated English result.
+
+This closes the architectural question of whether the 1B graph can be expressed as an iOS-native MLX application. It does **not** close the mobile product or performance gates. At the inspected revision `e149a27`, the app is FR->EN rather than Vietnamese, the Simulator deliberately disables inference, live microphone capture is not wired, and no load-time, peak-memory, p95/p99, battery, or thermal receipt is available to this report. The app's native runtime and UI are implemented; sustained real-time operation on the target phone remains unqualified.
+
+The next Apple-mobile sequence is:
+
+1. **Import a device receipt.** Run the file workflow on physical target devices and preserve cold load, first audio, per-frame p50/p95/p99, memory high-water, underruns, battery, and 30-minute thermals.
+2. **Add live audio safely.** Wire 24 kHz microphone capture into the existing chunk/session boundary, keep inference out of callbacks, and resolve speaker-to-microphone feedback through headphones, echo cancellation, or half duplex.
+3. **Move the accepted Vietnamese student into the native contract.** The current app proves FR->EN integration; it should not be described as a Vietnamese app until a qualified Vietnamese 1B artifact passes the same parity and generation gates.
+4. **Evaluate Core ML only after MLX Swift is measured.** Core ML can place work across CPU, GPU, and Neural Engine and supports state buffers for KV caches [R12-R13]. Convert the main Transformer, parallel head, Mimi encoder, and Mimi decoder separately with static 80 ms frame shapes; the serial AR depformer is a poor first ANE target.
+
+**Exit gate:** the qualified Vietnamese 1B artifact runs on at least one base 6 GB iPhone and one 8 GB Pro device, sustains p99 below 80 ms without audio underruns or memory growth, and passes the 30-minute thermal and quality suites.
 
 ## 9.5 Milestone E - Qualcomm mobile application
 
@@ -721,6 +756,8 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 | Boundary | Source |
 |---|---|
 | CLI and live audio | [`main.py`](../../main.py) |
+| native macOS prototype | [`macos/HibikiTestApp/`](../../macos/HibikiTestApp/) |
+| external native iOS runtime and app | [An Quách's `hibiki-inference`](https://github.com/anthoai97/hibiki-inference) |
 | model loading, quantization, pipeline | [`hibiki_mlx/pipeline.py`](../../hibiki_mlx/pipeline.py) |
 | model architecture deltas | [`moshi-mlx/moshi_mlx/models`](../../moshi-mlx/moshi_mlx/models/) |
 | benchmark and silence gate | [`scripts/bench.py`](../../scripts/bench.py) |
@@ -734,6 +771,7 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 ## 11.2 Primary local evidence
 
 - Runtime evidence: [inference optimization](../vision/reports/inference_matrix.md), [iPhone budget](../vision/reports/iphone_budget.md), and [parallel-head smoke](../vision/reports/parallel_head_smoke.md)
+- Native app evidence: this repository's [`HibikiTestApp`](../../macos/HibikiTestApp/) and An Quách's external [Hibiki Edge repository at `e149a27`](https://github.com/anthoai97/hibiki-inference/tree/e149a279996851f5ed736b6c9d79a6ecfc1f1a96)
 - Current training evidence: [direct-run validation-collapse analysis](../analysis/validation_collapse_analysis.md), [exact loss function](../analysis/loss_function.md), [frozen direct recipe](../training_plan.md), [validation contract](../validation_plan.md), and [H100 handoff](../finetune.md). The six unseen-PhoMT free-running examples and their aggregate metrics are embedded in Section 5.6.
 - Historical dataset evidence: [pipeline README at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/training-data/README.md), [data generation plan at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/docs/data_generation_plan.md), [VieNeu/Kokoro optimization record at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/docs/vieneu_optimizations.md), [timbre matcher at `d0ccf84`](https://github.com/huybik/hibiki-zero-mlx/blob/d0ccf84/training-data/match_voices.py), and [unexecuted retrofit plan at `77884e0`](https://github.com/huybik/hibiki-zero-mlx/blob/77884e0/training-data/RETROFIT_PLAN.md)
 - Raw-campaign timing is derived from the timestamped milestones `fc6b770`, `557ce36`, `012566b`, `d1d65dc`, `ce0ece7`, `2b4c88e`, and `9bb5d12`; throughput changes are recorded in `193a83f`, `8f956af`, and `cc128d5`
@@ -766,13 +804,13 @@ Failed experiments are evidence: later success may supersede the decision, but m
 - **Domain balance:** most supervised hours are synthetic and short. The direct run improved unseen-PhoMT teacher-forced loss while regressing on FLEURS, but its six-row unseen-PhoMT free-running check still failed generation health. VIVOS adds real source speech but only about 11 hours after QA.
 - **Language retention:** Vietnamese full SFT can forget FR/ES/PT/DE. Release requires an automated multilingual suite.
 - **Latency:** an 80 ms compute frame does not equal 80 ms conversational delay. Codec buffering, learned translation lag, audio I/O, Bluetooth, and target reordering all contribute to perceived latency.
-- **Hardware:** no iPhone or Snapdragon measurement is yet in the repository. Platform claims remain plans or projections until physical-device reports exist.
+- **Hardware:** the external Hibiki Edge repository implements the native iOS graph and application surface, but no physical-iPhone performance receipt is available to this report. iPhone speed remains a projection, and no Snapdragon measurement exists. Platform performance claims remain open until physical-device reports are preserved.
 
 ---
 
 # 13. Conclusion
 
-The project has crossed the hardest early boundary: the model is no longer tied to an NVIDIA reference server, and the Apple runtime is fast enough that product work is rational. The most important engineering wins came from correctness and ownership - loading the exact architecture, keeping thread state local, scheduling CPU and GPU concurrently, and refusing to let convenient metrics overrule free-running behavior.
+The project has crossed the hardest early boundary: the model is no longer tied to an NVIDIA reference server, and the Apple runtime is fast enough that product work is rational. A native SwiftUI macOS prototype now exercises both file and live-microphone workflows through that local Python/MLX runtime. In parallel, An Quách's Hibiki Edge demonstrates the deeper native direction with an independent MLX Swift 1B runtime and iOS file-translation interface. The most important engineering wins came from correctness and ownership - loading the exact architecture, keeping thread state local, scheduling CPU and GPU concurrently, and refusing to let convenient metrics overrule free-running behavior.
 
 Vietnamese adaptation has also moved from speculation to evidence. We learned how to synthesize and cache at scale, how to match timbre using the audio the clone actually produces, and why that match must be recorded per row. LoRA was insufficient; full-model SFT established Vietnamese routing; the warm start collapsed; the grounding curricula proved diagnostic but not deployable; and the clean direct run improved teacher-forced PhoMT fit while overfitting away from FLEURS and still failing free-running PhoMT generation. Five planned epochs became a measured stop at 135k steps, with 18k preserved as the FLEURS best. Neither checkpoint is production-qualified.
 
@@ -810,4 +848,6 @@ The next chapter begins with a shorter, early-stopped 3B experiment, separate Ph
 
 <a id="ref-14"></a>**R14.** Qualcomm. [Qualcomm AI Hub documentation](https://app.aihub.qualcomm.com/docs/index.html), model conversion, physical-device profiling, numerical validation, and deployment.
 
-**Project links:** [GitHub repository](https://github.com/huybik/hibiki-zero-mlx) · [3B MLX q4](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4) · [1B MLX q4](https://huggingface.co/huybik/hibiki-1b-mlx-q4) · [Vietnamese model artifacts](https://huggingface.co/huybik/hibiki-zero-vi-full-sft) · [Vietnamese cache/data artifacts](https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft)
+<a id="ref-15"></a>**R15.** An Quách. [Hibiki Inference / Hibiki Edge](https://github.com/anthoai97/hibiki-inference), native MLX Swift Hibiki 1B runtime and iOS application; inspected at commit [`e149a27`](https://github.com/anthoai97/hibiki-inference/tree/e149a279996851f5ed736b6c9d79a6ecfc1f1a96).
+
+**Project links:** [GitHub repository](https://github.com/huybik/hibiki-zero-mlx) · [Hibiki Edge iOS](https://github.com/anthoai97/hibiki-inference) · [3B MLX q4](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4) · [1B MLX q4](https://huggingface.co/huybik/hibiki-1b-mlx-q4) · [Vietnamese model artifacts](https://huggingface.co/huybik/hibiki-zero-vi-full-sft) · [Vietnamese cache/data artifacts](https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft)
