@@ -3,18 +3,16 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
 
-from contract import build_meta_ar_model, read_config, sha256, validate_config
-from harness import checkpoint_shapes, require_exact_shapes
+from student.contract import build_meta_ar_model, read_config, sha256, validate_config
+from student.harness import checkpoint_shapes, require_exact_shapes
 
 PARALLEL_PARAMETERS = 7_346_176
-AR_QUALIFICATION_FORMAT = "hibiki_student_ar_qualification_v1"
 
 
 class ResidualBlock(nn.Module):
@@ -151,33 +149,21 @@ def require_exact_ar_checkpoint(path: Path, cfg: dict[str, Any]) -> None:
     require_exact_shapes(
         expected,
         checkpoint_shapes(path),
-        "Checkpoint does not exactly match the qualified 12-layer AR config:",
+        "Checkpoint does not exactly match the 12-layer AR config:",
     )
 
 
-def validate_qualified_ar(
+def validate_ar_checkpoint(
     config_path: Path,
     checkpoint_path: Path,
     checkpoint_sha256: str,
-    receipt_path: Path,
 ) -> dict[str, Any]:
     cfg = read_config(config_path)
     validate_config(cfg)
     if cfg["head"] != "ar" or int(cfg["num_layers"]) != 12:
-        raise RuntimeError("Qualified backbone must be the 12-layer AR student")
+        raise RuntimeError("Backbone must be the 12-layer AR student")
     actual_checkpoint_sha = sha256(checkpoint_path)
     if actual_checkpoint_sha != checkpoint_sha256:
-        raise RuntimeError("Qualified AR checkpoint SHA-256 does not match the explicit SHA")
-    expected = {
-        "format": AR_QUALIFICATION_FORMAT,
-        "architecture": cfg["architecture"],
-        "head": "ar",
-        "decision": "pass",
-        "config_sha256": sha256(config_path),
-        "checkpoint_sha256": actual_checkpoint_sha,
-    }
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    if receipt != expected:
-        raise RuntimeError("AR qualification receipt does not match the exact config/checkpoint")
+        raise RuntimeError("AR checkpoint SHA-256 does not match the explicit SHA")
     require_exact_ar_checkpoint(checkpoint_path, cfg)
     return cfg

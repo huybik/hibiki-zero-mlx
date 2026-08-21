@@ -14,8 +14,8 @@ from moshi.models import loaders
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from contract import read_config, sha256, torch_lm_config, validate_config
-from harness import checkpoint_shapes, require_exact_shapes
+from student.contract import read_config, sha256, torch_lm_config, validate_config
+from student.harness import checkpoint_shapes, require_exact_shapes
 
 LAYER_RE = re.compile(r"^transformer\.layers\.(\d+)\.(.+)$")
 

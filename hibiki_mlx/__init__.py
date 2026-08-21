@@ -1,4 +1,4 @@
-"""hibiki_mlx — MLX runtime for hibiki-zero speech translation (q4, pipelined)."""
+"""Pipelined MLX runtime for Hibiki q4 and BF16 speech translation."""
 
 __all__ = ["W", "load", "make_mimi", "resolve_weights_dir", "run"]
 

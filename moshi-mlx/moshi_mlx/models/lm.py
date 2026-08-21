@@ -512,6 +512,8 @@ class Lm(nn.Module):
                     v = v[0, 0]
                 k = k.replace(".alpha", ".weight")
                 k = k.replace(".in_proj_weight", ".in_proj.weight")
+                k = k.replace(".in_projs.0.weight", ".in_proj.weight")
+                k = k.replace(".out_projs.0.weight", ".out_proj.weight")
                 mlx_t[k] = v
             if k.startswith("condition_provider.") or k.startswith("extra_heads."):
                 mlx_t[k] = v
@@ -558,14 +560,19 @@ class Lm(nn.Module):
                     mlx_t[f"{p}.gating.linear_out.weight"] = pth_t[
                         f"depformer.layers.{layer_idx}.gating.{pth_idx}.linear_out.weight"
                     ]
-                    mlx_t[f"{p}.self_attn.in_proj.weight"] = mx.split(
-                        pth_t[f"depformer.layers.{layer_idx}.self_attn.in_proj_weight"],
-                        depformer_chunks,
-                    )[pth_idx]
-                    mlx_t[f"{p}.self_attn.out_proj.weight"] = mx.split(
-                        pth_t[f"depformer.layers.{layer_idx}.self_attn.out_proj.weight"],
-                        depformer_chunks,
-                    )[pth_idx]
+                    source = f"depformer.layers.{layer_idx}.self_attn"
+                    current_in = f"{source}.in_projs.{pth_idx}.weight"
+                    current_out = f"{source}.out_projs.{pth_idx}.weight"
+                    mlx_t[f"{p}.self_attn.in_proj.weight"] = (
+                        pth_t[current_in]
+                        if current_in in pth_t
+                        else mx.split(pth_t[f"{source}.in_proj_weight"], depformer_chunks)[pth_idx]
+                    )
+                    mlx_t[f"{p}.self_attn.out_proj.weight"] = (
+                        pth_t[current_out]
+                        if current_out in pth_t
+                        else mx.split(pth_t[f"{source}.out_proj.weight"], depformer_chunks)[pth_idx]
+                    )
         else:
             for name, value in pth_t.items():
                 if name.startswith("parallel_head."):

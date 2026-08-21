@@ -13,7 +13,7 @@ from typing import Any
 
 import torch
 
-from contract import DEFAULT_CONFIG, read_config, sha256, validate_config
+from student.contract import DEFAULT_CONFIG, read_config, sha256, validate_config
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MIMI = ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"

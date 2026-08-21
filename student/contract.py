@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Freeze and validate the mobile-student architecture and model-pack contract."""
+"""Measure and validate the frozen mobile-student architecture."""
 
 from __future__ import annotations
 
@@ -10,16 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from hibiki_mlx.student_pack import make_student_manifest, validate_student_pack
 from moshi.models import loaders
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = REPO_ROOT / "student" / "configs" / "hibiki_m_12l_ar.json"
-FORMAT = "hibiki_student_pack_v1"
 RECEIPT_FORMAT = "hibiki_student_shape_receipt_v1"
 
 LOADER_METADATA_KEYS = {
-    "artifact_format",
     "architecture",
     "parent_repo",
     "parent_revision",
@@ -31,10 +28,6 @@ LOADER_METADATA_KEYS = {
     "sample_rate",
     "frame_rate",
     "frame_samples",
-    "quantization_bits",
-    "quantization_group_size",
-    "parity_fixture_name",
-    "moshi_name",
     "mimi_name",
     "tokenizer_name",
     "model_type",
@@ -60,7 +53,6 @@ def sha256(path: Path) -> str:
 
 def validate_config(cfg: dict[str, Any]) -> None:
     expected = {
-        "artifact_format": FORMAT,
         "architecture": "hibiki_m_12l",
         "sample_rate": 24000,
         "frame_rate": 12.5,
@@ -70,8 +62,6 @@ def validate_config(cfg: dict[str, Any]) -> None:
         "dim": 2048,
         "num_layers": 12,
         "text_card": 48000,
-        "quantization_bits": 4,
-        "quantization_group_size": 32,
     }
     mismatches = [
         f"{key}={cfg.get(key)!r}, expected {value!r}"
@@ -136,11 +126,6 @@ def parallel_head_parameters(cfg: dict[str, Any]) -> int:
     return context_in + previous_embedding + position_embedding + blocks + final_norm + output
 
 
-def q4_bytes(parameter_count: int) -> int:
-    # MLX affine q4 stores 4-bit values plus bf16 scale and bias per 32-value group.
-    return parameter_count // 2 + parameter_count // 32 * 4
-
-
 def state_contract(cfg: dict[str, Any]) -> dict[str, Any]:
     head_dim = int(cfg["dim"]) // int(cfg["num_heads"])
     state: dict[str, Any] = {
@@ -193,7 +178,6 @@ def make_receipt(cfg: dict[str, Any]) -> dict[str, Any]:
         },
         "estimated_weight_bytes": {
             "bf16": total * 2,
-            "q4_upper_bound": q4_bytes(total),
         },
         "state": state_contract(cfg),
     }
@@ -204,41 +188,21 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def make_manifest(pack_dir: Path) -> dict[str, Any]:
-    return make_student_manifest(pack_dir)
-
-
-def validate_manifest(pack_dir: Path) -> None:
-    validate_student_pack(pack_dir)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     receipt = sub.add_parser("receipt", help="measure a config without allocating model weights")
     receipt.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     receipt.add_argument("--out", type=Path)
-    manifest = sub.add_parser("manifest", help="hash a complete qualified model pack")
-    manifest.add_argument("pack_dir", type=Path)
-    validate = sub.add_parser("validate", help="validate a complete model pack and its hashes")
-    validate.add_argument("pack_dir", type=Path)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.command == "receipt":
-        payload = make_receipt(read_config(args.config))
-        if args.out:
-            write_json(args.out, payload)
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    elif args.command == "manifest":
-        payload = make_manifest(args.pack_dir)
-        write_json(args.pack_dir / "manifest.json", payload)
-        print(f"Wrote {args.pack_dir / 'manifest.json'}")
-    else:
-        validate_manifest(args.pack_dir)
-        print(f"PASS: {args.pack_dir}")
+    payload = make_receipt(read_config(args.config))
+    if args.out:
+        write_json(args.out, payload)
+    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

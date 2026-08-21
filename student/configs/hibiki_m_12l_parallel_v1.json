@@ -1,5 +1,4 @@
 {
-  "artifact_format": "hibiki_student_pack_v1",
   "architecture": "hibiki_m_12l",
   "parent_repo": "kyutai/hibiki-1b-pytorch-bf16",
   "parent_revision": "65dee9b6a682393d4e9b193ccbe314e401e230c9",
@@ -24,9 +23,6 @@
   "sample_rate": 24000,
   "frame_rate": 12.5,
   "frame_samples": 1920,
-  "quantization_bits": 4,
-  "quantization_group_size": 32,
-  "parity_fixture_name": "parity_fixture.npz",
   "card": 2048,
   "n_q": 16,
   "dep_q": 8,
@@ -104,6 +100,5 @@
     "top_k_text": 25
   },
   "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors",
-  "tokenizer_name": "tokenizer_spm_48k_multi6_2.model",
-  "moshi_name": "model.q4.safetensors"
+  "tokenizer_name": "tokenizer_spm_48k_multi6_2.model"
 }

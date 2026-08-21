@@ -16,10 +16,10 @@ import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
-from cache import artifact_identity
-from capture_parallel import load_parallel_cache
-from contract import read_config, sha256
-from harness import (
+from student.cache import artifact_identity
+from student.capture_parallel import load_parallel_cache
+from student.contract import read_config, sha256
+from student.harness import (
     atomic_torch_save,
     cache_identity,
     checkpoint_pairs,
@@ -30,11 +30,11 @@ from harness import (
     topk_residual_kl,
     validate_common_hyperparams,
 )
-from parallel import (
+from student.parallel import (
     PARALLEL_PARAMETERS,
     ParallelHead,
     require_compatible_configs,
-    validate_qualified_ar,
+    validate_ar_checkpoint,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,7 +106,6 @@ def run_contract(
         "parallel_config": artifact_identity(args.parallel_config),
         "ar_config": artifact_identity(args.ar_config),
         "base_checkpoint": artifact_identity(args.ar_checkpoint),
-        "qualification_receipt": artifact_identity(args.qualification_receipt),
         "tokenizer": artifact_identity(args.tokenizer),
         "cache": cache_hashes,
         "training": {key: getattr(args, key) for key in training_keys},
@@ -250,11 +249,10 @@ def train(args: argparse.Namespace) -> None:
     ):
         raise ValueError("Resume optimizer must be inside --out-dir")
 
-    ar_cfg = validate_qualified_ar(
+    ar_cfg = validate_ar_checkpoint(
         args.ar_config,
         args.ar_checkpoint,
         args.ar_sha256,
-        args.qualification_receipt,
     )
     cfg = read_config(args.parallel_config)
     require_compatible_configs(ar_cfg, cfg)
@@ -264,11 +262,10 @@ def train(args: argparse.Namespace) -> None:
     expected_artifacts = {
         "config_artifact": artifact_identity(args.ar_config),
         "checkpoint_artifact": artifact_identity(args.ar_checkpoint),
-        "qualification_receipt": artifact_identity(args.qualification_receipt),
     }
     for key, value in expected_artifacts.items():
         if metadata["backbone"][key] != value:
-            raise RuntimeError(f"Capture cache {key} differs from the exact qualified base")
+            raise RuntimeError(f"Capture cache {key} differs from the exact frozen base")
     if metadata["tokenizer"] != artifact_identity(args.tokenizer):
         raise RuntimeError("Capture cache tokenizer differs from --tokenizer")
 
@@ -437,7 +434,6 @@ def parse_args() -> argparse.Namespace:
     command.add_argument("--parallel-config", type=Path, default=DEFAULT_PARALLEL_CONFIG)
     command.add_argument("--ar-checkpoint", type=Path, required=True)
     command.add_argument("--ar-sha256", required=True)
-    command.add_argument("--qualification-receipt", type=Path, required=True)
     command.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     command.add_argument("--out-dir", type=Path, required=True)
     command.add_argument("--resume-optimizer", type=Path)

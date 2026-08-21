@@ -1,8 +1,7 @@
 {
   "architecture": "hibiki_m_12l",
   "estimated_weight_bytes": {
-    "bf16": 3188741120,
-    "q4_upper_bound": 996481600
+    "bf16": 3188741120
   },
   "format": "hibiki_student_shape_receipt_v1",
   "head": "ar",

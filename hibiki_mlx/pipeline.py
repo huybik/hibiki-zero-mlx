@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pipelined MLX hibiki-zero inference.
+"""Pipelined MLX hibiki-zero inference for q4 and bf16 weights.
 
 Overlaps the CPU Mimi codec (rustymimi, GIL-released) with the GPU LM:
   - encoder thread streams encode_step over the whole file, running ahead
@@ -25,7 +25,6 @@ import rustymimi
 import sentencepiece
 import sphn
 
-from hibiki_mlx.student_pack import PACK_FORMAT, validate_student_pack
 from moshi_mlx import models, utils
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root (hibiki_mlx/ -> ..)
@@ -63,39 +62,50 @@ def _q4_model_name(cfg: dict) -> str:
     return name
 
 
+def _model_name(cfg: dict) -> str:
+    if cfg.get("weight_dtype") != "bfloat16":
+        return _q4_model_name(cfg)
+    name = cfg.get("moshi_name")
+    if not (isinstance(name, str) and name.endswith(".bf16.safetensors")):
+        raise ValueError("bfloat16 model config requires moshi_name ending in .bf16.safetensors")
+    return name
+
+
 def resolve_weights_dir(model: str | Path = "3b") -> Path:
     return W if str(model) == "3b" else Path(model)
+
+
+def text_special_ids(tokenizer) -> set[int]:
+    return {tokenizer.unk_id(), tokenizer.eos_id(), tokenizer.pad_id()}
 
 
 def load(weights_dir: Path):
     cfg_path = weights_dir / "config.json"
     _require_file(
         cfg_path,
-        "Use a q4 model directory containing config.json.",
+        "Use an MLX model directory containing config.json.",
     )
     cfg = json.loads(cfg_path.read_text())
-    is_student = cfg.get("artifact_format") == PACK_FORMAT
-    if is_student:
-        cfg = validate_student_pack(weights_dir)
-    model_name = _q4_model_name(cfg)
+    model_name = _model_name(cfg)
     tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
     _require_file(
         weights_dir / model_name,
-        "Use a staged q4 model directory, or run the matching q4 conversion script.",
+        "Use a staged MLX model directory, or run the matching conversion script.",
     )
     _require_file(
         weights_dir / tokenizer_name,
-        "Download or copy the tokenizer into the q4 model directory.",
+        "Download or copy the tokenizer into the MLX model directory.",
     )
     lm_config = models.LmConfig.from_config_dict(cfg)
     model = models.Lm(lm_config)
     model.set_dtype(mx.bfloat16)
-    nn.quantize(model, bits=4, group_size=32, class_predicate=_q4_compatible)
+    if cfg.get("weight_dtype") != "bfloat16":
+        nn.quantize(model, bits=4, group_size=32, class_predicate=_q4_compatible)
     model.load_weights(str(weights_dir / model_name), strict=True)
     mx.eval(model.parameters())
     tok = sentencepiece.SentencePieceProcessor(str(weights_dir / tokenizer_name))
-    if is_student and tok.vocab_size() != cfg["text_card"]:
-        raise RuntimeError("Student tokenizer vocabulary does not match config.json")
+    if "text_card" in cfg and tok.vocab_size() != cfg["text_card"]:
+        raise RuntimeError("Tokenizer vocabulary does not match config.json")
     mimi_enc, mimi_dec = make_mimi(weights_dir, lm_config)
     return model, lm_config, tok, mimi_enc, mimi_dec
 
@@ -110,7 +120,7 @@ def make_mimi(weights_dir: Path, lm_config):
     mimi_name = cfg.get("mimi_name", "mimi-pytorch-e351c8d8@125.safetensors")
     _require_file(
         weights_dir / mimi_name,
-        "Download or copy the Mimi checkpoint into the q4 model directory.",
+        "Download or copy the Mimi checkpoint into the model directory.",
     )
     mimi_path = str(weights_dir / mimi_name)
     nq = max(lm_config.other_codebooks, lm_config.generated_codebooks)
@@ -195,6 +205,8 @@ def run(
     dec_t.start()
 
     text_pieces: list[str] = []
+    special_text_tokens = text_special_ids(text_tok)
+    eos_token = text_tok.eos_id()
     processed = 0
     pad_run = 0
     t0 = time.perf_counter()
@@ -205,7 +217,7 @@ def run(
         text_token = gen.step(mx.array(oat), ct)
         tt = text_token[0].item()  # sync this frame's LM
         processed += 1
-        if tt not in (0, 3):
+        if tt not in special_text_tokens:
             piece = text_tok.id_to_piece(tt).replace("▁", " ")
             text_pieces.append(piece)
         audio = gen.last_audio_tokens()
@@ -214,7 +226,9 @@ def run(
         # After the input audio ends, stop once the model goes quiet (sustained pad).
         # Sitting in silence longer makes it hallucinate/repeat and inflates WER.
         if processed > steps:
-            pad_run = pad_run + 1 if tt in (0, 3) else 0
+            if tt == eos_token:
+                break
+            pad_run = pad_run + 1 if tt in special_text_tokens else 0
             if pad_run >= PAD_STOP:
                 break
     stop.set()

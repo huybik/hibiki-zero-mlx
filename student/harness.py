@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 
-from contract import sha256
+from student.contract import sha256
 
 
 def canonical_sha256(value: Any) -> str:

@@ -16,8 +16,8 @@ from moshi.models import loaders
 from moshi.run_inference import get_condition_tensors
 from safetensors.torch import save_file
 
-from cache import DISTILL_ROLE, artifact_identity, load_cache
-from contract import (
+from student.cache import DISTILL_ROLE, artifact_identity, load_cache
+from student.contract import (
     DEFAULT_CONFIG,
     build_meta_ar_model,
     read_config,
@@ -25,7 +25,7 @@ from contract import (
     torch_lm_config,
     validate_config,
 )
-from harness import (
+from student.harness import (
     atomic_torch_save,
     cache_identity,
     checkpoint_pairs,
@@ -261,7 +261,7 @@ def validate_args(args: argparse.Namespace) -> None:
     if not 0.0 <= args.rollout_start <= 1.0 or not 0.0 <= args.rollout_fraction <= 1.0:
         raise ValueError("Rollout start and replacement fraction must be in [0, 1]")
     if args.init_sha256 != sha256(args.init_checkpoint):
-        raise RuntimeError("Initialized/qualified checkpoint SHA-256 does not match --init-sha256")
+        raise RuntimeError("Initial checkpoint SHA-256 does not match --init-sha256")
 
 
 def train(args: argparse.Namespace) -> None:
@@ -312,10 +312,9 @@ def train(args: argparse.Namespace) -> None:
     if (
         args.teacher_sequence_weight > 0
         and sequence_samples != len(samples)
-        and not any((args.hard_audio_weight, args.hard_text_weight, args.teacher_text_weight))
     ):
         raise RuntimeError(
-            "Teacher-sequence-only training requires a sequence for every selected sample"
+            "--teacher-sequence-weight requires teacher_sequence_codes for every selected sample"
         )
 
     cache_hashes = cache_identity(args.cache_dir, metadata)
@@ -557,7 +556,7 @@ def parse_args() -> argparse.Namespace:
     command.add_argument("--grad-clip", type=float, default=1.0)
     command.add_argument("--hard-audio-weight", type=float, default=1.0)
     command.add_argument("--hard-text-weight", type=float, default=1.0)
-    command.add_argument("--teacher-sequence-weight", type=float, default=1.0)
+    command.add_argument("--teacher-sequence-weight", type=float, default=0.0)
     command.add_argument("--teacher-text-weight", type=float, default=1.0)
     command.add_argument("--rollout-start", type=float, default=0.8)
     command.add_argument("--rollout-fraction", type=float, default=0.25)

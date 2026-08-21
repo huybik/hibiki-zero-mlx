@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""hibiki-zero MLX translation — realtime mic or a file, on q4 + the fast path.
+"""hibiki-zero MLX translation — realtime mic or a file, on q4 or bf16 weights.
 
   python main.py path/to/audio.wav      # file  -> translations/<stem>_translated.wav
   python main.py --mic                  # mic   -> speakers, live (Ctrl-C to stop)
 
-Speak/record FR/ES/PT/DE; you get streamed EN text + 24 kHz EN audio. Both modes
-use the 4-bit weights via hibiki_mlx.pipeline (load()/run()); --model accepts the
-3B default or a staged Hibiki-Zero model directory. File mode is the 3-thread
+You get streamed EN text + 24 kHz EN audio. Both modes use hibiki_mlx.pipeline
+(load()/run()); --model accepts the 3B q4 default or a staged q4/bf16 Hibiki-Zero
+model directory. File mode is the 3-thread
 pipelined path; mic mode pipelines encode->LM->decode across threads so the live
 critical path is just the LM step (~22 ms on M4 for 3B, budget 80 ms).
 """
@@ -31,8 +31,9 @@ FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
     import sounddevice as sd
 
-    print("loading q4 weights ...")
+    print("loading MLX weights ...")
     model, lm_config, text_tok, mimi_enc, mimi_dec = f.load(weights_dir)
+    special_text_tokens = f.text_special_ids(text_tok)
     ct = None
     if model.condition_provider is not None:
         ct = model.condition_provider.condition_tensor("description", "very_good")
@@ -86,7 +87,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
                     continue
                 tt = gen.step(mx.array(codes), ct)
                 tok = tt[0].item()                                       # sync this frame
-                if tok not in (0, 3):
+                if tok not in special_text_tokens:
                     sys.stdout.write(text_tok.id_to_piece(tok).replace("▁", " "))
                     sys.stdout.flush()
                 audio = gen.last_audio_tokens()
@@ -108,7 +109,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
 
     for fn in (encoder, lm, decoder):
         threading.Thread(target=fn, daemon=True).start()
-    print(f"listening — speak FR/ES/PT/DE; translated EN plays back. Ctrl-C to stop "
+    print(f"listening — translated EN plays back. Ctrl-C to stop "
           f"(cap {max_steps / 12.5 / 60:.0f} min)\n")
     try:
         with sd.InputStream(samplerate=24000, channels=1, blocksize=FRAME,
@@ -124,12 +125,12 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
 
 
 def main():
-    p = argparse.ArgumentParser(description="hibiki-zero MLX q4 translation (mic or file)")
-    p.add_argument("input", nargs="?", help="audio file to translate (FR/ES/PT/DE)")
+    p = argparse.ArgumentParser(description="hibiki-zero MLX translation (mic or file)")
+    p.add_argument("input", nargs="?", help="audio file to translate")
     p.add_argument("--mic", action="store_true", help="realtime mic -> speakers")
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
-    p.add_argument("--model", default="3b", help="3b or a q4 Hibiki-Zero model directory")
+    p.add_argument("--model", default="3b", help="3b or a q4/bf16 Hibiki-Zero model directory")
     p.add_argument("--text-temp", type=float, default=0.4, help="text sampling temperature (default 0.4)")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()

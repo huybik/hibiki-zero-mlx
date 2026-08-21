@@ -11,7 +11,7 @@ import torch
 from moshi.models import loaders
 from moshi.run_inference import get_condition_tensors
 
-from cache import (
+from student.cache import (
     DISTILL_ROLE,
     STUDENT_ROLE,
     TEACHER_ROLE,
@@ -21,7 +21,7 @@ from cache import (
     validate_metadata,
     validate_sample,
 )
-from contract import read_config, torch_lm_config
+from student.contract import read_config, torch_lm_config
 
 
 def parse_args() -> argparse.Namespace:

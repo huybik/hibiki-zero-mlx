@@ -24,7 +24,6 @@ import mlx.nn as nn
 import rustymimi
 import sentencepiece
 
-from hibiki_mlx.student_pack import PACK_FORMAT, validate_student_pack
 from moshi_mlx import models
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -184,12 +183,6 @@ def main() -> None:
     results: list[tuple[str, bool, str]] = []
     cfg = check_config(art, results)
     if cfg is not None:
-        if cfg.get("artifact_format") == PACK_FORMAT:
-            try:
-                validate_student_pack(art)
-                results.append(("strict student pack", True, "manifest/hashes/receipts/q4/parity"))
-            except Exception as e:
-                results.append(("strict student pack", False, f"{type(e).__name__}: {e}"[:300]))
         check_q4_weights(art, cfg, results)
         check_sidecars(art, cfg, results)
         if cfg.get("head", "ar") == "parallel_v1":

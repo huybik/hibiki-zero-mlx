@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent  # repo root (scripts/ -> ..)
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", default="3b", help="3b or a q4 Hibiki-Zero model directory")
+    p.add_argument("--model", default="3b", help="3b or a q4/bf16 Hibiki-Zero model directory")
     p.add_argument("--frames", type=int, default=150, help="timed frames (default 150)")
     p.add_argument("--warmup", type=int, default=15, help="untimed warmup frames (default 15)")
     p.add_argument(
@@ -121,10 +121,12 @@ def main() -> None:
     main_t = step_t - head_t[0]
     lm_ms = 1000 * step_t / n
     cfg = json.loads((weights_dir / "config.json").read_text())
-    size_gb = (weights_dir / pl._q4_model_name(cfg)).stat().st_size / 1e9
+    model_name = pl._model_name(cfg)
+    size_gb = (weights_dir / model_name).stat().st_size / 1e9
+    weight_dtype = cfg.get("weight_dtype", "q4")
 
     print(
-        f"\n=== {args.model} q4 | {n} frames, wall {wall:.2f}s "
+        f"\n=== {args.model} {weight_dtype} | {n} frames, wall {wall:.2f}s "
         f"-> {n / wall:.1f} frames/s ({n / wall / 12.5:.2f}x RT sequential) ==="
     )
     print(f"{'stage':<26}{'ms/frame':>10}{'% of wall':>10}")

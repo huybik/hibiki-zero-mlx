@@ -7,11 +7,11 @@ This repository maintains two paths:
    translation SFT on CUDA.
 
 The mobile model track now has the frozen 12-layer contract, strict CUDA AR and
-parallel-head training, BF16 qualification/export gates, deterministic
-PyTorch/MLX parity tooling, and strict MLX q4 group-size-32 pack
-conversion/inference. Student packs use an explicit raw pre-undelay
-previous-head frame; stock Swift still lacks `parallel_v1` and must not be
-called compatible.
+parallel-head distillation, and a BF16 MLX listening path. Teacher inference and
+student forward/backward use BF16; optimizer masters, Adam state, and recovery
+checkpoints stay FP32. The final parallel export is cast to BF16. Automatic
+quality validation, benchmarking, qualification receipts, and student q4 are
+deferred; sample translation and manual listening are the current endpoint.
 
 Historical design, experiment, and report documentation remains under `docs/`.
 The active training handoff is `docs/finetune.md`.
@@ -24,16 +24,15 @@ The active training handoff is `docs/finetune.md`.
   are GQA (`kv_repeat`), configurable `hidden_scale`, `rope_concat`,
   per-slice depformer output LayerNorm, and the compact one/two-pass
   `parallel_v1` head.
-- Supported weights are q4 with `group_size=32`; `3b` resolves to `weights/`;
-  legacy custom directories remain supported, while student directories require
-  the complete hash-validated pack contract.
+- `3b` resolves to the existing q4 `weights/` directory. Custom directories may
+  contain existing q4 weights or staged BF16 weights with
+  `weight_dtype=bfloat16`.
 - Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
   arrays because lazy MLX graphs cannot cross their creating threads.
 - File inference adds an 8-second silence tail and stops after 12 sustained PAD
   frames.
-- Runtime gates are `scripts/verify_mlx_q4.py` and
-  `scripts/bench.py --model 3b --silence`; student packs additionally use
-  `scripts/verify_student_parity.py`.
+- The student listening path is BF16 export → `scripts/convert_mlx_bf16.py` →
+  `main.py INPUT --model STAGED_DIR`.
 - `scripts/check_swift_compat.py` requires strict q4 group-size-32 reload plus
   valid config, tokenizer, and Mimi sidecars, and deliberately rejects
   `parallel_v1` as unsupported by stock Swift.

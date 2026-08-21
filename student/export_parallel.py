@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Merge a qualified AR backbone and exact parallel head for later MLX quantization."""
+"""Merge an exact AR backbone and parallel head into a BF16 listening checkpoint."""
 
 from __future__ import annotations
 
@@ -7,16 +7,17 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from contract import read_config, sha256
-from harness import checkpoint_shapes, require_exact_shapes
-from parallel import (
+from student.contract import read_config, sha256
+from student.harness import checkpoint_shapes, require_exact_shapes
+from student.parallel import (
     PARALLEL_PARAMETERS,
     ParallelHead,
     require_compatible_configs,
-    validate_qualified_ar,
+    validate_ar_checkpoint,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,11 +70,10 @@ def validate_head_checkpoint(
 def export(args: argparse.Namespace) -> None:
     if args.output_weights.exists() or args.output_config.exists():
         raise FileExistsError("Refusing to overwrite parallel export output")
-    ar_cfg = validate_qualified_ar(
+    ar_cfg = validate_ar_checkpoint(
         args.ar_config,
         args.base_checkpoint,
         args.base_sha256,
-        args.qualification_receipt,
     )
     parallel_cfg = read_config(args.parallel_config)
     require_compatible_configs(ar_cfg, parallel_cfg)
@@ -91,16 +91,16 @@ def export(args: argparse.Namespace) -> None:
     with safe_open(args.base_checkpoint, framework="pt", device="cpu") as base:
         removed = [name for name in base.keys() if name.startswith(obsolete)]
         if not removed:
-            raise RuntimeError("Qualified AR checkpoint contains no obsolete AR head tensors")
+            raise RuntimeError("AR checkpoint contains no obsolete AR head tensors")
         for name in base.keys():
             if not name.startswith(obsolete):
-                state[name] = base.get_tensor(name).contiguous()
+                state[name] = base.get_tensor(name).to(torch.bfloat16).contiguous()
     with safe_open(args.head_checkpoint, framework="pt", device="cpu") as head:
         for name in head.keys():
             exported_name = f"parallel_head.{name}"
             if exported_name in state:
                 raise RuntimeError(f"Export tensor collision: {exported_name}")
-            state[exported_name] = head.get_tensor(name).contiguous()
+            state[exported_name] = head.get_tensor(name).to(torch.bfloat16).contiguous()
 
     args.output_weights.parent.mkdir(parents=True, exist_ok=True)
     args.output_config.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +117,7 @@ def export(args: argparse.Namespace) -> None:
                 "parallel_config_sha256": parallel_config_sha,
                 "head_contract_sha256": head_metadata["contract_sha256"],
                 "head_passes": str(parallel_cfg["head_passes"]),
+                "dtype": "bfloat16",
             },
         )
         temporary_config.write_bytes(args.parallel_config.read_bytes())
@@ -137,7 +138,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parallel-config", type=Path, default=DEFAULT_PARALLEL_CONFIG)
     parser.add_argument("--base-checkpoint", type=Path, required=True)
     parser.add_argument("--base-sha256", required=True)
-    parser.add_argument("--qualification-receipt", type=Path, required=True)
     parser.add_argument("--head-checkpoint", type=Path, required=True)
     parser.add_argument("--head-sha256", required=True)
     parser.add_argument("--output-weights", type=Path, required=True)

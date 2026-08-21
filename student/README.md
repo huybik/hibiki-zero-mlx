@@ -1,30 +1,38 @@
-# Mobile student model track
+# Mobile student model
 
-This directory owns the CUDA-to-MLX model path described in
-[`docs/mobile_student_plan.md`](../docs/mobile_student_plan.md). The immutable
-starting shapes are:
+The active path is deliberately short:
 
-- `hibiki_m_12l_ar.json`: the full-model CUDA distillation intermediate;
-- `hibiki_m_12l_parallel_v1.json`: the deployable frozen-backbone shape.
-
-Both retain the official Hibiki-M 1B width, tokenizer, Mimi contract, and eight
-source plus eight target codebooks. The AR checkpoint is deliberately larger
-than one billion parameters; deleting its large depformer when installing
-`parallel_v1` is what takes the deployable model below one billion parameters.
-
-Measure either shape without allocating weights:
-
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/contract.py receipt \
-  --config student/configs/hibiki_m_12l_ar.json
+```text
+official 1B init -> BF16 AR distillation -> BF16 parallel-head distillation
+-> BF16 export -> MLX BF16 sample translation
 ```
 
-Initialize the AR student from an explicitly downloaded official 1B config and
-checkpoint. The command rejects every missing, extra, or shape-mismatched tensor
-before renaming the frozen parent-layer selection:
+There is no automatic quality validation, benchmark, qualification receipt, or
+student q4 stage. Listen to generated translations before deciding what to
+change. Structural checks remain strict: configs, tensor shapes, input hashes,
+cache schemas, checkpoint pairs, and base/head lineage must still match.
+
+## Precision contract
+
+- The frozen 3B teacher runs in BF16 inference.
+- Student forward and backward compute uses BF16 autocast.
+- Loss reduction, optimizer state, and trainable master weights remain FP32.
+- Recovery checkpoints remain FP32 for exact resume.
+- `student.export_parallel` casts the final listening checkpoint to BF16.
+
+Training the optimizer masters directly in BF16 is not supported. It saves
+little H100 memory and weakens small parameter updates.
+
+## 1. Measure and initialize
+
+The AR intermediate keeps the official Hibiki-M width and ordinary depformer.
+The listening candidate replaces that large head with `parallel_v1`.
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/initialize.py \
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.contract receipt \
+  --config student/configs/hibiki_m_12l_ar.json
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.initialize \
   --config student/configs/hibiki_m_12l_ar.json \
   --parent-config PATH/TO/OFFICIAL/config.json \
   --parent-weights PATH/TO/OFFICIAL/hibikim-pytorch.safetensors \
@@ -32,51 +40,24 @@ before renaming the frozen parent-layer selection:
   --receipt RUN/initialization_receipt.json
 ```
 
-A release model pack is accepted only when all config-selected files, the parity
-fixture, and both receipts exist and match `manifest.json`:
+## 2. Build the aligned caches
+
+Input rows contain `id`, `split`, `source_audio`, `target_audio`,
+`target_text`, and sorted `text_frames` locating every SentencePiece token,
+including EOS, on the 12.5 Hz timeline.
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/contract.py manifest PACK_DIR
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/contract.py validate PACK_DIR
-```
-
-Build strict hard-pair caches from JSONL or CSV rows containing `id`, `split`,
-`source_audio`, `target_audio`, `target_text`, and `text_frames`. `text_frames`
-is a sorted JSON list locating every SentencePiece token, including EOS, on the
-12.5 Hz aligned timeline; the builder rejects unaligned text. Cache construction
-and model distillation are CUDA-only; MLX is reserved for quantization and
-inference.
-
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/cache.py build \
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.cache build \
   --pairs PAIRS.jsonl --out-dir CACHE
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/cache.py validate \
-  CACHE --role student_hard
-```
 
-Build the matching 32-stream teacher context from the same aligned pairs. This
-cache exists only to run the 3B text head; its audio logits are never exported:
-
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/cache.py build \
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.cache build \
   --pairs PAIRS.jsonl --out-dir TEACHER_CACHE --role teacher_context \
   --config TEACHER/config.json --weights TEACHER/model.safetensors \
   --repo kyutai/hibiki-zero-3b-pytorch-bf16 \
   --revision 73175ce6243f8ad66b2138b0264a80044b35c1bd \
   --mimi TEACHER/mimi.safetensors --tokenizer TEACHER/tokenizer.model
-```
 
-Every shard repeats one exact metadata object: the full model config and its
-SHA-256, Mimi and tokenizer SHA-256 values, the 24 kHz/12.5 Hz contract, and the
-17-row layout. The validator checks every shard and sample; legacy 32-stream 3B
-caches fail. A teacher cache uses the same format with role `teacher_context`,
-33 rows, full teacher config, and a teacher weights SHA-256.
-
-Materialize only compact teacher text distributions; teacher audio heads are
-never mapped to student heads:
-
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/dump_teacher.py \
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.dump_teacher \
   --teacher-cache TEACHER_CACHE --student-cache CACHE \
   --teacher-config TEACHER/config.json --teacher-weights TEACHER/model.safetensors \
   --teacher-repo kyutai/hibiki-zero-3b-pytorch-bf16 \
@@ -84,131 +65,79 @@ never mapped to student heads:
   --out-dir DISTILL_CACHE --top-k 32
 ```
 
-`teacher_sequence_codes`, when present, is a separately produced `[8, T]`
-integer field containing teacher-waveform audio re-encoded by the student Mimi.
-It is preserved by the dumper and strictly validated, but this phase does not
-generate teacher speech or mislabel hard target audio as teacher audio.
+This materializes teacher text distributions only. Teacher audio sequence
+distillation is disabled by default because this repository does not generate
+teacher waveforms. If `--teacher-sequence-weight` is made positive later, every
+selected sample must contain real teacher speech re-encoded by the student Mimi.
 
-Train every parameter of the 12-layer AR student on CUDA. The trainer accepts
-only `student_text_distillation`, re-hashes every cache shard, verifies the
-embedded config/Mimi/tokenizer identities, and requires the initialized (or
-qualified) checkpoint SHA explicitly. It keeps fp32 master parameters under
-bf16 autocast and uses fused AdamW with fixed-size batches and gradient
-accumulation:
+## 3. Distill the AR student
 
 ```bash
 INIT_SHA=$(sha256sum RUN/init.safetensors | cut -d' ' -f1)
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/train.py train \
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.train train \
   --cache-dir DISTILL_CACHE \
   --init-checkpoint RUN/init.safetensors --init-sha256 "$INIT_SHA" \
   --out-dir RUN/ar_distill --steps 10000 \
   --batch-size 4 --grad-accum-steps 4 \
   --hard-audio-weight 1 --hard-text-weight 1 \
-  --teacher-sequence-weight 1 --teacher-text-weight 1 \
+  --teacher-sequence-weight 0 --teacher-text-weight 1 \
   --rollout-start 0.8 --rollout-fraction 0.25
 ```
 
-The Hugging Face token in `.env` is for staging the pinned inputs; the trainer
-does not print it or download artifacts implicitly. `teacher_sequence_codes`
-contributes only when actually present. It always means teacher speech decoded
-and re-encoded with the student Mimi, never the hard target audio.
+Every save is an FP32 model plus optimizer recovery pair. Resume only from the
+newest complete optimizer checkpoint in the same run directory; the trainer
+rejects changed data, settings, initialization, or incomplete pairs.
 
-Check the loss and rollout mechanics without CUDA or model allocation:
+## 4. Distill the parallel head
 
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/train.py self-check
-```
-
-Gradient checkpointing is on by default. Every save is an exact
-`model_stepNNNNNN.safetensors` and `optimizer_stepNNNNNN.pt` pair; the newest
-two pairs are retained by default. Resume only from the newest optimizer file
-in the same run directory; changed cache shards, artifact identities,
-initialization SHA, training settings, missing tensors, or incomplete pairs are
-rejected:
+Use the exact final AR checkpoint. The capture records the normalized hidden
+state, sampled text token, prior raw pre-undelay frame, hard targets, and compact
+AR-head distributions.
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/train.py train \
-  --cache-dir DISTILL_CACHE \
-  --init-checkpoint RUN/init.safetensors --init-sha256 "$INIT_SHA" \
-  --out-dir RUN/ar_distill --steps 10000 \
-  --batch-size 4 --grad-accum-steps 4 \
-  --hard-audio-weight 1 --hard-text-weight 1 \
-  --teacher-sequence-weight 1 --teacher-text-weight 1 \
-  --rollout-start 0.8 --rollout-fraction 0.25 \
-  --resume-optimizer RUN/ar_distill/optimizer_step001000.pt
-```
+AR=RUN/ar_distill/model_step010000.safetensors
+AR_SHA=$(sha256sum "$AR" | cut -d' ' -f1)
 
-Training and teacher materialization are CUDA-only. Quantization and inference
-belong to the MLX phase after the BF16 AR checkpoint qualifies; this trainer
-does not generate evaluation audio, quantize weights, or run experiment grids.
-
-After the AR student qualifies, freeze its exact SHA in a receipt with format
-`hibiki_student_ar_qualification_v1`, architecture `hibiki_m_12l`, head `ar`,
-decision `pass`, and the exact config/checkpoint SHA-256 values. Capture the AR
-depformer distributions on its pre-undelay pattern timeline:
-
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/capture_parallel.py \
-  --cache-dir DISTILL_CACHE --ar-checkpoint RUN/qualified.safetensors \
-  --ar-sha256 "$AR_SHA" --qualification-receipt RUN/qualification_receipt.json \
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.capture_parallel \
+  --cache-dir DISTILL_CACHE --ar-checkpoint "$AR" --ar-sha256 "$AR_SHA" \
   --out-dir RUN/parallel_cache
-```
 
-Train only the 7,346,176-parameter `parallel_v1` head. `text_emb.weight` is read
-from that exact AR checkpoint, kept frozen, and excluded from checkpoints and
-the optimizer. The supplied config fixes either one or two passes.
-
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/train_parallel.py self-check
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/train_parallel.py train \
-  --cache-dir RUN/parallel_cache --ar-checkpoint RUN/qualified.safetensors \
-  --ar-sha256 "$AR_SHA" --qualification-receipt RUN/qualification_receipt.json \
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.train_parallel train \
+  --cache-dir RUN/parallel_cache \
+  --ar-checkpoint "$AR" --ar-sha256 "$AR_SHA" \
   --out-dir RUN/parallel_head --steps 10000
 ```
 
-Merge the qualified backbone with an exact head only after both explicit hashes
-and the head's embedded base/config lineage agree. The output remains BF16/fp32
-PyTorch safetensors; MLX owns subsequent q4 quantization and inference.
+Only the 7,346,176-parameter head is trained. The AR backbone and
+`text_emb.weight` stay frozen and are bound to the capture and head checkpoints
+by their hashes.
+
+## 5. Export and listen in BF16
 
 ```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/export_parallel.py \
-  --base-checkpoint RUN/qualified.safetensors --base-sha256 "$AR_SHA" \
-  --qualification-receipt RUN/qualification_receipt.json \
-  --head-checkpoint RUN/parallel_head/head_step010000.safetensors \
-  --head-sha256 "$HEAD_SHA" --output-weights RUN/parallel/model.safetensors \
+HEAD=RUN/parallel_head/head_step010000.safetensors
+HEAD_SHA=$(sha256sum "$HEAD" | cut -d' ' -f1)
+
+/opt/homebrew/Caskroom/miniconda/base/bin/python -m student.export_parallel \
+  --base-checkpoint "$AR" --base-sha256 "$AR_SHA" \
+  --head-checkpoint "$HEAD" --head-sha256 "$HEAD_SHA" \
+  --output-weights RUN/parallel/model.bf16.safetensors \
   --output-config RUN/parallel/config.json
-```
 
-After BF16 listening/intelligibility qualification, record an exact
-`hibiki_student_parallel_qualification_v1` receipt with decision `pass`, head
-`parallel_v1`, and the SHA-256 values of that exported checkpoint and config.
-Generate the deterministic PyTorch head fixture, then build one explicit MLX q4
-group-size-32 pack. Conversion never downloads inputs or overwrites its output.
-
-```bash
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/make_parallel_parity.py \
-  --config RUN/parallel/config.json --checkpoint RUN/parallel/model.safetensors \
-  --checkpoint-sha256 "$PARALLEL_BF16_SHA" \
-  --qualification-receipt RUN/parallel/qualification_receipt.json \
-  --output RUN/parallel/parity_fixture.npz
-
-/opt/homebrew/Caskroom/miniconda/base/bin/python scripts/convert_mlx_q4.py \
-  --checkpoint RUN/parallel/model.safetensors \
-  --checkpoint-sha256 "$PARALLEL_BF16_SHA" \
+/opt/homebrew/Caskroom/miniconda/base/bin/python scripts/convert_mlx_bf16.py \
+  --checkpoint RUN/parallel/model.bf16.safetensors \
   --config RUN/parallel/config.json \
-  --qualification-receipt RUN/parallel/qualification_receipt.json \
-  --shape-receipt student/receipts/hibiki_m_12l_parallel_v1.json \
-  --parity-fixture RUN/parallel/parity_fixture.npz \
   --mimi weights/mimi-pytorch-e351c8d8@125.safetensors \
   --tokenizer weights/tokenizer_spm_48k_multi6_2.model \
-  --out-dir RUN/parallel_q4
+  --out-dir RUN/parallel_mlx_bf16
 
-/opt/homebrew/Caskroom/miniconda/base/bin/python student/contract.py validate RUN/parallel_q4
-/opt/homebrew/Caskroom/miniconda/base/bin/python scripts/verify_student_parity.py RUN/parallel_q4
+/opt/homebrew/Caskroom/miniconda/base/bin/python main.py assets/samples/leon.wav \
+  --model RUN/parallel_mlx_bf16 \
+  --out RUN/listen/leon.wav \
+  --text-out RUN/listen/leon.txt
 ```
 
-The pack loader re-hashes the manifest and every selected file, validates the
-config, shape and qualification receipts, inspects q4 group size, validates the
-parity fixture, then performs a strict MLX weight load. Stock `moshi-swift` does
-not yet implement `parallel_v1`; `scripts/check_swift_compat.py` reports that
-gap instead of claiming compatibility.
+The last command is the current decision gate: listen to the WAV and inspect
+the text. Keep the exact checkpoint and sample outputs you chose; no receipt is
+required.

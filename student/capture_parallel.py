@@ -12,17 +12,17 @@ from moshi.models import loaders
 from moshi.models.lm_utils import _delay_sequence
 from moshi.run_inference import get_condition_tensors
 
-from cache import DISTILL_ROLE, artifact_identity, exact_keys, load_cache
-from contract import DEFAULT_CONFIG, sha256, torch_lm_config
-from harness import canonical_sha256
-from parallel import validate_qualified_ar
+from student.cache import DISTILL_ROLE, artifact_identity, exact_keys, load_cache
+from student.contract import DEFAULT_CONFIG, sha256, torch_lm_config
+from student.harness import canonical_sha256
+from student.parallel import validate_ar_checkpoint
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MIMI = ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"
 DEFAULT_TOKENIZER = ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 PARALLEL_CACHE_FORMAT = "hibiki_parallel_capture_v1"
 PARALLEL_METADATA_FORMAT = "hibiki_parallel_capture_metadata_v1"
-PARALLEL_ROLE = "qualified_ar_parallel_distillation"
+PARALLEL_ROLE = "ar_parallel_distillation"
 SAMPLE_FIELDS = {
     "id",
     "split",
@@ -51,7 +51,6 @@ def make_metadata(
     cfg: dict[str, Any],
     config_path: Path,
     checkpoint_path: Path,
-    qualification_receipt: Path,
     source_metadata: dict[str, Any],
     source_identity: dict[str, Any],
     top_k: int,
@@ -70,17 +69,16 @@ def make_metadata(
             "config": cfg,
             "config_artifact": artifact_identity(config_path),
             "checkpoint_artifact": artifact_identity(checkpoint_path),
-            "qualification_receipt": artifact_identity(qualification_receipt),
         },
         "mimi": source_metadata["mimi"],
         "tokenizer": source_metadata["tokenizer"],
         "input_cache": source_identity,
         "generation": {
-            "method": "frozen_qualified_ar_pattern_topk_v1",
+            "method": "frozen_ar_pattern_topk_v1",
             "top_k": top_k,
             "text_condition": "current_pattern_text_argmax",
             "previous_codes": "initial_card_then_previous_pattern_target_frame",
-            "audio_teacher": "qualified_12l_ar_depformer",
+            "audio_teacher": "frozen_12l_ar_depformer",
             "excluded": "3b_audio_logits",
         },
     }
@@ -106,7 +104,7 @@ def validate_metadata(metadata: Any) -> None:
         raise RuntimeError("Unsupported parallel capture metadata")
     cfg = metadata["backbone"].get("config")
     if not isinstance(cfg, dict) or cfg.get("head") != "ar" or cfg.get("num_layers") != 12:
-        raise RuntimeError("Parallel cache backbone is not the qualified 12-layer AR student")
+        raise RuntimeError("Parallel cache backbone is not the frozen 12-layer AR student")
     expected_layout = {
         "timeline": "ar_depformer_pattern_pre_undelay",
         "hidden_dim": 2048,
@@ -117,10 +115,10 @@ def validate_metadata(metadata: Any) -> None:
         raise RuntimeError("Parallel capture layout changed")
     exact_keys(
         metadata["backbone"],
-        {"config", "config_artifact", "checkpoint_artifact", "qualification_receipt"},
+        {"config", "config_artifact", "checkpoint_artifact"},
         "parallel cache backbone",
     )
-    for key in ("config_artifact", "checkpoint_artifact", "qualification_receipt"):
+    for key in ("config_artifact", "checkpoint_artifact"):
         exact_keys(metadata["backbone"][key], {"name", "sha256"}, key)
     for key in ("mimi", "tokenizer"):
         exact_keys(metadata[key], {"name", "sha256"}, key)
@@ -139,13 +137,13 @@ def validate_metadata(metadata: Any) -> None:
         "parallel target generation",
     )
     if (
-        generation["method"] != "frozen_qualified_ar_pattern_topk_v1"
+        generation["method"] != "frozen_ar_pattern_topk_v1"
         or isinstance(generation["top_k"], bool)
         or not isinstance(generation["top_k"], int)
         or not 0 < generation["top_k"] <= 2048
         or generation["text_condition"] != "current_pattern_text_argmax"
         or generation["previous_codes"] != "initial_card_then_previous_pattern_target_frame"
-        or generation["audio_teacher"] != "qualified_12l_ar_depformer"
+        or generation["audio_teacher"] != "frozen_12l_ar_depformer"
         or generation["excluded"] != "3b_audio_logits"
     ):
         raise RuntimeError("Unsupported parallel target generation")
@@ -331,7 +329,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--ar-checkpoint", type=Path, required=True)
     parser.add_argument("--ar-sha256", required=True)
-    parser.add_argument("--qualification-receipt", type=Path, required=True)
     parser.add_argument("--mimi", type=Path, default=DEFAULT_MIMI)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     parser.add_argument("--out-dir", type=Path, required=True)
@@ -348,15 +345,14 @@ def main() -> None:
     if args.out_dir.exists() and any(args.out_dir.iterdir()):
         raise FileExistsError(f"Refusing to mix or overwrite captures in {args.out_dir}")
 
-    cfg = validate_qualified_ar(
+    cfg = validate_ar_checkpoint(
         args.config,
         args.ar_checkpoint,
         args.ar_sha256,
-        args.qualification_receipt,
     )
     source_metadata, source_shards = load_cache(args.cache_dir, DISTILL_ROLE)
     if source_metadata["model"]["config"] != cfg:
-        raise RuntimeError("Student distill cache config differs from the qualified AR config")
+        raise RuntimeError("Student distill cache config differs from the frozen AR config")
     if source_metadata["model"]["config_artifact"] != artifact_identity(args.config):
         raise RuntimeError("Student distill cache config hash differs from --config")
     for key, path in (("mimi", args.mimi), ("tokenizer", args.tokenizer)):
@@ -370,7 +366,6 @@ def main() -> None:
         cfg,
         args.config,
         args.ar_checkpoint,
-        args.qualification_receipt,
         source_metadata,
         source_identity,
         args.top_k,
@@ -400,7 +395,7 @@ def main() -> None:
         print(f"Wrote {len(samples)} pattern-aligned samples -> {args.out_dir / source_path.name}")
 
     load_parallel_cache(args.out_dir)
-    print(f"PASS: captured {captured_count} qualified-AR parallel-head samples")
+    print(f"PASS: captured {captured_count} frozen-AR parallel-head samples")
 
 
 if __name__ == "__main__":
