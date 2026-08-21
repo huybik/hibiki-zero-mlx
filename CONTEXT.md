@@ -19,6 +19,8 @@ The active training handoff is `docs/finetune.md`.
 ## Inference
 
 - `main.py` is the file and microphone translation CLI.
+- `macos/HibikiTestApp/` is the native SwiftUI file/microphone test app. Its
+  local build script produces `build/Hibiki Test.app` and invokes `main.py`.
 - `hibiki_mlx/pipeline.py` owns the Mimi-encode → LM → Mimi-decode pipeline.
 - `moshi-mlx/` is the minimal vendored MLX runtime. Its required Hibiki deltas
   are GQA (`kv_repeat`), configurable `hidden_scale`, `rope_concat`,
@@ -29,8 +31,8 @@ The active training handoff is `docs/finetune.md`.
   `weight_dtype=bfloat16`.
 - Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
   arrays because lazy MLX graphs cannot cross their creating threads.
-- File inference adds an 8-second silence tail and stops after 12 sustained PAD
-  frames.
+- File inference adds an 8-second silence tail and stops on text EOS or after
+  12 sustained PAD frames.
 - The student listening path is BF16 export → `scripts/convert_mlx_bf16.py` →
   `main.py INPUT --model STAGED_DIR`.
 - `scripts/check_swift_compat.py` requires strict q4 group-size-32 reload plus

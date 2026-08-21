@@ -34,14 +34,25 @@ python main.py assets/samples/leon.wav
 python main.py --mic
 ```
 
-`main.py` and `hibiki_mlx.pipeline` are the only inference entry points. They
-use 4-bit, group-size-32 weights and overlap the CPU Mimi encoder/decoder with
-the GPU language model. `--model` accepts `3b` or a staged Hibiki-Zero model
+Build and open the native macOS test app:
+
+```bash
+./macos/HibikiTestApp/build.sh
+open "macos/HibikiTestApp/build/Hibiki Test.app"
+```
+
+The SwiftUI app provides model and audio pickers, file translation and playback,
+live microphone start/stop, the English transcript, and the backend log. It runs
+`main.py` with the conda Python at `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
+
+`main.py` and `hibiki_mlx.pipeline` overlap the CPU Mimi encoder/decoder with the
+GPU language model. `--model` accepts `3b` or a staged q4/BF16 Hibiki-Zero model
 directory.
 
 The maintained inference utilities are:
 
 - `scripts/convert_mlx_q4.py`: convert the 3B PyTorch LM to MLX q4.
+- `scripts/convert_mlx_bf16.py`: stage an exact BF16 checkpoint for MLX listening.
 - `scripts/verify_mlx_q4.py`: translate the checked-in sample as a quality gate.
 - `scripts/bench.py`: stage timing and silence-input gate.
 - `scripts/check_swift_compat.py`: strict group-size-32 artifact validation.
@@ -82,5 +93,6 @@ See [SFT mechanics](docs/finetune.md), the current
 - `moshi-mlx/`: minimal vendored MLX model implementation with Hibiki deltas.
 - `finetune/`: full-model SFT, cache preparation, and evaluation.
 - `remote_dataset/`: reproducible FLEURS downloader.
+- `macos/HibikiTestApp/`: native SwiftUI file and microphone test app.
 - `scripts/`: q4 conversion and inference verification.
 - `assets/samples/`: the retained inference gate clip.

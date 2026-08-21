@@ -20,6 +20,8 @@ venv/
 # Model and generated artifacts
 /weights
 /translations/
+macos/HibikiTestApp/.build/
+macos/HibikiTestApp/build/
 remote_dataset/fleurs_vi_en/
 finetune/pairs/
 finetune/cache/
