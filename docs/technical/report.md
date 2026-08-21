@@ -778,7 +778,17 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 - Historical training evidence: [phase-1 H100 record at `b4ba8b8`](https://github.com/huybik/hibiki-zero-mlx/blob/b4ba8b8/CONTEXT.md), [phase-2 benchmark at `45624db`](https://github.com/huybik/hibiki-zero-mlx/blob/45624db/CONTEXT.md), [phase-2 post-mortem at `1250f1d`](https://github.com/huybik/hibiki-zero-mlx/blob/1250f1d/docs/phase2_postmortem.md), and the direct-run receipts in commits `385d0cf`, `4b164ee`, and `97f8214`
 - VIVOS evidence at `70eaead`: [retry-v6 report](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/metrics.md), [speaker exclusion](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/SPEAKER_EXCLUSION_2026-08-05.md), and [runtime repair/terminal selection](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/RUNTIME_RESUME_2026-08-06.md)
 
-## 11.3 Experiment-record contract
+## 11.3 Public resources
+
+- **Source repository:** [Connect / Hibiki-Zero MLX](https://github.com/huybik/hibiki-zero-mlx)
+- **Documentation:** [`docs/`](https://github.com/huybik/hibiki-zero-mlx/tree/main/docs)
+- **Generated speech dataset:** [PhoMT-en-vi-speech](https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech)
+- **Cache repository:** [Vietnamese SFT datasets and caches](https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft/tree/main)
+- **Checkpoint repository:** [Vietnamese model checkpoints](https://huggingface.co/huybik/hibiki-zero-vi-full-sft)
+- **Current cache asset:** [Grounded-v2 cache](https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft/tree/main/grounded-v2)
+- **Current checkpoint asset:** [step-135k model](https://huggingface.co/huybik/hibiki-zero-vi-full-sft/blob/main/grounded_v2_full_direct_voice_5epoch/checkpoints/model_step135000.safetensors)
+
+## 11.4 Experiment-record contract
 
 Every material run should preserve:
 
@@ -850,4 +860,4 @@ The next chapter begins with a shorter, early-stopped 3B experiment, separate Ph
 
 <a id="ref-15"></a>**R15.** An Quách. [Hibiki Inference / Hibiki Edge](https://github.com/anthoai97/hibiki-inference), native MLX Swift Hibiki 1B runtime and iOS application; inspected at commit [`e149a27`](https://github.com/anthoai97/hibiki-inference/tree/e149a279996851f5ed736b6c9d79a6ecfc1f1a96).
 
-**Project links:** [GitHub repository](https://github.com/huybik/hibiki-zero-mlx) · [Hibiki Edge iOS](https://github.com/anthoai97/hibiki-inference) · [3B MLX q4](https://huggingface.co/huybik/hibiki-zero-3b-mlx-q4) · [1B MLX q4](https://huggingface.co/huybik/hibiki-1b-mlx-q4) · [Vietnamese model artifacts](https://huggingface.co/huybik/hibiki-zero-vi-full-sft) · [Vietnamese cache/data artifacts](https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft)
+The consolidated public code, documentation, dataset, cache, and checkpoint URLs are indexed in Section 11.3.
