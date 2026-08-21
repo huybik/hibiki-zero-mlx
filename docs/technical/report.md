@@ -454,6 +454,18 @@ The evidence now supports a shorter upstream-start experiment, not another long 
 
 Checkpoint promotion must combine teacher-forced diagnostics with correct-source free-running health: at least 122/128 nonempty, at least 116/128 EOS, at most 12 repeated-4-gram failures, mean length ratio at most 2.0, and no material chrF regression. Generated English must also pass content, audio-quality, and source-speaker-similarity checks on a verified timbre-matched set. The test sets stay sealed until selection.
 
+## 5.9 Next-phase targets: data scale-up, voice-matched fine-tune, and GRPO
+
+The Hibiki-Zero paper [R1] closes its exposure gap not in supervised training but in two later stages: a natural-pause TTS fine-tune whose targets are voice-transferred onto the source speaker, and GRPO reinforcement learning on free-running outputs scored by BLEU process rewards. Its supervised stage trains on 40,000 hours of real multi-speaker audio per source language; this project's entire supervised signal is about 1,114 synthetic PhoMT hours plus 1,392 unique FLEURS rows. The next phase therefore has three targets, planned in detail in [`vi_en_parity_plan.md`](../vi_en_parity_plan.md):
+
+| Phase | Target | Key numbers |
+|---|---|---|
+| Data scale-up | grow total Vietnamese source speech to **about 40,000 h**, matching the paper's per-language volume | scripted-EN corpora (Common Voice first, then LibriSpeech/MLS/GigaSpeech-class) → Gemini EN→VI translation → TTS voice-transfer onto the original clip speaker → grounded-v2 cache; every new row verifiably timbre matched; FLEURS single pass, no reuse |
+| Voice-matched fine-tune | paper stage-4 analog: audio CE restricted to verified timbre-matched rows only | ~1–2k steps, batch 16, LR `1e-6`; unmatched PhoMT rows keep text CE only; speaker-cosine gate added to eval |
+| GRPO reinforcement learning | paper stage-5 analog: train in the free-running regime that inference actually uses | G=4 samples/input, reward r_t = (1−α)·BLEU(partial) + α·BLEU(full), α=0.4, rewards every 8 input words, batch 32, LR `2e-7`, start 500–1000 updates |
+
+Sequencing is deliberate: data first because RL on a weak base rewards noise and generation is the longest-lead item; then the fixed stopping-rule SFT run; then the cheap voice-matched fine-tune before RL locks in a policy; then GRPO against the repetition/EOS failures measured in Section 5.6. Success criteria and risks are maintained in the parity plan.
+
 ---
 
 # 6. Data engineering: scale was necessary, but quality boundaries mattered more
