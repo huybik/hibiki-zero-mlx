@@ -778,7 +778,7 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 - Historical training evidence: [phase-1 H100 record at `b4ba8b8`](https://github.com/huybik/hibiki-zero-mlx/blob/b4ba8b8/CONTEXT.md), [phase-2 benchmark at `45624db`](https://github.com/huybik/hibiki-zero-mlx/blob/45624db/CONTEXT.md), [phase-2 post-mortem at `1250f1d`](https://github.com/huybik/hibiki-zero-mlx/blob/1250f1d/docs/phase2_postmortem.md), and the direct-run receipts in commits `385d0cf`, `4b164ee`, and `97f8214`
 - VIVOS evidence at `70eaead`: [retry-v6 report](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/metrics.md), [speaker exclusion](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/SPEAKER_EXCLUSION_2026-08-05.md), and [runtime repair/terminal selection](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/RUNTIME_RESUME_2026-08-06.md)
 
-## 11.3 Public resources
+## 11.3 Resources we release to public
 
 - **Source repository:** [Connect / Hibiki-Zero MLX](https://github.com/huybik/hibiki-zero-mlx)
 - **Documentation:** [`docs/`](https://github.com/huybik/hibiki-zero-mlx/tree/main/docs)
