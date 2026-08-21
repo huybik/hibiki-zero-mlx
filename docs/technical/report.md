@@ -2,12 +2,12 @@
 title: "Hibiki-Zero MLX"
 subtitle: "From an NVIDIA-only simultaneous translator to Vietnamese training and a credible on-device path"
 author: "Hibiki-Zero MLX project"
-date: "Technical report - evidence current to 15 August 2026"
+date: "Technical report - evidence current to 21 August 2026"
 ---
 
 ![Hibiki-Zero MLX: translate while the speaker is still speaking](assets/hero.svg)
 
-> **One-line result.** We ported Kyutai's 3B Hibiki-Zero simultaneous speech translator to Apple Silicon, fixed the architectural mismatches that made the first MLX output babble, reduced the model from 5.8 GB to 2.2 GB, pipelined the CPU codec around the GPU model to reach about 3x real-time on an M4 Pro, built a 1B phone candidate, and established the data and training machinery for Vietnamese. The remaining work is model quality, native product integration, and real-device validation - not another desktop inference rewrite.
+> **One-line result.** We ported Kyutai's 3B Hibiki-Zero simultaneous speech translator to Apple Silicon, reduced it from 5.8 GB to 2.2 GB, and reached about 3x real-time on an M4 Pro. For Vietnamese, we produced 696,243 PhoMT speech pairs, introduced cross-lingual timbre matching for the final roughly 51%, built a grounded 719,120-row training receipt, and completed several full-model SFT campaigns. The latest direct run improved teacher-forced PhoMT fit but regressed on real FLEURS speech and still failed free-running PhoMT generation; no Vietnamese checkpoint is production-qualified yet.
 
 | Evidence snapshot | Result | Confidence |
 |---|---:|---|
@@ -18,11 +18,18 @@ date: "Technical report - evidence current to 15 August 2026"
 | CoVoST2 fr->en, n=30 | 3B **25.7 BLEU**; 1B **28.4 BLEU** | measured, small set |
 | Vietnamese phase-1 full SFT, val128 | **19.61 chrF** vs unsupported baseline about zero | measured |
 | Vietnamese phase-2 warm start | **closed/no-go**; best 13.04 chrF, final 7.48 | measured |
+| PhoMT synthetic speech | **696,243 pairs / about 1,228 VI hours** | measured |
+| PhoMT timbre-matched subset | **about 357k rows / 51%** | derived from frozen boundary |
+| PhoMT raw-campaign elapsed time | **32.4 days**; optimized sprint **2.45 days** | derived from commit timestamps |
+| PhoMT training-cache endpoint | **34.3 days from first pipeline commit** | derived from commit timestamps |
+| Grounded-v2 direct-SFT receipt | **719,120 rows/epoch** | frozen and verified |
+| Direct 3B S2ST run | best FLEURS teacher-forced loss at **18k**; stopped at **135k / about 3 epochs** | measured; no qualified checkpoint |
+| Historical H100 full-SFT speed | phase 1 **4.5 h / 3 epochs**; phase 2 **6 h / 2 epochs** | measured on different receipts |
 | Parallel-head smoke, 3B | head **12.70 -> 5.28 ms**; LM **25.9 -> 18.5 ms** | measured, quality not qualified |
 | 1B phone artifact | **7/7 loader checks pass** | compatibility only |
 | 1B projected iPhone LM step | about **30 ms** at the stated 0.5x scale | projection, no phone measured |
 
-**Repository state used for this report:** commit `3b8e394`; core evidence is linked throughout. Numbers are labeled **measured**, **derived**, or **projected**. A projection is never presented as a device result.
+**Repository state used for this report:** commit `0331f33`; core evidence is linked throughout. Numbers are labeled **measured**, **derived**, or **projected**. A projection is never presented as a device result.
 
 ---
 
@@ -184,7 +191,7 @@ Measured on the 3B model:
 - LM total: **25.9 -> 18.5 ms** (-29%);
 - live throughput: **3.1x -> 4.3x real-time**.
 
-The head is now bandwidth-bound because it reads about 0.45 GB of bf16 parameters per frame. The next optimization is therefore architectural shrinkage and q4, after quality training. The implementation and smoke evidence live in [`distill/`](../../distill/) and [`parallel_head_smoke.md`](../vision/reports/parallel_head_smoke.md).
+The head is now bandwidth-bound because it reads about 0.45 GB of bf16 parameters per frame. The next optimization is therefore architectural shrinkage and q4, after quality training. The current implementation lives in [`student/`](../../student/), and the original smoke evidence remains in [`parallel_head_smoke.md`](../vision/reports/parallel_head_smoke.md).
 
 ## 4.3 The gate stack
 
@@ -210,29 +217,34 @@ The report deliberately keeps **text-stream quality** and **speech-output qualit
 
 The upstream model does not support Vietnamese. The original FLEURS test produced about 0.26 BLEU, effectively the unsupported-language floor. Adding Vietnamese therefore requires the main Transformer to learn a new source-acoustic mapping; a tokenizer flag or a new output head cannot do it.
 
-## 5.1 Data path
+## 5.1 From generated speech to a frozen training receipt
 
-The training stack converts each paired example into a cached tensor:
+The data exists at several boundaries, and their counts should not be conflated. The published PhoMT speech campaign contains 696,243 VI-EN pairs. The first duration-filtered Mimi cache contains 694,422 rows. Grounded-v2 then rebuilt the supervision with English CTC timing and rejected 4,364 failed alignments, leaving 690,067 PhoMT rows before the training frame cap.
+
+Each grounded cached example has aligned streams:
 
 ```text
-row 0       English text tokens
-rows 1..N  English target Mimi codebooks
-remaining  Vietnamese source Mimi codebooks
+English text         CTC-timed tokens ending in tokenizer EOS
+English target audio Mimi codebooks with their native validity mask
+Vietnamese source    Mimi codebooks ending in explicit codec-card EOS
 ```
 
-Mimi encoding happens once. The trainer then performs masked teacher-forced audio and text cross-entropy without re-running the codec. This made a 1,114-hour corpus practical to train repeatedly and forced the project to record alignment, prefix-pad, content, EOS, and tail-mask behavior explicitly.
+Mimi encoding happens once. The trainer consumes these streams unchanged and performs masked teacher-forced audio and text cross-entropy without re-running the codec. Grounded-v2 requires an alignment score of at least 0.5, supervises English text EOS, and gives the source an explicit acoustic end boundary. These changes fixed grounding and termination at the cache boundary instead of adding trainer-side transforms.
 
-The main data reservoirs are:
+The final direct-run receipt is:
 
-| Dataset/artifact | Role | Current evidence |
+| Boundary | Rows | Meaning |
 |---|---|---|
-| FLEURS vi/en | real train/dev/test and fixed val128 | 1,449 train pairs; 4.44 VI train hours; speaker-disjoint splits [R8] |
-| PhoMT text | large VI-EN parallel text source | 3.02M sentence pairs in the original corpus [R9] |
-| PhoMT synthetic speech | broad supervised training reservoir | 696,243 uploaded pairs; 694,422 cached rows; 1,114 usable VI hours |
-| VIVOS source speech | independent real-speech domain and future training stratum | source audit plus 7,757 accepted target pairs; 11.15 source hours after QA |
-| CoVoST2 fr/en | regression and distillation smoke data | multilingual ST corpus; local n=30 report slice [R10] |
+| Published PhoMT speech | 696,243 | about 1,228 VI hours before the 25-second cache filter |
+| First PhoMT Mimi cache | 694,422 | 1,114 VI hours; 1,821 long rows removed |
+| Grounded-v2 PhoMT | 690,067 | 4,364 CTC-alignment failures rejected |
+| Eligible PhoMT at 280 frames | 684,232 | pool before frozen sampling |
+| Frozen PhoMT membership | 683,164 | unique rows selected per epoch |
+| Grounded-v2 FLEURS | 1,448 train / 148 validation | 1,392 train and 138 validation rows eligible at 280 frames [R8] |
+| Frozen FLEURS membership | 35,956 | repeated sampling from 1,392 unique eligible rows |
+| **Total frozen epoch** | **719,120** | 95/5 PhoMT/FLEURS selection, seed 42 |
 
-Project-published artifacts include the [PhoMT speech dataset](https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech) and the model/dataset repository `huybik/hibiki-zero-vi-full-sft`. The original PhoMT terms are research/education-oriented and restrict redistribution of the original corpus; the generated artifact and every downstream release still require a license audit [R9].
+This distinction later mattered: “35,956 FLEURS rows per epoch” means about 25.8 presentations of each unique FLEURS training row per epoch, not 35,956 independent real-speech examples. Project-published artifacts include the [PhoMT speech dataset](https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech) and the grounded-v2 cache under `huybik/hibiki-zero-vi-full-sft`. The original PhoMT terms are research/education-oriented and restrict redistribution of the original corpus; the generated artifact and every downstream release still require a license audit [R9].
 
 ## 5.2 Experiment 1 - LoRA proved plumbing, not Vietnamese grounding
 
@@ -252,9 +264,24 @@ The first H100 full-model SFT started from the upstream base checkpoint and trai
 - about 1.9x output/reference length; and
 - BLEU 0.22, showing chrF was the more informative low-resource progress signal.
 
-The run cost roughly 4.5 hours on an H100 and demonstrated the central hypothesis: full SFT can make Hibiki route Vietnamese source speech where LoRA could not. The remaining weakness was data/domain quality and free-running behavior.
+The run cost roughly 4.5 hours on an H100 and demonstrated the central hypothesis: full SFT can make Hibiki route Vietnamese source speech where LoRA could not. It did not yet prove strong source dependence. A later calibrated test measured only **0.01 BLEU / 1.03 chrF** correct-minus-shuffled-source gaps, compared with **23.08 / 38.80** for healthy French. Much of the apparent translation quality could still come from English target history.
 
-## 5.4 Experiment 3 - the warm-start run collapsed to silence
+## 5.4 Grounding detours: what we tried before returning to direct S2ST
+
+We used shuffled-source evaluation during this research phase as a causality diagnostic: if replacing Vietnamese audio barely changes the output, the model is not relying on it. It was later removed from the production recipe, but it exposed why low teacher-forced loss and plausible English were insufficient.
+
+| Approach | Strongest evidence | Decision |
+|---|---|---|
+| Ordinary, high-delay, and contrastive pilots | Correct-minus-shuffled gaps stayed near zero despite falling losses; contrastive NLL gap reached 1.04 but free-running chrF gap was only 0.61 | Delay and contrastive loss did not produce usable S2ST grounding |
+| Raw Vietnamese ASR preadaptation | Learned source dependence, but the English tokenizer used 4.14 pieces/word and emitted invalid-byte characters in 110/128 predictions | Tokenizer made raw VI text a dead end |
+| ASCII Vietnamese ASR | 27.85 BLEU / 53.26 chrF, WER 0.514, with large source gaps | Proved the backbone can learn Vietnamese acoustics; not translation |
+| Translation after ASCII-ASR, with and without ASR replay | At step 1,000, chrF was 8.44 without replay and 7.73 with replay; source gaps remained around zero | Preadaptation did not transfer into simultaneous translation |
+| Post-source-EOS translation | Best at step 2,000: 2.06 BLEU / 18.27 chrF, source gaps 1.81 / 4.31 | First partial grounding, but missed the 1.0 BLEU / 5.0 chrF source gates |
+| Full text-only run from the ASCII-ASR parent | 4.00 BLEU / 26.30 chrF versus shuffled 0.18 / 16.78 after one epoch | Proved partial text translation, but trained zero target-audio tokens and therefore was not S2ST |
+
+The value of these branches was diagnostic. Their curriculum, replay, contrastive, anti-repetition, and post-source machinery was then deleted, restoring the simplest general boundary: upstream initialization, grounded source/target streams, and direct full-model speech-to-speech training.
+
+## 5.5 The full-cache warm start collapsed to silence
 
 Phase 2 warm-started the successful checkpoint on the full 1,114-hour synthetic cache. It used a peak learning rate of 5e-5, higher than the prior run's final 3e-5. The model fell into a text-pad/silence attractor:
 
@@ -271,20 +298,161 @@ The alarming result was that **every teacher-forced metric improved while free-r
 
 **Decision:** only deterministic free-running outputs can qualify a checkpoint. Teacher-forced metrics diagnose optimization and overfit; they do not select a model.
 
-## 5.5 The next Vietnamese run
+## 5.6 Direct grounded-v2 S2ST: stable optimization, wrong stopping rule
 
-The current [`training_plan.md`](../training_plan.md) replaces warm-start continuation with a base-start full SFT on the complete cache:
+The direct run removed every experimental curriculum and initialized only from upstream Hibiki-Zero 3B. Its frozen launcher recipe was:
 
-- initialize from the upstream base weight, with no adapter or prior trainer state;
-- fp32 master weights, CUDA bf16 autocast, batch 16;
-- two-epoch hard budget;
-- LR `1e-4 -> 3e-5` at 50%, warmup 500;
-- text weight `5 -> 2` at 60%;
-- prefix-pad weight 0.5, shifting measured effective text-loss mass from about 45/55 pad/content+EOS to about 29/71;
-- val CE every 2k and deterministic val128 generation every 9k; and
-- preserved model/trainer pairs for every eligible checkpoint.
+- all parameters train with fp32 master weights and bf16 autocast;
+- physical batch 16, no accumulation, and a 280-frame cap;
+- fixed LR `1e-6` with fused AdamW, betas `(0.9, 0.95)`, weight decay 0.1;
+- full English target-audio teacher forcing;
+- loss `audio CE + (content text CE + 0.05 × prefix-PAD CE) / 1.05`; and
+- five planned epochs / 224,725 steps, validating and saving every 9,000 steps.
 
-Eligibility requires at least 122/128 nonempty, at least 116/128 EOS, at most 12 loop failures, mean length ratio at most 2.0, and strong corpus chrF without a material nonempty-chrF regression. Final selection also requires full FLEURS validation and an independent VIVOS development manifest. The test sets stay sealed until selection.
+Five epochs was the frozen plan, not the completed result. The pod was stopped at **step 135,000**, almost exactly three epochs, after the fixed FLEURS validation loss had worsened for thirteen consecutive checkpoints. Step 18,000 remained the best deterministic FLEURS teacher-forced checkpoint.
+
+| Step | Epoch position | Rolling train loss | FLEURS validation loss | Unseen PhoMT loss |
+|---:|---:|---:|---:|---:|
+| 18,000 | 0.40 | 3.6674 | **5.8426** | 3.6814 |
+| 36,000 | 0.80 | 3.5560 | 6.2577 | - |
+| 90,000 | 2.00 | 3.0826 | 6.8838 | - |
+| 135,000 | 3.00 | **2.7357** | 7.2782 | **3.1285** |
+
+This was not numerical collapse. The model continued improving **teacher-forced loss** on a row-disjoint PhoMT holdout while regressing on held-out FLEURS. The 95% PhoMT mixture dominated optimization, while each of the 1,392 unique FLEURS training rows had been seen about 77 times on average by step 135,000. A fixed LR and five-epoch replay continued moving the model long after the FLEURS optimum.
+
+Free-running evaluation showed that even the 18k checkpoint was not healthy:
+
+| Metric | Upstream | Step 18k | Step 135k |
+|---|---:|---:|---:|
+| BLEU | 0.213 | **0.880** | 0.633 |
+| chrF | 14.269 | **17.117** | 16.311 |
+| WER | **1.130** | 1.329 | 1.951 |
+| EOS found | 125/128 | 124/128 | 115/128 |
+| Mean length ratio | 1.056 | 1.283 | 2.049 |
+| Repeated-4-gram outputs | 16/128 | 22/128 | 32/128 |
+
+A six-row correct-source check then tested step 135k on row-ID-disjoint PhoMT examples whose English targets were all marked timbre matched:
+
+| PhoMT free-running metric | Step 135k |
+|---|---:|
+| Nonempty | 6/6 |
+| EOS found | 4/6 |
+| BLEU | 2.07 |
+| chrF | 18.85 |
+| WER | 159.18% |
+| Generation health | **Fail** |
+
+All six rows used the correct Vietnamese source, seed 42, audio temperature 0.8, text temperature 0.4, and top-k 250 for both streams. Their English targets were all marked `cross_lingual_timbre_matched=true` in grounded-v2.
+
+### The six unseen-PhoMT cases
+
+#### `phomt_s01071r00154`
+
+- Vietnamese: Tránh sử dụng tiếng lóng.
+- English reference: Avoid using slang.
+- Step-135k output: Avoid snoring , You've been in snooze. ":
+- EOS: yes
+
+#### `phomt_s01071r00260`
+
+- Vietnamese: Bạn có thể tìm kiếm bằng chứng chống lại suy nghĩ này.
+- English reference: You can look for evidence to the contrary.
+- Step-135k output: You can look for a katyl, taeky, "I" in "-no" ways. ""). ")))
+- EOS: yes
+
+#### `phomt_s01071r00217`
+
+- Vietnamese: Cố gắng không vội vã đưa ra kết luận.
+- English reference: Try not to jump to conclusions.
+- Step-135k output: Try to be sure you're not giving your ⌘ ☘ ⌘ ⌘ ⌘ ⌘ ⌘ ⌘ ⌘ ⌘ ⌌ ⌌ The best of ⌘ ☌ people ⌘) but ⌄Well - ⌘) the other way around ⌘) See, you're doing it. ⌘. ⊞)
+- EOS: **no**
+
+#### `phomt_s01071r00340`
+
+- Vietnamese: Nếu muốn buộc tóc sau lưng, bạn chỉ nên buộc hoặc tết lỏng.
+- English reference: When pulling your hair back, style it in a loose braid.
+- Step-135k output: So if you want to get your hair's back, you'll say, "------------- -- or - - - - - - ------re-use"? ,'------------- 'to-intro your yourself '" ----- - ----o- do - - - - - - '---------or - / - - - - -------or" ---
+- EOS: **no**
+
+#### `phomt_s01071r00474`
+
+- Vietnamese: Hàn the rất độc đối với con người và thú cưng.
+- English reference: Borax is very toxic to humans and pets as well.
+- Step-135k output: We're going to make a lot of money. ", " -----------sit-top- cold - - - - - and - - - -------knucks------------nation-- - -------knose -----------
+- EOS: yes
+
+#### `phomt_s01071r00299`
+
+- Vietnamese: Không siết các cơ bụng, chân hoặc mông.
+- English reference: Do n't squeeze other muscles like your abs, legs, or butt.
+- Step-135k output: Do not sting , The muscles, , shiver , The muscles, sting. sting .. '"
+- EOS: yes
+
+Several outputs began with a related phrase and then drifted into corrupted, repetitive, or unterminated text. The lower unseen-PhoMT teacher-forced loss therefore measures improved in-domain next-token fit under gold history, not healthy free-running PhoMT translation.
+
+Step 18k should be preserved as the FLEURS-selected artifact and step 135k as a **teacher-forced PhoMT-specialized** research artifact. Neither passes the generation-health gate, and neither is a production Vietnamese S2ST checkpoint.
+
+## 5.7 Making full-model SFT fast enough on H100
+
+The H100 work optimized **samples per second**, not merely seconds per optimizer step. Batch 16 takes longer per step than batch 8 but processes twice as many examples, which is why the phase-2 change from 0.196 to 0.281 seconds/step was still a 1.39x throughput win.
+
+| Run | H100 and physical batch | Measured optimizer speed | Memory and wall time |
+|---|---|---:|---|
+| Phase-1 smoke | SXM 80 GB, B8 | about 0.28 s/step | 68/80 GB; 240 steps; full save about one minute |
+| Phase-1 full | SXM 80 GB, B8 | about 0.20 s/step / 5 step/s | 59 GB; 55,284 steps / 3 epochs in about 4.5 h; about $9 |
+| Phase-2 baseline | NVL 94 GB, B8 | 0.196 s/step / 40.8 samples/s | per-step speed essentially matched the SXM |
+| Phase-2 B16 benchmark | NVL 94 GB, B16 | 0.281 s/step / **56.9 samples/s** | **1.39x** B8 sample throughput; B24 OOMed |
+| Phase-2 production | NVL 94 GB, B16 | about 0.25 s/step / 64 samples/s | 93-94/93.6 GiB; 86,258 steps / 2 epochs in about 6 h; about $15 |
+| Grounded-v2 direct | H100 with at least 90 GiB, B16 | **not committed** | 44,945 steps/epoch planned; stopped at 135,000 |
+
+The final row is intentionally incomplete. The grounded-v2 trainer logs `sec_per_step` every ten steps, but the stopped run did not commit an aggregate speed, exact H100 SKU, epoch wall time, or total rental cost. Phase-2's 0.25 s/step must not be reused as if it measured the direct run.
+
+### Cache once; never run Mimi in the optimizer loop
+
+Vietnamese and English audio are encoded once. Training reads cached English target Mimi codes, CTC-timed English text, and Vietnamese source codes, so neither Mimi encoder runs during forward/backward. The phase-1 eight-way H100 cache build converted 224 VI hours in about **40 minutes**. The full caches stay in host RAM as int32—about half the footprint of int64—and only the active batch is cast to long during collation. The current pod preflight therefore requires at least 110 GiB host RAM.
+
+This is an intentionally simple in-memory loader: `num_workers=0`, no pinned-memory prefetch, no persistent workers, and no non-blocking H2D copy. Those paths were never implemented or benchmarked, so they are not credited as optimizations.
+
+### Use BF16 for matrix work, FP32 where small updates matter
+
+The model runs forward/backward under CUDA bf16 autocast while parameters, gradients, Adam moments, recovery checkpoints, and CE logits remain fp32. Compared with the earlier fp32 forward path, this measured at roughly **2x throughput with about half the activation memory**. BF16 master weights were rejected because Adam updates around `1e-5` could round away; BF16 autocast needs no fp16-style GradScaler.
+
+CUDA also uses fused AdamW. `torch.set_float32_matmul_precision("high")` enables TF32 tensor-core work for remaining fp32 matmuls without changing fp32 state. No isolated fused-AdamW or TF32 gain was recorded, so the report treats them as parts of the final stack rather than independent benchmark claims.
+
+### Spend VRAM on physical batch, not recomputation
+
+The main phase-2 gain was using the NVL's extra memory for physical batch 16. It raised throughput from 40.8 to 56.9 samples/s; batch 24 OOMed. The current direct recipe therefore requires at least 90 GiB, freezes physical B16 with accumulation 1, and disables gradient checkpointing. When B16 fits, accumulation or checkpoint recomputation would serialize extra work instead of increasing sample throughput.
+
+Rows are capped at **280 Mimi frames**, about 22.4 seconds, then length-sorted into homogeneous B16 blocks. This bounds quadratic attention memory and reduces padding. The blocks are shuffled in the frozen manifest for deterministic resume. Exact one-frame buckets were **1.6x slower** because CUDA repeatedly autotuned new shapes; phase 2 used 32-frame buckets, and the direct run uses 16-frame buckets to balance padding against stable compiled shapes.
+
+### Make the kernels compile and stay on device
+
+Torch 2.12's Moshi compile path returned invalid backward gradient shapes, so phase 1 correctly disabled it. Torch 2.13 fixed the failure; phase 2 measured `torch.compile` at roughly **10% faster** and made it the default. The direct launcher pins Torch `2.8.0+cu128`, requires compile, and gates it on the longest-row save/resume smoke, although no isolated gain is committed for that exact stack.
+
+Two smaller loop fixes each measured about 1% on CUDA:
+
+- verified lower-triangular masks are replaced with `scaled_dot_product_attention(..., is_causal=True)`, allowing the fused causal SDPA/Flash path;
+- loss sums, token counts, and non-finite checks remain on GPU and convert to host only every ten log steps instead of synchronizing every microbatch.
+
+Condition tensors are also cached by physical batch size. None of these small changes replaces the primary gains from BF16, B16, frame control, and compilation, but together they remove steady-state launch and synchronization tax.
+
+### Overlap recovery I/O without pretending it is kernel speed
+
+The direct run validates and saves every 9,000 steps rather than interrupting the loop every few thousand steps. Historical full recovery pairs were roughly 12.5 GB of model plus 25 GB of trainer state and took about one minute to write. Best-checkpoint promotion uses a hard link instead of copying the model again.
+
+`hf_sync.py` runs as a separate supervised process, so Hub upload overlaps optimizer work. It stages through hard links, publishes the model first and trainer second as the completion marker, keeps the newest two complete recovery pairs plus the current best, and uploads final logs after training exits. Phase 2 recorded roughly 16 MB/s over one connection with `hf_transfer`. This reduces network-induced idle time and makes pod replacement practical; it does not make a CUDA step faster.
+
+### Run at the memory edge only after the worst case passes
+
+Preflight verifies the H100, driver and package pins, hashes, 1,428 cache shards, frozen 719,120-row manifest, at least 110 GiB host RAM, and 190 GiB free disk. The direct smoke trains the longest B16 rows for ten steps, saves and validates, reloads the complete model and optimizer, resumes for step 11, and exercises the longest non-shuffled validation row. It requires at least 2 GiB VRAM headroom and binds `SMOKE_OK` to the Git commit.
+
+These checks cost setup time but prevent an optimized configuration from failing hours later on the longest batch or first recovery. They are reliability gates around the fast path, not throughput results.
+
+## 5.8 What the next run must change
+
+The evidence now supports a shorter upstream-start experiment, not another long continuation: cap the first controlled run at 27k-36k steps, validate every 3k through the early optimum, and stop after two consecutive regressions. PhoMT and FLEURS must remain separate validation domains. LR decay or a fixed `5e-7` should be tested only after the shorter stopping rule is reproduced, so data mixture and optimizer effects are not confounded.
+
+Checkpoint promotion must combine teacher-forced diagnostics with correct-source free-running health: at least 122/128 nonempty, at least 116/128 EOS, at most 12 repeated-4-gram failures, mean length ratio at most 2.0, and no material chrF regression. Generated English must also pass content, audio-quality, and source-speaker-similarity checks on a verified timbre-matched set. The test sets stay sealed until selection.
 
 ---
 
@@ -292,18 +460,85 @@ Eligibility requires at least 122/128 nonempty, at least 116/128 EOS, at most 12
 
 ## 6.1 The PhoMT campaign
 
-PhoMT supplied broad Vietnamese-English text coverage. VieNeu generated Vietnamese source speech; Kokoro generated English target speech. The campaign eventually produced about 1,228 VI hours on the Hub and a 1,114-hour Mimi cache after the 25-second filter.
+PhoMT supplied broad Vietnamese-English text coverage. VieNeu generated Vietnamese source speech and Kokoro generated English target speech. The goal was not merely bilingual audio: for voice-preserving S2ST, the English target should provide both the translated content and a usable proxy for the Vietnamese source timbre.
 
-The throughput story mirrors the inference story: remove synchronization and shape churn before adding machines. On M4 Pro, the VI TTS path improved from about 4.2x to about 53x real-time in isolation through tensorized penalties, batched codec decode, static KV buffers, shape buckets, fused embeddings, and simpler sampling. Concurrent EN+VI production stabilized around VI 33x and EN 40-50x because the GPU was saturated.
+### Timeline and honest wall-clock accounting
+
+The first PhoMT speech-pipeline commit was recorded on **29 June 2026 at 12:52 +07**. The raw Hub campaign completed on **31 July at 22:45 +07**: **32 days 9 hours 52 minutes**, or **32.4 elapsed days across 33 calendar dates**. This is the defensible whole-project duration. It includes the original pipeline, the first 148k rows, voice-bank work, optimization, failed paths, QA, regeneration, packing, and upload—not 32 days of uninterrupted synthesis.
+
+The heavily optimized production sprint began on **29 July at 11:59 +07** and ended **2 days 10 hours 47 minutes later**, spanning three calendar dates. It began with 148,148 rows already on the Hub, so “696k rows in 2.45 days” would be false. The sprint planned 556,800 new pairs, accepted 548,095, and dropped 8,705. The training-ready Mimi cache finished on **2 August at 20:43 +07**, **34.3 days** after the first pipeline commit and just under 46 hours after raw-data completion.
+
+| Date | Milestone | Cumulative or tranche result |
+|---|---|---|
+| 29 June | First paired PhoMT speech pipeline | project clock starts |
+| 29 July | Optimized sprint starts | 148,148 existing rows / about 234 VI hours |
+| 30 July, 00:37 | Tranche 1 uploaded | 96,000 planned; Hub at about 239.8k rows / 400 VI hours |
+| 30 July, 22:24 | Tranches 1 and 2 validated | 337,519 exact rows / about 568 VI hours; 189,371 accepted and 2,629 dropped across the two tranches |
+| 31 July, 17:15 | Tranche 3 audio complete locally | 364,800 planned; 8,225 duration outliers retried once |
+| 31 July, 22:45 | Raw campaign complete | 358,724 accepted from tranche 3; **696,243 total rows / about 1,228 VI hours** |
+| 2 August, 20:43 | Mimi cache complete | **694,422 rows / 1,114 VI hours / 1,377 shards** |
+
+The exact accepted split between tranches 1 and 2 was not recorded, so the report preserves their combined result rather than inventing per-tranche counts. No monetary or electricity cost was logged for generation.
+
+### Building and qualifying the voice pools
+
+The final Vietnamese pool contained **40 voices**: 12 VieNeu presets and 28 VIVOS-derived clones. We removed eight candidates before production: three were unstable under repeated PhoWhisper CER checks and five synthesized slower than 12 characters per second. The first matching implementation embedded the raw Vietnamese enrollment clips; this was wrong because it measured the reference speaker more directly than the actual VieNeu clone. The mapping was rebuilt from synthesized Vietnamese calibration WAVs, fixing the invariant at the generated-audio boundary.
+
+For each Vietnamese voice, the matcher searched a same-gender grid of **34 English candidates** built from seven Kokoro voices and pair blends at 25%, 50%, and 75%. VieNeu's 192-dimensional speaker encoder supplied the cross-lingual cosine space. Nearest-cosine selection produced roughly 14 distinct English target timbres; the worst selected cosine improved from **0.03 to 0.17**, and the best mapping reached **0.64**. This was a practical timbre proxy, not proof that the English voice was perceptually identical to the Vietnamese speaker.
+
+### The partial-matching boundary
+
+Timbre matching arrived midway through production. Only tranche 3, source index **345,600 and above**, used the mapping: roughly **357k rows / 51%** of the published dataset. The earlier roughly 339k rows retained independently selected English voices; a sample showed about 95% would choose a different English voice under the later map. We implemented a retrofit path but did not run it without evidence that re-synthesizing half the corpus would materially improve end-to-end speaker consistency.
+
+The correct claim is therefore **partially timbre-matched PhoMT**, not fully voice-preserving PhoMT. The metadata records the boundary so training and evaluation can stratify matched and unmatched rows.
+
+### Production QA and scale
+
+The campaign eventually published **696,243 pairs / about 1,228 VI hours**. Tranche 3 generated 364,800 candidate pairs; 8,225 duration-ratio outliers were regenerated once and 6,076 were finally dropped. Every uploaded row had to contain finite, non-zero waveforms and pass an English/Vietnamese duration ratio of 0.4-1.8.
+
+### Optimizing generation on the Mac
+
+Generation ran on an Apple **M4 Pro**; related benchmark records identify the machine as having **48 GiB unified memory**, although the exact chassis and core count were not preserved. One tranche needed roughly 80-82 GB, so working data moved to `/Volumes/data/datasets` to keep the system disk available for swap.
+
+The early path was dispatch- and memory-churn-bound, not compute-bound. Different benchmarks used different row mixes, so only like-for-like deltas should be read as one speed curve:
+
+| Stage | Vietnamese throughput | English throughput | Material change |
+|---|---:|---:|---|
+| Initial Apple path | 3.1x sequential | 22x Kokoro MPS | functional baseline |
+| Native VI batching | 6.1x at batch 8 | - | amortized model calls |
+| First custom MPS engine | 4.2x -> about 25x warm | about 5.4x per CPU worker | removed host synchronization; batched codec decode |
+| VI hyper-optimization | **52.8x sustained** over 256 real rows | 25.8x aggregate compiled CPU | static KV, shape buckets, fused embeddings, faster sampling |
+| Kokoro Core ML path | about 53x VI solo | **70-75x EN solo aggregate** | Metal iSTFTNet decoder, 12.7x decoder speedup |
+| Final concurrent production | **about 33x VI** | **about 40-50x EN** | one VI plus seven EN workers at the GPU-saturation ceiling |
+
+The main gains came in dependency order:
+
+1. **Remove CPU/GPU synchronization.** VieNeu's stock repetition penalty performed about 153,000 `.item()` synchronizations per batch. A persistent device-side seen-token mask, device-side EOS state, and an eight-frame completion check removed that traffic.
+2. **Batch across voices and lengths.** Rows were globally sorted by phoneme length, synthesized across all voices, and decoded through the codec once per batch. This reduced tail waste and per-row launches.
+3. **Bound MPS memory behavior.** `torch.mps.empty_cache()` after each batch stopped the allocator retaining many KV and shape classes until the machine swap-thrashed.
+4. **Replace dynamic backbone state.** Preallocated Qwen KV buffers, 64-frame attention buckets, 128-frame allocation buckets, and fused grouped-query SDPA cut the backbone decode step from **27 to 7 ms/frame**.
+5. **Simplify the acoustic loop.** Precomputed constant embeddings, mask-free one-token steps, fused 16-codebook embedding gathers, and top-k exponential-race sampling cut sampling from **2.94 to 1.22 ms**. Static KV was deliberately not used for the tiny acoustic decoder because it measured 3x slower.
+6. **Make codec batching safe.** Short rows repeat their final valid code instead of zero-padding into fully masked attention, then trim after decode. The codec moved from fp16 to bf16; the language model remained fp16. Broadcasting one shared attention mask saved about 330 MB per 100-frame batch and cut the codec microbenchmark 26%, although the end-to-end gain was within noise.
+7. **Move English around the Vietnamese long pole.** Kokoro first moved to CPU workers so VI could own MPS. Folding weight normalization and compiling iSTFTNet reached 25.8x aggregate; replacing that decoder with Core ML/Metal reduced a representative six-second decode from 927 ms to 73 ms and reached 70-75x solo. Cached compilation took about 50 seconds per worker when warm and roughly eight minutes from a cold cache.
+
+Solo headline numbers did not survive real concurrency. One VI worker plus seven Core ML EN workers fully occupied the M4 Pro: VI fell from roughly 53x solo to 33x, while EN settled at 40-50x. Even so, a 96,000-pair tranche fell from about **17 hours to 5.3 hours**. A second VI worker achieved only about 34x combined and added roughly 6 GB of swap; batch 64 did not improve over batch 32; five versus seven EN workers barely changed the ceiling. CPU codec offload was slower under EN load, and asynchronous MPS decode from another thread crashed because Metal command encoding was not thread-safe in that path. Free-threaded Python 3.14 matched Python 3.12, confirming that the GIL was not the bottleneck. Other measured EN dead ends included ONNX variants at roughly 1.8-3x slower than PyTorch eager, fp16/bf16 CPU convolutions around 186x slower, and a 26-minute ANE compile that was no faster than eager CPU.
 
 The campaign also produced two distinct silent-audio failures:
 
 1. mixed-length fp16 codec attention created fully masked rows, NaNs, and silent PCM;
-2. later memory pressure caused Metal to return exactly zero rows for roughly 0.4% of outputs.
+2. later memory pressure caused Metal to return exactly zero rows in **232 of 21,000 VI clips (0.44%)**, biased toward longer utterances.
 
-The fix was not "try again later." Every decoded row is now gated for finiteness and non-zero amplitude; suspicious rows are decoded with a CPU clone. The campaign then ran full silence and duration-ratio audits before upload.
+The fix was not "try again later." Uniform-length repeat-last padding plus a bf16 codec eliminated the NaN mechanism; a 256-row validation produced zero NaNs, zero silent clips, and a 1.000 median duration ratio against the prior path. Every decoded row was then gated for finiteness and non-zero amplitude, with corrupt Metal rows regenerated through a lazy CPU codec clone. Full silence and duration-ratio audits ran before upload.
 
-## 6.2 Real speech: VIVOS translation and target synthesis
+The operational path was also made resumable. Manifests appended after every batch, limiting a hard-kill loss to one batch per worker, and uploads resumed at 500-row shard granularity. Overlapping packing with upload saved about 50 minutes on a 325-shard run but initially exceeded Hugging Face's 128-commits/hour limit and hit HTTP 429; batching five Parquet files per commit lowered the rate to roughly 30 commits/hour.
+
+## 6.2 Mimi and grounding caches
+
+The first full Mimi pass produced **1,377 shards / 694,422 rows / 1,114 VI hours** after filtering 1,821 rows longer than 25 seconds. The 6.3 GB int32 cache had zero degenerate rows. We kept the PyTorch-MPS Mimi backend: the MLX port was only 0.74x as fast in the tested path and agreed on roughly 42% of codes, so mixing backends would have silently changed the token distribution.
+
+Grounded-v2 then used Wav2Vec2 CTC word timing to place English text on the acoustic timeline, appended English tokenizer EOS, and appended explicit Vietnamese codec-card EOS. It accepted 690,067 PhoMT rows and rejected 4,364 alignment failures. At the 280-frame training cap, 684,232 PhoMT rows, 1,392 unique FLEURS train rows, and 138 FLEURS validation rows remained eligible. The published grounded-v2 cache, frozen manifest, and exact receipt made later run-to-run comparisons possible.
+
+## 6.3 Real speech: VIVOS translation and target synthesis
 
 The VIVOS pipeline froze speaker-disjoint train/dev/test manifests, removed transcript overlap, translated 11,711 eligible Vietnamese transcripts through a versioned batch request, and excluded the single row that was repeatedly blocked. Qwen3-TTS was then used for reference-conditioned English target synthesis [R11].
 
@@ -330,10 +565,14 @@ Hub publication is **not verified**. The publisher rejected the dev archive at a
 | Full depformer q3 looped | repeated text and bad tail flush | embeddings/output heads were not q3-safe | narrow quant predicate; keep those q4 |
 | Combined LoRA run BSOD'd | memory grew near epoch end | longest sorted batches exceeded MPS cap | `--max-frames 280`; frame buckets |
 | LoRA loss fell but translation failed | fluent generic English | frozen backbone never grounded VI | full-model SFT for new language |
-| Warm-start full SFT went silent | empty greedy output | converged model perturbed by hot LR; pad attractor | base-start recipe; dense free-running gates |
+| Raw enrollment matching misranked clones | selected EN voice did not match synthesized VI output | matcher embedded the reference, not the generated clone | embed synthesized VI calibration audio |
+| Only half of PhoMT was timbre matched | older rows reproduced unrelated EN voices | matching arrived after 345,600 source rows | preserve match metadata; stratify audio supervision |
+| Warm-start full SFT went silent | empty greedy output | converged model perturbed by hot LR; pad attractor | upstream-start recipe; dense free-running gates |
 | Resume ignored requested LR | log showed 2e-5 instead of 1e-5 | optimizer state restored old schedule metadata | reassert new schedule after optimizer restore; audit logs |
 | Teacher-forced validation "improved" | collapsed model won every TF metric | reference history bypassed free-running attractor | TF is diagnostic only; greedy output selects |
 | TTS produced silent WAVs | NaNs or exact zeros | padding attention and Metal memory pressure | per-row waveform gate plus CPU rescue |
+| Direct run improved PhoMT TF loss but failed generation | PhoMT TF loss fell while FLEURS rose 13 times; six unseen PhoMT generations failed health | domain conflict plus teacher-forcing exposure gap, fixed LR, excessive duration | separate domain/free-running gates; early stop; shorter run |
+| Audio CE implied the wrong voice objective | unmatched pairs reward reproducing an unrelated EN speaker | exact-target reconstruction is not source-voice preservation | audio CE only on verified timbre-matched pairs |
 | VIVOS failures clustered by speaker | repeated prompt-conditioned ASR failures | unstable shared reference prompt | speaker exclusions bound into provenance |
 | Stopping a supervisor stopped QA child | interrupted at 8,745 rows | process-tree behavior differed from assumption | immutable row sidecars and resumable assembly |
 | Release worker halted | no Hub report | dev archive below mandatory LFS check | publication is unverified until remote re-download audit |
@@ -353,8 +592,13 @@ These are not embarrassing footnotes. Each failure identified an ownership bound
 | AR head remains default | qualified audio path | ship smoke parallel head | scaled distillation passes speech gates |
 | Track A precedes Track B | main distribution changes during language training | distil a head before fine-tuning main | never; re-distil after each main change |
 | Full SFT for Vietnamese | LoRA did not ground a new source language | larger LoRA as production bet | only with contrary matched evidence |
-| Base-start next run | warm-start continuation collapsed | another rescue continuation | after a new eligible base-start checkpoint |
-| Free-running output selects checkpoints | TF metrics missed silence collapse | selection by val CE | only if a proven free-running surrogate exists |
+| H100 uses BF16 compute with FP32 state | about 2x throughput / half activation memory without losing small Adam updates | pure FP32 forward or BF16 masters | only with matched numerical evidence |
+| Direct H100 requires physical B16 | B16 measured 1.39x B8 sample throughput; B24 OOMed | accumulation or checkpoint recomputation while B16 fits | on a different memory class |
+| Use 16-frame training buckets | exact-length buckets measured 1.6x slower from autotune churn | one compiled shape per exact length | compiler shape handling materially changes |
+| Short upstream-start next run | warm start collapsed and five planned epochs overfit FLEURS | resume 135k or repeat a long receipt | after an early optimum and decay are measured separately |
+| Separate PhoMT and FLEURS validation | the direct run improved one domain while regressing the other | one aggregate or FLEURS-only score | only if deployment and data domains converge |
+| Free-running output gates checkpoints | TF metrics missed both pad collapse and exposure-gap failures | selection by val CE alone | only if a proven free-running surrogate exists |
+| Audio CE only on verified timbre matches | exact reconstruction of an unrelated EN speaker is not voice preservation | label every paired target voice-preserving | when a better cross-lingual speaker target exists |
 | Real speech is an explicit stratum | synthetic-only validation drift | another bulk identical TTS campaign | real-domain analysis supports more synthetic data |
 | Apple mobile starts with MLX Swift/Metal | closest parity with the working runtime | promise ANE performance now | after a stateful Core ML conversion wins on device |
 | Qualcomm uses QNN/AI Hub, not MLX | platform-native compiler/profile/deploy path | cross-compile the Apple runtime | if a portable runtime beats QNN on target devices |
@@ -363,22 +607,22 @@ These are not embarrassing footnotes. Each failure identified an ownership bound
 
 # 9. Deployment plan: desktop first, then mobile
 
-![Four gated milestones from Vietnamese training to Apple and Qualcomm mobile apps](assets/roadmap.svg)
+![Five gated milestones from Vietnamese training to Apple and Qualcomm mobile apps](assets/roadmap.svg)
 
 ## 9.1 Milestone A - finish Vietnamese training
 
-**Deliverable:** one base-start 3B checkpoint that passes the frozen free-running contract.
+**Deliverable:** one upstream-start 3B checkpoint that translates Vietnamese into healthy English text and audio while preserving speaker timbre on a verified matched set.
 
-1. Freeze base, cache, pair, and repository hashes.
-2. Recompute base and phase-1 val128 baselines on the training box.
-3. Run the 10-step full-SFT smoke, reload the checkpoint, and verify logged LR.
-4. Launch the two-epoch base-start run with artifact sync.
-5. At every 9k step, run eligibility-aware standalone evaluation and protect the paired checkpoint.
-6. At milestones, evaluate full FLEURS validation and all VIVOS dev rows.
-7. Freeze one checkpoint before opening FLEURS and VIVOS test.
-8. Convert the accepted checkpoint to MLX q4 and rerun the multilingual retention suite.
+1. Preserve step 18k as the FLEURS-selected artifact and step 135k as teacher-forced PhoMT-specialized evidence; do not resume either.
+2. Audit the 1,068-row PhoMT complement for cross-ID duplicates, freeze it as the same-domain holdout, and continue reporting FLEURS separately.
+3. Run an upstream-start 27k-36k-step experiment with the same batch and frame cap, validating every 3k and stopping after two consecutive FLEURS regressions.
+4. Reproduce the early optimum before separately testing LR decay toward `1e-7` or fixed `5e-7`; do not change mixture and LR in the same causal experiment.
+5. Apply English target-audio CE only to verified timbre-matched rows; retain all semantically valid rows for English text CE.
+6. At recovery points, run correct-source free generation, English ASR/content checks, audio-quality checks, and Vietnamese-source/generated-English speaker cosine.
+7. Increase unique real Vietnamese speech or cap FLEURS reuse; do not treat repeated samples as new domain coverage.
+8. Freeze one eligible checkpoint before opening test sets, convert it to MLX q4, and rerun FR/ES/PT/DE retention.
 
-**Exit gate:** Vietnamese improves on phase-1 or credibly matches it while nonempty, EOS, loop, length, real-domain, generated-audio, and FR/ES/PT/DE retention gates pass.
+**Exit gate:** FLEURS and PhoMT held-out metrics no longer diverge materially; nonempty, EOS, repetition, length, BLEU/chrF, English audio, and source-speaker similarity pass; and the multilingual retention suite does not regress beyond its frozen tolerances.
 
 ## 9.2 Milestone B - create the desktop application
 
@@ -471,19 +715,18 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 | Swift artifact contract | [`scripts/check_swift_compat.py`](../../scripts/check_swift_compat.py) |
 | translation benchmarks | [`remote_dataset/`](../../remote_dataset/) |
 | Vietnamese cache/train/eval | [`finetune/`](../../finetune/) |
-| parallel-head distillation | [`distill/`](../../distill/) |
-| synthetic and VIVOS data pipeline | [`training-data/`](../../training-data/) |
-| immutable experiment reports | [`reports/benchmarks/`](../../reports/benchmarks/) |
+| student and parallel-head training | [`student/`](../../student/) |
+| historical synthetic and VIVOS data pipeline | [`training-data/` at `b4ba8b8`](https://github.com/huybik/hibiki-zero-mlx/tree/b4ba8b8/training-data) |
+| historical VIVOS experiment reports | [`reports/benchmarks/` at `70eaead`](https://github.com/huybik/hibiki-zero-mlx/tree/70eaead/reports/benchmarks) |
 
 ## 11.2 Primary local evidence
 
 - Runtime evidence: [inference optimization](../vision/reports/inference_matrix.md), [iPhone budget](../vision/reports/iphone_budget.md), and [parallel-head smoke](../vision/reports/parallel_head_smoke.md)
-- [Vietnamese phase-2 post-mortem](../phase2_postmortem.md)
-- [Next Vietnamese training plan](../training_plan.md)
-- [Checkpoint validation contract](../validation_plan.md)
-- [Vietnamese data generation plan](../data_generation_plan.md)
-- [VieNeu/Kokoro optimization record](../vieneu_optimizations.md)
-- VIVOS evidence: [retry-v6 report](../../reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/metrics.md), [speaker exclusion](../../reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/SPEAKER_EXCLUSION_2026-08-05.md), and [runtime repair/terminal selection](../../reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/RUNTIME_RESUME_2026-08-06.md)
+- Current training evidence: [direct-run validation-collapse analysis](../analysis/validation_collapse_analysis.md), [exact loss function](../analysis/loss_function.md), [frozen direct recipe](../training_plan.md), [validation contract](../validation_plan.md), and [H100 handoff](../finetune.md). The six unseen-PhoMT free-running examples and their aggregate metrics are embedded in Section 5.6.
+- Historical dataset evidence: [pipeline README at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/training-data/README.md), [data generation plan at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/docs/data_generation_plan.md), [VieNeu/Kokoro optimization record at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/docs/vieneu_optimizations.md), [timbre matcher at `d0ccf84`](https://github.com/huybik/hibiki-zero-mlx/blob/d0ccf84/training-data/match_voices.py), and [unexecuted retrofit plan at `77884e0`](https://github.com/huybik/hibiki-zero-mlx/blob/77884e0/training-data/RETROFIT_PLAN.md)
+- Raw-campaign timing is derived from the timestamped milestones `fc6b770`, `557ce36`, `012566b`, `d1d65dc`, `ce0ece7`, `2b4c88e`, and `9bb5d12`; throughput changes are recorded in `193a83f`, `8f956af`, and `cc128d5`
+- Historical training evidence: [phase-1 H100 record at `b4ba8b8`](https://github.com/huybik/hibiki-zero-mlx/blob/b4ba8b8/CONTEXT.md), [phase-2 benchmark at `45624db`](https://github.com/huybik/hibiki-zero-mlx/blob/45624db/CONTEXT.md), [phase-2 post-mortem at `1250f1d`](https://github.com/huybik/hibiki-zero-mlx/blob/1250f1d/docs/phase2_postmortem.md), and the direct-run receipts in commits `385d0cf`, `4b164ee`, and `97f8214`
+- VIVOS evidence at `70eaead`: [retry-v6 report](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/metrics.md), [speaker exclusion](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/SPEAKER_EXCLUSION_2026-08-05.md), and [runtime repair/terminal selection](https://github.com/huybik/hibiki-zero-mlx/blob/70eaead/reports/benchmarks/vivos_tts/2026-08-04_qwen_mlx_retry_v6/RUNTIME_RESUME_2026-08-06.md)
 
 ## 11.3 Experiment-record contract
 
@@ -505,8 +748,10 @@ Failed experiments are evidence: later success may supersede the decision, but m
 - **License:** Hibiki-Zero weights are CC BY-NC-SA 4.0. Derived weights and bundled applications require attribution, non-commercial use, and share-alike treatment unless Kyutai grants different terms [R2].
 - **Voice use:** voice transfer and cloning can be misused. Training and demos should use consented/licensed sources, preserve provenance, and avoid impersonation claims.
 - **Evaluation size:** the CoVoST2 n=30 matrix is a fast engineering gate, not a publication-scale benchmark.
-- **Audio evaluation:** the Vietnamese checkpoint still lacks a fully integrated English-ASR round-trip scorer for its generated Hibiki speech. Manual audition and waveform sanity are not sufficient for release.
-- **Domain balance:** most available supervised hours are synthetic and short. VIVOS adds real source speech but only about 11 hours after QA.
+- **Timbre coverage:** only roughly 51% of PhoMT has a matched English target. Earlier PhoMT and independently paired FLEURS rows do not establish source-voice preservation.
+- **Audio objective:** exact English target-audio CE measures reconstruction of that recording. On an unmatched pair it can reward conversion to an unrelated English speaker rather than preservation of the Vietnamese source.
+- **Audio evaluation:** neither direct-run checkpoint passes free-running health, and the project still needs integrated English-ASR, audio-quality, and cross-lingual speaker-similarity gates. Manual audition and waveform sanity are not sufficient for release.
+- **Domain balance:** most supervised hours are synthetic and short. The direct run improved unseen-PhoMT teacher-forced loss while regressing on FLEURS, but its six-row unseen-PhoMT free-running check still failed generation health. VIVOS adds real source speech but only about 11 hours after QA.
 - **Language retention:** Vietnamese full SFT can forget FR/ES/PT/DE. Release requires an automated multilingual suite.
 - **Latency:** an 80 ms compute frame does not equal 80 ms conversational delay. Codec buffering, learned translation lag, audio I/O, Bluetooth, and target reordering all contribute to perceived latency.
 - **Hardware:** no iPhone or Snapdragon measurement is yet in the repository. Platform claims remain plans or projections until physical-device reports exist.
@@ -517,9 +762,9 @@ Failed experiments are evidence: later success may supersede the decision, but m
 
 The project has crossed the hardest early boundary: the model is no longer tied to an NVIDIA reference server, and the Apple runtime is fast enough that product work is rational. The most important engineering wins came from correctness and ownership - loading the exact architecture, keeping thread state local, scheduling CPU and GPU concurrently, and refusing to let convenient metrics overrule free-running behavior.
 
-Vietnamese adaptation has also moved from speculation to evidence. LoRA was insufficient; full-model SFT established real source-language routing; an aggressive warm start failed; and the next base-start run now has frozen, reproducible qualification gates. The data pipeline can produce scale, and its failures have forced stronger provenance and audio QA.
+Vietnamese adaptation has also moved from speculation to evidence. We learned how to synthesize and cache at scale, how to match timbre using the audio the clone actually produces, and why that match must be recorded per row. LoRA was insufficient; full-model SFT established Vietnamese routing; the warm start collapsed; the grounding curricula proved diagnostic but not deployable; and the clean direct run improved teacher-forced PhoMT fit while overfitting away from FLEURS and still failing free-running PhoMT generation. Five planned epochs became a measured stop at 135k steps, with 18k preserved as the FLEURS best. Neither checkpoint is production-qualified.
 
-The next chapter is a gated product sequence: finish and qualify Vietnamese, wrap the proven engine in a desktop app, distil a true Vietnamese 1B student and its parallel head, then earn the mobile claim separately on Apple and Qualcomm hardware. If each stage preserves the research discipline already learned, "real-time translation in your pocket" becomes an engineering program rather than a slogan.
+The next chapter begins with a shorter, early-stopped 3B experiment, separate PhoMT/FLEURS selection, audio supervision restricted to verified timbre matches, and free-running content/audio/speaker gates. Only after a Vietnamese 3B checkpoint clears those gates should the project distil a true Vietnamese 1B student and its parallel head, then earn the mobile claim separately on Apple and Qualcomm hardware. If each stage preserves the research discipline already learned, "real-time translation in your pocket" becomes an engineering program rather than a slogan.
 
 ---
 
