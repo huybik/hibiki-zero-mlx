@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Vietnamese evidence boundary from source data to checkpoint decision</title>
+  <desc id="desc">A top-down funnel shows the unsupported upstream baseline, published speech pairs, the grounded training cache, domain controls, and the failed production gate.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#fbfcff"/>
+      <stop offset="1" stop-color="#f4f7fc"/>
+    </linearGradient>
+    <linearGradient id="data" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#e8e9ff"/>
+      <stop offset="1" stop-color="#ddf6f1"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#20305a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="6" refY="6" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#7482aa"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="1000" rx="34" fill="url(#background)"/>
+  <text x="90" y="78" fill="#18213d" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="43" font-weight="800">Vietnamese evidence boundary: data to decision</text>
+  <text x="90" y="120" fill="#66708b" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="22">Counts narrow at each owning boundary. Real FLEURS and synthetic PhoMT remain separate.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="365" y="165" width="870" height="115" rx="24" fill="#fff1ed" stroke="#e5a18f" stroke-width="2"/>
+    <rect x="300" y="335" width="1000" height="125" rx="24" fill="#eef4ff" stroke="#9eb4e6" stroke-width="2"/>
+    <rect x="235" y="515" width="1130" height="145" rx="24" fill="url(#data)" stroke="#8da8d6" stroke-width="2"/>
+    <rect x="300" y="715" width="1000" height="120" rx="24" fill="#eef9f6" stroke="#79bea9" stroke-width="2"/>
+    <rect x="365" y="890" width="870" height="80" rx="24" fill="#fff6e8" stroke="#e4ad68" stroke-width="2"/>
+  </g>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif">
+    <circle cx="425" cy="222" r="32" fill="#f6d7cf"/>
+    <text x="425" y="232" text-anchor="middle" fill="#a34f3d" font-size="27" font-weight="800">1</text>
+    <text x="485" y="210" fill="#3e2b32" font-size="25" font-weight="800">Unsupported upstream path</text>
+    <text x="485" y="246" fill="#76515a" font-size="21">Original Vietnamese FLEURS test: about 0.26 BLEU</text>
+
+    <circle cx="365" cy="397" r="32" fill="#dbe6fb"/>
+    <text x="365" y="407" text-anchor="middle" fill="#4d64a7" font-size="27" font-weight="800">2</text>
+    <text x="425" y="385" fill="#253050" font-size="25" font-weight="800">Published source artifact</text>
+    <text x="425" y="421" fill="#58647f" font-size="21">696,243 VI-source / EN-target pairs · about 1,228 Vietnamese hours</text>
+
+    <circle cx="300" cy="587" r="32" fill="#dfe2ff"/>
+    <text x="300" y="597" text-anchor="middle" fill="#585eb0" font-size="27" font-weight="800">3</text>
+    <text x="360" y="562" fill="#253050" font-size="25" font-weight="800">Grounded model-ready boundary</text>
+    <text x="360" y="601" fill="#58647f" font-size="20">690,067 aligned rows → 684,232 within 280 frames → 683,164 unique PhoMT train rows</text>
+    <text x="360" y="633" fill="#397366" font-size="19">Stored once: source Mimi + codec EOS · timed English text + tokenizer EOS · target Mimi + validity mask</text>
+
+    <circle cx="365" cy="775" r="32" fill="#d8f3eb"/>
+    <text x="365" y="785" text-anchor="middle" fill="#287b68" font-size="27" font-weight="800">4</text>
+    <text x="425" y="762" fill="#203f3a" font-size="25" font-weight="800">Domain control</text>
+    <text x="425" y="799" fill="#4f766e" font-size="21">1,392 unique real FLEURS train clips; repeated presentations are reported separately</text>
+
+    <circle cx="425" cy="930" r="27" fill="#f8dfbb"/>
+    <text x="425" y="939" text-anchor="middle" fill="#956027" font-size="23" font-weight="800">5</text>
+    <text x="480" y="921" fill="#5d4326" font-size="23" font-weight="800">Decision: preserve the evidence; do not ship either checkpoint</text>
+    <text x="480" y="951" fill="#87653d" font-size="18">Step 18k failed repetition; step 135k found EOS for 4 of 6 held-out PhoMT examples</text>
+  </g>
+
+  <path d="M800 286V326" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M800 466V506" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M800 666V706" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M800 841V881" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+</svg>

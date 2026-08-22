@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-labelledby="title desc">
+  <title id="title">Top-down Vietnamese-to-English parity gates</title>
+  <desc id="desc">Five top-down gates lead from a licensed one-thousand-hour data tranche to a qualified phone release.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#fbfcff"/>
+      <stop offset="1" stop-color="#f3f7fb"/>
+    </linearGradient>
+    <linearGradient id="model" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#e8e8ff"/>
+      <stop offset="1" stop-color="#e1f6f2"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#20305a" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="6" refY="6" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#7482aa"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="1080" rx="34" fill="url(#background)"/>
+  <text x="90" y="78" fill="#18213d" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="43" font-weight="800">Vietnamese-to-English parity is a gated sequence</text>
+  <text x="90" y="120" fill="#66708b" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif" font-size="22">A later stage starts only when the prior artifact passes content, generation, voice, and retention gates.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="250" y="165" width="1100" height="125" rx="25" fill="#eef6ff" stroke="#8fb8df" stroke-width="2"/>
+    <rect x="300" y="345" width="1000" height="125" rx="25" fill="#eef9f6" stroke="#7dbda9" stroke-width="2"/>
+    <rect x="300" y="525" width="1000" height="145" rx="25" fill="url(#model)" stroke="#929ce0" stroke-width="2"/>
+    <rect x="350" y="725" width="900" height="125" rx="25" fill="#fff6e8" stroke="#e0a660" stroke-width="2"/>
+    <rect x="400" y="905" width="800" height="115" rx="25" fill="#e9f8f4" stroke="#56ac93" stroke-width="2"/>
+  </g>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif">
+    <circle cx="320" cy="227" r="33" fill="#d9eafb"/>
+    <text x="320" y="238" text-anchor="middle" fill="#396f9d" font-size="28" font-weight="800">1</text>
+    <text x="385" y="214" fill="#253050" font-size="27" font-weight="800">Stop/go data tranche</text>
+    <text x="385" y="251" fill="#58647f" font-size="20">Licensed English recording + gold text → translated Vietnamese → speaker-conditioned source speech</text>
+    <text x="385" y="278" fill="#58647f" font-size="18">First 1,000 hours before scale-up toward about 40,000 hours</text>
+
+    <circle cx="370" cy="407" r="33" fill="#d8f3eb"/>
+    <text x="370" y="418" text-anchor="middle" fill="#287b68" font-size="28" font-weight="800">2</text>
+    <text x="435" y="394" fill="#203f3a" font-size="27" font-weight="800">Freeze the data receipt</text>
+    <text x="435" y="431" fill="#4f766e" font-size="20">Translation acceptance ≥95% · TTS WER &lt;15% · timbre, clipping, silence, dedupe, and holdout gates</text>
+    <text x="435" y="458" fill="#4f766e" font-size="18">Real FLEURS stays once per epoch and remains a separate validation domain</text>
+
+    <circle cx="370" cy="597" r="33" fill="#e0e1ff"/>
+    <text x="370" y="608" text-anchor="middle" fill="#585eb0" font-size="28" font-weight="800">3</text>
+    <text x="435" y="572" fill="#292653" font-size="27" font-weight="800">Qualify the 3B teacher</text>
+    <text x="435" y="610" fill="#5f6687" font-size="20">Controlled full SFT → audio loss only on verified timbre matches → small GRPO stage</text>
+    <text x="435" y="642" fill="#5f6687" font-size="18">Gate: EOS, repetition, length, chrF/BLEU, audio quality, speaker similarity, and upstream-language retention</text>
+
+    <circle cx="420" cy="787" r="33" fill="#f8dfbb"/>
+    <text x="420" y="798" text-anchor="middle" fill="#956027" font-size="28" font-weight="800">4</text>
+    <text x="485" y="775" fill="#5d4326" font-size="27" font-weight="800">Build the 1B mobile artifact</text>
+    <text x="485" y="807" fill="#87653d" font-size="19">Distil the accepted teacher → train the parallel codebook head</text>
+    <text x="485" y="834" fill="#87653d" font-size="19">Quantise → require teacher parity with the 3B teacher</text>
+
+    <circle cx="470" cy="962" r="31" fill="#cfeee6"/>
+    <text x="470" y="972" text-anchor="middle" fill="#21705c" font-size="26" font-weight="800">5</text>
+    <text x="530" y="950" fill="#203f3a" font-size="26" font-weight="800">Release on measured phone evidence</text>
+    <text x="530" y="980" fill="#4f766e" font-size="18">Apple + Qualcomm · p99 &lt;80 ms · zero underruns</text>
+    <text x="530" y="1006" fill="#4f766e" font-size="18">Flat memory · stable 30-minute thermals</text>
+  </g>
+
+  <path d="M800 296V336" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M800 476V516" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M800 676V716" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M800 856V896" stroke="#7482aa" stroke-width="4" marker-end="url(#arrow)"/>
+</svg>
