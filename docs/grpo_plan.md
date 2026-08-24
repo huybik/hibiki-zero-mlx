@@ -90,11 +90,16 @@ Exit gate: smoke passes on H100 (and CPU micro-smoke locally); loss decreases
 or stays flat with sane ratio ranges over the smoke window; resume from
 step-2 checkpoint reproduces step-3 loss within tolerance.
 
-### Phase C — Launcher, eval, recovery (`finetune/h100.sh`, `finetune/hf_sync.py`)
+### Phase C — Launcher, eval, recovery (`finetune/grpo.sh`, `finetune/hf_sync.py`)
 
-1. New `grpo-*` recipe paths in `h100.sh`: setup reuse, `preflight-grpo`
-   (artifact hashes + GRPO manifest pin), `rollout`, `train-grpo`,
-   `resume-grpo`; VRAM monitor as in SFT smoke.
+1. New dedicated `finetune/grpo.sh` launcher (not new subcommands inside
+   `h100.sh`, which is hard-gated to the frozen grounded-v2 SFT contract):
+   same environment conventions (reuse the venv built by
+   `./finetune/h100.sh setup`, identical Torch/moshi pins), plus
+   `preflight-grpo` (artifact hashes + init-checkpoint + GRPO manifest pin),
+   `rollout`, `train-grpo`, `resume-grpo`; VRAM monitor as in SFT smoke.
+   Its smoke marker and commit gate are tracked separately from the SFT
+   smoke so the two launchers never invalidate each other.
 2. Periodic free-running evaluation every 10·τ updates on the three holdout
    manifests (FLEURS, PhoMT holdout, val128 subset) via the Phase A/B stack:
    BLEU/chrF + the existing health gates in
