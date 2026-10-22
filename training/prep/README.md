@@ -49,7 +49,8 @@ python -m training.prep.translate_en_speech export      # {train,validation}.par
 ```
 
 `--concurrency` (default 8) sets the calls in flight, so it sets how fast the accounts' quota
-drains. Rerunning `texts` after the corpus changes keeps every translation already made.
+drains. Rerunning `texts` after the corpus changes keeps every translation already made; a
+running `translate` reads the selection once, so start it again afterwards.
 
 Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
 Voice text.

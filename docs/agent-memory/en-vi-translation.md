@@ -18,12 +18,14 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
 ([en-speech-corpus](en-speech-corpus.md)).
 
 - `texts` writes `texts.parquet` (`text`, the unique transcripts in translation order) and
-  `rows.parquet` (`split`, `id`, `text`) for every corpus row with a letter in its transcript;
-  the corpus keeps only 5–22.4 s clips. Validation comes first, then each Libriheavy recording in
-  segment order, so a batch carries the neighbouring book text. `texts` stops if a clip is over
-  the 22.4 s (280-frame) cap, and must not run while a build is writing `en_speech`.
+  `rows.parquet` (`split`, `id`, `text`) for every corpus row with a letter in its transcript,
+  so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)). Validation
+  comes first, then each Libriheavy recording in segment order, so a batch carries the
+  neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap, and must
+  not run while a build is writing `en_speech`. A running `translate` reads the selection once,
+  so start it again after `texts`.
 - The selection on disk is still the first tranche (5-15 s clips, 1,000 train hours plus
-  validation, 410,618 texts) while `en_speech` is pruned and topped up; rerun `texts` after.
+  validation, 410,618 texts) until `en_speech` stops changing.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
   (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
   rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on
@@ -39,12 +41,12 @@ Measured with Sonnet 5.5:
 - Output is 0.60-0.62 tokens per English character (Vietnamese costs 0.585 per character) and
   ~88% of the cost at API price weights.
 - One 5-hour window held ~4-5M output tokens on `claude-p` and `claude-l`, ~3.2M on `claude-5x`
-  (Max 5x) and ~11M on `default`. A full window used ~5% of `claude-5x`'s week, and `default`'s
-  week rose about 1 point per 9 of its window, so weekly limits bound a long run. `claude-p`
-  was at 87% of its week on 2026-10-23.
-- Mid-rebuild on 2026-10-23, the 5–22.4 s corpus held 384M characters in 2.48M unique texts,
-  171M of them (~104M output tokens) in 15–22.4 s clips. The Libriheavy top-up to ~9k hours of
-  5-15 s clips adds ~220M, so the whole corpus needs ~370M output tokens.
+  (Max 5x) and ~11M on `default`. A full window used ~5% of `claude-5x`'s week and ~11% of
+  `default`'s, so their weeks hold ~64M and ~100M. At 8 calls (~600M a week) the weekly caps,
+  not the windows, bound the run: every named account, `default` included, reaches its weekly
+  cap each week until the corpus is done.
+- The whole corpus needs ~370M output tokens (~600M English characters), ~104M of them for
+  15–22.4 s clips.
 - Measured levers, as changes to total cost: one call per line instead of batches +80%; no
   prompt cache for the 687-token instruction prefix +2.2%; no output line numbers −2.1%, but
   merged or split lines would pass unnoticed; 16k-character batches −0.7%, since Claude Code
@@ -64,7 +66,7 @@ Measured with Sonnet 5.5:
 - The prompt keeps dialogue quotes and the English order of clauses. A wording that banned
   quotation marks made Sonnet move speech tags to the front of the line.
 - A batch is accepted only with exactly one `n|` line per input, numbered 1..N. Rejections are
-  rare (11 of ~3,900 batches by 2026-10-23): most break a translation across lines, and a few
+  rare (about 1 batch in 350): most break a translation across lines, and a few
   answer with a stray `echo skip` tool call. Rejected lines are retried in quarter-size batches
   down to ~500 characters, then alone; a line that still fails alone ends the run.
 - The gates mostly flag good output: on the validation texts, the 22 lines identical to the
@@ -76,7 +78,7 @@ Measured with Sonnet 5.5:
   Mac with the conda Python against the local Claude API (`~/.local/share/claude-local-api/`).
 - `--concurrency` (default 8, at most the server's 48) sets the calls in flight, and quota
   drains in proportion: 8 calls spend ~3.6M output tokens an hour, so a 5-hour window lasts
-  from ~1 hour on `claude-5x` to ~3 on `default`; 64 calls spent ~20M an hour.
+  from ~1 hour on `claude-5x` to ~3 on `default`.
 - `--profile` names each subscription to spend, in order of use; the run uses `claude-p`,
   `claude-l`, `claude-5x`, then `default`. When all are out of quota it waits for the earliest
   reset, checking the clock every minute so it also resumes after the Mac sleeps. Name
@@ -97,7 +99,6 @@ Measured with Sonnet 5.5:
 
 - Before committing pipeline changes or starting a quota-heavy run, test a small sample and
   report measured alternatives, as the user asked.
-- The user chose on 2026-10-23 to translate the whole corpus to the end, with no limit beyond
-  the corpus's own 5–22.4 s, after a first 1k-hour tranche of 5-15 s clips. They asked for few
-  calls in flight so the accounts drain slowly, and for the run to resume by itself after quota
-  resets.
+- The user chose to translate the whole corpus, with no limit beyond the corpus's own clip
+  range, with few calls in flight so the accounts drain slowly, and with the run resuming by
+  itself after quota resets.

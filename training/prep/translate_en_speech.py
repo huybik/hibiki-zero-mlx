@@ -49,6 +49,7 @@ API_URL = "http://127.0.0.1:8787"
 API_TOKEN = Path.home() / ".local/share/claude-local-api/token"
 MAX_LINES = 200  # per batch, whatever its size
 MAX_TOKENS = 32_000
+SERVER_SLOTS = 48  # calls the local API runs at once; more in flight only queue
 QUOTA_CHECK = 60  # seconds between wall-clock checks while every profile is out of quota
 TRANSIENT_RETRIES = 5  # per batch, for 5xx, dropped connections and one-off 429s: ~30 min of backoff
 RETRY_WAIT = 60  # seconds before the first retry; doubles on each further retry
@@ -111,7 +112,7 @@ class Profiles:
 
     def __init__(self, names: list[str]):
         self.until = dict.fromkeys(names, 0.0)
-        self.announced = 0.0
+        self.announced = ""
         self.stop = threading.Event()  # set on shutdown, so no thread keeps waiting for quota
         self.lock = threading.Lock()
 
@@ -129,9 +130,10 @@ class Profiles:
                 if ready:
                     return ready[0]
                 wake = min(self.until.values())
-                if wake != self.announced:
-                    self.announced = wake
-                    log(f"every profile is out of quota; waiting until {time.strftime('%a %H:%M', time.localtime(wake))}")
+                # Concurrent 429s move `wake` by milliseconds; log once per minute shown.
+                if (shown := time.strftime("%a %H:%M", time.localtime(wake))) != self.announced:
+                    self.announced = shown
+                    log(f"every profile is out of quota; waiting until {shown}")
             # A timed wait stops counting while the Mac sleeps, so check the clock again often.
             self.sleep(min(wake - now, QUOTA_CHECK))
 
@@ -318,15 +320,15 @@ def main() -> None:
                    help="local API profile to spend, in order of use (repeatable; translate needs one)")
     p.add_argument("--batch-chars", type=int, default=8_000, help="English characters per call")
     p.add_argument("--concurrency", type=int, default=8,
-                   help="calls in flight (translate); quota drains in proportion, and the server runs 48 at once")
+                   help=f"calls in flight (translate), at most {SERVER_SLOTS}; quota drains in proportion")
     args = p.parse_args()
     if args.step == "texts":
         build_texts(args.src, args.out)
     elif args.step == "translate":
         if not args.profile:
             p.error("translate needs --profile: name the subscriptions it may spend")
-        if not 1 <= args.concurrency <= 48:
-            p.error("--concurrency must be 1 to 48, the calls the local API runs at once")
+        if not 1 <= args.concurrency <= SERVER_SLOTS:
+            p.error(f"--concurrency must be 1 to {SERVER_SLOTS}, the calls the local API runs at once")
         # A background run ignores SIGINT; let `kill` stop it as cleanly as Ctrl-C does.
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, signal.default_int_handler)
