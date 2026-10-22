@@ -61,8 +61,10 @@ repetition recovery — exactly the step-135k failure modes — not simultaneity
    (manifest position, group member).
 2. Reward computer: from `text_vi`/`text_en` build source-sentence frame map,
    reward frames every 8 VI words, prefix references from `text_en`;
-   r_t per Eq. 3 with corpus-level sacrebleu (already a dependency,
-   `sacrebleu==2.6.0` in `finetune/h100.sh` setup).
+   r_t(i) per Eq. 3 scored separately for each group member (sentence-level
+   sacrebleu, already a dependency via `sacrebleu==2.6.0` in `finetune/h100.sh`
+   setup). One corpus BLEU over the whole group gives every member the same
+   reward, so the group-normalized advantages are all zero.
 3. Group statistics + advantages per Eq. 5–6 saved alongside.
 4. Offline unit checks runnable locally (CPU/MPS, tiny fixtures): reward math
    on synthetic texts, frame-map monotonicity, advantage sum ordering.
