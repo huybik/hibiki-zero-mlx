@@ -11,6 +11,8 @@ The Claude subscriptions' weekly caps stretch the whole corpus over weeks
 ([en-vi-translation](en-vi-translation.md)), so the user chose to translate 1,000 hours on each
 of two paid Gemini API keys with Gemini 3.8 Flash through the Batch API, at half the interactive
 price. Prompt, `n|` line format and acceptance check are the Claude path's.
+After that share finished in 30 minutes for ~$75, the user chose to keep the remaining ~9,100
+hours (8,154 of Libriheavy, 979 of Common Voice) on Claude rather than pay ~$300 more.
 
 ## Claims and files
 
