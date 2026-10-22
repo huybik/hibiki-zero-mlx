@@ -5,9 +5,11 @@ Roadmap phase 1 (docs/vi_en_parity_plan.md): every English clip gets a Vietnames
 line that a TTS voice conditioned on the clip's speaker will read. Translation runs
 on Claude Sonnet 5.5 through the local Claude API (claude-sub-as-api), which spends
 Claude subscription quota, so the steps keep tokens down:
-  - Rows whose English clip alone is longer than the 280-frame training cap
-    (22.4 s) are skipped, as they can never become a training row, and so are
-    transcripts without letters.
+  - Only rows whose clip lasts --min-seconds to --max-seconds are kept; the
+    280-frame training cap (22.4 s) bounds the maximum, since a longer English
+    clip can never become a training row. Transcripts without letters are skipped.
+  - --hours translates the train split in tranches, so the TTS step can be
+    checked on one before more quota is spent.
   - Identical transcripts (whitespace-normalised) are translated once.
   - One call carries a batch of lines, so the fixed per-call prompt is paid per
     batch, and the instructions sit in a cached prefix that calls read at ~0.1x.
@@ -17,7 +19,11 @@ neighbouring book text as context for names, gender and Vietnamese forms of addr
 
 Run from the repo root as `python -m training.prep.translate_en_speech <step>`. Steps, all under
 --out:
-  texts      texts.parquet (key, text) and rows.parquet (split, id, key)
+  texts      texts.parquet (key, text) and rows.parquet (split, id, key): every
+             validation row in the duration range, plus train rows up to --hours, drawn
+             in a fixed random order of units (a Common Voice clip, or a whole
+             Libriheavy recording so its book context stays together); a larger --hours
+             extends a smaller selection
   translate  appends accepted batches, keyed by their English text, to translations.jsonl
              and rejected output to rejects.jsonl; rerun to resume. Rejected lines are
              retried in smaller batches, then alone. When every --profile is out of quota
@@ -47,7 +53,7 @@ API_TOKEN = Path.home() / ".local/share/claude-local-api/token"
 MAX_LINES = 200  # per batch, whatever its size
 MAX_TOKENS = 32_000
 CONCURRENCY = 64  # the server runs 48 calls at once; macOS resets connections past a 128 backlog
-TRANSIENT_RETRIES = 5  # per batch, for 5xx replies and dropped connections: ~30 min of backoff
+TRANSIENT_RETRIES = 5  # per batch, for 5xx, dropped connections and one-off 429s: ~30 min of backoff
 RETRY_WAIT = 60  # seconds before the first retry; doubles on each further retry
 SPLIT_ORDER = {"validation": 0, "train": 1}
 
@@ -67,7 +73,7 @@ def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def build_texts(src: Path, out: Path) -> None:
+def build_texts(src: Path, out: Path, min_seconds: float, max_seconds: float, hours: float | None) -> None:
     def read(path: Path) -> pa.Table:
         table = pq.read_table(path, columns=["id", "text", "duration"])
         return table.append_column("split", pa.array([path.parent.name] * table.num_rows, pa.string()))
@@ -75,15 +81,24 @@ def build_texts(src: Path, out: Path) -> None:
     with ThreadPoolExecutor(16) as pool:
         rows = pa.concat_tables(pool.map(read, sorted(src.glob("*/*.parquet")))).to_pandas()
     rows["text"] = rows.text.str.split().str.join(" ")
-    fits = rows.duration <= MAX_SECONDS
+    fits = rows.duration.between(min_seconds, max_seconds)
     spoken = rows.text.str.contains(r"[^\W\d_]")  # has a letter; "." alone has nothing to translate
-    log(f"{len(rows):,} rows; skipped {(~fits).sum():,} with clips over {MAX_SECONDS:.1f} s and "
-        f"{(fits & ~spoken).sum():,} without letters")
+    log(f"{len(rows):,} rows; skipped {(~fits).sum():,} with clips outside {min_seconds:g}-{max_seconds:g} s "
+        f"and {(fits & ~spoken).sum():,} without letters")
     rows = rows[fits & spoken].copy()
-    # Validation first, then each Libriheavy recording in segment order (CV ids sort alone).
     recording = rows.id.str.rsplit("_", n=1)
     rows["recording"] = recording.str[0]
     rows["segment"] = recording.str[1].astype(int)
+    if hours is not None:
+        unit = rows.id.where(rows.id.str.startswith("cv27/"), rows.recording)
+        train = rows.split == "train"
+        unit_hours = (rows.duration[train].groupby(unit[train]).sum() / 3600).sample(frac=1, random_state=0)
+        chosen = unit_hours.index[unit_hours.cumsum().shift(fill_value=0) < hours]
+        rows = rows[~train | unit.isin(chosen)]
+    for (split, cv), group in rows.groupby([rows.split, rows.id.str.startswith("cv27/")]):
+        log(f"{split} {'Common Voice' if cv else 'Libriheavy'}: {len(group):,} rows, "
+            f"{group.duration.sum() / 3600:,.1f} h")
+    # Validation first, then each Libriheavy recording in segment order (CV ids sort alone).
     rows["split_order"] = rows.split.map(SPLIT_ORDER)
     rows = rows.sort_values(["split_order", "recording", "segment"], kind="stable")
     texts = rows.drop_duplicates("text")[["text"]].reset_index(drop=True)
@@ -164,17 +179,18 @@ def call(client: Anthropic, profiles: Profiles, lines: list[str]) -> tuple[list[
             break
         except RateLimitError as error:
             retry_after = error.response.headers.get("retry-after")
-            if retry_after is None:  # only this request was refused; the profile keeps its quota
-                profiles.sleep(RETRY_WAIT)
-            else:
+            if retry_after is not None:  # the profile is out of quota until then
                 profiles.out_until(profile, max(1.0, float(retry_after)))
+                continue
+            transient = error  # only this request was refused
         except (APIConnectionError, InternalServerError) as error:
-            failures += 1
-            if failures > TRANSIENT_RETRIES:
-                raise
-            wait = RETRY_WAIT * 2 ** (failures - 1)
-            log(f"{type(error).__name__} on {profile}: {error}; retry {failures} in {wait} s")
-            profiles.sleep(wait)
+            transient = error
+        failures += 1
+        if failures > TRANSIENT_RETRIES:
+            raise transient
+        wait = RETRY_WAIT * 2 ** (failures - 1)
+        log(f"{type(transient).__name__} on {profile}: {transient}; retry {failures} in {wait} s")
+        profiles.sleep(wait)
     text = "".join(block.text for block in reply.content if block.type == "text")
     usage = Counter({key: getattr(reply.usage, key) or 0 for key in (
         "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")})
@@ -217,13 +233,16 @@ def lock_dir(out: Path):
     return lock_file
 
 
-def translate(out: Path, profile_names: list[str], batch_chars: int, limit: int | None) -> None:
-    texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()[:limit]
+def translate(out: Path, profile_names: list[str], batch_chars: int) -> None:
+    texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
     with lock_dir(out):
-        done = {en for batch in read_batches(out / "translations.jsonl") for en in batch["en"]}
+        log_path = out / "translations.jsonl"
+        if log_path.exists() and log_path.stat().st_size and not log_path.read_bytes().endswith(b"\n"):
+            raise SystemExit(f"{log_path} ends in a cut-off line from a killed run; delete that line to continue")
+        done = {en for batch in read_batches(log_path) for en in batch["en"]}
         client = Anthropic(base_url=API_URL, api_key=API_TOKEN.read_text().strip(), max_retries=0, timeout=1800)
         profiles, lock, totals = Profiles(profile_names), threading.Lock(), Counter()
-        with (out / "translations.jsonl").open("a") as accepted, (out / "rejects.jsonl").open("a") as rejected:
+        with log_path.open("a") as accepted, (out / "rejects.jsonl").open("a") as rejected:
 
             def run(keys: list[int]) -> None:
                 lines = [texts[k] for k in keys]
@@ -247,8 +266,8 @@ def translate(out: Path, profile_names: list[str], batch_chars: int, limit: int 
                 log(f"{len(pending):,} lines pending: {len(batches):,} batches of up to {budget:,} characters")
                 start = time.time()
                 with ThreadPoolExecutor(CONCURRENCY) as pool:
-                    futures = [pool.submit(run, batch) for batch in batches]
                     try:
+                        futures = [pool.submit(run, batch) for batch in batches]
                         for i, future in enumerate(as_completed(futures), 1):
                             future.result()
                             if i % 50 == 0 or i == len(futures):
@@ -273,8 +292,9 @@ def translate(out: Path, profile_names: list[str], batch_chars: int, limit: int 
 def export(out: Path) -> None:
     texts = pq.read_table(out / "texts.parquet").to_pandas()
     vi = {}
-    for batch in read_batches(out / "translations.jsonl"):
-        vi.update(zip(batch["en"], batch["vi"]))
+    with lock_dir(out):  # a running translate could be mid-write
+        for batch in read_batches(out / "translations.jsonl"):
+            vi.update(zip(batch["en"], batch["vi"]))
     texts["text_vi"] = texts.text.map(vi)
     done = texts.dropna()
     identical = (done.text_vi == done.text).sum()
@@ -285,6 +305,7 @@ def export(out: Path) -> None:
     for split, group in rows.groupby("split"):
         missing = group.text_vi.isna().sum()
         if missing:
+            (out / f"{split}.parquet").unlink(missing_ok=True)
             log(f"{split}: {missing:,} of {len(group):,} rows untranslated; not written")
             continue
         pq.write_table(pa.Table.from_pandas(group[["id", "text_vi"]], preserve_index=False),
@@ -300,14 +321,18 @@ def main() -> None:
     p.add_argument("--profile", action="append", default=[],
                    help="local API profile to spend, in order of use (repeatable; translate needs one)")
     p.add_argument("--batch-chars", type=int, default=8_000, help="English characters per call")
-    p.add_argument("--limit", type=int, help="translate only the first N texts (validation comes first)")
+    p.add_argument("--min-seconds", type=float, default=0.0, help="shortest clip kept (texts)")
+    p.add_argument("--max-seconds", type=float, default=MAX_SECONDS, help="longest clip kept (texts)")
+    p.add_argument("--hours", type=float, help="train hours to select (texts); default: all")
     args = p.parse_args()
     if args.step == "texts":
-        build_texts(args.src, args.out)
+        if args.max_seconds > MAX_SECONDS:
+            p.error(f"--max-seconds over {MAX_SECONDS:.1f} keeps clips that can never become a training row")
+        build_texts(args.src, args.out, args.min_seconds, args.max_seconds, args.hours)
     elif args.step == "translate":
         if not args.profile:
             p.error("translate needs --profile: name the subscriptions it may spend")
-        translate(args.out, args.profile, args.batch_chars, args.limit)
+        translate(args.out, args.profile, args.batch_chars)
     else:
         export(args.out)
 

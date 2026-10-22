@@ -37,10 +37,13 @@ Claude API; costs and rules are in
 [en-vi-translation](../../docs/agent-memory/en-vi-translation.md).
 
 ```bash
-python -m training.prep.translate_en_speech texts       # unique transcripts whose clip fits a 280-frame row
-python -m training.prep.translate_en_speech translate --profile claude-l --limit 20882  # validation first; rerun to resume
+python -m training.prep.translate_en_speech texts --min-seconds 5 --max-seconds 15 --hours 1000  # select a tranche
+caffeinate -i nohup python -m training.prep.translate_en_speech translate --profile claude-p --profile claude-l \
+  >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # rerun to resume
 python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
 ```
+
+A larger `--hours` extends the selection, and translations already made are kept.
 
 Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
 Voice text.
