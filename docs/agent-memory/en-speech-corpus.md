@@ -15,15 +15,15 @@ rows exist yet. Those rows would then go through `cache_codes` and train togethe
 
 ## Contents
 
-`/Volumes/data/datasets/en_speech/` (279 GB) holds `train/` (600 shards) and `validation/`
+`/Volumes/data/datasets/en_speech/` (375 GB) holds `train/` (1,466 shards) and `validation/`
 (3 shards). Its `README.md` is the dataset card with statistics and loading code.
 
-| split | source | rows | hours |
-|---|---|---:|---:|
-| train | Common Voice 27.0 EN (`cv27`) | 1,728,261 | 2,486.3 |
-| train | Libriheavy small + medium + part of large | 1,828,349 | 7,523.9 |
-| validation | Common Voice dev | 16,403 | 27.2 |
-| validation | Libriheavy dev | 5,014 | 20.9 |
+| split | source | rows | hours | 5–15 s hours |
+|---|---|---:|---:|---:|
+| train | Common Voice 27.0 EN (`cv27`) | 891,783 | 1,624.9 | 1,623.0 |
+| train | Libriheavy small + medium + 1,060 of 2,955 large files | 3,263,734 | 10,801.3 | 7,577.2 |
+| validation | Common Voice dev | 11,114 | 21.4 | 21.4 |
+| validation | Libriheavy dev | 4,378 | 16.6 | 7.5 |
 
 ## Format
 
