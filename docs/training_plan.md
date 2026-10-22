@@ -42,7 +42,7 @@ verified by `finetune/freeze_full_data_receipt.py`:
 | Steps per epoch | 44,945 |
 
 Membership and order are frozen in
-`finetune/runs/grounded_v2_full_direct_receipt/sample_manifest.jsonl`. The
+`finetune/runs/grounded_v2_full_direct_5epoch_receipt/sample_manifest.jsonl`. The
 training loader follows that manifest without reshuffling.
 
 Validation uses the raw grounded-v2 FLEURS validation cache:
@@ -107,7 +107,7 @@ A complete recovery point is a matching
 `model_stepNNNNNN.safetensors` / `trainer_stepNNNNNN.pt` pair. The trainer is
 published after the model and acts as the remote completion marker. The newest
 two complete pairs are retained. The final step 224,725 is always saved and
-synced even though it is off the 3,000-step cadence.
+synced even though it is off the 9,000-step cadence.
 
 The remote prefix also stores:
 
