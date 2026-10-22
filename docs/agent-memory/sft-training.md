@@ -89,10 +89,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
 
 - `eval.py` is the optional correct-source free-running check. Despite its name,
   `run_greedy_eval` samples (text 0.4, audio 0.8).
-- `validate.py` does not reproduce in-training validation: it defaults to the legacy
-  `cache/validation`, applies no 280-frame filter, and uses BF16 weights, batch 8 and MPS.
+- `validate.py` does not reproduce in-training validation: it applies no 280-frame filter and
+  uses BF16 weights, batch 8 and MPS.
 - `common.py` is shared by `train.py`, `validate.py`, `eval.py` and `freeze_full_data_receipt.py`;
   `student/` does not import it.
-- Defaults that can't work for production: `utils.DEFAULT_RUN_DIR` (`runs/vi_base_full`), and
-  `train.py`'s single default `--cache-dir`, which fails the two-cache check. `h100.sh` passes
-  the real values.
+- `utils.DEFAULT_RUN_DIR` (`runs/vi_base_full`) is not the production run directory; `h100.sh`
+  passes the real one.
+- `remote_dataset/download_covost2.py` materialises a frozen CoVoST 2 French→English control
+  set; nothing references it.

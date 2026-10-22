@@ -29,7 +29,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compute teacher-forced CE on cached codes for a base or full-SFT model."
     )
-    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_ROOT / "validation")
+    parser.add_argument(
+        "--cache-dir", type=Path, default=DEFAULT_CACHE_ROOT / "validation_grounded_v2"
+    )
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
     )

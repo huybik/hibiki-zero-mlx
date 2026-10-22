@@ -38,7 +38,7 @@ from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from finetune.cache_codes import CACHE_FORMAT, GROUNDED_CACHE_FORMAT
+from finetune.cache_codes import CACHE_FORMAT
 from finetune.hibiki_helpers import (
     audio_read,
     decode_outputs,
@@ -47,8 +47,6 @@ from finetune.hibiki_helpers import (
     stack_and_pad_audio,
 )
 from finetune.utils import repo_display_path, require_file, resolve_repo_path
-
-SUPPORTED_CACHE_FORMATS = {CACHE_FORMAT, GROUNDED_CACHE_FORMAT}
 
 
 def ascii_text(text: str) -> str:
@@ -101,14 +99,6 @@ def mps_memory_stats(device: torch.device) -> dict[str, float]:
         "mps_driver_gb": torch.mps.driver_allocated_memory() / 1024**3,
         "mps_recommended_gb": torch.mps.recommended_max_memory() / 1024**3,
     }
-
-
-def empty_device_cache(device: torch.device) -> None:
-    """Synchronize + free cached memory. No-op off MPS so CUDA runs stay clean."""
-    if not is_mps(device):
-        return
-    torch.mps.synchronize()
-    torch.mps.empty_cache()
 
 
 class _CausalSDPA:
@@ -224,8 +214,7 @@ class CachedCodeDataset(Dataset):
                 index for index, directory in enumerate(cache_dirs) if shard_path.parent == directory
             )
             payload = torch.load(shard_path, map_location="cpu")
-            cache_format = payload.get("format")
-            if cache_format not in SUPPORTED_CACHE_FORMATS:
+            if payload.get("format") != CACHE_FORMAT:
                 raise RuntimeError(f"Unsupported cache format in {shard_path}")
             frame_rate = float(payload["frame_rate"])
             if self.frame_rate is None:
@@ -248,11 +237,6 @@ class CachedCodeDataset(Dataset):
                     "codes": codes.to(torch.int32),
                     "frames": int(codes.shape[1]),
                     "source_frames": int(sample["vi_frames"]),
-                    "cache_format": str(cache_format),
-                    "stratum": str(sample.get("stratum", "legacy_unspecified")),
-                    "split": str(sample.get("split", "")),
-                    "speaker_id": str(sample.get("speaker_id", "")),
-                    "gender": str(sample.get("gender", "")),
                     "cache_index": cache_index,
                 }
                 if manifest_keys is None:
@@ -333,18 +317,6 @@ class CachedCodeDataset(Dataset):
                 balanced.extend(rng.choices(pool, k=count - len(pool)))
         self.samples = balanced
 
-    def filter_max_frames(self, max_frames: int, label: str) -> None:
-        if max_frames <= 0:
-            raise ValueError("Frame filtering requires a positive maximum")
-        before = len(self.samples)
-        self.samples = [sample for sample in self.samples if sample["frames"] <= max_frames]
-        if not self.samples:
-            raise RuntimeError(f"{label} selected no samples at T<={max_frames}")
-        print(
-            f"[dataset] {label}: dropped {before - len(self.samples)} samples over "
-            f"{max_frames} frames; kept {len(self.samples)}"
-        )
-
     def require_max_frames(self, max_frames: int, label: str) -> None:
         if not max_frames or not self.samples:
             return
@@ -410,18 +382,15 @@ def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
     max_frames = ((max_frames + FRAME_BUCKET - 1) // FRAME_BUCKET) * FRAME_BUCKET
     batch = torch.full((len(samples), codebooks, max_frames), -1, dtype=torch.long)
     ids: list[str] = []
-    strata: list[str] = []
     for index, sample in enumerate(samples):
         codes = sample["codes"]
         batch[index, :, : codes.shape[1]] = codes
         ids.append(sample["id"])
-        strata.append(sample["stratum"])
     return {
         "codes": batch,
         "ids": ids,
         "frames": torch.tensor([sample["frames"] for sample in samples]),
         "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
-        "strata": strata,
     }
 
 
