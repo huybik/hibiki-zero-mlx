@@ -213,7 +213,7 @@ if sys.argv[2] == "fresh":
         path_or_fileobj=identity,
         path_in_repo=f"{prefix}run.json",
         repo_id=sys.argv[1],
-        commit_message="Start direct full training run",
+        commit_message="Start full training run",
     )
 else:
     local_models = steps(
@@ -271,12 +271,25 @@ PY
   (( sync_status == 0 )) || return "$sync_status"
 }
 
+require_train_args() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --out-dir | --out-dir=* | --resume-checkpoint | --resume-checkpoint=*)
+        die "the launcher sets $arg itself"
+        ;;
+    esac
+  done
+}
+
 train() {
   [[ $# -ge 1 ]] \
     || die "usage: $0 train RUN_NAME --cache-dir DIR... --val-cache-dir DIR [train args]"
   local run_name="$1"
   shift
-  [[ "$run_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "RUN_NAME may use only [A-Za-z0-9._-]"
+  [[ "$run_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+    || die "RUN_NAME must start with a letter or digit and use only [A-Za-z0-9._-]"
+  require_train_args "$@"
   preflight 190
   local run_dir="$RUNS_DIR/$run_name"
   require_empty_dir "$run_dir"
@@ -293,9 +306,11 @@ resume() {
   local checkpoint
   checkpoint="$(realpath "$1")"
   shift
+  require_train_args "$@"
   local out_dir
   out_dir="$(dirname "$checkpoint")"
-  [[ "$(dirname "$out_dir")" == "$RUNS_DIR" ]] || die "checkpoint is not in a runs/ directory"
+  [[ "$(dirname "$out_dir")" == "$(realpath "$RUNS_DIR")" ]] \
+    || die "checkpoint is not in a runs/ directory"
   local run_name
   run_name="$(basename "$out_dir")"
   export HIBIKI_HF_PREFIX="$run_name"

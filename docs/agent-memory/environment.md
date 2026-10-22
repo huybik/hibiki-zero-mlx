@@ -28,7 +28,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   works), the Mimi checkpoint, the tokenizer and the staged BF16 model
   `vi-step135000-mlx-bf16/`.
 - `/Volumes/data/datasets/en_speech/` is the only training corpus
-  ([en-speech-corpus](en-speech-corpus.md)). No other Hibiki datasets are kept on disk.
+  ([en-speech-corpus](en-speech-corpus.md)). The PhoMT and FLEURS data are deleted.
 - Gitignored local state: `data/` (pair files and Mimi caches), `runs/` (training runs and eval
   outputs), `translations/` and `output/`.
 
@@ -37,4 +37,4 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 - `origin` is `github.com/huybik/hibiki-zero-mlx`; `upstream` is `kyutai-labs/hibiki-zero`.
 - Only the `huybik` GitHub account can push to `origin`. If `gh` has another account active,
   run `gh auth switch --user huybik` first.
-- Commit messages carry no AI attribution and no `Co-Authored-By` lines (see `AGENTS.md`).
+- Commit messages carry no AI attribution and no `Co-Authored-By` lines.

@@ -97,8 +97,9 @@ def mdc_plan() -> dict:
     key = os.environ.get("MDC_API_KEY")
     if not key:
         env = REPO_ROOT / ".env"
+        lines = env.read_text().splitlines() if env.is_file() else []
         key = next(
-            (l.split("=", 1)[1].strip() for l in env.read_text().splitlines() if l.startswith("MDC_API_KEY=")),
+            (l.split("=", 1)[1].strip() for l in lines if l.startswith("MDC_API_KEY=")),
             None,
         )
     if not key:

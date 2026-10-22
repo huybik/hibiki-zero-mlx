@@ -54,6 +54,7 @@ RESUME_KEYS = (
     "text_pad_loss_weight",
     "val_max_frames",
     "val_batch_size",
+    "val_batches",
     "val_every",
     "save_every",
     "keep_checkpoints",
@@ -280,6 +281,9 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.keep_checkpoints < 0:
         raise ValueError("--keep-checkpoints must be non-negative")
+    # Best-model promotion hard-links the checkpoint saved at the validation step.
+    if args.val_every and (not args.save_every or args.val_every % args.save_every):
+        raise ValueError("--val-every must be a multiple of a positive --save-every")
     if os.environ.get("NO_TORCH_COMPILE"):
         raise ValueError("Full-model training requires torch compile; unset NO_TORCH_COMPILE")
 
@@ -365,7 +369,7 @@ def main() -> None:
     if (
         args.resume_checkpoint is not None
         and args.val_every
-        and global_step >= args.val_every
+        and global_step > args.val_every
         and best_state is None
     ):
         raise RuntimeError("Resume requires the previously promoted best checkpoint")

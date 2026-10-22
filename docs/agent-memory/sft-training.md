@@ -20,11 +20,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - Defaults are the last production recipe:
   - batch 16, 5 epochs (`--max-steps` overrides);
   - constant LR 1e-6; fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0;
-  - validation (batch 4) and checkpoints every 9,000 steps.
+  - validation (batch 4) and checkpoints every 9,000 steps; `--val-every` must be a multiple
+    of `--save-every`, because promotion hard-links the checkpoint saved at that step.
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch.
   Batches pad to 16-frame buckets (`common.FRAME_BUCKET`), and training requires moshi's
-  internal compile, meaning `NO_TORCH_COMPILE` must be unset. Everything under `training/` is
-  CUDA-only; `train.py` has no device flag.
+  internal compile, meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` and
+  `cache_codes` are CUDA-only (`train.py` has no device flag); only `build_en_speech` runs on the
+  Mac.
 
 ## Objective
 
@@ -66,9 +68,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   teacher-forced validation loss (`best.json`, metric `teacher_forced_loss`).
 - `train.py` resumes only from the newest complete pair, and only if `run_config.json`
   matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences, seed, train row
-  count and total steps. After the first validation step, `best.json` is required.
+  count and total steps. Past the first validation step, `best.json` is required.
 - `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
-  - `checkpoints/`: the newest two pairs, at multiples of 9,000 plus the final step;
+  - `checkpoints/`: every new complete pair as it appears, keeping the newest two;
   - `best/`: the newest promoted model only;
   - `metadata/run_config.json`;
   - logs, on the final sync only.

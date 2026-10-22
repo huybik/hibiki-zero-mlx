@@ -183,12 +183,14 @@ class CachedCodeDataset(Dataset):
         """Shuffle length-sorted samples in whole-batch blocks.
 
         Batches stay near-uniform length (minimal padding, few shapes) but
-        the epoch is no longer an ascending-length curriculum replayed in the
-        same order every epoch. Deterministic, so sorted-resume skip still works.
+        the epoch is no longer an ascending-length curriculum. A short final
+        block stays last so every loader batch is exactly one block.
+        Deterministic, so the resume batch skip still works.
         """
         blocks = [self.samples[i : i + batch_size] for i in range(0, len(self.samples), batch_size)]
+        tail = blocks.pop() if blocks and len(blocks[-1]) < batch_size else []
         random.Random(seed).shuffle(blocks)
-        self.samples = [sample for block in blocks for sample in block]
+        self.samples = [sample for block in blocks for sample in block] + tail
 
     def __len__(self) -> int:
         return len(self.samples)

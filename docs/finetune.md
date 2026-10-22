@@ -56,12 +56,21 @@ steps.
 `RUN_NAME/` prefix is empty, and uploads `run.json` with the run identity and commit.
 It then trains while `training.finetune.hf_sync` keeps the newest two complete recovery
 pairs, the promoted best model, the run config, and the final logs under that prefix.
-Training stops if sync fails.
+Training stops if sync fails. A start that fails before training (for example a
+missing cache directory) has already claimed `runs/RUN_NAME/` and the remote
+`RUN_NAME/run.json`: delete both, or choose a new name.
 
 ## Recover a run on a replacement pod
 
 Check out the commit recorded in the remote `RUN_NAME/run.json` before setup, then set
 up the pod as above and restore the newest complete model/trainer pair:
+
+```bash
+run=RUN_NAME
+git checkout "$(curl -fsSL \
+  "https://huggingface.co/$HIBIKI_HF_REPO/resolve/main/$run/run.json" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
+```
 
 ```bash
 run=RUN_NAME
@@ -95,7 +104,7 @@ the same run only:
 
 - it needs the newest complete pair, an unchanged `run_config.json`, and the same run
   identity and commit;
-- after the first validation, it also needs the promoted best model and marker;
+- past the first validation step, it also needs the promoted best model and marker;
 - it cannot extend the stop step or start a different run.
 
 Runs recorded before the `inference/`/`training/` split, such as

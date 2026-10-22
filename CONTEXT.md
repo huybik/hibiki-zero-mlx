@@ -50,8 +50,8 @@ inference/ (Apple Silicon, MLX)
   [environment](docs/agent-memory/environment.md).
 - Never upload or re-share the Common Voice part of `en_speech` →
   [en-speech-corpus](docs/agent-memory/en-speech-corpus.md).
-- Apple Silicon is for inference only; training, caching and evaluation run on CUDA →
-  [sft-training](docs/agent-memory/sft-training.md).
+- Apple Silicon runs inference and the `en_speech` corpus builder only; Mimi caching, training
+  and evaluation run on CUDA → [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
@@ -83,7 +83,7 @@ inference/ (Apple Silicon, MLX)
 ## Maintaining context
 
 ```text
-CLAUDE.md (imports AGENTS.md + this file)
+CLAUDE.md (imports this file)
   └─ CONTEXT.md: orientation, invariants, Topic Index
        └─ docs/agent-memory/<topic>.md: one note per aspect, read when work touches its paths
 ```
