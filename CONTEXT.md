@@ -1,82 +1,82 @@
 # Hibiki MLX — project context
 
-This repository maintains two paths:
+Last verified: 2026-10-22
 
-1. q4 MLX inference for Hibiki-Zero on Apple Silicon;
-2. direct full-model Vietnamese-to-English voice-preserving simultaneous
-   translation SFT on CUDA.
+## Purpose
 
-The mobile model track now has the frozen 12-layer contract, strict CUDA AR and
-parallel-head distillation, and a BF16 MLX listening path. Teacher inference and
-student forward/backward use BF16; optimizer masters, Adam state, and recovery
-checkpoints stay FP32. The final parallel export is cast to BF16. Automatic
-quality validation, benchmarking, qualification receipts, and student q4 are
-deferred; sample translation and manual listening are the current endpoint.
+This repo runs Hibiki-Zero simultaneous speech translation:
 
-Historical design, experiment, and report documentation remains under `docs/`.
-The active training handoff is `docs/finetune.md`.
+- MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE→EN, or staged BF16 checkpoints);
+- direct full-model Vietnamese→English voice-preserving SFT on one H100;
+- a 12-layer mobile student, and the roadmap toward VI→EN parity with the upstream languages.
 
-## Inference
+Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
+[paper](https://arxiv.org/abs/2602.11072).
 
-- `main.py` is the file and microphone translation CLI.
-- `macos/HibikiTestApp/` is the native SwiftUI file/microphone test app. Its
-  local build script produces `build/Hibiki Test.app` and invokes `main.py`.
-- `hibiki_mlx/pipeline.py` owns the Mimi-encode → LM → Mimi-decode pipeline.
-- `moshi-mlx/` is the minimal vendored MLX runtime. Its required Hibiki deltas
-  are GQA (`kv_repeat`), configurable `hidden_scale`, `rope_concat`,
-  per-slice depformer output LayerNorm, and the compact one/two-pass
-  `parallel_v1` head.
-- `3b` resolves to the existing q4 `weights/` directory. Custom directories may
-  contain existing q4 weights or staged BF16 weights with
-  `weight_dtype=bfloat16`.
-- Each codec thread owns a separate `rustymimi.Tokenizer`. Queues carry NumPy
-  arrays because lazy MLX graphs cannot cross their creating threads.
-- Microphone inference keeps the MLX model and generator on their owning main
-  thread; only the CPU Mimi encoder and decoder run in worker threads.
-- File inference adds an 8-second silence tail and stops on text EOS or after
-  12 sustained PAD frames.
-- The student listening path is BF16 export → `scripts/convert_mlx_bf16.py` →
-  `main.py INPUT --model STAGED_DIR`.
-- `scripts/check_swift_compat.py` requires strict q4 group-size-32 reload plus
-  valid config, tokenizer, and Mimi sidecars, and deliberately rejects
-  `parallel_v1` as unsupported by stock Swift.
+## Map
 
-## Training
+```text
+FLEURS, PhoMT ─► finetune/ caches ─► finetune/h100.sh → train.py (H100 SFT) ─► HF recovery repo
+                                              │
+                                              └► finetune/grpo_rollout.py (GRPO, phase A only)
+3B teacher ─► student/ (12 layers + parallel_v1 head) ─► BF16 export
+checkpoints ─► scripts/convert_mlx_{q4,bf16}.py ─► main.py · hibiki_mlx/ · moshi-mlx/ · macos/
+remote_dataset/build_en_speech.py ─► /Volumes/data/datasets/en_speech (roadmap phase 1 input)
+```
 
-- The only launcher recipe is direct full-data SFT from the upstream
-  Hibiki-Zero weight. ASCII-ASR and all pilot, replay, post-source, contrastive,
-  anti-repetition, and six-epoch curricula are obsolete and rejected.
-- Cached streams are used unchanged: English target Mimi audio, CTC-timed
-  English text ending in tokenizer EOS, and Vietnamese source Mimi audio ending
-  in explicit codec-card EOS. There is no dataset transform.
-- English target audio is teacher-forced and trained with audio CE. Every model
-  parameter is trainable.
-- The frozen train receipt has 719,120 rows: 683,164 PhoMT and 35,956 FLEURS.
-  Raw train and validation are capped at 280 frames. Validation retains 138
-  rows, has observed maximum 277, uses batch 4, and never shuffles.
-- The run uses physical batch 16, accumulation 1, five epochs / 224,725 steps,
-  fixed LR `1e-6`, and fused AdamW with betas `(0.9, 0.95)` and weight decay
-  `0.1`. CUDA uses fp32 master weights, bf16 autocast, compile, and 16-frame
-  buckets.
-- `finetune/h100.sh` pins Torch `2.8.0+cu128` and Moshi `0.2.13`, verifies one
-  H100 with at least 90 GiB VRAM and driver 570+, freezes the receipt, and gates
-  launch on a longest-row save/resume smoke.
-- `finetune/train.py` validates and saves every 9,000 steps plus the final step,
-  promoting the lowest teacher-forced validation loss. `finetune/eval.py` is an optional
-  correct-source-only free-running check; shuffled-source evaluation is not part
-  of this receipt.
-- `finetune/hf_sync.py` keeps the newest two complete recovery pairs, the latest
-  promoted best model, run metadata, and logs under the public model prefix
-  `grounded_v2_full_direct_voice_5epoch`. Loading requires an exact same-run model,
-  optimizer, manifest, receipt, run identity, and code commit.
-- Published caches live under the dataset prefix `grounded-v2/`. The launcher
-  expects `finetune/cache/phomt_grounded_v2`,
-  `finetune/cache/train_grounded_v2`, and
-  `finetune/cache/validation_grounded_v2`.
+- `main.py`, `hibiki_mlx/`, `moshi-mlx/`, `scripts/` and `macos/HibikiTestApp/` are inference.
+- `finetune/` holds CUDA SFT, caches, evaluation and GRPO.
+- `student/` is mobile-student distillation.
+- `remote_dataset/` holds dataset downloaders and builders.
+- `docs/` holds plans, analyses and reports.
 
-Use `docs/finetune.md` for pod setup and recovery, `docs/training_plan.md` for
-the frozen recipe, and `docs/validation_plan.md` for monitoring and optional
-free-running evaluation.
+## Where things stand
+
+- The 5-epoch SFT run `grounded_v2_full_direct_voice_5epoch` is analysed up to step 135k.
+  Teacher-forced loss improves, but free-running translation fails, and the FLEURS validation
+  loss diverges.
+- [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
+  the English source corpus is built, but the translation, TTS and caching pipeline is not.
+- GRPO phase A is coded but has a reward defect. The student code is complete but has not been
+  run.
+
+## Essential invariants
+
+- Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`) →
+  [environment](docs/agent-memory/environment.md).
+- Never upload or re-share the Common Voice part of `en_speech` →
+  [en-speech-corpus](docs/agent-memory/en-speech-corpus.md).
+- The SFT recipe constants live in `freeze_full_data_receipt.py`, and `train.py` rejects any
+  deviation. Production runs go only through `h100.sh` → [sft-training](docs/agent-memory/sft-training.md).
+- Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
+  codebooks. EOS and -1 positions are fixed, and training applies no transform →
+  [sft-data-caches](docs/agent-memory/sft-data-caches.md).
+- Resume only from the newest complete model and optimizer pair of the same run →
+  [sft-training](docs/agent-memory/sft-training.md), [mobile-student](docs/agent-memory/mobile-student.md).
+- In MLX, give each thread its own `rustymimi.Tokenizer` and pass NumPy arrays, not MLX arrays,
+  between threads → [mlx-inference](docs/agent-memory/mlx-inference.md).
+- q4 means 4-bit, group size 32, on layers whose input width divides by 32. A BF16 model
+  directory needs `weight_dtype: bfloat16` → [mlx-inference](docs/agent-memory/mlx-inference.md).
+- The student computes in BF16 but keeps FP32 masters, optimizer state and recovery
+  checkpoints, casting to BF16 only at export. Every stage is bound to the previous one by
+  SHA-256 → [mobile-student](docs/agent-memory/mobile-student.md).
+- Stock moshi-swift cannot load the `parallel_v1` head →
+  [mlx-inference](docs/agent-memory/mlx-inference.md).
+- GRPO rewards are currently identical within a group, so every advantage is 0; fix this before
+  phase B → [grpo](docs/agent-memory/grpo.md).
+
+## Topic Index
+
+| Read when working on… | Note | Main paths |
+|---|---|---|
+| MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `main.py`, `hibiki_mlx/`, `moshi-mlx/`, `scripts/`, `macos/` |
+| SFT recipe, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `finetune/{train,common,hf_sync,eval,validate}.py`, `finetune/h100.sh` |
+| Pairs, Mimi caches, publishing, frozen receipt | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `finetune/{cache_codes,cache_phomt_stream,text_timing,build_pairs,publish_grounded_cache,freeze_full_data_receipt}.py`, `remote_dataset/download_*.py` |
+| GRPO rollouts, rewards, trainer | [grpo](docs/agent-memory/grpo.md) | `finetune/grpo_rollout.py`, `finetune/tests/`, `docs/grpo_plan.md` |
+| Mobile student distillation and export | [mobile-student](docs/agent-memory/mobile-student.md) | `student/`, `docs/mobile_student_plan.md` |
+| English read-speech corpus | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `remote_dataset/build_en_speech.py`, `/Volumes/data/datasets/en_speech` |
+| Roadmap, analyses, reports, proposals | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
+| Python, secrets, external storage, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `/Volumes/data` |
 
 ## Canonical resources
 
@@ -84,17 +84,21 @@ free-running evaluation.
 - Recovery: https://huggingface.co/huybik/hibiki-zero-vi-full-sft/tree/main/grounded_v2_full_direct_voice_5epoch
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - PhoMT speech data: https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
-- English read-speech corpus (~10k h train, Common Voice 27 EN + Libriheavy):
-  `/Volumes/data/datasets/en_speech`, built by `remote_dataset/build_en_speech.py`.
-  Parquet shards keep the original mono MP3/Opus bytes; resample to 24 kHz for
-  Mimi. The Common Voice part must not be re-shared (MDC terms).
 
-## Environment
+## Maintaining context
 
-- Local Python work uses `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
-- The ignored `.env` may contain the HF credential. Never print, log, or commit
-  its value.
-- Inference requires MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, and
-  sounddevice for microphone mode.
-- Training uses Python 3.10–3.13, Torch `2.8.0+cu128`, Moshi `0.2.13`, and the
-  exact dependencies installed by `./finetune/h100.sh setup`.
+```text
+CLAUDE.md (imports AGENTS.md + this file)
+  └─ CONTEXT.md: orientation, invariants, Topic Index
+       └─ docs/agent-memory/<topic>.md: one note per aspect, read when work touches its paths
+```
+
+- Record current facts checked against the code. Link to existing docs instead of copying,
+  keep one owner per fact, and keep no history.
+- Update the owning note in the same commit as the change. Knowledge with no owner gets a new
+  note, added to the Topic Index.
+- Change this file only when orientation, an invariant or the index changes, and update
+  `Last verified` when you do.
+- Keep this file under ~1,500 words and each note under ~1,000. Split a subject into a new note
+  before one grows past that.
+- Each note opens with `Read when touching …`, a link back here, and links to its sections.
