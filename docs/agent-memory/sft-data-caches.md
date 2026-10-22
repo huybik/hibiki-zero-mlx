@@ -10,8 +10,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [PhoMT cache](#phomt-
 ```text
 pair file (.jsonl/.csv, local audio) ─► cache_codes ─► data/cache/<name>/shard_*.pt + index.csv
   └─ text_timing: wav2vec2 CTC word timing of the English text
-HF huybik/hibiki-zero-vi-full-sft phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored)
-data/cache/<name> ... ─► training.finetune.train --cache-dir (several) / --val-cache-dir
+HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see PhoMT cache)
+data/cache/<name> ... ─► training.finetune.train --cache-dir (several), --val-cache-dir
 ```
 
 - No pipeline produces pair rows yet. The next source is the English `en_speech` corpus
@@ -33,9 +33,9 @@ data/cache/<name> ... ─► training.finetune.train --cache-dir (several) / --v
 
 ## PhoMT cache
 
-- Pooled with the `en_speech` caches by passing it as one more `--cache-dir`. Its 804 hours
-  count toward the ~10k training hours of 5–15 s clips, which is why `en_speech` stops at 9,200
-  hours of them (user's decision, 2026-10-22).
+- Pooled with the `en_speech` caches by passing it as one more `--cache-dir`. Its 804 hours of
+  English speech (~770 h of them 5–15 s clips) count toward the ~10k training hours of 5–15 s
+  clips, which is why `en_speech` stops at 9,200 hours of them (user's decision, 2026-10-22).
 - It is the HF dataset `huybik/hibiki-zero-vi-full-sft` prefix `phomt-grounded-v2-5s/`: 1,377
   `shard_*.pt` (6.5 GB) holding 361,968 `train` rows, restored as in
   [docs/finetune.md](../finetune.md). The Mac copy is

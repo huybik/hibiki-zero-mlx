@@ -53,9 +53,10 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
   clips. About 10% of Libriheavy rows are stereo and are dropped by checking OpusHead byte 37
   (`libriheavy-medium-00088` was all stereo, so its shard is empty). Files whose output shard
   exists are skipped. A large file yields ~5.5 h of 5–15 s clips in ~0.18 GB.
-- Every source keeps only clips of 5–22.4 s (`CLIP_SECONDS`); 22.4 s is the trainer's 280-frame
-  cap. The first 194 large files were written before the 5–15 s rule and keep all their 5–22.4 s
-  clips.
+- Every source keeps only clips of 5–22.4 s (`CLIP_SECONDS`). 22.4 s is an upper bound: a
+  cache row also holds the English delay, U[0, 0.5 × Vietnamese duration], so most 15–22.4 s
+  clips will still exceed the trainer's 280 frames. The first 194 large files were written
+  before the 5–15 s rule and keep all their 5–22.4 s clips; the card does not say so.
 - Shards are written to `.tmp` and then renamed, so an interrupted write never looks finished.
 
 ## Rules
@@ -64,9 +65,8 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
   upload this corpus.
 - The corpus must hold ~10k hours of 5–15 s clips, with the PhoMT cache counting toward them,
   so `--target-hours` is 10k minus PhoMT's hours. The user asked for this on 2026-10-22, when
-  only 4,372 of the corpus's 10,010 hours were 5–15 s clips. Translation covers every 5–22.4 s
-  clip ([en-vi-translation](en-vi-translation.md)), including the 15–22.4 s clips of the
-  original files.
+  only 4,372 of the corpus's 10,010 hours were 5–15 s clips. What gets translated is in
+  [en-vi-translation](en-vi-translation.md).
 - Rows outside 5–22.4 s were deleted from the existing shards rather than rebuilt (user's
   choice), and new large files keep only their 5–15 s clips, because `/Volumes/data` had no room
   for whole files (~0.47 GB each). Bringing the deleted rows back means downloading them again.

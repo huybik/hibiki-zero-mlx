@@ -11,7 +11,8 @@ Sources, both read speech with cased, punctuated transcripts:
     plus seeded-random large files, keeping only their 5-15 s clips, until the
     pooled train split holds --target-hours of 5-15 s clips.
 
-Every source keeps only clips of 5-22.4 s; 22.4 s is the trainer's 280-frame row cap.
+Every source keeps only clips of 5-22.4 s; longer clips can never fit the trainer's
+280-frame rows.
 
 Audio keeps each source's original mono codec bytes (CV MP3, Libriheavy 48 kHz
 Opus). Both are already lossy, so a lossless 24 kHz FLAC copy would be ~3x the
@@ -47,9 +48,9 @@ from training.paths import REPO_ROOT
 
 MDC_DATASET = "cmu5jplf300nwmh07iqvk9leo"
 LIBRIHEAVY = "mythicinfinity/libriheavy"
-CLIP_SECONDS = (5.0, 280 / 12.5)  # clip range every source keeps; the top is the trainer's 280-frame cap at 12.5 Hz
-TOP_UP_SECONDS = (5.0, 15.0)  # clip range that large files keep and --target-hours counts
-LARGE_FILE_HOURS = 5.5  # mean hours of mono 5-15 s clips per Libriheavy large file; sizes top-up batches
+CLIP_SECONDS = (5.0, 280 / 12.5)  # kept from every source; longer clips never fit a 280-frame row
+TOP_UP_SECONDS = (5.0, 15.0)  # kept from large files, and counted by --target-hours
+LARGE_FILE_HOURS = 5.5  # mean TOP_UP_SECONDS hours per Libriheavy large file; sizes top-up batches
 SHARD_ROWS = 20_000
 DOWNLOAD_CHUNK = 1 << 28  # 256 MiB ranges fetched in parallel
 
@@ -85,6 +86,10 @@ def write_shard(path: Path, columns: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     pq.write_table(table, tmp, row_group_size=500, compression=COMPRESSION)
     tmp.replace(path)
+
+
+def span(seconds: tuple[float, float]) -> str:
+    return f"{seconds[0]:g}-{seconds[1]:g} s"
 
 
 def in_range(duration: pa.ChunkedArray, seconds: tuple[float, float]) -> pa.ChunkedArray:
@@ -300,7 +305,8 @@ def convert_lh(root: Path, src: str, seconds: tuple[float, float]) -> None:
     if not pc.all(pc.equal(pc.binary_slice(data, 28, 36), pa.scalar(b"OpusHead"))).as_py():
         raise RuntimeError(f"{src}: audio is not single-stream Ogg Opus")
     total = t.num_rows
-    t = t.filter(pc.and_(pc.equal(pc.binary_slice(data, 37, 38), pa.scalar(b"\x01")), in_range(t["audio_duration"], seconds)))
+    mono = pc.equal(pc.binary_slice(data, 37, 38), pa.scalar(b"\x01"))
+    t = t.filter(pc.and_(mono, in_range(t["audio_duration"], seconds)))
     write_shard(
         dst,
         {
@@ -311,7 +317,7 @@ def convert_lh(root: Path, src: str, seconds: tuple[float, float]) -> None:
             "duration": t["audio_duration"].cast(pa.float32()),
         },
     )
-    log(f"wrote {dst.relative_to(root)} ({t.num_rows}/{total} mono rows of {seconds[0]:g}-{seconds[1]:g} s)")
+    log(f"wrote {dst.relative_to(root)} ({t.num_rows}/{total} mono rows of {span(seconds)})")
 
 
 def build_libriheavy(root: Path, target_hours: float, workers: int) -> None:
@@ -322,18 +328,19 @@ def build_libriheavy(root: Path, target_hours: float, workers: int) -> None:
     base = [f for f in files if subset(f) in ("dev", "small", "medium")]
     large = [f for f in files if subset(f) == "large"]
     random.Random(0).shuffle(large)
+    top_up = span(TOP_UP_SECONDS)
     with ThreadPoolExecutor(workers) as ex:
         list(ex.map(lambda f: convert_lh(root, f, CLIP_SECONDS), base))
         while (have := split_hours(root, "train", TOP_UP_SECONDS)) < target_hours:
             todo = [f for f in large if not lh_output(root, f).exists()]
             if not todo:
-                raise RuntimeError(f"Libriheavy large exhausted at {have:.1f} train hours of 5-15 s clips")
+                raise RuntimeError(f"Libriheavy large exhausted at {have:.1f} train hours of {top_up} clips")
             batch = todo[: max(1, int((target_hours - have) / LARGE_FILE_HOURS))]
-            log(f"train {have:.1f}/{target_hours:.0f} h of 5-15 s clips; adding {len(batch)} large files")
+            log(f"train {have:.1f}/{target_hours:.0f} h of {top_up} clips; adding {len(batch)} large files")
             list(ex.map(lambda f: convert_lh(root, f, TOP_UP_SECONDS), batch))
     log(
         f"Libriheavy done: train {split_hours(root, 'train'):.1f} h, "
-        f"{split_hours(root, 'train', TOP_UP_SECONDS):.1f} h of it in 5-15 s clips"
+        f"{split_hours(root, 'train', TOP_UP_SECONDS):.1f} h of it in {top_up} clips"
     )
 
 
@@ -359,11 +366,11 @@ configs:
 # en_speech
 
 Pooled English read speech with cased, punctuated transcripts, prepared for Mimi
-(24 kHz) tokenization: {{TRAIN_HOURS}} h train ({{TRAIN_TOP_UP_HOURS}} h of 5-15 s clips),
+(24 kHz) tokenization: {{TRAIN_HOURS}} h train ({{TOP_UP_RANGE_HOURS}} h of {{TOP_UP}} clips),
 {{VALIDATION_HOURS}} h validation. Built by `training/prep/build_en_speech.py` in the
 hibiki-zero repository.
 
-| split | source | shards | rows | hours | 5-15 s hours | speakers | GB |
+| split | source | shards | rows | hours | {{TOP_UP}} hours | speakers | GB |
 |---|---|---:|---:|---:|---:|---:|---:|
 {{STATS}}
 
@@ -416,13 +423,12 @@ With Hugging Face `datasets` (needs `torchcodec`):
 - Libriheavy (`mythicinfinity/libriheavy`, LibriVox audio taken from the best
   available source): mono rows only (the ~10% stereo Opus rows are dropped rather
   than re-encoded). dev is the validation split; train is small + medium plus
-  seeded-random large files until the pooled train split holds the target hours
-  of 5-15 s clips. Large files keep only their 5-15 s clips, except the first
-  194, which were written before that rule and keep every clip of 5-22.4 s.
+  seeded-random large files, keeping only their {{TOP_UP}} clips, until the pooled
+  train split holds the target hours of {{TOP_UP}} clips.
   `text` is the book text (`text_original`); the upper-case normalized copy, book
   ids and test sets are not kept.
-- Both sources keep only clips of 5-22.4 s; 22.4 s is 280 Mimi frames at
-  12.5 Hz, the training row cap.
+- Both sources keep only clips of {{CLIP}}; longer clips can never fit the
+  280-frame (12.5 Hz) training rows.
 
 ## Licenses
 
@@ -462,7 +468,9 @@ def write_card(root: Path) -> None:
     card = (
         CARD.replace("{{STATS}}", table)
         .replace("{{TRAIN_HOURS}}", f"{totals['train']:,.0f}")
-        .replace("{{TRAIN_TOP_UP_HOURS}}", f"{sum(r[5] for r in rows if r[0] == 'train'):,.0f}")
+        .replace("{{TOP_UP_RANGE_HOURS}}", f"{sum(r[5] for r in rows if r[0] == 'train'):,.0f}")
+        .replace("{{TOP_UP}}", span(TOP_UP_SECONDS))
+        .replace("{{CLIP}}", span(CLIP_SECONDS))
         .replace("{{VALIDATION_HOURS}}", f"{totals['validation']:,.0f}")
     )
     (root / "README.md").write_text(card)
@@ -474,7 +482,9 @@ def main() -> None:
     p.add_argument("step", choices=("cv", "libriheavy", "card"))
     p.add_argument("--root", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
     # With the PhoMT cache's ~0.8k hours, training gets ~10k hours of 5-15 s clips.
-    p.add_argument("--target-hours", type=float, default=9_200, help="pooled train hours of 5-15 s clips (libriheavy step)")
+    p.add_argument(
+        "--target-hours", type=float, default=9_200, help="pooled train hours of 5-15 s clips (libriheavy step)"
+    )
     p.add_argument("--workers", type=int, default=6)
     args = p.parse_args()
     if args.step == "cv":
