@@ -20,7 +20,8 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
 - `h100.sh cache-grounded` needs `pairs/train.jsonl` and `pairs/validation.jsonl`.
   - It runs `HIBIKI_CACHE_WORKERS` (default 4) workers of
     `cache_phomt_stream.py --profile h100`. These stream one PhoMT parquet shard at a time, drop
-    Vietnamese audio over 25 s and skip duplicate rows (same texts and durations).
+    Vietnamese audio over 25 s and skip rows whose texts and durations repeat within that
+    worker's current run.
   - It then runs `cache_codes.py` for FLEURS, at 32 rows per shard.
 - Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; the builders write it
   and `CachedCodeDataset` rejects anything else:
@@ -32,6 +33,8 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
 - Publishing uploads `cache_chunk_{0..7}.tar.zst`, `fleurs_cache.tar.zst`, pairs and reject
   files, `manifest.json` and `README.md`. It refuses a non-empty prefix and verifies remote
   SHA-256s and the exact file set. Restoring is in [docs/finetune.md](../finetune.md).
+- `remote_dataset/download_covost2.py` materialises a frozen CoVoST 2 French→English control
+  set; nothing references it.
 
 ## Row layout
 

@@ -95,5 +95,3 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
   `student/` does not import it.
 - `utils.DEFAULT_RUN_DIR` (`runs/vi_base_full`) is not the production run directory; `h100.sh`
   passes the real one.
-- `remote_dataset/download_covost2.py` materialises a frozen CoVoST 2 French→English control
-  set; nothing references it.
