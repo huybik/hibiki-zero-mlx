@@ -81,8 +81,9 @@ Measured with Sonnet 5.5:
   from ~1 hour on `claude-5x` to ~3 on `default`.
 - `--profile` names each subscription to spend, in order of use; the run uses `claude-p`,
   `claude-l`, `claude-5x`, then `default`. When all are out of quota it waits for the earliest
-  reset, checking the clock every minute so it also resumes after the Mac sleeps. Name
-  `default`, the interactive Claude Code login, only if the user asks. Every named profile must
+  reset, checking the clock every minute so it also resumes after the Mac sleeps. `default` is
+  the `~/.claude` login; the user works interactively on another account, so the run may spend
+  it like the others, weekly cap included. Every named profile must
   have extra usage off (`/v1/health` shows `overageStatus`), or the server keeps serving it and
   bills.
 - Run long jobs as `nohup caffeinate -i python …`, logging to `translate.log` in the output
