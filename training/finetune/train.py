@@ -1,9 +1,15 @@
 #!/usr/bin/env python
-"""Direct full-model Hibiki-Zero Vietnamese-to-English trainer."""
+"""Full-model Hibiki-Zero Vietnamese-to-English SFT on grounded caches.
+
+Trains every parameter from the upstream weight with fp32 masters, bf16 autocast
+and fused AdamW. Rows are length-sorted and batch-shuffled once with --seed; each
+epoch replays that order. Validation runs on a fixed, length-sorted cache, and the
+lowest teacher-forced validation loss is promoted to best_stepNNNNNN.safetensors.
+Resume only from the newest complete model/trainer pair of the same run.
+"""
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -14,26 +20,7 @@ from typing import Any
 import torch
 
 from training.finetune import common
-from training.finetune.freeze_full_data_receipt import (
-    BATCH_SIZE,
-    BEST_METRIC,
-    CACHE_COUNTS,
-    CADENCE_STEPS,
-    EPOCHS,
-    EXPECTED_ARTIFACTS,
-    EXPECTED_CACHE,
-    MAX_FRAMES,
-    ROWS,
-    SEED,
-    STEPS_PER_EPOCH,
-    TOTAL_STEPS,
-    VALIDATION_BATCH_SIZE,
-    VALIDATION_MAX_FRAMES,
-    VALIDATION_OBSERVED_MAX_FRAMES,
-    VALIDATION_ROWS,
-)
 from training.paths import (
-    DEFAULT_CACHE_ROOT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_MODEL_WEIGHT,
@@ -44,18 +31,43 @@ from training.paths import (
     resolve_repo_path,
 )
 
+BEST_METRIC = "teacher_forced_loss"
+# A resumed run must match these run_config.json entries.
+RESUME_KEYS = (
+    "cache_dir",
+    "val_cache_dir",
+    "config_path",
+    "model_weight",
+    "mimi_weight",
+    "tokenizer",
+    "epochs",
+    "max_steps",
+    "batch_size",
+    "max_frames",
+    "lr",
+    "adam_beta1",
+    "adam_beta2",
+    "weight_decay",
+    "grad_clip",
+    "audio_loss_weight",
+    "text_loss_weight",
+    "text_pad_loss_weight",
+    "val_max_frames",
+    "val_batch_size",
+    "val_batches",
+    "val_every",
+    "save_every",
+    "keep_checkpoints",
+    "seed",
+    "train_samples",
+    "total_steps",
+)
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--cache-dir",
-        type=Path,
-        nargs="+",
-        default=[
-            DEFAULT_CACHE_ROOT / "phomt_grounded_v2",
-            DEFAULT_CACHE_ROOT / "train_grounded_v2",
-        ],
-    )
+    # No abbreviations: h100.sh must be able to reject --out-dir/--resume-checkpoint.
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
     parser.add_argument("--val-cache-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -63,13 +75,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
-    parser.add_argument("--full-data-receipt", type=Path, required=True)
-    parser.add_argument("--input-sample-manifest", type=Path, required=True)
-    parser.add_argument("--epochs", type=int, default=EPOCHS)
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
-    parser.add_argument("--grad-accum-steps", type=int, default=1)
-    parser.add_argument("--max-frames", type=int, default=MAX_FRAMES)
-    parser.add_argument("--max-steps", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--max-steps", type=int, default=0, help="0 trains all epochs.")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--max-frames", type=int, default=280)
     parser.add_argument("--lr", type=float, default=1e-6)
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.95)
@@ -78,27 +87,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-pad-loss-weight", type=float, default=0.05)
-    parser.add_argument("--val-max-frames", type=int, default=VALIDATION_MAX_FRAMES)
-    parser.add_argument("--val-batch-size", type=int, default=VALIDATION_BATCH_SIZE)
-    parser.add_argument("--val-every", type=int, default=CADENCE_STEPS)
-    parser.add_argument("--val-batches", type=int, default=0)
-    parser.add_argument("--save-every", type=int, default=CADENCE_STEPS)
+    parser.add_argument("--val-max-frames", type=int, default=280)
+    parser.add_argument("--val-batch-size", type=int, default=4)
+    parser.add_argument("--val-every", type=int, default=9000)
+    parser.add_argument("--val-batches", type=int, default=0, help="0 validates every batch.")
+    parser.add_argument("--save-every", type=int, default=9000)
     parser.add_argument("--keep-checkpoints", type=int, default=2)
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--resume-checkpoint", type=Path)
-    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--smoke-longest-first", action="store_true")
-    parser.add_argument("--gradient-checkpointing", action="store_true")
     return parser.parse_args()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def atomic_write_text(text: str, path: Path) -> None:
@@ -119,73 +118,6 @@ def atomic_torch_save(payload: Any, path: Path) -> None:
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def cache_counts(dataset: common.CachedCodeDataset) -> list[int]:
-    return [
-        sum(sample["cache_index"] == cache_index for sample in dataset.samples)
-        for cache_index in range(dataset.cache_count)
-    ]
-
-
-def load_receipt(path: Path) -> tuple[dict[str, Any], bytes]:
-    encoded = path.read_bytes()
-    document = json.loads(encoded)
-    if set(document) != {"sha256", "full_data_receipt"}:
-        raise RuntimeError("Invalid full-data receipt wrapper")
-    receipt = document["full_data_receipt"]
-    digest = hashlib.sha256(
-        json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    if digest != document["sha256"]:
-        raise RuntimeError("Full-data receipt SHA-256 mismatch")
-    expected = {
-        "version": 3,
-        "strategy": "direct_voice_preserving_simultaneous_translation",
-        "artifacts": EXPECTED_ARTIFACTS,
-        "cache": EXPECTED_CACHE,
-        "streams": {
-            "target_audio": {
-                "content": "cached_english_mimi",
-                "termination": "native_minus_one_mask",
-            },
-            "target_text": {
-                "content": "cached_ctc_timed_english",
-                "termination": "tokenizer_eos",
-            },
-            "source_audio": {
-                "content": "cached_vietnamese_mimi",
-                "termination": "explicit_card_eos",
-            },
-            "transform": None,
-        },
-        "rows": ROWS,
-        "cache_counts": CACHE_COUNTS,
-        "cache_weights": [0.95, 0.05],
-        "selection_seed": SEED,
-        "batch_size": BATCH_SIZE,
-        "max_frames": MAX_FRAMES,
-        "epochs": EPOCHS,
-        "steps_per_epoch": STEPS_PER_EPOCH,
-        "total_steps": TOTAL_STEPS,
-        "validation_every_steps": CADENCE_STEPS,
-        "checkpoint_every_steps": CADENCE_STEPS,
-        "best_metric": BEST_METRIC,
-    }
-    for key, value in expected.items():
-        if receipt.get(key) != value:
-            raise RuntimeError(f"Direct full-data receipt changed: {key}")
-    validation = receipt.get("validation", {})
-    if (
-        validation.get("rows") != VALIDATION_ROWS
-        or validation.get("batch_size") != VALIDATION_BATCH_SIZE
-        or validation.get("max_frames") != VALIDATION_MAX_FRAMES
-        or validation.get("observed_max_frames")
-        != VALIDATION_OBSERVED_MAX_FRAMES
-        or validation.get("shuffle") is not False
-    ):
-        raise RuntimeError("Direct validation receipt changed")
-    return receipt, encoded
 
 
 def checkpoint_pairs(out_dir: Path) -> list[tuple[int, Path, Path]]:
@@ -230,11 +162,7 @@ def prune_checkpoint_pairs(out_dir: Path, keep: int) -> None:
 
 
 def build_metadata(args: argparse.Namespace) -> dict[str, str]:
-    return {
-        "target": "full",
-        "recipe": "direct_voice_preserving_simultaneous_translation",
-        "base_model": repo_display_path(args.model_weight),
-    }
+    return {"target": "full", "base_model": repo_display_path(args.model_weight)}
 
 
 def load_best_state(out_dir: Path) -> dict[str, Any] | None:
@@ -346,42 +274,19 @@ def load_resume_checkpoint(
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    fixed = {
-        "epochs": EPOCHS,
-        "batch_size": BATCH_SIZE,
-        "grad_accum_steps": 1,
-        "max_frames": MAX_FRAMES,
-        "lr": 1e-6,
-        "adam_beta1": 0.9,
-        "adam_beta2": 0.95,
-        "weight_decay": 0.1,
-        "audio_loss_weight": 1.0,
-        "text_loss_weight": 1.0,
-        "text_pad_loss_weight": 0.05,
-        "val_max_frames": VALIDATION_MAX_FRAMES,
-        "val_batch_size": VALIDATION_BATCH_SIZE,
-        "seed": SEED,
-        "gradient_checkpointing": False,
-    }
-    for key, expected in fixed.items():
-        if getattr(args, key) != expected:
-            raise ValueError(f"Direct full-data recipe requires {key}={expected}")
-    if args.max_steps and (not args.smoke_longest_first or args.max_steps > 11):
-        raise ValueError("--max-steps is reserved for the 11-step smoke")
-    if args.smoke_longest_first and not args.max_steps:
-        raise ValueError("--smoke-longest-first requires --max-steps")
-    if args.grad_clip < 0:
-        raise ValueError("--grad-clip must be non-negative")
+    for name in ("epochs", "batch_size", "max_frames", "val_max_frames", "val_batch_size"):
+        if getattr(args, name) <= 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    for name in ("max_steps", "grad_clip", "val_every", "val_batches", "save_every"):
+        if getattr(args, name) < 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.keep_checkpoints < 0:
         raise ValueError("--keep-checkpoints must be non-negative")
-    if not args.smoke_longest_first and (
-        args.val_every != CADENCE_STEPS or args.save_every != CADENCE_STEPS
-    ):
-        raise ValueError(
-            f"Direct production requires validation/checkpoints every {CADENCE_STEPS} steps"
-        )
+    # Best-model promotion hard-links the checkpoint saved at the validation step.
+    if args.val_every and (not args.save_every or args.val_every % args.save_every):
+        raise ValueError("--val-every must be a multiple of a positive --save-every")
     if os.environ.get("NO_TORCH_COMPILE"):
-        raise ValueError("Direct full-data training requires torch compile; unset NO_TORCH_COMPILE")
+        raise ValueError("Full-model training requires torch compile; unset NO_TORCH_COMPILE")
 
 
 def main() -> None:
@@ -394,40 +299,16 @@ def main() -> None:
     torch.set_float32_matmul_precision("high")
 
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
-    if len(cache_dirs) != len(CACHE_COUNTS):
-        raise RuntimeError("Direct receipt requires PhoMT and FLEURS train caches")
     val_cache_dir = require_dir(args.val_cache_dir, "validation code cache directory")
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "upstream model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
-    args.full_data_receipt = require_file(args.full_data_receipt, "full-data receipt")
-    args.input_sample_manifest = require_file(
-        args.input_sample_manifest, "input sample manifest"
-    )
     if args.resume_checkpoint is not None:
         args.resume_checkpoint = require_file(args.resume_checkpoint, "resume checkpoint")
 
-    receipt, receipt_encoded = load_receipt(args.full_data_receipt)
-    artifact_hashes = {
-        "config": sha256_file(args.config_path),
-        "model": sha256_file(args.model_weight),
-        "mimi": sha256_file(args.mimi_weight),
-        "tokenizer": sha256_file(args.tokenizer),
-    }
-    if artifact_hashes != receipt["artifacts"]:
-        raise RuntimeError("Training artifacts differ from the direct full-data receipt")
-    manifest_sha256 = sha256_file(args.input_sample_manifest)
-    if manifest_sha256 != receipt["sample_manifest_sha256"]:
-        raise RuntimeError("Training manifest differs from the direct full-data receipt")
-
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    run_receipt = out_dir / "full_data_receipt.json"
-    if run_receipt.is_file() and run_receipt.read_bytes() != receipt_encoded:
-        raise RuntimeError("Run receipt differs from the supplied full-data receipt")
-    if not run_receipt.is_file():
-        atomic_write_text(receipt_encoded.decode(), run_receipt)
     clean_incomplete_checkpoints(out_dir)
     best_state = load_best_state(out_dir)
     best_model = None if best_state is None else out_dir / str(best_state["model"])
@@ -435,56 +316,23 @@ def main() -> None:
         if path != best_model:
             path.unlink()
 
-    dataset = common.CachedCodeDataset(
-        cache_dirs,
-        False,
-        0,
-        args.max_frames,
-        sample_manifest=args.input_sample_manifest,
-        sample_manifest_sha256=manifest_sha256,
-    )
-    if (
-        len(dataset) != ROWS
-        or cache_counts(dataset) != CACHE_COUNTS
-        or max(sample["frames"] for sample in dataset.samples)
-        != receipt["observed_max_frames"]
-    ):
-        raise RuntimeError("Loaded training data differs from the direct receipt")
+    dataset = common.CachedCodeDataset(cache_dirs, True, 0, args.max_frames)
+    dataset.shuffle_batch_order(args.batch_size, args.seed)
     exposure = dataset.exposure()
     print(
-        f"Loaded {len(dataset)} direct cached samples; "
+        f"Loaded {len(dataset)} cached samples; "
         f"assembled_frames={exposure['assembled_frames']:,} "
         f"source_hours={exposure['source_hours']:.2f}"
     )
 
-    val_dataset = common.CachedCodeDataset(
-        val_cache_dir, True, 0, args.val_max_frames
-    )
-    if (
-        len(val_dataset) != receipt["validation"]["rows"]
-        or max(sample["frames"] for sample in val_dataset.samples)
-        != receipt["validation"]["observed_max_frames"]
-    ):
-        raise RuntimeError("Loaded validation data differs from the direct receipt")
-    if args.smoke_longest_first:
-        val_dataset.samples.reverse()
+    val_dataset = common.CachedCodeDataset(val_cache_dir, True, 0, args.val_max_frames)
     val_dataloader = common.make_cached_dataloader(
-        val_dataset,
-        args.val_batch_size,
-        args.num_workers,
-        True,
-        seed=args.seed,
-        shuffle=False,
+        val_dataset, args.val_batch_size, args.num_workers
     )
     print(f"Loaded {len(val_dataset)} non-shuffled validation samples")
 
     batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
-    steps_per_epoch = batches_per_epoch // args.grad_accum_steps
-    if steps_per_epoch != STEPS_PER_EPOCH:
-        raise RuntimeError(f"Direct full-data steps per epoch changed: {steps_per_epoch}")
-    total_steps = args.max_steps or steps_per_epoch * args.epochs
-    if not args.max_steps and total_steps != TOTAL_STEPS:
-        raise RuntimeError(f"Direct full-data total steps changed: {total_steps}")
+    total_steps = args.max_steps or batches_per_epoch * args.epochs
 
     checkpoint_info = common.load_checkpoint_info(args)
     print(f"Loading upstream Hibiki-Zero from {repo_display_path(args.model_weight)}")
@@ -519,15 +367,13 @@ def main() -> None:
         )
     if global_step >= total_steps:
         raise RuntimeError("Resume checkpoint is already at or beyond the requested stop")
-    if args.resume_checkpoint is not None and global_step >= CADENCE_STEPS and best_state is None:
-        raise RuntimeError("Production resume requires the previously promoted best checkpoint")
-
-    manifest_path = out_dir / "sample_manifest.jsonl"
-    manifest_encoded = args.input_sample_manifest.read_bytes()
-    if manifest_path.is_file() and manifest_path.read_bytes() != manifest_encoded:
-        raise RuntimeError("Run sample manifest changed")
-    if not manifest_path.is_file():
-        atomic_write_text(manifest_encoded.decode(), manifest_path)
+    if (
+        args.resume_checkpoint is not None
+        and args.val_every
+        and global_step >= args.val_every
+        and best_state is None
+    ):
+        raise RuntimeError("Resume requires the previously promoted best checkpoint")
 
     def jsonable(value: Any) -> Any:
         if isinstance(value, Path):
@@ -539,27 +385,13 @@ def main() -> None:
     run_config = {key: jsonable(value) for key, value in vars(args).items()}
     run_config.update(
         {
+            "train_samples": len(dataset),
             "total_steps": total_steps,
             "batches_per_epoch": batches_per_epoch,
-            "steps_per_epoch": steps_per_epoch,
             "frame_bucket": common.FRAME_BUCKET,
-            "torch_compile_enabled": True,
-            "sample_manifest_sha256": manifest_sha256,
-            "sample_manifest_rows": len(dataset),
-            "sample_manifest_cache_counts": cache_counts(dataset),
-            "receipt_sha256": hashlib.sha256(receipt_encoded).hexdigest(),
-            "initialization": "upstream_hibiki_zero",
-            "target_audio_teacher_forcing": True,
-            "audio_ce": True,
-            "post_source_transform": None,
-            "validation_shuffle": False,
             "best_metric": BEST_METRIC,
-            "observed_train_max_frames": max(
-                sample["frames"] for sample in dataset.samples
-            ),
-            "observed_val_max_frames": max(
-                sample["frames"] for sample in val_dataset.samples
-            ),
+            "observed_train_max_frames": max(sample["frames"] for sample in dataset.samples),
+            "observed_val_max_frames": max(sample["frames"] for sample in val_dataset.samples),
         }
     )
     run_config_path = out_dir / "run_config.json"
@@ -571,64 +403,11 @@ def main() -> None:
         if not run_config_path.is_file():
             raise RuntimeError("Resume requires the original run_config.json")
         previous = json.loads(run_config_path.read_text(encoding="utf-8"))
-        resume_keys = (
-            "cache_dir",
-            "val_cache_dir",
-            "config_path",
-            "model_weight",
-            "mimi_weight",
-            "tokenizer",
-            "full_data_receipt",
-            "input_sample_manifest",
-            "epochs",
-            "batch_size",
-            "grad_accum_steps",
-            "max_frames",
-            "lr",
-            "adam_beta1",
-            "adam_beta2",
-            "weight_decay",
-            "grad_clip",
-            "audio_loss_weight",
-            "text_loss_weight",
-            "text_pad_loss_weight",
-            "val_max_frames",
-            "val_batch_size",
-            "seed",
-            "sample_manifest_sha256",
-            "receipt_sha256",
-            "initialization",
-            "target_audio_teacher_forcing",
-            "audio_ce",
-            "post_source_transform",
-            "validation_shuffle",
-            "best_metric",
-            "val_every",
-            "save_every",
-            "keep_checkpoints",
-        )
-        for key in resume_keys:
+        for key in RESUME_KEYS:
             if previous.get(key) != run_config.get(key):
-                raise RuntimeError(f"Direct same-run resume contract changed: {key}")
-        if not args.smoke_longest_first and previous.get("total_steps") != total_steps:
-            raise RuntimeError("Direct same-run stop step changed")
+                raise RuntimeError(f"Same-run resume contract changed: {key}")
 
-    sample_order = None
-    if args.smoke_longest_first:
-        sample_order = sorted(
-            range(len(dataset)),
-            key=lambda index: dataset.samples[index]["frames"],
-            reverse=True,
-        )
-    dataloader = common.make_cached_dataloader(
-        dataset,
-        args.batch_size,
-        args.num_workers,
-        False,
-        seed=args.seed,
-        shuffle=False,
-        sample_order=sample_order,
-    )
+    dataloader = common.make_cached_dataloader(dataset, args.batch_size, args.num_workers)
     data_iter = iter(dataloader)
     resume_skip_batches = global_step % batches_per_epoch
     while resume_skip_batches:
@@ -755,7 +534,7 @@ def main() -> None:
                 raise RuntimeError(f"Non-finite loss by step {global_step}")
             now = time.time()
             item = {
-                "epoch": (global_step - 1) // steps_per_epoch + 1,
+                "epoch": (global_step - 1) // batches_per_epoch + 1,
                 "step": global_step,
                 "loss": loss_average,
                 "audio_loss": float(log_sums["audio_loss"]) / log_steps,
@@ -778,7 +557,6 @@ def main() -> None:
                 "lr": lr_value,
                 "audio_weight": args.audio_loss_weight,
                 "text_weight": args.text_loss_weight,
-                "target_audio_teacher_forcing": True,
             }
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(item, sort_keys=True) + "\n")
@@ -812,7 +590,7 @@ def main() -> None:
     if not args.val_every or global_step % args.val_every:
         run_teacher_forced_val(global_step)
     print(
-        f"Saved final direct full-model checkpoint at step {global_step} "
+        f"Saved final full-model checkpoint at step {global_step} "
         f"in {repo_display_path(out_dir)}"
     )
 

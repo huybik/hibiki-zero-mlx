@@ -1,35 +1,32 @@
 # Full-model SFT training
 
 Read when touching `training/h100.sh` or `training/finetune/`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Recipe](#recipe) · [Objective](#objective) ·
+Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) · [Objective](#objective) ·
 [Launcher](#launcher) · [Checkpoints and recovery](#checkpoints-and-recovery) ·
 [Side tools](#side-tools)
 
-The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale in
-[docs/training_plan.md](../training_plan.md) and monitoring in
-[docs/validation_plan.md](../validation_plan.md). Data and caches are covered in
+The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered in
 [sft-data-caches](sft-data-caches.md).
 
-## Recipe
+## Trainer
 
-- Direct full-model Vietnamese→English voice-preserving SFT, starting from
-  `kyutai/hibiki-zero-3b-pytorch-bf16`. Every parameter is trainable.
-- The constants live in `training/finetune/freeze_full_data_receipt.py`, and `train.py` `validate_args`
-  rejects any deviation:
-  - 719,120 rows; batch 16; accumulation 1; 280 frames;
-  - 5 epochs × 44,945 steps = 224,725 steps;
-  - constant LR 1e-6; fused AdamW with betas (0.9, 0.95) and weight decay 0.1;
-  - seed 42; validation and save cadence of 9,000 steps;
-  - validation set: 138 rows, batch 4, observed maximum 277 frames;
-  - no gradient checkpointing.
-- `--max-steps` is allowed only for the ≤11-step smoke. `grad_clip` 1.0 comes from `h100.sh`
-  and is checked on resume.
-- Every epoch replays the same frozen batch order; there is no reshuffle.
+`training/finetune/train.py`:
+
+- Full-model SFT from `kyutai/hibiki-zero-3b-pytorch-bf16`; every parameter is trainable.
+- Inputs are one or more `--cache-dir` grounded caches plus a `--val-cache-dir`.
+- Rows over `--max-frames` (280) are dropped. Training rows are length-sorted, then
+  batch-shuffled once with `--seed` (42), and every epoch replays that order. Validation
+  rows are length-sorted and never shuffled.
+- Defaults are the last production recipe:
+  - batch 16, 5 epochs (`--max-steps` overrides);
+  - constant LR 1e-6; fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0;
+  - validation (batch 4) and checkpoints every 9,000 steps; `--val-every` must be a multiple
+    of `--save-every`, because promotion hard-links the checkpoint saved at that step.
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch.
   Batches pad to 16-frame buckets (`common.FRAME_BUCKET`), and training requires moshi's
-  internal compile, meaning `NO_TORCH_COMPILE` must be unset. Everything under `training/` is
-  CUDA-only; `train.py` has no device flag.
-- `--cache-dir` order is PhoMT, then FLEURS, because manifest keys are `(cache_index, id)`.
+  internal compile, meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` and
+  `cache_codes` are CUDA-only (`train.py` has no device flag); only `build_en_speech` runs on the
+  Mac.
 
 ## Objective
 
@@ -43,39 +40,40 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
 
 ## Launcher
 
-`training/h100.sh`; see [docs/finetune.md](../finetune.md) for the order. It runs from the repo
-root and invokes modules as `python -m training.<package>.<module>`.
+`training/h100.sh` runs from the repo root and invokes modules as
+`python -m training.<package>.<module>`.
 
 - `setup` needs Linux, driver 570+, exactly one H100, Python 3.10–3.13 and no existing
   `.venv`. It installs Torch `2.8.0+cu128` (CUDA 12.8), pinned dependencies, and
   `moshi==0.2.13 --no-deps`.
-- `cache-grounded` builds the caches ([sft-data-caches](sft-data-caches.md)).
-- `preflight` checks the following, then freezes the receipt:
+- `preflight` checks:
   - a clean tracked tree;
   - exact Torch and Moshi versions; one H100 with compute capability 9.0;
   - ≥90 GiB VRAM (a standard 80 GB H100 fails), ≥110 GiB host RAM and ≥190 GiB free disk;
-  - four weight hashes; cache shard counts 1377 / 46 / 5.
-- `smoke` trains 10 longest-first steps, resumes to step 11, checks outputs, promotion and
-  ≥2 GiB VRAM headroom, and writes `SMOKE_OK` with the commit.
-- `train` requires `SMOKE_OK` = HEAD, an empty run directory, and a public `HIBIKI_HF_REPO`
-  with an empty prefix. It writes `run_id.json` and runs the `hf_sync` watcher; training is
-  killed if sync dies.
-- `resume <trainer_step.pt>` requires the current smoke, a checkpoint inside the run directory,
-  a remote no newer than local, and a `run_id.json` commit equal to HEAD.
+  - the SHA-256 of the four upstream files in `weights/`.
+- `train RUN_NAME ARGS…` runs preflight and requires an empty `runs/RUN_NAME/`. It needs a
+  public `HIBIKI_HF_REPO` whose `RUN_NAME/` prefix is empty. It writes `run_id.json` (commit
+  plus random id), uploads it as `RUN_NAME/run.json`, and runs `train.py --out-dir
+  runs/RUN_NAME ARGS…` beside the `hf_sync` watcher. Training is killed if sync dies.
+- `resume runs/RUN_NAME/trainer_stepNNNNNN.pt ARGS…` requires:
+  - a checkpoint directly under `runs/`;
+  - a remote no newer than local;
+  - a `run_id.json` commit equal to HEAD.
+  It syncs once, then resumes with the same ARGS.
 
 ## Checkpoints and recovery
 
 - A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt`; two are kept
   locally. `best_step*.safetensors` is a hard link promoted only on a strict improvement in
-  teacher-forced validation loss.
-- `train.py` resumes only from the newest complete pair, and only if the receipt bytes,
-  manifest bytes, `run_config`, total steps and artifact hashes match. `best.json` is required
-  from step 9,000 on. Run identity and commit are checked by `h100.sh`, not `train.py`.
-- `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (default `full_run`; `h100.sh` sets
-  `grounded_v2_full_direct_voice_5epoch`):
-  - `checkpoints/`: the newest two pairs, at multiples of 9,000 plus the final step;
+  teacher-forced validation loss (`best.json`, metric `teacher_forced_loss`).
+- `train.py` resumes only from the newest complete pair, and only if `run_config.json`
+  matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences, seed, train row
+  count and total steps. From the first validation step on, `best.json` is required.
+- `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
+  - `checkpoints/`: on each poll, the newest complete pair if newer than the remote, keeping
+    the newest two;
   - `best/`: the newest promoted model only;
-  - `metadata/`;
+  - `metadata/run_config.json`;
   - logs, on the final sync only.
   It requires a public repo and a remote `run.json` byte-equal to the local `run_id.json`. It
   polls every 60 s and aborts after three failures.
@@ -84,10 +82,9 @@ root and invokes modules as `python -m training.<package>.<module>`.
 
 ## Side tools
 
-- `eval.py` is the optional correct-source free-running check. Despite its name,
-  `run_greedy_eval` samples (text 0.4, audio 0.8).
-- `validate.py` does not reproduce in-training validation: it applies no 280-frame filter and
-  uses BF16 weights and batch 8.
-- `common.py` is shared by `train.py`, `validate.py`, `eval.py` and `freeze_full_data_receipt.py`.
-- `train.py` and `eval.py` take a required `--out-dir`; `h100.sh` passes
-  `runs/vi_grounded_v2_full_direct_voice_5epoch` for production.
+- `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,
+  `text_en`). Despite its name, `run_greedy_eval` samples (text 0.4, audio 0.8).
+- `validate.py` reports teacher-forced losses on one cache with BF16 weights and batch 8; it
+  applies no frame filter.
+- `common.py` is shared by `train.py`, `validate.py` and `eval.py`.
+- `train.py` and `eval.py` take a required `--out-dir`.

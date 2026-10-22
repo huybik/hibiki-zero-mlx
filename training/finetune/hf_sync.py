@@ -13,9 +13,6 @@ from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
 
 POLL_S = 60
-REMOTE_INTERVAL = int(os.environ.get("HIBIKI_HF_SYNC_INTERVAL", "9000"))
-if REMOTE_INTERVAL <= 0:
-    raise ValueError("HIBIKI_HF_SYNC_INTERVAL must be positive")
 REMOTE_KEEP = 2
 STAGE_ROOT = ".hf_sync"
 REMOTE_ROOT = os.environ.get("HIBIKI_HF_PREFIX", "full_run").strip("/")
@@ -25,11 +22,7 @@ STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
 STAGED_BEST = re.compile(r"best_step(\d+)$")
-RUN_METADATA = (
-    "run_config.json",
-    "sample_manifest.jsonl",
-    "full_data_receipt.json",
-)
+RUN_METADATA = ("run_config.json",)
 RUN_ARTIFACTS = (
     "train_log.jsonl",
     "val_log.jsonl",
@@ -354,10 +347,7 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
         elif step in uploaded:
             uploaded.remove(step)
     remote_latest = max(uploaded, default=-1)
-    wanted = [pair for pair in local_pairs if pair[0] % REMOTE_INTERVAL == 0]
-    if final and local_pairs and local_pairs[-1] not in wanted:
-        wanted.append(local_pairs[-1])
-    wanted = [pair for pair in wanted if pair[0] > remote_latest]
+    wanted = [pair for pair in local_pairs if pair[0] > remote_latest]
     newest_pair = max([*staged_pairs, *(pair[0] for pair in wanted)], default=None)
     for step, stage in staged_pairs.items():
         if step != newest_pair or step < remote_latest:

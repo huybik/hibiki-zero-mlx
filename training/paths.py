@@ -7,10 +7,6 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_DATASET_DIR = REPO_ROOT / "data" / "fleurs_vi_en"
-DEFAULT_PAIRS_DIR = REPO_ROOT / "data" / "pairs"
-DEFAULT_CACHE_ROOT = REPO_ROOT / "data" / "cache"
-
 DEFAULT_CONFIG_PATH = REPO_ROOT / "weights" / "config.json"
 DEFAULT_MODEL_WEIGHT = REPO_ROOT / "weights" / "hibiki-pytorch-77f82164@110.safetensors"
 DEFAULT_MIMI_WEIGHT = REPO_ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"

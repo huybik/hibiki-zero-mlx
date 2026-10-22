@@ -11,7 +11,6 @@ from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_MODEL_WEIGHT,
-    DEFAULT_PAIRS_DIR,
     DEFAULT_TOKENIZER,
     repo_display_path,
     require_file,
@@ -23,7 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate validation outputs with a base or full-SFT model."
     )
-    parser.add_argument("--pairs", type=Path, default=DEFAULT_PAIRS_DIR / "validation.jsonl")
+    parser.add_argument(
+        "--pairs",
+        type=Path,
+        required=True,
+        help="Rows (.jsonl or .csv) with source audio, reference text and id columns.",
+    )
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
     )
@@ -37,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model dtype."
     )
-    parser.add_argument("--limit", type=int, default=128, help="Max validation pairs to generate.")
+    parser.add_argument("--limit", type=int, default=128, help="Max rows to generate.")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--ids", default="", help="Comma-separated ids in that order; bypasses --limit.")
     parser.add_argument("--ids-file", type=Path, help="Text file of ids, one per line; bypasses --limit.")

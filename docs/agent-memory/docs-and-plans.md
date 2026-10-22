@@ -12,9 +12,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
   voice-matched fine-tune, and Phase 4 GRPO. Phases run strictly in order.
 - [docs/grpo_plan.md](../grpo_plan.md) details Phase 4. No GRPO code exists; build it from that
   plan once SFT passes its promotion gate.
-- [docs/finetune.md](../finetune.md), [docs/training_plan.md](../training_plan.md) and
-  [docs/validation_plan.md](../validation_plan.md) own the current SFT pod handoff, recipe and
-  validation ([sft-training](sft-training.md)).
+- The roadmap and GRPO plan still describe a PhoMT + FLEURS training mixture and validation.
+  That data and its code are removed; `en_speech` is the only source
+  ([en-speech-corpus](en-speech-corpus.md)).
+- [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
+  ([sft-training](sft-training.md)).
 
 ## Evidence
 

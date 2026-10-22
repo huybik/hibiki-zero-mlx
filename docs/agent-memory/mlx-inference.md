@@ -14,8 +14,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `inference/macos/HibikiTestApp/` is a SwiftUI wrapper that runs `inference/main.py` with the
   conda Python path hard-coded. It finds the repo root by walking up to a directory holding
   `inference/main.py` and `inference/hibiki_mlx/`, and defaults to the model
-  `weights/vi-step135000-mlx-bf16` and the clip `data/fleurs_vi_en/validation/vi/vi_01624.wav`
-  when they exist. `build.sh` produces `build/Hibiki Test.app`.
+  `weights/vi-step135000-mlx-bf16` when it exists. `build.sh` produces `build/Hibiki Test.app`.
 
 ## Runtime
 

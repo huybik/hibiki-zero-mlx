@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import math
 import random
@@ -27,7 +26,7 @@ import torch
 from moshi.models import loaders
 from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset
 
 from training.finetune.hibiki_helpers import (
     audio_read,
@@ -130,61 +129,20 @@ enable_causal_sdpa()
 # Cached-shard dataset / loader
 # --------------------------------------------------------------------------- #
 class CachedCodeDataset(Dataset):
+    """Grounded cache rows from one or more directories, optionally length-sorted."""
+
     def __init__(
         self,
         cache_dir: Path | list[Path],
         sort_by_length: bool,
         max_samples: int,
         max_frames: int = 0,
-        cache_weights: list[float] | None = None,
-        seed: int = 0,
-        sample_manifest: Path | None = None,
-        sample_manifest_sha256: str | None = None,
     ):
         self.samples: list[dict[str, Any]] = []
         self.frame_rate: float | None = None
         dropped = 0
         cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
-        self.cache_count = len(cache_dirs)
-        if (sample_manifest is None) != (sample_manifest_sha256 is None):
-            raise ValueError("Input sample manifest and SHA-256 must be set together")
-        manifest_keys: list[tuple[int, str]] | None = None
-        samples_by_key: dict[tuple[int, str], dict[str, Any]] = {}
-        if sample_manifest is not None and sample_manifest_sha256 is not None:
-            if max_samples or cache_weights is not None:
-                raise ValueError("Input sample manifest forbids max-sample and cache-weight sampling")
-            if sort_by_length:
-                raise ValueError("Input sample manifest requires exact order; disable length sorting")
-            content = sample_manifest.read_bytes()
-            digest = hashlib.sha256(content).hexdigest()
-            if digest != sample_manifest_sha256:
-                raise RuntimeError(
-                    f"Input sample manifest SHA-256 mismatch: {digest} != "
-                    f"{sample_manifest_sha256}"
-                )
-            manifest_keys = []
-            for line_no, line in enumerate(content.decode("utf-8").splitlines(), 1):
-                row = json.loads(line)
-                if not isinstance(row, dict) or set(row) != {"cache_index", "id"}:
-                    raise ValueError(f"Invalid input sample manifest row {line_no}")
-                cache_index = row["cache_index"]
-                sample_id = row["id"]
-                if (
-                    isinstance(cache_index, bool)
-                    or not isinstance(cache_index, int)
-                    or not 0 <= cache_index < len(cache_dirs)
-                    or not isinstance(sample_id, str)
-                    or not sample_id
-                ):
-                    raise ValueError(f"Invalid input sample manifest row {line_no}")
-                manifest_keys.append((cache_index, sample_id))
-            if not manifest_keys:
-                raise ValueError("Input sample manifest is empty")
-        shard_paths = [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]
-        for shard_path in shard_paths:
-            cache_index = next(
-                index for index, directory in enumerate(cache_dirs) if shard_path.parent == directory
-            )
+        for shard_path in [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]:
             payload = torch.load(shard_path, map_location="cpu")
             if payload.get("format") != CACHE_FORMAT:
                 raise RuntimeError(f"Unsupported cache format in {shard_path}")
@@ -199,117 +157,40 @@ class CachedCodeDataset(Dataset):
                 codes = sample["codes"]
                 if codes.ndim != 2:
                     raise RuntimeError(f"{shard_path} id={sample.get('id')} codes must be [K,T]")
-                if manifest_keys is None and max_frames and codes.shape[1] > max_frames:
+                if max_frames and codes.shape[1] > max_frames:
                     dropped += 1
                     continue
-                item = {
-                    "id": str(sample["id"]),
-                    # int32 in host RAM (halves footprint at ~700k samples);
-                    # collate_cached casts to long on batch assembly.
-                    "codes": codes.to(torch.int32),
-                    "frames": int(codes.shape[1]),
-                    "source_frames": int(sample["vi_frames"]),
-                    "cache_index": cache_index,
-                }
-                if manifest_keys is None:
-                    self.samples.append(item)
-                else:
-                    key = (cache_index, item["id"])
-                    if key in samples_by_key:
-                        raise RuntimeError(f"Duplicate cached sample for cache_index,id={key}")
-                    samples_by_key[key] = item
-        if manifest_keys is not None:
-            missing = [key for key in manifest_keys if key not in samples_by_key]
-            if missing:
-                raise RuntimeError(f"Input sample manifest references missing samples: {missing[:10]}")
-            self.samples = [samples_by_key[key] for key in manifest_keys]
-            self.require_max_frames(max_frames, "Input sample manifest")
+                self.samples.append(
+                    {
+                        "id": str(sample["id"]),
+                        # int32 in host RAM halves the footprint; collate_cached casts
+                        # to long on batch assembly.
+                        "codes": codes.to(torch.int32),
+                        "frames": int(codes.shape[1]),
+                        "source_frames": int(sample["vi_frames"]),
+                    }
+                )
         if not self.samples:
-            raise RuntimeError(f"No shard_*.pt cache files found in {cache_dir}")
+            raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
         if max_frames and dropped:
             print(f"[dataset] dropped {dropped} samples over {max_frames} frames; kept {len(self.samples)}")
-        if cache_weights is not None:
-            self.select_weighted(cache_weights, max_samples, seed)
-            max_samples = 0
         if sort_by_length:
             self.samples.sort(key=lambda sample: sample["frames"])
         if max_samples:
             self.samples = self.samples[:max_samples]
-            if not self.samples:
-                raise RuntimeError("--max-samples selected no cached samples")
-
-    def select_weighted(
-        self, cache_weights: list[float], max_samples: int, seed: int
-    ) -> None:
-        if len(cache_weights) != self.cache_count or any(
-            weight <= 0 for weight in cache_weights
-        ):
-            raise ValueError("--cache-weights must provide one positive weight per --cache-dir")
-        weight_total = sum(cache_weights)
-        pools = [
-            [sample for sample in self.samples if sample["cache_index"] == cache_index]
-            for cache_index in range(len(cache_weights))
-        ]
-        if any(not pool for pool in pools):
-            raise RuntimeError("Every weighted cache directory must have usable samples")
-        target_total = max_samples or max(
-            math.ceil(len(pool) * weight_total / weight)
-            for pool, weight in zip(pools, cache_weights, strict=True)
-        )
-        counts: list[int] = []
-        if max_samples:
-            quotas = [target_total * weight / weight_total for weight in cache_weights]
-            if any(
-                not math.isclose(quota, round(quota), rel_tol=0.0, abs_tol=1e-8)
-                for quota in quotas
-            ):
-                raise ValueError(
-                    "--max-samples must permit exact integer --cache-weights counts"
-                )
-            counts = [round(quota) for quota in quotas]
-            if sum(counts) != target_total:
-                raise RuntimeError("Exact cache-weight counts do not sum to --max-samples")
-        else:
-            remaining = target_total
-            for cache_index, weight in enumerate(cache_weights):
-                count = (
-                    remaining
-                    if cache_index == len(cache_weights) - 1
-                    else round(target_total * weight / weight_total)
-                )
-                counts.append(count)
-                remaining -= count
-        rng = random.Random(seed)
-        balanced: list[dict[str, Any]] = []
-        for pool, count in zip(pools, counts, strict=True):
-            if count <= len(pool):
-                balanced.extend(rng.sample(pool, count))
-            else:
-                balanced.extend(pool)
-                balanced.extend(rng.choices(pool, k=count - len(pool)))
-        self.samples = balanced
-
-    def require_max_frames(self, max_frames: int, label: str) -> None:
-        if not max_frames or not self.samples:
-            return
-        observed = max(sample["frames"] for sample in self.samples)
-        if observed > max_frames:
-            over = sum(sample["frames"] > max_frames for sample in self.samples)
-            raise RuntimeError(
-                f"{label} exceeds --max-frames={max_frames}: "
-                f"{over} entries, observed max T={observed}"
-            )
 
     def shuffle_batch_order(self, batch_size: int, seed: int = 1234) -> None:
         """Shuffle length-sorted samples in whole-batch blocks.
 
         Batches stay near-uniform length (minimal padding, few shapes) but
-        the epoch is no longer an ascending-length curriculum replayed in the
-        same order every epoch. Deterministic, so sorted-resume skip still works.
+        the epoch is no longer an ascending-length curriculum. A short final
+        block stays last so every loader batch is exactly one block.
+        Deterministic, so the resume batch skip still works.
         """
         blocks = [self.samples[i : i + batch_size] for i in range(0, len(self.samples), batch_size)]
+        tail = blocks.pop() if blocks and len(blocks[-1]) < batch_size else []
         random.Random(seed).shuffle(blocks)
-        self.samples = [sample for block in blocks for sample in block]
+        self.samples = [sample for block in blocks for sample in block] + tail
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -325,18 +206,6 @@ class CachedCodeDataset(Dataset):
             "source_frames": source_frames,
             "source_hours": source_frames / float(self.frame_rate) / 3600,
         }
-
-
-def sample_manifest_bytes(dataset: CachedCodeDataset) -> bytes:
-    return "".join(
-        json.dumps(
-            {"cache_index": sample["cache_index"], "id": sample["id"]},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-        for sample in dataset.samples
-    ).encode("utf-8")
 
 
 # Pad each batch's frame length up to a multiple of this so compiled kernels see a
@@ -365,28 +234,15 @@ def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def make_cached_dataloader(
-    dataset: CachedCodeDataset,
-    batch_size: int,
-    num_workers: int,
-    sort_by_length: bool,
-    seed: int = 0,
-    shuffle: bool | None = None,
-    sample_order: list[int] | None = None,
+    dataset: CachedCodeDataset, batch_size: int, num_workers: int
 ) -> DataLoader:
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-    loader_dataset: Dataset = dataset
-    if sample_order is not None:
-        loader_dataset = Subset(dataset, sample_order)
-    if shuffle is None:
-        shuffle = not sort_by_length
+    """Batch rows in dataset order; callers fix the order up front."""
     return DataLoader(
-        loader_dataset,
+        dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_cached,
-        generator=generator,
     )
 
 

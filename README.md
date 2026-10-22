@@ -20,13 +20,13 @@ inference/            Apple Silicon · MLX
   assets/leon.wav     French gate clip
   macos/              native SwiftUI file and microphone test app
 training/             CUDA · PyTorch
-  h100.sh             pinned H100 setup, caching, preflight, smoke, train, resume
+  h100.sh             pinned H100 setup, preflight, train and resume with HF recovery
   paths.py            repository defaults and file guards
-  prep/               FLEURS download, pair files, Mimi + CTC caches, cache publishing
-  finetune/           SFT trainer, frozen receipt, evaluation, HF recovery sync
+  prep/               en_speech corpus builder, pair rows → grounded Mimi + CTC caches
+  finetune/           full-model SFT trainer, evaluation, HF recovery sync
 docs/                 plans, analyses and the technical report
 weights → …           upstream and staged models (gitignored, shared by both paths)
-data/  runs/          datasets, caches and training runs (gitignored)
+data/  runs/          caches and training runs (gitignored)
 translations/         inference outputs (gitignored)
 ```
 
@@ -84,15 +84,14 @@ Training runs only on a Linux pod with one H100, through the pinned CUDA 12.8 la
 ```bash
 ./training/h100.sh setup
 ./training/h100.sh preflight
-./training/h100.sh smoke
-./training/h100.sh train
+./training/h100.sh train RUN_NAME --cache-dir data/cache/TRAIN --val-cache-dir data/cache/VALIDATION
 ```
 
 Training modules run from the repository root as `python -m training.<package>.<module>`.
 The only trainer is `training.finetune.train`: base-start, full-model SFT with fp32 master
-weights and bf16 autocast. Checkpoints are exact full-model states; partial or adapter
-checkpoints are rejected.
+weights and bf16 autocast on grounded caches. Checkpoints are exact full-model states;
+partial or adapter checkpoints are rejected.
 
-See the [pod handoff](docs/finetune.md), the [training recipe](docs/training_plan.md),
-the [validation contract](docs/validation_plan.md) and the
-[data preparation](training/prep/README.md) steps.
+The training data source is the ~10k-hour English read-speech corpus `en_speech`
+(Common Voice 27.0 EN + Libriheavy), built by `training.prep.build_en_speech`. See the
+[pod guide](docs/finetune.md) and [data preparation](training/prep/README.md).
