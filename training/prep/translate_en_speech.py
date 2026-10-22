@@ -6,7 +6,8 @@ line that a TTS voice conditioned on the clip's speaker will read. Translation r
 on Claude Sonnet 5.5 through the local Claude API (claude-sub-as-api), which spends
 Claude subscription quota, so the steps keep tokens down:
   - Rows whose English clip alone is longer than the 280-frame training cap
-    (22.4 s) are skipped: they can never become a training row.
+    (22.4 s) are skipped, as they can never become a training row, and so are
+    transcripts without letters.
   - Identical transcripts (whitespace-normalised) are translated once.
   - One call carries a batch of lines, so the fixed per-call prompt is paid per
     batch, and the instructions sit in a cached prefix that calls read at ~0.1x.
@@ -17,16 +18,17 @@ neighbouring book text as context for names, gender and Vietnamese forms of addr
 Run from the repo root as `python -m training.prep.translate_en_speech <step>`. Steps, all under
 --out:
   texts      texts.parquet (key, text) and rows.parquet (split, id, key)
-  translate  appends accepted batches to translations.jsonl and rejected output to
-             rejects.jsonl; rerun to resume. Rejected lines are retried in smaller
-             batches. When every allowed profile is out of quota it sleeps until
-             the earliest reset.
+  translate  appends accepted batches, keyed by their English text, to translations.jsonl
+             and rejected output to rejects.jsonl; rerun to resume. Rejected lines are
+             retried in smaller batches, then alone. When every --profile is out of quota
+             it sleeps until the earliest reset.
   export     {train,validation}.parquet (id, text_vi) for each fully translated split,
              plus the plan's gate counts
 """
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import threading
 import time
@@ -45,7 +47,8 @@ API_TOKEN = Path.home() / ".local/share/claude-local-api/token"
 MAX_LINES = 200  # per batch, whatever its size
 MAX_TOKENS = 32_000
 CONCURRENCY = 64  # the server runs 48 calls at once; macOS resets connections past a 128 backlog
-TRANSIENT_RETRIES = 3  # per batch, for 5xx replies and dropped connections
+TRANSIENT_RETRIES = 5  # per batch, for 5xx replies and dropped connections: ~30 min of backoff
+RETRY_WAIT = 60  # seconds before the first retry; doubles on each further retry
 SPLIT_ORDER = {"validation": 0, "train": 1}
 
 INSTRUCTIONS = """You translate English transcripts of read speech into Vietnamese. A Vietnamese text-to-speech voice will read each translated line as its own audio clip.
@@ -71,10 +74,12 @@ def build_texts(src: Path, out: Path) -> None:
 
     with ThreadPoolExecutor(16) as pool:
         rows = pa.concat_tables(pool.map(read, sorted(src.glob("*/*.parquet")))).to_pandas()
-    fits = rows.duration <= MAX_SECONDS
-    log(f"{len(rows):,} rows; {(~fits).sum():,} with clips over {MAX_SECONDS:.1f} s skipped")
-    rows = rows[fits].copy()
     rows["text"] = rows.text.str.split().str.join(" ")
+    fits = rows.duration <= MAX_SECONDS
+    spoken = rows.text.str.contains(r"[^\W\d_]")  # has a letter; "." alone has nothing to translate
+    log(f"{len(rows):,} rows; skipped {(~fits).sum():,} with clips over {MAX_SECONDS:.1f} s and "
+        f"{(fits & ~spoken).sum():,} without letters")
+    rows = rows[fits & spoken].copy()
     # Validation first, then each Libriheavy recording in segment order (CV ids sort alone).
     recording = rows.id.str.rsplit("_", n=1)
     rows["recording"] = recording.str[0]
@@ -93,15 +98,24 @@ def build_texts(src: Path, out: Path) -> None:
                    out / "rows.parquet", compression="zstd")
 
 
+class Stopped(Exception):
+    """The run is shutting down."""
+
+
 class Profiles:
-    """Sends each call to the first allowed profile with quota left, waiting when all are out."""
+    """Sends each call to the first named profile with quota left, waiting when all are out."""
 
     def __init__(self, names: list[str]):
-        self.until = dict.fromkeys(names or [None], 0.0)  # None lets the server pick
+        self.until = dict.fromkeys(names, 0.0)
         self.announced = 0.0
+        self.stop = threading.Event()  # set on shutdown, so no thread keeps waiting for quota
         self.lock = threading.Lock()
 
-    def pick(self) -> str | None:
+    def sleep(self, seconds: float) -> None:
+        if self.stop.wait(seconds):
+            raise Stopped
+
+    def pick(self) -> str:
         while True:
             with self.lock:
                 now = time.time()
@@ -112,9 +126,9 @@ class Profiles:
                 if wake != self.announced:
                     self.announced = wake
                     log(f"every profile is out of quota; waiting until {time.strftime('%a %H:%M', time.localtime(wake))}")
-            time.sleep(wake - now)
+            self.sleep(wake - now)
 
-    def out_until(self, name: str | None, seconds: float) -> None:
+    def out_until(self, name: str, seconds: float) -> None:
         with self.lock:
             self.until[name] = max(self.until[name], time.time() + seconds)
 
@@ -132,7 +146,7 @@ def parse(text: str, n: int) -> list[str] | None:
     return out
 
 
-def call(client: Anthropic, profiles: Profiles, lines: list[str]) -> tuple[list[str] | None, str, Counter, str | None]:
+def call(client: Anthropic, profiles: Profiles, lines: list[str]) -> tuple[list[str] | None, str, Counter, str]:
     body = "\n".join(f"{i}|{line}" for i, line in enumerate(lines, 1))
     failures = 0
     while True:
@@ -144,17 +158,23 @@ def call(client: Anthropic, profiles: Profiles, lines: list[str]) -> tuple[list[
                     {"type": "text", "text": INSTRUCTIONS, "cache_control": {"type": "ephemeral"}},
                     {"type": "text", "text": body},
                 ]}],
-                extra_headers={"x-local-profile": profile} if profile else {},
+                # A retried batch must be generated again, not served from the response cache.
+                extra_headers={"x-local-profile": profile, "x-local-cache": "false"},
             )
             break
         except RateLimitError as error:
-            profiles.out_until(profile, max(1.0, float(error.response.headers.get("retry-after", 300))))
+            retry_after = error.response.headers.get("retry-after")
+            if retry_after is None:  # only this request was refused; the profile keeps its quota
+                profiles.sleep(RETRY_WAIT)
+            else:
+                profiles.out_until(profile, max(1.0, float(retry_after)))
         except (APIConnectionError, InternalServerError) as error:
             failures += 1
             if failures > TRANSIENT_RETRIES:
                 raise
-            log(f"{type(error).__name__} on {profile}: {error}; retry {failures} in 60 s")
-            time.sleep(60)
+            wait = RETRY_WAIT * 2 ** (failures - 1)
+            log(f"{type(error).__name__} on {profile}: {error}; retry {failures} in {wait} s")
+            profiles.sleep(wait)
     text = "".join(block.text for block in reply.content if block.type == "text")
     usage = Counter({key: getattr(reply.usage, key) or 0 for key in (
         "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")})
@@ -176,67 +196,86 @@ def pack(keys: list[int], texts: list[str], budget: int):
         yield batch
 
 
+def read_batches(path: Path):
+    if not path.exists():
+        return
+    with path.open() as f:
+        for number, line in enumerate(f, 1):
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                raise SystemExit(f"{path}:{number} is not a complete JSON line, likely cut off by a "
+                                 "killed run; delete that line to continue") from None
+
+
+def lock_dir(out: Path):
+    lock_file = (out / "translate.lock").open("w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(f"another translate run is using {out}") from None
+    return lock_file
+
+
 def translate(out: Path, profile_names: list[str], batch_chars: int, limit: int | None) -> None:
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()[:limit]
-    done = set()
-    if (out / "translations.jsonl").exists():
-        with (out / "translations.jsonl").open() as f:
-            for line in f:
-                done.update(json.loads(line)["keys"])
-    client = Anthropic(base_url=API_URL, api_key=API_TOKEN.read_text().strip(), max_retries=0, timeout=1800)
-    profiles, lock, totals = Profiles(profile_names), threading.Lock(), Counter()
-    with (out / "translations.jsonl").open("a") as accepted, (out / "rejects.jsonl").open("a") as rejected:
+    with lock_dir(out):
+        done = {en for batch in read_batches(out / "translations.jsonl") for en in batch["en"]}
+        client = Anthropic(base_url=API_URL, api_key=API_TOKEN.read_text().strip(), max_retries=0, timeout=1800)
+        profiles, lock, totals = Profiles(profile_names), threading.Lock(), Counter()
+        with (out / "translations.jsonl").open("a") as accepted, (out / "rejects.jsonl").open("a") as rejected:
 
-        def run(keys: list[int]) -> None:
-            vi, raw, usage, profile = call(client, profiles, [texts[k] for k in keys])
-            with lock:
-                totals.update(usage)
-                totals["lines"] += len(keys)
-                if vi is None:
-                    rejected.write(json.dumps({"keys": keys, "raw": raw}, ensure_ascii=False) + "\n")
-                    rejected.flush()
-                    return
-                accepted.write(json.dumps({"keys": keys, "vi": vi, "profile": profile, "usage": usage},
-                                          ensure_ascii=False) + "\n")
-                accepted.flush()
-                done.update(keys)
-                totals["accepted"] += len(keys)
+            def run(keys: list[int]) -> None:
+                lines = [texts[k] for k in keys]
+                vi, raw, usage, profile = call(client, profiles, lines)
+                with lock:
+                    totals.update(usage)
+                    totals["lines"] += len(lines)
+                    if vi is None:
+                        rejected.write(json.dumps({"en": lines, "raw": raw}, ensure_ascii=False) + "\n")
+                        rejected.flush()
+                        return
+                    accepted.write(json.dumps({"en": lines, "vi": vi, "profile": profile, "usage": usage},
+                                              ensure_ascii=False) + "\n")
+                    accepted.flush()
+                    done.update(lines)
+                    totals["accepted"] += len(lines)
 
-        budget = batch_chars
-        while pending := [k for k in range(len(texts)) if k not in done]:
-            batches = list(pack(pending, texts, budget))
-            log(f"{len(pending):,} lines pending: {len(batches):,} batches of up to {budget:,} characters")
-            start = time.time()
-            with ThreadPoolExecutor(CONCURRENCY) as pool:
-                futures = [pool.submit(run, batch) for batch in batches]
-                try:
-                    for i, future in enumerate(as_completed(futures), 1):
-                        future.result()
-                        if i % 50 == 0 or i == len(futures):
-                            with lock:
-                                t = totals.copy()
-                            log(f"{i:,}/{len(futures):,} batches, {t['accepted']:,}/{t['lines']:,} lines accepted, "
-                                f"{(time.time() - start) / 3600:.2f} h; tokens in {t['input_tokens']:,} "
-                                f"cache-read {t['cache_read_input_tokens']:,} cache-write "
-                                f"{t['cache_creation_input_tokens']:,} out {t['output_tokens']:,}; "
-                                f"thinking in {t['thinking_calls']:,}/{t['calls']:,} calls")
-                except BaseException:
-                    pool.shutdown(wait=True, cancel_futures=True)
-                    raise
-            if budget == 0 and any(k not in done for k in pending):
-                raise SystemExit("some lines fail even alone; see rejects.jsonl")
-            budget //= 4  # retry rejected lines in smaller batches; 0 sends one line per call
+            budget = batch_chars
+            while pending := [k for k in range(len(texts)) if texts[k] not in done]:
+                batches = list(pack(pending, texts, budget))
+                log(f"{len(pending):,} lines pending: {len(batches):,} batches of up to {budget:,} characters")
+                start = time.time()
+                with ThreadPoolExecutor(CONCURRENCY) as pool:
+                    futures = [pool.submit(run, batch) for batch in batches]
+                    try:
+                        for i, future in enumerate(as_completed(futures), 1):
+                            future.result()
+                            if i % 50 == 0 or i == len(futures):
+                                with lock:
+                                    t = totals.copy()
+                                log(f"{i:,}/{len(futures):,} batches, {t['accepted']:,}/{t['lines']:,} lines accepted, "
+                                    f"{(time.time() - start) / 3600:.2f} h; tokens in {t['input_tokens']:,} "
+                                    f"cache-read {t['cache_read_input_tokens']:,} cache-write "
+                                    f"{t['cache_creation_input_tokens']:,} out {t['output_tokens']:,}; "
+                                    f"thinking in {t['thinking_calls']:,}/{t['calls']:,} calls")
+                    except BaseException:
+                        profiles.stop.set()
+                        pool.shutdown(wait=True, cancel_futures=True)
+                        raise
+                failed = sum(texts[k] not in done for k in pending)
+                if failed and budget == 0:
+                    raise SystemExit(f"{failed:,} lines fail even alone; see rejects.jsonl")
+                budget = budget // 4 if budget > 500 else 0  # retry rejected lines in smaller batches, then alone
     log(f"all {len(texts):,} texts translated")
 
 
 def export(out: Path) -> None:
     texts = pq.read_table(out / "texts.parquet").to_pandas()
     vi = {}
-    with (out / "translations.jsonl").open() as f:
-        for line in f:
-            batch = json.loads(line)
-            vi.update(zip(batch["keys"], batch["vi"]))
-    texts["text_vi"] = texts.key.map(vi)
+    for batch in read_batches(out / "translations.jsonl"):
+        vi.update(zip(batch["en"], batch["vi"]))
+    texts["text_vi"] = texts.text.map(vi)
     done = texts.dropna()
     identical = (done.text_vi == done.text).sum()
     long = (done.text_vi.str.len() > 2 * done.text.str.len()).sum()
@@ -259,13 +298,15 @@ def main() -> None:
     p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
     p.add_argument("--out", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--profile", action="append", default=[],
-                   help="local API profile to spend, in order of use (repeatable); default: the server's rotation")
+                   help="local API profile to spend, in order of use (repeatable; translate needs one)")
     p.add_argument("--batch-chars", type=int, default=8_000, help="English characters per call")
     p.add_argument("--limit", type=int, help="translate only the first N texts (validation comes first)")
     args = p.parse_args()
     if args.step == "texts":
         build_texts(args.src, args.out)
     elif args.step == "translate":
+        if not args.profile:
+            p.error("translate needs --profile: name the subscriptions it may spend")
         translate(args.out, args.profile, args.batch_chars, args.limit)
     else:
         export(args.out)
