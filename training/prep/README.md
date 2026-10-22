@@ -37,11 +37,16 @@ and `text_en`, with local audio paths. English text is word-timed by CTC alignme
 ## Vietnamese translations of `en_speech`
 
 Runs on the Mac with the conda Python and translates with Claude Sonnet 5.5 through the local
-Claude API; costs and rules are in
-[en-vi-translation](../../docs/agent-memory/en-vi-translation.md).
+Claude API, and with Gemini 3.8 Flash through the paid Gemini Batch API for the texts claimed for
+it; costs and rules are in [en-vi-translation](../../docs/agent-memory/en-vi-translation.md) and
+[en-vi-gemini](../../docs/agent-memory/en-vi-gemini.md).
 
 ```bash
 python -m training.prep.translate_en_speech texts       # select every en_speech row; not while a build writes it
+set -a && . ./.env && set +a                            # the Gemini keys
+nohup caffeinate -i python -m training.prep.translate_en_speech gemini \
+  --key GEMINI_API_KEY_1 --key GEMINI_API_KEY_2 --hours 1000 \
+  >> /Volumes/data/datasets/en_speech_vi_text/gemini.log 2>&1 &      # claims while translate is stopped
 nohup caffeinate -i python -m training.prep.translate_en_speech translate \
   --profile claude-p --profile claude-l --profile claude-5x --profile default \
   >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
@@ -50,7 +55,9 @@ python -m training.prep.translate_en_speech export      # {train,validation}.par
 
 `--concurrency` (default 8) sets the calls in flight, so it sets how fast the accounts' quota
 drains. Rerunning `texts` after the corpus changes keeps every translation already made; a
-running `translate` reads the selection once, so start it again afterwards.
+running `translate` reads the selection and the Gemini claims once, so start it again afterwards.
+`gemini --hours` claims audio hours for each key without a claim yet, from the end of the
+translation order, and `translate` skips them; both runs resume when started again.
 
 Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
 Voice text.

@@ -18,18 +18,20 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
 ([en-speech-corpus](en-speech-corpus.md)).
 
 - `texts` writes `texts.parquet` (`text`, the unique transcripts in translation order) and
-  `rows.parquet` (`split`, `id`, `text`) for every corpus row with a letter in its transcript,
+  `rows.parquet` (`split`, `id`, `text`, `duration`) for every corpus row with a letter in its transcript,
   so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)). Validation
   comes first, then each Libriheavy recording in segment order, so a batch carries the
   neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap, and must
-  not run while a build is writing `en_speech`. A running `translate` reads the selection once,
-  so start it again after `texts`.
+  not run while a build is writing `en_speech`. A running `translate` reads the selection and
+  the Gemini claims once, so start it again after `texts` or a claim.
 - The selection on disk is still the first tranche (5-15 s clips, 1,000 train hours plus
   validation, 410,618 texts) until `en_speech` stops changing.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
   (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
   rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on
-  the directory; `export` takes it too.
+  the directory; `export` takes it and `gemini.lock`.
+- `translate` skips texts claimed for Gemini, which writes under `gemini/`
+  ([en-vi-gemini](en-vi-gemini.md)); `export` merges both engines' translations.
 - `export` writes `{split}.parquet` (`id`, `text_vi`) once every row of the split is translated,
   and removes it while not. It reports the plan's two gates (identical to the English, over
   twice its length) but drops nothing.
@@ -47,10 +49,10 @@ Measured with Sonnet 5.5:
   cap each week until the corpus is done.
 - The whole corpus needs ~370M output tokens (~600M English characters), ~104M of them for
   15–22.4 s clips.
-- Measured levers, as changes to total cost: one call per line instead of batches +80%; no
-  prompt cache for the 687-token instruction prefix +2.2%; no output line numbers −2.1%, but
-  merged or split lines would pass unnoticed; 16k-character batches −0.7%, since Claude Code
-  adds ~316 uncached input tokens per call; Telex or VIQR output +26% or +61%.
+- Measured levers, as changes to total cost: one call per line +80%; no prompt cache for the
+  687-token instructions +2.2% (they are ~0.3% of cost cached, so trimming them saves nothing);
+  no output line numbers −2.1%, but merged or split lines would pass unnoticed; 16k-character
+  batches −0.7%; Telex or VIQR output +26% or +61%.
 - Thinking can't be disabled through the local API; at low effort it shows in ~25% of calls but
   adds under 1% of output.
 - With the English delayed by U[0, 0.5 × Vietnamese duration] and the Vietnamese as long as the
