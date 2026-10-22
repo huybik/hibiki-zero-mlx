@@ -10,7 +10,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
   turns scripted English corpora into Vietnamese-source rows (Gemini translation, then
   voice-transfer TTS) toward ~40k h. Phase 2 is SFT with per-domain validation, Phase 3 a
   voice-matched fine-tune, and Phase 4 GRPO. Phases run strictly in order.
-- [docs/grpo_plan.md](../grpo_plan.md) details Phase 4 ([grpo](grpo.md)).
+- [docs/grpo_plan.md](../grpo_plan.md) details Phase 4. No GRPO code exists; build it from that
+  plan once SFT passes its promotion gate.
 - [docs/mobile_student_plan.md](../mobile_student_plan.md) is the on-device track
   ([mobile-student](mobile-student.md)).
 - [docs/finetune.md](../finetune.md), [docs/training_plan.md](../training_plan.md) and

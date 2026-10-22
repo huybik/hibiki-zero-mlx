@@ -17,15 +17,13 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 
 ```text
 FLEURS, PhoMT ─► finetune/ caches ─► finetune/h100.sh → train.py (H100 SFT) ─► HF recovery repo
-                                              │
-                                              └► finetune/grpo_rollout.py (GRPO, phase A only)
 3B teacher ─► student/ (12 layers + parallel_v1 head) ─► BF16 export
 checkpoints ─► scripts/convert_mlx_{q4,bf16}.py ─► main.py · hibiki_mlx/ · moshi-mlx/ · macos/
 remote_dataset/build_en_speech.py ─► /Volumes/data/datasets/en_speech (roadmap phase 1 input)
 ```
 
 - `main.py`, `hibiki_mlx/`, `moshi-mlx/`, `scripts/` and `macos/HibikiTestApp/` are inference.
-- `finetune/` holds CUDA SFT, caches, evaluation and GRPO.
+- `finetune/` holds CUDA SFT, caches and evaluation.
 - `student/` is mobile-student distillation.
 - `remote_dataset/` holds dataset downloaders and builders.
 - `docs/` holds plans, analyses and reports.
@@ -37,8 +35,8 @@ remote_dataset/build_en_speech.py ─► /Volumes/data/datasets/en_speech (roadm
   loss diverges.
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
   the English source corpus is built, but the translation, TTS and caching pipeline is not.
-- GRPO phase A is coded but has a reward defect. The student code is complete but has not been
-  run.
+- GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
+  The student code is complete but has not been run.
 
 ## Essential invariants
 
@@ -62,8 +60,6 @@ remote_dataset/build_en_speech.py ─► /Volumes/data/datasets/en_speech (roadm
   SHA-256 → [mobile-student](docs/agent-memory/mobile-student.md).
 - Stock moshi-swift cannot load the `parallel_v1` head →
   [mlx-inference](docs/agent-memory/mlx-inference.md).
-- GRPO rewards are currently identical within a group, so every advantage is 0; fix this before
-  phase B → [grpo](docs/agent-memory/grpo.md).
 
 ## Topic Index
 
@@ -72,10 +68,9 @@ remote_dataset/build_en_speech.py ─► /Volumes/data/datasets/en_speech (roadm
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `main.py`, `hibiki_mlx/`, `moshi-mlx/`, `scripts/`, `macos/` |
 | SFT recipe, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `finetune/{train,common,hf_sync,eval,validate}.py`, `finetune/h100.sh` |
 | Pairs, Mimi caches, publishing, frozen receipt | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `finetune/{cache_codes,cache_phomt_stream,text_timing,build_pairs,publish_grounded_cache,freeze_full_data_receipt}.py`, `remote_dataset/download_*.py` |
-| GRPO rollouts, rewards, trainer | [grpo](docs/agent-memory/grpo.md) | `finetune/grpo_rollout.py`, `finetune/tests/`, `docs/grpo_plan.md` |
 | Mobile student distillation and export | [mobile-student](docs/agent-memory/mobile-student.md) | `student/`, `docs/mobile_student_plan.md` |
 | English read-speech corpus | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `remote_dataset/build_en_speech.py`, `/Volumes/data/datasets/en_speech` |
-| Roadmap, analyses, reports, proposals | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
+| Roadmap, GRPO plan, analyses, reports, proposals | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `/Volumes/data` |
 
 ## Canonical resources
