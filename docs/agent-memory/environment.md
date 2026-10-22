@@ -40,6 +40,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 ## Git
 
 - `origin` is `github.com/huybik/hibiki-zero-mlx`; `upstream` is `kyutai-labs/hibiki-zero`.
-- Only the `huybik` GitHub account can push to `origin`. If `gh` has another account active,
-  run `gh auth switch --user huybik` first.
+- Only the `huybik` GitHub account can push to `origin`. Other sessions may leave another
+  account active, so push without switching it: `GH_TOKEN=$(gh auth token --user huybik) git -c
+  credential.helper= -c credential.helper='!gh auth git-credential' push …`, and run `gh pr` the
+  same way under `GH_TOKEN`.
 - Commit messages carry no AI attribution and no `Co-Authored-By` lines.
