@@ -38,8 +38,9 @@ Claude API; costs and rules are in
 
 ```bash
 python -m training.prep.translate_en_speech texts --min-seconds 5 --max-seconds 15 --hours 1000  # select a tranche
-caffeinate -i nohup python -m training.prep.translate_en_speech translate --profile claude-p --profile claude-l \
-  >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # rerun to resume
+caffeinate -i nohup python -m training.prep.translate_en_speech translate \
+  --profile claude-p --profile claude-l --profile default \
+  >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
 python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
 ```
 

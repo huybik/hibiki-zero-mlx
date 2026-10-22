@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import signal
 import threading
 import time
 from collections import Counter
@@ -332,6 +333,9 @@ def main() -> None:
     elif args.step == "translate":
         if not args.profile:
             p.error("translate needs --profile: name the subscriptions it may spend")
+        # A background run ignores SIGINT; let `kill` stop it as cleanly as Ctrl-C does.
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, signal.default_int_handler)
         translate(args.out, args.profile, args.batch_chars)
     else:
         export(args.out)

@@ -34,7 +34,7 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
   translated, and removed while it is not. `export` reports the plan's two gates (identical to the
   English, over twice its length) but drops nothing.
 - All 20,882 validation texts of ≤ 22.4 s are translated, and the tranche's validation rows are
-  exported. The first train tranche is running on `claude-p`, then `claude-l`.
+  exported. The first train tranche is running on `claude-p`, then `claude-l`, then `default`.
 
 ## Token budget
 
@@ -90,8 +90,9 @@ Measured with Sonnet 5.5 on the validation split:
 - 5xx replies, dropped connections and a 429 without `retry-after` (a refusal of that request only)
   are retried with backoff (1, 2, 4, 8 and 16 minutes), then stop the run. Any other API error
   stops it at once.
-- Ctrl-C ends quota waits and lets in-flight batches finish and be logged. A run refuses to start
-  when a hard kill has cut off the last line of `translations.jsonl`.
+- Ctrl-C, or `kill <pid>` for a background run, ends quota waits and lets in-flight batches finish
+  and be logged. A run refuses to start when a hard kill has cut off the last line of
+  `translations.jsonl`.
 
 ## How to work
 
@@ -99,4 +100,4 @@ Measured with Sonnet 5.5 on the validation split:
   report measured alternatives, as the user asked.
 - Translate in tranches, as the roadmap validates the pipeline on 1k hours before scaling, and
   check TTS on a tranche before spending more quota. The user chose the first tranche's 5-15 s
-  window and its profiles.
+  window and its profiles, including `default` as the last one.
