@@ -8,9 +8,9 @@ through `hibiki_mlx.pipeline`.
 Install it from the repository root:
 
 ```bash
-pip install -e ./moshi-mlx
+pip install -e ./inference/moshi-mlx
 ```
 
-Use `main.py` for inference. This package is not a standalone CLI.
+Use `inference/main.py` for inference. This package is not a standalone CLI.
 
 The code remains under the upstream MIT license in `LICENSE`.

@@ -112,6 +112,12 @@ Expected directories and shard counts are:
 - `data/cache/train_grounded_v2`: 46 shards;
 - `data/cache/validation_grounded_v2`: 5 shards.
 
+Always restore these published caches. The frozen receipt pins their exact shard
+bytes, including each row's recorded audio paths, so caches rebuilt with
+`./training/h100.sh cache-grounded` do not pass preflight. The `README.md` inside
+the published `grounded-v2/` prefix predates the `data/` layout; follow the
+commands above.
+
 The large source pair manifests are not needed for cached training.
 
 ### 5. Preflight and smoke
@@ -145,6 +151,11 @@ epochs, validates and saves every 9,000 steps plus step 224,725, promotes the
 lowest validation loss, and keeps two recovery pairs plus the best model.
 
 ## Recover the same run on a replacement pod
+
+The commit recorded in `run.json` decides the paths. A run started before the
+`inference/`/`training/` split, such as the existing
+`grounded_v2_full_direct_voice_5epoch` prefix, follows that commit's own
+`docs/finetune.md` (`finetune/h100.sh`, `finetune/runs/`).
 
 After checking out the commit from remote `run.json`, completing setup, weights,
 caches, preflight, and smoke, restore the newest complete model/trainer pair and

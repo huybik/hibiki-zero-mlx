@@ -56,7 +56,9 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
   `runs/grounded_v2_full_direct_5epoch_receipt/{sample_manifest.jsonl,full_data_receipt.json}`.
   Existing files are never overwritten.
 - It checks four artifact hashes and the cache receipts: 1377 PhoMT, 46 FLEURS-train and
-  5 FLEURS-validation shards.
+  5 FLEURS-validation shards. The receipt pins the published shard bytes, which include each
+  row's recorded audio paths (`remote_dataset/fleurs_vi_en/...` for FLEURS), so production
+  restores the published caches; caches rebuilt under `data/` get a different receipt.
 - Rows over 280 frames are dropped, not truncated. It then draws
   `select_weighted([0.95, 0.05], 719,120, seed 42)`, giving 683,164 PhoMT and 35,956 FLEURS
   rows, sorts by length and shuffles batch order with batch 16 and seed 42.

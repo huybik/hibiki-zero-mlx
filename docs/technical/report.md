@@ -196,7 +196,7 @@ Measured on the 3B model:
 - LM total: **25.9 -> 18.5 ms** (-29%);
 - live throughput: **3.1x -> 4.3x real-time**.
 
-The head is now bandwidth-bound because it reads about 0.45 GB of bf16 parameters per frame. The next optimization is therefore architectural shrinkage and q4, after quality training. The current implementation lives in [`student/`](https://github.com/huybik/hibiki-zero-mlx/tree/6a48332/student/), and the original smoke evidence remains in [`parallel_head_smoke.md`](../vision/reports/parallel_head_smoke.md).
+The head is now bandwidth-bound because it reads about 0.45 GB of bf16 parameters per frame. The next optimization is therefore architectural shrinkage and q4, after quality training. The implementation lived in [`student/`](https://github.com/huybik/hibiki-zero-mlx/tree/6a48332/student/) until it was removed, and the original smoke evidence remains in [`parallel_head_smoke.md`](../vision/reports/parallel_head_smoke.md).
 
 ## 4.3 The gate stack
 

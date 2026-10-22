@@ -12,7 +12,6 @@ venv/
 # Secrets and local tool state
 .env
 .envrc
-.hf_cache/
 .claude/
 .codegraph/
 .DS_Store
