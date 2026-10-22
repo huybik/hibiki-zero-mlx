@@ -81,7 +81,7 @@ At 24 kHz, Mimi consumes 1,920 PCM samples per frame. The runtime performs four 
 3. **The text head and codebook head** emit English text plus target-audio codebooks.
 4. **Mimi decode** reconstructs 24 kHz English audio.
 
-The runtime implementation is intentionally small. [`inference/main.py`](../../inference/main.py) handles the CLI and live audio callbacks; [`inference/hibiki_mlx/pipeline.py`](../../inference/hibiki_mlx/pipeline.py) owns model loading, quantization, the file pipeline, tail flushing, and the opt-in parallel head. Model-specific architecture support belongs in the vendored [`moshi-mlx`](../../inference/moshi-mlx/) fork rather than in per-script monkey patches.
+The runtime implementation is intentionally small. [`inference/main.py`](../../inference/main.py) handles the CLI and live audio callbacks; [`inference/hibiki_mlx/pipeline.py`](../../inference/hibiki_mlx/pipeline.py) owns model loading, quantization, the file pipeline, and tail flushing (the opt-in parallel head it carried at the time has since been removed). Model-specific architecture support belongs in the vendored [`moshi-mlx`](../../inference/moshi-mlx/) fork rather than in per-script monkey patches.
 
 ## 2.1 The hierarchical bottleneck
 
