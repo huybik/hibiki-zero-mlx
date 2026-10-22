@@ -5,8 +5,8 @@ description = "Realtime MLX speech-translation runtime for hibiki-zero (q4, pipe
 requires-python = ">= 3.10,<3.14"
 readme = "README.md"
 dependencies = [
-    # moshi_mlx comes from the vendored fork: pip install -e ./moshi-mlx
-    "mlx>=0.26.0",
+    # moshi_mlx comes from the vendored fork: pip install -e ./inference/moshi-mlx
+    "mlx>=0.31",
     "numpy",
     "rustymimi>=0.4.1",
     "sentencepiece",
@@ -17,19 +17,9 @@ dependencies = [
 [tool.ruff]
 line-length = 100
 
-[project.optional-dependencies]
-training = [
-    "datasets",
-    "huggingface-hub",
-    "pyarrow",
-    "sacrebleu",
-    "safetensors",
-    "soundfile",
-]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["hibiki_mlx"]
+packages = ["inference/hibiki_mlx"]

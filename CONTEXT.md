@@ -16,14 +16,20 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-FLEURS, PhoMT ─► finetune/ caches ─► finetune/h100.sh → train.py (H100 SFT) ─► HF recovery repo
-checkpoints ─► scripts/convert_mlx_{q4,bf16}.py ─► main.py · hibiki_mlx/ · moshi-mlx/ · macos/
+training/  (CUDA, Linux H100)
+  FLEURS, PhoMT ─► prep/ ─► data/cache ─► h100.sh → finetune/train.py ─► runs/, HF recovery repo
+inference/ (Apple Silicon, MLX)
+  checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
 ```
 
-- `main.py`, `hibiki_mlx/`, `moshi-mlx/`, `scripts/` and `macos/HibikiTestApp/` are inference.
-- `finetune/` holds CUDA SFT, caches and evaluation.
-- `remote_dataset/` holds the FLEURS downloader.
+- `inference/` is the only Apple Silicon code: `main.py`, the `hibiki_mlx/` runtime, the
+  vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
+- `training/` is CUDA-only and never runs on a Mac: `h100.sh`, shared `paths.py`, data
+  preparation in `prep/` and the SFT trainer and evaluation in `finetune/`. Its modules run from
+  the repo root as `python -m training.<package>.<module>`.
 - `docs/` holds plans, analyses and reports.
+- Gitignored: `weights/` (shared by both sides), `data/` (datasets, pairs, caches), `runs/`
+  (training runs and eval outputs) and `translations/` (inference outputs).
 
 ## Where things stand
 
@@ -40,8 +46,11 @@ checkpoints ─► scripts/convert_mlx_{q4,bf16}.py ─► main.py · hibiki_mlx
   [environment](docs/agent-memory/environment.md).
 - Never upload or re-share the Common Voice part of `en_speech` →
   [environment](docs/agent-memory/environment.md).
+- Apple Silicon is for inference only; all training and data preparation run on CUDA →
+  [sft-training](docs/agent-memory/sft-training.md).
 - The SFT recipe constants live in `freeze_full_data_receipt.py`, and `train.py` rejects any
-  deviation. Production runs go only through `h100.sh` → [sft-training](docs/agent-memory/sft-training.md).
+  deviation. Production runs go only through `training/h100.sh` →
+  [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
   codebooks. EOS and -1 positions are fixed, and training applies no transform →
   [sft-data-caches](docs/agent-memory/sft-data-caches.md).
@@ -56,11 +65,11 @@ checkpoints ─► scripts/convert_mlx_{q4,bf16}.py ─► main.py · hibiki_mlx
 
 | Read when working on… | Note | Main paths |
 |---|---|---|
-| MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `main.py`, `hibiki_mlx/`, `moshi-mlx/`, `scripts/`, `macos/` |
-| SFT recipe, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `finetune/{train,common,hf_sync,eval,validate}.py`, `finetune/h100.sh` |
-| Pairs, Mimi caches, publishing, frozen receipt | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `finetune/{cache_codes,cache_phomt_stream,text_timing,build_pairs,publish_grounded_cache,freeze_full_data_receipt}.py`, `remote_dataset/download_fleurs_vi_en.py` |
+| MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
+| SFT recipe, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
+| Pairs, Mimi caches, publishing, frozen receipt | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/`, `training/paths.py`, `training/finetune/freeze_full_data_receipt.py` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
-| Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `/Volumes/data` |
+| Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
 
 ## Canonical resources
 

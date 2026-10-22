@@ -81,7 +81,7 @@ At 24 kHz, Mimi consumes 1,920 PCM samples per frame. The runtime performs four 
 3. **The text head and codebook head** emit English text plus target-audio codebooks.
 4. **Mimi decode** reconstructs 24 kHz English audio.
 
-The runtime implementation is intentionally small. [`main.py`](../../main.py) handles the CLI and live audio callbacks; [`hibiki_mlx/pipeline.py`](../../hibiki_mlx/pipeline.py) owns model loading, quantization, the file pipeline, tail flushing, and the opt-in parallel head. Model-specific architecture support belongs in the vendored [`moshi-mlx`](../../moshi-mlx/) fork rather than in per-script monkey patches.
+The runtime implementation is intentionally small. [`inference/main.py`](../../inference/main.py) handles the CLI and live audio callbacks; [`inference/hibiki_mlx/pipeline.py`](../../inference/hibiki_mlx/pipeline.py) owns model loading, quantization, the file pipeline, tail flushing, and the opt-in parallel head. Model-specific architecture support belongs in the vendored [`moshi-mlx`](../../inference/moshi-mlx/) fork rather than in per-script monkey patches.
 
 ## 2.1 The hierarchical bottleneck
 
@@ -164,7 +164,7 @@ The benchmark matrix made the product split explicit:
 
 The 1B q4 model is smaller and faster, and on the n=30 French benchmark it scored better than the multilingual 3B because it is a dedicated FR->EN model. It is not yet a Vietnamese phone model.
 
-**Decision:** keep q4 group size 32. Stock `moshi-mlx` and `moshi-swift` use this contract for `.q4.safetensors`; a different group size saves little and breaks the downstream loader. [`scripts/check_swift_compat.py`](../../scripts/check_swift_compat.py) reproduces the strict loader path and reports 7/7 checks for the staged artifact. This proves format compatibility, not iPhone speed [R7].
+**Decision:** keep q4 group size 32. Stock `moshi-mlx` and `moshi-swift` use this contract for `.q4.safetensors`; a different group size saves little and breaks the downstream loader. [`inference/tools/check_swift_compat.py`](../../inference/tools/check_swift_compat.py) reproduces the strict loader path and reports 7/7 checks for the staged artifact. This proves format compatibility, not iPhone speed [R7].
 
 ---
 
@@ -196,7 +196,7 @@ Measured on the 3B model:
 - LM total: **25.9 -> 18.5 ms** (-29%);
 - live throughput: **3.1x -> 4.3x real-time**.
 
-The head is now bandwidth-bound because it reads about 0.45 GB of bf16 parameters per frame. The next optimization is therefore architectural shrinkage and q4, after quality training. The current implementation lives in [`student/`](../../student/), and the original smoke evidence remains in [`parallel_head_smoke.md`](../vision/reports/parallel_head_smoke.md).
+The head is now bandwidth-bound because it reads about 0.45 GB of bf16 parameters per frame. The next optimization is therefore architectural shrinkage and q4, after quality training. The current implementation lives in [`student/`](https://github.com/huybik/hibiki-zero-mlx/tree/6a48332/student/), and the original smoke evidence remains in [`parallel_head_smoke.md`](../vision/reports/parallel_head_smoke.md).
 
 ## 4.3 The gate stack
 
@@ -647,7 +647,7 @@ These are not embarrassing footnotes. Each failure identified an ownership bound
 
 ![Native Hibiki Test macOS prototype](assets/macos-prototype.png)
 
-The screenshot shows the repository-built prototype running with the Vietnamese MLX checkpoint and a FLEURS validation clip; it demonstrates application integration, not Vietnamese model qualification. [`macos/HibikiTestApp/`](../../macos/HibikiTestApp/) implements the first desktop stage as a small native shell. It locates the repository, launches [`main.py`](../../main.py) through the project's fixed conda Python, and keeps inference in a separate local process. The prototype provides:
+The screenshot shows the repository-built prototype running with the Vietnamese MLX checkpoint and a FLEURS validation clip; it demonstrates application integration, not Vietnamese model qualification. [`inference/macos/HibikiTestApp/`](../../inference/macos/HibikiTestApp/) implements the first desktop stage as a small native shell. It locates the repository, launches [`inference/main.py`](../../inference/main.py) through the project's fixed conda Python, and keeps inference in a separate local process. The prototype provides:
 
 - selection of a staged q4 or bf16 MLX model and a WAV, MP3, or FLAC input;
 - file translation with English transcript capture, output playback, and Finder reveal;
@@ -755,23 +755,23 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 
 | Boundary | Source |
 |---|---|
-| CLI and live audio | [`main.py`](../../main.py) |
-| native macOS prototype | [`macos/HibikiTestApp/`](../../macos/HibikiTestApp/) |
+| CLI and live audio | [`inference/main.py`](../../inference/main.py) |
+| native macOS prototype | [`inference/macos/HibikiTestApp/`](../../inference/macos/HibikiTestApp/) |
 | external native iOS runtime and app | [An Quách's `hibiki-inference`](https://github.com/anthoai97/hibiki-inference) |
-| model loading, quantization, pipeline | [`hibiki_mlx/pipeline.py`](../../hibiki_mlx/pipeline.py) |
-| model architecture deltas | [`moshi-mlx/moshi_mlx/models`](../../moshi-mlx/moshi_mlx/models/) |
-| benchmark and silence gate | [`scripts/bench.py`](../../scripts/bench.py) |
-| Swift artifact contract | [`scripts/check_swift_compat.py`](../../scripts/check_swift_compat.py) |
-| translation benchmarks | [`remote_dataset/`](../../remote_dataset/) |
-| Vietnamese cache/train/eval | [`finetune/`](../../finetune/) |
-| student and parallel-head training | [`student/`](../../student/) |
+| model loading, quantization, pipeline | [`inference/hibiki_mlx/pipeline.py`](../../inference/hibiki_mlx/pipeline.py) |
+| model architecture deltas | [`inference/moshi-mlx/moshi_mlx/models`](../../inference/moshi-mlx/moshi_mlx/models/) |
+| benchmark and silence gate | [`inference/tools/bench.py`](../../inference/tools/bench.py) |
+| Swift artifact contract | [`inference/tools/check_swift_compat.py`](../../inference/tools/check_swift_compat.py) |
+| translation benchmark data | [`training/prep/`](../../training/prep/) |
+| Vietnamese cache/train/eval | [`training/`](../../training/) |
+| student and parallel-head training (removed) | [`student/` at `6a48332`](https://github.com/huybik/hibiki-zero-mlx/tree/6a48332/student) |
 | historical synthetic and VIVOS data pipeline | [`training-data/` at `b4ba8b8`](https://github.com/huybik/hibiki-zero-mlx/tree/b4ba8b8/training-data) |
 | historical VIVOS experiment reports | [`reports/benchmarks/` at `70eaead`](https://github.com/huybik/hibiki-zero-mlx/tree/70eaead/reports/benchmarks) |
 
 ## 11.2 Primary local evidence
 
 - Runtime evidence: [inference optimization](../vision/reports/inference_matrix.md), [iPhone budget](../vision/reports/iphone_budget.md), and [parallel-head smoke](../vision/reports/parallel_head_smoke.md)
-- Native app evidence: this repository's [`HibikiTestApp`](../../macos/HibikiTestApp/) and An Quách's external [Hibiki Edge repository at `e149a27`](https://github.com/anthoai97/hibiki-inference/tree/e149a279996851f5ed736b6c9d79a6ecfc1f1a96)
+- Native app evidence: this repository's [`HibikiTestApp`](../../inference/macos/HibikiTestApp/) and An Quách's external [Hibiki Edge repository at `e149a27`](https://github.com/anthoai97/hibiki-inference/tree/e149a279996851f5ed736b6c9d79a6ecfc1f1a96)
 - Current training evidence: [direct-run validation-collapse analysis](../analysis/validation_collapse_analysis.md), [exact loss function](../analysis/loss_function.md), [frozen direct recipe](../training_plan.md), [validation contract](../validation_plan.md), and [H100 handoff](../finetune.md). The six unseen-PhoMT free-running examples and their aggregate metrics are embedded in Section 5.6.
 - Historical dataset evidence: [pipeline README at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/training-data/README.md), [data generation plan at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/docs/data_generation_plan.md), [VieNeu/Kokoro optimization record at `6749a9a`](https://github.com/huybik/hibiki-zero-mlx/blob/6749a9a/docs/vieneu_optimizations.md), [timbre matcher at `d0ccf84`](https://github.com/huybik/hibiki-zero-mlx/blob/d0ccf84/training-data/match_voices.py), and [unexecuted retrofit plan at `77884e0`](https://github.com/huybik/hibiki-zero-mlx/blob/77884e0/training-data/RETROFIT_PLAN.md)
 - Raw-campaign timing is derived from the timestamped milestones `fc6b770`, `557ce36`, `012566b`, `d1d65dc`, `ce0ece7`, `2b4c88e`, and `9bb5d12`; throughput changes are recorded in `193a83f`, `8f956af`, and `cc128d5`

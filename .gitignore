@@ -17,15 +17,12 @@ venv/
 .codegraph/
 .DS_Store
 
-# Model and generated artifacts
+# Models, data and generated artifacts
 /weights
+/data/
+/runs/
 /translations/
 /output/
 docs/vision/vision.html
 docs/vision/vision.pdf
-macos/HibikiTestApp/.build/
-macos/HibikiTestApp/build/
-remote_dataset/fleurs_vi_en/
-finetune/pairs/
-finetune/cache/
-finetune/runs/
+inference/macos/HibikiTestApp/.build/

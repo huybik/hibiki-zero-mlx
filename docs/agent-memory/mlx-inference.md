@@ -1,22 +1,27 @@
 # MLX inference
 
-Read when touching `main.py`, `hibiki_mlx/`, `moshi-mlx/`, `scripts/` or `macos/HibikiTestApp/`.
+Read when touching anything under `inference/`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runtime](#runtime) ·
 [Model directories](#model-directories) · [Vendored moshi-mlx](#vendored-moshi-mlx) · [Gates](#gates)
 
 ## Entry points
 
-- `main.py INPUT` writes `translations/<stem>_translated.wav` and a matching `.txt`;
-  `main.py --mic` plays the translation live, capped by `--minutes` (default 30).
+- `python inference/main.py INPUT` writes `translations/<stem>_translated.wav` (repo root) and
+  a matching `.txt`; `--mic` plays the translation live, capped by `--minutes` (default 30).
 - `--model` takes `3b` (the `weights/` symlink to `/Volumes/data/models/hibiki/weights`) or a
   staged model directory. Text sampling is temperature 0.4, top-k 25; audio is 0.8, top-k 250;
   the seed is 299792458.
-- `macos/HibikiTestApp/` is a SwiftUI wrapper that runs `main.py` with the conda Python path
-  hard-coded; `build.sh` produces `build/Hibiki Test.app`.
+- `inference/macos/HibikiTestApp/` is a SwiftUI wrapper that runs `inference/main.py` with the
+  conda Python path hard-coded. It finds the repo root by walking up to a directory holding
+  `inference/main.py` and `inference/hibiki_mlx/`, and defaults to the model
+  `weights/vi-step135000-mlx-bf16` and the clip `data/fleurs_vi_en/validation/vi/vi_01624.wav`
+  when they exist. `build.sh` produces `build/Hibiki Test.app`.
 
 ## Runtime
 
-`hibiki_mlx/pipeline.py` owns load and run.
+`inference/hibiki_mlx/pipeline.py` owns load and run, plus the repo-root constants `W`
+(`weights/`) and `SAMPLE` (`inference/assets/leon.wav`). `pip install -e .` installs
+`hibiki_mlx` from `inference/`.
 
 - `load()` returns the LM, its config, the SentencePiece tokenizer and two separate
   `rustymimi.Tokenizer`s. One instance cannot be borrowed by two threads, and a fresh pair
@@ -37,16 +42,16 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - BF16: `weight_dtype: bfloat16` and `moshi_name` ending in `.bf16.safetensors`; no quantization.
 - The tokenizer vocabulary must equal `text_card`; the Mimi file is `mimi_name`
   (default `mimi-pytorch-e351c8d8@125.safetensors`).
-- `scripts/convert_mlx_q4.py` converts `weights/hibiki-pytorch-77f82164@110.safetensors` into
-  `weights/hibiki.q4.safetensors`.
-- `scripts/convert_mlx_bf16.py` stages an exact PyTorch checkpoint (for example an SFT
+- `inference/tools/convert_mlx_q4.py` converts `weights/hibiki-pytorch-77f82164@110.safetensors`
+  into `weights/hibiki.q4.safetensors`.
+- `inference/tools/convert_mlx_bf16.py` stages an exact PyTorch checkpoint (for example an SFT
   `model_step*.safetensors`) into a new directory and refuses to overwrite.
 
 ## Vendored moshi-mlx
 
-- A minimal LM, generator, transformer, KV cache and sampler subset, installed with
-  `pip install -e ./moshi-mlx`. It requires `mlx>=0.31`, stricter than the root
-  `pyproject.toml`.
+- `inference/moshi-mlx/` is a minimal LM, generator, transformer, KV cache and sampler subset,
+  installed with `pip install -e ./inference/moshi-mlx`. It and the root `pyproject.toml` both
+  require `mlx>=0.31`.
 - Hibiki-Zero deltas: grouped-query attention via `kv_repeat`, FFN width `hidden_scale * dim`,
   `rope_concat` as non-traditional RoPE, and a learned per-slice depformer output LayerNorm.
 - The depformer is the only audio head. `load_pytorch_weights` accepts both the upstream fused
@@ -55,10 +60,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 
 ## Gates
 
-- `scripts/verify_mlx_q4.py` translates `assets/samples/leon.wav` into
+- `inference/tools/verify_mlx_q4.py` translates `inference/assets/leon.wav` (French) into
   `translations/leon_mlx_q4.wav`.
-- `scripts/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
+- `inference/tools/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
   Mimi decode) and a projected iPhone frame time from an assumed `--scale` (0.5). The
   projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1.
-- `scripts/check_swift_compat.py [dir]` replays the stock moshi-swift loader path: strict q4
+- `inference/tools/check_swift_compat.py [dir]` replays the stock moshi-swift loader path: strict q4
   group-32 load, required config keys, tokenizer and Mimi sidecars.

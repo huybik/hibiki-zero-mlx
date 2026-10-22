@@ -45,11 +45,11 @@ and missing EOS become more severe.
 
 The evidence comes from the stopped pod's run artifacts:
 
-- `finetune/runs/vi_grounded_v2_full_direct_voice_5epoch/train_log.jsonl`;
-- `finetune/runs/vi_grounded_v2_full_direct_voice_5epoch/val_log.jsonl`;
-- `finetune/runs/eval_direct_voice/upstream_full128/metrics.json`;
-- `finetune/runs/eval_direct_voice/best_step018000_full128/metrics.json`;
-- `finetune/runs/eval_direct_voice/terminal_step135000_full128/metrics.json`.
+- `runs/vi_grounded_v2_full_direct_voice_5epoch/train_log.jsonl`;
+- `runs/vi_grounded_v2_full_direct_voice_5epoch/val_log.jsonl`;
+- `runs/eval_direct_voice/upstream_full128/metrics.json`;
+- `runs/eval_direct_voice/best_step018000_full128/metrics.json`;
+- `runs/eval_direct_voice/terminal_step135000_full128/metrics.json`.
 
 ### Training and validation diverged
 
@@ -107,7 +107,7 @@ universal validation collapse: it specialized toward PhoMT while regressing on
 FLEURS.
 
 The reproducible evaluation artifact is
-`finetune/runs/eval_phomt_teacher_forced/metrics.json` on the stopped pod. It
+`runs/eval_phomt_teacher_forced/metrics.json` on the stopped pod. It
 records the training-manifest hash, split ID hashes, batch 8, shuffle false, and
 all loss components. This holdout is row-ID-disjoint but has not yet been audited
 for duplicate or near-duplicate text/audio across different IDs, so it is a

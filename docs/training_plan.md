@@ -28,7 +28,7 @@ transform, ASR replay, contrastive or anti-repetition loss.
 ## Frozen data receipt
 
 Training uses the published grounded-v2 PhoMT and FLEURS caches exactly as
-verified by `finetune/freeze_full_data_receipt.py`:
+verified by `training/finetune/freeze_full_data_receipt.py`:
 
 | Property | Value |
 | --- | ---: |
@@ -42,7 +42,7 @@ verified by `finetune/freeze_full_data_receipt.py`:
 | Steps per epoch | 44,945 |
 
 Membership and order are frozen in
-`finetune/runs/grounded_v2_full_direct_5epoch_receipt/sample_manifest.jsonl`. The
+`runs/grounded_v2_full_direct_5epoch_receipt/sample_manifest.jsonl`. The
 training loader follows that manifest without reshuffling.
 
 Validation uses the raw grounded-v2 FLEURS validation cache:
@@ -86,14 +86,14 @@ at least 190 GiB free disk.
 
 ```bash
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
-./finetune/h100.sh preflight
-./finetune/h100.sh smoke
-./finetune/h100.sh train
+./training/h100.sh preflight
+./training/h100.sh smoke
+./training/h100.sh train
 ```
 
 `train` is allowed only after a commit-matched smoke and only when the remote
 `grounded_v2_full_direct_voice_5epoch/` prefix is empty. The full run directory is
-`finetune/runs/vi_grounded_v2_full_direct_voice_5epoch`.
+`runs/vi_grounded_v2_full_direct_voice_5epoch`.
 
 ## Validation and checkpoints
 
@@ -122,8 +122,8 @@ metadata, exact optimizer state, the current promoted best model/marker after
 step 9,000, and the commit recorded by `run.json`:
 
 ```bash
-./finetune/h100.sh resume \
-  finetune/runs/vi_grounded_v2_full_direct_voice_5epoch/trainer_stepNNNNNN.pt
+./training/h100.sh resume \
+  runs/vi_grounded_v2_full_direct_voice_5epoch/trainer_stepNNNNNN.pt
 ```
 
 See [finetune.md](finetune.md) for complete restore commands.
