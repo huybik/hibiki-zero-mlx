@@ -3,7 +3,7 @@
 Read when touching the `gemini` step of `training/prep/translate_en_speech.py` or
 `/Volumes/data/datasets/en_speech_vi_text/gemini`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Claims and files](#claims-and-files) ·
-[Measurements](#measurements) · [Running](#running)
+[Measurements](#measurements) · [Muse Spark comparison](#muse-spark-comparison) · [Running](#running)
 
 ## Purpose
 
@@ -68,6 +68,24 @@ The full 2 × 1,000-hour run (513,727 texts, 105M characters):
   `translate`.
 - Gates: 30 lines identical to the English and 8 over twice its length; the 35 long lines
   without Vietnamese diacritics are Latin, name lists and addresses kept as written.
+
+## Muse Spark comparison
+
+Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor` on OpenRouter, served by Meta), run on
+the same 71 batches with the same prompt (scratch test, no code in the repo):
+
+- It costs $0.10 input and $0.20 output per million tokens because Meta trains on prompts and
+  replies, so it may only ever see Libriheavy text, never Common Voice.
+- Reasoning cannot be turned off. At `minimal` effort it was ~3% of output; at `low`, 33%.
+- `minimal` accepted all 2,843 lines first time in 134 s at 16 calls in flight (median 26 s per
+  batch) for $0.050: $0.09 per million English characters, ~$37 for the 420M Libriheavy characters
+  left, against Gemini's $0.73 and ~$308. `low` cost $0.066 and one batch broke the `n|` format.
+- Its Vietnamese is 1.01× the English characters.
+- Blind judges scored all four engines together (adequacy/fluency). Opus gave Sonnet 4.26/4.15,
+  Gemini 4.20/4.04, Muse minimal 4.09/3.78 and Muse low 3.91/3.81. The Sonnet judge gave
+  3.97/3.84, 3.85/3.71, 3.87/3.62 and 3.70/3.54.
+- Muse minimal trails Sonnet in fluency by 0.37 ± 0.10 (Opus) and 0.22 ± 0.10 (Sonnet judge), with
+  literal calques and stiff word choice. In adequacy it is within ~0.1 of Gemini.
 
 ## Running
 
