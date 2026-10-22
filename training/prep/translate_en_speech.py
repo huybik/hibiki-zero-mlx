@@ -19,11 +19,11 @@ neighbouring book text as context for names, gender and Vietnamese forms of addr
 
 Run from the repo root as `python -m training.prep.translate_en_speech <step>`. Steps, all under
 --out:
-  texts      texts.parquet (key, text) and rows.parquet (split, id, key): every
-             validation row in the duration range, plus train rows up to --hours, drawn
-             in a fixed random order of units (a Common Voice clip, or a whole
-             Libriheavy recording so its book context stays together); a larger --hours
-             extends a smaller selection
+  texts      texts.parquet (text: the unique transcripts, in translation order) and
+             rows.parquet (split, id, text): every validation row in the duration range,
+             plus train rows up to --hours, drawn in a fixed random order of units (a
+             Common Voice clip, or a whole Libriheavy recording so its book context stays
+             together); with the same range, a larger --hours extends a smaller selection
   translate  appends accepted batches, keyed by their English text, to translations.jsonl
              and rejected output to rejects.jsonl; rerun to resume. Rejected lines are
              retried in smaller batches, then alone. When every --profile is out of quota
@@ -102,15 +102,12 @@ def build_texts(src: Path, out: Path, min_seconds: float, max_seconds: float, ho
     # Validation first, then each Libriheavy recording in segment order (CV ids sort alone).
     rows["split_order"] = rows.split.map(SPLIT_ORDER)
     rows = rows.sort_values(["split_order", "recording", "segment"], kind="stable")
-    texts = rows.drop_duplicates("text")[["text"]].reset_index(drop=True)
-    texts["key"] = texts.index.astype("int32")
-    rows = rows.merge(texts, on="text")
+    texts = rows.drop_duplicates("text")[["text"]]
     log(f"{len(rows):,} rows share {len(texts):,} unique texts "
         f"({texts.text.str.len().sum():,} characters)")
     out.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pandas(texts[["key", "text"]], preserve_index=False),
-                   out / "texts.parquet", compression="zstd")
-    pq.write_table(pa.Table.from_pandas(rows[["split", "id", "key"]], preserve_index=False),
+    pq.write_table(pa.Table.from_pandas(texts, preserve_index=False), out / "texts.parquet", compression="zstd")
+    pq.write_table(pa.Table.from_pandas(rows[["split", "id", "text"]], preserve_index=False),
                    out / "rows.parquet", compression="zstd")
 
 
@@ -133,6 +130,8 @@ class Profiles:
 
     def pick(self) -> str:
         while True:
+            if self.stop.is_set():
+                raise Stopped
             with self.lock:
                 now = time.time()
                 ready = [name for name, until in self.until.items() if until <= now]
@@ -238,8 +237,11 @@ def translate(out: Path, profile_names: list[str], batch_chars: int) -> None:
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
     with lock_dir(out):
         log_path = out / "translations.jsonl"
-        if log_path.exists() and log_path.stat().st_size and not log_path.read_bytes().endswith(b"\n"):
-            raise SystemExit(f"{log_path} ends in a cut-off line from a killed run; delete that line to continue")
+        if log_path.exists() and log_path.stat().st_size:
+            with log_path.open("rb") as f:
+                f.seek(-1, 2)
+                if f.read(1) != b"\n":
+                    raise SystemExit(f"{log_path} ends in a cut-off line from a killed run; delete that line to continue")
         done = {en for batch in read_batches(log_path) for en in batch["en"]}
         client = Anthropic(base_url=API_URL, api_key=API_TOKEN.read_text().strip(), max_retries=0, timeout=1800)
         profiles, lock, totals = Profiles(profile_names), threading.Lock(), Counter()
@@ -302,7 +304,8 @@ def export(out: Path) -> None:
     long = (done.text_vi.str.len() > 2 * done.text.str.len()).sum()
     log(f"{len(done):,}/{len(texts):,} texts translated: {identical:,} identical to the English, "
         f"{long:,} over 2x its length")
-    rows = pq.read_table(out / "rows.parquet").to_pandas().merge(texts[["key", "text_vi"]], on="key")
+    rows = pq.read_table(out / "rows.parquet").to_pandas()
+    rows["text_vi"] = rows.text.map(vi)
     for split, group in rows.groupby("split"):
         missing = group.text_vi.isna().sum()
         if missing:
@@ -329,6 +332,8 @@ def main() -> None:
     if args.step == "texts":
         if args.max_seconds > MAX_SECONDS:
             p.error(f"--max-seconds over {MAX_SECONDS:.1f} keeps clips that can never become a training row")
+        if args.min_seconds > args.max_seconds or (args.hours is not None and args.hours <= 0):
+            p.error("the selection would be empty: check --min-seconds, --max-seconds and --hours")
         build_texts(args.src, args.out, args.min_seconds, args.max_seconds, args.hours)
     elif args.step == "translate":
         if not args.profile:

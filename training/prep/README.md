@@ -38,13 +38,14 @@ Claude API; costs and rules are in
 
 ```bash
 python -m training.prep.translate_en_speech texts --min-seconds 5 --max-seconds 15 --hours 1000  # select a tranche
-caffeinate -i nohup python -m training.prep.translate_en_speech translate \
+nohup caffeinate -i python -m training.prep.translate_en_speech translate \
   --profile claude-p --profile claude-l --profile default \
   >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
 python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
 ```
 
-A larger `--hours` extends the selection, and translations already made are kept.
+With the same duration range, a larger `--hours` extends the selection; translations already
+made are always kept.
 
 Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
 Voice text.

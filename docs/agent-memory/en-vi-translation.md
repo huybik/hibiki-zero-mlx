@@ -17,18 +17,20 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
 `/Volumes/data/datasets/en_speech_vi_text/` holds Common Voice text, so never upload it
 ([en-speech-corpus](en-speech-corpus.md)).
 
-- `texts.parquet` (`key`, `text`) and `rows.parquet` (`split`, `id`, `key`) hold the current
-  selection, rebuilt by `texts`. It takes every validation row whose clip lasts `--min-seconds` to
+- `texts.parquet` (`text`, the unique transcripts in translation order) and `rows.parquet`
+  (`split`, `id`, `text`) hold the current selection, rebuilt by `texts`. It takes every
+  validation row whose clip lasts `--min-seconds` to
   `--max-seconds` (at most the 280-frame cap, 22.4 s), plus train rows up to `--hours`. Transcripts
   without letters (`.`) are skipped, and identical ones are translated once. Train is drawn in a
   fixed random order of units: a Common Voice clip, or a whole Libriheavy recording, so a batch
-  carries the neighbouring book text. A larger `--hours` therefore extends a smaller selection.
+  carries the neighbouring book text. With the same duration range, a larger `--hours` extends a
+  smaller selection; a new range draws a different order.
 - The current selection is the first tranche: 5-15 s clips, 1,000 train hours (Libriheavy
   627 h, Common Voice 373 h) and 13,664 validation rows (28.9 h), so 410,618 texts (46.5M
   characters) in 435,019 rows. With no limits it would be 2,812,262 texts in 3,387,073 rows.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
-  (`en`, raw output) are append-only, and `translate` resumes from them. Records hold the English
-  text, not a key, so rebuilding `texts` keeps every finished translation.
+  (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
+  rebuilding `texts` keeps every finished translation.
 - `translate.lock` stops a second run on the same directory; `export` takes it too.
 - `{split}.parquet` (`id`, `text_vi`) is written by `export` once every row of the split is
   translated, and removed while it is not. `export` reports the plan's two gates (identical to the
@@ -84,8 +86,8 @@ Measured with Sonnet 5.5 on the validation split:
   named profile is out of quota, it sleeps until the earliest reset. Don't name `default`, the
   interactive Claude Code login, unless the user asks. Every named profile must have extra usage
   turned off (`/v1/health` shows `overageStatus`), or the server keeps serving it and bills.
-- Run long jobs under `caffeinate -i` and `nohup`, logging to `translate.log` in the output
-  directory. Quota waits pause while the Mac sleeps.
+- Run long jobs as `nohup caffeinate -i python …`, logging to `translate.log` in the output
+  directory; quota waits pause while the Mac sleeps.
 - Every call turns off the server's response cache, so a retried batch is generated again.
 - 5xx replies, dropped connections and a 429 without `retry-after` (a refusal of that request only)
   are retried with backoff (1, 2, 4, 8 and 16 minutes), then stop the run. Any other API error
