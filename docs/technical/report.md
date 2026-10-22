@@ -465,7 +465,7 @@ The Hibiki-Zero paper [R1] closes its exposure gap not in supervised training bu
 
 | Phase | Target | Key numbers |
 |---|---|---|
-| Data scale-up | grow total Vietnamese source speech to **about 40,000 h**, matching the paper's per-language volume | scripted-EN corpora (Common Voice first, then LibriSpeech/MLS/GigaSpeech-class) → Gemini EN→VI translation → TTS voice-transfer onto the original clip speaker → grounded-v2 cache; every new row verifiably timbre matched; FLEURS single pass, no reuse |
+| Data scale-up | grow total Vietnamese source speech to **about 40,000 h**, matching the paper's per-language volume | scripted-EN corpora (Common Voice first, then LibriSpeech/MLS/GigaSpeech-class) → Claude Sonnet 5.5 EN→VI translation → TTS voice-transfer onto the original clip speaker → grounded-v2 cache; every new row verifiably timbre matched; FLEURS single pass, no reuse |
 | Voice-matched fine-tune | paper stage-4 analog: audio CE restricted to verified timbre-matched rows only | ~1–2k steps, batch 16, LR `1e-6`; unmatched PhoMT rows keep text CE only; speaker-cosine gate added to eval |
 | GRPO reinforcement learning | paper stage-5 analog: train in the free-running regime that inference actually uses | G=4 samples/input, reward r_t = (1−α)·BLEU(partial) + α·BLEU(full), α=0.4, rewards every 8 input words, batch 32, LR `2e-7`, start 500–1000 updates |
 

@@ -29,3 +29,23 @@ and `text_en`, with local audio paths. English text is word-timed by CTC alignme
 ```bash
 ./.venv/bin/python -m training.prep.cache_codes --pairs PAIRS.jsonl --out-dir data/cache/NAME
 ```
+
+## Vietnamese translations of `en_speech`
+
+Runs on the Mac with the conda Python and translates with Claude Sonnet 5.5 through the local
+Claude API; costs and rules are in
+[en-vi-translation](../../docs/agent-memory/en-vi-translation.md).
+
+```bash
+python -m training.prep.translate_en_speech texts --min-seconds 5 --max-seconds 15 --hours 1000  # select a tranche
+nohup caffeinate -i python -m training.prep.translate_en_speech translate \
+  --profile claude-p --profile claude-l --profile default \
+  >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
+python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
+```
+
+With the same duration range, a larger `--hours` extends the selection; translations already
+made are always kept.
+
+Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
+Voice text.

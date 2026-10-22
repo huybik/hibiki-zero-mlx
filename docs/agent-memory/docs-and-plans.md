@@ -7,8 +7,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 ## Roadmap
 
 - [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md) is the active VI→EN roadmap. Phase 1
-  turns scripted English corpora into Vietnamese-source rows (Gemini translation, then
-  voice-transfer TTS) toward ~40k h. Phase 2 is SFT with per-domain validation, Phase 3 a
+  turns scripted English corpora into Vietnamese-source rows (Claude Sonnet 5.5 translation,
+  then voice-transfer TTS) toward ~40k h. Phase 2 is SFT with per-domain validation, Phase 3 a
   voice-matched fine-tune, and Phase 4 GRPO. Phases run strictly in order.
 - [docs/grpo_plan.md](../grpo_plan.md) details Phase 4. No GRPO code exists; build it from that
   plan once SFT passes its promotion gate.
