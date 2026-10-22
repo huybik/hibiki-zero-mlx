@@ -56,6 +56,17 @@ On the 71 production batches that hold 100 random Libriheavy validation lines (2
   1,000-hour job (~6,650 batches, ~52M characters, ~15M input tokens) was accepted on both keys,
   so they are above Tier 1.
 
+The full 2 × 1,000-hour run (513,727 texts, 105M characters):
+
+- Both first-round jobs (~6,650 batches each) finished within 6 and 20 minutes; with three retry
+  rounds per key the whole run took 30 minutes. First rounds accepted 99.9% of lines.
+- Tokens: 30.1M input and 34.0M output, so ~$75, or ~$0.72 per million English characters.
+- Rejections: 10 empty replies (`finishReason` absent, blocked), 1 `PROHIBITED_CONTENT` and 1
+  `RECITATION`, on Freud-style passages and verse; one such line failed alone and went back to
+  `translate`.
+- Gates: 30 lines identical to the English and 8 over twice its length; the 35 long lines
+  without Vietnamese diacritics are Latin, name lists and addresses kept as written.
+
 ## Running
 
 - Load `.env` first (`set -a && . ./.env && set +a`). `--key` names the variables, and every
