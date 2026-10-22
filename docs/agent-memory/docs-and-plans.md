@@ -13,8 +13,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 - [docs/grpo_plan.md](../grpo_plan.md) details Phase 4. No GRPO code exists; build it from that
   plan once SFT passes its promotion gate.
 - The roadmap and GRPO plan still describe a PhoMT + FLEURS training mixture and validation.
-  That data and its code are removed; `en_speech` is the only source
-  ([en-speech-corpus](en-speech-corpus.md)).
+  FLEURS and the PhoMT code are removed; the training pool is `en_speech`
+  ([en-speech-corpus](en-speech-corpus.md)) plus the restored PhoMT cache
+  ([sft-data-caches](sft-data-caches.md#phomt-cache)), with no PhoMT holdout.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
   ([sft-training](sft-training.md)).
 

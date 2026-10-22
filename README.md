@@ -84,7 +84,7 @@ Training runs only on a Linux pod with one H100, through the pinned CUDA 12.8 la
 ```bash
 ./training/h100.sh setup
 ./training/h100.sh preflight
-./training/h100.sh train RUN_NAME --cache-dir data/cache/TRAIN --val-cache-dir data/cache/VALIDATION
+./training/h100.sh train RUN_NAME --cache-dir data/cache/EN_SPEECH_TRAIN data/cache/phomt-grounded-v2-5s --val-cache-dir data/cache/VALIDATION
 ```
 
 Training modules run from the repository root as `python -m training.<package>.<module>`.
@@ -92,6 +92,7 @@ The only trainer is `training.finetune.train`: base-start, full-model SFT with f
 weights and bf16 autocast on grounded caches. Checkpoints are exact full-model states;
 partial or adapter checkpoints are rejected.
 
-The training data source is the ~10k-hour English read-speech corpus `en_speech`
-(Common Voice 27.0 EN + Libriheavy), built by `training.prep.build_en_speech`. See the
+The training data is the 5–22.4 s clips of the English read-speech corpus `en_speech`
+(Common Voice 27.0 EN + Libriheavy, built by `training.prep.build_en_speech`) plus the
+~0.8k-hour PhoMT grounded cache, together ~10k hours of 5–15 s clips. See the
 [pod guide](docs/finetune.md) and [data preparation](training/prep/README.md).
