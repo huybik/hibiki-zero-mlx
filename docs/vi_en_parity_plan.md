@@ -219,7 +219,7 @@ teacher-forced losses and free-running gates hold on FLEURS/PhoMT.
 1. Start from the Phase 3 checkpoint. Data: sentence-level aligned rows with
    reliable references (CV rows are ideal: gold EN text; PhoMT rows usable).
 2. Sample G=4 free-running generations per input (temperature 0.8, top-k 250,
-   both streams — same decoding as `finetune/eval.py`).
+   both streams — same decoding as `training/finetune/eval.py`).
 3. Process reward: r_t = (1−α)·BLEU(partial text at t, reference prefix) +
    α·BLEU(full text, reference), α=0.4, rewards every 8 input words.
 4. GRPO without KL regularization; batch 32, group 4, LR 2e-7, start with

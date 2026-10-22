@@ -1,8 +1,6 @@
 # Full-model SFT training
 
-Read when touching `finetune/train.py`, `finetune/common.py`, `finetune/h100.sh`,
-`finetune/hf_sync.py`, `finetune/freeze_full_data_receipt.py`, `finetune/validate.py` or
-`finetune/eval.py`.
+Read when touching `training/h100.sh` or `training/finetune/`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Recipe](#recipe) · [Objective](#objective) ·
 [Launcher](#launcher) · [Checkpoints and recovery](#checkpoints-and-recovery) ·
 [Side tools](#side-tools)
@@ -16,7 +14,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
 
 - Direct full-model Vietnamese→English voice-preserving SFT, starting from
   `kyutai/hibiki-zero-3b-pytorch-bf16`. Every parameter is trainable.
-- The constants live in `finetune/freeze_full_data_receipt.py`, and `train.py` `validate_args`
+- The constants live in `training/finetune/freeze_full_data_receipt.py`, and `train.py` `validate_args`
   rejects any deviation:
   - 719,120 rows; batch 16; accumulation 1; 280 frames;
   - 5 epochs × 44,945 steps = 224,725 steps;
@@ -27,9 +25,10 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
 - `--max-steps` is allowed only for the ≤11-step smoke. `grad_clip` 1.0 comes from `h100.sh`
   and is checked on resume.
 - Every epoch replays the same frozen batch order; there is no reshuffle.
-- Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch
-  on CUDA. Training requires 16-frame buckets (`HIBIKI_FRAME_BUCKET=16`; the library default is
-  32) and moshi's internal compile, meaning `NO_TORCH_COMPILE` must be unset.
+- Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch.
+  Batches pad to 16-frame buckets (`common.FRAME_BUCKET`), and training requires moshi's
+  internal compile, meaning `NO_TORCH_COMPILE` must be unset. Everything under `training/` is
+  CUDA-only; `train.py` has no device flag.
 - `--cache-dir` order is PhoMT, then FLEURS, because manifest keys are `(cache_index, id)`.
 
 ## Objective
@@ -44,11 +43,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
 
 ## Launcher
 
-`finetune/h100.sh`; see [docs/finetune.md](../finetune.md) for the order.
+`training/h100.sh`; see [docs/finetune.md](../finetune.md) for the order. It runs from the repo
+root and invokes modules as `python -m training.<package>.<module>`.
 
-- `HIBIKI_RECIPE` must be `grounded-v2`. Ten obsolete curriculum flags, plus
-  `HIBIKI_MAX_SAMPLES`, `HIBIKI_MAX_STEPS`, `HIBIKI_CACHE_SAMPLE_SHARDS` and
-  `HIBIKI_HF_PREFIX_OVERRIDE`, are rejected.
 - `setup` needs Linux, driver 570+, exactly one H100, Python 3.10–3.13 and no existing
   `.venv`. It installs Torch `2.8.0+cu128` (CUDA 12.8), pinned dependencies, and
   `moshi==0.2.13 --no-deps`.
@@ -90,8 +87,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
 - `eval.py` is the optional correct-source free-running check. Despite its name,
   `run_greedy_eval` samples (text 0.4, audio 0.8).
 - `validate.py` does not reproduce in-training validation: it applies no 280-frame filter and
-  uses BF16 weights, batch 8 and MPS.
-- `common.py` is shared by `train.py`, `validate.py`, `eval.py` and `freeze_full_data_receipt.py`;
-  `student/` does not import it.
-- `utils.DEFAULT_RUN_DIR` (`runs/vi_base_full`) is not the production run directory; `h100.sh`
-  passes the real one.
+  uses BF16 weights and batch 8.
+- `common.py` is shared by `train.py`, `validate.py`, `eval.py` and `freeze_full_data_receipt.py`.
+- `train.py` and `eval.py` take a required `--out-dir`; `h100.sh` passes
+  `runs/vi_grounded_v2_full_direct_voice_5epoch` for production.

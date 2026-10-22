@@ -1,7 +1,7 @@
 # Direct VI-EN training loss
 
 This document describes the teacher-forced objective implemented by
-`finetune/common.py` for direct, simultaneous Vietnamese-speech-to-English-speech
+`training/finetune/common.py` for direct, simultaneous Vietnamese-speech-to-English-speech
 training.
 
 ## Training streams

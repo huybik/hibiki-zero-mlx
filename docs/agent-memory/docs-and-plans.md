@@ -2,7 +2,7 @@
 
 Read when choosing the next research step, editing a plan, or rebuilding a report.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evidence) ·
-[Superseded plans](#superseded-plans) · [Deliverables](#deliverables)
+[Deliverables](#deliverables)
 
 ## Roadmap
 
@@ -12,8 +12,6 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
   voice-matched fine-tune, and Phase 4 GRPO. Phases run strictly in order.
 - [docs/grpo_plan.md](../grpo_plan.md) details Phase 4. No GRPO code exists; build it from that
   plan once SFT passes its promotion gate.
-- [docs/mobile_student_plan.md](../mobile_student_plan.md) is the on-device track
-  ([mobile-student](mobile-student.md)).
 - [docs/finetune.md](../finetune.md), [docs/training_plan.md](../training_plan.md) and
   [docs/validation_plan.md](../validation_plan.md) own the current SFT pod handoff, recipe and
   validation ([sft-training](sft-training.md)).
@@ -28,20 +26,14 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 
 The parity plan's diagnosis is built on these documents.
 
-## Superseded plans
-
-These describe earlier repository states and are not instructions:
-
-- `docs/refactor_plan.md`
-- `docs/mobile_realtime_vi_en_plan.md` (pinned to commit `74f1b0f`)
-- `docs/vision/reports/*.md` (M4 Pro benchmarks and projected, unmeasured iPhone budgets)
+`docs/vision/reports/*.md` are historical M4 Pro benchmarks and projected, unmeasured iPhone
+budgets cited by the report; they are not instructions.
 
 ## Deliverables
 
 - [docs/technical/report.md](../technical/report.md) is the technical report source.
-  `docs/technical/build_pdf.py` (Pandoc, ReportLab, headless Chrome) writes the tracked
+  `docs/technical/build_pdf.py` (Pandoc, ReportLab, headless Chrome) writes the gitignored
   `output/pdf/hibiki-zero-mlx-technical-report.pdf`.
-- `docs/vision/vision.md` builds to `docs/vision/vision.pdf` with `docs/vision/build_pdf.sh`
-  (Pandoc plus headless Chrome).
-- The `1V_P2_TechProposal_Template.*` and `Connect_TechProposal_Submission.*` files are
-  proposal templates and submissions, kept as binaries.
+- `docs/vision/vision.md` builds to the gitignored `docs/vision/vision.pdf` with
+  `docs/vision/build_pdf.sh` (Pandoc plus headless Chrome).
+- No built PDFs or other binary deliverables are tracked.

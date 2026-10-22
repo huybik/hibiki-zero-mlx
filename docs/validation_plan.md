@@ -34,18 +34,19 @@ validated and eligible, while the newest two recovery pairs remain separate.
 Materialize FLEURS validation audio once:
 
 ```bash
-./.venv/bin/python remote_dataset/download_fleurs_vi_en.py --split validation
+./.venv/bin/python -m training.prep.download_fleurs_vi_en --split validation
+./.venv/bin/python -m training.prep.build_pairs --splits validation
 ```
 
 Then evaluate a checkpoint directly against its Vietnamese inputs:
 
 ```bash
 step=NNNNNN
-run_dir=finetune/runs/vi_grounded_v2_full_direct_voice_5epoch
-./.venv/bin/python finetune/eval.py \
+run_dir=runs/vi_grounded_v2_full_direct_voice_5epoch
+./.venv/bin/python -m training.finetune.eval \
   --device cuda --dtype bfloat16 \
   --checkpoint "$run_dir/model_step${step}.safetensors" \
-  --pairs finetune/pairs/val128.jsonl \
+  --pairs data/pairs/val128.jsonl \
   --limit 128 --batch-size 8 \
   --audio-temp 0.8 --text-temp 0.4 \
   --top-k 250 --top-k-text 250 \

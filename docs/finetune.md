@@ -58,7 +58,7 @@ must already be committed.
 ```bash
 export HF_HOME=/workspace/.hf_home
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
-./finetune/h100.sh setup
+./training/h100.sh setup
 ./.venv/bin/hf auth login
 ```
 
@@ -96,32 +96,37 @@ cache_files=(
   "${cache_files[@]}" \
   --repo-type dataset --local-dir "$cache_stage"
 
-mkdir -p finetune/cache/phomt_grounded_v2
+mkdir -p data/cache/phomt_grounded_v2
 for archive in "$cache_stage"/grounded-v2/cache_chunk_*.tar.zst; do
   tar --zstd --exclude='._*' --exclude='*/._*' \
-    -xf "$archive" -C finetune/cache/phomt_grounded_v2
+    -xf "$archive" -C data/cache/phomt_grounded_v2
 done
 tar --zstd --exclude='._*' --exclude='*/._*' \
-  -xf "$cache_stage/grounded-v2/fleurs_cache.tar.zst" -C finetune
+  -xf "$cache_stage/grounded-v2/fleurs_cache.tar.zst" -C data
 find "$cache_stage" -depth -delete
 ```
 
 Expected directories and shard counts are:
 
-- `finetune/cache/phomt_grounded_v2`: 1,377 shards;
-- `finetune/cache/train_grounded_v2`: 46 shards;
-- `finetune/cache/validation_grounded_v2`: 5 shards.
+- `data/cache/phomt_grounded_v2`: 1,377 shards;
+- `data/cache/train_grounded_v2`: 46 shards;
+- `data/cache/validation_grounded_v2`: 5 shards.
+
+Always restore these published caches. The frozen receipt pins their exact shard
+bytes, including each row's recorded audio paths, so caches rebuilt with
+`./training/h100.sh cache-grounded` do not pass preflight. The `README.md` inside
+the published `grounded-v2/` prefix predates the `data/` layout; follow the
+commands above.
 
 The large source pair manifests are not needed for cached training.
 
 ### 5. Preflight and smoke
 
 ```bash
-export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 git status --short
-./finetune/h100.sh preflight
-./finetune/h100.sh smoke
+./training/h100.sh preflight
+./training/h100.sh smoke
 ```
 
 `git status --short` must show no tracked changes. Preflight checks hardware,
@@ -136,17 +141,21 @@ current Git commit.
 Use this only when the remote `grounded_v2_full_direct_voice_5epoch/` prefix is empty:
 
 ```bash
-export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
-./finetune/h100.sh train
+./training/h100.sh train
 ```
 
 The launcher creates
-`finetune/runs/vi_grounded_v2_full_direct_voice_5epoch`, uploads `run.json`, trains five
+`runs/vi_grounded_v2_full_direct_voice_5epoch`, uploads `run.json`, trains five
 epochs, validates and saves every 9,000 steps plus step 224,725, promotes the
 lowest validation loss, and keeps two recovery pairs plus the best model.
 
 ## Recover the same run on a replacement pod
+
+The commit recorded in `run.json` decides the paths. A run started before the
+`inference/`/`training/` split, such as the existing
+`grounded_v2_full_direct_voice_5epoch` prefix, follows that commit's own
+`docs/finetune.md` (`finetune/h100.sh`, `finetune/runs/`).
 
 After checking out the commit from remote `run.json`, completing setup, weights,
 caches, preflight, and smoke, restore the newest complete model/trainer pair and
@@ -166,7 +175,7 @@ prefix=grounded_v2_full_direct_voice_5epoch
   "$prefix/best/best_stepBBBBBB.json" \
   --local-dir "$restore_dir"
 
-run_dir=finetune/runs/vi_grounded_v2_full_direct_voice_5epoch
+run_dir=runs/vi_grounded_v2_full_direct_voice_5epoch
 mkdir -p "$run_dir"
 cp "$restore_dir/$prefix/run.json" "$run_dir/run_id.json"
 cp "$restore_dir/$prefix/metadata/run_config.json" "$run_dir/run_config.json"
@@ -178,7 +187,7 @@ cp "$restore_dir/$prefix/best/best_stepBBBBBB.safetensors" "$run_dir/"
 cp "$restore_dir/$prefix/best/best_stepBBBBBB.json" "$run_dir/best.json"
 find "$restore_dir" -depth -delete
 
-./finetune/h100.sh resume \
+./training/h100.sh resume \
   "$run_dir/trainer_stepNNNNNN.pt"
 ```
 
@@ -194,14 +203,15 @@ Free-running evaluation is not part of the training loop and never shuffles the
 source. Materialize validation audio only when this check is wanted:
 
 ```bash
-./.venv/bin/python remote_dataset/download_fleurs_vi_en.py --split validation
-./.venv/bin/python finetune/eval.py \
+./.venv/bin/python -m training.prep.download_fleurs_vi_en --split validation
+./.venv/bin/python -m training.prep.build_pairs --splits validation
+./.venv/bin/python -m training.finetune.eval \
   --device cuda --dtype bfloat16 \
-  --checkpoint finetune/runs/vi_grounded_v2_full_direct_voice_5epoch/model_stepNNNNNN.safetensors \
-  --pairs finetune/pairs/val128.jsonl \
+  --checkpoint runs/vi_grounded_v2_full_direct_voice_5epoch/model_stepNNNNNN.safetensors \
+  --pairs data/pairs/val128.jsonl \
   --limit 128 --batch-size 8 --text-temp 0.4 \
   --stop-on-eos --text-only --seed 42 \
-  --out-dir finetune/runs/vi_grounded_v2_full_direct_voice_5epoch/eval_stepNNNNNN
+  --out-dir runs/vi_grounded_v2_full_direct_voice_5epoch/eval_stepNNNNNN
 ```
 
 See [training_plan.md](training_plan.md) for the receipt and

@@ -12,17 +12,16 @@ venv/
 # Secrets and local tool state
 .env
 .envrc
-.hf_cache/
 .claude/
 .codegraph/
 .DS_Store
 
-# Model and generated artifacts
+# Models, data and generated artifacts
 /weights
+/data/
+/runs/
 /translations/
-macos/HibikiTestApp/.build/
-macos/HibikiTestApp/build/
-remote_dataset/fleurs_vi_en/
-finetune/pairs/
-finetune/cache/
-finetune/runs/
+/output/
+docs/vision/vision.html
+docs/vision/vision.pdf
+inference/macos/HibikiTestApp/.build/

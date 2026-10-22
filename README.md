@@ -2,16 +2,38 @@
 
 Hibiki-Zero speech translation with two maintained paths:
 
-- q4 MLX inference on Apple Silicon for FR/ES/PT/DE → English;
-- full-model PyTorch SFT on CUDA for Vietnamese → English.
+- MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE → English, or staged BF16
+  checkpoints);
+- full-model PyTorch SFT on one CUDA H100 for Vietnamese → English.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero) ·
 [paper](https://arxiv.org/abs/2602.11072) · weights license CC BY-NC-SA 4.0.
 
+## Layout
+
+```text
+inference/            Apple Silicon · MLX
+  main.py             file and microphone translation CLI
+  hibiki_mlx/         pipelined runtime (CPU Mimi codec overlapped with the GPU LM)
+  moshi-mlx/          minimal vendored MLX model with the Hibiki-Zero deltas
+  tools/              q4/BF16 conversion, quality gate, benchmark, Swift check
+  assets/leon.wav     French gate clip
+  macos/              native SwiftUI file and microphone test app
+training/             CUDA · PyTorch
+  h100.sh             pinned H100 setup, caching, preflight, smoke, train, resume
+  paths.py            repository defaults and file guards
+  prep/               FLEURS download, pair files, Mimi + CTC caches, cache publishing
+  finetune/           SFT trainer, frozen receipt, evaluation, HF recovery sync
+docs/                 plans, analyses and the technical report
+weights → …           upstream and staged models (gitignored, shared by both paths)
+data/  runs/          datasets, caches and training runs (gitignored)
+translations/         inference outputs (gitignored)
+```
+
 ## Inference
 
 ```bash
-pip install -e ./moshi-mlx
+pip install -e ./inference/moshi-mlx
 pip install -e .
 ```
 
@@ -24,75 +46,53 @@ hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
   "mimi-pytorch-e351c8d8@125.safetensors" \
   tokenizer_spm_48k_multi6_2.model \
   --local-dir weights
-python scripts/convert_mlx_q4.py
+python inference/tools/convert_mlx_q4.py
 ```
 
 Run file or microphone translation:
 
 ```bash
-python main.py assets/samples/leon.wav
-python main.py --mic
+python inference/main.py inference/assets/leon.wav
+python inference/main.py --mic
 ```
+
+`--model` accepts `3b` or a staged q4/BF16 Hibiki-Zero model directory.
 
 Build and open the native macOS test app:
 
 ```bash
-./macos/HibikiTestApp/build.sh
-open "macos/HibikiTestApp/build/Hibiki Test.app"
+./inference/macos/HibikiTestApp/build.sh
+open "inference/macos/HibikiTestApp/build/Hibiki Test.app"
 ```
 
 The SwiftUI app provides model and audio pickers, file translation and playback,
 live microphone start/stop, the English transcript, and the backend log. It runs
-`main.py` with the conda Python at `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
+`inference/main.py` with the conda Python at `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
 
-`main.py` and `hibiki_mlx.pipeline` overlap the CPU Mimi encoder/decoder with the
-GPU language model. `--model` accepts `3b` or a staged q4/BF16 Hibiki-Zero model
-directory.
+The inference tools are:
 
-The maintained inference utilities are:
-
-- `scripts/convert_mlx_q4.py`: convert the 3B PyTorch LM to MLX q4.
-- `scripts/convert_mlx_bf16.py`: stage an exact BF16 checkpoint for MLX listening.
-- `scripts/verify_mlx_q4.py`: translate the checked-in sample as a quality gate.
-- `scripts/bench.py`: stage timing and silence-input gate.
-- `scripts/check_swift_compat.py`: strict group-size-32 artifact validation.
+- `inference/tools/convert_mlx_q4.py`: convert the 3B PyTorch LM to MLX q4.
+- `inference/tools/convert_mlx_bf16.py`: stage an exact PyTorch checkpoint as MLX BF16.
+- `inference/tools/verify_mlx_q4.py`: translate the gate clip as a quality check.
+- `inference/tools/bench.py`: stage timing and silence-input gate.
+- `inference/tools/check_swift_compat.py`: strict group-size-32 artifact validation.
 
 ## Training
 
-For an H100 pod, use the checked and pinned CUDA 12.8 workflow:
+Training runs only on a Linux pod with one H100, through the pinned CUDA 12.8 launcher:
 
 ```bash
-./finetune/h100.sh setup
-./finetune/h100.sh preflight
-./finetune/h100.sh smoke
-./finetune/h100.sh train
+./training/h100.sh setup
+./training/h100.sh preflight
+./training/h100.sh smoke
+./training/h100.sh train
 ```
 
-For other CUDA development environments, install PyTorch followed by the
-training dependencies:
+Training modules run from the repository root as `python -m training.<package>.<module>`.
+The only trainer is `training.finetune.train`: base-start, full-model SFT with fp32 master
+weights and bf16 autocast. Checkpoints are exact full-model states; partial or adapter
+checkpoints are rejected.
 
-```bash
-pip install -e '.[training]'
-pip install --no-deps moshi==0.2.13
-```
-
-Install the CUDA PyTorch build first. `--no-deps` prevents Moshi's stale Torch
-constraint from replacing it.
-
-The only supported trainer is `finetune/train.py`: base-start, full-model SFT
-with fp32 master weights and CUDA bf16 autocast. Checkpoints are exact full-model
-states; partial or adapter checkpoints are rejected.
-
-See [SFT mechanics](docs/finetune.md), the current
-[training recipe](docs/training_plan.md), and the
-[validation contract](docs/validation_plan.md).
-
-## Layout
-
-- `hibiki_mlx/`: pipelined q4 inference runtime.
-- `moshi-mlx/`: minimal vendored MLX model implementation with Hibiki deltas.
-- `finetune/`: full-model SFT, cache preparation, and evaluation.
-- `remote_dataset/`: FLEURS downloader and the English read-speech corpus builder.
-- `macos/HibikiTestApp/`: native SwiftUI file and microphone test app.
-- `scripts/`: q4 conversion and inference verification.
-- `assets/samples/`: the retained inference gate clip.
+See the [pod handoff](docs/finetune.md), the [training recipe](docs/training_plan.md),
+the [validation contract](docs/validation_plan.md) and the
+[data preparation](training/prep/README.md) steps.

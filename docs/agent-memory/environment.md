@@ -10,8 +10,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   (Python 3.13), which has the inference and data dependencies installed. The macOS app
   hard-codes the same path.
 - Inference needs MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, and sounddevice for the
-  microphone. Install with `pip install -e ./moshi-mlx` then `pip install -e .`.
-- CUDA training uses only the environment that `./finetune/h100.sh setup` builds; see
+  microphone. Install with `pip install -e ./inference/moshi-mlx` then `pip install -e .`; both
+  are editable installs, so moving either directory requires reinstalling them.
+- CUDA training uses only the environment that `./training/h100.sh setup` builds; see
   [sft-training](sft-training.md).
 
 ## Secrets
@@ -25,11 +26,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   `/Volumes/data/models/hibiki/weights`. That folder holds `config.json`, the Mimi checkpoint,
   the tokenizer and the staged BF16 model `vi-step135000-mlx-bf16/`, but neither
   `hibiki.q4.safetensors` nor the upstream PyTorch LM. `--model 3b` therefore needs the README's
-  `hf download` and `scripts/convert_mlx_q4.py` first.
-- Corpora live under `/Volumes/data/datasets/`. Only `en_speech/` is built by code on `main`
-  ([en-speech-corpus](en-speech-corpus.md)).
-- Gitignored generated paths: `translations/`, `finetune/pairs/`, `finetune/cache/`,
-  `finetune/runs/` and `remote_dataset/fleurs_vi_en/`.
+  `hf download` and `inference/tools/convert_mlx_q4.py` first.
+- `/Volumes/data/datasets/en_speech/` (279 GB) is the ~10k-hour English read-speech corpus
+  (Common Voice 27.0 EN + Libriheavy) for the parity plan's data phase. Its `README.md` is the
+  dataset card with schema and loading code. The Mozilla Data Collective terms forbid
+  re-hosting or re-sharing the Common Voice part, so never upload this corpus.
+- Gitignored local state: `data/` (FLEURS audio, pair files, Mimi caches), `runs/` (training
+  runs, receipts and eval outputs), `translations/` and `output/`.
 
 ## Git
 
