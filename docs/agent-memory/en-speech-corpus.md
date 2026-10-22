@@ -8,8 +8,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#con
 
 This is the only training data source: real English speech with gold text, to be turned into
 voice-matched VI→EN pair rows by the data phase of
-[docs/vi_en_parity_plan.md](../vi_en_parity_plan.md). That pipeline is not built, so nothing
-consumes the corpus yet; its rows would then go through `cache_codes`
+[docs/vi_en_parity_plan.md](../vi_en_parity_plan.md). Its transcripts are being translated to
+Vietnamese ([en-vi-translation](en-vi-translation.md)); the TTS step is not built, so no pair
+rows exist yet. Those rows would then go through `cache_codes`
 ([sft-data-caches](sft-data-caches.md)).
 
 ## Contents

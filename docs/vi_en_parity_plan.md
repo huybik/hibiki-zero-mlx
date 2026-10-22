@@ -92,7 +92,8 @@ Pipeline per selected clip:
 
 1. Take the validated English clip: real English audio + gold English text
    (this becomes the English target stream, unchanged).
-2. Translate the English sentence to Vietnamese with Gemini.
+2. Translate the English sentence to Vietnamese with Claude Sonnet 5.5
+   (`training/prep/translate_en_speech.py`).
 3. Generate Vietnamese speech from the translated text with a TTS **conditioned
    on the clip's original speaker** (voice transfer), producing a timbre-matched
    Vietnamese source audio.
@@ -112,7 +113,7 @@ per-source-language training volume. The existing cache contributes ~1,114 h,
 so the new pipelines must produce roughly 39,000 h more.
 
 Common Voice English validated audio alone is only a few thousand hours, so
-the Section 4 pipeline (EN clip → Gemini translate → timbre-matched VI TTS)
+the Section 4 pipeline (EN clip → Sonnet translate → timbre-matched VI TTS)
 is applied across multiple scripted English corpora, for example:
 
 - Mozilla Common Voice (English, CC0) — thousands of speakers, short clips;
@@ -133,7 +134,7 @@ validate the pipeline on 1k h before scaling).
 ### Pipeline quality gates (before any training)
 
 - **Translation**: back-translate spot check on a random 1k sample; require
-  ≥95% accept rate; drop rows where Gemini output is empty, identical to
+  ≥95% accept rate; drop rows where the translation is empty, identical to
   English, or longer than 2× the source.
 - **TTS**: ASR the generated Vietnamese audio on a random 1k sample; require
   WER < 15% against the translated text; drop clips with clipping, silence
@@ -263,7 +264,7 @@ paper's inference (temperature 0.8, top-k 250):
 | Risk | Mitigation |
 | --- | --- |
 | Synthetic VI source audio creates an acoustic domain gap vs real speech | 40k h target is met with synthetic sources; keep the 1,392 real FLEURS rows in-mixture (single pass); monitor FLEURS validation separately; consider real-VI data acquisition if FLEURS loss stalls |
-| Gemini translation noise propagates into training | Back-translation spot checks; drop suspicious rows; keep PhoMT (human-aligned) as translation anchor |
+| Machine translation noise propagates into training | Back-translation spot checks; drop suspicious rows; keep PhoMT (human-aligned) as translation anchor |
 | TTS voice transfer imperfect on some CV speakers | Speaker-embedding threshold gate; drop failing speakers rather than rows silently |
 | GRPO compute cost on a 3B multistream model | Small update budget first (500–1000); G=4 as in paper; reward computed on text stream only |
 | RL destabilizes the Phase 2/3 gains | LR 2e-7, hard promotion gates, keep best pre-RL checkpoint as fallback artifact |

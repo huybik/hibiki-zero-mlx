@@ -17,8 +17,8 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-training/  (CUDA, Linux H100; en_speech is built locally by prep/build_en_speech.py)
-  en_speech ─► (VI pair rows: not built) ─► prep/cache_codes ─► data/cache
+training/  (CUDA, Linux H100; en_speech is built and translated locally by prep/)
+  en_speech ─► prep/translate_en_speech ─► (VI TTS pair rows: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
@@ -26,10 +26,11 @@ inference/ (Apple Silicon, MLX)
 
 - `inference/` is the only Apple Silicon code: `main.py`, the `hibiki_mlx/` runtime, the
   vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
-- `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the `en_speech` corpus builder and
-  the pair → grounded cache builder) and `finetune/` (the generic SFT trainer, evaluation and HF
-  recovery sync). Its modules run from the repo root as `python -m training.<package>.<module>`;
-  everything except the corpus builder runs on CUDA only.
+- `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the `en_speech` corpus builder, its
+  Vietnamese translation and the pair → grounded cache builder) and `finetune/` (the generic SFT
+  trainer, evaluation and HF recovery sync). Its modules run from the repo root as
+  `python -m training.<package>.<module>`; everything except the corpus builder and the
+  translation runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
@@ -40,8 +41,9 @@ inference/ (Apple Silicon, MLX)
   them, `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
   teacher-forced loss improves, but free-running translation fails.
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
-  the `en_speech` corpus is built, but the translation and TTS step that turns it into
-  Vietnamese-source pair rows is not, so there are no caches to train on yet.
+  the `en_speech` corpus is built and its Vietnamese translation is under way
+  ([en-vi-translation](docs/agent-memory/en-vi-translation.md)), but the TTS step that turns it
+  into Vietnamese-source pair rows is not, so there are no caches to train on yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -50,8 +52,8 @@ inference/ (Apple Silicon, MLX)
   [environment](docs/agent-memory/environment.md).
 - Never upload or re-share the Common Voice part of `en_speech` →
   [en-speech-corpus](docs/agent-memory/en-speech-corpus.md).
-- Apple Silicon runs inference and the `en_speech` corpus builder only; Mimi caching, training
-  and evaluation run on CUDA → [sft-training](docs/agent-memory/sft-training.md).
+- Apple Silicon runs inference, the `en_speech` corpus builder and its translation only; Mimi
+  caching, training and evaluation run on CUDA → [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
@@ -74,6 +76,7 @@ inference/ (Apple Silicon, MLX)
 | English read-speech corpus | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `training/prep/build_en_speech.py`, `/Volumes/data/datasets/en_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
+| EN→VI transcript translation | [en-vi-translation](docs/agent-memory/en-vi-translation.md) | `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text` |
 
 ## Canonical resources
 
@@ -90,8 +93,9 @@ CLAUDE.md (imports this file)
 ```
 
 - Record current facts checked against the code, and guidance on how to work (decisions,
-  feedback) with its reason. Link to existing docs instead of copying, keep one owner per fact,
-  and keep no history.
+  feedback) with its reason. This replaces each agent's local memory: save here what you would
+  have saved there, so everyone shares it. Link to existing docs instead of copying, keep one
+  owner per fact, and keep no history.
 - Update the owning note in the same commit as the change. Knowledge with no owner gets a new
   note, added to the Topic Index.
 - Change this file only when orientation, an invariant or the index changes, and update

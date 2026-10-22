@@ -25,8 +25,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch.
   Batches pad to 16-frame buckets (`common.FRAME_BUCKET`), and training requires moshi's
   internal compile, meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` and
-  `cache_codes` are CUDA-only (`train.py` has no device flag); only `build_en_speech` runs on the
-  Mac.
+  `cache_codes` are CUDA-only (`train.py` has no device flag); only `build_en_speech` and
+  `translate_en_speech` run on the Mac.
 
 ## Objective
 
