@@ -39,9 +39,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   (default `mimi-pytorch-e351c8d8@125.safetensors`).
 - `scripts/convert_mlx_q4.py` converts `weights/hibiki-pytorch-77f82164@110.safetensors` into
   `weights/hibiki.q4.safetensors`.
-- `scripts/convert_mlx_bf16.py` stages a PyTorch checkpoint into a new directory and refuses to
-  overwrite. For `head: parallel_v1` it accepts only a `hibiki_parallel_bf16_export_v1` file
-  with all-BF16 tensors, as written by `student.export_parallel`.
+- `scripts/convert_mlx_bf16.py` stages an exact PyTorch checkpoint (for example an SFT
+  `model_step*.safetensors`) into a new directory and refuses to overwrite.
 
 ## Vendored moshi-mlx
 
@@ -50,9 +49,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   `pyproject.toml`.
 - Hibiki-Zero deltas: grouped-query attention via `kv_repeat`, FFN width `hidden_scale * dim`,
   `rope_concat` as non-traditional RoPE, and a learned per-slice depformer output LayerNorm.
-- `LmConfig` selects exactly one audio head: `ar` (depformer, one pass) or `parallel_v1`
-  (shape `(512, 2, 8)`, `head_passes` 1 or 2, no classifier-free guidance, needs the previous
-  raw head output). See `moshi-mlx/moshi_mlx/models/lm.py`.
+- The depformer is the only audio head. `load_pytorch_weights` accepts both the upstream fused
+  `in_proj_weight` layout and moshi 0.2.13's per-slice `in_projs.N` layout written by SFT
+  checkpoints.
 
 ## Gates
 
@@ -62,5 +61,4 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   Mimi decode) and a projected iPhone frame time from an assumed `--scale` (0.5). The
   projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1.
 - `scripts/check_swift_compat.py [dir]` replays the stock moshi-swift loader path: strict q4
-  group-32 load, required config keys, tokenizer and Mimi sidecars. It reports `parallel_v1`
-  packs as unsupported by stock Swift.
+  group-32 load, required config keys, tokenizer and Mimi sidecars.

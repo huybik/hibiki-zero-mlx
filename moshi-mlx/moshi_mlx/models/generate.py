@@ -41,11 +41,6 @@ class LmGen:
         self.audio_delays = self.model.cfg.audio_delays
         self.max_delay = max(self.audio_delays)
         self.main_codebooks = self.model.cfg.generated_codebooks
-        self.previous_raw_audio_tokens = mx.full(
-            (self.batch_size, self.main_codebooks),
-            self.model.cfg.audio_padding_token,
-            dtype=mx.int32,
-        )
         self.cfg_coef = cfg_coef
         self.on_text_hook = on_text_hook
         self.on_audio_hook = on_audio_hook
@@ -107,17 +102,11 @@ class LmGen:
             cfg_coef=self.cfg_coef,
             on_text_hook=self.on_text_hook,
             on_audio_hook=self.on_audio_hook,
-            previous_audio_tokens=self.previous_raw_audio_tokens,
         )
 
-        assert audio_tokens is None or audio_tokens.shape[-2] == (
-            self.model.cfg.generated_codebooks
-        ), "invalid output audio-token shape"
-        if audio_tokens is None:
-            raise RuntimeError("configured audio head returned no tokens")
-        # This is the raw pre-undelay frame emitted by the head. It is separate
-        # from gen_sequence, whose generated rows are scattered by codebook delay.
-        self.previous_raw_audio_tokens = audio_tokens[:, :, 0]
+        assert audio_tokens.shape[-2] == self.model.cfg.generated_codebooks, (
+            "invalid output audio-token shape"
+        )
         self.gen_sequence[:, 0, self.step_idx] = text_tokens.squeeze(-1)
         for cb_idx, delay in enumerate(self.audio_delays[: self.main_codebooks]):
             gen_idx = self.step_idx - delay

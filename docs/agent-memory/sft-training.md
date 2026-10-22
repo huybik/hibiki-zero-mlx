@@ -91,7 +91,6 @@ The pod procedure is in [docs/finetune.md](../finetune.md), the recipe rationale
   `run_greedy_eval` samples (text 0.4, audio 0.8).
 - `validate.py` does not reproduce in-training validation: it applies no 280-frame filter and
   uses BF16 weights, batch 8 and MPS.
-- `common.py` is shared by `train.py`, `validate.py`, `eval.py` and `freeze_full_data_receipt.py`;
-  `student/` does not import it.
+- `common.py` is shared by `train.py`, `validate.py`, `eval.py` and `freeze_full_data_receipt.py`.
 - `utils.DEFAULT_RUN_DIR` (`runs/vi_base_full`) is not the production run directory; `h100.sh`
   passes the real one.

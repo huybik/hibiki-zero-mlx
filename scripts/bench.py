@@ -4,7 +4,7 @@
   python scripts/bench.py --model 3b                 # per-stage ms table + projections
   python scripts/bench.py --model 3b --silence       # silence-in gate (rms/peak)
 
-Splits each frame into mimi encode / LM main transformer / configured audio head /
+Splits each frame into mimi encode / LM main transformer / LM depformer /
 mimi decode using mx.eval barriers, then reports RT factor, artifact size and a
 projected iPhone frame time. The projection is a documented assumption, not a
 measurement: --scale is the assumed A18 Pro / M4 Pro GPU throughput ratio for
@@ -70,13 +70,9 @@ def main() -> None:
         check=False,
     )
 
-    # Time the selected audio head inside the LM step with eval barriers.
-    if model.depformer is not None:
-        head_label = f"LM depformer ({n_slices}x)"
-        audio_head = model.depformer
-    else:
-        head_label = f"LM parallel_v1 ({lm_config.parallel_head.passes} pass)"
-        audio_head = model.parallel_head
+    # Time the autoregressive depformer inside the LM step with eval barriers.
+    head_label = f"LM depformer ({n_slices}x)"
+    audio_head = model.depformer
     head_t = [0.0]
     original_sample = audio_head.sample
 
@@ -138,8 +134,7 @@ def main() -> None:
     ]:
         print(f"{name:<26}{1000 * t / n:>10.2f}{100 * t / wall:>9.1f}%")
     print(f"{'LM total':<26}{lm_ms:>10.2f}")
-    if model.depformer is not None:
-        print(f"depformer per slice: {1000 * head_t[0] / n / max(n_slices, 1):.2f} ms")
+    print(f"depformer per slice: {1000 * head_t[0] / n / max(n_slices, 1):.2f} ms")
     print(f"artifact (LM weights): {size_gb:.2f} GB")
     print(
         f"pipelined critical path = LM total {lm_ms:.1f} ms/frame "

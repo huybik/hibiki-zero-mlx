@@ -1,13 +1,11 @@
 #!/usr/bin/env python
-"""Validate AR stock-Swift compatibility and report parallel packs honestly.
+"""Validate stock-Swift compatibility of a q4 MLX artifact.
 
 No device (iPhone) needed: it reproduces the exact stock loader path on the Mac —
   LmConfig.from_config_dict(config) -> Lm -> set_dtype(bf16)
   -> nn.quantize(bits=4, group_size=32, predicate=weight.shape[-1] % 32 == 0)
   -> load_weights(strict=True)
-The Python strict load checks the shared q4 tensor contract. Stock moshi-swift
-does not yet implement `parallel_v1`, so a parallel student pack is reported as
-not stock-compatible even when its vendored MLX load passes.
+The Python strict load checks the shared q4 tensor contract.
 
   python scripts/check_swift_compat.py [artifact_dir]     # default weights/
 
@@ -185,14 +183,6 @@ def main() -> None:
     if cfg is not None:
         check_q4_weights(art, cfg, results)
         check_sidecars(art, cfg, results)
-        if cfg.get("head", "ar") == "parallel_v1":
-            results.append(
-                (
-                    "stock moshi-swift audio head",
-                    False,
-                    "parallel_v1 requires the pending Swift implementation; vendored MLX only",
-                )
-            )
 
     for name, ok, detail in results:
         print(f"[{'PASS' if ok else 'FAIL'}] {name}\n       {detail}")

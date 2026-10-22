@@ -10,35 +10,17 @@ import tempfile
 from pathlib import Path
 
 import mlx.core as mx
-from safetensors import safe_open
 
 from moshi_mlx import models
 
 MODEL_NAME = "hibiki.bf16.safetensors"
 ARTIFACT_FORMAT = "hibiki_mlx_bf16_v1"
-EXPORT_FORMAT = "hibiki_parallel_bf16_export_v1"
-
-
-def require_bf16_export(path: Path) -> None:
-    with safe_open(path, framework="pt", device="cpu") as checkpoint:
-        metadata = checkpoint.metadata() or {}
-        if metadata.get("format") != EXPORT_FORMAT or metadata.get("dtype") != "bfloat16":
-            raise RuntimeError("Checkpoint is not a parallel BF16 listening export")
-        wrong = [
-            name
-            for name in checkpoint.keys()
-            if checkpoint.get_slice(name).get_dtype() != "BF16"
-        ]
-    if wrong:
-        raise RuntimeError(f"BF16 export contains non-BF16 tensors: {wrong[:5]}")
 
 
 def convert(args: argparse.Namespace) -> None:
     if args.out_dir.exists():
         raise FileExistsError(f"Refusing to overwrite model directory: {args.out_dir}")
     cfg = json.loads(args.config.read_text())
-    if cfg.get("head") == "parallel_v1":
-        require_bf16_export(args.checkpoint)
     cfg["artifact_format"] = ARTIFACT_FORMAT
     cfg["moshi_name"] = MODEL_NAME
     cfg["weight_dtype"] = "bfloat16"

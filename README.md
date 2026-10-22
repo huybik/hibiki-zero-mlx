@@ -92,7 +92,7 @@ See [SFT mechanics](docs/finetune.md), the current
 - `hibiki_mlx/`: pipelined q4 inference runtime.
 - `moshi-mlx/`: minimal vendored MLX model implementation with Hibiki deltas.
 - `finetune/`: full-model SFT, cache preparation, and evaluation.
-- `remote_dataset/`: FLEURS downloader and the English read-speech corpus builder.
+- `remote_dataset/`: FLEURS downloader.
 - `macos/HibikiTestApp/`: native SwiftUI file and microphone test app.
 - `scripts/`: q4 conversion and inference verification.
 - `assets/samples/`: the retained inference gate clip.

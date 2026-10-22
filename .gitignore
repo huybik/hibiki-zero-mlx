@@ -20,6 +20,9 @@ venv/
 # Model and generated artifacts
 /weights
 /translations/
+/output/
+docs/vision/vision.html
+docs/vision/vision.pdf
 macos/HibikiTestApp/.build/
 macos/HibikiTestApp/build/
 remote_dataset/fleurs_vi_en/

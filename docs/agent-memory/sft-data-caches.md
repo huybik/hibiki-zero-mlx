@@ -2,7 +2,7 @@
 
 Read when touching `finetune/cache_codes.py`, `finetune/cache_phomt_stream.py`,
 `finetune/text_timing.py`, `finetune/build_pairs.py`, `finetune/publish_grounded_cache.py`,
-`finetune/freeze_full_data_receipt.py` or `remote_dataset/download_*.py`.
+`finetune/freeze_full_data_receipt.py` or `remote_dataset/download_fleurs_vi_en.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Row layout](#row-layout) ·
 [Receipt](#receipt)
 
@@ -33,8 +33,6 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
 - Publishing uploads `cache_chunk_{0..7}.tar.zst`, `fleurs_cache.tar.zst`, pairs and reject
   files, `manifest.json` and `README.md`. It refuses a non-empty prefix and verifies remote
   SHA-256s and the exact file set. Restoring is in [docs/finetune.md](../finetune.md).
-- `remote_dataset/download_covost2.py` materialises a frozen CoVoST 2 French→English control
-  set; nothing references it.
 
 ## Row layout
 

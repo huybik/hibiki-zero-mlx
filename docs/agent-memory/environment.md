@@ -26,8 +26,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   the tokenizer and the staged BF16 model `vi-step135000-mlx-bf16/`, but neither
   `hibiki.q4.safetensors` nor the upstream PyTorch LM. `--model 3b` therefore needs the README's
   `hf download` and `scripts/convert_mlx_q4.py` first.
-- Corpora live under `/Volumes/data/datasets/`. Only `en_speech/` is built by code on `main`
-  ([en-speech-corpus](en-speech-corpus.md)).
+- `/Volumes/data/datasets/en_speech/` (279 GB) is the ~10k-hour English read-speech corpus
+  (Common Voice 27.0 EN + Libriheavy) for the parity plan's data phase. Its `README.md` is the
+  dataset card with schema and loading code. The Mozilla Data Collective terms forbid
+  re-hosting or re-sharing the Common Voice part, so never upload this corpus.
 - Gitignored generated paths: `translations/`, `finetune/pairs/`, `finetune/cache/`,
   `finetune/runs/` and `remote_dataset/fleurs_vi_en/`.
 
