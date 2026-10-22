@@ -85,11 +85,13 @@ inference/ (Apple Silicon, MLX)
 ```text
 CLAUDE.md (imports this file)
   └─ CONTEXT.md: orientation, invariants, Topic Index
-       └─ docs/agent-memory/<topic>.md: one note per aspect, read when work touches its paths
+       └─ docs/agent-memory/<topic>.md: one note per aspect (what is true and how to work on it),
+          read when work touches its paths
 ```
 
-- Record current facts checked against the code. Link to existing docs instead of copying,
-  keep one owner per fact, and keep no history.
+- Record current facts checked against the code, and guidance on how to work (decisions,
+  feedback) with its reason. Link to existing docs instead of copying, keep one owner per fact,
+  and keep no history.
 - Update the owning note in the same commit as the change. Knowledge with no owner gets a new
   note, added to the Topic Index.
 - Change this file only when orientation, an invariant or the index changes, and update
