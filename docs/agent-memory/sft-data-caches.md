@@ -4,7 +4,7 @@ Read when touching `finetune/cache_codes.py`, `finetune/cache_phomt_stream.py`,
 `finetune/text_timing.py`, `finetune/build_pairs.py`, `finetune/publish_grounded_cache.py`,
 `finetune/freeze_full_data_receipt.py` or `remote_dataset/download_*.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Row layout](#row-layout) ·
-[Receipt](#receipt) · [Legacy leftovers](#legacy-leftovers)
+[Receipt](#receipt)
 
 ## Flow
 
@@ -19,10 +19,12 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
 
 - `h100.sh cache-grounded` needs `pairs/train.jsonl` and `pairs/validation.jsonl`.
   - It runs `HIBIKI_CACHE_WORKERS` (default 4) workers of
-    `cache_phomt_stream.py --recipe grounded-v2 --profile h100`. These stream one PhoMT parquet
-    shard at a time and drop Vietnamese audio over 25 s.
-  - It then runs `cache_codes.py --recipe grounded-v2` for FLEURS, at 32 rows per shard.
-- The grounded-v2 recipe:
+    `cache_phomt_stream.py --profile h100`. These stream one PhoMT parquet shard at a time, drop
+    Vietnamese audio over 25 s and skip rows whose texts and durations repeat within that
+    worker's current run.
+  - It then runs `cache_codes.py` for FLEURS, at 32 rows per shard.
+- Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; the builders write it
+  and `CachedCodeDataset` rejects anything else:
   - Mimi at 24 kHz / 12.5 Hz;
   - English audio delayed by a draw from U[0, 0.5 × Vietnamese duration], seeded by
     `1234:{split}:{id}` and inserted as left silence;
@@ -31,6 +33,8 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
 - Publishing uploads `cache_chunk_{0..7}.tar.zst`, `fleurs_cache.tar.zst`, pairs and reject
   files, `manifest.json` and `README.md`. It refuses a non-empty prefix and verifies remote
   SHA-256s and the exact file set. Restoring is in [docs/finetune.md](../finetune.md).
+- `remote_dataset/download_covost2.py` materialises a frozen CoVoST 2 French→English control
+  set; nothing references it.
 
 ## Row layout
 
@@ -58,15 +62,3 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
   `select_weighted([0.95, 0.05], 719,120, seed 42)`, giving 683,164 PhoMT and 35,956 FLEURS
   rows, sorts by length and shuffles batch order with batch 16 and seed 42.
 - Only 1,392 FLEURS rows are eligible, so they are drawn with replacement, about 26× each.
-
-## Legacy leftovers
-
-These are unused by the production path:
-
-- `--recipe legacy` is the default in `cache_codes.py` and `cache_phomt_stream.py`, and
-  `common.SUPPORTED_CACHE_FORMATS` still accepts `hibiki_vn_lora_cache_v1`.
-- `cache_phomt_stream.py --skip-pairs/--sample-shards`.
-- `common.empty_device_cache`, `CachedCodeDataset.filter_max_frames` and
-  `text_timing.ALIGNMENT_NAME`.
-- `remote_dataset/download_covost2.py` (a frozen CoVoST 2 French→English control set) is
-  referenced by nothing.

@@ -7,10 +7,11 @@ time, Mimi-encodes each row via a tmpfs temp wav (no wavs ever touch disk),
 writes one CachedCodeDataset-compatible cache shard per parquet shard, then
 deletes the parquet from the HF cache. Peak disk = one parquet shard per worker.
 
-Run N workers as separate processes (worker k takes parquet shards k::N):
-  for i in $(seq 0 7); do
-    python finetune/cache_phomt_stream.py --worker $i --num-workers 8 \
-      --skip-pairs finetune/pairs/phomt_train.jsonl --device cuda &
+Run N workers as separate processes (worker k takes parquet shards k::N);
+`finetune/h100.sh cache-grounded` does this with --profile h100:
+  for i in $(seq 0 3); do
+    python finetune/cache_phomt_stream.py --worker $i --num-workers 4 \
+      --device cuda --profile h100 &
   done
 
 Sample ids are phomt_s{parquet}r{row} — deterministic regardless of worker
@@ -41,7 +42,6 @@ if str(REPO_ROOT) not in sys.path:
 from finetune.cache_codes import (  # noqa: E402
     CACHE_FORMAT,
     FRAME_RATE,
-    GROUNDED_CACHE_FORMAT,
     SAMPLE_RATE,
     assemble_codes,
     check_device,
@@ -50,8 +50,13 @@ from finetune.cache_codes import (  # noqa: E402
     save_shard,
     target_delay_policy,
     target_delay_s,
-    text_tokens,
     validate_existing_shards,
+)
+from finetune.text_timing import (  # noqa: E402
+    ALIGNMENT_NAME,
+    EnglishCTCAligner,
+    sentencepiece_groups,
+    timed_sentencepiece_tokens,
 )
 from finetune.utils import (  # noqa: E402
     DEFAULT_CACHE_ROOT,
@@ -59,7 +64,6 @@ from finetune.utils import (  # noqa: E402
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_TOKENIZER,
     read_json,
-    read_pair_file,
     repo_display_path,
     require_file,
     resolve_repo_path,
@@ -93,16 +97,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stream PhoMT parquet -> Mimi cache, no wavs on disk."
     )
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_CACHE_ROOT / "phomt_stream")
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_CACHE_ROOT / "phomt_grounded_v2")
     parser.add_argument("--worker", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=1)
-    parser.add_argument(
-        "--skip-pairs",
-        type=Path,
-        nargs="*",
-        default=[],
-        help="Pair jsonl files whose rows are already cached (keyed on texts+durations).",
-    )
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
@@ -144,12 +141,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Parquet shards to download ahead while encoding; use 2 for a single Mac worker.",
     )
-    parser.add_argument(
-        "--recipe",
-        choices=("legacy", "grounded-v2"),
-        default="legacy",
-        help="grounded-v2 CTC-aligns English text tokens to target speech.",
-    )
     parser.add_argument("--alignment-batch-size", type=int)
     parser.add_argument(
         "--alignment-sample-budget",
@@ -160,13 +151,7 @@ def parse_args() -> argparse.Namespace:
         "--min-alignment-score",
         type=float,
         default=0.5,
-        help="Reject grounded-v2 rows below this mean forced-alignment posterior.",
-    )
-    parser.add_argument(
-        "--sample-shards",
-        type=int,
-        default=0,
-        help="Evenly sample this many dataset shards for a grounded-v2 pilot; 0=all.",
+        help="Reject rows below this mean forced-alignment posterior.",
     )
     args = parser.parse_args()
     defaults = (
@@ -291,31 +276,14 @@ def main() -> None:
         if name.startswith("data/") and name.endswith(".parquet")
     )
     indexed_shards = list(enumerate(all_shards))
-    source_ranges: dict[str, tuple[int, int]] = {}
-    if args.recipe == "grounded-v2":
-        state_path = hf_hub_download(
-            DATASET, "upload-state.json", repo_type="dataset", revision=DATASET_REVISION
-        )
-        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
-        source_ranges = {
-            item["path"]: (int(item["source_index_min"]), int(item["source_index_max"]))
-            for item in state["shards"]
-        }
-    elif args.sample_shards:
-        raise ValueError("--sample-shards is only valid with --recipe grounded-v2")
-    if args.sample_shards:
-        if args.sample_shards > len(indexed_shards):
-            raise ValueError(
-                f"--sample-shards={args.sample_shards} exceeds {len(indexed_shards)} eligible shards"
-            )
-        if args.sample_shards == 1:
-            indexed_shards = [indexed_shards[len(indexed_shards) // 2]]
-        else:
-            last = len(indexed_shards) - 1
-            indexed_shards = [
-                indexed_shards[index * last // (args.sample_shards - 1)]
-                for index in range(args.sample_shards)
-            ]
+    state_path = hf_hub_download(
+        DATASET, "upload-state.json", repo_type="dataset", revision=DATASET_REVISION
+    )
+    state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    source_ranges = {
+        item["path"]: (int(item["source_index_min"]), int(item["source_index_max"]))
+        for item in state["shards"]
+    }
     mine = [
         item
         for ordinal, item in enumerate(indexed_shards)
@@ -323,14 +291,7 @@ def main() -> None:
     ]
     print(f"[w{args.worker}] {len(mine)}/{len(indexed_shards)} dataset shards assigned")
 
-    skip: set[tuple[str, str, str, str]] = set()
-    for pairs_path in args.skip_pairs:
-        for row in read_pair_file(pairs_path):
-            skip.add(
-                row_key(row["text_vi"], row["text_en"], row["vi_duration_s"], row["en_duration_s"])
-            )
-    if skip:
-        print(f"[w{args.worker}] skipping {len(skip)} already-cached rows")
+    seen: set[tuple[str, str, str, str]] = set()
 
     cfg = read_json(args.config_path)
     mimi_weight = require_file(args.mimi_weight, "Mimi weight")
@@ -342,22 +303,15 @@ def main() -> None:
     if int(cfg["card"]) != int(mimi.cardinality):
         raise RuntimeError(f"Config card={cfg['card']} != Mimi cardinality={mimi.cardinality}")
 
-    aligner = None
-    if args.recipe == "grounded-v2":
-        from finetune.text_timing import EnglishCTCAligner
+    aligner = EnglishCTCAligner(
+        device,
+        args.min_alignment_score,
+        alignment_backend="batched" if args.profile == "h100" else "serial",
+    )
 
-        aligner = EnglishCTCAligner(
-            device,
-            args.min_alignment_score,
-            alignment_backend="batched" if args.profile == "h100" else "serial",
-        )
-
-    if args.recipe == "grounded-v2" and args.out_dir == DEFAULT_CACHE_ROOT / "phomt_stream":
-        args.out_dir = DEFAULT_CACHE_ROOT / "phomt_grounded_v2"
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    expected_format = GROUNDED_CACHE_FORMAT if aligner is not None else CACHE_FORMAT
-    validate_existing_shards(torch, out_dir, expected_format, explicit_delay_policy)
+    validate_existing_shards(torch, out_dir, explicit_delay_policy)
     pairs_path = out_dir / f"pairs_w{args.worker}.jsonl"
     rejects_path = out_dir / f"alignment_rejects_w{args.worker}.jsonl"
     shm = Path("/dev/shm")
@@ -412,33 +366,26 @@ def main() -> None:
 
         def encode_chunk(chunk: list[dict]) -> None:
             nonlocal accepted, rejected
-            alignments = None
-            groups_batch = None
-            if aligner is not None:
-                from finetune.text_timing import sentencepiece_groups
-
-                groups_batch = [None] * len(chunk)
-                alignments = [None] * len(chunk)
-                valid_indices = []
-                for index, item in enumerate(chunk):
-                    try:
-                        groups_batch[index] = sentencepiece_groups(
-                            item["row"]["text_en"], tokenizer
-                        )
-                        valid_indices.append(index)
-                    except ValueError as exc:
-                        alignments[index] = exc
-                valid_alignments = aligner.align_many(
-                    [chunk[index]["en_align_wav"] for index in valid_indices],
-                    [groups_batch[index] for index in valid_indices],
-                    args.alignment_batch_size,
-                    args.alignment_sample_budget,
-                )
-                for index, alignment in zip(valid_indices, valid_alignments, strict=True):
-                    alignments[index] = alignment
+            groups_batch = [None] * len(chunk)
+            alignments = [None] * len(chunk)
+            valid_indices = []
+            for index, item in enumerate(chunk):
+                try:
+                    groups_batch[index] = sentencepiece_groups(item["row"]["text_en"], tokenizer)
+                    valid_indices.append(index)
+                except ValueError as exc:
+                    alignments[index] = exc
+            valid_alignments = aligner.align_many(
+                [chunk[index]["en_align_wav"] for index in valid_indices],
+                [groups_batch[index] for index in valid_indices],
+                args.alignment_batch_size,
+                args.alignment_sample_budget,
+            )
+            for index, alignment in zip(valid_indices, valid_alignments, strict=True):
+                alignments[index] = alignment
             encode_indices = []
             for index, item in enumerate(chunk):
-                alignment = alignments[index] if alignments is not None else None
+                alignment = alignments[index]
                 if isinstance(alignment, Exception):
                     rejected += 1
                     print(
@@ -460,40 +407,36 @@ def main() -> None:
                 c = chunk[k]
                 vi_codes, en_codes = codes[code_index], codes[n + code_index]
                 row = c["row"]
-                text_frames = None
-                alignment_score = None
-                if alignments is None or groups_batch is None:
-                    tokens = text_tokens(row["text_en"], tokenizer)
-                else:
-                    from finetune.text_timing import timed_sentencepiece_tokens
-
-                    alignment = alignments[k]
-                    if alignment is None or groups_batch[k] is None:
-                        raise RuntimeError(f"Missing CTC alignment result for {row['id']}")
-                    try:
-                        tokens, text_frames = timed_sentencepiece_tokens(
-                            groups_batch[k],
-                            alignment,
-                            int(en_codes.shape[1]) - c["delay_frames"],
-                            c["delay_frames"],
-                            int(tokenizer.eos_id()),
-                        )
-                    except ValueError as exc:
-                        rejected += 1
-                        print(f"[w{args.worker}] rejecting {row['id']}: {exc}", flush=True)
-                        reject_lines.append({"id": row["id"], "reason": str(exc)})
-                        continue
-                    alignment_score = alignment.score
+                alignment = alignments[k]
+                if alignment is None or groups_batch[k] is None:
+                    raise RuntimeError(f"Missing CTC alignment result for {row['id']}")
+                try:
+                    tokens, text_frames = timed_sentencepiece_tokens(
+                        groups_batch[k],
+                        alignment,
+                        int(en_codes.shape[1]) - c["delay_frames"],
+                        c["delay_frames"],
+                        int(tokenizer.eos_id()),
+                    )
+                except ValueError as exc:
+                    rejected += 1
+                    print(f"[w{args.worker}] rejecting {row['id']}: {exc}", flush=True)
+                    reject_lines.append({"id": row["id"], "reason": str(exc)})
+                    continue
                 assembled = assemble_codes(
-                    torch,
-                    row,
-                    vi_codes,
-                    en_codes,
-                    tokens,
-                    cfg,
-                    c["delay_frames"],
-                    text_frames,
+                    torch, row, vi_codes, en_codes, tokens, cfg, text_frames
                 )
+                grounding = {
+                    "alignment_score": alignment.score,
+                    "alignment_text": " ".join(spoken for _, spoken in groups_batch[k]),
+                    "phomt_index_range": (
+                        list(source_ranges[shard_name]) if shard_name in source_ranges else None
+                    ),
+                    "cross_lingual_timbre_matched": (
+                        shard_name in source_ranges
+                        and source_ranges[shard_name][0] >= TIMBRE_MATCHED_MIN_INDEX
+                    ),
+                }
                 sample = {
                     "id": row["id"],
                     "split": row["split"],
@@ -508,39 +451,10 @@ def main() -> None:
                     "en_audio": row["en_audio"],
                     "text_en": row["text_en"],
                     "text_vi": row["text_vi"],
-                    "text_timing": ("contiguous" if alignments is None else "wav2vec2_ctc_word_v1"),
-                    "alignment_score": alignment_score,
-                }
-                if aligner is not None:
-                    sample.update(
-                        {
-                            "alignment_text": " ".join(spoken for _, spoken in groups_batch[k]),
-                            "phomt_index_range": (
-                                list(source_ranges[shard_name])
-                                if shard_name in source_ranges
-                                else None
-                            ),
-                            "cross_lingual_timbre_matched": (
-                                shard_name in source_ranges
-                                and source_ranges[shard_name][0] >= TIMBRE_MATCHED_MIN_INDEX
-                            ),
-                        }
-                    )
+                    "text_timing": ALIGNMENT_NAME,
+                } | grounding
                 samples.append(sample)
-                pair_row = row
-                if aligner is not None:
-                    pair_row = row | {
-                        "alignment_score": alignment_score,
-                        "alignment_text": " ".join(spoken for _, spoken in groups_batch[k]),
-                        "phomt_index_range": (
-                            list(source_ranges[shard_name]) if shard_name in source_ranges else None
-                        ),
-                        "cross_lingual_timbre_matched": (
-                            shard_name in source_ranges
-                            and source_ranges[shard_name][0] >= TIMBRE_MATCHED_MIN_INDEX
-                        ),
-                    }
-                pair_lines.append(pair_row)
+                pair_lines.append(row | grounding)
                 accepted += 1
             if device.type == "mps":
                 torch.mps.empty_cache()
@@ -566,9 +480,9 @@ def main() -> None:
                     text_vi = str(table.column("vi")[i].as_py()).strip()
                     text_en = str(table.column("en")[i].as_py()).strip()
                     key = row_key(text_vi, text_en, f"{vi_dur:.2f}", f"{en_dur:.2f}")
-                    if key in skip:
+                    if key in seen:
                         continue
-                    skip.add(key)
+                    seen.add(key)
                     row = {
                         "id": f"phomt_s{parquet_idx:05d}r{i:05d}",
                         "split": "train",
@@ -606,10 +520,8 @@ def main() -> None:
                             "delay_frames": delay_frames,
                             "vi_wav": vi_wav,
                             "en_wav": en_wav,
-                            "en_align_wav": (
-                                sphn.resample(en_raw_wav.numpy(), SAMPLE_RATE, 16_000)
-                                if aligner is not None
-                                else None
+                            "en_align_wav": sphn.resample(
+                                en_raw_wav.numpy(), SAMPLE_RATE, 16_000
                             ),
                         }
                     )
@@ -636,11 +548,11 @@ def main() -> None:
             raise RuntimeError(f"Every row in {shard_name} failed CTC alignment")
 
         payload = {
-            "format": expected_format,
+            "format": CACHE_FORMAT,
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
             "dataset_revision": DATASET_REVISION,
-            "alignment_min_score": args.min_alignment_score if aligner is not None else None,
+            "alignment_min_score": args.min_alignment_score,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),

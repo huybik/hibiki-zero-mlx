@@ -116,7 +116,7 @@ cache_grounded() {
   local worker
   for ((worker = 0; worker < workers; worker++)); do
     "$PYTHON" finetune/cache_phomt_stream.py \
-      --recipe grounded-v2 --device cuda --profile h100 --out-dir "$PHOMT_CACHE" \
+      --device cuda --profile h100 --out-dir "$PHOMT_CACHE" \
       --worker "$worker" --num-workers "$workers" &
     pids+=("$!")
   done
@@ -150,10 +150,10 @@ print(
 )
 PY
   "$PYTHON" finetune/cache_codes.py \
-    --recipe grounded-v2 --device cuda --pairs finetune/pairs/train.jsonl \
+    --device cuda --pairs finetune/pairs/train.jsonl \
     --out-dir "$TRAIN_CACHE"
   "$PYTHON" finetune/cache_codes.py \
-    --recipe grounded-v2 --device cuda --pairs finetune/pairs/validation.jsonl \
+    --device cuda --pairs finetune/pairs/validation.jsonl \
     --out-dir "$VAL_CACHE"
   echo "Grounded-v2 caches complete"
 }

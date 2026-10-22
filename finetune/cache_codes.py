@@ -25,11 +25,16 @@ from finetune.utils import (  # noqa: E402
     require_file,
     resolve_repo_path,
 )
+from finetune.text_timing import (  # noqa: E402
+    ALIGNMENT_NAME,
+    EnglishCTCAligner,
+    sentencepiece_groups,
+    timed_sentencepiece_tokens,
+)
 
 SAMPLE_RATE = 24000
 FRAME_RATE = 12.5
-CACHE_FORMAT = "hibiki_vn_lora_cache_v1"
-GROUNDED_CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
+CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=DEFAULT_CACHE_ROOT / "train",
+        default=DEFAULT_CACHE_ROOT / "train_grounded_v2",
         help="Output directory for cache shards.",
     )
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -71,18 +76,12 @@ def parse_args() -> argparse.Namespace:
         help="Minimum target delay ratio; nonzero values create an explicit delay policy.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
-    parser.add_argument(
-        "--recipe",
-        choices=("legacy", "grounded-v2"),
-        default="legacy",
-        help="grounded-v2 CTC-aligns the text stream to target speech.",
-    )
     parser.add_argument("--alignment-batch-size", type=int, default=8)
     parser.add_argument(
         "--min-alignment-score",
         type=float,
         default=0.5,
-        help="Reject grounded-v2 rows below this mean forced-alignment posterior.",
+        help="Reject rows below this mean forced-alignment posterior.",
     )
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
     return parser.parse_args()
@@ -136,13 +135,6 @@ def encode_audio(
     return codes[0].cpu().long()
 
 
-def text_tokens(text: str, tokenizer: Any) -> list[int]:
-    eos_id = int(tokenizer.eos_id())
-    if eos_id < 0:
-        raise RuntimeError("Tokenizer has no EOS id; cannot build text targets.")
-    return list(tokenizer.encode(text, out_type=int)) + [eos_id]
-
-
 def assemble_codes(
     torch: Any,
     row: dict[str, str],
@@ -150,8 +142,7 @@ def assemble_codes(
     en_codes: Any,
     tokens: list[int],
     cfg: dict[str, Any],
-    text_start: int,
-    text_frames: list[int] | None = None,
+    text_frames: list[int],
 ) -> Any:
     n_q = int(cfg["n_q"])
     dep_q = int(cfg["dep_q"])
@@ -175,23 +166,19 @@ def assemble_codes(
     text_len = len(tokens)
     target_len = int(en_codes.shape[1])
     source_len = int(vi_codes.shape[1])
-    if text_frames is not None:
-        if len(text_frames) != text_len or len(set(text_frames)) != text_len:
-            raise ValueError(f"Text frames must be unique and match tokens for id={row['id']}")
-        if text_frames != sorted(text_frames) or text_frames[0] < 0:
-            raise ValueError(f"Text frames must be sorted and non-negative for id={row['id']}")
-    text_end = text_start + text_len if text_frames is None else text_frames[-1] + 1
+    if len(text_frames) != text_len or len(set(text_frames)) != text_len:
+        raise ValueError(f"Text frames must be unique and match tokens for id={row['id']}")
+    if text_frames != sorted(text_frames) or text_frames[0] < 0:
+        raise ValueError(f"Text frames must be sorted and non-negative for id={row['id']}")
+    text_end = text_frames[-1] + 1
     total_frames = max(text_end, target_len, source_len + 1)
     if total_frames <= 0:
         raise RuntimeError(f"Empty cache sample for id={row['id']}")
 
     codes = torch.full((1 + n_q, total_frames), zero_id, dtype=torch.int32)
     codes[0].fill_(text_pad_id)
-    if text_frames is None:
-        codes[0, text_start : text_start + text_len] = torch.tensor(tokens, dtype=torch.int32)
-    else:
-        codes[0, torch.tensor(text_frames, dtype=torch.long)] = torch.tensor(tokens, dtype=torch.int32)
-        codes[0, text_frames[-1] + 1 :] = zero_id
+    codes[0, torch.tensor(text_frames, dtype=torch.long)] = torch.tensor(tokens, dtype=torch.int32)
+    codes[0, text_frames[-1] + 1 :] = zero_id
     codes[1 : 1 + dep_q, :target_len] = en_codes.to(torch.int32)
 
     source_start = 1 + dep_q
@@ -236,13 +223,12 @@ def save_shard(torch: Any, payload: dict[str, Any], path: Path) -> None:
 def validate_existing_shards(
     torch: Any,
     out_dir: Path,
-    expected_format: str,
     explicit_delay_policy: dict[str, float | int] | None,
 ) -> None:
     paths = sorted(out_dir.glob("shard_*.pt"))
     for path in paths if explicit_delay_policy is not None else paths[:1]:
         payload = torch.load(path, map_location="cpu")
-        if payload.get("format") != expected_format:
+        if payload.get("format") != CACHE_FORMAT:
             raise RuntimeError(f"Refusing to mix cache formats in {out_dir}")
         if (
             explicit_delay_policy is not None
@@ -318,12 +304,9 @@ def main() -> None:
     if not pairs:
         raise RuntimeError(f"No pairs to cache from {args.pairs}")
 
-    if args.recipe == "grounded-v2" and args.out_dir == DEFAULT_CACHE_ROOT / "train":
-        args.out_dir = DEFAULT_CACHE_ROOT / "train_grounded_v2"
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    expected_format = GROUNDED_CACHE_FORMAT if args.recipe == "grounded-v2" else CACHE_FORMAT
-    validate_existing_shards(torch, out_dir, expected_format, explicit_delay_policy)
+    validate_existing_shards(torch, out_dir, explicit_delay_policy)
 
     print(f"Loading Mimi on {device} from {repo_display_path(mimi_weight)}")
     num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
@@ -333,11 +316,7 @@ def main() -> None:
             f"Config card={cfg['card']} does not match Mimi cardinality={mimi.cardinality}"
         )
     tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer_path))
-    aligner = None
-    if args.recipe == "grounded-v2":
-        from finetune.text_timing import EnglishCTCAligner
-
-        aligner = EnglishCTCAligner(device, args.min_alignment_score)
+    aligner = EnglishCTCAligner(device, args.min_alignment_score)
 
     shard_count = math.ceil(len(pairs) / args.shard_size)
     for shard_index in range(shard_count):
@@ -366,40 +345,30 @@ def main() -> None:
             delay_frames = int(round(delay_s * FRAME_RATE))
             vi_codes = encode_audio(vi_audio, mimi, sphn, torch, device)
             en_codes = encode_audio(en_audio, mimi, sphn, torch, device, left_pad_s=delay_s)
-            alignment_score = None
-            text_frames = None
-            if aligner is None:
-                tokens = text_tokens(row["text_en"], tokenizer)
-            else:
-                from finetune.text_timing import sentencepiece_groups, timed_sentencepiece_tokens
-
-                raw_en = read_audio(en_audio, sphn, torch, torch.device("cpu"))[0, 0].numpy()
-                wav16 = sphn.resample(raw_en, SAMPLE_RATE, 16_000)
-                try:
-                    groups = sentencepiece_groups(row["text_en"], tokenizer)
-                except ValueError as exc:
-                    print(f"Rejecting id={row['id']}: {exc}")
-                    continue
-                alignment = aligner.align_many([wav16], [groups], args.alignment_batch_size)[0]
-                if isinstance(alignment, Exception):
-                    print(f"Rejecting id={row['id']}: {alignment}")
-                    continue
-                raw_target_frames = int(en_codes.shape[1]) - delay_frames
-                try:
-                    tokens, text_frames = timed_sentencepiece_tokens(
-                        groups,
-                        alignment,
-                        raw_target_frames,
-                        delay_frames,
-                        int(tokenizer.eos_id()),
-                    )
-                except ValueError as exc:
-                    print(f"Rejecting id={row['id']}: {exc}")
-                    continue
-                alignment_score = alignment.score
-            codes = assemble_codes(
-                torch, row, vi_codes, en_codes, tokens, cfg, delay_frames, text_frames
-            )
+            raw_en = read_audio(en_audio, sphn, torch, torch.device("cpu"))[0, 0].numpy()
+            wav16 = sphn.resample(raw_en, SAMPLE_RATE, 16_000)
+            try:
+                groups = sentencepiece_groups(row["text_en"], tokenizer)
+            except ValueError as exc:
+                print(f"Rejecting id={row['id']}: {exc}")
+                continue
+            alignment = aligner.align_many([wav16], [groups], args.alignment_batch_size)[0]
+            if isinstance(alignment, Exception):
+                print(f"Rejecting id={row['id']}: {alignment}")
+                continue
+            raw_target_frames = int(en_codes.shape[1]) - delay_frames
+            try:
+                tokens, text_frames = timed_sentencepiece_tokens(
+                    groups,
+                    alignment,
+                    raw_target_frames,
+                    delay_frames,
+                    int(tokenizer.eos_id()),
+                )
+            except ValueError as exc:
+                print(f"Rejecting id={row['id']}: {exc}")
+                continue
+            codes = assemble_codes(torch, row, vi_codes, en_codes, tokens, cfg, text_frames)
             samples.append(
                 {
                     "id": row["id"],
@@ -415,11 +384,9 @@ def main() -> None:
                     "en_audio": repo_display_path(en_audio),
                     "text_en": row["text_en"],
                     "text_vi": row["text_vi"],
-                    "text_timing": "contiguous" if aligner is None else "wav2vec2_ctc_word_v1",
-                    "alignment_score": alignment_score,
-                    "alignment_text": (
-                        None if aligner is None else " ".join(spoken for _, spoken in groups)
-                    ),
+                    "text_timing": ALIGNMENT_NAME,
+                    "alignment_score": alignment.score,
+                    "alignment_text": " ".join(spoken for _, spoken in groups),
                 }
             )
 
@@ -427,10 +394,10 @@ def main() -> None:
             raise RuntimeError(f"Every row in cache shard {shard_index} failed CTC alignment")
 
         payload = {
-            "format": expected_format,
+            "format": CACHE_FORMAT,
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
-            "alignment_min_score": args.min_alignment_score if aligner is not None else None,
+            "alignment_min_score": args.min_alignment_score,
             "config": {
                 "n_q": int(cfg["n_q"]),
                 "dep_q": int(cfg["dep_q"]),

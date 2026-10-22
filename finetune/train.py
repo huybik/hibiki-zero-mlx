@@ -57,7 +57,10 @@ def parse_args() -> argparse.Namespace:
         "--cache-dir",
         type=Path,
         nargs="+",
-        default=[DEFAULT_CACHE_ROOT / "train"],
+        default=[
+            DEFAULT_CACHE_ROOT / "phomt_grounded_v2",
+            DEFAULT_CACHE_ROOT / "train_grounded_v2",
+        ],
     )
     parser.add_argument("--val-cache-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_RUN_DIR)
