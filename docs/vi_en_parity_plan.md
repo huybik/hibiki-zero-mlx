@@ -9,7 +9,7 @@ This plan combines:
 - the measured failures in `docs/analysis/validation_collapse_analysis.md`,
   `docs/analysis/step135k-check.md`, and the objective in
   `docs/analysis/loss_function.md`;
-- the Hibiki-Zero training recipe (arXiv 2602.11072, "Simultaneous Speech-to-
+- the Hibiki-Zero training recipe (arXiv 2602.11072v2, "Simultaneous Speech-to-
   Speech Translation Without Aligned Data");
 - the new Common Voice based data pipeline described below.
 
@@ -29,7 +29,9 @@ Diagnosis, ranked:
 1. **Data quantity/variation**: ~1,114 h of synthetic PhoMT VI speech (683k
    rows) and 1,392 unique FLEURS-domain rows versus the paper's 40,000 h per
    source language of real multi-speaker audio (~36× less audio, and far less
-   speaker variation).
+   speaker variation). The paper's own new-language adaptation (Section 2)
+   reached 31.4 BLEU after fine-tuning on 850 h, less than this cache, so hours
+   alone are unlikely to explain the failure.
 2. **Exposure gap**: supervised training is fully teacher-forced (gold English
    text+audio history in input); inference is free-running. No training stage
    optimizes the free-running regime, so repetition, missing EOS, and error
@@ -71,6 +73,29 @@ trained in that manner during supervised training" — the supervised stages
 must already leave exploration room (δ_i < d_i), and RL then sharpens the
 policy.
 
+**New-language adaptation** (Table 3, Appendix Table 6) is the paper's closest
+analogue to VI→EN. An 850 h Italian→English set was built with the stage-3
+recipe. Starting from the stage-3 supervised model (before stage 4 and RL), the
+model was fine-tuned on Italian, then trained with GRPO on Italian only:
+
+| Model (Italian short-form) | BLEU | Speaker sim. | End offset (s) | LAAL (s) |
+| --- | ---: | ---: | ---: | ---: |
+| Stage-3 base | 14.3 | 50.6 | 3.9 | 4.3 |
+| Fine-tuned | 31.4 | 55.2 | 3.7 | 4.5 |
+| Fine-tuned + RL | 32.1 | 54.2 | 3.0 | 3.5 |
+| Seamless | 32.5 | 22.2 | 3.0 | 3.5 |
+
+- Fine-tuning alone recovered the translation quality; RL mainly cut latency.
+- On FR/ES/PT/DE long-form, the adapted model stays within −1.2 to +1.4 BLEU of
+  Hibiki-Zero, with LAAL 0.1–0.7 s higher and speaker similarity 1.5–5.7
+  points lower.
+- The 850 h does not carry over directly. Italian is close to the Romance
+  source languages and made up <2% of the audio-pretraining mix, while
+  Vietnamese is tonal and absent from it. The paper's source speech is real;
+  ours is TTS.
+- This repo cannot use the same start point. Only the final post-RL model is
+  released (`kyutai/hibiki-zero-3b-pytorch-bf16`), not the stage-3 checkpoint.
+
 ## 3. Gap analysis: paper vs. this repo
 
 | Dimension | Paper | This repo | Action |
@@ -81,6 +106,7 @@ policy.
 | Natural simultaneity targets | Natural-pause TTS (stage 4) | CTC-timed alignment only | Phase 3 (lightweight analog) |
 | Free-running training | GRPO with BLEU process rewards (stage 5) | None | Phase 4 |
 | Early stopping | Best quality/latency checkpoint | 5 fixed epochs, teacher-forced selection | Phase 2 |
+| New-language start point | Stage-3 supervised model, 850 h fine-tune + GRPO | Released post-RL model, SFT only | None for the start point (stage-3 checkpoint unreleased); Phase 4 adds RL |
 
 ## 4. New data: Common Voice pipeline
 
@@ -109,7 +135,9 @@ boundary from the analysis doc.
 
 Total goal: **~40,000 h of Vietnamese source speech**, matching the paper's
 per-source-language training volume. The existing cache contributes ~1,114 h,
-so the new pipelines must produce roughly 39,000 h more.
+so the new pipelines must produce roughly 39,000 h more. That is the
+from-scratch stage-3 volume. The paper adapted to Italian with 850 h
+(Section 2), so tranche 1 (1k h) already sits at adaptation scale.
 
 Common Voice English validated audio alone is only a few thousand hours, so
 the Section 4 pipeline (EN clip → Gemini translate → timbre-matched VI TTS)
