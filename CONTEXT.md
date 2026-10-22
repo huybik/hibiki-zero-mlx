@@ -84,6 +84,10 @@ free-running evaluation.
 - Recovery: https://huggingface.co/huybik/hibiki-zero-vi-full-sft/tree/main/grounded_v2_full_direct_voice_5epoch
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - PhoMT speech data: https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
+- English read-speech corpus (~10k h train, Common Voice 27 EN + Libriheavy):
+  `/Volumes/data/datasets/en_speech`, built by `remote_dataset/build_en_speech.py`.
+  Parquet shards keep the original mono MP3/Opus bytes; resample to 24 kHz for
+  Mimi. The Common Voice part must not be re-shared (MDC terms).
 
 ## Environment
 
