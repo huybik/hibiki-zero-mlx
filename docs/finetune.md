@@ -68,7 +68,7 @@ up the pod as above and restore the newest complete model/trainer pair:
 ```bash
 run=RUN_NAME
 git checkout "$(curl -fsSL \
-  "https://huggingface.co/$HIBIKI_HF_REPO/resolve/main/$run/run.json" \
+  "https://huggingface.co/huybik/hibiki-zero-vi-full-sft/resolve/main/$run/run.json" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
 ```
 
@@ -104,7 +104,7 @@ the same run only:
 
 - it needs the newest complete pair, an unchanged `run_config.json`, and the same run
   identity and commit;
-- past the first validation step, it also needs the promoted best model and marker;
+- from the first validation step on, it also needs the promoted best model and marker;
 - it cannot extend the stop step or start a different run.
 
 Runs recorded before the `inference/`/`training/` split, such as

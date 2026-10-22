@@ -65,7 +65,8 @@ RESUME_KEYS = (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    # No abbreviations: h100.sh must be able to reject --out-dir/--resume-checkpoint.
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
     parser.add_argument("--val-cache-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
@@ -369,7 +370,7 @@ def main() -> None:
     if (
         args.resume_checkpoint is not None
         and args.val_every
-        and global_step > args.val_every
+        and global_step >= args.val_every
         and best_state is None
     ):
         raise RuntimeError("Resume requires the previously promoted best checkpoint")

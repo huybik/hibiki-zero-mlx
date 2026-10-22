@@ -68,9 +68,10 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   teacher-forced validation loss (`best.json`, metric `teacher_forced_loss`).
 - `train.py` resumes only from the newest complete pair, and only if `run_config.json`
   matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences, seed, train row
-  count and total steps. Past the first validation step, `best.json` is required.
+  count and total steps. From the first validation step on, `best.json` is required.
 - `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
-  - `checkpoints/`: every new complete pair as it appears, keeping the newest two;
+  - `checkpoints/`: on each poll, the newest complete pair if newer than the remote, keeping
+    the newest two;
   - `best/`: the newest promoted model only;
   - `metadata/run_config.json`;
   - logs, on the final sync only.
