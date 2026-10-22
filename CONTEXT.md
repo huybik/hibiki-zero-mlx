@@ -1,14 +1,15 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-22
+Last verified: 2026-10-23
 
 ## Purpose
 
 This repo runs Hibiki-Zero simultaneous speech translation:
 
 - MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE→EN, or staged BF16 checkpoints);
-- full-model Vietnamese→English voice-preserving SFT on one H100, whose only data source is the
-  ~10k-hour English read-speech corpus `en_speech`;
+- full-model Vietnamese→English voice-preserving SFT on one H100 on the 5–22.4 s clips of the
+  English read-speech corpus `en_speech` plus the ~0.8k-hour PhoMT cache, together ~10k hours of
+  5–15 s clips;
 - the roadmap toward VI→EN parity with the upstream languages.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
@@ -20,6 +21,7 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 training/  (CUDA, Linux H100; en_speech is built and translated locally by prep/)
   en_speech ─► prep/translate_en_speech ─► (VI TTS pair rows: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
+  HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
 ```
@@ -37,8 +39,9 @@ inference/ (Apple Silicon, MLX)
 
 ## Where things stand
 
-- PhoMT and FLEURS, with their code, caches and frozen recipe, are dropped. The last run on
-  them, `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
+- FLEURS and the PhoMT code and frozen recipe are dropped; the PhoMT grounded cache is kept and
+  pooled with the `en_speech` caches. The last run on PhoMT and FLEURS,
+  `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
   teacher-forced loss improves, but free-running translation fails.
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
   the `en_speech` corpus is built and a first 1k-hour tranche is being translated to Vietnamese

@@ -27,8 +27,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   LM `hibiki-pytorch-77f82164@110.safetensors`, `hibiki.q4.safetensors` (so `--model 3b`
   works), the Mimi checkpoint, the tokenizer and the staged BF16 model
   `vi-step135000-mlx-bf16/`.
-- `/Volumes/data/datasets/en_speech/` is the only training corpus
-  ([en-speech-corpus](en-speech-corpus.md)). The PhoMT and FLEURS data are deleted.
+- `/Volumes/data/datasets/en_speech/` is the English corpus
+  ([en-speech-corpus](en-speech-corpus.md)), and `/Volumes/data/datasets/phomt-grounded-v2-5s/`
+  the restored PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)). The FLEURS
+  data are deleted.
 - Gitignored local state: `data/` (pair files and Mimi caches), `runs/` (training runs and eval
   outputs), `translations/` and `output/`.
 

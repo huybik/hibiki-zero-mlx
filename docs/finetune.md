@@ -37,13 +37,19 @@ checks the GPU, driver, package pins, host RAM, free disk, and the SHA-256 of th
 four upstream artifacts, and requires a clean tracked worktree.
 
 Put the train and validation caches under `data/cache/` (built with
-[training/prep](../training/prep/README.md)).
+[training/prep](../training/prep/README.md)). Restore the PhoMT cache, which trains as one more
+`--cache-dir`:
+
+```bash
+./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset \
+  --include "phomt-grounded-v2-5s/shard_*.pt" --local-dir data/cache
+```
 
 ## Train
 
 ```bash
 ./training/h100.sh train RUN_NAME \
-  --cache-dir data/cache/TRAIN_A data/cache/TRAIN_B \
+  --cache-dir data/cache/EN_SPEECH_TRAIN data/cache/phomt-grounded-v2-5s \
   --val-cache-dir data/cache/VALIDATION
 ```
 
@@ -95,7 +101,7 @@ cp "$restore_dir/$run/best/best_stepBBBBBB.json" "$run_dir/best.json"
 find "$restore_dir" -depth -delete
 
 ./training/h100.sh resume "$run_dir/trainer_stepNNNNNN.pt" \
-  --cache-dir data/cache/TRAIN_A data/cache/TRAIN_B \
+  --cache-dir data/cache/EN_SPEECH_TRAIN data/cache/phomt-grounded-v2-5s \
   --val-cache-dir data/cache/VALIDATION
 ```
 
