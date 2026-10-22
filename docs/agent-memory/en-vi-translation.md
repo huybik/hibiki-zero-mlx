@@ -24,8 +24,9 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
   neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap, and must
   not run while a build is writing `en_speech`. A running `translate` reads the selection and
   the Gemini claims once, so start it again after `texts` or a claim.
-- The selection on disk is still the first tranche (5-15 s clips, 1,000 train hours plus
-  validation, 410,618 texts) until `en_speech` stops changing.
+- The selection on disk (3,952,995 texts, 12,271 train hours) was built while the second
+  Libriheavy top-up was still adding shards; existing shards are final and are written by rename,
+  so a snapshot is safe. Run `texts` again, with `translate` stopped, when the corpus is final.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
   (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
   rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on

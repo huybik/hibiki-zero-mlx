@@ -53,7 +53,8 @@ On the 71 production batches that hold 100 random Libriheavy validation lines (2
 - A trimmed 120-token prompt saved ~1% of cost but lost 0.06-0.14 adequacy and ~0.16 fluency on
   both judges, so the full prompt stays.
 - Batch jobs are limited per project in enqueued tokens: 3M on Tier 1, 400M on Tier 2. A
-  1,000-hour job is ~15M input tokens, so it needs Tier 2 or a split into smaller jobs.
+  1,000-hour job (~6,650 batches, ~52M characters, ~15M input tokens) was accepted on both keys,
+  so they are above Tier 1.
 
 ## Running
 
