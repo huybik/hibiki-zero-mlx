@@ -25,11 +25,12 @@ Run from the repo root as `python -m training.prep.translate_en_speech <step>`. 
              rejects.jsonl; rerun to resume. Rejected lines are retried in smaller
              batches, then alone. When every --profile is out of quota it sleeps until
              the earliest reset. Texts claimed for Gemini are skipped.
-  gemini     claims --hours of untranslated audio for each new --key from the end of the
-             translation order (while translate is stopped), then sends each key's claimed
-             lines as one Batch API job, appends accepted batches to gemini/translations.jsonl
-             and rejected output to gemini/rejects.jsonl, and resubmits rejected lines in
-             smaller batches, then alone; rerun to resume
+  claim      gemini/claims.parquet: --hours of untranslated Libriheavy audio for each --key,
+             from the end of the translation order; run it while translate is stopped
+  gemini     sends each --key's claimed lines as a Batch API job, appends accepted batches
+             to gemini/translations.jsonl and rejected output to gemini/rejects.jsonl, and
+             resubmits rejected lines in smaller batches, then alone; lines that fail alone
+             go back to translate. Rerun to resume
   export     {train,validation}.parquet (id, text_vi) for each fully translated split,
              plus the plan's gate counts
 """
@@ -42,6 +43,7 @@ import os
 import signal
 import threading
 import time
+import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -65,6 +67,7 @@ RETRY_WAIT = 60  # seconds before the first retry; doubles on each further retry
 SPLIT_ORDER = {"validation": 0, "train": 1}
 GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_POLL = 60  # seconds between checks on running batch jobs
+GEMINI_TIMEOUT = 600_000  # ms an HTTP read may stall before the call fails and is retried
 
 INSTRUCTIONS = """You translate English transcripts of read speech into Vietnamese. A Vietnamese text-to-speech voice will read each translated line as its own audio clip.
 
@@ -320,16 +323,28 @@ def translate(out: Path, profile_names: list[str], batch_chars: int, concurrency
     log(f"all {len(texts):,} texts translated or claimed for Gemini")
 
 
-def claim(out: Path, texts: list[str], claims: dict[str, str], keys: list[str], hours: float) -> dict[str, str]:
-    """Give each key `hours` of untranslated audio, walking back from the end of the translation order."""
-    seconds = pq.read_table(out / "rows.parquet", columns=["text", "duration"]).to_pandas() \
-        .groupby("text").duration.sum().to_dict()
+def write_claims(out: Path, claims: dict[str, str]) -> None:
+    path = out / "gemini" / "claims.parquet"
+    pq.write_table(pa.table({"text": list(claims), "key": list(claims.values())}), path.with_suffix(".tmp"))
+    path.with_suffix(".tmp").replace(path)
+
+
+def claim(out: Path, keys: list[str], hours: float) -> None:
+    """Give each key `hours` of untranslated Libriheavy audio, walking back from the end of the translation order."""
+    texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
+    rows = pq.read_table(out / "rows.parquet", columns=["id", "text", "duration"]).to_pandas()
+    seconds = rows.groupby("text").duration.sum().to_dict()
+    common_voice = set(rows.text[rows.id.str.startswith("cv27/")])  # never sent to Google
+    (out / "gemini").mkdir(exist_ok=True)
     # translate reads the claims once at start, so it must not run while they change.
-    with exclusive(out / "translate.lock", f"stop translate on {out} before claiming texts for Gemini, "
-                                           "then restart it so it skips them"):
+    with exclusive(out / "translate.lock", f"translate or export is using {out}; stop translate before claiming, "
+                                           "and start it again afterwards so it skips the claimed texts"), \
+            exclusive(out / "gemini.lock", f"a gemini run is using {out}"):
+        claims = read_claims(out)
+        if held := sorted(set(keys) & set(claims.values())):
+            raise SystemExit(f"{', '.join(held)} already hold claimed texts")
         done = translated(out / "translations.jsonl")
-        claims = dict(claims)
-        free = (text for text in reversed(texts) if text not in done and text not in claims)
+        free = (text for text in reversed(texts) if text not in done and text not in claims and text not in common_voice)
         for key in keys:
             total, count = 0.0, 0
             for text in free:
@@ -338,12 +353,9 @@ def claim(out: Path, texts: list[str], claims: dict[str, str], keys: list[str], 
                 if total >= hours * 3600:
                     break
             if not count:
-                raise SystemExit(f"no untranslated text is left to claim for {key}")
+                raise SystemExit(f"no untranslated Libriheavy text is left to claim for {key}")
             log(f"claimed {count:,} texts, {total / 3600:,.1f} h of audio, for {key}")
-        path = out / "gemini" / "claims.parquet"
-        pq.write_table(pa.table({"text": list(claims), "key": list(claims.values())}), path.with_suffix(".tmp"))
-        path.with_suffix(".tmp").replace(path)
-    return claims
+        write_claims(out, claims)
 
 
 def gemini_request(lines: list[str]) -> dict:
@@ -355,9 +367,8 @@ def gemini_request(lines: list[str]) -> dict:
 def read_result(result: dict | None, n: int) -> tuple[list[str] | None, str, Counter]:
     if result is None:
         return None, "[missing from the results]", Counter()
-    if "error" in result:
-        return None, f"[error] {json.dumps(result['error'])}", Counter()
-    response = result["response"]
+    if not (response := result.get("response")):
+        return None, f"[no response] {json.dumps(result, ensure_ascii=False)}", Counter()
     meta = response.get("usageMetadata", {})
     usage = Counter(input_tokens=meta.get("promptTokenCount", 0), output_tokens=meta.get("candidatesTokenCount", 0),
                     thinking_tokens=meta.get("thoughtsTokenCount", 0))
@@ -374,10 +385,12 @@ class GeminiKey:
     def __init__(self, out: Path, key: str, batch_chars: int):
         retry = types.HttpRetryOptions(attempts=TRANSIENT_RETRIES + 1, initial_delay=RETRY_WAIT,
                                        max_delay=RETRY_WAIT * 2 ** (TRANSIENT_RETRIES - 1))
-        self.client = genai.Client(api_key=os.environ[key], http_options=types.HttpOptions(retry_options=retry))
-        self.key, self.work = key, out / "gemini"
-        self.path = self.work / f"{key}.job.json"
-        # {"budget"} between rounds, plus {"name", "batches"} while a job runs.
+        self.client = genai.Client(api_key=os.environ[key], http_options=types.HttpOptions(
+            timeout=GEMINI_TIMEOUT, retry_options=retry))
+        self.out, self.key, self.batch_chars = out, key, batch_chars
+        self.path = out / "gemini" / f"{key}.job.json"
+        # {"budget"} between rounds; {"display_name", "batches"} from just before a job is created;
+        # plus {"name"} once it is.
         self.job = json.loads(self.path.read_text()) if self.path.exists() else {"budget": batch_chars}
         self.state = ""
 
@@ -388,12 +401,18 @@ class GeminiKey:
 
     def step(self, texts: list[str], claims: dict[str, str], done: set[str], accepted, rejected) -> bool:
         """Submit, check or collect this key's job; False once every claimed line is translated."""
+        if "display_name" in self.job and "name" not in self.job:
+            self.adopt()
         if "name" not in self.job:
-            pending = [k for k, text in enumerate(texts) if claims.get(text) == self.key and text not in done]
+            mine = [k for k, text in enumerate(texts) if claims.get(text) == self.key]
+            pending = [k for k in mine if texts[k] not in done]
             if not pending:
                 self.path.unlink(missing_ok=True)
                 log(f"{self.key}: every claimed text is translated")
                 return False
+            if self.job["budget"] < self.batch_chars and len(pending) > len(mine) / 10:
+                raise SystemExit(f"{self.key}: {len(pending):,} of {len(mine):,} claimed lines were rejected; see "
+                                 f"{self.out / 'gemini' / 'rejects.jsonl'} before running again")
             self.submit([[texts[k] for k in batch] for batch in pack(pending, texts, self.job["budget"])])
             return True
         job = self.client.batches.get(name=self.job["name"])
@@ -401,38 +420,54 @@ class GeminiKey:
             self.state = job.state.name
             log(f"{self.key}: {job.name} {self.state}")
         if job.state.name in ("JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"):
-            self.collect(job, done, accepted, rejected)
+            self.collect(job, claims, done, accepted, rejected)
         elif job.state.name == "JOB_STATE_EXPIRED":  # unfinished after 48 h, with nothing returned
             self.save({"budget": self.job["budget"]})
         elif job.state.name in ("JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
-            raise SystemExit(f"{self.key}: {job.name} ended {job.state.name}: {job.error}")
+            self.save({"budget": self.job["budget"]})  # a rerun submits the lines again
+            raise SystemExit(f"{self.key}: {job.name} ended {job.state.name}")
         return True
 
+    def adopt(self) -> None:
+        """Find the job a stopped run may have created without recording it, so it is not paid for twice."""
+        for job in self.client.batches.list():
+            if job.display_name == self.job["display_name"]:
+                log(f"{self.key}: found {job.name}, created by a stopped run")
+                self.save(self.job | {"name": job.name})
+                return
+        self.save({"budget": self.job["budget"]})
+
     def submit(self, batches: list[list[str]]) -> None:
-        requests = self.work / f"{self.key}.requests.jsonl"
+        display_name = f"en-vi {self.key} {uuid.uuid4().hex[:8]}"
+        self.save({"budget": self.job["budget"], "display_name": display_name, "batches": batches})
+        requests = self.out / "gemini" / f"{self.key}.requests.jsonl"
         with requests.open("w") as f:
             for i, lines in enumerate(batches):
                 f.write(json.dumps({"key": str(i), "request": gemini_request(lines)}, ensure_ascii=False) + "\n")
         upload = self.client.files.upload(file=requests, config={"display_name": requests.name, "mime_type": "jsonl"})
-        job = self.client.batches.create(model=GEMINI_MODEL, src=upload.name, config={"display_name": f"en-vi {self.key}"})
+        # Creating a job is not idempotent: a retried create can start, and bill, a second job.
+        job = self.client.batches.create(model=GEMINI_MODEL, src=upload.name, config={
+            "display_name": display_name, "http_options": {"retry_options": {"attempts": 1}}})
         requests.unlink()
-        self.save({"budget": self.job["budget"], "name": job.name, "batches": batches})
+        self.save(self.job | {"name": job.name})
         log(f"{self.key}: submitted {job.name}: {len(batches):,} batches of up to {self.job['budget']:,} "
             f"characters, {sum(map(len, batches)):,} lines")
 
-    def collect(self, job: types.BatchJob, done: set[str], accepted, rejected) -> None:
+    def collect(self, job: types.BatchJob, claims: dict[str, str], done: set[str], accepted, rejected) -> None:
         results = {}
-        for line in self.client.files.download(file=job.dest.file_name).decode().splitlines():
+        # Split on newlines only: str.splitlines() also breaks at U+2028 and others, which JSON leaves unescaped.
+        for line in self.client.files.download(file=job.dest.file_name).split(b"\n"):
             if line.strip():
                 result = json.loads(line)
                 results[int(result["key"])] = result
-        totals = Counter()
+        totals, failed = Counter(), []
         for i, lines in enumerate(self.job["batches"]):
             vi, raw, usage = read_result(results.get(i), len(lines))
             totals.update(usage)
             totals["lines"] += len(lines)
             if vi is None:
                 rejected.write(json.dumps({"en": lines, "raw": raw}, ensure_ascii=False) + "\n")
+                failed += lines
                 continue
             accepted.write(json.dumps({"en": lines, "vi": vi, "key": self.key, "usage": usage},
                                       ensure_ascii=False) + "\n")
@@ -443,21 +478,21 @@ class GeminiKey:
         log(f"{self.key}: {totals['accepted']:,}/{totals['lines']:,} lines accepted; tokens in "
             f"{totals['input_tokens']:,} out {totals['output_tokens']:,} thinking {totals['thinking_tokens']:,}")
         budget = self.job["budget"]
-        if totals["accepted"] < totals["lines"] and budget == 0:
-            raise SystemExit(f"{self.key}: {totals['lines'] - totals['accepted']:,} lines fail even alone; "
-                             f"see {self.work / 'rejects.jsonl'}")
+        if failed and budget == 0:
+            for text in failed:
+                del claims[text]
+            write_claims(self.out, claims)
+            log(f"{self.key}: {len(failed):,} lines fail even alone; released them to translate, which takes them "
+                "when started again")
         self.save({"budget": budget // 4 if budget > 500 else 0})  # rejected lines go again in smaller batches
 
 
-def gemini(out: Path, keys: list[str], hours: float | None, batch_chars: int) -> None:
+def gemini(out: Path, keys: list[str], batch_chars: int) -> None:
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
-    (out / "gemini").mkdir(exist_ok=True)
     with exclusive(out / "gemini.lock", f"another gemini run is using {out}"):
         claims = read_claims(out)
-        if new := [key for key in keys if key not in set(claims.values())]:
-            if hours is None:
-                raise SystemExit(f"{', '.join(new)} hold no claimed texts yet; pass --hours to claim some")
-            claims = claim(out, texts, claims, new, hours)
+        if unclaimed := [key for key in keys if key not in set(claims.values())]:
+            raise SystemExit(f"{', '.join(unclaimed)} hold no claimed texts; run the claim step first")
         log_path = out / "gemini" / "translations.jsonl"
         check_tail(log_path)
         done = translated(log_path)
@@ -497,15 +532,14 @@ def export(out: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("texts", "translate", "gemini", "export"))
+    p.add_argument("step", choices=("texts", "claim", "translate", "gemini", "export"))
     p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
     p.add_argument("--out", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--profile", action="append", default=[],
                    help="local API profile to spend, in order of use (repeatable; translate needs one)")
     p.add_argument("--key", action="append", default=[],
-                   help="environment variable holding a Gemini API key (gemini; repeatable)")
-    p.add_argument("--hours", type=float,
-                   help="audio hours to claim for each --key that has no claim yet (gemini)")
+                   help="environment variable holding a Gemini API key (claim, gemini; repeatable)")
+    p.add_argument("--hours", type=float, help="audio hours to claim for each --key (claim)")
     p.add_argument("--batch-chars", type=int, default=8_000, help="English characters per call")
     p.add_argument("--concurrency", type=int, default=8,
                    help=f"calls in flight (translate), at most {SERVER_SLOTS}; quota drains in proportion")
@@ -517,19 +551,23 @@ def main() -> None:
             p.error("translate needs --profile: name the subscriptions it may spend")
         if not 1 <= args.concurrency <= SERVER_SLOTS:
             p.error(f"--concurrency must be 1 to {SERVER_SLOTS}, the calls the local API runs at once")
-    elif args.step == "gemini":
+    elif args.step in ("claim", "gemini"):
         if not args.key:
-            p.error("gemini needs --key: name the environment variables holding the API keys")
+            p.error(f"{args.step} needs --key: name the environment variables holding the API keys")
         if missing := [key for key in args.key if not os.environ.get(key)]:
             p.error(f"{', '.join(missing)} not set; load .env first")
+        if args.step == "claim" and not args.hours:
+            p.error("claim needs --hours")
     if args.step in ("translate", "gemini"):
         # A background run ignores SIGINT; let `kill` stop it as cleanly as Ctrl-C does.
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, signal.default_int_handler)
-    if args.step == "translate":
+    if args.step == "claim":
+        claim(args.out, args.key, args.hours)
+    elif args.step == "translate":
         translate(args.out, args.profile, args.batch_chars, args.concurrency)
     elif args.step == "gemini":
-        gemini(args.out, args.key, args.hours, args.batch_chars)
+        gemini(args.out, args.key, args.batch_chars)
     elif args.step == "export":
         export(args.out)
 

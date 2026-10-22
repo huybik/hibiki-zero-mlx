@@ -14,20 +14,26 @@ price. Prompt, `n|` line format and acceptance check are the Claude path's.
 
 ## Claims and files
 
-- `gemini --hours H` gives each `--key` that has no claim yet H hours of untranslated audio (the
-  durations of every row sharing a text), walking back from the end of the translation order:
-  Claude works from the front and Gemini from the back. The end of the order is Libriheavy train,
-  so no Common Voice text reaches Google while the claims stay within the Libriheavy hours.
-- Claims go to `gemini/claims.parquet` (`text`, `key`) under `translate.lock`, so `translate` must
-  be stopped. It reads them once at start and skips every claimed text, finished or not.
+- `claim --hours H` gives each new `--key` H hours of untranslated audio (the durations of every
+  row sharing a text), walking back from the end of the translation order: Claude works from the
+  front and Gemini from the back. It skips every text with a Common Voice row, so no Common Voice
+  text reaches Google.
+- Claims go to `gemini/claims.parquet` (`text`, `key`) under `translate.lock` and `gemini.lock`, so
+  `translate` must be stopped. It reads them once at start and skips every claimed text.
 - Each key runs rounds: one batch job with all its pending claimed lines in 8,000-character
-  batches, then its rejected lines in quarter-size batches, then alone; a line rejected alone
-  stops the run. `gemini/<KEY>.job.json` holds the round's budget and, while a job runs, its name
-  and batches, so a rerun resumes polling. A job expired after 48 h is resubmitted; a failed or
-  cancelled one stops the run.
+  batches, then its rejected lines in quarter-size batches, then alone. Lines that fail alone are
+  removed from the claims, so `translate` takes them when started again. A retry round holding
+  over 10% of a key's lines stops the run instead, since that is a systematic failure; delete the
+  key's `job.json` to send them again at full size.
+- `gemini/<KEY>.job.json` holds the round's budget, then its batches and a unique display name
+  just before the job is created, then the job's name. A rerun resumes polling, or finds a job
+  that a killed run created but did not record, so it is never created and paid for twice; job
+  creation is not idempotent, so it is never retried. A job expired after 48 h is resubmitted; a
+  failed or cancelled one stops the run, and a rerun resubmits it.
 - Accepted batches go to `gemini/translations.jsonl` (`en`, `vi`, `key`, `usage`) and rejected
   output to `gemini/rejects.jsonl`; `export` merges both engines' translation files.
-- The SDK retries 429s, 5xx replies and dropped connections 5 times, 1 to 16 minutes apart.
+- Other API calls retry 429s, 5xx replies and connection errors 5 times, 1 to 16 minutes apart,
+  silently; any other error stops the run, and a rerun resumes.
 
 ## Measurements
 
@@ -53,7 +59,7 @@ On the 71 production batches that hold 100 random Libriheavy validation lines (2
 
 - Load `.env` first (`set -a && . ./.env && set +a`). `--key` names the variables, and every
   record stores the name, never the value.
-- When the corpus changes: stop `translate`, run `texts`, start `gemini` (it claims, then
-  submits), then restart `translate`.
+- When the corpus changes: stop `translate`, run `texts`, then `claim`, then start `gemini` and
+  `translate`.
 - One process drives every key and checks its jobs each minute; `gemini.lock` stops a second
   one. `kill` it and run it again to resume.

@@ -44,9 +44,11 @@ it; costs and rules are in [en-vi-translation](../../docs/agent-memory/en-vi-tra
 ```bash
 python -m training.prep.translate_en_speech texts       # select every en_speech row; not while a build writes it
 set -a && . ./.env && set +a                            # the Gemini keys
+python -m training.prep.translate_en_speech claim --key GEMINI_API_KEY_1 --key GEMINI_API_KEY_2 \
+  --hours 1000                                          # Libriheavy hours per key; while translate is stopped
 nohup caffeinate -i python -m training.prep.translate_en_speech gemini \
-  --key GEMINI_API_KEY_1 --key GEMINI_API_KEY_2 --hours 1000 \
-  >> /Volumes/data/datasets/en_speech_vi_text/gemini.log 2>&1 &      # claims while translate is stopped
+  --key GEMINI_API_KEY_1 --key GEMINI_API_KEY_2 \
+  >> /Volumes/data/datasets/en_speech_vi_text/gemini.log 2>&1 &      # `kill` stops it; rerun to resume
 nohup caffeinate -i python -m training.prep.translate_en_speech translate \
   --profile claude-p --profile claude-l --profile claude-5x --profile default \
   >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
@@ -56,8 +58,8 @@ python -m training.prep.translate_en_speech export      # {train,validation}.par
 `--concurrency` (default 8) sets the calls in flight, so it sets how fast the accounts' quota
 drains. Rerunning `texts` after the corpus changes keeps every translation already made; a
 running `translate` reads the selection and the Gemini claims once, so start it again afterwards.
-`gemini --hours` claims audio hours for each key without a claim yet, from the end of the
-translation order, and `translate` skips them; both runs resume when started again.
+`claim` gives each key audio hours from the end of the translation order, Libriheavy only, and
+`translate` skips them; both runs resume when started again.
 
 Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
 Voice text.
