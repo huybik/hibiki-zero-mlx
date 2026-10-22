@@ -5,11 +5,9 @@ Roadmap phase 1 (docs/vi_en_parity_plan.md): every English clip gets a Vietnames
 line that a TTS voice conditioned on the clip's speaker will read. Translation runs
 on Claude Sonnet 5.5 through the local Claude API (claude-sub-as-api), which spends
 Claude subscription quota, so the steps keep tokens down:
-  - Only rows whose clip lasts --min-seconds to --max-seconds are kept; the
-    280-frame training cap (22.4 s) bounds the maximum, since a longer English
-    clip can never become a training row. Transcripts without letters are skipped.
-  - --hours translates the train split in tranches, so the TTS step can be
-    checked on one before more quota is spent.
+  - The corpus holds only clips that fit the trainer's 280-frame cap (22.4 s), so
+    every row is kept except transcripts without letters; `texts` stops if a
+    longer clip is found.
   - Identical transcripts (whitespace-normalised) are translated once.
   - One call carries a batch of lines, so the fixed per-call prompt is paid per
     batch, and the instructions sit in a cached prefix that calls read at ~0.1x.
@@ -20,14 +18,12 @@ neighbouring book text as context for names, gender and Vietnamese forms of addr
 Run from the repo root as `python -m training.prep.translate_en_speech <step>`. Steps, all under
 --out:
   texts      texts.parquet (text: the unique transcripts, in translation order) and
-             rows.parquet (split, id, text): every validation row in the duration range,
-             plus train rows up to --hours, drawn in a fixed random order of units (a
-             Common Voice clip, or a whole Libriheavy recording so its book context stays
-             together); with the same range, a larger --hours extends a smaller selection
-  translate  appends accepted batches, keyed by their English text, to translations.jsonl
-             and rejected output to rejects.jsonl; rerun to resume. Rejected lines are
-             retried in smaller batches, then alone. When every --profile is out of quota
-             it sleeps until the earliest reset.
+             rows.parquet (split, id, text) for every corpus row
+  translate  keeps --concurrency calls in flight and appends accepted batches, keyed by
+             their English text, to translations.jsonl and rejected output to
+             rejects.jsonl; rerun to resume. Rejected lines are retried in smaller
+             batches, then alone. When every --profile is out of quota it sleeps until
+             the earliest reset.
   export     {train,validation}.parquet (id, text_vi) for each fully translated split,
              plus the plan's gate counts
 """
@@ -53,7 +49,7 @@ API_URL = "http://127.0.0.1:8787"
 API_TOKEN = Path.home() / ".local/share/claude-local-api/token"
 MAX_LINES = 200  # per batch, whatever its size
 MAX_TOKENS = 32_000
-CONCURRENCY = 64  # the server runs 48 calls at once; macOS resets connections past a 128 backlog
+QUOTA_CHECK = 60  # seconds between wall-clock checks while every profile is out of quota
 TRANSIENT_RETRIES = 5  # per batch, for 5xx, dropped connections and one-off 429s: ~30 min of backoff
 RETRY_WAIT = 60  # seconds before the first retry; doubles on each further retry
 SPLIT_ORDER = {"validation": 0, "train": 1}
@@ -74,7 +70,7 @@ def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def build_texts(src: Path, out: Path, min_seconds: float, max_seconds: float, hours: float | None) -> None:
+def build_texts(src: Path, out: Path) -> None:
     def read(path: Path) -> pa.Table:
         table = pq.read_table(path, columns=["id", "text", "duration"])
         return table.append_column("split", pa.array([path.parent.name] * table.num_rows, pa.string()))
@@ -82,20 +78,15 @@ def build_texts(src: Path, out: Path, min_seconds: float, max_seconds: float, ho
     with ThreadPoolExecutor(16) as pool:
         rows = pa.concat_tables(pool.map(read, sorted(src.glob("*/*.parquet")))).to_pandas()
     rows["text"] = rows.text.str.split().str.join(" ")
-    fits = rows.duration.between(min_seconds, max_seconds)
+    if (too_long := (rows.duration > MAX_SECONDS).sum()):
+        raise SystemExit(f"{too_long:,} clips last over {MAX_SECONDS:.1f} s and can never become a training row; "
+                         "prune en_speech to its clip range first")
     spoken = rows.text.str.contains(r"[^\W\d_]")  # has a letter; "." alone has nothing to translate
-    log(f"{len(rows):,} rows; skipped {(~fits).sum():,} with clips outside {min_seconds:g}-{max_seconds:g} s "
-        f"and {(fits & ~spoken).sum():,} without letters")
-    rows = rows[fits & spoken].copy()
+    log(f"{len(rows):,} rows; skipped {(~spoken).sum():,} without letters")
+    rows = rows[spoken].copy()
     recording = rows.id.str.rsplit("_", n=1)
     rows["recording"] = recording.str[0]
     rows["segment"] = recording.str[1].astype(int)
-    if hours is not None:
-        unit = rows.id.where(rows.id.str.startswith("cv27/"), rows.recording)
-        train = rows.split == "train"
-        unit_hours = (rows.duration[train].groupby(unit[train]).sum() / 3600).sample(frac=1, random_state=0)
-        chosen = unit_hours.index[unit_hours.cumsum().shift(fill_value=0) < hours]
-        rows = rows[~train | unit.isin(chosen)]
     for (split, cv), group in rows.groupby([rows.split, rows.id.str.startswith("cv27/")]):
         log(f"{split} {'Common Voice' if cv else 'Libriheavy'}: {len(group):,} rows, "
             f"{group.duration.sum() / 3600:,.1f} h")
@@ -141,7 +132,8 @@ class Profiles:
                 if wake != self.announced:
                     self.announced = wake
                     log(f"every profile is out of quota; waiting until {time.strftime('%a %H:%M', time.localtime(wake))}")
-            self.sleep(wake - now)
+            # A timed wait stops counting while the Mac sleeps, so check the clock again often.
+            self.sleep(min(wake - now, QUOTA_CHECK))
 
     def out_until(self, name: str, seconds: float) -> None:
         with self.lock:
@@ -233,7 +225,7 @@ def lock_dir(out: Path):
     return lock_file
 
 
-def translate(out: Path, profile_names: list[str], batch_chars: int) -> None:
+def translate(out: Path, profile_names: list[str], batch_chars: int, concurrency: int) -> None:
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
     with lock_dir(out):
         log_path = out / "translations.jsonl"
@@ -268,7 +260,7 @@ def translate(out: Path, profile_names: list[str], batch_chars: int) -> None:
                 batches = list(pack(pending, texts, budget))
                 log(f"{len(pending):,} lines pending: {len(batches):,} batches of up to {budget:,} characters")
                 start = time.time()
-                with ThreadPoolExecutor(CONCURRENCY) as pool:
+                with ThreadPoolExecutor(concurrency) as pool:
                     try:
                         futures = [pool.submit(run, batch) for batch in batches]
                         for i, future in enumerate(as_completed(futures), 1):
@@ -325,23 +317,20 @@ def main() -> None:
     p.add_argument("--profile", action="append", default=[],
                    help="local API profile to spend, in order of use (repeatable; translate needs one)")
     p.add_argument("--batch-chars", type=int, default=8_000, help="English characters per call")
-    p.add_argument("--min-seconds", type=float, default=0.0, help="shortest clip kept (texts)")
-    p.add_argument("--max-seconds", type=float, default=MAX_SECONDS, help="longest clip kept (texts)")
-    p.add_argument("--hours", type=float, help="train hours to select (texts); default: all")
+    p.add_argument("--concurrency", type=int, default=8,
+                   help="calls in flight (translate); quota drains in proportion, and the server runs 48 at once")
     args = p.parse_args()
     if args.step == "texts":
-        if args.max_seconds > MAX_SECONDS:
-            p.error(f"--max-seconds over {MAX_SECONDS:.1f} keeps clips that can never become a training row")
-        if args.min_seconds > args.max_seconds or (args.hours is not None and args.hours <= 0):
-            p.error("the selection would be empty: check --min-seconds, --max-seconds and --hours")
-        build_texts(args.src, args.out, args.min_seconds, args.max_seconds, args.hours)
+        build_texts(args.src, args.out)
     elif args.step == "translate":
         if not args.profile:
             p.error("translate needs --profile: name the subscriptions it may spend")
+        if not 1 <= args.concurrency <= 48:
+            p.error("--concurrency must be 1 to 48, the calls the local API runs at once")
         # A background run ignores SIGINT; let `kill` stop it as cleanly as Ctrl-C does.
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, signal.default_int_handler)
-        translate(args.out, args.profile, args.batch_chars)
+        translate(args.out, args.profile, args.batch_chars, args.concurrency)
     else:
         export(args.out)
 

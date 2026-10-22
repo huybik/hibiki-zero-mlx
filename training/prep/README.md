@@ -41,15 +41,15 @@ Claude API; costs and rules are in
 [en-vi-translation](../../docs/agent-memory/en-vi-translation.md).
 
 ```bash
-python -m training.prep.translate_en_speech texts --min-seconds 5 --max-seconds 15 --hours 1000  # select a tranche
+python -m training.prep.translate_en_speech texts       # select every en_speech row; not while a build writes it
 nohup caffeinate -i python -m training.prep.translate_en_speech translate \
-  --profile claude-p --profile claude-l --profile default \
+  --profile claude-p --profile claude-l --profile claude-5x --profile default \
   >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
 python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
 ```
 
-With the same duration range, a larger `--hours` extends the selection; translations already
-made are always kept.
+`--concurrency` (default 8) sets the calls in flight, so it sets how fast the accounts' quota
+drains. Rerunning `texts` after the corpus changes keeps every translation already made.
 
 Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
 Voice text.
