@@ -117,7 +117,6 @@ The large source pair manifests are not needed for cached training.
 ### 5. Preflight and smoke
 
 ```bash
-export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 git status --short
 ./finetune/h100.sh preflight
@@ -136,7 +135,6 @@ current Git commit.
 Use this only when the remote `grounded_v2_full_direct_voice_5epoch/` prefix is empty:
 
 ```bash
-export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh train
 ```

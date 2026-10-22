@@ -66,7 +66,7 @@ repetition recovery — exactly the step-135k failure modes — not simultaneity
    setup). One corpus BLEU over the whole group gives every member the same
    reward, so the group-normalized advantages are all zero.
 3. Group statistics + advantages per Eq. 5–6 saved alongside.
-4. Offline unit checks runnable locally (CPU/MPS, tiny fixtures): reward math
+4. Offline unit checks runnable locally (CPU, tiny fixtures): reward math
    on synthetic texts, frame-map monotonicity, advantage sum ordering.
 
 Exit gate: given a fixture rollout, rewards/advantages match hand-computed

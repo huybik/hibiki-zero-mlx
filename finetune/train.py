@@ -71,7 +71,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--full-data-receipt", type=Path, required=True)
     parser.add_argument("--input-sample-manifest", type=Path, required=True)
-    parser.add_argument("--device", default="cuda")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
@@ -387,8 +386,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             f"Direct production requires validation/checkpoints every {CADENCE_STEPS} steps"
         )
-    if common.FRAME_BUCKET != 16 or os.environ.get("NO_TORCH_COMPILE") == "1":
-        raise ValueError("Direct full-data training requires compile and 16-frame buckets")
+    if os.environ.get("NO_TORCH_COMPILE"):
+        raise ValueError("Direct full-data training requires torch compile; unset NO_TORCH_COMPILE")
 
 
 def main() -> None:
@@ -396,9 +395,7 @@ def main() -> None:
     validate_args(args)
     common.seed_all(args.seed)
 
-    device = common.check_device(args.device)
-    if device.type != "cuda":
-        raise RuntimeError("Full-model training requires CUDA")
+    device = common.check_device("cuda")
     dtype = torch.float32
     torch.set_float32_matmul_precision("high")
 
@@ -697,7 +694,6 @@ def main() -> None:
             "max_padded_frames",
         )
         item = {"step": step, **{key: metrics[key] for key in keys}}
-        item.update(common.mps_memory_stats(device))
         with val_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, sort_keys=True) + "\n")
         print(
@@ -790,7 +786,6 @@ def main() -> None:
                 "text_weight": args.text_loss_weight,
                 "target_audio_teacher_forcing": True,
             }
-            item.update(common.mps_memory_stats(device))
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(item, sort_keys=True) + "\n")
             print(

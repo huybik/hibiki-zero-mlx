@@ -4,8 +4,7 @@ This module owns device helpers, the cached-shard dataset, exact full-model
 checkpoint I/O, teacher-forced losses, autoregressive generation, text metrics,
 and correct-source generation health diagnostics.
 
-It is a PyTorch training toolkit; torch, safetensors and the `moshi` pip package
-are hard dependencies imported at module top (the conda base env ships them).
+It runs on CUDA in the environment that `finetune/h100.sh setup` builds.
 """
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ import csv
 import hashlib
 import json
 import math
-import os
 import random
 import re
 import time
@@ -22,17 +20,10 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-import torch
-
-# moshi reads NO_TORCH_COMPILE once at import. Default-enable compile on CUDA:
-# The pinned CUDA build supports compiled H100 training. Keep it off elsewhere
-# (no gain on MPS).
-# Override with NO_TORCH_COMPILE=1.
-os.environ.setdefault("NO_TORCH_COMPILE", "" if torch.cuda.is_available() else "1")
-
 import numpy as np
 import sacrebleu
 import sphn
+import torch
 from moshi.models import loaders
 from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
@@ -62,8 +53,6 @@ def ascii_text(text: str) -> str:
 # Device / dtype / seeding
 # --------------------------------------------------------------------------- #
 def check_device(device_name: str) -> torch.device:
-    if device_name == "mps" and not torch.backends.mps.is_available():
-        raise RuntimeError("Requested --device mps, but torch.backends.mps is not available.")
     if device_name == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("Requested --device cuda, but torch.cuda.is_available() is false.")
     return torch.device(device_name)
@@ -81,24 +70,8 @@ def seed_all(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    if torch.backends.mps.is_available() and hasattr(torch.mps, "manual_seed"):
-        torch.mps.manual_seed(seed)
     random.seed(seed)
     np.random.seed(seed)
-
-
-def is_mps(device: torch.device) -> bool:
-    return getattr(device, "type", str(device)) == "mps"
-
-
-def mps_memory_stats(device: torch.device) -> dict[str, float]:
-    if not is_mps(device):
-        return {}
-    return {
-        "mps_allocated_gb": torch.mps.current_allocated_memory() / 1024**3,
-        "mps_driver_gb": torch.mps.driver_allocated_memory() / 1024**3,
-        "mps_recommended_gb": torch.mps.recommended_max_memory() / 1024**3,
-    }
 
 
 class _CausalSDPA:
@@ -148,10 +121,9 @@ def enable_causal_sdpa() -> None:
     _moshi_transformer.F = _CausalSDPA()
 
 
-# Default-on for CUDA (~1% train speedup, free); streaming decode is unaffected
-# (T_q=1 falls through). MPS SDPA has no flash backend to unlock.
-if torch.cuda.is_available():
-    enable_causal_sdpa()
+# Always on (~1% train speedup, free); streaming decode is unaffected (T_q=1 falls
+# through).
+enable_causal_sdpa()
 
 
 # --------------------------------------------------------------------------- #
@@ -331,7 +303,7 @@ class CachedCodeDataset(Dataset):
     def shuffle_batch_order(self, batch_size: int, seed: int = 1234) -> None:
         """Shuffle length-sorted samples in whole-batch blocks.
 
-        Batches stay near-uniform length (minimal padding, few MPS shapes) but
+        Batches stay near-uniform length (minimal padding, few shapes) but
         the epoch is no longer an ascending-length curriculum replayed in the
         same order every epoch. Deterministic, so sorted-resume skip still works.
         """
@@ -367,13 +339,11 @@ def sample_manifest_bytes(dataset: CachedCodeDataset) -> bytes:
     ).encode("utf-8")
 
 
-# Pad each batch's frame length up to a multiple of this. MPS compiles+caches a
-# Metal kernel graph per distinct tensor shape; the raw pool has 262 distinct
-# lengths, which balloons the GPU working set (26 GB wired, swap-thrash). Bucketing
-# collapses that to ~9 shapes. Loss-neutral: extra frames are -1 == zero_token_id,
-# masked out of both CE terms (see LMModel.forward logits_mask). CUDA launch
-# recipes override this to balance padding against compiled-shape reuse.
-FRAME_BUCKET = int(os.environ.get("HIBIKI_FRAME_BUCKET", "32"))
+# Pad each batch's frame length up to a multiple of this so compiled kernels see a
+# few shapes instead of one per raw length, balancing padding against reuse.
+# Loss-neutral: extra frames are -1 == zero_token_id, masked out of both CE terms
+# (see LMModel.forward logits_mask).
+FRAME_BUCKET = 16
 
 
 def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:

@@ -8,10 +8,9 @@ writes one CachedCodeDataset-compatible cache shard per parquet shard, then
 deletes the parquet from the HF cache. Peak disk = one parquet shard per worker.
 
 Run N workers as separate processes (worker k takes parquet shards k::N);
-`finetune/h100.sh cache-grounded` does this with --profile h100:
+`finetune/h100.sh cache-grounded` does this on one H100:
   for i in $(seq 0 3); do
-    python finetune/cache_phomt_stream.py --worker $i --num-workers 4 \
-      --device cuda --profile h100 &
+    python finetune/cache_phomt_stream.py --worker $i --num-workers 4 &
   done
 
 Sample ids are phomt_s{parquet}r{row} — deterministic regardless of worker
@@ -48,7 +47,6 @@ from finetune.cache_codes import (  # noqa: E402
     read_audio,
     require_runtime_deps,
     save_shard,
-    target_delay_policy,
     target_delay_s,
     validate_existing_shards,
 )
@@ -76,16 +74,13 @@ LIBC = ctypes.CDLL(None) if sys.platform.startswith("linux") else None
 
 
 def load_hf_token() -> None:
-    """Load a local HF token and anchor a broken external cache to the repo."""
+    """Load the HF token from the repo .env when the environment has none."""
     if not os.environ.get("HF_TOKEN"):
         env = REPO_ROOT / ".env"
         if env.is_file():
             for line in env.read_text().splitlines():
                 if line.startswith("HF_TOKEN="):
                     os.environ["HF_TOKEN"] = line.split("=", 1)[1].strip()
-    hf_home = os.environ.get("HF_HOME")
-    if not hf_home or not Path(hf_home).is_dir():
-        os.environ["HF_HOME"] = str(REPO_ROOT / ".hf_cache")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 
 
@@ -104,47 +99,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument(
-        "--keep-parquet",
-        action="store_true",
-        help="Keep downloaded parquet in the HF cache (Mac run with pre-synced external disk).",
-    )
     parser.add_argument("--max-source-duration-s", type=float, default=25.0)
     parser.add_argument("--target-delay-ratio", type=float, default=0.5)
-    parser.add_argument("--target-delay-min-ratio", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument(
         "--limit", type=int, default=0, help="Stop after keeping N rows (smoke); 0=all."
     )
+    # Batch defaults are sized for four concurrent workers on one H100.
     parser.add_argument(
-        "--profile",
-        choices=("default", "h100"),
-        default="default",
-        help="Hardware-tuned execution profile with bounded H100 batches.",
+        "--batch-size", type=int, default=64, help="Clips per batched Mimi encode."
     )
-    parser.add_argument("--batch-size", type=int, help="Clips per batched Mimi encode.")
     parser.add_argument(
         "--batch-sample-budget",
         type=int,
-        default=None,
+        default=4_000_000,
         help="Maximum padded raw-audio samples per Mimi encode batch.",
     )
     parser.add_argument(
-        "--chunk-rows",
-        type=int,
-        default=None,
-        help="Rows buffered per encode flush; use 128 for concurrent MPS workers.",
+        "--chunk-rows", type=int, default=512, help="Rows buffered per encode flush."
     )
     parser.add_argument(
         "--prefetch-shards",
         type=int,
-        default=None,
-        help="Parquet shards to download ahead while encoding; use 2 for a single Mac worker.",
+        default=2,
+        help="Parquet shards to download ahead while encoding.",
     )
-    parser.add_argument("--alignment-batch-size", type=int)
+    parser.add_argument("--alignment-batch-size", type=int, default=32)
     parser.add_argument(
         "--alignment-sample-budget",
         type=int,
+        default=4_000_000,
         help="Maximum padded 16 kHz samples per CTC batch; 0 disables the cap.",
     )
     parser.add_argument(
@@ -153,30 +137,7 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Reject rows below this mean forced-alignment posterior.",
     )
-    args = parser.parse_args()
-    defaults = (
-        {
-            "batch_size": 64,
-            "batch_sample_budget": 4_000_000,
-            "chunk_rows": 512,
-            "prefetch_shards": 2,
-            "alignment_batch_size": 32,
-            "alignment_sample_budget": 4_000_000,
-        }
-        if args.profile == "h100"
-        else {
-            "batch_size": 16,
-            "batch_sample_budget": 2_000_000,
-            "chunk_rows": 512,
-            "prefetch_shards": 1,
-            "alignment_batch_size": 8,
-            "alignment_sample_budget": 0,
-        }
-    )
-    for name, value in defaults.items():
-        if getattr(args, name) is None:
-            setattr(args, name, value)
-    return args
+    return parser.parse_args()
 
 
 # Mimi's SEANet convs are ~512-wide at raw 24 kHz, so activation memory scales
@@ -186,7 +147,7 @@ def encode_batch(wavs: list, mimi, torch, batch_size: int, sample_budget: int) -
     """Batched Mimi encode of variable-length mono cpu wavs -> per-clip codes.
 
     Clips are length-sorted into batches, zero right-padded to a shared
-    16-frame-bucket length (bounds Metal per-shape kernel-graph variety),
+    16-frame-bucket length (bounds the number of distinct encode shapes),
     then trimmed back to each clip's own frame count. Mimi is causal, so
     the trimmed prefix matches a solo encode bit-exact (A/B-verified).
     """
@@ -207,8 +168,7 @@ def encode_batch(wavs: list, mimi, torch, batch_size: int, sample_budget: int) -
             <= sample_budget
         ):
             idxs.append(order[s + len(idxs)])
-        # power-of-2 batch sizes: (B, pad_t) shape combos each compile a Metal
-        # kernel graph for the whole conv stack; unquantized B explodes variety.
+        # Power-of-2 batch sizes keep the set of (B, pad_t) encode shapes small.
         while len(idxs) & (len(idxs) - 1):
             idxs.pop()
         pad_t = math.ceil(int(wavs[idxs[-1]].shape[0]) / bucket) * bucket
@@ -251,21 +211,10 @@ def main() -> None:
         raise ValueError("--alignment-batch-size must be positive")
     if args.alignment_sample_budget < 0:
         raise ValueError("--alignment-sample-budget must be non-negative")
-    delay_policy = target_delay_policy(
-        args.target_delay_min_ratio, args.target_delay_ratio, args.seed
-    )
-    explicit_delay_policy = delay_policy if args.target_delay_min_ratio > 0 else None
     load_hf_token()
 
     torch, sphn, sentencepiece, loaders = require_runtime_deps()
     device = check_device(torch, args.device)
-    if args.profile == "h100":
-        if (
-            device.type != "cuda"
-            or torch.cuda.get_device_capability(device) != (9, 0)
-            or "H100" not in torch.cuda.get_device_name(device).upper()
-        ):
-            raise RuntimeError("--profile h100 requires an NVIDIA H100 (CUDA capability 9.0)")
 
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download, list_repo_files
@@ -303,15 +252,11 @@ def main() -> None:
     if int(cfg["card"]) != int(mimi.cardinality):
         raise RuntimeError(f"Config card={cfg['card']} != Mimi cardinality={mimi.cardinality}")
 
-    aligner = EnglishCTCAligner(
-        device,
-        args.min_alignment_score,
-        alignment_backend="batched" if args.profile == "h100" else "serial",
-    )
+    aligner = EnglishCTCAligner(device, args.min_alignment_score, alignment_backend="batched")
 
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    validate_existing_shards(torch, out_dir, explicit_delay_policy)
+    validate_existing_shards(torch, out_dir)
     pairs_path = out_dir / f"pairs_w{args.worker}.jsonl"
     rejects_path = out_dir / f"alignment_rejects_w{args.worker}.jsonl"
     shm = Path("/dev/shm")
@@ -456,8 +401,6 @@ def main() -> None:
                 samples.append(sample)
                 pair_lines.append(row | grounding)
                 accepted += 1
-            if device.type == "mps":
-                torch.mps.empty_cache()
 
         # Producer thread preps chunks (parquet reads, wav decode, delay pad)
         # while the main thread keeps the GPU busy encoding the previous chunk.
@@ -493,12 +436,7 @@ def main() -> None:
                         "text_vi": text_vi,
                         "text_en": text_en,
                     }
-                    delay_s = target_delay_s(
-                        row,
-                        args.target_delay_ratio,
-                        args.seed,
-                        args.target_delay_min_ratio,
-                    )
+                    delay_s = target_delay_s(row, args.target_delay_ratio, args.seed)
                     delay_frames = int(round(delay_s * FRAME_RATE))
                     with (
                         tempfile.NamedTemporaryFile(suffix=".wav", dir=tmp_dir) as vi_tmp,
@@ -562,8 +500,6 @@ def main() -> None:
             },
             "samples": samples,
         }
-        if explicit_delay_policy is not None:
-            payload["target_delay"] = explicit_delay_policy
         save_shard(torch, payload, out_path)
         if pair_lines:
             with pairs_path.open("a", encoding="utf-8") as fh:
@@ -573,10 +509,7 @@ def main() -> None:
             with rejects_path.open("a", encoding="utf-8") as fh:
                 for row in reject_lines:
                     fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-        if not args.keep_parquet:
-            delete_from_hf_cache(local)
-        if device.type == "mps":
-            torch.mps.empty_cache()
+        delete_from_hf_cache(local)
         print(
             f"[w{args.worker}] {shard_name}: {len(samples)}/{table.num_rows} rows -> "
             f"{repo_display_path(out_path)} "

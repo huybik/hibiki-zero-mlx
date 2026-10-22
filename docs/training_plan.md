@@ -85,7 +85,6 @@ driver 570+, Torch `2.8.0+cu128`, Moshi `0.2.13`, at least 110 GiB host RAM, and
 at least 190 GiB free disk.
 
 ```bash
-export HIBIKI_RECIPE=grounded-v2
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./finetune/h100.sh preflight
 ./finetune/h100.sh smoke

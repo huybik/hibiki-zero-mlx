@@ -420,9 +420,6 @@ class EnglishCTCAligner:
             if any(result is None for result in batch_results):
                 raise RuntimeError("Missing CTC alignment result")
             results.extend(batch_results)  # type: ignore[arg-type]
-            if self.device.type == "mps":
-                del inputs, input_values, attention_mask, logits, input_lengths
-                torch.mps.empty_cache()
         return results
 
 

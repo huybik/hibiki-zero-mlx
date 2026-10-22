@@ -8,7 +8,6 @@ cd "$REPO_ROOT"
 
 VENV="$REPO_ROOT/.venv"
 PYTHON="$VENV/bin/python"
-RECIPE="${HIBIKI_RECIPE:-grounded-v2}"
 SMOKE_DIR="$REPO_ROOT/finetune/runs/h100_smoke_grounded_v2_full_direct_voice_5epoch"
 RUN_DIR="$REPO_ROOT/finetune/runs/vi_grounded_v2_full_direct_voice_5epoch"
 PHOMT_CACHE="finetune/cache/phomt_grounded_v2"
@@ -18,30 +17,13 @@ FULL_DATA_DIR="$REPO_ROOT/finetune/runs/grounded_v2_full_direct_5epoch_receipt"
 FULL_DATA_RECEIPT="$FULL_DATA_DIR/full_data_receipt.json"
 FULL_MANIFEST="$FULL_DATA_DIR/sample_manifest.jsonl"
 HIBIKI_HF_PREFIX="grounded_v2_full_direct_voice_5epoch"
-export HIBIKI_HF_PREFIX HIBIKI_HF_SYNC_INTERVAL=9000 HIBIKI_FRAME_BUCKET=16
+export HIBIKI_HF_PREFIX HIBIKI_HF_SYNC_INTERVAL=9000
 unset NO_TORCH_COMPILE
 
 die() {
   echo "error: $*" >&2
   exit 1
 }
-
-[[ "$RECIPE" == grounded-v2 ]] || die "only HIBIKI_RECIPE=grounded-v2 is supported"
-for obsolete in \
-  HIBIKI_PILOT HIBIKI_HIGH_DELAY_PILOT HIBIKI_CONTRASTIVE_PILOT \
-  HIBIKI_ASR_PREADAPT HIBIKI_ASR_ONE_EPOCH HIBIKI_ASR_ASCII \
-  HIBIKI_ASR_TRANSLATION_PILOT HIBIKI_ASR_REPLAY_TRANSLATION_PILOT \
-  HIBIKI_POST_SOURCE_EOS_TRANSLATION_PILOT HIBIKI_POST_SOURCE_EOS_EXTENSION; do
-  obsolete_value="${!obsolete:-0}"
-  [[ "$obsolete_value" == 0 ]] \
-    || die "$obsolete is obsolete; the launcher now has one direct full-data recipe"
-done
-[[ -z "${HIBIKI_MAX_SAMPLES:-}" ]] || die "full training rejects HIBIKI_MAX_SAMPLES"
-[[ -z "${HIBIKI_MAX_STEPS:-}" ]] || die "full training rejects HIBIKI_MAX_STEPS"
-[[ -z "${HIBIKI_CACHE_SAMPLE_SHARDS:-}" ]] \
-  || die "full cache building rejects HIBIKI_CACHE_SAMPLE_SHARDS"
-[[ -z "${HIBIKI_HF_PREFIX_OVERRIDE:-}" ]] \
-  || die "the direct full-run HF prefix is fixed"
 
 require_python() {
   [[ -x "$PYTHON" ]] || die "run '$0 setup' first"
@@ -116,7 +98,7 @@ cache_grounded() {
   local worker
   for ((worker = 0; worker < workers; worker++)); do
     "$PYTHON" finetune/cache_phomt_stream.py \
-      --device cuda --profile h100 --out-dir "$PHOMT_CACHE" \
+      --out-dir "$PHOMT_CACHE" \
       --worker "$worker" --num-workers "$workers" &
     pids+=("$!")
   done
@@ -274,7 +256,6 @@ PY
 
 common_args() {
   TRAIN_ARGS=(
-    --device cuda
     --model-weight weights/hibiki-pytorch-77f82164@110.safetensors
     --mimi-weight weights/mimi-pytorch-e351c8d8@125.safetensors
     --tokenizer weights/tokenizer_spm_48k_multi6_2.model

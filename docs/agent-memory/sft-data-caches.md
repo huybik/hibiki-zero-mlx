@@ -18,10 +18,10 @@ caches ─► freeze_full_data_receipt.py (in h100.sh preflight) ─► frozen r
 ```
 
 - `h100.sh cache-grounded` needs `pairs/train.jsonl` and `pairs/validation.jsonl`.
-  - It runs `HIBIKI_CACHE_WORKERS` (default 4) workers of
-    `cache_phomt_stream.py --profile h100`. These stream one PhoMT parquet shard at a time, drop
-    Vietnamese audio over 25 s and skip rows whose texts and durations repeat within that
-    worker's current run.
+  - It runs `HIBIKI_CACHE_WORKERS` (default 4) workers of `cache_phomt_stream.py`, whose
+    batch defaults are sized for four workers on one H100. Each streams one PhoMT parquet
+    shard at a time and deletes it after encoding, drops Vietnamese audio over 25 s, and skips
+    rows whose texts and durations repeat within that worker's current run.
   - It then runs `cache_codes.py` for FLEURS, at 32 rows per shard.
 - Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; the builders write it
   and `CachedCodeDataset` rejects anything else:
