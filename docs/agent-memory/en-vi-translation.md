@@ -21,12 +21,12 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
   `rows.parquet` (`split`, `id`, `text`, `duration`) for every corpus row with a letter in its transcript,
   so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)). Validation
   comes first, then each Libriheavy recording in segment order, so a batch carries the
-  neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap, and must
-  not run while a build is writing `en_speech`. A running `translate` reads the selection and
-  the Gemini claims once, so start it again after `texts` or a claim.
+  neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap. The
+  corpus builder writes shards by rename, so `texts` may read a snapshot of a build that only
+  adds shards, but not of a prune. A running `translate` reads the selection and the Gemini
+  claims once, so start it again after `texts` or a claim.
 - The selection on disk covers the final corpus: 4,005,744 texts (613M characters) in 4,171,008
-  rows. The corpus builder writes shards by rename, so `texts` may also read a snapshot of a
-  build that only adds shards.
+  rows.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
   (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
   rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on

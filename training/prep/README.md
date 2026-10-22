@@ -42,7 +42,7 @@ it; costs and rules are in [en-vi-translation](../../docs/agent-memory/en-vi-tra
 [en-vi-gemini](../../docs/agent-memory/en-vi-gemini.md).
 
 ```bash
-python -m training.prep.translate_en_speech texts       # select every en_speech row; not while a build writes it
+python -m training.prep.translate_en_speech texts       # select every en_speech row; not during a prune
 set -a && . ./.env && set +a                            # the Gemini keys
 python -m training.prep.translate_en_speech claim --key GEMINI_API_KEY_1 --key GEMINI_API_KEY_2 \
   --hours 1000                                          # Libriheavy hours per key; while translate is stopped
