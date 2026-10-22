@@ -25,11 +25,7 @@ STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
 STAGED_BEST = re.compile(r"best_step(\d+)$")
-RUN_METADATA = (
-    "run_config.json",
-    "sample_manifest.jsonl",
-    "full_data_receipt.json",
-)
+RUN_METADATA = ("run_config.json",)
 RUN_ARTIFACTS = (
     "train_log.jsonl",
     "val_log.jsonl",

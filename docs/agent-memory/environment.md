@@ -23,16 +23,14 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 ## Storage
 
 - `/Volumes/data` is the external data drive. `weights/` is a symlink to
-  `/Volumes/data/models/hibiki/weights`. That folder holds `config.json`, the Mimi checkpoint,
-  the tokenizer and the staged BF16 model `vi-step135000-mlx-bf16/`, but neither
-  `hibiki.q4.safetensors` nor the upstream PyTorch LM. `--model 3b` therefore needs the README's
-  `hf download` and `inference/tools/convert_mlx_q4.py` first.
-- `/Volumes/data/datasets/en_speech/` (279 GB) is the ~10k-hour English read-speech corpus
-  (Common Voice 27.0 EN + Libriheavy) for the parity plan's data phase. Its `README.md` is the
-  dataset card with schema and loading code. The Mozilla Data Collective terms forbid
-  re-hosting or re-sharing the Common Voice part, so never upload this corpus.
-- Gitignored local state: `data/` (FLEURS audio, pair files, Mimi caches), `runs/` (training
-  runs, receipts and eval outputs), `translations/` and `output/`.
+  `/Volumes/data/models/hibiki/weights`. That folder holds `config.json`, the upstream PyTorch
+  LM `hibiki-pytorch-77f82164@110.safetensors`, `hibiki.q4.safetensors` (so `--model 3b`
+  works), the Mimi checkpoint, the tokenizer and the staged BF16 model
+  `vi-step135000-mlx-bf16/`.
+- `/Volumes/data/datasets/en_speech/` is the only training corpus
+  ([en-speech-corpus](en-speech-corpus.md)). No other Hibiki datasets are kept on disk.
+- Gitignored local state: `data/` (pair files and Mimi caches), `runs/` (training runs and eval
+  outputs), `translations/` and `output/`.
 
 ## Git
 

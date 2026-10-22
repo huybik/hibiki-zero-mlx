@@ -7,7 +7,8 @@ Last verified: 2026-10-22
 This repo runs Hibiki-Zero simultaneous speech translation:
 
 - MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE→EN, or staged BF16 checkpoints);
-- direct full-model Vietnamese→English voice-preserving SFT on one H100;
+- full-model Vietnamese→English voice-preserving SFT on one H100, whose only data source is the
+  ~10k-hour English read-speech corpus `en_speech`;
 - the roadmap toward VI→EN parity with the upstream languages.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
@@ -16,28 +17,31 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-training/  (CUDA, Linux H100)
-  FLEURS, PhoMT ─► prep/ ─► data/cache ─► h100.sh → finetune/train.py ─► runs/, HF recovery repo
+training/  (CUDA, Linux H100; en_speech is built locally by prep/build_en_speech.py)
+  en_speech ─► (VI pair rows: not built) ─► prep/cache_codes ─► data/cache
+    ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
 ```
 
 - `inference/` is the only Apple Silicon code: `main.py`, the `hibiki_mlx/` runtime, the
   vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
-- `training/` is CUDA-only and never runs on a Mac: `h100.sh`, shared `paths.py`, data
-  preparation in `prep/` and the SFT trainer and evaluation in `finetune/`. Its modules run from
-  the repo root as `python -m training.<package>.<module>`.
+- `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the `en_speech` corpus builder and
+  the pair → grounded cache builder) and `finetune/` (the generic SFT trainer, evaluation and HF
+  recovery sync). Its modules run from the repo root as `python -m training.<package>.<module>`;
+  everything except the corpus builder runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
-- Gitignored: `weights/` (shared by both sides), `data/` (datasets, pairs, caches), `runs/`
-  (training runs and eval outputs) and `translations/` (inference outputs).
+- Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
+  runs and eval outputs) and `translations/` (inference outputs).
 
 ## Where things stand
 
-- The 5-epoch SFT run `grounded_v2_full_direct_voice_5epoch` is analysed up to step 135k.
-  Teacher-forced loss improves, but free-running translation fails, and the FLEURS validation
-  loss diverges.
+- PhoMT and FLEURS, with their code, caches and frozen recipe, are dropped. The last run on
+  them, `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
+  teacher-forced loss improves, but free-running translation fails.
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
-  the English source corpus is built, but the translation, TTS and caching pipeline is not.
+  the `en_speech` corpus is built, but the translation and TTS step that turns it into
+  Vietnamese-source pair rows is not, so there are no caches to train on yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -45,12 +49,11 @@ inference/ (Apple Silicon, MLX)
 - Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`) →
   [environment](docs/agent-memory/environment.md).
 - Never upload or re-share the Common Voice part of `en_speech` →
-  [environment](docs/agent-memory/environment.md).
-- Apple Silicon is for inference only; all training and data preparation run on CUDA →
+  [en-speech-corpus](docs/agent-memory/en-speech-corpus.md).
+- Apple Silicon is for inference only; training, caching and evaluation run on CUDA →
   [sft-training](docs/agent-memory/sft-training.md).
-- The SFT recipe constants live in `freeze_full_data_receipt.py`, and `train.py` rejects any
-  deviation. Production runs go only through `training/h100.sh` →
-  [sft-training](docs/agent-memory/sft-training.md).
+- Production runs go only through `training/h100.sh train`, which ties a run to its commit and
+  HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
   codebooks. EOS and -1 positions are fixed, and training applies no transform →
   [sft-data-caches](docs/agent-memory/sft-data-caches.md).
@@ -66,17 +69,16 @@ inference/ (Apple Silicon, MLX)
 | Read when working on… | Note | Main paths |
 |---|---|---|
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
-| SFT recipe, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
-| Pairs, Mimi caches, publishing, frozen receipt | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/`, `training/paths.py`, `training/finetune/freeze_full_data_receipt.py` |
+| SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
+| Pair rows, grounded Mimi caches, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/text_timing.py`, `training/paths.py` |
+| English read-speech corpus | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `training/prep/build_en_speech.py`, `/Volumes/data/datasets/en_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
 
 ## Canonical resources
 
-- Caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft/tree/main/grounded-v2
-- Recovery: https://huggingface.co/huybik/hibiki-zero-vi-full-sft/tree/main/grounded_v2_full_direct_voice_5epoch
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
-- PhoMT speech data: https://huggingface.co/datasets/anquachdev/PhoMT-en-vi-speech
+- Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
 
 ## Maintaining context
 

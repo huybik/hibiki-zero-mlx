@@ -1,25 +1,29 @@
 #!/usr/bin/env python
+"""Cache Vietnamese->English pair rows as grounded Mimi code shards for SFT.
+
+Each row is [33, T]: CTC-timed English text, 16 English target Mimi codebooks
+(delayed by a seeded draw), then 16 Vietnamese source Mimi codebooks ending in
+codec EOS. Rows whose English text fails CTC alignment are rejected.
+"""
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import random
 from pathlib import Path
 from typing import Any
 
 from training.paths import (
-    DEFAULT_CACHE_ROOT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
-    DEFAULT_PAIRS_DIR,
     DEFAULT_TOKENIZER,
     read_json,
     repo_display_path,
     require_file,
     resolve_repo_path,
 )
-from training.prep.pairs import read_pair_file
 from training.prep.text_timing import (
     ALIGNMENT_NAME,
     EnglishCTCAligner,
@@ -30,6 +34,16 @@ from training.prep.text_timing import (
 SAMPLE_RATE = 24000
 FRAME_RATE = 12.5
 CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
+PAIR_FIELDS = (
+    "id",
+    "split",
+    "vi_audio",
+    "en_audio",
+    "vi_duration_s",
+    "en_duration_s",
+    "text_vi",
+    "text_en",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,14 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pairs",
         type=Path,
-        default=DEFAULT_PAIRS_DIR / "train.jsonl",
-        help="Pair file from training.prep.build_pairs (.jsonl or .csv).",
+        required=True,
+        help=f"Pair file (.jsonl or .csv) with columns {', '.join(PAIR_FIELDS)}.",
     )
     parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=DEFAULT_CACHE_ROOT / "train_grounded_v2",
-        help="Output directory for cache shards.",
+        "--out-dir", type=Path, required=True, help="Output directory for cache shards."
     )
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
@@ -72,6 +83,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
     return parser.parse_args()
+
+
+def read_pair_file(path: str | Path) -> list[dict[str, str]]:
+    path = require_file(path, "pair file")
+    rows: list[dict[str, str]] = []
+    if path.suffix == ".jsonl":
+        with path.open("r", encoding="utf-8") as fh:
+            for line_no, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError(f"{path}:{line_no} is not a JSON object")
+                rows.append({field: str(row.get(field, "")) for field in PAIR_FIELDS})
+    elif path.suffix == ".csv":
+        with path.open("r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            missing = [field for field in PAIR_FIELDS if field not in reader.fieldnames]
+            if missing:
+                raise ValueError(f"{path} is missing columns: {', '.join(missing)}")
+            rows = [{field: (row.get(field, "") or "") for field in PAIR_FIELDS} for row in reader]
+    else:
+        raise ValueError(f"Pair file must be .jsonl or .csv: {path}")
+
+    for row in rows:
+        for field in PAIR_FIELDS:
+            if field not in row or row[field] == "":
+                raise ValueError(f"{path} has an empty {field} field")
+    return rows
 
 
 def require_runtime_deps() -> tuple[Any, Any, Any, Any]:

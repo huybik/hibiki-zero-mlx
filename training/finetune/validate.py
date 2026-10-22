@@ -8,7 +8,6 @@ from pathlib import Path
 
 from training.finetune import common
 from training.paths import (
-    DEFAULT_CACHE_ROOT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_MODEL_WEIGHT,
@@ -24,9 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compute teacher-forced CE on cached codes for a base or full-SFT model."
     )
-    parser.add_argument(
-        "--cache-dir", type=Path, default=DEFAULT_CACHE_ROOT / "validation_grounded_v2"
-    )
+    parser.add_argument("--cache-dir", type=Path, required=True)
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
     )
@@ -73,13 +70,7 @@ def main() -> None:
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
 
     dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples)
-    dataloader = common.make_cached_dataloader(
-        dataset,
-        args.batch_size,
-        args.num_workers,
-        args.sort_by_length,
-        shuffle=False,
-    )
+    dataloader = common.make_cached_dataloader(dataset, args.batch_size, args.num_workers)
     print(f"Loaded {len(dataset)} cached samples from {repo_display_path(cache_dir)}")
 
     checkpoint_info = common.load_checkpoint_info(args)

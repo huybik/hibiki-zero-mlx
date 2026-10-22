@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
-# H100 setup and launcher for direct Vietnamese-to-English full-model SFT.
+# H100 setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery.
 
 set -Eeuo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 
 VENV="$REPO_ROOT/.venv"
 PYTHON="$VENV/bin/python"
-SMOKE_DIR="$REPO_ROOT/runs/h100_smoke_grounded_v2_full_direct_voice_5epoch"
-RUN_DIR="$REPO_ROOT/runs/vi_grounded_v2_full_direct_voice_5epoch"
-PHOMT_CACHE="data/cache/phomt_grounded_v2"
-TRAIN_CACHE="data/cache/train_grounded_v2"
-VAL_CACHE="data/cache/validation_grounded_v2"
-FULL_DATA_DIR="$REPO_ROOT/runs/grounded_v2_full_direct_5epoch_receipt"
-FULL_DATA_RECEIPT="$FULL_DATA_DIR/full_data_receipt.json"
-FULL_MANIFEST="$FULL_DATA_DIR/sample_manifest.jsonl"
-HIBIKI_HF_PREFIX="grounded_v2_full_direct_voice_5epoch"
-export HIBIKI_HF_PREFIX HIBIKI_HF_SYNC_INTERVAL=9000
+RUNS_DIR="$REPO_ROOT/runs"
 unset NO_TORCH_COMPILE
 
 die() {
@@ -68,15 +59,12 @@ setup() {
     torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
   "$PYTHON" -m pip install \
     aiohttp==3.11.18 \
-    datasets==4.8.5 \
     einops==0.8.1 \
     huggingface-hub==1.21.0 \
     numpy==2.2.6 \
-    pyarrow==21.0.0 \
     sacrebleu==2.6.0 \
     safetensors==0.8.0 \
     sentencepiece==0.2.1 \
-    soundfile==0.14.0 \
     sphn==0.2.1 \
     tqdm==4.67.1 \
     num2words==0.5.14 \
@@ -84,60 +72,6 @@ setup() {
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
   echo "H100 environment installed in $VENV"
-}
-
-cache_grounded() {
-  require_python
-  require_cuda_driver
-  require_h100_gpu
-  [[ -f data/pairs/train.jsonl ]] || die "missing data/pairs/train.jsonl"
-  [[ -f data/pairs/validation.jsonl ]] || die "missing data/pairs/validation.jsonl"
-  local workers="${HIBIKI_CACHE_WORKERS:-4}"
-  [[ "$workers" =~ ^[1-9][0-9]*$ ]] || die "HIBIKI_CACHE_WORKERS must be positive"
-  local pids=()
-  local worker
-  for ((worker = 0; worker < workers; worker++)); do
-    "$PYTHON" -m training.prep.cache_phomt_stream \
-      --out-dir "$PHOMT_CACHE" \
-      --worker "$worker" --num-workers "$workers" &
-    pids+=("$!")
-  done
-  trap 'kill "${pids[@]}" 2>/dev/null || true' INT TERM EXIT
-  local remaining="$workers"
-  local status
-  while (( remaining > 0 )); do
-    set +e
-    wait -n
-    status=$?
-    set -e
-    if (( status != 0 )); then
-      kill "${pids[@]}" 2>/dev/null || true
-      wait "${pids[@]}" 2>/dev/null || true
-      trap - INT TERM EXIT
-      return "$status"
-    fi
-    remaining=$((remaining - 1))
-  done
-  trap - INT TERM EXIT
-
-  "$PYTHON" - "$PHOMT_CACHE" <<'PY'
-import sys
-from pathlib import Path
-from training.prep.publish_grounded_cache import validate_cache
-
-stats = validate_cache(Path(sys.argv[1]))
-print(
-    f"Validated PhoMT cache: {stats['shards']} shards / "
-    f"{stats['accepted_samples']} accepted / {stats['rejected_samples']} rejected"
-)
-PY
-  "$PYTHON" -m training.prep.cache_codes \
-    --device cuda --pairs data/pairs/train.jsonl \
-    --out-dir "$TRAIN_CACHE"
-  "$PYTHON" -m training.prep.cache_codes \
-    --device cuda --pairs data/pairs/validation.jsonl \
-    --out-dir "$VAL_CACHE"
-  echo "Grounded-v2 caches complete"
 }
 
 preflight() {
@@ -149,8 +83,7 @@ preflight() {
   git diff --cached --quiet || die "staged changes must be committed before training"
 
   local profile
-  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_free_gib" \
-    "$PHOMT_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" <<'PY'
+  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_free_gib" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -163,7 +96,6 @@ import torch
 
 root = Path(sys.argv[1])
 minimum_free_gib = float(sys.argv[2])
-cache_paths = sys.argv[3:6]
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -220,280 +152,13 @@ for relative, expected in expected_hashes.items():
     if digest != expected:
         raise RuntimeError(f"hash mismatch for {relative}")
 
-for relative, expected in zip(cache_paths, (1377, 46, 5), strict=True):
-    shards = sorted((root / relative).glob("shard_*.pt"))
-    if len(shards) != expected or any(path.stat().st_size == 0 for path in shards):
-        raise RuntimeError(f"{relative}: expected {expected} complete shards")
-    payload = torch.load(shards[0], map_location="cpu")
-    if payload.get("format") != "hibiki_vn_grounded_cache_v2":
-        raise RuntimeError(f"{relative}: not a grounded-v2 cache")
-    if float(payload.get("alignment_min_score") or 0) != 0.5:
-        raise RuntimeError(f"{relative}: CTC threshold is not 0.5")
-    if any(
-        sample.get("text_timing") != "wav2vec2_ctc_word_v1"
-        for sample in payload.get("samples", [])
-    ):
-        raise RuntimeError(f"{relative}: missing CTC-timed English text")
-
 print(f"{memory_gib:.1f} {host_gib:.1f} {free_gib:.1f}")
 PY
 )"
   read -r GPU_GIB HOST_GIB FREE_GIB <<< "$profile"
 
-  "$PYTHON" -m training.finetune.freeze_full_data_receipt \
-    --phomt-cache "$PHOMT_CACHE" \
-    --fleurs-train-cache "$TRAIN_CACHE" \
-    --fleurs-validation-cache "$VAL_CACHE" \
-    --config-path weights/config.json \
-    --model-weight weights/hibiki-pytorch-77f82164@110.safetensors \
-    --mimi-weight weights/mimi-pytorch-e351c8d8@125.safetensors \
-    --tokenizer weights/tokenizer_spm_48k_multi6_2.model \
-    --out-dir "$FULL_DATA_DIR"
-
   echo "Preflight passed: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
-  echo "GPU=${GPU_GIB}GiB host=${HOST_GIB}GiB free_disk=${FREE_GIB}GiB batch=16 accum=1"
-}
-
-common_args() {
-  TRAIN_ARGS=(
-    --model-weight weights/hibiki-pytorch-77f82164@110.safetensors
-    --mimi-weight weights/mimi-pytorch-e351c8d8@125.safetensors
-    --tokenizer weights/tokenizer_spm_48k_multi6_2.model
-    --cache-dir "$PHOMT_CACHE" "$TRAIN_CACHE"
-    --val-cache-dir "$VAL_CACHE"
-    --full-data-receipt "$FULL_DATA_RECEIPT"
-    --input-sample-manifest "$FULL_MANIFEST"
-    --epochs 5
-    --batch-size 16
-    --grad-accum-steps 1
-    --max-frames 280
-    --val-max-frames 280
-    --val-batch-size 4
-    --lr 1e-6
-    --adam-beta1 0.9
-    --adam-beta2 0.95
-    --weight-decay 0.1
-    --grad-clip 1.0
-    --audio-loss-weight 1.0
-    --text-loss-weight 1.0
-    --text-pad-loss-weight 0.05
-    --seed 42
-  )
-}
-
-stop_monitor() {
-  local pid="$1"
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-}
-
-check_smoke_outputs() {
-  "$PYTHON" - "$SMOKE_DIR" <<'PY'
-from __future__ import annotations
-
-import csv
-import hashlib
-import json
-import math
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-logs = [
-    json.loads(line)
-    for line in (root / "train_log.jsonl").read_text().splitlines()
-    if line
-]
-if not logs or logs[-1]["step"] != 11:
-    raise RuntimeError("resume smoke did not reach step 11")
-for item in logs:
-    for key in ("loss", "audio_loss", "text_loss", "lr"):
-        if not math.isfinite(float(item[key])):
-            raise RuntimeError(f"non-finite {key} at step {item['step']}")
-    if item["lr"] != 1e-6 or item["audio_weight"] != 1.0:
-        raise RuntimeError("smoke changed the fixed LR or audio CE weight")
-    if not item["target_audio_teacher_forcing"] or int(item["audio_tokens"]) <= 0:
-        raise RuntimeError("target-audio teacher forcing/audio CE is inactive")
-
-config = json.loads((root / "run_config_step10.json").read_text())
-expected = {
-    "batch_size": 16,
-    "grad_accum_steps": 1,
-    "max_frames": 280,
-    "val_max_frames": 280,
-    "val_batch_size": 4,
-    "epochs": 5,
-    "lr": 1e-6,
-    "adam_beta1": 0.9,
-    "adam_beta2": 0.95,
-    "weight_decay": 0.1,
-    "audio_loss_weight": 1.0,
-    "initialization": "upstream_hibiki_zero",
-    "target_audio_teacher_forcing": True,
-    "audio_ce": True,
-    "best_metric": "teacher_forced_loss",
-    "post_source_transform": None,
-    "validation_shuffle": False,
-    "sample_manifest_rows": 719_120,
-    "sample_manifest_cache_counts": [683_164, 35_956],
-    "steps_per_epoch": 44_945,
-    "total_steps": 10,
-    "frame_bucket": 16,
-    "torch_compile_enabled": True,
-    "smoke_longest_first": True,
-}
-for key, value in expected.items():
-    if config.get(key) != value:
-        raise RuntimeError(f"direct smoke config mismatch for {key}: {config.get(key)}")
-
-receipt_document = json.loads((root / "full_data_receipt.json").read_text())
-receipt = receipt_document["full_data_receipt"]
-digest = hashlib.sha256(
-    json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
-).hexdigest()
-if digest != receipt_document["sha256"]:
-    raise RuntimeError("full-data receipt hash mismatch")
-if receipt["strategy"] != "direct_voice_preserving_simultaneous_translation":
-    raise RuntimeError("smoke used the wrong training receipt")
-if (
-    receipt["version"] != 3
-    or receipt["epochs"] != 5
-    or receipt["steps_per_epoch"] != 44_945
-    or receipt["total_steps"] != 224_725
-    or receipt["validation_every_steps"] != 9_000
-    or receipt["checkpoint_every_steps"] != 9_000
-    or receipt["best_metric"] != "teacher_forced_loss"
-):
-    raise RuntimeError("smoke changed the five-epoch horizon or cadence")
-if receipt["streams"]["transform"] is not None:
-    raise RuntimeError("smoke applied a post-source transform")
-expected_streams = {
-    "target_audio": {
-        "content": "cached_english_mimi",
-        "termination": "native_minus_one_mask",
-    },
-    "target_text": {
-        "content": "cached_ctc_timed_english",
-        "termination": "tokenizer_eos",
-    },
-    "source_audio": {
-        "content": "cached_vietnamese_mimi",
-        "termination": "explicit_card_eos",
-    },
-    "transform": None,
-}
-if receipt["streams"] != expected_streams:
-    raise RuntimeError("smoke changed the cached stream/EOS contract")
-if receipt["validation"] != {
-    "rows": 138,
-    "batch_size": 4,
-    "max_frames": 280,
-    "observed_max_frames": 277,
-    "shuffle": False,
-}:
-    raise RuntimeError("smoke changed the raw validation receipt")
-manifest_digest = hashlib.sha256((root / "sample_manifest.jsonl").read_bytes()).hexdigest()
-if manifest_digest != receipt["sample_manifest_sha256"]:
-    raise RuntimeError("smoke changed frozen training membership")
-if config["observed_train_max_frames"] != receipt["observed_max_frames"]:
-    raise RuntimeError("smoke training maximum differs from receipt")
-if max(int(item["max_frames"]) for item in logs) != receipt["observed_max_frames"]:
-    raise RuntimeError("smoke missed the longest raw training row")
-if any(int(item["samples"]) != 16 for item in logs):
-    raise RuntimeError("smoke did not use physical batch 16")
-
-val_logs = [
-    json.loads(line)
-    for line in (root / "val_log.jsonl").read_text().splitlines()
-    if line
-]
-if not val_logs or max(int(item["max_frames"]) for item in val_logs) != receipt["validation"]["observed_max_frames"]:
-    raise RuntimeError("smoke missed the longest non-shuffled validation row")
-if not (root / "model_step000011.safetensors").is_file() or not (
-    root / "trainer_step000011.pt"
-).is_file():
-    raise RuntimeError("save/resume smoke is incomplete")
-best = json.loads((root / "best.json").read_text())
-best_model = root / best["model"]
-if (
-    best["metric"] != "teacher_forced_loss"
-    or not best_model.is_file()
-    or float(best["validation_loss"])
-    != min(float(item["loss"]) for item in val_logs)
-):
-    raise RuntimeError("best-checkpoint promotion is invalid")
-
-rows = []
-with (root / "vram.csv").open(newline="", encoding="utf-8") as handle:
-    for row in csv.reader(handle):
-        if len(row) >= 3:
-            rows.append((float(row[1]), float(row[2])))
-if not rows:
-    raise RuntimeError("VRAM monitor produced no samples")
-peak_mib = max(row[0] for row in rows)
-total_mib = max(row[1] for row in rows)
-headroom_mib = total_mib - peak_mib
-if headroom_mib < 2048:
-    raise RuntimeError(f"smoke left only {headroom_mib / 1024:.1f} GiB VRAM headroom")
-print(f"Smoke passed: peak VRAM {peak_mib / 1024:.1f}/{total_mib / 1024:.1f} GiB")
-PY
-}
-
-smoke() {
-  preflight 190
-  require_empty_dir "$SMOKE_DIR"
-  common_args
-  nvidia-smi \
-    --query-gpu=timestamp,memory.used,memory.total \
-    --format=csv,noheader,nounits -l 1 > "$SMOKE_DIR/vram.csv" &
-  local monitor_pid=$!
-  trap 'stop_monitor "$monitor_pid"' INT TERM EXIT
-
-  set +e
-  (
-    set -Eeuo pipefail
-    "$PYTHON" -m training.finetune.train \
-      "${TRAIN_ARGS[@]}" \
-      --smoke-longest-first --max-steps 10 \
-      --val-every 10 --val-batches 1 \
-      --save-every 10 --keep-checkpoints 1 --log-every 1 \
-      --out-dir "$SMOKE_DIR"
-    cp "$SMOKE_DIR/run_config.json" "$SMOKE_DIR/run_config_step10.json"
-    "$PYTHON" -m training.finetune.train \
-      "${TRAIN_ARGS[@]}" \
-      --smoke-longest-first --max-steps 11 \
-      --val-every 10 --val-batches 1 \
-      --save-every 10 --keep-checkpoints 1 --log-every 1 \
-      --resume-checkpoint "$SMOKE_DIR/trainer_step000010.pt" \
-      --out-dir "$SMOKE_DIR"
-  )
-  local status=$?
-  set -e
-  stop_monitor "$monitor_pid"
-  trap - INT TERM EXIT
-  (( status == 0 )) || return "$status"
-
-  check_smoke_outputs
-  rm -f \
-    "$SMOKE_DIR/model_step000011.safetensors" \
-    "$SMOKE_DIR/trainer_step000011.pt" \
-    "$SMOKE_DIR"/best_step*.safetensors \
-    "$SMOKE_DIR/best.json"
-  {
-    echo "commit=$(git rev-parse HEAD)"
-    echo "batch_size=16"
-    echo "grad_accum_steps=1"
-    echo "completed_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$SMOKE_DIR/SMOKE_OK"
-  echo "SMOKE_OK: $SMOKE_DIR"
-}
-
-require_current_smoke() {
-  local marker="$SMOKE_DIR/SMOKE_OK"
-  [[ -f "$marker" ]] || die "run '$0 smoke' successfully first"
-  local smoke_commit
-  smoke_commit="$(sed -n 's/^commit=//p' "$marker")"
-  [[ "$smoke_commit" == "$(git rev-parse HEAD)" ]] || die "code changed after smoke"
+  echo "GPU=${GPU_GIB}GiB host=${HOST_GIB}GiB free_disk=${FREE_GIB}GiB"
 }
 
 run_with_sync() {
@@ -607,58 +272,54 @@ PY
 }
 
 train() {
+  [[ $# -ge 1 ]] \
+    || die "usage: $0 train RUN_NAME --cache-dir DIR... --val-cache-dir DIR [train args]"
+  local run_name="$1"
+  shift
+  [[ "$run_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "RUN_NAME may use only [A-Za-z0-9._-]"
   preflight 190
-  require_current_smoke
-  require_empty_dir "$RUN_DIR"
-  common_args
-  run_with_sync "$RUN_DIR" fresh "$PYTHON" -m training.finetune.train \
-    "${TRAIN_ARGS[@]}" \
-    --val-every 9000 --val-batches 0 \
-    --save-every 9000 --keep-checkpoints 2 --log-every 10 \
-    --out-dir "$RUN_DIR"
+  local run_dir="$RUNS_DIR/$run_name"
+  require_empty_dir "$run_dir"
+  export HIBIKI_HF_PREFIX="$run_name"
+  run_with_sync "$run_dir" fresh "$PYTHON" -m training.finetune.train \
+    --out-dir "$run_dir" "$@"
 }
 
 resume() {
-  [[ $# -eq 1 ]] || die "usage: $0 resume <trainer_stepNNNNNN.pt>"
+  [[ $# -ge 1 ]] \
+    || die "usage: $0 resume runs/RUN_NAME/trainer_stepNNNNNN.pt [the run's train args]"
   preflight 50
-  require_current_smoke
   [[ -f "$1" ]] || die "missing resume checkpoint: $1"
   local checkpoint
   checkpoint="$(realpath "$1")"
+  shift
   local out_dir
   out_dir="$(dirname "$checkpoint")"
-  [[ "$out_dir" == "$RUN_DIR" ]] || die "checkpoint is not in the direct full-run directory"
-  common_args
+  [[ "$(dirname "$out_dir")" == "$RUNS_DIR" ]] || die "checkpoint is not in a runs/ directory"
+  local run_name
+  run_name="$(basename "$out_dir")"
+  export HIBIKI_HF_PREFIX="$run_name"
   run_with_sync "$out_dir" resume "$PYTHON" -m training.finetune.train \
-    "${TRAIN_ARGS[@]}" \
-    --val-every 9000 --val-batches 0 \
-    --save-every 9000 --keep-checkpoints 2 --log-every 10 \
-    --resume-checkpoint "$checkpoint" \
-    --out-dir "$out_dir"
+    --resume-checkpoint "$checkpoint" --out-dir "$out_dir" "$@"
 }
 
-case "${1:-}" in
+command="${1:-}"
+[[ $# -eq 0 ]] || shift
+case "$command" in
   setup)
     setup
-    ;;
-  cache-grounded)
-    cache_grounded
     ;;
   preflight)
     preflight 190
     ;;
-  smoke)
-    smoke
-    ;;
   train)
-    train
+    train "$@"
     ;;
   resume)
-    shift
     resume "$@"
     ;;
   *)
-    echo "usage: $0 setup|cache-grounded|preflight|smoke|train|resume <trainer checkpoint>" >&2
+    echo "usage: $0 setup|preflight|train RUN_NAME ARGS...|resume CHECKPOINT ARGS..." >&2
     exit 1
     ;;
 esac

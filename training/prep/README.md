@@ -1,24 +1,31 @@
 # Training data preparation
 
-Run from the repository root with the environment from `./training/h100.sh setup`.
-Everything generated lands under the gitignored `data/`.
+Run from the repository root. Generated caches land under the gitignored `data/`.
 
-## FLEURS Vietnamese–English
+## English read-speech corpus (~10k hours)
+
+Common Voice Scripted Speech 27.0 English plus Libriheavy, written as parquet
+shards (original mono MP3/Opus bytes, cased text, speaker, duration). The Common
+Voice step needs `MDC_API_KEY` in `.env` and the dataset terms accepted on Mozilla
+Data Collective; the Libriheavy step needs `HF_TOKEN`.
 
 ```bash
-for split in train validation test; do
-  ./.venv/bin/python -m training.prep.download_fleurs_vi_en --split "$split"
-done
-./.venv/bin/python -m training.prep.build_pairs --splits train validation test
+python -m training.prep.build_en_speech cv          # download, verify, shard, delete archive
+python -m training.prep.build_en_speech libriheavy  # dev, small, medium, then large files to 10k train hours
+python -m training.prep.build_en_speech card        # write README.md with statistics
 ```
 
-This creates `data/fleurs_vi_en/<split>/`, then deterministic pair manifests under
-`data/pairs/`, including the `val128.jsonl` selection set.
+Output defaults to `/Volumes/data/datasets/en_speech`; its `README.md` documents the
+schema, selection and loading at 24 kHz. Never upload it: the Common Voice terms
+forbid re-sharing.
 
-## Grounded-v2 caches
+## Grounded caches
 
-`./training/h100.sh cache-grounded` streams PhoMT into `data/cache/phomt_grounded_v2/`
-(`cache_phomt_stream`) and caches the FLEURS train and validation pairs into
-`data/cache/{train,validation}_grounded_v2/` (`cache_codes`). Both CTC-time the English
-text with `text_timing`. `publish_grounded_cache` validates and uploads finished caches;
-restoring them on a pod is in [docs/finetune.md](../../docs/finetune.md).
+`training.prep.cache_codes` turns a pair file into SFT cache shards. Each row needs
+`id`, `split`, `vi_audio`, `en_audio`, `vi_duration_s`, `en_duration_s`, `text_vi`
+and `text_en`, with local audio paths. English text is word-timed by CTC alignment
+(`text_timing`), and rows that fail alignment are rejected.
+
+```bash
+./.venv/bin/python -m training.prep.cache_codes --pairs PAIRS.jsonl --out-dir data/cache/NAME
+```

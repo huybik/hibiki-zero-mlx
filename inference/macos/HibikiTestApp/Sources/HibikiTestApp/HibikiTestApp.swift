@@ -199,12 +199,6 @@ final class InferenceController: ObservableObject {
         if FileManager.default.fileExists(atPath: preferredModel.path) {
             modelURL = preferredModel
         }
-        let sample = repositoryRoot.appendingPathComponent(
-            "data/fleurs_vi_en/validation/vi/vi_01624.wav"
-        )
-        if FileManager.default.fileExists(atPath: sample.path) {
-            audioURL = sample
-        }
     }
 
     deinit {
