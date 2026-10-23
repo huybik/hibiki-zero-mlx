@@ -476,7 +476,7 @@ Pooled English read speech with cased, punctuated transcripts, prepared for Mimi
 
 | column | type | content |
 |---|---|---|
-| `id` | string | `cv27/<clip>` or `libriheavy/<Libri-Light path>/<speaker>/<book>/<segment>` |
+| `id` | string | `cv27/<clip>` or `libriheavy/<subset>/<speaker>/<book>/<recording>_<segment>` |
 | `audio` | struct{bytes, path} | original codec bytes; the `path` extension names the codec |
 | `text` | string | cased, punctuated transcript |
 | `speaker` | string | `cv27/<client_id>` or `libriheavy/<speaker_id>` |

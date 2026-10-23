@@ -9,15 +9,16 @@ Vietnamese clip where one exists:
   - PhoMT-en-vi-speech: TTS speech on both sides. Its rows are those of the grounded-v2
     cache in CACHE_REPO, which passed English CTC alignment, whose English clip lasts within
     en_speech's CLIP_SECONDS. Ids are the cache's, so cache rows map back. The PCM WAV is
-    stored as lossless FLAC, about a third of its size.
+    stored as lossless FLAC, about 40% of its size.
 
 Run from the repo root as `python -m training.prep.publish_en_vi_speech <step>` with HF_TOKEN
 exported. Steps:
   en_speech  one shard per non-empty en_speech shard, under the same name
-  phomt      one shard per PhoMT source file that keeps rows
+  phomt      one shard per PhoMT source file
   card       README.md with statistics read back from the repo
-Shards are written under --staging, committed to --repo COMMIT_FILES at a time, then deleted
-locally. Shards already in the repo are skipped, so rerun to resume.
+Shards are written under --staging and committed to --repo COMMIT_FILES at a time from a
+background thread, so building (PhoMT downloads) and uploading overlap, then deleted locally.
+Shards already in the repo are skipped, so rerun to resume.
 
 Every shard has one schema:
   data/{train,validation}/{cv27,libriheavy-*,phomt-*}.parquet
@@ -29,6 +30,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -36,6 +38,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TypeVar
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -44,15 +47,20 @@ import soundfile as sf
 from huggingface_hub import CommitOperationAdd, HfApi, HfFileSystem, hf_hub_download
 
 from training.prep.build_en_speech import CLIP_SECONDS, in_range, log, span
+from training.prep.translate_en_speech import exclusive
 
 REPO = "huybik/en-vi-speech"
 CACHE_REPO = "huybik/hibiki-zero-vi-full-sft"
 PAIRS = [f"grounded-v2/pairs_w{w}.jsonl" for w in range(5)]
 PHOMT = "anquachdev/PhoMT-en-vi-speech"
 PHOMT_REVISION = "33400f73dde07da539e8326313cbabe20b757740"  # the revision grounded-v2 was built from
-COMMIT_FILES = 25  # shards per commit: ~4-7 GB, so a few hundred commits in all
-COMMIT_RETRIES = 5  # a failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
+COMMIT_FILES = 25  # shards per commit: ~3-7 GB, so ~130 commits in all
+# Batches staged while a commit uploads, so PhoMT downloads keep going: at most ~70 GB for
+# en_speech and ~30 GB for PhoMT on disk.
+QUEUED_COMMITS = 8
+RETRIES = 5  # a failed build or commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
+T = TypeVar("T")
 
 AUDIO = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
 FEATURES = {
@@ -81,70 +89,85 @@ SCHEMA = pa.schema(
     metadata={"huggingface": json.dumps({"info": {"features": FEATURES}})},
 )
 # Audio bytes are already compressed; zstd only the other columns.
-COMPRESSION = {
-    c: "none" if c.endswith(".bytes") else "zstd"
-    for c in ("id", "en_audio.bytes", "en_audio.path", "text_en", "text_vi", "speaker", "en_duration_s",
-              "vi_audio.bytes", "vi_audio.path", "vi_duration_s", "cross_lingual_timbre_matched")
-}
+COMPRESSION = {c: "none" if c.endswith(".bytes") else "zstd" for c in SCHEMA.empty_table().flatten().column_names}
 
 Task = tuple[str, Callable[[], pa.Table]]  # repo path, builder of its rows
 
 
+def retried(what: str, fn: Callable[[], T]) -> T:
+    """fn(), retried with backoff: downloads and Hub commits fail mostly transiently. A permanent
+    error (auth, quota) surfaces after the last retry."""
+    for attempt in range(RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == RETRIES:
+                raise
+            wait = RETRY_WAIT * 2**attempt
+            log(f"{what} failed ({type(e).__name__}: {e}); retrying in {wait // 60} min")
+            time.sleep(wait)
+
+
 def publish(api: HfApi, repo: str, tasks: Iterator[Task], staging: Path, workers: int) -> None:
-    """Build the shards the repo lacks, `workers` at a time and in order, and commit them in batches."""
+    """Build the shards the repo lacks, `workers` at a time and in order, and commit them
+    COMMIT_FILES at a time from one background thread, up to QUEUED_COMMITS batches behind."""
     api.create_repo(repo, repo_type="dataset", exist_ok=True)
     present = set(api.list_repo_files(repo, repo_type="dataset"))
-    staging.mkdir(parents=True, exist_ok=True)
-    batch: list[tuple[str, Path]] = []
 
-    def build(name: str, rows: Callable[[], pa.Table]) -> Path | None:
-        t = rows()
-        if not t.num_rows:
-            log(f"skipped {name}: no rows")
-            return None
+    def build(name: str, rows: Callable[[], pa.Table]) -> Path:
         path = staging / name.replace("/", "__")
-        tmp = path.with_name(path.name + ".tmp")
-        pq.write_table(t, tmp, row_group_size=500, compression=COMPRESSION)
-        tmp.replace(path)
+        pq.write_table(retried(f"building {name}", rows), path, row_group_size=500, compression=COMPRESSION)
         return path
 
-    def commit() -> None:
+    def commit(batch: list[tuple[str, Path]]) -> None:
         ops = [CommitOperationAdd(name, path) for name, path in batch]
         message = f"Add {len(batch)} shards: {batch[0][0]} … {batch[-1][0]}"
-        for attempt in range(COMMIT_RETRIES + 1):
-            try:
-                api.create_commit(repo, ops, repo_type="dataset", commit_message=message)
-                break
-            except Exception as e:
-                if attempt == COMMIT_RETRIES:
-                    raise
-                wait = RETRY_WAIT * 2**attempt
-                log(f"commit failed ({type(e).__name__}: {e}); retrying in {wait // 60} min")
-                time.sleep(wait)
+        retried(f"commit of {batch[0][0]} …", lambda: api.create_commit(repo, ops, repo_type="dataset", commit_message=message))
         gb = sum(p.stat().st_size for _, p in batch) / 1e9
         for _, path in batch:
             path.unlink()
         log(f"committed {message} ({gb:.1f} GB)")
+
+    batch: list[tuple[str, Path]] = []
+    pending: deque = deque()
+    commits: deque = deque()
+
+    def queue_commit() -> None:
+        commits.append(committer.submit(commit, batch.copy()))
         batch.clear()
+        # Raise a failed commit at once; wait while too many batches are staged.
+        while commits and (commits[0].done() or len(commits) > QUEUED_COMMITS):
+            commits.popleft().result()
 
     def finish() -> None:
         name, future = pending.popleft()
-        if (path := future.result()) is not None:
-            batch.append((name, path))
+        batch.append((name, future.result()))
         if len(batch) == COMMIT_FILES:
-            commit()
+            queue_commit()
 
-    pending: deque = deque()
-    with ThreadPoolExecutor(workers) as ex:
-        for name, rows in tasks:
-            if name not in present:
-                pending.append((name, ex.submit(build, name, rows)))
-                if len(pending) > workers:
-                    finish()
-        while pending:
-            finish()
-    if batch:
-        commit()
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive(staging.with_suffix(".lock"), f"another run is publishing from {staging}"), \
+            ThreadPoolExecutor(workers) as builder, ThreadPoolExecutor(1) as committer:
+        # Staged shards are never reused: a killed run may leave partial or uncommitted ones.
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir()
+        try:
+            for name, rows in tasks:
+                if name not in present:
+                    pending.append((name, builder.submit(build, name, rows)))
+                    if len(pending) > workers:
+                        finish()
+            while pending:
+                finish()
+            if batch:
+                queue_commit()
+            while commits:
+                commits.popleft().result()
+        except BaseException:
+            # Don't wait out the retries of batches still queued behind a failure.
+            builder.shutdown(cancel_futures=True)
+            committer.shutdown(cancel_futures=True)
+            raise
 
 
 # ------------------------------------------------------------------ en_speech
@@ -167,14 +190,15 @@ def en_speech_tasks(src: Path, vi_text: Path) -> Iterator[Task]:
 
 def read_en_speech(path: Path, vi: dict[str, str]) -> pa.Table:
     t = pq.read_table(path)
-    text_vi = [vi.get(i) for i in t["id"].to_pylist()]
-    keep = pa.array([v is not None for v in text_vi])
-    t, n = t.filter(keep), sum(v is not None for v in text_vi)
+    text_vi = pa.array([vi.get(i) for i in t["id"].to_pylist()], pa.string())
+    keep = pc.is_valid(text_vi)
+    t, text_vi = t.filter(keep), text_vi.filter(keep)
+    n = t.num_rows
     columns = {
         "id": t["id"],
         "en_audio": t["audio"],
         "text_en": t["text"],
-        "text_vi": pa.array([v for v in text_vi if v is not None], pa.string()),
+        "text_vi": text_vi,
         "speaker": t["speaker"],
         "en_duration_s": t["duration"],
         "vi_audio": pa.nulls(n, AUDIO),
@@ -247,6 +271,7 @@ language:
 - en
 - vi
 license: other
+license_name: mixed-research-only
 task_categories:
 - translation
 - text-to-speech
@@ -277,7 +302,7 @@ The Mimi-code training caches built from it are in
 
 | column | type | content |
 |---|---|---|
-| `id` | string | `cv27/<clip>`, `libriheavy/<Libri-Light path>/<speaker>/<book>/<segment>` or `phomt_s<file>r<row>` |
+| `id` | string | `cv27/<clip>`, `libriheavy/<subset>/<speaker>/<book>/<recording>_<segment>` or `phomt_s<file>r<row>` |
 | `en_audio` | Audio | English clip; the `path` extension names the codec |
 | `text_en` | string | cased, punctuated English transcript |
 | `text_vi` | string | Vietnamese translation |
@@ -300,15 +325,17 @@ Every clip lasts {{CLIP}} in English, so most fit the 280-frame (12.5 Hz) traini
   sides, limited to rows whose English passed CTC alignment. Its 24 kHz English and 48 kHz
   Vietnamese 16-bit WAV is stored as FLAC, sample for sample. All rows are train.
 
-Decode with `soundfile` (`sf.read(io.BytesIO(row["en_audio"]["bytes"]))`) and resample to 24 kHz
-for Mimi, or with `datasets` (needs `torchcodec`):
+The audio columns hold codec bytes. Read raw rows with `pyarrow` and decode with `soundfile`
+(`sf.read(io.BytesIO(row["en_audio"]["bytes"]))`), resampling to 24 kHz for Mimi, or with
+`datasets` (needs `torchcodec`):
 `load_dataset("huybik/en-vi-speech", streaming=True).cast_column("en_audio", Audio(sampling_rate=24_000))`.
 
 ## Use
 
 For research only. Common Voice is CC0-1.0, distributed by the Mozilla Data Collective, whose
-terms forbid trying to identify its speakers. Libriheavy is Apache-2.0 over public-domain
-LibriVox recordings. PhoMT-en-vi-speech is Apache-2.0 on its card, over the PhoMT corpus.
+terms forbid re-hosting it and trying to identify its speakers. Libriheavy is Apache-2.0 over
+public-domain LibriVox recordings. PhoMT-en-vi-speech is Apache-2.0 on its card, over the PhoMT
+corpus.
 """
 
 

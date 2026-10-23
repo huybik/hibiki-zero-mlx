@@ -34,20 +34,29 @@ grounded-v2 pairs + PhoMT-en-vi-speech ──┘     data/{train,validation}/{cv
   file the cache numbered 304), and `cross_lingual_timbre_matched` comes from its pairs. Texts
   and durations come from `anquachdev/PhoMT-en-vi-speech` at `33400f7`.
 - PhoMT audio is 16-bit mono WAV (English 24 kHz, Vietnamese 48 kHz) re-encoded as FLAC (user's
-  choice): bit-identical on decode, ~22% of the WAV size, ~0.44 MB a row.
+  choice): bit-identical on decode, ~39% of the WAV size (English 47%, Vietnamese 36%),
+  ~0.45 MB a row.
 
 ## Publishing
 
 - Steps `en_speech`, `phomt` and `card`; commands are in
   [training/prep/README.md](../../training/prep/README.md). Export `HF_TOKEN` from `.env` first.
-- Shards are built `--workers` at a time under `--staging`
-  (`/Volumes/data/datasets/en_vi_speech_upload`), committed 25 to a commit, then deleted, so
-  the disk holds a few GB at once. A rerun skips shards already in the repo; a failed commit is
-  retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
+- The link measured ~37 MB/s each way (2026-10-23), so the run is network-bound: ~475 GB up
+  (~315 GB `en_speech`, ~165 GB PhoMT) and ~513 GB of whole PhoMT source files down, about
+  4 hours each. Kept rows are spread through every row group, so partial reads save nothing.
+- So the two steps run at once, and each commits from a background thread, 25 shards a
+  commit, up to 8 batches behind. Builds (PhoMT downloads) never wait on uploads, and staging
+  (`/Volumes/data/datasets/en_vi_speech_upload/<step>`) peaks at ~70 GB for `en_speech` and
+  ~30 GB for PhoMT.
+- A rerun skips shards already in the repo and empties the step's staging folder first; a lock
+  beside it stops a second run of the same step. A failed build or commit is retried after 1,
+  2, 4, 8 and 16 minutes, then stops the run.
 - `en_speech` first checks that every exported id is in the corpus, so a stale export stops it.
-- A PhoMT source file takes ~1 minute to download and convert (373 MB in, ~80 MB out). Files
-  with no 5–22.4 s rows are re-read on every run, as nothing marks them done.
+- A PhoMT source file takes ~1 minute to download and convert (373 MB in, ~120 MB out); every
+  file keeps rows.
 - `card` reads the statistics back from the repo, so run it last.
+- The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses
+  storage, commits fail after their retries and the run stops resumable.
 - Filling `vi_audio` later means rewriting the `en_speech` shards; keep their row groups so Xet
   deduplicates the unchanged English audio.
 

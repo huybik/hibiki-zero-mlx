@@ -31,8 +31,8 @@ inference/ (Apple Silicon, MLX)
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the `en_speech` corpus builder, its
   Vietnamese translation and the pair → grounded cache builder) and `finetune/` (the generic SFT
   trainer, evaluation and HF recovery sync). Its modules run from the repo root as
-  `python -m training.<package>.<module>`; everything except the corpus builder and the
-  translation runs on CUDA only.
+  `python -m training.<package>.<module>`; everything except the corpus builder, the
+  translation and the dataset publisher runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
@@ -59,7 +59,8 @@ inference/ (Apple Silicon, MLX)
 - Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`, the Gemini and
   OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
-- Apple Silicon runs inference, the `en_speech` corpus builder and its translation only; Mimi
+- Apple Silicon runs inference, the `en_speech` corpus builder, its translation and the dataset
+  publisher only; Mimi
   caching, training and evaluation run on CUDA → [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
