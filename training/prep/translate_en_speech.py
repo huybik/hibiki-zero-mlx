@@ -45,6 +45,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import signal
 import threading
 import time
@@ -62,6 +63,7 @@ from google.genai import types
 
 MODEL = "claude-sonnet-5-5"
 MAX_SECONDS = 280 / 12.5  # the trainer's 280-frame row cap at Mimi's 12.5 Hz; longer rows are dropped
+LETTER = re.compile(r"[^\W\d_]")  # a transcript without one ("." alone) has nothing to translate
 API_URL = "http://127.0.0.1:8787"
 API_TOKEN = Path.home() / ".local/share/claude-local-api/token"
 MAX_LINES = 200  # per batch, whatever its size
@@ -107,7 +109,7 @@ def build_texts(src: Path, out: Path) -> None:
     if (too_long := (rows.duration > MAX_SECONDS).sum()):
         raise SystemExit(f"{too_long:,} clips last over {MAX_SECONDS:.1f} s and can never become a training row; "
                          "drop them from the dataset first")
-    spoken = rows.text.str.contains(r"[^\W\d_]")  # has a letter; "." alone has nothing to translate
+    spoken = rows.text.map(lambda x: bool(LETTER.search(x)))
     log(f"{len(rows):,} rows; skipped {(~spoken).sum():,} without letters")
     rows = rows[spoken].copy()
     recording = rows.id.str.rsplit("_", n=1)

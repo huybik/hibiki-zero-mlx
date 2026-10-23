@@ -34,7 +34,6 @@ import fcntl
 import io
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -55,7 +54,7 @@ import pyarrow.parquet as pq  # noqa: E402
 import soundfile as sf  # noqa: E402
 from huggingface_hub import HfApi, hf_hub_download  # noqa: E402
 
-from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
+from training.prep.translate_en_speech import LETTER, MAX_SECONDS, exclusive, log  # noqa: E402
 
 REPO = "huybik/en-vi-speech"
 CACHE_REPO = "huybik/hibiki-zero-vi-full-sft"
@@ -67,7 +66,6 @@ SPLITS = ("train", "validation")
 RETRIES = 5  # a failed PhoMT file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
 UPLOAD_WORKERS = 4  # more only adds memory: the link (~37 MB/s) is the limit
-LETTER = re.compile(r"[^\W\d_]")  # as in translate_en_speech: a transcript without one has nothing to translate
 T = TypeVar("T")
 
 AUDIO = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
@@ -131,6 +129,8 @@ def lock(root: Path, step: str):
 
 def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
     if not src.exists():
+        if not any(p for p in root.glob("data/*/*.parquet") if not p.name.startswith("phomt-")):
+            raise SystemExit(f"{src} does not exist and no en_speech shard is in {root}")
         log(f"{src} is gone: en_speech is already moved")
         return
     if src.resolve().is_relative_to(root.resolve()) or root.resolve().is_relative_to(src.resolve()):
