@@ -63,9 +63,9 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
 ## Quality filters
 
 - Bandwidth uses HiFiTTS-2's estimate: the highest frequency whose Welch power is within 50 dB
-  of the peak. It is taken per recording, from the first 30 s of a Libriheavy chapter's kept
-  clips in one source file (clip id minus `_<segment>`), or from a whole CV clip. Single clips
-  of one chapter scatter ±1.5 kHz around the chapter estimate.
+  of the peak, 0 for silence. It is taken per recording: a Libriheavy chapter's first kept clips
+  in one source file (clip id minus `_<segment>`) totalling ≥30 s, or a whole CV clip. Single
+  clips of one chapter scatter ±1.5 kHz around the chapter estimate.
 - Recordings under 10.5 kHz are dropped. Mimi codes up to 12 kHz. CV's 32 kHz MP3s cut off at
   ~11 kHz (a spike at 10.7–11.3 kHz) that an 11 kHz floor would split. Before the filter,
   42% of CV train hours and 17% of Libriheavy's were under 10.5 kHz.

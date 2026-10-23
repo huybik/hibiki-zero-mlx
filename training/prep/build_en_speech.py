@@ -64,7 +64,7 @@ LARGE_FILE_HOURS = 3.7
 # Mimi codes audio up to 12 kHz. Just below the ~11 kHz lowpass of Common Voice's 32 kHz MP3s,
 # which pass whole.
 MIN_BANDWIDTH_HZ = 10_500
-BANDWIDTH_SECONDS = 30  # audio per recording the bandwidth is estimated from, as HiFiTTS-2 does
+BANDWIDTH_SECONDS = 30  # a recording's first clips totalling this much give its bandwidth, as HiFiTTS-2 does
 # Train hours kept per speaker, so a few prolific readers can't dominate. Libriheavy is too
 # concentrated in a few readers for a lower cap to reach the target hours.
 SPEAKER_HOURS = 30.0
@@ -114,7 +114,8 @@ def in_range(duration: pa.ChunkedArray, seconds: tuple[float, float]) -> pa.Chun
 
 def bandwidth(clips: Iterable[bytes]) -> float:
     """HiFiTTS-2's bandwidth estimate: the highest frequency whose mean power is within 50 dB
-    of the spectral peak, over the first BANDWIDTH_SECONDS of one recording's clips."""
+    of the spectral peak, over one recording's first clips totalling BANDWIDTH_SECONDS. Silence
+    has no peak, so it scores 0."""
     audio, rate = [], 0
     for data in clips:
         a, rate = sf.read(io.BytesIO(data), dtype="float32")
@@ -122,6 +123,8 @@ def bandwidth(clips: Iterable[bytes]) -> float:
         if sum(map(len, audio)) >= BANDWIDTH_SECONDS * rate:
             break
     f, power = welch(np.concatenate(audio), rate, nperseg=4096)
+    if not power.any():
+        return 0.0
     return float(f[np.flatnonzero(power >= power.max() * 1e-5)[-1]])
 
 
@@ -533,9 +536,9 @@ With Hugging Face `datasets` (needs `torchcodec`):
 - Both sources keep only clips of {{CLIP}}; longer clips can never fit the
   280-frame (12.5 Hz) training rows.
 - Every recording reaches {{BANDWIDTH}} of audio bandwidth: the highest frequency whose
-  mean power is within 50 dB of the spectral peak (HiFiTTS-2's estimate), over the
-  first {{BANDWIDTH_SECONDS}} s of a Libriheavy chapter's clips in one source file, or a whole
-  Common Voice clip.
+  mean power is within 50 dB of the spectral peak (HiFiTTS-2's estimate), over a
+  Libriheavy chapter's first clips in one source file, totalling {{BANDWIDTH_SECONDS}} s
+  or more, or a whole Common Voice clip.
 - Train keeps each speaker's clips, in build order, until the speaker holds
   {{SPEAKER_HOURS}} h, so a few prolific readers don't dominate.
 
@@ -552,7 +555,8 @@ def write_card(root: Path) -> None:
     rows = []
     for split in ("train", "validation"):
         for source in ("cv27", "libriheavy"):
-            shards = sorted((root / split).glob(f"{source}-*.parquet"))
+            # Files emptied by the filters keep a 0-row shard as a marker; they aren't counted.
+            shards = [p for p in sorted((root / split).glob(f"{source}-*.parquet")) if pq.read_metadata(p).num_rows]
             if not shards:
                 continue
             t = pa.concat_tables(pq.read_table(p, columns=["speaker", "duration"]) for p in shards)
