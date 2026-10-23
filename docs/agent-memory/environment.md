@@ -41,6 +41,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 ## Git
 
 - `origin` is `github.com/huybik/hibiki-zero-mlx`; `upstream` is `kyutai-labs/hibiki-zero`.
+- With no default repo set, `gh` prefers the `upstream` remote, so `gh pr` commands fail with
+  "Could not resolve to a PullRequest". This Mac's clone has `gh repo set-default
+  huybik/hibiki-zero-mlx` in its git config; a fresh clone needs it once, or pass
+  `-R huybik/hibiki-zero-mlx`.
 - Only the `huybik` GitHub account can push to `origin`. Other sessions may leave another
   account active, so push without switching it: `GH_TOKEN=$(gh auth token --user huybik) git -c
   credential.helper= -c credential.helper='!gh auth git-credential' push …`, and run `gh pr` the
