@@ -10,7 +10,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#con
 The user asked on 2026-10-23 for one research dataset of pair-row sources: English speech, its
 transcript and Vietnamese translation, with the Vietnamese speech to come. It is kept in full on
 the Mac, where it replaced the `en_speech` corpus folder, and published as `huybik/en-vi-speech`
-(user's choices). The voice-transfer TTS step will later fill the Vietnamese speech of its rows; `cache_codes` pair rows are then made from it
+(user's choices). The voice-transfer TTS step ([vi-tts](vi-tts.md)) writes the Vietnamese speech of its rows to a separate folder; `cache_codes` pair rows are then made from it
 ([sft-data-caches](sft-data-caches.md)).
 
 ## Contents
