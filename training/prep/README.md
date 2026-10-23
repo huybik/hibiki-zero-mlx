@@ -49,7 +49,7 @@ or to Muse Spark 1.3 Contributor through OpenRouter. Costs and rules are in
 python -m training.prep.translate_en_speech texts       # select every en_speech row; not during a prune
 set -a && . ./.env && set +a                            # the Gemini and OpenRouter keys
 python -m training.prep.translate_en_speech claim --key OPEN_ROUTER  # all untranslated Libriheavy; while translate is stopped
-nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER --concurrency 48 \
+nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER --concurrency 96 \
   >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &        # `kill` stops it cleanly; rerun to resume
 nohup caffeinate -i python -m training.prep.translate_en_speech translate \
   --profile claude-p --profile claude-l --profile claude-5x --profile default \

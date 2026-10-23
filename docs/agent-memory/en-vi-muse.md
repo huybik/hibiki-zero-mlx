@@ -50,9 +50,10 @@ On the Gemini test's 71 batches (2,843 Libriheavy lines, 560k characters):
   3.91/3.81. The Sonnet judge gave 3.97/3.84, 3.85/3.71, 3.87/3.62 and 3.70/3.54.
 - Muse `minimal` trails Sonnet in fluency by 0.37 ± 0.10 (Opus) and 0.22 ± 0.10 (Sonnet judge), with
   literal calques and stiff word choice; in adequacy it is within ~0.1 of Gemini.
-- In production at 48 calls it runs ~110 batches a minute for ~$0.69 per 1,000 batches. On the
-  final corpus, Muse had 1.66M lines (34,276 batches) left: ~5 h and ~$24, with $10.55 of
-  the key's $50 already spent.
+- Throughput is bound by latency (~25 s a call), not by rate limits: 48 calls run ~110 batches a
+  minute and 96 calls ~210, with no 429s, at ~$0.69 per 1,000 batches either way. On the final
+  corpus, Muse had 1.66M lines (34,276 batches) left: ~2.5 h at 96 calls and ~$24, with $10.55
+  of the key's $50 already spent.
 - OpenRouter's Batch API has no `:batch` variant of any Muse model (checked 2026-10-23), and the
   Contributor price is below most batch prices anyway, so Muse uses the synchronous API.
 
@@ -61,7 +62,7 @@ On the Gemini test's 71 batches (2,843 Libriheavy lines, 560k characters):
 - Load `.env` first (`set -a && . ./.env && set +a`). The `OPEN_ROUTER` key has a $50 credit
   limit, set on OpenRouter.
 - Run as `nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER
-  --concurrency 48 >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &`. `kill` lets
+  --concurrency 96 >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &`. `kill` lets
   in-flight batches finish; rerun to resume.
 - From an agent's shell, start it in a new session instead (Python `subprocess.Popen(...,
   start_new_session=True)`). A `nohup … &` start from a Claude Code Bash call was hard-killed
