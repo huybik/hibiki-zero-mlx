@@ -23,6 +23,7 @@ import argparse
 import io
 import os
 import random
+import signal
 import sys
 import time
 from collections import deque
@@ -214,12 +215,16 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=6, help="CPU processes enrolling and encoding")
     args = p.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))  # so a `kill` shuts the workers down too
     with exclusive(args.out / ".tts.lock", f"another TTS run is writing {args.out}"):
         todo = [s for s in shards(args.root) if not (args.out / s.parent.name / s.name).exists()][: args.shards]
         log(f"{len(todo)} shards to voice")
         synth = vieneu_mlx.Synthesizer()
         with ProcessPoolExecutor(args.workers, initializer=_start_worker) as pool:
-            Voicer(synth, pool, args.batch).run(todo, args.out)
+            try:
+                Voicer(synth, pool, args.batch).run(todo, args.out)
+            finally:
+                pool.shutdown(cancel_futures=True)  # without running the rows queued ahead
 
 
 if __name__ == "__main__":

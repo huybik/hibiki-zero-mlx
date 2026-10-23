@@ -24,11 +24,16 @@ UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices.
 - The reference is the row's own English clip, edge silence trimmed, first 8 s: it gives the
   x-vector (the speaker anchor added to every input) and the in-context reference codes.
   Upstream's denoiser is skipped: 3.6 CPU-seconds a clip, and no better voice match or CER.
-- Text is cut into upstream's chunks of at most 256 characters, joined with upstream's pauses.
-  Sampling, caps and retries are upstream's: temperature 0.8, top-k 25, top-p 0.95, repetition
-  penalty 1.2 over 64 frames; a chunk stops at EOS (kept) or `min(300, 24 + 2 x phoneme chars)`
-  frames; one under 0.25 frames a phoneme character is generated again, twice at most, keeping
-  the longest. Upstream's babble guard for chunks of a few syllables is not ported.
+- Text is cut into upstream's chunks of at most 256 characters (a longer single word stays one
+  chunk), joined with upstream's pauses. Sampling, caps and retries are upstream's:
+  temperature 0.8, top-k 25, top-p 0.95, repetition penalty 1.2 over 64 frames. A chunk stops
+  at EOS (kept) or at upstream's `max_expected_frames`, at most 300: `24 + 2 x phoneme chars`,
+  but 13 frames plus 5 a syllable for chunks of up to 4 syllables and 13 for a lone emotion
+  cue. One under 0.25 frames a phoneme character is generated again, twice at most, keeping the
+  longest. Upstream's babble guard for chunks of a few syllables is not ported.
+- A text with nothing speakable, or a chunk past the model's 1024 positions, stops the run, and
+  a rerun stops on it again. No row of the corpus does (checked 2026-10-24: the longest chunk
+  needs 704 positions).
 - Output: `--out/{split}/{shard}.parquet` per dataset shard with `id`, `vi_audio{bytes,path}`
   (48 kHz mono Ogg Opus, libopus complexity 3, ~32 kbps) and `vi_duration_s`. Vietnamese runs
   shorter than the English: 0.68x on Common Voice, 0.93x on Libriheavy validation.
@@ -94,8 +99,11 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
   libopus at complexity 3 encodes at 250x for the same size (log-mel distance 1.41 dB to the
   source, against 1.24 dB).
 - Footprint: the main process ~4–6 GB with its Metal buffers (`footprint -p`; `ps` RSS omits
-  them), the six workers ~0.5 GB each. At most 256 enrolled rows (1.5 MB of reference audio
-  each) and one dataset shard wait in memory.
+  them), the six workers ~0.5 GB each. Waiting in memory: the dataset shard being read, at most
+  256 enrolled rows (1.5 MB of reference audio each), one decode batch of float32 audio
+  (~126 MB) until it is encoded, and the Opus bytes of each shard not yet written.
+- `kill` (SIGTERM) exits through the pool's shutdown, so the workers stop too; queued rows are
+  dropped, and only unwritten shards are lost.
 
 ## Running
 

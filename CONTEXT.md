@@ -17,7 +17,7 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-training/  (CUDA, Linux H100; the EN-VI dataset is translated and published locally by prep/)
+training/  (CUDA, Linux H100; prep/ translates, voices and publishes the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
     ─► prep/publish_en_vi_speech upload ─► HF en-vi-speech
     ─► prep/tts_en_speech (VieNeu VI voices) ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
@@ -27,13 +27,13 @@ inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
 ```
 
-- `inference/` is the only Apple Silicon code: `main.py`, the `hibiki_mlx/` runtime, the
+- `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
   vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
-  Vietnamese translation of its English text and the pair → grounded cache builder) and `finetune/` (the generic SFT
-  trainer, evaluation and HF recovery sync). Its modules run from the repo root as
-  `python -m training.<package>.<module>`; everything except the translation and the dataset
-  publisher runs on CUDA only.
+  Vietnamese translation of its English text, the Vietnamese TTS in MLX and the pair → grounded
+  cache builder) and `finetune/` (the generic SFT trainer, evaluation and HF recovery sync). Its
+  modules run from the repo root as `python -m training.<package>.<module>`; everything except
+  the translation, the TTS and the dataset publisher runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).

@@ -36,7 +36,6 @@ CODEC_REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 SAMPLE_RATE = 48_000
 FRAME_SAMPLES = 3840  # one MOSS frame, 12.5 Hz
 REF_SECONDS = 8.0  # upstream trims references to this
-ENCODER_PAD_CODE = 455
 
 # Upstream's defaults (VieNeu.infer and V3TurboBatchEngine).
 TEMPERATURE = 0.8
@@ -350,6 +349,8 @@ class Synthesizer:
         )
         for module in self.codec.modules():
             if isinstance(module, MultiheadAttention):
+                if not (module.causal and module.use_rope and module.context % 2 == 0):
+                    raise ValueError("WindowedAttention needs causal RoPE attention over an even context")
                 module.__class__ = WindowedAttention
         # The encoder and decoder transformers run in fp16, the quantizer in fp32. Measured against
         # fp32 (2026-10-24): decoding 1.6x faster with audio 53 dB from fp32's (bf16: 35 dB), far
@@ -368,7 +369,9 @@ class Synthesizer:
             x = np.zeros((len(idx), 2, n[-1] * FRAME_SAMPLES), np.float32)  # the codec is stereo
             for j, i in enumerate(idx):
                 x[j, :, : len(refs[i])] = refs[i]
-            codes, _, _ = self.codec._encode_frame(mx.array(x, mx.float16), mx.array(n) * FRAME_SAMPLES)
+            codes, _, hidden = self.codec._encode_frame(mx.array(x, mx.float16), mx.array(n) * FRAME_SAMPLES)
+            if not mx.isfinite(hidden).all().item():
+                raise FloatingPointError("the fp16 codec encoder overflowed")
             codes = np.array(codes)
             for j, i in enumerate(idx):
                 out[i] = codes[:, j, : n[j]].T
@@ -413,10 +416,11 @@ class Synthesizer:
     def embed_rows(self, rows: mx.array, anchor: mx.array) -> mx.array:
         """(B, T, n_vq+1) prompt rows -> (B, T, H), audio pads contributing nothing."""
         x = self.model.text_embeddings(rows[..., 0])
-        codes = rows[..., 1:]
-        valid = codes != self.audio_pad
-        audio = self.audio_flat[mx.where(valid, codes, 0) + self.code_offsets] * valid[..., None].astype(x.dtype)
-        return x + audio.sum(axis=-2) + anchor[:, None, :]
+        for i in range(self.n_vq):  # one codebook at a time: (B, T, n_vq, H) would take 1.3 GB
+            codes = rows[..., 1 + i]
+            valid = codes != self.audio_pad
+            x = x + self.audio_table[i][mx.where(valid, codes, 0)] * valid[..., None].astype(x.dtype)
+        return x + anchor[:, None, :]
 
     def _frame(self, hidden, penalized):
         """One audio frame for every row: (codes (B, n_vq), eos (B,))."""
