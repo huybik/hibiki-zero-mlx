@@ -2,7 +2,7 @@
 
 Run from the repository root. Generated caches land under the gitignored `data/`.
 
-## English read-speech corpus (9,200 hours of 5–15 s clips)
+## English read-speech corpus (~10.5k hours)
 
 Common Voice Scripted Speech 27.0 English plus Libriheavy, written as parquet
 shards (original mono MP3/Opus bytes, cased text, speaker, duration). Only clips of
@@ -14,12 +14,12 @@ Collective; the Libriheavy step needs `HF_TOKEN`.
 
 ```bash
 python -m training.prep.build_en_speech cv          # download, verify, shard, delete archive
-python -m training.prep.build_en_speech libriheavy  # dev, medium, small, then large files' 5–15 s clips
+python -m training.prep.build_en_speech libriheavy  # dev, medium, small, then large files to --target-hours
 python -m training.prep.build_en_speech card        # write README.md with statistics
 ```
 
 The 9,200-hour default leaves room for the ~0.8k-hour PhoMT cache, restored as in the
-[pod guide](../../docs/finetune.md), so that training gets ~10k hours of 5–15 s clips.
+[pod guide](../../docs/finetune.md), so that training gets ~10k hours.
 
 Output defaults to `/Volumes/data/datasets/en_speech`; its `README.md` documents the
 schema, selection and loading at 24 kHz. Never upload it: the Common Voice terms
