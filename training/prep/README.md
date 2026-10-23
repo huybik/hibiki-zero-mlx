@@ -22,7 +22,7 @@ R=/Volumes/data/datasets/en_vi_speech && mkdir -p $R
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech >> $R/en_speech.log 2>&1 &
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech phomt --workers 3 >> $R/phomt.log 2>&1 &
 python -m training.prep.publish_en_vi_speech card       # README.md with statistics
-python -m training.prep.publish_en_vi_speech upload     # what the repo lacks; rerun after adding shards
+python -m training.prep.publish_en_vi_speech upload     # rerun after adding shards
 ```
 
 Every step resumes when run again.

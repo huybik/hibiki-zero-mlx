@@ -18,8 +18,8 @@ Steps:
              same name and deletes the original, then the emptied corpus folder
   phomt      downloads each PhoMT source file and writes its dataset shard
   card       README.md with statistics of the local dataset
-  upload     uploads what the repo lacks with upload_large_folder (export HF_TOKEN); rerun
-             it after adding shards
+  upload     uploads the shards and card with upload_large_folder (export HF_TOKEN), which skips
+             files it committed before; rerun it after adding shards
 Every step resumes when run again; a lock stops a second run of the same step.
 
 Every shard has one schema:
@@ -30,15 +30,17 @@ Every shard has one schema:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TypeVar
 
@@ -65,6 +67,7 @@ SPLITS = ("train", "validation")
 RETRIES = 5  # a failed PhoMT file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
 UPLOAD_WORKERS = 4  # more only adds memory: the link (~37 MB/s) is the limit
+LETTER = re.compile(r"[^\W\d_]")  # as in translate_en_speech: a transcript without one has nothing to translate
 T = TypeVar("T")
 
 AUDIO = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
@@ -97,14 +100,25 @@ SCHEMA = pa.schema(
 COMPRESSION = {c: "none" if c.endswith(".bytes") else "zstd" for c in SCHEMA.empty_table().flatten().column_names}
 
 
+def durable(path: Path) -> None:
+    """Flush a file or directory to the drive itself; on macOS fsync stops at the drive's cache."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+    finally:
+        os.close(fd)
+
+
 def write_shard(path: Path, t: pa.Table) -> None:
-    """Write, check by reading back, then rename: a shard under its name is always whole, and
-    the upload never picks up a `.tmp`."""
+    """Write, check by reading back, flush, then rename: a shard under its name is whole on the
+    drive before any original is deleted, and the upload never picks up a `.tmp`."""
     tmp = path.with_name(path.name + ".tmp")
     pq.write_table(t, tmp, row_group_size=500, compression=COMPRESSION)
     if not pq.read_table(tmp).equals(t):
         raise RuntimeError(f"{tmp} does not read back as written")
+    durable(tmp)
     tmp.replace(path)
+    durable(path.parent)
 
 
 def lock(root: Path, step: str):
@@ -116,6 +130,11 @@ def lock(root: Path, step: str):
 
 
 def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
+    if not src.exists():
+        log(f"{src} is gone: en_speech is already moved")
+        return
+    if src.resolve().is_relative_to(root.resolve()) or root.resolve().is_relative_to(src.resolve()):
+        raise SystemExit(f"--src {src} and --root {root} overlap")
     for split in SPLITS:
         export = pq.read_table(vi_text / f"{split}.parquet")
         vi = dict(zip(export["id"].to_pylist(), export["text_vi"].to_pylist()))
@@ -128,15 +147,15 @@ def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
             ids.update(pq.read_table(p, columns=["id"])["id"].to_pylist())
         if stray := len(vi.keys() - ids):
             raise RuntimeError(f"{split}: {stray:,} translated ids are in neither {src} nor {out}; "
-                               "rerun translate_en_speech texts and export")
+                               "the export does not match the corpus")
         log(f"{split}: {len(sources)} shards to move, {len(moved)} moved, {len(ids) - len(vi):,} rows without a translation")
 
         def move(p: Path) -> None:
-            dst = out / p.name
-            # An empty shard only marked a source file done for the corpus builder.
-            if not dst.exists() and pq.read_metadata(p).num_rows:
+            # An empty shard only marked a source file done for the corpus builder. A shard whose
+            # original survives is rebuilt, as a crash may have cut it off before the flush.
+            if pq.read_metadata(p).num_rows:
                 t = read_en_speech(p, vi)
-                write_shard(dst, t)
+                write_shard(out / p.name, t)
                 log(f"moved {split}/{p.name} ({t.num_rows} rows)")
             p.unlink()
 
@@ -151,6 +170,10 @@ def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
 def read_en_speech(path: Path, vi: dict[str, str]) -> pa.Table:
     t = pq.read_table(path)
     text_vi = pa.array([vi.get(i) for i in t["id"].to_pylist()], pa.string())
+    # Only transcripts without letters may lack a translation; anything else means the export is
+    # stale or partial, and dropping the row would delete its clip.
+    if lost := [x for x, v in zip(t["text"].to_pylist(), text_vi.to_pylist()) if v is None and LETTER.search(x)]:
+        raise RuntimeError(f"{path}: {len(lost)} transcripts have no translation, e.g. {lost[0]!r}")
     keep = pc.is_valid(text_vi)
     t, text_vi = t.filter(keep), text_vi.filter(keep)
     n = t.num_rows
@@ -195,6 +218,10 @@ def build_phomt(root: Path, workers: int) -> None:
                 picks.setdefault(src, []).append((int(row), p["id"], p["cross_lingual_timbre_matched"]))
     out = root / "data" / "train"
     out.mkdir(parents=True, exist_ok=True)
+    # Source files download here, outside `data/`; a killed run leaves them behind.
+    downloads = root / ".phomt-downloads"
+    shutil.rmtree(downloads, ignore_errors=True)
+    downloads.mkdir()
     todo = []
     for src, rows in picks.items():
         dst = out / f"phomt-{rows[0][1].removeprefix('phomt_').split('r')[0]}.parquet"
@@ -203,18 +230,23 @@ def build_phomt(root: Path, workers: int) -> None:
     log(f"PhoMT: {sum(map(len, picks.values())):,} cache rows in {len(picks)} source files, {len(todo)} to build")
 
     def build(dst: Path, src: str, rows: list[tuple[int, str, bool]]) -> None:
-        t = retried(f"reading {src}", lambda: read_phomt(src, rows))
+        t = retried(f"reading {src}", lambda: read_phomt(src, rows, downloads))
         write_shard(dst, t)
         log(f"wrote {dst.name}: {t.num_rows} of {len(rows)} cache rows")
 
     with ThreadPoolExecutor(workers) as ex:
-        for f in [ex.submit(build, *task) for task in sorted(todo)]:
-            f.result()
+        futures = [ex.submit(build, *task) for task in sorted(todo)]
+        try:
+            for f in as_completed(futures):
+                f.result()
+        except BaseException:
+            ex.shutdown(cancel_futures=True)  # stop now rather than after every other file
+            raise
     log("PhoMT done")
 
 
-def read_phomt(src: str, rows: list[tuple[int, str, bool]]) -> pa.Table:
-    with tempfile.TemporaryDirectory() as tmp:
+def read_phomt(src: str, rows: list[tuple[int, str, bool]], downloads: Path) -> pa.Table:
+    with tempfile.TemporaryDirectory(dir=downloads) as tmp:
         local = hf_hub_download(PHOMT, src, repo_type="dataset", revision=PHOMT_REVISION, local_dir=tmp)
         t = pq.read_table(local).take(pa.array([r for r, _, _ in rows]))
     keep = pc.and_(pc.greater_equal(t["duration_en_s"], CLIP_SECONDS[0]), pc.less_equal(t["duration_en_s"], CLIP_SECONDS[1]))
@@ -355,9 +387,9 @@ def write_card(root: Path) -> None:
         f"| {s} | {src} | {n} | {r:,} | {h:,.1f} | {vh:,.1f} | {spk:,} | {gb:.1f} |"
         for s, src, n, r, h, vh, spk, gb in rows
     )
-    (root / "README.md").write_text(
-        CARD.replace("{{STATS}}", table).replace("{{CLIP}}", f"{CLIP_SECONDS[0]:g}-{CLIP_SECONDS[1]:g} s")
-    )
+    tmp = root / "README.md.tmp"  # so a running upload never reads half a card
+    tmp.write_text(CARD.replace("{{STATS}}", table).replace("{{CLIP}}", f"{CLIP_SECONDS[0]:g}-{CLIP_SECONDS[1]:g} s"))
+    tmp.replace(root / "README.md")
     log(f"wrote {root / 'README.md'}:\n{table}")
 
 

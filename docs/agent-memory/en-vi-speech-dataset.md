@@ -45,12 +45,20 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
 - Steps `en_speech`, `phomt`, `card` and `upload`; commands are in
   [training/prep/README.md](../../training/prep/README.md). Each resumes when run again and holds
   a `.<step>.lock` in the dataset folder.
-- Every shard is written as `.tmp`, read back and compared, then renamed. `en_speech` deletes an
-  original shard only after its dataset shard exists, and removes the emptied corpus folder at
-  the end. It first checks that every exported id is in the corpus or already moved.
-- `upload` runs `upload_large_folder` on `data/*.parquet` and `README.md`. It keeps its
-  resume state in `.cache/huggingface/`, so run it again after adding shards; HF asks for one
-  upload process at a time.
+- Every shard is written as `.tmp`, read back and compared, flushed to the drive with
+  `F_FULLFSYNC` (plain fsync stops at the drive's cache), then renamed. Only then does
+  `en_speech` delete the original, so a power loss or USB drop can't lose a clip. An original
+  that survives a crash is converted again.
+- `en_speech` stops if a transcript with a letter has no translation, as dropping the row
+  would delete its clip; only the one `"."` row lacks one. It also checks that every exported id
+  is in the corpus or already moved. It removes the emptied corpus folder at the end. Run
+  `translate_en_speech texts` only after the move: before it, `texts` sees part of the corpus.
+- `upload` runs `upload_large_folder` on `data/*.parquet` and `README.md`. It lists the folder
+  once, so run it again after adding shards. It keeps its state in `.cache/huggingface/` and
+  never rechecks files it marked committed, so delete that folder after deleting anything on the
+  Hub. HF asks for one upload process at a time. Its workers retry a failing file forever
+  instead of stopping, so watch the log for `Failed to preupload` and `Failed to commit`.
+- `phomt` downloads into `.phomt-downloads/` in the dataset folder, emptied at startup.
 - The link measured ~37 MB/s each way (2026-10-23): ~480 GB up and ~513 GB of whole PhoMT
   source files down (kept rows are spread through every row group), about 4 hours each. So the
   `en_speech` move and upload run while `phomt` downloads, and `card` plus a final `upload`
@@ -65,7 +73,7 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
 - The first attempt (a custom commit loop, 6 downloads plus a 6 GB commit at once) stalled at
   ~1 MB/s under that memory pressure, so `phomt` runs 3 workers and `upload` 4.
 - The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses
-  storage, `upload` fails and can be rerun later.
+  storage, the upload log fills with failures rather than the run stopping.
 
 ## Cache repo
 
