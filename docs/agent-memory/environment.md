@@ -7,7 +7,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 ## Python
 
 - Local work uses the conda base interpreter `/opt/homebrew/Caskroom/miniconda/base/bin/python`
-  (Python 3.13), which has the inference and data dependencies installed. The macOS app
+  (Python 3.13), which has the inference and data dependencies installed, including `anthropic`
+  and `google-genai` for the translation. The macOS app
   hard-codes the same path.
 - Inference needs MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, and sounddevice for the
   microphone. Install with `pip install -e ./inference/moshi-mlx` then `pip install -e .`; both
@@ -17,8 +18,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 
 ## Secrets
 
-- The gitignored `.env` holds `HF_TOKEN` and `MDC_API_KEY`. Never print, log or commit their
-  values. Export them into a command's environment without echoing them.
+- The gitignored `.env` holds `HF_TOKEN`, `MDC_API_KEY`, the paid Gemini API keys
+  `GEMINI_API_KEY_1` and `GEMINI_API_KEY_2` (`GEMINI_API_KEY` is the same key as `_2`) and the
+  paid OpenRouter key `OPEN_ROUTER`. Never
+  print, log or commit their values. Export them into a command's environment without echoing
+  them.
 
 ## Storage
 
@@ -41,6 +45,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   "Could not resolve to a PullRequest". This Mac's clone has `gh repo set-default
   huybik/hibiki-zero-mlx` in its git config; a fresh clone needs it once, or pass
   `-R huybik/hibiki-zero-mlx`.
-- Only the `huybik` GitHub account can push to `origin`. If `gh` has another account active,
-  run `gh auth switch --user huybik` first.
+- Only the `huybik` GitHub account can push to `origin`. Other sessions may leave another
+  account active, so push without switching it: `GH_TOKEN=$(gh auth token --user huybik) git -c
+  credential.helper= -c credential.helper='!gh auth git-credential' push …`, and run `gh pr` the
+  same way under `GH_TOKEN`.
 - Commit messages carry no AI attribution and no `Co-Authored-By` lines.

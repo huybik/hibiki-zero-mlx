@@ -38,20 +38,31 @@ and `text_en`, with local audio paths. English text is word-timed by CTC alignme
 
 ## Vietnamese translations of `en_speech`
 
-Runs on the Mac with the conda Python and translates with Claude Sonnet 5.5 through the local
-Claude API; costs and rules are in
-[en-vi-translation](../../docs/agent-memory/en-vi-translation.md).
+Runs on the Mac with the conda Python. Claude Sonnet 5.5 translates through the local Claude API;
+the Libriheavy texts claimed for a paid key go to Gemini 3.8 Flash through the Gemini Batch API
+or to Muse Spark 1.3 Contributor through OpenRouter. Costs and rules are in
+[en-vi-translation](../../docs/agent-memory/en-vi-translation.md),
+[en-vi-gemini](../../docs/agent-memory/en-vi-gemini.md) and
+[en-vi-muse](../../docs/agent-memory/en-vi-muse.md).
 
 ```bash
-python -m training.prep.translate_en_speech texts --min-seconds 5 --max-seconds 15 --hours 1000  # select a tranche
+python -m training.prep.translate_en_speech texts       # select every en_speech row; not during a prune
+set -a && . ./.env && set +a                            # the Gemini and OpenRouter keys
+python -m training.prep.translate_en_speech claim --key OPEN_ROUTER  # all untranslated Libriheavy; while translate is stopped
+nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER --concurrency 96 \
+  >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &        # `kill` stops it cleanly; rerun to resume
 nohup caffeinate -i python -m training.prep.translate_en_speech translate \
-  --profile claude-p --profile claude-l --profile default \
+  --profile claude-p --profile claude-l --profile claude-5x --profile default \
   >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
 python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
 ```
 
-With the same duration range, a larger `--hours` extends the selection; translations already
-made are always kept.
+`claim --hours H` gives each key H more hours instead, from the end of the translation order,
+Libriheavy only; `gemini --key GEMINI_API_KEY_1 --key GEMINI_API_KEY_2` sends those keys' claims
+as Batch API jobs. `translate` skips every claimed text. Its `--concurrency` (default 8) sets how
+fast the accounts' quota drains. Rerunning `texts` after the corpus changes keeps every
+translation already made; a running `translate` reads the selection and the claims once, so start
+it again afterwards. Every run resumes when started again.
 
 Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
 Voice text.

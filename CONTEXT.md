@@ -43,14 +43,18 @@ inference/ (Apple Silicon, MLX)
   `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
   teacher-forced loss improves, but free-running translation fails.
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
-  the `en_speech` corpus is built and a first 1k-hour tranche is being translated to Vietnamese
-  ([en-vi-translation](docs/agent-memory/en-vi-translation.md)), but the TTS step that turns it
+  the `en_speech` corpus is built and its transcripts are being translated to Vietnamese:
+  the first tranche and all Common Voice on Claude
+  ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
+  2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
+  rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)), but the TTS step that turns it
   into Vietnamese-source pair rows is not, so there are no caches to train on yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
 
-- Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`) →
+- Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`, the Gemini and
+  OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
 - Never upload or re-share the Common Voice part of `en_speech` →
   [en-speech-corpus](docs/agent-memory/en-speech-corpus.md).
@@ -79,6 +83,8 @@ inference/ (Apple Silicon, MLX)
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
 | EN→VI transcript translation | [en-vi-translation](docs/agent-memory/en-vi-translation.md) | `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text` |
+| EN→VI translation on the Gemini Batch API, claims | [en-vi-gemini](docs/agent-memory/en-vi-gemini.md) | the `claim` and `gemini` steps of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/gemini` |
+| EN→VI translation on Muse through OpenRouter | [en-vi-muse](docs/agent-memory/en-vi-muse.md) | the `muse` step of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/muse` |
 
 ## Canonical resources
 
