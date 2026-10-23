@@ -4,8 +4,9 @@
 Roadmap phase 1 (docs/vi_en_parity_plan.md): every English clip gets a Vietnamese
 line that a TTS voice conditioned on the clip's speaker will read. Translation runs
 on Claude Sonnet 5.5 through the local Claude API (claude-sub-as-api), which spends
-Claude subscription quota, and on Gemini 3.8 Flash through the paid Gemini Batch API for
-the texts claimed for it. The steps keep tokens down:
+Claude subscription quota, and, for the Libriheavy texts claimed for them, on Gemini 3.8
+Flash through the paid Gemini Batch API or on Muse Spark 1.3 Contributor through the paid
+OpenRouter API. The steps keep tokens down:
   - The corpus holds only clips that fit the trainer's 280-frame cap (22.4 s), so
     every row is kept except transcripts without letters; `texts` stops if a
     longer clip is found.
@@ -24,13 +25,17 @@ Run from the repo root as `python -m training.prep.translate_en_speech <step>`. 
              their English text, to translations.jsonl and rejected output to
              rejects.jsonl; rerun to resume. Rejected lines are retried in smaller
              batches, then alone. When every --profile is out of quota it sleeps until
-             the earliest reset. Texts claimed for Gemini are skipped.
-  claim      gemini/claims.parquet: --hours of untranslated Libriheavy audio for each --key,
-             from the end of the translation order; run it while translate is stopped
+             the earliest reset. Claimed texts are skipped.
+  claim      claims.parquet: --hours more of untranslated Libriheavy audio for each --key, or
+             all of it, from the end of the translation order; run it while translate is
+             stopped
   gemini     sends each --key's claimed lines as a Batch API job, appends accepted batches
              to gemini/translations.jsonl and rejected output to gemini/rejects.jsonl, and
              resubmits rejected lines in smaller batches, then alone; lines that fail alone
              go back to translate. Rerun to resume
+  muse       translates the one --key's claimed lines as translate does, into
+             muse/translations.jsonl and muse/rejects.jsonl; lines that fail alone go back
+             to translate. Rerun to resume
   export     {train,validation}.parquet (id, text_vi) for each fully translated split,
              plus the plan's gate counts
 """
@@ -48,6 +53,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 from anthropic import Anthropic, APIConnectionError, InternalServerError, RateLimitError
@@ -68,6 +74,9 @@ SPLIT_ORDER = {"validation": 0, "train": 1}
 GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_POLL = 60  # seconds between checks on running batch jobs
 GEMINI_TIMEOUT = 600_000  # ms an HTTP read may stall before the call fails and is retried
+MUSE_MODEL = "meta/muse-spark-1.3-contributor"  # Meta trains on its input and output: Libriheavy only
+MUSE_URL = "https://openrouter.ai/api/v1/chat/completions"
+MUSE_TIMEOUT = 600  # seconds an HTTP read may stall before the call fails and is retried
 
 INSTRUCTIONS = """You translate English transcripts of read speech into Vietnamese. A Vietnamese text-to-speech voice will read each translated line as its own audio clip.
 
@@ -173,7 +182,7 @@ def numbered(lines: list[str]) -> str:
     return "\n".join(f"{i}|{line}" for i, line in enumerate(lines, 1))
 
 
-def call(client: Anthropic, profiles: Profiles, lines: list[str]) -> tuple[list[str] | None, str, Counter, str]:
+def call(client: Anthropic, profiles: Profiles, lines: list[str]) -> tuple[list[str] | None, str, Counter, dict]:
     failures = 0
     while True:
         profile = profiles.pick()
@@ -208,7 +217,7 @@ def call(client: Anthropic, profiles: Profiles, lines: list[str]) -> tuple[list[
     usage["calls"] = 1
     usage["thinking_calls"] = int(any(block.type == "thinking" for block in reply.content))
     vi = parse(text, len(lines)) if reply.stop_reason == "end_turn" else None
-    return vi, f"[{reply.stop_reason}]\n{text}", usage, profile
+    return vi, f"[{reply.stop_reason}]\n{text}", usage, {"profile": profile}
 
 
 def pack(keys: list[int], texts: list[str], budget: int):
@@ -258,11 +267,61 @@ def exclusive(path: Path, busy: str):
 
 
 def read_claims(out: Path) -> dict[str, str]:
-    path = out / "gemini" / "claims.parquet"
+    path = out / "claims.parquet"
     if not path.exists():
         return {}
     table = pq.read_table(path)
     return dict(zip(table.column("text").to_pylist(), table.column("key").to_pylist()))
+
+
+def rounds(texts: list[str], pending: list[int], call, stop: threading.Event, done: set[str], accepted, rejected,
+           batch_chars: int, concurrency: int) -> list[str]:
+    """Translate the pending lines in batches, their rejected lines in quarter-size batches, then alone.
+
+    `call(lines)` returns the Vietnamese lines or None, the raw reply, the usage and the accepted record's
+    other fields. Returns the lines that fail even alone.
+    """
+    lock, totals, budget = threading.Lock(), Counter(), batch_chars
+
+    def run(keys: list[int]) -> None:
+        lines = [texts[k] for k in keys]
+        vi, raw, usage, fields = call(lines)
+        with lock:
+            totals.update(usage)
+            totals["lines"] += len(lines)
+            if vi is None:
+                rejected.write(json.dumps({"en": lines, "raw": raw}, ensure_ascii=False) + "\n")
+                rejected.flush()
+                return
+            accepted.write(json.dumps({"en": lines, "vi": vi, **fields, "usage": usage}, ensure_ascii=False) + "\n")
+            accepted.flush()
+            done.update(lines)
+            totals["accepted"] += len(lines)
+
+    while pending:
+        batches = list(pack(pending, texts, budget))
+        log(f"{len(pending):,} lines pending: {len(batches):,} batches of up to {budget:,} characters")
+        start = time.time()
+        with ThreadPoolExecutor(concurrency) as pool:
+            try:
+                futures = [pool.submit(run, batch) for batch in batches]
+                for i, future in enumerate(as_completed(futures), 1):
+                    future.result()
+                    if i % 50 == 0 or i == len(futures):
+                        with lock:
+                            t = totals.copy()
+                        usage = ", ".join(f"{name} {t[name]:,}" for name in sorted(t) if name not in ("lines", "accepted"))
+                        log(f"{i:,}/{len(futures):,} batches, {t['accepted']:,}/{t['lines']:,} lines accepted, "
+                            f"{(time.time() - start) / 3600:.2f} h; {usage}")
+            except BaseException:
+                stop.set()
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
+        pending = [k for k in pending if texts[k] not in done]
+        if pending and budget == 0:
+            return [texts[k] for k in pending]
+        budget = budget // 4 if budget > 500 else 0  # retry rejected lines in smaller batches, then alone
+    return []
 
 
 def translate(out: Path, profile_names: list[str], batch_chars: int, concurrency: int) -> None:
@@ -273,76 +332,35 @@ def translate(out: Path, profile_names: list[str], batch_chars: int, concurrency
         done = translated(log_path)
         claimed = set(read_claims(out))  # read once: claims are only made while translate is stopped
         if claimed:
-            log(f"skipping {len(claimed):,} texts claimed for Gemini")
+            log(f"skipping {len(claimed):,} claimed texts")
         client = Anthropic(base_url=API_URL, api_key=API_TOKEN.read_text().strip(), max_retries=0, timeout=1800)
-        profiles, lock, totals = Profiles(profile_names), threading.Lock(), Counter()
+        profiles = Profiles(profile_names)
+        pending = [k for k, text in enumerate(texts) if text not in done and text not in claimed]
         with log_path.open("a") as accepted, (out / "rejects.jsonl").open("a") as rejected:
-
-            def run(keys: list[int]) -> None:
-                lines = [texts[k] for k in keys]
-                vi, raw, usage, profile = call(client, profiles, lines)
-                with lock:
-                    totals.update(usage)
-                    totals["lines"] += len(lines)
-                    if vi is None:
-                        rejected.write(json.dumps({"en": lines, "raw": raw}, ensure_ascii=False) + "\n")
-                        rejected.flush()
-                        return
-                    accepted.write(json.dumps({"en": lines, "vi": vi, "profile": profile, "usage": usage},
-                                              ensure_ascii=False) + "\n")
-                    accepted.flush()
-                    done.update(lines)
-                    totals["accepted"] += len(lines)
-
-            budget = batch_chars
-            while pending := [k for k in range(len(texts)) if texts[k] not in done and texts[k] not in claimed]:
-                batches = list(pack(pending, texts, budget))
-                log(f"{len(pending):,} lines pending: {len(batches):,} batches of up to {budget:,} characters")
-                start = time.time()
-                with ThreadPoolExecutor(concurrency) as pool:
-                    try:
-                        futures = [pool.submit(run, batch) for batch in batches]
-                        for i, future in enumerate(as_completed(futures), 1):
-                            future.result()
-                            if i % 50 == 0 or i == len(futures):
-                                with lock:
-                                    t = totals.copy()
-                                log(f"{i:,}/{len(futures):,} batches, {t['accepted']:,}/{t['lines']:,} lines accepted, "
-                                    f"{(time.time() - start) / 3600:.2f} h; tokens in {t['input_tokens']:,} "
-                                    f"cache-read {t['cache_read_input_tokens']:,} cache-write "
-                                    f"{t['cache_creation_input_tokens']:,} out {t['output_tokens']:,}; "
-                                    f"thinking in {t['thinking_calls']:,}/{t['calls']:,} calls")
-                    except BaseException:
-                        profiles.stop.set()
-                        pool.shutdown(wait=True, cancel_futures=True)
-                        raise
-                failed = sum(texts[k] not in done for k in pending)
-                if failed and budget == 0:
-                    raise SystemExit(f"{failed:,} lines fail even alone; see rejects.jsonl")
-                budget = budget // 4 if budget > 500 else 0  # retry rejected lines in smaller batches, then alone
-    log(f"all {len(texts):,} texts translated or claimed for Gemini")
+            failed = rounds(texts, pending, lambda lines: call(client, profiles, lines), profiles.stop, done,
+                            accepted, rejected, batch_chars, concurrency)
+        if failed:
+            raise SystemExit(f"{len(failed):,} lines fail even alone; see rejects.jsonl")
+    log(f"all {len(texts):,} texts translated or claimed")
 
 
 def write_claims(out: Path, claims: dict[str, str]) -> None:
-    path = out / "gemini" / "claims.parquet"
+    path = out / "claims.parquet"
     pq.write_table(pa.table({"text": list(claims), "key": list(claims.values())}), path.with_suffix(".tmp"))
     path.with_suffix(".tmp").replace(path)
 
 
-def claim(out: Path, keys: list[str], hours: float) -> None:
-    """Give each key `hours` of untranslated Libriheavy audio, walking back from the end of the translation order."""
+def claim(out: Path, keys: list[str], hours: float | None) -> None:
+    """Give each key `hours` more of untranslated Libriheavy audio, or all of it, from the end of the translation order."""
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
     rows = pq.read_table(out / "rows.parquet", columns=["id", "text", "duration"]).to_pandas()
     seconds = rows.groupby("text").duration.sum().to_dict()
-    common_voice = set(rows.text[rows.id.str.startswith("cv27/")])  # never sent to Google
-    (out / "gemini").mkdir(exist_ok=True)
+    common_voice = set(rows.text[rows.id.str.startswith("cv27/")])  # never sent to Google or Meta
     # translate reads the claims once at start, so it must not run while they change.
     with exclusive(out / "translate.lock", f"translate or export is using {out}; stop translate before claiming, "
                                            "and start it again afterwards so it skips the claimed texts"), \
-            exclusive(out / "gemini.lock", f"a gemini run is using {out}"):
+            exclusive(out / "claims.lock", f"a gemini or muse run is using {out}"):
         claims = read_claims(out)
-        if held := sorted(set(keys) & set(claims.values())):
-            raise SystemExit(f"{', '.join(held)} already hold claimed texts")
         done = translated(out / "translations.jsonl")
         free = (text for text in reversed(texts) if text not in done and text not in claims and text not in common_voice)
         for key in keys:
@@ -350,7 +368,7 @@ def claim(out: Path, keys: list[str], hours: float) -> None:
             for text in free:
                 claims[text] = key
                 total, count = total + seconds[text], count + 1
-                if total >= hours * 3600:
+                if hours is not None and total >= hours * 3600:
                     break
             if not count:
                 raise SystemExit(f"no untranslated Libriheavy text is left to claim for {key}")
@@ -489,8 +507,9 @@ class GeminiKey:
 
 def gemini(out: Path, keys: list[str], batch_chars: int) -> None:
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
-    with exclusive(out / "gemini.lock", f"another gemini run is using {out}"):
+    with exclusive(out / "claims.lock", f"a claim, gemini or muse run is using {out}"):
         claims = read_claims(out)
+        (out / "gemini").mkdir(exist_ok=True)
         if unclaimed := [key for key in keys if key not in set(claims.values())]:
             raise SystemExit(f"{', '.join(unclaimed)} hold no claimed texts; run the claim step first")
         log_path = out / "gemini" / "translations.jsonl"
@@ -502,13 +521,74 @@ def gemini(out: Path, keys: list[str], batch_chars: int) -> None:
                 time.sleep(GEMINI_POLL)
 
 
+def muse_call(client: httpx.Client, stop: threading.Event, key: str,
+              lines: list[str]) -> tuple[list[str] | None, str, Counter, dict]:
+    failures = 0
+    while True:
+        try:
+            response = client.post(MUSE_URL, json={
+                "model": MUSE_MODEL, "max_tokens": MAX_TOKENS, "reasoning": {"effort": "minimal"},  # cannot be off
+                "messages": [{"role": "system", "content": INSTRUCTIONS}, {"role": "user", "content": numbered(lines)}]})
+            if response.status_code in (200, 403):  # 403: moderation refused the input
+                break
+            if response.status_code not in (408, 429) and response.status_code < 500:
+                raise SystemExit(f"OpenRouter refused a call with HTTP {response.status_code}: {response.text[:500]}")
+            transient = f"HTTP {response.status_code}: {response.text[:300]}"
+        except httpx.TransportError as error:
+            transient = f"{type(error).__name__}: {error}"
+        failures += 1
+        if failures > TRANSIENT_RETRIES:
+            raise SystemExit(f"a Muse call failed {failures} times; last: {transient}")
+        wait = RETRY_WAIT * 2 ** (failures - 1)
+        log(f"{key}: {transient}; retry {failures} in {wait} s")
+        if stop.wait(wait):
+            raise Stopped
+    if response.status_code == 403:
+        return None, f"[HTTP 403] {response.text}", Counter(calls=1), {}
+    reply = response.json()
+    choice, meta = reply["choices"][0], reply["usage"]
+    usage = Counter(calls=1, input_tokens=meta["prompt_tokens"], output_tokens=meta["completion_tokens"],
+                    reasoning_tokens=(meta.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
+    text = choice["message"].get("content") or ""
+    error = f" {json.dumps(choice['error'])}" if "error" in choice else ""
+    vi = parse(text, len(lines)) if choice.get("finish_reason") == "stop" else None
+    return vi, f"[{choice.get('finish_reason')}{error}]\n{text}", usage, {"key": key}
+
+
+def muse(out: Path, key: str, batch_chars: int, concurrency: int) -> None:
+    texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
+    with exclusive(out / "claims.lock", f"a claim, gemini or muse run is using {out}"):
+        claims = read_claims(out)
+        if key not in set(claims.values()):
+            raise SystemExit(f"{key} holds no claimed texts; run the claim step first")
+        (out / "muse").mkdir(exist_ok=True)
+        log_path = out / "muse" / "translations.jsonl"
+        check_tail(log_path)
+        done = translated(log_path)
+        pending = [k for k, text in enumerate(texts) if claims.get(text) == key and text not in done]
+        client = httpx.Client(timeout=MUSE_TIMEOUT, limits=httpx.Limits(max_connections=concurrency),
+                              headers={"Authorization": f"Bearer {os.environ[key]}"})
+        stop = threading.Event()
+        with log_path.open("a") as accepted, (out / "muse" / "rejects.jsonl").open("a") as rejected:
+            failed = rounds(texts, pending, lambda lines: muse_call(client, stop, key, lines), stop, done,
+                            accepted, rejected, batch_chars, concurrency)
+        if failed:
+            for text in failed:
+                del claims[text]
+            write_claims(out, claims)
+            log(f"{len(failed):,} lines fail even alone; released them to translate, which takes them when "
+                "started again")
+    log(f"{key}: every claimed text is translated or released")
+
+
 def export(out: Path) -> None:
     texts = pq.read_table(out / "texts.parquet").to_pandas()
     vi = {}
-    # A running translate or gemini could be mid-write.
+    # A running translate, gemini or muse could be mid-write.
     with exclusive(out / "translate.lock", f"a translate run is using {out}"), \
-            exclusive(out / "gemini.lock", f"a gemini run is using {out}"):
-        for path in (out / "translations.jsonl", out / "gemini" / "translations.jsonl"):
+            exclusive(out / "claims.lock", f"a gemini or muse run is using {out}"):
+        for path in (out / "translations.jsonl", out / "gemini" / "translations.jsonl",
+                     out / "muse" / "translations.jsonl"):
             for batch in read_batches(path):
                 vi.update(zip(batch["en"], batch["vi"]))
     texts["text_vi"] = texts.text.map(vi)
@@ -532,17 +612,19 @@ def export(out: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("texts", "claim", "translate", "gemini", "export"))
+    p.add_argument("step", choices=("texts", "claim", "translate", "gemini", "muse", "export"))
     p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
     p.add_argument("--out", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--profile", action="append", default=[],
                    help="local API profile to spend, in order of use (repeatable; translate needs one)")
     p.add_argument("--key", action="append", default=[],
-                   help="environment variable holding a Gemini API key (claim, gemini; repeatable)")
-    p.add_argument("--hours", type=float, help="audio hours to claim for each --key (claim)")
+                   help="environment variable holding a Gemini or OpenRouter API key (claim, gemini, muse; "
+                        "repeatable, muse takes one)")
+    p.add_argument("--hours", type=float,
+                   help="audio hours to claim for each --key (claim); all untranslated Libriheavy when omitted")
     p.add_argument("--batch-chars", type=int, default=8_000, help="English characters per call")
     p.add_argument("--concurrency", type=int, default=8,
-                   help=f"calls in flight (translate), at most {SERVER_SLOTS}; quota drains in proportion")
+                   help=f"calls in flight (translate: at most {SERVER_SLOTS}, and quota drains in proportion; muse)")
     args = p.parse_args()
     if args.step == "texts":
         build_texts(args.src, args.out)
@@ -551,14 +633,14 @@ def main() -> None:
             p.error("translate needs --profile: name the subscriptions it may spend")
         if not 1 <= args.concurrency <= SERVER_SLOTS:
             p.error(f"--concurrency must be 1 to {SERVER_SLOTS}, the calls the local API runs at once")
-    elif args.step in ("claim", "gemini"):
+    elif args.step in ("claim", "gemini", "muse"):
         if not args.key:
             p.error(f"{args.step} needs --key: name the environment variables holding the API keys")
         if missing := [key for key in args.key if not os.environ.get(key)]:
             p.error(f"{', '.join(missing)} not set; load .env first")
-        if args.step == "claim" and not args.hours:
-            p.error("claim needs --hours")
-    if args.step in ("translate", "gemini"):
+        if args.step == "muse" and len(args.key) != 1:
+            p.error("muse takes one --key")
+    if args.step in ("translate", "gemini", "muse"):
         # A background run ignores SIGINT; let `kill` stop it as cleanly as Ctrl-C does.
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, signal.default_int_handler)
@@ -568,6 +650,8 @@ def main() -> None:
         translate(args.out, args.profile, args.batch_chars, args.concurrency)
     elif args.step == "gemini":
         gemini(args.out, args.key, args.batch_chars)
+    elif args.step == "muse":
+        muse(args.out, args.key[0], args.batch_chars, args.concurrency)
     elif args.step == "export":
         export(args.out)
 

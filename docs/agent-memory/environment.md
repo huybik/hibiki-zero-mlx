@@ -18,8 +18,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 
 ## Secrets
 
-- The gitignored `.env` holds `HF_TOKEN`, `MDC_API_KEY` and the paid Gemini API keys
-  `GEMINI_API_KEY_1` and `GEMINI_API_KEY_2` (`GEMINI_API_KEY` is the same key as `_2`). Never
+- The gitignored `.env` holds `HF_TOKEN`, `MDC_API_KEY`, the paid Gemini API keys
+  `GEMINI_API_KEY_1` and `GEMINI_API_KEY_2` (`GEMINI_API_KEY` is the same key as `_2`) and the
+  paid OpenRouter key `OPEN_ROUTER`. Never
   print, log or commit their values. Export them into a command's environment without echoing
   them.
 

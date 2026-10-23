@@ -23,16 +23,17 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
   comes first, then each Libriheavy recording in segment order, so a batch carries the
   neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap. The
   corpus builder writes shards by rename, so `texts` may read a snapshot of a build that only
-  adds shards, but not of a prune. A running `translate` reads the selection and the Gemini
-  claims once, so start it again after `texts` or a claim.
-- The selection on disk covers the final corpus: 4,005,744 texts (613M characters) in 4,171,008
-  rows.
+  adds shards, but not of a prune. A running `translate` reads the selection and the claims
+  once, so start it again after `texts` or a claim.
+- The selection on disk is the pruned corpus without the top-up's shards: 2,584,312 texts (405M
+  characters) in 2,674,298 rows.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
   (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
   rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on
-  the directory; `export` takes it and `gemini.lock`.
-- `translate` skips texts claimed for Gemini, which writes under `gemini/`
-  ([en-vi-gemini](en-vi-gemini.md)); `export` merges both engines' translations.
+  the directory; `export` takes it and `claims.lock`.
+- `translate` skips texts claimed for Gemini or Muse, which write under `gemini/` and `muse/`
+  ([en-vi-gemini](en-vi-gemini.md), [en-vi-muse](en-vi-muse.md)); `export` merges all three.
+  Sonnet translates the Common Voice text.
 - `export` writes `{split}.parquet` (`id`, `text_vi`) once every row of the split is translated,
   and removes it while not. It reports the plan's two gates (identical to the English, over
   twice its length) but drops nothing.
@@ -48,8 +49,6 @@ Measured with Sonnet 5.5:
   `default`'s, so their weeks hold ~64M and ~100M. At 8 calls (~600M a week) the weekly caps,
   not the windows, bound the run: every named account, `default` included, reaches its weekly
   cap each week until the corpus is done.
-- The whole corpus needs ~370M output tokens (~600M English characters), ~104M of them for
-  15–22.4 s clips.
 - Measured levers, as changes to total cost: one call per line +80%; no prompt cache for the
   687-token instructions +2.2% (they are ~0.3% of cost cached, so trimming them saves nothing);
   no output line numbers −2.1%, but merged or split lines would pass unnoticed; 16k-character
