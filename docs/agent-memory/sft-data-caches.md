@@ -34,8 +34,8 @@ data/cache/<name> ... ─► training.finetune.train --cache-dir (several), --va
 ## PhoMT cache
 
 - Pooled with the `en_speech` caches by passing it as one more `--cache-dir`. Its 804 hours of
-  English speech (~770 h of them 5–15 s clips) count toward the ~10k training hours of 5–15 s
-  clips, which is why `en_speech` stops at 9,200 hours of them (user's decision, 2026-10-22).
+  English speech (~770 h of them 5–15 s clips) count toward the ~10k training hours, which is
+  why `en_speech`'s `--target-hours` is 9,200 (user's decision, 2026-10-22).
 - It is the HF dataset `huybik/hibiki-zero-vi-full-sft` prefix `phomt-grounded-v2-5s/`: 1,377
   `shard_*.pt` (6.5 GB) holding 361,968 `train` rows, restored as in
   [docs/finetune.md](../finetune.md). The Mac copy is

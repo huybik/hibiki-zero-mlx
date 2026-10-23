@@ -15,7 +15,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 - The roadmap and GRPO plan still describe a PhoMT + FLEURS training mixture and validation.
   FLEURS and the PhoMT code are removed; the training pool is `en_speech`
   ([en-speech-corpus](en-speech-corpus.md)) plus the restored PhoMT cache
-  ([sft-data-caches](sft-data-caches.md#phomt-cache)), with no PhoMT holdout.
+  ([sft-data-caches](sft-data-caches.md#phomt-cache)), with no PhoMT holdout. Its list of
+  candidate English corpora is also outdated: the review of other corpora is in
+  [en-speech-corpus](en-speech-corpus.md#rules).
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
   ([sft-training](sft-training.md)).
 

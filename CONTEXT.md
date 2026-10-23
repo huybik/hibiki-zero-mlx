@@ -8,8 +8,7 @@ This repo runs Hibiki-Zero simultaneous speech translation:
 
 - MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE→EN, or staged BF16 checkpoints);
 - full-model Vietnamese→English voice-preserving SFT on one H100 on the 5–22.4 s clips of the
-  English read-speech corpus `en_speech` plus the ~0.8k-hour PhoMT cache, together ~10k hours of
-  5–15 s clips;
+  English read-speech corpus `en_speech` plus the ~0.8k-hour PhoMT cache, together ~11.3k hours;
 - the roadmap toward VI→EN parity with the upstream languages.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
@@ -103,6 +102,6 @@ CLAUDE.md (imports this file)
   note, added to the Topic Index.
 - Change this file only when orientation, an invariant or the index changes, and update
   `Last verified` when you do.
-- Keep this file under ~1,500 words and each note under ~1,000. Split a subject into a new note
+- Keep this file under ~1,500 words and each note under 300 lines. Split a subject into a new note
   before one grows past that.
 - Each note opens with `Read when touching …`, a link back here, and links to its sections.
