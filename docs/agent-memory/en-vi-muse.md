@@ -50,8 +50,11 @@ On the Gemini test's 71 batches (2,843 Libriheavy lines, 560k characters):
   3.91/3.81. The Sonnet judge gave 3.97/3.84, 3.85/3.71, 3.87/3.62 and 3.70/3.54.
 - Muse `minimal` trails Sonnet in fluency by 0.37 ± 0.10 (Opus) and 0.22 ± 0.10 (Sonnet judge), with
   literal calques and stiff word choice; in adequacy it is within ~0.1 of Gemini.
-- In production at 48 calls it runs ~94 batches a minute: the 1.59M Libriheavy lines left after
-  the prune (34,366 batches, 272M characters) take ~6 h for ~$24.
+- In production at 48 calls it runs ~110 batches a minute for ~$0.69 per 1,000 batches. On the
+  final corpus, Muse had 1.66M lines (34,276 batches) left: ~5 h and ~$24, with $10.55 of
+  the key's $50 already spent.
+- OpenRouter's Batch API has no `:batch` variant of any Muse model (checked 2026-10-23), and the
+  Contributor price is below most batch prices anyway, so Muse uses the synchronous API.
 
 ## Running
 

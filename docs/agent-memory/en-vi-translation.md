@@ -25,8 +25,9 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
   corpus builder writes shards by rename, so `texts` may read a snapshot of a build that only
   adds shards, but not of a prune. A running `translate` reads the selection and the claims
   once, so start it again after `texts` or a claim.
-- The selection on disk is the pruned corpus without the top-up's shards: 2,584,312 texts (405M
-  characters) in 2,674,298 rows.
+- The selection on disk is the final corpus (PR #25): 3,388,263 texts (526M characters) in
+  3,490,088 rows. Every Common Voice text in it is translated, so `translate` has nothing left
+  until Muse or Gemini release lines that fail alone.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
   (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
   rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on
@@ -71,6 +72,9 @@ Measured with Sonnet 5.5:
   rare (about 1 batch in 350): most break a translation across lines, and a few
   answer with a stray `echo skip` tool call. Rejected lines are retried in quarter-size batches
   down to ~500 characters, then alone; a line that still fails alone ends the run.
+- One Common Voice sentence did that: Sonnet returns `refusal` and an empty body for "Aqueous
+  cyclodextrin solutions can generate aerosols in particle size ranges suitable for pulmonary
+  deposition." Its clip was deleted from the corpus ([en-speech-corpus](en-speech-corpus.md)).
 - The gates mostly flag good output: on the validation texts, the 22 lines identical to the
   English are names, and the 17 over twice the source length translate very short lines.
 
