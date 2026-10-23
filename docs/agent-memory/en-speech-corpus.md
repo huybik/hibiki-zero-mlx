@@ -91,6 +91,10 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
   choice), and large files keep only their clips, as `/Volumes/data` has no room for whole
   files. The quality filters were applied the same way on 2026-10-23 (1.51M rows). Bringing
   deleted rows back means downloading them again.
+- Train clip `cv27/common_voice_en_20040849` (9.4 s) was deleted on 2026-10-23, and the same
+  sentence was removed from the translation selection. Sonnet returns an empty refusal for it,
+  which stops `translate` ([en-vi-translation](en-vi-translation.md)). Rebuilding Common Voice
+  from the archive would put the clip back.
 - No other corpus is mixed in (user's choice, 2026-10-23, wanting many speakers, good
   transcripts and clean recordings). The English audio is a generated target, so 16 kHz
   corpora (LibriSpeech, GigaSpeech, People's Speech, VoxPopuli, Loquacious Set) lack the
