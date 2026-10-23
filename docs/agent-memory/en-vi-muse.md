@@ -19,16 +19,21 @@ Voice row.
 ## The step
 
 - `claim --key OPEN_ROUTER` without `--hours` claims every untranslated Libriheavy text. Run it
-  again after `texts` picks up new shards; it adds the new texts.
+  again after `texts` picks up new shards; it adds the new texts, but not lines a paid engine
+  released, and it releases claimed texts that have gained a Common Voice row. `muse` and
+  `gemini` refuse to start while any claimed text has one.
 - `muse --key OPEN_ROUTER` sends the claimed lines to `meta/muse-spark-1.3-contributor` with
   `translate`'s prompt, `n|` format, batches and retry rounds, at `--concurrency` calls.
   Reasoning cannot be turned off, so `reasoning.effort` is `minimal`.
 - Accepted batches go to `muse/translations.jsonl` (`en`, `vi`, `key`, `usage` with input, output
   and reasoning tokens) and rejected output to `muse/rejects.jsonl`. Lines that fail alone are
-  released from the claims, so `translate` takes them when started again.
-- An HTTP 403 (OpenRouter's moderation) counts as a rejected batch. A 408, 429, 5xx or dropped
-  connection is retried after 1, 2, 4, 8 and 16 minutes, then stops the run. Any other error,
-  such as 402 when the key's credit limit is reached, stops it at once with OpenRouter's message.
+  released from the claims, so `translate` takes them when started again; if they are over 10%
+  of the key's lines, the run stops instead, since that is a systematic failure.
+- A moderation 403 (its error carries `metadata.reasons`) counts as a rejected batch. Any other
+  403 is a spent key or budget limit, and it stops the run at once with OpenRouter's message, as
+  every other client error does (402 is out of account credit). A 408, 429, 5xx, a 200 holding
+  only an error, or a dropped connection is retried after 1, 2, 4, 8 and 16 minutes, then stops
+  the run.
 - It holds `claims.lock`, as `claim` and `gemini` do, so only one of them runs at a time.
 
 ## Measurements

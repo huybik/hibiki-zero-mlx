@@ -73,7 +73,8 @@ The full 2 × 1,000-hour run (513,727 texts, 105M characters):
 
 - Load `.env` first (`set -a && . ./.env && set +a`). `--key` names the variables, and every
   record stores the name, never the value.
-- When the corpus changes: stop `translate`, run `texts`, then `claim`, then start `gemini` and
-  `translate`.
+- When the corpus changes: stop `translate`, run `texts`, then `claim --hours H` for the Gemini
+  keys (without `--hours` a key takes all remaining Libriheavy), then start `gemini` and
+  `translate`. `claim` refuses a key whose round is still in progress.
 - One process drives every key and checks its jobs each minute; `claims.lock` stops a second
   one, and a `claim` or `muse` run. `kill` it and run it again to resume.

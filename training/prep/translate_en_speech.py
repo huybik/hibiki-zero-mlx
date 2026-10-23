@@ -350,19 +350,42 @@ def write_claims(out: Path, claims: dict[str, str]) -> None:
     path.with_suffix(".tmp").replace(path)
 
 
+def common_voice(out: Path) -> set[str]:
+    """Texts with a Common Voice row, which never go to Google or Meta."""
+    rows = pq.read_table(out / "rows.parquet", columns=["id", "text"]).to_pandas()
+    return set(rows.text[rows.id.str.startswith("cv27/")])
+
+
+def check_claims(out: Path, claims: dict[str, str]) -> None:
+    """Stop a paid run if a corpus rebuild has given a claimed text a Common Voice row."""
+    if any(text in claims for text in common_voice(out)):
+        raise SystemExit("claimed texts now have a Common Voice row; run the claim step, which releases them")
+
+
 def claim(out: Path, keys: list[str], hours: float | None) -> None:
     """Give each key `hours` more of untranslated Libriheavy audio, or all of it, from the end of the translation order."""
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
-    rows = pq.read_table(out / "rows.parquet", columns=["id", "text", "duration"]).to_pandas()
-    seconds = rows.groupby("text").duration.sum().to_dict()
-    common_voice = set(rows.text[rows.id.str.startswith("cv27/")])  # never sent to Google or Meta
+    seconds = pq.read_table(out / "rows.parquet", columns=["text", "duration"]).to_pandas() \
+        .groupby("text").duration.sum().to_dict()
+    cv = common_voice(out)
     # translate reads the claims once at start, so it must not run while they change.
     with exclusive(out / "translate.lock", f"translate or export is using {out}; stop translate before claiming, "
                                            "and start it again afterwards so it skips the claimed texts"), \
             exclusive(out / "claims.lock", f"a gemini or muse run is using {out}"):
         claims = read_claims(out)
+        # A round's smaller budget would count newly claimed lines as rejected ones.
+        if busy := [key for key in keys if (out / "gemini" / f"{key}.job.json").exists()]:
+            raise SystemExit(f"{', '.join(busy)} have a gemini round in progress; let gemini finish first")
+        if moved := [text for text in claims if text in cv]:
+            for text in moved:
+                del claims[text]
+            log(f"released {len(moved):,} claimed texts that now have a Common Voice row")
         done = translated(out / "translations.jsonl")
-        free = (text for text in reversed(texts) if text not in done and text not in claims and text not in common_voice)
+        # Lines a paid engine released after they failed alone go to translate.
+        refused = {text for engine in ("gemini", "muse") for batch in read_batches(out / engine / "rejects.jsonl")
+                   for text in batch["en"]}
+        free = (text for text in reversed(texts)
+                if text not in done and text not in claims and text not in cv and text not in refused)
         for key in keys:
             total, count = 0.0, 0
             for text in free:
@@ -509,6 +532,7 @@ def gemini(out: Path, keys: list[str], batch_chars: int) -> None:
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
     with exclusive(out / "claims.lock", f"a claim, gemini or muse run is using {out}"):
         claims = read_claims(out)
+        check_claims(out, claims)
         (out / "gemini").mkdir(exist_ok=True)
         if unclaimed := [key for key in keys if key not in set(claims.values())]:
             raise SystemExit(f"{', '.join(unclaimed)} hold no claimed texts; run the claim step first")
@@ -529,13 +553,19 @@ def muse_call(client: httpx.Client, stop: threading.Event, key: str,
             response = client.post(MUSE_URL, json={
                 "model": MUSE_MODEL, "max_tokens": MAX_TOKENS, "reasoning": {"effort": "minimal"},  # cannot be off
                 "messages": [{"role": "system", "content": INSTRUCTIONS}, {"role": "user", "content": numbered(lines)}]})
-            if response.status_code in (200, 403):  # 403: moderation refused the input
-                break
-            if response.status_code not in (408, 429) and response.status_code < 500:
-                raise SystemExit(f"OpenRouter refused a call with HTTP {response.status_code}: {response.text[:500]}")
-            transient = f"HTTP {response.status_code}: {response.text[:300]}"
-        except httpx.TransportError as error:
+            reply = response.json()
+        except (httpx.TransportError, json.JSONDecodeError) as error:
             transient = f"{type(error).__name__}: {error}"
+        else:
+            error = reply.get("error") or {}  # a 200 may carry only an error, from the provider
+            if response.status_code == 200 and not error:
+                break
+            if response.status_code == 403 and (error.get("metadata") or {}).get("reasons"):
+                return None, f"[moderation] {json.dumps(error)}", Counter(calls=1), {}
+            # Other 403s are spent key or budget limits; they and other client errors stop the run.
+            if response.status_code not in (200, 408, 429) and response.status_code < 500:
+                raise SystemExit(f"OpenRouter refused a call with HTTP {response.status_code}: {response.text[:500]}")
+            transient = f"HTTP {response.status_code}: {json.dumps(error)[:300]}"
         failures += 1
         if failures > TRANSIENT_RETRIES:
             raise SystemExit(f"a Muse call failed {failures} times; last: {transient}")
@@ -543,9 +573,6 @@ def muse_call(client: httpx.Client, stop: threading.Event, key: str,
         log(f"{key}: {transient}; retry {failures} in {wait} s")
         if stop.wait(wait):
             raise Stopped
-    if response.status_code == 403:
-        return None, f"[HTTP 403] {response.text}", Counter(calls=1), {}
-    reply = response.json()
     choice, meta = reply["choices"][0], reply["usage"]
     usage = Counter(calls=1, input_tokens=meta["prompt_tokens"], output_tokens=meta["completion_tokens"],
                     reasoning_tokens=(meta.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
@@ -559,19 +586,24 @@ def muse(out: Path, key: str, batch_chars: int, concurrency: int) -> None:
     texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
     with exclusive(out / "claims.lock", f"a claim, gemini or muse run is using {out}"):
         claims = read_claims(out)
-        if key not in set(claims.values()):
+        check_claims(out, claims)
+        mine = [k for k, text in enumerate(texts) if claims.get(text) == key]
+        if not mine:
             raise SystemExit(f"{key} holds no claimed texts; run the claim step first")
         (out / "muse").mkdir(exist_ok=True)
         log_path = out / "muse" / "translations.jsonl"
         check_tail(log_path)
         done = translated(log_path)
-        pending = [k for k, text in enumerate(texts) if claims.get(text) == key and text not in done]
+        pending = [k for k in mine if texts[k] not in done]
         client = httpx.Client(timeout=MUSE_TIMEOUT, limits=httpx.Limits(max_connections=concurrency),
                               headers={"Authorization": f"Bearer {os.environ[key]}"})
         stop = threading.Event()
         with log_path.open("a") as accepted, (out / "muse" / "rejects.jsonl").open("a") as rejected:
             failed = rounds(texts, pending, lambda lines: muse_call(client, stop, key, lines), stop, done,
                             accepted, rejected, batch_chars, concurrency)
+        if len(failed) > len(mine) / 10:
+            raise SystemExit(f"{len(failed):,} of {len(mine):,} claimed lines fail even alone, a systematic "
+                             f"failure; see {out / 'muse' / 'rejects.jsonl'} before running again")
         if failed:
             for text in failed:
                 del claims[text]

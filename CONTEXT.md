@@ -45,7 +45,8 @@ inference/ (Apple Silicon, MLX)
   teacher-forced loss improves, but free-running translation fails.
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
   the `en_speech` corpus is built and its transcripts are being translated to Vietnamese:
-  Common Voice on Claude ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
+  the first tranche and all Common Voice on Claude
+  ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)), but the TTS step that turns it
   into Vietnamese-source pair rows is not, so there are no caches to train on yet.
