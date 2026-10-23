@@ -10,7 +10,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Output](#outpu
 
 Step 2 of phase 1 in [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md): each `en_speech`
 clip gets a Vietnamese line for voice-transfer TTS to read. Vietnamese is the model's source
-stream, so each line must stay aligned with its English audio. The TTS step is not built.
+stream, so each line must stay aligned with its English audio. The TTS step is [vi-tts](vi-tts.md).
 
 ## Output
 

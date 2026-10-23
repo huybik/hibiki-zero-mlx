@@ -17,23 +17,23 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-training/  (CUDA, Linux H100; the EN-VI dataset is translated and published locally by prep/)
+training/  (CUDA, Linux H100; prep/ translates, voices and publishes the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
     ─► prep/publish_en_vi_speech upload ─► HF en-vi-speech
-    ─► (VI TTS fills vi_audio: not built) ─► prep/cache_codes ─► data/cache
+    ─► prep/tts_en_speech (VI voices) ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
 ```
 
-- `inference/` is the only Apple Silicon code: `main.py`, the `hibiki_mlx/` runtime, the
+- `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
   vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
-  Vietnamese translation of its English text and the pair → grounded cache builder) and `finetune/` (the generic SFT
-  trainer, evaluation and HF recovery sync). Its modules run from the repo root as
-  `python -m training.<package>.<module>`; everything except the translation and the dataset
-  publisher runs on CUDA only.
+  Vietnamese translation of its English text, the Vietnamese TTS in MLX and the pair → grounded
+  cache builder) and `finetune/` (the generic SFT trainer, evaluation and HF recovery sync). Its
+  modules run from the repo root as `python -m training.<package>.<module>`; everything except
+  the translation, the TTS and the dataset publisher runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
@@ -51,8 +51,9 @@ inference/ (Apple Silicon, MLX)
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
   translations, in the local EN-VI dataset, which is being uploaded as
-  `huybik/en-vi-speech` ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). The TTS step that fills
-  their Vietnamese speech is not built, so there are no caches to train on yet.
+  `huybik/en-vi-speech` ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)).
+  VieNeu-TTS voices the Vietnamese lines on the Mac in each row's own English voice
+  ([vi-tts](docs/agent-memory/vi-tts.md)); no pair rows or caches are built from it yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -60,8 +61,9 @@ inference/ (Apple Silicon, MLX)
 - Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`, the Gemini and
   OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
-- Apple Silicon runs inference, the translation and the dataset publisher only; Mimi
-  caching, training and evaluation run on CUDA → [sft-training](docs/agent-memory/sft-training.md).
+- Apple Silicon runs inference, the translation, the Vietnamese TTS and the dataset publisher
+  only; Mimi caching, training and evaluation run on CUDA →
+  [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
@@ -87,6 +89,7 @@ inference/ (Apple Silicon, MLX)
 | EN→VI transcript translation | [en-vi-translation](docs/agent-memory/en-vi-translation.md) | `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text` |
 | EN→VI translation on the Gemini Batch API, claims | [en-vi-gemini](docs/agent-memory/en-vi-gemini.md) | the `claim` and `gemini` steps of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/gemini` |
 | EN→VI translation on Muse through OpenRouter | [en-vi-muse](docs/agent-memory/en-vi-muse.md) | the `muse` step of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/muse` |
+| Vietnamese voice-transfer TTS (VieNeu in MLX) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py`, `/Volumes/data/datasets/en_speech_vi_tts` |
 | EN-VI speech dataset, its upload and the cache repo | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`, `huybik/en-vi-speech`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
 
 ## Canonical resources

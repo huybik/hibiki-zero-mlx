@@ -9,8 +9,7 @@ holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus
 hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
 Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
 
-Their Vietnamese speech will come from TTS
-([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)). The `en_speech` step
+Their Vietnamese speech comes from the TTS step below. The `en_speech` step
 moved the finished corpus in, shard by shard. The builder that downloaded Common Voice and
 Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild.
 
@@ -24,6 +23,19 @@ nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload >> $R/up
 
 Every step may be stopped (Ctrl-C, `kill`) and resumes when run again; `upload` loses at most
 its unfinished commit (~4 GB).
+
+## Vietnamese speech of `en_speech` (TTS)
+
+Runs on the Mac with the conda Python: VieNeu-TTS v3 Turbo in MLX speaks each row's `text_vi` in
+the voice of its own English clip, into one Opus shard per dataset shard
+([vi-tts](../../docs/agent-memory/vi-tts.md)).
+
+```bash
+O=/Volumes/data/datasets/en_speech_vi_tts && mkdir -p $O
+nohup caffeinate -i python -m training.prep.tts_en_speech >> $O/tts.log 2>&1 &   # `kill` stops it; rerun to resume
+```
+
+`--shards N` stops after N shards. A stop loses only the shards not yet written.
 
 ## Grounded caches
 
