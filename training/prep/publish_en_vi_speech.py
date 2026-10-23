@@ -1,24 +1,26 @@
 #!/usr/bin/env python
-"""Publish the EN-VI speech dataset that SFT pair rows are cached from.
+"""Build the EN-VI speech dataset that SFT pair rows are cached from, and publish it.
 
 Each row holds an English clip with its transcript and Vietnamese translation, and the
 Vietnamese clip where one exists:
-  - en_speech (training/prep/build_en_speech.py) with the Vietnamese text exported by
-    training/prep/translate_en_speech.py. `vi_audio` stays empty until the voice-transfer
-    TTS step fills it. Rows without a translation (transcripts without letters) are left out.
-  - PhoMT-en-vi-speech: TTS speech on both sides. Its rows are those of the grounded-v2
-    cache in CACHE_REPO, which passed English CTC alignment, whose English clip lasts within
-    en_speech's CLIP_SECONDS. Ids are the cache's, so cache rows map back. The PCM WAV is
-    stored as lossless FLAC, about 40% of its size.
+  - en_speech: Common Voice 27 and Libriheavy read speech, with the Vietnamese text exported by
+    training/prep/translate_en_speech.py. `vi_audio` stays empty until the voice-transfer TTS
+    step fills it. Rows without a translation (transcripts without letters) are dropped.
+  - PhoMT-en-vi-speech: TTS speech on both sides. Its rows are those of the grounded-v2 cache
+    in CACHE_REPO, which passed English CTC alignment, whose English clip lasts CLIP_SECONDS.
+    Ids are the cache's, so cache rows map back. The PCM WAV is stored as lossless FLAC, about
+    40% of its size.
 
-Run from the repo root as `python -m training.prep.publish_en_vi_speech <step>` with HF_TOKEN
-exported. Steps:
-  en_speech  one shard per non-empty en_speech shard, under the same name
-  phomt      one shard per PhoMT source file
-  card       README.md with statistics read back from the repo
-Shards are written under --staging and committed to --repo COMMIT_FILES at a time from a
-background thread, so building (PhoMT downloads) and uploading overlap, then deleted locally.
-Shards already in the repo are skipped, so rerun to resume.
+--root, laid out as the Hugging Face repo, is the one local copy: the en_speech step moves the
+corpus into it. Run from the repo root as `python -m training.prep.publish_en_vi_speech <step>`.
+Steps:
+  en_speech  converts each shard of the en_speech corpus at --src into a dataset shard of the
+             same name and deletes the original, then the emptied corpus folder
+  phomt      downloads each PhoMT source file and writes its dataset shard
+  card       README.md with statistics of the local dataset
+  upload     uploads what the repo lacks with upload_large_folder (export HF_TOKEN); rerun
+             it after adding shards
+Every step resumes when run again; a lock stops a second run of the same step.
 
 Every shard has one schema:
   data/{train,validation}/{cv27,libriheavy-*,phomt-*}.parquet
@@ -34,8 +36,7 @@ import shutil
 import sys
 import tempfile
 import time
-from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
@@ -44,22 +45,20 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import soundfile as sf
-from huggingface_hub import CommitOperationAdd, HfApi, HfFileSystem, hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 
-from training.prep.build_en_speech import CLIP_SECONDS, in_range, log, span
-from training.prep.translate_en_speech import exclusive
+from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log
 
 REPO = "huybik/en-vi-speech"
 CACHE_REPO = "huybik/hibiki-zero-vi-full-sft"
 PAIRS = [f"grounded-v2/pairs_w{w}.jsonl" for w in range(5)]
 PHOMT = "anquachdev/PhoMT-en-vi-speech"
 PHOMT_REVISION = "33400f73dde07da539e8326313cbabe20b757740"  # the revision grounded-v2 was built from
-COMMIT_FILES = 25  # shards per commit: ~3-7 GB, so ~130 commits in all
-# Batches staged while a commit uploads, so PhoMT downloads keep going: at most ~70 GB for
-# en_speech and ~30 GB for PhoMT on disk.
-QUEUED_COMMITS = 8
-RETRIES = 5  # a failed build or commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
+CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
+SPLITS = ("train", "validation")
+RETRIES = 5  # a failed PhoMT file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
+UPLOAD_WORKERS = 4  # more only adds memory: the link (~37 MB/s) is the limit
 T = TypeVar("T")
 
 AUDIO = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
@@ -91,101 +90,56 @@ SCHEMA = pa.schema(
 # Audio bytes are already compressed; zstd only the other columns.
 COMPRESSION = {c: "none" if c.endswith(".bytes") else "zstd" for c in SCHEMA.empty_table().flatten().column_names}
 
-Task = tuple[str, Callable[[], pa.Table]]  # repo path, builder of its rows
+
+def write_shard(path: Path, t: pa.Table) -> None:
+    """Write, check by reading back, then rename: a shard under its name is always whole, and
+    the upload never picks up a `.tmp`."""
+    tmp = path.with_name(path.name + ".tmp")
+    pq.write_table(t, tmp, row_group_size=500, compression=COMPRESSION)
+    if not pq.read_table(tmp).equals(t):
+        raise RuntimeError(f"{tmp} does not read back as written")
+    tmp.replace(path)
 
 
-def retried(what: str, fn: Callable[[], T]) -> T:
-    """fn(), retried with backoff: downloads and Hub commits fail mostly transiently. A permanent
-    error (auth, quota) surfaces after the last retry."""
-    for attempt in range(RETRIES + 1):
-        try:
-            return fn()
-        except Exception as e:
-            if attempt == RETRIES:
-                raise
-            wait = RETRY_WAIT * 2**attempt
-            log(f"{what} failed ({type(e).__name__}: {e}); retrying in {wait // 60} min")
-            time.sleep(wait)
-
-
-def publish(api: HfApi, repo: str, tasks: Iterator[Task], staging: Path, workers: int) -> None:
-    """Build the shards the repo lacks, `workers` at a time and in order, and commit them
-    COMMIT_FILES at a time from one background thread, up to QUEUED_COMMITS batches behind."""
-    api.create_repo(repo, repo_type="dataset", exist_ok=True)
-    present = set(api.list_repo_files(repo, repo_type="dataset"))
-
-    def build(name: str, rows: Callable[[], pa.Table]) -> Path:
-        path = staging / name.replace("/", "__")
-        pq.write_table(retried(f"building {name}", rows), path, row_group_size=500, compression=COMPRESSION)
-        return path
-
-    def commit(batch: list[tuple[str, Path]]) -> None:
-        ops = [CommitOperationAdd(name, path) for name, path in batch]
-        message = f"Add {len(batch)} shards: {batch[0][0]} … {batch[-1][0]}"
-        retried(f"commit of {batch[0][0]} …", lambda: api.create_commit(repo, ops, repo_type="dataset", commit_message=message))
-        gb = sum(p.stat().st_size for _, p in batch) / 1e9
-        for _, path in batch:
-            path.unlink()
-        log(f"committed {message} ({gb:.1f} GB)")
-
-    batch: list[tuple[str, Path]] = []
-    pending: deque = deque()
-    commits: deque = deque()
-
-    def queue_commit() -> None:
-        commits.append(committer.submit(commit, batch.copy()))
-        batch.clear()
-        # Raise a failed commit at once; wait while too many batches are staged.
-        while commits and (commits[0].done() or len(commits) > QUEUED_COMMITS):
-            commits.popleft().result()
-
-    def finish() -> None:
-        name, future = pending.popleft()
-        batch.append((name, future.result()))
-        if len(batch) == COMMIT_FILES:
-            queue_commit()
-
-    staging.parent.mkdir(parents=True, exist_ok=True)
-    with exclusive(staging.with_suffix(".lock"), f"another run is publishing from {staging}"), \
-            ThreadPoolExecutor(workers) as builder, ThreadPoolExecutor(1) as committer:
-        # Staged shards are never reused: a killed run may leave partial or uncommitted ones.
-        shutil.rmtree(staging, ignore_errors=True)
-        staging.mkdir()
-        try:
-            for name, rows in tasks:
-                if name not in present:
-                    pending.append((name, builder.submit(build, name, rows)))
-                    if len(pending) > workers:
-                        finish()
-            while pending:
-                finish()
-            if batch:
-                queue_commit()
-            while commits:
-                commits.popleft().result()
-        except BaseException:
-            # Don't wait out the retries of batches still queued behind a failure.
-            builder.shutdown(cancel_futures=True)
-            committer.shutdown(cancel_futures=True)
-            raise
+def lock(root: Path, step: str):
+    root.mkdir(parents=True, exist_ok=True)
+    return exclusive(root / f".{step}.lock", f"another {step} run is using {root}")
 
 
 # ------------------------------------------------------------------ en_speech
 
 
-def en_speech_tasks(src: Path, vi_text: Path) -> Iterator[Task]:
-    for split in ("train", "validation"):
+def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
+    for split in SPLITS:
         export = pq.read_table(vi_text / f"{split}.parquet")
         vi = dict(zip(export["id"].to_pylist(), export["text_vi"].to_pylist()))
-        shards = [p for p in sorted((src / split).glob("*.parquet")) if pq.read_metadata(p).num_rows]
+        out = root / "data" / split
+        out.mkdir(parents=True, exist_ok=True)
+        sources = sorted((src / split).glob("*.parquet"))
+        moved = [p for p in out.glob("*.parquet") if not p.name.startswith("phomt-")]
         ids = set()
-        for p in shards:
+        for p in sources + moved:
             ids.update(pq.read_table(p, columns=["id"])["id"].to_pylist())
         if stray := len(vi.keys() - ids):
-            raise RuntimeError(f"{split}: {stray:,} translated ids are not in {src}; rerun translate_en_speech texts and export")
-        log(f"{split}: {len(shards)} shards, {len(ids):,} rows, {len(ids) - len(vi):,} without a translation")
-        for p in shards:
-            yield f"data/{split}/{p.name}", lambda p=p, vi=vi: read_en_speech(p, vi)
+            raise RuntimeError(f"{split}: {stray:,} translated ids are in neither {src} nor {out}; "
+                               "rerun translate_en_speech texts and export")
+        log(f"{split}: {len(sources)} shards to move, {len(moved)} moved, {len(ids) - len(vi):,} rows without a translation")
+
+        def move(p: Path) -> None:
+            dst = out / p.name
+            # An empty shard only marked a source file done for the corpus builder.
+            if not dst.exists() and pq.read_metadata(p).num_rows:
+                t = read_en_speech(p, vi)
+                write_shard(dst, t)
+                log(f"moved {split}/{p.name} ({t.num_rows} rows)")
+            p.unlink()
+
+        with ThreadPoolExecutor(workers) as ex:
+            list(ex.map(move, sources))
+    if left := list(src.rglob("*.parquet")):
+        raise RuntimeError(f"{len(left)} shards outside the splits are left in {src}, e.g. {left[0]}")
+    shutil.rmtree(src)  # the corpus card and Finder files
+    log(f"en_speech moved into {root}; {src} removed")
 
 
 def read_en_speech(path: Path, vi: dict[str, str]) -> pa.Table:
@@ -211,9 +165,21 @@ def read_en_speech(path: Path, vi: dict[str, str]) -> pa.Table:
 # ---------------------------------------------------------------------- PhoMT
 
 
-def phomt_tasks(staging: Path) -> Iterator[Task]:
-    """One task per PhoMT source file, in cache id order: phomt_s00304r00012 is row 12 of the
-    file the cache numbered 304."""
+def retried(what: str, fn: Callable[[], T]) -> T:
+    for attempt in range(RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == RETRIES:
+                raise
+            wait = RETRY_WAIT * 2**attempt
+            log(f"{what} failed ({type(e).__name__}: {e}); retrying in {wait // 60} min")
+            time.sleep(wait)
+
+
+def build_phomt(root: Path, workers: int) -> None:
+    """One shard per PhoMT source file, named by the cache's file number: phomt_s00304r00012 is
+    row 12 of the file the cache numbered 304."""
     picks: dict[str, list[tuple[int, str, bool]]] = {}
     for name in PAIRS:
         with open(hf_hub_download(CACHE_REPO, name, repo_type="dataset")) as f:
@@ -221,21 +187,34 @@ def phomt_tasks(staging: Path) -> Iterator[Task]:
                 p = json.loads(line)
                 src, row = p["en_audio"].removeprefix(f"hf://{PHOMT}/").split("#r")
                 picks.setdefault(src, []).append((int(row), p["id"], p["cross_lingual_timbre_matched"]))
-    log(f"PhoMT: {sum(map(len, picks.values())):,} cache rows in {len(picks)} source files")
-    for src, rows in sorted(picks.items(), key=lambda kv: kv[1][0][1]):
-        number = rows[0][1].removeprefix("phomt_").split("r")[0]
-        yield f"data/train/phomt-{number}.parquet", lambda src=src, rows=rows: read_phomt(src, rows, staging)
+    out = root / "data" / "train"
+    out.mkdir(parents=True, exist_ok=True)
+    todo = []
+    for src, rows in picks.items():
+        dst = out / f"phomt-{rows[0][1].removeprefix('phomt_').split('r')[0]}.parquet"
+        if not dst.exists():
+            todo.append((dst, src, rows))
+    log(f"PhoMT: {sum(map(len, picks.values())):,} cache rows in {len(picks)} source files, {len(todo)} to build")
+
+    def build(dst: Path, src: str, rows: list[tuple[int, str, bool]]) -> None:
+        t = retried(f"reading {src}", lambda: read_phomt(src, rows))
+        write_shard(dst, t)
+        log(f"wrote {dst.name}: {t.num_rows} of {len(rows)} cache rows")
+
+    with ThreadPoolExecutor(workers) as ex:
+        for f in [ex.submit(build, *task) for task in sorted(todo)]:
+            f.result()
+    log("PhoMT done")
 
 
-def read_phomt(src: str, rows: list[tuple[int, str, bool]], staging: Path) -> pa.Table:
-    with tempfile.TemporaryDirectory(dir=staging) as tmp:
+def read_phomt(src: str, rows: list[tuple[int, str, bool]]) -> pa.Table:
+    with tempfile.TemporaryDirectory() as tmp:
         local = hf_hub_download(PHOMT, src, repo_type="dataset", revision=PHOMT_REVISION, local_dir=tmp)
         t = pq.read_table(local).take(pa.array([r for r, _, _ in rows]))
-    keep = in_range(t["duration_en_s"], CLIP_SECONDS)
+    keep = pc.and_(pc.greater_equal(t["duration_en_s"], CLIP_SECONDS[0]), pc.less_equal(t["duration_en_s"], CLIP_SECONDS[1]))
     t = t.append_column("id", pa.array([i for _, i, _ in rows])).append_column(
         "timbre", pa.array([m for _, _, m in rows], pa.bool_())
     ).filter(keep)
-    log(f"read {src}: {len(rows)} cache rows, {t.num_rows} of {span(CLIP_SECONDS)}")
     columns = {
         "id": t["id"],
         "en_audio": flac(t["audio_en"]),
@@ -314,16 +293,23 @@ The Mimi-code training caches built from it are in
 
 ## Sources
 
-Every clip lasts {{CLIP}} in English, so most fit the 280-frame (12.5 Hz) training rows.
+Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training rows.
 
-- Common Voice 27.0 English and Libriheavy: the `en_speech` corpus, read speech whose
-  recordings reach 10.5 kHz of audio bandwidth, at most 30 h per train speaker. Common Voice
-  dev and Libriheavy dev are the validation split. Audio is each source's original codec
-  (MP3, 48 kHz Ogg Opus). The English text was translated by Claude Sonnet 5.5, Gemini 3.8
-  Flash and Muse Spark 1.3, in batches of neighbouring lines.
-- PhoMT (`anquachdev/PhoMT-en-vi-speech` at `33400f7`): synthetic speech of PhoMT sentence pairs on both
-  sides, limited to rows whose English passed CTC alignment. Its 24 kHz English and 48 kHz
-  Vietnamese 16-bit WAV is stored as FLAC, sample for sample. All rows are train.
+- Common Voice Scripted Speech 27.0 English: validated clips only. dev is the validation
+  split; train is every other validated clip whose speaker and sentence are not in dev. The
+  official test clips are folded into train, so CV test is not a clean benchmark here. Audio is
+  the original 32 or 48 kHz MP3.
+- Libriheavy (`mythicinfinity/libriheavy`, LibriVox audiobooks): mono rows only, in the
+  original 48 kHz Ogg Opus. dev is the validation split; train is medium, small and
+  seeded-random large files. `text_en` is the book text (`text_original`).
+- Every Common Voice clip and Libriheavy chapter reaches 10.5 kHz of audio bandwidth (the
+  highest frequency within 50 dB of the spectral peak, HiFiTTS-2's estimate), and train keeps
+  each speaker's clips, in build order, until the speaker holds 30 h.
+- Their English text was translated by Claude Sonnet 5.5, Gemini 3.8 Flash and Muse Spark 1.3,
+  in batches of neighbouring lines.
+- PhoMT (`anquachdev/PhoMT-en-vi-speech` at `33400f7`): synthetic speech of PhoMT sentence
+  pairs on both sides, limited to rows whose English passed CTC alignment. Its 24 kHz English
+  and 48 kHz Vietnamese 16-bit WAV is stored as FLAC, sample for sample. All rows are train.
 
 The audio columns hold codec bytes. Read raw rows with `pyarrow` and decode with `soundfile`
 (`sf.read(io.BytesIO(row["en_audio"]["bytes"]))`), resampling to 24 kHz for Mimi, or with
@@ -339,16 +325,14 @@ corpus.
 """
 
 
-def write_card(api: HfApi, repo: str, staging: Path) -> None:
-    fs = HfFileSystem()
+def write_card(root: Path) -> None:
     rows = []
-    for split in ("train", "validation"):
-        files = {f["name"]: f["size"] for f in fs.ls(f"datasets/{repo}/data/{split}", detail=True)}
+    for split in SPLITS:
         for source in ("cv27", "libriheavy", "phomt"):
-            shards = sorted(f for f in files if f.rsplit("/", 1)[1].startswith(f"{source}-"))
+            shards = sorted((root / "data" / split).glob(f"{source}-*.parquet"))
             if not shards:
                 continue
-            t = pq.read_table(shards, filesystem=fs, columns=["speaker", "en_duration_s", "vi_duration_s"])
+            t = pa.concat_tables(pq.read_table(p, columns=["speaker", "en_duration_s", "vi_duration_s"]) for p in shards)
             rows.append(
                 (
                     split,
@@ -357,38 +341,44 @@ def write_card(api: HfApi, repo: str, staging: Path) -> None:
                     t.num_rows,
                     pc.sum(t["en_duration_s"]).as_py() / 3600,
                     (pc.sum(t["vi_duration_s"]).as_py() or 0) / 3600,
-                    len(pc.unique(t["speaker"].drop_null())),
-                    sum(files[f] for f in shards) / 1e9,
+                    len(pc.unique(t["speaker"]).drop_null()),
+                    sum(p.stat().st_size for p in shards) / 1e9,
                 )
             )
     table = "\n".join(
         f"| {s} | {src} | {n} | {r:,} | {h:,.1f} | {vh:,.1f} | {spk:,} | {gb:.1f} |"
         for s, src, n, r, h, vh, spk, gb in rows
     )
-    path = staging / "README.md"
-    staging.mkdir(parents=True, exist_ok=True)
-    path.write_text(CARD.replace("{{STATS}}", table).replace("{{CLIP}}", span(CLIP_SECONDS)))
-    api.upload_file(path_or_fileobj=path, path_in_repo="README.md", repo_id=repo, repo_type="dataset",
-                    commit_message="Update the dataset card")
-    log(f"uploaded README.md:\n{table}")
+    (root / "README.md").write_text(
+        CARD.replace("{{STATS}}", table).replace("{{CLIP}}", f"{CLIP_SECONDS[0]:g}-{CLIP_SECONDS[1]:g} s")
+    )
+    log(f"wrote {root / 'README.md'}:\n{table}")
+
+
+def upload(root: Path, repo: str) -> None:
+    HfApi().upload_large_folder(repo, root, repo_type="dataset", allow_patterns=["data/*.parquet", "README.md"],
+                                num_workers=UPLOAD_WORKERS)
+    log(f"uploaded {root} to {repo}")
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("en_speech", "phomt", "card"))
+    p.add_argument("step", choices=("en_speech", "phomt", "card", "upload"))
+    p.add_argument("--root", type=Path, default=Path("/Volumes/data/datasets/en_vi_speech"))
     p.add_argument("--repo", default=REPO)
     p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
     p.add_argument("--vi-text", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
-    p.add_argument("--staging", type=Path, default=Path("/Volumes/data/datasets/en_vi_speech_upload"))
-    p.add_argument("--workers", type=int, default=6)
+    p.add_argument("--workers", type=int, default=4, help="shards built at once (en_speech, phomt)")
     args = p.parse_args()
-    api = HfApi()
-    if args.step == "en_speech":
-        publish(api, args.repo, en_speech_tasks(args.src, args.vi_text), args.staging / "en_speech", args.workers)
-    elif args.step == "phomt":
-        publish(api, args.repo, phomt_tasks(args.staging / "phomt"), args.staging / "phomt", args.workers)
-    else:
-        write_card(api, args.repo, args.staging)
+    with lock(args.root, args.step):
+        if args.step == "en_speech":
+            move_en_speech(args.src, args.vi_text, args.root, args.workers)
+        elif args.step == "phomt":
+            build_phomt(args.root, args.workers)
+        elif args.step == "card":
+            write_card(args.root)
+        else:
+            upload(args.root, args.repo)
 
 
 if __name__ == "__main__":

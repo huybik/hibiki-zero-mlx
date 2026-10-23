@@ -17,14 +17,15 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
 `/Volumes/data/datasets/en_speech_vi_text/` stays local; the exported translations are published
 with the audio in `huybik/en-vi-speech` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
 
-- `texts` writes `texts.parquet` (`text`, the unique transcripts in translation order) and
-  `rows.parquet` (`split`, `id`, `text`, `duration`) for every corpus row with a letter in its transcript,
-  so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)). Validation
-  comes first, then each Libriheavy recording in segment order, so a batch carries the
-  neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap. The
-  corpus builder writes shards by rename, so `texts` may read a snapshot of a build that only
-  adds shards, but not of a prune. A running `translate` reads the selection and the claims
-  once, so start it again after `texts` or a claim.
+- `texts` reads the `en_speech` shards of the EN-VI dataset (`--src`, every shard but
+  `phomt-*`) and writes `texts.parquet` (`text`, the unique transcripts in translation order)
+  and `rows.parquet` (`split`, `id`, `text`, `duration`) for every row with a letter in its
+  transcript, so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)).
+  Validation comes first, then each Libriheavy recording in segment order, so a batch carries
+  the neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap.
+  Dataset shards are written by rename, so `texts` may read a snapshot while shards are only
+  added. A running `translate` reads the selection and the claims once, so start it again after
+  `texts` or a claim.
 - The selection on disk is the final corpus (PR #25): 3,388,263 texts (526M characters) in
   3,490,088 rows. Every text is translated: Sonnet 616,834 (all Common Voice), Gemini 375,868 and
   Muse 2,395,561, with no line left over for `translate`. `export` wrote `train.parquet`

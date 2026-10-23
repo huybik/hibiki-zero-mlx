@@ -20,7 +20,7 @@ neighbouring book text as context for names, gender and Vietnamese forms of addr
 Run from the repo root as `python -m training.prep.translate_en_speech <step>`. Steps, all under
 --out:
   texts      texts.parquet (text: the unique transcripts, in translation order) and
-             rows.parquet (split, id, text, duration) for every corpus row
+             rows.parquet (split, id, text, duration) for every en_speech row of the dataset
   translate  keeps --concurrency calls in flight and appends accepted batches, keyed by
              their English text, to translations.jsonl and rejected output to
              rejects.jsonl; rerun to resume. Rejected lines are retried in smaller
@@ -96,15 +96,17 @@ def log(msg: str) -> None:
 
 def build_texts(src: Path, out: Path) -> None:
     def read(path: Path) -> pa.Table:
-        table = pq.read_table(path, columns=["id", "text", "duration"])
+        table = pq.read_table(path, columns=["id", "text_en", "en_duration_s"]).rename_columns(["id", "text", "duration"])
         return table.append_column("split", pa.array([path.parent.name] * table.num_rows, pa.string()))
 
+    # The en_speech shards of the EN-VI dataset; PhoMT comes with its own Vietnamese.
+    shards = sorted(p for p in src.glob("data/*/*.parquet") if not p.name.startswith("phomt-"))
     with ThreadPoolExecutor(16) as pool:
-        rows = pa.concat_tables(pool.map(read, sorted(src.glob("*/*.parquet")))).to_pandas()
+        rows = pa.concat_tables(pool.map(read, shards)).to_pandas()
     rows["text"] = rows.text.str.split().str.join(" ")
     if (too_long := (rows.duration > MAX_SECONDS).sum()):
         raise SystemExit(f"{too_long:,} clips last over {MAX_SECONDS:.1f} s and can never become a training row; "
-                         "prune en_speech to its clip range first")
+                         "drop them from the dataset first")
     spoken = rows.text.str.contains(r"[^\W\d_]")  # has a letter; "." alone has nothing to translate
     log(f"{len(rows):,} rows; skipped {(~spoken).sum():,} without letters")
     rows = rows[spoken].copy()
@@ -645,7 +647,7 @@ def export(out: Path) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("step", choices=("texts", "claim", "translate", "gemini", "muse", "export"))
-    p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
+    p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_vi_speech"), help="the EN-VI dataset")
     p.add_argument("--out", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--profile", action="append", default=[],
                    help="local API profile to spend, in order of use (repeatable; translate needs one)")

@@ -93,6 +93,6 @@ weights and bf16 autocast on grounded caches. Checkpoints are exact full-model s
 partial or adapter checkpoints are rejected.
 
 The training data is the 5–22.4 s clips of the English read-speech corpus `en_speech`
-(Common Voice 27.0 EN + Libriheavy, built by `training.prep.build_en_speech`) plus the
+(Common Voice 27.0 EN + Libriheavy, kept in the EN-VI dataset built by `training.prep.publish_en_vi_speech`) plus the
 ~0.8k-hour PhoMT grounded cache, together ~11.3k hours. See the
 [pod guide](docs/finetune.md) and [data preparation](training/prep/README.md).
