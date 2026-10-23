@@ -36,6 +36,7 @@ CODEC_REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 SAMPLE_RATE = 48_000
 FRAME_SAMPLES = 3840  # one MOSS frame, 12.5 Hz
 REF_SECONDS = 8.0  # upstream trims references to this
+MIN_REF_SECONDS = 1.0  # a trim that leaves less (a lone click) keeps the untrimmed clip
 
 # Upstream's defaults (VieNeu.infer and V3TurboBatchEngine).
 TEMPERATURE = 0.8
@@ -59,7 +60,7 @@ def model_dir() -> Path:
         snapshot_download(
             REPO,
             revision=REVISION,
-            allow_patterns=[f"{SUBFOLDER}/*", "speaker_encoder.onnx", "denoiser.onnx"],
+            allow_patterns=[f"{SUBFOLDER}/*", "speaker_encoder.onnx"],
         )
     )
 
@@ -115,8 +116,12 @@ class Enroller:
         self.speaker = OnnxSpeakerEncoder(str(model_dir() / "speaker_encoder.onnx"), sess_options=so)
 
     def __call__(self, wav: np.ndarray, sr: int) -> Voice:
-        wav = trim_silence(wav)[: int(REF_SECONDS * sr)]
-        return Voice(self.speaker.embed(wav, sr), soxr.resample(wav, sr, SAMPLE_RATE).astype(np.float32))
+        trimmed = trim_silence(wav)
+        wav = (trimmed if len(trimmed) >= MIN_REF_SECONDS * sr else wav)[: int(REF_SECONDS * sr)]
+        emb = self.speaker.embed(wav, sr)
+        if not np.isfinite(emb).all():
+            raise FloatingPointError(f"non-finite x-vector from a {len(wav) / sr:.2f} s reference")
+        return Voice(emb, soxr.resample(wav, sr, SAMPLE_RATE).astype(np.float32))
 
 
 class WindowedAttention(MultiheadAttention):

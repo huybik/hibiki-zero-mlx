@@ -91,7 +91,7 @@ def encode(chunks: list[np.ndarray], pauses: list[float]) -> tuple[bytes, float]
 
 
 def shards(root: Path) -> list[Path]:
-    found = sorted(p for p in root.glob("data/*/*.parquet") if not p.name.startswith("phomt-"))
+    found = sorted(root.glob("data/*/*.parquet"))
     train = [p for p in found if p.parent.name == "train"]
     random.Random(0).shuffle(train)
     return [p for p in found if p.parent.name == "validation"] + train

@@ -28,11 +28,13 @@ UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices.
   chunk), joined with upstream's pauses. Sampling, caps and retries are upstream's:
   temperature 0.8, top-k 25, top-p 0.95, repetition penalty 1.2 over 64 frames. A chunk stops
   at EOS (kept) or at upstream's `max_expected_frames`, at most 300: `24 + 2 x phoneme chars`,
-  but 13 frames plus 5 a syllable for chunks of up to 4 syllables and 13 for a lone emotion
-  cue. One under 0.25 frames a phoneme character is generated again, twice at most, keeping the
+  but 13 frames plus 5 per syllable after the first for chunks of up to 4 syllables, and 13 for
+  a lone emotion cue. One under 0.25 frames a phoneme character is generated again, twice at most, keeping the
   longest. Upstream's babble guard for chunks of a few syllables is not ported.
-- A text with nothing speakable, or a chunk past the model's 1024 positions, stops the run, and
-  a rerun stops on it again. No row of the corpus does (checked 2026-10-24: the longest chunk
+- The reference keeps the whole clip when trimming would leave under 1 s (a lone click; a
+  ~30 ms reference gave a NaN x-vector and a buzz). A text with nothing speakable, a chunk past
+  the model's 1024 positions or a non-finite x-vector stops the run, and a rerun stops on it
+  again. No row of the corpus does (checked 2026-10-24: the longest chunk
   needs 704 positions).
 - Output: `--out/{split}/{shard}.parquet` per dataset shard with `id`, `vi_audio{bytes,path}`
   (48 kHz mono Ogg Opus, libopus complexity 3, ~32 kbps) and `vi_duration_s`. Vietnamese runs
@@ -65,8 +67,8 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
 ## Engine
 
 - Backbone: 12 Qwen3 layers (768 wide, 12 query and 4 KV heads); the acoustic decoder samples
-  16 MOSS codebooks a frame with one layer; bf16. In fp32 with greedy sampling, the engine's
-  codes equal those of the static left-padded port it replaced, chunk for chunk.
+  16 MOSS codebooks a frame with one layer; bf16. In fp32 with greedy sampling, its codes equal
+  upstream's PyTorch batched engine (`V3TurboBatchEngine`) frame for frame, refills included.
 - `Generator` batches continuously: 128 slots; each slot's KV cache row holds its prompt from
   column 0 and one column per frame. Every 8 frames the host collects stopped chunks and
   prefills queued prompts into the freed slots. Static batches kept 47% of slots busy, since
@@ -88,8 +90,8 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
 ## Speed and memory
 
 - Bench (1,500 Common Voice and 600 Libriheavy validation rows, 4.2 h of Vietnamese) on the
-  M4 Pro with 48 GB, nothing else busy, 2026-10-24: the old prototype ran 43x real time (with
-  the 2 GB cache cap; without it the codec cache filled memory); this pipeline runs 131x.
+  M4 Pro with 48 GB, nothing else busy, 2026-10-24: 131x real time. Static batches with
+  full-mask fp32 codec calls, shard by shard, ran 43x on it.
 - It is GPU-bound. GPU time on Libriheavy splits ~53% generation, ~28% decoding, ~19% reference
   encoding; Common Voice references last about as long as their Vietnamese, so encoding weighs
   more there.
@@ -100,8 +102,9 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
   source, against 1.24 dB).
 - Footprint: the main process ~4–6 GB with its Metal buffers (`footprint -p`; `ps` RSS omits
   them), the six workers ~0.5 GB each. Waiting in memory: the dataset shard being read, at most
-  256 enrolled rows (1.5 MB of reference audio each), one decode batch of float32 audio
-  (~126 MB) until it is encoded, and the Opus bytes of each shard not yet written.
+  256 enrolled rows (1.5 MB of reference audio each), a decode batch or two of float32 audio
+  (~130 MB each, queued behind the enrollments) until encoded, and the Opus bytes of each shard
+  not yet written.
 - `kill` (SIGTERM) exits through the pool's shutdown, so the workers stop too; queued rows are
   dropped, and only unwritten shards are lost.
 

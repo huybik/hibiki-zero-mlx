@@ -20,7 +20,7 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 training/  (CUDA, Linux H100; prep/ translates, voices and publishes the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
     ─► prep/publish_en_vi_speech upload ─► HF en-vi-speech
-    ─► prep/tts_en_speech (VieNeu VI voices) ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
+    ─► prep/tts_en_speech (VI voices) ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
 inference/ (Apple Silicon, MLX)
@@ -51,8 +51,8 @@ inference/ (Apple Silicon, MLX)
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
   translations, in the local EN-VI dataset, which is being uploaded as
-  `huybik/en-vi-speech` ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS
-  voices the Vietnamese lines on the Mac in each row's own English voice
+  `huybik/en-vi-speech` ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)).
+  VieNeu-TTS voices the Vietnamese lines on the Mac in each row's own English voice
   ([vi-tts](docs/agent-memory/vi-tts.md)); no pair rows or caches are built from it yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
@@ -61,8 +61,9 @@ inference/ (Apple Silicon, MLX)
 - Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`, the Gemini and
   OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
-- Apple Silicon runs inference, the translation, the dataset publisher and the Vietnamese TTS only; Mimi
-  caching, training and evaluation run on CUDA → [sft-training](docs/agent-memory/sft-training.md).
+- Apple Silicon runs inference, the translation, the Vietnamese TTS and the dataset publisher
+  only; Mimi caching, training and evaluation run on CUDA →
+  [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source

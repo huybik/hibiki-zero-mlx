@@ -11,8 +11,8 @@ This is the main training data source: real English speech with gold text, to be
 voice-matched VI→EN pair rows by the data phase of
 [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md). Its transcripts are all translated to
 Vietnamese ([en-vi-translation](en-vi-translation.md)) and voiced in Vietnamese
-([vi-tts](vi-tts.md)); no pair rows are built from them yet. Those rows would then go through `cache_codes` and train together with the
-~0.8k-hour PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)).
+([vi-tts](vi-tts.md)); no pair rows are built from them yet. Those rows would then go through
+`cache_codes` and train together with the ~0.8k-hour PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)).
 
 ## Contents
 
