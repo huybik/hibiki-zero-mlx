@@ -63,5 +63,9 @@ On the Gemini test's 71 batches (2,843 Libriheavy lines, 560k characters):
 - Run as `nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER
   --concurrency 48 >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &`. `kill` lets
   in-flight batches finish; rerun to resume.
+- From an agent's shell, start it in a new session instead (Python `subprocess.Popen(...,
+  start_new_session=True)`). A `nohup … &` start from a Claude Code Bash call was hard-killed
+  12 minutes in (2026-10-23): no traceback, `caffeinate` gone too, most likely with the call's
+  process group. A run that stops with no last log line needs checking with `ps`.
 - When the corpus changes: stop `translate` and `muse`, run `texts`, then
   `claim --key OPEN_ROUTER`, then start both again.
