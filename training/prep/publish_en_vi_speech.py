@@ -1,22 +1,16 @@
 #!/usr/bin/env python
 """Build the EN-VI speech dataset that SFT pair rows are cached from, and publish it.
 
-Each row holds an English clip with its transcript and Vietnamese translation, and the
-Vietnamese clip where one exists:
-  - en_speech: Common Voice 27 and Libriheavy read speech, with the Vietnamese text exported by
-    training/prep/translate_en_speech.py. `vi_audio` stays empty until the voice-transfer TTS
-    step fills it. Rows without a translation (transcripts without letters) are dropped.
-  - PhoMT-en-vi-speech: TTS speech on both sides. Its rows are those of the grounded-v2 cache
-    in CACHE_REPO, which passed English CTC alignment, whose English clip lasts CLIP_SECONDS.
-    Ids are the cache's, so cache rows map back. The PCM WAV is stored as 24 kHz Ogg Opus,
-    Mimi's rate, at ~6% of its size.
+Each row holds an English clip of the en_speech corpus (Common Voice 27 and Libriheavy read
+speech) with its transcript and the Vietnamese translation exported by
+training/prep/translate_en_speech.py. `vi_audio` stays empty until the voice-transfer TTS step
+fills it. Rows without a translation (transcripts without letters) are dropped.
 
 --root, laid out as the Hugging Face repo, is the one local copy: the en_speech step moves the
 corpus into it. Run from the repo root as `python -m training.prep.publish_en_vi_speech <step>`.
 Steps:
   en_speech  converts each shard of the en_speech corpus at --src into a dataset shard of the
              same name and deletes the original, then the emptied corpus folder
-  phomt      downloads each PhoMT source file and writes its dataset shard
   card       README.md with statistics of the local dataset
   upload     commits the shards missing from the Hub, a few GB at a time, then the card
              (export HF_TOKEN); rerun it after adding shards
@@ -24,7 +18,7 @@ Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stop
 the same step.
 
 Every shard has one schema:
-  data/{train,validation}/{cv27,libriheavy-*,phomt-*}.parquet
+  data/{train,validation}/{cv27,libriheavy-*}.parquet
   id, en_audio{bytes,path}, text_en, text_vi, speaker, en_duration_s,
   vi_audio{bytes,path}, vi_duration_s, cross_lingual_timbre_matched
 """
@@ -32,16 +26,13 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import io
 import json
-import math
 import os
 import shutil
 import sys
-import tempfile
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
 
@@ -50,25 +41,17 @@ from typing import TypeVar
 # this once, so it must be set before pyarrow is imported.
 os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
-import numpy as np  # noqa: E402
 import pyarrow as pa  # noqa: E402
 import pyarrow.compute as pc  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
-import soundfile as sf  # noqa: E402
-from huggingface_hub import CommitOperationAdd, HfApi, RepoFile, hf_hub_download  # noqa: E402
-from scipy.signal import resample_poly  # noqa: E402
+from huggingface_hub import CommitOperationAdd, HfApi, RepoFile  # noqa: E402
 
 from training.prep.translate_en_speech import LETTER, MAX_SECONDS, exclusive, log  # noqa: E402
 
 REPO = "huybik/en-vi-speech"
-CACHE_REPO = "huybik/hibiki-zero-vi-full-sft"
-PAIRS = [f"grounded-v2/pairs_w{w}.jsonl" for w in range(5)]
-PHOMT = "anquachdev/PhoMT-en-vi-speech"
-PHOMT_REVISION = "33400f73dde07da539e8326313cbabe20b757740"  # the revision grounded-v2 was built from
 CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
 SPLITS = ("train", "validation")
-MIMI_RATE = 24_000  # PhoMT audio is stored at the rate Mimi codes
-RETRIES = 5  # a failed PhoMT file or commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
+RETRIES = 5  # a failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
 # Up to ~3 min of upload, all a stop loses; at the link's ~37 MB/s, ~30 commits an hour, well
 # under the Hub's commit quota (~100 an hour).
@@ -148,7 +131,7 @@ def retried(what: str, fn: Callable[[], T]) -> T:
 
 def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
     if not src.exists():
-        if not any(p for p in root.glob("data/*/*.parquet") if not p.name.startswith("phomt-")):
+        if not any(root.glob("data/*/*.parquet")):
             raise SystemExit(f"{src} does not exist and no en_speech shard is in {root}")
         log(f"{src} is gone: en_speech is already moved")
         return
@@ -160,7 +143,7 @@ def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
         out = root / "data" / split
         out.mkdir(parents=True, exist_ok=True)
         sources = sorted((src / split).glob("*.parquet"))
-        moved = [p for p in out.glob("*.parquet") if not p.name.startswith("phomt-")]
+        moved = list(out.glob("*.parquet"))
         ids = set()
         for p in sources + moved:
             ids.update(pq.read_table(p, columns=["id"])["id"].to_pylist())
@@ -210,103 +193,6 @@ def read_en_speech(path: Path, vi: dict[str, str]) -> pa.Table:
     return pa.Table.from_pydict(columns, schema=SCHEMA)
 
 
-# ---------------------------------------------------------------------- PhoMT
-
-
-def build_phomt(root: Path, workers: int) -> None:
-    """One shard per PhoMT source file, named by the cache's file number: phomt_s00304r00012 is
-    row 12 of the file the cache numbered 304."""
-    picks: dict[str, list[tuple[int, str, bool]]] = {}
-    for name in PAIRS:
-        with open(hf_hub_download(CACHE_REPO, name, repo_type="dataset")) as f:
-            for line in f:
-                p = json.loads(line)
-                src, row = p["en_audio"].removeprefix(f"hf://{PHOMT}/").split("#r")
-                picks.setdefault(src, []).append((int(row), p["id"], p["cross_lingual_timbre_matched"]))
-    out = root / "data" / "train"
-    out.mkdir(parents=True, exist_ok=True)
-    # Source files download here, outside `data/`; a killed run leaves them behind.
-    downloads = root / ".phomt-downloads"
-    shutil.rmtree(downloads, ignore_errors=True)
-    downloads.mkdir()
-    todo = []
-    for src, rows in picks.items():
-        dst = out / f"phomt-{rows[0][1].removeprefix('phomt_').split('r')[0]}.parquet"
-        if not dst.exists():
-            todo.append((dst, src, rows))
-    log(f"PhoMT: {sum(map(len, picks.values())):,} cache rows in {len(picks)} source files, {len(todo)} to build")
-
-    def build(dst: Path, src: str, rows: list[tuple[int, str, bool]]) -> None:
-        t = retried(f"reading {src}", lambda: read_phomt(src, rows, downloads))
-        write_shard(dst, t)
-        log(f"wrote {dst.name}: {t.num_rows} of {len(rows)} cache rows")
-
-    with ThreadPoolExecutor(workers) as ex:
-        futures = [ex.submit(build, *task) for task in sorted(todo)]
-        try:
-            for f in as_completed(futures):
-                f.result()
-        except BaseException:
-            ex.shutdown(cancel_futures=True)  # stop now rather than after every other file
-            raise
-    log("PhoMT done")
-
-
-def read_phomt(src: str, rows: list[tuple[int, str, bool]], downloads: Path) -> pa.Table:
-    """Reads one row group (~100 clips, ~94 MB of WAV) at a time: a whole file in memory, with its
-    copies, took ~1 GB per worker."""
-    parts, start = [], 0
-    with tempfile.TemporaryDirectory(dir=downloads) as tmp:
-        local = hf_hub_download(PHOMT, src, repo_type="dataset", revision=PHOMT_REVISION, local_dir=tmp)
-        with pq.ParquetFile(local) as f:
-            if missing := [r for r, _, _ in rows if r >= f.metadata.num_rows]:
-                raise RuntimeError(f"{src} has {f.metadata.num_rows} rows; the cache names row {missing[0]}")
-            for g in range(f.num_row_groups):
-                end = start + f.metadata.row_group(g).num_rows
-                if here := [(r - start, i, m) for r, i, m in rows if start <= r < end]:
-                    parts.append(phomt_rows(f.read_row_group(g), here))
-                start = end
-    return pa.concat_tables(parts)
-
-
-def phomt_rows(group: pa.Table, rows: list[tuple[int, str, bool]]) -> pa.Table:
-    t = group.take(pa.array([r for r, _, _ in rows]))
-    keep = pc.and_(pc.greater_equal(t["duration_en_s"], CLIP_SECONDS[0]), pc.less_equal(t["duration_en_s"], CLIP_SECONDS[1]))
-    t = t.append_column("id", pa.array([i for _, i, _ in rows])).append_column(
-        "timbre", pa.array([m for _, _, m in rows], pa.bool_())
-    ).filter(keep)
-    columns = {
-        "id": t["id"],
-        "en_audio": opus(t["audio_en"]),
-        "text_en": t["en"],
-        "text_vi": t["vi"],
-        "speaker": pa.nulls(t.num_rows, pa.string()),
-        "en_duration_s": t["duration_en_s"].cast(pa.float32()),
-        "vi_audio": opus(t["audio_vi"]),
-        "vi_duration_s": t["duration_vi_s"].cast(pa.float32()),
-        "cross_lingual_timbre_matched": t["timbre"],
-    }
-    return pa.Table.from_pydict(columns, schema=SCHEMA)
-
-
-def opus(audio: pa.ChunkedArray) -> pa.Array:
-    """Re-encode mono 16-bit PCM WAV clips as Ogg Opus at MIMI_RATE and libsndfile's default
-    bitrate (~37 kbps), resampling the 48 kHz Vietnamese. Lossy (user's choice), at ~6% of the WAV."""
-    out = []
-    for clip in audio.to_pylist():
-        with sf.SoundFile(io.BytesIO(clip["bytes"])) as f:
-            if f.format != "WAV" or f.subtype != "PCM_16" or f.channels != 1:
-                raise RuntimeError(f"{clip['path']}: {f.format} {f.subtype} {f.channels} ch, not mono PCM_16 WAV")
-            samples, rate = f.read(dtype="float32"), f.samplerate
-        if rate != MIMI_RATE:
-            g = math.gcd(MIMI_RATE, rate)
-            samples = resample_poly(samples, MIMI_RATE // g, rate // g).astype(np.float32)
-        encoded = io.BytesIO()
-        sf.write(encoded, samples, MIMI_RATE, format="OGG", subtype="OPUS")
-        out.append({"bytes": encoded.getvalue(), "path": clip["path"].removesuffix(".wav") + ".opus"})
-    return pa.array(out, AUDIO)
-
-
 # ------------------------------------------------------------------ dataset card
 
 CARD = """---
@@ -331,11 +217,10 @@ configs:
 
 # en-vi-speech
 
-English speech with English transcripts and Vietnamese translations, and Vietnamese speech
-where it exists, for research on Vietnamese→English simultaneous speech translation
-(Hibiki-Zero). Built by `training/prep/publish_en_vi_speech.py` in the hibiki-zero repository.
-The Mimi-code training caches built from it are in
-[huybik/hibiki-zero-vi-full-sft](https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft).
+English read speech with English transcripts and Vietnamese translations, for research on
+Vietnamese→English simultaneous speech translation (Hibiki-Zero). The Vietnamese speech columns
+are empty until a voice-transfer TTS step fills them. Built by
+`training/prep/publish_en_vi_speech.py` in the hibiki-zero repository.
 
 | split | source | shards | rows | EN hours | VI audio hours | speakers | GB |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -345,15 +230,15 @@ The Mimi-code training caches built from it are in
 
 | column | type | content |
 |---|---|---|
-| `id` | string | `cv27/<clip>`, `libriheavy/<subset>/<speaker>/<book>/<recording>_<segment>` or `phomt_s<file>r<row>` |
+| `id` | string | `cv27/<clip>`, `libriheavy/<subset>/<speaker>/<book>/<recording>_<segment>` |
 | `en_audio` | Audio | English clip; the `path` extension names the codec |
 | `text_en` | string | cased, punctuated English transcript |
 | `text_vi` | string | Vietnamese translation |
-| `speaker` | string | `cv27/<client_id>` or `libriheavy/<speaker_id>`; empty for PhoMT |
+| `speaker` | string | `cv27/<client_id>` or `libriheavy/<speaker_id>` |
 | `en_duration_s` | float32 | seconds |
-| `vi_audio` | Audio | Vietnamese clip; empty for Common Voice and Libriheavy until voice-transfer TTS fills it |
+| `vi_audio` | Audio | Vietnamese clip; empty until voice-transfer TTS fills it |
 | `vi_duration_s` | float32 | seconds, empty with `vi_audio` |
-| `cross_lingual_timbre_matched` | bool | PhoMT: whether the English and Vietnamese TTS voices match; empty elsewhere |
+| `cross_lingual_timbre_matched` | bool | whether the Vietnamese voice matches the English speaker's; empty with `vi_audio` |
 
 ## Sources
 
@@ -371,10 +256,6 @@ Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training 
   each speaker's clips, in build order, until the speaker holds 30 h.
 - Their English text was translated by Claude Sonnet 5.5, Gemini 3.8 Flash and Muse Spark 1.3,
   in batches of neighbouring lines.
-- PhoMT (`anquachdev/PhoMT-en-vi-speech` at `33400f7`): synthetic speech of PhoMT sentence
-  pairs on both sides, limited to rows whose English passed CTC alignment. Its 24 kHz English
-  and 48 kHz Vietnamese 16-bit WAV is stored as 24 kHz mono Ogg Opus at ~37 kbps. All rows are
-  train.
 
 The audio columns hold codec bytes. Read raw rows with `pyarrow` and decode with `soundfile`
 (`sf.read(io.BytesIO(row["en_audio"]["bytes"]))`), resampling to 24 kHz for Mimi, or with
@@ -385,15 +266,14 @@ The audio columns hold codec bytes. Read raw rows with `pyarrow` and decode with
 
 For research only. Common Voice is CC0-1.0, distributed by the Mozilla Data Collective, whose
 terms forbid re-hosting it and trying to identify its speakers. Libriheavy is Apache-2.0 over
-public-domain LibriVox recordings. PhoMT-en-vi-speech is Apache-2.0 on its card, over the PhoMT
-corpus.
+public-domain LibriVox recordings.
 """
 
 
 def write_card(root: Path) -> None:
     rows = []
     for split in SPLITS:
-        for source in ("cv27", "libriheavy", "phomt"):
+        for source in ("cv27", "libriheavy"):
             shards = sorted((root / "data" / split).glob(f"{source}-*.parquet"))
             if not shards:
                 continue
@@ -447,18 +327,16 @@ def upload(root: Path, repo: str) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("en_speech", "phomt", "card", "upload"))
+    p.add_argument("step", choices=("en_speech", "card", "upload"))
     p.add_argument("--root", type=Path, default=Path("/Volumes/data/datasets/en_vi_speech"))
     p.add_argument("--repo", default=REPO)
     p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
     p.add_argument("--vi-text", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
-    p.add_argument("--workers", type=int, default=4, help="shards built at once (en_speech, phomt)")
+    p.add_argument("--workers", type=int, default=4, help="shards moved at once (en_speech)")
     args = p.parse_args()
     with lock(args.root, args.step):
         if args.step == "en_speech":
             move_en_speech(args.src, args.vi_text, args.root, args.workers)
-        elif args.step == "phomt":
-            build_phomt(args.root, args.workers)
         elif args.step == "card":
             write_card(args.root)
         else:

@@ -2,16 +2,15 @@
 
 Run from the repository root. Generated caches land under the gitignored `data/`.
 
-## EN-VI speech dataset (~11.5k hours)
+## EN-VI speech dataset (~10.5k hours)
 
 `/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `huybik/en-vi-speech`:
 
-- the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
-  hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and
-  their Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md));
-- the PhoMT cache rows with 5–22.4 s English clips, with both TTS voices as 24 kHz Opus.
+the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
+hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
+Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
 
-The Vietnamese speech of the `en_speech` rows will come from TTS
+Their Vietnamese speech will come from TTS
 ([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)). The `en_speech` step
 moved the finished corpus in, shard by shard. The builder that downloaded Common Voice and
 Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild.
@@ -20,7 +19,6 @@ Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) 
 set -a && . ./.env && set +a                            # HF_TOKEN
 R=/Volumes/data/datasets/en_vi_speech && mkdir -p $R
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech >> $R/en_speech.log 2>&1 &
-nohup caffeinate -i python -m training.prep.publish_en_vi_speech phomt --workers 8 >> $R/phomt.log 2>&1 &
 python -m training.prep.publish_en_vi_speech card       # README.md with statistics
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload >> $R/upload.log 2>&1 &  # rerun after adding shards
 ```

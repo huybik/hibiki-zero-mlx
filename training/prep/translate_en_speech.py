@@ -101,8 +101,7 @@ def build_texts(src: Path, out: Path) -> None:
         table = pq.read_table(path, columns=["id", "text_en", "en_duration_s"]).rename_columns(["id", "text", "duration"])
         return table.append_column("split", pa.array([path.parent.name] * table.num_rows, pa.string()))
 
-    # The en_speech shards of the EN-VI dataset; PhoMT comes with its own Vietnamese.
-    shards = sorted(p for p in src.glob("data/*/*.parquet") if not p.name.startswith("phomt-"))
+    shards = sorted(src.glob("data/*/*.parquet"))
     with ThreadPoolExecutor(16) as pool:
         rows = pa.concat_tables(pool.map(read, shards)).to_pandas()
     rows["text"] = rows.text.str.split().str.join(" ")

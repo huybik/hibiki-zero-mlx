@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-23
+Last verified: 2026-10-24
 
 ## Purpose
 
@@ -18,7 +18,7 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 
 ```text
 training/  (CUDA, Linux H100; the EN-VI dataset is translated and published locally by prep/)
-  en_vi_speech (en_speech + PhoMT rows; text_vi from prep/translate_en_speech)
+  en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
     ─► prep/publish_en_vi_speech upload ─► HF en-vi-speech
     ─► (VI TTS fills vi_audio: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
@@ -50,7 +50,7 @@ inference/ (Apple Silicon, MLX)
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
-  translations and the PhoMT rows, in the local EN-VI dataset, which is being uploaded as
+  translations, in the local EN-VI dataset, which is being uploaded as
   `huybik/en-vi-speech` ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). The TTS step that fills
   their Vietnamese speech is not built, so there are no caches to train on yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
