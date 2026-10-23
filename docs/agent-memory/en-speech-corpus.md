@@ -2,7 +2,7 @@
 
 Read when touching `training/prep/build_en_speech.py` or `/Volumes/data/datasets/en_speech`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#contents) ·
-[Format](#format) · [Build](#build) · [Rules](#rules)
+[Format](#format) · [Build](#build) · [Quality filters](#quality-filters) · [Rules](#rules)
 
 ## Purpose
 
@@ -48,16 +48,34 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
   sentence are not in dev. The official CV test set is folded into train, so CV test scores are
   not held out.
 - `libriheavy` pulls `mythicinfinity/libriheavy` through `huggingface_hub`, so export `HF_TOKEN`
-  from `.env` first. It takes dev, small and medium, then large files in `random.Random(0)` order,
+  from `.env` first. It takes dev, medium and small, then large files in `random.Random(0)` order,
   keeping only their 5–15 s clips, until pooled train holds `--target-hours` (9,200) of 5–15 s
   clips. About 10% of Libriheavy rows are stereo and are dropped by checking OpusHead byte 37
   (`libriheavy-medium-00088` was all stereo, so its shard is empty). Files whose output shard
-  exists are skipped. A large file yields ~5.5 h of 5–15 s clips in ~0.18 GB.
+  exists are skipped, and shards emptied by the filters stay as markers. A downloaded large
+  file (~0.47 GB) adds ~3.7 h of 5–15 s clips after the quality filters.
 - Every source keeps only clips of 5–22.4 s (`CLIP_SECONDS`). 22.4 s is an upper bound: a
   cache row also holds the English delay, U[0, 0.5 × Vietnamese duration], so most 15–22.4 s
   clips will still exceed the trainer's 280 frames. The first 194 large files were written
   before the 5–15 s rule and keep all their 5–22.4 s clips; the card does not say so.
 - Shards are written to `.tmp` and then renamed, so an interrupted write never looks finished.
+
+## Quality filters
+
+- Bandwidth uses HiFiTTS-2's estimate: the highest frequency whose Welch power is within 50 dB
+  of the peak. It is taken per recording, from the first 30 s of a Libriheavy chapter's kept
+  clips (clip id minus `_<segment>`) or from a whole CV clip. Single clips of one chapter
+  scatter ±1.5 kHz around the chapter estimate.
+- Recordings under 10.5 kHz are dropped. Mimi codes up to 12 kHz. CV's 32 kHz MP3s cut off at
+  ~11 kHz (a spike at 10.7–11.3 kHz) that an 11 kHz floor would split. Before the filter,
+  42% of CV train hours and 17% of Libriheavy's were under 10.5 kHz.
+- Train keeps a speaker's clips in build order (CV archive order, then Libriheavy medium, small
+  and large) until the speaker holds 30 h (`SPEAKER_HOURS`); no CV speaker reaches it.
+  A large file holds one or a few readers, so the top-up reads the per-row-group speaker
+  statistics in its parquet footer (~3 s) and skips files holding only capped readers.
+- The cap came from a simulation over the measured corpus and the footers of all 2,955 large
+  files. Without it, 3,642 Libriheavy readers fill 9,200 h and one holds 261 h. 30 h gives
+  ~4,760 readers with ~490 large files to spare; 25 h or less can't reach 9,200 h.
 
 ## Rules
 
@@ -69,4 +87,13 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
   [en-vi-translation](en-vi-translation.md).
 - Rows outside 5–22.4 s were deleted from the existing shards rather than rebuilt (user's
   choice), and new large files keep only their 5–15 s clips, because `/Volumes/data` had no room
-  for whole files (~0.47 GB each). Bringing the deleted rows back means downloading them again.
+  for whole files (~0.47 GB each). The quality filters were applied the same way on 2026-10-23
+  (1.51M rows). Bringing deleted rows back means downloading them again.
+- No other corpus is mixed in (user's choice on 2026-10-23, asked for many speakers, good
+  transcripts and clean recordings). The English audio is a generated target, so 16 kHz
+  corpora (LibriSpeech, GigaSpeech, People's Speech, VoxPopuli, Loquacious Set) lack the
+  8–12 kHz band; upsampling adds none. Loquacious text has no case or punctuation, TED-LIUM 3
+  is CC BY-NC-ND, GigaSpeech's HF terms are non-commercial, and HiFiTTS-2 is Libriheavy's own
+  LibriVox audio. Emilia-YODAS English (CC BY, 24 kHz, spontaneous, unchecked Whisper-medium
+  text) is the candidate for a spontaneous domain, with its own validation, once the first
+  1k-hour tranche has trained.

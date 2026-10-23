@@ -6,13 +6,15 @@ Run from the repository root. Generated caches land under the gitignored `data/`
 
 Common Voice Scripted Speech 27.0 English plus Libriheavy, written as parquet
 shards (original mono MP3/Opus bytes, cased text, speaker, duration). Only clips of
-5–22.4 s are kept, as longer clips can never fit a 280-frame training row. The Common
+5–22.4 s are kept, as longer clips can never fit a 280-frame training row. Every recording
+must reach 10.5 kHz of audio bandwidth, and train keeps at most 30 hours per speaker
+([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md#quality-filters)). The Common
 Voice step needs `MDC_API_KEY` in `.env` and the dataset terms accepted on Mozilla Data
 Collective; the Libriheavy step needs `HF_TOKEN`.
 
 ```bash
 python -m training.prep.build_en_speech cv          # download, verify, shard, delete archive
-python -m training.prep.build_en_speech libriheavy  # dev, small, medium, then large files' 5–15 s clips
+python -m training.prep.build_en_speech libriheavy  # dev, medium, small, then large files' 5–15 s clips
 python -m training.prep.build_en_speech card        # write README.md with statistics
 ```
 
