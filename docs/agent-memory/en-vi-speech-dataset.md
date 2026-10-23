@@ -58,9 +58,10 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
 - A PhoMT source file takes ~1 minute to download and convert (373 MB in, ~120 MB out). A
   failed file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
 - pyarrow's default memory pool on macOS (mimalloc) keeps freed buffers: converting 24 shards
-  left a 13 GB footprint with nothing allocated, and live runs reached 12–16 GB, pushing swap
-  to 25 GB. The steps use the system pool, which stays at ~2 GB. `ps` RSS hides this, since
-  macOS compresses the idle pages; check `footprint -p <pid>`.
+  left a 13 GB footprint with nothing allocated, and live runs reached 12–16 GB, pushing swap to
+  25 GB. The publisher sets `ARROW_DEFAULT_MEMORY_POOL=system` before importing pyarrow
+  (`pa.set_memory_pool` does not reach the Parquet reader), which stays at ~2 GB. `ps` RSS hides
+  this, since macOS compresses the idle pages; check `footprint -p <pid>`.
 - The first attempt (a custom commit loop, 6 downloads plus a 6 GB commit at once) stalled at
   ~1 MB/s under that memory pressure, so `phomt` runs 3 workers and `upload` 4.
 - The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses

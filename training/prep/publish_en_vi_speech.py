@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -41,13 +42,18 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
 
-import pyarrow as pa
-import pyarrow.compute as pc
-import pyarrow.parquet as pq
-import soundfile as sf
-from huggingface_hub import HfApi, hf_hub_download
+# pyarrow's default pool on macOS (mimalloc) keeps freed shard buffers: 13 GB of footprint after
+# converting 24 shards with nothing allocated. The system allocator returns them. Arrow reads
+# this once, so it must be set before pyarrow is imported.
+os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
-from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log
+import pyarrow as pa  # noqa: E402
+import pyarrow.compute as pc  # noqa: E402
+import pyarrow.parquet as pq  # noqa: E402
+import soundfile as sf  # noqa: E402
+from huggingface_hub import HfApi, hf_hub_download  # noqa: E402
+
+from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
 
 REPO = "huybik/en-vi-speech"
 CACHE_REPO = "huybik/hibiki-zero-vi-full-sft"
@@ -370,9 +376,6 @@ def main() -> None:
     p.add_argument("--vi-text", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--workers", type=int, default=4, help="shards built at once (en_speech, phomt)")
     args = p.parse_args()
-    # pyarrow's default pool on macOS (mimalloc) keeps freed shard buffers: 13 GB after 24 shards
-    # with nothing allocated. The system allocator returns them.
-    pa.set_memory_pool(pa.system_memory_pool())
     with lock(args.root, args.step):
         if args.step == "en_speech":
             move_en_speech(args.src, args.vi_text, args.root, args.workers)
