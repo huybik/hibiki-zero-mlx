@@ -29,7 +29,7 @@ rows exist yet. Those rows would then go through `cache_codes` and train togethe
 
 - Parquet with HF `Audio` feature metadata. Columns: `id`, `audio{bytes,path}`, `text` (cased,
   punctuated), `speaker`, `duration` (float32 seconds).
-- Audio keeps the original codec bytes: 48 kHz mono MP3 for CV and 48 kHz mono Ogg Opus for
+- Audio keeps the original codec bytes: 32 or 48 kHz mono MP3 for CV and 48 kHz mono Ogg Opus for
   Libriheavy. Resample to 24 kHz before Mimi.
 - Metadata columns are zstd-compressed and `audio.bytes` is uncompressed. Row groups hold 500
   rows; CV shards hold up to 20,000 rows.
@@ -64,15 +64,16 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
 
 - Bandwidth uses HiFiTTS-2's estimate: the highest frequency whose Welch power is within 50 dB
   of the peak. It is taken per recording, from the first 30 s of a Libriheavy chapter's kept
-  clips (clip id minus `_<segment>`) or from a whole CV clip. Single clips of one chapter
-  scatter ±1.5 kHz around the chapter estimate.
+  clips in one source file (clip id minus `_<segment>`), or from a whole CV clip. Single clips
+  of one chapter scatter ±1.5 kHz around the chapter estimate.
 - Recordings under 10.5 kHz are dropped. Mimi codes up to 12 kHz. CV's 32 kHz MP3s cut off at
   ~11 kHz (a spike at 10.7–11.3 kHz) that an 11 kHz floor would split. Before the filter,
   42% of CV train hours and 17% of Libriheavy's were under 10.5 kHz.
 - Train keeps a speaker's clips in build order (CV archive order, then Libriheavy medium, small
   and large) until the speaker holds 30 h (`SPEAKER_HOURS`); no CV speaker reaches it.
-  A large file holds one or a few readers, so the top-up reads the per-row-group speaker
-  statistics in its parquet footer (~3 s) and skips files holding only capped readers.
+  A Libriheavy file holds one or a few readers, so a train file whose parquet footer
+  (per-row-group speaker statistics, ~3 s to read) shows only capped readers gets an empty
+  shard without downloading.
 - The cap came from a simulation over the measured corpus and the footers of all 2,955 large
   files. Without it, 3,642 Libriheavy readers fill 9,200 h and one holds 261 h. 30 h gives
   ~4,760 readers with ~490 large files to spare; 25 h or less can't reach 9,200 h.

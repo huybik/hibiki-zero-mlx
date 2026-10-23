@@ -9,13 +9,13 @@ Sources, both read speech with cased, punctuated transcripts:
   - Libriheavy (mythicinfinity/libriheavy): LibriVox audiobooks aligned to the
     book text, mono rows only. dev becomes validation; train is medium + small
     plus seeded-random large files, keeping only their 5-15 s clips, until the
-    pooled train split holds --target-hours of 5-15 s clips. Large files whose
-    footer shows only capped speakers are skipped without downloading.
+    pooled train split holds --target-hours of 5-15 s clips. A train file whose
+    footer shows only capped speakers gets an empty shard without downloading.
 
 Every source keeps only clips of 5-22.4 s; longer clips can never fit the trainer's
-280-frame rows. Every recording (a CV clip, a Libriheavy chapter) must reach
-MIN_BANDWIDTH_HZ, and train keeps each speaker's clips, in build order, only until
-the speaker holds SPEAKER_HOURS.
+280-frame rows. Every recording (a CV clip, a Libriheavy chapter within one file)
+must reach MIN_BANDWIDTH_HZ, and train keeps each speaker's clips, in build order,
+only until the speaker holds SPEAKER_HOURS.
 
 Audio keeps each source's original mono codec bytes (CV MP3, Libriheavy 48 kHz
 Opus). Both are already lossy, so a lossless 24 kHz FLAC copy would be ~3x the
@@ -351,7 +351,10 @@ def lh_capped(src: str, totals: Counter) -> bool:
         md = pq.ParquetFile(f).metadata
     col = next(i for i in range(md.num_columns) if md.schema.column(i).path == "speaker_id")
     stats = [md.row_group(g).column(col).statistics for g in range(md.num_row_groups)]
-    return all(s.min == s.max and totals[f"libriheavy/{s.min}"] >= SPEAKER_HOURS * 3600 for s in stats)
+    return all(
+        s is not None and s.has_min_max and s.min == s.max and totals[f"libriheavy/{s.min}"] >= SPEAKER_HOURS * 3600
+        for s in stats
+    )
 
 
 def read_lh(src: str, seconds: tuple[float, float]) -> pa.Table:
@@ -366,8 +369,10 @@ def read_lh(src: str, seconds: tuple[float, float]) -> pa.Table:
     data = pc.struct_field(t["audio"], "bytes")
     if not pc.all(pc.equal(pc.binary_slice(data, 28, 36), pa.scalar(b"OpusHead"))).as_py():
         raise RuntimeError(f"{src}: audio is not single-stream Ogg Opus")
+    total = t.num_rows
     mono = pc.equal(pc.binary_slice(data, 37, 38), pa.scalar(b"\x01"))
     t = t.filter(pc.and_(mono, in_range(t["audio_duration"], seconds)))
+    kept = t.num_rows
     # A clip id is its chapter recording's id plus `_<segment>`.
     recordings = [i.rsplit("_", 1)[0] for i in t["id"].to_pylist()]
     clips: dict[str, list] = {}
@@ -375,6 +380,7 @@ def read_lh(src: str, seconds: tuple[float, float]) -> pa.Table:
         clips.setdefault(rec, []).append(clip)
     wide = {rec for rec, c in clips.items() if bandwidth(x.as_py() for x in c) >= MIN_BANDWIDTH_HZ}
     t = t.filter(pa.array([rec in wide for rec in recordings], pa.bool_()))
+    log(f"read {src}: {total} rows, {kept} mono of {span(seconds)}, {t.num_rows} reaching {MIN_BANDWIDTH_HZ / 1000:g} kHz")
     columns = {
         "id": pc.binary_join_element_wise("libriheavy/", t["id"], ""),
         "audio": t["audio"],
@@ -398,26 +404,25 @@ def build_libriheavy(root: Path, target_hours: float, workers: int) -> None:
     for split in ("train", "validation"):
         (root / split).mkdir(parents=True, exist_ok=True)
 
-    def read(src: str, seconds: tuple[float, float]) -> pa.Table | None:
-        train = lh_output(root, src).parent.name == "train"
-        return None if train and lh_capped(src, totals) else read_lh(src, seconds)
+    def read(src: str, seconds: tuple[float, float]) -> pa.Table:
+        if lh_output(root, src).parent.name == "train" and lh_capped(src, totals):
+            log(f"skipped {src}: its footer shows only capped speakers")
+            return SCHEMA.empty_table()
+        return read_lh(src, seconds)
 
-    def convert(srcs: list[str], seconds: tuple[float, float]) -> set[str]:
-        """Write the files' shards in order, so the speaker cap is applied in build order;
-        returns the files skipped because only capped speakers are in them."""
-        skipped, pending = set(), deque()
+    def convert(srcs: list[str], seconds: tuple[float, float]) -> None:
+        """Write the files' shards in order, so the speaker cap is applied in build order."""
+        pending = deque()
 
         def finish() -> None:
             src, future = pending.popleft()
-            if (t := future.result()) is None:
-                skipped.add(src)
-                return
-            dst = lh_output(root, src)
-            read_rows = t.num_rows
+            t, dst = future.result(), lh_output(root, src)
+            note = f"{t.num_rows} rows"
             if dst.parent.name == "train":
                 t = keep_speakers(t, totals)
+                note = f"{t.num_rows}/{note} under the speaker cap"
             write_shard(dst, t)
-            log(f"wrote {dst.relative_to(root)} ({t.num_rows}/{read_rows} filtered rows under the speaker cap)")
+            log(f"wrote {dst.relative_to(root)} ({note})")
 
         for src in srcs:
             if not lh_output(root, src).exists():
@@ -426,21 +431,19 @@ def build_libriheavy(root: Path, target_hours: float, workers: int) -> None:
                     finish()
         while pending:
             finish()
-        return skipped
 
     with ThreadPoolExecutor(workers) as ex:
-        skipped = convert(base, CLIP_SECONDS)
+        convert(base, CLIP_SECONDS)
         while (have := split_hours(root, "train", TOP_UP_SECONDS)) < target_hours:
-            todo = [f for f in large if f not in skipped and not lh_output(root, f).exists()]
+            todo = [f for f in large if not lh_output(root, f).exists()]
             if not todo:
                 raise RuntimeError(f"Libriheavy large exhausted at {have:.1f} train hours of {top_up} clips")
             batch = todo[: max(1, int((target_hours - have) / LARGE_FILE_HOURS))]
             log(f"train {have:.1f}/{target_hours:.0f} h of {top_up} clips; trying {len(batch)} large files")
-            skipped |= convert(batch, TOP_UP_SECONDS)
+            convert(batch, TOP_UP_SECONDS)
     log(
         f"Libriheavy done: train {split_hours(root, 'train'):.1f} h, "
-        f"{split_hours(root, 'train', TOP_UP_SECONDS):.1f} h of it in {top_up} clips; "
-        f"{len(skipped)} files skipped for capped speakers"
+        f"{split_hours(root, 'train', TOP_UP_SECONDS):.1f} h of it in {top_up} clips"
     )
 
 
@@ -488,7 +491,7 @@ hibiki-zero repository.
 
 Mono, in each source's original codec, never transcoded:
 
-- Common Voice: MP3, 48 kHz, ~64 kbps; decodes ~4,000x realtime per core (libsndfile).
+- Common Voice: MP3, 32 or 48 kHz, ~64 kbps; decodes ~4,000x realtime per core (libsndfile).
 - Libriheavy: Ogg Opus, 48 kHz, ~70 kbps; decodes ~340x realtime per core.
 
 Both sources are already lossy. A lossless 24 kHz FLAC copy measured ~3x the Opus
@@ -531,7 +534,8 @@ With Hugging Face `datasets` (needs `torchcodec`):
   280-frame (12.5 Hz) training rows.
 - Every recording reaches {{BANDWIDTH}} of audio bandwidth: the highest frequency whose
   mean power is within 50 dB of the spectral peak (HiFiTTS-2's estimate), over the
-  first 30 s of a Libriheavy chapter or a whole Common Voice clip.
+  first {{BANDWIDTH_SECONDS}} s of a Libriheavy chapter's clips in one source file, or a whole
+  Common Voice clip.
 - Train keeps each speaker's clips, in build order, until the speaker holds
   {{SPEAKER_HOURS}} h, so a few prolific readers don't dominate.
 
@@ -577,6 +581,7 @@ def write_card(root: Path) -> None:
         .replace("{{TOP_UP}}", span(TOP_UP_SECONDS))
         .replace("{{CLIP}}", span(CLIP_SECONDS))
         .replace("{{BANDWIDTH}}", f"{MIN_BANDWIDTH_HZ / 1000:g} kHz")
+        .replace("{{BANDWIDTH_SECONDS}}", f"{BANDWIDTH_SECONDS}")
         .replace("{{SPEAKER_HOURS}}", f"{SPEAKER_HOURS:g}")
         .replace("{{VALIDATION_HOURS}}", f"{totals['validation']:,.0f}")
     )
