@@ -370,6 +370,9 @@ def main() -> None:
     p.add_argument("--vi-text", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--workers", type=int, default=4, help="shards built at once (en_speech, phomt)")
     args = p.parse_args()
+    # pyarrow's default pool on macOS (mimalloc) keeps freed shard buffers: 13 GB after 24 shards
+    # with nothing allocated. The system allocator returns them.
+    pa.set_memory_pool(pa.system_memory_pool())
     with lock(args.root, args.step):
         if args.step == "en_speech":
             move_en_speech(args.src, args.vi_text, args.root, args.workers)

@@ -57,9 +57,12 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
   follow.
 - A PhoMT source file takes ~1 minute to download and convert (373 MB in, ~120 MB out). A
   failed file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
+- pyarrow's default memory pool on macOS (mimalloc) keeps freed buffers: converting 24 shards
+  left a 13 GB footprint with nothing allocated, and live runs reached 12–16 GB, pushing swap
+  to 25 GB. The steps use the system pool, which stays at ~2 GB. `ps` RSS hides this, since
+  macOS compresses the idle pages; check `footprint -p <pid>`.
 - The first attempt (a custom commit loop, 6 downloads plus a 6 GB commit at once) stalled at
-  ~1 MB/s with swap 9.4 of 10.2 GB and macOS exiting idle services for memory, so `phomt` runs
-  3 workers and `upload` 4.
+  ~1 MB/s under that memory pressure, so `phomt` runs 3 workers and `upload` 4.
 - The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses
   storage, `upload` fails and can be rerun later.
 
