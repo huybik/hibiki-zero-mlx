@@ -51,9 +51,8 @@ On the Gemini test's 71 batches (2,843 Libriheavy lines, 560k characters):
 - Muse `minimal` trails Sonnet in fluency by 0.37 ± 0.10 (Opus) and 0.22 ± 0.10 (Sonnet judge), with
   literal calques and stiff word choice; in adequacy it is within ~0.1 of Gemini.
 - Throughput is bound by latency (~25 s a call), not by rate limits: 48 calls run ~110 batches a
-  minute and 96 calls ~210, with no 429s, at ~$0.69 per 1,000 batches either way. On the final
-  corpus, Muse had 1.66M lines (34,276 batches) left: ~2.5 h at 96 calls and ~$24, with $10.55
-  of the key's $50 already spent.
+  minute and 96 calls ~210, with no 429s, at ~$0.69 per 1,000 batches either way. Muse
+  translated all 2,395,561 claimed Libriheavy texts for $33.93 of the key's $50.
 - OpenRouter's Batch API has no `:batch` variant of any Muse model (checked 2026-10-23), and the
   Contributor price is below most batch prices anyway, so Muse uses the synchronous API.
 
@@ -64,9 +63,11 @@ On the Gemini test's 71 batches (2,843 Libriheavy lines, 560k characters):
 - Run as `nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER
   --concurrency 96 >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &`. `kill` lets
   in-flight batches finish; rerun to resume.
-- From an agent's shell, start it in a new session instead (Python `subprocess.Popen(...,
-  start_new_session=True)`). A `nohup … &` start from a Claude Code Bash call was hard-killed
-  12 minutes in (2026-10-23): no traceback, `caffeinate` gone too, most likely with the call's
-  process group. A run that stops with no last log line needs checking with `ps`.
+- Twice on 2026-10-23 a run died with no traceback or crash report, once started with `nohup` and
+  once in its own session, after 12 and 98 minutes. No session sent a kill; the process held up
+  to 5.2 GB while swap was nearly full, so macOS memory pressure is the likely cause. A run that
+  stops with no last log line needs checking with `ps`. From an agent's shell, start it in its
+  own session (Python `subprocess.Popen(..., start_new_session=True)`) as `sh -c '… python -X
+  faulthandler …; echo "muse exited with status $?"'`, so a death leaves its status in the log.
 - When the corpus changes: stop `translate` and `muse`, run `texts`, then
   `claim --key OPEN_ROUTER`, then start both again.
