@@ -18,7 +18,7 @@ Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stop
 the same step.
 
 Every shard has one schema:
-  data/{train,validation}/{cv27,libriheavy-*}.parquet
+  data/{train,validation}/{cv27,libriheavy}-*.parquet
   id, en_audio{bytes,path}, text_en, text_vi, speaker, en_duration_s,
   vi_audio{bytes,path}, vi_duration_s, cross_lingual_timbre_matched
 """
@@ -53,8 +53,8 @@ CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never 
 SPLITS = ("train", "validation")
 RETRIES = 5  # a failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
-# Up to ~3 min of upload, all a stop loses; at the link's ~37 MB/s, ~30 commits an hour, well
-# under the Hub's commit quota (~100 an hour).
+# 2-7 min of upload, all a stop loses; ~20-30 commits an hour, well under the Hub's commit quota
+# (~100 an hour).
 COMMIT_BYTES = 4_000_000_000
 T = TypeVar("T")
 
@@ -305,7 +305,8 @@ def upload(root: Path, repo: str) -> None:
     the record of progress: a shard there at its local size is uploaded, so a stopped run loses
     only its unfinished commit. Shards written meanwhile go in later commits."""
     api = HfApi()
-    remote = {f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)}
+    remote = retried("listing the Hub", lambda: {
+        f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)})
     while todo := [p for p in sorted(root.glob("data/*/*.parquet")) if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size]:
         batch, size = [], 0
         for p in todo:

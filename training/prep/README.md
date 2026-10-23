@@ -4,9 +4,8 @@ Run from the repository root. Generated caches land under the gitignored `data/`
 
 ## EN-VI speech dataset (~10.5k hours)
 
-`/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `huybik/en-vi-speech`:
-
-the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
+`/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `huybik/en-vi-speech`,
+holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
 hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
 Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
 

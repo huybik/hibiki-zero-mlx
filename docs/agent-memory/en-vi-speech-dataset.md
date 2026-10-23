@@ -7,11 +7,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#con
 
 ## Purpose
 
-The user asked on 2026-10-23 for one research dataset holding every pair row source: English
-speech, its transcript and Vietnamese translation, and Vietnamese speech where it exists. It is
-kept in full on the Mac, where it replaced the `en_speech` corpus folder, and published as
-`huybik/en-vi-speech` (user's choices). The voice-transfer TTS step will later fill the
-Vietnamese speech of its rows; `cache_codes` pair rows are then made from it
+The user asked on 2026-10-23 for one research dataset of pair-row sources: English speech, its
+transcript and Vietnamese translation, with the Vietnamese speech to come. It is kept in full on
+the Mac, where it replaced the `en_speech` corpus folder, and published as `huybik/en-vi-speech`
+(user's choices). The voice-transfer TTS step will later fill the Vietnamese speech of its rows; `cache_codes` pair rows are then made from it
 ([sft-data-caches](sft-data-caches.md)).
 
 ## Contents
@@ -49,7 +48,7 @@ Vietnamese speech of its rows; `cache_codes` pair rows are then made from it
   is in the corpus or already moved. It removes the emptied corpus folder at the end. Run
   `translate_en_speech texts` only after the move: before it, `texts` sees part of the corpus.
 - `upload` commits the local shards that are missing from the Hub, or differ from it in size, in
-  commits of up to 4 GB (~2 min at the link's speed), then `README.md`. The Hub is the record of
+  commits of up to 4 GB (2–7 min each, depending on what else shares the link), then `README.md`. The Hub is the record of
   progress, so a stop loses only the unfinished commit. The user asked on 2026-10-23 that a stop
   never lose more than that: `upload_large_folder` committed nothing in its first 37 min, while
   it hashed and pre-uploaded batches of up to 256 files, and lost them when stopped. `upload`
