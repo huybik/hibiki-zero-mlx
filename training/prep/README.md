@@ -22,10 +22,11 @@ R=/Volumes/data/datasets/en_vi_speech && mkdir -p $R
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech >> $R/en_speech.log 2>&1 &
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech phomt --workers 8 >> $R/phomt.log 2>&1 &
 python -m training.prep.publish_en_vi_speech card       # README.md with statistics
-python -m training.prep.publish_en_vi_speech upload     # rerun after adding shards
+nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload >> $R/upload.log 2>&1 &  # rerun after adding shards
 ```
 
-Every step resumes when run again.
+Every step may be stopped (Ctrl-C, `kill`) and resumes when run again; `upload` loses at most
+its unfinished commit (~4 GB).
 
 ## Grounded caches
 

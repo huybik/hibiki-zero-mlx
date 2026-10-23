@@ -18,9 +18,10 @@ Steps:
              same name and deletes the original, then the emptied corpus folder
   phomt      downloads each PhoMT source file and writes its dataset shard
   card       README.md with statistics of the local dataset
-  upload     uploads the shards and card with upload_large_folder (export HF_TOKEN), which skips
-             files it committed before; rerun it after adding shards
-Every step resumes when run again; a lock stops a second run of the same step.
+  upload     commits the shards missing from the Hub, a few GB at a time, then the card
+             (export HF_TOKEN); rerun it after adding shards
+Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stops a second run of
+the same step.
 
 Every shard has one schema:
   data/{train,validation}/{cv27,libriheavy-*,phomt-*}.parquet
@@ -54,7 +55,7 @@ import pyarrow as pa  # noqa: E402
 import pyarrow.compute as pc  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 import soundfile as sf  # noqa: E402
-from huggingface_hub import HfApi, hf_hub_download  # noqa: E402
+from huggingface_hub import CommitOperationAdd, HfApi, RepoFile, hf_hub_download  # noqa: E402
 from scipy.signal import resample_poly  # noqa: E402
 
 from training.prep.translate_en_speech import LETTER, MAX_SECONDS, exclusive, log  # noqa: E402
@@ -67,9 +68,11 @@ PHOMT_REVISION = "33400f73dde07da539e8326313cbabe20b757740"  # the revision grou
 CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
 SPLITS = ("train", "validation")
 MIMI_RATE = 24_000  # PhoMT audio is stored at the rate Mimi codes
-RETRIES = 5  # a failed PhoMT file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
+RETRIES = 5  # a failed PhoMT file or commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
-UPLOAD_WORKERS = 4  # more only adds memory: the link (~37 MB/s) is the limit
+# Up to ~3 min of upload, all a stop loses; at the link's ~37 MB/s, ~30 commits an hour, well
+# under the Hub's commit quota (~100 an hour).
+COMMIT_BYTES = 4_000_000_000
 T = TypeVar("T")
 
 AUDIO = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
@@ -126,6 +129,18 @@ def write_shard(path: Path, t: pa.Table) -> None:
 def lock(root: Path, step: str):
     root.mkdir(parents=True, exist_ok=True)
     return exclusive(root / f".{step}.lock", f"another {step} run is using {root}")
+
+
+def retried(what: str, fn: Callable[[], T]) -> T:
+    for attempt in range(RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == RETRIES:
+                raise
+            wait = RETRY_WAIT * 2**attempt
+            log(f"{what} failed ({type(e).__name__}: {e}); retrying in {wait // 60} min")
+            time.sleep(wait)
 
 
 # ------------------------------------------------------------------ en_speech
@@ -198,18 +213,6 @@ def read_en_speech(path: Path, vi: dict[str, str]) -> pa.Table:
 # ---------------------------------------------------------------------- PhoMT
 
 
-def retried(what: str, fn: Callable[[], T]) -> T:
-    for attempt in range(RETRIES + 1):
-        try:
-            return fn()
-        except Exception as e:
-            if attempt == RETRIES:
-                raise
-            wait = RETRY_WAIT * 2**attempt
-            log(f"{what} failed ({type(e).__name__}: {e}); retrying in {wait // 60} min")
-            time.sleep(wait)
-
-
 def build_phomt(root: Path, workers: int) -> None:
     """One shard per PhoMT source file, named by the cache's file number: phomt_s00304r00012 is
     row 12 of the file the cache numbered 304."""
@@ -250,9 +253,24 @@ def build_phomt(root: Path, workers: int) -> None:
 
 
 def read_phomt(src: str, rows: list[tuple[int, str, bool]], downloads: Path) -> pa.Table:
+    """Reads one row group (~100 clips, ~94 MB of WAV) at a time: a whole file in memory, with its
+    copies, took ~1 GB per worker."""
+    parts, start = [], 0
     with tempfile.TemporaryDirectory(dir=downloads) as tmp:
         local = hf_hub_download(PHOMT, src, repo_type="dataset", revision=PHOMT_REVISION, local_dir=tmp)
-        t = pq.read_table(local).take(pa.array([r for r, _, _ in rows]))
+        with pq.ParquetFile(local) as f:
+            if missing := [r for r, _, _ in rows if r >= f.metadata.num_rows]:
+                raise RuntimeError(f"{src} has {f.metadata.num_rows} rows; the cache names row {missing[0]}")
+            for g in range(f.num_row_groups):
+                end = start + f.metadata.row_group(g).num_rows
+                if here := [(r - start, i, m) for r, i, m in rows if start <= r < end]:
+                    parts.append(phomt_rows(f.read_row_group(g), here))
+                start = end
+    return pa.concat_tables(parts)
+
+
+def phomt_rows(group: pa.Table, rows: list[tuple[int, str, bool]]) -> pa.Table:
+    t = group.take(pa.array([r for r, _, _ in rows]))
     keep = pc.and_(pc.greater_equal(t["duration_en_s"], CLIP_SECONDS[0]), pc.less_equal(t["duration_en_s"], CLIP_SECONDS[1]))
     t = t.append_column("id", pa.array([i for _, i, _ in rows])).append_column(
         "timbre", pa.array([m for _, _, m in rows], pa.bool_())
@@ -403,8 +421,27 @@ def write_card(root: Path) -> None:
 
 
 def upload(root: Path, repo: str) -> None:
-    HfApi().upload_large_folder(repo, root, repo_type="dataset", allow_patterns=["data/*.parquet", "README.md"],
-                                num_workers=UPLOAD_WORKERS)
+    """Commit the shards missing from the Hub, COMMIT_BYTES at a time, then the card. The Hub is
+    the record of progress: a shard there at its local size is uploaded, so a stopped run loses
+    only its unfinished commit. Shards written meanwhile go in later commits."""
+    api = HfApi()
+    remote = {f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)}
+    while todo := [p for p in sorted(root.glob("data/*/*.parquet")) if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size]:
+        batch, size = [], 0
+        for p in todo:
+            if batch and size + p.stat().st_size > COMMIT_BYTES:
+                break
+            batch.append(p)
+            size += p.stat().st_size
+        retried(f"committing {batch[0].name}", lambda: api.create_commit(
+            repo, [CommitOperationAdd(p.relative_to(root).as_posix(), p) for p in batch],
+            commit_message=f"Add {len(batch)} shards from {batch[0].name}", repo_type="dataset"))
+        remote.update((p.relative_to(root).as_posix(), p.stat().st_size) for p in batch)
+        log(f"committed {len(batch)} shards from {batch[0].name} ({size / 1e9:.1f} GB), {len(todo) - len(batch)} left")
+    card = root / "README.md"
+    if card.exists():  # create_commit skips it when unchanged
+        retried("committing README.md", lambda: api.upload_file(
+            path_or_fileobj=card, path_in_repo="README.md", repo_id=repo, repo_type="dataset", commit_message="Update the card"))
     log(f"uploaded {root} to {repo}")
 
 

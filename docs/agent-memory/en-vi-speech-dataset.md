@@ -57,11 +57,13 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
   would delete its clip; only the one `"."` row lacks one. It also checks that every exported id
   is in the corpus or already moved. It removes the emptied corpus folder at the end. Run
   `translate_en_speech texts` only after the move: before it, `texts` sees part of the corpus.
-- `upload` runs `upload_large_folder` on `data/*.parquet` and `README.md`. It lists the folder
-  once, so run it again after adding shards. It keeps its state in `.cache/huggingface/` and
-  never rechecks files it marked committed, so delete that folder after deleting anything on the
-  Hub. HF asks for one upload process at a time. Its workers retry a failing file forever
-  instead of stopping, so watch the log for `Failed to preupload` and `Failed to commit`.
+- `upload` commits the local shards that are missing from the Hub, or differ from it in size, in
+  commits of up to 4 GB (~2 min at the link's speed), then `README.md`. The Hub is the record of
+  progress, so a stop loses only the unfinished commit. The user asked on 2026-10-23 that a stop
+  never lose more than that: `upload_large_folder` committed nothing in its first 37 min, while
+  it hashed and pre-uploaded batches of up to 256 files, and lost them when stopped. `upload`
+  looks for new shards after each commit and ends when it finds none, so run it again once
+  `phomt` is done. A failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
 - `phomt` downloads into `.phomt-downloads/` in the dataset folder, emptied at startup.
 - The link measured ~37 MB/s each way (2026-10-23): ~345 GB up and ~513 GB of whole PhoMT
   source files down (kept rows are spread through every row group), about 4 hours each. So the
@@ -69,16 +71,21 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
   follow.
 - A PhoMT source file takes ~100 s on one worker (373 MB in, ~20 MB out), mostly Opus
   encoding, so `phomt` runs 8 workers on the Mac's 14 cores. A failed file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
+- `phomt` reads a source file one row group (100 clips, ~94 MB of WAV) at a time. Reading the
+  whole file peaked at a 1.5 GB footprint per file; one row group at a time peaks at 0.55 GB
+  (2026-10-24). The user runs memory-heavy TTS work on the same Mac, so keep the publisher's
+  memory low.
 - pyarrow's default memory pool on macOS (mimalloc) keeps freed buffers: converting 24 shards
   left a 13 GB footprint with nothing allocated, and live runs reached 12–16 GB, pushing swap to
   25 GB. The publisher sets `ARROW_DEFAULT_MEMORY_POOL=system` before importing pyarrow
   (`pa.set_memory_pool` does not reach the Parquet reader), which stays at ~2 GB. `ps` RSS hides
   this, since macOS compresses the idle pages; check `footprint -p <pid>`.
-- The first attempt (a custom commit loop, 6 downloads plus a 6 GB commit at once) stalled at
-  ~1 MB/s under that memory pressure; `upload` runs 4 workers. An interrupted upload loses its
-  unfinished Xet batches (up to 256 files each), so stop it only when needed.
+- An early commit loop stalled at ~1 MB/s under that memory pressure, while 6 downloads ran
+  beside a 6 GB commit. `upload` now commits 4 GB at a time, with a footprint of ~1.4 GB.
+- A launcher that logs `cmd; echo "[$(date +%T)] exited with status $?"` always logs 0, because
+  `$(date)` resets `$?`; save `s=$?` first. A killed `phomt` was once logged as status 0.
 - The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses
-  storage, the upload log fills with failures rather than the run stopping.
+  storage, the commits fail and `upload` stops after its retries.
 
 ## Cache repo
 
