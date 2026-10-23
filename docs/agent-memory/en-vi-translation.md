@@ -26,8 +26,10 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
   adds shards, but not of a prune. A running `translate` reads the selection and the claims
   once, so start it again after `texts` or a claim.
 - The selection on disk is the final corpus (PR #25): 3,388,263 texts (526M characters) in
-  3,490,088 rows. Every Common Voice text in it is translated, so `translate` has nothing left
-  until Muse or Gemini release lines that fail alone.
+  3,490,088 rows. Every text is translated: Sonnet 616,834 (all Common Voice), Gemini 375,868 and
+  Muse 2,395,561, with no line left over for `translate`. `export` wrote `train.parquet`
+  (3,480,566 rows) and `validation.parquet` (9,522) on 2026-10-23; its gates flagged 267 lines
+  identical to the English and 167 over twice its length.
 - `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
   (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
   rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on

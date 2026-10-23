@@ -43,12 +43,12 @@ inference/ (Apple Silicon, MLX)
   `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
   teacher-forced loss improves, but free-running translation fails.
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
-  the `en_speech` corpus is built and its transcripts are being translated to Vietnamese:
+  the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:
   the first tranche and all Common Voice on Claude
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
-  rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)), but the TTS step that turns it
-  into Vietnamese-source pair rows is not, so there are no caches to train on yet.
+  rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The TTS step that turns them
+  into Vietnamese-source pair rows is not built, so there are no caches to train on yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
