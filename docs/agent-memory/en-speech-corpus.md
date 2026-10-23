@@ -1,8 +1,9 @@
 # English read-speech corpus
 
-Read when touching `training/prep/build_en_speech.py` or `/Volumes/data/datasets/en_speech`.
+Read when touching the `en_speech` rows (`cv27-*`, `libriheavy-*` shards) of
+`/Volumes/data/datasets/en_vi_speech`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#contents) ·
-[Format](#format) · [Build](#build) · [Quality filters](#quality-filters) · [Rules](#rules)
+[Format](#format) · [Origin](#origin) · [Quality filters](#quality-filters) · [Rules](#rules)
 
 ## Purpose
 
@@ -15,50 +16,48 @@ rows exist yet. Those rows would then go through `cache_codes` and train togethe
 
 ## Contents
 
-`/Volumes/data/datasets/en_speech/` (294 GB) holds `train/` (2,094 shards, 262 of them empty
-markers) and `validation/` (3 shards). Its `README.md` is the dataset card with statistics and
-loading code.
+On 2026-10-23 the corpus moved into the EN-VI dataset
+([en-vi-speech-dataset](en-vi-speech-dataset.md)), the one local copy: its shards keep their
+names under `data/{train,validation}/`. The old `/Volumes/data/datasets/en_speech/` folder and
+its 262 empty marker shards are gone.
 
 | split | source | rows | hours | 5–15 s hours | speakers |
 |---|---|---:|---:|---:|---:|
 | train | Common Voice 27.0 EN (`cv27`) | 522,251 | 943.5 | 942.6 | 42,680 |
-| train | Libriheavy small + medium + 1,688 of 2,955 large files | 2,958,316 | 9,542.2 | 7,217.6 | 4,459 |
+| train | Libriheavy small + medium + 1,688 of 2,955 large files | 2,958,315 | 9,542.2 | 7,217.6 | 4,459 |
 | validation | Common Voice dev | 6,021 | 11.6 | 11.5 | 3,188 |
 | validation | Libriheavy dev | 3,501 | 13.3 | 6.0 | 125 |
 
+One Libriheavy train row, transcript `"."`, had nothing to translate and was dropped in the move.
+
 ## Format
 
-- Parquet with HF `Audio` feature metadata. Columns: `id`, `audio{bytes,path}`, `text` (cased,
-  punctuated), `speaker`, `duration` (float32 seconds).
+- Columns are the dataset's: `id`, `en_audio{bytes,path}`, `text_en` (cased, punctuated),
+  `text_vi`, `speaker`, `en_duration_s`, and empty `vi_audio`, `vi_duration_s` and
+  `cross_lingual_timbre_matched`.
 - Audio keeps the original codec bytes: 32 or 48 kHz mono MP3 for CV and 48 kHz mono Ogg Opus for
   Libriheavy. Resample to 24 kHz before Mimi.
-- Metadata columns are zstd-compressed and `audio.bytes` is uncompressed. Row groups hold 500
+- Audio bytes are uncompressed in the parquet and the other columns zstd. Row groups hold 500
   rows; CV shards hold up to 20,000 rows.
-- Libriheavy ids and speakers carry a `libriheavy/` prefix.
+- Libriheavy ids (`libriheavy/<subset>/<speaker>/<book>/<recording>_<segment>`) and speakers
+  carry a `libriheavy/` prefix; CV ids and speakers a `cv27/` prefix.
 
-## Build
+## Origin
 
-The steps are `cv`, `libriheavy` and `card`, with commands in
-[training/prep/README.md](../../training/prep/README.md); each step runs as
-`python -m training.prep.build_en_speech <step>` from the repo root in the conda env.
+`training/prep/build_en_speech.py` built the corpus and was retired once it moved into the
+dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
 
-- `cv` calls the Mozilla Data Collective API (dataset `cmu5jplf300nwmh07iqvk9leo`) with
-  `MDC_API_KEY`. It downloads in 256 MiB parallel ranges with a resumable `.done` log, verifies
-  SHA-256, streams the tar into shards, then deletes the archive.
-- CV split: dev becomes validation; train is every other validated clip whose speaker and
+- Common Voice came from the Mozilla Data Collective API (dataset `cmu5jplf300nwmh07iqvk9leo`,
+  `MDC_API_KEY`). Dev became validation; train is every other validated clip whose speaker and
   sentence are not in dev. The official CV test set is folded into train, so CV test scores are
   not held out.
-- `libriheavy` pulls `mythicinfinity/libriheavy` through `huggingface_hub`, so export `HF_TOKEN`
-  from `.env` first. It takes dev, medium and small, then large files in `random.Random(0)` order
-  until pooled train holds `--target-hours` (9,200). About 10% of Libriheavy rows are stereo and
-  are dropped by checking OpusHead byte 37. Files whose output shard exists are skipped, and
-  shards emptied by the filters stay as markers. A downloaded large file (~0.47 GB) adds ~8.3 h
-  after the filters (3.9 h of 5–15 s clips measured × 2.16, the first 194 files' ratio).
-- Every source keeps only clips of 5–22.4 s (`CLIP_SECONDS`). 22.4 s is an upper bound: a
-  cache row also holds the English delay, U[0, 0.5 × Vietnamese duration], so most 15–22.4 s
-  clips will still exceed the trainer's 280 frames. Large files 195–1,688 in build order keep
-  only 5–15 s clips (an earlier target); the card does not say so.
-- Shards are written to `.tmp` and then renamed, so an interrupted write never looks finished.
+- Libriheavy came from `mythicinfinity/libriheavy`: dev, medium and small, then large files in
+  `random.Random(0)` order until pooled train held the target hours. About 10% of its rows
+  are stereo and were dropped. A large file (~0.47 GB) added ~8.3 h after the filters.
+- Every source keeps only clips of 5–22.4 s. 22.4 s is an upper bound: a cache row also holds
+  the English delay, U[0, 0.5 × Vietnamese duration], so most 15–22.4 s clips will still exceed
+  the trainer's 280 frames. Large files 195–1,688 in build order keep only 5–15 s clips (an
+  earlier target).
 
 ## Quality filters
 
@@ -70,10 +69,7 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
   ~11 kHz (a spike at 10.7–11.3 kHz) that an 11 kHz floor would split. Before the filter,
   42% of CV train hours and 17% of Libriheavy's were under 10.5 kHz.
 - Train keeps a speaker's clips in build order (CV archive order, then Libriheavy medium, small
-  and large) until the speaker holds 30 h (`SPEAKER_HOURS`); no CV speaker reaches it.
-  A Libriheavy file holds one or a few readers, so a train file whose parquet footer
-  (per-row-group speaker statistics, ~3 s to read) shows only capped readers gets an empty
-  shard without downloading.
+  and large) until the speaker holds 30 h; no CV speaker reaches it.
 - The cap came from a simulation over the measured corpus and the footers of all 2,955 large
   files, counting 5–15 s hours as the target then did. Without it, 3,642 Libriheavy readers
   fill 9,200 h and one holds 261 h. 30 h left ~490 large files to spare; 20 h couldn't reach
@@ -81,16 +77,17 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
 
 ## Rules
 
-- The Mozilla Data Collective terms forbid re-hosting or re-sharing the CV portion, so never
-  upload this corpus.
-- Training gets ~10k hours of 5–22.4 s clips, PhoMT included, so `--target-hours` is 10k minus
-  PhoMT's hours. The user first asked for 5–15 s clips; on 2026-10-23 they chose 5–22.4 s and
-  stopped the top-up at 10,486 train hours (8,160 of them 5–15 s), knowing the trainer drops
-  rows over 280 frames. Translation scope is in [en-vi-translation](en-vi-translation.md).
-- Rows outside 5–22.4 s were deleted from the existing shards rather than rebuilt (user's
-  choice), and large files keep only their clips, as `/Volumes/data` has no room for whole
-  files. The quality filters were applied the same way on 2026-10-23 (1.51M rows). Bringing
-  deleted rows back means downloading them again.
+- The whole corpus is published with its translations in `huybik/en-vi-speech`
+  ([en-vi-speech-dataset](en-vi-speech-dataset.md)): on 2026-10-23 the user chose to include
+  Common Voice for research use, knowing the Mozilla Data Collective terms forbid re-hosting it.
+- Training gets ~10k hours of 5–22.4 s English clips. The user first asked for 5–15 s clips; on
+  2026-10-23 they chose 5–22.4 s and stopped the top-up at 10,486 train hours (8,160 of them
+  5–15 s), knowing the trainer drops rows over 280 frames. On 2026-10-24 they dropped PhoMT
+  from the EN-VI dataset and asked for 10k English hours; the corpus already held them, so they
+  chose no top-up. Translation scope is in [en-vi-translation](en-vi-translation.md).
+- Rows outside 5–22.4 s were deleted from the shards rather than rebuilt (user's choice), and
+  large files keep only their clips. The quality filters were applied the same way on
+  2026-10-23 (1.51M rows). Bringing deleted rows back means downloading them again.
 - Train clip `cv27/common_voice_en_20040849` (9.4 s) was deleted on 2026-10-23, and the same
   sentence was removed from the translation selection. Sonnet returns an empty refusal for it,
   which stops `translate` ([en-vi-translation](en-vi-translation.md)). Rebuilding Common Voice

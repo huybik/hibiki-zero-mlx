@@ -2,28 +2,28 @@
 
 Run from the repository root. Generated caches land under the gitignored `data/`.
 
-## English read-speech corpus (~10.5k hours)
+## EN-VI speech dataset (~10.5k hours)
 
-Common Voice Scripted Speech 27.0 English plus Libriheavy, written as parquet
-shards (original mono MP3/Opus bytes, cased text, speaker, duration). Only clips of
-5–22.4 s are kept, as longer clips can never fit a 280-frame training row. Every recording
-must reach 10.5 kHz of audio bandwidth, and train keeps at most 30 hours per speaker
-([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md#quality-filters)). The Common
-Voice step needs `MDC_API_KEY` in `.env` and the dataset terms accepted on Mozilla Data
-Collective; the Libriheavy step needs `HF_TOKEN`.
+`/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `huybik/en-vi-speech`,
+holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
+hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
+Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
+
+Their Vietnamese speech will come from TTS
+([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)). The `en_speech` step
+moved the finished corpus in, shard by shard. The builder that downloaded Common Voice and
+Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild.
 
 ```bash
-python -m training.prep.build_en_speech cv          # download, verify, shard, delete archive
-python -m training.prep.build_en_speech libriheavy  # dev, medium, small, then large files to --target-hours
-python -m training.prep.build_en_speech card        # write README.md with statistics
+set -a && . ./.env && set +a                            # HF_TOKEN
+R=/Volumes/data/datasets/en_vi_speech && mkdir -p $R
+nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech >> $R/en_speech.log 2>&1 &
+python -m training.prep.publish_en_vi_speech card       # README.md with statistics
+nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload >> $R/upload.log 2>&1 &  # rerun after adding shards
 ```
 
-The 9,200-hour default leaves room for the ~0.8k-hour PhoMT cache, restored as in the
-[pod guide](../../docs/finetune.md), so that training gets ~10k hours.
-
-Output defaults to `/Volumes/data/datasets/en_speech`; its `README.md` documents the
-schema, selection and loading at 24 kHz. Never upload it: the Common Voice terms
-forbid re-sharing.
+Every step may be stopped (Ctrl-C, `kill`) and resumes when run again; `upload` loses at most
+its unfinished commit (~4 GB).
 
 ## Grounded caches
 
@@ -46,7 +46,7 @@ or to Muse Spark 1.3 Contributor through OpenRouter. Costs and rules are in
 [en-vi-muse](../../docs/agent-memory/en-vi-muse.md).
 
 ```bash
-python -m training.prep.translate_en_speech texts       # select every en_speech row; not during a prune
+python -m training.prep.translate_en_speech texts       # select the en_speech rows of the EN-VI dataset
 set -a && . ./.env && set +a                            # the Gemini and OpenRouter keys
 python -m training.prep.translate_en_speech claim --key OPEN_ROUTER  # all untranslated Libriheavy; while translate is stopped
 nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER --concurrency 96 \
@@ -64,5 +64,4 @@ fast the accounts' quota drains. Rerunning `texts` after the corpus changes keep
 translation already made; a running `translate` reads the selection and the claims once, so start
 it again afterwards. Every run resumes when started again.
 
-Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
-Voice text.
+Output defaults to `/Volumes/data/datasets/en_speech_vi_text`.
