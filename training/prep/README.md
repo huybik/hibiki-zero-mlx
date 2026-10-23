@@ -22,8 +22,7 @@ The 9,200-hour default leaves room for the ~0.8k-hour PhoMT cache, restored as i
 [pod guide](../../docs/finetune.md), so that training gets ~10k hours.
 
 Output defaults to `/Volumes/data/datasets/en_speech`; its `README.md` documents the
-schema, selection and loading at 24 kHz. Never upload it: the Common Voice terms
-forbid re-sharing.
+schema, selection and loading at 24 kHz.
 
 ## Grounded caches
 
@@ -64,5 +63,23 @@ fast the accounts' quota drains. Rerunning `texts` after the corpus changes keep
 translation already made; a running `translate` reads the selection and the claims once, so start
 it again afterwards. Every run resumes when started again.
 
-Output defaults to `/Volumes/data/datasets/en_speech_vi_text`. Never upload it: it holds Common
-Voice text.
+Output defaults to `/Volumes/data/datasets/en_speech_vi_text`.
+
+## EN-VI speech dataset on Hugging Face
+
+`training.prep.publish_en_vi_speech` publishes `huybik/en-vi-speech`: every `en_speech` row with
+its Vietnamese text (Vietnamese speech to come from TTS), plus the PhoMT cache rows with 5–22.4 s
+English clips, with both voices as FLAC
+([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)).
+
+```bash
+set -a && . ./.env && set +a                            # HF_TOKEN
+mkdir -p /Volumes/data/datasets/en_vi_speech_upload     # staging and logs
+nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech \
+  >> /Volumes/data/datasets/en_vi_speech_upload/en_speech.log 2>&1 &
+nohup caffeinate -i python -m training.prep.publish_en_vi_speech phomt \
+  >> /Volumes/data/datasets/en_vi_speech_upload/phomt.log 2>&1 &
+python -m training.prep.publish_en_vi_speech card       # once both have finished
+```
+
+Each step commits shards in batches and skips those already in the repo, so rerun to resume.

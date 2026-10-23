@@ -17,7 +17,8 @@ data/cache/<name> ... ─► training.finetune.train --cache-dir (several), --va
 - No pipeline produces pair rows yet. The next source is the English `en_speech` corpus
   ([en-speech-corpus](en-speech-corpus.md)) once roadmap phase 1 turns it into
   Vietnamese-source rows; its caches train together with the [PhoMT cache](#phomt-cache).
-  FLEURS is dropped.
+  Both are published, with pair-row column names, in `huybik/en-vi-speech`
+  ([en-vi-speech-dataset](en-vi-speech-dataset.md)). FLEURS is dropped.
 - Pair rows need `id`, `split`, `vi_audio`, `en_audio`, `vi_duration_s`, `en_duration_s`,
   `text_vi` and `text_en`; audio paths are absolute or repo-relative.
 - `training/paths.py` holds the repo defaults (`weights/` artifacts) and file guards.

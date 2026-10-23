@@ -81,8 +81,9 @@ The steps are `cv`, `libriheavy` and `card`, with commands in
 
 ## Rules
 
-- The Mozilla Data Collective terms forbid re-hosting or re-sharing the CV portion, so never
-  upload this corpus.
+- The whole corpus is published with its translations in `huybik/en-vi-speech`
+  ([en-vi-speech-dataset](en-vi-speech-dataset.md)): on 2026-10-23 the user chose to include
+  Common Voice for research use, knowing the Mozilla Data Collective terms forbid re-hosting it.
 - Training gets ~10k hours of 5–22.4 s clips, PhoMT included, so `--target-hours` is 10k minus
   PhoMT's hours. The user first asked for 5–15 s clips; on 2026-10-23 they chose 5–22.4 s and
   stopped the top-up at 10,486 train hours (8,160 of them 5–15 s), knowing the trainer drops

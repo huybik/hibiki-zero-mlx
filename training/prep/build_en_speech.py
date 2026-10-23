@@ -536,8 +536,7 @@ With Hugging Face `datasets` (needs `torchcodec`):
 ## Licenses
 
 - Common Voice: CC0-1.0 under the Mozilla Data Collective terms, which forbid
-  re-hosting or re-sharing the data and attempting to identify speakers. Keep this
-  corpus private.
+  re-hosting or re-sharing the data and attempting to identify speakers.
 - Libriheavy: Apache-2.0; the LibriVox recordings are public domain.
 """
 

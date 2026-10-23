@@ -17,8 +17,9 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-training/  (CUDA, Linux H100; en_speech is built and translated locally by prep/)
-  en_speech ─► prep/translate_en_speech ─► (VI TTS pair rows: not built) ─► prep/cache_codes ─► data/cache
+training/  (CUDA, Linux H100; en_speech is built, translated and published locally by prep/)
+  en_speech ─► prep/translate_en_speech ─► prep/publish_en_vi_speech ─► HF en-vi-speech (+ PhoMT)
+    ─► (VI TTS fills vi_audio: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
 inference/ (Apple Silicon, MLX)
@@ -47,8 +48,10 @@ inference/ (Apple Silicon, MLX)
   the first tranche and all Common Voice on Claude
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
-  rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The TTS step that turns them
-  into Vietnamese-source pair rows is not built, so there are no caches to train on yet.
+  rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). They are being published with
+  the PhoMT rows as `huybik/en-vi-speech`
+  ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). The TTS step that fills
+  their Vietnamese speech is not built, so there are no caches to train on yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -56,8 +59,6 @@ inference/ (Apple Silicon, MLX)
 - Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`, the Gemini and
   OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
-- Never upload or re-share the Common Voice part of `en_speech` →
-  [en-speech-corpus](docs/agent-memory/en-speech-corpus.md).
 - Apple Silicon runs inference, the `en_speech` corpus builder and its translation only; Mimi
   caching, training and evaluation run on CUDA → [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
@@ -85,11 +86,14 @@ inference/ (Apple Silicon, MLX)
 | EN→VI transcript translation | [en-vi-translation](docs/agent-memory/en-vi-translation.md) | `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text` |
 | EN→VI translation on the Gemini Batch API, claims | [en-vi-gemini](docs/agent-memory/en-vi-gemini.md) | the `claim` and `gemini` steps of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/gemini` |
 | EN→VI translation on Muse through OpenRouter | [en-vi-muse](docs/agent-memory/en-vi-muse.md) | the `muse` step of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/muse` |
+| EN-VI speech dataset and cache repo on Hugging Face | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/prep/publish_en_vi_speech.py`, `huybik/en-vi-speech`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
 
 ## Canonical resources
 
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
+- Training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
+- EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech
 
 ## Maintaining context
 

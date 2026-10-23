@@ -14,8 +14,8 @@ stream, so each line must stay aligned with its English audio. The TTS step is n
 
 ## Output
 
-`/Volumes/data/datasets/en_speech_vi_text/` holds Common Voice text, so never upload it
-([en-speech-corpus](en-speech-corpus.md)).
+`/Volumes/data/datasets/en_speech_vi_text/` stays local; the exported translations are published
+with the audio in `huybik/en-vi-speech` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
 
 - `texts` writes `texts.parquet` (`text`, the unique transcripts in translation order) and
   `rows.parquet` (`split`, `id`, `text`, `duration`) for every corpus row with a letter in its transcript,
