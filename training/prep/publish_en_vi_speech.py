@@ -8,8 +8,8 @@ Vietnamese clip where one exists:
     step fills it. Rows without a translation (transcripts without letters) are dropped.
   - PhoMT-en-vi-speech: TTS speech on both sides. Its rows are those of the grounded-v2 cache
     in CACHE_REPO, which passed English CTC alignment, whose English clip lasts CLIP_SECONDS.
-    Ids are the cache's, so cache rows map back. The PCM WAV is stored as lossless FLAC, about
-    40% of its size.
+    Ids are the cache's, so cache rows map back. The PCM WAV is stored as 24 kHz Ogg Opus,
+    Mimi's rate, at ~6% of its size.
 
 --root, laid out as the Hugging Face repo, is the one local copy: the en_speech step moves the
 corpus into it. Run from the repo root as `python -m training.prep.publish_en_vi_speech <step>`.
@@ -33,6 +33,7 @@ import argparse
 import fcntl
 import io
 import json
+import math
 import os
 import shutil
 import sys
@@ -48,11 +49,13 @@ from typing import TypeVar
 # this once, so it must be set before pyarrow is imported.
 os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
+import numpy as np  # noqa: E402
 import pyarrow as pa  # noqa: E402
 import pyarrow.compute as pc  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 import soundfile as sf  # noqa: E402
 from huggingface_hub import HfApi, hf_hub_download  # noqa: E402
+from scipy.signal import resample_poly  # noqa: E402
 
 from training.prep.translate_en_speech import LETTER, MAX_SECONDS, exclusive, log  # noqa: E402
 
@@ -63,6 +66,7 @@ PHOMT = "anquachdev/PhoMT-en-vi-speech"
 PHOMT_REVISION = "33400f73dde07da539e8326313cbabe20b757740"  # the revision grounded-v2 was built from
 CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
 SPLITS = ("train", "validation")
+MIMI_RATE = 24_000  # PhoMT audio is stored at the rate Mimi codes
 RETRIES = 5  # a failed PhoMT file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
 UPLOAD_WORKERS = 4  # more only adds memory: the link (~37 MB/s) is the limit
@@ -255,29 +259,33 @@ def read_phomt(src: str, rows: list[tuple[int, str, bool]], downloads: Path) -> 
     ).filter(keep)
     columns = {
         "id": t["id"],
-        "en_audio": flac(t["audio_en"]),
+        "en_audio": opus(t["audio_en"]),
         "text_en": t["en"],
         "text_vi": t["vi"],
         "speaker": pa.nulls(t.num_rows, pa.string()),
         "en_duration_s": t["duration_en_s"].cast(pa.float32()),
-        "vi_audio": flac(t["audio_vi"]),
+        "vi_audio": opus(t["audio_vi"]),
         "vi_duration_s": t["duration_vi_s"].cast(pa.float32()),
         "cross_lingual_timbre_matched": t["timbre"],
     }
     return pa.Table.from_pydict(columns, schema=SCHEMA)
 
 
-def flac(audio: pa.ChunkedArray) -> pa.Array:
-    """Re-encode mono 16-bit PCM WAV clips as FLAC, sample for sample."""
+def opus(audio: pa.ChunkedArray) -> pa.Array:
+    """Re-encode mono 16-bit PCM WAV clips as Ogg Opus at MIMI_RATE and libsndfile's default
+    bitrate (~37 kbps), resampling the 48 kHz Vietnamese. Lossy (user's choice), at ~6% of the WAV."""
     out = []
     for clip in audio.to_pylist():
         with sf.SoundFile(io.BytesIO(clip["bytes"])) as f:
             if f.format != "WAV" or f.subtype != "PCM_16" or f.channels != 1:
                 raise RuntimeError(f"{clip['path']}: {f.format} {f.subtype} {f.channels} ch, not mono PCM_16 WAV")
-            samples, rate = f.read(dtype="int16"), f.samplerate
+            samples, rate = f.read(dtype="float32"), f.samplerate
+        if rate != MIMI_RATE:
+            g = math.gcd(MIMI_RATE, rate)
+            samples = resample_poly(samples, MIMI_RATE // g, rate // g).astype(np.float32)
         encoded = io.BytesIO()
-        sf.write(encoded, samples, rate, format="FLAC", subtype="PCM_16")
-        out.append({"bytes": encoded.getvalue(), "path": clip["path"].removesuffix(".wav") + ".flac"})
+        sf.write(encoded, samples, MIMI_RATE, format="OGG", subtype="OPUS")
+        out.append({"bytes": encoded.getvalue(), "path": clip["path"].removesuffix(".wav") + ".opus"})
     return pa.array(out, AUDIO)
 
 
@@ -347,7 +355,8 @@ Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training 
   in batches of neighbouring lines.
 - PhoMT (`anquachdev/PhoMT-en-vi-speech` at `33400f7`): synthetic speech of PhoMT sentence
   pairs on both sides, limited to rows whose English passed CTC alignment. Its 24 kHz English
-  and 48 kHz Vietnamese 16-bit WAV is stored as FLAC, sample for sample. All rows are train.
+  and 48 kHz Vietnamese 16-bit WAV is stored as 24 kHz mono Ogg Opus at ~37 kbps. All rows are
+  train.
 
 The audio columns hold codec bytes. Read raw rows with `pyarrow` and decode with `soundfile`
 (`sf.read(io.BytesIO(row["en_audio"]["bytes"]))`), resampling to 24 kHz for Mimi, or with

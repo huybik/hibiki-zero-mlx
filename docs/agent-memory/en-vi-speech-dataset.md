@@ -17,7 +17,7 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
 ## Contents
 
 ```text
-/Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~480 GB)
+/Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~345 GB)
   data/{train,validation}/cv27-*, libriheavy-*  ◄─ en_speech step: the corpus, moved in
   data/train/phomt-s*                         ◄─ phomt step: grounded-v2 pairs + PhoMT-en-vi-speech
   README.md                                   ◄─ card step
@@ -32,13 +32,17 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
 - Common Voice is published too: the user chose this, for research use, knowing the Mozilla
   Data Collective terms forbid re-hosting it.
 - PhoMT rows are the grounded-v2 cache rows ([sft-data-caches](sft-data-caches.md#phomt-cache))
-  whose English clip lasts 5–22.4 s, the `en_speech` rule (user's choice): 367,064 rows, all
-  train, all with both voices. Ids are the cache's (`phomt_s00304r00012`: row 12 of the source
+  whose English clip lasts 5–22.4 s, the `en_speech` rule (user's choice): 367,064 rows (830 h
+  English, 805 h Vietnamese), all train, all with both voices. The user kept the rule on the
+  English side only; requiring 5–22.4 s Vietnamese too would leave 308,233 rows (57,897
+  Vietnamese clips are under 5 s). Ids are the cache's (`phomt_s00304r00012`: row 12 of the source
   file the cache numbered 304), and `cross_lingual_timbre_matched` comes from its pairs. Texts
   and durations come from `anquachdev/PhoMT-en-vi-speech` at `33400f7`.
-- PhoMT audio is 16-bit mono WAV (English 24 kHz, Vietnamese 48 kHz) re-encoded as FLAC (user's
-  choice): bit-identical on decode, ~39% of the WAV size (English 47%, Vietnamese 36%),
-  ~0.45 MB a row.
+- PhoMT audio is 16-bit mono WAV (English 24 kHz, Vietnamese 48 kHz), re-encoded as 24 kHz
+  Ogg Opus at libsndfile's default bitrate (~35 kbps), the Vietnamese resampled first. The user
+  chose this lossy encoding on 2026-10-23 for size: ~27 GB for PhoMT, against ~170 GB as
+  lossless FLAC (194 kbps English, 243 kbps Vietnamese) or ~146 GB with the Vietnamese at 24 kHz.
+  Decoded durations match the listed ones.
 
 ## Building and publishing
 
@@ -59,19 +63,20 @@ Vietnamese speech of the `en_speech` rows; `cache_codes` pair rows are then made
   Hub. HF asks for one upload process at a time. Its workers retry a failing file forever
   instead of stopping, so watch the log for `Failed to preupload` and `Failed to commit`.
 - `phomt` downloads into `.phomt-downloads/` in the dataset folder, emptied at startup.
-- The link measured ~37 MB/s each way (2026-10-23): ~480 GB up and ~513 GB of whole PhoMT
+- The link measured ~37 MB/s each way (2026-10-23): ~345 GB up and ~513 GB of whole PhoMT
   source files down (kept rows are spread through every row group), about 4 hours each. So the
   `en_speech` move and upload run while `phomt` downloads, and `card` plus a final `upload`
   follow.
-- A PhoMT source file takes ~1 minute to download and convert (373 MB in, ~120 MB out). A
-  failed file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
+- A PhoMT source file takes ~100 s on one worker (373 MB in, ~20 MB out), mostly Opus
+  encoding, so `phomt` runs 8 workers on the Mac's 14 cores. A failed file is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
 - pyarrow's default memory pool on macOS (mimalloc) keeps freed buffers: converting 24 shards
   left a 13 GB footprint with nothing allocated, and live runs reached 12–16 GB, pushing swap to
   25 GB. The publisher sets `ARROW_DEFAULT_MEMORY_POOL=system` before importing pyarrow
   (`pa.set_memory_pool` does not reach the Parquet reader), which stays at ~2 GB. `ps` RSS hides
   this, since macOS compresses the idle pages; check `footprint -p <pid>`.
 - The first attempt (a custom commit loop, 6 downloads plus a 6 GB commit at once) stalled at
-  ~1 MB/s under that memory pressure, so `phomt` runs 3 workers and `upload` 4.
+  ~1 MB/s under that memory pressure; `upload` runs 4 workers. An interrupted upload loses its
+  unfinished Xet batches (up to 256 files each), so stop it only when needed.
 - The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses
   storage, the upload log fills with failures rather than the run stopping.
 

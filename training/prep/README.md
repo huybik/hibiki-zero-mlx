@@ -9,7 +9,7 @@ Run from the repository root. Generated caches land under the gitignored `data/`
 - the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
   hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and
   their Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md));
-- the PhoMT cache rows with 5–22.4 s English clips, with both TTS voices as FLAC.
+- the PhoMT cache rows with 5–22.4 s English clips, with both TTS voices as 24 kHz Opus.
 
 The Vietnamese speech of the `en_speech` rows will come from TTS
 ([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)). The `en_speech` step
@@ -20,7 +20,7 @@ Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) 
 set -a && . ./.env && set +a                            # HF_TOKEN
 R=/Volumes/data/datasets/en_vi_speech && mkdir -p $R
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech >> $R/en_speech.log 2>&1 &
-nohup caffeinate -i python -m training.prep.publish_en_vi_speech phomt --workers 3 >> $R/phomt.log 2>&1 &
+nohup caffeinate -i python -m training.prep.publish_en_vi_speech phomt --workers 8 >> $R/phomt.log 2>&1 &
 python -m training.prep.publish_en_vi_speech card       # README.md with statistics
 python -m training.prep.publish_en_vi_speech upload     # rerun after adding shards
 ```
