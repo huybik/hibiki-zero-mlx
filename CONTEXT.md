@@ -50,18 +50,20 @@ inference/ (Apple Silicon, MLX)
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
-  translations, in the local EN-VI dataset, published as `huybik/en-vi-speech`
+  translations and the already voiced Common Voice rows of `anquachdev/common-vi-en`
+  (`cv-anquach`), in the local EN-VI dataset, published as `huybik/en-vi-speech` while it is
+  voiced; once all is voiced it goes to `anquachdev/common-vi-en`, the one copy used from then on
   ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voices the
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
-  shard: the Mac top down, another person's hardware bottom up, meeting through the Hub, where
+  shard: the Mac top down, anquachdev's hardware bottom up, meeting through the Hub, where
   `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)); no pair
   rows or caches are built from it yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
 
-- Never print, log or commit `.env` values (`HF_TOKEN`, `MDC_API_KEY`, the Gemini and
-  OpenRouter keys) →
+- Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
+  and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
 - Apple Silicon runs inference, the translation, the Vietnamese TTS and the dataset publisher
   only; Mimi caching, training and evaluation run on CUDA →
@@ -92,14 +94,15 @@ inference/ (Apple Silicon, MLX)
 | EN→VI translation on the Gemini Batch API, claims | [en-vi-gemini](docs/agent-memory/en-vi-gemini.md) | the `claim` and `gemini` steps of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/gemini` |
 | EN→VI translation on Muse through OpenRouter | [en-vi-muse](docs/agent-memory/en-vi-muse.md) | the `muse` step of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/muse` |
 | Vietnamese voice-transfer TTS (VieNeu in MLX) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py`, `vi_audio` of `/Volumes/data/datasets/en_vi_speech` |
-| EN-VI speech dataset, its upload and the cache repo | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`, `huybik/en-vi-speech`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
+| EN-VI speech dataset, its upload and the cache repo | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`, `huybik/en-vi-speech`, `anquachdev/common-vi-en`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
 
 ## Canonical resources
 
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
 - Training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
-- EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech
+- EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech while voiced,
+  then https://huggingface.co/datasets/anquachdev/common-vi-en
 
 ## Maintaining context
 

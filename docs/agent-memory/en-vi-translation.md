@@ -15,9 +15,11 @@ stream, so each line must stay aligned with its English audio. The TTS step is [
 ## Output
 
 `/Volumes/data/datasets/en_speech_vi_text/` stays local; the exported translations are published
-with the audio in `huybik/en-vi-speech` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
+with the audio in the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
 
-- `texts` reads the shards of the EN-VI dataset (`--src`) and writes `texts.parquet` (`text`, the unique transcripts in translation order)
+- `texts` reads the corpus's `cv27-*` and `libriheavy-*` shards of the EN-VI dataset (`--src`;
+  its `cv-anquach` rows came translated, and their Common Voice text must not reach the paid
+  keys) and writes `texts.parquet` (`text`, the unique transcripts in translation order)
   and `rows.parquet` (`split`, `id`, `text`, `duration`) for every row with a letter in its
   transcript, so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)).
   Validation comes first, then each Libriheavy recording in segment order, so a batch carries
@@ -79,6 +81,10 @@ Measured with Sonnet 5.5:
   deposition." Its clip was deleted from the corpus ([en-speech-corpus](en-speech-corpus.md)).
 - The gates mostly flag good output: on the validation texts, the 22 lines identical to the
   English are names, and the 17 over twice the source length translate very short lines.
+- 3,845 Libriheavy and 58 Common Voice lines of the dataset's `text_vi` hold Chinese, Japanese
+  or Korean script (checked 2026-10-24). Most are broken mid-word (`kính畏`); a few are right,
+  where the English names the characters (`京都`). Nothing flags them yet, and the TTS speaks
+  them as they are.
 
 ## Running
 

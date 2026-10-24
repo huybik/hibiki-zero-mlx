@@ -44,6 +44,11 @@ UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices.
   for the TTS output to go up continuously, so it fills the published columns instead of a
   separate folder, and the 88 shards written to one before were folded in. Vietnamese runs
   shorter than the English: 0.68x on Common Voice, 0.93x on Libriheavy validation.
+- The Opus stream is full band. VieNeu's raw 48 kHz output holds ~1e-6 of its energy above
+  12 kHz (4e-5 above 10 kHz), so a libopus `cutoff` of 12 kHz (Mimi's band) saves only ~5%
+  (28.4 against 27.0 kbps) and measured slightly worse on 0–12 kHz log-mel distance (1.61 against
+  1.69 dB, 64 rows); the user kept the full band on 2026-10-24. A 20 kbps target would give
+  24.2 kbps at 1.86 dB.
 
 ## Voice transfer
 
@@ -139,8 +144,9 @@ leaves half a shard), and a rerun skips the shards whose `vi_duration_s` has no 
 the Mac alone 3–4 days.
 
 Two machines share the work (user's plan, 2026-10-24): the Mac goes top down through the
-dataset's shard paths in sorted order (`data/train/cv27-*`, `data/train/libriheavy-*`, then
-`data/validation/*`), and another person's own hardware goes bottom up. The Mac's first run
+dataset's shard paths in sorted order (`data/train/cv-anquach-*`, which came voiced,
+`data/train/cv27-*`, `data/train/libriheavy-*`, then `data/validation/*`), and another person's
+own hardware goes bottom up. The Mac's first run
 (validation, then a shuffled train order) had voiced 88 shards before, scattered through the
 list.
 
@@ -150,12 +156,14 @@ data/train/cv27-00000 ... ─► Mac, top down
 ... data/validation/*     ◄─ other machine, bottom up
 ```
 
-- The other machine reads the shards from the Hub, skips those whose `vi_duration_s` has no
+- The other machine, anquachdev's, reads the shards from `huybik/en-vi-speech`, skips those
+  whose `vi_duration_s` has no
   nulls there, and commits each voiced shard back as soon as it is done: the same schema, only
   `vi_audio` and `vi_duration_s` filled, every other column (`cross_lingual_timbre_matched`
   included, which stays empty) as it was.
 - The Mac's `upload --follow` downloads a Hub shard voiced there when the local copy is
-  unvoiced, after checking that it keeps that contract, and never commits an unvoiced shard. The
+  unvoiced, after checking that it keeps that contract, and commits an unvoiced shard only when
+  the Hub has none of it. The
   TTS checks each shard again before reading it, `fill` keeps a shard pulled while it was being
   voiced, and a pull keeps a shard voiced here while it downloaded, so the first voicing to reach
   the Mac stays, there and on the Hub. Only a pull and a rewrite (~1.5 s) landing within

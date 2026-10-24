@@ -2,12 +2,16 @@
 
 Run from the repository root. Generated caches land under the gitignored `data/`.
 
-## EN-VI speech dataset (~10.5k hours)
+## EN-VI speech dataset (~10.8k hours)
 
 `/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `huybik/en-vi-speech`,
 holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
 hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
-Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
+Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)). Its
+`cv-anquach` shards hold, already voiced, the Common Voice rows of `anquachdev/common-vi-en`'s
+earlier version that the corpus lacks ([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)).
+Once every shard is voiced, the dataset moves to `anquachdev/common-vi-en`
+([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md#purpose)).
 
 Their Vietnamese speech comes from the TTS step below. The builder that downloaded Common Voice
 and Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild,
@@ -16,13 +20,14 @@ and the publisher's `en_speech` step that moved the corpus in (commit `a236ad5`)
 ```bash
 set -a && . ./.env && set +a                            # HF_TOKEN
 R=/Volumes/data/datasets/en_vi_speech
+python -m training.prep.publish_en_vi_speech anquach    # data/train/cv-anquach-* from the earlier common-vi-en
 python -m training.prep.publish_en_vi_speech card       # README.md with statistics (each upload pass writes it too)
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload --follow >> $R/upload.log 2>&1 &
 ```
 
 Every step may be stopped (Ctrl-C, `kill`) and resumes when run again; `upload` loses at most
-its unfinished commit (~4 GB). Without `--follow` it ends after one pass, once every voiced shard
-is on the Hub; with it, it looks again every 10 min until every local shard is voiced, here or on
+its unfinished commit (~4 GB). Without `--follow` it ends after one pass, once every shard is on
+the Hub and every voiced local shard is current there; with it, it looks again every 10 min until every local shard is voiced, here or on
 the other machine.
 
 ## Vietnamese speech of `en_speech` (TTS)

@@ -1,18 +1,33 @@
 # EN-VI speech dataset
 
 Read when touching `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`,
-the HF dataset `huybik/en-vi-speech` or the cache repo `huybik/hibiki-zero-vi-full-sft`.
+the HF datasets `huybik/en-vi-speech` and `anquachdev/common-vi-en` or the cache repo
+`huybik/hibiki-zero-vi-full-sft`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#contents) ·
-[Building and publishing](#building-and-publishing) · [Cache repo](#cache-repo)
+[cv-anquach rows](#cv-anquach-rows) · [Building and publishing](#building-and-publishing) ·
+[Cache repo](#cache-repo)
 
 ## Purpose
 
 The user asked on 2026-10-23 for one research dataset of pair-row sources: English speech, its
 transcript and Vietnamese translation, with the Vietnamese speech to come. It is kept in full on
-the Mac, where it replaced the `en_speech` corpus folder, and published as `huybik/en-vi-speech`
-(user's choices). The voice-transfer TTS step ([vi-tts](vi-tts.md)) fills the Vietnamese speech
-of its shards in place, and `upload --follow` publishes each as it is voiced; `cache_codes` pair
-rows are then made from it ([sft-data-caches](sft-data-caches.md)).
+the Mac, where it replaced the `en_speech` corpus folder (user's choice). The voice-transfer TTS
+step ([vi-tts](vi-tts.md)) fills the Vietnamese speech of its shards in place, and
+`upload --follow` publishes each as it is voiced; `cache_codes` pair rows are then made from it
+([sft-data-caches](sft-data-caches.md)).
+
+It is published as `huybik/en-vi-speech` while it is voiced: the Mac and anquachdev's machine,
+which voices bottom up, both push there. Once every shard is voiced, the whole dataset goes to
+`anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice set, and from then
+on only that repository is used (user's plan, 2026-10-24). The final upload:
+
+```bash
+HF_TOKEN=$HF_TOKEN_AN python -m training.prep.publish_en_vi_speech upload --repo anquachdev/common-vi-en
+```
+
+then delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
+on the user's change of plan: it holds ~1,580 of these shards (277 GB with his own files, all
+from before the stop), its card still his own, which reads only his old files.
 
 ## Contents
 
@@ -20,14 +35,16 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
 /Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~316 GB + ~120 GB of VI)
   data/{train,validation}/cv27-*, libriheavy-*  ◄─ the corpus, moved in (en_speech step, retired)
                                               ◄─ tts_en_speech: vi_audio filled, shard by shard
+  data/train/cv-anquach-*                     ◄─ anquach step, voiced already
   README.md                                   ◄─ card step, and each upload pass
         └─► upload step (4 GB commits; --follow every 10 min) ─► huybik/en-vi-speech
+                                                 (all voiced) ─► anquachdev/common-vi-en
 ```
 
 - Columns: `id`, `en_audio`, `text_en`, `text_vi`, `speaker`, `en_duration_s`, `vi_audio`,
   `vi_duration_s`, `cross_lingual_timbre_matched`; pair rows use the same names.
-- The rows are the `en_speech` corpus ([en-speech-corpus](en-speech-corpus.md)): 3.49M rows,
-  10,510.6 h, all 5–22.4 s. Shards keep their audio bytes and names and gain the exported
+- The `cv27` and `libriheavy` rows are the `en_speech` corpus
+  ([en-speech-corpus](en-speech-corpus.md)): 3.49M rows, 10,510.6 h, all 5–22.4 s. Shards keep their audio bytes and names and gain the exported
   translations ([en-vi-translation](en-vi-translation.md)). The TTS step fills `vi_audio` and
   `vi_duration_s`; the timbre flag is empty until speaker similarity is measured (the parity
   plan's gate).
@@ -37,9 +54,38 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
   were built, and none was uploaded. Its training cache stays in the [cache repo](#cache-repo).
   The removed `phomt` step is in git at `7e3b954`.
 
+## cv-anquach rows
+
+`anquachdev/common-vi-en` held, before the merge (revision `dba8e98`), 739,346 Common Voice
+English rows (the first ~1,000 h in clip-name order, no length filter), each with a Vietnamese
+translation and Vietnamese speech: `en`, `vi`, `audio_en`, `audio_vi`, `source_clip`, both
+audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them dataset rows
+(user's choices, 2026-10-24):
+
+- Kept: English 5–22.4 s, as in the corpus (321,028 rows); the Vietnamese length is free.
+- 170,820 of those clips (307 h) are `cv27` rows, all in shards already voiced here
+  (`cv27-00000`…`00032` and validation `cv27-00000`); ours stay whole and his copies are dropped.
+- Of the other 150,208, the 11,212 whose English sentence is a `cv27` validation sentence,
+  compared lower-cased with punctuation and spaces collapsed, are dropped, as `cv27` train drops
+  them (plain lower-casing let 126 through), and the 78 whose `vi` holds Chinese, Japanese or
+  Korean script (`Thùng啤酒`), spoken from that broken text. The rest go to `train` as
+  `cv-anquach-*` shards of 20,000 rows: 138,918 rows, 256.1 h English, 211.6 h Vietnamese
+  (2 rows over 22.4 s).
+- They are clips `cv27` lacks: dropped by its filters (such as the 10.5 kHz bandwidth floor) or
+  not among its validated clips; which, is not recorded. Their English is his 16 kHz re-encode,
+  so nothing above 8 kHz; Mimi codes up to 12 kHz. His Vietnamese speech comes from his own TTS,
+  not known to match the English voice. `speaker` is empty (his set has
+  none, and the Common Voice metadata is not kept), so speaker overlap with `cv27` validation is
+  unchecked. `id` is `cv-anquach/<clip>`, and both audio paths are `<clip>.opus`.
+- His old files (`data/train-heavy-*.parquet`, the empty `data/train-00000-of-00001.parquet`) are
+  deleted by hand from `anquachdev/common-vi-en` after the final upload
+  (`HfApi().delete_files(repo, delete_patterns=…)`);
+  the step downloads them from the pinned revision, so never squash the repository's history.
+  The download sits in `/Volumes/data/datasets/common_vi_en_src` (12 GB) and can be deleted.
+
 ## Building and publishing
 
-- Steps `card` and `upload`; commands are in
+- Steps `anquach`, `card` and `upload`; commands are in
   [training/prep/README.md](../../training/prep/README.md). Each resumes when run again and holds
   a `.<step>.lock` in the dataset folder.
 - The `en_speech` step moved the corpus in, converting each shard and deleting its original;
@@ -47,9 +93,13 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
 - Every shard is written as `.tmp`, read back and compared, flushed to the drive with
   `F_FULLFSYNC` (plain fsync stops at the drive's cache), then renamed, so a power loss or USB
   drop leaves the old shard or the new one, never half of one.
-- `upload` commits the voiced local shards that are missing from the Hub, or differ from it in
-  size, in commits of up to 4 GB (2–7 min each, depending on what else shares the link), then writes and
-  commits a fresh `README.md`. The Hub is the record of
+- `upload` commits the local shards that are missing from the Hub, and the voiced ones that differ
+  from it in size, in commits of up to 4 GB (2–7 min each, depending on what else shares the
+  link), then writes and commits a fresh `README.md`. It lists the Hub before each commit and
+  makes the commit on top of the listed revision (`parent_commit`), so a commit landing in
+  between fails it (409 or 412) and it lists again at once. Seeding the merged repository went at 15–45 s a
+  commit (~110 an hour, above the Hub's rough limit of ~100 an hour, yet none refused): Xet had the
+  bytes from `huybik/en-vi-speech` already. The Hub is the record of
   progress, so a stop loses only the unfinished commit. The user asked on 2026-10-23 that a stop
   never lose more than that: `upload_large_folder` committed nothing in its first 37 min, while
   it hashed and pre-uploaded batches of up to 256 files, and lost them when stopped. `upload`
@@ -60,7 +110,8 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
   A failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run. It also stops
   when `data/` holds no shards (a dropped drive or a wrong `--root`), rather than end as if
   every shard were voiced.
-- Unvoiced shards are never committed, so an unvoiced local copy never replaces a voiced Hub one.
+- An unvoiced shard is committed only when the Hub has none of it (how the merged repository got
+  every shard), so an unvoiced local copy never replaces a voiced Hub one.
   A Hub shard whose size differs from an unvoiced local shard was voiced by the other machine
   ([vi-tts](vi-tts.md#running)): after its commits, `upload` downloads it into `.pull/` and puts
   it in place of the local copy (~20 s for 280 MB) only if its schema matches, every column but
@@ -93,8 +144,10 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
   ~1.4 GB, ~2.5 GB during a pull.
 - A launcher that logs `cmd; echo "[$(date +%T)] exited with status $?"` always logs 0, because
   `$(date)` resets `$?`; save `s=$?` first.
-- The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses
-  storage, the commits fail and `upload` stops after its retries.
+- `upload` writes with `HF_TOKEN`; for `anquachdev/common-vi-en`, set it to `HF_TOKEN_AN`, a
+  write token of that account ([environment](environment.md)).
+- Free-plan public storage is "best-effort" (huybik's plan; anquachdev's is not recorded); if
+  the Hub refuses storage, the commits fail and `upload` stops after its retries.
 
 ## Cache repo
 

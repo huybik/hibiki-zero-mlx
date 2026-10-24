@@ -82,7 +82,7 @@ def encode(chunks: list[np.ndarray], pauses: list[float]) -> tuple[bytes, float]
 
 
 def shards(root: Path) -> list[Path]:
-    """Top down: data/train/cv27-*, data/train/libriheavy-*, then data/validation/*."""
+    """Top down: data/train/cv-anquach-* (voiced already), cv27-*, libriheavy-*, then data/validation/*."""
     return sorted(root.glob("data/*/*.parquet"))
 
 
