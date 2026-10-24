@@ -42,14 +42,13 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
 - Steps `card` and `upload`; commands are in
   [training/prep/README.md](../../training/prep/README.md). Each resumes when run again and holds
   a `.<step>.lock` in the dataset folder.
-- The `en_speech` step that moved the corpus in, converting each shard and deleting its
-  original, is removed (in git at `a236ad5`): run again, it would replace voiced shards with
-  unvoiced rebuilds.
+- The `en_speech` step moved the corpus in, converting each shard and deleting its original;
+  with the corpus in, it is removed (in git at `a236ad5`).
 - Every shard is written as `.tmp`, read back and compared, flushed to the drive with
   `F_FULLFSYNC` (plain fsync stops at the drive's cache), then renamed, so a power loss or USB
   drop leaves the old shard or the new one, never half of one.
-- `upload` commits the local shards that are missing from the Hub, or differ from it in size, in
-  commits of up to 4 GB (2–7 min each, depending on what else shares the link), then writes and
+- `upload` commits the voiced local shards that are missing from the Hub, or differ from it in
+  size, in commits of up to 4 GB (2–7 min each, depending on what else shares the link), then writes and
   commits a fresh `README.md`. The Hub is the record of
   progress, so a stop loses only the unfinished commit. The user asked on 2026-10-23 that a stop
   never lose more than that: `upload_large_folder` committed nothing in its first 37 min, while
@@ -61,22 +60,26 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
   A failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run. It also stops
   when `data/` holds no shards (a dropped drive or a wrong `--root`), rather than end as if
   every shard were voiced.
-- A Hub shard whose size differs from an unvoiced local shard was voiced by the other machine
-  ([vi-tts](vi-tts.md#running)): `upload` downloads it into `.pull/` and puts it in place of the
-  local copy (~20 s for 280 MB) only if its schema matches, every column but `vi_audio` and
-  `vi_duration_s` equals the local one, and those two have no nulls. Any other difference is
-  committed, so an unvoiced local shard never replaces a voiced Hub one.
-- A rejected download stops the run, and every rerun stops on it again before committing
-  anything, while the TTS keeps voicing. Have the other machine commit a fixed copy (a new
-  version is downloaded afresh), or delete the Hub copy with `HfApi().delete_file` so the Mac
-  commits its own; then `rm -r .pull` and rerun.
+- Unvoiced shards are never committed, so an unvoiced local copy never replaces a voiced Hub one.
+  A Hub shard whose size differs from an unvoiced local shard was voiced by the other machine
+  ([vi-tts](vi-tts.md#running)): after its commits, `upload` downloads it into `.pull/` and puts
+  it in place of the local copy (~20 s for 280 MB) only if its schema matches, every column but
+  `vi_audio` and `vi_duration_s` equals the local one, and every row has Vietnamese audio bytes
+  and a positive duration. Comparing the `en_audio` columns adds ~1 GB for those ~20 s. A shard
+  the TTS voiced here meanwhile is kept, and goes up in the next pass.
+- A rejected download stops the run, and every rerun stops on it again after its commits, while
+  the TTS keeps voicing. Have the other machine commit a fixed copy (a new version is downloaded
+  afresh), or put the local copy back with `HfApi().upload_file` for the TTS here to voice; then
+  `rm -r .pull` and rerun.
 - A voiced shard sent again costs only its new bytes: the Hub's Xet storage chunks files by
   content, and the rewritten shard keeps the English columns' bytes. The first 4 GB commit of
   voiced shards sent 1.15 GB (2026-10-24), about their Vietnamese audio.
 - `upload` compares sizes only, and never deletes: a shard rewritten at the same size is not
   sent again, and a shard deleted locally stays on the Hub, where the card's
-  `data/train/*.parquet` still reads it. After rebuilding or deleting a shard, delete its Hub
-  copy with `HfApi().delete_file`.
+  `data/train/*.parquet` still reads it; delete its Hub copy with `HfApi().delete_file`.
+- A kill in the middle of a shard rewrite can leave its `.parquet.tmp` (200–300 MB), which no
+  step reads; delete it while the TTS is stopped. A killed download leaves its partial file in
+  `.pull/` until the next pull clears it.
 - huggingface_hub's progress bars are disabled in `upload`: in a log, Xet's redraws came to
   ~1 MB a commit.
 - Upload alone ran at 30–36 MB/s (2026-10-24). Downloads share the link: with ~27 MB/s coming
@@ -87,7 +90,7 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
   (`pa.set_memory_pool` does not reach the Parquet reader), which stays at ~2 GB. `ps` RSS hides
   this, since macOS compresses the idle pages; check `footprint -p <pid>`. The user runs
   memory-heavy TTS work on the same Mac, so keep the publisher's memory low; `upload` holds
-  ~1.4 GB.
+  ~1.4 GB, ~2.5 GB during a pull.
 - A launcher that logs `cmd; echo "[$(date +%T)] exited with status $?"` always logs 0, because
   `$(date)` resets `$?`; save `s=$?` first.
 - The account is on the free plan, whose public storage is "best-effort"; if the Hub refuses

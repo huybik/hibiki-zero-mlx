@@ -125,7 +125,7 @@ def read(paths: list[Path]) -> Iterator[tuple[Shard, int, bytes, str]]:
 
 def fill(path: Path, ids: list[str], clips: list[tuple[bytes, float]]) -> bool:
     """Rewrite a dataset shard with the Vietnamese clips of its rows, unless the upload pulled it
-    in, voiced on the Hub, meanwhile: the first voicing stays, here and on the Hub."""
+    in, voiced on the Hub, meanwhile: that voicing stays."""
     t = pq.read_table(path)
     if t["vi_duration_s"].null_count == 0:
         return False

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build the EN-VI speech dataset that SFT pair rows are cached from, and publish it.
+"""Publish the EN-VI speech dataset that SFT pair rows are cached from.
 
 Each row holds an English clip of the en_speech corpus (Common Voice 27 and Libriheavy read
 speech) with its transcript and the Vietnamese translation exported by
@@ -11,10 +11,9 @@ a236ad5.
 --root, laid out as the Hugging Face repo, is the one local copy. Run from the repo root as
 `python -m training.prep.publish_en_vi_speech <step>`. Steps:
   card       README.md with statistics of the local dataset
-  upload     commits the shards missing from the Hub or voiced here since, a few GB at a time,
-             downloads the shards voiced on the Hub by another machine, then commits a fresh card
-             (export HF_TOKEN); with --follow it looks again every 10 min until every shard is
-             voiced
+  upload     commits the shards voiced here since, a few GB at a time, downloads the shards
+             voiced on the Hub by another machine, then commits a fresh card (export HF_TOKEN);
+             with --follow it looks again every 10 min until every shard is voiced
 Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stops a second run of
 the same step.
 
@@ -242,20 +241,21 @@ def write_card(root: Path) -> None:
         f"| {s} | {src} | {n} | {r:,} | {h:,.1f} | {vh:,.1f} | {spk:,} | {gb:.1f} |"
         for s, src, n, r, h, vh, spk, gb in rows
     )
-    tmp = root / "README.md.tmp"  # so a running upload never reads half a card
+    tmp = root / f"README.md.{os.getpid()}.tmp"  # so no run reads half a card, or writes into another's
     tmp.write_text(CARD.replace("{{STATS}}", table).replace("{{CLIP}}", f"{CLIP_SECONDS[0]:g}-{CLIP_SECONDS[1]:g} s"))
     tmp.replace(root / "README.md")
     log(f"wrote {root / 'README.md'}:\n{table}")
 
 
 def upload(root: Path, repo: str, follow: bool) -> None:
-    """Match the local shards and the Hub's, then commit a fresh card. A shard differing from its
-    Hub copy in size is downloaded when only the Hub's is voiced (the TTS runs top down here and
-    bottom up on another machine) and committed otherwise, COMMIT_BYTES at a time. The Hub is the
-    record of progress: a shard there at its local size is uploaded, so a stopped run loses only
-    its unfinished commit. Shards written meanwhile go in later commits. With follow, it looks
-    again every FOLLOW_WAIT until every shard is voiced; the Hub's Xet storage sends only the new
-    bytes of a rewritten shard."""
+    """Match the local shards and the Hub's, then commit a fresh card. The TTS runs top down here
+    and bottom up on another machine. A voiced local shard that differs from its Hub copy in size
+    is committed, COMMIT_BYTES at a time; an unvoiced one is replaced by its Hub copy, voiced
+    there. Unvoiced shards are never committed, so they never replace a voiced Hub copy. The Hub
+    is the record of progress: a shard there at its local size is uploaded, so a stopped run loses
+    only its unfinished commit. Shards written meanwhile go in later commits. With follow, it
+    looks again every FOLLOW_WAIT until every shard is voiced; the Hub's Xet storage sends only
+    the new bytes of a rewritten shard."""
     disable_progress_bars()  # in a log, their redraws come to ~1 MB a commit
     api = HfApi()
     changed = True  # the first pass sends the card even when no shard changed
@@ -265,12 +265,7 @@ def upload(root: Path, repo: str, follow: bool) -> None:
         done = not follow or all(voiced(p) for p in local)  # before the pass, so it sends the last
         remote = retried("listing the Hub", lambda: {
             f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)})
-        for p in local:
-            name = p.relative_to(root).as_posix()
-            if name in remote and remote[name] != p.stat().st_size and not voiced(p):
-                pull(api, repo, root, p)
-                changed = True
-        while todo := [p for p in local if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size]:
+        while todo := [p for p in local if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size and voiced(p)]:
             batch, size = {}, 0
             for p in todo:
                 if batch and size + p.stat().st_size > COMMIT_BYTES:
@@ -284,6 +279,11 @@ def upload(root: Path, repo: str, follow: bool) -> None:
             remote.update((p.relative_to(root).as_posix(), n) for p, n in batch.items())
             log(f"committed {len(batch)} shards from {first} ({size / 1e9:.1f} GB), {len(todo) - len(batch)} left")
             changed = True
+        for p in local:
+            name = p.relative_to(root).as_posix()
+            if name in remote and remote[name] != p.stat().st_size and not voiced(p):
+                pull(api, repo, root, p)
+                changed = True
         if changed:
             write_card(root)
             card = root / "README.md"  # create_commit skips it when unchanged
@@ -298,7 +298,8 @@ def upload(root: Path, repo: str, follow: bool) -> None:
 
 def pull(api: HfApi, repo: str, root: Path, path: Path) -> None:
     """Replace a local shard with its Hub copy, voiced on another machine, once that checks out:
-    the same schema, every column but the Vietnamese speech equal, and the speech filled."""
+    the same schema, every column but the Vietnamese speech equal, and the speech filled. Comparing
+    the en_audio columns adds ~1 GB for the ~20 s of a pull."""
     name = path.relative_to(root).as_posix()
     got = Path(retried(f"downloading {name}", lambda: api.hf_hub_download(
         repo, name, repo_type="dataset", local_dir=root / ".pull")))
@@ -306,9 +307,19 @@ def pull(api: HfApi, repo: str, root: Path, path: Path) -> None:
     def column(p: Path, c: str) -> pa.ChunkedArray:  # one at a time: en_audio alone is ~200 MB
         return pq.read_table(p, columns=[c])[c]
 
-    if not (pq.read_schema(got).equals(SCHEMA) and column(got, "vi_audio").null_count == 0 and voiced(got)
+    def spoken() -> bool:  # every row has audio bytes and a positive duration
+        audio = pc.struct_field(column(got, "vi_audio"), "bytes")  # null under a null row too
+        seconds = column(got, "vi_duration_s")
+        return (audio.null_count == seconds.null_count == 0 and pc.all(pc.greater(pc.binary_length(audio), 0)).as_py()
+                and pc.all(pc.greater(seconds, 0)).as_py())  # NaN fails too
+
+    if not (pq.read_schema(got).equals(SCHEMA) and spoken()
             and all(column(got, c).equals(column(path, c)) for c in SCHEMA.names if c not in ("vi_audio", "vi_duration_s"))):
         raise RuntimeError(f"the Hub's {name} is not this shard voiced; it is left in {got}")
+    if voiced(path):  # the TTS voiced it here while it downloaded: the first voicing stays
+        shutil.rmtree(root / ".pull")
+        log(f"kept {name}, voiced here while the Hub's copy downloaded")
+        return
     durable(got)
     got.replace(path)
     durable(path.parent)

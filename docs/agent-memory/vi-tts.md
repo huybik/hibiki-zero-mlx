@@ -138,7 +138,10 @@ data/train/cv27-00000 ... ─► Mac, top down
   `vi_audio` and `vi_duration_s` filled, every other column (`cross_lingual_timbre_matched`
   included, which stays empty) as it was.
 - The Mac's `upload --follow` downloads a Hub shard voiced there when the local copy is
-  unvoiced, after checking that it keeps that contract. The TTS checks each shard again before
-  reading it, and `fill` keeps a shard pulled while it was being voiced, so the first voicing to
-  reach the Mac stays, there and on the Hub. Near the meeting point a few shards may be voiced
-  twice: the other machine's commits reach the Mac up to ~10 min later, ~3 TTS shards.
+  unvoiced, after checking that it keeps that contract, and never commits an unvoiced shard. The
+  TTS checks each shard again before reading it, `fill` keeps a shard pulled while it was being
+  voiced, and a pull keeps a shard voiced here while it downloaded, so the first voicing to reach
+  the Mac stays, there and on the Hub. Only a pull landing within a rewrite's ~1.5 s can be
+  overwritten by the Mac's voicing, which the next pass then commits; either way the two copies
+  end the same. Near the meeting point a few shards may be voiced twice: the other machine's
+  commits reach the Mac up to ~10 min later, ~3 TTS shards.
