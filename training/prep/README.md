@@ -9,15 +9,14 @@ holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus
 hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
 Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
 
-Their Vietnamese speech comes from the TTS step below. The `en_speech` step
-moved the finished corpus in, shard by shard. The builder that downloaded Common Voice and
-Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild.
+Their Vietnamese speech comes from the TTS step below. The builder that downloaded Common Voice
+and Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild,
+and the publisher's `en_speech` step that moved the corpus in (commit `a236ad5`).
 
 ```bash
 set -a && . ./.env && set +a                            # HF_TOKEN
-R=/Volumes/data/datasets/en_vi_speech && mkdir -p $R
-nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech >> $R/en_speech.log 2>&1 &
-python -m training.prep.publish_en_vi_speech card       # README.md with statistics
+R=/Volumes/data/datasets/en_vi_speech
+python -m training.prep.publish_en_vi_speech card       # README.md with statistics (each upload pass writes it too)
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload --follow >> $R/upload.log 2>&1 &
 ```
 

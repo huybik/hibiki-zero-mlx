@@ -18,7 +18,7 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
 
 ```text
 /Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~316 GB + ~120 GB of VI)
-  data/{train,validation}/cv27-*, libriheavy-*  ◄─ en_speech step: the corpus, moved in
+  data/{train,validation}/cv27-*, libriheavy-*  ◄─ the corpus, moved in (en_speech step, retired)
                                               ◄─ tts_en_speech: vi_audio filled, shard by shard
   README.md                                   ◄─ card step, and each upload pass
         └─► upload step (4 GB commits; --follow every 10 min) ─► huybik/en-vi-speech
@@ -39,17 +39,15 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
 
 ## Building and publishing
 
-- Steps `en_speech`, `card` and `upload`; commands are in
+- Steps `card` and `upload`; commands are in
   [training/prep/README.md](../../training/prep/README.md). Each resumes when run again and holds
   a `.<step>.lock` in the dataset folder.
+- The `en_speech` step that moved the corpus in, converting each shard and deleting its
+  original, is removed (in git at `a236ad5`): run again, it would replace voiced shards with
+  unvoiced rebuilds.
 - Every shard is written as `.tmp`, read back and compared, flushed to the drive with
-  `F_FULLFSYNC` (plain fsync stops at the drive's cache), then renamed. Only then does
-  `en_speech` delete the original, so a power loss or USB drop can't lose a clip. An original
-  that survives a crash is converted again.
-- `en_speech` stops if a transcript with a letter has no translation, as dropping the row
-  would delete its clip; only the one `"."` row lacks one. It also checks that every exported id
-  is in the corpus or already moved. It removes the emptied corpus folder at the end. Run
-  `translate_en_speech texts` only after the move: before it, `texts` sees part of the corpus.
+  `F_FULLFSYNC` (plain fsync stops at the drive's cache), then renamed, so a power loss or USB
+  drop leaves the old shard or the new one, never half of one.
 - `upload` commits the local shards that are missing from the Hub, or differ from it in size, in
   commits of up to 4 GB (2–7 min each, depending on what else shares the link), then writes and
   commits a fresh `README.md`. The Hub is the record of
@@ -60,14 +58,21 @@ rows are then made from it ([sft-data-caches](sft-data-caches.md)).
   user asked on 2026-10-24 that the TTS output go up continuously) it lists the Hub again every
   10 min until every shard is voiced, so start it beside the TTS run; a TTS shard is voiced
   every ~3 min.
+  A failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run. It also stops
+  when `data/` holds no shards (a dropped drive or a wrong `--root`), rather than end as if
+  every shard were voiced.
 - A Hub shard whose size differs from an unvoiced local shard was voiced by the other machine
-  ([vi-tts](vi-tts.md#running)): `upload` downloads it into `.pull/`, checks its schema, its
-  ids and that it is voiced, then puts it in place of the local copy (~20 s for 280 MB). Any
-  other difference is committed, so an unvoiced local shard never replaces a voiced Hub one. A failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
+  ([vi-tts](vi-tts.md#running)): `upload` downloads it into `.pull/` and puts it in place of the
+  local copy (~20 s for 280 MB) only if its schema matches, every column but `vi_audio` and
+  `vi_duration_s` equals the local one, and those two have no nulls. Any other difference is
+  committed, so an unvoiced local shard never replaces a voiced Hub one.
+- A rejected download stops the run, and every rerun stops on it again before committing
+  anything, while the TTS keeps voicing. Have the other machine commit a fixed copy (a new
+  version is downloaded afresh), or delete the Hub copy with `HfApi().delete_file` so the Mac
+  commits its own; then `rm -r .pull` and rerun.
 - A voiced shard sent again costs only its new bytes: the Hub's Xet storage chunks files by
   content, and the rewritten shard keeps the English columns' bytes. The first 4 GB commit of
-  voiced shards sent 1.15 GB (2026-10-24), about their Vietnamese audio. Each upload pass
-  stats sizes before committing, so a shard the TTS rewrites mid-commit goes up again.
+  voiced shards sent 1.15 GB (2026-10-24), about their Vietnamese audio.
 - `upload` compares sizes only, and never deletes: a shard rewritten at the same size is not
   sent again, and a shard deleted locally stays on the Hub, where the card's
   `data/train/*.parquet` still reads it. After rebuilding or deleting a shard, delete its Hub

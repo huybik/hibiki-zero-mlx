@@ -123,15 +123,19 @@ def read(paths: list[Path]) -> Iterator[tuple[Shard, int, bytes, str]]:
             yield shard, i, audio[i], texts[i]
 
 
-def fill(path: Path, ids: list[str], clips: list[tuple[bytes, float]]) -> None:
-    """Rewrite a dataset shard with the Vietnamese clips of its rows."""
+def fill(path: Path, ids: list[str], clips: list[tuple[bytes, float]]) -> bool:
+    """Rewrite a dataset shard with the Vietnamese clips of its rows, unless the upload pulled it
+    in, voiced on the Hub, meanwhile: the first voicing stays, here and on the Hub."""
     t = pq.read_table(path)
+    if t["vi_duration_s"].null_count == 0:
+        return False
     if t["id"].to_pylist() != ids:
         raise RuntimeError(f"{path} changed while it was voiced")
     audio = pa.array([{"bytes": b, "path": f"{i.rsplit('/', 1)[-1]}.opus"} for i, (b, _) in zip(ids, clips)], AUDIO)
     t = t.set_column(t.schema.get_field_index("vi_audio"), "vi_audio", audio)
     t = t.set_column(t.schema.get_field_index("vi_duration_s"), "vi_duration_s", pa.array([d for _, d in clips], pa.float32()))
     write_shard(path, t)
+    return True
 
 
 class Voicer:
@@ -198,7 +202,9 @@ class Voicer:
         shard.left -= 1
         if shard.left:
             return
-        fill(shard.path, shard.ids, shard.clips)
+        if not fill(shard.path, shard.ids, shard.clips):
+            log(f"{shard.path.parent.name}/{shard.path.name}: voiced on the Hub meanwhile, so that voicing stays")
+            return
         hours = sum(d for _, d in shard.clips) / 3600
         self.hours += hours
         elapsed = time.perf_counter() - self.start

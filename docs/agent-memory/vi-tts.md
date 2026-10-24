@@ -134,8 +134,11 @@ data/train/cv27-00000 ... ─► Mac, top down
 ```
 
 - The other machine reads the shards from the Hub, skips those whose `vi_duration_s` has no
-  nulls there, and commits each voiced shard back with the same schema as soon as it is done.
-- The Mac's `upload --follow` downloads every Hub shard voiced there in place of the local copy
-  (it checks the schema, the ids and that `vi_duration_s` has no nulls first). The TTS checks each
-  shard again before reading it, so it skips them. Near the meeting point both may voice a shard
-  or two; the later commit wins.
+  nulls there, and commits each voiced shard back as soon as it is done: the same schema, only
+  `vi_audio` and `vi_duration_s` filled, every other column (`cross_lingual_timbre_matched`
+  included, which stays empty) as it was.
+- The Mac's `upload --follow` downloads a Hub shard voiced there when the local copy is
+  unvoiced, after checking that it keeps that contract. The TTS checks each shard again before
+  reading it, and `fill` keeps a shard pulled while it was being voiced, so the first voicing to
+  reach the Mac stays, there and on the Hub. Near the meeting point a few shards may be voiced
+  twice: the other machine's commits reach the Mac up to ~10 min later, ~3 TTS shards.

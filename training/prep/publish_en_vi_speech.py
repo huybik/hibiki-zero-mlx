@@ -5,13 +5,11 @@ Each row holds an English clip of the en_speech corpus (Common Voice 27 and Libr
 speech) with its transcript and the Vietnamese translation exported by
 training/prep/translate_en_speech.py. The voice-transfer TTS step (training/prep/tts_en_speech.py)
 fills `vi_audio` and `vi_duration_s` shard by shard. Rows without a translation (transcripts
-without letters) are dropped.
+without letters) were dropped when the corpus was moved in; the step that moved it is in git at
+a236ad5.
 
---root, laid out as the Hugging Face repo, is the one local copy: the en_speech step moves the
-corpus into it. Run from the repo root as `python -m training.prep.publish_en_vi_speech <step>`.
-Steps:
-  en_speech  converts each shard of the en_speech corpus at --src into a dataset shard of the
-             same name and deletes the original, then the emptied corpus folder
+--root, laid out as the Hugging Face repo, is the one local copy. Run from the repo root as
+`python -m training.prep.publish_en_vi_speech <step>`. Steps:
   card       README.md with statistics of the local dataset
   upload     commits the shards missing from the Hub or voiced here since, a few GB at a time,
              downloads the shards voiced on the Hub by another machine, then commits a fresh card
@@ -35,7 +33,6 @@ import shutil
 import sys
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
 
@@ -50,7 +47,7 @@ import pyarrow.parquet as pq  # noqa: E402
 from huggingface_hub import CommitOperationAdd, HfApi, RepoFile  # noqa: E402
 from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
-from training.prep.translate_en_speech import LETTER, MAX_SECONDS, exclusive, log  # noqa: E402
+from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
 
 REPO = "huybik/en-vi-speech"
 CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
@@ -104,7 +101,7 @@ def durable(path: Path) -> None:
 
 def write_shard(path: Path, t: pa.Table) -> None:
     """Write, check by reading back, flush, then rename: a shard under its name is whole on the
-    drive before any original is deleted, and the upload never picks up a `.tmp`."""
+    drive, and the upload never picks up a `.tmp`."""
     tmp = path.with_name(path.name + ".tmp")
     pq.write_table(t, tmp, row_group_size=500, compression=COMPRESSION)
     if not pq.read_table(tmp).equals(t):
@@ -134,73 +131,6 @@ def retried(what: str, fn: Callable[[], T]) -> T:
             wait = RETRY_WAIT * 2**attempt
             log(f"{what} failed ({type(e).__name__}: {e}); retrying in {wait // 60} min")
             time.sleep(wait)
-
-
-# ------------------------------------------------------------------ en_speech
-
-
-def move_en_speech(src: Path, vi_text: Path, root: Path, workers: int) -> None:
-    if not src.exists():
-        if not any(root.glob("data/*/*.parquet")):
-            raise SystemExit(f"{src} does not exist and no en_speech shard is in {root}")
-        log(f"{src} is gone: en_speech is already moved")
-        return
-    if src.resolve().is_relative_to(root.resolve()) or root.resolve().is_relative_to(src.resolve()):
-        raise SystemExit(f"--src {src} and --root {root} overlap")
-    for split in SPLITS:
-        export = pq.read_table(vi_text / f"{split}.parquet")
-        vi = dict(zip(export["id"].to_pylist(), export["text_vi"].to_pylist()))
-        out = root / "data" / split
-        out.mkdir(parents=True, exist_ok=True)
-        sources = sorted((src / split).glob("*.parquet"))
-        moved = list(out.glob("*.parquet"))
-        ids = set()
-        for p in sources + moved:
-            ids.update(pq.read_table(p, columns=["id"])["id"].to_pylist())
-        if stray := len(vi.keys() - ids):
-            raise RuntimeError(f"{split}: {stray:,} translated ids are in neither {src} nor {out}; "
-                               "the export does not match the corpus")
-        log(f"{split}: {len(sources)} shards to move, {len(moved)} moved, {len(ids) - len(vi):,} rows without a translation")
-
-        def move(p: Path) -> None:
-            # An empty shard only marked a source file done for the corpus builder. A shard whose
-            # original survives is rebuilt, as a crash may have cut it off before the flush.
-            if pq.read_metadata(p).num_rows:
-                t = read_en_speech(p, vi)
-                write_shard(out / p.name, t)
-                log(f"moved {split}/{p.name} ({t.num_rows} rows)")
-            p.unlink()
-
-        with ThreadPoolExecutor(workers) as ex:
-            list(ex.map(move, sources))
-    if left := list(src.rglob("*.parquet")):
-        raise RuntimeError(f"{len(left)} shards outside the splits are left in {src}, e.g. {left[0]}")
-    shutil.rmtree(src)  # the corpus card and Finder files
-    log(f"en_speech moved into {root}; {src} removed")
-
-
-def read_en_speech(path: Path, vi: dict[str, str]) -> pa.Table:
-    t = pq.read_table(path)
-    text_vi = pa.array([vi.get(i) for i in t["id"].to_pylist()], pa.string())
-    # Only transcripts without letters may lack a translation; anything else means the export is
-    # stale or partial, and dropping the row would delete its clip.
-    if lost := [x for x, v in zip(t["text"].to_pylist(), text_vi.to_pylist()) if v is None and LETTER.search(x)]:
-        raise RuntimeError(f"{path}: {len(lost)} transcripts have no translation, e.g. {lost[0]!r}")
-    keep = pc.is_valid(text_vi)
-    t, text_vi = t.filter(keep), text_vi.filter(keep)
-    n = t.num_rows
-    columns = {
-        "id": t["id"],
-        "en_audio": t["audio"],
-        "text_en": t["text"],
-        "text_vi": text_vi,
-        "speaker": t["speaker"],
-        "en_duration_s": t["duration"],
-        "vi_audio": pa.nulls(n, AUDIO),
-        "vi_duration_s": pa.nulls(n, pa.float32()),
-        "cross_lingual_timbre_matched": pa.nulls(n, pa.bool_()),
-    }
-    return pa.Table.from_pydict(columns, schema=SCHEMA)
 
 
 # ------------------------------------------------------------------ dataset card
@@ -330,20 +260,22 @@ def upload(root: Path, repo: str, follow: bool) -> None:
     api = HfApi()
     changed = True  # the first pass sends the card even when no shard changed
     while True:
-        done = not follow or all(voiced(p) for p in root.glob("data/*/*.parquet"))  # before the pass, so it sends the last
+        if not (local := sorted(root.glob("data/*/*.parquet"))):
+            raise SystemExit(f"no shards in {root / 'data'}")  # a dropped drive, or the wrong --root
+        done = not follow or all(voiced(p) for p in local)  # before the pass, so it sends the last
         remote = retried("listing the Hub", lambda: {
             f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)})
-        for p in sorted(root.glob("data/*/*.parquet")):
+        for p in local:
             name = p.relative_to(root).as_posix()
             if name in remote and remote[name] != p.stat().st_size and not voiced(p):
                 pull(api, repo, root, p)
                 changed = True
-        while todo := [p for p in sorted(root.glob("data/*/*.parquet")) if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size]:
+        while todo := [p for p in local if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size]:
             batch, size = {}, 0
             for p in todo:
                 if batch and size + p.stat().st_size > COMMIT_BYTES:
                     break
-                batch[p] = p.stat().st_size  # before the commit, so a shard rewritten meanwhile goes again
+                batch[p] = p.stat().st_size
                 size += batch[p]
             first = next(iter(batch)).name
             retried(f"committing {first}", lambda: api.create_commit(
@@ -365,12 +297,17 @@ def upload(root: Path, repo: str, follow: bool) -> None:
 
 
 def pull(api: HfApi, repo: str, root: Path, path: Path) -> None:
-    """Replace a local shard with its Hub copy, voiced on another machine, once that checks out."""
+    """Replace a local shard with its Hub copy, voiced on another machine, once that checks out:
+    the same schema, every column but the Vietnamese speech equal, and the speech filled."""
     name = path.relative_to(root).as_posix()
     got = Path(retried(f"downloading {name}", lambda: api.hf_hub_download(
         repo, name, repo_type="dataset", local_dir=root / ".pull")))
-    ids = pq.read_table(path, columns=["id"])["id"]
-    if not (pq.read_schema(got).equals(SCHEMA) and voiced(got) and pq.read_table(got, columns=["id"])["id"].equals(ids)):
+
+    def column(p: Path, c: str) -> pa.ChunkedArray:  # one at a time: en_audio alone is ~200 MB
+        return pq.read_table(p, columns=[c])[c]
+
+    if not (pq.read_schema(got).equals(SCHEMA) and column(got, "vi_audio").null_count == 0 and voiced(got)
+            and all(column(got, c).equals(column(path, c)) for c in SCHEMA.names if c not in ("vi_audio", "vi_duration_s"))):
         raise RuntimeError(f"the Hub's {name} is not this shard voiced; it is left in {got}")
     durable(got)
     got.replace(path)
@@ -381,18 +318,13 @@ def pull(api: HfApi, repo: str, root: Path, path: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("en_speech", "card", "upload"))
+    p.add_argument("step", choices=("card", "upload"))
     p.add_argument("--root", type=Path, default=Path("/Volumes/data/datasets/en_vi_speech"))
     p.add_argument("--repo", default=REPO)
-    p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
-    p.add_argument("--vi-text", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
-    p.add_argument("--workers", type=int, default=4, help="shards moved at once (en_speech)")
     p.add_argument("--follow", action="store_true", help="keep uploading until every shard is voiced (upload)")
     args = p.parse_args()
     with lock(args.root, args.step):
-        if args.step == "en_speech":
-            move_en_speech(args.src, args.vi_text, args.root, args.workers)
-        elif args.step == "card":
+        if args.step == "card":
             write_card(args.root)
         else:
             upload(args.root, args.repo, args.follow)
