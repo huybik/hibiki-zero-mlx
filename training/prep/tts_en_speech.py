@@ -15,8 +15,12 @@ publisher's `upload --follow` sends them to the Hub as they come. Shards go top 
 while another machine voices them bottom up; the upload brings in the shards voiced there, and the
 run skips them, so the two meet in between.
 
+Only the rows without speech are voiced. With --texts (id, text_vi; translate_en_speech
+retranslate's retexts.parquet), the rows it lists whose text differs take its text and are voiced
+again, in the same single rewrite of their shard.
+
 Run from the repo root on Apple Silicon with the conda base Python:
-  python -m training.prep.tts_en_speech [--shards N]
+  python -m training.prep.tts_en_speech [--shards N] [--texts PARQUET]
 """
 from __future__ import annotations
 
@@ -90,8 +94,8 @@ def shards(root: Path) -> list[Path]:
 class Shard:
     path: Path
     ids: list[str]
-    clips: list[tuple[bytes, float] | None]
-    left: int
+    texts: dict[int, str]  # the rows to voice and the text each speaks
+    clips: dict[int, tuple[bytes, float]]
 
 
 @dataclass
@@ -102,32 +106,44 @@ class Row:
     codes: list[np.ndarray | None]  # per chunk, once generated
 
 
-def read(paths: list[Path]) -> Iterator[tuple[Shard, int, bytes, str]]:
-    """Each row of each shard, one shard in memory at a time."""
+def to_voice(t: pa.Table, texts: dict[str, str]) -> dict[int, str]:
+    """The rows of a shard table (id, text_vi, vi_duration_s) to voice, and the text each speaks:
+    the rows without speech, and those whose text `texts` replaces."""
+    rows = zip(t["id"].to_pylist(), t["text_vi"].to_pylist(), t["vi_duration_s"].to_pylist())
+    return {k: texts.get(i, text) for k, (i, text, seconds) in enumerate(rows)
+            if seconds is None or texts.get(i, text) != text}
+
+
+def read(paths: list[Path], texts: dict[str, str]) -> Iterator[tuple[Shard, int, bytes, str]]:
+    """Each row to voice of each shard, one shard in memory at a time."""
     for path in paths:
-        if voiced(path):  # pulled from the Hub, voiced bottom up, since the run began
+        t = pq.read_table(path, columns=["id", "en_audio", "text_vi", "vi_duration_s"])
+        if not (rows := to_voice(t, texts)):  # pulled from the Hub, voiced bottom up, since the run began
             continue
-        t = pq.read_table(path, columns=["id", "en_audio", "text_vi"])
-        ids, texts = t["id"].to_pylist(), t["text_vi"].to_pylist()
-        audio = [a["bytes"] for a in t["en_audio"].to_pylist()]
+        audio = [a["bytes"] for a in t["en_audio"].take(list(rows)).to_pylist()]
+        shard = Shard(path, t["id"].to_pylist(), rows, {})
         del t
-        shard = Shard(path, ids, [None] * len(ids), len(ids))
-        for i in range(len(ids)):
-            yield shard, i, audio[i], texts[i]
+        for k, a in zip(rows, audio):
+            yield shard, k, a, rows[k]
 
 
-def fill(path: Path, ids: list[str], clips: list[tuple[bytes, float]]) -> bool:
-    """Rewrite a dataset shard with the Vietnamese clips of its rows, unless the upload pulled it
-    in, voiced on the Hub, meanwhile: that voicing stays."""
-    t = pq.read_table(path)
-    if t["vi_duration_s"].null_count == 0:
+def fill(shard: Shard) -> bool:
+    """Rewrite a dataset shard with the text and the Vietnamese clips of the rows voiced, unless the
+    upload pulled it in meanwhile with those rows voiced and the same text: that voicing stays."""
+    t = pq.read_table(shard.path)
+    if t["id"].to_pylist() != shard.ids:
+        raise RuntimeError(f"{shard.path} changed while it was voiced")
+    text, seconds = t["text_vi"].to_pylist(), t["vi_duration_s"].to_pylist()
+    if all(seconds[k] is not None and text[k] == shard.texts[k] for k in shard.clips):
         return False
-    if t["id"].to_pylist() != ids:
-        raise RuntimeError(f"{path} changed while it was voiced")
-    audio = pa.array([{"bytes": b, "path": f"{i.rsplit('/', 1)[-1]}.opus"} for i, (b, _) in zip(ids, clips)], AUDIO)
-    t = t.set_column(t.schema.get_field_index("vi_audio"), "vi_audio", audio)
-    t = t.set_column(t.schema.get_field_index("vi_duration_s"), "vi_duration_s", pa.array([d for _, d in clips], pa.float32()))
-    write_shard(path, t)
+    audio = t["vi_audio"].to_pylist()
+    for k, (b, d) in shard.clips.items():
+        text[k], seconds[k] = shard.texts[k], d
+        audio[k] = {"bytes": b, "path": f"{shard.ids[k].rsplit('/', 1)[-1]}.opus"}
+    for name, column in (("text_vi", pa.array(text, pa.string())), ("vi_audio", pa.array(audio, AUDIO)),
+                         ("vi_duration_s", pa.array(seconds, pa.float32()))):
+        t = t.set_column(t.schema.get_field_index(name), name, column)
+    write_shard(shard.path, t)
     return True
 
 
@@ -140,8 +156,8 @@ class Voicer:
         self.encoding: deque = deque()  # (row, future of encode)
         self.start, self.hours = time.perf_counter(), 0.0
 
-    def run(self, paths: list[Path]) -> None:
-        source = read(paths)
+    def run(self, paths: list[Path], texts: dict[str, str]) -> None:
+        source = read(paths, texts)
         exhausted = False
         while True:
             while not exhausted and len(self.prepared) < PREFETCH:
@@ -196,16 +212,15 @@ class Voicer:
     def store(self, row: Row, audio: bytes, seconds: float) -> None:
         shard = row.shard
         shard.clips[row.index] = (audio, seconds)
-        shard.left -= 1
-        if shard.left:
+        if len(shard.clips) < len(shard.texts):
             return
-        if not fill(shard.path, shard.ids, shard.clips):
+        if not fill(shard):
             log(f"{shard.path.parent.name}/{shard.path.name}: voiced on the Hub meanwhile, so that voicing stays")
             return
-        hours = sum(d for _, d in shard.clips) / 3600
+        hours = sum(d for _, d in shard.clips.values()) / 3600
         self.hours += hours
         elapsed = time.perf_counter() - self.start
-        log(f"{shard.path.parent.name}/{shard.path.name}: {len(shard.ids)} rows, {hours:.2f} h | "
+        log(f"{shard.path.parent.name}/{shard.path.name}: {len(shard.clips)} rows, {hours:.2f} h | "
             f"{self.hours:.1f} h in {elapsed / 3600:.2f} h, {self.hours * 3600 / elapsed:.0f}x real time")
 
 
@@ -215,15 +230,23 @@ def main() -> None:
     p.add_argument("--shards", type=int, help="voice at most this many shards, then stop")
     p.add_argument("--batch", type=int, default=128, help="chunks generated together")
     p.add_argument("--workers", type=int, default=6, help="CPU processes enrolling and encoding")
+    p.add_argument("--texts", type=Path, help="parquet of id, text_vi: listed rows whose text differs take it "
+                   "and are voiced again (translate_en_speech retranslate's retexts.parquet)")
     args = p.parse_args()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))  # so a `kill` shuts the workers down too
     with lock(args.root, "tts"):
-        todo = [s for s in shards(args.root) if not voiced(s)][: args.shards]
+        texts = {}
+        if args.texts:
+            t = pq.read_table(args.texts, columns=["id", "text_vi"])
+            texts = dict(zip(t["id"].to_pylist(), t["text_vi"].to_pylist()))
+        # Without texts to replace, only unvoiced shards have rows to voice; reading their one column is quick.
+        todo = [s for s in shards(args.root) if (to_voice(pq.read_table(s, columns=["id", "text_vi", "vi_duration_s"]), texts)
+                                                 if texts else not voiced(s))][: args.shards]
         log(f"{len(todo)} shards to voice")
         synth = vieneu_mlx.Synthesizer()
         with ProcessPoolExecutor(args.workers) as pool:
             try:
-                Voicer(synth, pool, args.batch).run(todo)
+                Voicer(synth, pool, args.batch).run(todo, texts)
             finally:
                 pool.shutdown(cancel_futures=True)  # without running the rows queued ahead
 

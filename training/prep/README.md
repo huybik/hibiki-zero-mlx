@@ -45,7 +45,12 @@ nohup caffeinate -i python -m training.prep.tts_en_speech >> $R/tts.log 2>&1 &  
 ```
 
 `--shards N` stops after the next N unvoiced shards, counting those the upload pulls in meanwhile.
-A stop loses only the shards not yet rewritten.
+A stop loses only the shards not yet rewritten. Once both machines are done (the other's upload
+stopped), voice the retranslated rows again:
+
+```bash
+python -m training.prep.tts_en_speech --texts /Volumes/data/datasets/en_speech_vi_text/retexts.parquet >> $R/tts.log 2>&1
+```
 
 ## Grounded caches
 
@@ -76,6 +81,8 @@ nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_
 nohup caffeinate -i python -m training.prep.translate_en_speech translate \
   --profile claude-p --profile claude-l --profile claude-5x --profile default \
   >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
+python -m training.prep.translate_en_speech retranslate --profile claude-p --profile claude-l \
+  --profile claude-5x --profile default                  # CJK-script lines again on Claude; retexts.parquet
 python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
 ```
 

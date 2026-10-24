@@ -36,8 +36,13 @@ Run from the repo root as `python -m training.prep.translate_en_speech <step>`. 
   muse       translates the one --key's claimed lines as translate does, into
              muse/translations.jsonl and muse/rejects.jsonl; lines that fail alone go back
              to translate. Rerun to resume
+  retranslate
+             translates again, on Claude, the texts whose translation holds Chinese, Japanese
+             or Korean script their English lacks, into retranslations.jsonl, rejecting any
+             batch that still does; then writes retexts.parquet (id, text_vi) for the rows
+             whose text changed, for tts_en_speech --texts to voice again. Rerun to resume
   export     {train,validation}.parquet (id, text_vi) for each fully translated split,
-             plus the plan's gate counts
+             plus the plan's gate counts; a retranslation overrides the first translation
 """
 from __future__ import annotations
 
@@ -64,6 +69,9 @@ from google.genai import types
 MODEL = "claude-sonnet-5-5"
 MAX_SECONDS = 280 / 12.5  # the trainer's 280-frame row cap at Mimi's 12.5 Hz; longer rows are dropped
 LETTER = re.compile(r"[^\W\d_]")  # a transcript without one ("." alone) has nothing to translate
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")  # kana, Han, Hangul
+# Accepted batches, keyed by English text; a later file's translation of a text wins.
+TRANSLATIONS = ("translations.jsonl", "gemini/translations.jsonl", "muse/translations.jsonl", "retranslations.jsonl")
 API_URL = "http://127.0.0.1:8787"
 API_TOKEN = Path.home() / ".local/share/claude-local-api/token"
 MAX_LINES = 200  # per batch, whatever its size
@@ -618,16 +626,60 @@ def muse(out: Path, key: str, batch_chars: int, concurrency: int) -> None:
     log(f"{key}: every claimed text is translated or released")
 
 
-def export(out: Path) -> None:
-    texts = pq.read_table(out / "texts.parquet").to_pandas()
+def translations(out: Path) -> dict[str, str]:
     vi = {}
-    # A running translate, gemini or muse could be mid-write.
+    for name in TRANSLATIONS:
+        for batch in read_batches(out / name):
+            vi.update(zip(batch["en"], batch["vi"]))
+    return vi
+
+
+def broken(en: str, vi: str) -> bool:
+    """Whether a translation holds CJK script its English lacks: Muse and Gemini wrote some mid-word
+    (`kính畏`), and the TTS would speak it. Where the English names the characters (`京都`), they stay."""
+    return bool(CJK.search(vi)) and not CJK.search(en)
+
+
+def retranslate(out: Path, profile_names: list[str], batch_chars: int, concurrency: int) -> None:
+    texts = pq.read_table(out / "texts.parquet", columns=["text"]).column("text").to_pylist()
+    log_path = out / "retranslations.jsonl"
     with exclusive(out / "translate.lock", f"a translate run is using {out}"), \
             exclusive(out / "claims.lock", f"a gemini or muse run is using {out}"):
-        for path in (out / "translations.jsonl", out / "gemini" / "translations.jsonl",
-                     out / "muse" / "translations.jsonl"):
-            for batch in read_batches(path):
-                vi.update(zip(batch["en"], batch["vi"]))
+        check_tail(log_path)
+        vi = translations(out)  # ~2 GB for the corpus's texts
+        pending = [k for k, text in enumerate(texts) if broken(text, vi[text])]
+        del vi
+        log(f"{len(pending):,} texts hold CJK script their English lacks")
+        client = Anthropic(base_url=API_URL, api_key=API_TOKEN.read_text().strip(), max_retries=0, timeout=1800)
+        profiles = Profiles(profile_names)
+
+        def checked(lines: list[str]):
+            vi_lines, raw, usage, fields = call(client, profiles, lines)
+            if vi_lines is not None and any(broken(en, v) for en, v in zip(lines, vi_lines)):
+                return None, raw, usage, fields
+            return vi_lines, raw, usage, fields
+
+        with log_path.open("a") as accepted, (out / "rejects.jsonl").open("a") as rejected:
+            failed = rounds(texts, pending, checked, profiles.stop, set(), accepted, rejected, batch_chars, concurrency)
+        if failed:
+            raise SystemExit(f"{len(failed):,} lines fail even alone; see rejects.jsonl")
+    fixed = {}  # read last by export, so these win
+    for batch in read_batches(log_path):
+        fixed.update(zip(batch["en"], batch["vi"]))
+    rows = pq.read_table(out / "rows.parquet", columns=["id", "text"]).to_pandas()
+    rows = rows[rows.text.isin(fixed)]
+    rows["text_vi"] = rows.text.map(fixed)
+    pq.write_table(pa.Table.from_pandas(rows[["id", "text_vi"]], preserve_index=False), out / "retexts.parquet",
+                   compression="zstd")
+    log(f"retexts.parquet: {len(rows):,} rows of {len(fixed):,} retranslated texts")
+
+
+def export(out: Path) -> None:
+    texts = pq.read_table(out / "texts.parquet").to_pandas()
+    # A running translate, gemini, muse or retranslate could be mid-write.
+    with exclusive(out / "translate.lock", f"a translate run is using {out}"), \
+            exclusive(out / "claims.lock", f"a gemini or muse run is using {out}"):
+        vi = translations(out)
     texts["text_vi"] = texts.text.map(vi)
     done = texts.dropna()
     identical = (done.text_vi == done.text).sum()
@@ -649,7 +701,7 @@ def export(out: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("texts", "claim", "translate", "gemini", "muse", "export"))
+    p.add_argument("step", choices=("texts", "claim", "translate", "gemini", "muse", "retranslate", "export"))
     p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_vi_speech"), help="the EN-VI dataset")
     p.add_argument("--out", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--profile", action="append", default=[],
@@ -665,9 +717,9 @@ def main() -> None:
     args = p.parse_args()
     if args.step == "texts":
         build_texts(args.src, args.out)
-    elif args.step == "translate":
+    elif args.step in ("translate", "retranslate"):
         if not args.profile:
-            p.error("translate needs --profile: name the subscriptions it may spend")
+            p.error(f"{args.step} needs --profile: name the subscriptions it may spend")
         if not 1 <= args.concurrency <= SERVER_SLOTS:
             p.error(f"--concurrency must be 1 to {SERVER_SLOTS}, the calls the local API runs at once")
     elif args.step in ("claim", "gemini", "muse"):
@@ -677,7 +729,7 @@ def main() -> None:
             p.error(f"{', '.join(missing)} not set; load .env first")
         if args.step == "muse" and len(args.key) != 1:
             p.error("muse takes one --key")
-    if args.step in ("translate", "gemini", "muse"):
+    if args.step in ("translate", "gemini", "muse", "retranslate"):
         # A background run ignores SIGINT; let `kill` stop it as cleanly as Ctrl-C does.
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, signal.default_int_handler)
@@ -689,6 +741,8 @@ def main() -> None:
         gemini(args.out, args.key, args.batch_chars)
     elif args.step == "muse":
         muse(args.out, args.key[0], args.batch_chars, args.concurrency)
+    elif args.step == "retranslate":
+        retranslate(args.out, args.profile, args.batch_chars, args.concurrency)
     elif args.step == "export":
         export(args.out)
 

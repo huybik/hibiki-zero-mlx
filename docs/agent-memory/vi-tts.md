@@ -137,9 +137,18 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
 
 ## Running
 
-Commands are in [training/prep/README.md](../../training/prep/README.md). A shard is rewritten
-whole once its last row is encoded (through the publisher's `write_shard`, so a crash never
-leaves half a shard), and a rerun skips the shards whose `vi_duration_s` has no nulls. It holds
+Commands are in [training/prep/README.md](../../training/prep/README.md). Only rows without
+speech are voiced. A shard is rewritten whole once its last such row is encoded (through the
+publisher's `write_shard`, so a crash never leaves half a shard), and a rerun skips the shards
+whose `vi_duration_s` has no nulls.
+
+- `--texts retexts.parquet` (`id`, `text_vi`, from `translate_en_speech retranslate`,
+  [en-vi-translation](en-vi-translation.md)) also voices again each listed row whose text
+  differs, writing its new text and speech in the same one rewrite, so a shard is never left
+  without speech and the upload can keep running. Startup then reads every shard's `id` and
+  `text_vi`. Run it only after both machines have finished and the other machine's upload has
+  stopped: that upload compares every column but the speech before taking a shard, so a changed
+  `text_vi` would stop it. Checked on a 12-row copy: only the 2 listed rows changed. It holds
 `.tts.lock` in the dataset folder. At ~100–130x, the corpus's ~9k hours of Vietnamese would take
 the Mac alone 3–4 days.
 
