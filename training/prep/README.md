@@ -21,9 +21,9 @@ nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload --follow
 ```
 
 Every step may be stopped (Ctrl-C, `kill`) and resumes when run again; `upload` loses at most
-its unfinished commit (~4 GB). Without `--follow` it ends once the Hub matches the local shards;
-with it, it looks again every 10 min until every local shard is voiced, here or on the other
-machine.
+its unfinished commit (~4 GB). Without `--follow` it ends after one pass, once every voiced shard
+is on the Hub; with it, it looks again every 10 min until every local shard is voiced, here or on
+the other machine.
 
 ## Vietnamese speech of `en_speech` (TTS)
 

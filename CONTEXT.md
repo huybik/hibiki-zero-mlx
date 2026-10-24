@@ -19,8 +19,8 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ```text
 training/  (CUDA, Linux H100; prep/ translates, voices and publishes the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
-    ─► prep/publish_en_vi_speech upload ─► HF en-vi-speech
-    ─► prep/tts_en_speech (VI voices) ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
+    ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload --follow ─► HF en-vi-speech
+    ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
 inference/ (Apple Silicon, MLX)

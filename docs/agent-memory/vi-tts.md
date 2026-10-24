@@ -141,7 +141,8 @@ data/train/cv27-00000 ... ─► Mac, top down
   unvoiced, after checking that it keeps that contract, and never commits an unvoiced shard. The
   TTS checks each shard again before reading it, `fill` keeps a shard pulled while it was being
   voiced, and a pull keeps a shard voiced here while it downloaded, so the first voicing to reach
-  the Mac stays, there and on the Hub. Only a pull landing within a rewrite's ~1.5 s can be
-  overwritten by the Mac's voicing, which the next pass then commits; either way the two copies
-  end the same. Near the meeting point a few shards may be voiced twice: the other machine's
-  commits reach the Mac up to ~10 min later, ~3 TTS shards.
+  the Mac stays, there and on the Hub. Only a pull and a rewrite (~1.5 s) landing within
+  milliseconds of each other can swap that order, either way; both copies still end the same,
+  since the next pass commits whatever the Mac holds. Near the meeting point a few shards, ~3–5
+  on each side, may be voiced twice: each machine sees the other's work only once it is
+  committed, after the 10 min wait plus a pass of 4 GB commits (2–7 min each).

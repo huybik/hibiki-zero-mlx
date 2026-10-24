@@ -316,11 +316,11 @@ def pull(api: HfApi, repo: str, root: Path, path: Path) -> None:
     if not (pq.read_schema(got).equals(SCHEMA) and spoken()
             and all(column(got, c).equals(column(path, c)) for c in SCHEMA.names if c not in ("vi_audio", "vi_duration_s"))):
         raise RuntimeError(f"the Hub's {name} is not this shard voiced; it is left in {got}")
+    durable(got)
     if voiced(path):  # the TTS voiced it here while it downloaded: the first voicing stays
         shutil.rmtree(root / ".pull")
         log(f"kept {name}, voiced here while the Hub's copy downloaded")
         return
-    durable(got)
     got.replace(path)
     durable(path.parent)
     shutil.rmtree(root / ".pull")  # the download's metadata
