@@ -13,8 +13,8 @@ Voice clips the corpus lacks, with that dataset's translation and Vietnamese spe
 `python -m training.prep.publish_en_vi_speech <step>`. Steps:
   anquach    data/train/cv-anquach-*.parquet from a snapshot of the earlier common-vi-en (--src)
   card       README.md with statistics of the local dataset
-  upload     commits the shards voiced here since, a few GB at a time, downloads the shards
-             voiced on the Hub by another machine, then commits a fresh card (export HF_TOKEN_AN,
+  upload     commits the shards voiced here since and those the Hub lacks, a few GB at a time,
+             downloads the shards voiced on the Hub by another machine, then commits a fresh card (export HF_TOKEN_AN,
              a token of the anquachdev account that owns the repo); with --follow it looks again
              every 10 min until every shard is voiced
 Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stops a second run of
@@ -32,6 +32,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -59,7 +60,7 @@ SPLITS = ("train", "validation")
 SOURCES = ("cv27", "cv-anquach", "libriheavy")  # shard and id prefixes
 # common-vi-en before the merge: 739,346 Common Voice English rows, voiced, 16 kHz Ogg Opus.
 ANQUACH_REVISION = "dba8e98cef20eb0493f747ef040180fa81512d17"
-SHARD_ROWS = 20_000  # as in the cv27 shards
+SHARD_ROWS = 20_000  # the cv27 builder's shard size, before the corpus filters thinned its shards
 RETRIES = 5  # a failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
 # 2-7 min of upload, all a stop loses; ~20-30 commits an hour, well under the Hub's commit quota
@@ -147,9 +148,14 @@ def retried(what: str, fn: Callable[[], T]) -> T:
 def anquach(root: Path, src: Path) -> None:
     """Write data/train/cv-anquach-*.parquet from common-vi-en as it was before the merge: its rows
     whose English lasts CLIP_SECONDS, except the clips cv27 holds (ours stay) and the sentences of
-    cv27's validation split (cv27 train leaves them out too). Most are clips the corpus's 10.5 kHz
-    bandwidth floor dropped, and their English is that dataset's 16 kHz re-encode; their speaker is
-    unknown. Rerunning writes the same shards."""
+    cv27's validation split, compared without case or punctuation (cv27 train leaves them out too).
+    They are clips cv27 lacks, dropped by its filters (such as the 10.5 kHz bandwidth floor or its
+    validation speakers) or not among its validated clips, and their English is that dataset's
+    16 kHz re-encode; their speaker is unknown. Rerunning writes the same shards."""
+
+    def sentence(text: str) -> str:
+        return re.sub(r"\W+", " ", text.lower()).strip()
+
     snapshot_download(REPO, repo_type="dataset", revision=ANQUACH_REVISION, local_dir=src,
                       allow_patterns=["data/train-heavy-*.parquet"], token=os.environ["HF_TOKEN_AN"])
     ours, dev = set(), set()
@@ -157,7 +163,7 @@ def anquach(root: Path, src: Path) -> None:
         t = pq.read_table(path, columns=["id", "text_en"])
         ours.update(i.removeprefix("cv27/") for i in t["id"].to_pylist())
         if path.parent.name == "validation":
-            dev.update(s.strip().lower() for s in t["text_en"].to_pylist())
+            dev.update(sentence(s) for s in t["text_en"].to_pylist())
     rows, shards, seen, kept = [], 0, 0, 0
 
     def flush() -> None:
@@ -172,7 +178,7 @@ def anquach(root: Path, src: Path) -> None:
                 seen += 1
                 clip, en, vi = r["source_clip"].removesuffix(".mp3"), r["audio_en"]["bytes"], r["audio_vi"]["bytes"]
                 en_s = sf.info(io.BytesIO(en)).duration
-                if not CLIP_SECONDS[0] <= en_s <= CLIP_SECONDS[1] or clip in ours or r["en"].strip().lower() in dev:
+                if not CLIP_SECONDS[0] <= en_s <= CLIP_SECONDS[1] or clip in ours or sentence(r["en"]) in dev:
                     continue
                 vi_s = sf.info(io.BytesIO(vi)).duration
                 if not (r["en"].strip() and r["vi"].strip() and vi_s > 0):
@@ -214,8 +220,8 @@ configs:
 
 # common-vi-en
 
-English read speech with English transcripts, Vietnamese translations and Vietnamese speech in
-the English speaker's voice, for research on Vietnamese→English simultaneous speech translation
+English read speech with English transcripts, Vietnamese translations and Vietnamese speech,
+mostly in the English speaker's voice, for research on Vietnamese→English simultaneous speech translation
 (Hibiki-Zero). The Vietnamese speech is being synthesized shard by shard; shards not voiced yet
 have it empty, and the table shows how far it has come. It merges `huybik/en-vi-speech` into this
 repository's earlier Common Voice rows (`cv-anquach`). Built by
@@ -244,7 +250,7 @@ repository.
 
 Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training rows.
 
-- Common Voice Scripted Speech 27.0 English: validated clips only. dev is the validation
+- `cv27`, Common Voice Scripted Speech 27.0 English: validated clips only. dev is the validation
   split; train is every other validated clip whose speaker and sentence are not in dev. The
   official test clips are folded into train, so CV test is not a clean benchmark here. Audio is
   the original 32 or 48 kHz MP3.
@@ -256,12 +262,16 @@ Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training 
   each speaker's clips, in build order, until the speaker holds 30 h.
 - `cv-anquach` (train only) holds this repository's earlier rows (revision `dba8e98`, 739,346
   Common Voice English clips with Vietnamese translations and speech) whose English lasts
-  {{CLIP}}, except the clips `cv27` holds and the sentences of its validation split. Most are
-  clips under the 10.5 kHz floor. Their English is a 16 kHz mono Ogg Opus re-encode (~16 kbps),
-  so it carries nothing above 8 kHz, and their speaker is not recorded.
-- The `cv27` and `libriheavy` English text was translated by Claude Sonnet 5.5, Gemini 3.8 Flash and Muse Spark 1.3,
-  in batches of neighbouring lines.
-- The `cv27` and `libriheavy` Vietnamese speech is synthetic: VieNeu-TTS v3 Turbo (`pnnbao-ump/VieNeu-TTS-v3-Turbo`),
+  {{CLIP}}, except the clips `cv27` holds and the sentences of its validation split. They are
+  clips `cv27` lacks, dropped by its filters above (such as the 10.5 kHz floor) or not among its
+  validated clips. Their English is a 16 kHz mono Ogg Opus re-encode (~16 kbps), so it carries
+  nothing above 8 kHz. Their speaker is not recorded, so some may also speak in the validation
+  split, and their Vietnamese speech, from that dataset's own TTS, is not known to match the
+  English speaker's voice.
+- The `cv27` and `libriheavy` English text was translated by Claude Sonnet 5.5, Gemini 3.8 Flash
+  and Muse Spark 1.3, in batches of neighbouring lines.
+- The `cv27` and `libriheavy` Vietnamese speech is synthetic: VieNeu-TTS v3 Turbo
+  (`pnnbao-ump/VieNeu-TTS-v3-Turbo`),
   run in MLX, takes the speaker x-vector and in-context reference from the row's own English
   clip. On 120 validation rows, its speaker similarity to the English clip (WeSpeaker ResNet34
   cosine) averaged 0.50 on Common Voice and 0.56 on Libriheavy, where another clip of the same
@@ -323,31 +333,45 @@ def upload(root: Path, repo: str, follow: bool) -> None:
     the new bytes of a rewritten shard."""
     disable_progress_bars()  # in a log, their redraws come to ~1 MB a commit
     api = HfApi(token=os.environ["HF_TOKEN_AN"])
+
+    def hub(p: Path) -> str:
+        return p.relative_to(root).as_posix()
+
+    def commit_next(local: list[Path]) -> tuple[dict[str, int], dict[Path, int], int]:
+        """List the Hub and commit the next batch on top of that listing's revision, so a commit
+        landing in between (the other machine's) fails this one and the retry lists again: an
+        unvoiced shard never lands on a voiced copy committed meanwhile. Returns the listing with
+        the batch in it, the batch and the shards left before it."""
+        sha = api.repo_info(repo, repo_type="dataset").sha
+        remote = {f.path: f.size for f in api.list_repo_tree(repo, recursive=True, revision=sha, repo_type="dataset")
+                  if isinstance(f, RepoFile)}
+        todo = [p for p in local if hub(p) not in remote or (remote[hub(p)] != p.stat().st_size and voiced(p))]
+        batch, size = {}, 0
+        for p in todo:
+            if batch and size + p.stat().st_size > COMMIT_BYTES:
+                break
+            batch[p] = p.stat().st_size
+            size += batch[p]
+        if batch:
+            api.create_commit(repo, [CommitOperationAdd(hub(p), p) for p in batch], repo_type="dataset",
+                              commit_message=f"Add {len(batch)} shards from {next(iter(batch)).name}", parent_commit=sha)
+            remote.update((hub(p), n) for p, n in batch.items())
+        return remote, batch, len(todo)
+
     changed = True  # the first pass sends the card even when no shard changed
     while True:
         if not (local := sorted(root.glob("data/*/*.parquet"))):
             raise SystemExit(f"no shards in {root / 'data'}")  # a dropped drive, or the wrong --root
         done = not follow or all(voiced(p) for p in local)  # before the pass, so it sends the last
-        remote = retried("listing the Hub", lambda: {
-            f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)})
-        while todo := [p for p in local if (name := p.relative_to(root).as_posix()) not in remote
-                       or remote[name] != p.stat().st_size and voiced(p)]:
-            batch, size = {}, 0
-            for p in todo:
-                if batch and size + p.stat().st_size > COMMIT_BYTES:
-                    break
-                batch[p] = p.stat().st_size
-                size += batch[p]
-            first = next(iter(batch)).name
-            retried(f"committing {first}", lambda: api.create_commit(
-                repo, [CommitOperationAdd(p.relative_to(root).as_posix(), p) for p in batch],
-                commit_message=f"Add {len(batch)} shards from {first}", repo_type="dataset"))
-            remote.update((p.relative_to(root).as_posix(), n) for p, n in batch.items())
-            log(f"committed {len(batch)} shards from {first} ({size / 1e9:.1f} GB), {len(todo) - len(batch)} left")
+        while True:
+            remote, batch, todo = retried("committing to the Hub", lambda: commit_next(local))
+            if not batch:
+                break
+            log(f"committed {len(batch)} shards from {next(iter(batch)).name} ({sum(batch.values()) / 1e9:.1f} GB), "
+                f"{todo - len(batch)} left")
             changed = True
         for p in local:
-            name = p.relative_to(root).as_posix()
-            if name in remote and remote[name] != p.stat().st_size and not voiced(p):
+            if hub(p) in remote and remote[hub(p)] != p.stat().st_size and not voiced(p):
                 pull(api, repo, root, p)
                 changed = True
         if changed:

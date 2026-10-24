@@ -144,8 +144,9 @@ leaves half a shard), and a rerun skips the shards whose `vi_duration_s` has no 
 the Mac alone 3–4 days.
 
 Two machines share the work (user's plan, 2026-10-24): the Mac goes top down through the
-dataset's shard paths in sorted order (`data/train/cv27-*`, `data/train/libriheavy-*`, then
-`data/validation/*`), and another person's own hardware goes bottom up. The Mac's first run
+dataset's shard paths in sorted order (`data/train/cv-anquach-*`, which came voiced,
+`data/train/cv27-*`, `data/train/libriheavy-*`, then `data/validation/*`), and another person's
+own hardware goes bottom up. The Mac's first run
 (validation, then a shuffled train order) had voiced 88 shards before, scattered through the
 list.
 

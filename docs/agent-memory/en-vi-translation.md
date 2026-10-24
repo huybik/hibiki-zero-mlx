@@ -17,7 +17,9 @@ stream, so each line must stay aligned with its English audio. The TTS step is [
 `/Volumes/data/datasets/en_speech_vi_text/` stays local; the exported translations are published
 with the audio in `anquachdev/common-vi-en` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
 
-- `texts` reads the shards of the EN-VI dataset (`--src`) and writes `texts.parquet` (`text`, the unique transcripts in translation order)
+- `texts` reads the corpus's `cv27-*` and `libriheavy-*` shards of the EN-VI dataset (`--src`;
+  its `cv-anquach` rows came translated, and their Common Voice text must not reach the paid
+  keys) and writes `texts.parquet` (`text`, the unique transcripts in translation order)
   and `rows.parquet` (`split`, `id`, `text`, `duration`) for every row with a letter in its
   transcript, so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)).
   Validation comes first, then each Libriheavy recording in segment order, so a batch carries

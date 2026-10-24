@@ -55,16 +55,20 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
 - Kept: English 5–22.4 s, as in the corpus (321,028 rows); the Vietnamese length is free.
 - 170,820 of those clips (307 h) are `cv27` rows, all in shards already voiced here
   (`cv27-00000`…`00032` and validation `cv27-00000`); ours stay whole and his copies are dropped.
-- Of the other 150,208, the 11,086 whose English sentence (stripped, lower-cased) is a `cv27`
-  validation sentence are dropped, as `cv27` train drops them; the rest go to `train` as
-  `cv-anquach-*` shards of 20,000 rows: 139,122 rows.
-- Most are clips the corpus's 10.5 kHz bandwidth floor dropped, and their English is his 16 kHz
-  re-encode, so nothing above 8 kHz; Mimi codes up to 12 kHz. `speaker` is empty (his set has
+- Of the other 150,208, the 11,212 whose English sentence is a `cv27` validation sentence,
+  compared lower-cased with punctuation and spacing removed, are dropped, as `cv27` train drops
+  them (plain lower-casing let 126 through); the rest go to `train` as `cv-anquach-*` shards of
+  20,000 rows: 138,996 rows, 256.2 h English, 211.7 h Vietnamese (2 rows over 22.4 s).
+- They are clips `cv27` lacks: dropped by its filters (such as the 10.5 kHz bandwidth floor) or
+  not among its validated clips; which, is not recorded. Their English is his 16 kHz re-encode,
+  so nothing above 8 kHz; Mimi codes up to 12 kHz. His Vietnamese speech comes from his own TTS,
+  not known to match the English voice. `speaker` is empty (his set has
   none, and the Common Voice metadata is not kept), so speaker overlap with `cv27` validation is
   unchecked. `id` is `cv-anquach/<clip>`, and both audio paths are `<clip>.opus`.
-- His old files (`data/train-heavy-*.parquet`, the empty `data/train-00000-of-00001.parquet`)
-  are deleted from the repository once the merged layout is up; the step downloads them from
-  the pinned revision.
+- His old files (`data/train-heavy-*.parquet`, the empty `data/train-00000-of-00001.parquet`) are
+  deleted by hand once the merged layout is up (`HfApi().delete_files(repo, delete_patterns=…)`);
+  the step downloads them from the pinned revision, so never squash the repository's history.
+  The download sits in `/Volumes/data/datasets/common_vi_en_src` (12 GB) and can be deleted.
 
 ## Building and publishing
 
@@ -76,9 +80,13 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
 - Every shard is written as `.tmp`, read back and compared, flushed to the drive with
   `F_FULLFSYNC` (plain fsync stops at the drive's cache), then renamed, so a power loss or USB
   drop leaves the old shard or the new one, never half of one.
-- `upload` commits the voiced local shards that are missing from the Hub, or differ from it in
-  size, in commits of up to 4 GB (2–7 min each, depending on what else shares the link), then writes and
-  commits a fresh `README.md`. The Hub is the record of
+- `upload` commits the local shards that are missing from the Hub, and the voiced ones that differ
+  from it in size, in commits of up to 4 GB (2–7 min each, depending on what else shares the
+  link), then writes and commits a fresh `README.md`. It lists the Hub before each commit and
+  makes the commit on top of the listed revision (`parent_commit`), so a commit landing in
+  between fails it and the retry lists again. Seeding the merged repository went at 15–45 s a
+  commit (~2 a minute, near the Hub's rough limit of ~100 an hour, none refused): Xet had the
+  bytes from `huybik/en-vi-speech` already. The Hub is the record of
   progress, so a stop loses only the unfinished commit. The user asked on 2026-10-23 that a stop
   never lose more than that: `upload_large_folder` committed nothing in its first 37 min, while
   it hashed and pre-uploaded batches of up to 256 files, and lost them when stopped. `upload`

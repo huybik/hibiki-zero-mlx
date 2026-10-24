@@ -2,7 +2,7 @@
 
 Run from the repository root. Generated caches land under the gitignored `data/`.
 
-## EN-VI speech dataset (~10.5k hours)
+## EN-VI speech dataset (~10.8k hours)
 
 `/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `anquachdev/common-vi-en`,
 holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
@@ -25,8 +25,8 @@ nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload --follow
 ```
 
 Every step may be stopped (Ctrl-C, `kill`) and resumes when run again; `upload` loses at most
-its unfinished commit (~4 GB). Without `--follow` it ends after one pass, once every voiced shard
-is on the Hub; with it, it looks again every 10 min until every local shard is voiced, here or on
+its unfinished commit (~4 GB). Without `--follow` it ends after one pass, once every shard is on
+the Hub and every voiced one there is current; with it, it looks again every 10 min until every local shard is voiced, here or on
 the other machine.
 
 ## Vietnamese speech of `en_speech` (TTS)

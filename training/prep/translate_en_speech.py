@@ -101,7 +101,9 @@ def build_texts(src: Path, out: Path) -> None:
         table = pq.read_table(path, columns=["id", "text_en", "en_duration_s"]).rename_columns(["id", "text", "duration"])
         return table.append_column("split", pa.array([path.parent.name] * table.num_rows, pa.string()))
 
-    shards = sorted(src.glob("data/*/*.parquet"))
+    # The corpus's shards; cv-anquach rows came translated, and their Common Voice text must not
+    # reach the paid keys as Libriheavy.
+    shards = sorted(p for source in ("cv27", "libriheavy") for p in src.glob(f"data/*/{source}-*.parquet"))
     with ThreadPoolExecutor(16) as pool:
         rows = pa.concat_tables(pool.map(read, shards)).to_pandas()
     rows["text"] = rows.text.str.split().str.join(" ")
