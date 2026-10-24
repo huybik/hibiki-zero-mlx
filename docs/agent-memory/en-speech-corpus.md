@@ -33,8 +33,8 @@ One Libriheavy train row, transcript `"."`, had nothing to translate and was dro
 ## Format
 
 - Columns are the dataset's: `id`, `en_audio{bytes,path}`, `text_en` (cased, punctuated),
-  `text_vi`, `speaker`, `en_duration_s`, and empty `vi_audio`, `vi_duration_s` and
-  `cross_lingual_timbre_matched`.
+  `text_vi`, `speaker`, `en_duration_s`, then `vi_audio` and `vi_duration_s` (filled by the TTS
+  step, [vi-tts](vi-tts.md)) and `cross_lingual_timbre_matched` (empty).
 - Audio keeps the original codec bytes: 32 or 48 kHz mono MP3 for CV and 48 kHz mono Ogg Opus for
   Libriheavy. Resample to 24 kHz before Mimi.
 - Audio bytes are uncompressed in the parquet and the other columns zstd. Row groups hold 500

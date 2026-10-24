@@ -9,33 +9,38 @@ holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus
 hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
 Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
 
-Their Vietnamese speech comes from the TTS step below. The `en_speech` step
-moved the finished corpus in, shard by shard. The builder that downloaded Common Voice and
-Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild.
+Their Vietnamese speech comes from the TTS step below. The builder that downloaded Common Voice
+and Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild,
+and the publisher's `en_speech` step that moved the corpus in (commit `a236ad5`).
 
 ```bash
 set -a && . ./.env && set +a                            # HF_TOKEN
-R=/Volumes/data/datasets/en_vi_speech && mkdir -p $R
-nohup caffeinate -i python -m training.prep.publish_en_vi_speech en_speech >> $R/en_speech.log 2>&1 &
-python -m training.prep.publish_en_vi_speech card       # README.md with statistics
-nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload >> $R/upload.log 2>&1 &  # rerun after adding shards
+R=/Volumes/data/datasets/en_vi_speech
+python -m training.prep.publish_en_vi_speech card       # README.md with statistics (each upload pass writes it too)
+nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload --follow >> $R/upload.log 2>&1 &
 ```
 
 Every step may be stopped (Ctrl-C, `kill`) and resumes when run again; `upload` loses at most
-its unfinished commit (~4 GB).
+its unfinished commit (~4 GB). Without `--follow` it ends after one pass, once every voiced shard
+is on the Hub; with it, it looks again every 10 min until every local shard is voiced, here or on
+the other machine.
 
 ## Vietnamese speech of `en_speech` (TTS)
 
 Runs on the Mac with the conda Python: VieNeu-TTS v3 Turbo in MLX speaks each row's `text_vi` in
-the voice of its own English clip, into one Opus shard per dataset shard
-([vi-tts](../../docs/agent-memory/vi-tts.md)).
+the voice of its own English clip, and rewrites each dataset shard with its `vi_audio` filled
+([vi-tts](../../docs/agent-memory/vi-tts.md)). It goes top down through the sorted shard paths
+while another machine goes bottom up. Run `upload --follow` above beside it: it publishes the
+shards as they are voiced and downloads the ones the other machine voiced, which the TTS then
+skips.
 
 ```bash
-O=/Volumes/data/datasets/en_speech_vi_tts && mkdir -p $O
-nohup caffeinate -i python -m training.prep.tts_en_speech >> $O/tts.log 2>&1 &   # `kill` stops it; rerun to resume
+R=/Volumes/data/datasets/en_vi_speech
+nohup caffeinate -i python -m training.prep.tts_en_speech >> $R/tts.log 2>&1 &   # `kill` stops it; rerun to resume
 ```
 
-`--shards N` stops after N shards. A stop loses only the shards not yet written.
+`--shards N` stops after the next N unvoiced shards, counting those the upload pulls in meanwhile.
+A stop loses only the shards not yet rewritten.
 
 ## Grounded caches
 
