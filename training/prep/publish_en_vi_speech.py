@@ -6,19 +6,22 @@ speech) with its transcript and the Vietnamese translation exported by
 training/prep/translate_en_speech.py. The voice-transfer TTS step (training/prep/tts_en_speech.py)
 fills `vi_audio` and `vi_duration_s` shard by shard. Rows without a translation (transcripts
 without letters) were dropped when the corpus was moved in; the step that moved it is in git at
-a236ad5.
+a236ad5. The `cv-anquach` rows come voiced from the earlier anquachdev/common-vi-en: the Common
+Voice clips the corpus lacks, with that dataset's translation and Vietnamese speech.
 
 --root, laid out as the Hugging Face repo, is the one local copy. Run from the repo root as
 `python -m training.prep.publish_en_vi_speech <step>`. Steps:
+  anquach    data/train/cv-anquach-*.parquet from a snapshot of the earlier common-vi-en (--src)
   card       README.md with statistics of the local dataset
   upload     commits the shards voiced here since, a few GB at a time, downloads the shards
-             voiced on the Hub by another machine, then commits a fresh card (export HF_TOKEN);
-             with --follow it looks again every 10 min until every shard is voiced
+             voiced on the Hub by another machine, then commits a fresh card (export HF_TOKEN_AN,
+             a token of the anquachdev account that owns the repo); with --follow it looks again
+             every 10 min until every shard is voiced
 Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stops a second run of
 the same step.
 
 Every shard has one schema:
-  data/{train,validation}/{cv27,libriheavy}-*.parquet
+  data/{train,validation}/{cv27,libriheavy}-*.parquet, data/train/cv-anquach-*.parquet
   id, en_audio{bytes,path}, text_en, text_vi, speaker, en_duration_s,
   vi_audio{bytes,path}, vi_duration_s, cross_lingual_timbre_matched
 """
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import io
 import json
 import os
 import shutil
@@ -43,14 +47,19 @@ os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 import pyarrow as pa  # noqa: E402
 import pyarrow.compute as pc  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
-from huggingface_hub import CommitOperationAdd, HfApi, RepoFile  # noqa: E402
+import soundfile as sf  # noqa: E402
+from huggingface_hub import CommitOperationAdd, HfApi, RepoFile, snapshot_download  # noqa: E402
 from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
 from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
 
-REPO = "huybik/en-vi-speech"
+REPO = "anquachdev/common-vi-en"  # huybik/en-vi-speech, published before the merge, is no longer updated
 CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
 SPLITS = ("train", "validation")
+SOURCES = ("cv27", "cv-anquach", "libriheavy")  # shard and id prefixes
+# common-vi-en before the merge: 739,346 Common Voice English rows, voiced, 16 kHz Ogg Opus.
+ANQUACH_REVISION = "dba8e98cef20eb0493f747ef040180fa81512d17"
+SHARD_ROWS = 20_000  # as in the cv27 shards
 RETRIES = 5  # a failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
 # 2-7 min of upload, all a stop loses; ~20-30 commits an hour, well under the Hub's commit quota
@@ -132,6 +141,55 @@ def retried(what: str, fn: Callable[[], T]) -> T:
             time.sleep(wait)
 
 
+# ------------------------------------------------------------------ cv-anquach rows
+
+
+def anquach(root: Path, src: Path) -> None:
+    """Write data/train/cv-anquach-*.parquet from common-vi-en as it was before the merge: its rows
+    whose English lasts CLIP_SECONDS, except the clips cv27 holds (ours stay) and the sentences of
+    cv27's validation split (cv27 train leaves them out too). Most are clips the corpus's 10.5 kHz
+    bandwidth floor dropped, and their English is that dataset's 16 kHz re-encode; their speaker is
+    unknown. Rerunning writes the same shards."""
+    snapshot_download(REPO, repo_type="dataset", revision=ANQUACH_REVISION, local_dir=src,
+                      allow_patterns=["data/train-heavy-*.parquet"], token=os.environ["HF_TOKEN_AN"])
+    ours, dev = set(), set()
+    for path in root.glob("data/*/cv27-*.parquet"):
+        t = pq.read_table(path, columns=["id", "text_en"])
+        ours.update(i.removeprefix("cv27/") for i in t["id"].to_pylist())
+        if path.parent.name == "validation":
+            dev.update(s.strip().lower() for s in t["text_en"].to_pylist())
+    rows, shards, seen, kept = [], 0, 0, 0
+
+    def flush() -> None:
+        nonlocal rows, shards
+        write_shard(root / "data" / "train" / f"cv-anquach-{shards:05d}.parquet", pa.Table.from_pylist(rows, schema=SCHEMA))
+        shards += 1
+        rows = []
+
+    for path in sorted((src / "data").glob("train-heavy-*.parquet")):
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=500):
+            for r in batch.to_pylist():
+                seen += 1
+                clip, en, vi = r["source_clip"].removesuffix(".mp3"), r["audio_en"]["bytes"], r["audio_vi"]["bytes"]
+                en_s = sf.info(io.BytesIO(en)).duration
+                if not CLIP_SECONDS[0] <= en_s <= CLIP_SECONDS[1] or clip in ours or r["en"].strip().lower() in dev:
+                    continue
+                vi_s = sf.info(io.BytesIO(vi)).duration
+                if not (r["en"].strip() and r["vi"].strip() and vi_s > 0):
+                    raise ValueError(f"{path.name}: {clip} has no English or Vietnamese text, or no Vietnamese speech")
+                rows.append({
+                    "id": f"cv-anquach/{clip}", "en_audio": {"bytes": en, "path": f"{clip}.opus"},
+                    "text_en": r["en"], "text_vi": r["vi"], "speaker": None, "en_duration_s": en_s,
+                    "vi_audio": {"bytes": vi, "path": f"{clip}.opus"}, "vi_duration_s": vi_s,
+                    "cross_lingual_timbre_matched": None})
+                kept += 1
+                if len(rows) == SHARD_ROWS:
+                    flush()
+    if rows:
+        flush()
+    log(f"wrote {shards} cv-anquach shards: {kept:,} of common-vi-en's {seen:,} rows")
+
+
 # ------------------------------------------------------------------ dataset card
 
 CARD = """---
@@ -154,12 +212,13 @@ configs:
     path: data/validation/*.parquet
 ---
 
-# en-vi-speech
+# common-vi-en
 
 English read speech with English transcripts, Vietnamese translations and Vietnamese speech in
 the English speaker's voice, for research on Vietnamese→English simultaneous speech translation
 (Hibiki-Zero). The Vietnamese speech is being synthesized shard by shard; shards not voiced yet
-have it empty, and the table shows how far it has come. Built by
+have it empty, and the table shows how far it has come. It merges `huybik/en-vi-speech` into this
+repository's earlier Common Voice rows (`cv-anquach`). Built by
 `training/prep/publish_en_vi_speech.py` and `training/prep/tts_en_speech.py` in the hibiki-zero
 repository.
 
@@ -171,13 +230,13 @@ repository.
 
 | column | type | content |
 |---|---|---|
-| `id` | string | `cv27/<clip>`, `libriheavy/<subset>/<speaker>/<book>/<recording>_<segment>` |
+| `id` | string | `cv27/<clip>`, `cv-anquach/<clip>`, `libriheavy/<subset>/<speaker>/<book>/<recording>_<segment>` |
 | `en_audio` | Audio | English clip; the `path` extension names the codec |
 | `text_en` | string | cased, punctuated English transcript |
 | `text_vi` | string | Vietnamese translation |
-| `speaker` | string | `cv27/<client_id>` or `libriheavy/<speaker_id>` |
+| `speaker` | string | `cv27/<client_id>` or `libriheavy/<speaker_id>`; empty for `cv-anquach` |
 | `en_duration_s` | float32 | seconds |
-| `vi_audio` | Audio | `text_vi` spoken by VieNeu-TTS v3 Turbo, cloning the voice of `en_audio`'s first 8 s; 48 kHz mono Ogg Opus, ~32 kbps; empty in shards not voiced yet |
+| `vi_audio` | Audio | `text_vi` spoken; `cv27` and `libriheavy`: by VieNeu-TTS v3 Turbo, cloning the voice of `en_audio`'s first 8 s, 48 kHz mono Ogg Opus, ~32 kbps, empty in shards not voiced yet; `cv-anquach`: 16 kHz mono Ogg Opus, ~16 kbps |
 | `vi_duration_s` | float32 | seconds, empty with `vi_audio` |
 | `cross_lingual_timbre_matched` | bool | whether the Vietnamese voice matches the English speaker's; empty until speaker similarity is measured |
 
@@ -192,12 +251,17 @@ Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training 
 - Libriheavy (`mythicinfinity/libriheavy`, LibriVox audiobooks): mono rows only, in the
   original 48 kHz Ogg Opus. dev is the validation split; train is medium, small and
   seeded-random large files. `text_en` is the book text (`text_original`).
-- Every Common Voice clip and Libriheavy chapter reaches 10.5 kHz of audio bandwidth (the
+- Every `cv27` clip and Libriheavy chapter reaches 10.5 kHz of audio bandwidth (the
   highest frequency within 50 dB of the spectral peak, HiFiTTS-2's estimate), and train keeps
   each speaker's clips, in build order, until the speaker holds 30 h.
-- Their English text was translated by Claude Sonnet 5.5, Gemini 3.8 Flash and Muse Spark 1.3,
+- `cv-anquach` (train only) holds this repository's earlier rows (revision `dba8e98`, 739,346
+  Common Voice English clips with Vietnamese translations and speech) whose English lasts
+  {{CLIP}}, except the clips `cv27` holds and the sentences of its validation split. Most are
+  clips under the 10.5 kHz floor. Their English is a 16 kHz mono Ogg Opus re-encode (~16 kbps),
+  so it carries nothing above 8 kHz, and their speaker is not recorded.
+- The `cv27` and `libriheavy` English text was translated by Claude Sonnet 5.5, Gemini 3.8 Flash and Muse Spark 1.3,
   in batches of neighbouring lines.
-- The Vietnamese speech is synthetic: VieNeu-TTS v3 Turbo (`pnnbao-ump/VieNeu-TTS-v3-Turbo`),
+- The `cv27` and `libriheavy` Vietnamese speech is synthetic: VieNeu-TTS v3 Turbo (`pnnbao-ump/VieNeu-TTS-v3-Turbo`),
   run in MLX, takes the speaker x-vector and in-context reference from the row's own English
   clip. On 120 validation rows, its speaker similarity to the English clip (WeSpeaker ResNet34
   cosine) averaged 0.50 on Common Voice and 0.56 on Libriheavy, where another clip of the same
@@ -207,7 +271,7 @@ Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training 
 The audio columns hold codec bytes. Read raw rows with `pyarrow` and decode with `soundfile`
 (`sf.read(io.BytesIO(row["en_audio"]["bytes"]))`), resampling to 24 kHz for Mimi, or with
 `datasets` (needs `torchcodec`):
-`load_dataset("huybik/en-vi-speech", streaming=True).cast_column("en_audio", Audio(sampling_rate=24_000))`.
+`load_dataset("anquachdev/common-vi-en", streaming=True).cast_column("en_audio", Audio(sampling_rate=24_000))`.
 
 ## Use
 
@@ -220,7 +284,7 @@ public-domain LibriVox recordings.
 def write_card(root: Path) -> None:
     rows = []
     for split in SPLITS:
-        for source in ("cv27", "libriheavy"):
+        for source in SOURCES:
             shards = sorted((root / "data" / split).glob(f"{source}-*.parquet"))
             if not shards:
                 continue
@@ -238,7 +302,7 @@ def write_card(root: Path) -> None:
                 )
             )
     table = "\n".join(
-        f"| {s} | {src} | {n} | {r:,} | {h:,.1f} | {vh:,.1f} | {spk:,} | {gb:.1f} |"
+        f"| {s} | {src} | {n} | {r:,} | {h:,.1f} | {vh:,.1f} | {f'{spk:,}' if spk else 'unknown'} | {gb:.1f} |"
         for s, src, n, r, h, vh, spk, gb in rows
     )
     tmp = root / f"README.md.{os.getpid()}.tmp"  # so no run reads half a card, or writes into another's
@@ -251,13 +315,14 @@ def upload(root: Path, repo: str, follow: bool) -> None:
     """Match the local shards and the Hub's, then commit a fresh card. The TTS runs top down here
     and bottom up on another machine. A voiced local shard that differs from its Hub copy in size
     is committed, COMMIT_BYTES at a time; an unvoiced one is replaced by its Hub copy, voiced
-    there. Unvoiced shards are never committed, so they never replace a voiced Hub copy. The Hub
+    there. An unvoiced shard is committed only when the Hub has none of it, so it never replaces
+    a voiced Hub copy, and the other machine finds every shard there to voice. The Hub
     is the record of progress: a shard there at its local size is uploaded, so a stopped run loses
     only its unfinished commit. Shards written meanwhile go in later commits. With follow, it
     looks again every FOLLOW_WAIT until every shard is voiced; the Hub's Xet storage sends only
     the new bytes of a rewritten shard."""
     disable_progress_bars()  # in a log, their redraws come to ~1 MB a commit
-    api = HfApi()
+    api = HfApi(token=os.environ["HF_TOKEN_AN"])
     changed = True  # the first pass sends the card even when no shard changed
     while True:
         if not (local := sorted(root.glob("data/*/*.parquet"))):
@@ -265,7 +330,8 @@ def upload(root: Path, repo: str, follow: bool) -> None:
         done = not follow or all(voiced(p) for p in local)  # before the pass, so it sends the last
         remote = retried("listing the Hub", lambda: {
             f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)})
-        while todo := [p for p in local if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size and voiced(p)]:
+        while todo := [p for p in local if (name := p.relative_to(root).as_posix()) not in remote
+                       or remote[name] != p.stat().st_size and voiced(p)]:
             batch, size = {}, 0
             for p in todo:
                 if batch and size + p.stat().st_size > COMMIT_BYTES:
@@ -329,13 +395,17 @@ def pull(api: HfApi, repo: str, root: Path, path: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("card", "upload"))
+    p.add_argument("step", choices=("anquach", "card", "upload"))
     p.add_argument("--root", type=Path, default=Path("/Volumes/data/datasets/en_vi_speech"))
+    p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/common_vi_en_src"),
+                   help="where the earlier common-vi-en is downloaded to (anquach)")
     p.add_argument("--repo", default=REPO)
     p.add_argument("--follow", action="store_true", help="keep uploading until every shard is voiced (upload)")
     args = p.parse_args()
     with lock(args.root, args.step):
-        if args.step == "card":
+        if args.step == "anquach":
+            anquach(args.root, args.src)
+        elif args.step == "card":
             write_card(args.root)
         else:
             upload(args.root, args.repo, args.follow)

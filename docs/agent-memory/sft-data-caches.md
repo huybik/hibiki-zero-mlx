@@ -17,7 +17,7 @@ data/cache/<name> ... ─► training.finetune.train --cache-dir (several), --va
 - No pipeline produces pair rows yet. The next source is the English `en_speech` corpus
   ([en-speech-corpus](en-speech-corpus.md)) once roadmap phase 1 turns it into
   Vietnamese-source rows; its caches train together with the [PhoMT cache](#phomt-cache).
-  Its rows are published, with pair-row column names, in `huybik/en-vi-speech`
+  Its rows are published, with pair-row column names, in `anquachdev/common-vi-en`
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)); the PhoMT cache is only in the cache repo.
   FLEURS is dropped.
 - Pair rows need `id`, `split`, `vi_audio`, `en_audio`, `vi_duration_s`, `en_duration_s`,

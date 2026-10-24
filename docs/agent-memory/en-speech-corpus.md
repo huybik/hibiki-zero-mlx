@@ -77,9 +77,12 @@ dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
 
 ## Rules
 
-- The whole corpus is published with its translations in `huybik/en-vi-speech`
+- The whole corpus is published with its translations in `anquachdev/common-vi-en`
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)): on 2026-10-23 the user chose to include
   Common Voice for research use, knowing the Mozilla Data Collective terms forbid re-hosting it.
+  The dataset's `cv-anquach` rows are not corpus rows and miss these filters: most are Common
+  Voice clips under the 10.5 kHz floor, re-encoded at 16 kHz
+  ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)).
 - Training gets ~10k hours of 5–22.4 s English clips. The user first asked for 5–15 s clips; on
   2026-10-23 they chose 5–22.4 s and stopped the top-up at 10,486 train hours (8,160 of them
   5–15 s), knowing the trainer drops rows over 280 frames. On 2026-10-24 they dropped PhoMT

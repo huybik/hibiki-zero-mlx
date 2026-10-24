@@ -15,7 +15,7 @@ stream, so each line must stay aligned with its English audio. The TTS step is [
 ## Output
 
 `/Volumes/data/datasets/en_speech_vi_text/` stays local; the exported translations are published
-with the audio in `huybik/en-vi-speech` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
+with the audio in `anquachdev/common-vi-en` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
 
 - `texts` reads the shards of the EN-VI dataset (`--src`) and writes `texts.parquet` (`text`, the unique transcripts in translation order)
   and `rows.parquet` (`split`, `id`, `text`, `duration`) for every row with a letter in its
