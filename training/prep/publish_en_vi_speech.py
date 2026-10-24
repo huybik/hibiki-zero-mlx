@@ -3,8 +3,9 @@
 
 Each row holds an English clip of the en_speech corpus (Common Voice 27 and Libriheavy read
 speech) with its transcript and the Vietnamese translation exported by
-training/prep/translate_en_speech.py. `vi_audio` stays empty until the voice-transfer TTS step
-fills it. Rows without a translation (transcripts without letters) are dropped.
+training/prep/translate_en_speech.py. The voice-transfer TTS step (training/prep/tts_en_speech.py)
+fills `vi_audio` and `vi_duration_s` shard by shard. Rows without a translation (transcripts
+without letters) are dropped.
 
 --root, laid out as the Hugging Face repo, is the one local copy: the en_speech step moves the
 corpus into it. Run from the repo root as `python -m training.prep.publish_en_vi_speech <step>`.
@@ -12,8 +13,10 @@ Steps:
   en_speech  converts each shard of the en_speech corpus at --src into a dataset shard of the
              same name and deletes the original, then the emptied corpus folder
   card       README.md with statistics of the local dataset
-  upload     commits the shards missing from the Hub, a few GB at a time, then the card
-             (export HF_TOKEN); rerun it after adding shards
+  upload     commits the shards missing from the Hub or voiced here since, a few GB at a time,
+             downloads the shards voiced on the Hub by another machine, then commits a fresh card
+             (export HF_TOKEN); with --follow it looks again every 10 min until every shard is
+             voiced
 Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stops a second run of
 the same step.
 
@@ -45,6 +48,7 @@ import pyarrow as pa  # noqa: E402
 import pyarrow.compute as pc  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 from huggingface_hub import CommitOperationAdd, HfApi, RepoFile  # noqa: E402
+from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
 from training.prep.translate_en_speech import LETTER, MAX_SECONDS, exclusive, log  # noqa: E402
 
@@ -56,6 +60,7 @@ RETRY_WAIT = 60
 # 2-7 min of upload, all a stop loses; ~20-30 commits an hour, well under the Hub's commit quota
 # (~100 an hour).
 COMMIT_BYTES = 4_000_000_000
+FOLLOW_WAIT = 600  # a TTS shard is voiced every ~3 min
 T = TypeVar("T")
 
 AUDIO = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
@@ -107,6 +112,11 @@ def write_shard(path: Path, t: pa.Table) -> None:
     durable(tmp)
     tmp.replace(path)
     durable(path.parent)
+
+
+def voiced(path: Path) -> bool:
+    """Whether the TTS step has filled the shard's Vietnamese speech."""
+    return pq.read_table(path, columns=["vi_duration_s"])["vi_duration_s"].null_count == 0
 
 
 def lock(root: Path, step: str):
@@ -217,10 +227,12 @@ configs:
 
 # en-vi-speech
 
-English read speech with English transcripts and Vietnamese translations, for research on
-Vietnamese→English simultaneous speech translation (Hibiki-Zero). The Vietnamese speech columns
-are empty until a voice-transfer TTS step fills them. Built by
-`training/prep/publish_en_vi_speech.py` in the hibiki-zero repository.
+English read speech with English transcripts, Vietnamese translations and Vietnamese speech in
+the English speaker's voice, for research on Vietnamese→English simultaneous speech translation
+(Hibiki-Zero). The Vietnamese speech is being synthesized shard by shard; shards not voiced yet
+have it empty, and the table shows how far it has come. Built by
+`training/prep/publish_en_vi_speech.py` and `training/prep/tts_en_speech.py` in the hibiki-zero
+repository.
 
 | split | source | shards | rows | EN hours | VI audio hours | speakers | GB |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -236,9 +248,9 @@ are empty until a voice-transfer TTS step fills them. Built by
 | `text_vi` | string | Vietnamese translation |
 | `speaker` | string | `cv27/<client_id>` or `libriheavy/<speaker_id>` |
 | `en_duration_s` | float32 | seconds |
-| `vi_audio` | Audio | Vietnamese clip; empty until voice-transfer TTS fills it |
+| `vi_audio` | Audio | `text_vi` spoken by VieNeu-TTS v3 Turbo, cloning the voice of `en_audio`'s first 8 s; 48 kHz mono Ogg Opus, ~32 kbps; empty in shards not voiced yet |
 | `vi_duration_s` | float32 | seconds, empty with `vi_audio` |
-| `cross_lingual_timbre_matched` | bool | whether the Vietnamese voice matches the English speaker's; empty with `vi_audio` |
+| `cross_lingual_timbre_matched` | bool | whether the Vietnamese voice matches the English speaker's; empty until speaker similarity is measured |
 
 ## Sources
 
@@ -256,6 +268,12 @@ Every English clip lasts {{CLIP}}, so most fit the 280-frame (12.5 Hz) training 
   each speaker's clips, in build order, until the speaker holds 30 h.
 - Their English text was translated by Claude Sonnet 5.5, Gemini 3.8 Flash and Muse Spark 1.3,
   in batches of neighbouring lines.
+- The Vietnamese speech is synthetic: VieNeu-TTS v3 Turbo (`pnnbao-ump/VieNeu-TTS-v3-Turbo`),
+  run in MLX, takes the speaker x-vector and in-context reference from the row's own English
+  clip. On 120 validation rows, its speaker similarity to the English clip (WeSpeaker ResNet34
+  cosine) averaged 0.50 on Common Voice and 0.56 on Libriheavy, where another clip of the same
+  speaker scores ~0.78 and a different speaker ~0.10; Whisper large-v3-turbo's character error
+  rate against `text_vi` averaged 12% and 3%.
 
 The audio columns hold codec bytes. Read raw rows with `pyarrow` and decode with `soundfile`
 (`sf.read(io.BytesIO(row["en_audio"]["bytes"]))`), resampling to 24 kHz for Mimi, or with
@@ -300,30 +318,65 @@ def write_card(root: Path) -> None:
     log(f"wrote {root / 'README.md'}:\n{table}")
 
 
-def upload(root: Path, repo: str) -> None:
-    """Commit the shards missing from the Hub, COMMIT_BYTES at a time, then the card. The Hub is
-    the record of progress: a shard there at its local size is uploaded, so a stopped run loses
-    only its unfinished commit. Shards written meanwhile go in later commits."""
+def upload(root: Path, repo: str, follow: bool) -> None:
+    """Match the local shards and the Hub's, then commit a fresh card. A shard differing from its
+    Hub copy in size is downloaded when only the Hub's is voiced (the TTS runs top down here and
+    bottom up on another machine) and committed otherwise, COMMIT_BYTES at a time. The Hub is the
+    record of progress: a shard there at its local size is uploaded, so a stopped run loses only
+    its unfinished commit. Shards written meanwhile go in later commits. With follow, it looks
+    again every FOLLOW_WAIT until every shard is voiced; the Hub's Xet storage sends only the new
+    bytes of a rewritten shard."""
+    disable_progress_bars()  # in a log, their redraws come to ~1 MB a commit
     api = HfApi()
-    remote = retried("listing the Hub", lambda: {
-        f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)})
-    while todo := [p for p in sorted(root.glob("data/*/*.parquet")) if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size]:
-        batch, size = [], 0
-        for p in todo:
-            if batch and size + p.stat().st_size > COMMIT_BYTES:
-                break
-            batch.append(p)
-            size += p.stat().st_size
-        retried(f"committing {batch[0].name}", lambda: api.create_commit(
-            repo, [CommitOperationAdd(p.relative_to(root).as_posix(), p) for p in batch],
-            commit_message=f"Add {len(batch)} shards from {batch[0].name}", repo_type="dataset"))
-        remote.update((p.relative_to(root).as_posix(), p.stat().st_size) for p in batch)
-        log(f"committed {len(batch)} shards from {batch[0].name} ({size / 1e9:.1f} GB), {len(todo) - len(batch)} left")
-    card = root / "README.md"
-    if card.exists():  # create_commit skips it when unchanged
-        retried("committing README.md", lambda: api.upload_file(
-            path_or_fileobj=card, path_in_repo="README.md", repo_id=repo, repo_type="dataset", commit_message="Update the card"))
-    log(f"uploaded {root} to {repo}")
+    changed = True  # the first pass sends the card even when no shard changed
+    while True:
+        done = not follow or all(voiced(p) for p in root.glob("data/*/*.parquet"))  # before the pass, so it sends the last
+        remote = retried("listing the Hub", lambda: {
+            f.path: f.size for f in api.list_repo_tree(repo, recursive=True, repo_type="dataset") if isinstance(f, RepoFile)})
+        for p in sorted(root.glob("data/*/*.parquet")):
+            name = p.relative_to(root).as_posix()
+            if name in remote and remote[name] != p.stat().st_size and not voiced(p):
+                pull(api, repo, root, p)
+                changed = True
+        while todo := [p for p in sorted(root.glob("data/*/*.parquet")) if remote.get(p.relative_to(root).as_posix()) != p.stat().st_size]:
+            batch, size = {}, 0
+            for p in todo:
+                if batch and size + p.stat().st_size > COMMIT_BYTES:
+                    break
+                batch[p] = p.stat().st_size  # before the commit, so a shard rewritten meanwhile goes again
+                size += batch[p]
+            first = next(iter(batch)).name
+            retried(f"committing {first}", lambda: api.create_commit(
+                repo, [CommitOperationAdd(p.relative_to(root).as_posix(), p) for p in batch],
+                commit_message=f"Add {len(batch)} shards from {first}", repo_type="dataset"))
+            remote.update((p.relative_to(root).as_posix(), n) for p, n in batch.items())
+            log(f"committed {len(batch)} shards from {first} ({size / 1e9:.1f} GB), {len(todo) - len(batch)} left")
+            changed = True
+        if changed:
+            write_card(root)
+            card = root / "README.md"  # create_commit skips it when unchanged
+            retried("committing README.md", lambda: api.upload_file(
+                path_or_fileobj=card, path_in_repo="README.md", repo_id=repo, repo_type="dataset", commit_message="Update the card"))
+            log(f"uploaded {root} to {repo}")
+        if done:
+            return
+        changed = False
+        time.sleep(FOLLOW_WAIT)
+
+
+def pull(api: HfApi, repo: str, root: Path, path: Path) -> None:
+    """Replace a local shard with its Hub copy, voiced on another machine, once that checks out."""
+    name = path.relative_to(root).as_posix()
+    got = Path(retried(f"downloading {name}", lambda: api.hf_hub_download(
+        repo, name, repo_type="dataset", local_dir=root / ".pull")))
+    ids = pq.read_table(path, columns=["id"])["id"]
+    if not (pq.read_schema(got).equals(SCHEMA) and voiced(got) and pq.read_table(got, columns=["id"])["id"].equals(ids)):
+        raise RuntimeError(f"the Hub's {name} is not this shard voiced; it is left in {got}")
+    durable(got)
+    got.replace(path)
+    durable(path.parent)
+    shutil.rmtree(root / ".pull")  # the download's metadata
+    log(f"took {name}, voiced on the Hub")
 
 
 def main() -> None:
@@ -334,6 +387,7 @@ def main() -> None:
     p.add_argument("--src", type=Path, default=Path("/Volumes/data/datasets/en_speech"))
     p.add_argument("--vi-text", type=Path, default=Path("/Volumes/data/datasets/en_speech_vi_text"))
     p.add_argument("--workers", type=int, default=4, help="shards moved at once (en_speech)")
+    p.add_argument("--follow", action="store_true", help="keep uploading until every shard is voiced (upload)")
     args = p.parse_args()
     with lock(args.root, args.step):
         if args.step == "en_speech":
@@ -341,7 +395,7 @@ def main() -> None:
         elif args.step == "card":
             write_card(args.root)
         else:
-            upload(args.root, args.repo)
+            upload(args.root, args.repo, args.follow)
 
 
 if __name__ == "__main__":

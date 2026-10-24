@@ -10,25 +10,27 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#con
 The user asked on 2026-10-23 for one research dataset of pair-row sources: English speech, its
 transcript and Vietnamese translation, with the Vietnamese speech to come. It is kept in full on
 the Mac, where it replaced the `en_speech` corpus folder, and published as `huybik/en-vi-speech`
-(user's choices). The voice-transfer TTS step ([vi-tts](vi-tts.md)) writes the Vietnamese
-speech of its rows to a separate folder; `cache_codes` pair rows are then made from it
-([sft-data-caches](sft-data-caches.md)).
+(user's choices). The voice-transfer TTS step ([vi-tts](vi-tts.md)) fills the Vietnamese speech
+of its shards in place, and `upload --follow` publishes each as it is voiced; `cache_codes` pair
+rows are then made from it ([sft-data-caches](sft-data-caches.md)).
 
 ## Contents
 
 ```text
-/Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~316 GB)
+/Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~316 GB + ~120 GB of VI)
   data/{train,validation}/cv27-*, libriheavy-*  ◄─ en_speech step: the corpus, moved in
-  README.md                                   ◄─ card step
-        └─► upload step (4 GB commits) ─► huybik/en-vi-speech
+                                              ◄─ tts_en_speech: vi_audio filled, shard by shard
+  README.md                                   ◄─ card step, and each upload pass
+        └─► upload step (4 GB commits; --follow every 10 min) ─► huybik/en-vi-speech
 ```
 
 - Columns: `id`, `en_audio`, `text_en`, `text_vi`, `speaker`, `en_duration_s`, `vi_audio`,
   `vi_duration_s`, `cross_lingual_timbre_matched`; pair rows use the same names.
 - The rows are the `en_speech` corpus ([en-speech-corpus](en-speech-corpus.md)): 3.49M rows,
   10,510.6 h, all 5–22.4 s. Shards keep their audio bytes and names and gain the exported
-  translations ([en-vi-translation](en-vi-translation.md)); `vi_audio`, `vi_duration_s` and the
-  timbre flag are empty.
+  translations ([en-vi-translation](en-vi-translation.md)). The TTS step fills `vi_audio` and
+  `vi_duration_s`; the timbre flag is empty until speaker similarity is measured (the parity
+  plan's gate).
 - Common Voice is published too: the user chose this, for research use, knowing the Mozilla
   Data Collective terms forbid re-hosting it.
 - PhoMT is not in the dataset: the user dropped it on 2026-10-24, after 46 of its 1,377 shards
@@ -49,16 +51,29 @@ speech of its rows to a separate folder; `cache_codes` pair rows are then made f
   is in the corpus or already moved. It removes the emptied corpus folder at the end. Run
   `translate_en_speech texts` only after the move: before it, `texts` sees part of the corpus.
 - `upload` commits the local shards that are missing from the Hub, or differ from it in size, in
-  commits of up to 4 GB (2–7 min each, depending on what else shares the link), then `README.md`. The Hub is the record of
+  commits of up to 4 GB (2–7 min each, depending on what else shares the link), then writes and
+  commits a fresh `README.md`. The Hub is the record of
   progress, so a stop loses only the unfinished commit. The user asked on 2026-10-23 that a stop
   never lose more than that: `upload_large_folder` committed nothing in its first 37 min, while
   it hashed and pre-uploaded batches of up to 256 files, and lost them when stopped. `upload`
-  looks for new shards after each commit and ends when it finds none, so rerun it after adding
-  shards. A failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
+  looks for new shards after each commit and ends when it finds none. With `--follow` (the
+  user asked on 2026-10-24 that the TTS output go up continuously) it lists the Hub again every
+  10 min until every shard is voiced, so start it beside the TTS run; a TTS shard is voiced
+  every ~3 min.
+- A Hub shard whose size differs from an unvoiced local shard was voiced by the other machine
+  ([vi-tts](vi-tts.md#running)): `upload` downloads it into `.pull/`, checks its schema, its
+  ids and that it is voiced, then puts it in place of the local copy (~20 s for 280 MB). Any
+  other difference is committed, so an unvoiced local shard never replaces a voiced Hub one. A failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run.
+- A voiced shard sent again costs only its new bytes: the Hub's Xet storage chunks files by
+  content, and the rewritten shard keeps the English columns' bytes. The first 4 GB commit of
+  voiced shards sent 1.15 GB (2026-10-24), about their Vietnamese audio. Each upload pass
+  stats sizes before committing, so a shard the TTS rewrites mid-commit goes up again.
 - `upload` compares sizes only, and never deletes: a shard rewritten at the same size is not
   sent again, and a shard deleted locally stays on the Hub, where the card's
   `data/train/*.parquet` still reads it. After rebuilding or deleting a shard, delete its Hub
   copy with `HfApi().delete_file`.
+- huggingface_hub's progress bars are disabled in `upload`: in a log, Xet's redraws came to
+  ~1 MB a commit.
 - Upload alone ran at 30–36 MB/s (2026-10-24). Downloads share the link: with ~27 MB/s coming
   down, the upload fell to ~11 MB/s.
 - pyarrow's default memory pool on macOS (mimalloc) keeps freed buffers: converting 24 shards

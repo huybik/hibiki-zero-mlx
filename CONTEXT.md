@@ -50,10 +50,12 @@ inference/ (Apple Silicon, MLX)
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
-  translations, in the local EN-VI dataset, which is being uploaded as
-  `huybik/en-vi-speech` ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)).
-  VieNeu-TTS voices the Vietnamese lines on the Mac in each row's own English voice
-  ([vi-tts](docs/agent-memory/vi-tts.md)); no pair rows or caches are built from it yet.
+  translations, in the local EN-VI dataset, published as `huybik/en-vi-speech`
+  ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voices the
+  Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
+  shard: the Mac top down, another person's hardware bottom up, meeting through the Hub, where
+  `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)); no pair
+  rows or caches are built from it yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -89,7 +91,7 @@ inference/ (Apple Silicon, MLX)
 | EN→VI transcript translation | [en-vi-translation](docs/agent-memory/en-vi-translation.md) | `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text` |
 | EN→VI translation on the Gemini Batch API, claims | [en-vi-gemini](docs/agent-memory/en-vi-gemini.md) | the `claim` and `gemini` steps of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/gemini` |
 | EN→VI translation on Muse through OpenRouter | [en-vi-muse](docs/agent-memory/en-vi-muse.md) | the `muse` step of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/muse` |
-| Vietnamese voice-transfer TTS (VieNeu in MLX) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py`, `/Volumes/data/datasets/en_speech_vi_tts` |
+| Vietnamese voice-transfer TTS (VieNeu in MLX) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py`, `vi_audio` of `/Volumes/data/datasets/en_vi_speech` |
 | EN-VI speech dataset, its upload and the cache repo | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`, `huybik/en-vi-speech`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
 
 ## Canonical resources

@@ -1,7 +1,7 @@
 # Vietnamese voice-transfer TTS
 
-Read when touching `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py` or
-`/Volumes/data/datasets/en_speech_vi_tts`.
+Read when touching `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py` or the
+`vi_audio` of `/Volumes/data/datasets/en_vi_speech`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Recipe](#recipe) ·
 [Voice transfer](#voice-transfer) · [Engine](#engine) · [Speed and memory](#speed-and-memory) ·
 [Running](#running)
@@ -36,8 +36,11 @@ UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices.
   the model's 1024 positions or a non-finite x-vector stops the run, and a rerun stops on it
   again. No row of the corpus does (checked 2026-10-24: the longest chunk
   needs 704 positions).
-- Output: `--out/{split}/{shard}.parquet` per dataset shard with `id`, `vi_audio{bytes,path}`
-  (48 kHz mono Ogg Opus, libopus complexity 3, ~32 kbps) and `vi_duration_s`. Vietnamese runs
+- Output: the dataset shard itself, rewritten with `vi_audio{bytes,path}` (48 kHz mono Ogg Opus,
+  libopus complexity 3, ~32 kbps, ~13 MB an hour) and `vi_duration_s` filled; the timbre flag
+  stays empty until speaker similarity is measured. One local copy: the user asked on 2026-10-24
+  for the TTS output to go up continuously, so it fills the published columns instead of a
+  separate folder, and the 88 shards written to one before were folded in. Vietnamese runs
   shorter than the English: 0.68x on Common Voice, 0.93x on Libriheavy validation.
 
 ## Voice transfer
@@ -107,11 +110,32 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
   not yet written.
 - `kill` (SIGTERM) exits through the pool's shutdown, so the workers stop too; queued rows are
   dropped, and only unwritten shards are lost.
+- Rewriting a shard (read, fill, write, read back, flush) takes ~1.5 s on the main thread, once a
+  shard; the publisher's `upload --follow` beside the run (1.5 GB) left it at ~95x.
 
 ## Running
 
-Commands are in [training/prep/README.md](../../training/prep/README.md). One stream runs across
-shards: validation first, then train in a fixed shuffled order, so a stopped run has voiced a
-random sample. A shard is written whole once its last row is encoded (through the publisher's
-`write_shard`), and a rerun skips the shards already written. At ~100–130x, the corpus's ~9k
-hours of Vietnamese take 3–4 days.
+Commands are in [training/prep/README.md](../../training/prep/README.md). A shard is rewritten
+whole once its last row is encoded (through the publisher's `write_shard`, so a crash never
+leaves half a shard), and a rerun skips the shards whose `vi_duration_s` has no nulls. It holds
+`.tts.lock` in the dataset folder. At ~100–130x, the corpus's ~9k hours of Vietnamese would take
+the Mac alone 3–4 days.
+
+Two machines share the work (user's plan, 2026-10-24): the Mac goes top down through the
+dataset's shard paths in sorted order (`data/train/cv27-*`, `data/train/libriheavy-*`, then
+`data/validation/*`), and another person's own hardware goes bottom up. The Mac's first run
+(validation, then a shuffled train order) had voiced 88 shards before, scattered through the
+list.
+
+```text
+data/train/cv27-00000 ... ─► Mac, top down
+                     ... meet ...
+... data/validation/*     ◄─ other machine, bottom up
+```
+
+- The other machine reads the shards from the Hub, skips those whose `vi_duration_s` has no
+  nulls there, and commits each voiced shard back with the same schema as soon as it is done.
+- The Mac's `upload --follow` downloads every Hub shard voiced there in place of the local copy
+  (it checks the schema, the ids and that `vi_duration_s` has no nulls first). The TTS checks each
+  shard again before reading it, so it skips them. Near the meeting point both may voice a shard
+  or two; the later commit wins.

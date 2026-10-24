@@ -35,8 +35,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)), and `/Volumes/data/datasets/phomt-grounded-v2-5s/`
   the restored PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)). The FLEURS
   data are deleted.
-- `/Volumes/data/datasets/en_speech_vi_tts/` holds the Vietnamese TTS shards ([vi-tts](vi-tts.md)).
-  Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
+- Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
   (`HF_HOME`).
 - Gitignored local state: `data/` (pair files and Mimi caches), `runs/` (training runs and eval
   outputs), `translations/` and `output/`.
