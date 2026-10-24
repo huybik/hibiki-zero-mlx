@@ -121,7 +121,9 @@ class SpeakerEncoder:
     speaker_encoder.onnx (the batch norms that follow convs folded into them), in MLX on
     right-padded batches. Every conv wider than one frame sees zeros past a row's end, as the
     unpadded graph does; means count only a row's frames, except the CAM layers' segment means,
-    which onnxruntime divides by the full segment. In fp16: cosine to onnxruntime's x-vectors
+    which divide a partial last segment by the full 100 frames as upstream's onnxruntime does: its
+    default optimisation folds the graph's zero Pad into the AveragePool, counting the padding
+    (PyTorch's CAM++, or onnxruntime unoptimised, divides by the frames present). In fp16: cosine to onnxruntime's x-vectors
     above 0.99998 on Common Voice (fp32: 0.9999999), and 3.4 ms of GPU a row against 71 ms of
     CPU there, whose load slowed the GPU's work by a third."""
 
@@ -502,8 +504,9 @@ class Synthesizer:
             for i, x in zip(idx, self.speaker([fbanks[i] for i in idx])):
                 xvectors[i] = x
         x = mx.stack(xvectors)
-        if not mx.isfinite(x).all().item():
-            raise FloatingPointError("a non-finite x-vector")
+        finite = np.isfinite(np.array(x)).all(axis=1)
+        if not finite.all():  # a reference of a frame or two
+            raise FloatingPointError("non-finite x-vectors", np.flatnonzero(~finite).tolist())
         linear, norm = self.model.xvec_proj
         return norm(linear(x.astype(linear.weight.dtype)))
 

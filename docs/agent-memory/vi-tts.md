@@ -122,7 +122,7 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
   source, against 1.24 dB).
 - Footprint: the main process ~5 GB with its Metal buffers (`footprint -p`; `ps` RSS omits
   them), the six workers ~0.5 GB each. Waiting in memory: the dataset shard being read, at most
-  256 prepared rows (0.8 MB of fp16 reference audio and ~0.2 MB of fbank each), a decode batch
+  256 prepared rows (0.8 MB of fp16 reference audio and ~0.26 MB of fbank each), a decode batch
   or two of float32 audio (~130 MB each, queued behind the enrollments) until encoded, and the
   Opus bytes of each shard not yet written.
 - `kill` (SIGTERM) exits through the pool's shutdown, so the workers stop too; queued rows are

@@ -174,7 +174,11 @@ class Voicer:
             take.append(self.prepared.popleft())
         rows = [(shard, i, f.result()) for shard, i, f in take]
         ref_codes = self.synth.encode_refs([voice.ref for _, _, (voice, _, _) in rows])
-        anchors = self.synth.speaker_anchors([voice.fbank for _, _, (voice, _, _) in rows])
+        try:
+            anchors = self.synth.speaker_anchors([voice.fbank for _, _, (voice, _, _) in rows])
+        except FloatingPointError as e:
+            bad = [f"{rows[k][0].ids[rows[k][1]]} ({len(rows[k][2][0].fbank)} fbank frames)" for k in e.args[1]]
+            raise FloatingPointError(f"non-finite x-vectors: {', '.join(bad)}") from e
         jobs = []
         for k, ((shard, i, (_, phonemes, pauses)), codes) in enumerate(zip(rows, ref_codes)):
             row = Row(shard, i, pauses, [None] * len(phonemes))
