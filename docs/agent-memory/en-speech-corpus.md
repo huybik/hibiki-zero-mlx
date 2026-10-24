@@ -77,7 +77,7 @@ dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
 
 ## Rules
 
-- The whole corpus is published with its translations in `anquachdev/common-vi-en`
+- The whole corpus is published with its translations in the EN-VI dataset
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)): on 2026-10-23 the user chose to include
   Common Voice for research use, knowing the Mozilla Data Collective terms forbid re-hosting it.
   The dataset's `cv-anquach` rows are not corpus rows and miss these filters: Common Voice clips

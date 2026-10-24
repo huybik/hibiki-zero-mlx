@@ -15,7 +15,7 @@ stream, so each line must stay aligned with its English audio. The TTS step is [
 ## Output
 
 `/Volumes/data/datasets/en_speech_vi_text/` stays local; the exported translations are published
-with the audio in `anquachdev/common-vi-en` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
+with the audio in the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
 
 - `texts` reads the corpus's `cv27-*` and `libriheavy-*` shards of the EN-VI dataset (`--src`;
   its `cv-anquach` rows came translated, and their Common Voice text must not reach the paid

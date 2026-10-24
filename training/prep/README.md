@@ -4,20 +4,21 @@ Run from the repository root. Generated caches land under the gitignored `data/`
 
 ## EN-VI speech dataset (~10.8k hours)
 
-`/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `anquachdev/common-vi-en`,
+`/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `huybik/en-vi-speech`,
 holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
 hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
 Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)). Its
-`cv-anquach` shards hold, already voiced, the Common Voice rows of that repository's earlier
-version that the corpus lacks ([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)).
-`huybik/en-vi-speech`, published before the merge, is no longer updated.
+`cv-anquach` shards hold, already voiced, the Common Voice rows of `anquachdev/common-vi-en`'s
+earlier version that the corpus lacks ([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)).
+Once every shard is voiced, the dataset moves to `anquachdev/common-vi-en`
+([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md#purpose)).
 
 Their Vietnamese speech comes from the TTS step below. The builder that downloaded Common Voice
 and Libriheavy is retired; restore `build_en_speech.py` from git (commit `7fde7f5`) to rebuild,
 and the publisher's `en_speech` step that moved the corpus in (commit `a236ad5`).
 
 ```bash
-set -a && . ./.env && set +a                            # HF_TOKEN_AN (the anquachdev account)
+set -a && . ./.env && set +a                            # HF_TOKEN
 R=/Volumes/data/datasets/en_vi_speech
 python -m training.prep.publish_en_vi_speech anquach    # data/train/cv-anquach-* from the earlier common-vi-en
 python -m training.prep.publish_en_vi_speech card       # README.md with statistics (each upload pass writes it too)

@@ -1,7 +1,8 @@
 # EN-VI speech dataset
 
 Read when touching `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`,
-the HF dataset `anquachdev/common-vi-en` or the cache repo `huybik/hibiki-zero-vi-full-sft`.
+the HF datasets `huybik/en-vi-speech` and `anquachdev/common-vi-en` or the cache repo
+`huybik/hibiki-zero-vi-full-sft`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#contents) ·
 [cv-anquach rows](#cv-anquach-rows) · [Building and publishing](#building-and-publishing) ·
 [Cache repo](#cache-repo)
@@ -15,10 +16,18 @@ step ([vi-tts](vi-tts.md)) fills the Vietnamese speech of its shards in place, a
 `upload --follow` publishes each as it is voiced; `cache_codes` pair rows are then made from it
 ([sft-data-caches](sft-data-caches.md)).
 
-It is published as `anquachdev/common-vi-en`. On 2026-10-24 the user had it merged into that
-repository, another contributor's voiced Common Voice set, and said to use only the merged
-dataset and that repository from then on. `huybik/en-vi-speech`, where it was published before,
-stays on the Hub as it was at the merge (voiced through `cv27-00064`) and is no longer updated.
+It is published as `huybik/en-vi-speech` while it is voiced: the Mac and anquachdev's machine,
+which voices bottom up, both push there. Once every shard is voiced, the whole dataset goes to
+`anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice set, and from then
+on only that repository is used (user's plan, 2026-10-24). The final upload:
+
+```bash
+HF_TOKEN=$HF_TOKEN_AN python -m training.prep.publish_en_vi_speech upload --repo anquachdev/common-vi-en
+```
+
+then delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
+on the user's change of plan: it holds ~1,580 of these shards (277 GB with his own files, all
+from before the stop), its card still his own, which reads only his old files.
 
 ## Contents
 
@@ -28,7 +37,8 @@ stays on the Hub as it was at the merge (voiced through `cv27-00064`) and is no 
                                               ◄─ tts_en_speech: vi_audio filled, shard by shard
   data/train/cv-anquach-*                     ◄─ anquach step, voiced already
   README.md                                   ◄─ card step, and each upload pass
-        └─► upload step (4 GB commits; --follow every 10 min) ─► anquachdev/common-vi-en
+        └─► upload step (4 GB commits; --follow every 10 min) ─► huybik/en-vi-speech
+                                                 (all voiced) ─► anquachdev/common-vi-en
 ```
 
 - Columns: `id`, `en_audio`, `text_en`, `text_vi`, `speaker`, `en_duration_s`, `vi_audio`,
@@ -68,7 +78,8 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
   none, and the Common Voice metadata is not kept), so speaker overlap with `cv27` validation is
   unchecked. `id` is `cv-anquach/<clip>`, and both audio paths are `<clip>.opus`.
 - His old files (`data/train-heavy-*.parquet`, the empty `data/train-00000-of-00001.parquet`) are
-  deleted by hand once the merged layout is up (`HfApi().delete_files(repo, delete_patterns=…)`);
+  deleted by hand from `anquachdev/common-vi-en` after the final upload
+  (`HfApi().delete_files(repo, delete_patterns=…)`);
   the step downloads them from the pinned revision, so never squash the repository's history.
   The download sits in `/Volumes/data/datasets/common_vi_en_src` (12 GB) and can be deleted.
 
@@ -133,8 +144,8 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
   ~1.4 GB, ~2.5 GB during a pull.
 - A launcher that logs `cmd; echo "[$(date +%T)] exited with status $?"` always logs 0, because
   `$(date)` resets `$?`; save `s=$?` first.
-- `upload` writes with `HF_TOKEN_AN`, a write token of the anquachdev account that owns the
-  repository ([environment](environment.md)).
+- `upload` writes with `HF_TOKEN`; for `anquachdev/common-vi-en`, set it to `HF_TOKEN_AN`, a
+  write token of that account ([environment](environment.md)).
 - Free-plan public storage is "best-effort" (huybik's plan; anquachdev's is not recorded); if
   the Hub refuses storage, the commits fail and `upload` stops after its retries.
 

@@ -156,8 +156,8 @@ data/train/cv27-00000 ... ─► Mac, top down
 ... data/validation/*     ◄─ other machine, bottom up
 ```
 
-- The other machine reads the shards from the Hub (`anquachdev/common-vi-en` since the merge of
-  2026-10-24, [en-vi-speech-dataset](en-vi-speech-dataset.md)), skips those whose `vi_duration_s` has no
+- The other machine, anquachdev's, reads the shards from `huybik/en-vi-speech`, skips those
+  whose `vi_duration_s` has no
   nulls there, and commits each voiced shard back as soon as it is done: the same schema, only
   `vi_audio` and `vi_duration_s` filled, every other column (`cross_lingual_timbre_matched`
   included, which stays empty) as it was.
