@@ -44,7 +44,8 @@ R=/Volumes/data/datasets/en_vi_speech
 nohup caffeinate -i python -m training.prep.tts_en_speech >> $R/tts.log 2>&1 &   # `kill` stops it; rerun to resume
 ```
 
-`--shards N` stops after the next N unvoiced shards, counting those the upload pulls in meanwhile.
+`--shards N` stops after the next N shards with rows to voice, counting those the upload pulls in
+meanwhile.
 A stop loses only the shards not yet rewritten. Once both machines are done (the other's upload
 stopped), voice the retranslated rows again:
 

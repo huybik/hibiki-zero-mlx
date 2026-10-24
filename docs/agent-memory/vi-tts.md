@@ -146,9 +146,15 @@ whose `vi_duration_s` has no nulls.
   [en-vi-translation](en-vi-translation.md)) also voices again each listed row whose text
   differs, writing its new text and speech in the same one rewrite, so a shard is never left
   without speech and the upload can keep running. Startup then reads every shard's `id` and
-  `text_vi`. Run it only after both machines have finished and the other machine's upload has
+  `text_vi` (~30 s). `fill` writes only the rows still without speech or with another text, so a
+  row the upload pulled in meanwhile keeps that voicing.
+- Run `--texts` only after both machines have finished and the other machine's upload has
   stopped: that upload compares every column but the speech before taking a shard, so a changed
-  `text_vi` would stop it. Checked on a 12-row copy: only the 2 listed rows changed. It holds
+  `text_vi` would stop it, and it commits any voiced local shard whose size differs from the
+  Hub's, so its old-text copy would replace the new one. The pass rewrites the 1,460 shards
+  holding a listed row (~1 TB of reads and writes); the next upload commits them, sending only
+  their changed bytes. Checked on scratch copies: only the listed rows whose text changed were
+  voiced again. It holds
 `.tts.lock` in the dataset folder. At ~100–130x, the corpus's ~9k hours of Vietnamese would take
 the Mac alone 3–4 days.
 

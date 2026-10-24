@@ -117,27 +117,27 @@ def to_voice(t: pa.Table, texts: dict[str, str]) -> dict[int, str]:
 def read(paths: list[Path], texts: dict[str, str]) -> Iterator[tuple[Shard, int, bytes, str]]:
     """Each row to voice of each shard, one shard in memory at a time."""
     for path in paths:
-        t = pq.read_table(path, columns=["id", "en_audio", "text_vi", "vi_duration_s"])
+        t = pq.read_table(path, columns=["id", "text_vi", "vi_duration_s"])
         if not (rows := to_voice(t, texts)):  # pulled from the Hub, voiced bottom up, since the run began
             continue
-        audio = [a["bytes"] for a in t["en_audio"].take(list(rows)).to_pylist()]
         shard = Shard(path, t["id"].to_pylist(), rows, {})
-        del t
+        audio = [a["bytes"] for a in pq.read_table(path, columns=["en_audio"])["en_audio"].take(list(rows)).to_pylist()]
         for k, a in zip(rows, audio):
             yield shard, k, a, rows[k]
 
 
 def fill(shard: Shard) -> bool:
-    """Rewrite a dataset shard with the text and the Vietnamese clips of the rows voiced, unless the
-    upload pulled it in meanwhile with those rows voiced and the same text: that voicing stays."""
+    """Rewrite a dataset shard with the text and the Vietnamese clips of the rows voiced. A row the
+    upload pulled in meanwhile, voiced with the same text, keeps that voicing; with none left to
+    write, the shard stays as it is."""
     t = pq.read_table(shard.path)
     if t["id"].to_pylist() != shard.ids:
         raise RuntimeError(f"{shard.path} changed while it was voiced")
     text, seconds = t["text_vi"].to_pylist(), t["vi_duration_s"].to_pylist()
-    if all(seconds[k] is not None and text[k] == shard.texts[k] for k in shard.clips):
+    if not (rows := {k: c for k, c in shard.clips.items() if seconds[k] is None or text[k] != shard.texts[k]}):
         return False
     audio = t["vi_audio"].to_pylist()
-    for k, (b, d) in shard.clips.items():
+    for k, (b, d) in rows.items():
         text[k], seconds[k] = shard.texts[k], d
         audio[k] = {"bytes": b, "path": f"{shard.ids[k].rsplit('/', 1)[-1]}.opus"}
     for name, column in (("text_vi", pa.array(text, pa.string())), ("vi_audio", pa.array(audio, AUDIO)),
