@@ -18,9 +18,11 @@ UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices.
 
 - VieNeu-TTS v3 Turbo, `update/` weights at `61b85e3`, in MLX (`vieneu_mlx.py`). The `vieneu`
   3.8.3 package (installed with `--no-deps`) supplies text normalization, chunking,
-  phonemization, the frame caps and the x-vector ONNX. The codec is MOSS-Audio-Tokenizer-Nano at
+  phonemization, the frame caps and the speaker fbank; its x-vector network
+  (`speaker_encoder.onnx`, CAM++) runs in MLX. The codec is MOSS-Audio-Tokenizer-Nano at
   `6aa02b0` through mlx-audio 0.6.1. Also needed in the conda base Python: mlx 0.32.4,
-  `sea-g2p`, `kaldi-native-fbank`, `soxr`, `onnxruntime` and `av` (PyAV, for Opus).
+  `sea-g2p`, `kaldi-native-fbank`, `soxr`, `av` (PyAV, for Opus) and `onnx==1.18.0`, which reads
+  the CAM++ weights (1.19 and later would upgrade protobuf, which ~35 packages there depend on).
 - The reference is the row's own English clip, edge silence trimmed, first 8 s: it gives the
   x-vector (the speaker anchor added to every input) and the in-context reference codes.
   Upstream's denoiser is skipped: 3.6 CPU-seconds a clip, and no better voice match or CER.
@@ -79,8 +81,13 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
 - Prompts are ~295 positions (phonemes, then 100 reference frames), so prefill is about a third
   of generation time; chunks are queued sorted by prompt length so prefill groups pad less.
 - Codec: mlx-audio builds a (T, T) mask and attends every key, though each layer sees only its
-  last 4–10 s. `WindowedAttention` computes the band block by block: decoding 2.7x faster on
-  20 s rows at half the memory, audio within 2e-5 and reference codes identical.
+  last 4–10 s. `WindowedAttention` attends each block of queries to the slice of keys in its
+  band: decoding 2.7x faster on 20 s rows at half the memory, audio within 2e-5 and reference
+  codes identical. Slices instead of unfolded copies of the keys made it 12% faster.
+- x-vector: `SpeakerEncoder` runs the CAM++ graph of `speaker_encoder.onnx` in MLX fp16,
+  batched over right-padded fbanks with masks. Against onnxruntime on 128 Common Voice and
+  Libriheavy references (2026-10-24): x-vector cosine at least 0.99998 (fp32: 0.9999999),
+  reference codes identical. It costs ~3.4 ms of GPU a row against onnxruntime's 71 CPU-ms.
 - The codec transformers run in fp16 (quantizer fp32): decoding 1.6x faster, audio 53 dB from
   fp32's (bf16: 35 dB); encoding 1.5x faster with 96.8% of reference codes the same and no
   change in similarity or CER beyond noise (table above).
@@ -88,26 +95,36 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
   while 2 GB was in use. `Synthesizer` caps the cache at 2 GB; 6 GB was no faster.
 - Tried without gain: batch 256 (+5%, twice the KV memory), the codec on a second MLX stream
   beside generation (the GPU serialized them), utility QoS for the CPU workers (they fell
-  behind: 41x), `nice` (no effect).
+  behind: 41x), `nice` (no effect), user-interactive QoS for the main thread, the backbone in
+  fp16 instead of bf16 and fused gate/up projections (no faster), smaller codec attention
+  blocks, fewer workers (3: 99x, 4: 100x, 6: 104x), and onnxruntime's CoreML provider for the
+  x-vector (834 of 1,785 nodes placed, still 117 CPU-ms a row, NaN on the Neural Engine).
 
 ## Speed and memory
 
 - Bench (1,500 Common Voice and 600 Libriheavy validation rows, 4.2 h of Vietnamese) on the
   M4 Pro with 48 GB, nothing else busy, 2026-10-24: 131x real time. Static batches with
-  full-mask fp32 codec calls, shard by shard, ran 43x on it.
-- It is GPU-bound. GPU time on Libriheavy splits ~53% generation, ~28% decoding, ~19% reference
-  encoding; Common Voice references last about as long as their Vietnamese, so encoding weighs
-  more there.
-- The thread feeding the GPU competes for performance cores: six CPU-bound processes beside it
-  slowed generation 22%. Runs beside the publisher's `upload` (hashing) measured 35–67x.
-  libsndfile's Opus (complexity 10, 41x real time a core) made the workers the bottleneck;
+  full-mask fp32 codec calls, shard by shard, ran 43x on it. Train shards run slower: 1,500
+  rows of `cv27-00080` ran 100–110x and 600 of `libriheavy-large-00012-00145` 98–105x
+  (`upload --follow` beside it), where the onnxruntime x-vector ran ~80x and 83x.
+- It is GPU-bound, and CPU load slows the GPU: six CPU-bound processes slowed reference
+  encoding 51%, decoding 40%, prefill 27% and a generation step 25% (2026-10-24), the power
+  budget being shared; a user-interactive QoS for the main thread did not help. The workers'
+  onnxruntime x-vector, 71 of their ~90 CPU-ms a row, was most of that load, so it moved to the
+  GPU; keep the workers' CPU work small. They now spend ~28 CPU-ms a row: Opus ~15, fbank ~10.
+- GPU time on Common Voice (before the move) split ~32% generation steps, ~15% prefill, ~29%
+  reference encoding and ~22% decoding; Libriheavy rows weigh more on generation. A step at
+  batch 128 takes ~21 ms alone, half the acoustic decoder's 16 sequential passes, half the
+  backbone. In the codec, the 400 Hz stage (4 s context) takes ~70% of the time, most of it
+  attention.
+- libsndfile's Opus (complexity 10, 41x real time a core) made the workers the bottleneck;
   libopus at complexity 3 encodes at 250x for the same size (log-mel distance 1.41 dB to the
   source, against 1.24 dB).
-- Footprint: the main process ~4–6 GB with its Metal buffers (`footprint -p`; `ps` RSS omits
+- Footprint: the main process ~5 GB with its Metal buffers (`footprint -p`; `ps` RSS omits
   them), the six workers ~0.5 GB each. Waiting in memory: the dataset shard being read, at most
-  256 enrolled rows (1.5 MB of reference audio each), a decode batch or two of float32 audio
-  (~130 MB each, queued behind the enrollments) until encoded, and the Opus bytes of each shard
-  not yet written.
+  256 prepared rows (0.8 MB of fp16 reference audio and ~0.26 MB of fbank each), a decode batch
+  or two of float32 audio (~130 MB each, queued behind the enrollments) until encoded, and the
+  Opus bytes of each shard not yet written.
 - `kill` (SIGTERM) exits through the pool's shutdown, so the workers stop too; queued rows are
   dropped, and only unwritten shards are lost.
 - Rewriting a shard (read, fill, write, read back, flush) takes ~1.5 s on the main thread, once a

@@ -5,7 +5,8 @@ A port of the batched engine in vieneu 3.8.3 (``vieneu.v3_turbo_serve``) on the
 backbone's last hidden state and the backbone reads them back. Unlike upstream's static batches,
 :class:`Generator` batches continuously: a chunk that stops frees its slot for the next prompt.
 The MOSS codec is mlx-audio's port, with windowed attention and its transformers in fp16.
-Reference enrollment (x-vector) is upstream's ONNX code on the CPU.
+The speaker x-vector is upstream's CAM++ ONNX graph run in MLX on the GPU, from the fbank that
+upstream's code computes on the CPU.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ MAX_NEW_FRAMES = 300
 RETRIES = 2  # chunks that stop implausibly early are generated again, keeping the longest
 CHECK_EVERY = 8  # frames between the host's looks at which slots finished
 ENCODE_FRAMES = 3200  # reference frames encoded in one codec call (batch x longest): 32 of 8 s
+XVECTOR_FRAMES = 51_200  # fbank frames in one CAM++ call (batch x longest): 64 of 8 s
+SEGMENT = 100  # frames a CAM layer pools its context over
 DECODE_FRAMES = 2048  # codes decoded in one codec call (batch x longest row)
 # MLX keeps freed buffers for reuse. The codec's shapes change every call, so without a limit its
 # cache grew to 27 GB while 2 GB was in use.
@@ -97,38 +100,124 @@ def trim_silence(wav: np.ndarray, top_db: float = 30.0, frame: int = 2048, hop: 
 
 @dataclass
 class Voice:
-    speaker_emb: np.ndarray  # (192,) x-vector
-    ref: np.ndarray  # 48 kHz mono reference, encoded into the in-context codes
+    fbank: np.ndarray  # (frames, 80) mean-normalised 16 kHz Kaldi fbank, for the x-vector
+    ref: np.ndarray  # 48 kHz mono reference in fp16, the codec encoder's input, for the in-context codes
 
 
-class Enroller:
-    """Upstream's reference enrollment on the CPU, without its denoiser: trim the edges, keep 8 s,
-    take the x-vector. The denoiser costs 3.6 CPU-seconds a clip and measured no better voice
-    match or intelligibility on en_speech."""
+def enroll(wav: np.ndarray, sr: int) -> Voice:
+    """Upstream's reference enrollment on the CPU, up to the x-vector network and without its
+    denoiser: trim the edges, keep 8 s, take the fbank. The denoiser costs 3.6 CPU-seconds a
+    clip and measured no better voice match or intelligibility on en_speech."""
+    from vieneu._v3_turbo_engine.speaker import extract_speaker_fbank
 
-    def __init__(self):
-        import onnxruntime as ort
-        from vieneu._v3_turbo_engine.speaker import OnnxSpeakerEncoder
+    trimmed = trim_silence(wav)
+    wav = (trimmed if len(trimmed) >= MIN_REF_SECONDS * sr else wav)[: int(REF_SECONDS * sr)]
+    fbank = extract_speaker_fbank(wav, sample_rate=sr).astype(np.float32)
+    return Voice(fbank, soxr.resample(wav, sr, SAMPLE_RATE).astype(np.float16))
 
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = 1
-        so.inter_op_num_threads = 1
-        self.speaker = OnnxSpeakerEncoder(str(model_dir() / "speaker_encoder.onnx"), sess_options=so)
 
-    def __call__(self, wav: np.ndarray, sr: int) -> Voice:
-        trimmed = trim_silence(wav)
-        wav = (trimmed if len(trimmed) >= MIN_REF_SECONDS * sr else wav)[: int(REF_SECONDS * sr)]
-        emb = self.speaker.embed(wav, sr)
-        if not np.isfinite(emb).all():
-            raise FloatingPointError(f"non-finite x-vector from a {len(wav) / sr:.2f} s reference")
-        return Voice(emb, soxr.resample(wav, sr, SAMPLE_RATE).astype(np.float32))
+class SpeakerEncoder:
+    """Upstream's x-vector network, 3D-Speaker's CAM++ as exported in VieNeu's
+    speaker_encoder.onnx (the batch norms that follow convs folded into them), in MLX on
+    right-padded batches. Every conv wider than one frame sees zeros past a row's end, as the
+    unpadded graph does; means count only a row's frames, except the CAM layers' segment means,
+    which divide a partial last segment by the full 100 frames as upstream's onnxruntime does: its
+    default optimisation folds the graph's zero Pad into the AveragePool, counting the padding
+    (PyTorch's CAM++, or onnxruntime unoptimised, divides by the frames present). In fp16: cosine to onnxruntime's x-vectors
+    above 0.99998 on Common Voice (fp32: 0.9999999), and 3.4 ms of GPU a row against 71 ms of
+    CPU there, whose load slowed the GPU's work by a third."""
+
+    def __init__(self, path: Path, dtype=mx.float16):
+        import onnx
+        from onnx import numpy_helper
+
+        graph = onnx.load(str(path)).graph
+        values = {t.name: numpy_helper.to_array(t) for t in graph.initializer}
+        for n in graph.node:
+            if n.op_type == "Constant":
+                values[n.output[0]] = numpy_helper.to_array(n.attribute[0].t)
+        self.conv, self.bn = {}, {}  # by the module path in the node's name
+        for n in graph.node:
+            key = n.name.strip("/").rsplit("/", 1)[0].replace("/", ".")
+            if n.op_type == "Conv":
+                w = values[n.input[1]]
+                w = w.transpose(0, 2, 3, 1) if w.ndim == 4 else w.transpose(0, 2, 1)  # MLX: (out, kernel..., in)
+                b = mx.array(values[n.input[2]], dtype) if len(n.input) > 2 else None
+                self.conv[key] = (mx.array(w, dtype), b)
+            elif n.op_type == "BatchNormalization":
+                eps = next(a.f for a in n.attribute if a.name == "epsilon")
+                gamma, beta, mean, var = (values[i] for i in n.input[1:])
+                scale = gamma / np.sqrt(var + eps)
+                self.bn[key] = (mx.array(scale, dtype), mx.array(beta - mean * scale, dtype))
+        self.blocks = [sum(k.startswith(f"xvector.block{i}.") and k.endswith("linear1") and "cam_layer" not in k
+                           for k in self.conv) for i in (1, 2, 3)]  # dense layers: 12, 24, 16
+        self.dtype = dtype
+
+    def _conv(self, key, x, stride=1, padding=0, dilation=1):
+        w, b = self.conv[key]
+        y = (mx.conv2d if w.ndim == 4 else mx.conv1d)(x, w, stride=stride, padding=padding, dilation=dilation)
+        return y if b is None else y + b
+
+    def _bn_relu(self, key, x):
+        scale, shift = self.bn[key]
+        return mx.maximum(x * scale + shift, 0)
+
+    def __call__(self, fbanks: list[np.ndarray]) -> mx.array:
+        """(frames, 80) fbanks -> (n, 192) x-vectors."""
+        frames = np.array([len(f) for f in fbanks])
+        x = np.zeros((len(fbanks), frames.max(), fbanks[0].shape[1]), np.float32)
+        for i, f in enumerate(fbanks):
+            x[i, : len(f)] = f
+        n = mx.array(frames)
+        relu = nn.relu
+
+        # Head: a 2D ResNet over (frequency, time) in NHWC, H the frequency; time keeps its stride.
+        def masked(h):
+            return h * (mx.arange(h.shape[2])[None, None, :, None] < n[:, None, None, None])
+
+        h = mx.array(x, self.dtype).transpose(0, 2, 1)[..., None]
+        h = masked(relu(self._conv("head.conv1", h, padding=1)))
+        for name in ("layer1.layer1.0", "layer1.layer1.1", "layer2.layer2.0", "layer2.layer2.1"):
+            stride = (2, 1) if name.endswith("0") else 1
+            y = masked(relu(self._conv(f"head.{name}.conv1", h, stride=stride, padding=1)))
+            y = self._conv(f"head.{name}.conv2", y, padding=1)
+            short = self._conv(f"head.{name}.shortcut.shortcut.0", h, stride=stride) if name.endswith("0") else h
+            h = masked(relu(y + short))
+        h = masked(relu(self._conv("head.conv2", h, stride=(2, 1), padding=1)))
+        B, F, T, C = h.shape
+        h = h.transpose(0, 2, 3, 1).reshape(B, T, C * F)  # channels in torch's (C, F) order
+
+        # The x-vector TDNN: time stride 2, then dense CAM blocks.
+        h = relu(self._conv("xvector.tdnn.linear", h, stride=2, padding=2))
+        n = (n - 1) // 2 + 1
+        T = h.shape[1]
+        valid = (mx.arange(T)[None, :] < n[:, None])[..., None]
+        count = n[:, None, None].astype(self.dtype)
+        segments = -(-T // SEGMENT)
+        h = h * valid
+        for b, (layers, dilation) in enumerate(zip(self.blocks, (1, 2, 2)), 1):
+            for i in range(1, layers + 1):
+                p = f"xvector.block{b}.tdnnd{i}"
+                y = relu(self._conv(f"{p}.linear1", self._bn_relu(f"{p}.nonlinear1.batchnorm", h))) * valid
+                local = self._conv(f"{p}.cam_layer.linear_local", y, padding=dilation, dilation=dilation)
+                seg = mx.pad(y, [(0, 0), (0, segments * SEGMENT - T), (0, 0)]).reshape(B, segments, SEGMENT, -1).mean(axis=2)
+                context = y.sum(axis=1, keepdims=True) / count + mx.repeat(seg, SEGMENT, axis=1)[:, :T]
+                mask = mx.sigmoid(self._conv(f"{p}.cam_layer.linear2", relu(self._conv(f"{p}.cam_layer.linear1", context))))
+                h = mx.concatenate([h, local * mask * valid], axis=-1)
+            h = self._conv(f"xvector.transit{b}.linear", self._bn_relu(f"xvector.transit{b}.nonlinear.batchnorm", h)) * valid
+        h = relu(h) * valid
+        mean = h.sum(axis=1) / count[:, 0]
+        std = mx.sqrt((((h - mean[:, None]) * valid) ** 2).sum(axis=1) / (count[:, 0] - 1))
+        out = self._conv("xvector.dense.linear", mx.concatenate([mean, std], axis=-1)[:, None])[:, 0]
+        scale, shift = self.bn["xvector.dense.nonlinear.batchnorm"]
+        return (out * scale + shift).astype(mx.float32)
 
 
 class WindowedAttention(MultiheadAttention):
-    """The codec's causal attention over its last ``context`` positions, in blocks of half the
-    context that each attend only the keys in their band. mlx-audio's version builds a (T, T)
-    mask and attends every key, 2.7x slower on 20 s rows at twice the memory. Same outputs: decoded
-    audio within 2e-5, reference codes identical."""
+    """The codec's causal attention over its last ``context`` positions W: the first W queries
+    attend causally, then each block of W/2 queries attends the slice of keys in its band.
+    mlx-audio's version builds a (T, T) mask and attends every key, 2.7x slower on 20 s rows at
+    twice the memory. Same outputs: decoded audio within 2e-5, reference codes identical."""
 
     def __call__(self, x: mx.array, input_lengths: mx.array) -> mx.array:
         B, T, _ = x.shape
@@ -140,22 +229,14 @@ class WindowedAttention(MultiheadAttention):
         def attend(q, k, v, mask):
             return mx.fast.scaled_dot_product_attention(q, k, v, scale=D**-0.5, mask=mask)
 
-        out = attend(q[:, :, :W], k[:, :, :W], v[:, :, :W], "causal")  # the first W see no further back
-        if T > W:
-            C = W // 2
-            n = -(-T // C)
-            pad = [(0, 0), (0, 0), (0, n * C - T), (0, 0)]
-            q, k, v = (mx.pad(a, pad).reshape(B, H, n, C, D) for a in (q, k, v))
-            # Block i >= 2 attends blocks i-2..i: key j of 3C is allowed for query i when i < j <= i + W.
-            k, v = (mx.concatenate([a[:, :, s : n - 2 + s] for s in range(3)], axis=3) for a in (k, v))
-
-            def fold(a):
-                return a[:, :, -(n - 2) :].transpose(0, 2, 1, 3, 4).reshape(B * (n - 2), H, a.shape[3], D)
-
-            i, j = mx.arange(C)[:, None], mx.arange(3 * C)[None, :]
-            tail = attend(fold(q), fold(k), fold(v), (j > i) & (j <= i + W))
-            tail = tail.reshape(B, n - 2, H, C, D).transpose(0, 2, 1, 3, 4).reshape(B, H, -1, D)
-            out = mx.concatenate([out, tail], axis=2)[:, :, :T]
+        outs = [attend(q[:, :, :W], k[:, :, :W], v[:, :, :W], "causal")]  # the first W see no further back
+        C = W // 2
+        i, j = mx.arange(C)[:, None], mx.arange(W + C)[None, :]
+        band = (j > i) & (j <= i + W)  # query s+i sees key s-W+j: the W keys up to itself
+        for s in range(W, T, C):
+            e = min(s + C, T)
+            outs.append(attend(q[:, :, s:e], k[:, :, s - W : e], v[:, :, s - W : e], band[: e - s, : W + e - s]))
+        out = mx.concatenate(outs, axis=2)
         valid = mx.arange(T)[None, None, :, None] < input_lengths[:, None, None, None]
         out = mx.where(valid, out, mx.zeros((), dtype=out.dtype))
         return self.out_proj(out.transpose(0, 2, 1, 3).reshape(B, T, self.embed_dim))
@@ -349,6 +430,7 @@ class Synthesizer:
         from tokenizers import Tokenizer
 
         self.tokenizer = Tokenizer.from_file(str(root / SUBFOLDER / "tokenizer.json"))
+        self.speaker = SpeakerEncoder(root / "speaker_encoder.onnx")
         self.codec = MossAudioTokenizer.from_pretrained(
             snapshot_download(CODEC_REPO, revision=CODEC_REVISION, allow_patterns=["*.json", "*.safetensors"])
         )
@@ -365,16 +447,17 @@ class Synthesizer:
             module.update(tree_map(lambda p: p.astype(mx.float16), module.parameters()))
 
     def encode_refs(self, refs: list[np.ndarray]) -> list[np.ndarray]:
-        """48 kHz mono references -> MOSS codes (frames, n_vq). Each is zero-padded to whole
+        """48 kHz mono fp16 references -> MOSS codes (frames, n_vq). Each is zero-padded to whole
         frames first, as upstream does since its #198 fix (a codec-padded tail encodes a blip)."""
         frames = [-(-len(r) // FRAME_SAMPLES) for r in refs]
         out: list[np.ndarray | None] = [None] * len(refs)
         for idx in _groups(frames, ENCODE_FRAMES):
             n = [frames[i] for i in idx]
-            x = np.zeros((len(idx), 2, n[-1] * FRAME_SAMPLES), np.float32)  # the codec is stereo
+            x = np.zeros((len(idx), n[-1] * FRAME_SAMPLES), np.float16)
             for j, i in enumerate(idx):
-                x[j, :, : len(refs[i])] = refs[i]
-            codes, _, hidden = self.codec._encode_frame(mx.array(x, mx.float16), mx.array(n) * FRAME_SAMPLES)
+                x[j, : len(refs[i])] = refs[i]
+            x = mx.broadcast_to(mx.array(x)[:, None], (len(idx), 2, x.shape[1]))  # the codec is stereo
+            codes, _, hidden = self.codec._encode_frame(x, mx.array(n) * FRAME_SAMPLES)
             if not mx.isfinite(hidden).all().item():
                 raise FloatingPointError("the fp16 codec encoder overflowed")
             codes = np.array(codes)
@@ -414,9 +497,18 @@ class Synthesizer:
         ref[:, 1:] = ref_codes
         return np.concatenate([text, ref])
 
-    def speaker_anchor(self, speaker_emb: mx.array) -> mx.array:
+    def speaker_anchors(self, fbanks: list[np.ndarray]) -> mx.array:
+        """Reference fbanks -> (n, H) speaker anchors: the x-vectors, projected."""
+        xvectors: list[mx.array | None] = [None] * len(fbanks)
+        for idx in _groups([len(f) for f in fbanks], XVECTOR_FRAMES):
+            for i, x in zip(idx, self.speaker([fbanks[i] for i in idx])):
+                xvectors[i] = x
+        x = mx.stack(xvectors)
+        finite = np.isfinite(np.array(x)).all(axis=1)
+        if not finite.all():  # a reference of a frame or two
+            raise FloatingPointError("non-finite x-vectors", np.flatnonzero(~finite).tolist())
         linear, norm = self.model.xvec_proj
-        return norm(linear(speaker_emb.astype(linear.weight.dtype)))
+        return norm(linear(x.astype(linear.weight.dtype)))
 
     def embed_rows(self, rows: mx.array, anchor: mx.array) -> mx.array:
         """(B, T, n_vq+1) prompt rows -> (B, T, H), audio pads contributing nothing."""
