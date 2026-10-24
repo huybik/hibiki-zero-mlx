@@ -6,13 +6,14 @@ English clip: its first 8 s, edge silence trimmed, give the x-vector and the in-
 codes. The text is cut into upstream's chunks of at most 256 characters, spoken, and the chunks are
 joined with upstream's pauses.
 
-One stream runs across shards. CPU workers enroll rows ahead of the GPU and encode the finished
-audio; the GPU encodes references, generates every chunk with continuous batching and decodes
-finished rows in groups. Once its last row is encoded, a dataset shard is rewritten with its
-vi_audio{bytes,path} (48 kHz mono Ogg Opus, ~32 kbps) and vi_duration_s filled. A run skips the
-shards already voiced, so it resumes; the publisher's `upload --follow` sends them to the Hub as
-they come. Shards go top down in path order while another machine voices them bottom up; the
-upload brings in the shards voiced there, and the run skips them, so the two meet in between.
+One stream runs across shards. CPU workers prepare rows ahead of the GPU (decoding, fbank,
+phonemes) and encode the finished audio; the GPU takes the x-vectors, encodes references, generates
+every chunk with continuous batching and decodes finished rows in groups. Once its last row is
+encoded, a dataset shard is rewritten with its vi_audio{bytes,path} (48 kHz mono Ogg Opus,
+~32 kbps) and vi_duration_s filled. A run skips the shards already voiced, so it resumes; the
+publisher's `upload --follow` sends them to the Hub as they come. Shards go top down in path order
+while another machine voices them bottom up; the upload brings in the shards voiced there, and the
+run skips them, so the two meet in between.
 
 Run from the repo root on Apple Silicon with the conda base Python:
   python -m training.prep.tts_en_speech [--shards N]
@@ -35,7 +36,6 @@ from pathlib import Path
 os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
 import av  # noqa: E402
-import mlx.core as mx  # noqa: E402
 import numpy as np  # noqa: E402
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
@@ -53,16 +53,9 @@ MAX_CHARS = 256  # upstream's chunk length
 # CPU workers behind the GPU; its log-mel distance to the source was 1.24 dB, this one's 1.41 dB.
 OPUS_COMPLEXITY = 3
 OPUS_BITRATE = 24_000
-PREFETCH = 256  # rows enrolled ahead of the GPU; each holds an 8 s 48 kHz reference (1.5 MB)
-ENROLL = 128  # prepared rows whose references are encoded together, grouped by length
+PREFETCH = 256  # rows prepared ahead of the GPU; each holds an 8 s 48 kHz fp16 reference (0.8 MB)
+ENROLL = 128  # prepared rows whose x-vectors and references are taken together, grouped by length
 DECODE_BATCH = 8192  # frames of finished rows decoded together (11 minutes of audio)
-
-_enroll: vieneu_mlx.Enroller | None = None
-
-
-def _start_worker() -> None:
-    global _enroll
-    _enroll = vieneu_mlx.Enroller()
 
 
 def prepare(audio: bytes, text: str) -> tuple[vieneu_mlx.Voice, list[str], list[float]]:
@@ -71,7 +64,7 @@ def prepare(audio: bytes, text: str) -> tuple[vieneu_mlx.Voice, list[str], list[
     chunks, gaps = normalize_to_chunks_v3_with_gaps(text, max_chars=MAX_CHARS)
     if not chunks:
         raise ValueError(f"nothing to speak in {text!r}")
-    return _enroll(wav.mean(axis=1), sr), [phonemize_text_with_emotions(c) for c in chunks], gaps_to_silence(gaps)
+    return vieneu_mlx.enroll(wav.mean(axis=1), sr), [phonemize_text_with_emotions(c) for c in chunks], gaps_to_silence(gaps)
 
 
 def encode(chunks: list[np.ndarray], pauses: list[float]) -> tuple[bytes, float]:
@@ -175,13 +168,13 @@ class Voicer:
                 return
 
     def enroll(self) -> None:
-        """Encode the references of the next prepared rows and queue their chunks."""
+        """Take the x-vectors and reference codes of the next prepared rows and queue their chunks."""
         take = [self.prepared.popleft()]
         while self.prepared and len(take) < ENROLL and self.prepared[0][2].done():
             take.append(self.prepared.popleft())
         rows = [(shard, i, f.result()) for shard, i, f in take]
         ref_codes = self.synth.encode_refs([voice.ref for _, _, (voice, _, _) in rows])
-        anchors = self.synth.speaker_anchor(mx.array(np.stack([voice.speaker_emb for _, _, (voice, _, _) in rows])))
+        anchors = self.synth.speaker_anchors([voice.fbank for _, _, (voice, _, _) in rows])
         jobs = []
         for k, ((shard, i, (_, phonemes, pauses)), codes) in enumerate(zip(rows, ref_codes)):
             row = Row(shard, i, pauses, [None] * len(phonemes))
@@ -224,7 +217,7 @@ def main() -> None:
         todo = [s for s in shards(args.root) if not voiced(s)][: args.shards]
         log(f"{len(todo)} shards to voice")
         synth = vieneu_mlx.Synthesizer()
-        with ProcessPoolExecutor(args.workers, initializer=_start_worker) as pool:
+        with ProcessPoolExecutor(args.workers) as pool:
             try:
                 Voicer(synth, pool, args.batch).run(todo)
             finally:
