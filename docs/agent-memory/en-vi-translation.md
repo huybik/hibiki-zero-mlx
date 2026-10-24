@@ -81,6 +81,10 @@ Measured with Sonnet 5.5:
   deposition." Its clip was deleted from the corpus ([en-speech-corpus](en-speech-corpus.md)).
 - The gates mostly flag good output: on the validation texts, the 22 lines identical to the
   English are names, and the 17 over twice the source length translate very short lines.
+- 3,845 Libriheavy and 58 Common Voice lines of the dataset's `text_vi` hold Chinese, Japanese
+  or Korean script (checked 2026-10-24). Most are broken mid-word (`kính畏`); a few are right,
+  where the English names the characters (`京都`). Nothing flags them yet, and the TTS speaks
+  them as they are.
 
 ## Running
 

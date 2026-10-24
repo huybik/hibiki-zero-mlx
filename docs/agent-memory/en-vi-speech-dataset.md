@@ -56,9 +56,11 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
 - 170,820 of those clips (307 h) are `cv27` rows, all in shards already voiced here
   (`cv27-00000`…`00032` and validation `cv27-00000`); ours stay whole and his copies are dropped.
 - Of the other 150,208, the 11,212 whose English sentence is a `cv27` validation sentence,
-  compared lower-cased with punctuation and spacing removed, are dropped, as `cv27` train drops
-  them (plain lower-casing let 126 through); the rest go to `train` as `cv-anquach-*` shards of
-  20,000 rows: 138,996 rows, 256.2 h English, 211.7 h Vietnamese (2 rows over 22.4 s).
+  compared lower-cased with punctuation and spaces collapsed, are dropped, as `cv27` train drops
+  them (plain lower-casing let 126 through), and the 78 whose `vi` holds Chinese, Japanese or
+  Korean script (`Thùng啤酒`), spoken from that broken text. The rest go to `train` as
+  `cv-anquach-*` shards of 20,000 rows: 138,918 rows, 256.1 h English, 211.6 h Vietnamese
+  (2 rows over 22.4 s).
 - They are clips `cv27` lacks: dropped by its filters (such as the 10.5 kHz bandwidth floor) or
   not among its validated clips; which, is not recorded. Their English is his 16 kHz re-encode,
   so nothing above 8 kHz; Mimi codes up to 12 kHz. His Vietnamese speech comes from his own TTS,
@@ -84,8 +86,8 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
   from it in size, in commits of up to 4 GB (2–7 min each, depending on what else shares the
   link), then writes and commits a fresh `README.md`. It lists the Hub before each commit and
   makes the commit on top of the listed revision (`parent_commit`), so a commit landing in
-  between fails it and the retry lists again. Seeding the merged repository went at 15–45 s a
-  commit (~2 a minute, near the Hub's rough limit of ~100 an hour, none refused): Xet had the
+  between fails it (409 or 412) and it lists again at once. Seeding the merged repository went at 15–45 s a
+  commit (~110 an hour, above the Hub's rough limit of ~100 an hour, yet none refused): Xet had the
   bytes from `huybik/en-vi-speech` already. The Hub is the record of
   progress, so a stop loses only the unfinished commit. The user asked on 2026-10-23 that a stop
   never lose more than that: `upload_large_folder` committed nothing in its first 37 min, while

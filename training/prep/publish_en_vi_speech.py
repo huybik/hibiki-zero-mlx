@@ -50,6 +50,7 @@ import pyarrow.compute as pc  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 import soundfile as sf  # noqa: E402
 from huggingface_hub import CommitOperationAdd, HfApi, RepoFile, snapshot_download  # noqa: E402
+from huggingface_hub.errors import HfHubHTTPError  # noqa: E402
 from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
 from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
@@ -63,8 +64,8 @@ ANQUACH_REVISION = "dba8e98cef20eb0493f747ef040180fa81512d17"
 SHARD_ROWS = 20_000  # the cv27 builder's shard size, before the corpus filters thinned its shards
 RETRIES = 5  # a failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
-# 2-7 min of upload, all a stop loses; ~20-30 commits an hour, well under the Hub's commit quota
-# (~100 an hour).
+# 2-7 min of upload, all a stop loses; ~20-30 commits an hour, under the Hub's commit quota (~100
+# an hour). Seeding a repository with bytes Xet already holds ran at ~110 an hour, none refused.
 COMMIT_BYTES = 4_000_000_000
 FOLLOW_WAIT = 600  # a TTS shard is voiced every ~3 min
 T = TypeVar("T")
@@ -148,13 +149,16 @@ def retried(what: str, fn: Callable[[], T]) -> T:
 def anquach(root: Path, src: Path) -> None:
     """Write data/train/cv-anquach-*.parquet from common-vi-en as it was before the merge: its rows
     whose English lasts CLIP_SECONDS, except the clips cv27 holds (ours stay) and the sentences of
-    cv27's validation split, compared without case or punctuation (cv27 train leaves them out too).
-    They are clips cv27 lacks, dropped by its filters (such as the 10.5 kHz bandwidth floor or its
+    cv27's validation split, compared lower-cased with punctuation and spaces collapsed (cv27 train
+    leaves them out too), and those whose translation holds Chinese, Japanese or Korean script
+    (spoken from that broken text). They are clips cv27 lacks, dropped by its filters (such as the 10.5 kHz bandwidth floor or its
     validation speakers) or not among its validated clips, and their English is that dataset's
     16 kHz re-encode; their speaker is unknown. Rerunning writes the same shards."""
 
     def sentence(text: str) -> str:
         return re.sub(r"\W+", " ", text.lower()).strip()
+
+    cjk = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 
     snapshot_download(REPO, repo_type="dataset", revision=ANQUACH_REVISION, local_dir=src,
                       allow_patterns=["data/train-heavy-*.parquet"], token=os.environ["HF_TOKEN_AN"])
@@ -178,7 +182,7 @@ def anquach(root: Path, src: Path) -> None:
                 seen += 1
                 clip, en, vi = r["source_clip"].removesuffix(".mp3"), r["audio_en"]["bytes"], r["audio_vi"]["bytes"]
                 en_s = sf.info(io.BytesIO(en)).duration
-                if not CLIP_SECONDS[0] <= en_s <= CLIP_SECONDS[1] or clip in ours or sentence(r["en"]) in dev:
+                if not CLIP_SECONDS[0] <= en_s <= CLIP_SECONDS[1] or clip in ours or sentence(r["en"]) in dev or cjk.search(r["vi"]):
                     continue
                 vi_s = sf.info(io.BytesIO(vi)).duration
                 if not (r["en"].strip() and r["vi"].strip() and vi_s > 0):
@@ -339,24 +343,31 @@ def upload(root: Path, repo: str, follow: bool) -> None:
 
     def commit_next(local: list[Path]) -> tuple[dict[str, int], dict[Path, int], int]:
         """List the Hub and commit the next batch on top of that listing's revision, so a commit
-        landing in between (the other machine's) fails this one and the retry lists again: an
-        unvoiced shard never lands on a voiced copy committed meanwhile. Returns the listing with
-        the batch in it, the batch and the shards left before it."""
-        sha = api.repo_info(repo, repo_type="dataset").sha
-        remote = {f.path: f.size for f in api.list_repo_tree(repo, recursive=True, revision=sha, repo_type="dataset")
-                  if isinstance(f, RepoFile)}
-        todo = [p for p in local if hub(p) not in remote or (remote[hub(p)] != p.stat().st_size and voiced(p))]
-        batch, size = {}, 0
-        for p in todo:
-            if batch and size + p.stat().st_size > COMMIT_BYTES:
-                break
-            batch[p] = p.stat().st_size
-            size += batch[p]
-        if batch:
-            api.create_commit(repo, [CommitOperationAdd(hub(p), p) for p in batch], repo_type="dataset",
-                              commit_message=f"Add {len(batch)} shards from {next(iter(batch)).name}", parent_commit=sha)
-            remote.update((hub(p), n) for p, n in batch.items())
-        return remote, batch, len(todo)
+        landing in between (the other machine's) fails this one, and it lists again at once: an
+        unvoiced shard never lands on a voiced copy committed meanwhile. Returns the listing, the
+        batch committed (empty when nothing is left) and the shards left before it."""
+        while True:
+            sha = api.repo_info(repo, repo_type="dataset").sha
+            remote = {f.path: f.size for f in api.list_repo_tree(repo, recursive=True, revision=sha, repo_type="dataset")
+                      if isinstance(f, RepoFile)}
+            todo = [p for p in local if hub(p) not in remote or (remote[hub(p)] != p.stat().st_size and voiced(p))]
+            batch, size = {}, 0
+            for p in todo:
+                if batch and size + p.stat().st_size > COMMIT_BYTES:
+                    break
+                batch[p] = p.stat().st_size
+                size += batch[p]
+            if not batch:
+                return remote, batch, 0
+            try:
+                api.create_commit(repo, [CommitOperationAdd(hub(p), p) for p in batch], repo_type="dataset",
+                                  commit_message=f"Add {len(batch)} shards from {next(iter(batch)).name}", parent_commit=sha)
+            except HfHubHTTPError as e:
+                if e.response.status_code not in (409, 412):  # anything but a moved branch
+                    raise
+                log(f"the Hub moved past {sha[:7]} during the commit; listing again")
+                continue
+            return remote, batch, len(todo)
 
     changed = True  # the first pass sends the card even when no shard changed
     while True:
