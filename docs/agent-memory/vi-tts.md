@@ -111,10 +111,10 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
   encoding 51%, decoding 40%, prefill 27% and a generation step 25% (2026-10-24), the power
   budget being shared; a user-interactive QoS for the main thread did not help. The workers'
   onnxruntime x-vector, 71 of their ~90 CPU-ms a row, was most of that load, so it moved to the
-  GPU; keep the workers' CPU work small. They now spend ~25 CPU-ms a row: Opus ~15, fbank ~10.
+  GPU; keep the workers' CPU work small. They now spend ~28 CPU-ms a row: Opus ~15, fbank ~10.
 - GPU time on Common Voice (before the move) split ~32% generation steps, ~15% prefill, ~29%
   reference encoding and ~22% decoding; Libriheavy rows weigh more on generation. A step at
-  batch 128 takes ~21 ms alone, half the acoustic decoder's 17 sequential passes, half the
+  batch 128 takes ~21 ms alone, half the acoustic decoder's 16 sequential passes, half the
   backbone. In the codec, the 400 Hz stage (4 s context) takes ~70% of the time, most of it
   attention.
 - libsndfile's Opus (complexity 10, 41x real time a core) made the workers the bottleneck;
