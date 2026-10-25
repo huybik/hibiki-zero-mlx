@@ -34,8 +34,9 @@ UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices.
   a lone emotion cue. One under 0.25 frames a phoneme character is generated again, twice at most, keeping the
   longest. Upstream's babble guard for chunks of a few syllables is not ported.
 - The reference keeps the whole clip when trimming would leave under 1 s (a lone click; a
-  ~30 ms reference gave a NaN x-vector and a buzz). A text with nothing speakable, a chunk past
-  the model's 1024 positions or a non-finite x-vector stops the run, and a rerun stops on it
+  ~30 ms reference gave a NaN x-vector and a buzz). An English clip that does not decode, a text
+  with nothing speakable, a chunk past the model's 1024 positions or a non-finite x-vector stops
+  the run, and a rerun stops on it
   again. No row of the corpus does (checked 2026-10-24: the longest chunk
   needs 704 positions).
 - Output: the dataset shard itself, rewritten with `vi_audio{bytes,path}` (48 kHz mono Ogg Opus,
@@ -186,3 +187,10 @@ data/train/cv27-00000 ... ─► Mac, top down
   since the next pass commits whatever the Mac holds. Near the meeting point a few shards, ~3–5
   on each side, may be voiced twice: each machine sees the other's work only once it is
   committed, after the 10 min wait plus a pass of 4 GB commits (2–7 min each).
+- anquachdev's voicing, checked 2026-10-24 on 150 rows of his Libriheavy-small shards against 150
+  of the Mac's: CER 0.035 against 0.045, voice match 0.548 against 0.575 (within speaker noise),
+  the same loudness, clipping and pauses. It is not this script as is: its Opus is hybrid
+  SILK+CELT (libopus's default complexity), and its `vi_audio.path` copies `en_audio.path`
+  (`<subset>/<speaker>/<book>/<clip>.opus`) where ours is `<clip>.opus`. He was asked to use
+  `<clip>.opus`; the shards already voiced are renamed before the final upload. His speed is
+  ~30–40x.

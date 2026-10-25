@@ -26,8 +26,9 @@ HF_TOKEN=$HF_TOKEN_AN python -m training.prep.publish_en_vi_speech upload --repo
 ```
 
 Before it, with the other machine's upload stopped, re-voice the retranslated rows
-(`tts_en_speech --texts`, [vi-tts](vi-tts.md#running)) and let `upload` send them to
-`huybik/en-vi-speech`; after it, delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
+(`tts_en_speech --texts`, [vi-tts](vi-tts.md#running)), set `vi_audio.path` to `<clip>.opus` in
+the shards voiced on his machine, and let `upload` send them to `huybik/en-vi-speech`; after it,
+delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
 on the user's change of plan: it holds ~1,580 of these shards (277 GB with his own files, all
 from before the stop), its card still his own, which reads only his old files.
 
