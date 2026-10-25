@@ -40,7 +40,8 @@ with the audio in the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset
   ([en-vi-gemini](en-vi-gemini.md), [en-vi-muse](en-vi-muse.md)); `export` merges all three.
   Sonnet translates the Common Voice text.
 - `export` writes `{split}.parquet` (`id`, `text_vi`) once every row of the split is translated,
-  and removes it while not. It reports the plan's two gates (identical to the English, over
+  and removes it while not. Of several translations of a text, the one in the later file of
+  `translations.jsonl`, `gemini/`, `muse/` and `retranslations.jsonl` wins. It reports the plan's two gates (identical to the English, over
   twice its length) but drops nothing.
 
 ## Token budget
@@ -81,10 +82,20 @@ Measured with Sonnet 5.5:
   deposition." Its clip was deleted from the corpus ([en-speech-corpus](en-speech-corpus.md)).
 - The gates mostly flag good output: on the validation texts, the 22 lines identical to the
   English are names, and the 17 over twice the source length translate very short lines.
-- 3,845 Libriheavy and 58 Common Voice lines of the dataset's `text_vi` hold Chinese, Japanese
-  or Korean script (checked 2026-10-24). Most are broken mid-word (`kính畏`); a few are right,
-  where the English names the characters (`京都`). Nothing flags them yet, and the TTS speaks
-  them as they are.
+- Muse and Gemini wrote letters of other scripts into some lines, mostly mid-word: 7,095 texts
+  whose English has none (checked 2026-10-24), 3,860 with Chinese, Japanese or Korean (`kính畏`)
+  and the rest Cyrillic (`thế là спас`, ~2,700 rows), Arabic, Thai, Devanagari, Greek and a few
+  others. Where the English has them too (`京都`), they are right and stay. Sonnet does it as
+  well, on some Sino-Vietnamese words (`征 dụng`, `ngoại延`), at any effort; the instructions now
+  ask for Latin letters only, which fixed some.
+- `retranslate` translates those texts again, rejecting any batch that still holds such letters:
+  on Sonnet at low effort, then the lines that fail alone on Opus at high effort (7, all fixed).
+  It appends to `retranslations.jsonl`, which `export` reads last, and writes
+  `retexts.parquet` (`id`, `text_vi`) for the rows of every retranslated text: 7,102 texts,
+  7,152 rows in 1,460 shards, 658 of them voiced already (2026-10-24). The TTS voices those rows
+  again with `--texts` once both machines have finished ([vi-tts](vi-tts.md#running)); until
+  then the shards keep the old text, since changing it under the other machine's sync would stop
+  its upload (user's choice, 2026-10-24).
 
 ## Running
 
