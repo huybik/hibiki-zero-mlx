@@ -24,11 +24,16 @@ its 262 empty marker shards are gone.
 | split | source | rows | hours | 5–15 s hours | speakers |
 |---|---|---:|---:|---:|---:|
 | train | Common Voice 27.0 EN (`cv27`) | 522,251 | 943.5 | 942.6 | 42,680 |
-| train | Libriheavy small + medium + 1,688 of 2,955 large files | 2,958,315 | 9,542.2 | 7,217.6 | 4,459 |
+| train | Libriheavy small + medium + 1,688 of 2,955 large files | 2,958,303 | 9,542.2 | 7,217.6 | 4,459 |
 | validation | Common Voice dev | 6,021 | 11.6 | 11.5 | 3,188 |
 | validation | Libriheavy dev | 3,501 | 13.3 | 6.0 | 125 |
 
 One Libriheavy train row, transcript `"."`, had nothing to translate and was dropped in the move.
+Twelve more whose English clip is broken upstream are dropped, locally and on the Hub: 11 of
+chapter 1 of *Elements of Conchology* (`libriheavy-large-00003-00075`) are 259-byte Ogg files with
+headers and no audio, which stopped the TTS, and `mike_02_wodehouse_64kb_32`
+(`libriheavy-medium-00016`) holds 5.7 s of its 21.2 s. A scan on 2026-10-25 of every Libriheavy
+clip's Ogg length against `en_duration_s` found no others.
 
 ## Format
 
