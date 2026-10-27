@@ -16,19 +16,19 @@ step ([vi-tts](vi-tts.md)) fills the Vietnamese speech of its shards in place, a
 `upload --follow` publishes each as it is voiced; `cache_codes` pair rows are then made from it
 ([sft-data-caches](sft-data-caches.md)).
 
-It is published as `huybik/en-vi-speech` while it is voiced: the Mac and anquachdev's machine,
-which voices bottom up, both push there. Once every shard is voiced, the whole dataset goes to
-`anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice set, and from then
-on only that repository is used (user's plan, 2026-10-24). The final upload:
+It was published as `huybik/en-vi-speech` while it was voiced: the Mac and anquachdev's machine,
+which voiced bottom up, both pushed there. By 2026-10-27 every shard was voiced, the
+retranslated rows voiced again and every `vi_audio.path` set to `<clip>.opus`
+([vi-tts](vi-tts.md#running)), and `huybik/en-vi-speech` holds that copy. The whole dataset then
+goes to `anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice set, and
+from then on only that repository is used (user's plan, 2026-10-24). The final upload, which
+waits for the user's go:
 
 ```bash
 HF_TOKEN=$HF_TOKEN_AN python -m training.prep.publish_en_vi_speech upload --repo anquachdev/common-vi-en
 ```
 
-Before it, with the other machine's upload stopped, re-voice the retranslated rows
-(`tts_en_speech --texts`, [vi-tts](vi-tts.md#running)), set `vi_audio.path` to `<clip>.opus` in
-the shards voiced on his machine, and let `upload` send them to `huybik/en-vi-speech`; after it,
-delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
+After it, delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
 on the user's change of plan: it holds ~1,580 of these shards (277 GB with his own files, all
 from before the stop), its card still his own, which reads only his old files.
 

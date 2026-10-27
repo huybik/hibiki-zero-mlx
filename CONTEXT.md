@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-24
+Last verified: 2026-10-27
 
 ## Purpose
 
@@ -51,13 +51,13 @@ inference/ (Apple Silicon, MLX)
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
   translations and the already voiced Common Voice rows of `anquachdev/common-vi-en`
-  (`cv-anquach`), in the local EN-VI dataset, published as `huybik/en-vi-speech` while it is
-  voiced; once all is voiced it goes to `anquachdev/common-vi-en`, the one copy used from then on
-  ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voices the
+  (`cv-anquach`), in the local EN-VI dataset, published as `huybik/en-vi-speech`; it goes next
+  to `anquachdev/common-vi-en`, the one copy used from then on
+  ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voiced the
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
-  shard: the Mac top down, anquachdev's hardware bottom up, meeting through the Hub, where
-  `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)); no pair
-  rows or caches are built from it yet.
+  shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
+  1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)). No pair rows
+  or caches are built from it yet.
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -101,7 +101,7 @@ inference/ (Apple Silicon, MLX)
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
 - Training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
-- EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech while voiced,
+- EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech until the move,
   then https://huggingface.co/datasets/anquachdev/common-vi-en
 
 ## Maintaining context
