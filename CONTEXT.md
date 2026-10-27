@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-24
+Last verified: 2026-10-27
 
 ## Purpose
 
@@ -77,6 +77,9 @@ inference/ (Apple Silicon, MLX)
   [sft-training](docs/agent-memory/sft-training.md).
 - In MLX, give each thread its own `rustymimi.Tokenizer` and pass NumPy arrays, not MLX arrays,
   between threads → [mlx-inference](docs/agent-memory/mlx-inference.md).
+- `mx.compile` only functions that see a small, fixed set of input shapes; fed a new shape per call,
+  a compiled function grows memory without bound (61 GB on wav2vec2) →
+  [mlx-inference](docs/agent-memory/mlx-inference.md#memory).
 - q4 means 4-bit, group size 32, on layers whose input width divides by 32. A BF16 model
   directory needs `weight_dtype: bfloat16` → [mlx-inference](docs/agent-memory/mlx-inference.md).
 
