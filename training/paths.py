@@ -1,7 +1,10 @@
 """Repository paths, default artifacts and file guards shared by training code."""
+
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +43,15 @@ def require_dir(path: str | Path, label: str) -> Path:
     if not path.is_dir():
         raise FileNotFoundError(f"Missing {label}: {path}")
     return path
+
+
+def durable(path: Path) -> None:
+    """Flush a file or directory to the drive itself; on macOS fsync stops at the drive's cache."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+    finally:
+        os.close(fd)
 
 
 def read_json(path: str | Path) -> dict[str, Any]:
