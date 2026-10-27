@@ -41,6 +41,7 @@ from training.paths import (  # noqa: E402
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_TOKENIZER,
     durable,
+    exclusive,
     read_json,
     require_dir,
     require_file,
@@ -63,11 +64,13 @@ COLUMNS = [
     "vi_audio",
     "text_en",
     "text_vi",
+    "en_duration_s",
     "vi_duration_s",
     "cross_lingual_timbre_matched",
 ]
 PREFETCH = 64  # rows decoded ahead of the GPU (~5 MB each)
 MLX_CACHE_BYTES = 1 << 30  # MLX keeps freed buffers; shapes vary per row
+DURATION_TOLERANCE_S = 0.02  # healthy clips decode to their stored duration (0.01 s steps)
 CONFIG_KEYS = ("n_q", "dep_q", "card", "text_card", "existing_text_padding_id")
 
 
@@ -206,8 +209,18 @@ class Cacher:
     def row(
         self, split: str, row: dict[str, Any], vi24: np.ndarray, en24: np.ndarray, en16: np.ndarray
     ) -> dict[str, Any]:
-        """One cache sample; raises ValueError, KeyError or RuntimeError to reject the row."""
+        """One cache sample; raises ValueError to reject the row."""
         args = self.args
+        for side, pcm, stored in (
+            ("vi", vi24, row["vi_duration_s"]),
+            ("en", en24, row["en_duration_s"]),
+        ):
+            # PyAV decodes a truncated or damaged clip without error, only shorter.
+            seconds = len(pcm) / SAMPLE_RATE
+            if abs(seconds - stored) > DURATION_TOLERANCE_S:
+                raise ValueError(
+                    f"{side} audio decodes to {seconds:.2f} s, the row says {stored:.2f} s"
+                )
         # vi_duration_s is float32 holding a multiple of 0.01; round to the decimal it stores.
         delay_s = target_delay_s(
             row["id"], split, round(row["vi_duration_s"], 2), args.target_delay_ratio, args.seed
@@ -279,6 +292,8 @@ class Cacher:
             "samples": samples,
             "rejected": rejected,
         }
+        if not samples:
+            raise RuntimeError(f"Every row of {source} was rejected: {rejected[:3]}")
         tmp = out_path.with_name(out_path.name + ".tmp")
         torch.save(payload, tmp)
         durable(tmp)
@@ -299,7 +314,9 @@ class Cacher:
         try:
             vi24, en24, en16 = future.result()
             sample = self.row(split, row, vi24, en24, en16)
-        except (KeyError, RuntimeError, ValueError, av.FFmpegError) as exc:
+        except (ValueError, av.FFmpegError) as exc:
+            # Only data faults reject a row; a dead worker (BrokenProcessPool) or an MLX error
+            # stops the run, so a rerun rebuilds the shard instead of skipping lost rows.
             rejected.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
             return 0.0
         sample["codes"] = torch.from_numpy(sample["codes"])
@@ -311,12 +328,24 @@ class Cacher:
 def main() -> None:
     args = parse_args()
     data = require_dir(args.dataset_dir / "data", "dataset data directory")
-    sources = sorted({path for pattern in args.shards for path in data.glob(pattern)})
+    sources = sorted(
+        {
+            path
+            for pattern in args.shards
+            for path in data.glob(pattern)
+            if path.suffix == ".parquet"
+        }
+    )
     if not sources:
         raise FileNotFoundError(f"No source shards match {args.shards} under {data}")
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    busy = f"another cache_codes run is using {args.out_dir}"
     mx.set_cache_limit(MLX_CACHE_BYTES)
     cacher = Cacher(args, read_json(args.config_path))
-    with ProcessPoolExecutor(args.workers) as pool:
+    with (
+        exclusive(args.out_dir / ".cache_codes.lock", busy),
+        ProcessPoolExecutor(args.workers) as pool,
+    ):
         for source in sources:
             out_path = args.out_dir / source.parent.name / f"shard_{source.stem}.pt"
             if out_path.exists() and not args.overwrite:

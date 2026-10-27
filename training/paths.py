@@ -54,6 +54,18 @@ def durable(path: Path) -> None:
         os.close(fd)
 
 
+def exclusive(path: Path, busy: str):
+    """Hold an exclusive lock on `path` for as long as the returned file stays open; exit with
+    `busy` when another process holds it."""
+    lock_file = path.open("w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        raise SystemExit(busy) from None
+    return lock_file
+
+
 def read_json(path: str | Path) -> dict[str, Any]:
     path = require_file(path, "JSON file")
     with path.open("r", encoding="utf-8") as fh:

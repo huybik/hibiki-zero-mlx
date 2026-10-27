@@ -106,7 +106,7 @@ def _ctc_token_frames(
             tokens.append(targets[state // 2])
         state -= int(back[time_index, state])
     if any(not item for item in frames):
-        raise RuntimeError("CTC alignment omitted a transcript token")
+        raise ValueError("CTC alignment omitted a transcript token")
     for item in frames:
         item.reverse()
     probabilities = np.exp(log_probs[times, tokens]).astype(np.float64)
@@ -120,7 +120,7 @@ class EnglishCTCAligner:
     padding clips into a batch changes their emissions. Clips therefore run one at a time and
     uncompiled: a compiled forward is traced again for every new length and grows memory without
     bound (docs/agent-memory/mlx-inference.md#memory). The word spans equal PyTorch CPU float32's
-    on 6,193 of 6,194 words, with the same rejections.
+    on 6,180 of 6,181 words, with the same rejections.
     """
 
     def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
@@ -174,8 +174,8 @@ class EnglishCTCAligner:
         return np.array(logits - mx.logsumexp(logits, axis=-1, keepdims=True))[0]
 
     def align(self, waveform_16khz: np.ndarray, groups: list[tuple[list[int], str]]) -> Alignment:
-        """Word spans of `groups` as fractions of the clip; raises ValueError, KeyError or
-        RuntimeError when the text cannot be aligned or the score is below the minimum."""
+        """Word spans of `groups` as fractions of the clip; raises ValueError when the text
+        cannot be aligned or the score is below the minimum."""
         targets, ranges = self._targets(groups)
         log_probs = self._log_probs(waveform_16khz)
         token_frames, score = _ctc_token_frames(log_probs, targets, self.blank_id)

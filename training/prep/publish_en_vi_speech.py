@@ -53,8 +53,8 @@ from huggingface_hub import CommitOperationAdd, HfApi, RepoFile, snapshot_downlo
 from huggingface_hub.errors import HfHubHTTPError  # noqa: E402
 from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
-from training.paths import durable  # noqa: E402
-from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
+from training.paths import durable, exclusive  # noqa: E402
+from training.prep.translate_en_speech import MAX_SECONDS, log  # noqa: E402
 
 REPO = "huybik/en-vi-speech"  # where both machines voice; anquachdev/common-vi-en once all is voiced
 ANQUACH_REPO = "anquachdev/common-vi-en"

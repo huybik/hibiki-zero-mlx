@@ -77,13 +77,13 @@ These rules hold for every MLX model here (the Hibiki LM, VieNeu, Mimi, wav2vec2
   again for each new input shape, and memory grows with every one: MLX wav2vec2-base compiled and
   fed 252 clips of 252 different lengths reached a 61 GB footprint and filled 43 GB of swap
   (2026-10-27); uncompiled, the same run peaked at 3.6 GB. `mx.set_cache_limit` (1 GB in that
-  run) does not bound it. Bucket lengths before compiling (Mimi padded to multiples of 16 frames:
-  16 shapes, 5–7 GB), or keep the function eager. A model whose output changes with padding
+  run) does not bound it. Bucket lengths before compiling (`training/prep/mimi_mlx.py` pads to
+  multiples of 16 frames: at most 18 shapes, 1.8 GB), or keep the function eager. A model whose output changes with padding
   (wav2vec2-base has no attention mask) cannot be bucketed, so it stays eager.
 - Every compiled function in the repo sees fixed shapes: the depformer step, one compile per
   slice (`moshi_mlx/models/lm.py`); the attention regions of a single-token step, with the RoPE
-  offset passed as an array (`moshi_mlx/modules/transformer.py`); the samplers; and the VieNeu
-  frame (`training/prep/vieneu_mlx.py`). Hold any new compiled path to the same rule.
+  offset passed as an array (`moshi_mlx/modules/transformer.py`); the samplers; the VieNeu
+  frame (`training/prep/vieneu_mlx.py`); and the bucketed Mimi encoder (`mimi_mlx.py`). Hold any new compiled path to the same rule.
 - MLX also keeps freed buffers across shapes; cap the cache with `mx.set_cache_limit` when shapes
   vary ([vi-tts](vi-tts.md#engine) caps the codec at 2 GB).
 - PyTorch MPS keeps memory per input shape too: Mimi encode at batch 1 over per-clip lengths

@@ -7,7 +7,7 @@ The encoder transformer is causal over a 250-frame window with exact GELU, as in
 moshi_mlx 0.3.0 omits the mask and uses the tanh GELU, which gives different codes on whole clips.
 
 Codes match PyTorch CPU float32 on 99.98% of frames with every first codebook equal; the rest are
-float near-ties in the residual codebooks. Keep float32: bfloat16 matches 68%.
+float near-ties in the residual codebooks. Keep float32: half precision changes 11-55% of frames.
 """
 
 from __future__ import annotations

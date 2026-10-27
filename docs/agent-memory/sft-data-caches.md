@@ -20,10 +20,10 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
   straight from its parquet shards, the split taken from the folder. No cache is built from it
   yet. FLEURS is dropped.
-- `--shards` picks source shards by glob under `data/` (default: every train and validation
-  shard). `cv-anquach` rows have 16 kHz English targets
-  ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)); build them into their own
-  `--out-dir` to keep them optional. Put `--out-dir` on `/Volumes/data`: the codes come to
+- `--shards` picks `.parquet` source shards by glob under `data/` (default: every train and
+  validation shard, `cv-anquach` included). `cv-anquach` rows have 16 kHz English targets
+  ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)); to keep them optional, pass
+  the other globs and build them into their own `--out-dir`. Put `--out-dir` on `/Volumes/data`: the codes come to
   ~70 GB and the internal disk is too small.
 - Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `CachedCodeDataset`
   rejects anything else:
@@ -38,18 +38,23 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
 ## Builder
 
 - Gates run cheapest first, and a row is rejected, with its reason, at the first one it fails:
-  more frames than `--max-frames` (280, the trainer's cap), counted from the decoded lengths as
-  max(English frames with the delay, Vietnamese frames) + 1; then the text grouping; CTC
-  alignment; token timing. Only kept rows reach Mimi.
+  a decoded clip more than 0.02 s off its stored duration (PyAV decodes a truncated or damaged
+  clip without error, only shorter); more frames than `--max-frames` (280, the trainer's cap),
+  counted from the decoded lengths as max(English frames with the delay, Vietnamese frames) + 1;
+  the text grouping; CTC alignment; token timing. Only kept rows reach Mimi.
+- Only data faults reject a row (`ValueError`, and PyAV errors for undecodable bytes). A dead
+  decode worker, an MLX error, or a shard whose every row fails stops the run before the shard
+  is written, so a rerun rebuilds it rather than skipping lost rows.
 - A shard holds `samples` (the row fields plus `source_row`, `data/<split>/<file>#r<index>`),
   `rejected` (`id`, `reason`), `source` (file, bytes) and `max_frames`. Its values are Python
   types and tensors only: the trainer's `torch.load` keeps the `weights_only` default, which
   refuses NumPy scalars.
 - A shard is written as `.tmp`, flushed with `F_FULLFSYNC`, then renamed. A rerun skips shards
-  that exist; `--overwrite` rebuilds. Run one build per `--out-dir`. A shard whose rows all fail
-  is written, empty. Run a multi-day build under `caffeinate -i -s`.
-- Decoding: PyAV for every stream (the Opus clips and cv27's MP3); all decode as 48 kHz mono
-  `fltp`, and anything else is rejected. soxr resamples from 48 kHz straight to each rate.
+  that exist, without checking their source again; `--overwrite` rebuilds. A lock
+  (`.cache_codes.lock`) keeps a second run off the same `--out-dir`. Run a multi-day build under
+  `caffeinate -i -s`.
+- Decoding: PyAV for every stream (the Opus clips and cv27's MP3); anything but mono `fltp`
+  is rejected, and every clip in the dataset decodes at 48 kHz. soxr resamples from 48 kHz straight to each rate.
   `sphn.read` cannot decode Opus, `sphn.read_opus_bytes` keeps the 312-sample Opus pre-skip, and
   `sphn.resample` delays its output (256 samples at 48 → 24 kHz).
 - Mimi: `mimi_mlx.MimiEncoder`, an encode-only MLX port that loads the PyTorch checkpoint. Each

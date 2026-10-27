@@ -64,7 +64,7 @@ skips the shards already built. Rules and speed are in
 
 ```bash
 caffeinate -i -s python -m training.prep.cache_codes --out-dir /Volumes/data/datasets/en-vi-grounded-v2 \
-  --shards 'train/cv27-*' 'train/libriheavy-*' 'validation/*'
+  --shards 'train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet'
 ```
 
 ## Vietnamese translations of `en_speech`
