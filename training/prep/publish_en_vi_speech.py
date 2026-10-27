@@ -8,8 +8,8 @@ fills `vi_audio` and `vi_duration_s` shard by shard. Rows without a translation 
 without letters) were dropped when the corpus was moved in; the step that moved it is in git at
 a236ad5. The `cv-anquach` rows come voiced from anquachdev/common-vi-en as it was before the merge:
 the Common Voice clips the corpus lacks, with that dataset's translation and Vietnamese speech.
-Both machines voice into huybik/en-vi-speech; once every shard is voiced, the dataset is uploaded
-to anquachdev/common-vi-en (--repo, HF_TOKEN of that account), the one copy used from then on.
+It is published as anquachdev/common-vi-en, the one copy used; it was voiced on huybik/en-vi-speech
+(--repo), where both machines pushed.
 
 --root, laid out as the Hugging Face repo, is the one local copy. Run from the repo root as
 `python -m training.prep.publish_en_vi_speech <step>`. Steps:
@@ -17,7 +17,8 @@ to anquachdev/common-vi-en (--repo, HF_TOKEN of that account), the one copy used
   card       README.md with statistics of the local dataset
   upload     commits the shards voiced here since and those the Hub lacks, a few GB at a time,
              downloads the shards voiced on the Hub by another machine, then commits a fresh card
-             (export HF_TOKEN); with --follow it looks again every 10 min until every shard is voiced
+             (export HF_TOKEN of the repo's account); with --follow it looks again every 10 min
+             until every shard is voiced
 Every step may be stopped (Ctrl-C, kill) and resumes when run again; a lock stops a second run of
 the same step.
 
@@ -56,8 +57,7 @@ from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
 from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
 
-REPO = "huybik/en-vi-speech"  # where both machines voice; anquachdev/common-vi-en once all is voiced
-ANQUACH_REPO = "anquachdev/common-vi-en"
+REPO = "anquachdev/common-vi-en"  # the merged dataset; its cv-anquach rows come from its revision below
 CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
 SPLITS = ("train", "validation")
 SOURCES = ("cv27", "cv-anquach", "libriheavy")  # shard and id prefixes
@@ -149,7 +149,7 @@ def retried(what: str, fn: Callable[[], T]) -> T:
 
 
 def anquach(root: Path, src: Path) -> None:
-    """Write data/train/cv-anquach-*.parquet from ANQUACH_REPO as it was before the merge: its rows
+    """Write data/train/cv-anquach-*.parquet from REPO as it was before the merge: its rows
     whose English lasts CLIP_SECONDS, except the clips cv27 holds (ours stay) and the sentences of
     cv27's validation split, compared lower-cased with punctuation and spaces collapsed (cv27 train
     leaves them out too), and those whose translation holds Chinese, Japanese or Korean script
@@ -162,7 +162,7 @@ def anquach(root: Path, src: Path) -> None:
 
     cjk = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 
-    snapshot_download(ANQUACH_REPO, repo_type="dataset", revision=ANQUACH_REVISION, local_dir=src,
+    snapshot_download(REPO, repo_type="dataset", revision=ANQUACH_REVISION, local_dir=src,
                       allow_patterns=["data/train-heavy-*.parquet"])
     ours, dev = set(), set()
     for path in root.glob("data/*/cv27-*.parquet"):

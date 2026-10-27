@@ -16,21 +16,14 @@ step ([vi-tts](vi-tts.md)) fills the Vietnamese speech of its shards in place, a
 `upload --follow` publishes each as it is voiced; `cache_codes` pair rows are then made from it
 ([sft-data-caches](sft-data-caches.md)).
 
-It was published as `huybik/en-vi-speech` while it was voiced: the Mac and anquachdev's machine,
-which voiced bottom up, both pushed there. By 2026-10-27 every shard was voiced, the
-retranslated rows voiced again and every `vi_audio.path` set to `<clip>.opus`
-([vi-tts](vi-tts.md#running)), and `huybik/en-vi-speech` holds that copy. The whole dataset then
-goes to `anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice set, and
-from then on only that repository is used (user's plan, 2026-10-24). The final upload, which
-waits for the user's go:
-
-```bash
-HF_TOKEN=$HF_TOKEN_AN python -m training.prep.publish_en_vi_speech upload --repo anquachdev/common-vi-en
-```
-
-After it, delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
-on the user's change of plan: it holds ~1,580 of these shards (277 GB with his own files, all
-from before the stop), its card still his own, which reads only his old files.
+It is published as `anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice
+set, and only that repository is used (user's plan, 2026-10-24); `upload` goes there by default,
+with his write token (`HF_TOKEN=$HF_TOKEN_AN`). It was voiced on `huybik/en-vi-speech`, kept but
+no longer used, where the Mac and anquachdev's machine, which voiced bottom up, both pushed. By
+2026-10-27 every shard was voiced, the retranslated rows voiced again and every
+`vi_audio.path` set to `<clip>.opus` ([vi-tts](vi-tts.md#running)); that copy went to both
+repositories the same day (447 GB, 1,842 shards; 112 commits in 83 min to `common-vi-en`, as
+Xet had the bytes), and his old files were deleted there (commit `2ce8777`).
 
 ## Contents
 
@@ -40,8 +33,7 @@ from before the stop), its card still his own, which reads only his old files.
                                               ◄─ tts_en_speech: vi_audio filled, shard by shard
   data/train/cv-anquach-*                     ◄─ anquach step, voiced already
   README.md                                   ◄─ card step, and each upload pass
-        └─► upload step (4 GB commits; --follow every 10 min) ─► huybik/en-vi-speech
-                                                 (all voiced) ─► anquachdev/common-vi-en
+        └─► upload step (4 GB commits; --follow every 10 min) ─► anquachdev/common-vi-en
 ```
 
 - Columns: `id`, `en_audio`, `text_en`, `text_vi`, `speaker`, `en_duration_s`, `vi_audio`,
@@ -80,11 +72,9 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
   not known to match the English voice. `speaker` is empty (his set has
   none, and the Common Voice metadata is not kept), so speaker overlap with `cv27` validation is
   unchecked. `id` is `cv-anquach/<clip>`, and both audio paths are `<clip>.opus`.
-- His old files (`data/train-heavy-*.parquet`, the empty `data/train-00000-of-00001.parquet`) are
-  deleted by hand from `anquachdev/common-vi-en` after the final upload
-  (`HfApi().delete_files(repo, delete_patterns=…)`);
-  the step downloads them from the pinned revision, so never squash the repository's history.
-  The download sits in `/Volumes/data/datasets/common_vi_en_src` (12 GB) and can be deleted.
+- His old files (`data/train-heavy-*.parquet`, the empty `data/train-00000-of-00001.parquet`)
+  are deleted from `anquachdev/common-vi-en`; the step downloads them from the pinned revision,
+  so never squash the repository's history. Its download to `--src` is deleted too.
 
 ## Building and publishing
 

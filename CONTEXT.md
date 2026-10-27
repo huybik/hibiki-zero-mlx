@@ -19,7 +19,7 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ```text
 training/  (CUDA, Linux H100; prep/ translates, voices and publishes the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
-    ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload --follow ─► HF en-vi-speech
+    ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload ─► HF common-vi-en
     ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
@@ -51,8 +51,8 @@ inference/ (Apple Silicon, MLX)
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
   translations and the already voiced Common Voice rows of `anquachdev/common-vi-en`
-  (`cv-anquach`), in the local EN-VI dataset, published as `huybik/en-vi-speech`; it goes next
-  to `anquachdev/common-vi-en`, the one copy used from then on
+  (`cv-anquach`), in the local EN-VI dataset, published as `anquachdev/common-vi-en`, the one
+  copy used
   ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voiced the
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
   shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
@@ -101,8 +101,7 @@ inference/ (Apple Silicon, MLX)
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
 - Training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
-- EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech until the move,
-  then https://huggingface.co/datasets/anquachdev/common-vi-en
+- EN-VI speech and text pairs: https://huggingface.co/datasets/anquachdev/common-vi-en
 
 ## Maintaining context
 
