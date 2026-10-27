@@ -247,10 +247,10 @@ class Cacher:
         pad = int(round(delay_s * SAMPLE_RATE))
         delay_frames = int(round(delay_s * FRAME_RATE))
         en_frames = math.ceil((pad + len(en24)) / FRAME_SAMPLES)
-        groups = sentencepiece_groups(row["text_en"], self.tokenizer)
+        lead, groups = sentencepiece_groups(row["text_en"], self.tokenizer)
         alignment = self.aligner.align(en16, groups)
         tokens, text_frames = timed_sentencepiece_tokens(
-            groups, alignment, en_frames - delay_frames, delay_frames, self.eos_id
+            lead, groups, alignment, en_frames - delay_frames, delay_frames, self.eos_id
         )
         vi_codes = self.mimi.encode(vi24)
         en_codes = self.mimi.encode(np.concatenate([np.zeros(pad, np.float32), en24]))

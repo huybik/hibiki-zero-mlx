@@ -33,7 +33,11 @@ def _spoken_group(text: str) -> str:
     return " ".join(re.sub(r"[^A-Za-z' ]+", " ", text).upper().split())
 
 
-def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str]]:
+def sentencepiece_groups(
+    text: str, tokenizer: Any
+) -> tuple[list[int], list[tuple[list[int], str]]]:
+    """SentencePiece ids grouped into spoken words for CTC alignment, after the ids of the
+    unspoken lead (a stray "*", "-" or quote before the first word), which may be empty."""
     pieces = list(tokenizer.encode(text, out_type=str))
     if not pieces:
         raise AlignmentError("Cannot align empty English text")
@@ -43,21 +47,19 @@ def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str
             groups.append([piece])
         else:
             groups[-1].append(piece)
-    # A group with nothing to speak (a stray "*", "-" or quote) joins its neighbouring word: the
-    # word before it, or the first word when it leads the text.
+    # A group with nothing to speak joins the word before it, or the lead before the first word.
+    lead: list[int] = []
     result: list[tuple[list[int], str]] = []
-    leading: list[int] = []
     for group in groups:
         ids = [int(tokenizer.piece_to_id(piece)) for piece in group]
         spoken = _spoken_group(tokenizer.decode(ids))
         if not spoken:
-            (result[-1][0] if result else leading).extend(ids)
+            (result[-1][0] if result else lead).extend(ids)
             continue
-        result.append((leading + ids, spoken))
-        leading = []
+        result.append((ids, spoken))
     if not result:
         raise AlignmentError(f"No speakable English text in {text!r}")
-    return result
+    return lead, result
 
 
 class AlignmentError(ValueError):
@@ -203,18 +205,26 @@ class EnglishCTCAligner:
 
 
 def timed_sentencepiece_tokens(
+    lead: list[int],
     groups: list[tuple[list[int], str]],
     alignment: Alignment,
     raw_target_frames: int,
     delay_frames: int,
     eos_id: int,
 ) -> tuple[list[int], list[int]]:
-    """Map word-aligned SentencePiece groups onto unique 12.5 Hz frames."""
+    """Map word-aligned SentencePiece groups onto unique 12.5 Hz frames; the unspoken lead takes
+    the frames just before the first word, from the delay at the earliest."""
     if len(groups) != len(alignment.spans):
         raise ValueError("Text groups and alignment spans differ")
     tokens: list[int] = []
     frames: list[int] = []
     previous = delay_frames - 1
+    if lead:
+        first = delay_frames + int(math.floor(alignment.spans[0][0] * raw_target_frames))
+        for frame, token in enumerate(lead, start=max(delay_frames, first - len(lead))):
+            tokens.append(token)
+            frames.append(frame)
+            previous = frame
     for (ids, _), (start_ratio, end_ratio) in zip(groups, alignment.spans, strict=True):
         start = delay_frames + int(math.floor(start_ratio * raw_target_frames))
         end = delay_frames + max(

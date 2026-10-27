@@ -38,8 +38,9 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
     silence. `room` is what the English clip leaves of the frame cap, so a long clip gets a
     shorter delay rather than being dropped (chosen 2026-10-27 for the full build: it keeps 197k
     rows, 1,033 English hours). Where the room does not bind, the delay equals the old rule's; on
-    `libriheavy-dev-00001` 1,040 rows came out byte-identical, 349 got a shorter delay and 307
-    more were kept. PhoMT's cache was filtered under the old rule (rows over the cap dropped);
+    `libriheavy-dev-00001` 1,040 rows came out byte-identical, 349 got a shorter delay and 299
+    more were kept (and 8 with leading symbols). Over the main build the room binds on 443k rows,
+    ~246k of which the old rule kept with a longer delay. PhoMT's cache was filtered under the old rule (rows over the cap dropped);
   - English text word-timed by CTC alignment with `facebook/wav2vec2-base-960h`; rows that
     fail alignment or score below 0.5 are rejected.
 - `training/paths.py` holds the repo defaults (`weights/` artifacts), file guards and `durable`.
@@ -51,9 +52,11 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   clip without error, only shorter); more frames than `--max-frames` (280, the trainer's cap),
   counted from the decoded lengths as max(English frames, Vietnamese frames) + 1 before the delay;
   the text grouping; CTC alignment; token timing. Only kept rows reach Mimi.
-- Text grouping: SentencePiece pieces group into words; a group with nothing to speak (a stray
-  `*`, `-` or quote) joins the word before it, or the first word when it leads the text. Leading
-  ones were rejected before 2026-10-27 (51k Libriheavy rows, 1.7%).
+- Text grouping: SentencePiece pieces group into words, and a group with nothing to speak (a
+  stray `*`, `-` or `"`; a lone `'` counts as spoken) joins the word before it. Before the first
+  word it is the lead, timed on the frames just before that word's start (not before the delay),
+  so the word keeps its own frame. Leading ones were rejected before 2026-10-27 (51k Libriheavy
+  rows, 1.7%).
 - Only data faults reject a row: `cache_codes.Rejected` (undecodable or non-mono audio, a duration
   mismatch, the frame cap) and `text_timing.AlignmentError`. Any other error, such as a dead
   decode worker (`BrokenProcessPool`), an MLX error or PyAV running out of memory, stops the run
@@ -124,7 +127,7 @@ The full build, started 2026-10-27, runs the two out-dirs one after the other, e
   more `--cache-dir` to use it.
 - Frame-cap survey of every source row (2026-10-27): 21.4k rows (111 English hours) have a
   Vietnamese clip over 22.32 s and 454 an English one, and are rejected; everything else fits.
-  CTC rejections come on top (~20% on the `libriheavy-dev` validation shard).
+  CTC rejections come on top: ~0.6% on `libriheavy-dev-00001`, ~0.4% on `cv27`.
 
 ## PhoMT cache
 

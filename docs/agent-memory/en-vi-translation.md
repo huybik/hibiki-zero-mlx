@@ -61,9 +61,6 @@ Measured with Sonnet 5.5:
   batches −0.7%; Telex or VIQR output +26% or +61%.
 - Thinking can't be disabled through the local API; at low effort it shows in ~25% of calls but
   adds under 1% of output.
-- With the English delayed by U[0, 0.5 × Vietnamese duration] and the Vietnamese as long as the
-  English, ~22% of characters are in rows likely to overflow 280 frames; clips over 15 s hold
-  44% of them.
 
 ## Model and prompt
 
