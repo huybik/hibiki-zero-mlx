@@ -43,16 +43,20 @@ def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str
             groups.append([piece])
         else:
             groups[-1].append(piece)
+    # A group with nothing to speak (a stray "*", "-" or quote) joins its neighbouring word: the
+    # word before it, or the first word when it leads the text.
     result: list[tuple[list[int], str]] = []
+    leading: list[int] = []
     for group in groups:
         ids = [int(tokenizer.piece_to_id(piece)) for piece in group]
         spoken = _spoken_group(tokenizer.decode(ids))
         if not spoken:
-            if not result:
-                raise AlignmentError(f"Leading unalignable text group: {group!r}")
-            result[-1][0].extend(ids)
+            (result[-1][0] if result else leading).extend(ids)
             continue
-        result.append((ids, spoken))
+        result.append((leading + ids, spoken))
+        leading = []
+    if not result:
+        raise AlignmentError(f"No speakable English text in {text!r}")
     return result
 
 

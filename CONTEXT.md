@@ -57,8 +57,9 @@ inference/ (Apple Silicon, MLX)
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
   shard: the Mac top down, anquachdev's hardware bottom up, meeting through the Hub, where
   `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)).
-  `cache_codes` builds the training caches from it on the Mac in MLX
-  ([sft-data-caches](docs/agent-memory/sft-data-caches.md)); none is built yet.
+  Every shard is voiced and uploaded. `cache_codes` builds the training caches from it on the Mac
+  in MLX; the full build runs from 2026-10-27, ~4 days
+  ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)).
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants

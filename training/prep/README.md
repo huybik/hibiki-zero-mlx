@@ -60,12 +60,14 @@ parquet shards into SFT cache shards, one per source shard, in MLX on the GPU: P
 wav2vec2 CTC word timing of the English text (`text_timing`), then Mimi (`mimi_mlx`). Rows whose
 audio is damaged (it decodes off its stored duration), that exceed the trainer's 280-frame cap
 or that fail alignment are rejected and listed in their shard; any other error stops the run.
-A rerun skips the shards already built. Rules and speed are in
+A rerun skips the shards already built. Rules, speed and the full build are in
 [sft-data-caches](../../docs/agent-memory/sft-data-caches.md).
 
 ```bash
 caffeinate -i -s python -m training.prep.cache_codes --out-dir /Volumes/data/datasets/en-vi-grounded-v2 \
   --shards 'train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet'
+caffeinate -i -s python -m training.prep.cache_codes \
+  --out-dir /Volumes/data/datasets/en-vi-grounded-v2-cv-anquach --shards 'train/cv-anquach-*.parquet'
 ```
 
 ## Vietnamese translations of `en_speech`

@@ -2,7 +2,7 @@
 
 Read when touching `training/prep/cache_codes.py`, `training/prep/mimi_mlx.py`,
 `training/prep/text_timing.py` or `training/paths.py`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) · [Speed](#speed) ·
+Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) · [Speed](#speed) · [Builds](#builds) ·
 [PhoMT cache](#phomt-cache) · [Row layout](#row-layout)
 
 ## Flow
@@ -24,19 +24,22 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   Mac-only packages (PyAV, MLX, soxr), which the pod does not install.
 
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
-  straight from its parquet shards, the split taken from the folder. No cache is built from it
-  yet. FLEURS is dropped.
+  straight from its parquet shards, the split taken from the folder. FLEURS is dropped.
 - `--shards` picks `.parquet` source shards by glob under `data/` (default: every train and
-  validation shard, `cv-anquach` included). `cv-anquach` rows have 16 kHz English targets
-  ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)); to keep them optional, pass
-  the other globs and build them into their own `--out-dir`. Put `--out-dir` on `/Volumes/data`: the codes come to
+  validation shard, `cv-anquach` included). Put `--out-dir` on `/Volumes/data`: the codes come to
   ~70 GB and the internal disk is too small.
+- The full build (user's choice, 2026-10-27: every row that fits the trainer) goes to two
+  out-dirs, see [Builds](#builds).
 - Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `CachedCodeDataset`
   rejects anything else:
   - Mimi at 24 kHz / 12.5 Hz;
-  - English audio delayed by a draw from U[0, 0.5 × Vietnamese duration], seeded by
+  - English audio delayed by a draw from U[0, min(0.5 × Vietnamese duration, room)], seeded by
     `1234:{split}:{id}` with the duration rounded to the 0.01 s it stores, and inserted as left
-    silence;
+    silence. `room` is what the English clip leaves of the frame cap, so a long clip gets a
+    shorter delay rather than being dropped (chosen 2026-10-27 for the full build: it keeps 197k
+    rows, 1,033 English hours). Where the room does not bind, the delay equals the old rule's; on
+    `libriheavy-dev-00001` 1,040 rows came out byte-identical, 349 got a shorter delay and 307
+    more were kept. PhoMT's cache was filtered under the old rule (rows over the cap dropped);
   - English text word-timed by CTC alignment with `facebook/wav2vec2-base-960h`; rows that
     fail alignment or score below 0.5 are rejected.
 - `training/paths.py` holds the repo defaults (`weights/` artifacts), file guards and `durable`.
@@ -46,8 +49,11 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
 - Gates run cheapest first, and a row is rejected, with its reason, at the first one it fails:
   a decoded clip more than 0.02 s off its stored duration (PyAV decodes a truncated or damaged
   clip without error, only shorter); more frames than `--max-frames` (280, the trainer's cap),
-  counted from the decoded lengths as max(English frames with the delay, Vietnamese frames) + 1;
+  counted from the decoded lengths as max(English frames, Vietnamese frames) + 1 before the delay;
   the text grouping; CTC alignment; token timing. Only kept rows reach Mimi.
+- Text grouping: SentencePiece pieces group into words; a group with nothing to speak (a stray
+  `*`, `-` or quote) joins the word before it, or the first word when it leads the text. Leading
+  ones were rejected before 2026-10-27 (51k Libriheavy rows, 1.7%).
 - Only data faults reject a row: `cache_codes.Rejected` (undecodable or non-mono audio, a duration
   mismatch, the frame cap) and `text_timing.AlignmentError`. Any other error, such as a dead
   decode worker (`BrokenProcessPool`), an MLX error or PyAV running out of memory, stops the run
@@ -102,6 +108,23 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
   MLX cache; grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
   GPU busy, four CPU processes fell from 123x to 20x in total and Mimi slowed ~45%: the CPU and
   GPU share this laptop's power.
+
+## Builds
+
+The full build, started 2026-10-27, runs the two out-dirs one after the other, each under
+`caffeinate -i -s` with its log in `<out-dir>/build.log`:
+
+| Out-dir on `/Volumes/data/datasets/` | `--shards` | Source rows |
+|---|---|---|
+| `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English |
+| `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
+
+- `cv-anquach` is kept apart because its English targets are 16 kHz
+  ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
+  more `--cache-dir` to use it.
+- Frame-cap survey of every source row (2026-10-27): 21.4k rows (111 English hours) have a
+  Vietnamese clip over 22.32 s and 454 an English one, and are rejected; everything else fits.
+  CTC rejections come on top (~20% on the `libriheavy-dev` validation shard).
 
 ## PhoMT cache
 

@@ -3,9 +3,10 @@
 
 Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard_<name>.pt`.
 A row is
-[33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw), then
-16 Vietnamese source Mimi codebooks ending in codec EOS. Rows longer than --max-frames, or whose
-English text fails CTC alignment, are rejected before Mimi and listed with their reason.
+[33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
+fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. Rows whose clips
+exceed --max-frames, or whose English text fails CTC alignment, are rejected before Mimi and listed
+with their reason.
 
 Worker processes decode the Opus/MP3 bytes (PyAV) and resample them (soxr); the main process runs
 wav2vec2 CTC and the Mimi encoder in MLX on the GPU.
@@ -96,7 +97,7 @@ def parse_args() -> argparse.Namespace:
         "--target-delay-ratio",
         type=float,
         default=0.5,
-        help="Maximum target delay as a ratio of Vietnamese source duration.",
+        help="Maximum target delay as a ratio of Vietnamese source duration, within the frame cap.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
     parser.add_argument(
@@ -110,6 +111,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.max_frames <= 0:
         parser.error("--max-frames must be positive")
+    if not (math.isfinite(args.target_delay_ratio) and args.target_delay_ratio >= 0):
+        parser.error("--target-delay-ratio must be finite and non-negative")
     return args
 
 
@@ -149,14 +152,9 @@ def prepare(vi_audio: bytes, en_audio: bytes) -> tuple[np.ndarray, np.ndarray, n
     )
 
 
-def target_delay_s(row_id: str, split: str, vi_duration_s: float, ratio: float, seed: int) -> float:
-    """Draw the English left-silence delay from U[0, ratio * Vietnamese duration]."""
-    if not (math.isfinite(ratio) and ratio >= 0):
-        raise ValueError("Target-delay ratio must be finite and non-negative")
-    if ratio == 0:
-        return 0.0
-    rng = random.Random(f"{seed}:{split}:{row_id}")
-    return rng.uniform(0.0, ratio * vi_duration_s)
+def target_delay_s(row_id: str, split: str, max_delay_s: float, seed: int) -> float:
+    """Draw the English left-silence delay from U[0, max_delay_s], seeded per row."""
+    return random.Random(f"{seed}:{split}:{row_id}").uniform(0.0, max_delay_s)
 
 
 def assemble_codes(
@@ -235,17 +233,20 @@ class Cacher:
                 raise Rejected(
                     f"{side} audio decodes to {seconds:.2f} s, the row says {stored:.2f} s"
                 )
-        # vi_duration_s is float32 holding a multiple of 0.01; round to the decimal it stores.
-        delay_s = target_delay_s(
-            row["id"], split, round(row["vi_duration_s"], 2), args.target_delay_ratio, args.seed
-        )
+        vi_frames = math.ceil(len(vi24) / FRAME_SAMPLES)
+        # Text EOS sits at en_frames, codec EOS at vi_frames.
+        frames = max(math.ceil(len(en24) / FRAME_SAMPLES), vi_frames) + 1
+        if frames > args.max_frames:
+            raise Rejected(f"{frames} frames exceed --max-frames {args.max_frames}")
+        # The delay is drawn within the room the English clip leaves under the cap, so a long clip
+        # gets a shorter delay instead of being rejected. vi_duration_s is float32 holding a
+        # multiple of 0.01; round to the decimal it stores.
+        room_s = ((args.max_frames - 1) * FRAME_SAMPLES - len(en24)) / SAMPLE_RATE
+        max_delay_s = min(args.target_delay_ratio * round(row["vi_duration_s"], 2), room_s)
+        delay_s = target_delay_s(row["id"], split, max_delay_s, args.seed)
         pad = int(round(delay_s * SAMPLE_RATE))
         delay_frames = int(round(delay_s * FRAME_RATE))
         en_frames = math.ceil((pad + len(en24)) / FRAME_SAMPLES)
-        vi_frames = math.ceil(len(vi24) / FRAME_SAMPLES)
-        frames = max(en_frames, vi_frames) + 1  # text EOS sits at en_frames, codec EOS at vi_frames
-        if frames > args.max_frames:
-            raise Rejected(f"{frames} frames exceed --max-frames {args.max_frames}")
         groups = sentencepiece_groups(row["text_en"], self.tokenizer)
         alignment = self.aligner.align(en16, groups)
         tokens, text_frames = timed_sentencepiece_tokens(
