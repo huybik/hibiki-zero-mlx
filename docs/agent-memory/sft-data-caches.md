@@ -104,7 +104,8 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
 - The builder runs ~200x real time on its Mimi audio (both clips plus the delay): a 1,738-row
   validation shard took 170–190 s for 9.97 h, at a 3.4 GB peak footprint. GPU time was
   ~100 s Mimi and ~75 s wav2vec2; the Viterbi took 8 s and waiting for decodes ~1 s.
-- The dataset's ~20k h of Mimi audio after the frame cap projects to ~100 h.
+- The full build holds ~22.1k h of Mimi audio (both clips and the mean delay: 21,558 h main,
+  521 h `cv-anquach`), ~110–120 h at 180–200x.
 - Alone: Mimi 440–460x (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length buckets:
   per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 241x (PyTorch CPU 86x, MPS 193x). Its 12
   layers already run at ~3.9 TFLOP/s in float32.
