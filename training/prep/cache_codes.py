@@ -37,6 +37,7 @@ import soxr  # noqa: E402
 import torch  # noqa: E402
 
 from training.paths import (  # noqa: E402
+    CACHE_FORMAT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_TOKENIZER,
@@ -49,6 +50,7 @@ from training.paths import (  # noqa: E402
 from training.prep.mimi_mlx import FRAME_SAMPLES, SAMPLE_RATE, MimiEncoder  # noqa: E402
 from training.prep.text_timing import (  # noqa: E402
     ALIGNMENT_NAME,
+    AlignmentError,
     EnglishCTCAligner,
     sentencepiece_groups,
     timed_sentencepiece_tokens,
@@ -56,7 +58,6 @@ from training.prep.text_timing import (  # noqa: E402
 
 FRAME_RATE = 12.5
 CTC_RATE = 16_000
-CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
 DATASET_DIR = Path("/Volumes/data/datasets/en_vi_speech")
 COLUMNS = [
     "id",
@@ -70,7 +71,7 @@ COLUMNS = [
 ]
 PREFETCH = 64  # rows decoded ahead of the GPU (~5 MB each)
 MLX_CACHE_BYTES = 1 << 30  # MLX keeps freed buffers; shapes vary per row
-DURATION_TOLERANCE_S = 0.02  # healthy clips decode to their stored duration (0.01 s steps)
+DURATION_TOLERANCE_S = 0.02  # healthy clips decode exactly to their stored duration
 CONFIG_KEYS = ("n_q", "dep_q", "card", "text_card", "existing_text_padding_id")
 
 
@@ -108,19 +109,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+class Rejected(Exception):
+    """A data fault in one row (bad audio, too long); any other error stops the run."""
+
+
 def decode(data: bytes) -> tuple[np.ndarray, int]:
     """Opus or MP3 bytes -> mono float32 PCM at the stream's rate (48 kHz in this dataset)."""
-    with av.open(io.BytesIO(data)) as container:
-        chunks, rate = [], 0
-        for frame in container.decode(audio=0):
-            if frame.format.name != "fltp" or frame.layout.nb_channels != 1:
-                raise ValueError(
-                    f"expected mono fltp audio, got {frame.format.name} {frame.layout.name}"
-                )
-            chunks.append(frame.to_ndarray()[0])
-            rate = frame.sample_rate
+    try:
+        with av.open(io.BytesIO(data)) as container:
+            chunks, rate = [], 0
+            for frame in container.decode(audio=0):
+                if frame.format.name != "fltp" or frame.layout.nb_channels != 1:
+                    raise Rejected(
+                        f"expected mono fltp audio, got {frame.format.name} {frame.layout.name}"
+                    )
+                chunks.append(frame.to_ndarray()[0])
+                rate = frame.sample_rate
+    except av.error.MemoryError:
+        raise
+    except av.FFmpegError as exc:
+        raise Rejected(f"undecodable audio: {exc}") from None
     if not chunks:
-        raise ValueError("no audio frames")
+        raise Rejected("no audio frames")
     return np.concatenate(chunks), rate
 
 
@@ -209,7 +219,7 @@ class Cacher:
     def row(
         self, split: str, row: dict[str, Any], vi24: np.ndarray, en24: np.ndarray, en16: np.ndarray
     ) -> dict[str, Any]:
-        """One cache sample; raises ValueError to reject the row."""
+        """One cache sample; raises Rejected or AlignmentError to reject the row."""
         args = self.args
         for side, pcm, stored in (
             ("vi", vi24, row["vi_duration_s"]),
@@ -218,7 +228,7 @@ class Cacher:
             # PyAV decodes a truncated or damaged clip without error, only shorter.
             seconds = len(pcm) / SAMPLE_RATE
             if abs(seconds - stored) > DURATION_TOLERANCE_S:
-                raise ValueError(
+                raise Rejected(
                     f"{side} audio decodes to {seconds:.2f} s, the row says {stored:.2f} s"
                 )
         # vi_duration_s is float32 holding a multiple of 0.01; round to the decimal it stores.
@@ -231,7 +241,7 @@ class Cacher:
         vi_frames = math.ceil(len(vi24) / FRAME_SAMPLES)
         frames = max(en_frames, vi_frames) + 1  # text EOS sits at en_frames, codec EOS at vi_frames
         if frames > args.max_frames:
-            raise ValueError(f"{frames} frames exceed --max-frames {args.max_frames}")
+            raise Rejected(f"{frames} frames exceed --max-frames {args.max_frames}")
         groups = sentencepiece_groups(row["text_en"], self.tokenizer)
         alignment = self.aligner.align(en16, groups)
         tokens, text_frames = timed_sentencepiece_tokens(
@@ -260,6 +270,7 @@ class Cacher:
 
     def shard(self, pool: ProcessPoolExecutor, source: Path, out_path: Path) -> None:
         split = source.parent.name
+        source_bytes = source.stat().st_size
         parquet = pq.ParquetFile(source)
         rows = (
             row
@@ -288,12 +299,10 @@ class Cacher:
             "alignment_min_score": self.args.min_alignment_score,
             "max_frames": self.args.max_frames,
             "config": {key: int(self.cfg[key]) for key in CONFIG_KEYS},
-            "source": {"file": f"data/{split}/{source.name}", "bytes": source.stat().st_size},
+            "source": {"file": f"data/{split}/{source.name}", "bytes": source_bytes},
             "samples": samples,
             "rejected": rejected,
         }
-        if not samples:
-            raise RuntimeError(f"Every row of {source} was rejected: {rejected[:3]}")
         tmp = out_path.with_name(out_path.name + ".tmp")
         torch.save(payload, tmp)
         durable(tmp)
@@ -314,9 +323,9 @@ class Cacher:
         try:
             vi24, en24, en16 = future.result()
             sample = self.row(split, row, vi24, en24, en16)
-        except (ValueError, av.FFmpegError) as exc:
-            # Only data faults reject a row; a dead worker (BrokenProcessPool) or an MLX error
-            # stops the run, so a rerun rebuilds the shard instead of skipping lost rows.
+        except (Rejected, AlignmentError) as exc:
+            # Only data faults reject a row. Anything else (a dead worker's BrokenProcessPool, an
+            # MLX error) stops the run before the shard is written, so a rerun rebuilds it.
             rejected.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
             return 0.0
         sample["codes"] = torch.from_numpy(sample["codes"])

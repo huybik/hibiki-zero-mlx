@@ -57,9 +57,10 @@ python -m training.prep.tts_en_speech --texts /Volumes/data/datasets/en_speech_v
 
 Runs on the Mac with the conda Python. `training.prep.cache_codes` turns the EN-VI dataset's
 parquet shards into SFT cache shards, one per source shard, in MLX on the GPU: PyAV decoding,
-wav2vec2 CTC word timing of the English text (`text_timing`), then Mimi (`mimi_mlx`). Rows over
-the trainer's 280-frame cap or failing alignment are rejected and listed in their shard; a rerun
-skips the shards already built. Rules and speed are in
+wav2vec2 CTC word timing of the English text (`text_timing`), then Mimi (`mimi_mlx`). Rows whose
+audio is damaged (it decodes off its stored duration), that exceed the trainer's 280-frame cap
+or that fail alignment are rejected and listed in their shard; any other error stops the run.
+A rerun skips the shards already built. Rules and speed are in
 [sft-data-caches](../../docs/agent-memory/sft-data-caches.md).
 
 ```bash

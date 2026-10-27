@@ -11,11 +11,17 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) �
 /Volumes/data/datasets/en_vi_speech/data/<split>/<name>.parquet
   ─► cache_codes (Mac, MLX) ─► <out-dir>/<split>/shard_<name>.pt
        workers: PyAV decode; soxr to 24 kHz (Mimi) and 16 kHz (CTC)
-       GPU: frame cap ─► text groups ─► wav2vec2 CTC (text_timing) ─► Mimi (mimi_mlx)
+       gates: decoded duration ─► frame cap ─► text groups ─► wav2vec2 CTC (text_timing)
+       GPU: CTC, then Mimi (mimi_mlx) on kept rows
 HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see PhoMT cache)
 <out-dir>/train + PhoMT ─► training.finetune.train --cache-dir (several)
 <out-dir>/validation ─► --val-cache-dir
 ```
+
+- The trainer runs on the H100 pod, so a Mac-built cache must get there; no transfer step exists
+  yet (the PhoMT cache went through the cache repo, [docs/finetune.md](../finetune.md)).
+  `CACHE_FORMAT` lives in `training/paths.py` so the trainer never imports the builder's
+  Mac-only packages (PyAV, MLX, soxr), which the pod does not install.
 
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
   straight from its parquet shards, the split taken from the folder. No cache is built from it
@@ -42,9 +48,11 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   clip without error, only shorter); more frames than `--max-frames` (280, the trainer's cap),
   counted from the decoded lengths as max(English frames with the delay, Vietnamese frames) + 1;
   the text grouping; CTC alignment; token timing. Only kept rows reach Mimi.
-- Only data faults reject a row (`ValueError`, and PyAV errors for undecodable bytes). A dead
-  decode worker, an MLX error, or a shard whose every row fails stops the run before the shard
-  is written, so a rerun rebuilds it rather than skipping lost rows.
+- Only data faults reject a row: `cache_codes.Rejected` (undecodable or non-mono audio, a duration
+  mismatch, the frame cap) and `text_timing.AlignmentError`. Any other error, such as a dead
+  decode worker (`BrokenProcessPool`), an MLX error or PyAV running out of memory, stops the run
+  before the shard is written, so a rerun rebuilds it rather than skipping lost rows. A shard
+  whose rows all fail on data is written, empty (some source shards hold only 3 rows).
 - A shard holds `samples` (the row fields plus `source_row`, `data/<split>/<file>#r<index>`),
   `rejected` (`id`, `reason`), `source` (file, bytes) and `max_frames`. Its values are Python
   types and tensors only: the trainer's `torch.load` keeps the `weights_only` default, which

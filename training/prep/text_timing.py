@@ -36,7 +36,7 @@ def _spoken_group(text: str) -> str:
 def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str]]:
     pieces = list(tokenizer.encode(text, out_type=str))
     if not pieces:
-        raise ValueError("Cannot align empty English text")
+        raise AlignmentError("Cannot align empty English text")
     groups: list[list[str]] = []
     for piece in pieces:
         if piece.startswith("▁") or not groups:
@@ -49,11 +49,15 @@ def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str
         spoken = _spoken_group(tokenizer.decode(ids))
         if not spoken:
             if not result:
-                raise ValueError(f"Leading unalignable text group: {group!r}")
+                raise AlignmentError(f"Leading unalignable text group: {group!r}")
             result[-1][0].extend(ids)
             continue
         result.append((ids, spoken))
     return result
+
+
+class AlignmentError(ValueError):
+    """The English text cannot be timed against its audio: a data fault that rejects the row."""
 
 
 @dataclass(frozen=True)
@@ -71,11 +75,11 @@ def _ctc_token_frames(
     token unless the trailing blank scores higher.
     """
     if not targets:
-        raise ValueError("CTC target is empty")
+        raise AlignmentError("CTC target is empty")
     time_steps = int(log_probs.shape[0])
     states = 2 * len(targets) + 1
     if time_steps < states:
-        raise ValueError(f"CTC emission is too short: {time_steps} < {states}")
+        raise AlignmentError(f"CTC emission is too short: {time_steps} < {states}")
 
     symbols = np.full(states, blank_id, dtype=np.int64)
     symbols[1::2] = targets
@@ -106,7 +110,7 @@ def _ctc_token_frames(
             tokens.append(targets[state // 2])
         state -= int(back[time_index, state])
     if any(not item for item in frames):
-        raise ValueError("CTC alignment omitted a transcript token")
+        raise AlignmentError("CTC alignment omitted a transcript token")
     for item in frames:
         item.reverse()
     probabilities = np.exp(log_probs[times, tokens]).astype(np.float64)
@@ -159,7 +163,7 @@ class EnglishCTCAligner:
             start = len(target_ids)
             for char in spoken.replace(" ", self.delimiter):
                 if char not in self.vocab:
-                    raise ValueError(f"CTC transcript contains unsupported character: {char!r}")
+                    raise AlignmentError(f"CTC transcript contains unsupported character: {char!r}")
                 target_ids.append(int(self.vocab[char]))
             ranges.append((start, len(target_ids)))
         return target_ids, ranges
@@ -174,13 +178,13 @@ class EnglishCTCAligner:
         return np.array(logits - mx.logsumexp(logits, axis=-1, keepdims=True))[0]
 
     def align(self, waveform_16khz: np.ndarray, groups: list[tuple[list[int], str]]) -> Alignment:
-        """Word spans of `groups` as fractions of the clip; raises ValueError when the text
+        """Word spans of `groups` as fractions of the clip; raises AlignmentError when the text
         cannot be aligned or the score is below the minimum."""
         targets, ranges = self._targets(groups)
         log_probs = self._log_probs(waveform_16khz)
         token_frames, score = _ctc_token_frames(log_probs, targets, self.blank_id)
         if score < self.min_score:
-            raise ValueError(f"CTC alignment score {score:.3f} is below {self.min_score:.3f}")
+            raise AlignmentError(f"CTC alignment score {score:.3f} is below {self.min_score:.3f}")
         denom = int(log_probs.shape[0])
         spans = []
         for left, right in ranges:
@@ -190,7 +194,7 @@ class EnglishCTCAligner:
             not (0 <= left < right <= 1) or (index and left < spans[index - 1][0])
             for index, (left, right) in enumerate(spans)
         ):
-            raise ValueError("CTC alignment produced invalid word spans")
+            raise AlignmentError("CTC alignment produced invalid word spans")
         return Alignment(spans=spans, score=score)
 
 
@@ -226,7 +230,7 @@ def timed_sentencepiece_tokens(
             previous = frame
     eos_frame = delay_frames + raw_target_frames
     if previous >= eos_frame:
-        raise ValueError(
+        raise AlignmentError(
             f"Aligned text needs {previous - delay_frames + 1} frames but target has "
             f"{raw_target_frames}"
         )

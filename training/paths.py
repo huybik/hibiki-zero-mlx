@@ -15,6 +15,10 @@ DEFAULT_MODEL_WEIGHT = REPO_ROOT / "weights" / "hibiki-pytorch-77f82164@110.safe
 DEFAULT_MIMI_WEIGHT = REPO_ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"
 DEFAULT_TOKENIZER = REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 
+# Written by training.prep.cache_codes (Mac) and required by CachedCodeDataset (H100); kept here
+# so the trainer never imports the builder's Mac-only packages.
+CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
+
 
 def resolve_repo_path(path: str | Path) -> Path:
     path = Path(path)
