@@ -54,8 +54,10 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   the text grouping; CTC alignment; token timing. Only kept rows reach Mimi.
 - Text grouping: SentencePiece pieces group into words, and a group with nothing to speak (a
   stray `*`, `-` or `"`; a lone `'` counts as spoken) joins the word before it. Before the first
-  word it is the lead, timed on the frames just before that word's start (not before the delay),
-  so the word keeps its own frame. Leading ones were rejected before 2026-10-27 (51k Libriheavy
+  word it is the lead, timed on the frames just before that word's start, so the word keeps its
+  own frame; when the lead does not fit after the delay it starts at the delay and pushes the
+  word later. An unspoken piece inside a word (`"It`, `(see`) is spread over that word's span
+  with it, as before (half of Libriheavy rows; kept unchanged in this build). Leading ones were rejected before 2026-10-27 (51k Libriheavy
   rows, 1.7%).
 - Only data faults reject a row: `cache_codes.Rejected` (undecodable or non-mono audio, a duration
   mismatch, the frame cap) and `text_timing.AlignmentError`. Any other error, such as a dead
@@ -111,6 +113,11 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
   MLX cache; grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
   GPU busy, four CPU processes fell from 123x to 20x in total and Mimi slowed ~45%: the CPU and
   GPU share this laptop's power.
+- Neural Engine (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
+  rules out Mimi (above). wav2vec2-base needs each clip's exact length (no attention mask,
+  whole-input GroupNorm), so every length is a new ANE compile, and compiling one fixed 10 s
+  shape ran over 27 min in `ANECompilerService` (root, one core, cutting the build to
+  ~150x) without finishing. At best it would take wav2vec2's ~40% of GPU time off the GPU.
 
 ## Builds
 
