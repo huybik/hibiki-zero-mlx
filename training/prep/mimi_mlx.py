@@ -152,7 +152,7 @@ class MimiEncoder:
         return mx.stack(codes, axis=1).astype(mx.int32)
 
     def encode(self, pcm: np.ndarray) -> np.ndarray:
-        """Encode one mono 24 kHz clip as a whole; returns int32 codes of ceil(len / 1920) frames."""
+        """Encode one mono 24 kHz clip as a whole; returns int32 codes, ceil(len / 1920) frames."""
         if pcm.ndim != 1 or not len(pcm):
             raise ValueError(f"Mimi needs a non-empty mono clip, got shape {pcm.shape}")
         frames = math.ceil(len(pcm) / FRAME_SAMPLES)

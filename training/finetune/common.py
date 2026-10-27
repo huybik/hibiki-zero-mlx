@@ -35,8 +35,7 @@ from training.finetune.hibiki_helpers import (
     get_lmgen,
     stack_and_pad_audio,
 )
-from training.paths import repo_display_path, require_file, resolve_repo_path
-from training.paths import CACHE_FORMAT
+from training.paths import CACHE_FORMAT, repo_display_path, require_file, resolve_repo_path
 
 
 def ascii_text(text: str) -> str:

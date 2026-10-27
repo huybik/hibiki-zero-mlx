@@ -62,7 +62,8 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   (`.cache_codes.lock`) keeps a second run off the same `--out-dir`. Run a multi-day build under
   `caffeinate -i -s`.
 - Decoding: PyAV for every stream (the Opus clips and cv27's MP3); anything but mono `fltp`
-  is rejected, and every clip in the dataset decodes at 48 kHz. soxr resamples from 48 kHz straight to each rate.
+  is rejected. Opus decodes at 48 kHz and cv27's MP3 at 32 or 48 kHz
+  ([en-speech-corpus](en-speech-corpus.md)); soxr resamples from that rate straight to each target.
   `sphn.read` cannot decode Opus, `sphn.read_opus_bytes` keeps the 312-sample Opus pre-skip, and
   `sphn.resample` delays its output (256 samples at 48 → 24 kHz).
 - Mimi: `mimi_mlx.MimiEncoder`, an encode-only MLX port that loads the PyTorch checkpoint. Each

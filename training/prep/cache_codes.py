@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Cache the EN-VI speech dataset as grounded Mimi code shards for SFT, on Apple Silicon.
 
-Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard_<name>.pt`. A row is
+Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard_<name>.pt`.
+A row is
 [33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw), then
 16 Vietnamese source Mimi codebooks ending in codec EOS. Rows longer than --max-frames, or whose
 English text fails CTC alignment, are rejected before Mimi and listed with their reason.
@@ -106,7 +107,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--workers", type=int, default=2, help="Audio decode processes.")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.max_frames <= 0:
+        parser.error("--max-frames must be positive")
+    return args
 
 
 class Rejected(Exception):
@@ -114,7 +118,7 @@ class Rejected(Exception):
 
 
 def decode(data: bytes) -> tuple[np.ndarray, int]:
-    """Opus or MP3 bytes -> mono float32 PCM at the stream's rate (48 kHz in this dataset)."""
+    """Opus or MP3 bytes -> mono float32 PCM at its own rate (Opus 48 kHz, MP3 32/48 kHz)."""
     try:
         with av.open(io.BytesIO(data)) as container:
             chunks, rate = [], 0
@@ -313,7 +317,8 @@ class Cacher:
             re.sub(r"[\d.]+", "N", item["reason"])[:60] for item in rejected
         )
         print(
-            f"{split}/{out_path.name}: {len(samples)} kept, {len(rejected)} rejected {dict(reasons)}; "
+            f"{split}/{out_path.name}: {len(samples)} kept, "
+            f"{len(rejected)} rejected {dict(reasons)}; "
             f"{audio_s / 3600:.2f} h encoded in {wall:.0f} s ({audio_s / wall:.0f}x RT)",
             flush=True,
         )
@@ -337,16 +342,12 @@ class Cacher:
 def main() -> None:
     args = parse_args()
     data = require_dir(args.dataset_dir / "data", "dataset data directory")
-    sources = sorted(
-        {
-            path
-            for pattern in args.shards
-            for path in data.glob(pattern)
-            if path.suffix == ".parquet"
-        }
-    )
-    if not sources:
-        raise FileNotFoundError(f"No source shards match {args.shards} under {data}")
+    sources = set()
+    for pattern in args.shards:
+        matched = {path for path in data.glob(pattern) if path.suffix == ".parquet"}
+        if not matched:
+            raise FileNotFoundError(f"No .parquet source shards match {pattern!r} under {data}")
+        sources |= matched
     args.out_dir.mkdir(parents=True, exist_ok=True)
     busy = f"another cache_codes run is using {args.out_dir}"
     mx.set_cache_limit(MLX_CACHE_BYTES)
@@ -355,7 +356,7 @@ def main() -> None:
         exclusive(args.out_dir / ".cache_codes.lock", busy),
         ProcessPoolExecutor(args.workers) as pool,
     ):
-        for source in sources:
+        for source in sorted(sources):
             out_path = args.out_dir / source.parent.name / f"shard_{source.stem}.pt"
             if out_path.exists() and not args.overwrite:
                 print(f"Skipping existing {out_path}", flush=True)

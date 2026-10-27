@@ -66,9 +66,7 @@ setup() {
     safetensors==0.8.0 \
     sentencepiece==0.2.1 \
     sphn==0.2.1 \
-    tqdm==4.67.1 \
-    num2words==0.5.14 \
-    transformers==5.14.1
+    tqdm==4.67.1
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
   echo "H100 environment installed in $VENV"
