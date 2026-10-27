@@ -1,72 +1,97 @@
 #!/usr/bin/env python
-"""Cache Vietnamese->English pair rows as grounded Mimi code shards for SFT.
+"""Cache the EN-VI speech dataset as grounded Mimi code shards for SFT, on Apple Silicon.
 
-Each row is [33, T]: CTC-timed English text, 16 English target Mimi codebooks
-(delayed by a seeded draw), then 16 Vietnamese source Mimi codebooks ending in
-codec EOS. Rows whose English text fails CTC alignment are rejected.
+Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard_<name>.pt`.
+A row is
+[33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw), then
+16 Vietnamese source Mimi codebooks ending in codec EOS. Rows longer than --max-frames, or whose
+English text fails CTC alignment, are rejected before Mimi and listed with their reason.
+
+Worker processes decode the Opus/MP3 bytes (PyAV) and resample them (soxr); the main process runs
+wav2vec2 CTC and the Mimi encoder in MLX on the GPU.
 """
+
 from __future__ import annotations
 
 import argparse
-import csv
-import json
+import collections
+import io
 import math
+import os
 import random
+import re
+import time
+from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from training.paths import (
+os.environ.setdefault(
+    "ARROW_DEFAULT_MEMORY_POOL", "system"
+)  # mimalloc keeps freed buffers on macOS
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+import av  # noqa: E402
+import mlx.core as mx  # noqa: E402
+import numpy as np  # noqa: E402
+import pyarrow.parquet as pq  # noqa: E402
+import soxr  # noqa: E402
+import torch  # noqa: E402
+
+from training.paths import (  # noqa: E402
+    CACHE_FORMAT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_TOKENIZER,
+    durable,
+    exclusive,
     read_json,
-    repo_display_path,
+    require_dir,
     require_file,
-    resolve_repo_path,
 )
-from training.prep.text_timing import (
+from training.prep.mimi_mlx import FRAME_SAMPLES, SAMPLE_RATE, MimiEncoder  # noqa: E402
+from training.prep.text_timing import (  # noqa: E402
     ALIGNMENT_NAME,
+    AlignmentError,
     EnglishCTCAligner,
     sentencepiece_groups,
     timed_sentencepiece_tokens,
 )
 
-SAMPLE_RATE = 24000
 FRAME_RATE = 12.5
-CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
-PAIR_FIELDS = (
+CTC_RATE = 16_000
+DATASET_DIR = Path("/Volumes/data/datasets/en_vi_speech")
+COLUMNS = [
     "id",
-    "split",
-    "vi_audio",
     "en_audio",
-    "vi_duration_s",
-    "en_duration_s",
-    "text_vi",
+    "vi_audio",
     "text_en",
-)
+    "text_vi",
+    "en_duration_s",
+    "vi_duration_s",
+    "cross_lingual_timbre_matched",
+]
+PREFETCH = 64  # rows decoded ahead of the GPU (~5 MB each)
+MLX_CACHE_BYTES = 1 << 30  # MLX keeps freed buffers; shapes vary per row
+DURATION_TOLERANCE_S = 0.02  # healthy clips decode exactly to their stored duration
+CONFIG_KEYS = ("n_q", "dep_q", "card", "text_card", "existing_text_padding_id")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Cache Mimi audio codes and English text tokens for vi->en full-model SFT."
-    )
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--pairs",
-        type=Path,
-        required=True,
-        help=f"Pair file (.jsonl or .csv) with columns {', '.join(PAIR_FIELDS)}.",
+        "--out-dir", type=Path, required=True, help="Cache root; one folder per split."
     )
+    parser.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
     parser.add_argument(
-        "--out-dir", type=Path, required=True, help="Output directory for cache shards."
+        "--shards",
+        nargs="+",
+        default=["train/*.parquet", "validation/*.parquet"],
+        help="Source shard globs under <dataset-dir>/data.",
     )
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
-    parser.add_argument(
-        "--device", default="cuda", help="Torch device for Mimi encoding and CTC alignment."
-    )
-    parser.add_argument("--shard-size", type=int, default=32, help="Samples per shard.")
-    parser.add_argument("--limit", type=int, default=0, help="Max pairs to cache, 0 means all.")
+    parser.add_argument("--max-frames", type=int, default=280, help="The trainer's frame cap.")
     parser.add_argument(
         "--target-delay-ratio",
         type=float,
@@ -74,109 +99,80 @@ def parse_args() -> argparse.Namespace:
         help="Maximum target delay as a ratio of Vietnamese source duration.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
-    parser.add_argument("--alignment-batch-size", type=int, default=8)
     parser.add_argument(
         "--min-alignment-score",
         type=float,
         default=0.5,
         help="Reject rows below this mean forced-alignment posterior.",
     )
+    parser.add_argument("--workers", type=int, default=2, help="Audio decode processes.")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.max_frames <= 0:
+        parser.error("--max-frames must be positive")
+    return args
 
 
-def read_pair_file(path: str | Path) -> list[dict[str, str]]:
-    path = require_file(path, "pair file")
-    rows: list[dict[str, str]] = []
-    if path.suffix == ".jsonl":
-        with path.open("r", encoding="utf-8") as fh:
-            for line_no, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                row = json.loads(line)
-                if not isinstance(row, dict):
-                    raise ValueError(f"{path}:{line_no} is not a JSON object")
-                rows.append({field: str(row.get(field, "")) for field in PAIR_FIELDS})
-    elif path.suffix == ".csv":
-        with path.open("r", newline="", encoding="utf-8") as fh:
-            reader = csv.DictReader(fh)
-            missing = [field for field in PAIR_FIELDS if field not in reader.fieldnames]
-            if missing:
-                raise ValueError(f"{path} is missing columns: {', '.join(missing)}")
-            rows = [{field: (row.get(field, "") or "") for field in PAIR_FIELDS} for row in reader]
-    else:
-        raise ValueError(f"Pair file must be .jsonl or .csv: {path}")
-
-    for row in rows:
-        for field in PAIR_FIELDS:
-            if field not in row or row[field] == "":
-                raise ValueError(f"{path} has an empty {field} field")
-    return rows
+class Rejected(Exception):
+    """A data fault in one row (bad audio, too long); any other error stops the run."""
 
 
-def require_runtime_deps() -> tuple[Any, Any, Any, Any]:
+def decode(data: bytes) -> tuple[np.ndarray, int]:
+    """Opus or MP3 bytes -> mono float32 PCM at its own rate (Opus 48 kHz, MP3 32/48 kHz)."""
     try:
-        import sentencepiece
-        import sphn
-        import torch
-        from moshi.models import loaders
-    except ImportError as exc:
-        raise SystemExit(f"Missing training dependency: {exc.name}") from exc
-    return torch, sphn, sentencepiece, loaders
+        with av.open(io.BytesIO(data)) as container:
+            chunks, rate = [], 0
+            for frame in container.decode(audio=0):
+                if frame.format.name != "fltp" or frame.layout.nb_channels != 1:
+                    raise Rejected(
+                        f"expected mono fltp audio, got {frame.format.name} {frame.layout.name}"
+                    )
+                chunks.append(frame.to_ndarray()[0])
+                rate = frame.sample_rate
+    except av.error.MemoryError:
+        raise
+    except av.FFmpegError as exc:
+        raise Rejected(f"undecodable audio: {exc}") from None
+    if not chunks:
+        raise Rejected("no audio frames")
+    return np.concatenate(chunks), rate
 
 
-def check_device(torch: Any, device_name: str) -> Any:
-    if device_name == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("Requested --device cuda, but torch.cuda.is_available() is false.")
-    return torch.device(device_name)
+def prepare(vi_audio: bytes, en_audio: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Worker: both clips at 24 kHz for Mimi, and the English clip at 16 kHz for CTC."""
+    vi, vi_rate = decode(vi_audio)
+    en, en_rate = decode(en_audio)
+    return (
+        soxr.resample(vi, vi_rate, SAMPLE_RATE),
+        soxr.resample(en, en_rate, SAMPLE_RATE),
+        soxr.resample(en, en_rate, CTC_RATE),
+    )
 
 
-def read_audio(path: Path, sphn: Any, torch: Any, device: Any, left_pad_s: float = 0.0) -> Any:
-    wav, sr = sphn.read(str(path), sample_rate=SAMPLE_RATE)
-    if sr != SAMPLE_RATE:
-        raise RuntimeError(f"{path} loaded at {sr} Hz, expected {SAMPLE_RATE} Hz")
-    wav = torch.from_numpy(wav).float()
-    if wav.ndim == 1:
-        wav = wav[None, :]
-    if wav.ndim != 2:
-        raise ValueError(f"{path} has unsupported audio shape {tuple(wav.shape)}")
-    if wav.shape[0] > 1:
-        wav = wav.mean(dim=0, keepdim=True)
-    if left_pad_s:
-        pad = int(round(left_pad_s * SAMPLE_RATE))
-        if pad > 0:
-            wav = torch.nn.functional.pad(wav, (pad, 0))
-    return wav[None].to(device)
-
-
-def encode_audio(
-    path: Path, mimi: Any, sphn: Any, torch: Any, device: Any, left_pad_s: float = 0.0
-) -> Any:
-    wav = read_audio(path, sphn, torch, device, left_pad_s=left_pad_s)
-    with torch.no_grad():
-        codes = mimi.encode(wav)
-    if codes.ndim != 3 or codes.shape[0] != 1:
-        raise RuntimeError(f"Mimi returned unexpected codes shape for {path}: {tuple(codes.shape)}")
-    return codes[0].cpu().long()
+def target_delay_s(row_id: str, split: str, vi_duration_s: float, ratio: float, seed: int) -> float:
+    """Draw the English left-silence delay from U[0, ratio * Vietnamese duration]."""
+    if not (math.isfinite(ratio) and ratio >= 0):
+        raise ValueError("Target-delay ratio must be finite and non-negative")
+    if ratio == 0:
+        return 0.0
+    rng = random.Random(f"{seed}:{split}:{row_id}")
+    return rng.uniform(0.0, ratio * vi_duration_s)
 
 
 def assemble_codes(
-    torch: Any,
-    row: dict[str, str],
-    vi_codes: Any,
-    en_codes: Any,
+    row_id: str,
+    vi_codes: np.ndarray,
+    en_codes: np.ndarray,
     tokens: list[int],
-    cfg: dict[str, Any],
     text_frames: list[int],
-) -> Any:
+    cfg: dict[str, Any],
+) -> np.ndarray:
     n_q = int(cfg["n_q"])
     dep_q = int(cfg["dep_q"])
     source_q = n_q - dep_q
     card = int(cfg["card"])
     text_card = int(cfg["text_card"])
     text_pad_id = int(cfg["existing_text_padding_id"])
-    zero_id = -1
 
     if vi_codes.shape[0] < source_q:
         raise RuntimeError(
@@ -185,231 +181,188 @@ def assemble_codes(
     if en_codes.shape[0] < dep_q:
         raise RuntimeError(f"English Mimi codes have {en_codes.shape[0]} codebooks, need {dep_q}")
     if any(token < 0 or token >= text_card for token in tokens):
-        raise RuntimeError(f"Text token out of range for id={row['id']}")
+        raise RuntimeError(f"Text token out of range for id={row_id}")
+    if len(text_frames) != len(tokens) or len(set(text_frames)) != len(tokens):
+        raise ValueError(f"Text frames must be unique and match tokens for id={row_id}")
+    if text_frames != sorted(text_frames) or text_frames[0] < 0:
+        raise ValueError(f"Text frames must be sorted and non-negative for id={row_id}")
 
-    vi_codes = vi_codes[:source_q]
-    en_codes = en_codes[:dep_q]
-    text_len = len(tokens)
     target_len = int(en_codes.shape[1])
     source_len = int(vi_codes.shape[1])
-    if len(text_frames) != text_len or len(set(text_frames)) != text_len:
-        raise ValueError(f"Text frames must be unique and match tokens for id={row['id']}")
-    if text_frames != sorted(text_frames) or text_frames[0] < 0:
-        raise ValueError(f"Text frames must be sorted and non-negative for id={row['id']}")
     text_end = text_frames[-1] + 1
-    total_frames = max(text_end, target_len, source_len + 1)
-    if total_frames <= 0:
-        raise RuntimeError(f"Empty cache sample for id={row['id']}")
-
-    codes = torch.full((1 + n_q, total_frames), zero_id, dtype=torch.int32)
-    codes[0].fill_(text_pad_id)
-    codes[0, torch.tensor(text_frames, dtype=torch.long)] = torch.tensor(tokens, dtype=torch.int32)
-    codes[0, text_frames[-1] + 1 :] = zero_id
-    codes[1 : 1 + dep_q, :target_len] = en_codes.to(torch.int32)
-
-    source_start = 1 + dep_q
-    codes[source_start : source_start + source_q, :source_len] = vi_codes.to(torch.int32)
-    source_eos_idx = min(source_len, total_frames - 1)
-    codes[source_start : source_start + source_q, source_eos_idx] = card
-    if source_eos_idx + 1 < total_frames:
-        codes[source_start : source_start + source_q, source_eos_idx + 1 :] = zero_id
-
+    codes = np.full((1 + n_q, max(text_end, target_len, source_len + 1)), -1, dtype=np.int32)
+    codes[0, :text_end] = text_pad_id
+    codes[0, text_frames] = tokens
+    codes[1 : 1 + dep_q, :target_len] = en_codes[:dep_q]
+    source = slice(1 + dep_q, 1 + n_q)
+    codes[source, :source_len] = vi_codes[:source_q]
+    codes[source, source_len] = card
     return codes
 
 
-def target_delay_s(row: dict[str, str], ratio: float, seed: int) -> float:
-    """Draw the English left-silence delay from U[0, ratio * Vietnamese duration]."""
-    if not (math.isfinite(ratio) and ratio >= 0):
-        raise ValueError("Target-delay ratio must be finite and non-negative")
-    if ratio == 0:
-        return 0.0
-    source_duration_s = float(row["vi_duration_s"])
-    rng = random.Random(f"{seed}:{row['split']}:{row['id']}")
-    return rng.uniform(0.0, ratio * source_duration_s)
+class Cacher:
+    """GPU side of the build: gates, CTC timing and Mimi codes for one source shard at a time."""
 
+    def __init__(self, args: argparse.Namespace, cfg: dict[str, Any]):
+        import sentencepiece
 
-def shard_path(out_dir: Path, shard_index: int) -> Path:
-    return out_dir / f"shard_{shard_index:05d}.pt"
-
-
-def save_shard(torch: Any, payload: dict[str, Any], path: Path) -> None:
-    tmp_path = path.with_name(path.name + ".tmp")
-    torch.save(payload, tmp_path)
-    tmp_path.replace(path)
-
-
-def validate_existing_shards(torch: Any, out_dir: Path) -> None:
-    for path in sorted(out_dir.glob("shard_*.pt"))[:1]:
-        if torch.load(path, map_location="cpu").get("format") != CACHE_FORMAT:
-            raise RuntimeError(f"Refusing to mix cache formats in {out_dir}")
-
-
-def write_index(torch: Any, out_dir: Path) -> None:
-    index_path = out_dir / "index.csv"
-    with index_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(
-            fh,
-            fieldnames=[
-                "id",
-                "split",
-                "shard",
-                "frames",
-                "vi_frames",
-                "en_frames",
-                "text_tokens",
-                "target_delay_s",
-                "target_delay_frames",
-                "vi_audio",
-                "en_audio",
-                "text_timing",
-                "alignment_score",
-                "alignment_text",
-            ],
+        self.args = args
+        self.cfg = cfg
+        self.tokenizer = sentencepiece.SentencePieceProcessor(
+            str(require_file(args.tokenizer, "text tokenizer"))
         )
-        writer.writeheader()
-        for path in sorted(out_dir.glob("shard_*.pt")):
-            payload = torch.load(path, map_location="cpu")
-            for sample in payload["samples"]:
-                writer.writerow(
-                    {
-                        "id": sample["id"],
-                        "split": sample["split"],
-                        "shard": path.name,
-                        "frames": sample["frames"],
-                        "vi_frames": sample["vi_frames"],
-                        "en_frames": sample["en_frames"],
-                        "text_tokens": sample["text_tokens"],
-                        "target_delay_s": f"{sample['target_delay_s']:.6f}",
-                        "target_delay_frames": sample["target_delay_frames"],
-                        "vi_audio": sample["vi_audio"],
-                        "en_audio": sample["en_audio"],
-                        "text_timing": sample.get("text_timing"),
-                        "alignment_score": sample.get("alignment_score"),
-                        "alignment_text": sample.get("alignment_text"),
-                    }
-                )
-
-
-def main() -> None:
-    args = parse_args()
-    if args.shard_size <= 0:
-        raise ValueError("--shard-size must be positive")
-
-    torch, sphn, sentencepiece, loaders = require_runtime_deps()
-    device = check_device(torch, args.device)
-
-    cfg = read_json(args.config_path)
-    mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    tokenizer_path = require_file(args.tokenizer, "text tokenizer")
-    pairs = read_pair_file(args.pairs)
-    if args.limit:
-        pairs = pairs[: args.limit]
-    if not pairs:
-        raise RuntimeError(f"No pairs to cache from {args.pairs}")
-
-    out_dir = resolve_repo_path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    validate_existing_shards(torch, out_dir)
-
-    print(f"Loading Mimi on {device} from {repo_display_path(mimi_weight)}")
-    num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
-    mimi = loaders.get_mimi(mimi_weight, num_codebooks=num_codebooks, device=device)
-    if int(cfg["card"]) != int(mimi.cardinality):
-        raise RuntimeError(
-            f"Config card={cfg['card']} does not match Mimi cardinality={mimi.cardinality}"
-        )
-    tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer_path))
-    aligner = EnglishCTCAligner(device, args.min_alignment_score)
-
-    shard_count = math.ceil(len(pairs) / args.shard_size)
-    for shard_index in range(shard_count):
-        start = shard_index * args.shard_size
-        rows = pairs[start : start + args.shard_size]
-        out_path = shard_path(out_dir, shard_index)
-        if out_path.exists() and not args.overwrite:
-            print(f"Skipping existing {repo_display_path(out_path)}")
-            continue
-
-        samples: list[dict[str, Any]] = []
-        for row in rows:
-            vi_audio = resolve_repo_path(row["vi_audio"])
-            en_audio = resolve_repo_path(row["en_audio"])
-            if not vi_audio.is_file():
-                raise FileNotFoundError(f"Missing Vietnamese audio for id={row['id']}: {vi_audio}")
-            if not en_audio.is_file():
-                raise FileNotFoundError(f"Missing English audio for id={row['id']}: {en_audio}")
-
-            delay_s = target_delay_s(row, args.target_delay_ratio, args.seed)
-            delay_frames = int(round(delay_s * FRAME_RATE))
-            vi_codes = encode_audio(vi_audio, mimi, sphn, torch, device)
-            en_codes = encode_audio(en_audio, mimi, sphn, torch, device, left_pad_s=delay_s)
-            raw_en = read_audio(en_audio, sphn, torch, torch.device("cpu"))[0, 0].numpy()
-            wav16 = sphn.resample(raw_en, SAMPLE_RATE, 16_000)
-            try:
-                groups = sentencepiece_groups(row["text_en"], tokenizer)
-            except ValueError as exc:
-                print(f"Rejecting id={row['id']}: {exc}")
-                continue
-            alignment = aligner.align_many([wav16], [groups], args.alignment_batch_size)[0]
-            if isinstance(alignment, Exception):
-                print(f"Rejecting id={row['id']}: {alignment}")
-                continue
-            raw_target_frames = int(en_codes.shape[1]) - delay_frames
-            try:
-                tokens, text_frames = timed_sentencepiece_tokens(
-                    groups,
-                    alignment,
-                    raw_target_frames,
-                    delay_frames,
-                    int(tokenizer.eos_id()),
-                )
-            except ValueError as exc:
-                print(f"Rejecting id={row['id']}: {exc}")
-                continue
-            codes = assemble_codes(torch, row, vi_codes, en_codes, tokens, cfg, text_frames)
-            samples.append(
-                {
-                    "id": row["id"],
-                    "split": row["split"],
-                    "codes": codes,
-                    "frames": int(codes.shape[1]),
-                    "vi_frames": int(vi_codes.shape[1]),
-                    "en_frames": int(en_codes.shape[1]),
-                    "text_tokens": len(tokens),
-                    "target_delay_s": delay_s,
-                    "target_delay_frames": delay_frames,
-                    "vi_audio": repo_display_path(vi_audio),
-                    "en_audio": repo_display_path(en_audio),
-                    "text_en": row["text_en"],
-                    "text_vi": row["text_vi"],
-                    "text_timing": ALIGNMENT_NAME,
-                    "alignment_score": alignment.score,
-                    "alignment_text": " ".join(spoken for _, spoken in groups),
-                }
+        self.eos_id = int(self.tokenizer.eos_id())
+        self.aligner = EnglishCTCAligner(args.min_alignment_score)
+        num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
+        self.mimi = MimiEncoder(require_file(args.mimi_weight, "Mimi weight"), num_codebooks)
+        if self.mimi.cardinality != int(cfg["card"]):
+            raise RuntimeError(
+                f"Config card={cfg['card']} != Mimi cardinality {self.mimi.cardinality}"
             )
 
-        if not samples:
-            raise RuntimeError(f"Every row in cache shard {shard_index} failed CTC alignment")
+    def row(
+        self, split: str, row: dict[str, Any], vi24: np.ndarray, en24: np.ndarray, en16: np.ndarray
+    ) -> dict[str, Any]:
+        """One cache sample; raises Rejected or AlignmentError to reject the row."""
+        args = self.args
+        for side, pcm, stored in (
+            ("vi", vi24, row["vi_duration_s"]),
+            ("en", en24, row["en_duration_s"]),
+        ):
+            # PyAV decodes a truncated or damaged clip without error, only shorter.
+            seconds = len(pcm) / SAMPLE_RATE
+            if abs(seconds - stored) > DURATION_TOLERANCE_S:
+                raise Rejected(
+                    f"{side} audio decodes to {seconds:.2f} s, the row says {stored:.2f} s"
+                )
+        # vi_duration_s is float32 holding a multiple of 0.01; round to the decimal it stores.
+        delay_s = target_delay_s(
+            row["id"], split, round(row["vi_duration_s"], 2), args.target_delay_ratio, args.seed
+        )
+        pad = int(round(delay_s * SAMPLE_RATE))
+        delay_frames = int(round(delay_s * FRAME_RATE))
+        en_frames = math.ceil((pad + len(en24)) / FRAME_SAMPLES)
+        vi_frames = math.ceil(len(vi24) / FRAME_SAMPLES)
+        frames = max(en_frames, vi_frames) + 1  # text EOS sits at en_frames, codec EOS at vi_frames
+        if frames > args.max_frames:
+            raise Rejected(f"{frames} frames exceed --max-frames {args.max_frames}")
+        groups = sentencepiece_groups(row["text_en"], self.tokenizer)
+        alignment = self.aligner.align(en16, groups)
+        tokens, text_frames = timed_sentencepiece_tokens(
+            groups, alignment, en_frames - delay_frames, delay_frames, self.eos_id
+        )
+        vi_codes = self.mimi.encode(vi24)
+        en_codes = self.mimi.encode(np.concatenate([np.zeros(pad, np.float32), en24]))
+        codes = assemble_codes(row["id"], vi_codes, en_codes, tokens, text_frames, self.cfg)
+        return {
+            "id": row["id"],
+            "split": split,
+            "codes": codes,
+            "frames": int(codes.shape[1]),
+            "vi_frames": vi_frames,
+            "en_frames": en_frames,
+            "text_tokens": len(tokens),
+            "target_delay_s": delay_s,
+            "target_delay_frames": delay_frames,
+            "text_en": row["text_en"],
+            "text_vi": row["text_vi"],
+            "cross_lingual_timbre_matched": row["cross_lingual_timbre_matched"],
+            "text_timing": ALIGNMENT_NAME,
+            "alignment_score": alignment.score,
+            "alignment_text": " ".join(spoken for _, spoken in groups),
+        }
+
+    def shard(self, pool: ProcessPoolExecutor, source: Path, out_path: Path) -> None:
+        split = source.parent.name
+        source_bytes = source.stat().st_size
+        parquet = pq.ParquetFile(source)
+        rows = (
+            row
+            for group in range(parquet.num_row_groups)
+            for row in parquet.read_row_group(group, columns=COLUMNS).to_pylist()
+        )
+        pending: collections.deque[tuple[int, dict[str, Any], Future]] = collections.deque()
+        samples: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        audio_s = 0.0
+        started = time.perf_counter()
+        for index, row in enumerate(rows):
+            job = pool.submit(prepare, row["vi_audio"]["bytes"], row["en_audio"]["bytes"])
+            pending.append((index, row, job))
+            row["vi_audio"] = row["en_audio"] = None
+            if len(pending) < PREFETCH:
+                continue
+            audio_s += self._take(pending.popleft(), split, source, samples, rejected)
+        while pending:
+            audio_s += self._take(pending.popleft(), split, source, samples, rejected)
 
         payload = {
             "format": CACHE_FORMAT,
             "sample_rate": SAMPLE_RATE,
             "frame_rate": FRAME_RATE,
-            "alignment_min_score": args.min_alignment_score,
-            "config": {
-                "n_q": int(cfg["n_q"]),
-                "dep_q": int(cfg["dep_q"]),
-                "card": int(cfg["card"]),
-                "text_card": int(cfg["text_card"]),
-                "existing_text_padding_id": int(cfg["existing_text_padding_id"]),
-            },
+            "alignment_min_score": self.args.min_alignment_score,
+            "max_frames": self.args.max_frames,
+            "config": {key: int(self.cfg[key]) for key in CONFIG_KEYS},
+            "source": {"file": f"data/{split}/{source.name}", "bytes": source_bytes},
             "samples": samples,
+            "rejected": rejected,
         }
-        save_shard(torch, payload, out_path)
-        print(f"Wrote {len(samples)} samples -> {repo_display_path(out_path)}")
+        tmp = out_path.with_name(out_path.name + ".tmp")
+        torch.save(payload, tmp)
+        durable(tmp)
+        tmp.replace(out_path)
+        durable(out_path.parent)
+        wall = time.perf_counter() - started
+        reasons = collections.Counter(
+            re.sub(r"[\d.]+", "N", item["reason"])[:60] for item in rejected
+        )
+        print(
+            f"{split}/{out_path.name}: {len(samples)} kept, "
+            f"{len(rejected)} rejected {dict(reasons)}; "
+            f"{audio_s / 3600:.2f} h encoded in {wall:.0f} s ({audio_s / wall:.0f}x RT)",
+            flush=True,
+        )
 
-    write_index(torch, out_dir)
-    print(f"Index: {repo_display_path(out_dir / 'index.csv')}")
+    def _take(self, item, split, source, samples, rejected) -> float:
+        index, row, future = item
+        try:
+            vi24, en24, en16 = future.result()
+            sample = self.row(split, row, vi24, en24, en16)
+        except (Rejected, AlignmentError) as exc:
+            # Only data faults reject a row. Anything else (a dead worker's BrokenProcessPool, an
+            # MLX error) stops the run before the shard is written, so a rerun rebuilds it.
+            rejected.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
+            return 0.0
+        sample["codes"] = torch.from_numpy(sample["codes"])
+        sample["source_row"] = f"data/{split}/{source.name}#r{index}"
+        samples.append(sample)
+        return (sample["vi_frames"] + sample["en_frames"]) * FRAME_SAMPLES / SAMPLE_RATE
+
+
+def main() -> None:
+    args = parse_args()
+    data = require_dir(args.dataset_dir / "data", "dataset data directory")
+    sources = set()
+    for pattern in args.shards:
+        matched = {path for path in data.glob(pattern) if path.suffix == ".parquet"}
+        if not matched:
+            raise FileNotFoundError(f"No .parquet source shards match {pattern!r} under {data}")
+        sources |= matched
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    busy = f"another cache_codes run is using {args.out_dir}"
+    mx.set_cache_limit(MLX_CACHE_BYTES)
+    cacher = Cacher(args, read_json(args.config_path))
+    with (
+        exclusive(args.out_dir / ".cache_codes.lock", busy),
+        ProcessPoolExecutor(args.workers) as pool,
+    ):
+        for source in sorted(sources):
+            out_path = args.out_dir / source.parent.name / f"shard_{source.stem}.pt"
+            if out_path.exists() and not args.overwrite:
+                print(f"Skipping existing {out_path}", flush=True)
+                continue
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            cacher.shard(pool, source, out_path)
 
 
 if __name__ == "__main__":

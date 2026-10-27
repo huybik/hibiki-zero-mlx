@@ -48,7 +48,6 @@ Run from the repo root as `python -m training.prep.translate_en_speech <step>`. 
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import re
@@ -66,6 +65,8 @@ import pyarrow.parquet as pq
 from anthropic import Anthropic, APIConnectionError, InternalServerError, RateLimitError
 from google import genai
 from google.genai import types
+
+from training.paths import exclusive
 
 MODEL = "claude-sonnet-5-5"
 # retranslate's last pass: Sonnet writes Han characters into some Sino-Vietnamese words (ngoại延 for
@@ -274,16 +275,6 @@ def check_tail(path: Path) -> None:
             f.seek(-1, 2)
             if f.read(1) != b"\n":
                 raise SystemExit(f"{path} ends in a cut-off line from a killed run; delete that line to continue")
-
-
-def exclusive(path: Path, busy: str):
-    lock_file = path.open("w")
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock_file.close()
-        raise SystemExit(busy) from None
-    return lock_file
 
 
 def read_claims(out: Path) -> dict[str, str]:

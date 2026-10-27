@@ -6,6 +6,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -35,7 +36,7 @@ def _spoken_group(text: str) -> str:
 def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str]]:
     pieces = list(tokenizer.encode(text, out_type=str))
     if not pieces:
-        raise ValueError("Cannot align empty English text")
+        raise AlignmentError("Cannot align empty English text")
     groups: list[list[str]] = []
     for piece in pieces:
         if piece.startswith("▁") or not groups:
@@ -48,11 +49,15 @@ def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str
         spoken = _spoken_group(tokenizer.decode(ids))
         if not spoken:
             if not result:
-                raise ValueError(f"Leading unalignable text group: {group!r}")
+                raise AlignmentError(f"Leading unalignable text group: {group!r}")
             result[-1][0].extend(ids)
             continue
         result.append((ids, spoken))
     return result
+
+
+class AlignmentError(ValueError):
+    """The English text cannot be timed against its audio: a data fault that rejects the row."""
 
 
 @dataclass(frozen=True)
@@ -62,214 +67,86 @@ class Alignment:
 
 
 def _ctc_token_frames(
-    log_probs: Any, targets: list[int], blank_id: int
+    log_probs: np.ndarray, targets: list[int], blank_id: int
 ) -> tuple[list[list[int]], float]:
-    """Viterbi-align one CTC emission matrix to a known token sequence."""
-    import torch
+    """Viterbi-align one CTC log-probability matrix [T, vocab] to a known token sequence.
 
+    On ties a state keeps the first candidate (stay, advance, skip), and the path ends on the last
+    token unless the trailing blank scores higher.
+    """
     if not targets:
-        raise ValueError("CTC target is empty")
+        raise AlignmentError("CTC target is empty")
     time_steps = int(log_probs.shape[0])
     states = 2 * len(targets) + 1
     if time_steps < states:
-        raise ValueError(f"CTC emission is too short: {time_steps} < {states}")
+        raise AlignmentError(f"CTC emission is too short: {time_steps} < {states}")
 
-    symbols = torch.full((states,), blank_id, dtype=torch.long, device=log_probs.device)
-    symbols[1::2] = torch.tensor(targets, dtype=torch.long, device=log_probs.device)
-    score = torch.full((states,), -torch.inf, device=log_probs.device)
-    score[0] = log_probs[0, blank_id]
-    score[1] = log_probs[0, targets[0]]
-    back = torch.zeros((time_steps, states), dtype=torch.int8, device=log_probs.device)
-
+    symbols = np.full(states, blank_id, dtype=np.int64)
+    symbols[1::2] = targets
+    can_skip = np.zeros(states, dtype=bool)
+    can_skip[3::2] = symbols[3::2] != symbols[1:-2:2]
+    emissions = log_probs[:, symbols]
+    score = np.full(states, -np.inf, dtype=np.float32)
+    score[:2] = emissions[0, :2]
+    back = np.zeros((time_steps, states), dtype=np.int8)
+    candidates = np.full((3, states), -np.inf, dtype=np.float32)
+    every_state = np.arange(states)
     for time_index in range(1, time_steps):
-        candidates = torch.stack(
-            (
-                score,
-                torch.cat((score.new_full((1,), -torch.inf), score[:-1])),
-                torch.cat((score.new_full((2,), -torch.inf), score[:-2])),
-            )
-        )
-        can_skip = torch.zeros(states, dtype=torch.bool, device=log_probs.device)
-        can_skip[3::2] = symbols[3::2] != symbols[1:-2:2]
-        candidates[2, ~can_skip] = -torch.inf
-        best_score, choice = candidates.max(dim=0)
-        score = best_score + log_probs[time_index, symbols]
-        back[time_index] = choice.to(dtype=torch.int8)
+        candidates[0] = score
+        candidates[1, 1:] = score[:-1]
+        candidates[2, 2:] = np.where(can_skip[2:], score[:-2], -np.inf)
+        choice = candidates.argmax(axis=0)
+        score = candidates[choice, every_state] + emissions[time_index]
+        back[time_index] = choice
 
     state = states - 1 if score[-1] >= score[-2] else states - 2
-    back = back.cpu()
-    path = [state]
-    for time_index in range(time_steps - 1, 0, -1):
-        state -= int(back[time_index, state])
-        path.append(state)
-    path.reverse()
-
     frames: list[list[int]] = [[] for _ in targets]
-    probability_times = []
-    probability_tokens = []
-    for time_index, state in enumerate(path):
+    times: list[int] = []
+    tokens: list[int] = []
+    for time_index in range(time_steps - 1, -1, -1):
         if state % 2:
-            target_index = state // 2
-            frames[target_index].append(time_index)
-            probability_times.append(time_index)
-            probability_tokens.append(targets[target_index])
+            frames[state // 2].append(time_index)
+            times.append(time_index)
+            tokens.append(targets[state // 2])
+        state -= int(back[time_index, state])
     if any(not item for item in frames):
-        raise RuntimeError("CTC alignment omitted a transcript token")
-    probabilities = (
-        log_probs[
-            torch.tensor(probability_times, device=log_probs.device),
-            torch.tensor(probability_tokens, device=log_probs.device),
-        ]
-        .exp()
-        .cpu()
-        .tolist()
-    )
-    return frames, sum(probabilities) / len(probabilities)
-
-
-def _ctc_token_frames_many(
-    log_probs: Any,
-    targets_batch: list[list[int]],
-    blank_id: int,
-    output_lengths: list[int],
-) -> list[tuple[list[list[int]], float] | Exception]:
-    """Viterbi-align a padded CTC batch with one device loop per batch."""
-    import torch
-
-    batch_size = len(targets_batch)
-    if not batch_size or len(output_lengths) != batch_size:
-        raise ValueError("CTC alignment batch is empty or inconsistent")
-    if any(not targets for targets in targets_batch):
-        raise ValueError("CTC target is empty")
-    if any(
-        length < 2 * len(targets) + 1 or length > int(log_probs.shape[1])
-        for targets, length in zip(targets_batch, output_lengths, strict=True)
-    ):
-        raise ValueError("CTC output lengths are invalid for the padded emissions")
-    state_lengths = torch.tensor(
-        [2 * len(targets) + 1 for targets in targets_batch],
-        dtype=torch.long,
-        device=log_probs.device,
-    )
-    max_states = int(state_lengths.max())
-    symbols = torch.full(
-        (batch_size, max_states), blank_id, dtype=torch.long, device=log_probs.device
-    )
-    for batch_index, targets in enumerate(targets_batch):
-        symbols[batch_index, 1 : 2 * len(targets) : 2] = torch.tensor(
-            targets, dtype=torch.long, device=log_probs.device
-        )
-
-    valid_states = torch.arange(max_states, device=log_probs.device)[None] < state_lengths[:, None]
-    score = torch.full((batch_size, max_states), -torch.inf, device=log_probs.device)
-    score[:, 0] = log_probs[:, 0, blank_id]
-    score[:, 1] = log_probs[:, 0].gather(1, symbols[:, 1:2]).squeeze(1)
-    max_time = max(output_lengths)
-    back = torch.zeros(
-        (max_time, batch_size, max_states), dtype=torch.int8, device=log_probs.device
-    )
-    can_skip = torch.zeros((batch_size, max_states), dtype=torch.bool, device=log_probs.device)
-    can_skip[:, 3::2] = symbols[:, 3::2] != symbols[:, 1:-2:2]
-    lengths = torch.tensor(output_lengths, dtype=torch.long, device=log_probs.device)
-    last_states = state_lengths - 1
-    penultimate_states = state_lengths - 2
-    end_states = torch.zeros(batch_size, dtype=torch.long, device=log_probs.device)
-    end_times = set(output_lengths)
-
-    for time_index in range(1, max_time):
-        candidates = torch.stack(
-            (
-                score,
-                torch.cat((score.new_full((batch_size, 1), -torch.inf), score[:, :-1]), dim=1),
-                torch.cat((score.new_full((batch_size, 2), -torch.inf), score[:, :-2]), dim=1),
-            )
-        )
-        candidates[2, ~can_skip] = -torch.inf
-        best_score, choice = candidates.max(dim=0)
-        score = best_score + log_probs[:, time_index].gather(1, symbols)
-        score.masked_fill_(~valid_states, -torch.inf)
-        back[time_index] = choice.to(dtype=torch.int8)
-
-        if time_index + 1 in end_times:
-            last_score = score.gather(1, last_states[:, None]).squeeze(1)
-            penultimate_score = score.gather(1, penultimate_states[:, None]).squeeze(1)
-            final_state = torch.where(
-                last_score >= penultimate_score, last_states, penultimate_states
-            )
-            end_states = torch.where(lengths == time_index + 1, final_state, end_states)
-
-    back = back.cpu()
-    end_states = end_states.cpu()
-    probability_batches: list[int] = []
-    probability_times: list[int] = []
-    probability_tokens: list[int] = []
-    probability_offsets = [0]
-    frames_batch: list[list[list[int]] | Exception] = []
-    for batch_index, (targets, output_length) in enumerate(
-        zip(targets_batch, output_lengths, strict=True)
-    ):
-        state = int(end_states[batch_index])
-        path = [state]
-        for time_index in range(output_length - 1, 0, -1):
-            state -= int(back[time_index, batch_index, state])
-            path.append(state)
-        path.reverse()
-
-        frames: list[list[int]] = [[] for _ in targets]
-        for time_index, state in enumerate(path):
-            if state % 2:
-                target_index = state // 2
-                frames[target_index].append(time_index)
-                probability_batches.append(batch_index)
-                probability_times.append(time_index)
-                probability_tokens.append(targets[target_index])
-        if any(not item for item in frames):
-            frames_batch.append(RuntimeError("CTC alignment omitted a transcript token"))
-        else:
-            frames_batch.append(frames)
-        probability_offsets.append(len(probability_times))
-
-    probabilities = []
-    if probability_times:
-        probabilities = (
-            log_probs[
-                torch.tensor(probability_batches, device=log_probs.device),
-                torch.tensor(probability_times, device=log_probs.device),
-                torch.tensor(probability_tokens, device=log_probs.device),
-            ]
-            .exp()
-            .cpu()
-            .tolist()
-        )
-    aligned: list[tuple[list[list[int]], float] | Exception] = []
-    for index, frames in enumerate(frames_batch):
-        if isinstance(frames, Exception):
-            aligned.append(frames)
-            continue
-        left, right = probability_offsets[index : index + 2]
-        aligned.append((frames, sum(probabilities[left:right]) / (right - left)))
-    return aligned
+        raise AlignmentError("CTC alignment omitted a transcript token")
+    for item in frames:
+        item.reverse()
+    probabilities = np.exp(log_probs[times, tokens]).astype(np.float64)
+    return frames, float(probabilities.sum() / len(probabilities))
 
 
 class EnglishCTCAligner:
-    def __init__(
-        self,
-        device: Any,
-        min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE,
-        alignment_backend: str = "serial",
-    ):
-        import torch
-        from transformers import AutoModelForCTC, AutoProcessor
+    """wav2vec2-base-960h CTC word timing in MLX float32, one clip per forward.
+
+    The base model has no attention mask and normalizes its features over the whole input, so
+    padding clips into a batch changes their emissions. Clips therefore run one at a time and
+    uncompiled: a compiled forward is traced again for every new length and grows memory without
+    bound (docs/agent-memory/mlx-inference.md#memory). The word spans equal PyTorch CPU float32's
+    on 6,180 of 6,181 words, with the same rejections.
+    """
+
+    def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
+        import json
+
+        import mlx.core as mx
+        from huggingface_hub import snapshot_download
+        from mlx_audio.stt.models.wav2vec.wav2vec import ModelConfig, Wav2Vec2Model
+        from transformers import AutoProcessor
 
         if not 0 <= min_score <= 1:
             raise ValueError("Minimum CTC alignment score must be in [0, 1]")
-        if alignment_backend not in ("serial", "batched"):
-            raise ValueError("Alignment backend must be serial or batched")
-        self.device = torch.device(device)
         self.min_score = min_score
-        self.alignment_backend = alignment_backend
+        root = Path(snapshot_download(ALIGNER_REPO))
+        weights = mx.load(str(root / "model.safetensors"))
+        self.model = Wav2Vec2Model(
+            ModelConfig.from_dict(json.loads((root / "config.json").read_text()))
+        )
+        self.model.load_weights(list(self.model.sanitize(weights).items()), strict=True)
+        self.model.eval()
+        self.head = weights["lm_head.weight"].T, weights["lm_head.bias"]
         self.processor = AutoProcessor.from_pretrained(ALIGNER_REPO)
-        self.model = AutoModelForCTC.from_pretrained(ALIGNER_REPO).to(self.device).eval()
         tokenizer = self.processor.tokenizer
         self.vocab = tokenizer.get_vocab()
         self.blank_id = int(tokenizer.pad_token_id)
@@ -286,141 +163,39 @@ class EnglishCTCAligner:
             start = len(target_ids)
             for char in spoken.replace(" ", self.delimiter):
                 if char not in self.vocab:
-                    raise ValueError(f"CTC transcript contains unsupported character: {char!r}")
+                    raise AlignmentError(f"CTC transcript contains unsupported character: {char!r}")
                 target_ids.append(int(self.vocab[char]))
             ranges.append((start, len(target_ids)))
         return target_ids, ranges
 
-    def align_many(
-        self,
-        waveforms_16khz: list[np.ndarray],
-        grouped_text: list[list[tuple[list[int], str]]],
-        batch_size: int,
-        sample_budget: int = 0,
-    ) -> list[Alignment | Exception]:
-        import torch
+    def _log_probs(self, waveform_16khz: np.ndarray) -> np.ndarray:
+        import mlx.core as mx
 
-        if len(waveforms_16khz) != len(grouped_text):
-            raise ValueError("Waveform and transcript batches differ")
-        if batch_size <= 0 or sample_budget < 0:
-            raise ValueError("Alignment batch size must be positive and sample budget non-negative")
-        results: list[Alignment | Exception] = []
-        start = 0
-        while start < len(waveforms_16khz):
-            stop = start + 1
-            max_samples = len(waveforms_16khz[start])
-            while stop < len(waveforms_16khz) and stop - start < batch_size:
-                next_max = max(max_samples, len(waveforms_16khz[stop]))
-                if sample_budget and (stop - start + 1) * next_max > sample_budget:
-                    break
-                max_samples = next_max
-                stop += 1
-            wavs = waveforms_16khz[start:stop]
-            groups_batch = grouped_text[start:stop]
-            start = stop
-            # wav2vec2-base uses group-normalized features and was not trained
-            # with attention masks; layer-normalized variants require them.
-            inputs = self.processor(
-                wavs,
-                sampling_rate=16_000,
-                return_tensors="pt",
-                padding=True,
-                return_attention_mask=self.model.config.feat_extract_norm == "layer",
-            )
-            input_values = inputs.input_values.to(self.device)
-            attention_mask = getattr(inputs, "attention_mask", None)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(self.device)
-            with (
-                torch.inference_mode(),
-                torch.autocast(
-                    device_type=self.device.type,
-                    dtype=torch.bfloat16,
-                    enabled=self.device.type == "cuda",
-                ),
-            ):
-                logits = self.model(input_values, attention_mask=attention_mask).logits
-            input_lengths = torch.tensor([len(wav) for wav in wavs], device=self.device)
-            output_lengths = self.model._get_feat_extract_output_lengths(input_lengths).tolist()
-            prepared: list[tuple[int, list[int], list[tuple[int, int]], int]] = []
-            batch_results: list[Alignment | Exception | None] = [None] * len(wavs)
-            for local_index, (groups, output_length) in enumerate(
-                zip(groups_batch, output_lengths, strict=True)
-            ):
-                try:
-                    targets, ranges = self._targets(groups)
-                    if int(output_length) < 2 * len(targets) + 1:
-                        raise ValueError(
-                            f"CTC emission is too short: {int(output_length)} < "
-                            f"{2 * len(targets) + 1}"
-                        )
-                    prepared.append((local_index, targets, ranges, int(output_length)))
-                except (KeyError, RuntimeError, ValueError) as exc:
-                    batch_results[local_index] = exc
+        features = self.processor(
+            [waveform_16khz], sampling_rate=16_000, return_tensors="np"
+        ).input_values
+        logits = self.model(mx.array(features)).last_hidden_state @ self.head[0] + self.head[1]
+        return np.array(logits - mx.logsumexp(logits, axis=-1, keepdims=True))[0]
 
-            if self.alignment_backend == "batched" and prepared:
-                valid_indices = [item[0] for item in prepared]
-                valid_lengths = [item[3] for item in prepared]
-                emissions = logits[valid_indices, : max(valid_lengths)].float().log_softmax(-1)
-                aligned = _ctc_token_frames_many(
-                    emissions,
-                    [item[1] for item in prepared],
-                    self.blank_id,
-                    valid_lengths,
-                )
-            else:
-                aligned = []
-                for local_index, targets, _, output_length in prepared:
-                    try:
-                        aligned.append(
-                            _ctc_token_frames(
-                                logits[local_index, :output_length].float().log_softmax(-1),
-                                targets,
-                                self.blank_id,
-                            )
-                        )
-                    except (KeyError, RuntimeError, ValueError) as exc:
-                        aligned.append(exc)
-
-            for (local_index, _, ranges, output_length), alignment in zip(
-                prepared, aligned, strict=True
-            ):
-                if isinstance(alignment, Exception):
-                    batch_results[local_index] = alignment
-                    continue
-                token_frames, score = alignment
-                try:
-                    if score < self.min_score:
-                        raise ValueError(
-                            f"CTC alignment score {score:.3f} is below {self.min_score:.3f}"
-                        )
-                    denom = max(1, int(output_length))
-                    spans = [
-                        (
-                            min(frame for frames in token_frames[left:right] for frame in frames)
-                            / denom,
-                            (
-                                max(
-                                    frame for frames in token_frames[left:right] for frame in frames
-                                )
-                                + 1
-                            )
-                            / denom,
-                        )
-                        for left, right in ranges
-                    ]
-                    if any(
-                        not (0 <= left < right <= 1) or (index and left < spans[index - 1][0])
-                        for index, (left, right) in enumerate(spans)
-                    ):
-                        raise ValueError("CTC alignment produced invalid word spans")
-                    batch_results[local_index] = Alignment(spans=spans, score=score)
-                except (KeyError, RuntimeError, ValueError) as exc:
-                    batch_results[local_index] = exc
-            if any(result is None for result in batch_results):
-                raise RuntimeError("Missing CTC alignment result")
-            results.extend(batch_results)  # type: ignore[arg-type]
-        return results
+    def align(self, waveform_16khz: np.ndarray, groups: list[tuple[list[int], str]]) -> Alignment:
+        """Word spans of `groups` as fractions of the clip; raises AlignmentError when the text
+        cannot be aligned or the score is below the minimum."""
+        targets, ranges = self._targets(groups)
+        log_probs = self._log_probs(waveform_16khz)
+        token_frames, score = _ctc_token_frames(log_probs, targets, self.blank_id)
+        if score < self.min_score:
+            raise AlignmentError(f"CTC alignment score {score:.3f} is below {self.min_score:.3f}")
+        denom = int(log_probs.shape[0])
+        spans = []
+        for left, right in ranges:
+            frames = [frame for item in token_frames[left:right] for frame in item]
+            spans.append((min(frames) / denom, (max(frames) + 1) / denom))
+        if any(
+            not (0 <= left < right <= 1) or (index and left < spans[index - 1][0])
+            for index, (left, right) in enumerate(spans)
+        ):
+            raise AlignmentError("CTC alignment produced invalid word spans")
+        return Alignment(spans=spans, score=score)
 
 
 def timed_sentencepiece_tokens(
@@ -455,7 +230,7 @@ def timed_sentencepiece_tokens(
             previous = frame
     eos_frame = delay_frames + raw_target_frames
     if previous >= eos_frame:
-        raise ValueError(
+        raise AlignmentError(
             f"Aligned text needs {previous - delay_frames + 1} frames but target has "
             f"{raw_target_frames}"
         )

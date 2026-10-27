@@ -29,7 +29,6 @@ Every shard has one schema:
 from __future__ import annotations
 
 import argparse
-import fcntl
 import io
 import json
 import os
@@ -54,7 +53,8 @@ from huggingface_hub import CommitOperationAdd, HfApi, RepoFile, snapshot_downlo
 from huggingface_hub.errors import HfHubHTTPError  # noqa: E402
 from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
-from training.prep.translate_en_speech import MAX_SECONDS, exclusive, log  # noqa: E402
+from training.paths import durable, exclusive  # noqa: E402
+from training.prep.translate_en_speech import MAX_SECONDS, log  # noqa: E402
 
 REPO = "huybik/en-vi-speech"  # where both machines voice; anquachdev/common-vi-en once all is voiced
 ANQUACH_REPO = "anquachdev/common-vi-en"
@@ -100,15 +100,6 @@ SCHEMA = pa.schema(
 )
 # Audio bytes are already compressed; zstd only the other columns.
 COMPRESSION = {c: "none" if c.endswith(".bytes") else "zstd" for c in SCHEMA.empty_table().flatten().column_names}
-
-
-def durable(path: Path) -> None:
-    """Flush a file or directory to the drive itself; on macOS fsync stops at the drive's cache."""
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-    finally:
-        os.close(fd)
 
 
 def write_shard(path: Path, t: pa.Table) -> None:

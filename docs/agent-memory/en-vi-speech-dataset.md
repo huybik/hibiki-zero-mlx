@@ -13,8 +13,8 @@ The user asked on 2026-10-23 for one research dataset of pair-row sources: Engli
 transcript and Vietnamese translation, with the Vietnamese speech to come. It is kept in full on
 the Mac, where it replaced the `en_speech` corpus folder (user's choice). The voice-transfer TTS
 step ([vi-tts](vi-tts.md)) fills the Vietnamese speech of its shards in place, and
-`upload --follow` publishes each as it is voiced; `cache_codes` pair rows are then made from it
-([sft-data-caches](sft-data-caches.md)).
+`upload --follow` publishes each as it is voiced; `cache_codes` then builds the training caches
+straight from its shards ([sft-data-caches](sft-data-caches.md)).
 
 It is published as `huybik/en-vi-speech` while it is voiced: the Mac and anquachdev's machine,
 which voices bottom up, both push there. Once every shard is voiced, the whole dataset goes to
