@@ -154,6 +154,10 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
 
 ## Cache repo
 
-`huybik/hibiki-zero-vi-full-sft` holds only `phomt-grounded-v2-5s/` (the training cache) and
-`grounded-v2/` (its source). On 2026-10-23 the obsolete v1 cache, the root FLEURS cache and
-pairs were deleted and the history squashed to one commit (user's choice), leaving 10.4 GB.
+`huybik/hibiki-zero-vi-full-sft` (a dataset) holds the training caches: `phomt-grounded-v2-5s/`
+with `grounded-v2/` (its source), and since 2026-10-28 the caches of this dataset,
+`en-vi-grounded-v2/` and `en-vi-grounded-v2-cv-anquach/`, committed shard by shard as they are
+built ([sft-data-caches](sft-data-caches.md#publishing)). On 2026-10-23 the obsolete v1 cache,
+the root FLEURS cache and pairs were deleted and the history squashed to one commit (user's
+choice), leaving 10.4 GB. The model repository of the same name holds training runs, not
+caches.

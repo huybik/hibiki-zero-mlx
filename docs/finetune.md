@@ -36,21 +36,23 @@ pinned dependencies, and refuses to reuse an existing environment. `preflight`
 checks the GPU, driver, package pins, host RAM, free disk, and the SHA-256 of the
 four upstream artifacts, and requires a clean tracked worktree.
 
-Put the train and validation caches under `data/cache/` (built with
-[training/prep](../training/prep/README.md)). Restore the PhoMT cache, which trains as one more
-`--cache-dir`:
+Restore the training caches from the cache repo (built with
+[training/prep](../training/prep/README.md); `en-vi-grounded-v2` is whole once it holds a shard
+for every source shard): the `en_speech` cache with its validation split, and the PhoMT cache,
+which trains as one more `--cache-dir`. Add `"en-vi-grounded-v2-cv-anquach/train/shard_*.pt"`
+for the `cv-anquach` rows, whose English targets are 16 kHz.
 
 ```bash
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset \
-  --include "phomt-grounded-v2-5s/shard_*.pt" --local-dir data/cache
+  --include "en-vi-grounded-v2/*/shard_*.pt" "phomt-grounded-v2-5s/shard_*.pt" --local-dir data/cache
 ```
 
 ## Train
 
 ```bash
 ./training/h100.sh train RUN_NAME \
-  --cache-dir data/cache/EN_SPEECH_TRAIN data/cache/phomt-grounded-v2-5s \
-  --val-cache-dir data/cache/VALIDATION
+  --cache-dir data/cache/en-vi-grounded-v2/train data/cache/phomt-grounded-v2-5s \
+  --val-cache-dir data/cache/en-vi-grounded-v2/validation
 ```
 
 Arguments after `RUN_NAME` go to `training.finetune.train` (`--help` lists them).
@@ -101,8 +103,8 @@ cp "$restore_dir/$run/best/best_stepBBBBBB.json" "$run_dir/best.json"
 find "$restore_dir" -depth -delete
 
 ./training/h100.sh resume "$run_dir/trainer_stepNNNNNN.pt" \
-  --cache-dir data/cache/EN_SPEECH_TRAIN data/cache/phomt-grounded-v2-5s \
-  --val-cache-dir data/cache/VALIDATION
+  --cache-dir data/cache/en-vi-grounded-v2/train data/cache/phomt-grounded-v2-5s \
+  --val-cache-dir data/cache/en-vi-grounded-v2/validation
 ```
 
 Pass the run's original training arguments again. Resume is interruption recovery for

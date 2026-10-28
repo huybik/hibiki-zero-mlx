@@ -71,6 +71,32 @@ caffeinate -i -s python -m training.prep.cache_codes \
   --out-dir /Volumes/data/datasets/en-vi-grounded-v2-cv-anquach --shards 'train/cv-anquach-*.parquet'
 ```
 
+Beside each build, `publish_caches` with the same `--out-dir` and `--shards` commits the built
+shards to the cache repo, the dataset `huybik/hibiki-zero-vi-full-sft`, under
+`<out-dir name>/<split>/`, and brings in the shards another machine built, which the build then
+skips. The Mac goes top down; a second machine builds bottom up and they meet in between:
+
+```bash
+set -a && . ./.env && set +a                            # HF_TOKEN, with write access to the cache repo
+O=/Volumes/data/datasets/en-vi-grounded-v2
+nohup caffeinate -i python -m training.prep.publish_caches --out-dir $O --follow \
+  --shards 'train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet' >> $O/publish.log 2>&1 &
+```
+
+The second machine needs Apple Silicon, this repo at the Mac's commit, `weights/` as in
+[docs/finetune.md](../../docs/finetune.md), and the dataset from `anquachdev/common-vi-en` (the same
+bytes as the Mac's copy). Name the out-dir as the Mac's, since its name is the Hub prefix:
+
+```bash
+D=~/en_vi_speech O=~/en-vi-grounded-v2
+S=('train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet')
+hf download anquachdev/common-vi-en --repo-type dataset --include "data/*" --local-dir $D
+nohup caffeinate -i -s python -m training.prep.cache_codes --dataset-dir $D --out-dir $O \
+  --shards "${S[@]}" --bottom-up >> build.log 2>&1 &
+nohup caffeinate -i python -m training.prep.publish_caches --dataset-dir $D --out-dir $O \
+  --shards "${S[@]}" --follow >> publish.log 2>&1 &
+```
+
 ## Vietnamese translations of `en_speech`
 
 Runs on the Mac with the conda Python. Claude Sonnet 5.5 translates through the local Claude API;

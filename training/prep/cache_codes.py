@@ -11,6 +11,10 @@ reason.
 Worker processes decode the Opus/MP3 bytes (PyAV) and resample them (soxr); the main process runs
 wav2vec2 CTC and the Mimi encoder in MLX on the GPU, and the CTC Viterbi on the CPU while the GPU
 encodes.
+
+Source shards go top down in path order, or bottom up with --bottom-up on a second machine;
+`publish_caches --follow` beside each run commits the shards to the cache repo and brings in those
+the other machine built, which the run then skips, so the two meet in between.
 """
 
 from __future__ import annotations
@@ -30,7 +34,6 @@ from typing import Any
 os.environ.setdefault(
     "ARROW_DEFAULT_MEMORY_POOL", "system"
 )  # mimalloc keeps freed buffers on macOS
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import av  # noqa: E402
 import mlx.core as mx  # noqa: E402
@@ -62,6 +65,7 @@ from training.prep.text_timing import (  # noqa: E402
 FRAME_RATE = 12.5
 CTC_RATE = 16_000
 DATASET_DIR = Path("/Volumes/data/datasets/en_vi_speech")
+SHARDS = ["train/*.parquet", "validation/*.parquet"]
 COLUMNS = [
     "id",
     "en_audio",
@@ -87,10 +91,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
     parser.add_argument(
-        "--shards",
-        nargs="+",
-        default=["train/*.parquet", "validation/*.parquet"],
-        help="Source shard globs under <dataset-dir>/data.",
+        "--shards", nargs="+", default=SHARDS, help="Source shard globs under <dataset-dir>/data."
+    )
+    parser.add_argument(
+        "--bottom-up",
+        action="store_true",
+        help="Build the source shards in reverse path order, as the second machine does.",
     )
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
@@ -349,15 +355,25 @@ class Cacher:
         return (sample["vi_frames"] + sample["en_frames"]) * FRAME_SAMPLES / SAMPLE_RATE
 
 
-def main() -> None:
-    args = parse_args()
-    data = require_dir(args.dataset_dir / "data", "dataset data directory")
+def source_shards(dataset_dir: Path, patterns: list[str]) -> list[Path]:
+    """The .parquet source shards matching `patterns` under <dataset_dir>/data, in path order."""
+    data = require_dir(dataset_dir / "data", "dataset data directory")
     sources = set()
-    for pattern in args.shards:
+    for pattern in patterns:
         matched = {path for path in data.glob(pattern) if path.suffix == ".parquet"}
         if not matched:
             raise FileNotFoundError(f"No .parquet source shards match {pattern!r} under {data}")
         sources |= matched
+    return sorted(sources)
+
+
+def cache_path(out_dir: Path, source: Path) -> Path:
+    return out_dir / source.parent.name / f"shard_{source.stem}.pt"
+
+
+def main() -> None:
+    args = parse_args()
+    sources = source_shards(args.dataset_dir, args.shards)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     busy = f"another cache_codes run is using {args.out_dir}"
     mx.set_cache_limit(MLX_CACHE_BYTES)
@@ -366,8 +382,9 @@ def main() -> None:
         exclusive(args.out_dir / ".cache_codes.lock", busy),
         ProcessPoolExecutor(args.workers) as pool,
     ):
-        for source in sorted(sources):
-            out_path = args.out_dir / source.parent.name / f"shard_{source.stem}.pt"
+        for source in sources[::-1] if args.bottom_up else sources:
+            # Checked as each shard starts, so a shard publish_caches brought in meanwhile is skipped.
+            out_path = cache_path(args.out_dir, source)
             if out_path.exists() and not args.overwrite:
                 print(f"Skipping existing {out_path}", flush=True)
                 continue

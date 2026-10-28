@@ -20,7 +20,8 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
     ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload --follow ─► HF en-vi-speech
-    ─► prep/cache_codes (MLX) ─► <out-dir>/{train,validation}
+    ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
+    ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
 inference/ (Apple Silicon, MLX)
@@ -57,9 +58,12 @@ inference/ (Apple Silicon, MLX)
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
   shard: the Mac top down, anquachdev's hardware bottom up, meeting through the Hub, where
   `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)).
-  Every shard is voiced and uploaded. `cache_codes` builds the training caches from it on the Mac
-  in MLX; the full build runs from 2026-10-27, ~4 more days from its 2026-10-28 restart
-  ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)).
+  Every shard is voiced and uploaded. `cache_codes` builds the training caches from it in MLX;
+  the full build runs on the Mac from 2026-10-27, ~5.5 more days alone from its 2026-10-28
+  restart ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
+  up, meeting the Mac through the Hub as for the TTS
+  ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -91,7 +95,7 @@ inference/ (Apple Silicon, MLX)
 |---|---|---|
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
 | SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
-| Grounded Mimi caches, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
+| Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
@@ -105,7 +109,8 @@ inference/ (Apple Silicon, MLX)
 
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
-- Training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
+- Training caches (the dataset repo; the model repo of the same name holds runs):
+  https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
 - EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech while voiced,
   then https://huggingface.co/datasets/anquachdev/common-vi-en
 

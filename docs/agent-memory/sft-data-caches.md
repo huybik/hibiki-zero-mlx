@@ -1,9 +1,10 @@
 # SFT grounded caches
 
-Read when touching `training/prep/cache_codes.py`, `training/prep/mimi_mlx.py`,
-`training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or `training/paths.py`.
+Read when touching `training/prep/cache_codes.py`, `training/prep/publish_caches.py`,
+`training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or
+`training/paths.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) · [Speed](#speed) · [Builds](#builds) ·
-[PhoMT cache](#phomt-cache) · [Row layout](#row-layout)
+[Publishing](#publishing) · [PhoMT cache](#phomt-cache) · [Row layout](#row-layout)
 
 ## Flow
 
@@ -13,15 +14,16 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) �
        workers: PyAV decode; soxr to 24 kHz (Mimi) and 16 kHz (CTC)
        gates: decoded duration ─► frame cap ─► text groups ─► wav2vec2 CTC (text_timing)
        GPU: CTC (wav2vec2_mlx), then Mimi (mimi_mlx); the CPU Viterbi runs while Mimi encodes
-HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see PhoMT cache)
-<out-dir>/train + PhoMT ─► training.finetune.train --cache-dir (several)
-<out-dir>/validation ─► --val-cache-dir
+  ─► publish_caches ─► HF cache repo <out-dir name>/<split>/shard_<name>.pt ◄─ second machine
+HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
+<prefix>/train + phomt-grounded-v2-5s ─► training.finetune.train --cache-dir (several)
+<prefix>/validation ─► --val-cache-dir
 ```
 
-- The trainer runs on the H100 pod, so a Mac-built cache must get there; no transfer step exists
-  yet (the PhoMT cache went through the cache repo, [docs/finetune.md](../finetune.md)).
-  `CACHE_FORMAT` lives in `training/paths.py` so the trainer never imports the builder's
-  Mac-only packages (PyAV, MLX, soxr), which the pod does not install.
+- The trainer runs on the H100 pod; the caches reach it through the cache repo
+  ([Publishing](#publishing), [docs/finetune.md](../finetune.md)). `CACHE_FORMAT` lives in
+  `training/paths.py` so the trainer never imports the builder's Mac-only packages (PyAV, MLX,
+  soxr), which the pod does not install.
 
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
   straight from its parquet shards, the split taken from the folder. FLEURS is dropped.
@@ -118,7 +120,8 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
   140–166x. Same rows kept and rejected, every Mimi code equal; on 2 rows the text of one or two
   words sits 1–2 frames apart.
 - The full build holds ~22.1k h of Mimi audio (both clips and the mean delay: 21,558 h main,
-  521 h `cv-anquach`), ~95–110 h at 200–225x.
+  521 h `cv-anquach`), ~95–110 h at 200–225x. With the Mac in use it ran 150–170x after the
+  restart (busy browser tabs and window rendering share the GPU), ~5.5 days for the Mac alone.
 - Alone: Mimi ~500x on one shape (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length
   buckets: per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 240–290x (PyTorch CPU 86x, MPS
   193x), its 12 layers at ~3.9 TFLOP/s in float32. One clip per forward already fills the GPU.
@@ -146,9 +149,53 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
   more `--cache-dir` to use it.
+- `publish.sh` beside `launch.sh` in the main out-dir runs `publish_caches --follow` on the two
+  out-dirs in the same order, logging to `<out-dir>/publish.log`.
 - Frame-cap survey of every source row (2026-10-27): 21.4k rows (111 English hours) have a
   Vietnamese clip over 22.32 s and 454 an English one, and are rejected; everything else fits.
   CTC rejections come on top: ~0.6% on `libriheavy-dev-00001`, ~0.4% on `cv27`.
+
+## Publishing
+
+The user asked on 2026-10-28 that the caches go to the cache repo while they are built, and that
+anquachdev can build part of them, as the two machines voiced the dataset
+([vi-tts](vi-tts.md#running)):
+
+```text
+train/cv27-00000 ... ─► Mac, cache_codes top down
+                ... meet ...
+... validation/*     ◄─ second machine, cache_codes --bottom-up
+both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <out-dir name>/<split>/
+```
+
+- The Hub prefix is the out-dir's name (`en-vi-grounded-v2/`, `en-vi-grounded-v2-cv-anquach/`),
+  so the second machine names its out-dir the same. Only the source shards matching `--shards`
+  count, so give the publisher the builder's `--shards`.
+- A pass lists the Hub and commits the local shards it lacks, up to 4 GB a commit (~60 shards of
+  ~65 MB), on top of the listed revision (`parent_commit`, as the dataset publisher): a commit
+  landing in between fails with 409 or 412 and it lists again. The Hub is the record: a shard
+  there is never sent again, so a stop loses only the unfinished commit. Failed commits are
+  retried after 1, 2, 4, 8 and 16 minutes, then stop the run.
+- Then it downloads, into `<out-dir>/.pull/`, each Hub shard missing here and puts it in place,
+  so the builder, which checks for a shard as it starts it, skips it. Each machine so ends with
+  the whole cache (the second machine downloads the Mac's part too). A pulled shard must have
+  the settings of a shard built here (format, rates, `max_frames`, `alignment_min_score`, model
+  config; pulls wait until one exists), the same source file at the same byte size, and every
+  source row once, kept or rejected; otherwise the run stops with it left in `.pull/`. The
+  delay seed is not recorded in a shard, so both machines run the same commit with the default
+  settings.
+- Near the meeting point a few shards may be built on both machines: each sees the other's work
+  only after its commit and the 10 min wait. The Hub keeps the copy committed first; the other
+  machine's local copy may be its own build, the same rows up to float near-ties. The pod
+  trains on the Hub's.
+- With `--follow` it looks again every 10 min and ends once every source shard is cached here
+  and on the Hub. It stops when the out-dir is gone (a dropped drive), rather than download onto
+  the internal disk.
+- The builder no longer sets `HF_HUB_OFFLINE`: the publisher imports it and must reach the Hub.
+  The aligner's one `snapshot_download` at start then checks the Hub, and uses the local copy
+  when offline.
+- The second machine needs Apple Silicon (the builder is MLX only) and write access to the
+  cache repo; commands are in [training/prep/README.md](../../training/prep/README.md).
 
 ## PhoMT cache
 
