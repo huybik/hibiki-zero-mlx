@@ -59,9 +59,10 @@ dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
 - Libriheavy came from `mythicinfinity/libriheavy`: dev, medium and small, then large files in
   `random.Random(0)` order until pooled train held the target hours. About 10% of its rows
   are stereo and were dropped. A large file (~0.47 GB) added ~8.3 h after the filters.
-- Every source keeps only clips of 5–22.4 s. 22.4 s is an upper bound: a cache row also holds
-  the English delay, U[0, 0.5 × Vietnamese duration], so most 15–22.4 s clips will still exceed
-  the trainer's 280 frames. Large files 195–1,688 in build order keep only 5–15 s clips (an
+- Every source keeps only clips of 5–22.4 s. A cache row holds each clip within the trainer's 280
+  frames (22.32 s, one frame left for EOS), and the English delay is drawn within the room left
+  ([sft-data-caches](sft-data-caches.md#flow)); a row is lost only when a clip itself is longer
+  (454 English, 21.4k Vietnamese). Large files 195–1,688 in build order keep only 5–15 s clips (an
   earlier target).
 
 ## Quality filters

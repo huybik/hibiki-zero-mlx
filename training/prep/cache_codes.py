@@ -3,12 +3,18 @@
 
 Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard_<name>.pt`.
 A row is
-[33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw), then
-16 Vietnamese source Mimi codebooks ending in codec EOS. Rows longer than --max-frames, or whose
-English text fails CTC alignment, are rejected before Mimi and listed with their reason.
+[33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
+fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. Rows whose clips
+exceed --max-frames, or whose English text fails CTC alignment, are rejected and listed with their
+reason.
 
 Worker processes decode the Opus/MP3 bytes (PyAV) and resample them (soxr); the main process runs
-wav2vec2 CTC and the Mimi encoder in MLX on the GPU.
+wav2vec2 CTC and the Mimi encoder in MLX on the GPU, and the CTC Viterbi on the CPU while the GPU
+encodes.
+
+Source shards go top down in path order, or bottom up with --bottom-up on a second machine;
+`publish_caches --follow` beside each run commits the shards to the cache repo and brings in those
+the other machine built, which the run then skips, so the two meet in between.
 """
 
 from __future__ import annotations
@@ -28,7 +34,6 @@ from typing import Any
 os.environ.setdefault(
     "ARROW_DEFAULT_MEMORY_POOL", "system"
 )  # mimalloc keeps freed buffers on macOS
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import av  # noqa: E402
 import mlx.core as mx  # noqa: E402
@@ -71,7 +76,9 @@ COLUMNS = [
     "cross_lingual_timbre_matched",
 ]
 PREFETCH = 64  # rows decoded ahead of the GPU (~5 MB each)
-MLX_CACHE_BYTES = 1 << 30  # MLX keeps freed buffers; shapes vary per row
+# Freed MLX buffers kept for reuse across the ~36 bucketed shapes of Mimi and wav2vec2; on
+# libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
+MLX_CACHE_BYTES = 16 << 30
 DURATION_TOLERANCE_S = 0.02  # healthy clips decode exactly to their stored duration
 CONFIG_KEYS = ("n_q", "dep_q", "card", "text_card", "existing_text_padding_id")
 
@@ -88,6 +95,11 @@ def parse_args() -> argparse.Namespace:
         default=["train/*.parquet", "validation/*.parquet"],
         help="Source shard globs under <dataset-dir>/data.",
     )
+    parser.add_argument(
+        "--bottom-up",
+        action="store_true",
+        help="Build the source shards in reverse path order, as the second machine does.",
+    )
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
@@ -96,7 +108,7 @@ def parse_args() -> argparse.Namespace:
         "--target-delay-ratio",
         type=float,
         default=0.5,
-        help="Maximum target delay as a ratio of Vietnamese source duration.",
+        help="Maximum target delay as a ratio of Vietnamese source duration, within the frame cap.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
     parser.add_argument(
@@ -110,6 +122,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.max_frames <= 0:
         parser.error("--max-frames must be positive")
+    if not (math.isfinite(args.target_delay_ratio) and args.target_delay_ratio >= 0):
+        parser.error("--target-delay-ratio must be finite and non-negative")
     return args
 
 
@@ -149,14 +163,9 @@ def prepare(vi_audio: bytes, en_audio: bytes) -> tuple[np.ndarray, np.ndarray, n
     )
 
 
-def target_delay_s(row_id: str, split: str, vi_duration_s: float, ratio: float, seed: int) -> float:
-    """Draw the English left-silence delay from U[0, ratio * Vietnamese duration]."""
-    if not (math.isfinite(ratio) and ratio >= 0):
-        raise ValueError("Target-delay ratio must be finite and non-negative")
-    if ratio == 0:
-        return 0.0
-    rng = random.Random(f"{seed}:{split}:{row_id}")
-    return rng.uniform(0.0, ratio * vi_duration_s)
+def target_delay_s(row_id: str, split: str, max_delay_s: float, seed: int) -> float:
+    """Draw the English left-silence delay from U[0, max_delay_s], seeded per row."""
+    return random.Random(f"{seed}:{split}:{row_id}").uniform(0.0, max_delay_s)
 
 
 def assemble_codes(
@@ -235,25 +244,34 @@ class Cacher:
                 raise Rejected(
                     f"{side} audio decodes to {seconds:.2f} s, the row says {stored:.2f} s"
                 )
-        # vi_duration_s is float32 holding a multiple of 0.01; round to the decimal it stores.
-        delay_s = target_delay_s(
-            row["id"], split, round(row["vi_duration_s"], 2), args.target_delay_ratio, args.seed
-        )
+        vi_frames = math.ceil(len(vi24) / FRAME_SAMPLES)
+        # Text EOS sits at en_frames, codec EOS at vi_frames.
+        frames = max(math.ceil(len(en24) / FRAME_SAMPLES), vi_frames) + 1
+        if frames > args.max_frames:
+            raise Rejected(f"{frames} frames exceed --max-frames {args.max_frames}")
+        # The delay is drawn within the room the English clip leaves under the cap, so a long clip
+        # gets a shorter delay instead of being rejected. vi_duration_s is float32 holding a
+        # multiple of 0.01; round to the decimal it stores.
+        room_s = ((args.max_frames - 1) * FRAME_SAMPLES - len(en24)) / SAMPLE_RATE
+        max_delay_s = min(args.target_delay_ratio * round(row["vi_duration_s"], 2), room_s)
+        delay_s = target_delay_s(row["id"], split, max_delay_s, args.seed)
         pad = int(round(delay_s * SAMPLE_RATE))
         delay_frames = int(round(delay_s * FRAME_RATE))
         en_frames = math.ceil((pad + len(en24)) / FRAME_SAMPLES)
-        vi_frames = math.ceil(len(vi24) / FRAME_SAMPLES)
-        frames = max(en_frames, vi_frames) + 1  # text EOS sits at en_frames, codec EOS at vi_frames
-        if frames > args.max_frames:
-            raise Rejected(f"{frames} frames exceed --max-frames {args.max_frames}")
-        groups = sentencepiece_groups(row["text_en"], self.tokenizer)
-        alignment = self.aligner.align(en16, groups)
-        tokens, text_frames = timed_sentencepiece_tokens(
-            groups, alignment, en_frames - delay_frames, delay_frames, self.eos_id
-        )
+        lead, groups = sentencepiece_groups(row["text_en"], self.tokenizer)
+        # Queue the CTC forward, then both Mimi encodes: the GPU encodes while the CPU aligns.
+        log_probs = self.aligner.log_probs(en16)
         vi_codes = self.mimi.encode(vi24)
         en_codes = self.mimi.encode(np.concatenate([np.zeros(pad, np.float32), en24]))
-        codes = assemble_codes(row["id"], vi_codes, en_codes, tokens, text_frames, self.cfg)
+        mx.async_eval(log_probs)
+        mx.async_eval(vi_codes, en_codes)
+        alignment = self.aligner.align(np.array(log_probs), groups)
+        tokens, text_frames = timed_sentencepiece_tokens(
+            lead, groups, alignment, en_frames - delay_frames, delay_frames, self.eos_id
+        )
+        codes = assemble_codes(
+            row["id"], np.array(vi_codes), np.array(en_codes), tokens, text_frames, self.cfg
+        )
         return {
             "id": row["id"],
             "split": split,
@@ -339,15 +357,25 @@ class Cacher:
         return (sample["vi_frames"] + sample["en_frames"]) * FRAME_SAMPLES / SAMPLE_RATE
 
 
-def main() -> None:
-    args = parse_args()
-    data = require_dir(args.dataset_dir / "data", "dataset data directory")
+def source_shards(dataset_dir: Path, patterns: list[str]) -> list[Path]:
+    """The .parquet source shards matching `patterns` under <dataset_dir>/data, in path order."""
+    data = require_dir(dataset_dir / "data", "dataset data directory")
     sources = set()
-    for pattern in args.shards:
+    for pattern in patterns:
         matched = {path for path in data.glob(pattern) if path.suffix == ".parquet"}
         if not matched:
             raise FileNotFoundError(f"No .parquet source shards match {pattern!r} under {data}")
         sources |= matched
+    return sorted(sources)
+
+
+def cache_path(out_dir: Path, source: Path) -> Path:
+    return out_dir / source.parent.name / f"shard_{source.stem}.pt"
+
+
+def main() -> None:
+    args = parse_args()
+    sources = source_shards(args.dataset_dir, args.shards)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     busy = f"another cache_codes run is using {args.out_dir}"
     mx.set_cache_limit(MLX_CACHE_BYTES)
@@ -356,8 +384,9 @@ def main() -> None:
         exclusive(args.out_dir / ".cache_codes.lock", busy),
         ProcessPoolExecutor(args.workers) as pool,
     ):
-        for source in sorted(sources):
-            out_path = args.out_dir / source.parent.name / f"shard_{source.stem}.pt"
+        for source in sources[::-1] if args.bottom_up else sources:
+            # Checked as each shard starts, so a shard publish_caches brought in meanwhile is skipped.
+            out_path = cache_path(args.out_dir, source)
             if out_path.exists() and not args.overwrite:
                 print(f"Skipping existing {out_path}", flush=True)
                 continue

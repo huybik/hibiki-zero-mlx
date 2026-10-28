@@ -12,8 +12,11 @@ from typing import Any
 import numpy as np
 
 ALIGNER_REPO = "facebook/wav2vec2-base-960h"
+ALIGNER_REVISION = "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"  # every machine times with this one
 ALIGNMENT_NAME = "wav2vec2_ctc_word_v1"
 DEFAULT_MIN_ALIGNMENT_SCORE = 0.5
+CTC_BLANK = "<pad>"  # the aligner tokenizer's pad token
+CTC_DELIMITER = "|"  # its word delimiter
 
 
 def _ascii(text: str) -> str:
@@ -33,7 +36,11 @@ def _spoken_group(text: str) -> str:
     return " ".join(re.sub(r"[^A-Za-z' ]+", " ", text).upper().split())
 
 
-def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str]]:
+def sentencepiece_groups(
+    text: str, tokenizer: Any
+) -> tuple[list[int], list[tuple[list[int], str]]]:
+    """SentencePiece ids grouped into spoken words for CTC alignment, after the ids of the
+    unspoken lead (a stray "*", "-" or quote before the first word), which may be empty."""
     pieces = list(tokenizer.encode(text, out_type=str))
     if not pieces:
         raise AlignmentError("Cannot align empty English text")
@@ -43,17 +50,19 @@ def sentencepiece_groups(text: str, tokenizer: Any) -> list[tuple[list[int], str
             groups.append([piece])
         else:
             groups[-1].append(piece)
+    # A group with nothing to speak joins the word before it, or the lead before the first word.
+    lead: list[int] = []
     result: list[tuple[list[int], str]] = []
     for group in groups:
         ids = [int(tokenizer.piece_to_id(piece)) for piece in group]
         spoken = _spoken_group(tokenizer.decode(ids))
         if not spoken:
-            if not result:
-                raise AlignmentError(f"Leading unalignable text group: {group!r}")
-            result[-1][0].extend(ids)
+            (result[-1][0] if result else lead).extend(ids)
             continue
         result.append((ids, spoken))
-    return result
+    if not result:
+        raise AlignmentError(f"No speakable English text in {text!r}")
+    return lead, result
 
 
 class AlignmentError(ValueError):
@@ -118,39 +127,33 @@ def _ctc_token_frames(
 
 
 class EnglishCTCAligner:
-    """wav2vec2-base-960h CTC word timing in MLX float32, one clip per forward.
-
-    The base model has no attention mask and normalizes its features over the whole input, so
-    padding clips into a batch changes their emissions. Clips therefore run one at a time and
-    uncompiled: a compiled forward is traced again for every new length and grows memory without
-    bound (docs/agent-memory/mlx-inference.md#memory). The word spans equal PyTorch CPU float32's
-    on 6,180 of 6,181 words, with the same rejections.
+    """wav2vec2-base-960h CTC word timing: `log_probs` queues the MLX float32 forward
+    (`wav2vec2_mlx`) and `align` runs the Viterbi on its result, so a caller can keep the GPU busy
+    while the CPU aligns. The word spans equal PyTorch CPU float32's on 6,180 of 6,181 words, with
+    the same rejections (measured on mlx-audio's eager model, whose rows this port builds but for
+    float near-ties).
     """
 
     def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
         import json
 
-        import mlx.core as mx
         from huggingface_hub import snapshot_download
-        from mlx_audio.stt.models.wav2vec.wav2vec import ModelConfig, Wav2Vec2Model
-        from transformers import AutoProcessor
+
+        from training.prep.wav2vec2_mlx import Wav2Vec2CTC
 
         if not 0 <= min_score <= 1:
             raise ValueError("Minimum CTC alignment score must be in [0, 1]")
         self.min_score = min_score
-        root = Path(snapshot_download(ALIGNER_REPO))
-        weights = mx.load(str(root / "model.safetensors"))
-        self.model = Wav2Vec2Model(
-            ModelConfig.from_dict(json.loads((root / "config.json").read_text()))
+        root = Path(
+            snapshot_download(
+                ALIGNER_REPO,
+                revision=ALIGNER_REVISION,
+                allow_patterns=["model.safetensors", "vocab.json"],
+            )
         )
-        self.model.load_weights(list(self.model.sanitize(weights).items()), strict=True)
-        self.model.eval()
-        self.head = weights["lm_head.weight"].T, weights["lm_head.bias"]
-        self.processor = AutoProcessor.from_pretrained(ALIGNER_REPO)
-        tokenizer = self.processor.tokenizer
-        self.vocab = tokenizer.get_vocab()
-        self.blank_id = int(tokenizer.pad_token_id)
-        self.delimiter = str(tokenizer.word_delimiter_token)
+        self.model = Wav2Vec2CTC(root / "model.safetensors")
+        self.vocab = json.loads((root / "vocab.json").read_text())
+        self.blank_id = int(self.vocab[CTC_BLANK])
 
     def _targets(
         self, groups: list[tuple[list[int], str]]
@@ -159,29 +162,23 @@ class EnglishCTCAligner:
         ranges: list[tuple[int, int]] = []
         for group_index, (_, spoken) in enumerate(groups):
             if group_index:
-                target_ids.append(self.vocab[self.delimiter])
+                target_ids.append(self.vocab[CTC_DELIMITER])
             start = len(target_ids)
-            for char in spoken.replace(" ", self.delimiter):
+            for char in spoken.replace(" ", CTC_DELIMITER):
                 if char not in self.vocab:
                     raise AlignmentError(f"CTC transcript contains unsupported character: {char!r}")
                 target_ids.append(int(self.vocab[char]))
             ranges.append((start, len(target_ids)))
         return target_ids, ranges
 
-    def _log_probs(self, waveform_16khz: np.ndarray) -> np.ndarray:
-        import mlx.core as mx
+    def log_probs(self, waveform_16khz: np.ndarray) -> Any:
+        """The clip's lazy MLX CTC log-probabilities [frames, vocab]."""
+        return self.model.log_probs(waveform_16khz)
 
-        features = self.processor(
-            [waveform_16khz], sampling_rate=16_000, return_tensors="np"
-        ).input_values
-        logits = self.model(mx.array(features)).last_hidden_state @ self.head[0] + self.head[1]
-        return np.array(logits - mx.logsumexp(logits, axis=-1, keepdims=True))[0]
-
-    def align(self, waveform_16khz: np.ndarray, groups: list[tuple[list[int], str]]) -> Alignment:
-        """Word spans of `groups` as fractions of the clip; raises AlignmentError when the text
-        cannot be aligned or the score is below the minimum."""
+    def align(self, log_probs: np.ndarray, groups: list[tuple[list[int], str]]) -> Alignment:
+        """Word spans of `groups` as fractions of the clip, from its CTC log-probabilities; raises
+        AlignmentError when the text cannot be aligned or the score is below the minimum."""
         targets, ranges = self._targets(groups)
-        log_probs = self._log_probs(waveform_16khz)
         token_frames, score = _ctc_token_frames(log_probs, targets, self.blank_id)
         if score < self.min_score:
             raise AlignmentError(f"CTC alignment score {score:.3f} is below {self.min_score:.3f}")
@@ -199,18 +196,26 @@ class EnglishCTCAligner:
 
 
 def timed_sentencepiece_tokens(
+    lead: list[int],
     groups: list[tuple[list[int], str]],
     alignment: Alignment,
     raw_target_frames: int,
     delay_frames: int,
     eos_id: int,
 ) -> tuple[list[int], list[int]]:
-    """Map word-aligned SentencePiece groups onto unique 12.5 Hz frames."""
+    """Map word-aligned SentencePiece groups onto unique 12.5 Hz frames; the unspoken lead takes
+    the frames just before the first word, from the delay at the earliest."""
     if len(groups) != len(alignment.spans):
         raise ValueError("Text groups and alignment spans differ")
     tokens: list[int] = []
     frames: list[int] = []
     previous = delay_frames - 1
+    if lead:
+        first = delay_frames + int(math.floor(alignment.spans[0][0] * raw_target_frames))
+        for frame, token in enumerate(lead, start=max(delay_frames, first - len(lead))):
+            tokens.append(token)
+            frames.append(frame)
+            previous = frame
     for (ids, _), (start_ratio, end_ratio) in zip(groups, alignment.spans, strict=True):
         start = delay_frames + int(math.floor(start_ratio * raw_target_frames))
         end = delay_frames + max(

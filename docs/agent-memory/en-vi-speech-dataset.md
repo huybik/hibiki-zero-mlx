@@ -16,21 +16,18 @@ step ([vi-tts](vi-tts.md)) fills the Vietnamese speech of its shards in place, a
 `upload --follow` publishes each as it is voiced; `cache_codes` then builds the training caches
 straight from its shards ([sft-data-caches](sft-data-caches.md)).
 
-It is published as `huybik/en-vi-speech` while it is voiced: the Mac and anquachdev's machine,
-which voices bottom up, both push there. Once every shard is voiced, the whole dataset goes to
-`anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice set, and from then
-on only that repository is used (user's plan, 2026-10-24). The final upload:
+It was published as `huybik/en-vi-speech` while it was voiced: the Mac and anquachdev's
+machine, which voiced bottom up, both pushed there. Once every shard was voiced and the
+retranslated rows voiced again (`tts_en_speech --texts`, [vi-tts](vi-tts.md#running)), the whole
+dataset went to `anquachdev/common-vi-en` on 2026-10-27, merged into that contributor's voiced
+Common Voice set, and from then on only that repository is used (user's plan, 2026-10-24):
 
 ```bash
 HF_TOKEN=$HF_TOKEN_AN python -m training.prep.publish_en_vi_speech upload --repo anquachdev/common-vi-en
 ```
 
-Before it, with the other machine's upload stopped, re-voice the retranslated rows
-(`tts_en_speech --texts`, [vi-tts](vi-tts.md#running)), set `vi_audio.path` to `<clip>.opus` in
-the shards voiced on his machine, and let `upload` send them to `huybik/en-vi-speech`; after it,
-delete his old files there by hand. On 2026-10-24 an upload to it ran first and was stopped
-on the user's change of plan: it holds ~1,580 of these shards (277 GB with his own files, all
-from before the stop), its card still his own, which reads only his old files.
+On 2026-10-28 both repositories held the 1,842 shards at the Mac's byte sizes
+(`anquachdev/common-vi-en` revision `2ce8777`), with none of his old files left.
 
 ## Contents
 
@@ -154,6 +151,10 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
 
 ## Cache repo
 
-`huybik/hibiki-zero-vi-full-sft` holds only `phomt-grounded-v2-5s/` (the training cache) and
-`grounded-v2/` (its source). On 2026-10-23 the obsolete v1 cache, the root FLEURS cache and
-pairs were deleted and the history squashed to one commit (user's choice), leaving 10.4 GB.
+`huybik/hibiki-zero-vi-full-sft` (a dataset) holds the training caches: `phomt-grounded-v2-5s/`
+with `grounded-v2/` (its source), and since 2026-10-28 the caches of this dataset,
+`en-vi-grounded-v2/` and `en-vi-grounded-v2-cv-anquach/`, committed shard by shard as they are
+built ([sft-data-caches](sft-data-caches.md#publishing)). On 2026-10-23 the obsolete v1 cache,
+the root FLEURS cache and pairs were deleted and the history squashed to one commit (user's
+choice), leaving 10.4 GB. The model repository of the same name holds training runs, not
+caches.
