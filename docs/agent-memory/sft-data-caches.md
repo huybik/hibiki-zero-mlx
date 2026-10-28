@@ -134,6 +134,14 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
   rules out Mimi (above) and moves 0.7% of wav2vec2's word spans. Compiling one fixed 10 s
   wav2vec2 shape ran over 27 min in `ANECompilerService` (root, one core, cutting the build to
   ~150x) without finishing. At best it would take wav2vec2's ~40% of GPU time off the GPU.
+- Headroom (2026-10-29, measured beside the build at 240x): the GPU is 96–98% busy, and a row
+  takes as long as its two models do alone, so only less GPU work per row would help. On a mean
+  `libriheavy-large` row (Vietnamese 11.5 s, English 13.6 s, delay 2.2 s) Mimi takes ~55%
+  (SEANet 59%, transformer 24%, quantizer 15%) and wav2vec2 ~45% (its convolutions a third).
+  Bucket padding adds 4.5% to each; the delay's silence is 8% of Mimi's frames and must be encoded.
+  Convolutions rewritten as matmuls gain nothing on Mimi's k=3 and k=7, and 8% of wav2vec2's
+  convolutions (~1% overall): MLX's conv1d is as fast. Left: a second machine, the Mac kept idle,
+  and High Power Mode (`powermode 0`, Automatic, so far; untested).
 
 ## Builds
 
