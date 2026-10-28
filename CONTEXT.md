@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-27
+Last verified: 2026-10-28
 
 ## Purpose
 
@@ -58,7 +58,7 @@ inference/ (Apple Silicon, MLX)
   shard: the Mac top down, anquachdev's hardware bottom up, meeting through the Hub, where
   `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)).
   Every shard is voiced and uploaded. `cache_codes` builds the training caches from it on the Mac
-  in MLX; the full build runs from 2026-10-27, ~5 days
+  in MLX; the full build runs from 2026-10-27, ~4 more days from its 2026-10-28 restart
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)).
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
@@ -91,7 +91,7 @@ inference/ (Apple Silicon, MLX)
 |---|---|---|
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
 | SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
-| Grounded Mimi caches, the MLX Mimi encoder, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/mimi_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
+| Grounded Mimi caches, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |

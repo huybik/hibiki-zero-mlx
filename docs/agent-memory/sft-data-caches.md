@@ -1,7 +1,7 @@
 # SFT grounded caches
 
 Read when touching `training/prep/cache_codes.py`, `training/prep/mimi_mlx.py`,
-`training/prep/text_timing.py` or `training/paths.py`.
+`training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or `training/paths.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) · [Speed](#speed) · [Builds](#builds) ·
 [PhoMT cache](#phomt-cache) · [Row layout](#row-layout)
 
@@ -12,7 +12,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) �
   ─► cache_codes (Mac, MLX) ─► <out-dir>/<split>/shard_<name>.pt
        workers: PyAV decode; soxr to 24 kHz (Mimi) and 16 kHz (CTC)
        gates: decoded duration ─► frame cap ─► text groups ─► wav2vec2 CTC (text_timing)
-       GPU: CTC, then Mimi (mimi_mlx) on kept rows
+       GPU: CTC (wav2vec2_mlx), then Mimi (mimi_mlx); the CPU Viterbi runs while Mimi encodes
 HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see PhoMT cache)
 <out-dir>/train + PhoMT ─► training.finetune.train --cache-dir (several)
 <out-dir>/validation ─► --val-cache-dir
@@ -83,35 +83,47 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   ceil(samples / 1920) frames. Against moshi 0.2.13 PyTorch on CPU in float32, 99.98% of frames
   are equal on all 16 codebooks and every first codebook (65,237 frames of 504 clips; 12,704
   frames of 40 built rows); the rest are near-ties in the residual codebooks.
-- CTC: `text_timing.EnglishCTCAligner` runs mlx-audio's wav2vec2 in float32, one clip at a time
-  and uncompiled, then a numpy Viterbi (the same frames as the former torch loop). On 252 rows it
-  rejects the same rows as PyTorch CPU float32 and gives the same spans on 6,180 of 6,181 words.
+- CTC: `text_timing.EnglishCTCAligner` runs `wav2vec2_mlx.Wav2Vec2CTC` in float32, one clip
+  at a time, then a numpy Viterbi (the same frames as the former torch loop). The port pads each
+  clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional
+  convolution input, attention keys), so it computes the clip alone and compiles over ~18 shapes.
+  It builds the same rows as mlx-audio 0.6.1's eager wav2vec2 (1,400 of 1,400 rows), which on 252
+  rows rejects the same rows as PyTorch CPU float32 and gives the same spans on 6,180 of 6,181
+  words.
 - Rejected after measurement (2026-10-27):
   - upstream moshi_mlx 0.3.0 Mimi: no attention mask and tanh GELU, 30% of codes equal on whole
     clips (with both fixed it matches, which `mimi_mlx` does);
   - rustymimi 0.4.1: an attention window of 251 frames, not 250, so codes differ past 10 s;
   - streaming or chunked encoding: differs past 250 encoder frames (10 s);
   - float16 / bfloat16 Mimi: 89% / 45% of frames equal; float16 wav2vec2: 99.3% of word spans;
-  - padded wav2vec2 batches: change the emissions, since the base model has no attention mask.
+  - padded wav2vec2 without a mask: changes the emissions, since the base model has none.
 - Upstream (checked 2026-10-27): moshi 0.2.13, rustymimi 0.4.1 and moshi_mlx 0.3.0 are the
   newest releases; the Mimi stack of moshi 0.2.13 equals kyutai's main, and the local Mimi
   checkpoint is the file upstream Hibiki-Zero loads (sha256 `09b782f0…`).
 
 ## Speed
 
-Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10-27.
+Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10-27/28.
 
-- The builder runs ~200x real time on its Mimi audio (both clips plus the delay): a 1,738-row
-  validation shard took 170–190 s for 9.97 h, at a 3.4 GB peak footprint. GPU time was
-  ~100 s Mimi and ~75 s wav2vec2; the Viterbi took 8 s and waiting for decodes ~1 s.
+- Speed is real time on the Mimi audio (both clips plus the delay). It swings ±20% with the
+  Mac's other load (a stuck `ANECompilerService`, busy browser tabs, other sessions' builds), so
+  compare variants interleaved on the same rows in one process, never one run after another.
+- Interleaved on the same rows (2026-10-28), the builder before → now: `cv27` 101x → 153x,
+  `libriheavy` 164x → 225x, with identical rows. Each part counts: the 16 GB MLX cache (4 GB 195x,
+  8 GB 209x; Mimi alone over real clips 275x at 1 GB, 399x at 8 GB, ~500x on one repeated
+  shape), wav2vec2 over buckets (its unique raw lengths had filled any cache with buffers never
+  reused), and the Viterbi running while Mimi encodes (+5–11%). The footprint grows to ~19 GB.
+- Whole shard: `libriheavy-dev-00001` (1,738 rows, 13.2 h) built at 189x, the old builder at
+  140–166x. Same rows kept and rejected, every Mimi code equal; on 2 rows the text of one or two
+  words sits 1–2 frames apart.
 - The full build holds ~22.1k h of Mimi audio (both clips and the mean delay: 21,558 h main,
-  521 h `cv-anquach`), ~110–120 h at 180–200x.
-- Alone: Mimi 440–460x (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length buckets:
-  per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 241x (PyTorch CPU 86x, MPS 193x). Its 12
-  layers already run at ~3.9 TFLOP/s in float32.
+  521 h `cv-anquach`), ~95–110 h at 200–225x.
+- Alone: Mimi ~500x on one shape (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length
+  buckets: per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 240–290x (PyTorch CPU 86x, MPS
+  193x), its 12 layers at ~3.9 TFLOP/s in float32. One clip per forward already fills the GPU.
 - PyAV decodes Opus at ~1,430x real time per core (soundfile 413x); two workers keep the GPU fed.
-- Tried without gain: batching Mimi clips (MLX and MPS: none to −10%, with more memory); a 4 GB
-  MLX cache; grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
+- Tried without gain: batching Mimi or wav2vec2 clips (MLX: −40% to +25%, no pattern; MPS: none
+  to −10%); grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
   GPU busy, four CPU processes fell from 123x to 20x in total and Mimi slowed ~45%: the CPU and
   GPU share this laptop's power.
 - Neural Engine (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
@@ -122,7 +134,8 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
 
 ## Builds
 
-The full build, started 2026-10-27, runs the two out-dirs one after the other, each under
+The full build, started 2026-10-27 and restarted on the faster builder on 2026-10-28 after the
+first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 `caffeinate -i -s` with its log in `<out-dir>/build.log`:
 
 | Out-dir on `/Volumes/data/datasets/` | `--shards` | Source rows |

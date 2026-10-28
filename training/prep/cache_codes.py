@@ -5,11 +5,12 @@ Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard
 A row is
 [33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
 fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. Rows whose clips
-exceed --max-frames, or whose English text fails CTC alignment, are rejected before Mimi and listed
-with their reason.
+exceed --max-frames, or whose English text fails CTC alignment, are rejected and listed with their
+reason.
 
 Worker processes decode the Opus/MP3 bytes (PyAV) and resample them (soxr); the main process runs
-wav2vec2 CTC and the Mimi encoder in MLX on the GPU.
+wav2vec2 CTC and the Mimi encoder in MLX on the GPU, and the CTC Viterbi on the CPU while the GPU
+encodes.
 """
 
 from __future__ import annotations
@@ -72,7 +73,9 @@ COLUMNS = [
     "cross_lingual_timbre_matched",
 ]
 PREFETCH = 64  # rows decoded ahead of the GPU (~5 MB each)
-MLX_CACHE_BYTES = 1 << 30  # MLX keeps freed buffers; shapes vary per row
+# Freed MLX buffers kept for reuse across the ~36 bucketed shapes of Mimi and wav2vec2; on
+# libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
+MLX_CACHE_BYTES = 16 << 30
 DURATION_TOLERANCE_S = 0.02  # healthy clips decode exactly to their stored duration
 CONFIG_KEYS = ("n_q", "dep_q", "card", "text_card", "existing_text_padding_id")
 
@@ -248,13 +251,19 @@ class Cacher:
         delay_frames = int(round(delay_s * FRAME_RATE))
         en_frames = math.ceil((pad + len(en24)) / FRAME_SAMPLES)
         lead, groups = sentencepiece_groups(row["text_en"], self.tokenizer)
-        alignment = self.aligner.align(en16, groups)
+        # Queue the CTC forward, then both Mimi encodes: the GPU encodes while the CPU aligns.
+        log_probs = self.aligner.log_probs(en16)
+        vi_codes = self.mimi.encode(vi24)
+        en_codes = self.mimi.encode(np.concatenate([np.zeros(pad, np.float32), en24]))
+        mx.async_eval(log_probs)
+        mx.async_eval(vi_codes, en_codes)
+        alignment = self.aligner.align(np.array(log_probs), groups)
         tokens, text_frames = timed_sentencepiece_tokens(
             lead, groups, alignment, en_frames - delay_frames, delay_frames, self.eos_id
         )
-        vi_codes = self.mimi.encode(vi24)
-        en_codes = self.mimi.encode(np.concatenate([np.zeros(pad, np.float32), en24]))
-        codes = assemble_codes(row["id"], vi_codes, en_codes, tokens, text_frames, self.cfg)
+        codes = assemble_codes(
+            row["id"], np.array(vi_codes), np.array(en_codes), tokens, text_frames, self.cfg
+        )
         return {
             "id": row["id"],
             "split": split,
