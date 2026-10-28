@@ -16,26 +16,22 @@ Run from the repo root with HF_TOKEN exported (write access to --repo):
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-# As in the builder: macOS's default Arrow pool keeps freed buffers.
-os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
+import pyarrow.parquet as pq
+import torch
+from huggingface_hub import CommitOperationAdd, HfApi, RepoFile
+from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.utils import disable_progress_bars
 
-import pyarrow.parquet as pq  # noqa: E402
-import torch  # noqa: E402
-from huggingface_hub import CommitOperationAdd, HfApi, RepoFile  # noqa: E402
-from huggingface_hub.errors import HfHubHTTPError  # noqa: E402
-from huggingface_hub.utils import disable_progress_bars  # noqa: E402
-
-from training.paths import durable, exclusive  # noqa: E402
-from training.prep.cache_codes import DATASET_DIR, SHARDS, cache_path, source_shards  # noqa: E402
-from training.prep.publish_en_vi_speech import COMMIT_BYTES, retried  # noqa: E402
-from training.prep.translate_en_speech import log  # noqa: E402
+from training.paths import durable, exclusive
+from training.prep.cache_codes import DATASET_DIR, cache_path, source_shards
+from training.prep.publish_en_vi_speech import COMMIT_BYTES, retried
+from training.prep.translate_en_speech import log
 
 REPO = "huybik/hibiki-zero-vi-full-sft"  # a dataset repo; the PhoMT cache is there too
 FOLLOW_WAIT = 600  # a cache shard is built every ~4 min
@@ -103,7 +99,7 @@ def publish(out_dir: Path, sources: list[Path], repo: str, follow: bool) -> None
                 break
         missing = [p for p in caches if not p.exists() and hub(p) in remote]
         built = next((p for p in caches if p.exists()), None)
-        if missing and built:  # pulled shards are checked against one built here
+        if missing and built:  # pulled shards are checked against one already here
             reference = settings(torch.load(built, weights_only=True, mmap=True))
             for path in missing:
                 pull(api, repo, out_dir, hub(path), path, caches[path], reference)
@@ -122,7 +118,7 @@ def pull(
     reference: dict[str, Any],
 ) -> None:
     """Put the Hub's cache shard of `source`, built on the other machine, in place once it checks
-    out: the settings of the shards built here, the same source file at the same size, and every
+    out: the settings of a shard already here, the same source file at the same size, and every
     source row once, kept or rejected."""
     got = Path(
         retried(
@@ -141,7 +137,6 @@ def pull(
         and sorted(rows) == sorted(pq.read_table(source, columns=["id"])["id"].to_pylist())
     ):
         raise RuntimeError(f"the Hub's {name} is not the cache of {source}; it is left in {got}")
-    del shard  # its mmap
     if path.exists():  # built here while it downloaded: the Hub keeps its copy, this one stays
         log(f"kept {name}, built here while the Hub's copy downloaded")
     else:
@@ -164,7 +159,7 @@ def main() -> None:
         help="the builder's --out-dir; its name is the Hub prefix",
     )
     p.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
-    p.add_argument("--shards", nargs="+", default=SHARDS, help="the builder's --shards")
+    p.add_argument("--shards", nargs="+", required=True, help="the builder's --shards")
     p.add_argument("--repo", default=REPO)
     p.add_argument(
         "--follow",

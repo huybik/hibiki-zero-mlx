@@ -83,18 +83,28 @@ nohup caffeinate -i python -m training.prep.publish_caches --out-dir $O --follow
   --shards 'train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet' >> $O/publish.log 2>&1 &
 ```
 
-The second machine needs Apple Silicon, this repo at the Mac's commit, `weights/` as in
-[docs/finetune.md](../../docs/finetune.md), and the dataset from `anquachdev/common-vi-en` (the same
-bytes as the Mac's copy). Name the out-dir as the Mac's, since its name is the Hub prefix:
+The second machine needs Apple Silicon, this repo's `main`, `weights/` as in
+[docs/finetune.md](../../docs/finetune.md), an `HF_TOKEN` with write access to the cache repo, and
+~520 GB of disk: the dataset from `anquachdev/common-vi-en` at the revision the Mac's copy
+equals (~440 GB), and the whole cache (~75 GB, the Mac's part pulled in too). Name the out-dir as
+the Mac's, since its name is the Hub prefix. First check that it builds the Mac's rows: the
+counts should match, with any differing rows down to float near-ties (a few residual codes).
 
 ```bash
-D=~/en_vi_speech O=~/en-vi-grounded-v2
+export HF_TOKEN=...                                      # write access to huybik/hibiki-zero-vi-full-sft
+D=~/en_vi_speech O=~/en-vi-grounded-v2 C=~/cache-check
 S=('train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet')
-hf download anquachdev/common-vi-en --repo-type dataset --include "data/*" --local-dir $D
+hf download anquachdev/common-vi-en --repo-type dataset --revision 2ce8777d122123609722814f776f0505ea966ca5 \
+  --include "data/*" --local-dir $D
+python -m training.prep.cache_codes --dataset-dir $D --out-dir $C --shards train/cv27-00000.parquet
+hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir $C/hub \
+  --include "en-vi-grounded-v2/train/shard_cv27-00000.pt"
+python -c "import torch; a, b = (torch.load(p, weights_only=True)['samples'] for p in ('$C/train/shard_cv27-00000.pt', '$C/hub/en-vi-grounded-v2/train/shard_cv27-00000.pt')); print(len(a), len(b), sum(x['id'] == y['id'] and x['codes'].equal(y['codes']) for x, y in zip(a, b)), 'rows equal')"
+mkdir $O
 nohup caffeinate -i -s python -m training.prep.cache_codes --dataset-dir $D --out-dir $O \
-  --shards "${S[@]}" --bottom-up >> build.log 2>&1 &
+  --shards "${S[@]}" --bottom-up >> $O/build.log 2>&1 &
 nohup caffeinate -i python -m training.prep.publish_caches --dataset-dir $D --out-dir $O \
-  --shards "${S[@]}" --follow >> publish.log 2>&1 &
+  --shards "${S[@]}" --follow >> $O/publish.log 2>&1 &
 ```
 
 ## Vietnamese translations of `en_speech`

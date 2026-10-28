@@ -65,7 +65,6 @@ from training.prep.text_timing import (  # noqa: E402
 FRAME_RATE = 12.5
 CTC_RATE = 16_000
 DATASET_DIR = Path("/Volumes/data/datasets/en_vi_speech")
-SHARDS = ["train/*.parquet", "validation/*.parquet"]
 COLUMNS = [
     "id",
     "en_audio",
@@ -91,7 +90,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
     parser.add_argument(
-        "--shards", nargs="+", default=SHARDS, help="Source shard globs under <dataset-dir>/data."
+        "--shards",
+        nargs="+",
+        default=["train/*.parquet", "validation/*.parquet"],
+        help="Source shard globs under <dataset-dir>/data.",
     )
     parser.add_argument(
         "--bottom-up",

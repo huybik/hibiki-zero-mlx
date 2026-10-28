@@ -39,12 +39,13 @@ four upstream artifacts, and requires a clean tracked worktree.
 Restore the training caches from the cache repo (built with
 [training/prep](../training/prep/README.md); `en-vi-grounded-v2` is whole once it holds a shard
 for every source shard): the `en_speech` cache with its validation split, and the PhoMT cache,
-which trains as one more `--cache-dir`. Add `"en-vi-grounded-v2-cv-anquach/train/shard_*.pt"`
-for the `cv-anquach` rows, whose English targets are 16 kHz.
+which trains as one more `--cache-dir`. Add `--include "en-vi-grounded-v2-cv-anquach/train/shard_*.pt"`
+for the `cv-anquach` rows, whose English targets are 16 kHz. `--include` takes one pattern
+each; given two, `hf` reads the second as a file name and ignores the include.
 
 ```bash
-./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset \
-  --include "en-vi-grounded-v2/*/shard_*.pt" "phomt-grounded-v2-5s/shard_*.pt" --local-dir data/cache
+./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data/cache \
+  --include "en-vi-grounded-v2/*/shard_*.pt" --include "phomt-grounded-v2-5s/shard_*.pt"
 ```
 
 ## Train

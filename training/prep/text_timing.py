@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 ALIGNER_REPO = "facebook/wav2vec2-base-960h"
+ALIGNER_REVISION = "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"  # every machine times with this one
 ALIGNMENT_NAME = "wav2vec2_ctc_word_v1"
 DEFAULT_MIN_ALIGNMENT_SCORE = 0.5
 CTC_BLANK = "<pad>"  # the aligner tokenizer's pad token
@@ -143,7 +144,13 @@ class EnglishCTCAligner:
         if not 0 <= min_score <= 1:
             raise ValueError("Minimum CTC alignment score must be in [0, 1]")
         self.min_score = min_score
-        root = Path(snapshot_download(ALIGNER_REPO))
+        root = Path(
+            snapshot_download(
+                ALIGNER_REPO,
+                revision=ALIGNER_REVISION,
+                allow_patterns=["model.safetensors", "vocab.json"],
+            )
+        )
         self.model = Wav2Vec2CTC(root / "model.safetensors")
         self.vocab = json.loads((root / "vocab.json").read_text())
         self.blank_id = int(self.vocab[CTC_BLANK])

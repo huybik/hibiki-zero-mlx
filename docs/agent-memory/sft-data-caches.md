@@ -170,7 +170,8 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 
 - The Hub prefix is the out-dir's name (`en-vi-grounded-v2/`, `en-vi-grounded-v2-cv-anquach/`),
   so the second machine names its out-dir the same. Only the source shards matching `--shards`
-  count, so give the publisher the builder's `--shards`.
+  count; the publisher requires the builder's `--shards`, since the default globs would put
+  `cv-anquach` shards under the main prefix, where the pod's restore takes them as main rows.
 - A pass lists the Hub and commits the local shards it lacks, up to 4 GB a commit (~60 shards of
   ~65 MB), on top of the listed revision (`parent_commit`, as the dataset publisher): a commit
   landing in between fails with 409 or 412 and it lists again. The Hub is the record: a shard
@@ -179,11 +180,14 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 - Then it downloads, into `<out-dir>/.pull/`, each Hub shard missing here and puts it in place,
   so the builder, which checks for a shard as it starts it, skips it. Each machine so ends with
   the whole cache (the second machine downloads the Mac's part too). A pulled shard must have
-  the settings of a shard built here (format, rates, `max_frames`, `alignment_min_score`, model
-  config; pulls wait until one exists), the same source file at the same byte size, and every
-  source row once, kept or rejected; otherwise the run stops with it left in `.pull/`. The
-  delay seed is not recorded in a shard, so both machines run the same commit with the default
-  settings.
+  the settings of a shard already in the out-dir (format, rates, `max_frames`,
+  `alignment_min_score`, model config; pulls wait until one exists), the same source file at the
+  same byte size, and every source row once, kept or rejected; otherwise the run stops with it
+  left in `.pull/`, and every rerun stops on it again. Then fix the cause, or delete the bad
+  shard on the Hub (`HfApi().delete_file`) for this machine to build; then `rm -r .pull` and
+  rerun. Row contents are not checked, nor the delay seed and ratio, which a shard does not
+  record: both machines run `main` with the default settings, and the second checks once that it
+  rebuilds a Mac shard ([training/prep/README.md](../../training/prep/README.md)).
 - Near the meeting point a few shards may be built on both machines: each sees the other's work
   only after its commit and the 10 min wait. The Hub keeps the copy committed first; the other
   machine's local copy may be its own build, the same rows up to float near-ties. The pod
@@ -191,9 +195,10 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 - With `--follow` it looks again every 10 min and ends once every source shard is cached here
   and on the Hub. It stops when the out-dir is gone (a dropped drive), rather than download onto
   the internal disk.
-- The builder no longer sets `HF_HUB_OFFLINE`: the publisher imports it and must reach the Hub.
-  The aligner's one `snapshot_download` at start then checks the Hub, and uses the local copy
-  when offline.
+- The aligner is pinned to `facebook/wav2vec2-base-960h` at `22aad52`, its two files only, so
+  both machines time with the same model. The builder no longer sets `HF_HUB_OFFLINE`, so a
+  machine's first run can download them; offline it uses the cached copy (0.4 s on a refused
+  connection, ~75 s on a hanging one).
 - The second machine needs Apple Silicon (the builder is MLX only) and write access to the
   cache repo; commands are in [training/prep/README.md](../../training/prep/README.md).
 
