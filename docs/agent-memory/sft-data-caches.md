@@ -151,6 +151,10 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
   more `--cache-dir` to use it.
 - `publish.sh` beside `launch.sh` in the main out-dir runs `publish_caches --follow` on the two
   out-dirs in the same order, logging to `<out-dir>/publish.log`.
+- Both scripts append each log line on its own: unplugging `/Volumes/data` kills a log a
+  process holds open. On 2026-10-28 a replug lost the builder's lines while it kept building, and
+  `publish_caches` died on its next one (exit 120: Python could not write its stdout). A process
+  reading the drive while it is gone can still fail, so stop the build before unplugging.
 - Frame-cap survey of every source row (2026-10-27): 21.4k rows (111 English hours) have a
   Vietnamese clip over 22.32 s and 454 an English one, and are rejected; everything else fits.
   CTC rejections come on top: ~0.6% on `libriheavy-dev-00001`, ~0.4% on `cv27`.
