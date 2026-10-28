@@ -6,8 +6,9 @@ BUCKET_SAMPLES and masks the padding instead: the first GroupNorm's statistics, 
 convolution's input and the attention keys see only the clip's own frames, and the unpadded
 convolutions never reach it. A padded clip therefore gives the log-probabilities of the clip
 alone, up to float rounding, and the compiled forward sees at most ~18 shapes
-(docs/agent-memory/mlx-inference.md#memory). Against mlx-audio 0.6.1's eager model it gives the
-same cache rows on 1,400 of 1,400 rows.
+(docs/agent-memory/mlx-inference.md#memory). Against mlx-audio 0.6.1's eager model it builds
+the same cache rows but for float near-ties at CTC: on 2 of ~3,200 rows a word sits 1-2 frames
+apart.
 """
 
 from __future__ import annotations
@@ -129,12 +130,14 @@ class Wav2Vec2CTC:
 
     def log_probs(self, pcm: np.ndarray) -> mx.array:
         """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz clip."""
-        if pcm.ndim != 1 or len(pcm) < KERNELS[0]:
-            raise ValueError(f"wav2vec2 needs a mono clip of at least {KERNELS[0]} samples")
+        if pcm.ndim != 1:
+            raise ValueError(f"wav2vec2 needs a mono clip, got shape {pcm.shape}")
+        first_frames, frames = _frames(len(pcm))
+        if frames < 1:
+            raise ValueError(f"A {len(pcm)}-sample clip is too short for one wav2vec2 frame")
         # The feature extractor's zero-mean, unit-variance input normalization, over the clip.
         pcm = np.asarray(pcm, np.float32)
         pcm = (pcm - pcm.mean()) / np.sqrt(pcm.var() + 1e-7)
-        first_frames, frames = _frames(len(pcm))
         padded = np.zeros(math.ceil(len(pcm) / BUCKET_SAMPLES) * BUCKET_SAMPLES, np.float32)
         padded[: len(pcm)] = pcm
         out = self._forward_compiled(

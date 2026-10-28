@@ -129,7 +129,8 @@ class EnglishCTCAligner:
     """wav2vec2-base-960h CTC word timing: `log_probs` queues the MLX float32 forward
     (`wav2vec2_mlx`) and `align` runs the Viterbi on its result, so a caller can keep the GPU busy
     while the CPU aligns. The word spans equal PyTorch CPU float32's on 6,180 of 6,181 words, with
-    the same rejections (measured on mlx-audio's model, which gives the same cache rows).
+    the same rejections (measured on mlx-audio's eager model, whose rows this port builds but for
+    float near-ties).
     """
 
     def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):

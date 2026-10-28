@@ -51,7 +51,8 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   a decoded clip more than 0.02 s off its stored duration (PyAV decodes a truncated or damaged
   clip without error, only shorter); more frames than `--max-frames` (280, the trainer's cap),
   counted from the decoded lengths as max(English frames, Vietnamese frames) + 1 before the delay;
-  the text grouping; CTC alignment; token timing. Only kept rows reach Mimi.
+  the text grouping; CTC alignment; token timing. Mimi is queued with the CTC forward, so the
+  ~0.5% of rows rejected at alignment or token timing are encoded and dropped.
 - Text grouping: SentencePiece pieces group into words, and a group with nothing to speak (a
   stray `*`, `-` or `"`; a lone `'` counts as spoken) joins the word before it. Before the first
   word it is the lead, timed on the frames just before that word's start, so the word keeps its
@@ -87,9 +88,9 @@ HF phomt-grounded-v2-5s/ ─► data/cache/phomt-grounded-v2-5s (restored, see P
   at a time, then a numpy Viterbi (the same frames as the former torch loop). The port pads each
   clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional
   convolution input, attention keys), so it computes the clip alone and compiles over ~18 shapes.
-  It builds the same rows as mlx-audio 0.6.1's eager wav2vec2 (1,400 of 1,400 rows), which on 252
-  rows rejects the same rows as PyTorch CPU float32 and gives the same spans on 6,180 of 6,181
-  words.
+  It builds the same rows as mlx-audio 0.6.1's eager wav2vec2 but for float near-ties (on 2 of
+  ~3,200 rows a word sits 1–2 frames apart; see [Speed](#speed)), and that model on 252 rows
+  rejects the same rows as PyTorch CPU float32 and gives the same spans on 6,180 of 6,181 words.
 - Rejected after measurement (2026-10-27):
   - upstream moshi_mlx 0.3.0 Mimi: no attention mask and tanh GELU, 30% of codes equal on whole
     clips (with both fixed it matches, which `mimi_mlx` does);
@@ -127,9 +128,8 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
   GPU busy, four CPU processes fell from 123x to 20x in total and Mimi slowed ~45%: the CPU and
   GPU share this laptop's power.
 - Neural Engine (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
-  rules out Mimi (above). wav2vec2-base needs each clip's exact length (no attention mask,
-  whole-input GroupNorm), so every length is a new ANE compile, and compiling one fixed 10 s
-  shape ran over 27 min in `ANECompilerService` (root, one core, cutting the build to
+  rules out Mimi (above) and moves 0.7% of wav2vec2's word spans. Compiling one fixed 10 s
+  wav2vec2 shape ran over 27 min in `ANECompilerService` (root, one core, cutting the build to
   ~150x) without finishing. At best it would take wav2vec2's ~40% of GPU time off the GPU.
 
 ## Builds

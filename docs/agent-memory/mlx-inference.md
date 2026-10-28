@@ -84,7 +84,8 @@ These rules hold for every MLX model here (the Hibiki LM, VieNeu, Mimi, wav2vec2
 - Every compiled function in the repo sees fixed shapes: the depformer step, one compile per
   slice (`moshi_mlx/models/lm.py`); the attention regions of a single-token step, with the RoPE
   offset passed as an array (`moshi_mlx/modules/transformer.py`); the samplers; the VieNeu
-  frame (`training/prep/vieneu_mlx.py`); and the bucketed Mimi encoder (`mimi_mlx.py`). Hold any new compiled path to the same rule.
+  frame (`training/prep/vieneu_mlx.py`); the bucketed Mimi encoder (`mimi_mlx.py`) and wav2vec2
+  (`wav2vec2_mlx.py`). Hold any new compiled path to the same rule.
 - MLX also keeps freed buffers across shapes; cap the cache with `mx.set_cache_limit` when shapes
   vary ([vi-tts](vi-tts.md#engine) caps the codec at 2 GB). Too small a cap costs speed instead:
   the cache builder cycles through ~36 bucketed shapes and ran 195x at 4 GB, 225x at 16 GB
