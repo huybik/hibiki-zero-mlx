@@ -149,22 +149,21 @@ whose `vi_duration_s` has no nulls.
   without speech and the upload can keep running. Startup then reads every shard's `id` and
   `text_vi` (~30 s). `fill` writes only the rows still without speech or with another text, so a
   row the upload pulled in meanwhile keeps that voicing.
-- Run `--texts` only after both machines have finished and the other machine's upload has
-  stopped: that upload compares every column but the speech before taking a shard, so a changed
-  `text_vi` would stop it, and it commits any voiced local shard whose size differs from the
-  Hub's, so its old-text copy would replace the new one. The pass rewrites the 1,460 shards
-  holding a listed row (~1 TB of reads and writes); the next upload commits them, sending only
-  their changed bytes. Checked on scratch copies: only the listed rows whose text changed were
-  voiced again. It holds
-`.tts.lock` in the dataset folder. At ~100–130x, the corpus's ~9k hours of Vietnamese would take
-the Mac alone 3–4 days.
+- Run `--texts` only once both machines have finished: a shard the other machine commits
+  afterwards carries its old text back to the Hub. Run on 2026-10-27, it rewrote the 1,460
+  shards holding a listed row (~1 TB of reads and writes) in 46 min and voiced 22.1 h again (a
+  few rows a shard, so the ~1.9 s rewrite sets the pace); the next upload committed them,
+  sending only their changed bytes. Only the listed rows whose text changed were voiced again.
+- A run holds `.tts.lock` in the dataset folder.
 
 Two machines share the work (user's plan, 2026-10-24): the Mac goes top down through the
 dataset's shard paths in sorted order (`data/train/cv-anquach-*`, which came voiced,
 `data/train/cv27-*`, `data/train/libriheavy-*`, then `data/validation/*`), and another person's
 own hardware goes bottom up. The Mac's first run
 (validation, then a shuffled train order) had voiced 88 shards before, scattered through the
-list.
+list. All 1,842 shards were voiced by 2026-10-27 07:10, 9,477 h of Vietnamese for 10,767 h of
+English, the machines meeting at `libriheavy-medium-00027`/`00028`. The Mac's last run voiced
+4,964 h in 47.5 h: 105x, 118–129x on quiet nights, ~70x beside a video call with the camera on.
 
 ```text
 data/train/cv27-00000 ... ─► Mac, top down
@@ -187,10 +186,17 @@ data/train/cv27-00000 ... ─► Mac, top down
   since the next pass commits whatever the Mac holds. Near the meeting point a few shards, ~3–5
   on each side, may be voiced twice: each machine sees the other's work only once it is
   committed, after the 10 min wait plus a pass of 4 GB commits (2–7 min each).
-- anquachdev's voicing, checked 2026-10-24 on 150 rows of his Libriheavy-small shards against 150
-  of the Mac's: CER 0.035 against 0.045, voice match 0.548 against 0.575 (within speaker noise),
-  the same loudness, clipping and pauses. It is not this script as is: its Opus is hybrid
-  SILK+CELT (libopus's default complexity), and its `vi_audio.path` copies `en_audio.path`
-  (`<subset>/<speaker>/<book>/<clip>.opus`) where ours is `<clip>.opus`. He was asked to use
-  `<clip>.opus`; the shards already voiced are renamed before the final upload. His speed is
-  ~30–40x.
+- anquachdev's voicing says the text as well as the Mac's, in a voice slightly further from the
+  English one. Checked 2026-10-26 on 150 rows each from his ~34x shards (`medium-00252` up) and
+  his ~124x ones (`medium-00204`–`00251`, since 2026-10-25), with the same rows voiced again on
+  the Mac: CER 0.025 against the Mac's 0.034, then 0.039 against 0.036 (both within noise),
+  voice match 0.035 below the Mac's on both (0.580 vs 0.615, 0.521 vs 0.558), and the same
+  loudness, clipping and pauses. The speed-up cost no quality; the two groups differ by their
+  books, which the Mac shows too. Compare machines on the same rows: copy the sampled rows into an
+  unvoiced shard under a scratch root and voice it there (`--root <scratch> --batch 32 --workers
+  2`, beside the main run). It is not this script as is: its Opus is hybrid SILK+CELT (libopus's
+  default complexity), and its `vi_audio.path` copies `en_audio.path`
+  (`<subset>/<speaker>/<book>/<clip>.opus`) where ours is `<clip>.opus`. On 2026-10-27 the 264
+  shards he voiced (235 `libriheavy-medium`, 29 `libriheavy-small`) were rewritten through
+  `write_shard` with only that path changed, by a one-off script, so every shard's is now
+  `<clip>.opus`.

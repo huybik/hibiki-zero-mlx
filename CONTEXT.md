@@ -19,7 +19,7 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ```text
 training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
-    ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload --follow ─► HF en-vi-speech
+    ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload ─► HF common-vi-en
     ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
@@ -52,13 +52,12 @@ inference/ (Apple Silicon, MLX)
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
   translations and the already voiced Common Voice rows of `anquachdev/common-vi-en`
-  (`cv-anquach`), in the local EN-VI dataset, published as `huybik/en-vi-speech` while it is
-  voiced; once all is voiced it goes to `anquachdev/common-vi-en`, the one copy used from then on
-  ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voices the
+  (`cv-anquach`), in the local EN-VI dataset, published as `anquachdev/common-vi-en`, the one
+  copy used ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voiced the
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
-  shard: the Mac top down, anquachdev's hardware bottom up, meeting through the Hub, where
-  `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)).
-  Every shard is voiced and uploaded. `cache_codes` builds the training caches from it in MLX;
+  shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
+  1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
+  `cache_codes` builds the training caches from it in MLX;
   the full build ran on the Mac from 2026-10-27 and is paused since 2026-10-29 at 36.6%, ~3 days
   short alone at ~200x ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
@@ -111,8 +110,7 @@ inference/ (Apple Silicon, MLX)
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
 - Training caches (the dataset repo; the model repo of the same name holds runs):
   https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
-- EN-VI speech and text pairs: https://huggingface.co/datasets/huybik/en-vi-speech while voiced,
-  then https://huggingface.co/datasets/anquachdev/common-vi-en
+- EN-VI speech and text pairs: https://huggingface.co/datasets/anquachdev/common-vi-en
 
 ## Maintaining context
 
