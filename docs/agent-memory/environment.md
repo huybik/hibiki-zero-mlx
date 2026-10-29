@@ -39,7 +39,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   data are deleted.
 - Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
   (`HF_HOME`).
-- Gitignored local state: `data/` (pair files and Mimi caches), `runs/` (training runs and eval
+- Gitignored local state: `data/` (restored Mimi caches), `runs/` (training runs and eval
   outputs), `translations/` and `output/`.
 
 ## Git

@@ -12,9 +12,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#con
 The user asked on 2026-10-23 for one research dataset of pair-row sources: English speech, its
 transcript and Vietnamese translation, with the Vietnamese speech to come. It is kept in full on
 the Mac, where it replaced the `en_speech` corpus folder (user's choice). The voice-transfer TTS
-step ([vi-tts](vi-tts.md)) fills the Vietnamese speech of its shards in place, and
-`upload --follow` publishes each as it is voiced; `cache_codes` pair rows are then made from it
-([sft-data-caches](sft-data-caches.md)).
+step ([vi-tts](vi-tts.md)) filled the Vietnamese speech of its shards in place, and
+`upload --follow` published each as it was voiced; `cache_codes` then builds the training caches
+straight from its shards ([sft-data-caches](sft-data-caches.md)).
 
 It is published as `anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice
 set, and only that repository is used (user's plan, 2026-10-24); `upload` goes there by default,
@@ -23,7 +23,8 @@ no longer used, where the Mac and anquachdev's machine, which voiced bottom up, 
 2026-10-27 every shard was voiced, the retranslated rows voiced again and every
 `vi_audio.path` set to `<clip>.opus` ([vi-tts](vi-tts.md#running)); that copy went to both
 repositories the same day (447 GB, 1,842 shards; 112 commits in 83 min to `common-vi-en`, as
-Xet had the bytes), and his old files were deleted there (commit `2ce8777`).
+Xet had the bytes), and his old files were deleted there. On 2026-10-28 both held the 1,842
+shards at the Mac's byte sizes (`anquachdev/common-vi-en` revision `2ce8777`).
 
 ## Contents
 
@@ -144,6 +145,10 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
 
 ## Cache repo
 
-`huybik/hibiki-zero-vi-full-sft` holds only `phomt-grounded-v2-5s/` (the training cache) and
-`grounded-v2/` (its source). On 2026-10-23 the obsolete v1 cache, the root FLEURS cache and
-pairs were deleted and the history squashed to one commit (user's choice), leaving 10.4 GB.
+`huybik/hibiki-zero-vi-full-sft` (a dataset) holds the training caches: `phomt-grounded-v2-5s/`
+with `grounded-v2/` (its source), and since 2026-10-28 the caches of this dataset,
+`en-vi-grounded-v2/` and `en-vi-grounded-v2-cv-anquach/`, committed shard by shard as they are
+built ([sft-data-caches](sft-data-caches.md#publishing)). On 2026-10-23 the obsolete v1 cache,
+the root FLEURS cache and pairs were deleted and the history squashed to one commit (user's
+choice), leaving 10.4 GB. The model repository of the same name holds training runs, not
+caches.

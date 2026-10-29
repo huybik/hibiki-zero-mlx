@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-27
+Last verified: 2026-10-29
 
 ## Purpose
 
@@ -17,10 +17,11 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-training/  (CUDA, Linux H100; prep/ translates, voices and publishes the EN-VI dataset on the Mac)
+training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
     ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload ─► HF common-vi-en
-    ─► (pair rows: not built) ─► prep/cache_codes ─► data/cache
+    ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
+    ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
 inference/ (Apple Silicon, MLX)
@@ -30,10 +31,10 @@ inference/ (Apple Silicon, MLX)
 - `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
   vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
-  Vietnamese translation of its English text, the Vietnamese TTS in MLX and the pair → grounded
-  cache builder) and `finetune/` (the generic SFT trainer, evaluation and HF recovery sync). Its
+  Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
+  builder in MLX) and `finetune/` (the generic SFT trainer, evaluation and HF recovery sync). Its
   modules run from the repo root as `python -m training.<package>.<module>`; everything except
-  the translation, the TTS and the dataset publisher runs on CUDA only.
+  the translation, the TTS, the dataset publisher and the cache builder runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
@@ -52,12 +53,16 @@ inference/ (Apple Silicon, MLX)
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
   translations and the already voiced Common Voice rows of `anquachdev/common-vi-en`
   (`cv-anquach`), in the local EN-VI dataset, published as `anquachdev/common-vi-en`, the one
-  copy used
-  ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voiced the
+  copy used ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voiced the
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
   shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
-  1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)). No pair rows
-  or caches are built from it yet.
+  1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
+  `cache_codes` builds the training caches from it in MLX;
+  the full build ran on the Mac from 2026-10-27 and is paused since 2026-10-29 at 36.6%, ~3 days
+  short alone at ~200x ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
+  up, meeting the Mac through the Hub as for the TTS
+  ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
 - GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
 
 ## Essential invariants
@@ -65,8 +70,8 @@ inference/ (Apple Silicon, MLX)
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
   and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
-- Apple Silicon runs inference, the translation, the Vietnamese TTS and the dataset publisher
-  only; Mimi caching, training and evaluation run on CUDA →
+- Apple Silicon runs inference, the translation, the Vietnamese TTS, the dataset publisher and
+  the Mimi cache build; training and evaluation run on CUDA →
   [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
@@ -77,6 +82,9 @@ inference/ (Apple Silicon, MLX)
   [sft-training](docs/agent-memory/sft-training.md).
 - In MLX, give each thread its own `rustymimi.Tokenizer` and pass NumPy arrays, not MLX arrays,
   between threads → [mlx-inference](docs/agent-memory/mlx-inference.md).
+- `mx.compile` only functions that see a small, fixed set of input shapes; fed a new shape per call,
+  a compiled function grows memory without bound (61 GB on wav2vec2) →
+  [mlx-inference](docs/agent-memory/mlx-inference.md#memory).
 - q4 means 4-bit, group size 32, on layers whose input width divides by 32. A BF16 model
   directory needs `weight_dtype: bfloat16` → [mlx-inference](docs/agent-memory/mlx-inference.md).
 
@@ -86,7 +94,7 @@ inference/ (Apple Silicon, MLX)
 |---|---|---|
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
 | SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
-| Pair rows, grounded Mimi caches, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/text_timing.py`, `training/paths.py` |
+| Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
@@ -100,7 +108,8 @@ inference/ (Apple Silicon, MLX)
 
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
-- Training caches: https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
+- Training caches (the dataset repo; the model repo of the same name holds runs):
+  https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
 - EN-VI speech and text pairs: https://huggingface.co/datasets/anquachdev/common-vi-en
 
 ## Maintaining context
