@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-28
+Last verified: 2026-10-29
 
 ## Purpose
 
@@ -59,8 +59,8 @@ inference/ (Apple Silicon, MLX)
   shard: the Mac top down, anquachdev's hardware bottom up, meeting through the Hub, where
   `upload --follow` publishes each voiced shard ([vi-tts](docs/agent-memory/vi-tts.md)).
   Every shard is voiced and uploaded. `cache_codes` builds the training caches from it in MLX;
-  the full build runs on the Mac from 2026-10-27, ~5.5 more days alone from its 2026-10-28
-  restart ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  the full build ran on the Mac from 2026-10-27 and is paused since 2026-10-29 at 36.6%, ~3 days
+  short alone at ~200x ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
