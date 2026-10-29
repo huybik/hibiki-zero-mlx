@@ -134,6 +134,14 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
   rules out Mimi (above) and moves 0.7% of wav2vec2's word spans. Compiling one fixed 10 s
   wav2vec2 shape ran over 27 min in `ANECompilerService` (root, one core, cutting the build to
   ~150x) without finishing. At best it would take wav2vec2's ~40% of GPU time off the GPU.
+- Headroom (2026-10-29, measured beside the build at 240x): the GPU is 96–98% busy, and a row
+  takes as long as its two models do alone, so only less GPU work per row would help. On a mean
+  `libriheavy-large` row (Vietnamese 11.5 s, English 13.6 s, delay 2.2 s) Mimi takes ~55%
+  (SEANet 59%, transformer 24%, quantizer 15%) and wav2vec2 ~45% (its convolutions a third).
+  Bucket padding adds 4.5% to each; the delay's silence is 8% of Mimi's frames and must be encoded.
+  Convolutions rewritten as matmuls gain nothing on Mimi's k=3 and k=7, and 8% of wav2vec2's
+  convolutions (~1% overall): MLX's conv1d is as fast. Left: a second machine, the Mac kept idle,
+  and High Power Mode (`powermode 0`, Automatic, so far; untested).
 
 ## Builds
 
@@ -146,11 +154,19 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 | `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English |
 | `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
 
+- Paused by the user on 2026-10-29 at 19:18, 36.6% of the audio in (767 main shards, through
+  `libriheavy-large-00010-00021`, all on the Hub; `cv-anquach` not started). Resume from the
+  repo root on `main` with `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same
+  for `publish.sh`; the builder skips the built shards.
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
   more `--cache-dir` to use it.
 - `publish.sh` beside `launch.sh` in the main out-dir runs `publish_caches --follow` on the two
   out-dirs in the same order, logging to `<out-dir>/publish.log`.
+- Both scripts append each log line on its own: unplugging `/Volumes/data` kills a log a
+  process holds open. On 2026-10-28 a replug lost the builder's lines while it kept building, and
+  `publish_caches` died on its next one (exit 120: Python could not write its stdout). A process
+  reading the drive while it is gone can still fail, so stop the build before unplugging.
 - Frame-cap survey of every source row (2026-10-27): 21.4k rows (111 English hours) have a
   Vietnamese clip over 22.32 s and 454 an English one, and are rejected; everything else fits.
   CTC rejections come on top: ~0.6% on `libriheavy-dev-00001`, ~0.4% on `cv27`.
