@@ -154,10 +154,10 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 | `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English |
 | `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
 
-- Paused by the user on 2026-10-29 at 19:18, 36.6% of the audio in (767 main shards, through
-  `libriheavy-large-00010-00021`, all on the Hub; `cv-anquach` not started). Resume from the
-  repo root on `main` with `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same
-  for `publish.sh`; the builder skips the built shards.
+- The user paused it on 2026-10-29 at 19:18, at 36.6% of the audio (767 main shards, all on the
+  Hub), and it resumed at 22:35. To restart after a stop, run from the repo root on `main`
+  `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same for `publish.sh`; the
+  builder skips the built shards and rebuilds the unfinished one.
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
   more `--cache-dir` to use it.

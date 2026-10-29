@@ -58,8 +58,8 @@ inference/ (Apple Silicon, MLX)
   shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
   1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
   `cache_codes` builds the training caches from it in MLX;
-  the full build ran on the Mac from 2026-10-27 and is paused since 2026-10-29 at 36.6%, ~3 days
-  short alone at ~200x ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  the full build runs on the Mac since 2026-10-27, resumed on 2026-10-29 at 36.6% after a pause,
+  ~3 days short alone at ~200x ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
