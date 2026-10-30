@@ -154,10 +154,12 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 | `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English |
 | `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
 
-- Paused by the user on 2026-10-29 at 19:18, 36.6% of the audio in (767 main shards, through
-  `libriheavy-large-00010-00021`, all on the Hub; `cv-anquach` not started). Resume from the
-  repo root on `main` with `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same
-  for `publish.sh`; the builder skips the built shards.
+- The user paused it on 2026-10-29 at 19:18, at 36.6% of the audio (767 main shards, all on the
+  Hub), and it resumed at 22:35. To restart after a stop, run from the repo root on `main`
+  `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same for `publish.sh`; the
+  builder skips the built shards and rebuilds the unfinished one. Nothing restarts it on its own: a
+  logout or restart ends it (the macOS 27.2 update on 2026-10-30 logged out at 13:23 and the build
+  resumed at 14:01, at 42.2%).
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
   more `--cache-dir` to use it.
@@ -167,6 +169,13 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
   process holds open. On 2026-10-28 a replug lost the builder's lines while it kept building, and
   `publish_caches` died on its next one (exit 120: Python could not write its stdout). A process
   reading the drive while it is gone can still fail, so stop the build before unplugging.
+- Keep the Mac on AC: `caffeinate -s` holds only on AC, and on 2026-10-29 the build ran on battery
+  until Low Power Sleep at 1% (23:49), losing 7 h. A process started from a terminal reads
+  `/Volumes/data` under that terminal app's privacy grant (Removable Volumes). On 2026-10-30
+  Ghostty 1.3.1 kept running after 1.4.0 replaced it, its old bundle moved and half deleted;
+  after the wake macOS could not verify it and refused every drive read from it ("Operation not
+  permitted", also on `ls`), so the builder died. Restoring the bundle's files from the official
+  1.3.1 image let reads through again an hour later; quitting and reopening the terminal also fixes it.
 - Frame-cap survey of every source row (2026-10-27): 21.4k rows (111 English hours) have a
   Vietnamese clip over 22.32 s and 454 an English one, and are rejected; everything else fits.
   CTC rejections come on top: ~0.6% on `libriheavy-dev-00001`, ~0.4% on `cv27`.
