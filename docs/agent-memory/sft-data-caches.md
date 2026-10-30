@@ -157,7 +157,9 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 - The user paused it on 2026-10-29 at 19:18, at 36.6% of the audio (767 main shards, all on the
   Hub), and it resumed at 22:35. To restart after a stop, run from the repo root on `main`
   `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same for `publish.sh`; the
-  builder skips the built shards and rebuilds the unfinished one.
+  builder skips the built shards and rebuilds the unfinished one. Nothing restarts it on its own: a
+  logout or restart ends it (the macOS 27.2 update on 2026-10-30 logged out at 13:23 and the build
+  resumed at 14:01, at 42.2%).
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
   more `--cache-dir` to use it.
