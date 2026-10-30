@@ -103,6 +103,12 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 - Upstream (checked 2026-10-27): moshi 0.2.13, rustymimi 0.4.1 and moshi_mlx 0.3.0 are the
   newest releases; the Mimi stack of moshi 0.2.13 equals kyutai's main, and the local Mimi
   checkpoint is the file upstream Hibiki-Zero loads (sha256 `09b782f0…`).
+- MLX (checked 2026-10-30): 0.32.4 is the newest release, and none of the 57 commits on `main`
+  after it changes these rows. Its convolution fixes cover flipped (gradient) convolutions and
+  out-of-bounds weight reads that feed only dropped output channels, the addmm fix only half
+  precision, and the numpy fix only conversions between two dtypes of one width (the ports pass
+  float32 as float32). Its new sliding-window attention would save under 2%: attention is a small
+  part of Mimi's transformer.
 
 ## Speed
 
