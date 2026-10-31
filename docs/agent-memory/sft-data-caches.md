@@ -161,7 +161,12 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 | `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
 
 - The user paused it on 2026-10-29 at 19:18, at 36.6% of the audio (767 main shards, all on the
-  Hub), and it resumed at 22:35. To restart after a stop, run from the repo root on `main`
+  Hub; resumed at 22:35), and on 2026-10-31 at 07:08, at 60.0% (1,238 main shards, all on the
+  Hub). To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status
+  143 and does not start `cv-anquach`, but only once the two orphaned decode workers
+  (`multiprocessing.spawn` and its `resource_tracker`, parent pid 1) are killed too, since they
+  hold its log pipe open. Stop the publisher the same way (`training.prep.publish_caches`) after its
+  log shows `0 left`. To restart after a stop, run from the repo root on `main`
   `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same for `publish.sh`; the
   builder skips the built shards and rebuilds the unfinished one. Nothing restarts it on its own: a
   logout or restart ends it (the macOS 27.2 update on 2026-10-30 logged out at 13:23 and the build
