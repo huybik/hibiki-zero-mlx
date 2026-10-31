@@ -160,17 +160,15 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 | `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English |
 | `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
 
-- The user paused it on 2026-10-29 at 19:18, at 36.6% of the audio (767 main shards, all on the
-  Hub; resumed at 22:35), and on 2026-10-31 at 07:08, at 60.0% (1,238 main shards, all on the
-  Hub). To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status
-  143 and does not start `cv-anquach`, but only once the two orphaned decode workers
+- To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status 143
+  and does not start `cv-anquach`, but only once the two orphaned decode workers
   (`multiprocessing.spawn` and its `resource_tracker`, parent pid 1) are killed too, since they
   hold its log pipe open. Stop the publisher the same way (`training.prep.publish_caches`) after its
-  log shows `0 left`. To restart after a stop, run from the repo root on `main`
-  `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &` and the same for `publish.sh`; the
-  builder skips the built shards and rebuilds the unfinished one. Nothing restarts it on its own: a
-  logout or restart ends it (the macOS 27.2 update on 2026-10-30 logged out at 13:23 and the build
-  resumed at 14:01, at 42.2%).
+  log shows `0 left`; it logs only commits and retries, so a quiet log means nothing is waiting.
+- Nothing restarts it on its own, after a stop, a logout or a restart (a macOS update logs out).
+  Run from the repo root on `main` `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &`, and
+  the same for `publish.sh` if it stopped; the builder skips the built shards and rebuilds the
+  unfinished one.
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
   more `--cache-dir` to use it.
