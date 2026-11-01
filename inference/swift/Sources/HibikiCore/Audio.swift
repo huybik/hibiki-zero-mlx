@@ -52,12 +52,26 @@ public enum Audio {
 
     /// Writes 24 kHz mono float samples as a WAV file.
     public static func write(_ samples: [Float], to url: URL) throws {
-        let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        let buffer = AVAudioPCMBuffer(
-            pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        buffer.floatChannelData![0].update(from: samples, count: samples.count)
-        try file.write(from: buffer)
+        try Writer(url).append(samples)
+    }
+
+    /// A 24 kHz mono WAV file written as samples arrive.
+    public final class Writer {
+        private let file: AVAudioFile
+        private let format = AVAudioFormat(
+            standardFormatWithSampleRate: Double(Audio.sampleRate), channels: 1)!
+
+        public init(_ url: URL) throws {
+            file = try AVAudioFile(forWriting: url, settings: format.settings)
+        }
+
+        public func append(_ samples: [Float]) throws {
+            guard !samples.isEmpty else { return }
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
+            buffer.frameLength = AVAudioFrameCount(samples.count)
+            buffer.floatChannelData![0].update(from: samples, count: samples.count)
+            try file.write(from: buffer)
+        }
     }
 }

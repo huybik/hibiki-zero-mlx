@@ -22,18 +22,14 @@ public struct TransformerConfig {
     public var dModel: Int
     public var numHeads: Int
     public var numLayers: Int
-    public var causal: Bool
-    public var normFirst: Bool
     public var biasFF: Bool
     public var biasAttn: Bool
     public var layerScale: Float?
     public var positionalEmbedding: PositionalEmbedding
-    public var useConvBias: Bool
     public var gating: Bool
     public var norm: Norm
     public var context: Int
     public var maxPeriod: Int
-    public var maxSeqLen: Int
     public var kvRepeat: Int
     public var dimFeedForward: Int
     public var convLayout: Bool
@@ -122,33 +118,13 @@ final class Attention: Module {
         outProj(attn.transposed(0, 2, 1, 3).reshaped(attn.dim(0), attn.dim(2), cfg.dModel))
     }
 
-    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: KVCache?) -> MLXArray {
-        let T = x.dim(1)
+    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: RotatingKVCache) -> MLXArray {
         var (q, k, v) = projections(x)
         if let rope {
-            let offset = cache?.offset ?? 0
-            q = rope(q, offset: offset)
-            k = rope(k, offset: offset)
+            q = rope(q, offset: cache.offset)
+            k = rope(k, offset: cache.offset)
         }
-        if let cache {
-            (k, v) = cache.update(keys: k, values: v)
-        }
-        let kLen = k.dim(2)
-        let kTargetLen = T + min(self.cfg.context, kLen - T)
-        if kTargetLen < kLen {
-            let offset = kLen - kTargetLen
-            k = k[0..., 0..., offset...]
-            v = v[0..., 0..., offset...]
-        }
-
-        var mask = mask
-        if let m = mask {
-            let maskLen = m.dim(-1)
-            if k.dim(2) < maskLen {
-                let offset = maskLen - k.dim(2)
-                mask = m[0..., offset...]
-            }
-        }
+        (k, v) = cache.update(keys: k, values: v)
         return output(
             MLXFast.scaledDotProductAttention(
                 queries: q, keys: k, values: v, scale: self.scale, mask: mask))
@@ -200,7 +176,7 @@ final class TransformerLayer: Module {
         }
     }
 
-    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: KVCache) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: RotatingKVCache) -> MLXArray {
         residualFeedForward(x, attended: selfAttn(norm1(x), mask: mask, cache: cache))
     }
 
@@ -222,7 +198,7 @@ public class Transformer: Module {
         self.layers = (0..<cfg.numLayers).map { _ in TransformerLayer(cfg) }
     }
 
-    public func callAsFunction(_ x: MLXArray, cache: [KVCache]) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, cache: [RotatingKVCache]) -> MLXArray {
         var x = x
         let mask = cache.first?.createAttentionMask(h: x)
         for (layer, c) in zip(self.layers, cache) {
@@ -231,7 +207,7 @@ public class Transformer: Module {
         return x
     }
 
-    public func makeCache(bSize: Int) -> [KVCache] {
+    func makeCache(bSize: Int) -> [RotatingKVCache] {
         let kvHeads = cfg.numHeads / cfg.kvRepeat
         let dtype = self.layers.first!.selfAttn.inProj.weight.dtype
         return (0..<cfg.numLayers).map { _ in
@@ -265,7 +241,7 @@ public class ProjectedTransformer: Module {
         self._outputProjs.wrappedValue = outputProjs
     }
 
-    public func callAsFunction(_ x: MLXArray, cache: [KVCache]) -> [MLXArray] {
+    func callAsFunction(_ x: MLXArray, cache: [RotatingKVCache]) -> [MLXArray] {
         var x = x
         if self.convLayout {
             x = x.swappedAxes(1, 2)
@@ -285,7 +261,7 @@ public class ProjectedTransformer: Module {
         return outs
     }
 
-    public func makeCache(bSize: Int) -> [KVCache] {
+    func makeCache(bSize: Int) -> [RotatingKVCache] {
         self.transformer.makeCache(bSize: bSize)
     }
 }

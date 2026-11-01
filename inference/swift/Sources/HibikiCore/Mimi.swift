@@ -25,18 +25,14 @@ public struct MimiConfig {
             dModel: seanet.dimension,
             numHeads: 8,
             numLayers: 8,
-            causal: true,
-            normFirst: true,
             biasFF: false,
             biasAttn: false,
             layerScale: 0.01,
             positionalEmbedding: .rope,
-            useConvBias: true,
             gating: false,
             norm: .layerNorm,
             context: 250,
             maxPeriod: 10000,
-            maxSeqLen: 8192,
             kvRepeat: 1,
             dimFeedForward: 2048,
             convLayout: true
@@ -51,8 +47,8 @@ public struct MimiConfig {
 
 public class Mimi: Module {
     let cfg: MimiConfig
-    let encoderCache: [KVCache]
-    let decoderCache: [KVCache]
+    let encoderCache: [RotatingKVCache]
+    let decoderCache: [RotatingKVCache]
     @ModuleInfo(key: "encoder") var encoder: SeanetEncoder
     @ModuleInfo(key: "decoder") var decoder: SeanetDecoder
     @ModuleInfo(key: "encoder_transformer") var encoderTransformer: ProjectedTransformer
@@ -75,29 +71,10 @@ public class Mimi: Module {
             cfg.transformer, inputDim: dim, outputDims: [dim])
         self._decoderTransformer.wrappedValue = ProjectedTransformer(
             cfg.transformer, inputDim: dim, outputDims: [dim])
-        self._downsample.wrappedValue = ConvDownsample1d(
-            stride: downsampleStride, dim: dim, causal: true)
-        self._upsample.wrappedValue = ConvTrUpsample1d(
-            stride: downsampleStride, dim: dim, causal: true)
+        self._downsample.wrappedValue = ConvDownsample1d(stride: downsampleStride, dim: dim)
+        self._upsample.wrappedValue = ConvTrUpsample1d(stride: downsampleStride, dim: dim)
         self.encoderCache = self._encoderTransformer.wrappedValue.makeCache(bSize: bSize)
         self.decoderCache = self._decoderTransformer.wrappedValue.makeCache(bSize: bSize)
-    }
-
-    public func warmup() {
-        let pcm = MLXArray.zeros([1, 1, 1920 * 4])
-        let codes = self.encode(pcm)
-        let pcmOut = self.decode(codes)
-        eval(pcmOut)
-    }
-
-    public func encode(_ x: MLXArray) -> MLXArray {
-        self.encoder.resetState()
-        self.encoderCache.forEach { c in c.reset() }
-        var x = self.encoder(x)
-        x = self.encoderTransformer(x, cache: self.encoderCache)[0]
-        x = self.downsample(x)
-        let codes = self.quantizer.encode(x)
-        return codes
     }
 
     public func encodeStep(_ x: StreamArray) -> StreamArray {
@@ -106,15 +83,6 @@ public class Mimi: Module {
         x = self.downsample.step(x)
         let codes = x.map(self.quantizer.encode)
         return codes
-    }
-
-    public func decode(_ codes: MLXArray) -> MLXArray {
-        self.decoder.resetState()
-        self.decoderCache.forEach { c in c.reset() }
-        let emb = self.quantizer.decode(codes)
-        let embUp = self.upsample(emb)
-        let outs = self.decoderTransformer(embUp, cache: self.decoderCache)
-        return self.decoder(outs[0])
     }
 
     public func decodeStep(_ codes: StreamArray) -> StreamArray {
@@ -127,6 +95,8 @@ public class Mimi: Module {
     public func resetState() {
         self.encoder.resetState()
         self.decoder.resetState()
+        self.downsample.resetState()
+        self.upsample.resetState()
         self.encoderCache.forEach { c in c.reset() }
         self.decoderCache.forEach { c in c.reset() }
     }

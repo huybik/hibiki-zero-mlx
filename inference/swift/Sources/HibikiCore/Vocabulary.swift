@@ -4,7 +4,8 @@ import Foundation
 /// field 1 holds the `SentencePiece` messages (piece = 1, score = 2, type = 3).
 public struct Vocabulary {
     public let pieces: [String]
-    /// Control and unknown pieces (`<unk>`, `<s>`, `</s>`, `<pad>`), never printed.
+    /// `<unk>`, `</s>` and `<pad>`: never printed, and silence for the stop rule
+    /// (`text_special_ids` in pipeline.py).
     public let special: Set<Int>
     public let eos: Int
 
@@ -29,7 +30,7 @@ public struct Vocabulary {
                 default: try message.skip(w)
                 }
             }
-            if type == 2 || type == 3 { special.insert(pieces.count) }  // UNKNOWN, CONTROL
+            if type == 2 || piece == "</s>" || piece == "<pad>" { special.insert(pieces.count) }
             if piece == "</s>" { eos = pieces.count }
             pieces.append(piece)
         }

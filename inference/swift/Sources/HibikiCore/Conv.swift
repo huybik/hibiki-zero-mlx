@@ -84,17 +84,9 @@ class ConvTransposed1d: Module, UnaryLayer {
         self.inC = inputChannels
         self.outC = outputChannels
         self.kSize = kernelSize
-        if groups == inC && groups == outC {
-            let eye = repeated(
-                eye(outC).asType(weight.dtype).reshaped([outC, 1, outC]), count: kSize, axis: 1)
-            self._expandedWeight = repeated(weight, count: groups, axis: 0) * eye
-            self.expandedGroups = 1
-        } else if groups > 1 {
-            fatalError("groups are not supported in ConvTranspose1d, \(groups), \(inC), \(outC)")
-        } else {
-            self._expandedWeight = weight
-            self.expandedGroups = groups
-        }
+        (self._expandedWeight, self.expandedGroups) = (weight, groups)
+        super.init()
+        expand()
     }
 
     override func update(
@@ -103,18 +95,24 @@ class ConvTransposed1d: Module, UnaryLayer {
     ) throws -> Self {
         try super.update(
             parameters: parameters, verify: verify, path: path, modulePath: modulePath)
+        expand()
+        return self
+    }
+
+    /// Depthwise transposed convs (groups == channels) run as one dense conv over a
+    /// block-diagonal weight; MLX's convTransposed1d has no groups.
+    private func expand() {
         if groups == inC && groups == outC {
             let eye = repeated(
                 eye(outC).asType(weight.dtype).reshaped([outC, 1, outC]), count: kSize, axis: 1)
-            self._expandedWeight = repeated(weight, count: groups, axis: 0) * eye
-            self.expandedGroups = 1
+            _expandedWeight = repeated(weight, count: groups, axis: 0) * eye
+            expandedGroups = 1
         } else if groups > 1 {
             fatalError("groups are not supported in ConvTranspose1d, \(groups), \(inC), \(outC)")
         } else {
-            self._expandedWeight = weight
-            self.expandedGroups = groups
+            _expandedWeight = weight
+            expandedGroups = groups
         }
-        return self
     }
 
     open func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -132,7 +130,7 @@ class ConvTransposed1d: Module, UnaryLayer {
 
 // weight-norm is handled externally when generating the weights file so this class is just
 // a wrapper around Conv1d
-class NormConv1d: Module, UnaryLayer {
+class NormConv1d: Module {
     @ModuleInfo(key: "conv") var conv: Conv1d
 
     init(
@@ -147,10 +145,6 @@ class NormConv1d: Module, UnaryLayer {
             inputChannels: inC, outputChannels: outC, kernelSize: kSize, stride: stride,
             padding: padding,
             groups: groups, dilation: dilation, bias: bias)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        self.conv(x)
     }
 }
 
@@ -174,23 +168,8 @@ class NormConvTranspose1d: Module, UnaryLayer {
     }
 }
 
-func getExtraPaddingForConv1d(_ x: MLXArray, kSize: Int, stride: Int, paddingTotal: Int) -> Int {
-    let len = x.dim(-1)
-    let nFrames = Float(max(len + paddingTotal - kSize, 0)) / Float(stride) + 1.0
-    let idealLen = (Int(nFrames.rounded(.up)) - 1) * stride + kSize - paddingTotal
-    return max(0, idealLen - len)
-}
-
-func unpad1d(_ x: MLXArray, unpadL: Int, unpadR: Int) -> MLXArray {
-    let len = x.dim(-1)
-    let left = unpadL
-    let right = len - unpadR
-    return x[.ellipsis, left..<right]
-}
-
-class StreamableConv1d: Module, UnaryLayer, StreamingLayer {
+class StreamableConv1d: Module, StreamingLayer {
     let padMode: PadMode
-    let causal: Bool
     let kSize: Int
     var leftPadApplied: Bool = false
     var statePrevXs: StreamArray = StreamArray()
@@ -198,36 +177,13 @@ class StreamableConv1d: Module, UnaryLayer, StreamingLayer {
 
     init(
         inC: Int, outC: Int, kSize: Int, stride: Int, dilation: Int, groups: Int, bias: Bool,
-        causal: Bool, padMode: PadMode
+        padMode: PadMode
     ) {
-        self.causal = causal
         self.padMode = padMode
         self.kSize = kSize
         self._conv.wrappedValue = NormConv1d(
             inC: inC, outC: outC, kSize: kSize, stride: stride, groups: groups, dilation: dilation,
             bias: bias)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var kSize = self.kSize
-        // Effective kernel size with dilations.
-        kSize = (kSize - 1) * self.conv.conv.dilation + 1
-        let paddingTotal = kSize - self.conv.conv.stride
-        let extraPadding = getExtraPaddingForConv1d(
-            x, kSize: kSize, stride: self.conv.conv.stride, paddingTotal: paddingTotal)
-        var pd: MLXArray
-        let z = IntOrPair.init((0, 0))
-        if self.causal {
-            let widths = [z, z, IntOrPair((paddingTotal, extraPadding))]
-            pd = padded(x, widths: widths, mode: self.padMode)
-        } else {
-            let paddingRight = paddingTotal / 2
-            let paddingLeft = paddingTotal - paddingRight
-            let widths = [z, z, IntOrPair((paddingLeft, paddingRight + extraPadding))]
-            pd = padded(x, widths: widths, mode: self.padMode)
-        }
-        let y = self.conv(pd)
-        return y
     }
 
     func resetState() {
@@ -272,33 +228,17 @@ class StreamableConv1d: Module, UnaryLayer, StreamingLayer {
     }
 }
 
-class StreamableConvTranspose1d: Module, UnaryLayer, StreamingLayer {
-    let causal: Bool
+class StreamableConvTranspose1d: Module, StreamingLayer {
     let kSize: Int
     var statePrevYs: StreamArray = StreamArray()
     @ModuleInfo(key: "convtr") var convtr: NormConvTranspose1d
 
     init(
-        inC: Int, outC: Int, kSize: Int, stride: Int, groups: Int, bias: Bool,
-        causal: Bool
+        inC: Int, outC: Int, kSize: Int, stride: Int, groups: Int, bias: Bool
     ) {
-        self.causal = causal
         self.kSize = kSize
         self._convtr.wrappedValue = NormConvTranspose1d(
             inC: inC, outC: outC, kSize: kSize, stride: stride, groups: groups, bias: bias)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let stride = self.convtr.convtr.stride
-        let paddingTotal = max(self.kSize - stride, 0)
-        let x = self.convtr(x)
-        if self.causal {
-            return unpad1d(x, unpadL: 0, unpadR: paddingTotal)
-        } else {
-            let unpadR = paddingTotal / 2
-            let unpadL = paddingTotal - unpadR
-            return unpad1d(x, unpadL: unpadL, unpadR: unpadR)
-        }
     }
 
     func resetState() {
@@ -329,17 +269,13 @@ class StreamableConvTranspose1d: Module, UnaryLayer, StreamingLayer {
     }
 }
 
-class ConvDownsample1d: Module, UnaryLayer, StreamingLayer {
+class ConvDownsample1d: Module, StreamingLayer {
     @ModuleInfo(key: "conv") var conv: StreamableConv1d
 
-    init(stride: Int, dim: Int, causal: Bool) {
+    init(stride: Int, dim: Int) {
         self._conv.wrappedValue = StreamableConv1d(
             inC: dim, outC: dim, kSize: 2 * stride, stride: stride, dilation: 1, groups: 1,
-            bias: false, causal: causal, padMode: .edge)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        self.conv(x)
+            bias: false, padMode: .edge)
     }
 
     func resetState() {
@@ -351,17 +287,12 @@ class ConvDownsample1d: Module, UnaryLayer, StreamingLayer {
     }
 }
 
-class ConvTrUpsample1d: Module, UnaryLayer {
+class ConvTrUpsample1d: Module, StreamingLayer {
     @ModuleInfo(key: "convtr") var convtr: StreamableConvTranspose1d
 
-    init(stride: Int, dim: Int, causal: Bool) {
+    init(stride: Int, dim: Int) {
         self._convtr.wrappedValue = StreamableConvTranspose1d(
-            inC: dim, outC: dim, kSize: 2 * stride, stride: stride, groups: dim, bias: false,
-            causal: causal)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        self.convtr(x)
+            inC: dim, outC: dim, kSize: 2 * stride, stride: stride, groups: dim, bias: false)
     }
 
     func resetState() {

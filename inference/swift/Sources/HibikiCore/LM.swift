@@ -20,7 +20,8 @@ public enum HibikiError: Error, CustomStringConvertible {
     }
 }
 
-/// The subset of a Hibiki-Zero `config.json` this runtime reads.
+/// The subset of a Hibiki-Zero `config.json` this runtime reads, with the defaults of
+/// `moshi_mlx.models.LmConfig.from_config_dict` for keys it treats as optional.
 public struct HibikiConfig: Decodable {
     public let card: Int
     public let nQ: Int
@@ -35,27 +36,30 @@ public struct HibikiConfig: Decodable {
     public let maxPeriod: Double
     public let positionalEmbedding: String
     public let kvRepeat: Int
-    public let norm: String
-    public let gating: String
     public let depformerDim: Int
     public let depformerNumHeads: Int
     public let depformerNumLayers: Int
     public let depformerDimFeedforward: Int?
     public let depformerPosEmb: String
-    public let depformerMultiLinear: Bool
-    public let depformerWeightsPerStep: Bool
     public let depformerWeightsPerStepSchedule: [Int]?
-    public let depformerNorm: String?
-    public let demuxSecondStream: Bool
-    public let crossAttention: Bool
-    public let layerScale: Double?
+    /// Python: `depformer_output_layer_norm`, else whether `depformer_norm` is present.
+    public let depformerOutputNorm: Bool
     public let weightDtype: String?
     public let moshiName: String?
     public let mimiName: String?
     public let tokenizerName: String?
+    // Read only to refuse models this runtime would run wrongly.
+    let gating: String?
+    let norm: String?
+    let depformerMultiLinear: Bool?
+    let depformerWeightsPerStep: Bool?
+    let demuxSecondStream: Bool
+    let crossAttention: Bool
+    let layerScale: Double?
+    let conditioners: Int
 
     enum CodingKeys: String, CodingKey {
-        case card, dim, context, norm, gating, delays
+        case card, dim, context, norm, gating, delays, conditioners
         case nQ = "n_q"
         case depQ = "dep_q"
         case textCard = "text_card"
@@ -74,6 +78,7 @@ public struct HibikiConfig: Decodable {
         case depformerWeightsPerStep = "depformer_weights_per_step"
         case depformerWeightsPerStepSchedule = "depformer_weights_per_step_schedule"
         case depformerNorm = "depformer_norm"
+        case depformerOutputLayerNorm = "depformer_output_layer_norm"
         case demuxSecondStream = "demux_second_stream"
         case crossAttention = "cross_attention"
         case layerScale = "layer_scale"
@@ -83,22 +88,67 @@ public struct HibikiConfig: Decodable {
         case tokenizerName = "tokenizer_name"
     }
 
+    private struct Ignored: Decodable {
+        init(from decoder: Decoder) throws {}
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        card = try c.decode(Int.self, forKey: .card)
+        nQ = try c.decode(Int.self, forKey: .nQ)
+        depQ = try c.decode(Int.self, forKey: .depQ)
+        delays = try c.decode([Int].self, forKey: .delays)
+        dim = try c.decode(Int.self, forKey: .dim)
+        textCard = try c.decode(Int.self, forKey: .textCard)
+        numHeads = try c.decode(Int.self, forKey: .numHeads)
+        numLayers = try c.decode(Int.self, forKey: .numLayers)
+        hiddenScale = try c.decodeIfPresent(Double.self, forKey: .hiddenScale) ?? 4
+        context = try c.decode(Int.self, forKey: .context)
+        maxPeriod = try c.decode(Double.self, forKey: .maxPeriod)
+        positionalEmbedding = try c.decode(String.self, forKey: .positionalEmbedding)
+        kvRepeat = try c.decodeIfPresent(Int.self, forKey: .kvRepeat) ?? 1
+        depformerDim = try c.decode(Int.self, forKey: .depformerDim)
+        depformerNumHeads = try c.decode(Int.self, forKey: .depformerNumHeads)
+        depformerNumLayers = try c.decode(Int.self, forKey: .depformerNumLayers)
+        depformerDimFeedforward = try c.decodeIfPresent(Int.self, forKey: .depformerDimFeedforward)
+        depformerPosEmb = try c.decode(String.self, forKey: .depformerPosEmb)
+        depformerWeightsPerStepSchedule = try c.decodeIfPresent(
+            [Int].self, forKey: .depformerWeightsPerStepSchedule)
+        depformerOutputNorm =
+            try c.decodeIfPresent(Bool.self, forKey: .depformerOutputLayerNorm)
+            ?? c.contains(.depformerNorm)
+        weightDtype = try c.decodeIfPresent(String.self, forKey: .weightDtype)
+        moshiName = try c.decodeIfPresent(String.self, forKey: .moshiName)
+        mimiName = try c.decodeIfPresent(String.self, forKey: .mimiName)
+        tokenizerName = try c.decodeIfPresent(String.self, forKey: .tokenizerName)
+        gating = try c.decodeIfPresent(String.self, forKey: .gating)
+        norm = try c.decodeIfPresent(String.self, forKey: .norm)
+        depformerMultiLinear = try c.decodeIfPresent(Bool.self, forKey: .depformerMultiLinear)
+        depformerWeightsPerStep = try c.decodeIfPresent(Bool.self, forKey: .depformerWeightsPerStep)
+        demuxSecondStream = try c.decodeIfPresent(Bool.self, forKey: .demuxSecondStream) ?? false
+        crossAttention = try c.decodeIfPresent(Bool.self, forKey: .crossAttention) ?? false
+        layerScale = try c.decodeIfPresent(Double.self, forKey: .layerScale)
+        conditioners =
+            try c.decodeIfPresent([String: Ignored].self, forKey: .conditioners)?.count ?? 0
+    }
+
     /// Fails on any setting this runtime does not implement, instead of running a wrong model.
     func validate() throws {
-        if gating != "silu" { throw HibikiError.unsupported("gating \(gating)") }
-        if !norm.hasPrefix("rms_norm") { throw HibikiError.unsupported("norm \(norm)") }
+        if let gating, gating != "silu" { throw HibikiError.unsupported("gating \(gating)") }
+        if let norm, !norm.hasPrefix("rms_norm") { throw HibikiError.unsupported("norm \(norm)") }
         if !["rope", "rope_concat"].contains(positionalEmbedding) {
             throw HibikiError.unsupported("positional_embedding \(positionalEmbedding)")
         }
         if depformerPosEmb != "none" {
             throw HibikiError.unsupported("depformer_pos_emb \(depformerPosEmb)")
         }
-        if !depformerMultiLinear || !depformerWeightsPerStep {
+        if depformerMultiLinear == false || depformerWeightsPerStep == false {
             throw HibikiError.unsupported("a depformer without per-step weights")
         }
         if demuxSecondStream { throw HibikiError.unsupported("demux_second_stream") }
         if crossAttention { throw HibikiError.unsupported("cross_attention") }
         if layerScale != nil { throw HibikiError.unsupported("layer_scale") }
+        if conditioners > 0 { throw HibikiError.unsupported("conditioners") }
         if delays.count != nQ + 1 { throw HibikiError.unsupported("\(delays.count) delays") }
         if let schedule = depformerWeightsPerStepSchedule, schedule.count != depQ {
             throw HibikiError.unsupported("a weights-per-step schedule of \(schedule.count)")
@@ -113,20 +163,18 @@ public struct HibikiConfig: Decodable {
 
     var transformer: TransformerConfig {
         TransformerConfig(
-            dModel: dim, numHeads: numHeads, numLayers: numLayers, causal: true,
-            normFirst: true, biasFF: false, biasAttn: false, layerScale: nil,
+            dModel: dim, numHeads: numHeads, numLayers: numLayers, biasFF: false, biasAttn: false, layerScale: nil,
             positionalEmbedding: positionalEmbedding == "rope_concat" ? .ropeConcat : .rope,
-            useConvBias: true, gating: true, norm: .rmsNorm, context: context,
-            maxPeriod: Int(maxPeriod), maxSeqLen: 4096, kvRepeat: kvRepeat,
+            gating: true, norm: .rmsNorm, context: context, maxPeriod: Int(maxPeriod),
+            kvRepeat: kvRepeat,
             dimFeedForward: Int((hiddenScale * Double(dim)).rounded()), convLayout: false)
     }
 
     var depformer: TransformerConfig {
         TransformerConfig(
             dModel: depformerDim, numHeads: depformerNumHeads, numLayers: depformerNumLayers,
-            causal: true, normFirst: true, biasFF: false, biasAttn: false, layerScale: nil,
-            positionalEmbedding: .none, useConvBias: true, gating: true, norm: .rmsNorm,
-            context: depQ, maxPeriod: 8, maxSeqLen: 4096, kvRepeat: 1,
+            biasFF: false, biasAttn: false, layerScale: nil, positionalEmbedding: .none,
+            gating: true, norm: .rmsNorm, context: depQ, maxPeriod: 8, kvRepeat: 1,
             dimFeedForward: depformerDimFeedforward
                 ?? Int((hiddenScale * Double(depformerDim)).rounded()),
             convLayout: false)
@@ -173,7 +221,7 @@ final class Depformer: Module {
         let slices = (0..<cfg.depQ).map { idx in
             DepformerSlice(
                 inVocab: idx == 0 ? cfg.textCard + 1 : cfg.card + 1, outVocab: cfg.card,
-                dim: dcfg.dModel, outputNorm: cfg.depformerNorm != nil)
+                dim: dcfg.dModel, outputNorm: cfg.depformerOutputNorm)
         }
         self.schedule = schedule
         steps = slices.enumerated().map { idx, slice in
@@ -242,12 +290,18 @@ public final class HibikiLM: Module {
             HibikiConfig.self,
             from: Data(contentsOf: directory.appending(path: "config.json")))
         try cfg.validate()
+        // As pipeline.py `_model_name`: q4 unless weight_dtype is bfloat16.
         let bf16 = cfg.weightDtype == "bfloat16"
-        let name = cfg.moshiName.flatMap {
-            $0.hasSuffix(bf16 ? ".bf16.safetensors" : ".q4.safetensors") ? $0 : nil
-        }
-        guard let name = name ?? (bf16 ? nil : "hibiki.q4.safetensors") else {
-            throw HibikiError.unsupported("bfloat16 without a moshi_name ending in .bf16.safetensors")
+        let name: String
+        if bf16 {
+            guard let moshiName = cfg.moshiName, moshiName.hasSuffix(".bf16.safetensors") else {
+                throw HibikiError.unsupported(
+                    "bfloat16 without a moshi_name ending in .bf16.safetensors")
+            }
+            name = moshiName
+        } else {
+            name = cfg.moshiName.flatMap { $0.hasSuffix(".q4.safetensors") ? $0 : nil }
+                ?? "hibiki.q4.safetensors"
         }
         let url = directory.appending(path: name)
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -255,7 +309,14 @@ public final class HibikiLM: Module {
         }
         let model = HibikiLM(cfg)
         if !bf16 {
-            quantize(model: model, groupSize: 32, bits: 4)
+            // q4 group 32 on layers whose input width divides by 32, as pipeline.py.
+            quantize(model: model, groupSize: 32, bits: 4) { _, module in
+                switch module {
+                case let linear as Linear: linear.weight.dim(-1) % 32 == 0
+                case let embedding as Embedding: embedding.weight.dim(-1) % 32 == 0
+                default: false
+                }
+            }
         }
         var weights: [String: MLXArray] = [:]
         for (key, value) in try loadArrays(url: url) {

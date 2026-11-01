@@ -3,9 +3,9 @@
 //   to 8 s of silence to flush the lag, and generation stops once the input is consumed and the
 //   model emits text EOS or 12 frames of special tokens.
 //
-// hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out OUT.json]
+// hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE]
 //   Loops INPUT for M minutes (default 10) through `Bench`, paced like a live microphone unless
-//   --unpaced, and prints a per-minute summary.
+//   --unpaced, writes BASE.{jsonl,wav,txt} and prints a per-minute summary.
 
 import Foundation
 import HibikiCore
@@ -13,7 +13,7 @@ import MLXRandom
 
 let usage = """
     usage: hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N]
-           hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out OUT.json]
+           hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE]
 
     """
 let tailFrames = 100  // 8 s
@@ -24,17 +24,22 @@ func option(_ name: String) -> String? {
     guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
     return args[i + 1]
 }
-guard args.count >= 2, ["translate", "bench"].contains(args[0]) else {
+func fail() -> Never {
     FileHandle.standardError.write(usage.data(using: .utf8)!)
     exit(2)
 }
+func number<T: LosslessStringConvertible>(_ name: String, default value: T) -> T {
+    guard let text = option(name) else { return value }
+    guard let parsed = T(text) else { fail() }
+    return parsed
+}
+guard args.count >= 2, ["translate", "bench"].contains(args[0]) else { fail() }
 let input = URL(fileURLWithPath: args[1])
 let stem = input.deletingPathExtension().lastPathComponent
-MLXRandom.seed(UInt64(option("--seed") ?? "299792458")!)
-let translator = try Translator(directory: URL(fileURLWithPath: option("--model") ?? "weights"))
-let pcm = try Audio.read(input)
+let seed = number("--seed", default: UInt64(299_792_458))
+let minutes = number("--minutes", default: 10.0)
 
-func translate() throws {
+func translate(_ translator: Translator, _ pcm: [Float]) throws {
     let output = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_swift.wav")
     let steps = pcm.count / Audio.frameSize
     var text = ""
@@ -82,11 +87,13 @@ func translate() throws {
     print("out: \(output.path), text: \(textURL.path)")
 }
 
-func bench() throws {
-    let output = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_bench.json")
-    let result = Bench.run(
-        translator, clip: pcm, minutes: Double(option("--minutes") ?? "10")!,
-        paced: !args.contains("--unpaced")
+func bench(_ translator: Translator, _ pcm: [Float]) throws {
+    let base = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_bench")
+    try FileManager.default.createDirectory(
+        at: base.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let samples = try Bench.run(
+        translator, clip: pcm, minutes: minutes,
+        paced: !args.contains("--unpaced"), output: base
     ) { sample in
         if sample.frame % 750 == 749 {
             print(
@@ -95,11 +102,17 @@ func bench() throws {
                     sample.totalMs, sample.lag))
         }
     }
-    try FileManager.default.createDirectory(
-        at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try JSONEncoder().encode(result.samples).write(to: output)
-    print(Bench.summary(result.samples))
-    print("text: \(result.text.prefix(400))…\nsamples: \(output.path)")
+    print(Bench.summary(samples))
+    print("results: \(base.path).{jsonl,wav,txt}")
 }
 
-try args[0] == "translate" ? translate() : bench()
+do {
+    MLXRandom.seed(seed)
+    let translator = try Translator(
+        directory: URL(fileURLWithPath: option("--model") ?? "weights"))
+    let pcm = try Audio.read(input)
+    try args[0] == "translate" ? translate(translator, pcm) : bench(translator, pcm)
+} catch {
+    FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
+    exit(1)
+}

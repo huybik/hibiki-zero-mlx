@@ -2,10 +2,11 @@
 //
 // Reads Documents/model/ (config.json, weights, Mimi, tokenizer) and Documents/clip.wav, runs
 // `Bench` for `--minutes M` (default 10), paced like a live microphone unless `--unpaced`, and
-// writes Documents/bench-<time>.{json,txt,wav}. Progress and the summary also go to stdout,
-// which `xcrun devicectl device process launch --console` shows.
+// writes Documents/bench-<time>.{jsonl,wav,txt} as it goes. Progress and the summary also go
+// to stdout, which `xcrun devicectl device process launch --console` shows.
 
 import HibikiCore
+import MLX
 import SwiftUI
 
 @main
@@ -35,8 +36,11 @@ final class BenchRun: ObservableObject {
         started = true
         UIApplication.shared.isIdleTimerDisabled = true
         let args = ProcessInfo.processInfo.arguments
-        let minutes = args.firstIndex(of: "--minutes").flatMap { Double(args[$0 + 1]) } ?? 10
+        let minutes = args.firstIndex(of: "--minutes")
+            .flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil } ?? 10
         let paced = !args.contains("--unpaced")
+        // Freed MLX buffers count toward the app's memory limit; keep few of them.
+        Memory.cacheLimit = 256 << 20
         let thread = Thread { [weak self] in
             Self.bench(minutes: minutes, paced: paced) { line in
                 print(line)
@@ -45,6 +49,7 @@ final class BenchRun: ObservableObject {
             }
         }
         thread.stackSize = 8 << 20
+        thread.qualityOfService = .userInteractive  // as a live audio path would run
         thread.start()
     }
 
@@ -58,8 +63,12 @@ final class BenchRun: ObservableObject {
             let clip = try Audio.read(docs.appending(path: "clip.wav"))
             say(String(format: "loaded; footprint %.0f MB", Bench.footprintMB()))
             say("running \(minutes) min, \(paced ? "paced at 12.5 frames/s" : "unpaced")")
-            let result = Bench.run(translator, clip: clip, minutes: minutes, paced: paced) {
-                sample in
+            let stamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let base = docs.appending(path: "bench-\(stamp)")
+            let samples = try Bench.run(
+                translator, clip: clip, minutes: minutes, paced: paced, output: base
+            ) { sample in
                 if sample.frame % 125 == 124 {
                     say(
                         String(
@@ -68,17 +77,8 @@ final class BenchRun: ObservableObject {
                             sample.footprintMB))
                 }
             }
-            let stamp = ISO8601DateFormatter().string(from: Date())
-                .replacingOccurrences(of: ":", with: "-")
-            let base = docs.appending(path: "bench-\(stamp)")
-            try JSONEncoder().encode(result.samples).write(
-                to: base.appendingPathExtension("json"))
-            let summary = Bench.summary(result.samples)
-            try (summary + "\n\n" + result.text + "\n").write(
-                to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
-            try Audio.write(result.pcm, to: base.appendingPathExtension("wav"))
-            say(summary)
-            say("wrote \(base.lastPathComponent).{json,txt,wav}")
+            say(Bench.summary(samples))
+            say("wrote \(base.lastPathComponent).{jsonl,wav,txt}")
         } catch {
             say("error: \(error)")
         }

@@ -1,28 +1,12 @@
 // Copyright (c) Kyutai, all rights reserved.
 // This source code is licensed under the license found in the
 // LICENSE file in the root directory of this source tree.
-//
-// Parts of this file came from:
-// https://github.com/ml-explore/mlx-swift-examples/blob/main/Libraries/LLM/KVCache.swift
-// Copyright © 2024 Apple Inc.
 
 import Foundation
 import MLX
 
-/// Interface for Key/Value cache for LLMs.
-///
-/// See ``LLMModel/newCache(parameters:)-47tyu``
-public protocol KVCache: Evaluatable {
-
-    /// get the current offset
-    var offset: Int { get }
-
-    func update(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray)
-    func reset()
-    func createAttentionMask(h: MLXArray) -> MLXArray?
-}
-
-class RotatingKVCache: KVCache, Evaluatable {
+/// Mimi's transformer cache: a ring of `maxSize` steps, read in full under a mask.
+final class RotatingKVCache {
     let keys: MLXArray
     let values: MLXArray
     let maxSize: Int
@@ -55,10 +39,6 @@ class RotatingKVCache: KVCache, Evaluatable {
 
     func reset() {
         offset = 0
-    }
-
-    func innerState() -> [MLXArray] {
-        [self.keys, self.values].compactMap { $0 }
     }
 
     func createAttentionMask(h: MLXArray) -> MLXArray? {

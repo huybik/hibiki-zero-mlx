@@ -12,12 +12,15 @@ import MLXNN
 /// no mask and a partial one is read as a prefix.
 final class DecodeCache {
     let context: Int
-    private var keys: MLXArray?
-    private var values: MLXArray?
+    private let keys: MLXArray
+    private let values: MLXArray
     private(set) var offset = 0
 
-    init(context: Int) {
+    /// The model runs in bf16 (pipeline.py casts it), so the cache does too.
+    init(kvHeads: Int, headDim: Int, context: Int) {
         self.context = context
+        keys = MLXArray.zeros([1, kvHeads, context, headDim], dtype: .bfloat16)
+        values = MLXArray.zeros([1, kvHeads, context, headDim], dtype: .bfloat16)
     }
 
     func reset() {
@@ -25,18 +28,14 @@ final class DecodeCache {
     }
 
     func update(_ k: MLXArray, _ v: MLXArray) -> (MLXArray, MLXArray) {
-        if keys == nil {
-            keys = MLXArray.zeros([1, k.dim(1), context, k.dim(3)], dtype: k.dtype)
-            values = MLXArray.zeros([1, v.dim(1), context, v.dim(3)], dtype: v.dtype)
-        }
         let slot = offset % context
-        keys![0..., 0..., slot..<(slot + 1)] = k
-        values![0..., 0..., slot..<(slot + 1)] = v
+        keys[0..., 0..., slot..<(slot + 1)] = k
+        values[0..., 0..., slot..<(slot + 1)] = v
         offset += 1
         if offset < context {
-            return (keys![0..., 0..., ..<offset], values![0..., 0..., ..<offset])
+            return (keys[0..., 0..., ..<offset], values[0..., 0..., ..<offset])
         }
-        return (keys!, values!)
+        return (keys, values)
     }
 }
 
@@ -49,7 +48,11 @@ final class DecodeTransformer {
 
     init(_ transformer: Transformer) {
         layers = transformer.layers
-        caches = layers.map { _ in DecodeCache(context: transformer.cfg.context) }
+        let cfg = transformer.cfg
+        caches = layers.map { _ in
+            DecodeCache(
+                kvHeads: cfg.numHeads / cfg.kvRepeat, headDim: cfg.headDim(), context: cfg.context)
+        }
         // norm1, projections and RoPE at the offset passed as an array.
         pre = layers.map { layer in
             compile { args in

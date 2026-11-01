@@ -53,46 +53,27 @@ class EuclideanCodebook: Module {
 }
 
 class VectorQuantization: Module {
-    @ModuleInfo(key: "project_in") var projectIn: Linear?
-    @ModuleInfo(key: "project_out") var projectOut: Linear?
     @ModuleInfo(key: "_codebook") var codebook: EuclideanCodebook
 
-    init(dim: Int, codebookSize: Int, codebookDim: Int? = nil) {
-        let codebookDim = codebookDim ?? dim
-        if codebookDim == dim {
-            self._projectIn.wrappedValue = nil
-            self._projectOut.wrappedValue = nil
-        } else {
-            self._projectIn.wrappedValue = Linear(dim, codebookDim)
-            self._projectOut.wrappedValue = Linear(codebookDim, dim)
-        }
-        self._codebook.wrappedValue = EuclideanCodebook(
-            dim: codebookDim, codebookSize: codebookSize)
+    init(dim: Int, codebookSize: Int) {
+        self._codebook.wrappedValue = EuclideanCodebook(dim: dim, codebookSize: codebookSize)
     }
 
     func encode(_ x: MLXArray) -> MLXArray {
-        var x = x.swappedAxes(-1, -2)
-        if let projectIn = self.projectIn {
-            x = projectIn(x)
-        }
-        return self.codebook.encode(x)
+        self.codebook.encode(x.swappedAxes(-1, -2))
     }
 
     func decode(_ indexes: MLXArray) -> MLXArray {
-        var quantized = self.codebook.decode(indexes)
-        if let projectOut = self.projectOut {
-            quantized = projectOut(quantized)
-        }
-        return quantized.swappedAxes(-1, -2)
+        self.codebook.decode(indexes).swappedAxes(-1, -2)
     }
 }
 
 class ResidualVectorQuantization: Module {
     @ModuleInfo(key: "layers") var layers: [VectorQuantization]
 
-    init(nQ: Int, dim: Int, codebookSize: Int, codebookDim: Int? = nil) {
+    init(nQ: Int, dim: Int, codebookSize: Int) {
         self._layers.wrappedValue = (0..<nQ).map { _ in
-            VectorQuantization(dim: dim, codebookSize: codebookSize, codebookDim: codebookDim)
+            VectorQuantization(dim: dim, codebookSize: codebookSize)
         }
     }
 
@@ -120,43 +101,23 @@ class ResidualVectorQuantization: Module {
 
 class ResidualVectorQuantizer: Module {
     @ModuleInfo(key: "vq") var vq: ResidualVectorQuantization
-    @ModuleInfo(key: "input_proj") var inputProj: Conv1d?
-    @ModuleInfo(key: "output_proj") var outputProj: Conv1d?
+    @ModuleInfo(key: "input_proj") var inputProj: Conv1d
+    @ModuleInfo(key: "output_proj") var outputProj: Conv1d
 
-    init(dim: Int, inputDim: Int?, outputDim: Int?, nQ: Int, bins: Int, forceProjection: Bool) {
-        let inputDim = inputDim ?? dim
-        let outputDim = outputDim ?? dim
-        if inputDim == dim && !forceProjection {
-            self._inputProj.wrappedValue = nil
-        } else {
-            self._inputProj.wrappedValue = Conv1d(
-                inputChannels: inputDim, outputChannels: dim, kernelSize: 1, bias: false)
-        }
-        if outputDim == dim && !forceProjection {
-            self._outputProj.wrappedValue = nil
-        } else {
-            self._outputProj.wrappedValue = Conv1d(
-                inputChannels: dim, outputChannels: outputDim, kernelSize: 1, bias: false)
-        }
-        self._vq.wrappedValue = ResidualVectorQuantization(
-            nQ: nQ, dim: dim, codebookSize: bins, codebookDim: nil)
+    init(dim: Int, inputDim: Int, outputDim: Int, nQ: Int, bins: Int) {
+        self._inputProj.wrappedValue = Conv1d(
+            inputChannels: inputDim, outputChannels: dim, kernelSize: 1, bias: false)
+        self._outputProj.wrappedValue = Conv1d(
+            inputChannels: dim, outputChannels: outputDim, kernelSize: 1, bias: false)
+        self._vq.wrappedValue = ResidualVectorQuantization(nQ: nQ, dim: dim, codebookSize: bins)
     }
 
     func encode(_ x: MLXArray) -> MLXArray {
-        var x = x
-        if let inputProj = self.inputProj {
-            x = inputProj(x)
-        }
-        return self.vq.encode(x).swappedAxes(0, 1)
+        self.vq.encode(inputProj(x)).swappedAxes(0, 1)
     }
 
     func decode(_ codes: MLXArray) -> MLXArray {
-        let codes = codes.swappedAxes(0, 1)
-        var quantized = self.vq.decode(codes)
-        if let outputProj = self.outputProj {
-            quantized = outputProj(quantized)
-        }
-        return quantized
+        outputProj(self.vq.decode(codes.swappedAxes(0, 1)))
     }
 }
 
@@ -165,14 +126,12 @@ class SplitResidualVectorQuantizer: Module {
     @ModuleInfo(key: "rvq_first") var rvqFirst: ResidualVectorQuantizer
     @ModuleInfo(key: "rvq_rest") var rvqRest: ResidualVectorQuantizer
 
-    init(dim: Int, inputDim: Int?, outputDim: Int?, nQ: Int, bins: Int) {
+    init(dim: Int, inputDim: Int, outputDim: Int, nQ: Int, bins: Int) {
         self.nQ = nQ
         self._rvqFirst.wrappedValue = ResidualVectorQuantizer(
-            dim: dim, inputDim: inputDim, outputDim: outputDim, nQ: 1, bins: bins,
-            forceProjection: true)
+            dim: dim, inputDim: inputDim, outputDim: outputDim, nQ: 1, bins: bins)
         self._rvqRest.wrappedValue = ResidualVectorQuantizer(
-            dim: dim, inputDim: inputDim, outputDim: outputDim, nQ: nQ - 1, bins: bins,
-            forceProjection: true)
+            dim: dim, inputDim: inputDim, outputDim: outputDim, nQ: nQ - 1, bins: bins)
     }
 
     func encode(_ x: MLXArray) -> MLXArray {

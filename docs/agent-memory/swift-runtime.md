@@ -13,22 +13,28 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
 - `Sources/HibikiCore/` is the library:
   - Mimi, the transformer and the rotating KV cache are vendored from
     [moshi-swift](https://github.com/kyutai-labs/moshi-swift) (MIT, commit `df64ffd`,
-    `LICENSE-moshi-swift`), cut to what Mimi and the LM use.
+    `LICENSE-moshi-swift`), cut to Mimi's streaming path (`encodeStep`, `decodeStep`) and the
+    transformer layers the LM reuses.
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams), `Translator.swift` (one 80 ms frame through Mimi and the
     LM), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads the SentencePiece
     `.model` protobuf directly) and `Audio.swift`.
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (8 s silence tail,
-  stop on text EOS or 12 special frames, seed 299792458); `bench` runs `Bench`.
+  stop on text EOS or 12 frames of `<unk>`/`</s>`/`<pad>`, seed 299792458); `bench` runs
+  `Bench`, which streams `<base>.jsonl` (one sample per frame) and `<base>.wav` to disk as it
+  runs, so a killed run keeps its data.
 - `HibikiBench/` is the iOS app: a hand-written Xcode project (synchronized folder `App/`) that
   depends on the local package, with the increased-memory-limit entitlement. The team ID is
-  passed on the command line (`DEVELOPMENT_TEAM=`), not stored in the project.
+  passed on the command line (`DEVELOPMENT_TEAM=`), not stored in the project. It caps MLX's
+  buffer cache at 256 MB (freed buffers count toward the app's memory limit) and runs the
+  bench on a user-interactive thread.
 - Hibiki Edge (An Quách's 1B Swift app) has no licence file, so none of its code is used here.
 
 ## Hibiki-Zero deltas
 
-Stock moshi-swift runs none of the four; this runtime implements them, reading `config.json` and
-failing on any setting it does not implement:
+Stock moshi-swift runs none of the four; this runtime implements them. It reads `config.json`
+with `LmConfig.from_config_dict`'s defaults and fails on any setting it does not implement
+(cross-attention, conditioners, layer scale, other norms or gating):
 
 | Delta | Where |
 |---|---|
@@ -41,9 +47,12 @@ failing on any setting it does not implement:
   but steps 8–15 share one weight set (`depformer_weights_per_step_schedule`). `Depformer.remap`
   loads each set once into `depformer.cores.N`: 1.96 GB of LM weights instead of 2.41 GB. MLX
   loads safetensors lazily, so the dropped copies are never read.
+- q4 quantizes, as `pipeline.py`, only layers whose input width divides by 32.
 - mlx-swift 0.32 treats every `MLXArray` property of a module as a parameter unless its name
   starts with `_`, so Mimi's derived codebook arrays are `_embedding`, `_c2`, `_expandedWeight`.
-  The Mimi checkpoint holds 32 codebooks; `Mimi.load` keeps the 16 in use.
+  The Mimi checkpoint holds 32 codebooks; `Mimi.load` keeps the 16 in use. `Mimi.resetState`
+  clears every streaming layer, the down/upsampler included, so a reset session starts from
+  edge padding as a fresh rustymimi tokenizer does.
 
 ## Parity
 
@@ -69,7 +78,12 @@ the per-slice depformer steps as `Decode.swift` does, each over fixed shapes
 ([mlx-inference](mlx-inference.md#memory)).
 
 Footprint after load is 2.8 GB: LM 1.96 GB, Mimi 0.37 GB (fp32), KV cache 0.34 GB (28 layers,
-3,000 frames, bf16, allocated in full at the first frame), runtime buffers.
+3,000 frames, bf16, allocated in full at the first frame), runtime buffers. "main" in the stage
+times also covers building the depformer graph on the CPU, and reading the text token is a
+second GPU round trip per frame.
+
+The Mac numbers need an idle GPU: with the cache build (`cache_codes`) running, the same run
+took 80 ms/frame.
 
 ## Device test
 

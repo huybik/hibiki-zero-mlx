@@ -2,15 +2,18 @@ import Foundation
 import os
 
 /// Sustained-load test: feeds a looped clip for a fixed duration, either paced like a live
-/// microphone (one frame every 80 ms) or back to back, and records every frame's stage times,
-/// lag, thermal state and memory.
+/// microphone (frame i is available at (i + 1) × 80 ms) or back to back, and records every
+/// frame's stage times, lag, thermal state and memory. Results go to disk as they are made,
+/// so a run the system kills still leaves its data: `<base>.jsonl` (one sample per frame),
+/// `<base>.wav` (the translation) and, at the end, `<base>.txt` (summary and text).
 public enum Bench {
     public struct Sample: Codable {
         public let frame: Int
         /// Seconds since the run started, when this frame finished.
         public let wall: Double
-        /// Paced: seconds between the frame's arrival and its result (stays under 0.08 while
-        /// the device keeps up, grows without bound when it does not). Unpaced: 0.
+        /// Paced: seconds between the end of the frame's 80 ms of audio and its result (stays
+        /// under 0.08 while the device keeps up, grows without bound when it does not).
+        /// Unpaced: 0.
         public let lag: Double
         public let encodeMs: Double
         public let mainMs: Double
@@ -25,27 +28,26 @@ public enum Bench {
         public var totalMs: Double { encodeMs + mainMs + depformerMs + decodeMs }
     }
 
-    public struct Result {
-        public let samples: [Sample]
-        public let text: String
-        public let pcm: [Float]
-    }
-
     public static func run(
-        _ translator: Translator, clip: [Float], minutes: Double, paced: Bool,
+        _ translator: Translator, clip: [Float], minutes: Double, paced: Bool, output base: URL,
         progress: (Sample) -> Void = { _ in }
-    ) -> Result {
+    ) throws -> [Sample] {
         let frames = Int(minutes * 60 * 12.5)
         let clipFrames = clip.count / Audio.frameSize
         precondition(clipFrames > 0, "the clip is shorter than one frame")
         translator.reset()
+        let jsonl = base.appendingPathExtension("jsonl")
+        FileManager.default.createFile(atPath: jsonl.path, contents: nil)
+        let log = try FileHandle(forWritingTo: jsonl)
+        defer { try? log.close() }
+        let wav = try Audio.Writer(base.appendingPathExtension("wav"))
+        let encoder = JSONEncoder()
         var samples: [Sample] = []
         var text = ""
-        var pcm: [Float] = []
         samples.reserveCapacity(frames)
         let start = DispatchTime.now()
         for idx in 0..<frames {
-            let arrival = Double(idx) / 12.5
+            let arrival = Double(idx + 1) / 12.5
             if paced {
                 let wait = arrival - seconds(start, DispatchTime.now())
                 if wait > 0 { Thread.sleep(forTimeInterval: wait) }
@@ -54,7 +56,7 @@ public enum Bench {
             let frame = translator.step(Array(clip[offset..<(offset + Audio.frameSize)]))
             let wall = seconds(start, DispatchTime.now())
             text += frame.text ?? ""
-            pcm += frame.pcm ?? []
+            try wav.append(frame.pcm ?? [])
             let sample = Sample(
                 frame: idx, wall: wall, lag: paced ? wall - arrival : 0,
                 encodeMs: 1000 * frame.timing.encode, mainMs: 1000 * frame.timing.main,
@@ -62,9 +64,12 @@ public enum Bench {
                 thermal: ProcessInfo.processInfo.thermalState.rawValue,
                 footprintMB: footprintMB(), availableMB: availableMB())
             samples.append(sample)
+            try log.write(contentsOf: encoder.encode(sample) + Data("\n".utf8))
             progress(sample)
         }
-        return Result(samples: samples, text: text, pcm: pcm)
+        try (summary(samples) + "\n\n" + text + "\n").write(
+            to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
+        return samples
     }
 
     /// One line per minute: frame-time percentiles, worst lag, thermal state and memory.

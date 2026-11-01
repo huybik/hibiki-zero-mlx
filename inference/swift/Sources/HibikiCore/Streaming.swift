@@ -17,10 +17,6 @@ public class StreamArray {
         self.inner?.dim(dim) ?? 0
     }
 
-    public func eval() {
-        self.inner?.eval()
-    }
-
     public func cat2(_ rhs: StreamArray, axis: Int) -> StreamArray {
         switch (self.inner, rhs.inner) {
         case (.none, .none): StreamArray()
@@ -87,51 +83,31 @@ public protocol StreamingLayer {
     func step(_ x: StreamArray) -> StreamArray
 }
 
-public class StreamingBinOp {
-    enum BinOp {
-        case add
-        case mul
-        case sub
-        case div
-    }
-
-    var prevLHS: StreamArray
-    var prevRHS: StreamArray
-    let op: BinOp
+/// Adds two streams that may arrive with different lengths, keeping the unmatched tail.
+final class StreamingAdd {
+    var prevLHS = StreamArray()
+    var prevRHS = StreamArray()
     let axis: Int
 
-    init(_ op: BinOp, axis: Int) {
-        self.prevLHS = StreamArray()
-        self.prevRHS = StreamArray()
-        self.op = op
+    init(axis: Int) {
         self.axis = axis
     }
 
-    public func resetState() {
+    func resetState() {
         self.prevLHS = StreamArray()
         self.prevRHS = StreamArray()
     }
 
-    public func step(_ lhs: StreamArray, _ rhs: StreamArray) -> StreamArray {
+    func step(_ lhs: StreamArray, _ rhs: StreamArray) -> StreamArray {
         let lhs = self.prevLHS.cat2(lhs, axis: self.axis)
         let rhs = self.prevRHS.cat2(rhs, axis: self.axis)
-        let lhsLen = lhs.dim(self.axis)
-        let rhsLen = rhs.dim(self.axis)
-        let commonLen = min(lhsLen, rhsLen)
+        let commonLen = min(lhs.dim(self.axis), rhs.dim(self.axis))
         let (lhs_, prevLHS) = lhs.split(lhsLen: commonLen, axis: self.axis)
         let (rhs_, prevRHS) = rhs.split(lhsLen: commonLen, axis: self.axis)
         self.prevLHS = prevLHS
         self.prevRHS = prevRHS
         switch (lhs_.inner, rhs_.inner) {
-        case (.some(let l), .some(let r)):
-            var res: MLXArray
-            switch self.op {
-            case .add: res = l + r
-            case .sub: res = l - r
-            case .mul: res = l * r
-            case .div: res = l / r
-            }
-            return StreamArray(res)
+        case (.some(let l), .some(let r)): return StreamArray(l + r)
         case (.none, .none): return StreamArray()
         case _: fatalError("internal error")
         }
