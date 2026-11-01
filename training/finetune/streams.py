@@ -90,7 +90,6 @@ class Piece:
 class Stream:
     pieces: tuple[Piece, ...]
     frames: int
-    silence_offset: int
 
 
 def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layout]:
@@ -144,22 +143,19 @@ def _gap(rng: random.Random) -> int:
     return rng.randint(low, high)
 
 
-def plan_streams(
-    rows: list[Row], min_frames: int, max_frames: int, steady_frames: int, seed: int
-) -> list[Stream]:
+def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -> list[Stream]:
     """Cut every row, once, into streams of min_frames..max_frames frames (the last may be
-    shorter); `steady_frames` is the steady part of the silence track."""
+    shorter)."""
     longest = max(max(row.vi_frames, row.en_frames) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
-    # A stream still under min_frames grows by at most a long gap and a row, which must fit.
-    if max_frames < min_frames + LONG_GAP[1] + longest:
+    # A stream still under min_frames (at most min_frames - 1) grows by at most a long gap and a
+    # row, which must fit.
+    if max_frames < min_frames - 1 + LONG_GAP[1] + longest:
         raise ValueError(
             f"Stream lengths {min_frames}..{max_frames} must differ by at least a "
             f"{longest}-frame row and a {LONG_GAP[1]}-frame gap"
         )
-    if steady_frames < max_frames:
-        raise ValueError("The silence track must cover the longest stream")
     rng = random.Random(seed)
     chunks: dict[str, list[tuple[int, int]]] = defaultdict(list)
     units: list[list[int]] = []
@@ -177,8 +173,7 @@ def plan_streams(
     budget = vi_end = en_end = frames = 0
 
     def close() -> None:
-        offset = rng.randint(0, steady_frames - frames)
-        streams.append(Stream(tuple(pieces), frames, offset))
+        streams.append(Stream(tuple(pieces), frames))
 
     for index in (index for unit in units for index in unit):
         row = rows[index]
@@ -216,9 +211,9 @@ def assemble(
     """The stream's int32 codes [33, frames]; `silence` is the `silence_track`."""
     q = layout.dep_q
     frames = stream.frames
-    # The encoder's start-up codes open the stream, as at inference; steady silence follows.
-    steady = silence[:, SILENCE_WARMUP + stream.silence_offset :]
-    quiet = torch.cat([silence[:, :SILENCE_WARMUP], steady], dim=1)[:, :frames]
+    # Silence encoded from a fresh state, as inference encodes a stream: start-up codes, then
+    # steady silence.
+    quiet = silence[:, :frames]
     last_piece = stream.pieces[-1]
     last = rows[last_piece.row]
     text_eos = last_piece.en_start + last.en_frames - last.delay_frames
@@ -261,9 +256,10 @@ def silence_track(mimi: Any, frames: int) -> torch.Tensor:
     """Mimi codes of `frames` frames of digital silence encoded from a fresh state,
     [codebooks, frames] int32 on the CPU.
 
-    The first SILENCE_WARMUP frames hold the start-up codes (~11 frames of a transient, the codes
-    a cached row's delay begins with); the rest is steady silence, a few repeating patterns rather
-    than one frame (codebook 0 is 1316 on ~99% of frames), so gaps take slices of it.
+    It is the silence a stream holds wherever nobody speaks: start-up codes in the first
+    SILENCE_WARMUP frames (frames 0-14 differ, codebook 0 settles at frame 11; they equal a cached
+    row's delay frames), then steady silence, a few repeating patterns rather than one frame
+    (codebook 0 is 1316 on ~99% of frames).
     """
     samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
     device = next(mimi.parameters()).device
@@ -287,11 +283,12 @@ class StreamDataset(Dataset):
     ):
         if silence.shape[0] != layout.dep_q:
             raise ValueError(f"Silence has {silence.shape[0]} codebooks, need {layout.dep_q}")
+        if silence.shape[1] < stream_frames[1]:
+            raise ValueError("The silence track must cover the longest stream")
         self.rows = rows
         self.layout = layout
         self.silence = silence
-        steady = int(silence.shape[1]) - SILENCE_WARMUP
-        self.streams = plan_streams(rows, *stream_frames, steady, seed)
+        self.streams = plan_streams(rows, *stream_frames, seed)
 
     def __len__(self) -> int:
         return len(self.streams)

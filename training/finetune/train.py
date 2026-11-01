@@ -376,7 +376,7 @@ def main() -> None:
     frames = stream_frames(args.stream_seconds)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
     # near-tie in a residual code).
-    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), 2 * frames[1])
+    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
 
     rows, layout = streams.load_rows(cache_dirs, args.max_frames)
     dataset = streams.StreamDataset(rows, layout, silence, frames, args.seed)

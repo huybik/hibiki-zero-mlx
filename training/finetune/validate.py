@@ -75,7 +75,7 @@ def main() -> None:
 
     checkpoint_info = common.load_checkpoint_info(args)
     frames = stream_frames(args.stream_seconds)
-    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), 2 * frames[1])
+    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
     rows, layout = streams.load_rows([cache_dir], args.max_frames)
     dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED)
     dataloader = DataLoader(

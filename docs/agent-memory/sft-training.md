@@ -30,8 +30,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   machine and resume gets the same codes but for a rare residual near-tie (1 of 1,876 frames
   between thread counts).
 - Mimi codes depend on the encoder's state. Inference encodes one stream from a fresh state, so
-  a stream opens with the encoder's start-up codes (the silence track's first 16 frames) and is
-  steady silence elsewhere. Every cached clip was encoded alone from a fresh state, so unless a
+  wherever nobody speaks a stream holds the silence track at the same frames: digital silence
+  encoded from a fresh state, start-up codes in its first 16 frames, then steady silence. Every cached clip was encoded alone from a fresh state, so unless a
   piece opens the stream its Vietnamese frame 0 becomes silence (a start-up marker: codebook 0 is
   1049, 1698 or 995 in ~90% of rows; frame 1 already has ~200 values), and so does English silence
   before the first word within a clip's first 16 frames. What stays different from a continuous
@@ -47,10 +47,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset.
 - Measured on 6,152 rows of `cv27-00010`, `libriheavy-medium-00050`,
-  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-01): 1,421 streams of 47 s median
-  (p10 33, p90 66; none but the last under 30 s), 4 rows each, 20% of the Vietnamese side
-  silent; the 2 s overhang cap binds at the median join, since the English runs longer than the
-  Vietnamese; batches hold 7 streams median at 97.6% fill.
+  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-01): 1,433 streams of 47 s median
+  (p10 34, p90 64; none under 30 s), 4 rows each, 20% of the Vietnamese side silent; the 2 s
+  overhang cap binds at the median join, since the English runs longer than the Vietnamese;
+  batches hold 7 streams median, streams filling 98.6% of the padded frames (92.4% of the
+  4,608-frame budget).
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
