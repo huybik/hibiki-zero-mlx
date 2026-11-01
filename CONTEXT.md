@@ -27,10 +27,12 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
+                                                            └─► swift/ (MLX Swift: CLI, iOS bench app)
 ```
 
 - `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
-  vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
+  vendored `moshi-mlx/`, `tools/`, `assets/leon.wav`, the `macos/` test app and `swift/`, the
+  native MLX Swift runtime with its iOS benchmark app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
   builder in MLX, the evaluation-set builder) and `finetune/` (the generic SFT trainer, evaluation
@@ -97,6 +99,7 @@ inference/ (Apple Silicon, MLX)
 | Read when working on… | Note | Main paths |
 |---|---|---|
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
+| Swift runtime, iOS app, on-device tests | [swift-runtime](docs/agent-memory/swift-runtime.md) | `inference/swift/` |
 | SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
 | Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |

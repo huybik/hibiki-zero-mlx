@@ -1,0 +1,57 @@
+# Swift runtime
+
+Hibiki-Zero in MLX Swift, for macOS and iOS. It runs the same staged model directories as the
+Python runtime (`weights/`, or a `convert_mlx_{q4,bf16}.py` output) and matches it within bf16
+noise ([swift-runtime](../../docs/agent-memory/swift-runtime.md)).
+
+```text
+Package.swift          SwiftPM package, mlx-swift pinned
+Sources/HibikiCore/    the library: Mimi, the Hibiki-Zero LM, the frame loop, Bench
+Sources/hibiki/        macOS CLI: translate, bench
+HibikiBench/           iOS app that runs Bench on a phone
+```
+
+## macOS
+
+`swift build` cannot compile MLX's Metal shaders, so build with `xcodebuild`, from this directory:
+
+```sh
+xcodebuild -scheme hibiki -destination 'platform=macOS' -derivedDataPath .build/xcode \
+  -configuration Release -skipPackagePluginValidation build
+cd ../..   # repo root, where weights/ lives
+inference/swift/.build/xcode/Build/Products/Release/hibiki translate inference/assets/leon.wav
+inference/swift/.build/xcode/Build/Products/Release/hibiki bench inference/assets/leon.wav --minutes 10
+```
+
+`translate` writes `translations/<stem>_swift.{wav,txt}`. `bench` loops the clip for the given
+minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`, and prints frame times,
+lag, thermal state and memory per minute.
+
+## iPhone
+
+Build and install with your own team, then copy the model and a clip into the app's Documents
+folder (Finder file sharing works too) and launch it:
+
+```sh
+DEVICE=<udid from: xcrun devicectl list devices>
+APP=com.huybik.hibikibench
+cd HibikiBench
+xcodebuild -project HibikiBench.xcodeproj -scheme HibikiBench -destination "id=$DEVICE" \
+  -configuration Release -derivedDataPath ../.build/ios -allowProvisioningUpdates \
+  DEVELOPMENT_TEAM=<team id> -skipPackagePluginValidation build
+xcrun devicectl device install app --device $DEVICE \
+  ../.build/ios/Build/Products/Release-iphoneos/HibikiBench.app
+cd ../../..   # repo root
+for f in config.json hibiki.q4.safetensors mimi-pytorch-e351c8d8@125.safetensors \
+         tokenizer_spm_48k_multi6_2.model; do
+  xcrun devicectl device copy to --device $DEVICE --domain-type appDataContainer \
+    --domain-identifier $APP --source weights/$f --destination Documents/model/$f
+done
+xcrun devicectl device copy to --device $DEVICE --domain-type appDataContainer \
+  --domain-identifier $APP --source inference/assets/leon.wav --destination Documents/clip.wav
+xcrun devicectl device process launch --device $DEVICE --console --terminate-existing $APP \
+  --minutes 10
+```
+
+The phone must be unlocked; the app keeps it awake while it runs. Results land in
+`Documents/bench-<time>.{json,txt,wav}`; copy them back with `devicectl device copy from`.

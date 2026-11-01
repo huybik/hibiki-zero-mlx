@@ -1,6 +1,7 @@
 # MLX inference
 
-Read when touching anything under `inference/`.
+Read when touching anything under `inference/` except `inference/swift/`
+([swift-runtime](swift-runtime.md)).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runtime](#runtime) ·
 [Model directories](#model-directories) · [Vendored moshi-mlx](#vendored-moshi-mlx) · [Gates](#gates) ·
 [Memory](#memory)
