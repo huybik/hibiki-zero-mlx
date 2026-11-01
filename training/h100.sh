@@ -62,6 +62,7 @@ setup() {
     einops==0.8.1 \
     huggingface-hub==1.21.0 \
     numpy==2.2.6 \
+    pyarrow==21.0.0 \
     sacrebleu==2.6.0 \
     safetensors==0.8.0 \
     sentencepiece==0.2.1 \

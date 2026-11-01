@@ -35,11 +35,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   `vi-step135000-mlx-bf16/`.
 - `/Volumes/data/datasets/en_vi_speech/` is the EN-VI dataset holding the English corpus
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)), and `/Volumes/data/datasets/phomt-grounded-v2-5s/`
-  the restored PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)). The FLEURS
-  data are deleted.
+  the restored PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)). FLEURS and
+  MultiMed-ST are evaluation sets only, built into `data/eval/`
+  ([sft-training](sft-training.md#evaluation-sets)).
 - Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
   (`HF_HOME`).
-- Gitignored local state: `data/` (restored Mimi caches), `runs/` (training runs and eval
+- Gitignored local state: `data/` (restored Mimi caches, `data/eval/`), `runs/` (training runs and eval
   outputs), `translations/` and `output/`.
 
 ## Git

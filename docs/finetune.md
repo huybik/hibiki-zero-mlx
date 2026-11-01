@@ -121,12 +121,19 @@ Runs recorded before the `inference/`/`training/` split, such as
 
 ## Evaluate a checkpoint
 
+Build the real-Vietnamese evaluation sets once per pod
+([sft-training](agent-memory/sft-training.md#evaluation-sets)):
+
+```bash
+./.venv/bin/python -m training.prep.eval_sets
+```
+
 ```bash
 ./.venv/bin/python -m training.finetune.validate \
   --cache-dir data/cache/VALIDATION \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors
 ./.venv/bin/python -m training.finetune.eval \
-  --pairs PAIRS.jsonl \
+  --pairs data/eval/fleurs-vi/dev.jsonl --limit 361 \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors \
   --batch-size 8 --stop-on-eos --text-only --seed 42 \
   --out-dir runs/RUN_NAME/eval_stepNNNNNN

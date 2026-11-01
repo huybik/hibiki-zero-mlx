@@ -160,6 +160,8 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
   builder skips the built shards and rebuilds the unfinished one. Nothing restarts it on its own: a
   logout or restart ends it (the macOS 27.2 update on 2026-10-30 logged out at 13:23 and the build
   resumed at 14:01, at 42.2%).
+- It exited on 2026-11-01 at 12:08 with status 143 (SIGTERM) and 1,610 of the 1,835 main source
+  shards built here; restart it as above.
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
   more `--cache-dir` to use it.

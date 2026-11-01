@@ -3,7 +3,7 @@
 Read when touching `training/h100.sh` or `training/finetune/`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) · [Objective](#objective) ·
 [Launcher](#launcher) · [Checkpoints and recovery](#checkpoints-and-recovery) ·
-[Side tools](#side-tools)
+[Side tools](#side-tools) · [Evaluation sets](#evaluation-sets)
 
 The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered in
 [sft-data-caches](sft-data-caches.md).
@@ -88,3 +88,27 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   applies no frame filter.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.
 - `train.py` and `eval.py` take a required `--out-dir`.
+
+## Evaluation sets
+
+`training.prep.eval_sets` (huggingface_hub and pyarrow only, so it runs on the Mac or the pod)
+writes `eval.py` pair files of real Vietnamese speech under `data/eval/`; they are never trained
+on ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). Built and checked on 2026-11-01:
+
+| File | Rows | Hours | Use |
+|---|---:|---:|---|
+| `fleurs-vi/dev.jsonl` | 361 | 1.19 | checkpoint selection |
+| `fleurs-vi/test.jsonl` | 857 | 3.00 | final report |
+| `multimed-vi/select.jsonl` | 1,718 | 3.01 | non-regression gate |
+| `multimed-vi/final.jsonl` | 1,719 | 3.02 | final report |
+
+- FLEURS `google/fleurs` at `70bb2e8`: `vi_vn` 16 kHz WAV read speech; `text_en` is the `en_us`
+  raw text of the same sentence id (every Vietnamese row has one). Several speakers read each
+  sentence, so ids are the WAV stems.
+- MultiMed-ST `leduckhai/MultiMed-ST` at `d8c3b30`, Vietnamese `corrected.test` (3,437 rows),
+  split by a `random.Random(0)` shuffle into `select` and `final`. Every clip is **8 kHz** mono
+  Vorbis (the card's 16 kHz is the decode rate): telephone band. Segments are cut mid-phrase
+  (one starts with the tail of "bệnh viện") while the English is a clean sentence, so read chrF
+  rather than BLEU. Only the test split's English was corrected by annotators; `eval` and
+  `train` are raw Gemini drafts and are not used. No conversation ids exist, so the halves may
+  share conversations.

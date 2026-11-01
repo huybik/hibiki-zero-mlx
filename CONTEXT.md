@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-29
+Last verified: 2026-11-01
 
 ## Purpose
 
@@ -32,20 +32,22 @@ inference/ (Apple Silicon, MLX)
   vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
-  builder in MLX) and `finetune/` (the generic SFT trainer, evaluation and HF recovery sync). Its
-  modules run from the repo root as `python -m training.<package>.<module>`; everything except
-  the translation, the TTS, the dataset publisher and the cache builder runs on CUDA only.
+  builder in MLX, the evaluation-set builder) and `finetune/` (the generic SFT trainer, evaluation
+  and HF recovery sync). Its modules run from the repo root as
+  `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
+  publisher, the cache builder and the evaluation-set builder runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
 
 ## Where things stand
 
-- FLEURS and the PhoMT code and frozen recipe are dropped; the PhoMT grounded cache is kept and
-  pooled with the `en_speech` caches. The last run on PhoMT and FLEURS,
-  `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
-  teacher-forced loss improves, but free-running translation fails.
-- [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
+- The last run, on PhoMT and FLEURS (`grounded_v2_full_direct_voice_5epoch`), is analysed up
+  to step 135k in `docs/analysis/`: teacher-forced loss improves, but free-running translation
+  fails. FLEURS and MultiMed-ST now serve only as real-Vietnamese evaluation sets
+  ([sft-training](docs/agent-memory/sft-training.md#evaluation-sets)).
+- [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
+  Hibiki-Zero 3B from training to the phone. For the data,
   the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:
   the first tranche and all Common Voice on Claude
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
