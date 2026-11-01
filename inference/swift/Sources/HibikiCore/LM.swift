@@ -110,7 +110,10 @@ public struct HibikiConfig: Decodable {
         depformerDim = try c.decode(Int.self, forKey: .depformerDim)
         depformerNumHeads = try c.decode(Int.self, forKey: .depformerNumHeads)
         depformerNumLayers = try c.decode(Int.self, forKey: .depformerNumLayers)
-        depformerDimFeedforward = try c.decodeIfPresent(Int.self, forKey: .depformerDimFeedforward)
+        // Python: `depformer_dim_feedforward or scaled`, so 0 means unset too.
+        depformerDimFeedforward = try c.decodeIfPresent(
+            Int.self, forKey: .depformerDimFeedforward
+        ).flatMap { $0 > 0 ? $0 : nil }
         depformerPosEmb = try c.decode(String.self, forKey: .depformerPosEmb)
         depformerWeightsPerStepSchedule = try c.decodeIfPresent(
             [Int].self, forKey: .depformerWeightsPerStepSchedule)
@@ -165,9 +168,9 @@ public struct HibikiConfig: Decodable {
         TransformerConfig(
             dModel: dim, numHeads: numHeads, numLayers: numLayers, biasFF: false, biasAttn: false, layerScale: nil,
             positionalEmbedding: positionalEmbedding == "rope_concat" ? .ropeConcat : .rope,
-            gating: true, norm: .rmsNorm, context: context, maxPeriod: Int(maxPeriod),
+            gating: true, norm: .rmsNorm, context: context, maxPeriod: Float(maxPeriod),
             kvRepeat: kvRepeat,
-            dimFeedForward: Int((hiddenScale * Double(dim)).rounded()), convLayout: false)
+            dimFeedForward: Int((hiddenScale * Double(dim)).rounded()))
     }
 
     var depformer: TransformerConfig {
@@ -176,8 +179,7 @@ public struct HibikiConfig: Decodable {
             biasFF: false, biasAttn: false, layerScale: nil, positionalEmbedding: .none,
             gating: true, norm: .rmsNorm, context: depQ, maxPeriod: 8, kvRepeat: 1,
             dimFeedForward: depformerDimFeedforward
-                ?? Int((hiddenScale * Double(depformerDim)).rounded()),
-            convLayout: false)
+                ?? Int((hiddenScale * Double(depformerDim)).rounded()))
     }
 }
 
@@ -260,8 +262,8 @@ final class Depformer: Module {
     }
 }
 
-public final class HibikiLM: Module {
-    public let cfg: HibikiConfig
+final class HibikiLM: Module {
+    let cfg: HibikiConfig
     private let decoder: DecodeTransformer
     @ModuleInfo(key: "transformer") var transformer: Transformer
     @ModuleInfo(key: "depformer") var depformer: Depformer
@@ -285,7 +287,7 @@ public final class HibikiLM: Module {
     }
 
     /// Loads `config.json` and the q4 or BF16 weights of a staged model directory.
-    public static func load(directory: URL) throws -> HibikiLM {
+    static func load(directory: URL) throws -> HibikiLM {
         let cfg = try JSONDecoder().decode(
             HibikiConfig.self,
             from: Data(contentsOf: directory.appending(path: "config.json")))
@@ -327,7 +329,7 @@ public final class HibikiLM: Module {
         return model
     }
 
-    public func resetCache() {
+    func resetCache() {
         decoder.reset()
     }
 

@@ -25,9 +25,9 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki bench inference/asset
 ```
 
 `translate` writes `translations/<stem>_swift.{wav,txt}`. `bench` loops the clip for the given
-minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`, writes
-`translations/<stem>_bench.{jsonl,wav,txt}` as it runs (`--out BASE` to change) and prints frame
-times, lag, thermal state and memory per minute.
+minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`. It writes
+`translations/<stem>_bench.{jsonl,wav}` as it runs and `.txt` (summary and text) at the end
+(`--out BASE` to change), and prints frame times, lag, thermal state and memory per minute.
 
 ## iPhone
 
@@ -56,6 +56,6 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
 ```
 
 The phone must be unlocked, and a new developer certificate trusted once under Settings >
-General > VPN & Device Management. The app keeps the phone awake while it runs and writes
-`Documents/bench-<time>.{jsonl,wav,txt}` as it goes; copy them back with
-`devicectl device copy from`.
+General > VPN & Device Management. Keep the app in the foreground: iOS stops GPU work in the
+background. The app keeps the phone awake and writes `Documents/bench-<time>.{jsonl,wav}` as it
+runs and `.txt` at the end; copy them back with `devicectl device copy from`.

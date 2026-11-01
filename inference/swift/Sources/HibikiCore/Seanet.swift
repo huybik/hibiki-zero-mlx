@@ -4,26 +4,25 @@
 
 import MLX
 import MLXNN
-import MLXRandom
 
-public struct SeanetConfig {
-    public var dimension: Int
-    public var channels: Int
-    public var nFilters: Int
-    public var nResidualLayers: Int
-    public var ratios: [Int]
-    // public var activation: String: hardcoded to Elu(1) for now
-    // public var norm: Norm
-    public var kernelSize: Int
-    public var residualKernelSize: Int
-    public var lastKernelSize: Int
-    public var dilationBase: Int
-    public var padMode: PadMode
-    public var compress: Int
-    // public var disableNormOuterBlocks: Int
-    // public var finalActivation: String?: hardcoded to None for now
+struct SeanetConfig {
+    var dimension: Int
+    var channels: Int
+    var nFilters: Int
+    var nResidualLayers: Int
+    var ratios: [Int]
+    // var activation: String: hardcoded to Elu(1) for now
+    // var norm: Norm
+    var kernelSize: Int
+    var residualKernelSize: Int
+    var lastKernelSize: Int
+    var dilationBase: Int
+    var padMode: PadMode
+    var compress: Int
+    // var disableNormOuterBlocks: Int
+    // var finalActivation: String?: hardcoded to None for now
 
-    public static func v0_1() -> SeanetConfig {
+    static func v0_1() -> SeanetConfig {
         SeanetConfig(
             dimension: 512, channels: 1, nFilters: 64, nResidualLayers: 1,
             ratios: [8, 6, 5, 4], kernelSize: 7, residualKernelSize: 3, lastKernelSize: 3,

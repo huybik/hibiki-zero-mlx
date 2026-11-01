@@ -8,6 +8,7 @@ public struct Sampler {
     public let topK: Int
 
     public init(temp: Float, topK: Int) {
+        precondition(temp == 0 || topK > 0, "sampling needs a top-k")
         self.temp = temp
         self.topK = topK
     }
@@ -18,7 +19,7 @@ public struct Sampler {
             return argMax(logits, axis: -1).asType(.int32)
         }
         var scaled = logits * (1 / temp)
-        if topK > 0 && topK < logits.dim(-1) {
+        if topK < logits.dim(-1) {
             let dropped = argPartition(-scaled, kth: topK - 1, axis: -1)[0..., topK...]
             scaled = putAlong(
                 scaled, dropped, values: MLXArray(-Float.infinity).asType(scaled.dtype), axis: -1)

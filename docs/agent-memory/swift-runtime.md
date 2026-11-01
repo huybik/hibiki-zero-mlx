@@ -22,12 +22,17 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (8 s silence tail,
   stop on text EOS or 12 frames of `<unk>`/`</s>`/`<pad>`, seed 299792458); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per frame) and `<base>.wav` to disk as it
-  runs, so a killed run keeps its data.
+  runs and writes `<base>.txt` (summary, text) at the end. `Audio.Writer` writes 16-bit WAV
+  clipped like `sphn.write_wav` and rewrites the header after every frame: a run killed at
+  frame 153 left 153 samples and a valid 12.08 s WAV.
 - `HibikiBench/` is the iOS app: a hand-written Xcode project (synchronized folder `App/`) that
   depends on the local package, with the increased-memory-limit entitlement. The team ID is
   passed on the command line (`DEVELOPMENT_TEAM=`), not stored in the project. It caps MLX's
-  buffer cache at 256 MB (freed buffers count toward the app's memory limit) and runs the
-  bench on a user-interactive thread.
+  buffer cache at 256 MB through `Translator(cacheLimit:)` (freed buffers count toward the
+  app's memory limit) and runs the bench on a user-interactive thread. iOS refuses GPU work
+  from the background, so the app must stay in the foreground; locking the phone ends a run.
+- The public API is `Translator`, `Bench`, `Audio`, `Sampler`, `Vocabulary`, `HibikiConfig` and
+  `HibikiError`; the vendored and LM types are internal (`@testable import` reaches them).
 - Hibiki Edge (An Quách's 1B Swift app) has no licence file, so none of its code is used here.
 
 ## Hibiki-Zero deltas
@@ -78,7 +83,8 @@ the per-slice depformer steps as `Decode.swift` does, each over fixed shapes
 ([mlx-inference](mlx-inference.md#memory)).
 
 Footprint after load is 2.8 GB: LM 1.96 GB, Mimi 0.37 GB (fp32), KV cache 0.34 GB (28 layers,
-3,000 frames, bf16, allocated in full at the first frame), runtime buffers. "main" in the stage
+3,000 frames, bf16, allocated in full at the first frame), runtime buffers. Warmup runs silent
+frames until Mimi decode has run once, so the first timed frames pay no kernel builds. "main" in the stage
 times also covers building the depformer graph on the CPU, and reading the text token is a
 second GPU round trip per frame.
 
@@ -93,5 +99,5 @@ took 80 ms/frame.
   app with the increased-memory-limit entitlement. A new developer certificate must be trusted on
   the phone once (Settings > General > VPN & Device Management) before `devicectl` can launch it.
 - `devicectl device copy to` puts the model into the app's `Documents/model/` (2.6 GB in about a
-  minute over USB). Results are `Documents/bench-<time>.{json,txt,wav}`.
+  minute over USB). Results are `Documents/bench-<time>.{jsonl,wav,txt}`.
 - No result yet.

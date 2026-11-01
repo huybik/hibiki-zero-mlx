@@ -5,21 +5,20 @@
 import Foundation
 import MLX
 import MLXNN
-import MLXRandom
 
-public struct MimiConfig {
-    public var channels: Int
-    public var sampleRate: Float
-    public var frameRate: Float
-    public var renormalize: Bool
-    // public var resampleMethod: String
-    public var seanet: SeanetConfig
-    public var transformer: TransformerConfig
-    public var quantizerNQ: Int
-    public var quantizerBins: Int
-    public var quantizerDim: Int
+struct MimiConfig {
+    var channels: Int
+    var sampleRate: Float
+    var frameRate: Float
+    var renormalize: Bool
+    // var resampleMethod: String
+    var seanet: SeanetConfig
+    var transformer: TransformerConfig
+    var quantizerNQ: Int
+    var quantizerBins: Int
+    var quantizerDim: Int
 
-    public static func mimi_2024_07(numCodebooks: Int = 16) -> MimiConfig {
+    static func mimi_2024_07(numCodebooks: Int = 16) -> MimiConfig {
         let seanet = SeanetConfig.v0_1()
         let transformer = TransformerConfig(
             dModel: seanet.dimension,
@@ -34,8 +33,7 @@ public struct MimiConfig {
             context: 250,
             maxPeriod: 10000,
             kvRepeat: 1,
-            dimFeedForward: 2048,
-            convLayout: true
+            dimFeedForward: 2048
         )
         return MimiConfig(
             channels: 1,
@@ -45,7 +43,7 @@ public struct MimiConfig {
     }
 }
 
-public class Mimi: Module {
+class Mimi: Module {
     let cfg: MimiConfig
     let encoderCache: [RotatingKVCache]
     let decoderCache: [RotatingKVCache]
@@ -57,7 +55,7 @@ public class Mimi: Module {
     @ModuleInfo(key: "upsample") var upsample: ConvTrUpsample1d
     @ModuleInfo(key: "quantizer") var quantizer: SplitResidualVectorQuantizer
 
-    public init(_ cfg: MimiConfig, bSize: Int) {
+    init(_ cfg: MimiConfig, bSize: Int) {
         let dim = cfg.seanet.dimension
         self.cfg = cfg
         let encoderFrameRate = cfg.sampleRate / Float(cfg.seanet.ratios.reduce(1, *))
@@ -67,32 +65,31 @@ public class Mimi: Module {
         self._quantizer.wrappedValue = SplitResidualVectorQuantizer(
             dim: cfg.quantizerDim, inputDim: dim, outputDim: dim, nQ: cfg.quantizerNQ,
             bins: cfg.quantizerBins)
-        self._encoderTransformer.wrappedValue = ProjectedTransformer(
-            cfg.transformer, inputDim: dim, outputDims: [dim])
-        self._decoderTransformer.wrappedValue = ProjectedTransformer(
-            cfg.transformer, inputDim: dim, outputDims: [dim])
+        precondition(cfg.transformer.dModel == dim, "Mimi's transformer works at the codec width")
+        self._encoderTransformer.wrappedValue = ProjectedTransformer(cfg.transformer)
+        self._decoderTransformer.wrappedValue = ProjectedTransformer(cfg.transformer)
         self._downsample.wrappedValue = ConvDownsample1d(stride: downsampleStride, dim: dim)
         self._upsample.wrappedValue = ConvTrUpsample1d(stride: downsampleStride, dim: dim)
         self.encoderCache = self._encoderTransformer.wrappedValue.makeCache(bSize: bSize)
         self.decoderCache = self._decoderTransformer.wrappedValue.makeCache(bSize: bSize)
     }
 
-    public func encodeStep(_ x: StreamArray) -> StreamArray {
+    func encodeStep(_ x: StreamArray) -> StreamArray {
         var x = self.encoder.step(x)
-        x = x.map { self.encoderTransformer($0, cache: self.encoderCache)[0] }
+        x = x.map { self.encoderTransformer($0, cache: self.encoderCache) }
         x = self.downsample.step(x)
         let codes = x.map(self.quantizer.encode)
         return codes
     }
 
-    public func decodeStep(_ codes: StreamArray) -> StreamArray {
+    func decodeStep(_ codes: StreamArray) -> StreamArray {
         var emb = codes.map { self.quantizer.decode($0) }
         emb = self.upsample.step(emb)
-        let out = emb.map { self.decoderTransformer($0, cache: self.decoderCache)[0] }
+        let out = emb.map { self.decoderTransformer($0, cache: self.decoderCache) }
         return self.decoder.step(out)
     }
 
-    public func resetState() {
+    func resetState() {
         self.encoder.resetState()
         self.decoder.resetState()
         self.downsample.resetState()
@@ -105,7 +102,7 @@ public class Mimi: Module {
 extension Mimi {
     /// Loads Mimi from Kyutai's PyTorch checkpoint (`mimi-pytorch-e351c8d8@125.safetensors`),
     /// mapping its keys and conv layouts onto this module tree.
-    public static func load(url: URL, numCodebooks: Int) throws -> Mimi {
+    static func load(url: URL, numCodebooks: Int) throws -> Mimi {
         let model = Mimi(MimiConfig.mimi_2024_07(numCodebooks: numCodebooks), bSize: 1)
         var weights: [String: MLXArray] = [:]
         for (var key, var weight) in try loadArrays(url: url) {

@@ -7,7 +7,7 @@ import MLX
 /// the token of frame t - 1 - delay. Source codes enter at their own frame; generated target
 /// codes are stored at frame t - delay. Only the last `maxDelay + 2` frames are ever read or
 /// written, so they live in a ring and a session can run indefinitely.
-public final class Generator {
+final class Generator {
     private static let ungenerated = -2
 
     let lm: HibikiLM
@@ -16,9 +16,9 @@ public final class Generator {
     private let delays: [Int]
     private let maxDelay: Int
     private var ring: [[Int]]
-    public private(set) var frame = 0
+    private(set) var frame = 0
 
-    public init(_ lm: HibikiLM, textSampler: Sampler, audioSampler: Sampler) {
+    init(_ lm: HibikiLM, textSampler: Sampler, audioSampler: Sampler) {
         self.lm = lm
         self.textSampler = textSampler
         self.audioSampler = audioSampler
@@ -29,7 +29,7 @@ public final class Generator {
             count: maxDelay + 2)
     }
 
-    public func reset() {
+    func reset() {
         frame = 0
         for i in ring.indices { ring[i] = ring[i].map { _ in Self.ungenerated } }
         lm.resetCache()
@@ -45,7 +45,7 @@ public final class Generator {
 
     /// Feeds one frame of source codes. Returns the text token, the target codes now complete
     /// (frame - maxDelay; nil while warming up or when any is padding) and stage times.
-    public func step(source: [Int]) -> (
+    func step(source: [Int]) -> (
         text: Int, target: [Int]?, main: Double, depformer: Double
     ) {
         let cfg = lm.cfg

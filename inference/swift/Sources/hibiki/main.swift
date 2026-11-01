@@ -42,8 +42,10 @@ let minutes = number("--minutes", default: 10.0)
 func translate(_ translator: Translator, _ pcm: [Float]) throws {
     let output = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_swift.wav")
     let steps = pcm.count / Audio.frameSize
+    try FileManager.default.createDirectory(
+        at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let wav = try Audio.Writer(output)
     var text = ""
-    var out: [Float] = []
     var timing = Translator.Timing()
     var frames = 0
     var padRun = 0
@@ -55,16 +57,13 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
             : [Float](repeating: 0, count: Audio.frameSize)
         let frame = translator.step(chunk)
         frames += 1
-        timing.encode += frame.timing.encode
-        timing.main += frame.timing.main
-        timing.depformer += frame.timing.depformer
-        timing.decode += frame.timing.decode
+        timing += frame.timing
         if let piece = frame.text {
             text += piece
             print(piece, terminator: "")
             fflush(stdout)
         }
-        out += frame.pcm ?? []
+        try wav.append(frame.pcm ?? [])
         if idx >= steps {
             if frame.textToken == translator.vocabulary.eos { break }
             padRun = frame.text == nil ? padRun + 1 : 0
@@ -73,9 +72,6 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
     }
     let wall = Date().timeIntervalSince(start)
     print()
-    try FileManager.default.createDirectory(
-        at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Audio.write(out, to: output)
     let textURL = output.deletingPathExtension().appendingPathExtension("txt")
     try (text.trimmingCharacters(in: .whitespaces) + "\n").write(
         to: textURL, atomically: true, encoding: .utf8)

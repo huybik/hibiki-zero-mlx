@@ -23,6 +23,13 @@ public final class Translator {
         public var total: Double { encode + main + depformer + decode }
 
         public init() {}
+
+        public static func += (lhs: inout Timing, rhs: Timing) {
+            lhs.encode += rhs.encode
+            lhs.main += rhs.main
+            lhs.depformer += rhs.depformer
+            lhs.decode += rhs.decode
+        }
     }
 
     public let config: HibikiConfig
@@ -31,11 +38,15 @@ public final class Translator {
     let generator: Generator
 
     /// Upstream sampling (`pipeline.py`): text at 0.4 with top-k 25, audio at 0.8 with top-k 250.
+    /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
+    /// app's memory limit.
     public init(
         directory: URL,
         textSampler: Sampler = Sampler(temp: 0.4, topK: 25),
-        audioSampler: Sampler = Sampler(temp: 0.8, topK: 250)
+        audioSampler: Sampler = Sampler(temp: 0.8, topK: 250),
+        cacheLimit: Int? = nil
     ) throws {
+        if let cacheLimit { Memory.cacheLimit = cacheLimit }
         let lm = try HibikiLM.load(directory: directory)
         config = lm.cfg
         let file = { (name: String) throws -> URL in
@@ -58,9 +69,10 @@ public final class Translator {
         warmup()
     }
 
-    /// Runs one frame through every stage so kernels are built before timing starts.
+    /// Runs silent frames until every stage, Mimi decode included, has run once, so kernels
+    /// are built and weights read before timing starts.
     private func warmup() {
-        _ = step([Float](repeating: 0, count: Audio.frameSize))
+        while step([Float](repeating: 0, count: Audio.frameSize)).pcm == nil {}
         reset()
         Memory.clearCache()  // return load and warmup buffers instead of keeping them cached
     }

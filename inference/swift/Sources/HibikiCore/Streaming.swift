@@ -4,20 +4,19 @@
 
 import MLX
 import MLXNN
-import MLXRandom
 
-public class StreamArray {
+class StreamArray {
     let inner: MLXArray?
 
-    public init(_ x: MLXArray? = nil) {
+    init(_ x: MLXArray? = nil) {
         self.inner = x
     }
 
-    public func dim(_ dim: Int) -> Int {
+    func dim(_ dim: Int) -> Int {
         self.inner?.dim(dim) ?? 0
     }
 
-    public func cat2(_ rhs: StreamArray, axis: Int) -> StreamArray {
+    func cat2(_ rhs: StreamArray, axis: Int) -> StreamArray {
         switch (self.inner, rhs.inner) {
         case (.none, .none): StreamArray()
         case (.some(let lhs), .none): StreamArray(lhs)
@@ -26,15 +25,15 @@ public class StreamArray {
         }
     }
 
-    public var shape: [Int]? {
+    var shape: [Int]? {
         self.inner?.shape
     }
 
-    public func asArray() -> MLXArray? {
+    func asArray() -> MLXArray? {
         self.inner
     }
 
-    public func narrow(_ offset: Int, _ len: Int, axis: Int) -> StreamArray {
+    func narrow(_ offset: Int, _ len: Int, axis: Int) -> StreamArray {
         if let inner = self.inner {
             let totalLen = inner.dim(axis)
             if len <= 0 {
@@ -49,7 +48,7 @@ public class StreamArray {
         }
     }
 
-    public func split(lhsLen: Int, axis: Int) -> (StreamArray, StreamArray) {
+    func split(lhsLen: Int, axis: Int) -> (StreamArray, StreamArray) {
         if let t = self.inner {
             let len = t.dim(axis)
             let lhsLen = min(len, lhsLen)
@@ -66,11 +65,11 @@ public class StreamArray {
         }
     }
 
-    public func elu() -> StreamArray {
+    func elu() -> StreamArray {
         self.map { MLXNN.elu($0, alpha: 1.0) }
     }
 
-    public func map(_ f: (MLXArray) -> MLXArray) -> StreamArray {
+    func map(_ f: (MLXArray) -> MLXArray) -> StreamArray {
         switch self.inner {
         case .none: StreamArray()
         case .some(let x): StreamArray(f(x))
@@ -78,7 +77,7 @@ public class StreamArray {
     }
 }
 
-public protocol StreamingLayer {
+protocol StreamingLayer {
     func resetState()
     func step(_ x: StreamArray) -> StreamArray
 }

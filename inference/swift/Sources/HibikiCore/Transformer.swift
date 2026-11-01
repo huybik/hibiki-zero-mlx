@@ -5,12 +5,12 @@
 import MLX
 import MLXNN
 
-public enum Norm {
+enum Norm {
     case layerNorm
     case rmsNorm
 }
 
-public enum PositionalEmbedding {
+enum PositionalEmbedding {
     case none
     /// Interleaved rotary embedding (MLX `traditional: true`), as in Mimi.
     case rope
@@ -18,23 +18,22 @@ public enum PositionalEmbedding {
     case ropeConcat
 }
 
-public struct TransformerConfig {
-    public var dModel: Int
-    public var numHeads: Int
-    public var numLayers: Int
-    public var biasFF: Bool
-    public var biasAttn: Bool
-    public var layerScale: Float?
-    public var positionalEmbedding: PositionalEmbedding
-    public var gating: Bool
-    public var norm: Norm
-    public var context: Int
-    public var maxPeriod: Int
-    public var kvRepeat: Int
-    public var dimFeedForward: Int
-    public var convLayout: Bool
+struct TransformerConfig {
+    var dModel: Int
+    var numHeads: Int
+    var numLayers: Int
+    var biasFF: Bool
+    var biasAttn: Bool
+    var layerScale: Float?
+    var positionalEmbedding: PositionalEmbedding
+    var gating: Bool
+    var norm: Norm
+    var context: Int
+    var maxPeriod: Float
+    var kvRepeat: Int
+    var dimFeedForward: Int
 
-    public func headDim() -> Int {
+    func headDim() -> Int {
         self.dModel / self.numHeads
     }
 }
@@ -91,9 +90,9 @@ final class Attention: Module {
             switch cfg.positionalEmbedding {
             case .none: nil
             case .rope:
-                RoPE(dimensions: cfg.headDim(), traditional: true, base: Float(cfg.maxPeriod))
+                RoPE(dimensions: cfg.headDim(), traditional: true, base: cfg.maxPeriod)
             case .ropeConcat:
-                RoPE(dimensions: cfg.headDim(), traditional: false, base: Float(cfg.maxPeriod))
+                RoPE(dimensions: cfg.headDim(), traditional: false, base: cfg.maxPeriod)
             }
     }
 
@@ -189,11 +188,11 @@ final class TransformerLayer: Module {
     }
 }
 
-public class Transformer: Module {
+class Transformer: Module {
     let cfg: TransformerConfig
     let layers: [TransformerLayer]
 
-    public init(_ cfg: TransformerConfig) {
+    init(_ cfg: TransformerConfig) {
         self.cfg = cfg
         self.layers = (0..<cfg.numLayers).map { _ in TransformerLayer(cfg) }
     }
@@ -218,47 +217,16 @@ public class Transformer: Module {
     }
 }
 
-public class ProjectedTransformer: Module {
-    let convLayout: Bool
+/// Mimi's transformer over conv-layout features `[B, C, T]` (C = dModel, so no projections).
+final class ProjectedTransformer: Module {
     @ModuleInfo(key: "transformer") var transformer: Transformer
-    @ModuleInfo(key: "input_proj") var inputProj: Linear?
-    @ModuleInfo(key: "output_proj") var outputProjs: [Linear?]
 
-    init(_ cfg: TransformerConfig, inputDim: Int, outputDims: [Int]) {
-        self.convLayout = cfg.convLayout
+    init(_ cfg: TransformerConfig) {
         self._transformer.wrappedValue = Transformer(cfg)
-        if inputDim == cfg.dModel {
-            self._inputProj.wrappedValue = nil
-        } else {
-            self._inputProj.wrappedValue = Linear(inputDim, cfg.dModel, bias: false)
-        }
-        var outputProjs: [Linear?] = []
-        for outputDim in outputDims {
-            let outputProj =
-                outputDim != cfg.dModel ? Linear(cfg.dModel, outputDim, bias: false) : nil
-            outputProjs.append(outputProj)
-        }
-        self._outputProjs.wrappedValue = outputProjs
     }
 
-    func callAsFunction(_ x: MLXArray, cache: [RotatingKVCache]) -> [MLXArray] {
-        var x = x
-        if self.convLayout {
-            x = x.swappedAxes(1, 2)
-        }
-        if let inputProj = self.inputProj {
-            x = inputProj(x)
-        }
-        x = self.transformer(x, cache: cache)
-        var outs: [MLXArray] = []
-        for outputProj in self.outputProjs {
-            var out = outputProj?(x) ?? x
-            if self.convLayout {
-                out = out.swappedAxes(1, 2)
-            }
-            outs.append(out)
-        }
-        return outs
+    func callAsFunction(_ x: MLXArray, cache: [RotatingKVCache]) -> MLXArray {
+        self.transformer(x.swappedAxes(1, 2), cache: cache).swappedAxes(1, 2)
     }
 
     func makeCache(bSize: Int) -> [RotatingKVCache] {
