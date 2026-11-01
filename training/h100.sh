@@ -111,7 +111,7 @@ if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
 if memory_gib < 90:
-    raise RuntimeError(f"physical batch 16 requires at least 90 GiB, got {memory_gib:.1f}")
+    raise RuntimeError(f"4,608-frame batches require at least 90 GiB, got {memory_gib:.1f}")
 
 host_kib = int(
     next(

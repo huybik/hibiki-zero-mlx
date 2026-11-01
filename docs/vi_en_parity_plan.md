@@ -93,7 +93,8 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 1. Streams: consecutive Libriheavy segments of one recording (and consecutive PhoMT rows of one
    document) in order, Common Voice clips at random; each row's English placed at its cached
    delay after its Vietnamese, never before the previous English ends; gaps drawn so the
-   previous English overhangs the next Vietnamese by at most 2 s.
+   previous English overhangs the next Vietnamese by at most 2 s. That cap binds at the median
+   join, so the source "waits" for the interpreter; watch lag growth on long real speech.
 2. Loss as above; LR peak 1e-6, 5% warmup, cosine to 0; one pass over the pool.
 3. Teacher-forced loss on streams of the cache's `validation/` split is the early-stopping signal.
    Promotion also needs free-running results: FLEURS dev chrF/BLEU as the main metric, MultiMed

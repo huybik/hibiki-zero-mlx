@@ -1,11 +1,12 @@
 #!/usr/bin/env python
-"""Full-model Hibiki-Zero Vietnamese-to-English SFT on grounded caches.
+"""Full-model Hibiki-Zero Vietnamese-to-English SFT on multi-sentence streams.
 
-Trains every parameter from the upstream weight with fp32 masters, bf16 autocast
-and fused AdamW. Rows are length-sorted and batch-shuffled once with --seed; each
-epoch replays that order. Validation runs on a fixed, length-sorted cache, and the
-lowest teacher-forced validation loss is promoted to best_stepNNNNNN.safetensors.
-Resume only from the newest complete model/trainer pair of the same run.
+Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
+AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
+rows with --seed (`streams.py`) and batched up to --batch-frames padded frames; every epoch
+replays that order. Validation runs on a fixed stream plan of the validation cache, and the
+lowest teacher-forced validation loss is promoted to best_stepNNNNNN.safetensors. Resume only
+from the newest complete model/trainer pair of the same run.
 """
 from __future__ import annotations
 
@@ -18,8 +19,9 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.utils.data import DataLoader
 
-from training.finetune import common
+from training.finetune import common, streams
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
@@ -42,25 +44,36 @@ RESUME_KEYS = (
     "tokenizer",
     "epochs",
     "max_steps",
-    "batch_size",
+    "batch_frames",
+    "stream_seconds",
     "max_frames",
     "lr",
+    "warmup_fraction",
     "adam_beta1",
     "adam_beta2",
     "weight_decay",
     "grad_clip",
     "audio_loss_weight",
     "text_loss_weight",
-    "text_pad_loss_weight",
-    "val_max_frames",
-    "val_batch_size",
+    "first_codebook_weight",
+    "text_pad_weight",
     "val_batches",
     "val_every",
     "save_every",
     "keep_checkpoints",
     "seed",
-    "train_samples",
+    "train_rows",
+    "train_streams",
     "total_steps",
+)
+LOG_LOSSES = (
+    "loss",
+    "audio_loss",
+    "semantic_loss",
+    "acoustic_loss",
+    "text_loss",
+    "content_text_loss",
+    "pad_text_loss",
 )
 
 
@@ -75,20 +88,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=0, help="0 trains all epochs.")
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--max-frames", type=int, default=280)
-    parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument(
+        "--batch-frames", type=int, default=4608, help="Padded frames per batch (streams x frames)."
+    )
+    parser.add_argument(
+        "--stream-seconds",
+        type=float,
+        nargs=2,
+        default=[30.0, 75.0],
+        metavar=("MIN", "MAX"),
+        help="Each stream's length is drawn from this range.",
+    )
+    parser.add_argument(
+        "--max-frames", type=int, default=280, help="Cache rows longer than this are dropped."
+    )
+    parser.add_argument("--lr", type=float, default=1e-6, help="Peak learning rate.")
+    parser.add_argument(
+        "--warmup-fraction", type=float, default=0.05, help="Share of steps warming up linearly."
+    )
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.95)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
-    parser.add_argument("--text-pad-loss-weight", type=float, default=0.05)
-    parser.add_argument("--val-max-frames", type=int, default=280)
-    parser.add_argument("--val-batch-size", type=int, default=4)
+    parser.add_argument(
+        "--first-codebook-weight",
+        type=float,
+        default=100.0,
+        help="Weight of audio codebook 0 against each acoustic codebook.",
+    )
+    parser.add_argument(
+        "--text-pad-weight", type=float, default=0.5, help="Weight of a text PAD against a word."
+    )
     parser.add_argument("--val-every", type=int, default=9000)
     parser.add_argument("--val-batches", type=int, default=0, help="0 validates every batch.")
     parser.add_argument("--save-every", type=int, default=9000)
@@ -274,7 +308,7 @@ def load_resume_checkpoint(
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    for name in ("epochs", "batch_size", "max_frames", "val_max_frames", "val_batch_size"):
+    for name in ("epochs", "batch_frames", "max_frames"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     for name in ("max_steps", "grad_clip", "val_every", "val_batches", "save_every"):
@@ -282,11 +316,30 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.keep_checkpoints < 0:
         raise ValueError("--keep-checkpoints must be non-negative")
+    shortest, longest = args.stream_seconds
+    if not 0 < shortest <= longest:
+        raise ValueError("--stream-seconds needs 0 < MIN <= MAX")
+    if not 0 <= args.warmup_fraction < 1:
+        raise ValueError("--warmup-fraction must be in [0, 1)")
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
     if os.environ.get("NO_TORCH_COMPILE"):
         raise ValueError("Full-model training requires torch compile; unset NO_TORCH_COMPILE")
+
+
+def stream_frames(stream_seconds: list[float]) -> tuple[int, int]:
+    shortest, longest = stream_seconds
+    return round(shortest * streams.FRAME_RATE), round(longest * streams.FRAME_RATE)
+
+
+def learning_rate(step: int, peak: float, warmup_steps: int, total_steps: int) -> float:
+    """Linear warmup to `peak`, then cosine decay towards 0 at `total_steps` (moshi-finetune's
+    OneCycle shape, without its momentum cycling). `step` counts updates from 0."""
+    if step < warmup_steps:
+        return peak * (step + 1) / warmup_steps
+    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    return peak * 0.5 * (1 + math.cos(math.pi * progress))
 
 
 def main() -> None:
@@ -316,25 +369,46 @@ def main() -> None:
         if path != best_model:
             path.unlink()
 
-    dataset = common.CachedCodeDataset(cache_dirs, True, 0, args.max_frames)
-    dataset.shuffle_batch_order(args.batch_size, args.seed)
+    checkpoint_info = common.load_checkpoint_info(args)
+    frames = stream_frames(args.stream_seconds)
+    mimi = checkpoint_info.get_mimi(device=device)
+    silence = streams.silence_track(mimi, 2 * frames[1])
+    del mimi
+    torch.cuda.empty_cache()
+
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames)
+    dataset = streams.StreamDataset(rows, layout, silence, frames, args.seed)
+    batches = dataset.batches(args.batch_frames, args.seed)
     exposure = dataset.exposure()
     print(
-        f"Loaded {len(dataset)} cached samples; "
-        f"assembled_frames={exposure['assembled_frames']:,} "
-        f"source_hours={exposure['source_hours']:.2f}"
+        f"Planned {exposure['streams']} streams from {exposure['rows']} cache rows; "
+        f"stream_frames={exposure['stream_frames']:,} source_hours={exposure['source_hours']:.2f} "
+        f"batches={len(batches)}"
     )
-
-    val_dataset = common.CachedCodeDataset(val_cache_dir, True, 0, args.val_max_frames)
-    val_dataloader = common.make_cached_dataloader(
-        val_dataset, args.val_batch_size, args.num_workers
+    val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames)
+    if val_layout != layout:
+        raise RuntimeError(f"Validation layout {val_layout} differs from training {layout}")
+    val_dataset = streams.StreamDataset(
+        val_rows, layout, silence, frames, streams.VALIDATION_SEED
     )
-    print(f"Loaded {len(val_dataset)} non-shuffled validation samples")
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_sampler=val_dataset.batches(args.batch_frames, None),
+        collate_fn=streams.collate,
+        num_workers=args.num_workers,
+    )
+    print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows")
 
-    batches_per_epoch = math.ceil(len(dataset) / args.batch_size)
+    batches_per_epoch = len(batches)
     total_steps = args.max_steps or batches_per_epoch * args.epochs
+    warmup_steps = round(total_steps * args.warmup_fraction)
+    weights = common.LossWeights(
+        audio=args.audio_loss_weight,
+        text=args.text_loss_weight,
+        first_codebook=args.first_codebook_weight,
+        text_pad=args.text_pad_weight,
+    )
 
-    checkpoint_info = common.load_checkpoint_info(args)
     print(f"Loading upstream Hibiki-Zero from {repo_display_path(args.model_weight)}")
     lm = checkpoint_info.get_moshi(
         device=device,
@@ -378,20 +452,23 @@ def main() -> None:
     def jsonable(value: Any) -> Any:
         if isinstance(value, Path):
             return str(value)
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return [jsonable(item) for item in value]
         return value
 
     run_config = {key: jsonable(value) for key, value in vars(args).items()}
     run_config.update(
         {
-            "train_samples": len(dataset),
+            "train_rows": exposure["rows"],
+            "train_streams": exposure["streams"],
             "total_steps": total_steps,
             "batches_per_epoch": batches_per_epoch,
-            "frame_bucket": common.FRAME_BUCKET,
+            "warmup_steps": warmup_steps,
+            "stream_frames": list(frames),
+            "frame_bucket": streams.FRAME_BUCKET,
             "best_metric": BEST_METRIC,
-            "observed_train_max_frames": max(sample["frames"] for sample in dataset.samples),
-            "observed_val_max_frames": max(sample["frames"] for sample in val_dataset.samples),
+            "val_rows": len(val_rows),
+            "val_streams": len(val_dataset),
         }
     )
     run_config_path = out_dir / "run_config.json"
@@ -407,34 +484,39 @@ def main() -> None:
             if previous.get(key) != run_config.get(key):
                 raise RuntimeError(f"Same-run resume contract changed: {key}")
 
-    dataloader = common.make_cached_dataloader(dataset, args.batch_size, args.num_workers)
-    data_iter = iter(dataloader)
-    resume_skip_batches = global_step % batches_per_epoch
-    while resume_skip_batches:
-        next(data_iter)
-        resume_skip_batches -= 1
+    def training_batches(start_step: int):
+        """The planned batches from `start_step` on, epoch after epoch."""
+        offset = start_step % batches_per_epoch
+        while True:
+            yield from DataLoader(
+                dataset,
+                batch_sampler=batches[offset:],
+                collate_fn=streams.collate,
+                num_workers=args.num_workers,
+            )
+            offset = 0
 
+    data_iter = training_batches(global_step)
     condition_cache: dict[int, Any | None] = {}
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
-    log_sums = {
-        "loss": 0.0,
-        "audio_loss": 0.0,
-        "text_loss": 0.0,
-        "content_text_loss": 0.0,
-        "pad_text_loss": 0.0,
-    }
-    log_steps = 0
-    log_audio_tokens = 0
-    log_text_tokens = 0
-    log_samples = 0
-    log_assembled_frames = 0
-    log_padded_frames = 0
-    log_source_frames = 0
-    log_min_batch_size = math.inf
-    log_max_batch_size = 0
-    log_max_frames = 0
-    log_max_padded_frames = 0
+
+    def empty_log() -> dict[str, Any]:
+        return {
+            "losses": {key: 0.0 for key in LOG_LOSSES},
+            "steps": 0,
+            "audio_tokens": 0,
+            "text_tokens": 0,
+            "streams": 0,
+            "stream_frames": 0,
+            "padded_frames": 0,
+            "source_frames": 0,
+            "min_batch": math.inf,
+            "max_batch": 0,
+            "max_frames": 0,
+        }
+
+    log = empty_log()
     last_log_time = time.time()
 
     def run_teacher_forced_val(step: int) -> None:
@@ -444,50 +526,26 @@ def main() -> None:
             val_dataloader,
             device,
             checkpoint_info.model_type,
-            args.audio_loss_weight,
-            args.text_loss_weight,
+            weights,
             args.val_batches,
-            "prefix",
-            args.text_pad_loss_weight,
         )
-        keys = (
-            "loss",
-            "audio_loss",
-            "text_loss",
-            "audio_tokens",
-            "text_tokens",
-            "samples",
-            "content_text_loss",
-            "content_acc",
-            "content_tokens",
-            "pad_text_loss",
-            "pad_acc",
-            "pad_tokens",
-            "max_frames",
-            "max_padded_frames",
-        )
-        item = {"step": step, **{key: metrics[key] for key in keys}}
+        item = {"step": step, **metrics}
         with val_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, sort_keys=True) + "\n")
         print(
             f"val step={step} loss={metrics['loss']:.4f} "
-            f"audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} "
-            f"content={metrics['content_text_loss']:.4f} "
+            f"audio={metrics['audio_loss']:.4f} semantic={metrics['semantic_loss']:.4f} "
+            f"text={metrics['text_loss']:.4f} content={metrics['content_text_loss']:.4f} "
             f"acc={metrics['content_acc']:.3f} pad_acc={metrics['pad_acc']:.3f}"
         )
-        best_state = promote_best(
-            step, float(metrics["loss"]), out_dir, best_state
-        )
+        best_state = promote_best(step, float(metrics["loss"]), out_dir, best_state)
 
-    optimizer.zero_grad(set_to_none=True)
     while global_step < total_steps:
-        lr_value = args.lr
+        lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
+        for group in optimizer.param_groups:
+            group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            data_iter = iter(dataloader)
-            batch = next(data_iter)
+        batch = next(data_iter)
         codes = batch["codes"].to(device=device, dtype=torch.long)
         batch_size = int(codes.shape[0])
         if batch_size not in condition_cache:
@@ -495,15 +553,7 @@ def main() -> None:
                 lm, checkpoint_info.model_type, batch_size
             )
         with autocast:
-            losses = common.compute_batch_losses(
-                lm,
-                codes,
-                condition_cache[batch_size],
-                args.audio_loss_weight,
-                args.text_loss_weight,
-                text_pad_loss_weight=args.text_pad_loss_weight,
-                text_pad_mode="prefix",
-            )
+            losses = common.compute_batch_losses(lm, codes, condition_cache[batch_size], weights)
         loss = losses["loss"]
         loss.backward()
         if args.grad_clip > 0:
@@ -511,74 +561,51 @@ def main() -> None:
         optimizer.step()
         global_step += 1
 
-        log_sums["loss"] += loss.detach()
-        log_sums["audio_loss"] += losses["audio_loss"].detach()
-        log_sums["text_loss"] += losses["text_loss"].detach()
-        log_sums["content_text_loss"] += losses["content_text_loss"].detach()
-        log_sums["pad_text_loss"] += losses["pad_text_loss"].detach()
-        log_steps += 1
-        log_audio_tokens += losses["audio_tokens"]
-        log_text_tokens += losses["text_tokens"]
-        log_samples += batch_size
-        log_assembled_frames += int(batch["frames"].sum())
-        log_padded_frames += batch_size * int(codes.shape[-1])
-        log_source_frames += int(batch["source_frames"].sum())
-        log_min_batch_size = min(log_min_batch_size, batch_size)
-        log_max_batch_size = max(log_max_batch_size, batch_size)
-        log_max_frames = max(log_max_frames, int(batch["frames"].max()))
-        log_max_padded_frames = max(log_max_padded_frames, int(codes.shape[-1]))
+        for key in LOG_LOSSES:
+            log["losses"][key] += losses[key].detach()
+        log["steps"] += 1
+        log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
+        log["text_tokens"] += losses["content_n"] + losses["pad_n"]
+        log["streams"] += batch_size
+        log["stream_frames"] += int(batch["frames"].sum())
+        log["padded_frames"] += batch_size * int(codes.shape[-1])
+        log["source_frames"] += int(batch["source_frames"].sum())
+        log["min_batch"] = min(log["min_batch"], batch_size)
+        log["max_batch"] = max(log["max_batch"], batch_size)
+        log["max_frames"] = max(log["max_frames"], int(codes.shape[-1]))
 
         if args.log_every and global_step % args.log_every == 0:
-            loss_average = float(log_sums["loss"]) / log_steps
-            if not math.isfinite(loss_average):
+            steps = log["steps"]
+            means = {key: float(value) / steps for key, value in log["losses"].items()}
+            if not math.isfinite(means["loss"]):
                 raise RuntimeError(f"Non-finite loss by step {global_step}")
             now = time.time()
             item = {
                 "epoch": (global_step - 1) // batches_per_epoch + 1,
                 "step": global_step,
-                "loss": loss_average,
-                "audio_loss": float(log_sums["audio_loss"]) / log_steps,
-                "text_loss": float(log_sums["text_loss"]) / log_steps,
-                "content_text_loss": float(log_sums["content_text_loss"]) / log_steps,
-                "pad_text_loss": float(log_sums["pad_text_loss"]) / log_steps,
-                "audio_tokens": int(log_audio_tokens),
-                "text_tokens": int(log_text_tokens),
-                "samples": log_samples,
-                "microbatches": log_steps,
-                "assembled_frames": log_assembled_frames,
-                "padded_frames": log_padded_frames,
-                "source_hours": log_source_frames / float(dataset.frame_rate) / 3600,
-                "min_batch_size": int(log_min_batch_size),
-                "max_batch_size": log_max_batch_size,
-                "max_frames": log_max_frames,
-                "max_padded_frames": log_max_padded_frames,
-                "sec_per_step": (now - last_log_time) / log_steps,
-                "log_steps": log_steps,
+                **means,
+                "audio_tokens": int(log["audio_tokens"]),
+                "text_tokens": int(log["text_tokens"]),
+                "streams": log["streams"],
+                "stream_frames": log["stream_frames"],
+                "padded_frames": log["padded_frames"],
+                "source_hours": log["source_frames"] / streams.FRAME_RATE / 3600,
+                "min_batch_size": int(log["min_batch"]),
+                "max_batch_size": log["max_batch"],
+                "max_padded_frames": log["max_frames"],
+                "sec_per_step": (now - last_log_time) / steps,
+                "log_steps": steps,
                 "lr": lr_value,
-                "audio_weight": args.audio_loss_weight,
-                "text_weight": args.text_loss_weight,
             }
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(item, sort_keys=True) + "\n")
             print(
                 f"step={global_step} loss={item['loss']:.4f} "
                 f"audio={item['audio_loss']:.4f} text={item['text_loss']:.4f} "
-                f"B={item['samples'] / item['microbatches']:.1f} "
-                f"T<={item['max_frames']} lr={item['lr']:.1e} "
-                f"s/step={item['sec_per_step']:.3f}"
+                f"B={item['streams'] / steps:.1f} T<={item['max_padded_frames']} "
+                f"lr={item['lr']:.1e} s/step={item['sec_per_step']:.3f}"
             )
-            log_sums = {key: 0.0 for key in log_sums}
-            log_steps = 0
-            log_audio_tokens = 0
-            log_text_tokens = 0
-            log_samples = 0
-            log_assembled_frames = 0
-            log_padded_frames = 0
-            log_source_frames = 0
-            log_min_batch_size = math.inf
-            log_max_batch_size = 0
-            log_max_frames = 0
-            log_max_padded_frames = 0
+            log = empty_log()
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:

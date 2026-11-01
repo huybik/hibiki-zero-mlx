@@ -32,7 +32,7 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
   ~70 GB and the internal disk is too small.
 - The full build (user's choice, 2026-10-27: every row that fits the trainer) goes to two
   out-dirs, see [Builds](#builds).
-- Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `CachedCodeDataset`
+- Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `streams.load_rows`
   rejects anything else:
   - Mimi at 24 kHz / 12.5 Hz;
   - English audio delayed by a draw from U[0, min(0.5 × Vietnamese duration, room)], seeded by
@@ -261,5 +261,6 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 - Target audio is -1 after its length, with no explicit EOS.
 - Source audio has codec EOS 2048 at `source_len`, then -1.
 - T = max(text end, target length, source length + 1).
-- Batches are right-padded with -1 to a multiple of the frame bucket. There is no dataset
-  transform at training time.
+- The trainer joins rows into multi-sentence streams without changing the cache
+  ([sft-training](sft-training.md#trainer)); batches are right-padded with -1 to a multiple of
+  the frame bucket.

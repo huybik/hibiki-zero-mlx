@@ -78,7 +78,8 @@ inference/ (Apple Silicon, MLX)
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
-  codebooks. EOS and -1 positions are fixed, and training applies no transform →
+  codebooks, with fixed EOS and -1 positions. The trainer joins rows into streams and never
+  rewrites the cache →
   [sft-data-caches](docs/agent-memory/sft-data-caches.md).
 - Resume only from the newest complete model and optimizer pair of the same run →
   [sft-training](docs/agent-memory/sft-training.md).
