@@ -8,9 +8,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 
 - [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md) is the active VI→EN plan (rewritten
   2026-11-01): Hibiki-Zero 3B from training to the phone, SFT on multi-sentence streams with
-  Kyutai's loss weights, real-Vietnamese evaluation sets, GRPO, an on-device test that decides
-  between shipping the 3B and shrinking it, then q4 and a Swift port of the Hibiki-Zero deltas. It
-  records the decisions with their reasons and the timing the cache teaches.
+  Kyutai's loss weights, real-Vietnamese evaluation sets, GRPO, then the phone model. The Swift
+  port and the A15 device test are done ([swift-runtime](swift-runtime.md)): the 3B runs at
+  0.4x real time sustained there, so the plan takes the shrink branch. It records the decisions
+  with their reasons and the timing the cache teaches.
 - [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage. No GRPO code exists; build it from
   that plan once SFT passes its promotion gate.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer

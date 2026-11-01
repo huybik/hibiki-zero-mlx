@@ -100,4 +100,18 @@ took 80 ms/frame.
   the phone once (Settings > General > VPN & Device Management) before `devicectl` can launch it.
 - `devicectl device copy to` puts the model into the app's `Documents/model/` (2.6 GB in about a
   minute over USB). Results are `Documents/bench-<time>.{jsonl,wav,txt}`.
-- No result yet.
+- Result (2026-11-01), upstream 3B q4 FR→EN, `leon.wav` looped, 10 minutes back to back
+  (`--unpaced`; the phone cannot keep pace, so pacing changes nothing), wired and charging,
+  thermal state "serious" from the first frame (warm from a 30 s run before):
+
+  | | min 1 | min 4–10 |
+  |---|---|---|
+  | frame p50 | 135 ms | 193–203 ms |
+  | Mimi encode / main / depformer / Mimi decode | 17 / 52 / 48 / 18 ms | 23 / 79–82 / 67–71 / 25 ms |
+
+  10 minutes of audio took 23.5 minutes (0.43x real time; 0.59x cold). Footprint 2.78 GB with
+  1.3 GB still available (increased memory limit), growing 14 MB over the run. Every stage
+  slows ~1.5x under throttling. The 80 ms budget fails on the LM alone.
+- Long input breaks the model, not the port: on a 64 s clip looped for 6 minutes, Python and
+  Swift both start repeating after ~1.6 min and emit garbage after ~2.4 min; the iPhone run's
+  text ends in garbage too.
