@@ -19,7 +19,7 @@ public final class Translator {
         /// The text this frame adds, nil for special tokens.
         public let text: String?
         /// 1920 samples at 24 kHz, decoded from the previous step's audio tokens, once the
-        /// model has produced audio, else nil.
+        /// model has produced audio, else nil. `flush` returns the last step's.
         public let pcm: [Float]?
         public let timing: Timing
     }
@@ -67,9 +67,10 @@ public final class Translator {
         // and blocks `asyncEval` while more than 10 are in flight, so the LM step (hundreds of
         // ops over 0.6–2 GB of weights) would run almost entirely inside `asyncEval`, before
         // the CPU work instead of beside it. MLX reads these when it creates the Metal device,
-        // so the translator must come before any other MLX GPU work in the process.
-        setenv("MLX_MAX_OPS_PER_BUFFER", "400", 1)
-        setenv("MLX_MAX_MB_PER_BUFFER", "1000000", 1)
+        // so the translator must come before any other MLX GPU work in the process. Values
+        // already in the environment win, for tuning.
+        setenv("MLX_MAX_OPS_PER_BUFFER", "400", 0)
+        setenv("MLX_MAX_MB_PER_BUFFER", "1000000", 0)
         if let cacheLimit { Memory.cacheLimit = cacheLimit }
         let lm = try HibikiLM.load(directory: directory)
         config = lm.cfg
@@ -101,7 +102,8 @@ public final class Translator {
         Memory.clearCache()  // return load and warmup buffers instead of keeping them cached
     }
 
-    /// Starts a new session: clears the codec and the LM state.
+    /// Starts a new session: clears the codec and the LM state, dropping audio not yet
+    /// returned (`flush` first to keep it).
     public func reset() {
         target = nil
         mimi.resetState()
@@ -129,6 +131,13 @@ public final class Translator {
         target = out.target
         return Frame(
             textToken: out.text, text: vocabulary.text(out.text), pcm: samples, timing: timing)
+    }
+
+    /// The audio of the last step, which the next `step` would have returned; nil if there is
+    /// none. Call it when the input ends.
+    public func flush() -> [Float]? {
+        defer { target = nil }
+        return target.flatMap(decode)
     }
 
     /// Frame t's source codes, encoded on the CPU.

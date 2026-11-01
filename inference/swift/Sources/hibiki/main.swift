@@ -70,6 +70,7 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
             if padRun >= padStop { break }
         }
     }
+    try wav.append(translator.flush() ?? [])
     let wall = Date().timeIntervalSince(start)
     print()
     let textURL = output.deletingPathExtension().appendingPathExtension("txt")

@@ -56,7 +56,7 @@ with `LmConfig.from_config_dict`'s defaults and fails on any setting it does not
   loads safetensors lazily, so the dropped copies are never read.
 - q4 quantizes, as `pipeline.py`, only layers whose input width divides by 32.
 - mlx-swift 0.32 treats every `MLXArray` property of a module as a parameter unless its name
-  starts with `_`, so Mimi's derived codebook arrays are `_embedding`, `_c2`, `_expandedWeight`.
+  starts with `_`, so Mimi's derived codebook arrays are `_embedding` and `_c2`.
   The Mimi checkpoint holds 32 codebooks; `Mimi.load` keeps the 16 in use. `Mimi.resetState`
   clears every streaming layer, the down/upsampler included, so a reset session starts from
   edge padding as a fresh rustymimi tokenizer does.
@@ -80,7 +80,8 @@ kept):
 
 `Translator.step` starts LM step t on the GPU with `asyncEval`, decodes the audio of step t − 1
 and encodes frame t on the CPU meanwhile, then waits for the LM, as `pipeline.py` overlaps
-rustymimi threads with the LM. A frame's audio comes out one step after its text.
+rustymimi threads with the LM. A frame's audio comes out one step after its text; `flush`
+returns the last step's when the input ends (the CLI's `translate` calls it).
 
 - One thread drives both devices: mlx-swift 0.32 holds a global lock through every `eval`,
   waiting included, so MLX work on a second thread takes turns with the first.
@@ -88,8 +89,10 @@ rustymimi threads with the LM. A frame's audio comes out one step after its text
   which MLX closes every 20 ops or 40 MB on phones (40–50 on Macs), or 10 CPU ops. With those
   defaults the LM step ran almost entirely inside `asyncEval` (34 of 38 ms on the A15) and the
   CPU work followed it. `Translator.init` sets `MLX_MAX_OPS_PER_BUFFER=400` and
-  `MLX_MAX_MB_PER_BUFFER=1000000` before MLX creates its Metal device (LM start 4.5 ms), so the
-  translator must come before any other MLX GPU work in the process. The CPU side cannot be
+  `MLX_MAX_MB_PER_BUFFER=1000000` unless already set, before MLX creates its Metal device (LM
+  start 4.5 ms), so the translator must come before any other MLX GPU work in the process. The
+  16-codebook 3B (~2,600 ops a step) does not block either: on the Mac its LM start was 14–16 ms
+  at 400, 1,000 and 3,000 ops per buffer. The CPU side cannot be
   split the same way: `asyncEval` of a ~300-op Mimi graph waits for most of it, so encode and
   decode run one after the other.
 - MLX's CPU backend needed four changes to Mimi (busy M4 Pro, per frame: decode 206 → 34 ms,
