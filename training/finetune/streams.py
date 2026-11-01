@@ -2,14 +2,21 @@
 
 A stream joins cached rows (`[33, T]`: text, 16 English target and 16 Vietnamese source
 codebooks) the way a speaker talks on. Consecutive Libriheavy segments of one recording and
-consecutive PhoMT rows of one document stay together in order; other rows (Common Voice) follow at
-random. Each row's Vietnamese follows the previous one after a gap. Its English starts the row's
-cached delay after its Vietnamese, never before the previous English ends, and a gap is stretched
-so the previous English overhangs the next Vietnamese by at most MAX_OVERHANG.
+consecutive PhoMT rows of one source chunk (`phomt_s<N>`, which spans talk boundaries) stay
+together in order; other rows (Common Voice) follow at random. Each row's Vietnamese follows the
+previous one after a gap. Its English starts the row's cached delay after its Vietnamese, never
+before the previous English ends, and a gap is stretched so the previous English overhangs the
+next Vietnamese by at most MAX_OVERHANG.
 
 Wherever nobody speaks, both audio streams hold encoded silence and the text holds PAD, all
 supervised. The last row keeps the source EOS and the text EOS; the source after its EOS stays
 silence (as upstream inference feeds it), while the target and text after the text EOS are -1.
+
+Every cached clip was encoded from a fresh Mimi state, so its first frames carry start-up codes a
+continuous stream never shows. A Vietnamese clip's first frame (codebook 0 is one of three values
+in 90% of rows) and the English silence before the first word within SILENCE_WARMUP frames become
+steady silence. Residual codebooks still differ from a continuous encoding near every join
+(Mimi's 10 s context), as with any splicing.
 
     VI   lead [row 1]  gap  [row 2]  gap ... [row n] EOS  silence ...
     EN   silence  δ1 [row 1 en] [row 2 en]  ...   [row n en] EOS -1 ...
@@ -39,10 +46,10 @@ LONG_GAP = (38, 125)  # a 3-10 s silence, to practise staying quiet
 LONG_GAP_PROBABILITY = 0.1
 MAX_OVERHANG = 25  # the previous English may run at most 2 s into the next Vietnamese
 SILENCE_WARMUP = 16  # frames of the silence encoder's start transient, dropped
-# Teacher-forced validation streams are planned with one fixed seed, so every run and
-# validate.py score the same streams.
+# Teacher-forced validation streams and their batch order use one fixed seed, so every run and
+# validate.py score the same streams, and --val-batches takes a random subset.
 VALIDATION_SEED = 0
-# Consecutive rows: Libriheavy `<recording>_<segment>` and PhoMT `phomt_s<document>r<row>`.
+# Consecutive rows: Libriheavy `<recording>_<segment>` and PhoMT `phomt_s<chunk>r<row>`.
 GROUPED_ID = re.compile(r"^(libriheavy/.+)_(\d+)$|^(phomt_s\d+)r(\d+)$")
 
 
@@ -136,7 +143,8 @@ def _gap(rng: random.Random) -> int:
 def plan_streams(
     rows: list[Row], min_frames: int, max_frames: int, silence_frames: int, seed: int
 ) -> list[Stream]:
-    """Cut every row, once, into streams of min_frames..max_frames frames."""
+    """Cut every row, once, into streams of min_frames..max_frames frames (the last may be
+    shorter)."""
     longest = max(max(row.vi_frames, row.en_frames) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
@@ -174,7 +182,13 @@ def plan_streams(
             next_vi_end = vi_start + row.vi_frames
             next_en_end = en_start + row.en_frames - row.delay_frames
             next_frames = max(next_vi_end, next_en_end) + 1  # the EOS frames
-            if pieces and next_frames > budget:
+            # Close the stream when the row overflows its budget, unless it is still short and the
+            # row fits the longest stream.
+            if (
+                pieces
+                and next_frames > budget
+                and (frames >= min_frames or next_frames > max_frames)
+            ):
                 close()
                 pieces, vi_end, en_end = [], 0, 0
                 continue
@@ -210,11 +224,22 @@ def assemble(
             raise RuntimeError(f"{row.id} has text before its delay")
         if int(source[1 + q, row.vi_frames]) != layout.card:
             raise RuntimeError(f"{row.id} has no source EOS at {row.vi_frames}")
-        english = slice(row.delay_frames, row.en_frames)
         span = row.en_frames - row.delay_frames
-        codes[: 1 + q, piece.en_start : piece.en_start + span] = source[: 1 + q, english]
-        codes[1 + q :, piece.vi_start : piece.vi_start + row.vi_frames] = source[
-            1 + q :, : row.vi_frames
+        codes[0, piece.en_start : piece.en_start + span] = source[
+            0, row.delay_frames : row.en_frames
+        ]
+        # Each clip was encoded from a fresh Mimi state, whose start-up codes never occur inside a
+        # continuous stream: English silence before the first word inside the start-up window
+        # stays steady silence, and so does the Vietnamese clip's first frame.
+        words = (source[0, row.delay_frames : row.en_frames] != layout.pad_id).nonzero()
+        first_word = row.delay_frames + int(words[0]) if len(words) else row.en_frames
+        audio_from = max(row.delay_frames, min(SILENCE_WARMUP, first_word))
+        start = piece.en_start + audio_from - row.delay_frames
+        codes[1 : 1 + q, start : piece.en_start + span] = source[
+            1 : 1 + q, audio_from : row.en_frames
+        ]
+        codes[1 + q :, piece.vi_start + 1 : piece.vi_start + row.vi_frames] = source[
+            1 + q :, 1 : row.vi_frames
         ]
     return codes
 

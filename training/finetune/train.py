@@ -4,9 +4,10 @@
 Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
 AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
 rows with --seed (`streams.py`) and batched up to --batch-frames padded frames; every epoch
-replays that order. Validation runs on a fixed stream plan of the validation cache, and the
-lowest teacher-forced validation loss is promoted to best_stepNNNNNN.safetensors. Resume only
-from the newest complete model/trainer pair of the same run.
+replays that order. Validation runs on a fixed, seeded stream plan and batch order of the
+validation cache (so --val-batches takes a random subset), and the lowest teacher-forced
+validation loss is promoted to best_stepNNNNNN.safetensors. Resume only from the newest complete
+model/trainer pair of the same run.
 """
 from __future__ import annotations
 
@@ -64,6 +65,8 @@ RESUME_KEYS = (
     "seed",
     "train_rows",
     "train_streams",
+    "val_rows",
+    "val_streams",
     "total_steps",
 )
 LOG_LOSSES = (
@@ -371,10 +374,8 @@ def main() -> None:
 
     checkpoint_info = common.load_checkpoint_info(args)
     frames = stream_frames(args.stream_seconds)
-    mimi = checkpoint_info.get_mimi(device=device)
-    silence = streams.silence_track(mimi, 2 * frames[1])
-    del mimi
-    torch.cuda.empty_cache()
+    # On the CPU in float32, so every machine and every resume encodes the same silence.
+    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), 2 * frames[1])
 
     rows, layout = streams.load_rows(cache_dirs, args.max_frames)
     dataset = streams.StreamDataset(rows, layout, silence, frames, args.seed)
@@ -393,7 +394,7 @@ def main() -> None:
     )
     val_dataloader = DataLoader(
         val_dataset,
-        batch_sampler=val_dataset.batches(args.batch_frames, None),
+        batch_sampler=val_dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
         collate_fn=streams.collate,
         num_workers=args.num_workers,
     )

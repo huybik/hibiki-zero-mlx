@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """Teacher-forced losses of a base or full-SFT model on the validation streams of a cache.
 
-The streams are planned exactly as `train.py` plans its validation streams (same seed, stream
-lengths and silence track), so the numbers compare with a run's `val_log.jsonl`.
+The streams and batches are planned as `train.py` plans its validation (fixed seed, silence track
+encoded on the CPU). To reproduce a run's `val_log.jsonl`, pass its --stream-seconds,
+--max-frames and --batch-frames and use --dtype float32, as training validates its fp32 weights.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,7 +42,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
-        "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model dtype."
+        "--dtype",
+        choices=("float16", "bfloat16", "float32"),
+        default="bfloat16",
+        help="Model dtype.",
     )
     parser.add_argument("--batch-frames", type=int, default=4608)
     parser.add_argument("--stream-seconds", type=float, nargs=2, default=[30.0, 75.0])
@@ -68,12 +73,12 @@ def main() -> None:
 
     checkpoint_info = common.load_checkpoint_info(args)
     frames = stream_frames(args.stream_seconds)
-    silence = streams.silence_track(checkpoint_info.get_mimi(device=device), 2 * frames[1])
+    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), 2 * frames[1])
     rows, layout = streams.load_rows([cache_dir], args.max_frames)
     dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED)
     dataloader = DataLoader(
         dataset,
-        batch_sampler=dataset.batches(args.batch_frames, None),
+        batch_sampler=dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
         collate_fn=streams.collate,
         num_workers=args.num_workers,
     )

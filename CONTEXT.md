@@ -7,8 +7,9 @@ Last verified: 2026-11-01
 This repo runs Hibiki-Zero simultaneous speech translation:
 
 - MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE→EN, or staged BF16 checkpoints);
-- full-model Vietnamese→English voice-preserving SFT on one H100 on the 5–22.4 s clips of the
-  English read-speech corpus `en_speech` plus the ~0.8k-hour PhoMT cache, together ~11.3k hours;
+- full-model Vietnamese→English voice-preserving SFT on one H100, on multi-sentence streams
+  joined from the 5–22.4 s clips of the English read-speech corpus `en_speech` (~10.5k hours;
+  the ~0.8k-hour PhoMT cache is a later ablation);
 - the roadmap toward VI→EN parity with the upstream languages.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
@@ -23,7 +24,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
-  HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
+  HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
 ```
@@ -60,8 +61,8 @@ inference/ (Apple Silicon, MLX)
   shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
   1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
   `cache_codes` builds the training caches from it in MLX;
-  the full build runs on the Mac since 2026-10-27, resumed on 2026-10-29 at 36.6% after a pause,
-  ~3 days short alone at ~200x ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  the full build ran on the Mac from 2026-10-27 and stopped on 2026-11-01 with 1,610 of 1,835 main
+  shards built ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).

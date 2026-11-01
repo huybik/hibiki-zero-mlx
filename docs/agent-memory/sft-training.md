@@ -17,23 +17,34 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   `--max-frames` (280) are dropped.
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
   multi-sentence sequences of `--stream-seconds` (30–75 s, upstream's coarse-stage range).
-  Libriheavy segments of one recording and PhoMT rows of one document stay in order; other rows
-  are random. Each row's English starts its cached delay after its Vietnamese, never before the
+  Libriheavy segments of one recording and PhoMT rows of one source chunk (`phomt_s<N>`, which
+  spans talk boundaries) stay in order; other rows are random. A stream closes when the next row
+  overflows its drawn length, unless it is still under the minimum. Each row's English starts its cached delay after its Vietnamese, never before the
   previous English ends; a 0.3–1.5 s gap (3–10 s one time in ten) separates the Vietnamese, and
   is stretched so the previous English overhangs the next Vietnamese by at most 2 s. Silent
   stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
   the last row keeps the source and text EOS, and the source after its EOS stays silence. The
-  cache itself is never changed.
+  cache itself is never changed. The silence track is encoded on the CPU in float32, so every
+  machine and resume gets the same codes.
+- Every cached clip was encoded from a fresh Mimi state, whose start-up codes a continuous
+  stream never shows: a Vietnamese clip's frame 0 (codebook 0 is 1049, 1698 or 995 in ~90% of
+  rows; frame 1 already has ~200 values) and English silence before the first word within the
+  first 16 frames (rows with short delays) are replaced by steady silence. Measured 2026-11-01
+  on 40 CV clips against encoding after a 2.56 s silence pre-roll: codebook 0 matches on 0% / 17%
+  of clips at Vietnamese frames 0 / 1 and 60–80% after, while only ~42% of all codes match even
+  beyond 2 s (Mimi's 10 s context), so residual codebooks differ near every join as with any
+  splicing. Encoding each clip after a silence pre-roll would be the full fix (a Mimi-only
+  re-encode, about half the cache build).
 - The plan is drawn once with `--seed` (42); streams are length-sorted and grouped into batches
   of at most `--batch-frames` (4,608, as 16 rows of 288 frames before) padded frames, whose
   order is shuffled once; every epoch replays it, and resume skips the planned batches.
-  Validation streams use the fixed `VALIDATION_SEED`, unshuffled, so `validate.py` scores the
-  same streams.
+  Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
+  scores the same streams and `--val-batches` takes a random subset.
 - Measured on 6,152 rows of `cv27-00010`, `libriheavy-medium-00050`,
-  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-01): 1,497 streams of 46 s median
-  (p10 28, p90 65), 4 rows each, 19% of the Vietnamese side silent; the 2 s overhang cap binds
-  at the median join, since the English runs longer than the Vietnamese; batches hold 7 streams
-  median at 97% fill.
+  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-01): 1,435 streams of 46 s median
+  (p10 34, p90 64; none but the last under 30 s), 4 rows each, 20% of the Vietnamese side
+  silent; the 2 s overhang cap binds at the median join, since the English runs longer than the
+  Vietnamese; batches hold 7 streams median at 97.5% fill.
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
