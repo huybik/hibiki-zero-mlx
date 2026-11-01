@@ -73,6 +73,7 @@ public enum Bench {
             try log.write(contentsOf: encoder.encode(sample) + Data("\n".utf8))
             progress(sample)
         }
+        try wav.append(translator.flush() ?? [])
         try (summary(samples) + "\n\n" + text + "\n").write(
             to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
         return samples

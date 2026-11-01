@@ -86,15 +86,16 @@ returns the last step's when the input ends (the CLI's `translate` calls it).
 - One thread drives both devices: mlx-swift 0.32 holds a global lock through every `eval`,
   waiting included, so MLX work on a second thread takes turns with the first.
 - MLX's `eval` blocks while more than 10 tasks are in flight; a task is a Metal command buffer,
-  which MLX closes every 20 ops or 40 MB on phones (40–50 on Macs), or 10 CPU ops. With those
-  defaults the LM step ran almost entirely inside `asyncEval` (34 of 38 ms on the A15) and the
-  CPU work followed it. `Translator.init` sets `MLX_MAX_OPS_PER_BUFFER=400` and
-  `MLX_MAX_MB_PER_BUFFER=1000000` unless already set, before MLX creates its Metal device (LM
-  start 4.5 ms), so the translator must come before any other MLX GPU work in the process. The
-  16-codebook 3B (~2,600 ops a step) does not block either: on the Mac its LM start was 14–16 ms
-  at 400, 1,000 and 3,000 ops per buffer. The CPU side cannot be
-  split the same way: `asyncEval` of a ~300-op Mimi graph waits for most of it, so encode and
-  decode run one after the other.
+  which MLX closes every 20 ops or 40 MB on phones (40–50 on Macs), or 10 CPU dispatches (~5
+  ops). With those defaults the LM step ran almost entirely inside `asyncEval` (34 of 38 ms on
+  the A15) and the CPU work followed it. `Translator.init` sets `MLX_MAX_OPS_PER_BUFFER=400` and
+  `MLX_MAX_MB_PER_BUFFER=1000000` unless already set: LM start 4.5 ms on the A15. MLX reads them
+  once, when the first array or `Memory` setting creates its Metal device (`MLXRandom.seed`
+  too), so the translator must come before anything else touches MLX; the CLI seeds after
+  creating it. The 16-codebook 3B (~2,600 ops a step) does not block either: on the Mac its LM
+  start was 14–16 ms at 400, 1,000 and 3,000 ops per buffer. The CPU side cannot be split the
+  same way: `asyncEval` of a ~300-op Mimi graph waits for most of it, so encode and decode run
+  one after the other.
 - MLX's CPU backend needed four changes to Mimi (busy M4 Pro, per frame: decode 206 → 34 ms,
   encoder transformer 23 → 14 ms):
   - `ConvTransposed1d` is one matmul plus an overlap-add (kernel = 2 × stride, all Mimi uses);
@@ -178,9 +179,9 @@ always on the frame after a progress line: its on-screen log, a text view one li
   slices (64 MB each at q4) read more than the main transformer (39 MB a layer).
 - Quality of the shrinks, teacher-forced against bf16 on `leon.wav` (share of text / codebook-0
   tokens equal to bf16's): q4 g32 93 / 88%, q4 g64 92 / 85%, q3 g32 82 / 78%, q3 g64 82 / 71%,
-  q2 g32 55 / 7%; q4 g64 main with a q3 g64 depformer 92 / 78%; 8 codebooks in bf16 95 / 87%, at q4 92 /
-  83%. q3 is out anywhere; dropping codebooks 8–15 costs about as much as q4. Sampled free runs
-  of bf16, q4 and q4 with 8 codebooks all translate `leon.wav` well.
+  q2 g32 55 / 7%; q4 g64 main with a q3 g64 depformer 92 / 78%; 8 codebooks in bf16 95 / 87%,
+  at q4 92 / 83%. q3 is out anywhere; dropping codebooks 8–15 costs about as much as q4. Sampled
+  free runs of bf16, q4 and q4 with 8 codebooks all translate `leon.wav` well.
 - Long input breaks the model, not the port: on a 64 s clip looped for 6 minutes, Python and
   Swift both start repeating after ~1.6 min and emit garbage after ~2.4 min; the iPhone run's
   text ends in garbage too.

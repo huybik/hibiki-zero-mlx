@@ -104,9 +104,11 @@ func bench(_ translator: Translator, _ pcm: [Float]) throws {
 }
 
 do {
-    MLXRandom.seed(seed)
+    // Translator first: it configures MLX before MLX creates its Metal device, which seeding
+    // would do.
     let translator = try Translator(
         directory: URL(fileURLWithPath: option("--model") ?? "weights"))
+    MLXRandom.seed(seed)
     let pcm = try Audio.read(input)
     try args[0] == "translate" ? translate(translator, pcm) : bench(translator, pcm)
 } catch {

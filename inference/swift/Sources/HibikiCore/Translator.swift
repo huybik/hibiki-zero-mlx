@@ -18,8 +18,8 @@ public final class Translator {
         public let textToken: Int
         /// The text this frame adds, nil for special tokens.
         public let text: String?
-        /// 1920 samples at 24 kHz, decoded from the previous step's audio tokens, once the
-        /// model has produced audio, else nil. `flush` returns the last step's.
+        /// 1920 samples at 24 kHz, decoded from the previous step's audio tokens; nil until the
+        /// model has produced audio, and on the step after a `flush`, which returned it.
         public let pcm: [Float]?
         public let timing: Timing
     }
@@ -66,9 +66,10 @@ public final class Translator {
         // MLX closes a Metal command buffer every 20 ops or 40 MB on phones (40–50 on Macs)
         // and blocks `asyncEval` while more than 10 are in flight, so the LM step (hundreds of
         // ops over 0.6–2 GB of weights) would run almost entirely inside `asyncEval`, before
-        // the CPU work instead of beside it. MLX reads these when it creates the Metal device,
-        // so the translator must come before any other MLX GPU work in the process. Values
-        // already in the environment win, for tuning.
+        // the CPU work instead of beside it. MLX reads these once, when it creates the Metal
+        // device, which any array or `Memory` setting does (`MLXRandom.seed` too), so create
+        // the translator before anything else touches MLX. Values already in the environment
+        // win, for tuning.
         setenv("MLX_MAX_OPS_PER_BUFFER", "400", 0)
         setenv("MLX_MAX_MB_PER_BUFFER", "1000000", 0)
         if let cacheLimit { Memory.cacheLimit = cacheLimit }
