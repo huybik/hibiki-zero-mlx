@@ -142,9 +142,16 @@ extension Mimi {
             {
                 weight = weight.swappedAxes(-1, -2)
             }
-            // PyTorch transposed convs are (in, out, kernel).
+            // PyTorch transposed convs are (in, out, kernel); `ConvTransposed1d` wants
+            // (in, kernel, out) in memory, to reshape to its matmul operand without a copy.
             if key.hasSuffix(".convtr.weight") {
-                weight = weight.transposed(axes: [1, 2, 0])
+                weight = contiguous(weight.swappedAxes(1, 2))
+            }
+            // Transformer linears are (out, in); stored column-major, `Linear`'s x · wᵀ hands
+            // the CPU's sgemm a row-major (in, out) operand, which it streams ~7x faster than
+            // a transposed one at Mimi's two-row inputs.
+            if key.contains("_transformer.") && weight.ndim == 2 {
+                weight = contiguous(weight.T).T
             }
             weights[key] = weight
         }

@@ -43,29 +43,42 @@ final class Generator {
         return value
     }
 
-    /// Feeds one frame of source codes. Returns the text token, the target codes now complete
-    /// (frame - maxDelay; nil while warming up or when any is padding) and stage times.
-    func step(source: [Int]) -> (
-        text: Int, target: [Int]?, main: Double, depformer: Double
-    ) {
+    /// LM step `frame` running on the GPU, from `start` until `finish` reads it back.
+    struct Pending {
+        let frame: Int
+        let text: MLXArray
+        let audio: MLXArray
+    }
+
+    /// Builds LM step t (t = `frame`) from the tokens of frames before t and starts it on the
+    /// GPU. Frame t's own source codes are first read by step t + 1, so the caller can encode
+    /// them while this runs.
+    func start() -> Pending {
         let cfg = lm.cfg
-        precondition(source.count == cfg.nQ - cfg.depQ)
         let t = frame
         ring[slot(t)] = ring[slot(t)].map { _ in Self.ungenerated }
-        for (j, code) in source.enumerated() { ring[slot(t)][1 + cfg.depQ + j] = code }
-
         let textIn = t == 0 ? cfg.textInitToken : read(t - 1, 0)
         let audioIn = delays.enumerated().map { cb, delay in
             t - 1 - delay >= 0 ? read(t - 1 - delay, 1 + cb) : cfg.audioPaddingToken
         }
-        let start = DispatchTime.now()
-        let (textToken, audioTokens) = lm.step(
+        let (text, audio) = lm.step(
             text: textIn, audio: audioIn, textSampler: textSampler, audioSampler: audioSampler)
-        let text = Int(textToken.item(Int32.self))
-        let mainDone = DispatchTime.now()
-        let audio = audioTokens.asArray(Int32.self).map(Int.init)
-        let end = DispatchTime.now()
+        asyncEval(text, audio)
+        return Pending(frame: t, text: text, audio: audio)
+    }
 
+    /// Stores frame t's source codes, waits for step t and stores its tokens. Returns the text
+    /// token and the target codes now complete (frame t - maxDelay; nil while warming up or
+    /// when any is padding).
+    func finish(_ pending: Pending, source: [Int]) -> (text: Int, target: [Int]?) {
+        let cfg = lm.cfg
+        let t = frame
+        precondition(pending.frame == t, "finishing step \(pending.frame) at frame \(t)")
+        precondition(source.count == cfg.nQ - cfg.depQ)
+        for (j, code) in source.enumerated() { ring[slot(t)][1 + cfg.depQ + j] = code }
+
+        let text = Int(pending.text.item(Int32.self))
+        let audio = pending.audio.asArray(Int32.self).map(Int.init)
         ring[slot(t)][0] = text
         for cb in 0..<cfg.depQ where t - delays[cb] >= 0 {
             ring[slot(t - delays[cb])][1 + cb] = audio[cb]
@@ -78,7 +91,7 @@ final class Generator {
             let codes = (1...cfg.depQ).map { read(done, $0) }
             if !codes.contains(cfg.audioPaddingToken) { target = codes }
         }
-        return (text, target, seconds(start, mainDone), seconds(mainDone, end))
+        return (text, target)
     }
 }
 

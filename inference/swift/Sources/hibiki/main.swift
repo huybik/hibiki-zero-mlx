@@ -77,8 +77,8 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
         to: textURL, atomically: true, encoding: .utf8)
     let ms = { (s: Double) in String(format: "%.1f", 1000 * s / Double(frames)) }
     let speed = String(format: "%.2f s -> %.2fx RT", wall, Double(steps) / wall / 12.5)
-    let stages = "encode \(ms(timing.encode)), main \(ms(timing.main)), "
-        + "depformer \(ms(timing.depformer)), decode \(ms(timing.decode))"
+    let stages = "LM start \(ms(timing.lmStart)), decode \(ms(timing.decode)), "
+        + "encode \(ms(timing.encode)), LM wait \(ms(timing.lmWait))"
     print("[\(frames) frames (\(steps) audio) in \(speed); ms/frame: \(stages)]")
     print("out: \(output.path), text: \(textURL.path)")
 }

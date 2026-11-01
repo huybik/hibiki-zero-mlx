@@ -50,81 +50,58 @@ class Conv1d: Module, UnaryLayer {
     }
 }
 
-// ConvTranspose1d + groups
+/// ConvTranspose1d with kernel = 2 × stride, the only shape Mimi uses, as one matmul and an
+/// overlap-add. MLX's convTransposed1d has no groups, and on the CPU it runs a naive loop
+/// (35–65 ms per Mimi decoder layer on an M4 Pro, against 0.3 ms this way).
+///
+/// `weight` is `[in, kernel, out / groups]` (PyTorch's `[in, out / groups, kernel]` with the
+/// last two axes swapped), so it reshapes for free to the `[in, kernel × out]` matmul operand.
 class ConvTransposed1d: Module, UnaryLayer {
     @ModuleInfo(key: "weight") var weight: MLXArray
     @ModuleInfo(key: "bias") var bias: MLXArray?
-    let padding: Int
     let stride: Int
-    let groups: Int
-    let inC: Int
-    let outC: Int
-    let kSize: Int
-    var _expandedWeight: MLXArray
-    var expandedGroups: Int
+    let depthwise: Bool
 
     init(
         inputChannels: Int,
         outputChannels: Int,
         kernelSize: Int,
         stride: Int = 1,
-        padding: Int = 0,
         groups: Int = 1,
         bias: Bool = true
     ) {
+        precondition(kernelSize == 2 * stride, "only kernel = 2 × stride is implemented")
+        depthwise = groups == inputChannels && groups == outputChannels
+        precondition(groups == 1 || depthwise, "only dense or depthwise transposed convs")
         let scale = (1 / Float(inputChannels * kernelSize)).squareRoot()
-
         self._weight.wrappedValue = uniform(
-            low: -scale, high: scale, [outputChannels / groups, kernelSize, inputChannels])
-        let weight = self._weight.wrappedValue
+            low: -scale, high: scale, [inputChannels, kernelSize, outputChannels / groups])
         self._bias.wrappedValue = bias ? MLXArray.zeros([outputChannels]) : nil
-        self.padding = padding
         self.stride = stride
-        self.groups = groups
-        self.inC = inputChannels
-        self.outC = outputChannels
-        self.kSize = kernelSize
-        (self._expandedWeight, self.expandedGroups) = (weight, groups)
-        super.init()
-        expand()
     }
 
-    override func update(
-        parameters: ModuleParameters, verify: Module.VerifyUpdate, path: [String] = [],
-        modulePath: [String] = []
-    ) throws -> Self {
-        try super.update(
-            parameters: parameters, verify: verify, path: path, modulePath: modulePath)
-        expand()
-        return self
-    }
-
-    /// Depthwise transposed convs (groups == channels) run as one dense conv over a
-    /// block-diagonal weight; MLX's convTransposed1d has no groups.
-    private func expand() {
-        if groups == inC && groups == outC {
-            let eye = repeated(
-                eye(outC).asType(weight.dtype).reshaped([outC, 1, outC]), count: kSize, axis: 1)
-            _expandedWeight = repeated(weight, count: groups, axis: 0) * eye
-            expandedGroups = 1
-        } else if groups > 1 {
-            fatalError("groups are not supported in ConvTranspose1d, \(groups), \(inC), \(outC)")
-        } else {
-            _expandedWeight = weight
-            expandedGroups = groups
-        }
-    }
-
-    open func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // Groups are not supported in convTransposed1d as of 0.18.1 so we hack our way around it.
-        var y = convTransposed1d(
-            x.swappedAxes(-1, -2), _expandedWeight, stride: stride, padding: padding,
-            groups: expandedGroups
-        )
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let (b, t) = (x.dim(0), x.dim(2))
+        let k = 2 * stride
+        // Each input step's contribution to its 2 × stride output samples: [B, T, K, out].
+        let y =
+            depthwise
+            ? x.swappedAxes(-1, -2)[0..., 0..., .newAxis, 0...]
+                * weight.reshaped(-1, k).T[.newAxis, .newAxis]
+            : matmul(x.swappedAxes(-1, -2), weight.reshaped(weight.dim(0), -1))
+                .reshaped(b, t, k, -1)
+        // Overlap-add: the first half of step i's kernel and the second half of step i - 1's
+        // fill output block i, for T + 1 blocks of `stride` samples.
+        let halves = y.reshaped(b, t, 2, stride, -1)
+        let pad = MLXArray.zeros([b, 1, stride, halves.dim(-1)], dtype: y.dtype)
+        var out =
+            (concatenated([halves[0..., 0..., 0], pad], axis: 1)
+            + concatenated([pad, halves[0..., 0..., 1]], axis: 1))
+            .reshaped(b, (t + 1) * stride, -1)
         if let bias {
-            y = y + bias
+            out = out + bias
         }
-        return y.swappedAxes(-1, -2)
+        return out.swappedAxes(-1, -2)
     }
 }
 
@@ -154,13 +131,12 @@ class NormConvTranspose1d: Module, UnaryLayer {
     init(
         inC: Int, outC: Int, kSize: Int,
         stride: Int = 1,
-        padding: Int = 0,
         groups: Int = 1,
         bias: Bool = true
     ) {
         self._convtr.wrappedValue = ConvTransposed1d(
             inputChannels: inC, outputChannels: outC, kernelSize: kSize, stride: stride,
-            padding: padding, groups: groups, bias: bias)
+            groups: groups, bias: bias)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {

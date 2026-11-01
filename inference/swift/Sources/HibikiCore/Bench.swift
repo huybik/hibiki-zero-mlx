@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import os
 
 /// Sustained-load test: feeds a looped clip for a fixed duration, either paced like a live
@@ -15,17 +16,21 @@ public enum Bench {
         /// under 0.08 while the device keeps up, grows without bound when it does not).
         /// Unpaced: 0.
         public let lag: Double
-        public let encodeMs: Double
-        public let mainMs: Double
-        public let depformerMs: Double
+        /// `Translator.Timing`, in milliseconds.
+        public let lmStartMs: Double
         public let decodeMs: Double
+        public let encodeMs: Double
+        public let lmWaitMs: Double
         /// `ProcessInfo.ThermalState`: 0 nominal, 1 fair, 2 serious, 3 critical.
         public let thermal: Int
         public let footprintMB: Double
+        /// MLX buffers in use, and freed ones MLX keeps for reuse; both count in the footprint.
+        public let mlxActiveMB: Double
+        public let mlxCacheMB: Double
         /// Memory the process may still allocate before the system kills it (iOS only).
         public let availableMB: Double?
 
-        public var totalMs: Double { encodeMs + mainMs + depformerMs + decodeMs }
+        public var totalMs: Double { lmStartMs + decodeMs + encodeMs + lmWaitMs }
     }
 
     public static func run(
@@ -59,10 +64,11 @@ public enum Bench {
             try wav.append(frame.pcm ?? [])
             let sample = Sample(
                 frame: idx, wall: wall, lag: paced ? wall - arrival : 0,
-                encodeMs: 1000 * frame.timing.encode, mainMs: 1000 * frame.timing.main,
-                depformerMs: 1000 * frame.timing.depformer, decodeMs: 1000 * frame.timing.decode,
+                lmStartMs: 1000 * frame.timing.lmStart, decodeMs: 1000 * frame.timing.decode,
+                encodeMs: 1000 * frame.timing.encode, lmWaitMs: 1000 * frame.timing.lmWait,
                 thermal: ProcessInfo.processInfo.thermalState.rawValue,
-                footprintMB: footprintMB(), availableMB: availableMB())
+                footprintMB: footprintMB(), mlxActiveMB: Double(Memory.activeMemory) / 1_048_576,
+                mlxCacheMB: Double(Memory.cacheMemory) / 1_048_576, availableMB: availableMB())
             samples.append(sample)
             try log.write(contentsOf: encoder.encode(sample) + Data("\n".utf8))
             progress(sample)
@@ -75,18 +81,22 @@ public enum Bench {
     /// One line per minute: frame-time percentiles, worst lag, thermal state and memory.
     public static func summary(_ samples: [Sample]) -> String {
         let perMinute = 750
-        var lines = ["minute  frames  p50 ms  p90 ms  p99 ms  depformer p50  max lag s  thermal  footprint MB"]
+        var lines = [
+            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50  max lag s  thermal"
+                + "  footprint MB  MLX active MB"
+        ]
         for start in stride(from: 0, to: samples.count, by: perMinute) {
             let chunk = Array(samples[start..<min(start + perMinute, samples.count)])
             let total = chunk.map(\.totalMs).sorted()
-            let dep = chunk.map(\.depformerMs).sorted()
+            let wait = chunk.map(\.lmWaitMs).sorted()
             let q = { (xs: [Double], p: Double) in xs[min(xs.count - 1, Int(p * Double(xs.count)))] }
             lines.append(
                 String(
-                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %13.1f  %9.2f  %7d  %12.0f",
+                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f  %9.2f  %7d  %12.0f  %13.0f",
                     start / perMinute + 1, chunk.count, q(total, 0.5), q(total, 0.9),
-                    q(total, 0.99), q(dep, 0.5), chunk.map(\.lag).max() ?? 0,
-                    chunk.map(\.thermal).max() ?? 0, chunk.map(\.footprintMB).max() ?? 0))
+                    q(total, 0.99), q(wait, 0.5), chunk.map(\.lag).max() ?? 0,
+                    chunk.map(\.thermal).max() ?? 0, chunk.map(\.footprintMB).max() ?? 0,
+                    chunk.map(\.mlxActiveMB).max() ?? 0))
         }
         return lines.joined(separator: "\n")
     }

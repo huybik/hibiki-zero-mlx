@@ -66,8 +66,12 @@ private class MlpNoGating: Module, UnaryLayer {
         self._linear2.wrappedValue = Linear(cfg.dimFeedForward, cfg.dModel, bias: cfg.biasFF)
     }
 
+    /// The tanh GELU written out: MLXNN's `geluApproximate` is a compiled function, and iOS
+    /// cannot compile CPU kernels.
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        linear2(geluApproximate(linear1(x)))
+        let h = linear1(x)
+        let inner = (2 / Float.pi).squareRoot() * (h + 0.044715 * h * h * h)
+        return linear2(0.5 * h * (1 + tanh(inner)))
     }
 }
 
@@ -130,6 +134,18 @@ final class Attention: Module {
     }
 }
 
+/// LayerNorm composed from mean and variance, for Mimi on the CPU, where MLXFast.layerNorm's
+/// fallback takes ~8x as long. Only Mimi's transformers use `Norm.layerNorm`.
+final class ComposedLayerNorm: LayerNorm {
+    override func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let centered = x - x.mean(axis: -1, keepDims: true)
+        var y = centered * rsqrt((centered * centered).mean(axis: -1, keepDims: true) + eps)
+        if let weight { y = y * weight }
+        if let bias { y = y + bias }
+        return y
+    }
+}
+
 class LayerScale: Module, UnaryLayer {
     @ModuleInfo(key: "scale") var scale: MLXArray
 
@@ -154,14 +170,12 @@ final class TransformerLayer: Module {
         self._gating.wrappedValue = cfg.gating ? MlpGating(cfg) : MlpNoGating(cfg)
         self._norm1.wrappedValue =
             switch cfg.norm {
-            case .layerNorm:
-                LayerNorm(dimensions: cfg.dModel, eps: 1e-5)
+            case .layerNorm: ComposedLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
             case .rmsNorm: RMSNorm(dimensions: cfg.dModel, eps: 1e-8)
             }
         self._norm2.wrappedValue =
             switch cfg.norm {
-            case .layerNorm:
-                LayerNorm(dimensions: cfg.dModel, eps: 1e-5)
+            case .layerNorm: ComposedLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
             case .rmsNorm: RMSNorm(dimensions: cfg.dModel, eps: 1e-8)
             }
         self._selfAttn.wrappedValue = Attention(cfg)

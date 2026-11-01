@@ -1,9 +1,9 @@
 # Swift runtime
 
-Hibiki-Zero in MLX Swift, for macOS and iOS. It runs the same staged model directories as the
-Python runtime (`weights/`, or a `convert_mlx_{q4,bf16}.py` output). Fed the same tokens, it
-picks the same text token as the Python runtime 99% of the time; sampled runs differ token by
-token but translate as well ([swift-runtime](../../docs/agent-memory/swift-runtime.md#parity)).
+Hibiki-Zero in MLX Swift, for macOS and iOS: the LM runs on the GPU and Mimi on the CPU beside
+it. It runs the same staged model directories as the Python runtime (`weights/`, or a
+`convert_mlx_{q4,bf16}.py` output). Fed the same tokens, it picks the same text token as the
+Python runtime 99% of the time; sampled runs differ token by token but translate as well ([swift-runtime](../../docs/agent-memory/swift-runtime.md#parity)).
 
 ```text
 Package.swift          SwiftPM package, mlx-swift pinned
@@ -55,7 +55,10 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
   --minutes 10
 ```
 
-The phone must be unlocked, and a new developer certificate trusted once under Settings >
-General > VPN & Device Management. Keep the app in the foreground: iOS stops GPU work in the
-background. The app keeps the phone awake and writes `Documents/bench-<time>.{jsonl,wav}` as it
-runs and `.txt` at the end; copy them back with `devicectl device copy from`.
+`--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models
+on the phone. The phone must be unlocked, and a new developer certificate trusted once under
+Settings > General > VPN & Device Management. Keep the app in the foreground: iOS stops GPU
+work in the background. The app keeps the phone awake and writes
+`Documents/bench-<time>.{jsonl,wav}` as it runs and `.txt` at the end; copy them back with
+`devicectl device copy from`. The app stays open after a run, so the console does too; stopping
+the console ends the app, and the phone may lock.

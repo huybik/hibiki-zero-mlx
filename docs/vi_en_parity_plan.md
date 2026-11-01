@@ -11,7 +11,7 @@ VI TTS (done) ─► Mimi cache (finish) ─► SFT 3B ─► GRPO 3B ─► tea
                                             on-device test of upstream Hibiki-Zero 3B q4
                                             ├─ real time on target iPhones ─► ship 3B q4
                                             └─ too slow / hot ─► shrink in the family + distill
-                                                                 (8 codebooks, ~14 layers)
+                                                                 (8 codebooks, ~10–14 layers)
                                                      ─► q4 + Swift runtime (4 Hibiki-Zero deltas)
 ```
 
@@ -121,18 +121,27 @@ student afterwards.
    phone (A17 Pro / A18, 8 GB) before settling the target.
 3. The 3B does not hold real time on the A15, so the shrink branch is on: drop depformer steps
    8–15 (8 codebooks per stream; the depformer's sequential steps halve) and main layers 28 →
-   ~14 initialised from the 3B's own, fine-tune, then distil from the teacher on its
+   ~10–14 initialised from the 3B's own, fine-tune, then distil from the teacher on its
    free-running outputs over the cached Vietnamese codes and unlabeled real Vietnamese audio.
-   Halving both on the A15's throttled numbers gives ~77 ms for the LM, so Mimi must also leave
-   the GPU's critical path (CPU threads, as the Python runtime does).
+   Timed on the A15 with untrained cuts and Mimi on the CPU beside the GPU LM
+   ([swift-runtime](agent-memory/swift-runtime.md#device-test)): 10 layers run at 58 ms/frame
+   cold and hold real time for ~3 minutes, then throttle to ~90 ms; 14 layers 64 → 98 ms; the
+   8-codebook 3B 84 → 137 ms. The phone reaches thermal state "serious" within a minute, and hot,
+   the CPU codec alone (Mimi encode + decode) takes ~80 ms. Sustained real time on the A15 needs
+   a cheaper codec path as well as a smaller LM; at 10 layers the depformer (8 × 64 MB at q4)
+   already reads more per frame than the main transformer, so a thinner depformer is the next
+   LM cut. Measure a current phone (A17 Pro / A18) before settling the target.
 
 ### 6. Quantise and package
 
 q4 group 32 on transformer linears; embeddings, text head and depformer input/output projections
 at 8 bits (q3 there made the 3B babble, [inference_matrix](vision/reports/inference_matrix.md)).
-Gate q4 against bf16 on the real-Vietnamese sets. Ship on MLX Swift (GPU) with the 3-thread codec
-pipeline; the Neural Engine comes later (fp16 only, static shapes). File mode should send the
-source EOS at the end of the input, as upstream does; live mode never sends it.
+Gate q4 against bf16 on the real-Vietnamese sets. q3 is out everywhere: teacher-forced on
+`leon.wav` it keeps 82% of bf16's text tokens and 71–78% of codebook 0, against q4's 93% and 88%
+([swift-runtime](agent-memory/swift-runtime.md#device-test)). Ship on MLX Swift: the LM on the
+GPU, Mimi on the CPU beside it; the Neural Engine comes later (fp16 only, static shapes). File
+mode should send the source EOS at the end of the input, as upstream does; live mode never sends
+it.
 
 ## Order
 
@@ -148,6 +157,6 @@ source EOS at the end of the input, as upstream does; live mode never sends it.
 |---|---|
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
-| 3B too slow or hot on phones | Measured: 0.4x real time sustained on the A15; shrink within the family, Mimi off the GPU path |
+| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained; even 10 layers with Mimi on the CPU throttle past 80 ms after ~3 minutes. Shrink within the family, thin the depformer, cheapen the codec |
 | Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; streams longer than 75 s in SFT; reset the session in silence if needed |
 | Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |

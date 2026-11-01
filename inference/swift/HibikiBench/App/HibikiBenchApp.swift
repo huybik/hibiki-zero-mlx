@@ -1,10 +1,11 @@
 // HibikiBench: the on-device sustained-load test of the Swift runtime.
 //
-// Reads Documents/model/ (config.json, weights, Mimi, tokenizer) and Documents/clip.wav, runs
-// `Bench` for `--minutes M` (default 10), paced like a live microphone unless `--unpaced`, and
-// writes Documents/bench-<time>.{jsonl,wav,txt} as it goes. Progress and the summary also go
-// to stdout, which `xcrun devicectl device process launch --console` shows. Keep the app in the
-// foreground: iOS refuses GPU work from the background, so locking the phone ends the run.
+// Reads Documents/model/ (Documents/NAME/ with `--model NAME`: config.json, weights, Mimi,
+// tokenizer) and Documents/clip.wav, runs `Bench` for `--minutes M` (default 10), paced like a
+// live microphone unless `--unpaced`, and writes Documents/bench-<time>.{jsonl,wav,txt} as it
+// goes. Progress and the summary also go to stdout, which `xcrun devicectl device process launch
+// --console` shows. Keep the app in the foreground: iOS refuses GPU work from the background, so
+// locking the phone ends the run.
 
 import HibikiCore
 import SwiftUI
@@ -16,7 +17,7 @@ struct HibikiBenchApp: App {
     var body: some Scene {
         WindowGroup {
             ScrollView {
-                Text(run.log)
+                Text(run.lines.joined(separator: "\n"))
                     .font(.system(.footnote, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
@@ -28,7 +29,9 @@ struct HibikiBenchApp: App {
 
 @MainActor
 final class BenchRun: ObservableObject {
-    @Published private(set) var log = ""
+    /// The newest lines only: a text view that grows by a line every 10 s grew the app's
+    /// footprint by ~1.6 MB a minute.
+    @Published private(set) var lines: [String] = []
     private var started = false
 
     func start() {
@@ -39,11 +42,13 @@ final class BenchRun: ObservableObject {
         let minutes = args.firstIndex(of: "--minutes")
             .flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil } ?? 10
         let paced = !args.contains("--unpaced")
+        let model = args.firstIndex(of: "--model")
+            .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "model"
         let thread = Thread { [weak self] in
-            Self.bench(minutes: minutes, paced: paced) { line in
+            Self.bench(model: model, minutes: minutes, paced: paced) { line in
                 print(line)
                 fflush(stdout)
-                Task { @MainActor in self?.log += line + "\n" }
+                Task { @MainActor in self?.show(line) }
             }
         }
         thread.stackSize = 8 << 20
@@ -51,15 +56,20 @@ final class BenchRun: ObservableObject {
         thread.start()
     }
 
+    private func show(_ line: String) {
+        lines.append(line)
+        lines.removeFirst(max(0, lines.count - 10))
+    }
+
     nonisolated private static func bench(
-        minutes: Double, paced: Bool, say: @escaping (String) -> Void
+        model: String, minutes: Double, paced: Bool, say: @escaping (String) -> Void
     ) {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         do {
-            say("loading \(docs.appending(path: "model").path)")
+            say("loading \(docs.appending(path: model).path)")
             // Freed MLX buffers count toward the app's memory limit; keep few of them.
             let translator = try Translator(
-                directory: docs.appending(path: "model"), cacheLimit: 256 << 20)
+                directory: docs.appending(path: model), cacheLimit: 256 << 20)
             let clip = try Audio.read(docs.appending(path: "clip.wav"))
             say(String(format: "loaded; footprint %.0f MB", Bench.footprintMB()))
             say("running \(minutes) min, \(paced ? "paced at 12.5 frames/s" : "unpaced")")
@@ -72,9 +82,10 @@ final class BenchRun: ObservableObject {
                 if sample.frame % 125 == 124 {
                     say(
                         String(
-                            format: "%5.0f s  %5.1f ms/frame  lag %.2f s  thermal %d  %.0f MB",
+                            format: "%5.0f s  %5.1f ms/frame  lag %.2f s  thermal %d  %.0f MB"
+                                + " (MLX %.0f)",
                             sample.wall, sample.totalMs, sample.lag, sample.thermal,
-                            sample.footprintMB))
+                            sample.footprintMB, sample.mlxActiveMB))
                 }
             }
             say(Bench.summary(samples))

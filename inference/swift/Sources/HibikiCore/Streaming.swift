@@ -65,8 +65,9 @@ class StreamArray {
         }
     }
 
+    /// ELU written out: MLXNN's is a compiled function, and iOS cannot compile CPU kernels.
     func elu() -> StreamArray {
-        self.map { MLXNN.elu($0, alpha: 1.0) }
+        self.map { which($0 .> 0, $0, exp($0) - 1) }
     }
 
     func map(_ f: (MLXArray) -> MLXArray) -> StreamArray {
