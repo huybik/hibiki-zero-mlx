@@ -1,9 +1,10 @@
 """Multi-sentence training streams assembled from grounded cache rows.
 
 A stream joins cached rows (`[33, T]`: text, 16 English target and 16 Vietnamese source
-codebooks) the way a speaker talks on. Consecutive Libriheavy segments of one recording and
-consecutive PhoMT rows of one source chunk (`phomt_s<N>`, which spans talk boundaries) stay
-together in order; other rows (Common Voice) follow at random. Each row's Vietnamese follows the
+codebooks) the way a speaker talks on. Consecutive PhoMT rows of one source chunk
+(`phomt_s<N>r<M>`, in order, spanning talk boundaries) stay together; every other row follows at
+random. Libriheavy segment numbers are not reading order, and about a quarter of a recording's
+segments overlap another's text, so its rows are not grouped. Each row's Vietnamese follows the
 previous one after a gap. Its English starts the row's cached delay after its Vietnamese, never
 before the previous English ends, and a gap is stretched so the previous English overhangs the
 next Vietnamese by at most MAX_OVERHANG.
@@ -12,11 +13,15 @@ Wherever nobody speaks, both audio streams hold encoded silence and the text hol
 supervised. The last row keeps the source EOS and the text EOS; the source after its EOS stays
 silence (as upstream inference feeds it), while the target and text after the text EOS are -1.
 
-Every cached clip was encoded from a fresh Mimi state, so its first frames carry start-up codes a
-continuous stream never shows. A Vietnamese clip's first frame (codebook 0 is one of three values
-in 90% of rows) and the English silence before the first word within SILENCE_WARMUP frames become
-steady silence. Residual codebooks still differ from a continuous encoding near every join
-(Mimi's 10 s context), as with any splicing.
+Mimi codes depend on the encoder's state. Inference encodes one continuous stream from a fresh
+state, so a stream opens with the encoder's start-up codes and is steady silence elsewhere. Every
+cached clip, though, was encoded alone from a fresh state. Unless a piece opens the stream, its
+Vietnamese frame 0 (a start-up marker: codebook 0 is one of three values in ~90% of rows, though
+it can hold a syllable's onset) becomes silence, and so does English silence before the first word
+within the first SILENCE_WARMUP frames of a clip. English speech that starts within those frames
+keeps codes that differ from a continuous encoding (codebook 0 matches 60-80%), and residual
+codebooks differ near every join (Mimi's 10 s context); re-encoding each clip after a silence
+pre-roll would remove both.
 
     VI   lead [row 1]  gap  [row 2]  gap ... [row n] EOS  silence ...
     EN   silence  δ1 [row 1 en] [row 2 en]  ...   [row n en] EOS -1 ...
@@ -45,12 +50,11 @@ SHORT_GAP = (4, 19)  # a pause between sentences, 0.3-1.5 s
 LONG_GAP = (38, 125)  # a 3-10 s silence, to practise staying quiet
 LONG_GAP_PROBABILITY = 0.1
 MAX_OVERHANG = 25  # the previous English may run at most 2 s into the next Vietnamese
-SILENCE_WARMUP = 16  # frames of the silence encoder's start transient, dropped
+SILENCE_WARMUP = 16  # frames of Mimi's start-up codes when it encodes from a fresh state
 # Teacher-forced validation streams and their batch order use one fixed seed, so every run and
 # validate.py score the same streams, and --val-batches takes a random subset.
 VALIDATION_SEED = 0
-# Consecutive rows: Libriheavy `<recording>_<segment>` and PhoMT `phomt_s<chunk>r<row>`.
-GROUPED_ID = re.compile(r"^(libriheavy/.+)_(\d+)$|^(phomt_s\d+)r(\d+)$")
+PHOMT_ID = re.compile(r"^(phomt_s\d+)r(\d+)$")  # consecutive rows of one source chunk
 
 
 @dataclass(frozen=True)
@@ -141,26 +145,31 @@ def _gap(rng: random.Random) -> int:
 
 
 def plan_streams(
-    rows: list[Row], min_frames: int, max_frames: int, silence_frames: int, seed: int
+    rows: list[Row], min_frames: int, max_frames: int, steady_frames: int, seed: int
 ) -> list[Stream]:
     """Cut every row, once, into streams of min_frames..max_frames frames (the last may be
-    shorter)."""
+    shorter); `steady_frames` is the steady part of the silence track."""
     longest = max(max(row.vi_frames, row.en_frames) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
-    if silence_frames < max_frames:
+    # A stream still under min_frames grows by at most a long gap and a row, which must fit.
+    if max_frames < min_frames + LONG_GAP[1] + longest:
+        raise ValueError(
+            f"Stream lengths {min_frames}..{max_frames} must differ by at least a "
+            f"{longest}-frame row and a {LONG_GAP[1]}-frame gap"
+        )
+    if steady_frames < max_frames:
         raise ValueError("The silence track must cover the longest stream")
     rng = random.Random(seed)
-    groups: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    chunks: dict[str, list[tuple[int, int]]] = defaultdict(list)
     units: list[list[int]] = []
     for index, row in enumerate(rows):
-        match = GROUPED_ID.match(row.id)
+        match = PHOMT_ID.match(row.id)
         if match is None:
             units.append([index])
         else:
-            key, order = (match.group(1), match.group(2)) if match.group(1) else match.group(3, 4)
-            groups[key].append((int(order), index))
-    units.extend([index for _, index in sorted(group)] for group in groups.values())
+            chunks[match.group(1)].append((int(match.group(2)), index))
+    units.extend([index for _, index in sorted(chunk)] for chunk in chunks.values())
     rng.shuffle(units)
 
     streams: list[Stream] = []
@@ -168,7 +177,8 @@ def plan_streams(
     budget = vi_end = en_end = frames = 0
 
     def close() -> None:
-        streams.append(Stream(tuple(pieces), frames, rng.randint(0, silence_frames - frames)))
+        offset = rng.randint(0, steady_frames - frames)
+        streams.append(Stream(tuple(pieces), frames, offset))
 
     for index in (index for unit in units for index in unit):
         row = rows[index]
@@ -203,10 +213,12 @@ def plan_streams(
 def assemble(
     stream: Stream, rows: list[Row], silence: torch.Tensor, layout: Layout
 ) -> torch.Tensor:
-    """The stream's int32 codes [33, frames]; `silence` is encoded silence [dep_q, >= frames]."""
+    """The stream's int32 codes [33, frames]; `silence` is the `silence_track`."""
     q = layout.dep_q
     frames = stream.frames
-    quiet = silence[:, stream.silence_offset : stream.silence_offset + frames]
+    # The encoder's start-up codes open the stream, as at inference; steady silence follows.
+    steady = silence[:, SILENCE_WARMUP + stream.silence_offset :]
+    quiet = torch.cat([silence[:, :SILENCE_WARMUP], steady], dim=1)[:, :frames]
     last_piece = stream.pieces[-1]
     last = rows[last_piece.row]
     text_eos = last_piece.en_start + last.en_frames - last.delay_frames
@@ -228,9 +240,9 @@ def assemble(
         codes[0, piece.en_start : piece.en_start + span] = source[
             0, row.delay_frames : row.en_frames
         ]
-        # Each clip was encoded from a fresh Mimi state, whose start-up codes never occur inside a
-        # continuous stream: English silence before the first word inside the start-up window
-        # stays steady silence, and so does the Vietnamese clip's first frame.
+        # Each clip was encoded from a fresh Mimi state: English silence before the first word
+        # within the start-up window stays silence, and so does the Vietnamese first frame unless
+        # the clip opens the stream, where inference starts fresh too.
         words = (source[0, row.delay_frames : row.en_frames] != layout.pad_id).nonzero()
         first_word = row.delay_frames + int(words[0]) if len(words) else row.en_frames
         audio_from = max(row.delay_frames, min(SILENCE_WARMUP, first_word))
@@ -238,28 +250,28 @@ def assemble(
         codes[1 : 1 + q, start : piece.en_start + span] = source[
             1 : 1 + q, audio_from : row.en_frames
         ]
-        codes[1 + q :, piece.vi_start + 1 : piece.vi_start + row.vi_frames] = source[
-            1 + q :, 1 : row.vi_frames
+        vi_from = 0 if piece.vi_start == 0 else 1
+        codes[1 + q :, piece.vi_start + vi_from : piece.vi_start + row.vi_frames] = source[
+            1 + q :, vi_from : row.vi_frames
         ]
     return codes
 
 
 def silence_track(mimi: Any, frames: int) -> torch.Tensor:
-    """Mimi codes of `frames` frames of steady digital silence, [codebooks, frames] int32 on the
-    CPU.
+    """Mimi codes of `frames` frames of digital silence encoded from a fresh state,
+    [codebooks, frames] int32 on the CPU.
 
-    Encoding silence from a fresh state starts with a transient of ~11 frames (the codes a cached
-    row's delay begins with), then settles into a few repeating patterns rather than one frame
-    (codebook 0 is 1316 on ~99% of frames), so the transient is dropped and gaps take slices.
+    The first SILENCE_WARMUP frames hold the start-up codes (~11 frames of a transient, the codes
+    a cached row's delay begins with); the rest is steady silence, a few repeating patterns rather
+    than one frame (codebook 0 is 1316 on ~99% of frames), so gaps take slices of it.
     """
-    total = frames + SILENCE_WARMUP
-    samples = int(round(mimi.sample_rate / mimi.frame_rate)) * total
+    samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
     device = next(mimi.parameters()).device
     with torch.no_grad():
         codes = mimi.encode(torch.zeros(1, 1, samples, device=device))[0]
-    if codes.shape[-1] != total:
-        raise RuntimeError(f"Mimi encoded {codes.shape[-1]} silence frames, expected {total}")
-    return codes[:, SILENCE_WARMUP:].to(device="cpu", dtype=torch.int32)
+    if codes.shape[-1] != frames:
+        raise RuntimeError(f"Mimi encoded {codes.shape[-1]} silence frames, expected {frames}")
+    return codes.to(device="cpu", dtype=torch.int32)
 
 
 class StreamDataset(Dataset):
@@ -278,7 +290,8 @@ class StreamDataset(Dataset):
         self.rows = rows
         self.layout = layout
         self.silence = silence
-        self.streams = plan_streams(rows, *stream_frames, int(silence.shape[1]), seed)
+        steady = int(silence.shape[1]) - SILENCE_WARMUP
+        self.streams = plan_streams(rows, *stream_frames, steady, seed)
 
     def __len__(self) -> int:
         return len(self.streams)

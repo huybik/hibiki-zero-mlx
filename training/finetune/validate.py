@@ -12,6 +12,7 @@ import argparse
 import json
 from pathlib import Path
 
+import torch
 from torch.utils.data import DataLoader
 
 from training.finetune import common, streams
@@ -63,6 +64,7 @@ def main() -> None:
     args = parse_args()
     device = common.check_device(args.device)
     dtype = common.dtype_from_name(args.dtype)
+    torch.set_float32_matmul_precision("high")  # TF32 matmuls, as training validates
 
     cache_dir = require_dir(args.cache_dir, "code cache directory")
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None

@@ -17,34 +17,40 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   `--max-frames` (280) are dropped.
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
   multi-sentence sequences of `--stream-seconds` (30–75 s, upstream's coarse-stage range).
-  Libriheavy segments of one recording and PhoMT rows of one source chunk (`phomt_s<N>`, which
-  spans talk boundaries) stay in order; other rows are random. A stream closes when the next row
-  overflows its drawn length, unless it is still under the minimum. Each row's English starts its cached delay after its Vietnamese, never before the
+  PhoMT rows of one source chunk (`phomt_s<N>r<M>`, which spans talk boundaries) stay in order;
+  every other row is random, Libriheavy included: its segment numbers are not reading order and
+  segments overlap ([en-speech-corpus](en-speech-corpus.md#quality-filters)). A stream closes when
+  the next row overflows its drawn length, unless it is still under the minimum; the length range
+  must exceed the longest row plus a long gap, so no stream but the last ends short. Each row's English starts its cached delay after its Vietnamese, never before the
   previous English ends; a 0.3–1.5 s gap (3–10 s one time in ten) separates the Vietnamese, and
   is stretched so the previous English overhangs the next Vietnamese by at most 2 s. Silent
   stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
   the last row keeps the source and text EOS, and the source after its EOS stays silence. The
   cache itself is never changed. The silence track is encoded on the CPU in float32, so every
-  machine and resume gets the same codes.
-- Every cached clip was encoded from a fresh Mimi state, whose start-up codes a continuous
-  stream never shows: a Vietnamese clip's frame 0 (codebook 0 is 1049, 1698 or 995 in ~90% of
-  rows; frame 1 already has ~200 values) and English silence before the first word within the
-  first 16 frames (rows with short delays) are replaced by steady silence. Measured 2026-11-01
-  on 40 CV clips against encoding after a 2.56 s silence pre-roll: codebook 0 matches on 0% / 17%
-  of clips at Vietnamese frames 0 / 1 and 60–80% after, while only ~42% of all codes match even
-  beyond 2 s (Mimi's 10 s context), so residual codebooks differ near every join as with any
-  splicing. Encoding each clip after a silence pre-roll would be the full fix (a Mimi-only
-  re-encode, about half the cache build).
+  machine and resume gets the same codes but for a rare residual near-tie (1 of 1,876 frames
+  between thread counts).
+- Mimi codes depend on the encoder's state. Inference encodes one stream from a fresh state, so
+  a stream opens with the encoder's start-up codes (the silence track's first 16 frames) and is
+  steady silence elsewhere. Every cached clip was encoded alone from a fresh state, so unless a
+  piece opens the stream its Vietnamese frame 0 becomes silence (a start-up marker: codebook 0 is
+  1049, 1698 or 995 in ~90% of rows; frame 1 already has ~200 values), and so does English silence
+  before the first word within a clip's first 16 frames. What stays different from a continuous
+  encoding: Vietnamese frame 0 sometimes holds a syllable onset (above −20 dB of the clip peak in
+  28% of 400 rows), 23% of rows have English speech inside their first 16 frames, where codebook 0
+  matches a continuous encoding 60–80% of the time, and residual codebooks differ near every join
+  (on 40 CV clips against a 2.56 s silence pre-roll, ~42% of all codes match even beyond 2 s:
+  Mimi's 10 s context). Encoding each clip after a silence pre-roll would be the full fix (a
+  Mimi-only re-encode, about half the cache build).
 - The plan is drawn once with `--seed` (42); streams are length-sorted and grouped into batches
   of at most `--batch-frames` (4,608, as 16 rows of 288 frames before) padded frames, whose
   order is shuffled once; every epoch replays it, and resume skips the planned batches.
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset.
 - Measured on 6,152 rows of `cv27-00010`, `libriheavy-medium-00050`,
-  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-01): 1,435 streams of 46 s median
-  (p10 34, p90 64; none but the last under 30 s), 4 rows each, 20% of the Vietnamese side
+  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-01): 1,421 streams of 47 s median
+  (p10 33, p90 66; none but the last under 30 s), 4 rows each, 20% of the Vietnamese side
   silent; the 2 s overhang cap binds at the median join, since the English runs longer than the
-  Vietnamese; batches hold 7 streams median at 97.5% fill.
+  Vietnamese; batches hold 7 streams median at 97.6% fill.
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;

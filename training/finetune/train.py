@@ -374,7 +374,8 @@ def main() -> None:
 
     checkpoint_info = common.load_checkpoint_info(args)
     frames = stream_frames(args.stream_seconds)
-    # On the CPU in float32, so every machine and every resume encodes the same silence.
+    # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
+    # near-tie in a residual code).
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), 2 * frames[1])
 
     rows, layout = streams.load_rows(cache_dirs, args.max_frames)

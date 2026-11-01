@@ -71,6 +71,11 @@ dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
   of the peak, 0 for silence. It is taken per recording: a Libriheavy chapter's first kept clips
   in one source file (clip id minus `_<segment>`) totalling ≥30 s, or a whole CV clip. Single
   clips of one chapter scatter ±1.5 kHz around the chapter estimate.
+- Libriheavy segments of one recording overlap and are not numbered in reading order: in
+  `libriheavy-medium-00050`, 24.5% of rows share a 6-word run with another row of their recording
+  (`the_card_11_bennett_64kb` segments 123 and 147 open with the same sentence), checked
+  2026-11-01. Rows are not deduplicated; training streams place them at random
+  ([sft-training](sft-training.md#trainer)).
 - Recordings under 10.5 kHz are dropped. Mimi codes up to 12 kHz. CV's 32 kHz MP3s cut off at
   ~11 kHz (a spike at 10.7–11.3 kHz) that an 11 kHz floor would split. Before the filter,
   42% of CV train hours and 17% of Libriheavy's were under 10.5 kHz.

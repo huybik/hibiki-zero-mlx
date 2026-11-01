@@ -90,16 +90,18 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 
 `training/finetune/train.py` ([sft-training](agent-memory/sft-training.md)):
 
-1. Streams: consecutive Libriheavy segments of one recording (and consecutive PhoMT rows of one
-   source chunk) in order, Common Voice clips at random; each row's English placed at its cached
+1. Streams: rows at random (consecutive PhoMT rows of one source chunk stay in order; Libriheavy
+   segment numbers are not reading order and overlap); each row's English placed at its cached
    delay after its Vietnamese, never before the previous English ends; gaps drawn so the
    previous English overhangs the next Vietnamese by at most 2 s. That cap binds at the median
    join, so the source "waits" for the interpreter; watch lag growth on long real speech.
 2. Loss as above; LR peak 1e-6, 5% warmup, cosine to 0; one pass over the pool.
-3. Teacher-forced loss on streams of the cache's `validation/` split is the early-stopping signal.
-   Promotion also needs free-running results: FLEURS dev chrF/BLEU as the main metric, MultiMed
-   `select` chrF no more than 1 point below the previously promoted checkpoint's, and the health
-   gates on both (nonempty, EOS, repeated 4-grams, length ratio).
+3. The trainer promotes the lowest teacher-forced loss on streams of the cache's `validation/`
+   split and keeps only that and the newest two checkpoints. Run `eval.py` on those: FLEURS dev
+   chrF/BLEU as the main metric, MultiMed `select` chrF no more than 1 point below the previously
+   promoted checkpoint's, and the health gates on both (nonempty, EOS, repeated 4-grams, length
+   ratio). If free-running and teacher-forced rankings disagree, as in the last run, add
+   free-running evaluation at each validation step before the full run.
 
 ### 4. GRPO
 
@@ -141,4 +143,4 @@ source EOS at the end of the input, as upstream does; live mode never sends it.
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
 | 3B too slow or hot on phones | Device test before any distillation work; shrink within the family |
-| Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams replace the start-up codes (Vietnamese frame 0, English silence before the first word) with steady silence; residual codebooks still differ near joins. Full fix: re-encode each clip after a silence pre-roll |
+| Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |
