@@ -30,8 +30,9 @@ minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`. It writes
 (`--out BASE` to change), and prints frame times, lag, thermal state and memory per minute.
 
 Both take `--chunk K` (default 1): K frames per step, so Mimi encodes and decodes K frames per
-call. That costs less CPU time per frame and adds up to (2K − 2) × 80 ms of latency; the
-translation stays the same.
+call. That costs less CPU time per frame and adds up to (2K − 2) × 80 ms of latency. The
+translation is the same, but `translate` stops only at the end of a step, up to K − 1 frames
+later than with K = 1.
 
 ## iPhone
 

@@ -8,7 +8,7 @@ import MLX
 /// step takes k frames: the LM runs k steps one after another, and Mimi encodes the k frames in
 /// one call and decodes the audio of the finished LM steps in another. LM step t reads source
 /// frames before t, so the chunk is encoded beside the chunk's first LM step and the audio
-/// decoded beside its second (beside the first too when k is 1):
+/// decoded beside its last:
 ///
 ///     k = 1   GPU:  [LM t ·································]
 ///             CPU:  [decode t-1] [encode t] [wait]              → text t, audio t-1
@@ -16,7 +16,8 @@ import MLX
 ///             CPU:  [encode t, t+1]   [wait]   [decode t-1, t]   [wait]   → text t, t+1; audio t-1, t
 ///
 /// A frame is a few rows per op, so Mimi's cost per call grows much slower than its length:
-/// k = 2 cuts its CPU time per frame by about a third, for up to 160 ms more latency.
+/// k = 2 cuts its CPU time per frame by about a third, for up to (2k - 2) × 80 ms more latency
+/// (the chunk's first frame waits for the rest, and the step may take k × 80 ms).
 ///
 /// One thread drives both devices: mlx-swift holds a global lock while a thread evaluates, so
 /// MLX work on two threads would take turns.
@@ -121,8 +122,7 @@ public final class Translator {
     }
 
     /// Translates k whole frames (k × 1920 samples): k LM steps, one Mimi encode of the k
-    /// frames, and one Mimi decode of the audio of every LM step finished before the second
-    /// (before the first when k is 1).
+    /// frames, and one Mimi decode of the audio of every LM step finished before the last.
     public func step(_ pcm: [Float]) -> Output {
         let frames = pcm.count / Audio.frameSize
         precondition(frames > 0 && pcm.count == frames * Audio.frameSize)
@@ -140,7 +140,7 @@ public final class Translator {
         for i in 0..<frames {
             let pending = generator.start()
             timing.lmStart += lap()
-            if i == min(1, frames - 1) {
+            if i == frames - 1 {
                 audio = flush()
                 timing.decode += lap()
             }

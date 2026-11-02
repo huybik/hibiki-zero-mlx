@@ -26,7 +26,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
   runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per
   step (default 1), as the iOS app does. `Audio.Writer` writes 16-bit WAV
-  clipped like `sphn.write_wav` and rewrites the header after every frame: a run killed at
+  clipped like `sphn.write_wav` and rewrites the header after every step: a run killed at
   frame 153 left 153 samples and a valid 12.08 s WAV.
 - `HibikiBench/` is the iOS app: a hand-written Xcode project (synchronized folder `App/`) that
   depends on the local package, with the increased-memory-limit entitlement. `--model NAME` reads
@@ -84,9 +84,9 @@ kept):
 
 `Translator.step` starts LM step t on the GPU with `asyncEval`, decodes the audio of step t − 1
 and encodes frame t on the CPU meanwhile, then waits for the LM, as `pipeline.py` overlaps
-rustymimi threads with the LM. A frame's audio comes out one LM step after its text; `flush`
-returns what is left when the input ends (the CLI's `translate` and `Bench` call it). A step
-can take k frames ([chunks](#chunks)).
+rustymimi threads with the LM. An LM step's audio is decoded during the next one, so it comes
+out one step after its text; `flush` returns what is left when the input ends (the CLI's
+`translate` and `Bench` call it). A step can take k frames ([chunks](#chunks)).
 
 - One thread drives both devices: mlx-swift 0.32 holds a global lock through every `eval`,
   waiting included, so MLX work on a second thread takes turns with the first.
@@ -123,7 +123,7 @@ can take k frames ([chunks](#chunks)).
 
 `Translator.step` takes k whole frames: k LM steps one after another, with Mimi encoding the k
 frames in one call beside the first and decoding the audio of the LM steps finished so far in
-one call beside the second (beside the first when k is 1). A frame is a few rows per op, so
+one call beside the last (the step's own last LM step is decoded in the next step). A frame is a few rows per op, so
 Mimi's per-op overhead dominates and its cost per call grows much slower than its length; a
 chunk cuts its CPU time per frame, for up to (2k − 2) × 80 ms more latency: the first frame of a chunk waits for the rest,
 and the step may take k × 80 ms.
@@ -135,9 +135,11 @@ and the step may take k × 80 ms.
   steps let a k-step call overwrite keys its first queries still needed: once the ring was full
   (frame 125), 2-frame calls changed 16% of frames' codes. With the window cache, codes for
   k = 1, 2 and 4 are identical over 800 frames of `leon.wav`.
-- `translate` at `--chunk` 1, 2 and 3 gives the same text word for word (a run stops at the end
-  of a step, so k ≥ 2 kept one more word), and audio within 1 LSB of 16 bits on 0.2% of samples
-  (float rounding of the different matmul shapes).
+- `translate` at `--chunk` 1, 2 and 3 gives the same text word for word up to where k = 1 stops
+  (a run stops only at the end of a step, so k ≥ 2 can add up to k − 1 frames: one more word on
+  `leon.wav`), and audio within 1 LSB of 16 bits on 0.2% of samples (float rounding of the
+  different matmul shapes). A review fed mixed chunk sizes (3, 1, 2, 5, …, with a `flush`
+  mid-stream): text tokens identical to k = 1 and audio within 1.2e-6.
 
 ## Speed and memory
 
@@ -194,6 +196,7 @@ always on the frame after a progress line: its on-screen log, a text view one li
   | 10 layers (1.14 GB) | all on the GPU | 78 | 82 | | 2 s at 3 min |
   | 10 layers | Mimi on the CPU | 58 | 73 | 85 | real time for ~3 min; 45 s at 10 min |
   | 10 layers | Mimi on the CPU, 2-frame steps | 50 | 53 | 81 | real time for ~4 min; 19 s at 10 min |
+  | 10 layers, 3-layer depformer (0.89 GB) | Mimi on the CPU, 2-frame steps | 42 | 44 | 46 | real time through 10 min (79 ms in min 10) |
   | 14 layers (1.30 GB) | all on the GPU | 84 | 98 | | 27 s at 3 min |
   | 14 layers | Mimi on the CPU | 64 | 94 | 98 | 41 s at 5 min |
   | 28 layers (1.85 GB) | all on the GPU | 105 | 123 | | 76 s at 3 min |
@@ -208,6 +211,10 @@ always on the frame after a progress line: its on-screen log, a text view one li
   for 4 minutes, then at ~250 s the GPU throttles and it jumps to 39–45 ms, so the hot 10-layer
   LM alone takes ~75–80 ms a step. MLX's buffer cache fills its 256 MB cap (86 MB a frame at a
   time), so the footprint is 174 MB higher (1,940 MB), and flat.
+- A thinner depformer (each slice keeps its first 3 of 6 layers; `depformer_num_layers` 3)
+  takes the 10-layer cut from 1.14 to 0.89 GB. With 2-frame steps it held real time for all 10
+  minutes (worst lag 0.54 s): 42 ms a frame cold, 52 by minute 8 with the LM wait at 4–6 ms a
+  frame, then the GPU throttled at ~8.5 minutes instead of ~4 and minute 10 ran at 79 ms.
 - Quality of the shrinks, teacher-forced against bf16 on `leon.wav` (share of text / codebook-0
   tokens equal to bf16's): q4 g32 93 / 88%, q4 g64 92 / 85%, q3 g32 82 / 78%, q3 g64 82 / 71%,
   q2 g32 55 / 7%; q4 g64 main with a q3 g64 depformer 92 / 78%; 8 codebooks in bf16 95 / 87%,

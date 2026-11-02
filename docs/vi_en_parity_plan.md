@@ -126,11 +126,12 @@ student afterwards.
    Timed on the A15 with untrained cuts and Mimi on the CPU beside the GPU LM
    ([swift-runtime](agent-memory/swift-runtime.md#device-test)): 10 layers run at 58 ms/frame
    cold and hold real time for ~3 minutes, then throttle to ~90 ms; 14 layers 64 → 98 ms; the
-   8-codebook 3B 84 → 137 ms. The phone reaches thermal state "serious" within a minute, and hot,
-   the CPU codec alone (Mimi encode + decode) takes ~80 ms. Sustained real time on the A15 needs
-   a cheaper codec path as well as a smaller LM; at 10 layers the depformer (8 × 64 MB at q4)
-   already reads more per frame than the main transformer, so a thinner depformer is the next
-   LM cut. Measure a current phone (A17 Pro / A18) before settling the target.
+   8-codebook 3B 84 → 137 ms. The phone reaches thermal state "serious" within a minute.
+   Mimi encoding and decoding 2 frames per call halves its CPU time (hot: 80 → 36 ms a frame);
+   the 10-layer step then turns GPU-bound once the GPU throttles (~4 minutes). Halving the
+   depformer (each of its 8 slices keeps 3 of 6 layers) holds real time through 10 minutes on
+   the A15 (42 → 79 ms a frame). So the student is 8 codebooks, ~10 main layers and a 3-layer
+   depformer; measure a current phone (A17 Pro / A18) before settling it.
 
 ### 6. Quantise and package
 

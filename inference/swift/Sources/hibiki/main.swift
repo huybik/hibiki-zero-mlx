@@ -8,7 +8,8 @@
 //   --unpaced, writes BASE.{jsonl,wav,txt} and prints a per-minute summary.
 //
 // --chunk K feeds K frames per `Translator.step` (default 1): Mimi then encodes and decodes K
-// frames per call, for less CPU time per frame and more latency. The output does not change.
+// frames per call, for less CPU time per frame and more latency. The translation is the same,
+// but `translate` stops only at the end of a step, up to K - 1 frames after K = 1 would.
 
 import Foundation
 import HibikiCore

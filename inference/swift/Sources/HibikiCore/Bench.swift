@@ -44,6 +44,7 @@ public enum Bench {
         _ translator: Translator, clip: [Float], minutes: Double, framesPerStep: Int,
         paced: Bool, output base: URL, progress: (Sample) -> Void = { _ in }
     ) throws -> [Sample] {
+        precondition(framesPerStep > 0, "a step takes at least one frame")
         let frames = Int(minutes * 60 * 12.5) / framesPerStep * framesPerStep
         let clipFrames = clip.count / Audio.frameSize
         precondition(clipFrames > 0, "the clip is shorter than one frame")
@@ -90,7 +91,9 @@ public enum Bench {
     }
 
     /// One line per minute of audio: percentiles of the time per frame and of the LM wait per
-    /// frame over its steps, worst lag, thermal state and memory.
+    /// frame over its steps, worst lag, thermal state and memory. A step counts toward the
+    /// minute of its first frame, so with k not dividing 750 the rows hold a few frames more or
+    /// less.
     public static func summary(_ samples: [Sample]) -> String {
         var lines = [
             "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50  max lag s  thermal"
