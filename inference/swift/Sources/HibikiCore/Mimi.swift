@@ -45,8 +45,8 @@ struct MimiConfig {
 
 class Mimi: Module {
     let cfg: MimiConfig
-    let encoderCache: [RotatingKVCache]
-    let decoderCache: [RotatingKVCache]
+    let encoderCache: [WindowKVCache]
+    let decoderCache: [WindowKVCache]
     @ModuleInfo(key: "encoder") var encoder: SeanetEncoder
     @ModuleInfo(key: "decoder") var decoder: SeanetDecoder
     @ModuleInfo(key: "encoder_transformer") var encoderTransformer: ProjectedTransformer
@@ -55,7 +55,7 @@ class Mimi: Module {
     @ModuleInfo(key: "upsample") var upsample: ConvTrUpsample1d
     @ModuleInfo(key: "quantizer") var quantizer: SplitResidualVectorQuantizer
 
-    init(_ cfg: MimiConfig, bSize: Int) {
+    init(_ cfg: MimiConfig) {
         let dim = cfg.seanet.dimension
         self.cfg = cfg
         let encoderFrameRate = cfg.sampleRate / Float(cfg.seanet.ratios.reduce(1, *))
@@ -70,8 +70,8 @@ class Mimi: Module {
         self._decoderTransformer.wrappedValue = ProjectedTransformer(cfg.transformer)
         self._downsample.wrappedValue = ConvDownsample1d(stride: downsampleStride, dim: dim)
         self._upsample.wrappedValue = ConvTrUpsample1d(stride: downsampleStride, dim: dim)
-        self.encoderCache = self._encoderTransformer.wrappedValue.makeCache(bSize: bSize)
-        self.decoderCache = self._decoderTransformer.wrappedValue.makeCache(bSize: bSize)
+        self.encoderCache = self._encoderTransformer.wrappedValue.makeCache()
+        self.decoderCache = self._decoderTransformer.wrappedValue.makeCache()
     }
 
     func encodeStep(_ x: StreamArray) -> StreamArray {
@@ -103,7 +103,7 @@ extension Mimi {
     /// Loads Mimi from Kyutai's PyTorch checkpoint (`mimi-pytorch-e351c8d8@125.safetensors`),
     /// mapping its keys and conv layouts onto this module tree.
     static func load(url: URL, numCodebooks: Int) throws -> Mimi {
-        let model = Mimi(MimiConfig.mimi_2024_07(numCodebooks: numCodebooks), bSize: 1)
+        let model = Mimi(MimiConfig.mimi_2024_07(numCodebooks: numCodebooks))
         var weights: [String: MLXArray] = [:]
         for (var key, var weight) in try loadArrays(url: url) {
             // The checkpoint holds 32 codebooks (1 first + 31 rest); keep the ones in use.

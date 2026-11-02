@@ -29,6 +29,10 @@ minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`. It writes
 `translations/<stem>_bench.{jsonl,wav}` as it runs and `.txt` (summary and text) at the end
 (`--out BASE` to change), and prints frame times, lag, thermal state and memory per minute.
 
+Both take `--chunk K` (default 1): K frames per step, so Mimi encodes and decodes K frames per
+call. That costs less CPU time per frame and adds up to (2K − 2) × 80 ms of latency; the
+translation stays the same.
+
 ## iPhone
 
 Build and install with your own team, then copy the model and a clip into the app's Documents
@@ -56,7 +60,7 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
 ```
 
 `--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models
-on the phone. The phone must be unlocked, and a new developer certificate trusted once under
+on the phone; `--chunk K` and `--unpaced` work as in `bench`. The phone must be unlocked, and a new developer certificate trusted once under
 Settings > General > VPN & Device Management. Keep the app in the foreground: iOS stops GPU
 work in the background. The app keeps the phone awake and writes
 `Documents/bench-<time>.{jsonl,wav}` as it runs and `.txt` at the end; copy them back with

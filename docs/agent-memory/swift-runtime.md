@@ -12,18 +12,20 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   side runs mlx 0.32.4). Build commands are in its [README](../../inference/swift/README.md).
   `swift build` cannot compile MLX's Metal shaders; build with `xcodebuild`.
 - `Sources/HibikiCore/` is the library:
-  - Mimi, the transformer and the rotating KV cache are vendored from
+  - Mimi and the transformer are vendored from
     [moshi-swift](https://github.com/kyutai-labs/moshi-swift) (MIT, commit `df64ffd`,
     `LICENSE-moshi-swift`), cut to Mimi's streaming path (`encodeStep`, `decodeStep`) and the
-    transformer layers the LM reuses.
+    transformer layers the LM reuses. Its ring KV cache is replaced by `WindowKVCache`
+    ([chunks](#chunks)).
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
-    `Generator.swift` (delayed streams), `Translator.swift` (one 80 ms frame: the LM on the GPU,
-    Mimi on the CPU beside it), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
+    `Generator.swift` (delayed streams), `Translator.swift` (k 80 ms frames per step: the LM on
+    the GPU, Mimi on the CPU beside it), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
     the SentencePiece `.model` protobuf directly) and `Audio.swift`.
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (8 s silence tail,
   stop on text EOS or 12 frames of `<unk>`/`</s>`/`<pad>`, seed 299792458); `bench` runs
-  `Bench`, which streams `<base>.jsonl` (one sample per frame) and `<base>.wav` to disk as it
-  runs and writes `<base>.txt` (summary, text) at the end. `Audio.Writer` writes 16-bit WAV
+  `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
+  runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per
+  step (default 1), as the iOS app does. `Audio.Writer` writes 16-bit WAV
   clipped like `sphn.write_wav` and rewrites the header after every frame: a run killed at
   frame 153 left 153 samples and a valid 12.08 s WAV.
 - `HibikiBench/` is the iOS app: a hand-written Xcode project (synchronized folder `App/`) that
@@ -67,7 +69,9 @@ Against `inference/hibiki_mlx` on `inference/assets/leon.wav` (2026-11-01, scrat
 kept):
 
 - Mimi: Swift MLX codes equal rustymimi's in 98% of frames on codebook 0, falling to 87% on
-  codebook 15.
+  codebook 15. Against the training caches' encoder (`training/prep/mimi_mlx.py`, whole clip)
+  on the same 800 frames, they are equal on 100% of frames in codebooks 0–9 and 99% in 10–15,
+  at any chunk size (2026-11-02).
 - LM, teacher-forced on the Python run's greedy tokens and rustymimi codes: 99.0% of text
   tokens and 98.6% of codebook-0 tokens equal; each further codebook matches 93–96% of the time
   given the previous ones, with no step at codebook 8 where the shared weights start. Free
@@ -80,8 +84,9 @@ kept):
 
 `Translator.step` starts LM step t on the GPU with `asyncEval`, decodes the audio of step t − 1
 and encodes frame t on the CPU meanwhile, then waits for the LM, as `pipeline.py` overlaps
-rustymimi threads with the LM. A frame's audio comes out one step after its text; `flush`
-returns the last step's when the input ends (the CLI's `translate` calls it).
+rustymimi threads with the LM. A frame's audio comes out one LM step after its text; `flush`
+returns what is left when the input ends (the CLI's `translate` and `Bench` call it). A step
+can take k frames ([chunks](#chunks)).
 
 - One thread drives both devices: mlx-swift 0.32 holds a global lock through every `eval`,
   waiting included, so MLX work on a second thread takes turns with the first.
@@ -113,6 +118,26 @@ returns the last step's when the input ends (the CLI's `translate` calls it).
 - Tried and dropped: rustymimi is no faster (59 / 53 ms per frame on the same busy Mac); decoding
   on the GPU after the LM and encoding on the CPU matched all-CPU on the 10-layer model (57 ms
   cold, ~80 hot) but puts 16 ms more on the GPU, which bounds the bigger models.
+
+### Chunks
+
+`Translator.step` takes k whole frames: k LM steps one after another, with Mimi encoding the k
+frames in one call beside the first and decoding the audio of the LM steps finished so far in
+one call beside the second (beside the first when k is 1). A frame is a few rows per op, so
+Mimi's per-op overhead dominates and its cost per call grows much slower than its length; a
+chunk cuts its CPU time per frame, for up to (2k − 2) × 80 ms more latency: the first frame of a chunk waits for the rest,
+and the step may take k × 80 ms.
+
+- Busy M4 Pro CPU, Mimi encode / decode per frame: k = 1 26 / 22 ms, 2 19 / 14, 4 16 / 13, 8 11 /
+  10.
+- `WindowKVCache` keeps the last `context − 1` (249) steps and masks each query to the 250 steps
+  ending at itself, as Mimi was trained and `mimi_mlx.py` encodes. moshi-swift's ring of 250
+  steps let a k-step call overwrite keys its first queries still needed: once the ring was full
+  (frame 125), 2-frame calls changed 16% of frames' codes. With the window cache, codes for
+  k = 1, 2 and 4 are identical over 800 frames of `leon.wav`.
+- `translate` at `--chunk` 1, 2 and 3 gives the same text word for word (a run stops at the end
+  of a step, so k ≥ 2 kept one more word), and audio within 1 LSB of 16 bits on 0.2% of samples
+  (float rounding of the different matmul shapes).
 
 ## Speed and memory
 
@@ -168,6 +193,7 @@ always on the frame after a progress line: its on-screen log, a text view one li
   |---|---|---|---|---|---|
   | 10 layers (1.14 GB) | all on the GPU | 78 | 82 | | 2 s at 3 min |
   | 10 layers | Mimi on the CPU | 58 | 73 | 85 | real time for ~3 min; 45 s at 10 min |
+  | 10 layers | Mimi on the CPU, 2-frame steps | 50 | 53 | 81 | real time for ~4 min; 19 s at 10 min |
   | 14 layers (1.30 GB) | all on the GPU | 84 | 98 | | 27 s at 3 min |
   | 14 layers | Mimi on the CPU | 64 | 94 | 98 | 41 s at 5 min |
   | 28 layers (1.85 GB) | all on the GPU | 105 | 123 | | 76 s at 3 min |
@@ -177,6 +203,11 @@ always on the frame after a progress line: its on-screen log, a text view one li
   5 / 25 / 28 / 0 ms in minute 1 and 12 / 37 / 44 / 0 in minutes 8–10, so once hot the codec alone
   exceeds 80 ms. The 28-layer one is GPU-bound (LM wait 24 → 73 ms). At 10 layers the 8 depformer
   slices (64 MB each at q4) read more than the main transformer (39 MB a layer).
+- 2-frame steps (2026-11-02, `--chunk 2`) halve Mimi's CPU time per frame: decode / encode 15 /
+  17 ms cold and 17 / 19 hot. The 10-layer step then turns GPU-bound: LM wait 13–16 ms a frame
+  for 4 minutes, then at ~250 s the GPU throttles and it jumps to 39–45 ms, so the hot 10-layer
+  LM alone takes ~75–80 ms a step. MLX's buffer cache fills its 256 MB cap (86 MB a frame at a
+  time), so the footprint is 174 MB higher (1,940 MB), and flat.
 - Quality of the shrinks, teacher-forced against bf16 on `leon.wav` (share of text / codebook-0
   tokens equal to bf16's): q4 g32 93 / 88%, q4 g64 92 / 85%, q3 g32 82 / 78%, q3 g64 82 / 71%,
   q2 g32 55 / 7%; q4 g64 main with a q3 g64 depformer 92 / 78%; 8 codebooks in bf16 95 / 87%,

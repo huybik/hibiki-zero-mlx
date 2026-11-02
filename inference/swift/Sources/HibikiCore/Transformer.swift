@@ -121,7 +121,7 @@ final class Attention: Module {
         outProj(attn.transposed(0, 2, 1, 3).reshaped(attn.dim(0), attn.dim(2), cfg.dModel))
     }
 
-    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: RotatingKVCache) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: WindowKVCache) -> MLXArray {
         var (q, k, v) = projections(x)
         if let rope {
             q = rope(q, offset: cache.offset)
@@ -189,7 +189,7 @@ final class TransformerLayer: Module {
         }
     }
 
-    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: RotatingKVCache) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: WindowKVCache) -> MLXArray {
         residualFeedForward(x, attended: selfAttn(norm1(x), mask: mask, cache: cache))
     }
 
@@ -211,23 +211,17 @@ class Transformer: Module {
         self.layers = (0..<cfg.numLayers).map { _ in TransformerLayer(cfg) }
     }
 
-    func callAsFunction(_ x: MLXArray, cache: [RotatingKVCache]) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, cache: [WindowKVCache]) -> MLXArray {
         var x = x
-        let mask = cache.first?.createAttentionMask(h: x)
+        let mask = cache.first?.mask(steps: x.dim(1), dtype: x.dtype)
         for (layer, c) in zip(self.layers, cache) {
             x = layer(x, mask: mask, cache: c)
         }
         return x
     }
 
-    func makeCache(bSize: Int) -> [RotatingKVCache] {
-        let kvHeads = cfg.numHeads / cfg.kvRepeat
-        let dtype = self.layers.first!.selfAttn.inProj.weight.dtype
-        return (0..<cfg.numLayers).map { _ in
-            RotatingKVCache(
-                bSize: bSize, numHeads: kvHeads, maxSize: cfg.context, headDim: cfg.headDim(),
-                dtype: dtype)
-        }
+    func makeCache() -> [WindowKVCache] {
+        (0..<cfg.numLayers).map { _ in WindowKVCache(context: cfg.context) }
     }
 }
 
@@ -239,11 +233,11 @@ final class ProjectedTransformer: Module {
         self._transformer.wrappedValue = Transformer(cfg)
     }
 
-    func callAsFunction(_ x: MLXArray, cache: [RotatingKVCache]) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, cache: [WindowKVCache]) -> MLXArray {
         self.transformer(x.swappedAxes(1, 2), cache: cache).swappedAxes(1, 2)
     }
 
-    func makeCache(bSize: Int) -> [RotatingKVCache] {
-        self.transformer.makeCache(bSize: bSize)
+    func makeCache() -> [WindowKVCache] {
+        self.transformer.makeCache()
     }
 }

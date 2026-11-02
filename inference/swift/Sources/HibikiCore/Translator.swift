@@ -1,37 +1,46 @@
 import Foundation
 import MLX
 
-/// Streaming translation: 80 ms of source audio in, a text token and 80 ms of translated
-/// audio out, one frame at a time, as `inference/hibiki_mlx/pipeline.py`.
+/// Streaming translation: source audio in, in whole 80 ms frames, and per frame a text token
+/// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`.
 ///
-/// Mimi runs on the CPU while the GPU runs the LM, as the Python runtime's codec threads do.
-/// LM step t reads source frames before t, so frame t is encoded while step t runs, and the
-/// audio of step t - 1 is decoded then too:
+/// Mimi runs on the CPU while the GPU runs the LM, as the Python runtime's codec threads do. A
+/// step takes k frames: the LM runs k steps one after another, and Mimi encodes the k frames in
+/// one call and decodes the audio of the finished LM steps in another. LM step t reads source
+/// frames before t, so the chunk is encoded beside the chunk's first LM step and the audio
+/// decoded beside its second (beside the first too when k is 1):
 ///
-///     GPU:  [LM step t ·····································]
-///     CPU:  [start] [decode step t-1] [encode frame t] [wait]  → text t, audio of step t-1
+///     k = 1   GPU:  [LM t ·································]
+///             CPU:  [decode t-1] [encode t] [wait]              → text t, audio t-1
+///     k = 2   GPU:  [LM t ···················] [LM t+1 ··················]
+///             CPU:  [encode t, t+1]   [wait]   [decode t-1, t]   [wait]   → text t, t+1; audio t-1, t
+///
+/// A frame is a few rows per op, so Mimi's cost per call grows much slower than its length:
+/// k = 2 cuts its CPU time per frame by about a third, for up to 160 ms more latency.
 ///
 /// One thread drives both devices: mlx-swift holds a global lock while a thread evaluates, so
 /// MLX work on two threads would take turns.
 public final class Translator {
-    public struct Frame {
-        public let textToken: Int
-        /// The text this frame adds, nil for special tokens.
-        public let text: String?
-        /// 1920 samples at 24 kHz, decoded from the previous step's audio tokens; nil until the
-        /// model has produced audio, and on the step after a `flush`, which returned it.
-        public let pcm: [Float]?
+    public struct Output {
+        /// One text token per input frame.
+        public let textTokens: [Int]
+        /// The text they add; special tokens add none.
+        public let text: String
+        /// Translated audio at 24 kHz decoded during this step, 1920 samples for each LM step
+        /// that finished since the last decode; empty until the model has produced audio.
+        public let pcm: [Float]
         public let timing: Timing
     }
 
-    /// Seconds the driving thread spent in each part of one step, in order; they sum to the
-    /// step's time. The LM runs on the GPU from `lmStart` to the end of `lmWait`.
+    /// Seconds the driving thread spent in each part of one step, summed over its LM steps;
+    /// they add up to the step's time. The LM runs on the GPU from each `lmStart` to the end of
+    /// the `lmWait` after it.
     public struct Timing {
-        /// Building the LM graph and handing it to the GPU.
+        /// Building the LM graphs and handing them to the GPU.
         public var lmStart = 0.0
-        /// Mimi decoding the previous step's audio tokens on the CPU.
+        /// Mimi decoding the finished LM steps' audio tokens on the CPU.
         public var decode = 0.0
-        /// Mimi encoding this frame on the CPU.
+        /// Mimi encoding the input frames on the CPU.
         public var encode = 0.0
         /// Waiting for the LM after the CPU work.
         public var lmWait = 0.0
@@ -51,8 +60,8 @@ public final class Translator {
     public let vocabulary: Vocabulary
     let mimi: Mimi
     let generator: Generator
-    /// The previous step's complete target codes, decoded during this step.
-    private var target: [Int]?
+    /// Complete target codes of finished LM steps, one frame each, not yet decoded.
+    private var targets: [[Int]] = []
 
     /// Upstream sampling (`pipeline.py`): text at 0.4 with top-k 25, audio at 0.8 with top-k 250.
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
@@ -98,7 +107,7 @@ public final class Translator {
     /// Runs silent frames until every stage, Mimi decode included, has run once, so kernels
     /// are built and weights read before timing starts.
     private func warmup() {
-        while step([Float](repeating: 0, count: Audio.frameSize)).pcm == nil {}
+        while step([Float](repeating: 0, count: Audio.frameSize)).pcm.isEmpty {}
         reset()
         Memory.clearCache()  // return load and warmup buffers instead of keeping them cached
     }
@@ -106,13 +115,17 @@ public final class Translator {
     /// Starts a new session: clears the codec and the LM state, dropping audio not yet
     /// returned (`flush` first to keep it).
     public func reset() {
-        target = nil
+        targets = []
         mimi.resetState()
         generator.reset()
     }
 
-    public func step(_ pcm: [Float]) -> Frame {
-        precondition(pcm.count == Audio.frameSize)
+    /// Translates k whole frames (k × 1920 samples): k LM steps, one Mimi encode of the k
+    /// frames, and one Mimi decode of the audio of every LM step finished before the second
+    /// (before the first when k is 1).
+    public func step(_ pcm: [Float]) -> Output {
+        let frames = pcm.count / Audio.frameSize
+        precondition(frames > 0 && pcm.count == frames * Audio.frameSize)
         var timing = Timing()
         var clock = DispatchTime.now()
         func lap() -> Double {
@@ -121,43 +134,61 @@ public final class Translator {
             return seconds(clock, now)
         }
 
-        let pending = generator.start()
-        timing.lmStart = lap()
-        let samples = target.flatMap(decode)
-        timing.decode = lap()
-        let source = encode(pcm)
-        timing.encode = lap()
-        let out = generator.finish(pending, source: source)
-        timing.lmWait = lap()
-        target = out.target
-        return Frame(
-            textToken: out.text, text: vocabulary.text(out.text), pcm: samples, timing: timing)
-    }
-
-    /// The audio of the last step, which the next `step` would have returned; nil if there is
-    /// none. Call it when the input ends.
-    public func flush() -> [Float]? {
-        defer { target = nil }
-        return target.flatMap(decode)
-    }
-
-    /// Frame t's source codes, encoded on the CPU.
-    private func encode(_ pcm: [Float]) -> [Int] {
-        Device.withDefaultDevice(.cpu) {
-            let codes = mimi.encodeStep(
-                StreamArray(MLXArray(pcm).reshaped(1, 1, Audio.frameSize)))
-            guard let codes = codes.asArray(), codes.dim(2) == 1 else {
-                fatalError("Mimi produced \(codes.shape ?? []) codes for one frame")
+        var sources: [[Int]] = []
+        var audio: [Float] = []
+        var tokens: [Int] = []
+        for i in 0..<frames {
+            let pending = generator.start()
+            timing.lmStart += lap()
+            if i == min(1, frames - 1) {
+                audio = flush()
+                timing.decode += lap()
             }
-            return codes[0, 0..<(config.nQ - config.depQ), 0].asArray(Int32.self).map(Int.init)
+            if i == 0 {
+                sources = encode(pcm)
+                timing.encode += lap()
+            }
+            let out = generator.finish(pending, source: sources[i])
+            timing.lmWait += lap()
+            tokens.append(out.text)
+            if let target = out.target { targets.append(target) }
+        }
+        return Output(
+            textTokens: tokens, text: tokens.compactMap(vocabulary.text).joined(), pcm: audio,
+            timing: timing)
+    }
+
+    /// Decodes the audio of the finished LM steps that no step has returned yet; empty if there
+    /// is none. Call it when the input ends.
+    public func flush() -> [Float] {
+        defer { targets = [] }
+        return decode(targets)
+    }
+
+    /// Source codes of each frame, encoded on the CPU in one call.
+    private func encode(_ pcm: [Float]) -> [[Int]] {
+        let frames = pcm.count / Audio.frameSize
+        return Device.withDefaultDevice(.cpu) {
+            let codes = mimi.encodeStep(StreamArray(MLXArray(pcm).reshaped(1, 1, pcm.count)))
+            guard let codes = codes.asArray(), codes.dim(2) == frames else {
+                fatalError("Mimi produced \(codes.shape ?? []) codes for \(frames) frames")
+            }
+            let sourceQ = config.nQ - config.depQ
+            let flat = codes[0, 0..<sourceQ].transposed().asArray(Int32.self).map(Int.init)
+            return (0..<frames).map { Array(flat[($0 * sourceQ)..<(($0 + 1) * sourceQ)]) }
         }
     }
 
-    /// 80 ms of audio from one frame of target codes, decoded on the CPU.
-    private func decode(_ target: [Int]) -> [Float]? {
-        Device.withDefaultDevice(.cpu) {
-            let tokens = MLXArray(target.map(Int32.init)).reshaped(1, config.depQ, 1)
-            return mimi.decodeStep(StreamArray(tokens)).asArray()?.reshaped(-1).asArray(Float.self)
+    /// 80 ms of audio per frame of target codes, decoded on the CPU in one call.
+    private func decode(_ targets: [[Int]]) -> [Float] {
+        if targets.isEmpty { return [] }
+        return Device.withDefaultDevice(.cpu) {
+            let tokens = MLXArray(targets.joined().map(Int32.init))
+                .reshaped(1, targets.count, config.depQ).transposed(0, 2, 1)
+            guard let pcm = mimi.decodeStep(StreamArray(tokens)).asArray() else {
+                fatalError("Mimi decoded no audio from \(targets.count) frames")
+            }
+            return pcm.reshaped(-1).asArray(Float.self)
         }
     }
 }
