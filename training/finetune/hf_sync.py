@@ -89,17 +89,17 @@ def best_state(run_dir: Path) -> dict[str, object] | None:
     if not path.is_file():
         return None
     state = json.loads(path.read_text(encoding="utf-8"))
-    if set(state) != {"step", "model", "metric", "validation_loss"}:
+    if set(state) != {"step", "model", "metric", "chrf"}:
         raise RuntimeError("invalid local best-checkpoint metadata")
     step = int(state["step"])
     model = run_dir / str(state["model"])
     if (
-        state["metric"] != "teacher_forced_loss"
+        state["metric"] != "free_running_chrf"
         or model.name != f"best_step{step:06d}.safetensors"
         or not model.is_file()
     ):
         raise RuntimeError("local best-checkpoint metadata is inconsistent")
-    float(state["validation_loss"])
+    float(state["chrf"])
     return state
 
 

@@ -48,6 +48,14 @@ each; given two, `hf` reads the second as a file name and ignores the include.
   --include "en-vi-grounded-v2/*/shard_*.pt" --include "phomt-grounded-v2-5s/shard_*.pt"
 ```
 
+Build the real-Vietnamese evaluation sets. Training translates FLEURS dev at every validation to
+choose its checkpoint, and refuses to start without it
+([sft-training](agent-memory/sft-training.md#evaluation-sets)):
+
+```bash
+./.venv/bin/python -m training.prep.eval_sets
+```
+
 ## Train
 
 ```bash
@@ -58,11 +66,14 @@ each; given two, `hf` reads the second as a file name and ignores the include.
 
 The first stream run trains on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
 back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
-`RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–75 s
+`RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–120 s
 streams in batches of at most 4,608 frames, one epoch, peak LR `1e-6` with 5% warmup and cosine
 decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW `(0.9, 0.95)` with weight
 decay `0.1`, and validation and checkpoints every 9,000 steps
-([sft-training](agent-memory/sft-training.md#trainer)).
+([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced
+losses, translates FLEURS dev free-running, and promotes the checkpoint that passes the
+generation health gates with the highest chrF
+([sft-training](agent-memory/sft-training.md#checkpoints-and-recovery)).
 
 `train` requires an empty `runs/RUN_NAME/`. It needs a public `HIBIKI_HF_REPO` whose
 `RUN_NAME/` prefix is empty, and uploads `run.json` with the run identity and commit.
@@ -75,7 +86,8 @@ missing cache directory) has already claimed `runs/RUN_NAME/` and the remote
 ## Recover a run on a replacement pod
 
 Check out the commit recorded in the remote `RUN_NAME/run.json` before setup, then set
-up the pod as above and restore the newest complete model/trainer pair:
+up the pod as above and restore the newest complete model/trainer pair, with the promoted best
+model and marker if the run has promoted one (`RUN_NAME/best/`):
 
 ```bash
 run=RUN_NAME
@@ -104,6 +116,9 @@ cp "$restore_dir/$run/checkpoints/model_stepNNNNNN.safetensors" "$run_dir/"
 cp "$restore_dir/$run/checkpoints/trainer_stepNNNNNN.pt" "$run_dir/"
 cp "$restore_dir/$run/best/best_stepBBBBBB.safetensors" "$run_dir/"
 cp "$restore_dir/$run/best/best_stepBBBBBB.json" "$run_dir/best.json"
+# Logs exist in $run/artifacts/ once a sync ran after the training process exited; keep them.
+./.venv/bin/hf download "$HIBIKI_HF_REPO" --include "$run/artifacts/*.jsonl" --local-dir "$restore_dir"
+cp "$restore_dir/$run/artifacts/"*.jsonl "$run_dir/"
 find "$restore_dir" -depth -delete
 
 ./training/h100.sh resume "$run_dir/trainer_stepNNNNNN.pt" \
@@ -116,7 +131,11 @@ the same run only:
 
 - it needs the newest complete pair, an unchanged `run_config.json`, and the same run
   identity and commit;
-- from the first validation step on, it also needs the promoted best model and marker;
+- if the run has promoted a checkpoint (`RUN_NAME/best/`), it also needs that model and
+  marker;
+- a validation the interruption cut short runs again before training continues, and so does
+  the resumed step's validation if the run's logs were not restored (the final sync then
+  replaces the remote logs with the resumed run's only);
 - it cannot extend the stop step or start a different run.
 
 Runs recorded before the `inference/`/`training/` split, such as
@@ -124,22 +143,20 @@ Runs recorded before the `inference/`/`training/` split, such as
 
 ## Evaluate a checkpoint
 
-Build the real-Vietnamese evaluation sets once per pod
-([sft-training](agent-memory/sft-training.md#evaluation-sets)):
-
-```bash
-./.venv/bin/python -m training.prep.eval_sets
-```
+Training has already translated FLEURS dev at every validation (`runs/RUN_NAME/val_log.jsonl`,
+`runs/RUN_NAME/eval/stepNNNNNN/predictions.csv`). Check the promoted checkpoint on the other
+sets, such as MultiMed `select`, the non-regression gate
+([plan](vi_en_parity_plan.md#2-evaluation-sets)), or teacher-forced on another cache:
 
 ```bash
 ./.venv/bin/python -m training.finetune.validate \
   --cache-dir data/cache/en-vi-grounded-v2/validation \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors
 ./.venv/bin/python -m training.finetune.eval \
-  --pairs data/eval/fleurs-vi/dev.jsonl --limit 361 \
+  --pairs data/eval/multimed-vi/select.jsonl --limit 1718 \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors \
   --batch-size 8 --stop-on-eos --text-only --seed 42 \
-  --out-dir runs/RUN_NAME/eval_stepNNNNNN
+  --out-dir runs/RUN_NAME/multimed_select_stepNNNNNN
 ```
 
 `validate` reports teacher-forced losses on a cache's validation streams. `eval` runs correct-source

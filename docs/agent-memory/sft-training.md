@@ -16,7 +16,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - Inputs are one or more `--cache-dir` grounded caches plus a `--val-cache-dir`; rows over
   `--max-frames` (280) are dropped.
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
-  multi-sentence sequences of `--stream-seconds` (30–75 s, upstream's coarse-stage range).
+  multi-sentence sequences of `--stream-seconds` (30–120 s, `streams.STREAM_SECONDS`, decided
+  2026-11-02: upstream's coarse stage used 30–75 s and its RL stage 120 s, and upstream degrades
+  after ~1.6 minutes of input, so streams practise long input).
   PhoMT rows of one source chunk (`phomt_s<N>r<M>`, which spans talk boundaries) stay in order;
   every other row is random, Libriheavy included: its segment numbers are not reading order and
   segments overlap ([en-speech-corpus](en-speech-corpus.md#quality-filters)). A stream closes when
@@ -47,17 +49,21 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset.
 - Measured on 6,152 rows of `cv27-00010`, `libriheavy-medium-00050`,
-  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-01): 1,433 streams of 47 s median
-  (p10 34, p90 64; none under 30 s), 4 rows each, 20% of the Vietnamese side silent; the 2 s
-  overhang cap binds at the median join, since the English runs longer than the Vietnamese;
-  batches hold 7 streams median, streams filling 98.6% of the padded frames (92.4% of the
-  4,608-frame budget).
+  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-02, 30–120 s): 981 streams of 68 s
+  median (p10 37, p90 104; none under 30 s), 6 rows each, 21% of the Vietnamese side silent; the
+  2 s overhang cap binds at the median join, since the English runs longer than the Vietnamese;
+  batches hold 4 streams median, streams filling 98.9% of the padded frames (88.5% of the
+  4,608-frame budget; 30–75 s streams filled 92.4%).
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
     fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0;
   - validation and checkpoints every 9,000 steps; `--val-every` must be a multiple of
-    `--save-every`, because promotion hard-links the checkpoint saved at that step.
+    `--save-every`, because promotion hard-links the checkpoint saved at that step;
+  - each validation translates `--eval-pairs` (FLEURS dev: 361 rows, 72 minutes of speech)
+    free-running, shortest first in batches of `--eval-batch-size` 16, each batch generated to
+    its longest row plus 8 s: ~6,000 generation steps (8,300 in file order; not yet timed on
+    the H100).
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch
   (streams stay under the 3,000-frame context, so the mask is purely causal). Batches pad to
   16-frame buckets (`streams.FRAME_BUCKET`), and training requires moshi's internal compile,
@@ -102,17 +108,45 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - `resume runs/RUN_NAME/trainer_stepNNNNNN.pt ARGS…` requires:
   - a checkpoint directly under `runs/`;
   - a remote no newer than local;
+  - a local `best.json` no older than the remote's newest `best/` marker;
   - a `run_id.json` commit equal to HEAD.
   It syncs once, then resumes with the same ARGS.
 
 ## Checkpoints and recovery
 
 - A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt`; two are kept
-  locally. `best_step*.safetensors` is a hard link promoted only on a strict improvement in
-  teacher-forced validation loss (`best.json`, metric `teacher_forced_loss`).
+  locally.
+- Checkpoints are chosen on free-running translation of real Vietnamese (decided 2026-11-02:
+  the last run's teacher-forced loss kept improving while its translations got worse). Each
+  validation logs the teacher-forced losses of the cache's validation streams, then translates
+  `--eval-pairs` (default `data/eval/fleurs-vi/dev.jsonl`, so build the
+  [evaluation sets](#evaluation-sets) before training; rows need `duration_s`) with `eval.py`'s
+  sampling, reseeded per batch from `--seed`. `best_step*.safetensors` is a hard link to the
+  checkpoint that passes the
+  generation health gates (`common.generation_health`) with a strictly higher corpus chrF
+  (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`); a run whose checkpoints
+  all fail the gates promotes none. `val_log.jsonl` holds `teacher_forced` and `free_running`
+  metrics per step, and `eval/stepNNNNNN/` the predictions.
+- Training's chrF ranks the checkpoints of one run. It generates with fp32 weights and TF32
+  matmuls in length-sorted batches of 16, while `eval.py` defaults to bf16, batch 1 and file
+  order, so the two give different numbers for the same checkpoint; compare runs with `eval.py`.
 - `train.py` resumes only from the newest complete pair, and only if `run_config.json`
   matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences, seed, train row
-  count and total steps. From the first validation step on, `best.json` is required.
+  count, evaluation pairs and rows, and total steps.
+- A pair is saved before its validation, and a validation's log line is written after its
+  promotion. A resume first validates its own step if `val_log.jsonl` lacks it, the final step
+  included; a finished run refuses to resume. A replacement pod has `val_log.jsonl` only if it
+  restored the run's `artifacts/` (synced whenever the training process exits); without it,
+  the resumed step's validation runs again and may promote it on sampling noise.
+- `h100.sh resume` refuses to start unless the local `best.json` is at least as new as the
+  recovery repo's newest `best/` marker: a resume without it would promote a worse checkpoint,
+  and `hf_sync`, which keeps only the newest remote best, would replace the better one.
+- Checked on the Mac CPU with a tiny random LM (2026-11-02): training, saving, both
+  validations, promotion (a lower chrF keeps the promoted checkpoint, a higher one replaces it,
+  a run failing the gates promotes none), resumes that rerun a validation cut short mid-run and
+  at the final step with the original numbers, and a finished run refusing to resume on the
+  same pod. The
+  launcher's best-checkpoint check was run on fake states.
 - `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
   - `checkpoints/`: on each poll, the newest complete pair if newer than the remote, keeping
     the newest two;
@@ -127,7 +161,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 ## Side tools
 
 - `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,
-  `text_en`). Despite its name, `run_greedy_eval` samples (text 0.4, audio 0.8).
+  `text_en`). Despite its name, `run_greedy_eval` samples (text 0.4, audio 0.8). Its defaults
+  are `common.GenerationConfig`'s, which training's checkpoint selection uses too.
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.

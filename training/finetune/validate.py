@@ -2,8 +2,9 @@
 """Teacher-forced losses of a base or full-SFT model on the validation streams of a cache.
 
 The streams and batches are planned as `train.py` plans its validation (fixed seed, silence track
-encoded on the CPU). To reproduce a run's `val_log.jsonl`, pass its --stream-seconds,
---max-frames and --batch-frames and use --dtype float32, as training validates its fp32 weights.
+encoded on the CPU). To reproduce the `teacher_forced` metrics of a run's `val_log.jsonl`, pass its
+--stream-seconds, --max-frames and --batch-frames and use --dtype float32, as training validates
+its fp32 weights.
 """
 
 from __future__ import annotations
@@ -49,7 +50,9 @@ def parse_args() -> argparse.Namespace:
         help="Model dtype.",
     )
     parser.add_argument("--batch-frames", type=int, default=4608)
-    parser.add_argument("--stream-seconds", type=float, nargs=2, default=[30.0, 75.0])
+    parser.add_argument(
+        "--stream-seconds", type=float, nargs=2, default=list(streams.STREAM_SECONDS)
+    )
     parser.add_argument("--max-frames", type=int, default=280)
     parser.add_argument("--max-batches", type=int, default=0, help="0 means every batch.")
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
