@@ -32,7 +32,7 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
   ~70 GB and the internal disk is too small.
 - The full build (user's choice, 2026-10-27: every row that fits the trainer) goes to two
   out-dirs, see [Builds](#builds).
-- Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `CachedCodeDataset`
+- Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `streams.load_rows`
   rejects anything else:
   - Mimi at 24 kHz / 12.5 Hz;
   - English audio delayed by a draw from U[0, min(0.5 × Vietnamese duration, room)], seeded by
@@ -160,6 +160,9 @@ first 68 `cv27` shards, runs the two out-dirs one after the other, each under
 | `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English |
 | `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
 
+- It stopped on 2026-11-02 at 08:20 (status 143) with 1,765 of the 1,835 main source shards
+  built, all on the Hub; left are the last 35 `libriheavy-medium` shards, the 32
+  `libriheavy-small` and the 3 validation shards, then `cv-anquach`.
 - To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status 143
   and does not start `cv-anquach`, but only once the two orphaned decode workers
   (`multiprocessing.spawn` and its `resource_tracker`, parent pid 1) are killed too, since they
@@ -268,5 +271,6 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 - Target audio is -1 after its length, with no explicit EOS.
 - Source audio has codec EOS 2048 at `source_len`, then -1.
 - T = max(text end, target length, source length + 1).
-- Batches are right-padded with -1 to a multiple of the frame bucket. There is no dataset
-  transform at training time.
+- The trainer joins rows into multi-sentence streams without changing the cache
+  ([sft-training](sft-training.md#trainer)); batches are right-padded with -1 to a multiple of
+  the frame bucket.

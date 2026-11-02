@@ -25,3 +25,6 @@ venv/
 docs/vision/vision.html
 docs/vision/vision.pdf
 inference/macos/HibikiTestApp/.build/
+inference/swift/.build/
+inference/swift/.swiftpm/
+xcuserdata/

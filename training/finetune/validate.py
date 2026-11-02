@@ -1,12 +1,22 @@
 #!/usr/bin/env python
-"""Teacher-forced CE on cached codes for a base or full-SFT model."""
+"""Teacher-forced losses of a base or full-SFT model on the validation streams of a cache.
+
+The streams and batches are planned as `train.py` plans its validation (fixed seed, silence track
+encoded on the CPU). To reproduce a run's `val_log.jsonl`, pass its --stream-seconds,
+--max-frames and --batch-frames and use --dtype float32, as training validates its fp32 weights.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
 
-from training.finetune import common
+import torch
+from torch.utils.data import DataLoader
+
+from training.finetune import common, streams
+from training.finetune.train import stream_frames
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
@@ -20,9 +30,7 @@ from training.paths import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Compute teacher-forced CE on cached codes for a base or full-SFT model."
-    )
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cache-dir", type=Path, required=True)
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
@@ -35,32 +43,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
-        "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model dtype."
+        "--dtype",
+        choices=("float16", "bfloat16", "float32"),
+        default="bfloat16",
+        help="Model dtype.",
     )
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--max-samples", type=int, default=0, help="0 means all.")
-    parser.add_argument("--max-batches", type=int, default=0, help="0 means all selected batches.")
+    parser.add_argument("--batch-frames", type=int, default=4608)
+    parser.add_argument("--stream-seconds", type=float, nargs=2, default=[30.0, 75.0])
+    parser.add_argument("--max-frames", type=int, default=280)
+    parser.add_argument("--max-batches", type=int, default=0, help="0 means every batch.")
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
-    parser.add_argument("--text-pad-mode", choices=("prefix", "all"), default="prefix")
-    parser.add_argument("--text-pad-loss-weight", type=float, default=0.05)
+    parser.add_argument("--first-codebook-weight", type=float, default=100.0)
+    parser.add_argument("--text-pad-weight", type=float, default=0.5)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument(
-        "--sort-by-length",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Sort cached samples by frame length to reduce padding.",
-    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.batch_size <= 0:
-        raise ValueError("--batch-size must be positive")
-
     device = common.check_device(args.device)
     dtype = common.dtype_from_name(args.dtype)
+    torch.set_float32_matmul_precision("high")  # TF32 matmuls, as training validates
 
     cache_dir = require_dir(args.cache_dir, "code cache directory")
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
@@ -69,11 +73,19 @@ def main() -> None:
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
 
-    dataset = common.CachedCodeDataset(cache_dir, args.sort_by_length, args.max_samples)
-    dataloader = common.make_cached_dataloader(dataset, args.batch_size, args.num_workers)
-    print(f"Loaded {len(dataset)} cached samples from {repo_display_path(cache_dir)}")
-
     checkpoint_info = common.load_checkpoint_info(args)
+    frames = stream_frames(args.stream_seconds)
+    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
+    rows, layout = streams.load_rows([cache_dir], args.max_frames)
+    dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED)
+    dataloader = DataLoader(
+        dataset,
+        batch_sampler=dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
+        collate_fn=streams.collate,
+        num_workers=args.num_workers,
+    )
+    print(f"Planned {len(dataset)} streams from {len(rows)} rows of {repo_display_path(cache_dir)}")
+
     print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
     lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
     if checkpoint is not None:
@@ -81,30 +93,26 @@ def main() -> None:
     else:
         print("Using the base model.")
 
+    weights = common.LossWeights(
+        audio=args.audio_loss_weight,
+        text=args.text_loss_weight,
+        first_codebook=args.first_codebook_weight,
+        text_pad=args.text_pad_weight,
+    )
     metrics = common.evaluate_teacher_forced(
-        lm, dataloader, device, checkpoint_info.model_type,
-        args.audio_loss_weight,
-        args.text_loss_weight,
-        args.max_batches,
-        args.text_pad_mode,
-        args.text_pad_loss_weight,
+        lm, dataloader, device, checkpoint_info.model_type, weights, args.max_batches
     )
     result = {
         "cache_dir": repo_display_path(cache_dir),
         "checkpoint": repo_display_path(checkpoint) if checkpoint is not None else "",
-        **{k: metrics[k] for k in (
-            "loss", "audio_loss", "text_loss", "audio_tokens", "text_tokens", "batches", "samples",
-            "content_text_loss", "content_acc", "content_tokens", "pad_text_loss", "pad_acc",
-            "pad_tokens", "first_content_loss", "first_content_tokens",
-            "first_content_margin", "silence_score",
-        )},
+        **metrics,
     }
     print(
-        f"loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} text={metrics['text_loss']:.4f} "
-        f"content={metrics['content_text_loss']:.4f} first={metrics['first_content_loss']:.4f} "
-        f"pad={metrics['pad_text_loss']:.4f} acc={metrics['content_acc']:.3f} "
-        f"pad_acc={metrics['pad_acc']:.3f} margin={metrics['first_content_margin']:.3f} "
-        f"silence={metrics['silence_score']:.3f} samples={metrics['samples']}"
+        f"loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} "
+        f"semantic={metrics['semantic_loss']:.4f} text={metrics['text_loss']:.4f} "
+        f"content={metrics['content_text_loss']:.4f} pad={metrics['pad_text_loss']:.4f} "
+        f"acc={metrics['content_acc']:.3f} pad_acc={metrics['pad_acc']:.3f} "
+        f"streams={metrics['streams']}"
     )
     if args.out_json:
         out_path = resolve_repo_path(args.out_json)

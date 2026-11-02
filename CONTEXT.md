@@ -1,14 +1,15 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-10-29
+Last verified: 2026-11-02
 
 ## Purpose
 
 This repo runs Hibiki-Zero simultaneous speech translation:
 
 - MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE→EN, or staged BF16 checkpoints);
-- full-model Vietnamese→English voice-preserving SFT on one H100 on the 5–22.4 s clips of the
-  English read-speech corpus `en_speech` plus the ~0.8k-hour PhoMT cache, together ~11.3k hours;
+- full-model Vietnamese→English voice-preserving SFT on one H100, on multi-sentence streams
+  joined from the 5–22.4 s clips of the English read-speech corpus `en_speech` (~10.5k hours;
+  the ~0.8k-hour PhoMT cache is a later ablation);
 - the roadmap toward VI→EN parity with the upstream languages.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
@@ -23,29 +24,34 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
     ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
-  HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir)
+  HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
+                                                            └─► swift/ (MLX Swift: CLI, iOS bench app)
+  Mimi checkpoint ─► tools/export_mimi_coreml.py (from tools/mimi_step.py) ─► mimi-decoder.mlmodelc ─► swift/
 ```
 
 - `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
-  vendored `moshi-mlx/`, `tools/`, `assets/leon.wav` and the `macos/` test app.
+  vendored `moshi-mlx/`, `tools/`, `assets/leon.wav`, the `macos/` test app and `swift/`, the
+  native MLX Swift runtime with its iOS benchmark app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
-  builder in MLX) and `finetune/` (the generic SFT trainer, evaluation and HF recovery sync). Its
-  modules run from the repo root as `python -m training.<package>.<module>`; everything except
-  the translation, the TTS, the dataset publisher and the cache builder runs on CUDA only.
+  builder in MLX, the evaluation-set builder) and `finetune/` (the generic SFT trainer, evaluation
+  and HF recovery sync). Its modules run from the repo root as
+  `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
+  publisher, the cache builder and the evaluation-set builder runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
 
 ## Where things stand
 
-- FLEURS and the PhoMT code and frozen recipe are dropped; the PhoMT grounded cache is kept and
-  pooled with the `en_speech` caches. The last run on PhoMT and FLEURS,
-  `grounded_v2_full_direct_voice_5epoch`, is analysed up to step 135k in `docs/analysis/`:
-  teacher-forced loss improves, but free-running translation fails.
-- [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active roadmap. In phase 1,
+- The last run, on PhoMT and FLEURS (`grounded_v2_full_direct_voice_5epoch`), is analysed up
+  to step 135k in `docs/analysis/`: teacher-forced loss improves, but free-running translation
+  fails. FLEURS and MultiMed-ST now serve only as real-Vietnamese evaluation sets
+  ([sft-training](docs/agent-memory/sft-training.md#evaluation-sets)).
+- [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
+  Hibiki-Zero 3B from training to the phone. For the data,
   the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:
   the first tranche and all Common Voice on Claude
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
@@ -58,8 +64,8 @@ inference/ (Apple Silicon, MLX)
   shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
   1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
   `cache_codes` builds the training caches from it in MLX;
-  the full build runs on the Mac since 2026-10-27, at 61% on 2026-10-31 and ~1.5 days short
-  alone at 200–240x ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  the full build ran on the Mac from 2026-10-27 and stopped on 2026-11-02 with 1,765 of 1,835 main
+  shards built and on the Hub ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
@@ -76,7 +82,8 @@ inference/ (Apple Silicon, MLX)
 - Production runs go only through `training/h100.sh train`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
-  codebooks. EOS and -1 positions are fixed, and training applies no transform →
+  codebooks, with fixed EOS and -1 positions. The trainer joins rows into streams and never
+  rewrites the cache →
   [sft-data-caches](docs/agent-memory/sft-data-caches.md).
 - Resume only from the newest complete model and optimizer pair of the same run →
   [sft-training](docs/agent-memory/sft-training.md).
@@ -93,6 +100,8 @@ inference/ (Apple Silicon, MLX)
 | Read when working on… | Note | Main paths |
 |---|---|---|
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
+| Swift runtime, iOS app, on-device tests | [swift-runtime](docs/agent-memory/swift-runtime.md) | `inference/swift/` |
+| Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
 | SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
 | Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |

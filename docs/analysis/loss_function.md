@@ -1,8 +1,8 @@
 # Direct VI-EN training loss
 
-This document describes the teacher-forced objective implemented by
-`training/finetune/common.py` for direct, simultaneous Vietnamese-speech-to-English-speech
-training.
+This document describes the teacher-forced objective that trained
+`grounded_v2_full_direct_voice_5epoch`. It was replaced on 2026-11-01 by Kyutai's weighting on
+multi-sentence streams ([sft-training](../agent-memory/sft-training.md#objective)).
 
 ## Training streams
 

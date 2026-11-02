@@ -1,6 +1,7 @@
 # MLX inference
 
-Read when touching anything under `inference/`.
+Read when touching anything under `inference/` except `inference/swift/`
+([swift-runtime](swift-runtime.md)).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runtime](#runtime) ·
 [Model directories](#model-directories) · [Vendored moshi-mlx](#vendored-moshi-mlx) · [Gates](#gates) ·
 [Memory](#memory)
@@ -33,6 +34,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   EOS or 12 consecutive special-token frames (`PAD_STOP`).
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers, which adds one frame of output latency.
+- rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
+  start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
+  such limit ([swift-runtime](swift-runtime.md)).
 
 ## Model directories
 

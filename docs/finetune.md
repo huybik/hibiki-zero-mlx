@@ -52,14 +52,17 @@ each; given two, `hf` reads the second as a file name and ignores the include.
 
 ```bash
 ./training/h100.sh train RUN_NAME \
-  --cache-dir data/cache/en-vi-grounded-v2/train data/cache/phomt-grounded-v2-5s \
+  --cache-dir data/cache/en-vi-grounded-v2/train \
   --val-cache-dir data/cache/en-vi-grounded-v2/validation
 ```
 
-Arguments after `RUN_NAME` go to `training.finetune.train` (`--help` lists them).
-The defaults are batch 16, 280-frame rows, 5 epochs, constant LR `1e-6`, fused AdamW
-`(0.9, 0.95)` with weight decay `0.1`, and validation and checkpoints every 9,000
-steps.
+The first stream run trains on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
+back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
+`RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–75 s
+streams in batches of at most 4,608 frames, one epoch, peak LR `1e-6` with 5% warmup and cosine
+decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW `(0.9, 0.95)` with weight
+decay `0.1`, and validation and checkpoints every 9,000 steps
+([sft-training](agent-memory/sft-training.md#trainer)).
 
 `train` requires an empty `runs/RUN_NAME/`. It needs a public `HIBIKI_HF_REPO` whose
 `RUN_NAME/` prefix is empty, and uploads `run.json` with the run identity and commit.
@@ -104,7 +107,7 @@ cp "$restore_dir/$run/best/best_stepBBBBBB.json" "$run_dir/best.json"
 find "$restore_dir" -depth -delete
 
 ./training/h100.sh resume "$run_dir/trainer_stepNNNNNN.pt" \
-  --cache-dir data/cache/en-vi-grounded-v2/train data/cache/phomt-grounded-v2-5s \
+  --cache-dir data/cache/en-vi-grounded-v2/train \
   --val-cache-dir data/cache/en-vi-grounded-v2/validation
 ```
 
@@ -121,17 +124,24 @@ Runs recorded before the `inference/`/`training/` split, such as
 
 ## Evaluate a checkpoint
 
+Build the real-Vietnamese evaluation sets once per pod
+([sft-training](agent-memory/sft-training.md#evaluation-sets)):
+
+```bash
+./.venv/bin/python -m training.prep.eval_sets
+```
+
 ```bash
 ./.venv/bin/python -m training.finetune.validate \
-  --cache-dir data/cache/VALIDATION \
+  --cache-dir data/cache/en-vi-grounded-v2/validation \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors
 ./.venv/bin/python -m training.finetune.eval \
-  --pairs PAIRS.jsonl \
+  --pairs data/eval/fleurs-vi/dev.jsonl --limit 361 \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors \
   --batch-size 8 --stop-on-eos --text-only --seed 42 \
   --out-dir runs/RUN_NAME/eval_stepNNNNNN
 ```
 
-`validate` reports teacher-forced losses on a cache. `eval` runs correct-source
+`validate` reports teacher-forced losses on a cache's validation streams. `eval` runs correct-source
 free-running generation on rows with `id`, `vi_audio` and `text_en` columns and
 writes predictions, BLEU/chrF/WER, and a generation-health verdict.

@@ -1,298 +1,167 @@
-# VI→EN parity plan
+# VI→EN plan: from Hibiki-Zero to a real-time phone translator
 
-Goal: make Vietnamese→English work as well as the upstream Hibiki-Zero source
-languages (FR/ES/PT/DE) on translation quality, latency behavior, voice
-preservation, and free-running generation health.
+Goal: Vietnamese speech in, English speech (in the speaker's voice) and text out, simultaneously,
+on a phone, offline. The base is Hibiki-Zero 3B (user's choice, 2026-11-01): its tokenizer, Mimi
+codec and runtime stay the same from training to the phone.
 
-This plan combines:
+```text
+VI TTS (done) ─► Mimi cache (finish) ─► SFT 3B ─► GRPO 3B ─► teacher
+                 + noisy VI re-encode     streams,              │
+                 + real-VI eval sets      fixed loss            ▼
+                                            on-device test of upstream Hibiki-Zero 3B q4
+                                            ├─ real time on target iPhones ─► ship 3B q4
+                                            └─ too slow / hot ─► shrink in the family + distill
+                                                                 (8 codebooks, ~10–14 layers)
+                                                     ─► q4 + Swift runtime (4 Hibiki-Zero deltas)
+```
 
-- the measured failures in `docs/analysis/validation_collapse_analysis.md`,
-  `docs/analysis/step135k-check.md`, and the objective in
-  `docs/analysis/loss_function.md`;
-- the Hibiki-Zero training recipe (arXiv 2602.11072v2, "Simultaneous Speech-to-
-  Speech Translation Without Aligned Data");
-- the new Common Voice based data pipeline described below.
+## Where we are
 
-## 1. Where we are
+- Data: the `en_speech` corpus (Common Voice 27 EN + Libriheavy, 10.5k h of 5–22.4 s clips) is
+  translated and voiced in each row's own English voice
+  ([en-vi-speech-dataset](agent-memory/en-vi-speech-dataset.md)). The grounded Mimi cache is being
+  built ([sft-data-caches](agent-memory/sft-data-caches.md#builds)).
+- The last run (`grounded_v2_full_direct_voice_5epoch`, PhoMT + FLEURS) improved teacher-forced
+  loss but failed free-running translation ([analysis](analysis/validation_collapse_analysis.md),
+  [examples](analysis/step135k-check.md)).
+- No Vietnamese checkpoint has run on a phone; every iPhone number in `docs/vision/reports/` is a
+  projection.
 
-Evidence from the direct VI-EN run `grounded_v2_full_direct_voice_5epoch`:
+## What the current cache teaches (measured 2026-11-01)
 
-| Signal | Result | Meaning |
-| --- | --- | --- |
-| Unseen PhoMT teacher-forced loss | 3.68 → 3.13 (step 18k → 135k), still falling | Translation knowledge is learnable but not saturated; 683k rows are not yet too many |
-| FLEURS teacher-forced loss | 5.84 → 7.28, rising 13 checkpoints | Domain conflict + only 1,392 unique FLEURS rows reused ~77× |
-| Free-running on PhoMT holdout (step 135k) | BLEU 2.07, chrF 18.85, WER 159%, EOS 4/6 | Teacher-forced loss does not transfer to free-running; exposure gap dominates |
-| Free-running on FLEURS (step 18k) | BLEU 0.88, chrF 17.12, but repetition gate failed | Best checkpoint already unhealthy at generation |
+300 rows each of `cv27-00010` and `libriheavy-medium-00050`, speech edges from a −40 dB energy
+gate:
 
-Diagnosis, ranked:
+| | CV | Libriheavy |
+|---|---|---|
+| VI heard before the first English word, median (share under 1 s) | 1.8 s (19%) | 2.2 s (17%) |
+| English speech ends after VI speech ends, median / p90 | 2.4 / 4.0 s | 3.8 / 6.8 s |
+| English speech ÷ VI speech duration, median | 1.27 | 1.15 |
 
-1. **Data quantity/variation**: ~1,114 h of synthetic PhoMT VI speech (683k
-   rows) and 1,392 unique FLEURS-domain rows versus the paper's 40,000 h per
-   source language of real multi-speaker audio (~36× less audio, and far less
-   speaker variation). The paper's own new-language adaptation (Section 2)
-   reached 31.4 BLEU after fine-tuning on 850 h, less than this cache, so hours
-   alone are unlikely to explain the failure.
-2. **Exposure gap**: supervised training is fully teacher-forced (gold English
-   text+audio history in input); inference is free-running. No training stage
-   optimizes the free-running regime, so repetition, missing EOS, and error
-   compounding are expected.
-3. **Voice-preservation mismatch**: audio CE is applied to pairs whose English
-   target speaker is not verified to match the Vietnamese source speaker,
-   teaching speaker conversion instead of voice preservation.
-4. **Stopping/selection**: five fixed epochs at fixed LR selected checkpoints
-   against a mismatched 138-row FLEURS validation set.
+A ~3 s lag is the realistic target; the paper's RL-tuned Italian adaptation ends ~3 s after the
+source. English runs longer than the VieNeu Vietnamese, so streams need source pauses or the lag
+grows sentence by sentence.
 
-## 2. What the Hibiki-Zero paper does
+## Decisions (2026-11-01)
 
-Five stages (§4.2 of the paper):
+| Decision | Why |
+|---|---|
+| Stay on Hibiki-Zero 3B; the phone model is the 3B or a smaller copy of it | One tokenizer, codec and runtime. Hibiki-M 1B shares Mimi and the tokenizer but only knows FR→EN |
+| Train on multi-sentence streams of 30–75 s, not single sentences | Upstream's coarse stage trained on 30–75 s utterances; a phone hears a continuous stream |
+| Gaps between sentences are silence codes on both sides, sometimes long | Teach "stay quiet while nobody speaks"; the MLX runtime already has to cut the model off in silence (`PAD_STOP`) |
+| Source after its EOS is silence codes, not `-1` | Upstream inference (`add_input_eos`) feeds encoded silence there; `-1` is an empty input the model never sees at inference |
+| Keep the source EOS and text EOS at the end of each stream | Upstream models termination this way and forces the input EOS in offline use; a live stream simply never sends it |
+| Audio codebook 0 weighted ×100; every text PAD supervised at 0.5 | Kyutai's `moshi-finetune` defaults. Before, codebook 0 was 1/16 of the audio loss and PADs after the first word had no loss, so nothing taught when not to emit a word; the last run's length ratio grew 1.06 → 1.28 → 2.05 |
+| Batches by frame budget; warmup + cosine LR | Attention is ~2.5% of compute at 1,500 frames, so cost tracks frames, not rows; the constant 1e-6 LR kept moving the model after its optimum |
+| Choose checkpoints on real Vietnamese speech | All training and cache-validation speech is VieNeu TTS |
+| Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
-1. **Text backbone init**: Helium-1-2B LLM weights.
-2. **Audio pretraining**: single-stream multilingual audio, 1M steps,
-   batch 144.
-3. **Coarse ST training**: teacher-forced CE on 40,000 h per source language
-   (~4M utterances), 500k steps, batch 96, loss on both streams, source noise
-   augmentation. Targets are delayed by random per-sentence silences
-   δ_i ~ U(0, δ·d_i) plus punctuation pauses U(0, μ) to teach simultaneous
-   behavior. Same exposure gap as our SFT — but at ~36× the audio volume, all
-   real multi-speaker speech.
-4. **Fine-tuning on natural-pause TTS data**: <200 h synthetic targets where a
-   synced-stream TTS regenerates the English audio with natural pauses,
-   **voice-transferred onto the source speaker**. 1K steps, batch 16,
-   LR 1e-6. Then distills into a lighter self-copy (20K updates). This stage
-   fixes the unnatural spliced-silence targets and is the paper's structural
-   answer to voice preservation.
-5. **GRPO reinforcement learning**: G=4 free-running generations per input,
-   scored by process rewards r_t = (1−α)·BLEU(partial at frame t) +
-   α·BLEU(full output), α=0.4, rewards every 8 input words, batch 32,
-   LR 2e-7, 2000 updates, τ=20, temperature 0.8 / top-k 250. This stage trains
-   directly in the free-running regime and is what teaches EOS, length
-   control, and recovery from the model's own errors.
+## Stages
 
-Key paper finding: RL could not teach behaviors the base model "was never
-trained in that manner during supervised training" — the supervised stages
-must already leave exploration room (δ_i < d_i), and RL then sharpens the
-policy.
+### 1. Data
 
-**New-language adaptation** (Table 3, Appendix Table 6) is the paper's closest
-analogue to VI→EN. An 850 h Italian→English set was built with the stage-3
-recipe. Starting from the stage-3 supervised model (before stage 4 and RL), the
-model was fine-tuned on Italian, then trained with GRPO on Italian only:
+1. Finish the cache build unchanged ([sft-data-caches](agent-memory/sft-data-caches.md#builds)).
+   The trainer builds streams from its rows; nothing needs re-encoding.
+2. Noisy Vietnamese re-encode (next): for a few thousand hours, encode the Vietnamese side again
+   with noise, room reverb, a phone-mic band and speed 0.9–1.1×, reusing each row's English codes
+   and text timing (no wav2vec2; about half the Mimi work of a row).
+3. Real Vietnamese source tranche (later): real Vietnamese speech (GigaSpeech 2 vi, Bud500; check
+   licences) with LLM-translated text and voice-cloned English TTS targets, timed causally. This
+   is the paper's stage-4 analogue and the main defence against the TTS-only source.
+4. First run pool: `en-vi-grounded-v2/train`. `cv-anquach` (16 kHz English targets) and the PhoMT
+   cache (half its rows not voice-matched) stay out of the first run and come back as ablations.
 
-| Model (Italian short-form) | BLEU | Speaker sim. | End offset (s) | LAAL (s) |
-| --- | ---: | ---: | ---: | ---: |
-| Stage-3 base | 14.3 | 50.6 | 3.9 | 4.3 |
-| Fine-tuned | 31.4 | 55.2 | 3.7 | 4.5 |
-| Fine-tuned + RL | 32.1 | 54.2 | 3.0 | 3.5 |
-| Seamless | 32.5 | 22.2 | 3.0 | 3.5 |
+### 2. Evaluation sets
 
-- Fine-tuning alone recovered the translation quality; RL mainly cut latency.
-- On FR/ES/PT/DE long-form, the adapted model stays within −1.2 to +1.4 BLEU of
-  Hibiki-Zero, with LAAL 0.1–0.7 s higher and speaker similarity 1.5–5.7
-  points lower.
-- The 850 h does not carry over directly. Italian is close to the Romance
-  source languages and made up <2% of the audio-pretraining mix, while
-  Vietnamese is tonal and absent from it. The paper's source speech is real;
-  ours is TTS.
-- This repo cannot use the same start point. Only the final post-RL model is
-  released (`kyutai/hibiki-zero-3b-pytorch-bf16`), not the stage-3 checkpoint.
+Built by `training.prep.eval_sets` into `data/eval/`; evaluation only, never training
+([sft-training](agent-memory/sft-training.md#evaluation-sets)).
 
-## 3. Gap analysis: paper vs. this repo
+| Set | Speech | Role |
+|---|---|---|
+| FLEURS vi_vn dev (361) | real read speech, 16 kHz, human EN references | checkpoint selection |
+| FLEURS vi_vn test (857) | same | final report |
+| MultiMed-ST vi `select` (half of 3,437) | real conversational medical speech, **8 kHz** telephone band; references LLM-drafted, then corrected by 5 annotators | non-regression gate |
+| MultiMed-ST vi `final` (other half) | same | final report |
+| Own phone recordings (to record) | conversational VI on a phone mic, incl. 2–3 min monologues | final gate before shipping |
 
-| Dimension | Paper | This repo | Action |
-| --- | --- | --- | --- |
-| Supervised ST data | 40,000 h / language (real, multi-speaker) | ~1,114 h PhoMT (synthetic) + 1,392 FLEURS rows | Phase 1 |
-| Target-domain speech variation | Massive, multi-speaker | 1,392 unique rows | Phase 1 |
-| Voice-matched targets | TTS voice transfer from source speaker (stage 4) | Timbre flag on ~51% of PhoMT rows, unverified | Phases 1+3 |
-| Natural simultaneity targets | Natural-pause TTS (stage 4) | CTC-timed alignment only | Phase 3 (lightweight analog) |
-| Free-running training | GRPO with BLEU process rewards (stage 5) | None | Phase 4 |
-| Early stopping | Best quality/latency checkpoint | 5 fixed epochs, teacher-forced selection | Phase 2 |
-| New-language start point | Stage-3 supervised model, 850 h fine-tune + GRPO | Released post-RL model, SFT only | None for the start point (stage-3 checkpoint unreleased); Phase 4 adds RL |
+MultiMed segments are cut mid-phrase and its references are clean sentences: read chrF, not
+BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 
-## 4. New data: Common Voice pipeline
+### 3. SFT (the stream recipe)
 
-Source: Mozilla Common Voice **English** (scripted, CC0): one validated
-sentence per clip, tens of thousands of speakers, thousands of validated
-hours.
+`training/finetune/train.py` ([sft-training](agent-memory/sft-training.md)):
 
-Pipeline per selected clip:
+1. Streams: rows at random (consecutive PhoMT rows of one source chunk stay in order; Libriheavy
+   segment numbers are not reading order and overlap); each row's English placed at its cached
+   delay after its Vietnamese, never before the previous English ends; gaps drawn so the
+   previous English overhangs the next Vietnamese by at most 2 s. That cap binds at the median
+   join, so the source "waits" for the interpreter; watch lag growth on long real speech.
+2. Loss as above; LR peak 1e-6, 5% warmup, cosine to 0; one pass over the pool.
+3. The trainer promotes the lowest teacher-forced loss on streams of the cache's `validation/`
+   split and keeps only that and the newest two checkpoints. Run `eval.py` on those: FLEURS dev
+   chrF/BLEU as the main metric, MultiMed `select` chrF no more than 1 point below the previously
+   promoted checkpoint's, and the health gates on both (nonempty, EOS, repeated 4-grams, length
+   ratio). If free-running and teacher-forced rankings disagree, as in the last run, add
+   free-running evaluation at each validation step before the full run.
 
-1. Take the validated English clip: real English audio + gold English text
-   (this becomes the English target stream, unchanged).
-2. Translate the English sentence to Vietnamese with Claude Sonnet 5.5
-   (`training/prep/translate_en_speech.py`).
-3. Generate Vietnamese speech from the translated text with a TTS **conditioned
-   on the clip's original speaker** (voice transfer), producing a timbre-matched
-   Vietnamese source audio.
-4. Cache as a grounded-v2 style row: Vietnamese source Mimi codes (with codec
-   EOS), CTC-timed English text (with EOS), English target Mimi codes.
+### 4. GRPO
 
-Why this direction is right: the model needs Vietnamese *source* audio and
-English *target* audio/text. Common Voice gives real English targets and, via
-voice transfer, Vietnamese sources that share the target's speaker identity —
-every row is verifiably timbre-matched, which fixes the audio-CE supervision
-boundary from the analysis doc.
+[docs/grpo_plan.md](grpo_plan.md), on streams with silent stretches, plus a penalty on speech
+while the source is silent. RL the teacher before any distillation; a short GRPO on a distilled
+student afterwards.
 
-### Sizing
+### 5. The phone model
 
-Total goal: **~40,000 h of Vietnamese source speech**, matching the paper's
-per-source-language training volume. The existing cache contributes ~1,114 h,
-so the new pipelines must produce roughly 39,000 h more. That is the
-from-scratch stage-3 volume. The paper adapted to Italian with 850 h
-(Section 2), so tranche 1 (1k h) already sits at adaptation scale.
+1. Done (2026-11-01): `inference/swift/` runs Hibiki-Zero in MLX Swift with the four deltas
+   (`hidden_scale`, grouped-query `kv_repeat`, `rope_concat`, per-slice depformer norms),
+   matching the Python runtime ([swift-runtime](agent-memory/swift-runtime.md)).
+2. Measured on an iPhone 13 Pro Max (A15, 6 GB), upstream 3B q4, 10 minutes of audio back to
+   back: it fits in memory (2.8 GB, 1.3 GB to spare) but runs at 135 ms/frame cold and
+   ~200 ms/frame once throttled, against an 80 ms budget; the LM alone is 100 → 153 ms
+   ([swift-runtime](agent-memory/swift-runtime.md#device-test)). Still to measure: a current
+   phone (A17 Pro / A18, 8 GB) before settling the target.
+3. The 3B does not hold real time on the A15, so the shrink branch is on: drop depformer steps
+   8–15 (8 codebooks per stream; the depformer's sequential steps halve) and main layers 28 →
+   ~10–14 initialised from the 3B's own, fine-tune, then distil from the teacher on its
+   free-running outputs over the cached Vietnamese codes and unlabeled real Vietnamese audio.
+   Timed on the A15 with untrained cuts and Mimi on the CPU beside the GPU LM
+   ([swift-runtime](agent-memory/swift-runtime.md#device-test)): 10 layers run at 58 ms/frame
+   cold and hold real time for ~3 minutes, then throttle to ~90 ms; 14 layers 64 → 98 ms; the
+   8-codebook 3B 84 → 137 ms. The phone reaches thermal state "serious" within a minute.
+   Mimi encoding and decoding 2 frames per call halves its CPU time (hot: 80 → 36 ms a frame);
+   the 10-layer step then turns GPU-bound once the GPU throttles (~4 minutes). Halving the
+   depformer (each of its 8 slices keeps 3 of 6 layers) holds real time through 10 minutes on
+   the A15 (42 → 79 ms a frame), and with Mimi's decoder on the Neural Engine the step is
+   GPU-bound at 41 → 44.5 ms for all 10 minutes (an earlier, warmer run throttled at ~9). So
+   the student is 8 codebooks, ~10 main layers and a 3-layer depformer; measure a current
+   phone (A17 Pro / A18) before settling it.
 
-Common Voice English validated audio alone is only a few thousand hours, so
-the Section 4 pipeline (EN clip → Sonnet translate → timbre-matched VI TTS)
-is applied across multiple scripted English corpora, for example:
+### 6. Quantise and package
 
-- Mozilla Common Voice (English, CC0) — thousands of speakers, short clips;
-- LibriSpeech / MLS English (read audiobooks, CC-permissive);
-- GigaSpeech / SPGISpeech or similar large licensed read corpora.
+q4 group 32 on transformer linears; embeddings, text head and depformer input/output projections
+at 8 bits (q3 there made the 3B babble, [inference_matrix](vision/reports/inference_matrix.md)).
+Gate q4 against bf16 on the real-Vietnamese sets. q3 is out everywhere: teacher-forced on
+`leon.wav` it keeps 82% of bf16's text tokens and 71–78% of codebook 0, against q4's 93% and 88%
+([swift-runtime](agent-memory/swift-runtime.md#device-test)). Ship on MLX Swift: the LM on the
+GPU; beside it Mimi encodes on the CPU in fp32 and decodes on the Neural Engine
+(`export_mimi_coreml.py`; fp16 on the Neural Engine shifts the encoder's codes, codebook 0 on 6%
+of frames, so the encoder stays on the CPU, [mimi-npu](agent-memory/mimi-npu.md)). File mode
+should send the source EOS at the end of the input, as upstream does; live mode never sends it.
 
-| Segment | Now | Target | Purpose |
-| --- | ---: | ---: | --- |
-| Scripted-EN derived rows (CV first, then other corpora) | 0 | **scaled until total VI ≈ 40k h** | Bulk VI-source/EN-target with verified timbre match; massive speaker variation |
-| PhoMT rows (existing) | 683,164 (~1,114 h) | keep | Translation breadth, human-aligned text pairs |
-| FLEURS rows (existing, real VI speech) | 1,392 | keep, **single pass — no reuse within an epoch** | Real-speech anchor; validation domain |
-| Validation | 138 FLEURS rows | + stratified holdouts from each new corpus + 1,068-row PhoMT holdout | Per-domain selection |
+## Order
 
-At ~7 s average clip length, 40k h is on the order of 20M clips; prioritize
-corpora by speaker count and audio quality, and generate in tranches (e.g.
-validate the pipeline on 1k h before scaling).
+1. Restart the cache build (stopped 2026-11-01 12:08).
+2. Evaluation sets and the stream recipe (this change).
+3. Swift port of the four deltas and the on-device test: done on the A15 (above); a current
+   phone remains.
+4. Pod run of the stream recipe; then GRPO; then the phone-model branch the device test picks.
 
-### Pipeline quality gates (before any training)
-
-- **Translation**: back-translate spot check on a random 1k sample; require
-  ≥95% accept rate; drop rows where the translation is empty, identical to
-  English, or longer than 2× the source.
-- **TTS**: ASR the generated Vietnamese audio on a random 1k sample; require
-  WER < 15% against the translated text; drop clips with clipping, silence
-  >50%, or duration >280 frames (cache cap).
-- **Timbre**: verify speaker-embedding similarity between generated VI audio
-  and the original EN clip; keep only pairs above the same threshold used for
-  PhoMT `cross_lingual_timbre_matched`.
-- **Dedupe**: near-duplicate sentence text within Common Voice is common —
-  dedupe by normalized text before TTS to avoid wasting generation budget.
-- **Split**: hold out ~2k rows (never trained) as the CV validation manifest,
-  stratified by speaker and duration.
-
-Known risk: the Vietnamese source side becomes 100% synthetic. Mitigation is
-to keep real FLEURS rows in the mixture and to monitor the FLEURS validation
-loss separately (never merge domain losses into one number).
-
-## 5. Phases
-
-Run phases strictly sequentially; commit and verify exit gates before starting
-the next phase.
-
-### Phase 1 — Data
-
-1. Build the scripted-EN pipeline (translate → TTS voice-transfer → cache),
-   starting with Common Voice.
-2. Produce new grounded rows passing all Section 4 gates, scaled until total
-   Vietnamese source audio ≈ 40k h (tranche 1: 1k h pipeline validation).
-3. Freeze new manifests: train mixture ≈ PhoMT + scripted-EN rows + FLEURS
-   (single pass, no reuse), plus separate validation manifests (FLEURS,
-   PhoMT holdout, per-corpus holdouts).
-4. Rebalance the mixture so the read-speech domain is no longer a 5% sliver;
-   target roughly 50/50 between PhoMT-style and read-speech data, tunable in
-   Phase 2.
-5. Log unique-row counts and per-row reuse explicitly in the receipt; assert
-   FLEURS reuse = 1× in the manifest validator.
-
-Exit gate: caches pass the smoke/resume check; validation manifests are
-row-disjoint from training; mixture ratios are recorded in the receipt.
-
-### Phase 2 — Supervised SFT (fixed recipe)
-
-1. Initialize from upstream Hibiki-Zero as before.
-2. Batch 16, 280-frame cap, fused AdamW (0.9, 0.95), wd 0.1 — unchanged.
-   Note: at ~40k h the corpus no longer fits the old 27k–36k step budget
-   (~400k steps would be one pass at batch 16); set the step cap and LR
-   schedule after measuring throughput, and keep multi-epoch replay off the
-   table for FLEURS.
-3. Cap the first run at a measured fraction of one epoch (start with the
-   equivalent of the old 27k–36k step budget, then extend while validation
-   improves); no five-epoch replay.
-4. Validate every 3,000 steps on all three manifests; report losses
-   separately; stop after two consecutive regressions on the primary
-   deployment domain.
-5. LR: repeat once at fixed 1e-6 to confirm the early optimum, then compare a
-   decayed variant (1e-6 → 1e-7 before step 27k) in a separate run. Change
-   only one variable per run.
-6. Promotion gate = teacher-forced losses (per domain, no merging) **plus**
-   the deterministic correct-source free-running check on the same 128-row
-   subset: nonempty ≥122/128, EOS ≥116/128, repeated-4-gram ≤12/128, length
-   ratio ≤2.0, no material chrF regression.
-
-Exit gate: a checkpoint that passes the full promotion gate, with FLEURS and
-CV validation losses no longer diverging from training loss.
-
-### Phase 3 — Voice-matched fine-tune (stage-4 analog)
-
-Lightweight version of the paper's natural-pause fine-tune, without training
-a synced-stream TTS:
-
-1. Restrict audio CE to rows with verified timbre match (all CV rows; PhoMT
-   timbre-matched rows after verification). Unmatched PhoMT rows keep text CE
-   only.
-2. Fine-tune the Phase 2 checkpoint on the timbre-matched subset only:
-   ~1–2k steps, batch 16, LR 1e-6 (mirrors the paper's stage-4 budget).
-3. Add speaker-embedding similarity (source VI vs generated EN) to the eval
-   harness alongside English ASR content accuracy.
-
-Exit gate: speaker similarity improves or holds on the CV holdout while
-teacher-forced losses and free-running gates hold on FLEURS/PhoMT.
-
-### Phase 4 — GRPO reinforcement learning (stage-5 analog)
-
-1. Start from the Phase 3 checkpoint. Data: sentence-level aligned rows with
-   reliable references (CV rows are ideal: gold EN text; PhoMT rows usable).
-2. Sample G=4 free-running generations per input (temperature 0.8, top-k 250,
-   both streams — same decoding as `training/finetune/eval.py`).
-3. Process reward: r_t = (1−α)·BLEU(partial text at t, reference prefix) +
-   α·BLEU(full text, reference), α=0.4, rewards every 8 input words.
-4. GRPO without KL regularization; batch 32, group 4, LR 2e-7, start with
-   ~500–1000 updates (paper used 2000; scale to measured stability), evaluate
-   every 10·τ updates, select by quality/latency trade-off.
-5. Keep the free-running promotion gates from Phase 2 as hard filters on any
-   promoted checkpoint.
-
-Exit gate: BLEU/chrF improve on all three holdouts without worse EOS,
-repetition, or length ratio, and speaker similarity holds.
-
-### Sequencing rationale
-
-- Phase 1 first: RL on a weak base rewards noise; the paper's RL worked
-  because the SFT base was already strong. Data is also the longest-lead item.
-- Phase 2 fixes stopping/selection so we stop confusing "more training" with
-  "better model" and get a clean base for later phases.
-- Phase 3 is cheap and directly targets voice preservation before RL locks in
-  a policy.
-- Phase 4 attacks the exposure gap in the regime the model actually runs in —
-  this is the paper's answer to exactly the repetition/EOS failures measured
-  in `step135k-check.md`.
-
-## 6. Success criteria (parity with upstream languages)
-
-Measured on the three held-out manifests with the same decoding config as the
-paper's inference (temperature 0.8, top-k 250):
-
-1. Teacher-forced: content and audio losses on every domain stop diverging
-   from training loss across the whole run.
-2. Free-running: chrF and BLEU on VI→EN within reach of the paper's reported
-   per-language spread; EOS found ≥90%; repeated-4-gram outputs ≤10%; mean
-   length ratio ≤2.0.
-3. Voice: speaker-embedding similarity between Vietnamese source and generated
-   English comparable to the paper's cross-lingual speaker-similarity results.
-4. Latency: translation begins before source end (simultaneous behavior), not
-   full-utterance wait.
-
-## 7. Risks
+## Risks
 
 | Risk | Mitigation |
-| --- | --- |
-| Synthetic VI source audio creates an acoustic domain gap vs real speech | 40k h target is met with synthetic sources; keep the 1,392 real FLEURS rows in-mixture (single pass); monitor FLEURS validation separately; consider real-VI data acquisition if FLEURS loss stalls |
-| Machine translation noise propagates into training | Back-translation spot checks; drop suspicious rows; keep PhoMT (human-aligned) as translation anchor |
-| TTS voice transfer imperfect on some CV speakers | Speaker-embedding threshold gate; drop failing speakers rather than rows silently |
-| GRPO compute cost on a 3B multistream model | Small update budget first (500–1000); G=4 as in paper; reward computed on text stream only |
-| RL destabilizes the Phase 2/3 gains | LR 2e-7, hard promotion gates, keep best pre-RL checkpoint as fallback artifact |
+|---|---|
+| TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
+| Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
+| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi encoder calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone |
+| Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; streams longer than 75 s in SFT; reset the session in silence if needed |
+| Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |
