@@ -1,8 +1,8 @@
 """Shared training and evaluation logic for Vietnamese full-model SFT.
 
-This module owns device helpers, the cached-shard dataset, exact full-model
-checkpoint I/O, teacher-forced losses, autoregressive generation, text metrics,
-and correct-source generation health diagnostics.
+This module owns device helpers, exact full-model checkpoint I/O, teacher-forced
+losses, autoregressive generation, text metrics, and correct-source generation
+health diagnostics. Training streams are built in `streams.py`.
 
 It runs on CUDA in the environment that `training/h100.sh setup` builds.
 """
@@ -16,6 +16,7 @@ import random
 import re
 import time
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,7 @@ import torch
 from moshi.models import loaders
 from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 from training.finetune.hibiki_helpers import (
     audio_read,
@@ -35,7 +36,7 @@ from training.finetune.hibiki_helpers import (
     get_lmgen,
     stack_and_pad_audio,
 )
-from training.paths import CACHE_FORMAT, repo_display_path, require_file, resolve_repo_path
+from training.paths import repo_display_path, require_file, resolve_repo_path
 
 
 def ascii_text(text: str) -> str:
@@ -125,127 +126,6 @@ enable_causal_sdpa()
 
 
 # --------------------------------------------------------------------------- #
-# Cached-shard dataset / loader
-# --------------------------------------------------------------------------- #
-class CachedCodeDataset(Dataset):
-    """Grounded cache rows from one or more directories, optionally length-sorted."""
-
-    def __init__(
-        self,
-        cache_dir: Path | list[Path],
-        sort_by_length: bool,
-        max_samples: int,
-        max_frames: int = 0,
-    ):
-        self.samples: list[dict[str, Any]] = []
-        self.frame_rate: float | None = None
-        dropped = 0
-        cache_dirs = [cache_dir] if isinstance(cache_dir, Path) else list(cache_dir)
-        for shard_path in [p for d in cache_dirs for p in sorted(d.glob("shard_*.pt"))]:
-            payload = torch.load(shard_path, map_location="cpu")
-            if payload.get("format") != CACHE_FORMAT:
-                raise RuntimeError(f"Unsupported cache format in {shard_path}")
-            frame_rate = float(payload["frame_rate"])
-            if self.frame_rate is None:
-                self.frame_rate = frame_rate
-            elif frame_rate != self.frame_rate:
-                raise RuntimeError(
-                    f"Cache frame-rate mismatch in {shard_path}: {frame_rate} != {self.frame_rate}"
-                )
-            for sample in payload["samples"]:
-                codes = sample["codes"]
-                if codes.ndim != 2:
-                    raise RuntimeError(f"{shard_path} id={sample.get('id')} codes must be [K,T]")
-                if max_frames and codes.shape[1] > max_frames:
-                    dropped += 1
-                    continue
-                self.samples.append(
-                    {
-                        "id": str(sample["id"]),
-                        # int32 in host RAM halves the footprint; collate_cached casts
-                        # to long on batch assembly.
-                        "codes": codes.to(torch.int32),
-                        "frames": int(codes.shape[1]),
-                        "source_frames": int(sample["vi_frames"]),
-                    }
-                )
-        if not self.samples:
-            raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
-        if max_frames and dropped:
-            print(f"[dataset] dropped {dropped} samples over {max_frames} frames; kept {len(self.samples)}")
-        if sort_by_length:
-            self.samples.sort(key=lambda sample: sample["frames"])
-        if max_samples:
-            self.samples = self.samples[:max_samples]
-
-    def shuffle_batch_order(self, batch_size: int, seed: int = 1234) -> None:
-        """Shuffle length-sorted samples in whole-batch blocks.
-
-        Batches stay near-uniform length (minimal padding, few shapes) but
-        the epoch is no longer an ascending-length curriculum. A short final
-        block stays last so every loader batch is exactly one block.
-        Deterministic, so the resume batch skip still works.
-        """
-        blocks = [self.samples[i : i + batch_size] for i in range(0, len(self.samples), batch_size)]
-        tail = blocks.pop() if blocks and len(blocks[-1]) < batch_size else []
-        random.Random(seed).shuffle(blocks)
-        self.samples = [sample for block in blocks for sample in block] + tail
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        return self.samples[index]
-
-    def exposure(self) -> dict[str, float | int]:
-        source_frames = sum(sample["source_frames"] for sample in self.samples)
-        return {
-            "samples": len(self.samples),
-            "assembled_frames": sum(sample["frames"] for sample in self.samples),
-            "source_frames": source_frames,
-            "source_hours": source_frames / float(self.frame_rate) / 3600,
-        }
-
-
-# Pad each batch's frame length up to a multiple of this so compiled kernels see a
-# few shapes instead of one per raw length, balancing padding against reuse.
-# Loss-neutral: extra frames are -1 == zero_token_id, masked out of both CE terms
-# (see LMModel.forward logits_mask).
-FRAME_BUCKET = 16
-
-
-def collate_cached(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    codebooks = int(samples[0]["codes"].shape[0])
-    max_frames = max(int(sample["codes"].shape[1]) for sample in samples)
-    max_frames = ((max_frames + FRAME_BUCKET - 1) // FRAME_BUCKET) * FRAME_BUCKET
-    batch = torch.full((len(samples), codebooks, max_frames), -1, dtype=torch.long)
-    ids: list[str] = []
-    for index, sample in enumerate(samples):
-        codes = sample["codes"]
-        batch[index, :, : codes.shape[1]] = codes
-        ids.append(sample["id"])
-    return {
-        "codes": batch,
-        "ids": ids,
-        "frames": torch.tensor([sample["frames"] for sample in samples]),
-        "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
-    }
-
-
-def make_cached_dataloader(
-    dataset: CachedCodeDataset, batch_size: int, num_workers: int
-) -> DataLoader:
-    """Batch rows in dataset order; callers fix the order up front."""
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        collate_fn=collate_cached,
-    )
-
-
-# --------------------------------------------------------------------------- #
 # Full-model checkpoint I/O
 # --------------------------------------------------------------------------- #
 def enable_full_finetune(model: Any) -> None:
@@ -293,79 +173,20 @@ def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
 # --------------------------------------------------------------------------- #
 # Teacher-forced losses
 # --------------------------------------------------------------------------- #
-def masked_cross_entropy(logits: Any, targets: Any, mask: Any) -> tuple[Any, Any]:
-    # Sum/clamp form keeps everything on-GPU: no host sync mid-forward (the old
-    # int(mask.sum().cpu()) stalled the CUDA pipeline twice per micro-batch).
-    # Empty mask -> sum CE is 0.0, clamp avoids 0/0. Token count is a tensor;
-    # callers int() it only at log/eval time.
-    token_count = mask.sum()
-    loss_sum = torch.nn.functional.cross_entropy(
-        logits[mask].float(), targets[mask].long(), reduction="sum"
-    )
-    return loss_sum / token_count.clamp(min=1), token_count
+@dataclass(frozen=True)
+class LossWeights:
+    """Kyutai's moshi-finetune weighting: audio codebook 0 (semantic) counts `first_codebook`
+    times an acoustic codebook and a text PAD `text_pad` times a word token, each within its own
+    weighted mean; the audio and text means are then added with weights `audio` and `text`."""
+
+    audio: float = 1.0
+    text: float = 1.0
+    first_codebook: float = 100.0
+    text_pad: float = 0.5
 
 
-def text_supervision_mask(base_mask: Any, targets: Any, pad_id: int, pad_mode: str) -> Any:
-    if pad_mode == "all":
-        return base_mask
-    if pad_mode != "prefix":
-        raise ValueError(f"Unsupported text PAD mode: {pad_mode}")
-    non_pad = targets != pad_id
-    seen_text = non_pad.long().cumsum(dim=-1) > 0
-    prefix_pad = (targets == pad_id) & ~seen_text
-    return base_mask & (non_pad | prefix_pad)
-
-
-def combine_text_losses(
-    content_loss: Any,
-    pad_loss: Any,
-    pad_loss_weight: float,
-) -> Any:
-    return (content_loss + pad_loss_weight * pad_loss) / (1.0 + pad_loss_weight)
-
-
-def balanced_text_cross_entropy(
-    logits: Any,
-    targets: Any,
-    mask: Any,
-    pad_id: int,
-    pad_loss_weight: float,
-) -> dict[str, Any]:
-    """Keep PAD pressure independent of the number of PAD frames."""
-    token_count = mask.sum()
-    selected_targets = targets[mask].long()
-    token_losses = torch.nn.functional.cross_entropy(
-        logits[mask].float(), selected_targets, reduction="none"
-    )
-    selected_pad = selected_targets == pad_id
-    selected_content = ~selected_pad
-    content_mask = mask & (targets != pad_id)
-    first_content_mask = content_mask & (content_mask.long().cumsum(dim=-1) == 1)
-    selected_first_content = first_content_mask[mask]
-
-    pad_tokens = selected_pad.sum()
-    content_tokens = selected_content.sum()
-    first_content_tokens = selected_first_content.sum()
-    pad_loss = token_losses[selected_pad].sum() / pad_tokens.clamp(min=1)
-    content_loss = token_losses[selected_content].sum() / content_tokens.clamp(min=1)
-    first_content_loss = token_losses[selected_first_content].sum() / first_content_tokens.clamp(
-        min=1
-    )
-    loss = combine_text_losses(
-        content_loss,
-        pad_loss,
-        pad_loss_weight,
-    )
-    return {
-        "loss": loss,
-        "tokens": token_count,
-        "pad_loss": pad_loss,
-        "pad_tokens": pad_tokens,
-        "content_loss": content_loss,
-        "content_tokens": content_tokens,
-        "first_content_loss": first_content_loss,
-        "first_content_tokens": first_content_tokens,
-    }
+# Each component's loss sum and the token count or weight it is divided by.
+LOSS_SUMS = ("audio", "semantic", "acoustic", "text", "content", "pad")
 
 
 def batch_condition_tensors(lm: Any, model_type: str, batch_size: int) -> Any | None:
@@ -374,48 +195,70 @@ def batch_condition_tensors(lm: Any, model_type: str, batch_size: int) -> Any | 
     return get_condition_tensors(model_type, lm, batch_size=batch_size, cfg_coef=1.0)
 
 
+def loss_means(sums: dict[str, Any], weights: LossWeights) -> dict[str, Any]:
+    """Losses from `<name>_sum` / `<name>_n`, as tensors in training or floats in evaluation."""
+
+    def mean(name: str) -> Any:
+        total, count = sums[f"{name}_sum"], sums[f"{name}_n"]
+        if isinstance(count, torch.Tensor):
+            return total / count.clamp(min=1)
+        return total / count if count else 0.0
+
+    audio_loss = mean("audio")
+    text_loss = mean("text")
+    return {
+        "loss": weights.audio * audio_loss + weights.text * text_loss,
+        "audio_loss": audio_loss,
+        "semantic_loss": mean("semantic"),
+        "acoustic_loss": mean("acoustic"),
+        "text_loss": text_loss,
+        "content_text_loss": mean("content"),
+        "pad_text_loss": mean("pad"),
+    }
+
+
 def compute_batch_losses(
     lm: Any,
     codes: Any,
     condition_tensors: Any | None,
-    audio_loss_weight: float,
-    text_loss_weight: float,
-    text_pad_loss_weight: float = 0.05,
-    text_pad_mode: str = "prefix",
+    weights: LossWeights,
     return_output: bool = False,
 ) -> dict[str, Any]:
+    """Teacher-forced losses of one batch, with every component's sum and count beside them so
+    evaluation can aggregate exactly. Positions holding -1 are outside the masks."""
     output = lm(codes, condition_tensors=condition_tensors)
-    audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
-    text_targets = codes[:, :1]
-    audio_loss, audio_tokens = masked_cross_entropy(output.logits, audio_targets, output.mask)
-    text_mask = text_supervision_mask(
-        output.text_mask, text_targets, lm.text_padding_token_id, text_pad_mode
+    audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q][output.mask]
+    audio_ce = torch.nn.functional.cross_entropy(
+        output.logits[output.mask].float(), audio_targets, reduction="none"
     )
-    text_losses = balanced_text_cross_entropy(
-        output.text_logits,
-        text_targets,
-        text_mask,
-        lm.text_padding_token_id,
-        text_pad_loss_weight,
+    codebook = torch.arange(lm.dep_q, device=codes.device)[None, :, None].expand_as(output.mask)
+    semantic = codebook[output.mask] == 0
+    audio_weight = torch.where(semantic, weights.first_codebook, 1.0)
+    text_targets = codes[:, :1][output.text_mask]
+    text_ce = torch.nn.functional.cross_entropy(
+        output.text_logits[output.text_mask].float(), text_targets, reduction="none"
     )
-    text_loss = text_losses["loss"]
-    loss = audio_loss_weight * audio_loss + text_loss_weight * text_loss
-    result = {
-        "loss": loss,
-        "audio_loss": audio_loss,
-        "text_loss": text_loss,
-        "audio_tokens": audio_tokens,
-        "text_tokens": text_losses["tokens"],
-        "pad_text_loss": text_losses["pad_loss"],
-        "pad_text_tokens": text_losses["pad_tokens"],
-        "content_text_loss": text_losses["content_loss"],
-        "content_text_tokens": text_losses["content_tokens"],
-        "first_content_loss": text_losses["first_content_loss"],
-        "first_content_tokens": text_losses["first_content_tokens"],
+    pad = text_targets == lm.text_padding_token_id
+    text_weight = torch.where(pad, weights.text_pad, 1.0)
+    # Sums and counts stay on the GPU: no host sync mid-step.
+    sums = {
+        "audio_sum": (audio_weight * audio_ce).sum(),
+        "audio_n": audio_weight.sum(),
+        "semantic_sum": audio_ce[semantic].sum(),
+        "semantic_n": semantic.sum(),
+        "acoustic_sum": audio_ce[~semantic].sum(),
+        "acoustic_n": (~semantic).sum(),
+        "text_sum": (text_weight * text_ce).sum(),
+        "text_n": text_weight.sum(),
+        "content_sum": text_ce[~pad].sum(),
+        "content_n": (~pad).sum(),
+        "pad_sum": text_ce[pad].sum(),
+        "pad_n": pad.sum(),
     }
+    result = {**sums, **loss_means(sums, weights)}
     if return_output:
-        # Only for eval: keeping logits alive an extra step in the train loop
-        # would cost ~1 GB on a full-VRAM box.
+        # Only for evaluation: keeping logits alive an extra step in the train loop costs
+        # ~1 GB on a full-VRAM box.
         result["output"] = output
     return result
 
@@ -425,35 +268,15 @@ def evaluate_teacher_forced(
     dataloader: DataLoader,
     device: torch.device,
     model_type: str,
-    audio_loss_weight: float,
-    text_loss_weight: float,
+    weights: LossWeights,
     max_batches: int = 0,
-    text_pad_mode: str = "prefix",
-    text_pad_loss_weight: float = 0.05,
 ) -> dict[str, float | int]:
+    """Corpus-level teacher-forced losses and text accuracies over `dataloader`."""
     was_training = bool(lm.training)
     lm.eval()
     condition_cache: dict[int, Any | None] = {}
-    totals = {
-        "audio_loss_sum": 0.0,
-        "audio_tokens": 0,
-        "text_tokens": 0,
-        "batches": 0,
-        "samples": 0,
-        "max_frames": 0,
-        "max_padded_frames": 0,
-        "content_loss_sum": 0.0,
-        "content_correct": 0,
-        "content_tokens": 0,
-        "pad_loss_sum": 0.0,
-        "pad_correct": 0,
-        "pad_tokens": 0,
-        "first_content_loss_sum": 0.0,
-        "first_content_tokens": 0,
-        "first_content_margin_sum": 0.0,
-        "silence_sum": 0.0,
-        "silence_count": 0,
-    }
+    totals = {f"{name}_{part}": 0.0 for name in LOSS_SUMS for part in ("sum", "n")}
+    counts = {"batches": 0, "streams": 0, "max_frames": 0, "content_correct": 0, "pad_correct": 0}
     with torch.no_grad():
         for batch_index, batch in enumerate(dataloader):
             if max_batches and batch_index >= max_batches:
@@ -462,103 +285,36 @@ def evaluate_teacher_forced(
             batch_size = int(codes.shape[0])
             if batch_size not in condition_cache:
                 condition_cache[batch_size] = batch_condition_tensors(lm, model_type, batch_size)
-            losses = compute_batch_losses(
-                lm, codes, condition_cache[batch_size], audio_loss_weight, text_loss_weight,
-                text_pad_loss_weight=text_pad_loss_weight,
-                text_pad_mode=text_pad_mode,
-                return_output=True,
+            result = compute_batch_losses(
+                lm, codes, condition_cache[batch_size], weights, return_output=True
             )
-            output = losses.pop("output")
-            audio_tokens = int(losses["audio_tokens"])
-            text_tokens = int(losses["text_tokens"])
-            totals["audio_loss_sum"] += float(losses["audio_loss"].detach().cpu()) * audio_tokens
-            totals["audio_tokens"] += audio_tokens
-            totals["text_tokens"] += text_tokens
-            component_keys = {
-                "content": ("content_text_loss", "content_text_tokens"),
-                "pad": ("pad_text_loss", "pad_text_tokens"),
-                "first_content": ("first_content_loss", "first_content_tokens"),
-            }
-            for prefix, (loss_key, count_key) in component_keys.items():
-                count = int(losses[count_key])
-                totals[f"{prefix}_loss_sum"] += float(losses[loss_key].detach().cpu()) * count
-                totals[f"{prefix}_tokens"] += count
-            totals["batches"] += 1
-            totals["samples"] += batch_size
-            totals["max_frames"] = max(totals["max_frames"], int(batch["frames"].max()))
-            totals["max_padded_frames"] = max(
-                totals["max_padded_frames"], int(codes.shape[-1])
-            )
-            # Diagnostics for content quality, PAD behavior, and the critical
-            # PAD-to-first-content transition.
-            text_targets = codes[:, :1]
-            pad_id = lm.text_padding_token_id
-            content_mask = output.text_mask & (text_targets != pad_id)
-            content_logits = output.text_logits[content_mask].float()
-            content_targets = text_targets[content_mask].long()
-            if content_targets.numel():
-                totals["content_correct"] += int((content_logits.argmax(-1) == content_targets).sum())
-            supervised_text_mask = text_supervision_mask(
-                output.text_mask, text_targets, pad_id, text_pad_mode
-            )
-            pad_mask = supervised_text_mask & (text_targets == pad_id)
-            pad_logits = output.text_logits[pad_mask].float()
-            if pad_logits.shape[0]:
-                totals["pad_correct"] += int((pad_logits.argmax(-1) == pad_id).sum())
-            first_content = content_mask & (content_mask.long().cumsum(-1) == 1)
-            first_logits = output.text_logits[first_content].float()
-            if first_logits.shape[0]:
-                totals["silence_sum"] += float(first_logits.softmax(-1)[:, pad_id].sum())
-                first_targets = text_targets[first_content].long()
-                target_logits = first_logits.gather(1, first_targets[:, None]).squeeze(1)
-                totals["first_content_margin_sum"] += float(
-                    (target_logits - first_logits[:, pad_id]).sum()
-                )
-                totals["silence_count"] += int(first_logits.shape[0])
-
+            output = result.pop("output")
+            for key in totals:
+                totals[key] += float(result[key])
+            targets = codes[:, :1][output.text_mask]
+            correct = output.text_logits[output.text_mask].argmax(-1) == targets
+            pad = targets == lm.text_padding_token_id
+            counts["content_correct"] += int(correct[~pad].sum())
+            counts["pad_correct"] += int(correct[pad].sum())
+            counts["batches"] += 1
+            counts["streams"] += batch_size
+            counts["max_frames"] = max(counts["max_frames"], int(batch["frames"].max()))
     if was_training:
         lm.train()
-    if not totals["batches"]:
+    if not counts["batches"]:
         raise RuntimeError("Validation dataloader produced no batches.")
-
-    audio_loss = totals["audio_loss_sum"] / totals["audio_tokens"] if totals["audio_tokens"] else 0.0
-    content_tokens = totals["content_tokens"]
-    pad_tokens = totals["pad_tokens"]
-    first_content_tokens = totals["first_content_tokens"]
-    content_loss = totals["content_loss_sum"] / content_tokens if content_tokens else 0.0
-    pad_loss = totals["pad_loss_sum"] / pad_tokens if pad_tokens else 0.0
-    first_content_loss = (
-        totals["first_content_loss_sum"] / first_content_tokens if first_content_tokens else 0.0
-    )
-    text_loss = combine_text_losses(
-        content_loss,
-        pad_loss,
-        text_pad_loss_weight,
-    )
+    content_tokens = int(totals["content_n"])
+    pad_tokens = int(totals["pad_n"])
     return {
-        "loss": audio_loss_weight * audio_loss + text_loss_weight * text_loss,
-        "audio_loss": audio_loss,
-        "text_loss": text_loss,
-        "audio_tokens": totals["audio_tokens"],
-        "text_tokens": totals["text_tokens"],
-        "batches": totals["batches"],
-        "samples": totals["samples"],
-        "max_frames": totals["max_frames"],
-        "max_padded_frames": totals["max_padded_frames"],
-        "content_text_loss": content_loss,
-        "content_acc": totals["content_correct"] / content_tokens if content_tokens else 0.0,
+        **loss_means(totals, weights),
+        "audio_tokens": int(totals["semantic_n"] + totals["acoustic_n"]),
         "content_tokens": content_tokens,
-        "pad_text_loss": pad_loss,
-        "pad_acc": totals["pad_correct"] / pad_tokens if pad_tokens else 0.0,
+        "content_acc": counts["content_correct"] / content_tokens if content_tokens else 0.0,
         "pad_tokens": pad_tokens,
-        "first_content_loss": first_content_loss,
-        "first_content_tokens": first_content_tokens,
-        "first_content_margin": (
-            totals["first_content_margin_sum"] / totals["silence_count"]
-            if totals["silence_count"]
-            else 0.0
-        ),
-        "silence_score": totals["silence_sum"] / totals["silence_count"] if totals["silence_count"] else 0.0,
+        "pad_acc": counts["pad_correct"] / pad_tokens if pad_tokens else 0.0,
+        "batches": counts["batches"],
+        "streams": counts["streams"],
+        "max_frames": counts["max_frames"],
     }
 
 

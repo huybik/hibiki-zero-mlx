@@ -1,10 +1,10 @@
-# GRPO preparation plan (Phase 4 analog)
+# GRPO preparation plan
 
 Preparation for Hibiki-Zero style GRPO reinforcement learning on one H100,
 following arXiv 2602.11072v2 §3.3 (process rewards) and §4.2.5 (RL protocol),
-adapted to this repo's grounded-v2 caches and direct full-model trainer.
+adapted to this repo's grounded-v2 caches, training streams and full-model trainer.
 
-Parent plan: `docs/vi_en_parity_plan.md` Phase 4. This doc defines the WHAT;
+Parent plan: [docs/vi_en_parity_plan.md](vi_en_parity_plan.md) §4. This doc defines the WHAT;
 run phases strictly sequentially, one implementer per phase, commit per phase.
 
 ## 1. What the paper does (verified against the v2 HTML)
@@ -37,19 +37,20 @@ run phases strictly sequentially, one implementer per phase, commit per phase.
 
 | Paper concept | Repo reality |
 | --- | --- |
-| Input sentence boundaries t_i | No VI forced alignment. Split `text_vi` on punctuation; map each sentence end to a source frame proportionally by word count over `vi_frames`. Documented approximation. |
+| Input sentence boundaries t_i | Rollouts run on training streams (`training/finetune/streams.py`), so each cache row's Vietnamese start and end frames are known exactly. Within a row, split `text_vi` on punctuation and map each sentence end proportionally by word count over the row's `vi_frames` (no VI forced alignment). |
 | Reward frames every 8 input words | Every 8 Vietnamese words, same proportional mapping onto source frames. |
-| Gold sentence prefixes y_t | Progressive sentence-prefixes of `text_en` (PhoMT rows are sentence-aligned pairs). Prefix noise is a known risk (paper Exp. A). |
-| Fixed-T rollouts | T = bucketed cap derived from source length + tail (reuse the 280-frame SFT cap logic scaled up; measure VRAM before fixing). `stop_on_eos=False`; PAD/EOS handling exactly as free-running eval. |
+| Gold sentence prefixes y_t | The `text_en` of the stream's rows whose Vietnamese has ended by t, then sentence prefixes within a row. Prefix noise is a known risk (paper Exp. A). |
+| Fixed-T rollouts | T = the stream's frames plus a silent tail (measure VRAM before fixing the stream length). `stop_on_eos=False`; PAD/EOS handling exactly as free-running eval. Streams contain silent stretches; add a penalty on words emitted while the source has been silent longer than the pending translation needs. |
 | Rollout decoding | Reuse the `common.generate_batch` streaming loop (`training/finetune/common.py`) minus output saving, with `lm_gen` config identical to `training/finetune/eval.py` (temp/top-k flags). Resolve the eval.py text_temp=0.4 default vs paper 0.8 before the run; parity plan §6 pins 0.8/250. |
 | Token logprobs for ratios | Rollouts stored as grounded-v2 style code tensors `[1+n_q, T]`; each update re-forwards the batch under grad (bf16 autocast + gradient checkpointing like SFT) to get text + per-codebook audio logprobs. Never backprop through generation. |
 | Batch 32 | 32 groups × G=4 = 128 sequences per update is likely beyond one H100 for a 3B multistream model. Micro-batch the ratio/loss computation with grad accumulation to an effective 32; measure real throughput in Phase B before freezing the horizon. |
-| Data | Sentence-level rows with reliable references. Start from the frozen 719,120-row train receipt (PhoMT-dominant); FLEURS excluded from RL (reuse already rejected there). A dedicated GRPO manifest freezes membership + order, SHA-pinned like the SFT input manifest (`CachedCodeDataset(sample_manifest=...)`). |
-| Init checkpoint | `--init-checkpoint` pointing at a promoted SFT best model (today: `grounded_v2_full_direct_voice_5epoch` best; later: Phase 2/3 checkpoints). Loading path mirrors `common.load_model`. |
+| Data | Streams planned from the `en_speech` cache, whose English is the corpus's gold text, with a seed of their own; rows the SFT run trained on are fine, the evaluation sets in `data/eval/` never enter. |
+| Init checkpoint | `--init-checkpoint` pointing at the promoted checkpoint of the stream-recipe SFT. Loading path mirrors `common.load_model`. |
 
-Expectation setting: our SFT is fully teacher-forced with no delay curriculum,
-so per paper Exp. B this stage mainly sharpens EOS, length control, and
-repetition recovery — exactly the step-135k failure modes — not simultaneity.
+Expectation setting: the SFT draws each row's delay from U[0, 0.5 × its
+Vietnamese duration], leaving the exploration room paper Exp. B requires, so
+this stage can cut latency as well as sharpen EOS, length control and
+repetition recovery (the step-135k failure modes).
 
 ## 3. Phases
 
@@ -102,8 +103,8 @@ step-2 checkpoint reproduces step-3 loss within tolerance.
    `rollout`, `train-grpo`, `resume-grpo`; VRAM monitor as in SFT smoke.
    Its smoke marker and commit gate are tracked separately from the SFT
    smoke so the two launchers never invalidate each other.
-2. Periodic free-running evaluation every 10·τ updates on the three holdout
-   manifests (FLEURS, PhoMT holdout, val128 subset) via the Phase A/B stack:
+2. Periodic free-running evaluation every 10·τ updates on FLEURS-vi dev and
+   MultiMed-ST `select` (`data/eval/`) via the Phase A/B stack:
    BLEU/chrF + the existing health gates in
    `common.generation_health` (`training/finetune/common.py`) as hard promotion
    filters; promote best quality/latency trade-off, never the newest.

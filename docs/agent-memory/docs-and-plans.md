@@ -6,18 +6,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 
 ## Roadmap
 
-- [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md) is the active VI→EN roadmap. Phase 1
-  turns scripted English corpora into Vietnamese-source rows (Claude Sonnet 5.5 translation,
-  then voice-transfer TTS) toward ~40k h. Phase 2 is SFT with per-domain validation, Phase 3 a
-  voice-matched fine-tune, and Phase 4 GRPO. Phases run strictly in order.
-- [docs/grpo_plan.md](../grpo_plan.md) details Phase 4. No GRPO code exists; build it from that
-  plan once SFT passes its promotion gate.
-- The roadmap and GRPO plan still describe a PhoMT + FLEURS training mixture and validation.
-  FLEURS and the PhoMT code are removed; the training pool is `en_speech`
-  ([en-speech-corpus](en-speech-corpus.md)) plus the restored PhoMT cache
-  ([sft-data-caches](sft-data-caches.md#phomt-cache)), with no PhoMT holdout. Its list of
-  candidate English corpora is also outdated: the review of other corpora is in
-  [en-speech-corpus](en-speech-corpus.md#rules).
+- [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md) is the active VI→EN plan (rewritten
+  2026-11-01): Hibiki-Zero 3B from training to the phone, SFT on multi-sentence streams with
+  Kyutai's loss weights, real-Vietnamese evaluation sets, GRPO, an on-device test that decides
+  between shipping the 3B and shrinking it, then q4 and a Swift port of the Hibiki-Zero deltas. It
+  records the decisions with their reasons and the timing the cache teaches.
+- [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage. No GRPO code exists; build it from
+  that plan once SFT passes its promotion gate.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
   ([sft-training](sft-training.md)).
 
