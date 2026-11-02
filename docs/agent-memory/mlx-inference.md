@@ -97,4 +97,7 @@ These rules hold for every MLX model here (the Hibiki LM, VieNeu, Mimi, wav2vec2
   lengths) fill any cap with buffers that are never reused.
 - PyTorch MPS keeps memory per input shape too: Mimi encode at batch 1 over per-clip lengths
   reached 28–30 GB; 16-frame length buckets held it at 8 GB.
-- Watch a run with `footprint -p <pid>` (RSS hides compressed pages) and `sysctl vm.swapusage`.
+- Watch a run with `top -l 1 -pid <pid> -stats mem` (the physical footprint; RSS hides
+  compressed pages) and `sysctl vm.swapusage`. `footprint -p <pid>` reports the same number but
+  can hang system-wide, even on a shell (2026-11-02, for over an hour), so a watchdog that calls
+  it needs a timeout.

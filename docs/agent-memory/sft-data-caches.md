@@ -117,6 +117,11 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
 - Speed is real time on the Mimi audio (both clips plus the delay). It swings ±20% with the
   Mac's other load (a stuck `ANECompilerService`, busy browser tabs, other sessions' builds), so
   compare variants interleaved on the same rows in one process, never one run after another.
+- Heat costs more: at macOS's thermal state "fair" the build ran 120–200x instead of ~240x on the
+  same kind of rows, with the builder alone on the GPU (2026-11-02, a warm morning). Read the
+  state with `osascript -l JavaScript -e 'ObjC.import("Foundation");
+  $.NSProcessInfo.processInfo.thermalState'` (0 nominal, 1 fair, 2 serious, 3 critical);
+  `pmset -g therm` reports nothing at "fair".
 - Interleaved on the same rows (2026-10-28), the builder before → now: `cv27` 101x → 153x,
   `libriheavy` 164x → 225x, with identical rows. Each part counts: the 16 GB MLX cache (4 GB 195x,
   8 GB 209x; Mimi alone over real clips 275x at 1 GB, 399x at 8 GB, ~500x on one repeated
