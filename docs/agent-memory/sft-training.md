@@ -133,16 +133,19 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - `train.py` resumes only from the newest complete pair, and only if `run_config.json`
   matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences, seed, train row
   count, evaluation pairs and rows, and total steps.
-- A pair is saved before its validation. A resume first validates its own step if
-  `val_log.jsonl` lacks it (always on a replacement pod, which has no `val_log.jsonl`), the
-  final step included; a finished run refuses to resume.
+- A pair is saved before its validation, and a validation's log line is written after its
+  promotion. A resume first validates its own step if `val_log.jsonl` lacks it, the final step
+  included; a finished run refuses to resume. A replacement pod has `val_log.jsonl` only if it
+  restored the run's `artifacts/` (synced whenever the training process exits); without it,
+  the resumed step's validation runs again and may promote it on sampling noise.
 - `h100.sh resume` refuses to start unless the local `best.json` is at least as new as the
   recovery repo's newest `best/` marker: a resume without it would promote a worse checkpoint,
   and `hf_sync`, which keeps only the newest remote best, would replace the better one.
 - Checked on the Mac CPU with a tiny random LM (2026-11-02): training, saving, both
   validations, promotion (a lower chrF keeps the promoted checkpoint, a higher one replaces it,
   a run failing the gates promotes none), resumes that rerun a validation cut short mid-run and
-  at the final step with the original numbers, and a finished run refusing to resume. The
+  at the final step with the original numbers, and a finished run refusing to resume on the
+  same pod. The
   launcher's best-checkpoint check was run on fake states.
 - `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
   - `checkpoints/`: on each poll, the newest complete pair if newer than the remote, keeping

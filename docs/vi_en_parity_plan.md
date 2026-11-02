@@ -155,9 +155,10 @@ should send the source EOS at the end of the input, as upstream does; live mode 
    checkpoint selection by free-running chrF inside training, and 30–120 s streams.
 2. Finish the cache build (restarted 2026-11-02 with 70 of the 1,835 main shards and
    `cv-anquach` left, [sft-data-caches](agent-memory/sft-data-caches.md#builds)).
-3. Pod smoke run of the stream recipe: a few thousand steps with a short `--val-every`, to check
-   that the loss falls and PAD accuracy rises, that one validation's translations have sane
-   length and EOS, and how long a validation takes. The trainer has run only on the Mac CPU.
+3. Pod smoke run of the stream recipe: a few thousand steps with a short `--save-every` and
+   `--val-every`, to check that the loss falls and PAD accuracy rises, that one validation's
+   translations have sane length and EOS, and how long a validation takes. The trainer has run
+   only on the Mac CPU.
 4. The full 3B run; then GRPO.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before

@@ -116,6 +116,9 @@ cp "$restore_dir/$run/checkpoints/model_stepNNNNNN.safetensors" "$run_dir/"
 cp "$restore_dir/$run/checkpoints/trainer_stepNNNNNN.pt" "$run_dir/"
 cp "$restore_dir/$run/best/best_stepBBBBBB.safetensors" "$run_dir/"
 cp "$restore_dir/$run/best/best_stepBBBBBB.json" "$run_dir/best.json"
+# Logs exist in $run/artifacts/ once a sync ran after the training process exited; keep them.
+./.venv/bin/hf download "$HIBIKI_HF_REPO" --include "$run/artifacts/*.jsonl" --local-dir "$restore_dir"
+cp "$restore_dir/$run/artifacts/"*.jsonl "$run_dir/"
 find "$restore_dir" -depth -delete
 
 ./training/h100.sh resume "$run_dir/trainer_stepNNNNNN.pt" \
@@ -130,7 +133,9 @@ the same run only:
   identity and commit;
 - if the run has promoted a checkpoint (`RUN_NAME/best/`), it also needs that model and
   marker;
-- a validation the interruption cut short runs again before training continues;
+- a validation the interruption cut short runs again before training continues, and so does
+  the resumed step's validation if the run's logs were not restored (the final sync then
+  replaces the remote logs with the resumed run's only);
 - it cannot extend the stop step or start a different run.
 
 Runs recorded before the `inference/`/`training/` split, such as

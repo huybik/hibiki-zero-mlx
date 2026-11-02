@@ -236,7 +236,7 @@ def promote_best(
     chrf: float,
     out_dir: Path,
     previous: dict[str, Any] | None,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """Promote the checkpoint of `step` if its chrF beats the promoted one's."""
     if previous is not None and chrf <= float(previous["chrf"]):
         return previous
@@ -245,8 +245,10 @@ def promote_best(
         "validation-cadence model checkpoint",
     )
     model_path = out_dir / f"best_step{step:06d}.safetensors"
-    model_path.unlink(missing_ok=True)
-    os.link(checkpoint_path, model_path)
+    # Only the promoted model's link survives startup and promotion, so an existing one is this
+    # checkpoint already (a resume can validate the promoted step again).
+    if not model_path.exists():
+        os.link(checkpoint_path, model_path)
     state = {
         "step": step,
         "model": model_path.name,
@@ -585,10 +587,6 @@ def main() -> None:
         common.write_predictions(eval_dir / "predictions.csv", records)
         healthy, gates = common.generation_health(free_running)
         free_running.update(health_eligible=healthy, health_gates=gates)
-        item = {"step": step, "teacher_forced": teacher_forced, "free_running": free_running}
-        with val_log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(item, sort_keys=True) + "\n")
-        validated.add(step)
         print(
             f"val step={step} loss={teacher_forced['loss']:.4f} "
             f"semantic={teacher_forced['semantic_loss']:.4f} "
@@ -599,9 +597,14 @@ def main() -> None:
             f"eos={free_running['eos_found']}/{free_running['num_predictions']} "
             f"health={'pass' if healthy else 'fail'}"
         )
-        # chrF weighs recall, so overlong output barely lowers it: the gates come first.
+        # chrF weighs recall, so overlong output barely lowers it: the gates come first. Promotion
+        # precedes the log line, which marks the step done for a resume.
         if healthy:
             best_state = promote_best(step, float(free_running["chrf"]), out_dir, best_state)
+        item = {"step": step, "teacher_forced": teacher_forced, "free_running": free_running}
+        with val_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(item, sort_keys=True) + "\n")
+        validated.add(step)
 
     resumed_at_validation = args.val_every and global_step % args.val_every == 0
     if global_step and resumed_at_validation and global_step not in validated:
