@@ -69,7 +69,7 @@ public enum Bench {
                 let offset = (frame % clipFrames) * Audio.frameSize
                 return clip[offset..<(offset + Audio.frameSize)]
             }
-            let out = translator.step(pcm)
+            let out = try translator.step(pcm)
             let wall = seconds(start, DispatchTime.now())
             text += out.text
             try wav.append(out.pcm)

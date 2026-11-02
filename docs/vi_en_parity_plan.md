@@ -54,6 +54,7 @@ grows sentence by sentence.
 | Audio codebook 0 weighted ×100; every text PAD supervised at 0.5 | Kyutai's `moshi-finetune` defaults. Before, codebook 0 was 1/16 of the audio loss and PADs after the first word had no loss, so nothing taught when not to emit a word; the last run's length ratio grew 1.06 → 1.28 → 2.05 |
 | Batches by frame budget; warmup + cosine LR | Attention is ~2.5% of compute at 1,500 frames, so cost tracks frames, not rows; the constant 1e-6 LR kept moving the model after its optimum |
 | Choose checkpoints on real Vietnamese speech | All training and cache-validation speech is VieNeu TTS |
+| Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
 
@@ -130,8 +131,10 @@ student afterwards.
    Mimi encoding and decoding 2 frames per call halves its CPU time (hot: 80 → 36 ms a frame);
    the 10-layer step then turns GPU-bound once the GPU throttles (~4 minutes). Halving the
    depformer (each of its 8 slices keeps 3 of 6 layers) holds real time through 10 minutes on
-   the A15 (42 → 79 ms a frame). So the student is 8 codebooks, ~10 main layers and a 3-layer
-   depformer; measure a current phone (A17 Pro / A18) before settling it.
+   the A15 (42 → 79 ms a frame), and Mimi's decoder on the Neural Engine takes it to 40 → 43 ms
+   over minutes 1–8, GPU-bound, until the GPU throttles at ~9 minutes. So the student is 8
+   codebooks, ~10 main layers and a 3-layer depformer; measure a current phone (A17 Pro / A18)
+   before settling it.
 
 ### 6. Quantise and package
 
@@ -140,9 +143,10 @@ at 8 bits (q3 there made the 3B babble, [inference_matrix](vision/reports/infere
 Gate q4 against bf16 on the real-Vietnamese sets. q3 is out everywhere: teacher-forced on
 `leon.wav` it keeps 82% of bf16's text tokens and 71–78% of codebook 0, against q4's 93% and 88%
 ([swift-runtime](agent-memory/swift-runtime.md#device-test)). Ship on MLX Swift: the LM on the
-GPU, Mimi on the CPU beside it; the Neural Engine comes later (fp16 only, static shapes). File
-mode should send the source EOS at the end of the input, as upstream does; live mode never sends
-it.
+GPU; beside it Mimi encodes on the CPU in fp32 and decodes on the Neural Engine
+(`export_mimi_coreml.py`; fp16 on the Neural Engine shifts the encoder's codes, codebook 0 on 6%
+of frames, so the encoder stays on the CPU, [mimi-npu](agent-memory/mimi-npu.md)). File mode
+should send the source EOS at the end of the input, as upstream does; live mode never sends it.
 
 ## Order
 
@@ -158,6 +162,6 @@ it.
 |---|---|
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
-| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained; even 10 layers with Mimi on the CPU throttle past 80 ms after ~3 minutes. Shrink within the family, thin the depformer, cheapen the codec |
+| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes, at the edge once the GPU throttles (~9 minutes). Next: the encoder off the CPU, a current phone |
 | Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; streams longer than 75 s in SFT; reset the session in silence if needed |
 | Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |

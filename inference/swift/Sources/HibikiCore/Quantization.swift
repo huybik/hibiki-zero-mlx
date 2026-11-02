@@ -89,35 +89,20 @@ class ResidualVectorQuantization: Module {
         return stacked(codes, axis: 0)
     }
 
-    func decode(_ indexes: MLXArray) -> MLXArray {
-        let seqLen = indexes.dim(0)
-        var quantized = self.layers[0].decode(indexes[0])
-        for i in 1..<seqLen {
-            quantized = quantized + self.layers[i].decode(indexes[i])
-        }
-        return quantized
-    }
 }
 
 class ResidualVectorQuantizer: Module {
     @ModuleInfo(key: "vq") var vq: ResidualVectorQuantization
     @ModuleInfo(key: "input_proj") var inputProj: Conv1d
-    @ModuleInfo(key: "output_proj") var outputProj: Conv1d
 
-    init(dim: Int, inputDim: Int, outputDim: Int, nQ: Int, bins: Int) {
+    init(dim: Int, inputDim: Int, nQ: Int, bins: Int) {
         self._inputProj.wrappedValue = Conv1d(
             inputChannels: inputDim, outputChannels: dim, kernelSize: 1, bias: false)
-        self._outputProj.wrappedValue = Conv1d(
-            inputChannels: dim, outputChannels: outputDim, kernelSize: 1, bias: false)
         self._vq.wrappedValue = ResidualVectorQuantization(nQ: nQ, dim: dim, codebookSize: bins)
     }
 
     func encode(_ x: MLXArray) -> MLXArray {
         self.vq.encode(inputProj(x)).swappedAxes(0, 1)
-    }
-
-    func decode(_ codes: MLXArray) -> MLXArray {
-        outputProj(self.vq.decode(codes.swappedAxes(0, 1)))
     }
 }
 
@@ -126,12 +111,12 @@ class SplitResidualVectorQuantizer: Module {
     @ModuleInfo(key: "rvq_first") var rvqFirst: ResidualVectorQuantizer
     @ModuleInfo(key: "rvq_rest") var rvqRest: ResidualVectorQuantizer
 
-    init(dim: Int, inputDim: Int, outputDim: Int, nQ: Int, bins: Int) {
+    init(dim: Int, inputDim: Int, nQ: Int, bins: Int) {
         self.nQ = nQ
         self._rvqFirst.wrappedValue = ResidualVectorQuantizer(
-            dim: dim, inputDim: inputDim, outputDim: outputDim, nQ: 1, bins: bins)
+            dim: dim, inputDim: inputDim, nQ: 1, bins: bins)
         self._rvqRest.wrappedValue = ResidualVectorQuantizer(
-            dim: dim, inputDim: inputDim, outputDim: outputDim, nQ: nQ - 1, bins: bins)
+            dim: dim, inputDim: inputDim, nQ: nQ - 1, bins: bins)
     }
 
     func encode(_ x: MLXArray) -> MLXArray {
@@ -141,13 +126,5 @@ class SplitResidualVectorQuantizer: Module {
             codes = concatenated([codes, restCodes], axis: 1)
         }
         return codes
-    }
-
-    func decode(_ codes: MLXArray) -> MLXArray {
-        var quantized = self.rvqFirst.decode(codes[0..., ..<1])
-        if self.nQ > 1 {
-            quantized = quantized + self.rvqRest.decode(codes[0..., 1...])
-        }
-        return quantized
     }
 }

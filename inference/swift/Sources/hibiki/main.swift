@@ -62,7 +62,7 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
                 ? Array(pcm[(frame * Audio.frameSize)..<((frame + 1) * Audio.frameSize)])
                 : [Float](repeating: 0, count: Audio.frameSize)
         }
-        let out = translator.step(input)
+        let out = try translator.step(input)
         frames += out.textTokens.count
         timing += out.timing
         text += out.text

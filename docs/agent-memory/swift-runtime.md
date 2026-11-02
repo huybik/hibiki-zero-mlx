@@ -12,14 +12,15 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   side runs mlx 0.32.4). Build commands are in its [README](../../inference/swift/README.md).
   `swift build` cannot compile MLX's Metal shaders; build with `xcodebuild`.
 - `Sources/HibikiCore/` is the library:
-  - Mimi and the transformer are vendored from
+  - Mimi's encoder and the transformer are vendored from
     [moshi-swift](https://github.com/kyutai-labs/moshi-swift) (MIT, commit `df64ffd`,
-    `LICENSE-moshi-swift`), cut to Mimi's streaming path (`encodeStep`, `decodeStep`) and the
-    transformer layers the LM reuses. Its ring KV cache is replaced by `WindowKVCache`
-    ([chunks](#chunks)).
+    `LICENSE-moshi-swift`), cut to Mimi's streaming encoder (`encodeStep`) and the transformer
+    layers the LM reuses. Its ring KV cache is replaced by `WindowKVCache` ([chunks](#chunks)).
+  - `NeuralDecoder.swift` runs Mimi's decoder on the Neural Engine from the Core ML package
+    `mimi-decoder.mlpackage` in the model directory ([mimi-npu](mimi-npu.md)).
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams), `Translator.swift` (k 80 ms frames per step: the LM on
-    the GPU, Mimi on the CPU beside it), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
+    the GPU, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
     the SentencePiece `.model` protobuf directly) and `Audio.swift`.
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (8 s silence tail,
   stop on text EOS or 12 frames of `<unk>`/`</s>`/`<pad>`, seed 299792458); `bench` runs
@@ -59,9 +60,9 @@ with `LmConfig.from_config_dict`'s defaults and fails on any setting it does not
 - q4 quantizes, as `pipeline.py`, only layers whose input width divides by 32.
 - mlx-swift 0.32 treats every `MLXArray` property of a module as a parameter unless its name
   starts with `_`, so Mimi's derived codebook arrays are `_embedding` and `_c2`.
-  The Mimi checkpoint holds 32 codebooks; `Mimi.load` keeps the 16 in use. `Mimi.resetState`
-  clears every streaming layer, the down/upsampler included, so a reset session starts from
-  edge padding as a fresh rustymimi tokenizer does.
+  The Mimi checkpoint holds 32 codebooks; `Mimi.load` keeps the source stream's 16 and skips
+  the decoder's weights. `Mimi.resetState` clears every streaming layer, the downsampler
+  included, so a reset session starts from edge padding as a fresh rustymimi tokenizer does.
 
 ## Parity
 
@@ -82,11 +83,12 @@ kept):
 
 ## Mimi on the CPU
 
-`Translator.step` starts LM step t on the GPU with `asyncEval`, decodes the audio of step t − 1
-and encodes frame t on the CPU meanwhile, then waits for the LM, as `pipeline.py` overlaps
-rustymimi threads with the LM. An LM step's audio is decoded during the next one, so it comes
-out one step after its text; `flush` returns what is left when the input ends (the CLI's
-`translate` and `Bench` call it). A step can take k frames ([chunks](#chunks)).
+`Translator.step` starts LM step t on the GPU with `asyncEval`, meanwhile decodes the audio of
+step t − 1 on the Neural Engine ([mimi-npu](mimi-npu.md)) and encodes frame t on the CPU, then
+waits for the LM, as `pipeline.py` overlaps rustymimi threads with the LM. An LM step's audio is
+decoded during a later one, so it comes out after its text; `flush` returns what is left when
+the input ends (the CLI's `translate` and `Bench` call it). A step can take k frames
+([chunks](#chunks)).
 
 - One thread drives both devices: mlx-swift 0.32 holds a global lock through every `eval`,
   waiting included, so MLX work on a second thread takes turns with the first.
@@ -99,12 +101,9 @@ out one step after its text; `flush` returns what is left when the input ends (t
   too), so the translator must come before anything else touches MLX; the CLI seeds after
   creating it. The 16-codebook 3B (~2,600 ops a step) does not block either: on the Mac its LM
   start was 14–16 ms at 400, 1,000 and 3,000 ops per buffer. The CPU side cannot be split the
-  same way: `asyncEval` of a ~300-op Mimi graph waits for most of it, so encode and decode run
-  one after the other.
-- MLX's CPU backend needed four changes to Mimi (busy M4 Pro, per frame: decode 206 → 34 ms,
-  encoder transformer 23 → 14 ms):
-  - `ConvTransposed1d` is one matmul plus an overlap-add (kernel = 2 × stride, all Mimi uses);
-    MLX's CPU transposed conv is a naive loop, 35–65 ms per decoder layer.
+  same way: `asyncEval` of a ~300-op Mimi graph waits for most of it.
+- MLX's CPU backend needed three changes to Mimi's encoder (busy M4 Pro: its transformer 23 →
+  14 ms a frame):
   - `ComposedLayerNorm`: MLXFast.layerNorm's CPU fallback is ~8x slower. Only Mimi's
     transformers use `Norm.layerNorm`; the LM's depformer slice norms keep MLXFast.
   - Mimi's transformer linears are stored column-major, so `Linear`'s x · wᵀ hands sgemm a
@@ -113,11 +112,13 @@ out one step after its text; `flush` returns what is left when the input ends (t
     cannot compile CPU kernels (`[Compiled::eval_cpu] CPU compilation not supported on the
     platform`). Never `compile`, or call a compiled MLXNN activation, in code that runs on the
     CPU.
-- On the A15's CPU, Mimi takes 20 ms to encode and 19 to decode a frame alone, 28 and 25 beside
-  the GPU LM, and 35–45 each once the phone is hot.
-- Tried and dropped: rustymimi is no faster (59 / 53 ms per frame on the same busy Mac); decoding
-  on the GPU after the LM and encoding on the CPU matched all-CPU on the 10-layer model (57 ms
-  cold, ~80 hot) but puts 16 ms more on the GPU, which bounds the bigger models.
+- On the A15's CPU, Mimi takes 20 ms to encode a frame alone, 28 beside the GPU LM and 35–45
+  once the phone is hot; 17–19 at 2 frames per call.
+- Tried and dropped: rustymimi is no faster (59 / 53 ms per frame on the same busy Mac);
+  decoding on the GPU puts 16 ms more on the GPU, which bounds the LM; decoding on the CPU in
+  MLX (a matmul-plus-overlap-add transposed conv, as MLX's CPU one is a naive loop at 35–65 ms a
+  layer) took 19–25 ms a frame on the A15, 15–17 at 2 frames per call, and is replaced by the
+  Neural Engine.
 
 ### Chunks
 
@@ -128,8 +129,7 @@ Mimi's per-op overhead dominates and its cost per call grows much slower than it
 chunk cuts its CPU time per frame, for up to (2k − 2) × 80 ms more latency: the first frame of a chunk waits for the rest,
 and the step may take k × 80 ms.
 
-- Busy M4 Pro CPU, Mimi encode / decode per frame: k = 1 26 / 22 ms, 2 19 / 14, 4 16 / 13, 8 11 /
-  10.
+- Busy M4 Pro CPU, Mimi encode per frame: k = 1 26 ms, 2 19, 4 16, 8 11.
 - `WindowKVCache` keeps the last `context − 1` (249) steps and masks each query to the 250 steps
   ending at itself, as Mimi was trained and `mimi_mlx.py` encodes. moshi-swift's ring of 250
   steps let a k-step call overwrite keys its first queries still needed: once the ring was full
@@ -137,9 +137,7 @@ and the step may take k × 80 ms.
   k = 1, 2 and 4 are identical over 800 frames of `leon.wav`.
 - `translate` at `--chunk` 1, 2 and 3 gives the same text word for word up to where k = 1 stops
   (a run stops only at the end of a step, so k ≥ 2 can add up to k − 1 frames: one more word on
-  `leon.wav`), and audio within 1 LSB of 16 bits on 0.2% of samples (float rounding of the
-  different matmul shapes). A review fed mixed chunk sizes (3, 1, 2, 5, …, with a `flush`
-  mid-stream): text tokens identical to k = 1 and audio within 1.2e-6.
+  `leon.wav`); so did a review's mixed chunk sizes (3, 1, 2, 5, …).
 
 ## Speed and memory
 
@@ -197,6 +195,7 @@ always on the frame after a progress line: its on-screen log, a text view one li
   | 10 layers | Mimi on the CPU | 58 | 73 | 85 | real time for ~3 min; 45 s at 10 min |
   | 10 layers | Mimi on the CPU, 2-frame steps | 50 | 53 | 81 | real time for ~4 min; 19 s at 10 min |
   | 10 layers, 3-layer depformer (0.89 GB) | Mimi on the CPU, 2-frame steps | 42 | 44 | 46 | real time through 10 min (79 ms in min 10) |
+  | 10 layers, 3-layer depformer | Mimi encoding on the CPU, decoding on the Neural Engine, 2-frame steps | 40 | 41 | 43 | real time through 10 min (75 ms in min 10) |
   | 14 layers (1.30 GB) | all on the GPU | 84 | 98 | | 27 s at 3 min |
   | 14 layers | Mimi on the CPU | 64 | 94 | 98 | 41 s at 5 min |
   | 28 layers (1.85 GB) | all on the GPU | 105 | 123 | | 76 s at 3 min |
@@ -215,6 +214,13 @@ always on the frame after a progress line: its on-screen log, a text view one li
   takes the 10-layer cut from 1.14 to 0.89 GB. With 2-frame steps it held real time for all 10
   minutes (worst lag 0.54 s): 42 ms a frame cold, 52 by minute 8 with the LM wait at 4–6 ms a
   frame, then the GPU throttled at ~8.5 minutes instead of ~4 and minute 10 ran at 79 ms.
+- With Mimi's decoder on the Neural Engine (2026-11-02) the same cut ran 40 → 43 ms a frame
+  over minutes 1–8 (CPU decoder: 42 → 52) and the GPU throttled at ~9.3 minutes (75 ms in
+  minute 10, worst lag 1.9 s). Per frame, LM start / decode / encode / LM wait: 5.7 / 4.2 / 20.3
+  / 10 ms in minute 1 and 5.8 / 4.2 / 20.4 / 12.6 in minute 8. The decoder holds 4.2 ms hot,
+  and the CPU encode no longer slows either, so the step is GPU-bound throughout. Footprint
+  1,493 MB (200 MB less: the MLX decoder is gone), flat from minute 2 to 5 once each Core ML
+  call runs in an autorelease pool; without one it grew 1.6 MB a minute.
 - Quality of the shrinks, teacher-forced against bf16 on `leon.wav` (share of text / codebook-0
   tokens equal to bf16's): q4 g32 93 / 88%, q4 g64 92 / 85%, q3 g32 82 / 78%, q3 g64 82 / 71%,
   q2 g32 55 / 7%; q4 g64 main with a q3 g64 depformer 92 / 78%; 8 codebooks in bf16 95 / 87%,
