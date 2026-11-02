@@ -11,7 +11,7 @@ VI TTS (done) ─► Mimi cache (finish) ─► SFT 3B ─► GRPO 3B ─► tea
                                             on-device test of upstream Hibiki-Zero 3B q4
                                             ├─ real time on target iPhones ─► ship 3B q4
                                             └─ too slow / hot ─► shrink in the family + distill
-                                                                 (8 codebooks, ~14 layers)
+                                                                 (8 codebooks, ~10–14 layers)
                                                      ─► q4 + Swift runtime (4 Hibiki-Zero deltas)
 ```
 
@@ -54,6 +54,7 @@ grows sentence by sentence.
 | Audio codebook 0 weighted ×100; every text PAD supervised at 0.5 | Kyutai's `moshi-finetune` defaults. Before, codebook 0 was 1/16 of the audio loss and PADs after the first word had no loss, so nothing taught when not to emit a word; the last run's length ratio grew 1.06 → 1.28 → 2.05 |
 | Batches by frame budget; warmup + cosine LR | Attention is ~2.5% of compute at 1,500 frames, so cost tracks frames, not rows; the constant 1e-6 LR kept moving the model after its optimum |
 | Choose checkpoints on real Vietnamese speech | All training and cache-validation speech is VieNeu TTS |
+| Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
 
@@ -111,29 +112,48 @@ student afterwards.
 
 ### 5. The phone model
 
-1. Port the four Hibiki-Zero deltas (`hidden_scale`, grouped-query `kv_repeat`, `rope_concat`,
-   learned per-slice depformer norms) to the Swift runtime (An Quách's Hibiki Edge `HibikiCore`,
-   or `moshi-swift`). The Python fork in `inference/moshi-mlx` is the reference.
-2. Run upstream Hibiki-Zero 3B q4 (FR→EN) on the target iPhones: sustained frame time over
-   10 minutes, memory, heat. This needs no Vietnamese model.
-3. If it holds real time: ship the 3B. If not: drop depformer steps 8–15 (8 codebooks per
-   stream; the depformer's sequential steps halve) and main layers 28 → ~14 initialised from the
-   3B's own, fine-tune, then distil from the teacher on its free-running outputs over the cached
-   Vietnamese codes and unlabeled real Vietnamese audio.
+1. Done (2026-11-01): `inference/swift/` runs Hibiki-Zero in MLX Swift with the four deltas
+   (`hidden_scale`, grouped-query `kv_repeat`, `rope_concat`, per-slice depformer norms),
+   matching the Python runtime ([swift-runtime](agent-memory/swift-runtime.md)).
+2. Measured on an iPhone 13 Pro Max (A15, 6 GB), upstream 3B q4, 10 minutes of audio back to
+   back: it fits in memory (2.8 GB, 1.3 GB to spare) but runs at 135 ms/frame cold and
+   ~200 ms/frame once throttled, against an 80 ms budget; the LM alone is 100 → 153 ms
+   ([swift-runtime](agent-memory/swift-runtime.md#device-test)). Still to measure: a current
+   phone (A17 Pro / A18, 8 GB) before settling the target.
+3. The 3B does not hold real time on the A15, so the shrink branch is on: drop depformer steps
+   8–15 (8 codebooks per stream; the depformer's sequential steps halve) and main layers 28 →
+   ~10–14 initialised from the 3B's own, fine-tune, then distil from the teacher on its
+   free-running outputs over the cached Vietnamese codes and unlabeled real Vietnamese audio.
+   Timed on the A15 with untrained cuts and Mimi on the CPU beside the GPU LM
+   ([swift-runtime](agent-memory/swift-runtime.md#device-test)): 10 layers run at 58 ms/frame
+   cold and hold real time for ~3 minutes, then throttle to ~90 ms; 14 layers 64 → 98 ms; the
+   8-codebook 3B 84 → 137 ms. The phone reaches thermal state "serious" within a minute.
+   Mimi encoding and decoding 2 frames per call halves its CPU time (hot: 80 → 36 ms a frame);
+   the 10-layer step then turns GPU-bound once the GPU throttles (~4 minutes). Halving the
+   depformer (each of its 8 slices keeps 3 of 6 layers) holds real time through 10 minutes on
+   the A15 (42 → 79 ms a frame), and with Mimi's decoder on the Neural Engine the step is
+   GPU-bound at 41 → 44.5 ms for all 10 minutes (an earlier, warmer run throttled at ~9). So
+   the student is 8 codebooks, ~10 main layers and a 3-layer depformer; measure a current
+   phone (A17 Pro / A18) before settling it.
 
 ### 6. Quantise and package
 
 q4 group 32 on transformer linears; embeddings, text head and depformer input/output projections
 at 8 bits (q3 there made the 3B babble, [inference_matrix](vision/reports/inference_matrix.md)).
-Gate q4 against bf16 on the real-Vietnamese sets. Ship on MLX Swift (GPU) with the 3-thread codec
-pipeline; the Neural Engine comes later (fp16 only, static shapes). File mode should send the
-source EOS at the end of the input, as upstream does; live mode never sends it.
+Gate q4 against bf16 on the real-Vietnamese sets. q3 is out everywhere: teacher-forced on
+`leon.wav` it keeps 82% of bf16's text tokens and 71–78% of codebook 0, against q4's 93% and 88%
+([swift-runtime](agent-memory/swift-runtime.md#device-test)). Ship on MLX Swift: the LM on the
+GPU; beside it Mimi encodes on the CPU in fp32 and decodes on the Neural Engine
+(`export_mimi_coreml.py`; fp16 on the Neural Engine shifts the encoder's codes, codebook 0 on 6%
+of frames, so the encoder stays on the CPU, [mimi-npu](agent-memory/mimi-npu.md)). File mode
+should send the source EOS at the end of the input, as upstream does; live mode never sends it.
 
 ## Order
 
 1. Restart the cache build (stopped 2026-11-01 12:08).
 2. Evaluation sets and the stream recipe (this change).
-3. Swift port of the four deltas and the on-device test (in parallel with training).
+3. Swift port of the four deltas and the on-device test: done on the A15 (above); a current
+   phone remains.
 4. Pod run of the stream recipe; then GRPO; then the phone-model branch the device test picks.
 
 ## Risks
@@ -142,5 +162,6 @@ source EOS at the end of the input, as upstream does; live mode never sends it.
 |---|---|
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
-| 3B too slow or hot on phones | Device test before any distillation work; shrink within the family |
+| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi encoder calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone |
+| Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; streams longer than 75 s in SFT; reset the session in silence if needed |
 | Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |
