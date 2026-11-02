@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from training.paths import (
 
 
 def parse_args() -> argparse.Namespace:
+    defaults = common.GenerationConfig()
     parser = argparse.ArgumentParser(
         description="Generate validation outputs with a base or full-SFT model."
     )
@@ -46,17 +48,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ids", default="", help="Comma-separated ids in that order; bypasses --limit.")
     parser.add_argument("--ids-file", type=Path, help="Text file of ids, one per line; bypasses --limit.")
     parser.add_argument(
-        "--gen-duration", type=float, default=0.0, help="Generation seconds. 0 = max source + --tail-s."
+        "--gen-duration",
+        type=float,
+        default=defaults.gen_duration,
+        help="Generation seconds. 0 = max source + --tail-s.",
     )
-    parser.add_argument("--tail-s", type=float, default=8.0, help="Silence tail when gen-duration=0.")
-    parser.add_argument("--audio-temp", type=float, default=0.8)
-    parser.add_argument("--text-temp", type=float, default=0.4)
-    parser.add_argument("--top-k", type=int, default=250)
-    parser.add_argument("--top-k-text", type=int, default=250)
+    parser.add_argument(
+        "--tail-s", type=float, default=defaults.tail_s, help="Silence tail when gen-duration=0."
+    )
+    parser.add_argument("--audio-temp", type=float, default=defaults.audio_temp)
+    parser.add_argument("--text-temp", type=float, default=defaults.text_temp)
+    parser.add_argument("--top-k", type=int, default=defaults.top_k)
+    parser.add_argument("--top-k-text", type=int, default=defaults.top_k_text)
     parser.add_argument(
         "--stop-on-eos",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=defaults.stop_on_eos,
         help="Stop a batch once every row has emitted text EOS.",
     )
     parser.add_argument(
@@ -67,9 +74,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metrics-json", type=Path, help="Metrics JSON path; default <out-dir>/metrics.json.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tag", default="sft")
-    parser.add_argument("--source-column", default="vi_audio")
-    parser.add_argument("--reference-column", default="text_en")
-    parser.add_argument("--id-column", default="id")
+    parser.add_argument("--source-column", default=defaults.source_column)
+    parser.add_argument("--reference-column", default=defaults.reference_column)
+    parser.add_argument("--id-column", default=defaults.id_column)
     return parser.parse_args()
 
 
@@ -102,11 +109,11 @@ def main() -> None:
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    fields = dataclasses.fields(common.GenerationConfig)
+    generation = common.GenerationConfig(
+        **{field.name: getattr(args, field.name) for field in fields}
+    )
     checkpoint_info = common.load_checkpoint_info(args)
-    checkpoint_info.lm_gen_config["temp"] = args.audio_temp
-    checkpoint_info.lm_gen_config["temp_text"] = args.text_temp
-    checkpoint_info.lm_gen_config["top_k"] = args.top_k
-    checkpoint_info.lm_gen_config["top_k_text"] = args.top_k_text
 
     print(f"Loading Mimi on {device} from {repo_display_path(args.mimi_weight)}")
     mimi = checkpoint_info.get_mimi(device=device)
@@ -121,7 +128,7 @@ def main() -> None:
 
     records, metrics = common.run_greedy_eval(
         rows,
-        args,
+        generation,
         args.batch_size,
         mimi,
         lm,

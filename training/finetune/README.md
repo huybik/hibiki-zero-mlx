@@ -8,7 +8,8 @@ the CTC-timed English text.
 
 Modules, run from the repository root as `python -m training.finetune.<module>`:
 
-- `train`: full-model training, best-model promotion, and exact recovery checkpoints.
+- `train`: full-model training, checkpoint promotion on free-running chrF of real Vietnamese
+  speech, and exact recovery checkpoints.
 - `validate`: teacher-forced diagnostics on a cache's validation streams.
 - `eval`: correct-source free-running text/audio evaluation.
 - `streams`: cache rows, stream planning and assembly, frame-budget batches.

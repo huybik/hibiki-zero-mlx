@@ -4,9 +4,11 @@
 Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
 AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
 rows with --seed (`streams.py`) and batched up to --batch-frames padded frames; every epoch
-replays that order. Validation runs on a fixed, seeded stream plan and batch order of the
-validation cache (so --val-batches takes a random subset), and the lowest teacher-forced
-validation loss is promoted to best_stepNNNNNN.safetensors. Resume only from the newest complete
+replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
+and batch order of the validation cache (so --val-batches takes a random subset) and translates
+the --eval-pairs rows of real Vietnamese speech free-running (FLEURS dev by default, as
+`eval.py` does). Of the checkpoints that pass the generation health gates, the one with the
+highest chrF is promoted to best_stepNNNNNN.safetensors. Resume only from the newest complete
 model/trainer pair of the same run.
 """
 from __future__ import annotations
@@ -34,7 +36,7 @@ from training.paths import (
     resolve_repo_path,
 )
 
-BEST_METRIC = "teacher_forced_loss"
+BEST_METRIC = "free_running_chrf"
 # A resumed run must match these run_config.json entries.
 RESUME_KEYS = (
     "cache_dir",
@@ -59,6 +61,8 @@ RESUME_KEYS = (
     "first_codebook_weight",
     "text_pad_weight",
     "val_batches",
+    "eval_pairs",
+    "eval_batch_size",
     "val_every",
     "save_every",
     "keep_checkpoints",
@@ -67,6 +71,7 @@ RESUME_KEYS = (
     "train_streams",
     "val_rows",
     "val_streams",
+    "eval_rows",
     "total_steps",
 )
 LOG_LOSSES = (
@@ -100,7 +105,7 @@ def parse_args() -> argparse.Namespace:
         "--stream-seconds",
         type=float,
         nargs=2,
-        default=[30.0, 75.0],
+        default=list(streams.STREAM_SECONDS),
         metavar=("MIN", "MAX"),
         help="Each stream's length is drawn from this range.",
     )
@@ -128,6 +133,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--val-every", type=int, default=9000)
     parser.add_argument("--val-batches", type=int, default=0, help="0 validates every batch.")
+    parser.add_argument(
+        "--eval-pairs",
+        type=Path,
+        default=Path("data/eval/fleurs-vi/dev.jsonl"),
+        help="Pairs (training.prep.eval_sets) translated free-running at each validation.",
+    )
+    parser.add_argument("--eval-batch-size", type=int, default=16)
     parser.add_argument("--save-every", type=int, default=9000)
     parser.add_argument("--keep-checkpoints", type=int, default=2)
     parser.add_argument("--log-every", type=int, default=10)
@@ -207,7 +219,7 @@ def load_best_state(out_dir: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     state = json.loads(path.read_text(encoding="utf-8"))
-    if set(state) != {"step", "model", "metric", "validation_loss"}:
+    if set(state) != {"step", "model", "metric", "chrf"}:
         raise RuntimeError("Invalid best-checkpoint metadata")
     step = int(state["step"])
     if state["metric"] != BEST_METRIC:
@@ -215,17 +227,20 @@ def load_best_state(out_dir: Path) -> dict[str, Any] | None:
     model = out_dir / str(state["model"])
     if model.name != f"best_step{step:06d}.safetensors" or not model.is_file():
         raise RuntimeError("Best-checkpoint metadata references a missing model")
-    float(state["validation_loss"])
+    float(state["chrf"])
     return state
 
 
 def promote_best(
     step: int,
-    validation_loss: float,
+    chrf: float,
+    healthy: bool,
     out_dir: Path,
     previous: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if previous is not None and validation_loss >= float(previous["validation_loss"]):
+) -> dict[str, Any] | None:
+    """Promote the checkpoint of `step` if it passed the generation health gates with a higher
+    chrF than the promoted one."""
+    if not healthy or (previous is not None and chrf <= float(previous["chrf"])):
         return previous
     checkpoint_path = require_file(
         out_dir / f"model_step{step:06d}.safetensors",
@@ -238,26 +253,30 @@ def promote_best(
         "step": step,
         "model": model_path.name,
         "metric": BEST_METRIC,
-        "validation_loss": validation_loss,
+        "chrf": chrf,
     }
     atomic_write_text(
         json.dumps(state, indent=2, sort_keys=True) + "\n", out_dir / "best.json"
     )
-    if previous is not None:
-        (out_dir / str(previous["model"])).unlink(missing_ok=True)
     for path in out_dir.glob("best_step*.safetensors"):
         if path != model_path:
             path.unlink()
     print(
-        f"Promoted best validation loss={validation_loss:.4f} at step {step} "
+        f"Promoted best chrF={chrf:.2f} at step {step} "
         f"-> {repo_display_path(model_path)}"
     )
     return state
 
 
 def save_checkpoint(
-    model: Any, optimizer: Any, args: argparse.Namespace, step: int, out_dir: Path
+    model: Any,
+    optimizer: Any,
+    args: argparse.Namespace,
+    step: int,
+    out_dir: Path,
+    best_state: dict[str, Any] | None,
 ) -> Path:
+    """Save the model and trainer pair of `step`, recording the checkpoint promoted so far."""
     model_path = out_dir / f"model_step{step:06d}.safetensors"
     trainer_path = out_dir / f"trainer_step{step:06d}.pt"
     clean_incomplete_checkpoints(out_dir)
@@ -273,6 +292,7 @@ def save_checkpoint(
                 "step": step,
                 "optimizer": optimizer.state_dict(),
                 "model": model_path.name,
+                "best_step": None if best_state is None else int(best_state["step"]),
                 "args": {
                     key: str(value) if isinstance(value, Path) else value
                     for key, value in vars(args).items()
@@ -293,7 +313,8 @@ def load_resume_checkpoint(
     resume_path: Path,
     device: torch.device,
     dtype: torch.dtype,
-) -> int:
+) -> tuple[int, int | None]:
+    """Load the pair; returns its step and the step promoted when it was saved."""
     pairs = checkpoint_pairs(resume_path.parent)
     if not pairs or pairs[-1][2].resolve() != resume_path.resolve():
         raise RuntimeError("--resume-checkpoint must be the newest complete pair")
@@ -307,11 +328,11 @@ def load_resume_checkpoint(
                 state[key] = value.to(device=device)
     step = int(checkpoint["step"])
     print(f"Resumed step {step} from {repo_display_path(resume_path)}")
-    return step
+    return step, checkpoint["best_step"]
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    for name in ("epochs", "batch_frames", "max_frames"):
+    for name in ("epochs", "batch_frames", "max_frames", "eval_batch_size"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     for name in ("max_steps", "grad_clip", "val_every", "val_batches", "save_every"):
@@ -360,6 +381,7 @@ def main() -> None:
     args.model_weight = require_file(args.model_weight, "upstream model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
+    args.eval_pairs = require_file(args.eval_pairs, "evaluation pairs")
     if args.resume_checkpoint is not None:
         args.resume_checkpoint = require_file(args.resume_checkpoint, "resume checkpoint")
 
@@ -400,6 +422,17 @@ def main() -> None:
         num_workers=args.num_workers,
     )
     print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows")
+    # Checkpoints are selected on free-running translation, sampled as eval.py samples.
+    generation = common.GenerationConfig(text_only=True)
+    eval_rows = common.read_eval_rows(args.eval_pairs)
+    if not eval_rows:
+        raise RuntimeError(f"No rows in {args.eval_pairs}")
+    common.validate_eval_rows(
+        eval_rows, generation.source_column, generation.reference_column, generation.id_column
+    )
+    for row in eval_rows:
+        require_file(row[generation.source_column], "evaluation audio")
+    print(f"Validation translates {len(eval_rows)} rows of {repo_display_path(args.eval_pairs)}")
 
     batches_per_epoch = len(batches)
     total_steps = args.max_steps or batches_per_epoch * args.epochs
@@ -426,6 +459,8 @@ def main() -> None:
         f"Trainable params: {sum(param.numel() for param in params):,} / "
         f"{sum(param.numel() for param in lm.parameters()):,}"
     )
+    mimi = checkpoint_info.get_mimi(device=device)
+    text_tokenizer = checkpoint_info.get_text_tokenizer()
 
     optimizer = torch.optim.AdamW(
         params,
@@ -438,18 +473,18 @@ def main() -> None:
 
     global_step = 0
     if args.resume_checkpoint is not None:
-        global_step = load_resume_checkpoint(
+        global_step, resumed_best = load_resume_checkpoint(
             lm, optimizer, args.resume_checkpoint, device, dtype
         )
+        # A replacement pod restores the promoted checkpoint from the recovery repo's best/.
+        if resumed_best is not None and (
+            best_state is None or int(best_state["step"]) < resumed_best
+        ):
+            raise RuntimeError(
+                f"Resume requires the checkpoint promoted at step {resumed_best} or a later one"
+            )
     if global_step >= total_steps:
         raise RuntimeError("Resume checkpoint is already at or beyond the requested stop")
-    if (
-        args.resume_checkpoint is not None
-        and args.val_every
-        and global_step >= args.val_every
-        and best_state is None
-    ):
-        raise RuntimeError("Resume requires the previously promoted best checkpoint")
 
     def jsonable(value: Any) -> Any:
         if isinstance(value, Path):
@@ -471,6 +506,7 @@ def main() -> None:
             "best_metric": BEST_METRIC,
             "val_rows": len(val_rows),
             "val_streams": len(val_dataset),
+            "eval_rows": len(eval_rows),
         }
     )
     run_config_path = out_dir / "run_config.json"
@@ -521,9 +557,11 @@ def main() -> None:
     log = empty_log()
     last_log_time = time.time()
 
-    def run_teacher_forced_val(step: int) -> None:
+    def run_validation(step: int) -> None:
         nonlocal best_state
-        metrics = common.evaluate_teacher_forced(
+        # The next step zeroes the gradients anyway; freed now, they leave room for generation.
+        optimizer.zero_grad(set_to_none=True)
+        teacher_forced = common.evaluate_teacher_forced(
             lm,
             val_dataloader,
             device,
@@ -531,16 +569,37 @@ def main() -> None:
             weights,
             args.val_batches,
         )
-        item = {"step": step, **metrics}
+        eval_dir = out_dir / "eval" / f"step{step:06d}"
+        lm.eval()
+        records, free_running = common.run_greedy_eval(
+            eval_rows,
+            generation,
+            args.eval_batch_size,
+            mimi,
+            lm,
+            text_tokenizer,
+            checkpoint_info,
+            eval_dir,
+            args.seed,
+        )
+        lm.train()
+        common.write_predictions(eval_dir / "predictions.csv", records)
+        healthy, gates = common.generation_health(free_running)
+        free_running.update(health_eligible=healthy, health_gates=gates)
+        item = {"step": step, "teacher_forced": teacher_forced, "free_running": free_running}
         with val_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, sort_keys=True) + "\n")
         print(
-            f"val step={step} loss={metrics['loss']:.4f} "
-            f"audio={metrics['audio_loss']:.4f} semantic={metrics['semantic_loss']:.4f} "
-            f"text={metrics['text_loss']:.4f} content={metrics['content_text_loss']:.4f} "
-            f"acc={metrics['content_acc']:.3f} pad_acc={metrics['pad_acc']:.3f}"
+            f"val step={step} loss={teacher_forced['loss']:.4f} "
+            f"semantic={teacher_forced['semantic_loss']:.4f} "
+            f"content={teacher_forced['content_text_loss']:.4f} "
+            f"acc={teacher_forced['content_acc']:.3f} pad_acc={teacher_forced['pad_acc']:.3f} "
+            f"chrf={free_running['chrf']:.2f} bleu={free_running['bleu']:.2f} "
+            f"length_ratio={free_running['mean_length_ratio']:.2f} "
+            f"eos={free_running['eos_found']}/{free_running['num_predictions']} "
+            f"health={'pass' if healthy else 'fail'}"
         )
-        best_state = promote_best(step, float(metrics["loss"]), out_dir, best_state)
+        best_state = promote_best(step, float(free_running["chrf"]), healthy, out_dir, best_state)
 
     while global_step < total_steps:
         lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
@@ -611,13 +670,13 @@ def main() -> None:
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:
-            save_checkpoint(lm, optimizer, args, global_step, out_dir)
+            save_checkpoint(lm, optimizer, args, global_step, out_dir, best_state)
         if args.val_every and global_step % args.val_every == 0:
-            run_teacher_forced_val(global_step)
+            run_validation(global_step)
 
-    save_checkpoint(lm, optimizer, args, global_step, out_dir)
+    save_checkpoint(lm, optimizer, args, global_step, out_dir, best_state)
     if not args.val_every or global_step % args.val_every:
-        run_teacher_forced_val(global_step)
+        run_validation(global_step)
     print(
         f"Saved final full-model checkpoint at step {global_step} "
         f"in {repo_display_path(out_dir)}"

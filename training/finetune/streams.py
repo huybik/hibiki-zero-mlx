@@ -43,6 +43,10 @@ from torch.utils.data import Dataset
 from training.paths import CACHE_FORMAT
 
 FRAME_RATE = 12.5
+# Stream lengths, seconds. Upstream's coarse stage trained on 30-75 s utterances and its RL stage
+# on 120 s sequences; upstream Hibiki-Zero degrades after ~1.6 minutes of input, and a phone hears
+# a stream that goes on.
+STREAM_SECONDS = (30.0, 120.0)
 # Batches pad to a multiple of this many frames, so the model sees few shapes.
 FRAME_BUCKET = 16
 MAX_LEAD = 25  # frames of silence before the first Vietnamese, drawn from [0, 2 s]

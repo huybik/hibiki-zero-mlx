@@ -42,18 +42,18 @@ A ~3 s lag is the realistic target; the paper's RL-tuned Italian adaptation ends
 source. English runs longer than the VieNeu Vietnamese, so streams need source pauses or the lag
 grows sentence by sentence.
 
-## Decisions (2026-11-01)
+## Decisions (2026-11-01, later dates marked)
 
 | Decision | Why |
 |---|---|
 | Stay on Hibiki-Zero 3B; the phone model is the 3B or a smaller copy of it | One tokenizer, codec and runtime. Hibiki-M 1B shares Mimi and the tokenizer but only knows FR→EN |
-| Train on multi-sentence streams of 30–75 s, not single sentences | Upstream's coarse stage trained on 30–75 s utterances; a phone hears a continuous stream |
+| Train on multi-sentence streams of 30–120 s, not single sentences (120 s from 2026-11-02) | Upstream's coarse stage trained on 30–75 s utterances and its RL stage on 120 s; upstream 3B degrades after ~1.6 min of input; a phone hears a continuous stream |
 | Gaps between sentences are silence codes on both sides, sometimes long | Teach "stay quiet while nobody speaks"; the MLX runtime already has to cut the model off in silence (`PAD_STOP`) |
 | Source after its EOS is silence codes, not `-1` | Upstream inference (`add_input_eos`) feeds encoded silence there; `-1` is an empty input the model never sees at inference |
 | Keep the source EOS and text EOS at the end of each stream | Upstream models termination this way and forces the input EOS in offline use; a live stream simply never sends it |
 | Audio codebook 0 weighted ×100; every text PAD supervised at 0.5 | Kyutai's `moshi-finetune` defaults. Before, codebook 0 was 1/16 of the audio loss and PADs after the first word had no loss, so nothing taught when not to emit a word; the last run's length ratio grew 1.06 → 1.28 → 2.05 |
 | Batches by frame budget; warmup + cosine LR | Attention is ~2.5% of compute at 1,500 frames, so cost tracks frames, not rows; the constant 1e-6 LR kept moving the model after its optimum |
-| Choose checkpoints on real Vietnamese speech | All training and cache-validation speech is VieNeu TTS |
+| Choose checkpoints by free-running chrF on real Vietnamese speech, inside training (2026-11-02) | All training and cache-validation speech is VieNeu TTS, and the last run's teacher-forced loss kept improving while its translations got worse |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
@@ -91,18 +91,18 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 
 `training/finetune/train.py` ([sft-training](agent-memory/sft-training.md)):
 
-1. Streams: rows at random (consecutive PhoMT rows of one source chunk stay in order; Libriheavy
-   segment numbers are not reading order and overlap); each row's English placed at its cached
-   delay after its Vietnamese, never before the previous English ends; gaps drawn so the
-   previous English overhangs the next Vietnamese by at most 2 s. That cap binds at the median
-   join, so the source "waits" for the interpreter; watch lag growth on long real speech.
+1. Streams of 30–120 s: rows at random (consecutive PhoMT rows of one source chunk stay in
+   order; Libriheavy segment numbers are not reading order and overlap); each row's English
+   placed at its cached delay after its Vietnamese, never before the previous English ends;
+   gaps drawn so the previous English overhangs the next Vietnamese by at most 2 s. That cap
+   binds at the median join, so the source "waits" for the interpreter; watch lag growth on
+   long real speech.
 2. Loss as above; LR peak 1e-6, 5% warmup, cosine to 0; one pass over the pool.
-3. The trainer promotes the lowest teacher-forced loss on streams of the cache's `validation/`
-   split and keeps only that and the newest two checkpoints. Run `eval.py` on those: FLEURS dev
-   chrF/BLEU as the main metric, MultiMed `select` chrF no more than 1 point below the previously
-   promoted checkpoint's, and the health gates on both (nonempty, EOS, repeated 4-grams, length
-   ratio). If free-running and teacher-forced rankings disagree, as in the last run, add
-   free-running evaluation at each validation step before the full run.
+3. Each validation logs teacher-forced losses on streams of the cache's `validation/` split and
+   translates FLEURS dev free-running. The trainer promotes the checkpoint that passes the health
+   gates (nonempty, EOS, repeated 4-grams, length ratio) with the highest chrF, and keeps it
+   beside the newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
+   chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
 
 ### 4. GRPO
 
@@ -122,8 +122,9 @@ student afterwards.
    phone (A17 Pro / A18, 8 GB) before settling the target.
 3. The 3B does not hold real time on the A15, so the shrink branch is on: drop depformer steps
    8–15 (8 codebooks per stream; the depformer's sequential steps halve) and main layers 28 →
-   ~10–14 initialised from the 3B's own, fine-tune, then distil from the teacher on its
-   free-running outputs over the cached Vietnamese codes and unlabeled real Vietnamese audio.
+   ~10–14 initialised from the 3B's own, and fine-tune it on the streams directly. Only if it
+   falls short of the 3B, distil from the teacher on its free-running outputs over the cached
+   Vietnamese codes and unlabeled real Vietnamese audio.
    Timed on the A15 with untrained cuts and Mimi on the CPU beside the GPU LM
    ([swift-runtime](agent-memory/swift-runtime.md#device-test)): 10 layers run at 58 ms/frame
    cold and hold real time for ~3 minutes, then throttle to ~90 ms; 14 layers 64 → 98 ms; the
@@ -150,11 +151,17 @@ should send the source EOS at the end of the input, as upstream does; live mode 
 
 ## Order
 
-1. Restart the cache build (stopped 2026-11-01 12:08).
-2. Evaluation sets and the stream recipe (this change).
-3. Swift port of the four deltas and the on-device test: done on the A15 (above); a current
-   phone remains.
-4. Pod run of the stream recipe; then GRPO; then the phone-model branch the device test picks.
+1. Done: the evaluation sets and the stream recipe; the Swift port and the A15 device test;
+   checkpoint selection by free-running chrF inside training, and 30–120 s streams.
+2. Finish the cache build (restarted 2026-11-02 with 70 of the 1,835 main shards and
+   `cv-anquach` left, [sft-data-caches](agent-memory/sft-data-caches.md#builds)).
+3. Pod smoke run of the stream recipe: a few thousand steps with a short `--val-every`, to check
+   that the loss falls and PAD accuracy rises, that one validation's translations have sane
+   length and EOS, and how long a validation takes. The trainer has run only on the Mac CPU.
+4. The full 3B run; then GRPO.
+5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
+   directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
+   settling it.
 
 ## Risks
 
@@ -163,5 +170,5 @@ should send the source EOS at the end of the input, as upstream does; live mode 
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
 | 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi encoder calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone |
-| Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; streams longer than 75 s in SFT; reset the session in silence if needed |
+| Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; SFT streams of up to 120 s; reset the session in silence if needed |
 | Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |

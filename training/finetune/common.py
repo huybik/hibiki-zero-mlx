@@ -561,7 +561,7 @@ def save_batch_outputs(
     outputs: list[dict[str, Any]],
     sample_rate: int,
     out_dir: Path,
-    cfg: Any,
+    cfg: GenerationConfig,
     start_index: int,
 ) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
@@ -598,21 +598,36 @@ def save_batch_outputs(
     return records
 
 
+@dataclass(frozen=True)
+class GenerationConfig:
+    """How free-running evaluation reads its rows, how long it generates and how it samples.
+    The defaults are eval.py's, and train.py selects checkpoints with them."""
+
+    source_column: str = "vi_audio"
+    reference_column: str = "text_en"
+    id_column: str = "id"
+    gen_duration: float = 0.0  # seconds; 0 generates the batch's longest source plus tail_s
+    tail_s: float = 8.0
+    stop_on_eos: bool = True
+    text_only: bool = False  # skip decoding and writing the generated audio
+    tag: str | None = None  # appended to every output file's name
+    audio_temp: float = 0.8
+    text_temp: float = 0.4
+    top_k: int = 250
+    top_k_text: int = 250
+
+
 def generate_batch(
     rows: list[dict[str, str]],
     batch_start: int,
-    cfg: Any,
+    cfg: GenerationConfig,
     mimi: Any,
     lm: Any,
     text_tokenizer: Any,
     checkpoint_info: Any,
     out_dir: Path,
 ) -> list[dict[str, str]]:
-    """Greedy autoregressive decode of a batch of source clips.
-
-    `cfg` supplies: source_column, reference_column, id_column, gen_duration,
-    tail_s, stop_on_eos, text_only, tag.
-    """
+    """Sampled autoregressive decode of a batch of source clips."""
     files = [resolve_repo_path(row[cfg.source_column]) for row in rows]
     input_wavs = [audio_read(path, to_sample_rate=mimi.sample_rate, mono=True)[0] for path in files]
     audio_durations = [wav.shape[-1] / mimi.sample_rate for wav in input_wavs]
@@ -621,7 +636,15 @@ def generate_batch(
         raise RuntimeError(f"Source audio is longer than generation duration: {max(audio_durations)}")
 
     batch_wavs = stack_and_pad_audio(input_wavs, max_len=int(gen_duration * mimi.sample_rate))
-    lm_gen = get_lmgen(lm, checkpoint_info, batch_size=batch_wavs.shape[0])
+    lm_gen = get_lmgen(
+        lm,
+        checkpoint_info,
+        batch_size=batch_wavs.shape[0],
+        temp=cfg.audio_temp,
+        temp_text=cfg.text_temp,
+        top_k=cfg.top_k,
+        top_k_text=cfg.top_k_text,
+    )
     codes, warmup_codes = encode_inputs(batch_wavs, mimi, lm_gen, audio_durations)
 
     output_text_tokens: list[Any] = []
@@ -680,7 +703,7 @@ def generate_batch(
 
 def run_greedy_eval(
     rows: list[dict[str, str]],
-    cfg: Any,
+    cfg: GenerationConfig,
     batch_size: int,
     mimi: Any,
     lm: Any,

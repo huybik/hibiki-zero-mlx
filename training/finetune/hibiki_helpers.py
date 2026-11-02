@@ -50,13 +50,21 @@ def stack_and_pad_audio(wavs: list[torch.Tensor], max_len: int | None = None) ->
 
 
 def get_lmgen(
-    lm: LMModel, checkpoint_info: loaders.CheckpointInfo, batch_size: int, cfg_coef: int = 1.0
+    lm: LMModel,
+    checkpoint_info: loaders.CheckpointInfo,
+    batch_size: int,
+    cfg_coef: int = 1.0,
+    **sampling: float,
 ) -> LMGen:
+    """An LMGen with the checkpoint's generation config, `sampling` (temp, top_k, ...) over it."""
     condition_tensors = get_condition_tensors(
         checkpoint_info.model_type, lm, batch_size=batch_size, cfg_coef=cfg_coef
     )
     lm_gen = LMGen(
-        lm, cfg_coef=cfg_coef, condition_tensors=condition_tensors, **checkpoint_info.lm_gen_config
+        lm,
+        cfg_coef=cfg_coef,
+        condition_tensors=condition_tensors,
+        **{**checkpoint_info.lm_gen_config, **sampling},
     )
     return lm_gen
 
