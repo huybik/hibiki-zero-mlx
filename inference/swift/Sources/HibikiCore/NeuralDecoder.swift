@@ -10,7 +10,10 @@ final class NeuralDecoder {
     /// Codebooks per frame, from the model's input shape.
     let codebooks: Int
     private let model: MLModel
-    private let shapes: [String: [Int]]
+    /// Transformer steps per call, steps in the key/value window, half a head's width.
+    private let steps: Int
+    private let window: Int
+    private let halfDim: Int
     /// A new session's state; Core ML never writes to its inputs.
     private let zeros: [String: MLMultiArray]
     private var state: [String: MLMultiArray]
@@ -24,11 +27,16 @@ final class NeuralDecoder {
         let shapes = model.modelDescription.inputDescriptionsByName.compactMapValues {
             $0.multiArrayConstraint?.shape.map(\.intValue)
         }
+        let outputs = model.modelDescription.outputDescriptionsByName
         guard let codes = shapes["codes"], codes.count == 3, codes[2] == 1,
-            ["conv", "keys", "values", "mask", "cos", "sin"].allSatisfy({ shapes[$0] != nil })
+            let keys = shapes["keys"], keys.count == 4, let cos = shapes["cos"], cos.count == 2,
+            ["conv", "values", "mask", "sin"].allSatisfy({ shapes[$0] != nil }),
+            ["pcm", "new_conv", "new_keys", "new_values"].allSatisfy({
+                outputs[$0]?.multiArrayConstraint?.dataType == .float16
+            })
         else { throw HibikiError.unsupported("Mimi decoder model \(url.path)") }
-        self.shapes = shapes
         codebooks = codes[1]
+        (steps, window, halfDim) = (cos[0], keys[2], cos[1])
         zeros = try Dictionary(uniqueKeysWithValues: ["conv", "keys", "values"].map { name in
             let array = try MLMultiArray(shape: shapes[name]!.map(NSNumber.init), dataType: .float16)
             memset(array.dataPointer, 0, array.count * MemoryLayout<Float16>.size)
@@ -65,7 +73,7 @@ final class NeuralDecoder {
         for name in ["conv", "keys", "values"] {
             state[name] = out.featureValue(for: "new_\(name)")!.multiArrayValue!
         }
-        offset += shapes["cos"]![0]
+        offset += steps
         let pcm = out.featureValue(for: "pcm")!.multiArrayValue!
         let stride = pcm.strides.last!.intValue
         return pcm.withUnsafeBufferPointer(ofType: Float16.self) { values in
@@ -77,7 +85,6 @@ final class NeuralDecoder {
     /// Window slot j holds step `offset - window + j`, and the new steps follow it; a query at
     /// step s sees steps s - window ... s that exist.
     private func windowInputs() throws -> (MLMultiArray, MLMultiArray, MLMultiArray) {
-        let (steps, window, halfDim) = (shapes["cos"]![0], shapes["keys"]![2], shapes["cos"]![1])
         let mask = try MLMultiArray(shape: [steps, window + steps].map(NSNumber.init), dataType: .float16)
         let cos = try MLMultiArray(shape: [steps, halfDim].map(NSNumber.init), dataType: .float16)
         let sin = try MLMultiArray(shape: [steps, halfDim].map(NSNumber.init), dataType: .float16)

@@ -7,8 +7,8 @@
 //   Loops INPUT for M minutes (default 10) through `Bench`, paced like a live microphone unless
 //   --unpaced, writes BASE.{jsonl,wav,txt} and prints a per-minute summary.
 //
-// --chunk K feeds K frames per `Translator.step` (default 1): Mimi then encodes and decodes K
-// frames per call, for less CPU time per frame and more latency. The translation is the same,
+// --chunk K feeds K frames per `Translator.step` (default 1): Mimi then encodes K frames per
+// call, for less CPU time per frame and more latency (its decoder runs one frame per call). The translation is the same,
 // but `translate` stops only at the end of a step, up to K - 1 frames after K = 1 would.
 
 import Foundation

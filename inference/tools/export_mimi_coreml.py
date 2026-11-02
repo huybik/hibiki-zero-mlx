@@ -5,11 +5,12 @@ for the Apple Neural Engine: fp16 throughout, fixed shapes, state in and out.
         MODEL_DIR --decoder-codebooks 8
 
 writes MODEL_DIR/mimi-decoder.mlmodelc, one frame per call, which the Swift runtime loads
-(`NeuralDecoder`), and MODEL_DIR/mimi-encoder.mlmodelc, `--encoder-frames` per call, which it
-does not: on the Neural Engine the encoder's codes match fp32 on only 94% of frames in codebook
-0 and ~17% in codebooks 8-15, so Mimi encodes in fp32 on the CPU. Inputs and outputs are named
-as `mimi_step` names them; the host feeds `conv`, `keys` and `values` back (`new_*`), starting
-from zeros, and computes `mask`, `cos`, `sin` and `first` per call as `mimi_step.Inputs.at` does.
+(`NeuralDecoder`). `--encoder-frames K` also writes MODEL_DIR/mimi-encoder.mlmodelc, K frames
+per call, for NPU experiments; the runtime does not use it: on the Neural Engine the encoder's
+codes match fp32 on only 94% of frames in codebook 0 and ~17% in codebooks 8-15, so Mimi encodes
+in fp32 on the CPU. Inputs and outputs are named as `mimi_step` names them; the host feeds
+`conv`, `keys` and `values` back (`new_*`), starting from zeros, and computes `mask`, `cos`,
+`sin` and `first` per call as `mimi_step.Inputs.at` does.
 """
 
 from __future__ import annotations
@@ -44,8 +45,12 @@ def _export(module: torch.nn.Module, inputs: dict[str, tuple[tuple[int, ...], ty
     with tempfile.TemporaryDirectory() as tmp:
         package = Path(tmp) / path.with_suffix(".mlpackage").name
         model.save(str(package))
-        shutil.rmtree(path, ignore_errors=True)
-        ct.models.utils.compile_model(str(package), str(path))
+        compiled = ct.models.utils.compile_model(str(package), str(Path(tmp) / path.name))
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.exists():
+            shutil.rmtree(path)
+        shutil.move(compiled, path)
     print(path)
 
 
@@ -66,26 +71,27 @@ def main() -> None:
     parser.add_argument("out_dir", type=Path, help="the model directory")
     parser.add_argument("--decoder-codebooks", type=int, required=True,
                         help="the LM's dep_q: 16 for upstream Hibiki-Zero, 8 for the 8-codebook cuts")
-    parser.add_argument("--encoder-frames", type=int, default=2, help="frames per encoder call")
+    parser.add_argument("--encoder-frames", type=int,
+                        help="also export the encoder, this many frames per call (unused by the runtime)")
     args = parser.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     torch.set_grad_enabled(False)
     w = ms.load(args.checkpoint)
     state_out = ["new_conv", "new_keys", "new_values"]
 
-    k = args.encoder_frames
-    encoder = ms.EncoderStep(w, k)
-    _export(
-        encoder,
-        {
-            "pcm": ((1, 1, k * ms.FRAME), np.float16),
-            "conv": ((1, encoder.size), np.float16),
-            **_per_call(k),
-            "first": ((1,), np.float16),
-        },
-        ["codes", *state_out],
-        args.out_dir / "mimi-encoder.mlmodelc",
-    )
+    if k := args.encoder_frames:
+        encoder = ms.EncoderStep(w, k)
+        _export(
+            encoder,
+            {
+                "pcm": ((1, 1, k * ms.FRAME), np.float16),
+                "conv": ((1, encoder.size), np.float16),
+                **_per_call(k),
+                "first": ((1,), np.float16),
+            },
+            ["codes", *state_out],
+            args.out_dir / "mimi-encoder.mlmodelc",
+        )
     decoder = ms.DecoderStep(w, 1, args.decoder_codebooks)
     _export(
         decoder,

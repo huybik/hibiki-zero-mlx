@@ -8,7 +8,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Step module](#step-module) · [Core M
 
 ```text
 mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-decoder.mlmodelc ─► NeuralDecoder (Swift, ANE)
-                                   │                        └► mimi-encoder.mlmodelc (not used: fp16 codes drift)
+                                   │                        └► mimi-encoder.mlmodelc (--encoder-frames; unused: fp16 codes drift)
                                    └► later: ONNX ─► QNN (Qualcomm HTP)
 ```
 
@@ -33,10 +33,10 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
 
 ## Core ML
 
-- `export_mimi_coreml.py CHECKPOINT MODEL_DIR --decoder-codebooks N` traces both steps, converts
-  them to fp16 ML programs (iOS 18, CPU and Neural Engine) and compiles them, in ~20 s: the
-  decoder at one frame per call, the encoder at `--encoder-frames` (default 2). N is the LM's
-  `dep_q`; the Swift runtime checks it. The compiled `.mlmodelc` is what an app ships; compiling
+- `export_mimi_coreml.py CHECKPOINT MODEL_DIR --decoder-codebooks N` traces the decoder step at
+  one frame per call, converts it to an fp16 ML program (iOS 18, CPU and Neural Engine) and
+  compiles it, in ~10 s; `--encoder-frames K` adds the encoder for experiments. N is the LM's
+  `dep_q`; the Swift runtime checks it. A new model replaces the old only once it compiled. The compiled `.mlmodelc` is what an app ships; compiling
   at load (`MLModel.compileModel`) left a 93 MB copy in the temporary folder on every launch.
 - `NeuralDecoder` loads the compiled model, reads the codebook count from its input shape and
   keeps the state arrays the model returns as the next call's inputs. `Translator` decodes each
@@ -48,9 +48,9 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
   the Neural Engine and 73 on the CPU (the codebook gathers, the last two convolutions and
   transposed convolutions, three ELUs); the encoder 460 and 122 (its quantizer: argmin,
   codebook matmuls, gathers).
-- M4 Pro Neural Engine, 2 frames per call: decoder 5.2–5.8 ms, encoder 11 ms. In `translate`
-  the decoder costs 2.1 ms a frame, against 14–22 ms for the MLX decoder on the CPU; the text
-  is unchanged (the LM never sees decoded audio).
+- M4 Pro Neural Engine: the encoder takes 11 ms per 2-frame call; in `translate` the decoder
+  costs 3.3–3.8 ms a frame, against 14–22 ms for the MLX decoder on the CPU, and the text is
+  unchanged (the LM never sees decoded audio).
 - A15 (iPhone 13 Pro Max), 10 paced minutes: the decoder costs 6.9 ms a frame (4.2 in 2-frame
   calls), the same hot as cold, against 15–17 ms for the MLX decoder on the CPU; it runs while
   the GPU computes an LM step, and the phone's step is GPU-bound throughout
