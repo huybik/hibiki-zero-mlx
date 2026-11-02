@@ -131,10 +131,10 @@ student afterwards.
    Mimi encoding and decoding 2 frames per call halves its CPU time (hot: 80 → 36 ms a frame);
    the 10-layer step then turns GPU-bound once the GPU throttles (~4 minutes). Halving the
    depformer (each of its 8 slices keeps 3 of 6 layers) holds real time through 10 minutes on
-   the A15 (42 → 79 ms a frame), and Mimi's decoder on the Neural Engine takes it to 40 → 43 ms
-   over minutes 1–8, GPU-bound, until the GPU throttles at ~9 minutes. So the student is 8
-   codebooks, ~10 main layers and a 3-layer depformer; measure a current phone (A17 Pro / A18)
-   before settling it.
+   the A15 (42 → 79 ms a frame), and with Mimi's decoder on the Neural Engine the step is
+   GPU-bound at 41 → 44.5 ms for all 10 minutes (an earlier, warmer run throttled at ~9). So
+   the student is 8 codebooks, ~10 main layers and a 3-layer depformer; measure a current
+   phone (A17 Pro / A18) before settling it.
 
 ### 6. Quantise and package
 
@@ -162,6 +162,6 @@ should send the source EOS at the end of the input, as upstream does; live mode 
 |---|---|
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
-| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes, at the edge once the GPU throttles (~9 minutes). Next: the encoder off the CPU, a current phone |
+| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone |
 | Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; streams longer than 75 s in SFT; reset the session in silence if needed |
 | Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |

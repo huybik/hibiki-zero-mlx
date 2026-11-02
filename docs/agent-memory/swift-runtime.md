@@ -16,8 +16,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
     [moshi-swift](https://github.com/kyutai-labs/moshi-swift) (MIT, commit `df64ffd`,
     `LICENSE-moshi-swift`), cut to Mimi's streaming encoder (`encodeStep`) and the transformer
     layers the LM reuses. Its ring KV cache is replaced by `WindowKVCache` ([chunks](#chunks)).
-  - `NeuralDecoder.swift` runs Mimi's decoder on the Neural Engine from the Core ML package
-    `mimi-decoder.mlpackage` in the model directory ([mimi-npu](mimi-npu.md)).
+  - `NeuralDecoder.swift` runs Mimi's decoder on the Neural Engine, one frame per call, from the
+    compiled Core ML model `mimi-decoder.mlmodelc` in the model directory
+    ([mimi-npu](mimi-npu.md)).
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams), `Translator.swift` (k 80 ms frames per step: the LM on
     the GPU, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
@@ -123,8 +124,9 @@ the input ends (the CLI's `translate` and `Bench` call it). A step can take k fr
 ### Chunks
 
 `Translator.step` takes k whole frames: k LM steps one after another, with Mimi encoding the k
-frames in one call beside the first and decoding the audio of the LM steps finished so far in
-one call beside the last (the step's own last LM step is decoded in the next step). A frame is a few rows per op, so
+frames in one call beside the first and decoding the audio of the LM steps finished so far
+beside the last, one Neural Engine call per frame (the step's own last LM step is decoded in
+the next step). A frame is a few rows per op, so
 Mimi's per-op overhead dominates and its cost per call grows much slower than its length; a
 chunk cuts its CPU time per frame, for up to (2k − 2) × 80 ms more latency: the first frame of a chunk waits for the rest,
 and the step may take k × 80 ms.
@@ -147,7 +149,8 @@ to 80 ms/frame. Without compilation the LM was 3.4x slower: compile the per-laye
 per-slice depformer steps as `Decode.swift` does, each over fixed shapes
 ([mlx-inference](mlx-inference.md#memory)).
 
-Footprint after load is 2.8 GB for the 3B: LM 1.96 GB, Mimi 0.37 GB (fp32), KV cache 0.34 GB (28
+Footprint after load for the 3B: LM 1.96 GB, Mimi's encoder 0.18 GB (fp32, MLX) and its
+decoder 0.09 GB (fp16, Core ML; the MLX decoder had been another 0.15 GB), KV cache 0.34 GB (28
 layers, 3,000 frames, bf16, allocated in full at the first frame), runtime buffers. Warmup runs
 silent frames until Mimi decode has run once, so the first timed frames pay no kernel builds.
 `Translator.Timing` splits a step as the driving thread spends it: LM start (graph build and
@@ -195,7 +198,7 @@ always on the frame after a progress line: its on-screen log, a text view one li
   | 10 layers | Mimi on the CPU | 58 | 73 | 85 | real time for ~3 min; 45 s at 10 min |
   | 10 layers | Mimi on the CPU, 2-frame steps | 50 | 53 | 81 | real time for ~4 min; 19 s at 10 min |
   | 10 layers, 3-layer depformer (0.89 GB) | Mimi on the CPU, 2-frame steps | 42 | 44 | 46 | real time through 10 min (79 ms in min 10) |
-  | 10 layers, 3-layer depformer | Mimi encoding on the CPU, decoding on the Neural Engine, 2-frame steps | 40 | 41 | 43 | real time through 10 min (75 ms in min 10) |
+  | 10 layers, 3-layer depformer | Mimi encoding on the CPU, decoding on the Neural Engine, 2-frame steps | 41 | 43 | 44 | real time through 10 min (44.5 ms in min 10) |
   | 14 layers (1.30 GB) | all on the GPU | 84 | 98 | | 27 s at 3 min |
   | 14 layers | Mimi on the CPU | 64 | 94 | 98 | 41 s at 5 min |
   | 28 layers (1.85 GB) | all on the GPU | 105 | 123 | | 76 s at 3 min |
@@ -214,13 +217,15 @@ always on the frame after a progress line: its on-screen log, a text view one li
   takes the 10-layer cut from 1.14 to 0.89 GB. With 2-frame steps it held real time for all 10
   minutes (worst lag 0.54 s): 42 ms a frame cold, 52 by minute 8 with the LM wait at 4–6 ms a
   frame, then the GPU throttled at ~8.5 minutes instead of ~4 and minute 10 ran at 79 ms.
-- With Mimi's decoder on the Neural Engine (2026-11-02) the same cut ran 40 → 43 ms a frame
-  over minutes 1–8 (CPU decoder: 42 → 52) and the GPU throttled at ~9.3 minutes (75 ms in
-  minute 10, worst lag 1.9 s). Per frame, LM start / decode / encode / LM wait: 5.7 / 4.2 / 20.3
-  / 10 ms in minute 1 and 5.8 / 4.2 / 20.4 / 12.6 in minute 8. The decoder holds 4.2 ms hot,
-  and the CPU encode no longer slows either, so the step is GPU-bound throughout. Footprint
-  1,493 MB (200 MB less: the MLX decoder is gone), flat from minute 2 to 5 once each Core ML
-  call runs in an autorelease pool; without one it grew 1.6 MB a minute.
+- With Mimi's decoder on the Neural Engine (2026-11-02), one frame per call, the same cut ran
+  41.3 → 44.5 ms a frame for all 10 minutes, worst lag 0.11 s, with no throttle step. Per frame,
+  LM start / decode / encode / LM wait: 5.6 / 6.9 / 20.0 / 8.7 ms in minute 1 and 5.8 / 6.9 /
+  20.2 / 11.4 in minute 10. The decoder holds its time hot, and the CPU encode no longer slows
+  either, so the step is GPU-bound throughout. Thermal state "serious" came at 223 s; an
+  earlier run with 2-frame decoder calls reached it at ~110 s and throttled at ~9.3 minutes
+  (75 ms in minute 10), so starting temperature matters as much as the setup. Footprint 1,492
+  MB (200 MB less: the MLX decoder is gone), flat all run once each Core ML call runs in an
+  autorelease pool; without one it grew 1.6 MB a minute.
 - Quality of the shrinks, teacher-forced against bf16 on `leon.wav` (share of text / codebook-0
   tokens equal to bf16's): q4 g32 93 / 88%, q4 g64 92 / 85%, q3 g32 82 / 78%, q3 g64 82 / 71%,
   q2 g32 55 / 7%; q4 g64 main with a q3 g64 depformer 92 / 78%; 8 codebooks in bf16 95 / 87%,

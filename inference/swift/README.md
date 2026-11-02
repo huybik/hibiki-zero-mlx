@@ -3,7 +3,7 @@
 Hibiki-Zero in MLX Swift, for macOS and iOS: the LM runs on the GPU, beside it Mimi encodes on
 the CPU and decodes on the Neural Engine. It runs the same staged model directories as the
 Python runtime (`weights/`, or a `convert_mlx_{q4,bf16}.py` output), plus Mimi's decoder as a
-Core ML package (`mimi-decoder.mlpackage`, made once per model directory, below). Fed the same tokens, it picks the same text token as the
+compiled Core ML model (`mimi-decoder.mlmodelc`, made once per model directory, below). Fed the same tokens, it picks the same text token as the
 Python runtime 99% of the time; sampled runs differ token by token but translate as well ([swift-runtime](../../docs/agent-memory/swift-runtime.md#parity)).
 
 ```text
@@ -36,8 +36,7 @@ minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`. It writes
 Both take `--chunk K` (default 1): K frames per step, so Mimi encodes K frames per call. That
 costs less CPU time per frame and adds up to (2K − 2) × 80 ms of latency. The translation is
 the same, but `translate` stops only at the end of a step, up to K − 1 frames later than with
-K = 1. The decoder package decodes a fixed number of frames per call (`--frames`, default 2),
-whatever K is.
+K = 1. The decoder runs one frame per call on the Neural Engine, whatever K is.
 
 ## iPhone
 
@@ -55,9 +54,9 @@ xcrun devicectl device install app --device $DEVICE \
   ../.build/ios/Build/Products/Release-iphoneos/HibikiBench.app
 cd ../../..   # repo root
 for f in config.json hibiki.q4.safetensors mimi-pytorch-e351c8d8@125.safetensors \
-         tokenizer_spm_48k_multi6_2.model mimi-decoder.mlpackage/Manifest.json \
-         mimi-decoder.mlpackage/Data/com.apple.CoreML/model.mlmodel \
-         mimi-decoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin; do
+         tokenizer_spm_48k_multi6_2.model mimi-decoder.mlmodelc/model.mil \
+         mimi-decoder.mlmodelc/coremldata.bin mimi-decoder.mlmodelc/weights/weight.bin \
+         mimi-decoder.mlmodelc/analytics/coremldata.bin; do
   xcrun devicectl device copy to --device $DEVICE --domain-type appDataContainer \
     --domain-identifier $APP --source weights/$f --destination Documents/model/$f
 done

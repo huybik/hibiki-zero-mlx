@@ -7,8 +7,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Step module](#step-module) · [Core M
 [Precision](#precision) · [Qualcomm](#qualcomm)
 
 ```text
-mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-decoder.mlpackage ─► NeuralDecoder (Swift, ANE)
-                                   │                        └► mimi-encoder.mlpackage (not used: fp16 codes drift)
+mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-decoder.mlmodelc ─► NeuralDecoder (Swift, ANE)
+                                   │                        └► mimi-encoder.mlmodelc (not used: fp16 codes drift)
                                    └► later: ONNX ─► QNN (Qualcomm HTP)
 ```
 
@@ -33,14 +33,17 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
 
 ## Core ML
 
-- `export_mimi_coreml.py CHECKPOINT MODEL_DIR --frames K --decoder-codebooks N` traces both
-  steps and converts them to fp16 ML programs (iOS 18, CPU and Neural Engine), in ~17 s. N is
-  the LM's `dep_q`; the Swift runtime checks it.
-- `NeuralDecoder` compiles the package when the translator loads, reads k and the codebook
-  count from its input shapes, and keeps the state arrays the model returns as the next call's
-  inputs. `Translator` decodes the queued target frames in whole groups of k, so audio waits
-  until k frames are ready; `flush` fills the last group with copies of the last frame and
-  resets the decoder.
+- `export_mimi_coreml.py CHECKPOINT MODEL_DIR --decoder-codebooks N` traces both steps, converts
+  them to fp16 ML programs (iOS 18, CPU and Neural Engine) and compiles them, in ~20 s: the
+  decoder at one frame per call, the encoder at `--encoder-frames` (default 2). N is the LM's
+  `dep_q`; the Swift runtime checks it. The compiled `.mlmodelc` is what an app ships; compiling
+  at load (`MLModel.compileModel`) left a 93 MB copy in the temporary folder on every launch.
+- `NeuralDecoder` loads the compiled model, reads the codebook count from its input shape and
+  keeps the state arrays the model returns as the next call's inputs. `Translator` decodes each
+  finished LM step's frame with one call. Calls of 2 frames cost less per frame (M4 Pro: 5.8 ms
+  a call against 5.1 for one frame), but their groups fell out of step with the translator's
+  steps and held audio back 80 ms, and `flush` had to pad; one frame per call fits beside an LM
+  step on the A15 anyway.
 - Compute plan (`coremltools.models.compute_plan.MLComputePlan`): the decoder runs 453 ops on
   the Neural Engine and 73 on the CPU (the codebook gathers, the last two convolutions and
   transposed convolutions, three ELUs); the encoder 460 and 122 (its quantizer: argmin,
@@ -48,17 +51,21 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
 - M4 Pro Neural Engine, 2 frames per call: decoder 5.2–5.8 ms, encoder 11 ms. In `translate`
   the decoder costs 2.1 ms a frame, against 14–22 ms for the MLX decoder on the CPU; the text
   is unchanged (the LM never sees decoded audio).
-- A15 (iPhone 13 Pro Max), 10 paced minutes: the decoder costs 4.2 ms a frame from cold to
-  throttled, against 15–17 ms (2-frame calls) for the MLX CPU decoder, and the phone's step
-  becomes GPU-bound throughout ([swift-runtime](swift-runtime.md#device-test)).
+- A15 (iPhone 13 Pro Max), 10 paced minutes: the decoder costs 6.9 ms a frame (4.2 in 2-frame
+  calls), the same hot as cold, against 15–17 ms for the MLX decoder on the CPU; it runs while
+  the GPU computes an LM step, and the phone's step is GPU-bound throughout
+  ([swift-runtime](swift-runtime.md#device-test)).
 - Core ML returns autoreleased objects; on the bench's thread, which has no run loop, they piled
   up until it ended (1.6 MB a minute on the phone). `NeuralDecoder.decode` runs each call in an
   `autoreleasepool`.
 
 ## Precision
 
-- Decoder in fp16 on the Neural Engine: 37 dB SNR against moshi's fp32 decode, 40 dB against
-  the former MLX decoder (which used the tanh GELU); far below Mimi's own coding error.
+- Decoder in fp16 on the Neural Engine: against moshi's fp32 decode, 37 dB SNR with 8 codebooks
+  and 35 dB with 16; 40 dB against the former MLX decoder (which used the tanh GELU); far below
+  Mimi's own coding error. A review found the Swift host bit-exact with coremltools' predictions
+  over 800 frames. (`Inputs.at` rounds its float32 tables to fp16 a second time, 1 ulp off
+  Swift's at a few positions, so Python validators drift to ~51 dB from the Swift output.)
 - Encoder in fp16 on the Neural Engine: codes equal fp32 on 94% of frames in codebook 0, 59% in
   1–7 and 17% in 8–15. MLX in fp16 (fp32 accumulation) keeps 99.8, 98 and 95%, so the encoder
   stays on the CPU in fp32. The error enters inside SEANet (1.7% at its output, 4.4% at the

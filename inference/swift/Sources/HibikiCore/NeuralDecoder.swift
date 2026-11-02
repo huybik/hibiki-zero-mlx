@@ -1,15 +1,13 @@
 import CoreML
 import Foundation
 
-/// Mimi's streaming decoder on the Neural Engine: the Core ML package that
-/// `inference/tools/export_mimi_coreml.py` writes from `mimi_step.DecoderStep`. Each call
-/// decodes a fixed number of frames in fp16; the model's state (convolution context and the
-/// transformer's key/value windows) comes back as outputs and goes into the next call, and the
-/// attention mask and RoPE tables are computed here from the step count, as
-/// `mimi_step.Inputs.at` does.
+/// Mimi's streaming decoder on the Neural Engine: the compiled Core ML model that
+/// `inference/tools/export_mimi_coreml.py` writes from `mimi_step.DecoderStep`, one frame per
+/// call in fp16. The model's state (convolution context and the transformer's key/value
+/// windows) comes back as outputs and goes into the next call, and the attention mask and RoPE
+/// tables are computed here from the step count, as `mimi_step.Inputs.at` does.
 final class NeuralDecoder {
-    /// Frames per call and codebooks per frame, from the package's input shapes.
-    let frames: Int
+    /// Codebooks per frame, from the model's input shape.
     let codebooks: Int
     private let model: MLModel
     private let shapes: [String: [Int]]
@@ -22,16 +20,15 @@ final class NeuralDecoder {
     init(url: URL) throws {
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
-        model = try MLModel(contentsOf: MLModel.compileModel(at: url), configuration: config)
+        model = try MLModel(contentsOf: url, configuration: config)
         let shapes = model.modelDescription.inputDescriptionsByName.compactMapValues {
             $0.multiArrayConstraint?.shape.map(\.intValue)
         }
-        guard let codes = shapes["codes"], codes.count == 3,
+        guard let codes = shapes["codes"], codes.count == 3, codes[2] == 1,
             ["conv", "keys", "values", "mask", "cos", "sin"].allSatisfy({ shapes[$0] != nil })
-        else { throw HibikiError.unsupported("Mimi decoder package \(url.path)") }
+        else { throw HibikiError.unsupported("Mimi decoder model \(url.path)") }
         self.shapes = shapes
         codebooks = codes[1]
-        frames = codes[2]
         zeros = try Dictionary(uniqueKeysWithValues: ["conv", "keys", "values"].map { name in
             let array = try MLMultiArray(shape: shapes[name]!.map(NSNumber.init), dataType: .float16)
             memset(array.dataPointer, 0, array.count * MemoryLayout<Float16>.size)
@@ -46,20 +43,18 @@ final class NeuralDecoder {
         state = zeros
     }
 
-    /// 1920 samples at 24 kHz for each of exactly `frames` frames of target codes.
-    func decode(_ targets: [[Int]]) throws -> [Float] {
+    /// 1920 samples at 24 kHz from one frame of target codes.
+    func decode(_ target: [Int]) throws -> [Float] {
         // Core ML returns autoreleased objects, which a thread without a run loop keeps
         // until it ends.
-        try autoreleasepool { try predict(targets) }
+        try autoreleasepool { try predict(target) }
     }
 
-    private func predict(_ targets: [[Int]]) throws -> [Float] {
-        precondition(targets.count == frames && targets.allSatisfy { $0.count == codebooks })
-        let codes = try MLMultiArray(shape: [1, codebooks, frames].map(NSNumber.init), dataType: .int32)
+    private func predict(_ target: [Int]) throws -> [Float] {
+        precondition(target.count == codebooks)
+        let codes = try MLMultiArray(shape: [1, codebooks, 1].map(NSNumber.init), dataType: .int32)
         let ints = codes.dataPointer.bindMemory(to: Int32.self, capacity: codes.count)
-        for (f, target) in targets.enumerated() {
-            for (q, code) in target.enumerated() { ints[q * frames + f] = Int32(code) }
-        }
+        for (q, code) in target.enumerated() { ints[q] = Int32(code) }
         let (mask, cos, sin) = try windowInputs()
         var inputs = state.mapValues { MLFeatureValue(multiArray: $0) }
         inputs["codes"] = MLFeatureValue(multiArray: codes)
@@ -70,7 +65,7 @@ final class NeuralDecoder {
         for name in ["conv", "keys", "values"] {
             state[name] = out.featureValue(for: "new_\(name)")!.multiArrayValue!
         }
-        offset += 2 * frames
+        offset += shapes["cos"]![0]
         let pcm = out.featureValue(for: "pcm")!.multiArrayValue!
         let stride = pcm.strides.last!.intValue
         return pcm.withUnsafeBufferPointer(ofType: Float16.self) { values in
@@ -79,8 +74,8 @@ final class NeuralDecoder {
     }
 
     /// The additive mask over [window, new steps] and the RoPE tables of this call's steps.
-    /// Window slot j holds step `offset - window + j`; a query at step s sees steps
-    /// s - window ... s that exist.
+    /// Window slot j holds step `offset - window + j`, and the new steps follow it; a query at
+    /// step s sees steps s - window ... s that exist.
     private func windowInputs() throws -> (MLMultiArray, MLMultiArray, MLMultiArray) {
         let (steps, window, halfDim) = (shapes["cos"]![0], shapes["keys"]![2], shapes["cos"]![1])
         let mask = try MLMultiArray(shape: [steps, window + steps].map(NSNumber.init), dataType: .float16)
@@ -92,7 +87,7 @@ final class NeuralDecoder {
         for i in 0..<steps {
             let query = offset + i
             for j in 0..<(window + steps) {
-                let key = j < window ? offset - window + j : offset + j - window
+                let key = offset - window + j
                 let visible = key >= 0 && query - key >= 0 && query - key <= window
                 m[i * (window + steps) + j] = visible ? 0 : -1e4
             }

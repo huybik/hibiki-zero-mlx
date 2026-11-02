@@ -28,7 +28,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
                                                             └─► swift/ (MLX Swift: CLI, iOS bench app)
-  Mimi checkpoint ─► tools/export_mimi_coreml.py (from tools/mimi_step.py) ─► mimi-decoder.mlpackage ─► swift/
+  Mimi checkpoint ─► tools/export_mimi_coreml.py (from tools/mimi_step.py) ─► mimi-decoder.mlmodelc ─► swift/
 ```
 
 - `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
