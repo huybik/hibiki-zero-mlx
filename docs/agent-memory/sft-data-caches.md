@@ -157,17 +157,18 @@ Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10
 ## Builds
 
 The full build, started 2026-10-27 and restarted on the faster builder on 2026-10-28 after the
-first 68 `cv27` shards, runs the two out-dirs one after the other, each under
-`caffeinate -i -s` with its log in `<out-dir>/build.log`:
+first 68 `cv27` shards, ran the two out-dirs one after the other, each under
+`caffeinate -i -s` with its log in `<out-dir>/build.log`, and finished on 2026-11-02 (main at
+19:05, `cv-anquach` at 21:42, both with status 0). Every shard is on the Hub.
 
-| Out-dir on `/Volumes/data/datasets/` | `--shards` | Source rows |
-|---|---|---|
-| `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English |
-| `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English |
+| Out-dir on `/Volumes/data/datasets/` | `--shards` | Source rows | Built |
+|---|---|---|---|
+| `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English | 1,835 shards, 3.45M rows (1.1% rejected), 73 GB |
+| `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English | 7 shards, 136k rows (2.2% rejected), 1.8 GB |
 
-- It stopped on 2026-11-02 at 08:20 (status 143) with 1,765 of the 1,835 main source shards
-  built, all on the Hub; left are the last 35 `libriheavy-medium` shards, the 32
-  `libriheavy-small` and the 3 validation shards, then `cv-anquach`.
+- `build.log` has no line for three main shards (`libriheavy-large-00001-00031`, `-00033`,
+  `-00036`): the 2026-10-28 replug below lost them while the builder kept building. Their
+  shards match their neighbours' layout and hold 2,783 rows.
 - To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status 143
   and does not start `cv-anquach`, but only once the two orphaned decode workers
   (`multiprocessing.spawn` and its `resource_tracker`, parent pid 1) are killed too, since they

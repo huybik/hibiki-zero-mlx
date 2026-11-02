@@ -60,8 +60,9 @@ grows sentence by sentence.
 
 ### 1. Data
 
-1. Finish the cache build unchanged ([sft-data-caches](agent-memory/sft-data-caches.md#builds)).
-   The trainer builds streams from its rows; nothing needs re-encoding.
+1. The cache, built unchanged and finished on 2026-11-02
+   ([sft-data-caches](agent-memory/sft-data-caches.md#builds)). The trainer builds streams from its
+   rows; nothing needs re-encoding.
 2. Noisy Vietnamese re-encode (next): for a few thousand hours, encode the Vietnamese side again
    with noise, room reverb, a phone-mic band and speed 0.9–1.1×, reusing each row's English codes
    and text timing (no wav2vec2; about half the Mimi work of a row).
@@ -152,15 +153,14 @@ should send the source EOS at the end of the input, as upstream does; live mode 
 ## Order
 
 1. Done: the evaluation sets and the stream recipe; the Swift port and the A15 device test;
-   checkpoint selection by free-running chrF inside training, and 30–120 s streams.
-2. Finish the cache build (restarted 2026-11-02 with 70 of the 1,835 main shards and
-   `cv-anquach` left, [sft-data-caches](agent-memory/sft-data-caches.md#builds)).
-3. Pod smoke run of the stream recipe: a few thousand steps with a short `--save-every` and
+   checkpoint selection by free-running chrF inside training, and 30–120 s streams; the full
+   cache build ([sft-data-caches](agent-memory/sft-data-caches.md#builds)).
+2. Pod smoke run of the stream recipe: a few thousand steps with a short `--save-every` and
    `--val-every`, to check that the loss falls and PAD accuracy rises, that one validation's
    translations have sane length and EOS, and how long a validation takes. The trainer has run
    only on the Mac CPU.
-4. The full 3B run; then GRPO.
-5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
+3. The full 3B run; then GRPO.
+4. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.
 
