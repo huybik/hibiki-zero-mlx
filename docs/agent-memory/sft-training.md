@@ -60,8 +60,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0;
   - validation and checkpoints every 9,000 steps; `--val-every` must be a multiple of
     `--save-every`, because promotion hard-links the checkpoint saved at that step;
-  - each validation translates `--eval-pairs` (FLEURS dev, 361 rows) free-running in batches
-    of `--eval-batch-size` 16: ~11 minutes of audio, ~8,300 generation steps (not yet timed on
+  - each validation translates `--eval-pairs` (FLEURS dev: 361 rows, 72 minutes of speech)
+    free-running, shortest first in batches of `--eval-batch-size` 16, each batch generated to
+    its longest row plus 8 s: ~6,000 generation steps (8,300 in file order; not yet timed on
     the H100).
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch
   (streams stay under the 3,000-frame context, so the mask is purely causal). Batches pad to
@@ -107,6 +108,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - `resume runs/RUN_NAME/trainer_stepNNNNNN.pt ARGS…` requires:
   - a checkpoint directly under `runs/`;
   - a remote no newer than local;
+  - a local `best.json` no older than the remote's newest `best/` marker;
   - a `run_id.json` commit equal to HEAD.
   It syncs once, then resumes with the same ARGS.
 
@@ -118,20 +120,30 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   the last run's teacher-forced loss kept improving while its translations got worse). Each
   validation logs the teacher-forced losses of the cache's validation streams, then translates
   `--eval-pairs` (default `data/eval/fleurs-vi/dev.jsonl`, so build the
-  [evaluation sets](#evaluation-sets) before training) with `eval.py`'s sampling, reseeded per
-  batch from `--seed`. `best_step*.safetensors` is a hard link to the checkpoint that passes the
+  [evaluation sets](#evaluation-sets) before training; rows need `duration_s`) with `eval.py`'s
+  sampling, reseeded per batch from `--seed`. `best_step*.safetensors` is a hard link to the
+  checkpoint that passes the
   generation health gates (`common.generation_health`) with a strictly higher corpus chrF
   (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`); a run whose checkpoints
   all fail the gates promotes none. `val_log.jsonl` holds `teacher_forced` and `free_running`
   metrics per step, and `eval/stepNNNNNN/` the predictions.
+- Training's chrF ranks the checkpoints of one run. It generates with fp32 weights and TF32
+  matmuls in length-sorted batches of 16, while `eval.py` defaults to bf16, batch 1 and file
+  order, so the two give different numbers for the same checkpoint; compare runs with `eval.py`.
 - `train.py` resumes only from the newest complete pair, and only if `run_config.json`
   matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences, seed, train row
-  count, evaluation pairs and rows, and total steps. Each trainer file records the step promoted
-  when it was saved (`best_step`); resume requires that checkpoint, or a later promoted one, in
-  `best.json`.
+  count, evaluation pairs and rows, and total steps.
+- A pair is saved before its validation. A resume first validates its own step if
+  `val_log.jsonl` lacks it (always on a replacement pod, which has no `val_log.jsonl`), the
+  final step included; a finished run refuses to resume.
+- `h100.sh resume` refuses to start unless the local `best.json` is at least as new as the
+  recovery repo's newest `best/` marker: a resume without it would promote a worse checkpoint,
+  and `hf_sync`, which keeps only the newest remote best, would replace the better one.
 - Checked on the Mac CPU with a tiny random LM (2026-11-02): training, saving, both
-  validations, promotion (a lower chrF keeps the promoted checkpoint, a higher one replaces it),
-  the resume guard, and a resume that repeats the next validation's numbers exactly.
+  validations, promotion (a lower chrF keeps the promoted checkpoint, a higher one replaces it,
+  a run failing the gates promotes none), resumes that rerun a validation cut short mid-run and
+  at the final step with the original numbers, and a finished run refusing to resume. The
+  launcher's best-checkpoint check was run on fake states.
 - `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
   - `checkpoints/`: on each poll, the newest complete pair if newer than the remote, keeping
     the newest two;

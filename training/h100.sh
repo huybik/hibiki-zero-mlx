@@ -229,6 +229,12 @@ else:
     remote_latest = max(remote_models & remote_trainers, default=-1)
     if remote_latest > local_latest:
         raise RuntimeError(f"remote checkpoint {remote_latest} is newer than local {local_latest}")
+    # Without the promoted checkpoint, a worse one would be promoted and replace it remotely.
+    remote_best = max(steps(remote_files, r"best/best_step(\d+)\.json"), default=-1)
+    best = run_dir / "best.json"
+    local_best = json.loads(best.read_text())["step"] if best.is_file() else -1
+    if remote_best > local_best:
+        raise RuntimeError(f"restore best/best_step{remote_best:06d} before resume")
     identity = run_dir / "run_id.json"
     if not identity.is_file():
         raise RuntimeError("restore run_id.json before resume")

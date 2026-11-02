@@ -234,13 +234,11 @@ def load_best_state(out_dir: Path) -> dict[str, Any] | None:
 def promote_best(
     step: int,
     chrf: float,
-    healthy: bool,
     out_dir: Path,
     previous: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Promote the checkpoint of `step` if it passed the generation health gates with a higher
-    chrF than the promoted one."""
-    if not healthy or (previous is not None and chrf <= float(previous["chrf"])):
+    """Promote the checkpoint of `step` if its chrF beats the promoted one's."""
+    if previous is not None and chrf <= float(previous["chrf"]):
         return previous
     checkpoint_path = require_file(
         out_dir / f"model_step{step:06d}.safetensors",
@@ -274,9 +272,7 @@ def save_checkpoint(
     args: argparse.Namespace,
     step: int,
     out_dir: Path,
-    best_state: dict[str, Any] | None,
 ) -> Path:
-    """Save the model and trainer pair of `step`, recording the checkpoint promoted so far."""
     model_path = out_dir / f"model_step{step:06d}.safetensors"
     trainer_path = out_dir / f"trainer_step{step:06d}.pt"
     clean_incomplete_checkpoints(out_dir)
@@ -292,7 +288,6 @@ def save_checkpoint(
                 "step": step,
                 "optimizer": optimizer.state_dict(),
                 "model": model_path.name,
-                "best_step": None if best_state is None else int(best_state["step"]),
                 "args": {
                     key: str(value) if isinstance(value, Path) else value
                     for key, value in vars(args).items()
@@ -313,8 +308,7 @@ def load_resume_checkpoint(
     resume_path: Path,
     device: torch.device,
     dtype: torch.dtype,
-) -> tuple[int, int | None]:
-    """Load the pair; returns its step and the step promoted when it was saved."""
+) -> int:
     pairs = checkpoint_pairs(resume_path.parent)
     if not pairs or pairs[-1][2].resolve() != resume_path.resolve():
         raise RuntimeError("--resume-checkpoint must be the newest complete pair")
@@ -328,7 +322,7 @@ def load_resume_checkpoint(
                 state[key] = value.to(device=device)
     step = int(checkpoint["step"])
     print(f"Resumed step {step} from {repo_display_path(resume_path)}")
-    return step, checkpoint["best_step"]
+    return step
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -428,10 +422,16 @@ def main() -> None:
     if not eval_rows:
         raise RuntimeError(f"No rows in {args.eval_pairs}")
     common.validate_eval_rows(
-        eval_rows, generation.source_column, generation.reference_column, generation.id_column
+        eval_rows,
+        generation.source_column,
+        generation.reference_column,
+        generation.id_column,
+        duration_column="duration_s",
     )
     for row in eval_rows:
         require_file(row[generation.source_column], "evaluation audio")
+    # Batches of similar length pad less: on FLEURS dev, 6,000 generation steps instead of 8,300.
+    eval_rows.sort(key=lambda row: float(row["duration_s"]))
     print(f"Validation translates {len(eval_rows)} rows of {repo_display_path(args.eval_pairs)}")
 
     batches_per_epoch = len(batches)
@@ -471,19 +471,19 @@ def main() -> None:
     )
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
 
+    val_log_path = out_dir / "val_log.jsonl"
+    # Steps already validated. A pair is saved before its validation, so a run cut short there
+    # validates on resume; a replacement pod has no val_log and validates again.
+    validated: set[int] = set()
     global_step = 0
     if args.resume_checkpoint is not None:
-        global_step, resumed_best = load_resume_checkpoint(
+        global_step = load_resume_checkpoint(
             lm, optimizer, args.resume_checkpoint, device, dtype
         )
-        # A replacement pod restores the promoted checkpoint from the recovery repo's best/.
-        if resumed_best is not None and (
-            best_state is None or int(best_state["step"]) < resumed_best
-        ):
-            raise RuntimeError(
-                f"Resume requires the checkpoint promoted at step {resumed_best} or a later one"
-            )
-    if global_step >= total_steps:
+        if val_log_path.is_file():
+            lines = val_log_path.read_text(encoding="utf-8").splitlines()
+            validated = {int(json.loads(line)["step"]) for line in lines if line}
+    if global_step > total_steps or (global_step == total_steps and global_step in validated):
         raise RuntimeError("Resume checkpoint is already at or beyond the requested stop")
 
     def jsonable(value: Any) -> Any:
@@ -537,7 +537,6 @@ def main() -> None:
     data_iter = training_batches(global_step)
     condition_cache: dict[int, Any | None] = {}
     log_path = out_dir / "train_log.jsonl"
-    val_log_path = out_dir / "val_log.jsonl"
 
     def empty_log() -> dict[str, Any]:
         return {
@@ -589,6 +588,7 @@ def main() -> None:
         item = {"step": step, "teacher_forced": teacher_forced, "free_running": free_running}
         with val_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, sort_keys=True) + "\n")
+        validated.add(step)
         print(
             f"val step={step} loss={teacher_forced['loss']:.4f} "
             f"semantic={teacher_forced['semantic_loss']:.4f} "
@@ -599,7 +599,13 @@ def main() -> None:
             f"eos={free_running['eos_found']}/{free_running['num_predictions']} "
             f"health={'pass' if healthy else 'fail'}"
         )
-        best_state = promote_best(step, float(free_running["chrf"]), healthy, out_dir, best_state)
+        # chrF weighs recall, so overlong output barely lowers it: the gates come first.
+        if healthy:
+            best_state = promote_best(step, float(free_running["chrf"]), out_dir, best_state)
+
+    resumed_at_validation = args.val_every and global_step % args.val_every == 0
+    if global_step and resumed_at_validation and global_step not in validated:
+        run_validation(global_step)
 
     while global_step < total_steps:
         lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
@@ -670,12 +676,12 @@ def main() -> None:
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:
-            save_checkpoint(lm, optimizer, args, global_step, out_dir, best_state)
+            save_checkpoint(lm, optimizer, args, global_step, out_dir)
         if args.val_every and global_step % args.val_every == 0:
             run_validation(global_step)
 
-    save_checkpoint(lm, optimizer, args, global_step, out_dir, best_state)
-    if not args.val_every or global_step % args.val_every:
+    save_checkpoint(lm, optimizer, args, global_step, out_dir)
+    if global_step not in validated:
         run_validation(global_step)
     print(
         f"Saved final full-model checkpoint at step {global_step} "

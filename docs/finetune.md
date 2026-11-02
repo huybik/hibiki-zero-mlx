@@ -128,8 +128,9 @@ the same run only:
 
 - it needs the newest complete pair, an unchanged `run_config.json`, and the same run
   identity and commit;
-- if a checkpoint had been promoted when the pair was saved, it also needs that promoted
-  model and marker (or a later one);
+- if the run has promoted a checkpoint (`RUN_NAME/best/`), it also needs that model and
+  marker;
+- a validation the interruption cut short runs again before training continues;
 - it cannot extend the stop step or start a different run.
 
 Runs recorded before the `inference/`/`training/` split, such as
