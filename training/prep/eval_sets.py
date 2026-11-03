@@ -157,9 +157,8 @@ def build_multimed(out_dir: Path) -> None:
 
 
 def opus_pre_skip(data: bytes, name: str) -> int:
-    """The samples a decoder drops from the start of an Ogg Opus stream (RFC 7845 section 5.1),
-    which must be mono and without output gain, the only streams this decodes as a conforming
-    decoder would."""
+    """The samples a decoder drops from the start of an Ogg Opus stream (RFC 7845 section 5.1).
+    The stream must be mono and without output gain, which sphn would not apply."""
     head = data.find(b"OpusHead")
     if head < 0:
         raise RuntimeError(f"{name}: not an Ogg Opus stream")
@@ -173,7 +172,9 @@ def opus_pre_skip(data: bytes, name: str) -> int:
 def decode_opus(data: bytes, duration_s: float, name: str) -> Any:
     """Decode a 48 kHz Ogg Opus clip to its stored duration. sphn returns every packet's samples:
     the encoder's pre-skip, which this drops, and the last packet's padding, which the cut at the
-    stored duration drops (on these clips it ends where the last granule position does)."""
+    stored duration drops. That matches PyAV, the cache builder's decoder, to the sample. The
+    granule positions cannot serve instead: the TTS encoder counts the pre-skip twice, so they
+    run 312 samples past the audio."""
     pre_skip = opus_pre_skip(data, name)
     wav, rate = sphn.read_opus_bytes(data)
     if rate != OPUS_RATE:

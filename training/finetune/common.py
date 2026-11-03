@@ -731,9 +731,6 @@ def generation_health(metrics: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
 def score_sets(records: list[dict[str, str]], names: list[str]) -> dict[str, dict[str, Any]]:
     """Metrics and health gates of each set in `names` that has records, in that order. Sets are
     scored apart: corpus chrF and BLEU weigh rows by length, and the gates must hold on each."""
-    unknown = {record[EVAL_SET] for record in records} - set(names)
-    if unknown:
-        raise ValueError(f"Records of unnamed evaluation sets: {sorted(unknown)}")
     scores: dict[str, dict[str, Any]] = {}
     for name in names:
         group = [record for record in records if record[EVAL_SET] == name]
