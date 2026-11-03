@@ -25,6 +25,8 @@ pre-roll would remove both.
 
     VI   lead [row 1]  gap  [row 2]  gap ... [row n] EOS  silence ...
     EN   silence  δ1 [row 1 en] [row 2 en]  ...   [row n en] EOS -1 ...
+
+A SINGLE_ROW_STREAMS share of streams hold one row: lead, the row, both EOS.
 """
 
 from __future__ import annotations
@@ -54,6 +56,10 @@ FRAME_RATE = 12.5
 # on 120 s sequences; upstream Hibiki-Zero degrades after ~1.6 minutes of input, and a phone hears
 # a stream that goes on.
 STREAM_SECONDS = (30.0, 120.0)
+# The share of streams that hold one row, as a single-sentence evaluation feeds it. Trained only on
+# 30-120 s streams, the first run never saw the source end after one sentence, and never ended a
+# third of the FLEURS rows.
+SINGLE_ROW_STREAMS = 0.1
 # Batches pad to a multiple of this many frames, so the model sees few shapes.
 FRAME_BUCKET = 16
 MAX_LEAD = 25  # frames of silence before the first Vietnamese, drawn from [0, 2 s]
@@ -235,7 +241,7 @@ def _gap(rng: random.Random) -> int:
 
 def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -> list[Stream]:
     """Cut every row, once, into streams of min_frames..max_frames frames (the last may be
-    shorter)."""
+    shorter), but for a SINGLE_ROW_STREAMS share of streams that hold one row."""
     longest = max(max(row.vi_frames, row.en_frames) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
@@ -261,6 +267,7 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
     streams: list[Stream] = []
     pieces: list[Piece] = []
     budget = vi_end = en_end = frames = 0
+    single = False
 
     def close() -> None:
         streams.append(Stream(tuple(pieces), frames))
@@ -272,17 +279,17 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
                 vi_start = max(vi_end + _gap(rng), en_end - MAX_OVERHANG)
             else:
                 budget = rng.randint(min_frames, max_frames)
+                single = rng.random() < SINGLE_ROW_STREAMS
                 vi_start = rng.randint(0, MAX_LEAD)
             en_start = max(vi_start + row.delay_frames, en_end)
             next_vi_end = vi_start + row.vi_frames
             next_en_end = en_start + row.en_frames - row.delay_frames
             next_frames = max(next_vi_end, next_en_end) + 1  # the EOS frames
-            # Close the stream when the row overflows its budget, unless it is still short and the
-            # row fits the longest stream.
-            if (
-                pieces
-                and next_frames > budget
-                and (frames >= min_frames or next_frames > max_frames)
+            # Close a single-row stream after its row, any other when the row overflows its budget,
+            # unless it is still short and the row fits the longest stream.
+            if pieces and (
+                single
+                or (next_frames > budget and (frames >= min_frames or next_frames > max_frames))
             ):
                 close()
                 pieces, vi_end, en_end = [], 0, 0

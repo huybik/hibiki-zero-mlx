@@ -123,7 +123,9 @@ ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.
 ./training/h100.sh run RUN_NAME \
   --cache-dir data/cache/en-vi-grounded-v2-noisy/train \
   --val-cache-dir data/cache/en-vi-grounded-v2/validation \
-  --model-weight weights/PREVIOUS_RUN_stepFINAL.safetensors --seed 43 --val-every 18000
+  --model-weight weights/PREVIOUS_RUN_stepFINAL.safetensors --seed 43 --val-every 18000 \
+  --eval-pairs data/eval/fleurs-vi/dev.jsonl data/eval/en-vi-val/{cv27,libriheavy}.jsonl \
+  data/eval/en-vi-val-noisy/{cv27,libriheavy}.jsonl
 ```
 
 - `--model-weight` loads the full fp32 model exactly (moshi's loader is strict); the hard link
@@ -132,7 +134,9 @@ ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.
 - A new `--seed` draws new streams: the noisy split has the same rows, so seed 42 would replay
   the first run's streams and batch order.
 - The run starts a new warmup and cosine decay. Validation every 18,000 steps (7 per epoch plus
-  the final step) halves its share of the run.
+  the final step) halves its share of the run; it also scores `en-vi-val-noisy` (build it first
+  with `python -m training.prep.eval_sets --sets en-vi-val-noisy`), so the run shows what the
+  channel costs as it trains.
 
 ### Interruptible pods
 

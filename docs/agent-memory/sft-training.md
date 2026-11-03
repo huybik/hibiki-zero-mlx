@@ -28,7 +28,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   previous English ends; a 0.3–1.5 s gap (3–10 s one time in ten) separates the Vietnamese, and
   is stretched so the previous English overhangs the next Vietnamese by at most 2 s. Silent
   stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
-  the last row keeps the source and text EOS, and the source after its EOS stays silence. The
+  the last row keeps the source and text EOS, and the source after its EOS stays silence. A tenth
+  of the streams (`streams.SINGLE_ROW_STREAMS`, from 2026-11-04) hold one row, lead to both EOS,
+  as a single-sentence evaluation feeds it: the first run, on 30–120 s streams only, never saw the
+  source end after one sentence and never ended a third of the FLEURS rows. On the three shards
+  below (seed 43) they are 9.8% of the streams and 2.4% of the frames (median 200 frames). The
   cache itself is never changed. The silence track is encoded on the CPU in float32, so every
   machine and resume gets the same codes but for a rare residual near-tie (1 of 1,876 frames
   between thread counts).
@@ -50,13 +54,16 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset.
 - Measured on 6,152 rows of `cv27-00010`, `libriheavy-medium-00050`,
-  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-02, 30–120 s): 981 streams of 68 s
+  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-02, 30–120 s, before single-row
+  streams): 981 streams of 68 s
   median (p10 37, p90 104; none under 30 s), 6 rows each, 21% of the Vietnamese side silent; the
   2 s overhang cap binds at the median join, since the English runs longer than the Vietnamese;
   batches hold 4 streams median, streams filling 98.9% of the padded frames (88.5% of the
   4,608-frame budget; 30–75 s streams filled 92.4%).
-- The full `en_speech` cache (3,441,391 rows) plans into 622,220 streams in 131,553 batches,
-  one epoch (planned and every stream assembled on the pod, 2026-11-03).
+- The full `en_speech` cache (3,441,391 rows) planned into 622,220 streams in 131,553 batches,
+  one epoch, before single-row streams (planned and every stream assembled on the pod,
+  2026-11-03). They change every plan, the validation streams' too, so teacher-forced
+  validation losses do not compare across that change.
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
   index, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's size or mtime changes),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
