@@ -117,7 +117,9 @@ def encode_inputs(
     return codes_with_input_eos, warmup_codes
 
 
-def decode_wavs(batch_codes: torch.Tensor, end_frames: list[int], mimi: MimiModel) -> list[torch.Tensor]:
+def decode_wavs(
+    batch_codes: torch.Tensor, end_frames: list[int], mimi: MimiModel
+) -> list[torch.Tensor]:
     """Decode each row's audio codes and cut it at its end frame."""
     with torch.no_grad():
         output_wavs = torch.cat(

@@ -169,13 +169,14 @@ seldom ends ([analysis](analysis/eos_and_lag.md)).
    to 3.05 and teacher-forced content accuracy reached 0.51 (PAD 0.947).
    - By step 36,000 content accuracy was 0.62 and FLEURS dev chrF 15.9, but only 38 of 361
      rows found EOS.
-   - That came from the decode, not the training. The run's validation samples text at 0.4 with
+   - Most of that came from the decode. The run's validation samples text at 0.4 with
      an 8 s tail; at the paper's 0.8 and a longer tail, the step-18,000 model ended 33 of 48
      FLEURS rows instead of 11, and chrF rose from 18 to 22
      ([analysis](analysis/eos_and_lag.md)).
    - The run validates with its commit's old settings, so its gates cannot pass and it promotes
-     nothing. Its checkpoints are scored with `eval.py`'s new defaults as each reaches the
-     recovery repo, which keeps the newest two pairs.
+     nothing. Even at the new settings a third of FLEURS rows never end, short of the gate's 91%.
+     Its checkpoints are scored with `eval.py`'s new defaults as each reaches the recovery repo,
+     which keeps the newest two pairs.
 4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before

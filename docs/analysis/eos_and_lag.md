@@ -44,8 +44,8 @@ validation samples it. Each set had 48 rows:
   - At 0.4, on cache rows:
     - the first word comes 31 frames (2.5 s) after the reference's and the last word 46 frames
       after;
-    - every frame is a choice between a word and PAD, and a word is sampled only when it beats
-      PAD outright, so speech falls behind and stalls.
+    - every frame is a choice between a word and PAD, and temperature 0.4 sharpens it toward
+      PAD, so speech falls behind and stalls.
   - At 0.8:
     - the model still starts 27 frames late;
     - it speaks faster than the reference (3.7 frames a token against 4.3) and ends 20 frames
@@ -56,7 +56,7 @@ validation samples it. Each set had 48 rows:
 
 ## Cause and fix
 
-The decode settings, not the training:
+Most of the gap came from the decode settings:
 
 - **Text temperature.** The repo has evaluated at 0.4 since the inference/training split. The
   paper samples every token at temperature 0.8, top-k 250 (Sec. 4.5), as the checkpoint's

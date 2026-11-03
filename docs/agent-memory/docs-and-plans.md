@@ -26,8 +26,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 - `step135k-check.md` covers free-running PhoMT holdout examples at step 135k.
 
 The parity plan's diagnosis is built on these documents. `eos_and_lag.md` covers the stream run
-`en_speech_streams_epoch1b`. Its missing EOS came from evaluating at text temperature 0.4 and an
-8 s tail. It also records the lag and the TTS-against-real-speech gap that remain.
+`en_speech_streams_epoch1b`. Most of its missing EOS came from evaluating at text temperature 0.4
+with an 8 s tail; a third of FLEURS rows still never end. It also records the lag and the
+TTS-against-real-speech gap that remain.
 
 `docs/vision/reports/*.md` are historical M4 Pro benchmarks and projected, unmeasured iPhone
 budgets cited by the report; they are not instructions.

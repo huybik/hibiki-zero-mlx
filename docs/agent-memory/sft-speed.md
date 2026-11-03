@@ -100,8 +100,8 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
   5.8 GiB: without it the first training step after a validation ran out of memory there
   (76.8 GiB allocated), which a 141 GB card hides.
 - About 33 GiB of that 74.4 GiB was Mimi coding all 64 rows at once in fp32 (0.8 GiB per 40 s
-  row, measured on CPU). With the 20 s tail its longest batch would have needed about 89 GiB in
-  total, so Mimi now codes 8 rows at a time and validation should peak well below training.
+  row, measured on CPU). With the 20 s tail its biggest batch (64 rows of up to 17 s) would
+  have needed about 89 GiB in total, so Mimi now codes 8 rows at a time and validation should peak well below training.
   Record the next run's validation peak here.
 - Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
   1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by

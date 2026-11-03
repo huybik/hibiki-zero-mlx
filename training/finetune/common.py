@@ -486,11 +486,7 @@ def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any) -> list[dict[
     for output_idx in range(batch_text_tokens.shape[0]):
         text_tokens: list[int] = batch_text_tokens[output_idx].tolist()
         eos_found = eos_id in text_tokens
-        if not eos_found:
-            print(
-                "warning: model did not generate output EOS token for "
-                f"entry {output_idx}; ending the output after its last word."
-            )
+        # The output ends at the EOS; without one it runs to the end of generation.
         eos_idx = text_tokens.index(eos_id) if eos_found else len(text_tokens)
         words = [index for index, token in enumerate(text_tokens[:eos_idx]) if token > pad_id]
         content_tokens = [text_tokens[index] for index in words]
@@ -500,8 +496,7 @@ def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any) -> list[dict[
                 "eos_found": eos_found,
                 "generated_text_tokens": len(content_tokens),
                 "last_word_frame": words[-1] if words else None,
-                # Where the output stops: at the EOS, or after the last word without one.
-                "end_frame": eos_idx if eos_found else (words[-1] + 1 if words else 0),
+                "end_frame": eos_idx,
             }
         )
     return decoded
@@ -578,8 +573,8 @@ class GenerationConfig:
     text_only: bool = False  # skip decoding and writing the generated audio
     tag: str | None = None  # appended to every output file's name
     # The paper samples every token at temperature 0.8, top-k 250 (Sec. 4.5), as the checkpoint's
-    # lm_gen_config does. At a text temperature of 0.4 a word must beat PAD outright, so the model
-    # falls behind, stalls and seldom ends.
+    # lm_gen_config does. A text temperature of 0.4 sharpens each frame's choice toward PAD, so the
+    # model falls behind, stalls and seldom ends.
     audio_temp: float = 0.8
     text_temp: float = 0.8
     top_k: int = 250
@@ -643,17 +638,19 @@ def generate_batch(
         raise RuntimeError("LM generation produced no output tokens; increase --gen-duration")
     batch_text_tokens = torch.concat(output_text_tokens, dim=-1)
     text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer)
-    end_frames = [t.pop("end_frame") for t in text_outputs]
     # How far the last generated word's text token lands after the source audio ends: the
     # paper's End Offset, measured to the end of the audio instead of its last word. Output
     # index i is the token sampled at step i, which is where the saved audio places it; the
     # model chose it having heard (i - 1) frames of source.
-    for t, duration in zip(text_outputs, audio_durations, strict=True):
-        frame = t.pop("last_word_frame")
+    for row, t, duration in zip(rows, text_outputs, audio_durations, strict=True):
+        frame = t["last_word_frame"]
         t["end_offset_s"] = "" if frame is None else round(frame / mimi.frame_rate - duration, 2)
+        if not t["eos_found"]:
+            print(f"warning: no output EOS for {row[cfg.id_column]}; keeping all generated text.")
     if cfg.text_only:
         wavs = [None] * len(text_outputs)
     else:
+        end_frames = [t["end_frame"] for t in text_outputs]
         wavs = decode_wavs(torch.concat(output_audio_tokens, dim=-1), end_frames, mimi)
     outputs = [{**t, "wav": wav} for t, wav in zip(text_outputs, wavs, strict=True)]
     return save_batch_outputs(
