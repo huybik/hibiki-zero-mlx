@@ -154,6 +154,39 @@ Sample the Vietnamese model as the paper does: temperature 0.8, top-k 250 on eve
 runtime's text sampling (0.4, top-k 25) suits upstream, but at 0.4 the fine-tuned model lags and
 seldom ends ([analysis](analysis/eos_and_lag.md)).
 
+### 7. English to Vietnamese (later)
+
+A possible next step once the VI→EN phone model works (user, 2026-11-03), not started. Every
+dataset row holds real English audio, Vietnamese audio voiced in the same speaker's voice and
+both texts, so the data serves both directions; EN→VI is the paper's own setup (real source,
+synthetic target).
+
+```text
+VI→EN (now):   source = TTS Vietnamese audio  ─►  target = real English audio + English text
+EN→VI (later): source = real English audio    ─►  target = TTS Vietnamese audio + Vietnamese text
+```
+
+The tokenizer blocks it first. Measured on the FLEURS dev sentences (361 rows, 2026-11-03), it
+spends 4.2 tokens per Vietnamese syllable, 44% of them byte fallbacks, against 1.3 per English
+word. Spoken at FLEURS pace, Vietnamese text needs 10.3 tokens/s on average, 13.2 at p90 and 17
+at most. The text stream carries one token per 12.5 Hz frame and needs room for PAD, so
+Vietnamese text cannot keep up with its speech.
+
+1. Check Mimi on Vietnamese first (cheap go/no-go): encode and decode real Vietnamese speech and
+   compare a Vietnamese ASR's error before and after, to see whether the tones survive.
+2. Add ~5–8k Vietnamese syllable tokens (to about one token per syllable): grow the text
+   embedding and head past `text_card` 48,000; the MLX and Swift runtimes take the new size.
+3. Build an EN→VI cache: Vietnamese text word-timed by a Vietnamese CTC aligner
+   (`wav2vec2-base-960h` is English-only), the random delay on the Vietnamese target, and
+   source and target codebooks swapped in the `[33, T]` rows.
+4. Evaluation: FLEURS `en_us` speech with the `vi_vn` sentences as references (paired by
+   sentence id, as the VI→EN sets are), held-out Common Voice dev and Libriheavy dev rows, and
+   a Vietnamese ASR on the output audio.
+5. Train EN→VI as its own fine-tune, since the model must learn to speak a new language. If the
+   phone should ship one model, a joint fine-tune can then mix both caches (the trainer already
+   mixes caches). Hibiki-Zero has no target-language switch, so the output language follows the
+   input language; keep the joint model only if it matches both single-direction models.
+
 ## Order
 
 1. Done: the evaluation sets and the stream recipe; the Swift port and the A15 device test;
@@ -181,6 +214,8 @@ seldom ends ([analysis](analysis/eos_and_lag.md)).
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.
+6. Possibly, once the VI→EN phone model works: EN→VI
+   ([stage 7](#7-english-to-vietnamese-later)).
 
 ## Risks
 

@@ -12,6 +12,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
   port and the A15 device test are done ([swift-runtime](swift-runtime.md)): the 3B runs at
   0.4x real time sustained there, so the plan takes the shrink branch. It records the decisions
   with their reasons and the timing the cache teaches.
+- The plan's stage 7 keeps EN→VI as a possible step once the VI→EN phone model works (user,
+  2026-11-03). The tokenizer blocks it first: Vietnamese text needs ~10 tokens/s of speech
+  against the text stream's 12.5.
 - [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage. No GRPO code exists; build it from
   that plan once SFT passes its promotion gate.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
