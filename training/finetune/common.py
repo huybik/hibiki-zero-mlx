@@ -33,7 +33,7 @@ from torch.utils.data import DataLoader
 from training.finetune import lm_training
 from training.finetune.hibiki_helpers import (
     audio_read,
-    decode_outputs,
+    decode_wavs,
     encode_inputs,
     get_lmgen,
     stack_and_pad_audio,
@@ -458,6 +458,8 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "wer": word_error_rate(references, hypotheses),
     }
     metrics.update(length_repetition_metrics(references, hypotheses))
+    offsets = [float(record["end_offset_s"]) for record in records if record["end_offset_s"] != ""]
+    metrics["median_end_offset_s"] = float(np.median(offsets)) if offsets else float("nan")
     metrics["bleu"] = sacrebleu.corpus_bleu(hypotheses, [references]).score
     metrics["chrf"] = sacrebleu.corpus_chrf(hypotheses, [references]).score
     if nonempty_pairs:
@@ -477,31 +479,24 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Autoregressive greedy generation
 # --------------------------------------------------------------------------- #
-def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any, warn: bool) -> list[dict[str, Any]]:
+def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any) -> list[dict[str, Any]]:
     eos_id = int(text_tokenizer.eos_id())
     pad_id = int(text_tokenizer.pad_id())
     decoded: list[dict[str, Any]] = []
     for output_idx in range(batch_text_tokens.shape[0]):
         text_tokens: list[int] = batch_text_tokens[output_idx].tolist()
-        if eos_id in text_tokens:
-            eos_idx = text_tokens.index(eos_id)
-            eos_found = True
-        else:
-            if warn:
-                print(
-                    "warning: model did not generate output EOS token for "
-                    f"entry {output_idx}; truncating text after the last non-pad token."
-                )
-            eos_idx = len(text_tokens) - 1
-            while eos_idx > 0 and text_tokens[eos_idx] == pad_id:
-                eos_idx -= 1
-            eos_found = False
-        content_tokens = [token for token in text_tokens[:eos_idx] if token > pad_id]
+        eos_found = eos_id in text_tokens
+        # The output ends at the EOS; without one it runs to the end of generation.
+        eos_idx = text_tokens.index(eos_id) if eos_found else len(text_tokens)
+        words = [index for index, token in enumerate(text_tokens[:eos_idx]) if token > pad_id]
+        content_tokens = [text_tokens[index] for index in words]
         decoded.append(
             {
                 "text": text_tokenizer.decode(content_tokens),
                 "eos_found": eos_found,
                 "generated_text_tokens": len(content_tokens),
+                "last_word_frame": words[-1] if words else None,
+                "end_frame": eos_idx,
             }
         )
     return decoded
@@ -553,6 +548,7 @@ def save_batch_outputs(
                 "prediction_text": out_text,
                 "eos_found": bool(output["eos_found"]),
                 "generated_text_tokens": int(output["generated_text_tokens"]),
+                "end_offset_s": output["end_offset_s"],
                 "mono_wav": mono_wav,
                 "stereo_wav": stereo_wav,
                 "text_file": repo_display_path(paths["text"]),
@@ -570,12 +566,17 @@ class GenerationConfig:
     reference_column: str = "text_en"
     id_column: str = "id"
     gen_duration: float = 0.0  # seconds; 0 generates the batch's longest source plus tail_s
-    tail_s: float = 8.0
+    # The translation runs seconds behind the source: the text EOS came up to 14 s after a FLEURS
+    # row ended, and 8 s cut a third of them.
+    tail_s: float = 20.0
     stop_on_eos: bool = True
     text_only: bool = False  # skip decoding and writing the generated audio
     tag: str | None = None  # appended to every output file's name
+    # The paper samples every token at temperature 0.8, top-k 250 (Sec. 4.5), as the checkpoint's
+    # lm_gen_config does. A text temperature of 0.4 sharpens each frame's choice toward PAD, so the
+    # model falls behind, stalls and seldom ends.
     audio_temp: float = 0.8
-    text_temp: float = 0.4
+    text_temp: float = 0.8
     top_k: int = 250
     top_k_text: int = 250
 
@@ -636,29 +637,22 @@ def generate_batch(
     if not output_text_tokens:
         raise RuntimeError("LM generation produced no output tokens; increase --gen-duration")
     batch_text_tokens = torch.concat(output_text_tokens, dim=-1)
-    text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer, warn=cfg.text_only)
+    text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer)
+    # How far the last generated word's text token lands after the source audio ends: the
+    # paper's End Offset, measured to the end of the audio instead of its last word. Output
+    # index i is the token sampled at step i, which is where the saved audio places it; the
+    # model chose it having heard (i - 1) frames of source.
+    for row, t, duration in zip(rows, text_outputs, audio_durations, strict=True):
+        frame = t["last_word_frame"]
+        t["end_offset_s"] = "" if frame is None else round(frame / mimi.frame_rate - duration, 2)
+        if not t["eos_found"]:
+            print(f"warning: no output EOS for {row[cfg.id_column]}; keeping all generated text.")
     if cfg.text_only:
-        outputs = [
-            {
-                "wav": None,
-                "text": t["text"],
-                "eos_found": t["eos_found"],
-                "generated_text_tokens": t["generated_text_tokens"],
-            }
-            for t in text_outputs
-        ]
+        wavs = [None] * len(text_outputs)
     else:
-        batch_codes = torch.concat(output_audio_tokens, dim=-1)
-        decoded_outputs = decode_outputs(batch_codes, batch_text_tokens, mimi, text_tokenizer)
-        outputs = [
-            {
-                "wav": wav,
-                "text": text,
-                "eos_found": t["eos_found"],
-                "generated_text_tokens": t["generated_text_tokens"],
-            }
-            for (wav, text), t in zip(decoded_outputs, text_outputs, strict=True)
-        ]
+        end_frames = [t["end_frame"] for t in text_outputs]
+        wavs = decode_wavs(torch.concat(output_audio_tokens, dim=-1), end_frames, mimi)
+    outputs = [{**t, "wav": wav} for t, wav in zip(text_outputs, wavs, strict=True)]
     return save_batch_outputs(
         rows, files, input_wavs, outputs, mimi.sample_rate, out_dir, cfg, batch_start
     )
@@ -686,6 +680,10 @@ def run_greedy_eval(
                 checkpoint_info, out_dir,
             )
         )
+        if lm.device.type == "mps":
+            # PyTorch's MPS cache keeps a finished batch's blocks without reusing them: it grew
+            # 5 GiB a batch of 16 and swapped a 48 GB Mac while live tensors stayed at 6.3 GiB.
+            torch.mps.empty_cache()
     return records, score_records(records)
 
 
@@ -713,7 +711,7 @@ def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
             handle,
             fieldnames=[
                 "id", "source_audio", "reference_text", "prediction_text", "eos_found",
-                "generated_text_tokens", "mono_wav", "stereo_wav", "text_file",
+                "generated_text_tokens", "end_offset_s", "mono_wav", "stereo_wav", "text_file",
             ],
         )
         writer.writeheader()

@@ -71,7 +71,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     a multiple of `--save-every`, because promotion hard-links the checkpoint saved at that step;
   - each validation translates `--eval-pairs` (FLEURS dev: 361 rows, 72 minutes of speech)
     free-running on a bf16 copy of the model, shortest first in batches of `--eval-batch-size`
-    64, each batch generated to its longest row plus 8 s: 1,747 generation steps.
+    64, each batch generated until every row ends or 20 s past its longest row: at most 2,647
+    generation steps. Mimi codes 8 rows at a time (`hibiki_helpers.MIMI_CHUNK_ROWS`).
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". Batches pad to 16-frame
   buckets (`streams.FRAME_BUCKET`), and training requires torch compile (moshi's and
   `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only
@@ -200,8 +201,25 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 ## Side tools
 
 - `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,
-  `text_en`). Despite its name, `run_greedy_eval` samples (text 0.4, audio 0.8). Its defaults
-  are `common.GenerationConfig`'s, which training's checkpoint selection uses too.
+  `text_en`). Its defaults are `common.GenerationConfig`'s, which training's checkpoint
+  selection uses too.
+  - Despite its name, `run_greedy_eval` samples every token at temperature 0.8, top-k 250, as
+    the paper does (Sec. 4.5).
+  - It generates until every row has emitted the text EOS, or 20 s past the batch's longest
+    source.
+  - Each prediction records `end_offset_s`, the time from the end of the source audio to the
+    last generated word; the metrics report their median.
+  - Decided 2026-11-03. At text temperature 0.4 the step-18,000 model fell behind, stalled and
+    ended 11 of 48 FLEURS rows, against 27 at 0.8 with the same 8 s tail and 33 with a longer
+    one. Its EOS came up to 14 s after a row ended, and the 8 s tail cut a third of them
+    ([analysis](../analysis/eos_and_lag.md)).
+  - On the Mac, `--device mps` scores a running run's checkpoints while the pod trains: FLEURS
+    dev takes 20–25 min at batch 16. Measured 2026-11-03 on a 48 GB Mac:
+    - PyTorch's MPS cache kept each finished batch's blocks without reusing them. It grew 5 GiB
+      a batch to 50 GB and swap, while live tensors stayed at 6.3 GiB, and `gc.collect()` freed
+      nothing. `run_greedy_eval` empties it after each batch on MPS, which holds it at 7 GiB.
+    - An fp32 training checkpoint as `--model-weight` holds 18 GiB while it loads. Convert it to
+      bf16 first; the eval runs in bf16, so the scores are the same.
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.

@@ -2,7 +2,6 @@
 import math
 from pathlib import Path
 
-import sentencepiece
 import sphn
 import torch
 from moshi.models import LMGen, LMModel, MimiModel, loaders
@@ -89,12 +88,23 @@ def add_input_eos(
     return codes_with_input_eos
 
 
+# Mimi runs in fp32 at the full sample rate, so its activations grow with rows times length:
+# encoding one 40 s row peaks at 0.8 GiB, and a whole batch of 64 rows would not fit beside the
+# model on an 80 GB card. Each row is coded independently, so chunks give the same codes.
+MIMI_CHUNK_ROWS = 8
+
+
 def encode_inputs(
     batch_wavs: torch.Tensor, mimi: MimiModel, lm_gen: LMGen, audio_durations: list[float]
 ) -> tuple[torch.Tensor, torch.Tensor]:
     frame_size = int(mimi.sample_rate / mimi.frame_rate)
     with torch.no_grad():
-        codes: torch.Tensor = mimi.encode(batch_wavs.to(lm_gen.lm_model.device))
+        codes: torch.Tensor = torch.cat(
+            [
+                mimi.encode(chunk.to(lm_gen.lm_model.device))
+                for chunk in batch_wavs.split(MIMI_CHUNK_ROWS)
+            ]
+        )
         codes_with_input_eos = add_input_eos(codes, mimi, audio_durations)
         warmup_wav: torch.Tensor = torch.zeros(
             codes.shape[0],
@@ -107,31 +117,15 @@ def encode_inputs(
     return codes_with_input_eos, warmup_codes
 
 
-def decode_outputs(
-    batch_codes: torch.Tensor,
-    batch_text_tokens: torch.Tensor,
-    mimi: MimiModel,
-    text_tokenizer: sentencepiece.SentencePieceProcessor,
-) -> list[tuple[torch.Tensor, str]]:
+def decode_wavs(
+    batch_codes: torch.Tensor, end_frames: list[int], mimi: MimiModel
+) -> list[torch.Tensor]:
+    """Decode each row's audio codes and cut it at its end frame."""
     with torch.no_grad():
-        output_wavs: torch.Tensor = mimi.decode(batch_codes).cpu()
-
-    outputs: list[tuple[torch.Tensor, str]] = []
-    for output_idx, wav in enumerate(output_wavs):
-        text_tokens: list[int] = batch_text_tokens[output_idx].tolist()
-        if text_tokenizer.eos_id() in text_tokens:
-            eos_idx: int = text_tokens.index(text_tokenizer.eos_id())
-        else:
-            print(
-                "warning: the model didn't generate output EOS token for "
-                f"entry {output_idx}, truncating audio after the last word generated."
-            )
-            eos_idx: int = len(text_tokens) - 1
-            while eos_idx > 0 and text_tokens[eos_idx] == text_tokenizer.pad_id():
-                eos_idx -= 1
-        text_tokens = [t for t in text_tokens[:eos_idx] if t > text_tokenizer.pad_id()]
-        text: str = text_tokenizer.decode(text_tokens)
-        wav = wav[:, : int(eos_idx * mimi.sample_rate / mimi.frame_rate)]
-        outputs.append((wav, text))
-
-    return outputs
+        output_wavs = torch.cat(
+            [mimi.decode(chunk).cpu() for chunk in batch_codes.split(MIMI_CHUNK_ROWS)]
+        )
+    frame_size = mimi.sample_rate / mimi.frame_rate
+    return [
+        wav[:, : int(end * frame_size)] for wav, end in zip(output_wavs, end_frames, strict=True)
+    ]
