@@ -12,9 +12,9 @@ interruptible pod reruns it on boot.
 - One Hopper GPU with at least 80 GB: an H100 SXM (80 GB), H100 NVL (94 GB) or H200 / H200 NVL
   (141 GB). Training peaks at 75.1 GiB reserved, validation at 74.4 GiB.
 - The GPU at its stock power limit (`nvidia-smi -q -d POWER`): an H100 SXM its host capped at
-  500 W instead of 700 W trained 1.4x slower than a 400 W H100 NVL. One epoch takes ~11 h on
-  an H200 NVL and ~14 h on an H100 NVL
-  ([sft-training](agent-memory/sft-training.md#speed)).
+  500 W instead of 700 W trained 1.8x slower than one at 700 W, and some providers cap every
+  SXM they rent out. One epoch takes ~11 h on a 700 W H100 SXM or an H200 NVL and ~14 h on an
+  H100 NVL ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
 - NVIDIA driver 580 or newer (CUDA 13), at least 80 GiB of RAM in the container, and Bash 5.1+.
 - About 400 GB of disk: ~100 GB of environment, weights, caches and evaluation sets, 70 GB of
   cache packs, and 130 GiB for the run: free, plus what a continued run already holds (`run`

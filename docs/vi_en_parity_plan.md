@@ -157,7 +157,7 @@ should send the source EOS at the end of the input, as upstream does; live mode 
    cache build ([sft-data-caches](agent-memory/sft-data-caches.md#builds)).
 2. Done (2026-11-03, H100 NVL): the trainer 1.5x faster per frame, startup in seconds, cheap
    frequent checkpoints, and runs that survive preemption
-   ([sft-training](agent-memory/sft-training.md#speed)).
+   ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
 3. Pod smoke run of the stream recipe: a few thousand steps, to check that the loss falls and
    PAD accuracy rises and that one validation's translations have sane length and EOS.
 4. The full 3B run (~11 h of training on one H200 NVL, ~14 h on an H100 NVL); then GRPO.

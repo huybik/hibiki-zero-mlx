@@ -80,69 +80,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 
 ## Speed
 
-`lm_training.install()` (run when `common` is imported) replaces four things in moshi 0.2.13
-with the same math on the same weights:
-
-- the causal attention mask becomes `is_causal=True` (flash);
-- grouped-query attention runs in SDPA (`enable_gqa`) instead of copying each key and value to 16
-  heads: in generation that copy is the whole KV cache, twice per layer and step;
-- the depformer's training forward runs its 16 codebook steps step-major (`unbind`/`stack`,
-  whose backward is one copy, instead of slices whose backward zero-fills a full gradient each),
-  compiled with dynamic shapes, with the memory-efficient attention kernel;
-- the training gating FFN splits with `unbind` for the same reason;
-- each compiled function keeps up to 64 graphs, not dynamo's 8. moshi compiles `_rms_norm`,
-  `apply_rope` and `gating_forward_kernel` once per dtype, rank, grad mode, autocast state and
-  shape class, and past the limit a function's new variants run eagerly for the rest of the
-  process. Training alone builds 12 graphs of `_rms_norm` and reached 8 within its first 11
-  steps; its steps then ran within 2% of those at 64. With every helper eager, a step is 6%
-  slower and peaks 3 GiB higher (78.2 GiB reserved).
-
-Checked against moshi as shipped (2026-11-03, H100 NVL): fp32 loss equal, logits within 1.7e-6
-and every gradient within 3.1e-6; in bf16 both are as far from an fp32 reference (gradients:
-median 8.5e-3, max 9.4e-2); fp32 greedy decoding gives the same tokens for 494 steps on 16
-FLEURS rows. Sampled decoding diverges from moshi's after a few words (any rounding change
-does that), with outputs of the same kind.
-
-Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches, 2026-11-03:
-
-| Training step | frames/s | s/step | peak |
-|---|---:|---:|---:|
-| Torch 2.8, moshi as shipped | 6,930 | 0.595 | 76.8 GiB |
-| Torch 2.15, moshi as shipped | 7,715 | 0.528 | 76.8 GiB |
-| + step-major depformer and gating | 9,480 | 0.430 | 76.7 GiB |
-| + compiled depformer, GQA, 4 data workers | 10,669 | 0.385 | 73.6 GiB |
-
-- The 2.8 row ran on another 16-shard sample; per-frame rates compare.
-- Tried and dropped: flash (8,880 frames/s) or cuDNN (8,969) for the depformer's 16-position
-  attention, one `bmm` per step group instead of per-step linears (no gain), compiling the
-  main transformer too (10,358).
-- What is left: matmuls 44% of GPU time, fused AdamW 7% (bandwidth-bound: 87 GB per step).
-- Generation (`LMGen`, ms per step at batch 16/32/64): fp32 57/93/164, bf16 31/47/80, bf16 with
-  GQA 16/18/22.
-
-The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
-
-| GPU (power limit) | frames/s | s/step | one epoch |
-|---|---:|---:|---:|
-| H200 NVL (600 W) | 13,353 | 0.305 | 11.1 h |
-| H100 NVL (400 W) | 10,669 | 0.385 | 14.1 h |
-| H100 SXM 80 GB (500 W, its host's cap; 700 W stock) | 7,401 | 0.550 | 20.1 h |
-
-- The capped SXM sat at its limit 99% of the time, at a mean 798 MHz SM clock (1,980 max), with
-  no allocator retries: an SXM is fast only at its stock 700 W. `nvidia-smi -q -d POWER` shows
-  the pod's limit.
-- An 80 GB card fits: CUDA sees 79.2 GiB of it and the allocator gets 78.7 GiB; training peaks
-  at 73.6 GiB allocated, 75.1 GiB reserved, and translating FLEURS dev at 74.4 GiB.
-- Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
-  1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by
-  0.01% and PAD accuracy by 1 point (base model). Loader workers save nothing: assembling the
-  300 batches takes 0.8 s.
-- Translating FLEURS dev (bf16, batch 64, 1,747 steps): 42 s on the H200 NVL, 48–53 s on the
-  capped SXM. Batch 96 takes 34 s but 100.3 GiB. Before these changes (fp32, batch 16) it took
-  382 s.
-- The checkpoint writer stalls training for the copy to pinned memory (0.6 s per save on the
-  H200 NVL) and writes the 37.5 GB in the background (16 s on the H200 NVL pod's disk, 37 s on
-  the SXM's). The first save also allocates the pinned buffers: 8 s and 26 s of stall.
+The fast path (`lm_training`), its measurements and the speed by GPU are in
+[sft-speed](sft-speed.md).
 
 ## Objective
 
@@ -185,14 +124,14 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
     `run_id.json` leaves only `train_args.json`, which is removed) and an empty `RUN_NAME/`
     prefix in a public `HIBIKI_HF_REPO`; it writes `train_args.json` (ARGS), then `run_id.json`
     (commit plus random id), then uploads it as `RUN_NAME/run.json`;
-  - with it: the saved ARGS (other ARGS are refused), a remote pair no newer than the newest
-    local one, a local `best.json` no older than the remote's newest `best/` marker, and a
-    `run_id.json` commit equal to HEAD; a missing remote `run.json` (its upload failed) is
-    uploaded if the prefix is otherwise empty.
+  - with it: the saved ARGS (other ARGS are refused), a remote pair no newer than the newest local
+    one, a local `best.json` no older than the remote's newest `best/` marker, and a `run_id.json`
+    commit equal to HEAD; a missing remote `run.json` (its upload failed) is uploaded if the prefix
+    is otherwise empty.
   Either way it runs `train.py --out-dir runs/RUN_NAME ARGS…` beside the `hf_sync` watcher, and
-  kills training if sync dies. INT or TERM to the launcher stops training and waits for the
-  sync's final upload (`wait` is retried: a trapped signal interrupts it). On an interruptible pod the boot script runs it
-  ([docs/finetune.md](../finetune.md#interruptible-pods)).
+  kills training if sync dies. INT or TERM to the launcher stops training and waits for the sync's
+  final upload (`wait` is retried: a trapped signal interrupts it). On an interruptible pod the
+  boot script runs it ([docs/finetune.md](../finetune.md#interruptible-pods)).
 
 ## Checkpoints and recovery
 
@@ -222,16 +161,17 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
   seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
   and `val_log.jsonl` past the resumed step are dropped. A start without a pair begins at step 0
   and removes the logs, `best.json` and `eval/` of a run cut short before its first save.
-- A pair is saved before its validation, and a validation's log line is written after its
-  promotion. A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl`
-  lacks validates it first; a finished run exits 0 after loading the data and before loading
-  the model (the boot hook's retry loop stops on it). Promotion relinks `best_stepS.safetensors` (a link to a temp name, then a rename)
-  unless it is already this run's `model_stepS` (a replacement pod can restore best S beside an
-  older pair, then retrain S). A torn last log line, or one missing its newline, is rewritten
-  on resume. The writer's thread is not a daemon, so a Python exception still finishes the pair
-  being written; the launcher's TERM kills it, and the run resumes from the pair before. A replacement pod has `val_log.jsonl` only if it
-  restored the run's `artifacts/` (synced whenever the training process exits); without it,
-  the resumed step's validation runs again and may promote it on sampling noise.
+- A pair is saved before its validation, and a validation's log line is written after its promotion.
+  A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl` lacks validates
+  it first; a finished run exits 0 after loading the data and before loading the model (the boot
+  hook's retry loop stops on it). Promotion relinks `best_stepS.safetensors` (a link to a temp name,
+  then a rename) unless it is already this run's `model_stepS` (a replacement pod can restore best S
+  beside an older pair, then retrain S). A torn last log line, or one missing its newline, is
+  rewritten on resume. The writer's thread is not a daemon, so a Python exception still finishes the
+  pair being written; the launcher's TERM kills it, and the run resumes from the pair before. A
+  replacement pod has `val_log.jsonl` only if it restored the run's `artifacts/` (synced whenever
+  the training process exits); without it, the resumed step's validation runs again and may promote
+  it on sampling noise.
 - `h100.sh run` refuses to continue unless the local `best.json` is at least as new as the
   recovery repo's newest `best/` marker: a resume without it would promote a worse checkpoint,
   and `hf_sync`, which keeps only the newest remote best, would replace the better one.
