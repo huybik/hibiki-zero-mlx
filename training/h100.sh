@@ -196,7 +196,7 @@ wait_child() {  # PID: its exit status, waiting again while a trapped signal int
   while true; do
     wait "$1"
     status=$?
-    kill -0 "$1" 2>/dev/null || return "$status"
+    (( status > 128 )) && kill -0 "$1" 2>/dev/null || return "$status"
   done
 }
 
@@ -311,6 +311,8 @@ PY
   until [[ -n "${finished_pid:-}" ]]; do
     wait -n -p finished_pid "$train_pid" "$sync_pid"
     first_status=$?
+    [[ -n "${finished_pid:-}" ]] || (( first_status > 128 )) \
+      || die "lost track of the trainer and the sync (wait returned $first_status)"
   done
   local train_status=0
   local sync_status=0

@@ -110,8 +110,9 @@ final upload.
 A preempted container restarts with its disk intact but nothing running. Its boot script,
 `/root/onstart.sh` on Vast, can continue the run, retrying every 5 minutes until `run`
 succeeds; a finished run exits 0 at once. `run` only continues a run that exists and exits
-while another launcher holds it, so the line is safe to leave in place; to stop a run for good,
-kill the loop before the launcher:
+while another launcher holds it, so the line can stay while the run lasts. To stop a run for
+good, remove the line from `/root/onstart.sh`, kill the loop
+(`pkill -f 'until ./training/h100.sh run RUN_NAME'`), then send the launcher SIGTERM:
 
 ```bash
 cat >> /root/onstart.sh <<'EOF'

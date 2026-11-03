@@ -224,8 +224,8 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
   and removes the logs, `best.json` and `eval/` of a run cut short before its first save.
 - A pair is saved before its validation, and a validation's log line is written after its
   promotion. A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl`
-  lacks validates it first; a finished run exits 0 at once (the boot hook's retry loop stops
-  on it). Promotion relinks `best_stepS.safetensors` (a link to a temp name, then a rename)
+  lacks validates it first; a finished run exits 0 after loading the data and before loading
+  the model (the boot hook's retry loop stops on it). Promotion relinks `best_stepS.safetensors` (a link to a temp name, then a rename)
   unless it is already this run's `model_stepS` (a replacement pod can restore best S beside an
   older pair, then retrain S). A torn last log line, or one missing its newline, is rewritten
   on resume. The writer's thread is not a daemon, so a Python exception still finishes the pair
@@ -243,9 +243,8 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
 - Checked on the Mac CPU with a tiny random LM (2026-11-02): training, saving, both
   validations, promotion (a lower chrF keeps the promoted checkpoint, a higher one replaces it,
   a run failing the gates promotes none), resumes that rerun a validation cut short mid-run and
-  at the final step with the original numbers, and a finished run refusing to resume on the
-  same pod. The
-  launcher's best-checkpoint check was run on fake states.
+  at the final step with the original numbers. The launcher's best-checkpoint check was run on
+  fake states.
 - `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
   - `checkpoints/`: on each poll, the newest complete pair at a validation step
     (`run_config.json`'s `val_every`) if newer than the remote, keeping the newest two; the

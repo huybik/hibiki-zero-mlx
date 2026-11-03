@@ -161,6 +161,7 @@ def atomic_write_text(text: str, path: Path) -> None:
     temporary.unlink(missing_ok=True)
     try:
         temporary.write_text(text, encoding="utf-8")
+        common.fsync_path(temporary)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -521,6 +522,14 @@ def main() -> None:
 
     batches_per_epoch = len(batches)
     total_steps = args.max_steps or batches_per_epoch * args.epochs
+    # A finished run stops before loading the model, so a boot hook that retries the run until it
+    # succeeds ends here.
+    pairs = checkpoint_pairs(out_dir)
+    if pairs and pairs[-1][0] == total_steps:
+        logged = keep_log_lines(out_dir / "val_log.jsonl", total_steps)
+        if total_steps in {int(item["step"]) for item in logged}:
+            print(f"The run finished at step {total_steps}")
+            return
     warmup_steps = round(total_steps * args.warmup_fraction)
     weights = common.LossWeights(
         audio=args.audio_loss_weight,
@@ -565,10 +574,6 @@ def main() -> None:
     keep_log_lines(log_path, global_step)
     if global_step > total_steps:
         raise RuntimeError("The run is beyond the requested stop")
-    if global_step == total_steps and global_step in validated:
-        # Not an error: a boot hook that retries the run until it succeeds stops here.
-        print(f"The run finished at step {global_step}")
-        return
 
     def jsonable(value: Any) -> Any:
         if isinstance(value, Path):
