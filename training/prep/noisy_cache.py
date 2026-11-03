@@ -1,27 +1,35 @@
 #!/usr/bin/env python
-"""Re-encode the Vietnamese source of a grounded cache under simulated recording conditions, on CUDA.
+"""Re-encode the Vietnamese source of a grounded cache under simulated recording conditions.
 
 Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the same rows in the
 same order. A seeded --fraction of the rows get new Vietnamese source codes: their clip, decoded
-from the EN-VI dataset's parquet shard that the cache shard names, resampled with soxr as the cache
-builder does, put under `augment`'s drawn conditions and Mimi-encoded in float32. Text, English
-codes, frame counts and both EOS positions stay as they were. Each row records its conditions
-under `source_conditions` (None for a row kept clean).
+from the EN-VI dataset's parquet shard that the cache shard was built from, resampled with soxr as
+the cache builder does, put under `augment`'s drawn conditions and Mimi-encoded in float32. Text,
+English codes, frame counts and both EOS positions stay as they were. Each row records its
+conditions under `source_conditions` (None for a row kept clean).
 
-    HF parquet (one shard ahead) ─► workers: Opus decode, soxr to 24 kHz ─► GPU: augment, Mimi
-    cache shard ──────────────────────────────────────────────────────────► new source codes ─► shard
+Two steps, so the download runs while the GPU still trains:
 
-The parquet shards download from the Hub at the revision `eval_sets` pins and are deleted once
-used. A rerun skips the shards already written.
+    fetch  (network, CPU) HF parquet ─► <out-dir>/.sources/<name>.parquet: id, duration and the
+                          Opus bytes of the selected rows only (30% of a parquet's bytes is
+                          Vietnamese audio; 60% of that is kept)
+    encode (CUDA)         .sources + clean shard ─► workers: Opus decode, soxr to 24 kHz
+                          ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted
+
+`encode` waits for a source that a running `fetch` has not written yet, and stops when none is
+running. Both skip the shards already written, so a rerun continues.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import fcntl
+import json
 import math
 import multiprocessing
 import random
+import shutil
 import tempfile
 import time
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
@@ -29,6 +37,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import soxr
 import torch
@@ -49,41 +59,138 @@ from training.prep import augment
 from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION, OPUS_RATE, decode_opus
 
 FRAME_SAMPLES = 1920  # 24 kHz / 12.5 Hz
-DOWNLOAD_AHEAD = 2
+SOURCES = ".sources"
+FETCH_LOCK = ".fetch.lock"
+ENCODE_LOCK = ".encode.lock"
+META_KEY = b"noisy_cache"
+WAIT_S = 30
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--cache-dir", type=Path, required=True, help="Folder of clean shard_*.pt.")
-    parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"))
-    parser.add_argument("--fraction", type=float, default=0.6, help="Rows given new conditions.")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--workers", type=int, default=24, help="Decode processes.")
-    parser.add_argument(
+    steps = parser.add_subparsers(dest="step", required=True)
+    fetch = steps.add_parser("fetch", help="Download the selected rows' Vietnamese audio.")
+    encode = steps.add_parser("encode", help="Write the noisy shards on CUDA.")
+    for step in (fetch, encode):
+        step.add_argument("--cache-dir", type=Path, required=True, help="A clean cache split.")
+        step.add_argument("--out-dir", type=Path, required=True)
+    fetch.add_argument("--fraction", type=float, default=0.6, help="Rows given new conditions.")
+    fetch.add_argument("--seed", type=int, default=0)
+    fetch.add_argument("--jobs", type=int, default=16, help="Parallel downloads.")
+    fetch.add_argument(
+        "--min-free-gb", type=float, default=40.0, help="Pause while the disk has less free."
+    )
+    encode.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"))
+    encode.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
+    encode.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
+    encode.add_argument("--workers", type=int, default=24, help="Decode processes.")
+    encode.add_argument(
         "--batch-seconds", type=float, default=640.0, help="Padded audio per Mimi batch."
     )
     args = parser.parse_args()
-    if not 0 < args.fraction <= 1:
+    if args.step == "fetch" and not 0 < args.fraction <= 1:
         parser.error("--fraction must be in (0, 1]")
     return args
+
+
+def selected(seed: int, row_id: str, fraction: float) -> bool:
+    return random.Random(f"{seed}:select:{row_id}").random() < fraction
+
+
+def shard_name(shard_path: Path) -> str:
+    return shard_path.stem.removeprefix("shard_")
+
+
+def todo(cache_dir: Path, out_dir: Path) -> list[Path]:
+    """The clean shards whose noisy shard is not written yet, in path order."""
+    return [
+        path for path in sorted(cache_dir.glob("shard_*.pt")) if not (out_dir / path.name).exists()
+    ]
+
+
+def held(lock: Path) -> bool:
+    """Whether a running process holds the `exclusive` lock at `lock`."""
+    if not lock.exists():
+        return False
+    with lock.open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
+# --------------------------------------------------------------------------- fetch
+
+
+def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
+    """Write the selected rows' audio of one shard's parquet to .sources."""
+    name = shard_name(shard_path)
+    target = args.out_dir / SOURCES / f"{name}.parquet"
+    if target.exists():
+        return f"{name}: fetched before"
+    if shutil.disk_usage(args.out_dir).free < args.min_free_gb * 1e9:
+        print(f"{name}: waiting for {args.min_free_gb:.0f} GB of free disk", flush=True)
+        while shutil.disk_usage(args.out_dir).free < args.min_free_gb * 1e9:
+            time.sleep(WAIT_S)
+    source = f"data/{split}/{name}.parquet"
+    with tempfile.TemporaryDirectory(dir=args.out_dir / SOURCES, prefix=".download-") as tmp:
+        path = Path(
+            hf_hub_download(
+                EN_VI_REPO, source, repo_type="dataset", revision=EN_VI_REVISION, local_dir=tmp
+            )
+        )
+        table = pq.read_table(path, columns=["id", "vi_audio", "vi_duration_s"])
+        ids = table.column("id").to_pylist()
+        audio = table.column("vi_audio").combine_chunks().field("bytes")
+        keep = pa.array([selected(args.seed, row_id, args.fraction) for row_id in ids])
+        slim = pa.table(
+            {
+                "id": table.column("id"),
+                "vi_duration_s": table.column("vi_duration_s"),
+                # Null for the rows that stay clean.
+                "vi_opus": pc.if_else(keep, audio, pa.scalar(None, audio.type)),
+            }
+        )
+        meta = {"source": source, "bytes": path.stat().st_size}
+        meta |= {"seed": args.seed, "fraction": args.fraction, "revision": EN_VI_REVISION}
+        slim = slim.replace_schema_metadata({META_KEY: json.dumps(meta)})
+        partial = target.with_name(f".{target.name}.tmp")
+        pq.write_table(slim, partial)
+        durable(partial)
+        partial.replace(target)
+    return f"{name}: {sum(keep.to_pylist())} of {len(ids)} rows"
+
+
+def fetch(args: argparse.Namespace) -> None:
+    cache_dir = require_dir(args.cache_dir, "clean cache split")
+    (args.out_dir / SOURCES).mkdir(parents=True, exist_ok=True)
+    shards = todo(cache_dir, args.out_dir)
+    print(f"{len(shards)} shards to fetch for {args.out_dir}", flush=True)
+    busy = f"another noisy_cache fetch uses {args.out_dir}"
+    with (
+        exclusive(args.out_dir / FETCH_LOCK, busy),
+        ThreadPoolExecutor(args.jobs) as pool,
+    ):
+        # What a killed fetch left: downloads and unrenamed sources.
+        for stale in (args.out_dir / SOURCES).glob(".*"):
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                stale.unlink()
+        jobs = [pool.submit(fetch_one, args, cache_dir.name, path) for path in shards]
+        for number, job in enumerate(jobs, 1):
+            print(f"{job.result()} [{number}/{len(jobs)}]", flush=True)
+
+
+# --------------------------------------------------------------------------- encode
 
 
 def decode(data: bytes, duration_s: float, name: str) -> np.ndarray:
     """Worker: the clip at 24 kHz, decoded and cut as the cache builder decoded it."""
     wav = decode_opus(data, duration_s, name)[0]
     return soxr.resample(wav, OPUS_RATE, augment.SAMPLE_RATE)
-
-
-def fetch(source: str, folder: Path) -> Path:
-    """Download one parquet shard of the dataset (`data/<split>/<name>.parquet`) into `folder`."""
-    return Path(
-        hf_hub_download(
-            EN_VI_REPO, source, repo_type="dataset", revision=EN_VI_REVISION, local_dir=folder
-        )
-    )
 
 
 class Encoder:
@@ -154,87 +261,93 @@ class Encoder:
             source[:, : sample["vi_frames"]] = new
 
 
-def selected(seed: int, row_id: str, fraction: float) -> bool:
-    return random.Random(f"{seed}:select:{row_id}").random() < fraction
+def wait_for_source(out_dir: Path, name: str) -> Path:
+    """The fetched source of shard `name`, waiting while a fetch runs."""
+    path = out_dir / SOURCES / f"{name}.parquet"
+    while not path.exists():
+        if not held(out_dir / FETCH_LOCK):
+            raise FileNotFoundError(f"{path} is missing and no fetch is running")
+        time.sleep(WAIT_S)
+    return path
 
 
-def main() -> None:
-    args = parse_args()
+def encode(args: argparse.Namespace) -> None:
     cache_dir = require_dir(args.cache_dir, "clean cache split")
-    shards = [
-        path
-        for path in sorted(cache_dir.glob("shard_*.pt"))
-        if not (args.out_dir / path.name).exists()
-    ]
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    shards = todo(cache_dir, args.out_dir)
     print(f"{len(shards)} shards to write under {args.out_dir}", flush=True)
     if not shards:
         return
     encoder = Encoder(args)
     split = cache_dir.name
-    spawn = multiprocessing.get_context("spawn")
+    busy = f"another noisy_cache encode uses {args.out_dir}"
     with (
-        exclusive(
-            args.out_dir / ".noisy_cache.lock", f"another noisy_cache run uses {args.out_dir}"
-        ),
-        tempfile.TemporaryDirectory(dir=args.out_dir.parent, prefix=".parquet-") as tmp,
-        ThreadPoolExecutor(DOWNLOAD_AHEAD) as downloads,
-        ProcessPoolExecutor(args.workers, mp_context=spawn) as pool,
+        exclusive(args.out_dir / ENCODE_LOCK, busy),
+        ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn")) as pool,
     ):
-        sources = [f"data/{split}/{path.stem.removeprefix('shard_')}.parquet" for path in shards]
-        fetched = [
-            downloads.submit(fetch, source, Path(tmp)) for source in sources[:DOWNLOAD_AHEAD]
-        ]
-        for number, (shard_path, source) in enumerate(zip(shards, sources)):
+        for number, shard_path in enumerate(shards, 1):
             started = time.perf_counter()
-            parquet_path = fetched[number].result()
-            if number + DOWNLOAD_AHEAD < len(sources):
-                fetched.append(downloads.submit(fetch, sources[number + DOWNLOAD_AHEAD], Path(tmp)))
+            source_path = wait_for_source(args.out_dir, shard_name(shard_path))
+            table = pq.read_table(source_path)
+            meta = json.loads(table.schema.metadata[META_KEY])
             payload = torch.load(shard_path, map_location="cpu")
             if payload.get("format") != CACHE_FORMAT:
                 raise RuntimeError(f"{shard_path} is not a {CACHE_FORMAT} shard")
-            if payload["source"] != {"file": source, "bytes": parquet_path.stat().st_size}:
-                raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {source}")
-            table = pq.read_table(parquet_path, columns=["id", "vi_audio", "vi_duration_s"])
+            source = {
+                "file": f"data/{split}/{shard_name(shard_path)}.parquet",
+                "bytes": meta["bytes"],
+            }
+            if payload["source"] != source or meta["source"] != source["file"]:
+                raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {meta}")
+            ids = table.column("id").to_pylist()
+            opus = table.column("vi_opus").to_pylist()
+            durations = table.column("vi_duration_s").to_pylist()
+            del table
             clips: dict[int, Future] = {}
             for index, sample in enumerate(payload["samples"]):
-                sample["source_conditions"] = None
-                if not selected(args.seed, sample["id"], args.fraction):
-                    continue
-                file, row_index = sample["source_row"].split("#r")
-                row = table.slice(int(row_index), 1).to_pylist()[0]
-                if file != source or row["id"] != sample["id"]:
+                file, row = sample["source_row"].split("#r")
+                row = int(row)
+                if file != source["file"] or ids[row] != sample["id"]:
                     raise RuntimeError(
-                        f"{sample['source_row']} holds {row['id']}, not {sample['id']}"
+                        f"{sample['source_row']} holds {ids[row]}, not {sample['id']}"
                     )
-                conditions = encoder.bank.draw(f"{args.seed}:{sample['id']}")
+                sample["source_conditions"] = None
+                if opus[row] is None:
+                    continue
+                conditions = encoder.bank.draw(f"{meta['seed']}:{sample['id']}")
                 sample["source_conditions"] = dataclasses.asdict(conditions)
-                clips[index] = pool.submit(
-                    decode, row["vi_audio"]["bytes"], row["vi_duration_s"], row["id"]
-                )
-            del table
+                clips[index] = pool.submit(decode, opus[row], durations[row], sample["id"])
+            del opus
             seconds = encoder.shard(payload["samples"], clips)
-            parquet_path.unlink()
             payload["source_augment"] = {
                 "clean_cache": f"{split}/{shard_path.name}",
-                "fraction": args.fraction,
-                "seed": args.seed,
+                "fraction": meta["fraction"],
+                "seed": meta["seed"],
                 "bank_sha256": augment.BANK_SHA256,
-                "dataset_revision": EN_VI_REVISION,
+                "dataset_revision": meta["revision"],
             }
             out_path = args.out_dir / shard_path.name
-            tmp_path = out_path.with_name(f".{out_path.name}.tmp")
-            torch.save(payload, tmp_path)
-            durable(tmp_path)
-            tmp_path.replace(out_path)
+            partial = out_path.with_name(f".{out_path.name}.tmp")
+            torch.save(payload, partial)
+            durable(partial)
+            partial.replace(out_path)
             durable(args.out_dir)
+            source_path.unlink()
             wall = time.perf_counter() - started
             print(
                 f"{shard_path.name}: {len(clips)} of {len(payload['samples'])} rows re-encoded, "
                 f"{seconds / 3600:.2f} h in {wall:.0f} s ({seconds / wall:.0f}x RT) "
-                f"[{number + 1}/{len(shards)}]",
+                f"[{number}/{len(shards)}]",
                 flush=True,
             )
+
+
+def main() -> None:
+    args = parse_args()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.step == "fetch":
+        fetch(args)
+    else:
+        encode(args)
 
 
 if __name__ == "__main__":
