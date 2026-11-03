@@ -147,7 +147,7 @@ def parse_args() -> argparse.Namespace:
     )
     # bf16 at batch 64 decodes FLEURS dev in ~1,750 steps of ~22 ms on the H100.
     parser.add_argument("--eval-batch-size", type=int, default=64)
-    # Frequent saves bound the work a preemption loses; the snapshot costs ~2 s.
+    # Frequent saves bound the work a preemption loses; the snapshot stalls training ~0.6 s.
     parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--keep-checkpoints", type=int, default=2)
     parser.add_argument("--log-every", type=int, default=10)
@@ -171,6 +171,7 @@ def atomic_torch_save(payload: Any, path: Path) -> None:
     temporary.unlink(missing_ok=True)
     try:
         torch.save(payload, temporary)
+        common.fsync_path(temporary)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -203,7 +204,7 @@ def clean_incomplete_checkpoints(out_dir: Path) -> None:
     for path in out_dir.glob("trainer_step*.pt"):
         if path not in paired_trainers:
             path.unlink()
-    for pattern in (".model_step*.safetensors.tmp", ".trainer_step*.pt.tmp"):
+    for pattern in (".model_step*.safetensors.tmp", ".trainer_step*.pt.tmp", ".best_step*.tmp"):
         for path in out_dir.glob(pattern):
             path.unlink()
 
@@ -254,10 +255,12 @@ def promote_best(
     model_path = out_dir / f"best_step{step:06d}.safetensors"
     # A resume can validate the promoted step again: its link is this checkpoint already, unless
     # a replacement pod restored that best model beside an older pair and retrained the step.
-    if model_path.exists() and not os.path.samefile(model_path, checkpoint_path):
-        model_path.unlink()
-    if not model_path.exists():
-        os.link(checkpoint_path, model_path)
+    # A new link replaces the old one in one rename, so best.json never names a missing file.
+    if not (model_path.exists() and os.path.samefile(model_path, checkpoint_path)):
+        temporary = model_path.with_name(f".{model_path.name}.tmp")
+        temporary.unlink(missing_ok=True)
+        os.link(checkpoint_path, temporary)
+        temporary.replace(model_path)
     state = {
         "step": step,
         "model": model_path.name,
@@ -341,6 +344,7 @@ class CheckpointWriter:
                 prune_checkpoint_pairs(self.out_dir, max(1, self.args.keep_checkpoints - 1))
             common.save_state(model_state, model_path, build_metadata(self.args))
             atomic_torch_save(trainer_state, trainer_path)
+            common.fsync_path(self.out_dir)
             prune_checkpoint_pairs(self.out_dir, self.args.keep_checkpoints)
         except BaseException as exc:  # raised by the next wait()
             model_path.unlink(missing_ok=True)
@@ -381,7 +385,8 @@ def keep_log_lines(path: Path, last_step: int) -> list[dict[str, Any]]:
     a last line cut short by a crash."""
     if not path.is_file():
         return []
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    text = path.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if line]
     items = []
     for index, line in enumerate(lines):
         try:
@@ -390,7 +395,8 @@ def keep_log_lines(path: Path, last_step: int) -> list[dict[str, Any]]:
             if index != len(lines) - 1:
                 raise
     kept = [item for item in items if int(item["step"]) <= last_step]
-    if len(kept) != len(lines):
+    # A line cut just before its newline parses, but the next append would join it.
+    if len(kept) != len(lines) or (text and not text.endswith("\n")):
         atomic_write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in kept), path)
     return kept
 
@@ -557,8 +563,12 @@ def main() -> None:
     # validates on resume; a replacement pod without val_log validates again.
     validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
     keep_log_lines(log_path, global_step)
-    if global_step > total_steps or (global_step == total_steps and global_step in validated):
-        raise RuntimeError("The run is already at or beyond the requested stop")
+    if global_step > total_steps:
+        raise RuntimeError("The run is beyond the requested stop")
+    if global_step == total_steps and global_step in validated:
+        # Not an error: a boot hook that retries the run until it succeeds stops here.
+        print(f"The run finished at step {global_step}")
+        return
 
     def jsonable(value: Any) -> Any:
         if isinstance(value, Path):
@@ -731,6 +741,8 @@ def main() -> None:
             means = {key: float(value) / steps for key, value in log["losses"].items()}
             if not math.isfinite(means["loss"]):
                 raise RuntimeError(f"Non-finite loss by step {global_step}")
+            if writer.error is not None:
+                writer.wait()  # raises the failed write now, not at the next save
             now = time.time()
             item = {
                 "epoch": (global_step - 1) // batches_per_epoch + 1,

@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
 import re
 import time
@@ -91,6 +92,16 @@ def trainable_parameters(model: Any) -> list[Any]:
     return [param for param in model.parameters() if param.requires_grad]
 
 
+def fsync_path(path: Path) -> None:
+    """Flush a file, or a directory's entries, to disk: a rename alone can survive a host crash
+    that the renamed file's data does not."""
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def save_state(state: dict[str, torch.Tensor], path: Path, metadata: dict[str, str]) -> None:
     """Write a model's state dict (host tensors) atomically as safetensors."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +109,7 @@ def save_state(state: dict[str, torch.Tensor], path: Path, metadata: dict[str, s
     temp_path.unlink(missing_ok=True)
     try:
         save_file(state, str(temp_path), metadata=metadata)
+        fsync_path(temp_path)
         temp_path.replace(path)
     finally:
         temp_path.unlink(missing_ok=True)

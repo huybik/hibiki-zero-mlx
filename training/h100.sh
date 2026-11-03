@@ -191,6 +191,15 @@ PY
   echo "GPU=${GPU_GIB}GiB host=${HOST_GIB}GiB free_disk=${FREE_GIB}GiB"
 }
 
+wait_child() {  # PID: its exit status, waiting again while a trapped signal interrupts wait
+  local status
+  while true; do
+    wait "$1"
+    status=$?
+    kill -0 "$1" 2>/dev/null || return "$status"
+  done
+}
+
 run_with_sync() {
   local out_dir="$1"
   local mode="$2"
@@ -295,21 +304,25 @@ PY
   trap "kill -TERM $train_pid $sync_pid 2>/dev/null || true" EXIT
   trap "kill -TERM $train_pid 2>/dev/null || true" INT TERM
 
-  local finished_pid=""
+  # A trapped INT or TERM interrupts wait, which then returns no pid: wait again, so the sync
+  # still makes its final upload after the trainer stops.
+  local finished_pid="" first_status=0
   set +e
-  wait -n -p finished_pid "$train_pid" "$sync_pid"
-  local first_status=$?
+  until [[ -n "${finished_pid:-}" ]]; do
+    wait -n -p finished_pid "$train_pid" "$sync_pid"
+    first_status=$?
+  done
   local train_status=0
   local sync_status=0
   if [[ "$finished_pid" == "$sync_pid" ]]; then
     sync_status=$first_status
     kill -TERM "$train_pid" 2>/dev/null || true
-    wait "$train_pid"
+    wait_child "$train_pid"
     train_status=$?
     (( sync_status != 0 )) || sync_status=1
   else
     train_status=$first_status
-    wait "$sync_pid"
+    wait_child "$sync_pid"
     sync_status=$?
   fi
   set -e
@@ -335,7 +348,8 @@ run() {
   mkdir -p "$RUNS_DIR"
   exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
   flock -n "$lock_fd" || die "$run_name is already running"
-  # Two pairs, the promoted model, and a pair the sync still uploads after it is pruned.
+  # Two pairs (the default --keep-checkpoints), the promoted model, and a pair the sync still
+  # uploads after it is pruned.
   preflight 130 "$run_dir"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
@@ -350,7 +364,10 @@ run() {
   else
     [[ $# -gt 0 ]] || die "a new run needs its train args (--cache-dir, --val-cache-dir, ...)"
     # A start cut short before run_id.json leaves only these behind.
-    rm -f "$run_dir/train_args.json" "$run_dir/.run_id.json.tmp"
+    if [[ -d "$run_dir" && -z "$(find "$run_dir" -mindepth 1 -maxdepth 1 ! -name train_args.json \
+        ! -name .run_id.json.tmp -print -quit)" ]]; then
+      rm -f "$run_dir/train_args.json" "$run_dir/.run_id.json.tmp"
+    fi
     require_empty_dir "$run_dir"
     run_with_sync "$run_dir" fresh "$PYTHON" -m training.finetune.train --out-dir "$run_dir" "$@"
   fi

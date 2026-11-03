@@ -190,16 +190,19 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
     `run_id.json` commit equal to HEAD; a missing remote `run.json` (its upload failed) is
     uploaded if the prefix is otherwise empty.
   Either way it runs `train.py --out-dir runs/RUN_NAME ARGS…` beside the `hf_sync` watcher, and
-  kills training if sync dies. On an interruptible pod the boot script runs it
+  kills training if sync dies. INT or TERM to the launcher stops training and waits for the
+  sync's final upload (`wait` is retried: a trapped signal interrupts it). On an interruptible pod the boot script runs it
   ([docs/finetune.md](../finetune.md#interruptible-pods)).
 
 ## Checkpoints and recovery
 
 - A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt` (12.5 + 25 GB);
   two are kept locally. `train.CheckpointWriter` copies the model and optimizer state into
-  pinned host buffers on the training stream and returns; a thread waits for the copy, writes
-  the model then the trainer file, and prunes. The next save, a promotion (which hard-links the
-  model file) and the end of training wait for it.
+  pinned host buffers on the training stream and returns; a thread waits for the copy, prunes
+  to `--keep-checkpoints` − 1 pairs, writes the model then the trainer file (each fsynced before
+  its rename, then the directory), and prunes again. The next save, a promotion (which
+  hard-links the model file) and the end of training wait for it; a failed write raises at the
+  next log step.
 - Checkpoints are chosen on free-running translation of real Vietnamese (decided 2026-11-02:
   the last run's teacher-forced loss kept improving while its translations got worse). Each
   validation logs the teacher-forced losses of the cache's validation streams, then translates
@@ -221,11 +224,12 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
   and removes the logs, `best.json` and `eval/` of a run cut short before its first save.
 - A pair is saved before its validation, and a validation's log line is written after its
   promotion. A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl`
-  lacks validates it first; a finished run refuses to resume. Promotion relinks
-  `best_stepS.safetensors` unless it is already this run's `model_stepS` (a replacement pod can
-  restore best S beside an older pair, then retrain S). A torn last log line is dropped on
-  resume, and the checkpoint writer's thread is not a daemon, so a crash still finishes the pair
-  being written. A replacement pod has `val_log.jsonl` only if it
+  lacks validates it first; a finished run exits 0 at once (the boot hook's retry loop stops
+  on it). Promotion relinks `best_stepS.safetensors` (a link to a temp name, then a rename)
+  unless it is already this run's `model_stepS` (a replacement pod can restore best S beside an
+  older pair, then retrain S). A torn last log line, or one missing its newline, is rewritten
+  on resume. The writer's thread is not a daemon, so a Python exception still finishes the pair
+  being written; the launcher's TERM kills it, and the run resumes from the pair before. A replacement pod has `val_log.jsonl` only if it
   restored the run's `artifacts/` (synced whenever the training process exits); without it,
   the resumed step's validation runs again and may promote it on sampling noise.
 - `h100.sh run` refuses to continue unless the local `best.json` is at least as new as the

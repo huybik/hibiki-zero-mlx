@@ -161,9 +161,12 @@ def stage_files(run_dir: Path, kind: str, step: int, sources: tuple[Path, ...]) 
 
 
 def remove_stage(path: Path) -> None:
-    for child in path.iterdir():
-        child.unlink()
-    path.rmdir()
+    # Renamed first: a kill mid-removal leaves a .tmp that clean_staging removes, never a stage
+    # missing a file.
+    temporary = path.with_name(f".{path.name}.tmp")
+    shutil.rmtree(temporary, ignore_errors=True)
+    path.replace(temporary)
+    shutil.rmtree(temporary)
 
 
 def clean_staging(run_dir: Path) -> None:

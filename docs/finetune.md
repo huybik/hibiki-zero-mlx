@@ -101,23 +101,29 @@ training process exits. Training stops if sync fails.
 `run RUN_NAME` with no arguments continues the run with its saved ones (other arguments are
 refused): the trainer resumes the newest complete local pair, or starts over at step 0 if a
 preemption came before the first save. A start that failed before training has already
-claimed the run; running it again continues the same claim.
+claimed the run; running it again continues the same claim, so arguments `train.py` refuses
+need a new RUN_NAME. Ctrl-C or SIGTERM to the launcher stops training and waits for the sync's
+final upload.
 
 ### Interruptible pods
 
 A preempted container restarts with its disk intact but nothing running. Its boot script,
-`/root/onstart.sh` on Vast, can continue the run (`run` only continues a run that exists and
-exits while another launcher holds it, so the line is safe to leave in place):
+`/root/onstart.sh` on Vast, can continue the run, retrying every 5 minutes until `run`
+succeeds; a finished run exits 0 at once. `run` only continues a run that exists and exits
+while another launcher holds it, so the line is safe to leave in place; to stop a run for good,
+kill the loop before the launcher:
 
 ```bash
 cat >> /root/onstart.sh <<'EOF'
 cd /workspace/hibiki-zero && HF_HOME=/workspace/.hf_home HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft \
-  nohup ./training/h100.sh run RUN_NAME >> /workspace/RUN_NAME.log 2>&1 &
+  nohup bash -c 'until ./training/h100.sh run RUN_NAME; do sleep 300; done' \
+  >> /workspace/RUN_NAME.log 2>&1 &
 EOF
 ```
 
-A preemption loses the steps since the last save (≤1,000) and the restart: ~10 s of data
-loading, the model load, and ~30 s of compilation.
+A preemption loses the steps since the last save (≤1,000) and the restart: preflight's hash of
+the 6.3 GB of weights, ~10 s of data loading, the model load, ~30 s of compilation, and a
+validation if the run stopped between a validation step's save and its log line.
 
 ## Recover a run on a replacement pod
 
