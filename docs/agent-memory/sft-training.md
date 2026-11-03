@@ -213,6 +213,13 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
     ended 11 of 48 FLEURS rows, against 27 at 0.8 with the same 8 s tail and 33 with a longer
     one. Its EOS came up to 14 s after a row ended, and the 8 s tail cut a third of them
     ([analysis](../analysis/eos_and_lag.md)).
+  - On the Mac, `--device mps` scores a running run's checkpoints while the pod trains: FLEURS
+    dev takes 20–25 min at batch 16. Measured 2026-11-03 on a 48 GB Mac:
+    - PyTorch's MPS cache kept each finished batch's blocks without reusing them. It grew 5 GiB
+      a batch to 50 GB and swap, while live tensors stayed at 6.3 GiB, and `gc.collect()` freed
+      nothing. `run_greedy_eval` empties it after each batch on MPS, which holds it at 7 GiB.
+    - An fp32 training checkpoint as `--model-weight` holds 18 GiB while it loads. Convert it to
+      bf16 first; the eval runs in bf16, so the scores are the same.
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.

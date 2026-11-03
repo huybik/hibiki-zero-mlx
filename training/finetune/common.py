@@ -680,6 +680,10 @@ def run_greedy_eval(
                 checkpoint_info, out_dir,
             )
         )
+        if lm.device.type == "mps":
+            # PyTorch's MPS cache keeps a finished batch's blocks without reusing them: it grew
+            # 5 GiB a batch of 16 and swapped a 48 GB Mac while live tensors stayed at 6.3 GiB.
+            torch.mps.empty_cache()
     return records, score_records(records)
 
 
