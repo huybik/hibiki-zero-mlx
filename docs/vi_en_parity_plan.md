@@ -19,8 +19,9 @@ VI TTS (done) ─► Mimi cache (finish) ─► SFT 3B ─► GRPO 3B ─► tea
 
 - Data: the `en_speech` corpus (Common Voice 27 EN + Libriheavy, 10.5k h of 5–22.4 s clips) is
   translated and voiced in each row's own English voice
-  ([en-vi-speech-dataset](agent-memory/en-vi-speech-dataset.md)). The grounded Mimi cache is being
-  built ([sft-data-caches](agent-memory/sft-data-caches.md#builds)).
+  ([en-vi-speech-dataset](agent-memory/en-vi-speech-dataset.md)). The grounded Mimi cache is
+  built ([sft-data-caches](agent-memory/sft-data-caches.md#builds)), and the full 3B run trains
+  on it ([order](#order)).
 - The last run (`grounded_v2_full_direct_voice_5epoch`, PhoMT + FLEURS) improved teacher-forced
   loss but failed free-running translation ([analysis](analysis/validation_collapse_analysis.md),
   [examples](analysis/step135k-check.md)).
@@ -158,9 +159,14 @@ should send the source EOS at the end of the input, as upstream does; live mode 
 2. Done (2026-11-03, H100 NVL): the trainer 1.5x faster per frame, startup in seconds, cheap
    frequent checkpoints, and runs that survive preemption
    ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
-3. Pod smoke run of the stream recipe: a few thousand steps, to check that the loss falls and
-   PAD accuracy rises and that one validation's translations have sane length and EOS.
-4. The full 3B run (~10 h of training on one H200 NVL, ~14 h on an H100 NVL); then GRPO.
+3. Running (started 2026-11-03): the full 3B run `en_speech_streams_epoch1b`, one epoch of
+   `en-vi-grounded-v2/train` on a 700 W H100 SXM (~10.5 h with validations). The first validation
+   (step 9,000, ~45 min in) replaces a separate smoke run. On the first attempt
+   (`en_speech_streams_epoch1`, which then ran out of memory) the training loss fell from 10.1
+   to 3.05 and teacher-forced content accuracy reached 0.51 (PAD 0.947), but FLEURS dev
+   translations came out short (length ratio 0.58, chrF 12.1) and only 50 of 361 found EOS;
+   later validations show whether that recovers.
+4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.
