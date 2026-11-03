@@ -71,12 +71,13 @@ grows sentence by sentence.
    8 kHz as MultiMed, a phone band) and a level change, reusing each row's English codes and
    text timing; it runs on the pod's GPU after a run, where the Mac would take days
    ([noisy-source](agent-memory/noisy-source.md)).
-   - `en-vi-val-noisy` measures the channel: if a checkpoint's score on it falls toward FLEURS
-     dev, the channel is the gap and this stage pays; if it stays near clean `en-vi-val`, the
-     gap is real Vietnamese speech (stage 3), which noise cannot teach.
+   - `en-vi-val-noisy` measures the channel. At step 63,000 of the first run it cost 4.8 chrF
+     (41.5 → 36.7) of the ~18 between clean TTS and FLEURS dev (23.5)
+     ([noisy-source](agent-memory/noisy-source.md#evaluation)): the noise makes the model
+     robust to rooms and phones, but most of the FLEURS gap is real speech, for stage 3.
    - Left out: speed changes, since a source slowed or sped against the cached delays moves
      Vietnamese words past the English that translates them; and low-bitrate Opus.
-3. Real Vietnamese source tranche (later): real Vietnamese speech (GigaSpeech 2 vi, Bud500; check
+3. Real Vietnamese source tranche (next after the noisy epoch; the larger lever, see 1.2): real Vietnamese speech (GigaSpeech 2 vi, Bud500; check
    licences) with LLM-translated text and voice-cloned English TTS targets, timed causally. This
    is the paper's stage-4 analogue and the main defence against the TTS-only source.
 4. First run pool: `en-vi-grounded-v2/train`. `cv-anquach` (16 kHz English targets) and the PhoMT

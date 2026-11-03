@@ -65,7 +65,7 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
 ```
 
 - `fetch` downloads each parquet from `anquachdev/common-vi-en` at `eval_sets.EN_VI_REVISION`,
-  16 at a time. It keeps the id, the duration and the Opus bytes of the selected rows
+  16 at a time, each tried 4 times. It keeps the id, the duration and the Opus bytes of the selected rows
   (`random.Random(f"{seed}:select:{id}").random() < --fraction`, 0.6), null for the others, in
   `.sources/`, about a fifth of the parquet's bytes, and deletes the download. It pauses while the disk has
   less than `--min-free-gb` (50) free: a trainer on the same disk needs a checkpoint pair
@@ -73,8 +73,11 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   writes `manifest.json` (seed, fraction, dataset revision, bank SHA-256); a later fetch with
   other values stops.
 - `encode` re-encodes the rows whose source holds audio:
-  - the clip is decoded as `eval_sets.decode_opus` decodes it (it matches PyAV, the builder's
-    decoder, to the sample) and resampled with soxr, as the builder did;
+  - the clip is decoded as `eval_sets.decode_opus` decodes it and resampled with soxr, as the
+    builder did. It matches PyAV, the builder's decoder, to the sample on the Mac-voiced shards;
+    on the 264 shards voiced on anquachdev's machine (hybrid SILK+CELT Opus) the decode sits 1–2
+    samples apart with amplitude differences up to 0.3, though every clip keeps its frame count
+    (118,986 rows of 60 shards from both machines checked);
   - the clip goes under `Bank.draw(f"{seed}:{id}")`, stored as `source_conditions` (None for a
     clean row);
   - Mimi (moshi's, float32, TF32 off) encodes the clips shortest first, in right-padded batches
@@ -86,9 +89,10 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
 - The shard gains `source_augment` (clean shard plus the manifest). The format string stays
   `hibiki_vn_grounded_cache_v2`, so the trainer reads the split as any cache.
 - `encode` checks each source against its shard's `source` (file and byte size) and its rows' ids.
-  It waits for a source a running fetch has not written, stops when none is running, deletes each
-  source once its shard is written, and prints `every shard written` at the end: train only
-  after that line, since the trainer takes whatever shards the folder holds.
+  It waits for a source a running fetch has not written, and skips a shard whose source is
+  missing when no fetch runs, then exits non-zero naming them (run `fetch`, then `encode`
+  again). It deletes each source once its shard is written and prints `every shard written` at
+  the end: train only after that line, since the trainer takes whatever shards the folder holds.
 - Both skip written shards; locks keep a second fetch or encode off the out-dir.
 - Sizes for `en-vi-grounded-v2/train`: 1,832 parquets, 442.7 GB; 9,057 h of Vietnamese, ~5,400 h
   re-encoded. The pod downloads at ~39 MB/s (16 at a time; one alone ~10 MB/s; reading only the
@@ -123,3 +127,17 @@ the conditions alone. (Every evaluation set reaches Mimi through `sphn.resample`
 soxr: a residual-codebook difference that predates this set.) Scored against the clean set on the
 same checkpoint it shows what the channel costs. It is not in the trainer's default
 `--eval-pairs`; the second epoch passes it.
+
+Measured on the Mac (`eval.py`, MPS, batch 16), step 63,000 of the first run, 2026-11-04:
+
+| Set | Common Voice | Libriheavy | Both (360) |
+|---|---:|---:|---:|
+| `en-vi-val` (clean TTS) | 39.4 | 42.2 | 41.5 |
+| `en-vi-val-noisy` | 34.4 | 37.5 | 36.7 |
+| FLEURS dev (real speech) | | | 23.5 |
+
+- By condition, against the same rows clean: reverb −6.1 chrF; SNR under 15 dB −8.8 (15 dB
+  and up −2.9); phone band −8.9, 8 kHz −7.8, 16 kHz −4.7.
+- The channel so costs ~5 of the ~18 points between clean TTS and FLEURS. The rest is real
+  speech and FLEURS's content (encyclopaedic sentences, names, numbers), which noise cannot
+  teach: the real-Vietnamese tranche (plan stage 1.3) is the larger lever.

@@ -118,22 +118,33 @@ trains from the first run's final model:
 
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
+V=data/cache/en-vi-grounded-v2/validation
+# From a second worktree of the PR's commit: a preempted first run resumes only on its own commit.
 nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
-./.venv/bin/python -m training.prep.eval_sets --sets en-vi-val-noisy
-# after the first run's final save and sync:
-rm -r $C/.packed runs/PREVIOUS_RUN/trainer_step*.pt   # 70 + 50 GB; the trainer state stays on the Hub
-./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O
+# After the first run's final save and sync (its final pair is in PREVIOUS_RUN/checkpoints/ on the Hub):
 ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.safetensors
-./training/h100.sh run RUN_NAME \
-  --cache-dir data/cache/en-vi-grounded-v2-noisy/train \
-  --val-cache-dir data/cache/en-vi-grounded-v2/validation \
+rm runs/PREVIOUS_RUN/trainer_step*.pt runs/PREVIOUS_RUN/model_stepOTHER.safetensors
+rm -r $C/.packed                                            # 70 GB
+./.venv/bin/python -m training.prep.eval_sets --sets en-vi-val-noisy
+./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O   # ends with "every shard written"
+rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean shards stay on the Hub
+./.venv/bin/python -m training.finetune.streams $O $V       # pack before run checks the free disk
+./training/h100.sh run RUN_NAME --cache-dir $O --val-cache-dir $V \
   --model-weight weights/PREVIOUS_RUN_stepFINAL.safetensors --seed 43 --val-every 18000 \
   --eval-pairs data/eval/fleurs-vi/dev.jsonl data/eval/en-vi-val/{cv27,libriheavy}.jsonl \
   data/eval/en-vi-val-noisy/{cv27,libriheavy}.jsonl
 ```
 
-- `--model-weight` loads the full fp32 model exactly (moshi's loader is strict); the hard link
-  keeps it while the previous run's folder is pruned, and a resume needs it at the same path.
+- Disk: the noisy split's shards (73 GB) and packs (70 GB) replace the clean ones. `run` checks
+  130 GiB free before the trainer packs a split itself, so pack first; with the clean shards still
+  there the run fills the 350 GB disk at its first checkpoints.
+- `encode` skips a shard whose source a failed download left missing, and exits non-zero naming
+  it: run `fetch` again (it retries each download 4 times), then `encode`.
+
+- `--model-weight` loads the full fp32 model (moshi's loader is strict; for Hibiki models it
+  also copies the text embedding's PAD row over row 2, which got no gradient in the first run).
+  The hard link keeps it while the previous run's folder is pruned, and a resume needs it at the
+  same path.
   A replacement pod downloads it from `PREVIOUS_RUN/checkpoints/` in the recovery repo.
 - A new `--seed` draws new streams: the noisy split has the same rows, so seed 42 would replay
   the first run's streams and batch order.

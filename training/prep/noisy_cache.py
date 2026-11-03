@@ -67,6 +67,7 @@ ENCODE_LOCK = ".encode.lock"
 MANIFEST = "manifest.json"
 META_KEY = b"noisy_cache"
 WAIT_S = 30
+DOWNLOAD_ATTEMPTS = 4  # one failed download would leave its shard unwritten overnight
 
 
 def parse_args() -> argparse.Namespace:
@@ -159,11 +160,23 @@ def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
             time.sleep(WAIT_S)
     source = f"data/{split}/{name}.parquet"
     with tempfile.TemporaryDirectory(dir=args.out_dir / SOURCES, prefix=".download-") as tmp:
-        path = Path(
-            hf_hub_download(
-                EN_VI_REPO, source, repo_type="dataset", revision=EN_VI_REVISION, local_dir=tmp
-            )
-        )
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            try:
+                path = Path(
+                    hf_hub_download(
+                        EN_VI_REPO,
+                        source,
+                        repo_type="dataset",
+                        revision=EN_VI_REVISION,
+                        local_dir=tmp,
+                    )
+                )
+                break
+            except Exception as exc:  # network and Hub errors alike; the last one raises
+                if attempt == DOWNLOAD_ATTEMPTS:
+                    raise
+                print(f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True)
+                time.sleep(60 * attempt)
         table = pq.read_table(path, columns=["id", "vi_audio", "vi_duration_s"])
         ids = table.column("id").to_pylist()
         audio = table.column("vi_audio").combine_chunks().field("bytes")
@@ -288,13 +301,14 @@ class Encoder:
             source[:, : sample["vi_frames"]] = new
 
 
-def wait_for_source(out_dir: Path, name: str) -> Path:
-    """The fetched source of shard `name`, waiting while a fetch runs."""
+def wait_for_source(out_dir: Path, name: str) -> Path | None:
+    """The fetched source of shard `name`, waiting while a fetch runs; None when it is missing
+    and no fetch is running."""
     path = out_dir / SOURCES / f"{name}.parquet"
     while not path.exists():
         # Checked again after the lock: the fetch may have written it and exited in between.
         if not held(out_dir / FETCH_LOCK) and not path.exists():
-            raise FileNotFoundError(f"{path} is missing and no fetch is running")
+            return None
         time.sleep(WAIT_S)
     return path
 
@@ -310,20 +324,30 @@ def encode(args: argparse.Namespace) -> None:
             (args.out_dir / SOURCES / f"{shard_name(written)}.parquet").unlink(missing_ok=True)
         shards = todo(cache_dir, args.out_dir)
         print(f"{len(shards)} shards to write under {args.out_dir}", flush=True)
-        if shards:
-            encode_shards(args, settings, split, shards)
+        missing = encode_shards(args, settings, split, shards) if shards else []
+        if missing:
+            raise SystemExit(
+                f"{len(missing)} shards lack a fetched source and were not written "
+                f"({', '.join(missing[:5])}...): run fetch, then encode again"
+            )
         print(f"{args.out_dir}: every shard written", flush=True)
 
 
 def encode_shards(
     args: argparse.Namespace, settings: dict[str, Any], split: str, shards: list[Path]
-) -> None:
+) -> list[str]:
+    """Write the noisy shards; return the names of those whose source is missing."""
     encoder = Encoder(args)
     spawn = multiprocessing.get_context("spawn")
+    missing: list[str] = []
     with ProcessPoolExecutor(args.workers, mp_context=spawn) as pool:
         for number, shard_path in enumerate(shards, 1):
             started = time.perf_counter()
             source_path = wait_for_source(args.out_dir, shard_name(shard_path))
+            if source_path is None:
+                print(f"{shard_path.name}: no fetched source, skipped", flush=True)
+                missing.append(shard_name(shard_path))
+                continue
             table = pq.read_table(source_path)
             source = json.loads(table.schema.metadata[META_KEY])
             payload = torch.load(shard_path, map_location="cpu")
@@ -369,6 +393,7 @@ def encode_shards(
                 f"[{number}/{len(shards)}]",
                 flush=True,
             )
+    return missing
 
 
 def main() -> None:
