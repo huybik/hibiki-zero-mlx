@@ -155,12 +155,13 @@ should send the source EOS at the end of the input, as upstream does; live mode 
 1. Done: the evaluation sets and the stream recipe; the Swift port and the A15 device test;
    checkpoint selection by free-running chrF inside training, and 30–120 s streams; the full
    cache build ([sft-data-caches](agent-memory/sft-data-caches.md#builds)).
-2. Pod smoke run of the stream recipe: a few thousand steps with a short `--save-every` and
-   `--val-every`, to check that the loss falls and PAD accuracy rises, that one validation's
-   translations have sane length and EOS, and how long a validation takes. The trainer has run
-   only on the Mac CPU.
-3. The full 3B run; then GRPO.
-4. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
+2. Done (2026-11-03, H100 NVL): the trainer 1.5x faster per frame, startup in seconds, cheap
+   frequent checkpoints, and runs that survive preemption
+   ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
+3. Pod smoke run of the stream recipe: a few thousand steps, to check that the loss falls and
+   PAD accuracy rises and that one validation's translations have sane length and EOS.
+4. The full 3B run (~11 h of training on one H200 NVL, ~14 h on an H100 NVL); then GRPO.
+5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.
 

@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
 import re
 import time
@@ -29,6 +30,7 @@ from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 
+from training.finetune import lm_training
 from training.finetune.hibiki_helpers import (
     audio_read,
     decode_outputs,
@@ -73,56 +75,8 @@ def seed_all(seed: int) -> None:
     np.random.seed(seed)
 
 
-class _CausalSDPA:
-    """Namespace proxy injected as moshi.modules.transformer.F (rebinds only that
-    module's global, not torch.nn.functional itself).
-
-    moshi's causal attention passes a boolean attn_bias to SDPA, which blocks the
-    flash kernel and falls back to the slower mem-efficient backend. In training
-    (offset 0, T << cfg.context) that mask is exactly lower-triangular causal, so
-    we rewrite it to is_causal=True. The verdict is verified by tril comparison
-    ONCE per mask shape then cached (re-checking every call would reintroduce a
-    host sync per layer) — sound here because every same-shape bool mask moshi
-    builds at offset 0 is identical, and streaming decode has T_q=1 != T_k so it
-    always falls through. Do not reuse this proxy where same-shape masks differ.
-    """
-
-    def __init__(self):
-        self._causal_shapes: dict[tuple[int, ...], bool] = {}
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(torch.nn.functional, name)
-
-    def scaled_dot_product_attention(self, q, k, v, attn_mask=None, **kwargs):
-        if (
-            attn_mask is not None
-            and attn_mask.dtype == torch.bool
-            and q.shape[-2] == k.shape[-2]
-            and attn_mask.shape[-2:] == (q.shape[-2], k.shape[-2])
-        ):
-            key = tuple(attn_mask.shape)
-            causal = self._causal_shapes.get(key)
-            if causal is None:
-                T = q.shape[-2]
-                tril = torch.ones(T, T, dtype=torch.bool, device=attn_mask.device).tril()
-                causal = bool((attn_mask == tril).all())
-                self._causal_shapes[key] = causal
-            if causal:
-                return torch.nn.functional.scaled_dot_product_attention(
-                    q, k, v, is_causal=True, **kwargs
-                )
-        return torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask, **kwargs)
-
-
-def enable_causal_sdpa() -> None:
-    import moshi.modules.transformer as _moshi_transformer
-
-    _moshi_transformer.F = _CausalSDPA()
-
-
-# Always on (~1% train speedup, free); streaming decode is unaffected (T_q=1 falls
-# through).
-enable_causal_sdpa()
+# moshi's training forward, faster (lm_training.py); inference keeps moshi's path.
+lm_training.install()
 
 
 # --------------------------------------------------------------------------- #
@@ -138,16 +92,24 @@ def trainable_parameters(model: Any) -> list[Any]:
     return [param for param in model.parameters() if param.requires_grad]
 
 
-def save_model(model: Any, path: Path, metadata: dict[str, str]) -> None:
+def fsync_path(path: Path) -> None:
+    """Flush a file, or a directory's entries, to disk: a rename alone can survive a host crash
+    that the renamed file's data does not."""
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def save_state(state: dict[str, torch.Tensor], path: Path, metadata: dict[str, str]) -> None:
+    """Write a model's state dict (host tensors) atomically as safetensors."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    state = {
-        name: tensor.detach().cpu().contiguous()
-        for name, tensor in model.state_dict().items()
-    }
     temp_path = path.with_name(f".{path.name}.tmp")
     temp_path.unlink(missing_ok=True)
     try:
         save_file(state, str(temp_path), metadata=metadata)
+        fsync_path(temp_path)
         temp_path.replace(path)
     finally:
         temp_path.unlink(missing_ok=True)
@@ -271,13 +233,14 @@ def evaluate_teacher_forced(
     weights: LossWeights,
     max_batches: int = 0,
 ) -> dict[str, float | int]:
-    """Corpus-level teacher-forced losses and text accuracies over `dataloader`."""
+    """Corpus-level teacher-forced losses and text accuracies over `dataloader`, under the bf16
+    autocast that training computes its losses in (1.7x faster than fp32 weights without it)."""
     was_training = bool(lm.training)
     lm.eval()
     condition_cache: dict[int, Any | None] = {}
     totals = {f"{name}_{part}": 0.0 for name in LOSS_SUMS for part in ("sum", "n")}
     counts = {"batches": 0, "streams": 0, "max_frames": 0, "content_correct": 0, "pad_correct": 0}
-    with torch.no_grad():
+    with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
         for batch_index, batch in enumerate(dataloader):
             if max_batches and batch_index >= max_batches:
                 break

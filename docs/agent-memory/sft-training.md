@@ -1,9 +1,10 @@
 # Full-model SFT training
 
 Read when touching `training/h100.sh` or `training/finetune/`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) · [Objective](#objective) ·
-[Launcher](#launcher) · [Checkpoints and recovery](#checkpoints-and-recovery) ·
-[Side tools](#side-tools) · [Evaluation sets](#evaluation-sets)
+Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) · [Speed](#speed) ·
+[Objective](#objective) · [Launcher](#launcher) ·
+[Checkpoints and recovery](#checkpoints-and-recovery) · [Side tools](#side-tools) ·
+[Evaluation sets](#evaluation-sets)
 
 The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered in
 [sft-data-caches](sft-data-caches.md).
@@ -54,22 +55,33 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   2 s overhang cap binds at the median join, since the English runs longer than the Vietnamese;
   batches hold 4 streams median, streams filling 98.9% of the padded frames (88.5% of the
   4,608-frame budget; 30–75 s streams filled 92.4%).
+- The full `en_speech` cache (3,441,391 rows) plans into 622,220 streams in 131,553 batches,
+  one epoch (planned and every stream assembled on the pod, 2026-11-03).
+- Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
+  index, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's size or mtime changes),
+  memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
+  per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
+  a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling
+  the shards. `--num-workers` (4) assemble streams in the background.
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
     fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0;
-  - validation and checkpoints every 9,000 steps; `--val-every` must be a multiple of
-    `--save-every`, because promotion hard-links the checkpoint saved at that step;
+  - checkpoints every 1,000 steps (~6.5 min) and validation every 9,000; `--val-every` must be
+    a multiple of `--save-every`, because promotion hard-links the checkpoint saved at that step;
   - each validation translates `--eval-pairs` (FLEURS dev: 361 rows, 72 minutes of speech)
-    free-running, shortest first in batches of `--eval-batch-size` 16, each batch generated to
-    its longest row plus 8 s: ~6,000 generation steps (8,300 in file order; not yet timed on
-    the H100).
-- Precision: fp32 master weights, bf16 autocast, TF32 matmul "high", and a causal-SDPA patch
-  (streams stay under the 3,000-frame context, so the mask is purely causal). Batches pad to
-  16-frame buckets (`streams.FRAME_BUCKET`), and training requires moshi's internal compile,
-  meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only (`train.py` has no
-  device flag); the `training.prep` steps, the cache build included
+    free-running on a bf16 copy of the model, shortest first in batches of `--eval-batch-size`
+    64, each batch generated to its longest row plus 8 s: 1,747 generation steps.
+- Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". Batches pad to 16-frame
+  buckets (`streams.FRAME_BUCKET`), and training requires torch compile (moshi's and
+  `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only
+  (`train.py` has no device flag); the `training.prep` steps, the cache build included
   ([sft-data-caches](sft-data-caches.md)), run on the Mac.
+
+## Speed
+
+The fast path (`lm_training`), its measurements and the speed by GPU are in
+[sft-speed](sft-speed.md).
 
 ## Objective
 
@@ -93,29 +105,43 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 `training/h100.sh` runs from the repo root and invokes modules as
 `python -m training.<package>.<module>`.
 
-- `setup` needs Linux, driver 570+, exactly one H100, Python 3.10–3.13 and no existing
-  `.venv`. It installs Torch `2.8.0+cu128` (CUDA 12.8), pinned dependencies, and
-  `moshi==0.2.13 --no-deps`.
+- `setup` needs Linux, driver 580+ (CUDA 13), exactly one H100 or H200 (Hopper, compute
+  capability 9.0: the kernels and measurements are sm_90's), Python 3.10–3.13 and no existing
+  `.venv`. It installs Torch `2.15.0+cu134` (CUDA 13.4, the newest build on 2026-11-03), the
+  newest of every pinned dependency (`huggingface-hub` 2.4), and `moshi==0.2.13 --no-deps`
+  (moshi declares `torch<2.10`; 0.2.13 is its newest release and runs on 2.15).
 - `preflight` checks:
   - a clean tracked tree;
-  - exact Torch and Moshi versions; one H100 with compute capability 9.0;
-  - ≥90 GiB VRAM (a standard 80 GB H100 fails), ≥110 GiB host RAM and ≥190 GiB free disk;
+  - exact Torch and Moshi versions; one H100 or H200 with compute capability 9.0;
+  - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
+    when lower than `/proc/meminfo`, which shows the host on Vast) and 130 GiB of disk: free
+    space plus, for `run`, what the run dir already holds (each hard-linked inode once);
   - the SHA-256 of the four upstream files in `weights/`.
-- `train RUN_NAME ARGS…` runs preflight and requires an empty `runs/RUN_NAME/`. It needs a
-  public `HIBIKI_HF_REPO` whose `RUN_NAME/` prefix is empty. It writes `run_id.json` (commit
-  plus random id), uploads it as `RUN_NAME/run.json`, and runs `train.py --out-dir
-  runs/RUN_NAME ARGS…` beside the `hf_sync` watcher. Training is killed if sync dies.
-- `resume runs/RUN_NAME/trainer_stepNNNNNN.pt ARGS…` requires:
-  - a checkpoint directly under `runs/`;
-  - a remote no newer than local;
-  - a local `best.json` no older than the remote's newest `best/` marker;
-  - a `run_id.json` commit equal to HEAD.
-  It syncs once, then resumes with the same ARGS.
+- `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
+  It holds `flock` on `runs/.RUN_NAME.lock` (inherited by the trainer and the sync), so a
+  second launcher of a running run exits; then preflight:
+  - without `runs/RUN_NAME/run_id.json`: an empty run dir (a start cut short before
+    `run_id.json` leaves only `train_args.json`, which is removed) and an empty `RUN_NAME/`
+    prefix in a public `HIBIKI_HF_REPO`; it writes `train_args.json` (ARGS), then `run_id.json`
+    (commit plus random id), then uploads it as `RUN_NAME/run.json`;
+  - with it: the saved ARGS (other ARGS are refused), a remote pair no newer than the newest local
+    one, a local `best.json` no older than the remote's newest `best/` marker, and a `run_id.json`
+    commit equal to HEAD; a missing remote `run.json` (its upload failed) is uploaded if the prefix
+    is otherwise empty.
+  Either way it runs `train.py --out-dir runs/RUN_NAME ARGS…` beside the `hf_sync` watcher, and
+  kills training if sync dies. INT or TERM to the launcher stops training and waits for the sync's
+  final upload (`wait` is retried: a trapped signal interrupts it). On an interruptible pod the
+  boot script runs it ([docs/finetune.md](../finetune.md#interruptible-pods)).
 
 ## Checkpoints and recovery
 
-- A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt`; two are kept
-  locally.
+- A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt` (12.5 + 25 GB);
+  two are kept locally. `train.CheckpointWriter` copies the model and optimizer state into
+  pinned host buffers on the training stream and returns; a thread waits for the copy, prunes
+  to `--keep-checkpoints` − 1 pairs, writes the model then the trainer file (each fsynced before
+  its rename, then the directory), and prunes again. The next save, a promotion (which
+  hard-links the model file) and the end of training wait for it; a failed write raises at the
+  next log step.
 - Checkpoints are chosen on free-running translation of real Vietnamese (decided 2026-11-02:
   the last run's teacher-forced loss kept improving while its translations got worse). Each
   validation logs the teacher-forced losses of the cache's validation streams, then translates
@@ -127,31 +153,44 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`); a run whose checkpoints
   all fail the gates promotes none. `val_log.jsonl` holds `teacher_forced` and `free_running`
   metrics per step, and `eval/stepNNNNNN/` the predictions.
-- Training's chrF ranks the checkpoints of one run. It generates with fp32 weights and TF32
-  matmuls in length-sorted batches of 16, while `eval.py` defaults to bf16, batch 1 and file
-  order, so the two give different numbers for the same checkpoint; compare runs with `eval.py`.
-- `train.py` resumes only from the newest complete pair, and only if `run_config.json`
-  matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences, seed, train row
-  count, evaluation pairs and rows, and total steps.
-- A pair is saved before its validation, and a validation's log line is written after its
-  promotion. A resume first validates its own step if `val_log.jsonl` lacks it, the final step
-  included; a finished run refuses to resume. A replacement pod has `val_log.jsonl` only if it
-  restored the run's `artifacts/` (synced whenever the training process exits); without it,
-  the resumed step's validation runs again and may promote it on sampling noise.
-- `h100.sh resume` refuses to start unless the local `best.json` is at least as new as the
+- Training's chrF ranks the checkpoints of one run. It generates with bf16 weights, as `eval.py`
+  does, but in length-sorted batches of 64, while `eval.py` defaults to batch 1 in file order, so
+  the two give different numbers for the same checkpoint; compare runs with `eval.py`.
+- A start in an out-dir with complete pairs resumes the newest one, and only if
+  `run_config.json` matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences,
+  seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
+  and `val_log.jsonl` past the resumed step are dropped. A start without a pair begins at step 0
+  and removes the logs, `best.json` and `eval/` of a run cut short before its first save.
+- A pair is saved before its validation, and a validation's log line is written after its promotion.
+  A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl` lacks validates
+  it first; a finished run exits 0 after loading the data and before loading the model (the boot
+  hook's retry loop stops on it). Promotion relinks `best_stepS.safetensors` (a link to a temp name,
+  then a rename) unless it is already this run's `model_stepS` (a replacement pod can restore best S
+  beside an older pair, then retrain S). A torn last log line, or one missing its newline, is
+  rewritten on resume. The writer's thread is not a daemon, so a Python exception still finishes the
+  pair being written; the launcher's TERM kills it, and the run resumes from the pair before. A
+  replacement pod has `val_log.jsonl` only if it restored the run's `artifacts/` (synced whenever
+  the training process exits); without it, the resumed step's validation runs again and may promote
+  it on sampling noise.
+- `h100.sh run` refuses to continue unless the local `best.json` is at least as new as the
   recovery repo's newest `best/` marker: a resume without it would promote a worse checkpoint,
   and `hf_sync`, which keeps only the newest remote best, would replace the better one.
+- Checked on the pods (2026-11-03), killing `train.py` with `kill -9` and rerunning the same
+  command: on the H200 NVL, killed at step 70 with the step-60 pair half-written, it skipped
+  that pair, resumed from step 40 and logged the same losses for steps 50–70; on the H100 SXM,
+  killed once the step-80 pair was saved but before its validation was logged, it validated
+  step 80 first, then trained to 160 at the s/step it had before the kill.
 - Checked on the Mac CPU with a tiny random LM (2026-11-02): training, saving, both
   validations, promotion (a lower chrF keeps the promoted checkpoint, a higher one replaces it,
   a run failing the gates promotes none), resumes that rerun a validation cut short mid-run and
-  at the final step with the original numbers, and a finished run refusing to resume on the
-  same pod. The
-  launcher's best-checkpoint check was run on fake states.
+  at the final step with the original numbers. The launcher's best-checkpoint check was run on
+  fake states.
 - `hf_sync.py` uploads under `HIBIKI_HF_PREFIX` (the run name):
-  - `checkpoints/`: on each poll, the newest complete pair if newer than the remote, keeping
-    the newest two;
+  - `checkpoints/`: on each poll, the newest complete pair at a validation step
+    (`run_config.json`'s `val_every`) if newer than the remote, keeping the newest two; the
+    final sync, after the training process exits, uploads the newest pair whatever its step;
   - `best/`: the newest promoted model only;
-  - `metadata/run_config.json`;
+  - `metadata/run_config.json` and `metadata/train_args.json`;
   - logs, on the final sync only.
   It requires a public repo and a remote `run.json` byte-equal to the local `run_id.json`. It
   polls every 60 s and aborts after three failures.

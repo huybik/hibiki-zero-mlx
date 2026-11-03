@@ -29,14 +29,21 @@ pre-roll would remove both.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import math
+import multiprocessing
+import os
 import random
 import re
+import shutil
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -59,6 +66,7 @@ SILENCE_WARMUP = 16  # frames of Mimi's start-up codes when it encodes from a fr
 # validate.py score the same streams, and --val-batches takes a random subset.
 VALIDATION_SEED = 0
 PHOMT_ID = re.compile(r"^(phomt_s\d+)r(\d+)$")  # consecutive rows of one source chunk
+PACK_WORKERS = 32
 
 
 @dataclass(frozen=True)
@@ -77,7 +85,7 @@ class Layout:
 @dataclass(frozen=True)
 class Row:
     id: str
-    codes: torch.Tensor  # int32 [33, T]
+    codes: np.ndarray  # int32 [33, T], memory-mapped
     vi_frames: int  # source length; the cached source EOS sits here
     en_frames: int  # target length including the delay; the cached text EOS sits here
     delay_frames: int
@@ -96,43 +104,121 @@ class Stream:
     frames: int
 
 
+PACK_VERSION = 2
+PACK_DIR = ".packed"  # beside the shards: <cache-dir>/.packed/<shard stem>/
+
+
+def _pack_dir(shard_path: Path) -> Path:
+    return shard_path.parent / PACK_DIR / shard_path.stem
+
+
+def _pack_stamp(shard_path: Path) -> dict[str, int]:
+    stat = shard_path.stat()
+    return {"version": PACK_VERSION, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _pack_is_current(shard_path: Path) -> bool:
+    meta = _pack_dir(shard_path) / "pack.json"
+    return meta.is_file() and json.loads(meta.read_text())["stamp"] == _pack_stamp(shard_path)
+
+
+def pack_shard(shard_path: Path) -> None:
+    """Write a shard's rows as one flat int32 array plus an index, which loads memory-mapped
+    in milliseconds; unpickling the shard's per-row tensors takes ~0.2 s."""
+    payload = torch.load(shard_path, map_location="cpu")
+    if payload.get("format") != CACHE_FORMAT:
+        raise RuntimeError(f"Unsupported cache format in {shard_path}")
+    if float(payload["frame_rate"]) != FRAME_RATE:
+        raise RuntimeError(f"{shard_path} has frame rate {payload['frame_rate']}")
+    config = payload["config"]
+    layout = Layout(
+        dep_q=int(config["dep_q"]),
+        card=int(config["card"]),
+        pad_id=int(config["existing_text_padding_id"]),
+    )
+    if 2 * layout.dep_q != int(config["n_q"]):
+        raise RuntimeError(f"{shard_path} has unequal source and target codebooks")
+    chunks, index, ids = [], [], []
+    offset = 0
+    for sample in payload["samples"]:
+        codes = sample["codes"]
+        if codes.dtype != torch.int32 or codes.ndim != 2 or codes.shape[0] != layout.rows:
+            raise RuntimeError(
+                f"{shard_path} id={sample['id']} codes are {codes.dtype} {tuple(codes.shape)}"
+            )
+        chunks.append(codes.reshape(-1).numpy())
+        frames = int(codes.shape[1])
+        index.append(
+            (
+                offset,
+                frames,
+                int(sample["vi_frames"]),
+                int(sample["en_frames"]),
+                int(sample["target_delay_frames"]),
+            )
+        )
+        ids.append(str(sample["id"]))
+        offset += codes.numel()
+    target = _pack_dir(shard_path)
+    temporary = target.with_name(f".{target.name}.tmp")
+    shutil.rmtree(temporary, ignore_errors=True)
+    temporary.mkdir(parents=True)
+    (np.concatenate(chunks) if chunks else np.empty(0, np.int32)).tofile(temporary / "codes.bin")
+    np.save(temporary / "index.npy", np.array(index, dtype=np.int64).reshape(-1, 5))
+    (temporary / "ids.json").write_text(json.dumps(ids))
+    (temporary / "pack.json").write_text(
+        json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout)})
+    )
+    shutil.rmtree(target, ignore_errors=True)
+    temporary.rename(target)
+
+
 def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layout]:
-    """Every row of the grounded cache shards in `cache_dirs` that fits `max_frames`."""
+    """Every row of the grounded cache shards in `cache_dirs` that fits `max_frames`.
+
+    Rows load memory-mapped from each shard's pack (`pack_shard`), built in parallel the first
+    time a shard is seen or after it changes. Startup then reads only the indexes, and the codes
+    (69 GiB for the full `en_speech` cache) stay on disk until a stream needs them."""
+    shard_paths = [path for d in cache_dirs for path in sorted(d.glob("shard_*.pt"))]
+    stale = [path for path in shard_paths if not _pack_is_current(path)]
+    if stale:
+        print(f"[streams] packing {len(stale)} of {len(shard_paths)} cache shards", flush=True)
+        # Forked like DataLoader workers: packing touches only files and host memory, and fork
+        # neither re-runs the caller's script nor starts a fresh BLAS thread pool per worker.
+        workers = min(PACK_WORKERS, os.cpu_count() or 1, len(stale))
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("fork")) as pool:
+            list(pool.map(pack_shard, stale))
     rows: list[Row] = []
     layout: Layout | None = None
     dropped = 0
-    for shard_path in [path for d in cache_dirs for path in sorted(d.glob("shard_*.pt"))]:
-        payload = torch.load(shard_path, map_location="cpu")
-        if payload.get("format") != CACHE_FORMAT:
-            raise RuntimeError(f"Unsupported cache format in {shard_path}")
-        if float(payload["frame_rate"]) != FRAME_RATE:
-            raise RuntimeError(f"{shard_path} has frame rate {payload['frame_rate']}")
-        config = payload["config"]
-        shard_layout = Layout(
-            dep_q=int(config["dep_q"]),
-            card=int(config["card"]),
-            pad_id=int(config["existing_text_padding_id"]),
-        )
-        if 2 * shard_layout.dep_q != int(config["n_q"]):
-            raise RuntimeError(f"{shard_path} has unequal source and target codebooks")
+    for shard_path in shard_paths:
+        directory = _pack_dir(shard_path)
+        shard_layout = Layout(**json.loads((directory / "pack.json").read_text())["layout"])
         if layout is None:
             layout = shard_layout
         elif shard_layout != layout:
             raise RuntimeError(f"{shard_path} has layout {shard_layout}, others {layout}")
-        for sample in payload["samples"]:
-            codes = sample["codes"]
-            if codes.ndim != 2 or codes.shape[0] != layout.rows:
-                raise RuntimeError(f"{shard_path} id={sample['id']} codes are {tuple(codes.shape)}")
-            if codes.shape[1] > max_frames:
+        # A private mapping that keeps no file descriptor open (numpy's memmap holds one per
+        # shard, past the usual limit of 1,024), writable for torch.from_numpy, never written.
+        path = directory / "codes.bin"
+        codes = torch.from_file(
+            str(path), shared=False, size=path.stat().st_size // 4, dtype=torch.int32
+        ).numpy()
+        ids = json.loads((directory / "ids.json").read_text())
+        for row_id, (offset, frames, vi_frames, en_frames, delay) in zip(
+            ids, np.load(directory / "index.npy").tolist()
+        ):
+            if frames > max_frames:
                 dropped += 1
                 continue
+            row_codes = codes[offset : offset + layout.rows * frames]
             rows.append(
                 Row(
-                    id=str(sample["id"]),
-                    codes=codes.to(torch.int32),
-                    vi_frames=int(sample["vi_frames"]),
-                    en_frames=int(sample["en_frames"]),
-                    delay_frames=int(sample["target_delay_frames"]),
+                    id=row_id,
+                    codes=row_codes.reshape(layout.rows, frames),
+                    vi_frames=vi_frames,
+                    en_frames=en_frames,
+                    delay_frames=delay,
                 )
             )
     if layout is None or not rows:
@@ -224,13 +310,13 @@ def assemble(
     source_eos = last_piece.vi_start + last.vi_frames
     codes = torch.full((layout.rows, frames), -1, dtype=torch.int32)
     codes[0, :text_eos] = layout.pad_id
-    codes[0, text_eos] = last.codes[0, last.en_frames]
+    codes[0, text_eos] = int(last.codes[0, last.en_frames])
     codes[1 : 1 + q, :text_eos] = quiet[:, :text_eos]
     codes[1 + q :] = quiet
     codes[1 + q :, source_eos] = layout.card
     for piece in stream.pieces:
         row = rows[piece.row]
-        source = row.codes
+        source = torch.from_numpy(row.codes)
         if (source[0, : row.delay_frames] != layout.pad_id).any():
             raise RuntimeError(f"{row.id} has text before its delay")
         if int(source[1 + q, row.vi_frames]) != layout.card:
@@ -349,3 +435,11 @@ def collate(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "frames": torch.tensor([sample["frames"] for sample in samples]),
         "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
     }
+
+
+if __name__ == "__main__":
+    # python -m training.finetune.streams CACHE_DIR...: build the packs before the first run.
+    import sys
+
+    packed, _ = load_rows([Path(directory) for directory in sys.argv[1:]], max_frames=2**31)
+    print(f"{len(packed):,} rows packed in {len(sys.argv) - 1} cache directories")

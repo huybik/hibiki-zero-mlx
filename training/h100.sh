@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# H100 setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery.
+# Hopper (H100/H200) setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery.
+#
+#   setup             a pinned .venv (Torch 2.15 on CUDA 13.4)
+#   preflight         GPU, driver, pins, memory, disk, upstream weights
+#   run RUN_NAME ...  start a run, or continue it: the same command resumes the newest local
+#                     pair with the run's saved arguments, so a preempted pod reruns it on boot
 
 set -Eeuo pipefail
 
@@ -25,15 +30,17 @@ require_cuda_driver() {
   local driver_version
   driver_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"
   [[ "$driver_version" =~ ^[0-9]+\. ]] || die "invalid NVIDIA driver: $driver_version"
-  [[ "$(printf '%s\n' 570 "$driver_version" | sort -V | head -n 1)" == 570 ]] \
-    || die "NVIDIA driver 570 or newer required, got $driver_version"
+  # CUDA 13 runs on R580 and newer.
+  [[ "$(printf '%s\n' 580 "$driver_version" | sort -V | head -n 1)" == 580 ]] \
+    || die "NVIDIA driver 580 or newer required, got $driver_version"
 }
 
-require_h100_gpu() {
+require_hopper_gpu() {
   local gpu_names
   gpu_names="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
   [[ -n "$gpu_names" && "$gpu_names" != *$'\n'* ]] || die "exactly one GPU is required"
-  [[ "${gpu_names^^}" == *H100* ]] || die "H100 required, got $gpu_names"
+  [[ "${gpu_names^^}" == *H100* || "${gpu_names^^}" == *H200* ]] \
+    || die "an H100 or H200 is required, got $gpu_names"
 }
 
 require_empty_dir() {
@@ -45,10 +52,10 @@ require_empty_dir() {
 }
 
 setup() {
-  [[ "$(uname -s)" == Linux ]] || die "setup must run on the Linux H100 pod"
+  [[ "$(uname -s)" == Linux ]] || die "setup must run on the Linux GPU pod"
   command -v python3 >/dev/null || die "python3 is required"
   require_cuda_driver
-  require_h100_gpu
+  require_hopper_gpu
   python3 -c 'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 14)))' \
     || die "Python 3.10-3.13 is required"
   [[ ! -e "$VENV" ]] || die "refusing to reuse existing environment: $VENV"
@@ -56,33 +63,34 @@ setup() {
   python3 -m venv "$VENV"
   "$PYTHON" -m pip install --upgrade pip
   "$PYTHON" -m pip install \
-    torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+    torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
   "$PYTHON" -m pip install \
-    aiohttp==3.11.18 \
-    einops==0.8.1 \
-    huggingface-hub==1.21.0 \
-    numpy==2.2.6 \
-    pyarrow==21.0.0 \
+    aiohttp==3.14.5 \
+    einops==0.8.2 \
+    huggingface-hub==2.4.0 \
+    numpy==2.5.4 \
+    pyarrow==26.0.0 \
     sacrebleu==2.6.0 \
     safetensors==0.8.0 \
-    sentencepiece==0.2.1 \
+    sentencepiece==0.2.2 \
     sphn==0.2.1 \
-    tqdm==4.67.1
+    tqdm==4.70.1
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
-  echo "H100 environment installed in $VENV"
+  echo "Training environment installed in $VENV"
 }
 
 preflight() {
-  local minimum_free_gib="${1:-190}"
+  # The run needs MIN GiB of disk: free space plus what RUN_DIR (when given) already holds.
+  local minimum_gib="$1" run_dir="${2:-}"
   require_python
   require_cuda_driver
-  require_h100_gpu
+  require_hopper_gpu
   git diff --quiet || die "tracked worktree changes must be committed before training"
   git diff --cached --quiet || die "staged changes must be committed before training"
 
   local profile
-  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_free_gib" <<'PY'
+  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_gib" "$run_dir" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -94,38 +102,61 @@ from pathlib import Path
 import torch
 
 root = Path(sys.argv[1])
-minimum_free_gib = float(sys.argv[2])
+minimum_gib = float(sys.argv[2])
+run_dir = Path(sys.argv[3]) if sys.argv[3] else None
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
-if torch.__version__ != "2.8.0+cu128" or torch.version.cuda != "12.8":
-    raise RuntimeError(f"torch 2.8.0+cu128 required, got {torch.__version__}")
+if torch.__version__ != "2.15.0+cu134" or torch.version.cuda != "13.4":
+    raise RuntimeError(f"torch 2.15.0+cu134 required, got {torch.__version__}")
 if version("moshi") != "0.2.13":
     raise RuntimeError(f"moshi 0.2.13 required, got {version('moshi')}")
 if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
     raise RuntimeError("exactly one CUDA GPU is required")
 name = torch.cuda.get_device_name(0)
-if "H100" not in name.upper() or torch.cuda.get_device_capability(0) != (9, 0):
-    raise RuntimeError(f"H100 compute capability 9.0 required, got {name}")
+# Hopper only: the kernels and the speed measurements are sm_90's.
+hopper = any(gpu in name.upper() for gpu in ("H100", "H200"))
+if not hopper or torch.cuda.get_device_capability(0) != (9, 0):
+    raise RuntimeError(f"an H100 or H200 (compute capability 9.0) is required, got {name}")
 if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-if memory_gib < 90:
-    raise RuntimeError(f"4,608-frame batches require at least 90 GiB, got {memory_gib:.1f}")
+# Training's 4,608-frame batches peak at 75.1 GiB reserved, validation's translation at 74.4:
+# an 80 GB card fits (CUDA sees 79.2 GiB of it).
+if memory_gib < 78:
+    raise RuntimeError(f"an 80 GB GPU or larger is required, got {memory_gib:.1f} GiB")
 
-host_kib = int(
+host_bytes = 1024 * int(
     next(
         line.split()[1]
         for line in Path("/proc/meminfo").read_text().splitlines()
         if line.startswith("MemTotal:")
     )
 )
-host_gib = host_kib / 1024**2
-if host_gib < 110:
-    raise RuntimeError(f"at least 110 GiB host RAM required, got {host_gib:.1f}")
+# In a container /proc/meminfo shows the host; the cgroup limit is what the run gets.
+for limit in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+    text = Path(limit).read_text().strip() if Path(limit).is_file() else "max"
+    if text != "max":
+        host_bytes = min(host_bytes, int(text))
+host_gib = host_bytes / 2**30
+# The packed cache stays on disk; the checkpoint snapshot pins 37.5 GB.
+if host_gib < 80:
+    raise RuntimeError(f"at least 80 GiB of RAM required, got {host_gib:.1f}")
 free_gib = shutil.disk_usage(root).free / 2**30
-if free_gib < minimum_free_gib:
-    raise RuntimeError(f"at least {minimum_free_gib:.0f} GiB free disk required")
+# A continued run's pairs, promoted model and staged uploads are disk it already has; the
+# promoted model is a hard link, so each inode counts once.
+held = {}
+if run_dir is not None and run_dir.is_dir():
+    for path in run_dir.rglob("*"):
+        stat = path.lstat()
+        if path.is_file() and not path.is_symlink():
+            held[(stat.st_dev, stat.st_ino)] = stat.st_blocks * 512
+held_gib = sum(held.values()) / 2**30
+if free_gib + held_gib < minimum_gib:
+    raise RuntimeError(
+        f"at least {minimum_gib:.0f} GiB of disk required for the run, got {free_gib:.0f} free"
+        f" and {held_gib:.0f} held by the run"
+    )
 
 expected_hashes = {
     "weights/config.json": "a99f354a6131034b688fc9f91c889dc10e7eeff96ce65e94447be33d1be325a5",
@@ -160,6 +191,15 @@ PY
   echo "GPU=${GPU_GIB}GiB host=${HOST_GIB}GiB free_disk=${FREE_GIB}GiB"
 }
 
+wait_child() {  # PID: its exit status, waiting again while a trapped signal interrupts wait
+  local status
+  while true; do
+    wait "$1"
+    status=$?
+    (( status > 128 )) && kill -0 "$1" 2>/dev/null || return "$status"
+  done
+}
+
 run_with_sync() {
   local out_dir="$1"
   local mode="$2"
@@ -170,7 +210,7 @@ run_with_sync() {
   [[ -n "$repo" ]] || die "set HIBIKI_HF_REPO=owner/public-model-repo"
   local commit
   commit="$(git rev-parse HEAD)"
-  "$PYTHON" - "$repo" "$mode" "$out_dir" "$commit" "$HIBIKI_HF_PREFIX" <<'PY'
+  "$PYTHON" - "$repo" "$mode" "$out_dir" "$commit" "$HIBIKI_HF_PREFIX" "$@" <<'PY'
 import json
 import re
 import secrets
@@ -198,6 +238,10 @@ run_dir = Path(sys.argv[3])
 if sys.argv[2] == "fresh":
     if remote_files:
         raise RuntimeError(f"fresh training requires an empty {prefix} recovery prefix")
+    # The arguments a continuation of the run reuses (the training command's, after
+    # `-m training.finetune.train --out-dir DIR`), written first: run_id.json marks a run that
+    # continues.
+    (run_dir / "train_args.json").write_text(json.dumps(sys.argv[11:]) + "\n")
     identity = run_dir / "run_id.json"
     temporary = run_dir / ".run_id.json.tmp"
     temporary.write_text(
@@ -223,7 +267,7 @@ else:
         (path.name for path in run_dir.glob("trainer_step*.pt")),
         r"trainer_step(\d+)\.pt",
     )
-    local_latest = max(local_models & local_trainers)
+    local_latest = max(local_models & local_trainers, default=-1)
     remote_models = steps(remote_files, r"checkpoints/model_step(\d+)\.safetensors")
     remote_trainers = steps(remote_files, r"checkpoints/trainer_step(\d+)\.pt")
     remote_latest = max(remote_models & remote_trainers, default=-1)
@@ -240,12 +284,19 @@ else:
         raise RuntimeError("restore run_id.json before resume")
     if json.loads(identity.read_text())["commit"] != sys.argv[4]:
         raise RuntimeError("training code changed since this run was created")
+    if "run.json" not in remote_files:
+        # The start wrote run_id.json but its upload failed: finish the claim.
+        if remote_files:
+            raise RuntimeError(f"{prefix} holds files but no run.json")
+        api.upload_file(
+            path_or_fileobj=identity,
+            path_in_repo=f"{prefix}run.json",
+            repo_id=sys.argv[1],
+            commit_message="Start full training run",
+        )
 print(f"HF disaster recovery: {info.id}/tree/main/{prefix.rstrip('/')}")
 PY
 
-  if [[ "$mode" == resume ]]; then
-    "$PYTHON" -m training.finetune.hf_sync "$out_dir" "$repo"
-  fi
   "$@" &
   local train_pid=$!
   "$PYTHON" -m training.finetune.hf_sync "$out_dir" "$repo" --watch-pid "$train_pid" &
@@ -253,21 +304,27 @@ PY
   trap "kill -TERM $train_pid $sync_pid 2>/dev/null || true" EXIT
   trap "kill -TERM $train_pid 2>/dev/null || true" INT TERM
 
-  local finished_pid=""
+  # A trapped INT or TERM interrupts wait, which then returns no pid: wait again, so the sync
+  # still makes its final upload after the trainer stops.
+  local finished_pid="" first_status=0
   set +e
-  wait -n -p finished_pid "$train_pid" "$sync_pid"
-  local first_status=$?
+  until [[ -n "${finished_pid:-}" ]]; do
+    wait -n -p finished_pid "$train_pid" "$sync_pid"
+    first_status=$?
+    [[ -n "${finished_pid:-}" ]] || (( first_status > 128 )) \
+      || die "lost track of the trainer and the sync (wait returned $first_status)"
+  done
   local train_status=0
   local sync_status=0
   if [[ "$finished_pid" == "$sync_pid" ]]; then
     sync_status=$first_status
     kill -TERM "$train_pid" 2>/dev/null || true
-    wait "$train_pid"
+    wait_child "$train_pid"
     train_status=$?
     (( sync_status != 0 )) || sync_status=1
   else
     train_status=$first_status
-    wait "$sync_pid"
+    wait_child "$sync_pid"
     sync_status=$?
   fi
   set -e
@@ -276,51 +333,46 @@ PY
   (( sync_status == 0 )) || return "$sync_status"
 }
 
-require_train_args() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --out-dir | --out-dir=* | --resume-checkpoint | --resume-checkpoint=*)
-        die "the launcher sets $arg itself"
-        ;;
-    esac
-  done
-}
-
-train() {
-  [[ $# -ge 1 ]] \
-    || die "usage: $0 train RUN_NAME --cache-dir DIR... --val-cache-dir DIR [train args]"
+run() {
+  [[ $# -ge 1 ]] || die "usage: $0 run RUN_NAME [train args, needed when the run starts]"
   local run_name="$1"
   shift
   [[ "$run_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
     || die "RUN_NAME must start with a letter or digit and use only [A-Za-z0-9._-]"
-  require_train_args "$@"
-  preflight 190
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" != --out-dir && "$arg" != --out-dir=* ]] || die "the launcher sets --out-dir itself"
+  done
   local run_dir="$RUNS_DIR/$run_name"
-  require_empty_dir "$run_dir"
   export HIBIKI_HF_PREFIX="$run_name"
-  run_with_sync "$run_dir" fresh "$PYTHON" -m training.finetune.train \
-    --out-dir "$run_dir" "$@"
-}
-
-resume() {
-  [[ $# -ge 1 ]] \
-    || die "usage: $0 resume runs/RUN_NAME/trainer_stepNNNNNN.pt [the run's train args]"
-  preflight 50
-  [[ -f "$1" ]] || die "missing resume checkpoint: $1"
-  local checkpoint
-  checkpoint="$(realpath "$1")"
-  shift
-  require_train_args "$@"
-  local out_dir
-  out_dir="$(dirname "$checkpoint")"
-  [[ "$(dirname "$out_dir")" == "$(realpath "$RUNS_DIR")" ]] \
-    || die "checkpoint is not in a runs/ directory"
-  local run_name
-  run_name="$(basename "$out_dir")"
-  export HIBIKI_HF_PREFIX="$run_name"
-  run_with_sync "$out_dir" resume "$PYTHON" -m training.finetune.train \
-    --resume-checkpoint "$checkpoint" --out-dir "$out_dir" "$@"
+  # One launcher per run: the boot hook's and a manual one would clean each other's files. The
+  # trainer and the sync inherit the lock, so it holds until all of them exit.
+  mkdir -p "$RUNS_DIR"
+  exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
+  flock -n "$lock_fd" || die "$run_name is already running"
+  # Two pairs (the default --keep-checkpoints), the promoted model, and a pair the sync still
+  # uploads after it is pruned.
+  preflight 130 "$run_dir"
+  if [[ -f "$run_dir/run_id.json" ]]; then
+    [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
+    local -a saved
+    mapfile -t saved < <("$PYTHON" -c \
+      'import json, sys; print("\n".join(json.load(open(sys.argv[1]))))' "$run_dir/train_args.json")
+    if [[ $# -gt 0 && "$*" != "${saved[*]}" ]]; then
+      die "$run_name was started with other arguments; run it with none to continue"
+    fi
+    run_with_sync "$run_dir" resume \
+      "$PYTHON" -m training.finetune.train --out-dir "$run_dir" "${saved[@]}"
+  else
+    [[ $# -gt 0 ]] || die "a new run needs its train args (--cache-dir, --val-cache-dir, ...)"
+    # A start cut short before run_id.json leaves only these behind.
+    if [[ -d "$run_dir" && -z "$(find "$run_dir" -mindepth 1 -maxdepth 1 ! -name train_args.json \
+        ! -name .run_id.json.tmp -print -quit)" ]]; then
+      rm -f "$run_dir/train_args.json" "$run_dir/.run_id.json.tmp"
+    fi
+    require_empty_dir "$run_dir"
+    run_with_sync "$run_dir" fresh "$PYTHON" -m training.finetune.train --out-dir "$run_dir" "$@"
+  fi
 }
 
 command="${1:-}"
@@ -330,16 +382,13 @@ case "$command" in
     setup
     ;;
   preflight)
-    preflight 190
+    preflight 130
     ;;
-  train)
-    train "$@"
-    ;;
-  resume)
-    resume "$@"
+  run)
+    run "$@"
     ;;
   *)
-    echo "usage: $0 setup|preflight|train RUN_NAME ARGS...|resume CHECKPOINT ARGS..." >&2
+    echo "usage: $0 setup|preflight|run RUN_NAME [ARGS...]" >&2
     exit 1
     ;;
 esac

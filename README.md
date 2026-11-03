@@ -79,12 +79,14 @@ The inference tools are:
 
 ## Training
 
-Training runs only on a Linux pod with one H100, through the pinned CUDA 12.8 launcher:
+Training runs only on a Linux pod with one H100 or H200 of 80 GB or more, through the pinned
+CUDA 13.4 launcher:
 
 ```bash
 ./training/h100.sh setup
 ./training/h100.sh preflight
-./training/h100.sh train RUN_NAME --cache-dir data/cache/EN_SPEECH_TRAIN data/cache/phomt-grounded-v2-5s --val-cache-dir data/cache/VALIDATION
+./training/h100.sh run RUN_NAME --cache-dir data/cache/EN_SPEECH_TRAIN --val-cache-dir data/cache/VALIDATION
+./training/h100.sh run RUN_NAME   # continues it, e.g. after a preemption
 ```
 
 Training modules run from the repository root as `python -m training.<package>.<module>`.

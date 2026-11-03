@@ -3,14 +3,26 @@
 `training/h100.sh` sets up a pinned environment, checks the pod, and runs
 `training.finetune.train` with Hugging Face disaster recovery. Training starts from
 the upstream Hibiki-Zero weight and updates every parameter on grounded cache
-directories built by `training.prep.cache_codes`.
+directories built by `training.prep.cache_codes`. A run survives preemption: running
+`h100.sh run RUN_NAME` again continues it from its newest local checkpoint, so an
+interruptible pod reruns it on boot.
 
 ## Pod requirements
 
-Use one H100 with at least 90 GiB VRAM, NVIDIA driver 570 or newer, at least
-110 GiB host RAM, and at least 190 GiB free disk at preflight. The launcher also
-requires Bash 5.1+ for training supervision. Never commit an HF token, SSH
-endpoint, or pod-specific path.
+- One Hopper GPU with at least 80 GB: an H100 SXM (80 GB), H100 NVL (94 GB) or H200 / H200 NVL
+  (141 GB). Training peaks at 75.1 GiB reserved, validation at 74.4 GiB.
+- The GPU at its stock power limit (`nvidia-smi -q -d POWER`): an H100 SXM its host capped at
+  500 W instead of 700 W trained 1.8x slower than one at 700 W, and some providers cap every
+  SXM they rent out. One epoch takes ~11 h on a 700 W H100 SXM or an H200 NVL and ~14 h on an
+  H100 NVL ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
+- NVIDIA driver 580 or newer (CUDA 13), at least 80 GiB of RAM in the container, and Bash 5.1+.
+- About 400 GB of disk: ~100 GB of environment, weights, caches and evaluation sets, 70 GB of
+  cache packs, and 130 GiB for the run: free, plus what a continued run already holds (`run`
+  checks it).
+- Interruptible pods work. Their disk survives a preemption, and the boot hook below continues
+  the run; checkpoints every 1,000 steps (5–6.5 min) bound the work a preemption loses.
+
+Never commit an HF token, SSH endpoint, or pod-specific path.
 
 ## Set up a pod
 
@@ -31,35 +43,39 @@ export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./training/h100.sh preflight
 ```
 
-`setup` creates a new `.venv` with Torch `2.8.0+cu128`, Moshi `0.2.13` and the
+`setup` creates a new `.venv` with Torch `2.15.0+cu134`, Moshi `0.2.13` and the
 pinned dependencies, and refuses to reuse an existing environment. `preflight`
-checks the GPU, driver, package pins, host RAM, free disk, and the SHA-256 of the
-four upstream artifacts, and requires a clean tracked worktree.
+checks the GPU, driver, package pins, RAM (the container's limit, not the host's), free disk,
+and the SHA-256 of the four upstream artifacts, and requires a clean tracked worktree.
 
 Restore the training caches from the cache repo (built with
-[training/prep](../training/prep/README.md); `en-vi-grounded-v2` is whole once it holds a shard
-for every source shard): the `en_speech` cache with its validation split, and the PhoMT cache,
-which trains as one more `--cache-dir`. Add `--include "en-vi-grounded-v2-cv-anquach/train/shard_*.pt"`
-for the `cv-anquach` rows, whose English targets are 16 kHz. `--include` takes one pattern
-each; given two, `hf` reads the second as a file name and ignores the include.
+[training/prep](../training/prep/README.md)): the `en_speech` cache with its validation split.
+The PhoMT cache (`--include "phomt-grounded-v2-5s/shard_*.pt"`) and `cv-anquach`
+(`--include "en-vi-grounded-v2-cv-anquach/train/shard_*.pt"`, 16 kHz English targets) train as
+more `--cache-dir`s in later ablations. `--include` takes one pattern each; given two, `hf`
+reads the second as a file name and ignores the include. Anonymous downloads hit HF's rate
+limit (429) partway; logged in they do not, and `hf download` resumes where it stopped.
 
 ```bash
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data/cache \
-  --include "en-vi-grounded-v2/*/shard_*.pt" --include "phomt-grounded-v2-5s/shard_*.pt"
-```
-
-Build the real-Vietnamese evaluation sets. Training translates FLEURS dev at every validation to
-choose its checkpoint, and refuses to start without it
-([sft-training](agent-memory/sft-training.md#evaluation-sets)):
-
-```bash
+  --include "en-vi-grounded-v2/*/shard_*.pt"
+./.venv/bin/python -m training.finetune.streams \
+  data/cache/en-vi-grounded-v2/train data/cache/en-vi-grounded-v2/validation
 ./.venv/bin/python -m training.prep.eval_sets
 ```
 
-## Train
+The second command packs each shard into a flat memory-mapped array beside it
+(`<cache-dir>/.packed/`, 70 GB, ~30 s): every later start loads the 3.44M rows in ~9 s instead
+of unpickling them for 7.5 minutes, and keeps them out of RAM. Training builds missing packs
+itself, so this only moves that work before `run` checks the free disk. The third builds the
+real-Vietnamese evaluation sets; training translates FLEURS dev at every validation to choose
+its checkpoint, and refuses to start without it
+([sft-training](agent-memory/sft-training.md#evaluation-sets)).
+
+## Run
 
 ```bash
-./training/h100.sh train RUN_NAME \
+./training/h100.sh run RUN_NAME \
   --cache-dir data/cache/en-vi-grounded-v2/train \
   --val-cache-dir data/cache/en-vi-grounded-v2/validation
 ```
@@ -67,21 +83,48 @@ choose its checkpoint, and refuses to start without it
 The first stream run trains on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
 back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
 `RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–120 s
-streams in batches of at most 4,608 frames, one epoch, peak LR `1e-6` with 5% warmup and cosine
-decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW `(0.9, 0.95)` with weight
-decay `0.1`, and validation and checkpoints every 9,000 steps
+streams in batches of at most 4,608 frames, one epoch (131,553 steps), peak LR `1e-6` with 5%
+warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW
+`(0.9, 0.95)` with weight decay `0.1`, checkpoints every 1,000 steps and validation every 9,000
 ([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced
 losses, translates FLEURS dev free-running, and promotes the checkpoint that passes the
 generation health gates with the highest chrF
 ([sft-training](agent-memory/sft-training.md#checkpoints-and-recovery)).
 
-`train` requires an empty `runs/RUN_NAME/`. It needs a public `HIBIKI_HF_REPO` whose
-`RUN_NAME/` prefix is empty, and uploads `run.json` with the run identity and commit.
-It then trains while `training.finetune.hf_sync` keeps the newest two complete recovery
-pairs, the promoted best model, the run config, and the final logs under that prefix.
-Training stops if sync fails. A start that fails before training (for example a
-missing cache directory) has already claimed `runs/RUN_NAME/` and the remote
-`RUN_NAME/run.json`: delete both, or choose a new name.
+A new run needs an empty `runs/RUN_NAME/` and a public `HIBIKI_HF_REPO` whose `RUN_NAME/`
+prefix is empty. It records the run identity and commit in `runs/RUN_NAME/run_id.json` (uploaded
+as `RUN_NAME/run.json`) and its arguments in `train_args.json`. It then trains while
+`training.finetune.hf_sync` uploads, under that prefix, the pairs of the validation steps (the
+newest two), the promoted best model, the run config and arguments, and the logs once the
+training process exits. Training stops if sync fails.
+
+`run RUN_NAME` with no arguments continues the run with its saved ones (other arguments are
+refused): the trainer resumes the newest complete local pair, or starts over at step 0 if a
+preemption came before the first save. A start that failed before training has already
+claimed the run; running it again continues the same claim, so arguments `train.py` refuses
+need a new RUN_NAME. Ctrl-C or SIGTERM to the launcher stops training and waits for the sync's
+final upload.
+
+### Interruptible pods
+
+A preempted container restarts with its disk intact but nothing running. Its boot script,
+`/root/onstart.sh` on Vast, can continue the run, retrying every 5 minutes until `run`
+succeeds; a finished run exits 0 at once. `run` only continues a run that exists and exits
+while another launcher holds it, so the line can stay while the run lasts. To stop a run for
+good, remove the line from `/root/onstart.sh`, kill the loop
+(`pkill -f 'until ./training/h100.sh run RUN_NAME'`), then send the launcher SIGTERM:
+
+```bash
+cat >> /root/onstart.sh <<'EOF'
+cd /workspace/hibiki-zero && HF_HOME=/workspace/.hf_home HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft \
+  nohup bash -c 'until ./training/h100.sh run RUN_NAME; do sleep 300; done' \
+  >> /workspace/RUN_NAME.log 2>&1 &
+EOF
+```
+
+A preemption loses the steps since the last save (≤1,000) and the restart: preflight's hash of
+the 6.3 GB of weights, ~10 s of data loading, the model load, ~30 s of compilation, and a
+validation if the run stopped between a validation step's save and its log line.
 
 ## Recover a run on a replacement pod
 
@@ -102,6 +145,7 @@ restore_dir="$(mktemp -d /workspace/hibiki-recovery.XXXXXX)"
 ./.venv/bin/hf download "$HIBIKI_HF_REPO" \
   "$run/run.json" \
   "$run/metadata/run_config.json" \
+  "$run/metadata/train_args.json" \
   "$run/checkpoints/model_stepNNNNNN.safetensors" \
   "$run/checkpoints/trainer_stepNNNNNN.pt" \
   "$run/best/best_stepBBBBBB.safetensors" \
@@ -111,7 +155,7 @@ restore_dir="$(mktemp -d /workspace/hibiki-recovery.XXXXXX)"
 run_dir="runs/$run"
 mkdir -p "$run_dir"
 cp "$restore_dir/$run/run.json" "$run_dir/run_id.json"
-cp "$restore_dir/$run/metadata/run_config.json" "$run_dir/run_config.json"
+cp "$restore_dir/$run/metadata/"{run_config,train_args}.json "$run_dir/"
 cp "$restore_dir/$run/checkpoints/model_stepNNNNNN.safetensors" "$run_dir/"
 cp "$restore_dir/$run/checkpoints/trainer_stepNNNNNN.pt" "$run_dir/"
 cp "$restore_dir/$run/best/best_stepBBBBBB.safetensors" "$run_dir/"
@@ -121,18 +165,15 @@ cp "$restore_dir/$run/best/best_stepBBBBBB.json" "$run_dir/best.json"
 cp "$restore_dir/$run/artifacts/"*.jsonl "$run_dir/"
 find "$restore_dir" -depth -delete
 
-./training/h100.sh resume "$run_dir/trainer_stepNNNNNN.pt" \
-  --cache-dir data/cache/en-vi-grounded-v2/train \
-  --val-cache-dir data/cache/en-vi-grounded-v2/validation
+./training/h100.sh run "$run"
 ```
 
-Pass the run's original training arguments again. Resume is interruption recovery for
-the same run only:
+Continuing is interruption recovery for the same run only:
 
-- it needs the newest complete pair, an unchanged `run_config.json`, and the same run
-  identity and commit;
-- if the run has promoted a checkpoint (`RUN_NAME/best/`), it also needs that model and
-  marker;
+- it needs the run's identity and commit, its `train_args.json`, and an unchanged
+  `run_config.json`;
+- the remote pair may not be newer than the newest local one, and if the run has promoted a
+  checkpoint (`RUN_NAME/best/`), its local `best.json` may not be older;
 - a validation the interruption cut short runs again before training continues, and so does
   the resumed step's validation if the run's logs were not restored (the final sync then
   replaces the remote logs with the resumed run's only);
@@ -155,7 +196,7 @@ sets, such as MultiMed `select`, the non-regression gate
 ./.venv/bin/python -m training.finetune.eval \
   --pairs data/eval/multimed-vi/select.jsonl --limit 1718 \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors \
-  --batch-size 8 --stop-on-eos --text-only --seed 42 \
+  --batch-size 64 --stop-on-eos --text-only --seed 42 \
   --out-dir runs/RUN_NAME/multimed_select_stepNNNNNN
 ```
 
