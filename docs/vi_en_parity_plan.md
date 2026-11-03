@@ -159,11 +159,13 @@ should send the source EOS at the end of the input, as upstream does; live mode 
 2. Done (2026-11-03, H100 NVL): the trainer 1.5x faster per frame, startup in seconds, cheap
    frequent checkpoints, and runs that survive preemption
    ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
-3. Running (started 2026-11-03): the full 3B run `en_speech_streams_epoch1`, one epoch of
-   `en-vi-grounded-v2/train` on a 700 W H100 SXM (~10.5 h with validations). Its first
-   validation (step 9,000, ~45 min in) replaces a separate smoke run: the loss falls, PAD
-   accuracy rises, and the translations have sane length and EOS, or the run stops and restarts
-   under a new name, losing only those minutes.
+3. Running (started 2026-11-03): the full 3B run `en_speech_streams_epoch1b`, one epoch of
+   `en-vi-grounded-v2/train` on a 700 W H100 SXM (~10.5 h with validations). The first validation
+   (step 9,000, ~45 min in) replaces a separate smoke run. On the first attempt
+   (`en_speech_streams_epoch1`, which then ran out of memory) the training loss fell from 10.1
+   to 3.05 and teacher-forced content accuracy reached 0.51 (PAD 0.947), but FLEURS dev
+   translations came out short (length ratio 0.58, chrF 12.1) and only 50 of 361 found EOS;
+   later validations show whether that recovers.
 4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before

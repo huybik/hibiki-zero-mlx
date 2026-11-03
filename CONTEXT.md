@@ -50,7 +50,7 @@ inference/ (Apple Silicon, MLX)
   to step 135k in `docs/analysis/`: teacher-forced loss improves, but free-running translation
   fails. FLEURS and MultiMed-ST now serve only as real-Vietnamese evaluation sets
   ([sft-training](docs/agent-memory/sft-training.md#evaluation-sets)).
-- The first stream run, `en_speech_streams_epoch1` (one epoch of `en-vi-grounded-v2/train`),
+- The first stream run, `en_speech_streams_epoch1b` (one epoch of `en-vi-grounded-v2/train`),
   started on 2026-11-03 on a 700 W H100 SXM ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,

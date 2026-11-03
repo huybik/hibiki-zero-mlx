@@ -95,7 +95,10 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
 - An 80 GB card fits: CUDA sees 79.2 GiB of it and the allocator gets 78.7 GiB. Training
   peaked at 73.6 GiB allocated and 75.1 GiB reserved there before the compiled main transformer,
   and translating FLEURS dev at 74.4 GiB; with it, 71.6 and 73.1 GiB on both the H200 NVL
-  (where main also reserved 75.1) and the 700 W SXM, with no allocator retries.
+  (where main also reserved 75.1) and the 700 W SXM, with no allocator retries. The
+  validation's bf16 generator sits in moshi's reference cycles, so only `gc.collect()` frees its
+  5.8 GiB: without it the first training step after a validation ran out of memory there
+  (76.8 GiB allocated), which a 141 GB card hides.
 - Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
   1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by
   0.01% and PAD accuracy by 1 point (base model). Loader workers save nothing: assembling the

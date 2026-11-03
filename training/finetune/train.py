@@ -18,6 +18,7 @@ continues by running the same command again.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import math
 import os
@@ -683,7 +684,10 @@ def main() -> None:
             eval_dir,
             args.seed,
         )
+        # moshi's streaming state holds the generator in reference cycles: without the collect,
+        # its 5.8 GiB outlive `del` and the next training step runs out of an 80 GB card.
         del generator
+        gc.collect()
         torch.cuda.empty_cache()
         common.write_predictions(eval_dir / "predictions.csv", records)
         healthy, gates = common.generation_health(free_running)
