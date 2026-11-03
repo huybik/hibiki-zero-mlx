@@ -12,8 +12,9 @@ Writes, under --out-dir (default data/eval):
                                    Voice dev and Libriheavy dev, Vietnamese TTS in the English
                                    speaker's voice): the training data's own domain, held out.
   en-vi-val-noisy/{cv27,libriheavy}.jsonl  the same rows with every clip under `augment`'s
-                                   simulated recording conditions (24 kHz WAV), against which the
-                                   clean set shows what the channel alone costs.
+                                   simulated recording conditions (24 kHz WAV, resampled as eval.py
+                                   resamples the clean clips), against which the clean set shows
+                                   what the channel alone costs.
 
 Each row holds `id`, `vi_audio` (the clip's path), `text_vi`, `text_en` and `duration_s`. These sets
 are for evaluation only and never enter training. Needs huggingface_hub, pyarrow, sphn, soxr and
@@ -32,7 +33,6 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
-import soxr
 import sphn
 import torch
 from huggingface_hub import hf_hub_download
@@ -246,8 +246,10 @@ def build_en_vi_val_noisy(out_dir: Path, bank_dir: Path) -> None:
         rows = []
         clean = (out_dir / "en-vi-val" / f"{source}.jsonl").read_text().splitlines()
         for row in map(json.loads, clean):
+            # Resampled as eval.py resamples the clean clip (hibiki_helpers.audio_read), so the
+            # two sets differ by the conditions alone.
             wav, rate = sphn.read(resolve_repo_path(Path(row["vi_audio"])))
-            clip = torch.from_numpy(soxr.resample(wav[0], rate, augment.SAMPLE_RATE))
+            clip = torch.from_numpy(sphn.resample(wav, rate, augment.SAMPLE_RATE)[0])
             conditions = bank.draw(f"{NOISY_SEED}:{row['id']}")
             noisy = bank.apply(clip, conditions)
             path = audio_dir / Path(row["vi_audio"]).name

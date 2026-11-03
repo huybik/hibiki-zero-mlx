@@ -110,15 +110,19 @@ final upload.
 ### A second epoch on the noisy cache
 
 The noisy cache holds the clean cache's rows with the Vietnamese source of 60% of them re-encoded
-under simulated rooms, noise and bands ([noisy-source](agent-memory/noisy-source.md)). Build it on
-the pod once a run has finished, while the GPU is otherwise idle (it downloads the 442 GB of
-parquet shards one at a time and Mimi encodes ~5,000 h of Vietnamese), then train a new run from
-the first run's final model:
+under simulated rooms, noise and bands ([noisy-source](agent-memory/noisy-source.md)). Start its
+`fetch` while the first run still trains: it downloads the 442 GB of parquet shards (~3.2 h at
+the pod's ~39 MB/s) and keeps ~80 GB of the selected rows' Vietnamese audio, pausing below 50 GB
+of free disk. Once the run has finished, `encode` writes the shards on the GPU, and a new run
+trains from the first run's final model:
 
 ```bash
-./.venv/bin/python -m training.prep.noisy_cache --cache-dir data/cache/en-vi-grounded-v2/train \
-  --out-dir data/cache/en-vi-grounded-v2-noisy/train
-rm -r data/cache/en-vi-grounded-v2/train/.packed     # 70 GB; the new run packs the noisy split
+C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
+nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+./.venv/bin/python -m training.prep.eval_sets --sets en-vi-val-noisy
+# after the first run's final save and sync:
+rm -r $C/.packed runs/PREVIOUS_RUN/trainer_step*.pt   # 70 + 50 GB; the trainer state stays on the Hub
+./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O
 ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.safetensors
 ./training/h100.sh run RUN_NAME \
   --cache-dir data/cache/en-vi-grounded-v2-noisy/train \
@@ -133,10 +137,11 @@ ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.
   A replacement pod downloads it from `PREVIOUS_RUN/checkpoints/` in the recovery repo.
 - A new `--seed` draws new streams: the noisy split has the same rows, so seed 42 would replay
   the first run's streams and batch order.
+- Train only after `encode` prints `every shard written`: the trainer takes whatever shards the
+  folder holds.
 - The run starts a new warmup and cosine decay. Validation every 18,000 steps (7 per epoch plus
-  the final step) halves its share of the run; it also scores `en-vi-val-noisy` (build it first
-  with `python -m training.prep.eval_sets --sets en-vi-val-noisy`), so the run shows what the
-  channel costs as it trains.
+  the final step) halves its share of the run; it also scores `en-vi-val-noisy`, so the run shows
+  what the channel costs as it trains.
 
 ### Interruptible pods
 

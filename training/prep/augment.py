@@ -2,8 +2,8 @@
 narrowed band and a level change, applied to a 24 kHz clip without changing its length.
 
     clip ─► reverb (p 0.5) ─► + noise at 5–30 dB SNR (p 0.8) ─► band ─► gain, clipped to ±1
-            room impulse        background noise              full 24 kHz 0.40 · 16 kHz rate 0.35
-            responses           from the bank                 · 8 kHz rate 0.15 · phone 0.10
+            room impulse        background 0.7, looped        full 24 kHz 0.40 · 16 kHz rate 0.35
+            responses           foreground 0.3, one event     · 8 kHz rate 0.15 · phone 0.10
 
 The impulse responses and noises are OpenSLR 28 (RIRS_NOISES, Apache 2.0): real and simulated
 small and medium room responses, and point-source and diffuse noises, all 16 kHz, resampled to
@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+import tempfile
 import urllib.request
 import wave
 import zipfile
@@ -40,7 +41,7 @@ NOISE_P = 0.8
 # 129 files) more often than foreground events (806: doors, keys, animals, ...).
 NOISE_KINDS = {"background": 0.7, "foreground": 0.3}
 SNR_DB = (5.0, 30.0)
-GAIN_DB = (-15.0, 5.0)
+GAIN_DB = (-15.0, 0.0)  # TTS peaks at a median 0.73: louder clips most rows
 # name: (probability, high-pass Hz, low-pass Hz); the 16 and 8 kHz bands are FLEURS's and
 # MultiMed-ST's sampling rates, the phone band the narrowband telephone channel.
 BANDS = {
@@ -58,7 +59,9 @@ class Conditions:
 
     rir: str | None
     noise: str | None
-    noise_offset: float  # fraction of the noise clip where it starts
+    # Where the noise starts: in a background loop, or of the room a foreground event leaves in
+    # the clip (in the event, when it outlasts the clip); a fraction.
+    noise_offset: float
     snr_db: float | None
     band: str
     gain_db: float
@@ -81,8 +84,11 @@ def fetch_bank(root: Path) -> Path:
             digest.update(block)
     if digest.hexdigest() != BANK_SHA256:
         raise RuntimeError(f"{archive} has SHA-256 {digest.hexdigest()}, expected {BANK_SHA256}")
-    with zipfile.ZipFile(archive) as zipped:
-        zipped.extractall(root)
+    # Unpacked aside and renamed into place: a cut-short unpack must not pass for the bank.
+    with tempfile.TemporaryDirectory(dir=root, prefix=".unpack-") as tmp:
+        with zipfile.ZipFile(archive) as zipped:
+            zipped.extractall(tmp)
+        (Path(tmp) / bank.name).rename(bank)
     return bank
 
 
@@ -133,6 +139,7 @@ class Bank:
             for paths in noises.values()
             for p in paths
         }
+        self.foreground = set(self.noise_names["foreground"])
         if not self.rirs or not all(self.noise_names.values()):
             raise RuntimeError(f"{bank} lacks impulse responses or a kind of noise")
 
@@ -165,9 +172,13 @@ class Bank:
             out = wet * (level / _rms(wet))
         if conditions.noise is not None:
             noise = self.noises[conditions.noise]
-            noise = _loop(noise, int(conditions.noise_offset * noise.shape[-1]), out.shape[-1])
-            gain = level / (_rms(noise) * 10 ** (conditions.snr_db / 20))
-            out = out + gain * noise
+            if conditions.noise in self.foreground:
+                # One event (a door, a cough), its SNR measured over the event itself.
+                track, event = _event(noise, conditions.noise_offset, out.shape[-1])
+            else:
+                start = int(conditions.noise_offset * noise.shape[-1])
+                track = event = _loop(noise, start, out.shape[-1])
+            out = out + track * (level / (_rms(event) * 10 ** (conditions.snr_db / 20)))
         _, high_pass, low_pass = BANDS[conditions.band]
         if high_pass or low_pass:
             out = _band(out, high_pass, low_pass)
@@ -194,6 +205,19 @@ def _convolve(x: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
     size = _fft_size(x.shape[-1] + h.shape[-1] - 1)
     y = torch.fft.irfft(torch.fft.rfft(x, size) * torch.fft.rfft(h, size), size)
     return y[: x.shape[-1]]
+
+
+def _event(noise: torch.Tensor, offset: float, length: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """A silent track of `length` holding `noise` once at `offset` of the room left, or the
+    window of `noise` at `offset` when it is longer; and the event's own samples."""
+    if noise.shape[-1] >= length:
+        start = int(offset * (noise.shape[-1] - length))
+        window = noise[start : start + length]
+        return window, window
+    start = int(offset * (length - noise.shape[-1]))
+    track = torch.zeros(length, dtype=noise.dtype, device=noise.device)
+    track[start : start + noise.shape[-1]] = noise
+    return track, noise
 
 
 def _loop(noise: torch.Tensor, start: int, length: int) -> torch.Tensor:

@@ -126,15 +126,18 @@ python -m training.prep.eval_sets --sets en-vi-val-noisy  # en-vi-val-noisy/{cv2
 
 ## Noisy source cache
 
-Runs on the pod's GPU. `training.prep.noisy_cache` copies a clean cache split shard by shard,
+Runs on the pod. `training.prep.noisy_cache` copies a clean cache split shard by shard,
 re-encoding the Vietnamese source of a seeded 60% of the rows under drawn room reverb, noise,
-band and level ([noisy-source](../../docs/agent-memory/noisy-source.md)); it downloads each
-shard's parquet from `anquachdev/common-vi-en` and deletes it once used. A rerun skips the shards
+band and level ([noisy-source](../../docs/agent-memory/noisy-source.md)). `fetch` downloads
+each shard's parquet from `anquachdev/common-vi-en`, keeps only the selected rows' Vietnamese
+audio and can run while the GPU trains; `encode` needs the GPU, waits for what a running fetch
+has not written yet, and ends with `every shard written`. A rerun of either skips the shards
 written.
 
 ```bash
-./.venv/bin/python -m training.prep.noisy_cache --cache-dir data/cache/en-vi-grounded-v2/train \
-  --out-dir data/cache/en-vi-grounded-v2-noisy/train
+C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
+nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O   # once the GPU is free
 ```
 
 ## Vietnamese translations of `en_speech`

@@ -16,8 +16,10 @@ Two steps, so the download runs while the GPU still trains:
     encode (CUDA)         .sources + clean shard ─► workers: Opus decode, soxr to 24 kHz
                           ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted
 
-`encode` waits for a source that a running `fetch` has not written yet, and stops when none is
-running. Both skip the shards already written, so a rerun continues.
+The first fetch writes <out-dir>/manifest.json (seed, fraction, dataset revision, bank SHA-256);
+later fetches and every encode require the same. `encode` waits for a source that a running
+`fetch` has not written yet, and stops when none is running. Both skip the shards already written,
+so a rerun continues.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ FRAME_SAMPLES = 1920  # 24 kHz / 12.5 Hz
 SOURCES = ".sources"
 FETCH_LOCK = ".fetch.lock"
 ENCODE_LOCK = ".encode.lock"
+MANIFEST = "manifest.json"
 META_KEY = b"noisy_cache"
 WAIT_S = 30
 
@@ -77,8 +80,10 @@ def parse_args() -> argparse.Namespace:
     fetch.add_argument("--fraction", type=float, default=0.6, help="Rows given new conditions.")
     fetch.add_argument("--seed", type=int, default=0)
     fetch.add_argument("--jobs", type=int, default=16, help="Parallel downloads.")
+    # A trainer on the same disk needs a checkpoint pair (37.5 GB) beyond its steady state while
+    # the recovery sync still uploads the pair it pruned.
     fetch.add_argument(
-        "--min-free-gb", type=float, default=40.0, help="Pause while the disk has less free."
+        "--min-free-gb", type=float, default=50.0, help="Pause while the disk has less free."
     )
     encode.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"))
     encode.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -106,6 +111,24 @@ def todo(cache_dir: Path, out_dir: Path) -> list[Path]:
     return [
         path for path in sorted(cache_dir.glob("shard_*.pt")) if not (out_dir / path.name).exists()
     ]
+
+
+def manifest(args: argparse.Namespace) -> dict[str, Any]:
+    """The out-dir's settings, written by its first fetch. Every run needs the same dataset
+    revision and bank, and a fetch the same seed and fraction."""
+    path = args.out_dir / MANIFEST
+    needed = {"dataset_revision": EN_VI_REVISION, "bank_sha256": augment.BANK_SHA256}
+    if args.step == "fetch":
+        needed |= {"seed": args.seed, "fraction": args.fraction}
+        if not path.exists():
+            partial = path.with_name(f".{path.name}.tmp")
+            partial.write_text(json.dumps(needed, indent=2) + "\n")
+            durable(partial)
+            partial.replace(path)
+    found = read_json(path)
+    if any(found.get(key) != value for key, value in needed.items()):
+        raise RuntimeError(f"{path} holds {found}, this run needs {needed}")
+    return found
 
 
 def held(lock: Path) -> bool:
@@ -153,8 +176,7 @@ def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
                 "vi_opus": pc.if_else(keep, audio, pa.scalar(None, audio.type)),
             }
         )
-        meta = {"source": source, "bytes": path.stat().st_size}
-        meta |= {"seed": args.seed, "fraction": args.fraction, "revision": EN_VI_REVISION}
+        meta = {"file": source, "bytes": path.stat().st_size}
         slim = slim.replace_schema_metadata({META_KEY: json.dumps(meta)})
         partial = target.with_name(f".{target.name}.tmp")
         pq.write_table(slim, partial)
@@ -173,6 +195,7 @@ def fetch(args: argparse.Namespace) -> None:
         exclusive(args.out_dir / FETCH_LOCK, busy),
         ThreadPoolExecutor(args.jobs) as pool,
     ):
+        manifest(args)
         # What a killed fetch left: downloads and unrenamed sources.
         for stale in (args.out_dir / SOURCES).glob(".*"):
             if stale.is_dir():
@@ -198,7 +221,8 @@ class Encoder:
 
     def __init__(self, args: argparse.Namespace):
         cfg = read_json(args.config_path)
-        self.source_q = int(cfg["n_q"]) - int(cfg["dep_q"])
+        self.dep_q = int(cfg["dep_q"])
+        self.source_q = int(cfg["n_q"]) - self.dep_q
         self.card = int(cfg["card"])
         # TF32 changes Mimi's residual codes as bf16 does, so every matmul and convolution stays
         # full float32.
@@ -236,7 +260,10 @@ class Encoder:
         for index in sorted(clips, key=lambda index: samples[index]["vi_frames"]):
             sample = samples[index]
             # Shortest first, so this row sets the padded length of the batch it joins.
-            if (len(pending) + 1) * sample["vi_frames"] * FRAME_SAMPLES > self.batch_samples:
+            if (
+                pending
+                and (len(pending) + 1) * sample["vi_frames"] * FRAME_SAMPLES > self.batch_samples
+            ):
                 self._write(pending)
                 pending = []
             clip = torch.from_numpy(clips[index].result()).to(self.device)
@@ -255,7 +282,7 @@ class Encoder:
     def _write(self, pending: list[tuple[dict[str, Any], torch.Tensor]]) -> None:
         codes = self.encode([clip for _, clip in pending])
         for (sample, _), new in zip(pending, codes, strict=True):
-            source = sample["codes"][1 + self.source_q :]
+            source = sample["codes"][1 + self.dep_q : 1 + self.dep_q + self.source_q]
             if int(source[0, sample["vi_frames"]]) != self.card:
                 raise RuntimeError(f"{sample['id']}: no codec EOS at frame {sample['vi_frames']}")
             source[:, : sample["vi_frames"]] = new
@@ -265,7 +292,8 @@ def wait_for_source(out_dir: Path, name: str) -> Path:
     """The fetched source of shard `name`, waiting while a fetch runs."""
     path = out_dir / SOURCES / f"{name}.parquet"
     while not path.exists():
-        if not held(out_dir / FETCH_LOCK):
+        # Checked again after the lock: the fetch may have written it and exited in between.
+        if not held(out_dir / FETCH_LOCK) and not path.exists():
             raise FileNotFoundError(f"{path} is missing and no fetch is running")
         time.sleep(WAIT_S)
     return path
@@ -273,31 +301,39 @@ def wait_for_source(out_dir: Path, name: str) -> Path:
 
 def encode(args: argparse.Namespace) -> None:
     cache_dir = require_dir(args.cache_dir, "clean cache split")
-    shards = todo(cache_dir, args.out_dir)
-    print(f"{len(shards)} shards to write under {args.out_dir}", flush=True)
-    if not shards:
-        return
-    encoder = Encoder(args)
     split = cache_dir.name
     busy = f"another noisy_cache encode uses {args.out_dir}"
-    with (
-        exclusive(args.out_dir / ENCODE_LOCK, busy),
-        ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn")) as pool,
-    ):
+    with exclusive(args.out_dir / ENCODE_LOCK, busy):
+        settings = manifest(args)
+        # Sources of shards already written: a stop between the shard's rename and the unlink.
+        for written in sorted(args.out_dir.glob("shard_*.pt")):
+            (args.out_dir / SOURCES / f"{shard_name(written)}.parquet").unlink(missing_ok=True)
+        shards = todo(cache_dir, args.out_dir)
+        print(f"{len(shards)} shards to write under {args.out_dir}", flush=True)
+        if shards:
+            encode_shards(args, settings, split, shards)
+        print(f"{args.out_dir}: every shard written", flush=True)
+
+
+def encode_shards(
+    args: argparse.Namespace, settings: dict[str, Any], split: str, shards: list[Path]
+) -> None:
+    encoder = Encoder(args)
+    spawn = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(args.workers, mp_context=spawn) as pool:
         for number, shard_path in enumerate(shards, 1):
             started = time.perf_counter()
             source_path = wait_for_source(args.out_dir, shard_name(shard_path))
             table = pq.read_table(source_path)
-            meta = json.loads(table.schema.metadata[META_KEY])
+            source = json.loads(table.schema.metadata[META_KEY])
             payload = torch.load(shard_path, map_location="cpu")
             if payload.get("format") != CACHE_FORMAT:
                 raise RuntimeError(f"{shard_path} is not a {CACHE_FORMAT} shard")
-            source = {
-                "file": f"data/{split}/{shard_name(shard_path)}.parquet",
-                "bytes": meta["bytes"],
-            }
-            if payload["source"] != source or meta["source"] != source["file"]:
-                raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {meta}")
+            if (
+                payload["source"] != source
+                or source["file"] != f"data/{split}/{shard_name(shard_path)}.parquet"
+            ):
+                raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {source}")
             ids = table.column("id").to_pylist()
             opus = table.column("vi_opus").to_pylist()
             durations = table.column("vi_duration_s").to_pylist()
@@ -313,18 +349,12 @@ def encode(args: argparse.Namespace) -> None:
                 sample["source_conditions"] = None
                 if opus[row] is None:
                     continue
-                conditions = encoder.bank.draw(f"{meta['seed']}:{sample['id']}")
+                conditions = encoder.bank.draw(f"{settings['seed']}:{sample['id']}")
                 sample["source_conditions"] = dataclasses.asdict(conditions)
                 clips[index] = pool.submit(decode, opus[row], durations[row], sample["id"])
             del opus
             seconds = encoder.shard(payload["samples"], clips)
-            payload["source_augment"] = {
-                "clean_cache": f"{split}/{shard_path.name}",
-                "fraction": meta["fraction"],
-                "seed": meta["seed"],
-                "bank_sha256": augment.BANK_SHA256,
-                "dataset_revision": meta["revision"],
-            }
+            payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings
             out_path = args.out_dir / shard_path.name
             partial = out_path.with_name(f".{out_path.name}.tmp")
             torch.save(payload, partial)
