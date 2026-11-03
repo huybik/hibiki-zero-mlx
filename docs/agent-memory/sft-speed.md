@@ -23,8 +23,9 @@ with the same math on the same weights:
 - the main transformer's training forward (training mode, no streaming state) runs its 28 layers
   as one function compiled with dynamic shapes, moshi's RMS norms and rope (at offset 0) inline
   and `is_causal` attention, which equals moshi's mask while T is within the 3,000-frame
-  context (checked per call). Compiling moshi's own forward instead recompiles per batch shape.
-  Validation and generation (eval mode) keep moshi's forward;
+  context (`train.py` checks `--stream-seconds` at startup, the forward each call). Compiling
+  moshi's own forward instead recompiles per batch shape. Validation and generation (eval mode)
+  keep moshi's forward;
 - each compiled function keeps up to 64 graphs, not dynamo's 8. moshi compiles `_rms_norm`,
   `apply_rope` and `gating_forward_kernel` once per dtype, rank, grad mode, autocast state and
   shape class, and past the limit a function's new variants run eagerly for the rest of the
