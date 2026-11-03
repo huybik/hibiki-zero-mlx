@@ -21,7 +21,8 @@
     x[:, t:t+1] ─► linear_t ─┐ ×16         x[16, N, C] ─unbind─► linear_t ─┐ ×16
     backward: 16 zero-filled grads + adds  backward: one stack ───────────┘
 
-Generation (`LMGen`) keeps moshi's own depformer and gating.
+Generation (`LMGen`) keeps moshi's own depformer and gating. `install()` also lets each compiled
+function keep 64 graphs instead of dynamo's 8, so none of moshi's runs eagerly.
 """
 from __future__ import annotations
 
@@ -181,6 +182,11 @@ def forward_depformer_training(
 
 
 def install() -> None:
+    # moshi compiles _rms_norm, apply_rope and gating_forward_kernel with automatic dynamic
+    # shapes: one graph per dtype, rank, grad mode, autocast state and shape class. Training
+    # alone builds 12 of _rms_norm, and validation and generation add more; past dynamo's
+    # default limit of 8, a function's new variants run eagerly for the rest of the process.
+    torch._dynamo.config.recompile_limit = 64
     moshi_transformer.F = _CausalSDPA()
     moshi_transformer.expand_repeated_kv = _keep_kv_heads
     LMModel.forward_depformer_training = forward_depformer_training

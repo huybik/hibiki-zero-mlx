@@ -89,7 +89,13 @@ with the same math on the same weights:
 - the depformer's training forward runs its 16 codebook steps step-major (`unbind`/`stack`,
   whose backward is one copy, instead of slices whose backward zero-fills a full gradient each),
   compiled with dynamic shapes, with the memory-efficient attention kernel;
-- the training gating FFN splits with `unbind` for the same reason.
+- the training gating FFN splits with `unbind` for the same reason;
+- each compiled function keeps up to 64 graphs, not dynamo's 8. moshi compiles `_rms_norm`,
+  `apply_rope` and `gating_forward_kernel` once per dtype, rank, grad mode, autocast state and
+  shape class, and past the limit a function's new variants run eagerly for the rest of the
+  process. Training alone builds 12 graphs of `_rms_norm` and reached 8 within its first 11
+  steps; its steps then ran within 2% of those at 64. With every helper eager, a step is 6%
+  slower and peaks 3 GiB higher (78.2 GiB reserved).
 
 Checked against moshi as shipped (2026-11-03, H100 NVL): fp32 loss equal, logits within 1.7e-6
 and every gradient within 3.1e-6; in bf16 both are as far from an fp32 reference (gradients:
@@ -111,15 +117,32 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   attention, one `bmm` per step group instead of per-step linears (no gain), compiling the
   main transformer too (10,358).
 - What is left: matmuls 44% of GPU time, fused AdamW 7% (bandwidth-bound: 87 GB per step).
-- One epoch is 131,553 steps: ~14 h of training at 0.385 s/step.
 - Generation (`LMGen`, ms per step at batch 16/32/64): fp32 57/93/164, bf16 31/47/80, bf16 with
   GQA 16/18/22.
-- A validation before these changes took 72 s teacher-forced plus 382 s translating FLEURS dev
-  (fp32, batch 16); at bf16, batch 64 the translation needs 1,747 steps, ~40 s.
-- A synchronous checkpoint save took 28 s (37.5 GB); the writer stalls training only for the
-  copy to pinned memory.
-- An 80 GB H100 SXM (79.6 GiB usable) was not tried: training peaks at 73.6 GiB, and the pod
-  offered had 88 GiB of RAM.
+
+The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
+
+| GPU (power limit) | frames/s | s/step | one epoch |
+|---|---:|---:|---:|
+| H200 NVL (600 W) | 13,353 | 0.305 | 11.1 h |
+| H100 NVL (400 W) | 10,669 | 0.385 | 14.1 h |
+| H100 SXM 80 GB (500 W, its host's cap; 700 W stock) | 7,401 | 0.550 | 20.1 h |
+
+- The capped SXM sat at its limit 99% of the time, at a mean 798 MHz SM clock (1,980 max), with
+  no allocator retries: an SXM is fast only at its stock 700 W. `nvidia-smi -q -d POWER` shows
+  the pod's limit.
+- An 80 GB card fits: CUDA sees 79.2 GiB of it and the allocator gets 78.7 GiB; training peaks
+  at 73.6 GiB allocated, 75.1 GiB reserved, and translating FLEURS dev at 74.4 GiB.
+- Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
+  1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by
+  0.01% and PAD accuracy by 1 point (base model). Loader workers save nothing: assembling the
+  300 batches takes 0.8 s.
+- Translating FLEURS dev (bf16, batch 64, 1,747 steps): 42 s on the H200 NVL, 48–53 s on the
+  capped SXM. Batch 96 takes 34 s but 100.3 GiB. Before these changes (fp32, batch 16) it took
+  382 s.
+- The checkpoint writer stalls training for the copy to pinned memory (0.6 s per save on the
+  H200 NVL) and writes the 37.5 GB in the background (16 s on the H200 NVL pod's disk, 37 s on
+  the SXM's). The first save also allocates the pinned buffers: 8 s and 26 s of stall.
 
 ## Objective
 
@@ -151,8 +174,9 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
 - `preflight` checks:
   - a clean tracked tree;
   - exact Torch and Moshi versions; one H100 or H200 with compute capability 9.0;
-  - ≥90 GiB VRAM, ≥80 GiB of RAM (the container's cgroup limit when lower than
-    `/proc/meminfo`, which shows the host on Vast) and the free disk its caller asks for;
+  - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
+    when lower than `/proc/meminfo`, which shows the host on Vast) and the free disk its caller
+    asks for;
   - the SHA-256 of the four upstream files in `weights/`.
 - `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues:
   - without `runs/RUN_NAME/run_id.json`: preflight with 130 GiB free, an empty run dir, an empty
@@ -199,6 +223,11 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
 - `h100.sh run` refuses to continue unless the local `best.json` is at least as new as the
   recovery repo's newest `best/` marker: a resume without it would promote a worse checkpoint,
   and `hf_sync`, which keeps only the newest remote best, would replace the better one.
+- Checked on the pods (2026-11-03), killing `train.py` with `kill -9` and rerunning the same
+  command: on the H200 NVL, killed at step 70 with the step-60 pair half-written, it skipped
+  that pair, resumed from step 40 and logged the same losses for steps 50–70; on the H100 SXM,
+  killed once the step-80 pair was saved but before its validation was logged, it validated
+  step 80 first, then trained to 160 at the s/step it had before the kill.
 - Checked on the Mac CPU with a tiny random LM (2026-11-02): training, saving, both
   validations, promotion (a lower chrF keeps the promoted checkpoint, a higher one replaces it,
   a run failing the gates promotes none), resumes that rerun a validation cut short mid-run and

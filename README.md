@@ -79,7 +79,8 @@ The inference tools are:
 
 ## Training
 
-Training runs only on a Linux pod with one H100 NVL, through the pinned CUDA 13.4 launcher:
+Training runs only on a Linux pod with one H100 or H200 of 80 GB or more, through the pinned
+CUDA 13.4 launcher:
 
 ```bash
 ./training/h100.sh setup
