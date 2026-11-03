@@ -22,8 +22,8 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 
 - The trainer runs on the H100 pod; the caches reach it through the cache repo
   ([Publishing](#publishing), [docs/finetune.md](../finetune.md)). `CACHE_FORMAT` lives in
-  `training/paths.py` so the trainer never imports the builder's Mac-only packages (PyAV, MLX,
-  soxr), which the pod does not install.
+  `training/paths.py` so the trainer never imports the builder's Mac-only packages (PyAV, MLX),
+  which the pod does not install.
 
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
   straight from its parquet shards, the split taken from the folder. FLEURS is dropped.

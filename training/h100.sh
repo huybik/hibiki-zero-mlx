@@ -73,6 +73,7 @@ setup() {
     sacrebleu==2.6.0 \
     safetensors==0.8.0 \
     sentencepiece==0.2.2 \
+    soxr==1.1.0 \
     sphn==0.2.1 \
     tqdm==4.70.1
   "$PYTHON" -m pip install --no-deps moshi==0.2.13

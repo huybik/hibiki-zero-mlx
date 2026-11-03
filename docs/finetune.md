@@ -107,6 +107,33 @@ claimed the run; running it again continues the same claim, so arguments `train.
 need a new RUN_NAME. Ctrl-C or SIGTERM to the launcher stops training and waits for the sync's
 final upload.
 
+### A second epoch on the noisy cache
+
+The noisy cache holds the clean cache's rows with the Vietnamese source of 60% of them re-encoded
+under simulated rooms, noise and bands ([noisy-source](agent-memory/noisy-source.md)). Build it on
+the pod once a run has finished, while the GPU is otherwise idle (it downloads the 442 GB of
+parquet shards one at a time and Mimi encodes ~5,000 h of Vietnamese), then train a new run from
+the first run's final model:
+
+```bash
+./.venv/bin/python -m training.prep.noisy_cache --cache-dir data/cache/en-vi-grounded-v2/train \
+  --out-dir data/cache/en-vi-grounded-v2-noisy/train
+rm -r data/cache/en-vi-grounded-v2/train/.packed     # 70 GB; the new run packs the noisy split
+ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.safetensors
+./training/h100.sh run RUN_NAME \
+  --cache-dir data/cache/en-vi-grounded-v2-noisy/train \
+  --val-cache-dir data/cache/en-vi-grounded-v2/validation \
+  --model-weight weights/PREVIOUS_RUN_stepFINAL.safetensors --seed 43 --val-every 18000
+```
+
+- `--model-weight` loads the full fp32 model exactly (moshi's loader is strict); the hard link
+  keeps it while the previous run's folder is pruned, and a resume needs it at the same path.
+  A replacement pod downloads it from `PREVIOUS_RUN/checkpoints/` in the recovery repo.
+- A new `--seed` draws new streams: the noisy split has the same rows, so seed 42 would replay
+  the first run's streams and batch order.
+- The run starts a new warmup and cosine decay. Validation every 18,000 steps (7 per epoch plus
+  the final step) halves its share of the run.
+
 ### Interruptible pods
 
 A preempted container restarts with its disk intact but nothing running. Its boot script,

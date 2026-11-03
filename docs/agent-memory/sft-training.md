@@ -238,7 +238,8 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 
 ## Evaluation sets
 
-`training.prep.eval_sets` (huggingface_hub, pyarrow and sphn, so it runs on the Mac or the pod)
+`training.prep.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, so it runs on the Mac
+or the pod)
 writes `eval.py` pair files under `data/eval/`; they are never trained on
 ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). FLEURS and MultiMed-ST built and checked
 on 2026-11-01, `en-vi-val` on 2026-11-03:
@@ -251,6 +252,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03:
 | `multimed-vi/final.jsonl` | 1,719 | 3.02 | final report |
 | `en-vi-val/cv27.jsonl` | 180 | 0.25 | in-domain check at each validation |
 | `en-vi-val/libriheavy.jsonl` | 180 | 0.66 | in-domain check at each validation |
+| `en-vi-val-noisy/{cv27,libriheavy}.jsonl` | 360 | 0.91 | the same rows under simulated recording conditions ([noisy-source](noisy-source.md#evaluation)) |
 
 - FLEURS `google/fleurs` at `70bb2e8`: `vi_vn` 16 kHz WAV read speech; `text_en` is the `en_us`
   raw text of the same sentence id (every Vietnamese row has one). Several speakers read each
