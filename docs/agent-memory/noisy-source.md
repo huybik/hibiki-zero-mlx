@@ -65,7 +65,7 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
 ```
 
 - `fetch` downloads each parquet from `anquachdev/common-vi-en` at `eval_sets.EN_VI_REVISION`,
-  16 at a time, each tried 4 times. It keeps the id, the duration and the Opus bytes of the selected rows
+  16 at a time, each tried 4 times. It keeps the id and the Opus bytes of the selected rows
   (`random.Random(f"{seed}:select:{id}").random() < --fraction`, 0.6), null for the others, in
   `.sources/`, about a fifth of the parquet's bytes, and deletes the download. It pauses while the disk has
   less than `--min-free-gb` (50) free: a trainer on the same disk needs a checkpoint pair
@@ -73,11 +73,9 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   writes `manifest.json` (seed, fraction, dataset revision, bank SHA-256); a later fetch with
   other values stops.
 - `encode` re-encodes the rows whose source holds audio:
-  - the clip is decoded as `eval_sets.decode_opus` decodes it and resampled with soxr, as the
-    builder did. It matches PyAV, the builder's decoder, to the sample on the Mac-voiced shards;
-    on the 264 shards voiced on anquachdev's machine (hybrid SILK+CELT Opus) the decode sits 1–2
-    samples apart with amplitude differences up to 0.3, though every clip keeps its frame count
-    (118,986 rows of 60 shards from both machines checked);
+  - the clip is decoded by the builder's own code, `audio.decode` (PyAV), and resampled with
+    soxr, so it has the samples and frame count the cache was built from. Any other decoder is
+    wrong here ([Checks](#checks));
   - the clip goes under `Bank.draw(f"{seed}:{id}")`, stored as `source_conditions` (None for a
     clean row);
   - Mimi (moshi's, float32, TF32 off) encodes the clips shortest first, in right-padded batches
@@ -97,8 +95,10 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
 - Sizes for `en-vi-grounded-v2/train`: 1,832 parquets, 442.7 GB; 9,057 h of Vietnamese, ~5,400 h
   re-encoded. The pod downloads at ~39 MB/s (16 at a time; one alone ~10 MB/s; reading only the
   needed columns over HTTP was no faster), so `fetch` takes ~3.2 h and keeps ~80 GB of sources.
-  On the Vast H100 pod's CPU, `encode` ran at 24x real time (cv27-00000: 2.3 h of audio in 347 s,
-  8 threads); the GPU rate is still to be measured.
+  On the pod's H100, `encode` runs at ~1,400x real time: ~12 s for a 4.8 h `cv27` shard, so
+  ~4 h for the split (its CPU alone: 24x).
+- PyAV must be in the pod's environment (`h100.sh setup` pins it; an older venv needs
+  `.venv/bin/python -m pip install av==15.1.0`).
 
 ## Checks
 
@@ -116,6 +116,21 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   - codebook 0 of the re-encoded rows matches the clean codes on 40% of frames.
 
   Fetch then encode gave the same shard as a single pass.
+- The decoder (pod, CUDA, 2026-11-04). The first encode decoded with `eval_sets.decode_opus`
+  (sphn, cut at `vi_duration_s`) and stopped on `cv27-00036`: 8 of its 3,006 selected rows, all
+  short with a frame-aligned stored duration, decode in PyAV to 312 samples past it, one frame
+  more than the cut; PyAV's frame counts match the cache on every row of 9 shards checked. Mimi
+  codes of 64 rows against the cached clean codes, all 16 codebooks:
+
+  | Shard | PyAV | sphn |
+  |---|---:|---:|
+  | `cv27-00036` | 99.95% | 99.97% |
+  | `libriheavy-medium-00100` (Mac voiced) | 99.95% | 7.4% |
+  | `libriheavy-medium-00260` (anquachdev voiced) | 99.97% | 9.1% |
+
+  On Libriheavy, libopus (sphn) and FFmpeg's decoder (PyAV) differ: 2 samples apart, then up to
+  0.45 in amplitude. On Common Voice they agree to 1e-7, so the 36 `cv27` shards written before
+  the switch are PyAV's.
 
 ## Evaluation
 

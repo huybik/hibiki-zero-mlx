@@ -186,9 +186,10 @@ def opus_pre_skip(data: bytes, name: str) -> int:
 def decode_opus(data: bytes, duration_s: float, name: str) -> Any:
     """Decode a 48 kHz Ogg Opus clip to its stored duration. sphn returns every packet's samples:
     the encoder's pre-skip, which this drops, and the last packet's padding, which the cut at the
-    stored duration drops. That matches PyAV, the cache builder's decoder, to the sample. The
-    granule positions cannot serve instead: the TTS encoder counts the pre-skip twice, so they
-    run 312 samples past the audio."""
+    stored duration drops. The granule positions cannot serve instead: the TTS encoder counts the
+    pre-skip twice, so they run 312 samples past the audio. sphn decodes with libopus and PyAV, the
+    cache builder's decoder, with FFmpeg's own: they agree on the Common Voice clips but not on
+    the Libriheavy ones, so this is not the training decode (`training.prep.audio` is)."""
     pre_skip = opus_pre_skip(data, name)
     wav, rate = sphn.read_opus_bytes(data)
     if rate != OPUS_RATE:

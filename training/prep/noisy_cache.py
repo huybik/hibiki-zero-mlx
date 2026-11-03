@@ -3,17 +3,17 @@
 
 Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the same rows in the
 same order. A seeded --fraction of the rows get new Vietnamese source codes: their clip, decoded
-from the EN-VI dataset's parquet shard that the cache shard was built from, resampled with soxr as
-the cache builder does, put under `augment`'s drawn conditions and Mimi-encoded in float32. Text,
+from the EN-VI dataset's parquet shard that the cache shard was built from, decoded and resampled
+by the cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions and Mimi-encoded in float32. Text,
 English codes, frame counts and both EOS positions stay as they were. Each row records its
 conditions under `source_conditions` (None for a row kept clean).
 
 Two steps, so the download runs while the GPU still trains:
 
-    fetch  (network, CPU) HF parquet ─► <out-dir>/.sources/<name>.parquet: id, duration and the
-                          Opus bytes of the selected rows only (30% of a parquet's bytes is
-                          Vietnamese audio; 60% of that is kept)
-    encode (CUDA)         .sources + clean shard ─► workers: Opus decode, soxr to 24 kHz
+    fetch  (network, CPU) HF parquet ─► <out-dir>/.sources/<name>.parquet: id and the Opus bytes
+                          of the selected rows only (30% of a parquet's bytes is Vietnamese
+                          audio; 60% of that is kept)
+    encode (CUDA)         .sources + clean shard ─► workers: PyAV decode, soxr to 24 kHz
                           ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted
 
 The first fetch writes <out-dir>/manifest.json (seed, fraction, dataset revision, bank SHA-256);
@@ -57,8 +57,8 @@ from training.paths import (
     require_dir,
     require_file,
 )
-from training.prep import augment
-from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION, OPUS_RATE, decode_opus
+from training.prep import audio, augment
+from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION
 
 FRAME_SAMPLES = 1920  # 24 kHz / 12.5 Hz
 SOURCES = ".sources"
@@ -177,14 +177,13 @@ def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
                     raise
                 print(f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True)
                 time.sleep(60 * attempt)
-        table = pq.read_table(path, columns=["id", "vi_audio", "vi_duration_s"])
+        table = pq.read_table(path, columns=["id", "vi_audio"])
         ids = table.column("id").to_pylist()
         audio = table.column("vi_audio").combine_chunks().field("bytes")
         keep = pa.array([selected(args.seed, row_id, args.fraction) for row_id in ids])
         slim = pa.table(
             {
                 "id": table.column("id"),
-                "vi_duration_s": table.column("vi_duration_s"),
                 # Null for the rows that stay clean.
                 "vi_opus": pc.if_else(keep, audio, pa.scalar(None, audio.type)),
             }
@@ -223,10 +222,11 @@ def fetch(args: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- encode
 
 
-def decode(data: bytes, duration_s: float, name: str) -> np.ndarray:
-    """Worker: the clip at 24 kHz, decoded and cut as the cache builder decoded it."""
-    wav = decode_opus(data, duration_s, name)[0]
-    return soxr.resample(wav, OPUS_RATE, augment.SAMPLE_RATE)
+def decode(data: bytes) -> np.ndarray:
+    """Worker: the clip at 24 kHz, decoded and resampled by the cache builder's code, so it has
+    the samples and frame count the cache was built from."""
+    pcm, rate = audio.decode(data)
+    return soxr.resample(pcm, rate, augment.SAMPLE_RATE)
 
 
 class Encoder:
@@ -360,7 +360,6 @@ def encode_shards(
                 raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {source}")
             ids = table.column("id").to_pylist()
             opus = table.column("vi_opus").to_pylist()
-            durations = table.column("vi_duration_s").to_pylist()
             del table
             clips: dict[int, Future] = {}
             for index, sample in enumerate(payload["samples"]):
@@ -375,7 +374,7 @@ def encode_shards(
                     continue
                 conditions = encoder.bank.draw(f"{settings['seed']}:{sample['id']}")
                 sample["source_conditions"] = dataclasses.asdict(conditions)
-                clips[index] = pool.submit(decode, opus[row], durations[row], sample["id"])
+                clips[index] = pool.submit(decode, opus[row])
             del opus
             seconds = encoder.shard(payload["samples"], clips)
             payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings

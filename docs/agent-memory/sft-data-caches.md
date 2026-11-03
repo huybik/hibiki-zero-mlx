@@ -75,7 +75,8 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
   that exist, without checking their source again; `--overwrite` rebuilds. A lock
   (`.cache_codes.lock`) keeps a second run off the same `--out-dir`. Run a multi-day build under
   `caffeinate -i -s`.
-- Decoding: PyAV for every stream (the Opus clips and cv27's MP3); anything but mono `fltp`
+- Decoding: PyAV for every stream (the Opus clips and cv27's MP3), in `audio.decode`, which the
+  noisy re-encode shares ([noisy-source](noisy-source.md#noisy-cache)); anything but mono `fltp`
   is rejected. Opus decodes at 48 kHz and cv27's MP3 at 32 or 48 kHz
   ([en-speech-corpus](en-speech-corpus.md)); soxr resamples from that rate straight to each target.
   `sphn.read` cannot decode Opus, `sphn.read_opus_bytes` keeps the 312-sample Opus pre-skip, and

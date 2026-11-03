@@ -276,8 +276,11 @@ on 2026-11-01, `en-vi-val` on 2026-11-03:
   (68 speakers). Its Vietnamese is the TTS the training data uses, so read against FLEURS it
   separates translation failures from the real-speech gap. `sphn` decodes the Opus clips but
   keeps the encoder's pre-skip (312 samples) and the last packet's padding (168 or 648 samples
-  here); the builder drops both, matching PyAV's decode to the sample, then writes 48 kHz WAV (a
-  few peaks above full scale clip). It cuts at the stored duration, not the last granule: the TTS
+  here); the builder drops both, then writes 48 kHz WAV (a few peaks above full scale clip). That
+  is the training decode (PyAV, FFmpeg's own Opus decoder) on the Common Voice clips, but not on
+  the Libriheavy ones: libopus there sits 2 samples off with differences up to 0.45 (pod,
+  2026-11-04; [noisy-source](noisy-source.md#checks)). Scores are comparable across checkpoints
+  either way. It cuts at the stored duration, not the last granule: the TTS
   encoder (`tts_en_speech.encode`) counts the pre-skip twice, so granules run 312 samples high. It refuses a clip that is not mono, has an output gain, or
   decodes shorter than its stored duration or a 20 ms packet or more longer. The rows keep
   `speaker` and `source_row`.
