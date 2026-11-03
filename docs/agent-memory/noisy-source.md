@@ -144,13 +144,14 @@ soxr: a residual-codebook difference that predates this set.) Scored against the
 same checkpoint it shows what the channel costs. It is not in the trainer's default
 `--eval-pairs`; the second epoch passes it.
 
-Measured on the Mac (`eval.py`, MPS, batch 16), step 63,000 of the first run, 2026-11-04:
+Measured on the Mac (`eval.py`, MPS, batch 16), the first run at step 63,000 and at its final
+step 131,553, 2026-11-04 (chrF; "Both" is corpus chrF over the 360 rows):
 
-| Set | Common Voice | Libriheavy | Both (360) |
-|---|---:|---:|---:|
-| `en-vi-val` (clean TTS) | 39.4 | 42.2 | 41.5 |
-| `en-vi-val-noisy` | 34.4 | 37.5 | 36.7 |
-| FLEURS dev (real speech) | | | 23.5 |
+| Set | Common Voice | Libriheavy | Both (360) | Final: CV · LH · both |
+|---|---:|---:|---:|---:|
+| `en-vi-val` (clean TTS) | 39.4 | 42.2 | 41.5 | 42.0 · 43.9 · 43.4 |
+| `en-vi-val-noisy` | 34.4 | 37.5 | 36.7 | 34.9 · 39.6 · 38.4 |
+| FLEURS dev (real speech) | | | 23.5 | 24.9 |
 
 - By condition, against the same rows clean: reverb −6.1 chrF; SNR under 15 dB −8.8 (15 dB
   and up −2.9); phone band −8.9, 8 kHz −7.8, 16 kHz −4.7.
