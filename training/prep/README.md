@@ -109,14 +109,15 @@ nohup caffeinate -i python -m training.prep.publish_caches --dataset-dir $D --ou
 
 ## Evaluation sets
 
-`training.prep.eval_sets` downloads FLEURS `vi_vn` (with the `en_us` text of each sentence) and
-MultiMed-ST's Vietnamese `corrected.test`, and writes `eval.py` pair files of real Vietnamese
-speech under `data/eval/` (~1 GB). It needs only huggingface_hub and pyarrow, so it runs on the Mac
-or the pod; rerunning rebuilds them. They are for evaluation only
+`training.prep.eval_sets` downloads FLEURS `vi_vn` (with the `en_us` text of each sentence),
+MultiMed-ST's Vietnamese `corrected.test` and the EN-VI dataset's validation split, and writes
+`eval.py` pair files under `data/eval/`: real Vietnamese speech, and 360 held-out rows of the
+training data's own domain (`en-vi-val`). It needs only huggingface_hub, pyarrow and sphn, so it
+runs on the Mac or the pod; rerunning rebuilds them. They are for evaluation only
 ([sft-training](../../docs/agent-memory/sft-training.md#evaluation-sets)).
 
 ```bash
-python -m training.prep.eval_sets            # data/eval/fleurs-vi/{dev,test}.jsonl, data/eval/multimed-vi/{select,final}.jsonl
+python -m training.prep.eval_sets  # fleurs-vi/{dev,test}, multimed-vi/{select,final}, en-vi-val/{cv27,libriheavy}
 ```
 
 ## Vietnamese translations of `en_speech`

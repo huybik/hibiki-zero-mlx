@@ -27,8 +27,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pairs",
         type=Path,
+        nargs="+",
         required=True,
-        help="Rows (.jsonl or .csv) with source audio, reference text and id columns.",
+        help="Pairs files (.jsonl or .csv) with source audio, reference text and id columns; each "
+        "is scored as its own set.",
     )
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
@@ -43,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model dtype."
     )
-    parser.add_argument("--limit", type=int, default=128, help="Max rows to generate.")
+    parser.add_argument("--limit", type=int, default=128, help="Max rows of each pairs file.")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--ids", default="", help="Comma-separated ids in that order; bypasses --limit.")
     parser.add_argument("--ids-file", type=Path, help="Text file of ids, one per line; bypasses --limit.")
@@ -92,7 +94,14 @@ def main() -> None:
     common.seed_all(args.seed)
 
     ids = common.ids_from_args(args.ids, args.ids_file)
-    rows = common.select_eval_rows(common.read_eval_rows(args.pairs), ids, args.id_column, args.limit)
+    sets = [common.read_eval_rows(path) for path in args.pairs]
+    names = [common.eval_set_name(path) for path in args.pairs]
+    if len(names) != len(set(names)):
+        raise ValueError(f"Pairs files must have distinct set names: {names}")
+    if ids:
+        rows = common.select_eval_rows([row for rows in sets for row in rows], ids, args.id_column)
+    else:
+        rows = [row for rows in sets for row in rows[: args.limit]]
     common.validate_eval_rows(
         rows,
         args.source_column,
@@ -100,7 +109,7 @@ def main() -> None:
         args.id_column,
     )
     if not rows:
-        raise RuntimeError(f"No rows selected from {args.pairs}")
+        raise RuntimeError(f"No rows selected from {names}")
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "model weight")
@@ -126,7 +135,7 @@ def main() -> None:
         print("Using the base model.")
     lm.eval()
 
-    records, metrics = common.run_greedy_eval(
+    records = common.run_greedy_eval(
         rows,
         generation,
         args.batch_size,
@@ -137,9 +146,7 @@ def main() -> None:
         out_dir,
         args.seed,
     )
-    health_eligible, health_gates = common.generation_health(metrics)
-    metrics["health_eligible"] = health_eligible
-    metrics["health_gates"] = health_gates
+    metrics = common.score_sets(records, names)
 
     predictions_path = out_dir / "predictions.csv"
     common.write_predictions(predictions_path, records)
@@ -149,17 +156,8 @@ def main() -> None:
     metrics_path.write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    summary = (
-        f"nonempty={metrics['nonempty_predictions']}/{metrics['num_predictions']} "
-        f"eos={metrics['eos_found']}/{metrics['num_predictions']} "
-        f"exact={metrics['exact_matches']}/{metrics['num_predictions']} "
-        f"wer={100 * metrics['wer']:.2f}% overlong={metrics['overlong_predictions']} "
-        f"repeat4={metrics['repeated_4gram_predictions']} "
-        f"bleu={metrics['bleu']:.2f} chrf={metrics['chrf']:.2f} "
-        f"end_offset={metrics['median_end_offset_s']:.1f}s "
-        f"health={'pass' if health_eligible else 'fail'}"
-    )
-    print(f"Metrics: {summary}")
+    for name, set_metrics in metrics.items():
+        print(f"Metrics {name}: {common.score_summary(set_metrics)}")
     print(f"Wrote metrics -> {repo_display_path(metrics_path)}")
 
 

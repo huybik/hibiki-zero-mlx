@@ -6,9 +6,11 @@ AdamW, under a linear warmup then cosine decay. Streams are planned once from th
 rows with --seed (`streams.py`) and batched up to --batch-frames padded frames; every epoch
 replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
 and batch order of the validation cache (so --val-batches takes a random subset) and translates
-the --eval-pairs rows of real Vietnamese speech free-running (FLEURS dev by default, as
-`eval.py` does). Of the checkpoints that pass the generation health gates, the one with the
-highest chrF is promoted to best_stepNNNNNN.safetensors.
+the rows of every --eval-pairs file free-running in one pass, sampled as `eval.py` samples, and
+scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
+held-out Common Voice and Libriheavy rows of the training data's own domain. Of the checkpoints
+whose every set passes the generation health gates, the one with the highest chrF on the first
+set is promoted to best_stepNNNNNN.safetensors.
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
@@ -143,10 +145,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--eval-pairs",
         type=Path,
-        default=Path("data/eval/fleurs-vi/dev.jsonl"),
-        help="Pairs (training.prep.eval_sets) translated free-running at each validation.",
+        nargs="+",
+        default=[
+            Path("data/eval/fleurs-vi/dev.jsonl"),
+            Path("data/eval/en-vi-val/cv27.jsonl"),
+            Path("data/eval/en-vi-val/libriheavy.jsonl"),
+        ],
+        help="Pairs files (training.prep.eval_sets) translated free-running at each validation, "
+        "each scored as its own set; the first selects the checkpoint.",
     )
-    # bf16 at batch 64 decodes FLEURS dev in ~1,750 steps of ~22 ms on the H100.
+    # bf16 at batch 64 decodes FLEURS dev with an 8 s tail in ~1,750 steps of ~22 ms on the H100.
     parser.add_argument("--eval-batch-size", type=int, default=64)
     # Frequent saves bound the work a preemption loses; the snapshot stalls training ~0.6 s.
     parser.add_argument("--save-every", type=int, default=1000)
@@ -456,7 +464,7 @@ def main() -> None:
     args.model_weight = require_file(args.model_weight, "upstream model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
-    args.eval_pairs = require_file(args.eval_pairs, "evaluation pairs")
+    args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
 
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -505,9 +513,15 @@ def main() -> None:
     print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows")
     # Checkpoints are selected on free-running translation, sampled as eval.py samples.
     generation = common.GenerationConfig(text_only=True)
-    eval_rows = common.read_eval_rows(args.eval_pairs)
-    if not eval_rows:
-        raise RuntimeError(f"No rows in {args.eval_pairs}")
+    eval_sets = [common.eval_set_name(path) for path in args.eval_pairs]
+    if len(eval_sets) != len(set(eval_sets)):
+        raise ValueError(f"--eval-pairs files must have distinct set names: {eval_sets}")
+    eval_rows = []
+    for path in args.eval_pairs:
+        rows_of_set = common.read_eval_rows(path)
+        if not rows_of_set:
+            raise RuntimeError(f"No rows in {path}")
+        eval_rows.extend(rows_of_set)
     common.validate_eval_rows(
         eval_rows,
         generation.source_column,
@@ -518,8 +532,12 @@ def main() -> None:
     for row in eval_rows:
         require_file(row[generation.source_column], "evaluation audio")
     # Batches of similar length pad less: on FLEURS dev, 6,000 generation steps instead of 8,300.
+    # The sets share batches, so one pass translates them all.
     eval_rows.sort(key=lambda row: float(row["duration_s"]))
-    print(f"Validation translates {len(eval_rows)} rows of {repo_display_path(args.eval_pairs)}")
+    print(
+        f"Validation translates {len(eval_rows)} rows of {', '.join(eval_sets)}; "
+        f"{eval_sets[0]} selects the checkpoint"
+    )
 
     batches_per_epoch = len(batches)
     total_steps = args.max_steps or batches_per_epoch * args.epochs
@@ -673,7 +691,7 @@ def main() -> None:
         generator = checkpoint_info.get_moshi(device=device, dtype=torch.bfloat16)
         generator.load_state_dict(lm.state_dict())
         generator.eval()
-        records, free_running = common.run_greedy_eval(
+        records = common.run_greedy_eval(
             eval_rows,
             generation,
             args.eval_batch_size,
@@ -690,25 +708,24 @@ def main() -> None:
         gc.collect()
         torch.cuda.empty_cache()
         common.write_predictions(eval_dir / "predictions.csv", records)
-        healthy, gates = common.generation_health(free_running)
-        free_running.update(health_eligible=healthy, health_gates=gates)
+        free_running = common.score_sets(records, eval_sets)
+        healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         print(
             f"val step={step} loss={teacher_forced['loss']:.4f} "
             f"semantic={teacher_forced['semantic_loss']:.4f} "
             f"content={teacher_forced['content_text_loss']:.4f} "
             f"acc={teacher_forced['content_acc']:.3f} pad_acc={teacher_forced['pad_acc']:.3f} "
-            f"chrf={free_running['chrf']:.2f} bleu={free_running['bleu']:.2f} "
-            f"length_ratio={free_running['mean_length_ratio']:.2f} "
-            f"eos={free_running['eos_found']}/{free_running['num_predictions']} "
-            f"end_offset={free_running['median_end_offset_s']:.1f}s "
             f"health={'pass' if healthy else 'fail'}"
         )
+        for name, metrics in free_running.items():
+            print(f"val step={step} {name} {common.score_summary(metrics)}")
         # chrF weighs recall, so overlong output barely lowers it: the gates come first. Promotion
         # links the step's model file, so its write must be done, and precedes the log line,
         # which marks the step done for a resume.
         if healthy:
             writer.wait()
-            best_state = promote_best(step, float(free_running["chrf"]), out_dir, best_state)
+            chrf = float(free_running[eval_sets[0]]["chrf"])
+            best_state = promote_best(step, chrf, out_dir, best_state)
         item = {"step": step, "teacher_forced": teacher_forced, "free_running": free_running}
         with val_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, sort_keys=True) + "\n")

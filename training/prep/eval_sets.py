@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build the real-Vietnamese-speech evaluation sets as `eval.py` pair files.
+"""Build the evaluation sets as `eval.py` pair files.
 
 Writes, under --out-dir (default data/eval):
 
@@ -8,10 +8,13 @@ Writes, under --out-dir (default data/eval):
   multimed-vi/{select,final}.jsonl MultiMed-ST Vietnamese `corrected.test` (8 kHz conversational
                                    medical speech, human-corrected English), split in two seeded
                                    halves: select gates checkpoints, final reports.
+  en-vi-val/{cv27,libriheavy}.jsonl  seeded samples of the EN-VI dataset's validation split (Common
+                                   Voice dev and Libriheavy dev, Vietnamese TTS in the English
+                                   speaker's voice): the training data's own domain, held out.
 
 Each row holds `id`, `vi_audio` (the clip's path), `text_vi`, `text_en` and `duration_s`. These sets
-are for evaluation only and never enter training. Needs huggingface_hub and pyarrow; runs on the
-Mac or the pod.
+are for evaluation only and never enter training. Needs huggingface_hub, pyarrow and sphn; runs on
+the Mac or the pod.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
+import sphn
 from huggingface_hub import hf_hub_download
 
 from training.paths import repo_display_path, resolve_repo_path
@@ -36,13 +40,25 @@ MULTIMED_REPO = "leduckhai/MultiMed-ST"
 MULTIMED_REVISION = "d8c3b300b0f2e2ec8fa2113df3bdbc25f5e64668"
 MULTIMED_FILE = "vietnamese/corrected.test-00000-of-00001.parquet"
 MULTIMED_SEED = 0
+EN_VI_REPO = "anquachdev/common-vi-en"
+EN_VI_REVISION = "2ce8777d122123609722814f776f0505ea966ca5"
+EN_VI_SOURCES = {
+    "cv27": ["cv27-00000"],
+    "libriheavy": ["libriheavy-dev-00000", "libriheavy-dev-00001"],
+}
+EN_VI_ROWS = 180  # per source
+EN_VI_SEED = 0
+OPUS_RATE = 48_000
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out-dir", type=Path, default=Path("data/eval"))
     parser.add_argument(
-        "--sets", nargs="+", choices=("fleurs", "multimed"), default=["fleurs", "multimed"]
+        "--sets",
+        nargs="+",
+        choices=("fleurs", "multimed", "en-vi-val"),
+        default=["fleurs", "multimed", "en-vi-val"],
     )
     return parser.parse_args()
 
@@ -140,6 +156,64 @@ def build_multimed(out_dir: Path) -> None:
         write_rows(out_dir / "multimed-vi" / f"{name}.jsonl", [rows[i] for i in sorted(indexes)])
 
 
+def opus_head_pre_skip(data: bytes) -> int:
+    """The samples an Ogg Opus decoder must drop from the start (RFC 7845 section 5.1)."""
+    head = data.find(b"OpusHead")
+    if head < 0:
+        raise RuntimeError("Not an Ogg Opus stream")
+    return int.from_bytes(data[head + 10 : head + 12], "little")
+
+
+def decode_opus(data: bytes, duration_s: float, name: str) -> Any:
+    """Decode a 48 kHz Ogg Opus clip to the stored duration. sphn keeps the encoder's pre-skip and
+    the last packet's padding, which a conforming decoder drops."""
+    wav, rate = sphn.read_opus_bytes(data)
+    if rate != OPUS_RATE:
+        raise RuntimeError(f"{name}: Opus decoded at {rate} Hz")
+    wav = wav[:, opus_head_pre_skip(data) :]
+    samples = round(duration_s * OPUS_RATE)
+    # As the cache builder's duration gate: a truncated clip decodes without error, only shorter.
+    if wav.shape[-1] < samples - 0.02 * OPUS_RATE:
+        decoded = wav.shape[-1] / OPUS_RATE
+        raise RuntimeError(f"{name}: decoded {decoded:.2f} s, stored {duration_s:.2f} s")
+    return wav[:, :samples]
+
+
+def build_en_vi_val(out_dir: Path) -> None:
+    for source, shards in EN_VI_SOURCES.items():
+        tables = [
+            pq.read_table(
+                download(EN_VI_REPO, EN_VI_REVISION, f"data/validation/{shard}.parquet"),
+                columns=["id", "speaker", "text_vi", "text_en", "vi_audio", "vi_duration_s"],
+            )
+            for shard in shards
+        ]
+        locations = [
+            (shard, index) for shard, table in zip(shards, tables) for index in range(len(table))
+        ]
+        random.Random(EN_VI_SEED).shuffle(locations)
+        audio_dir = out_dir / "en-vi-val" / "audio" / source
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for shard, index in sorted(locations[:EN_VI_ROWS]):
+            row = tables[shards.index(shard)].slice(index, 1).to_pylist()[0]
+            wav = audio_dir / f"{row['id'].replace('/', '_')}.wav"
+            audio = decode_opus(row["vi_audio"]["bytes"], row["vi_duration_s"], row["id"])
+            sphn.write_wav(wav, audio, OPUS_RATE)
+            rows.append(
+                {
+                    "id": f"en-vi-val/{row['id']}",
+                    "vi_audio": repo_display_path(wav),
+                    "text_vi": row["text_vi"],
+                    "text_en": row["text_en"],
+                    "duration_s": round(row["vi_duration_s"], 2),
+                    "speaker": row["speaker"],
+                    "source_row": f"data/validation/{shard}.parquet#r{index}",
+                }
+            )
+        write_rows(out_dir / "en-vi-val" / f"{source}.jsonl", rows)
+
+
 def main() -> None:
     args = parse_args()
     out_dir = resolve_repo_path(args.out_dir)
@@ -147,6 +221,8 @@ def main() -> None:
         build_fleurs(out_dir)
     if "multimed" in args.sets:
         build_multimed(out_dir)
+    if "en-vi-val" in args.sets:
+        build_en_vi_val(out_dir)
 
 
 if __name__ == "__main__":

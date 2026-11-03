@@ -84,6 +84,7 @@ Built by `training.prep.eval_sets` into `data/eval/`; evaluation only, never tra
 | FLEURS vi_vn test (857) | same | final report |
 | MultiMed-ST vi `select` (half of 3,437) | real conversational medical speech, **8 kHz** telephone band; references LLM-drafted, then corrected by 5 annotators | non-regression gate |
 | MultiMed-ST vi `final` (other half) | same | final report |
+| `en-vi-val` Common Voice dev and Libriheavy dev (180 rows each) | the training data's own TTS Vietnamese, held out | in-domain check at each validation, scored apart from FLEURS |
 | Own phone recordings (to record) | conversational VI on a phone mic, incl. 2–3 min monologues | final gate before shipping |
 
 MultiMed segments are cut mid-phrase and its references are clean sentences: read chrF, not

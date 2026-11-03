@@ -69,10 +69,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0;
   - checkpoints every 1,000 steps (~6.5 min) and validation every 9,000; `--val-every` must be
     a multiple of `--save-every`, because promotion hard-links the checkpoint saved at that step;
-  - each validation translates `--eval-pairs` (FLEURS dev: 361 rows, 72 minutes of speech)
-    free-running on a bf16 copy of the model, shortest first in batches of `--eval-batch-size`
-    64, each batch generated until every row ends or 20 s past its longest row: at most 2,647
-    generation steps. Mimi codes 8 rows at a time (`hibiki_helpers.MIMI_CHUNK_ROWS`).
+  - each validation translates the rows of every `--eval-pairs` file (FLEURS dev, 361 rows, 72
+    minutes of speech, and `en-vi-val` Common Voice and Libriheavy, 180 rows each, 54 minutes)
+    in one pass, free-running on a bf16 copy of the model, shortest first in batches of
+    `--eval-batch-size` 64 that mix the sets, each batch generated until every row ends or 20 s
+    past its longest row. Mimi codes 8 rows at a time (`hibiki_helpers.MIMI_CHUNK_ROWS`).
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". Batches pad to 16-frame
   buckets (`streams.FRAME_BUCKET`), and training requires torch compile (moshi's and
   `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only
@@ -146,14 +147,19 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 - Checkpoints are chosen on free-running translation of real Vietnamese (decided 2026-11-02:
   the last run's teacher-forced loss kept improving while its translations got worse). Each
   validation logs the teacher-forced losses of the cache's validation streams, then translates
-  `--eval-pairs` (default `data/eval/fleurs-vi/dev.jsonl`, so build the
+  `--eval-pairs` (default FLEURS dev, `en-vi-val/cv27` and `en-vi-val/libriheavy`, so build the
   [evaluation sets](#evaluation-sets) before training; rows need `duration_s`) with `eval.py`'s
-  sampling, reseeded per batch from `--seed`. `best_step*.safetensors` is a hard link to the
-  checkpoint that passes the
-  generation health gates (`common.generation_health`) with a strictly higher corpus chrF
-  (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`); a run whose checkpoints
-  all fail the gates promotes none. `val_log.jsonl` holds `teacher_forced` and `free_running`
-  metrics per step, and `eval/stepNNNNNN/` the predictions.
+  sampling, reseeded per batch from `--seed`.
+- Each pairs file is scored as its own set, named `<folder>/<stem>` (`common.score_sets`;
+  decided 2026-11-03). One blended score would hide the gap between the training data's own
+  domain and real speech, weigh sets by their length (corpus chrF and BLEU) and let one set's
+  rows carry another's EOS gate.
+- `best_step*.safetensors` is a hard link to the checkpoint whose every set passes the
+  generation health gates (`common.generation_health`) with a strictly higher corpus chrF on
+  the first set, FLEURS dev, because the phone hears real speech (`best.json`: `step`, `model`,
+  `metric` `free_running_chrf`, `chrf`). A run whose checkpoints all fail the gates promotes
+  none. `val_log.jsonl` holds `teacher_forced` and, under `free_running`, each set's metrics per
+  step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
 - Training's chrF ranks the checkpoints of one run. It generates with bf16 weights, as `eval.py`
   does, but in length-sorted batches of 64, while `eval.py` defaults to batch 1 in file order, so
   the two give different numbers for the same checkpoint; compare runs with `eval.py`.
@@ -227,9 +233,10 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 
 ## Evaluation sets
 
-`training.prep.eval_sets` (huggingface_hub and pyarrow only, so it runs on the Mac or the pod)
-writes `eval.py` pair files of real Vietnamese speech under `data/eval/`; they are never trained
-on ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). Built and checked on 2026-11-01:
+`training.prep.eval_sets` (huggingface_hub, pyarrow and sphn, so it runs on the Mac or the pod)
+writes `eval.py` pair files under `data/eval/`; they are never trained on
+([plan](../vi_en_parity_plan.md#2-evaluation-sets)). FLEURS and MultiMed-ST built and checked
+on 2026-11-01, `en-vi-val` on 2026-11-03:
 
 | File | Rows | Hours | Use |
 |---|---:|---:|---|
@@ -237,6 +244,8 @@ on ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). Built and checked on 202
 | `fleurs-vi/test.jsonl` | 857 | 3.00 | final report |
 | `multimed-vi/select.jsonl` | 1,718 | 3.01 | non-regression gate |
 | `multimed-vi/final.jsonl` | 1,719 | 3.02 | final report |
+| `en-vi-val/cv27.jsonl` | 180 | 0.25 | in-domain check at each validation |
+| `en-vi-val/libriheavy.jsonl` | 180 | 0.66 | in-domain check at each validation |
 
 - FLEURS `google/fleurs` at `70bb2e8`: `vi_vn` 16 kHz WAV read speech; `text_en` is the `en_us`
   raw text of the same sentence id (every Vietnamese row has one). Several speakers read each
@@ -248,3 +257,10 @@ on ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). Built and checked on 202
   rather than BLEU. Only the test split's English was corrected by annotators; `eval` and
   `train` are raw Gemini drafts and are not used. No conversation ids exist, so the halves may
   share conversations.
+- `en-vi-val` samples, with `random.Random(0)`, 180 rows per source from the validation split
+  of `anquachdev/common-vi-en` at `2ce8777`: Common Voice dev (173 speakers) and Libriheavy dev
+  (68 speakers). Its Vietnamese is the TTS the training data uses, so read against FLEURS it
+  separates translation failures from the real-speech gap. `sphn` decodes the Opus clips but
+  keeps the encoder's pre-skip (312 samples) and the last packet's padding; the builder drops
+  both, matching PyAV's decode to the sample, then writes 48 kHz WAV (a few peaks above full
+  scale clip). The rows keep `speaker` and `source_row`.

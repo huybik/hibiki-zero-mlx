@@ -69,8 +69,9 @@ The second command packs each shard into a flat memory-mapped array beside it
 (`<cache-dir>/.packed/`, 70 GB, ~30 s): every later start loads the 3.44M rows in ~9 s instead
 of unpickling them for 7.5 minutes, and keeps them out of RAM. Training builds missing packs
 itself, so this only moves that work before `run` checks the free disk. The third builds the
-real-Vietnamese evaluation sets; training translates FLEURS dev at every validation to choose
-its checkpoint, and refuses to start without it
+evaluation sets; training translates FLEURS dev and the held-out `en-vi-val` rows at every
+validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
+without them
 ([sft-training](agent-memory/sft-training.md#evaluation-sets)).
 
 ## Run
@@ -203,4 +204,5 @@ sets, such as MultiMed `select`, the non-regression gate
 
 `validate` reports teacher-forced losses on a cache's validation streams. `eval` runs correct-source
 free-running generation on rows with `id`, `vi_audio` and `text_en` columns and
-writes predictions, BLEU/chrF/WER, and a generation-health verdict.
+writes predictions, BLEU/chrF/WER, and a generation-health verdict. `--pairs` takes several
+files; `--limit` applies to each, and each is scored as its own set.
