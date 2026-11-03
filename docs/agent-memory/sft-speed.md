@@ -10,7 +10,7 @@ The trainer itself is in [sft-training](sft-training.md); the pod procedure in
 
 ## Fast path
 
-`lm_training.install()` (run when `common` is imported) replaces four things in moshi 0.2.13
+`lm_training.install()` (run when `common` is imported) replaces five things in moshi 0.2.13
 with the same math on the same weights:
 
 - the causal attention mask becomes `is_causal=True` (flash);
@@ -20,18 +20,25 @@ with the same math on the same weights:
   whose backward is one copy, instead of slices whose backward zero-fills a full gradient each),
   compiled with dynamic shapes, with the memory-efficient attention kernel;
 - the training gating FFN splits with `unbind` for the same reason;
+- the main transformer's training forward (training mode, no streaming state) runs its 28 layers
+  as one function compiled with dynamic shapes, moshi's RMS norms and rope (at offset 0) inline
+  and `is_causal` attention, which equals moshi's mask while T is within the 3,000-frame
+  context (checked per call). Compiling moshi's own forward instead recompiles per batch shape.
+  Validation and generation (eval mode) keep moshi's forward;
 - each compiled function keeps up to 64 graphs, not dynamo's 8. moshi compiles `_rms_norm`,
   `apply_rope` and `gating_forward_kernel` once per dtype, rank, grad mode, autocast state and
   shape class, and past the limit a function's new variants run eagerly for the rest of the
-  process. Training alone builds 12 graphs of `_rms_norm` and reached 8 within its first 11
-  steps; its steps then ran within 2% of those at 64. With every helper eager, a step is 6%
-  slower and peaks 3 GiB higher (78.2 GiB reserved).
+  process. Training builds two graphs of `_rms_norm` (the LM's output norm); a process that
+  resumes, validates, trains and validates again built 8 (2026-11-03, H200 NVL).
 
 Checked against moshi as shipped (2026-11-03, H100 NVL): fp32 loss equal, logits within 1.7e-6
 and every gradient within 3.1e-6; in bf16 both are as far from an fp32 reference (gradients:
 median 8.5e-3, max 9.4e-2); fp32 greedy decoding gives the same tokens for 494 steps on 16
 FLEURS rows. Sampled decoding diverges from moshi's after a few words (any rounding change
-does that), with outputs of the same kind.
+does that), with outputs of the same kind. With the compiled main transformer (H200 NVL): fp32
+loss equal (9.301917), logits within 2.6e-6 and every gradient within 1.2e-5; in bf16 its
+gradients are a median 7.8e-3 (max 9.9e-2) from the fp32 reference, moshi's own 8.6e-3
+(1.3e-1).
 
 ## Measurements
 
@@ -53,33 +60,38 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   - math attention in the depformer 13,381; clipping inside fused AdamW through its
     `grad_scale` (GradScaler's private hook) 13,584, +1.3%, not adopted;
   - `torch.compile(lm.transformer, dynamic=True)`: 14,390 (+7.3%, 1.5 GiB less), but two of its
-    frames recompile per batch shape up to the limit of 64 (warm-up 484 s, not 89), cause not
-    traced; a gain to take with a training forward for the main transformer, as the depformer
-    has. On the H100 NVL it ran at 10,358 against 10,669.
-- What is left (warm profile, same SXM): matmuls 49% of GPU time, compiled kernels 11%, copies
-  11%, eager elementwise 9.5%, fused AdamW 10% and the grad norm 4% (bandwidth-bound: 87 GB per
-  step); the GPU idles 8% in launch gaps under 0.1 ms, and the loader takes 0.15 ms per step.
-  The first step of each new batch shape also builds cuDNN attention plans (~75 ms).
+    frames recompiled per batch shape up to the limit of 64 (warm-up 484 s, not 89).
+- The compiled main-transformer forward on the H200 NVL (2026-11-03, the same benchmark):
+  14,682 frames/s against 13,838 (+6.1%), 73.1 GiB reserved against 75.1, the same loss.
+  Dynamo compiles it twice (batches under 4,096 frames get their own graph, an inductor fusion
+  guard), so the 200 warm-up steps took 137 s against 126.
+- What is left (warm profile, H200 NVL): matmuls 59% of GPU time, compiled kernels 16%, fused
+  AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
+  elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of
+  each new batch shape also builds cuDNN attention plans (~75 ms).
 - Generation (`LMGen`, ms per step at batch 16/32/64): fp32 57/93/164, bf16 31/47/80, bf16 with
   GQA 16/18/22.
 
 ## By GPU
 
-The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
+The same benchmark by GPU (one epoch is 131,553 steps); only the H200 row has the compiled
+main transformer, worth +6.1% there:
 
 | GPU (power limit) | frames/s | s/step | one epoch |
 |---|---:|---:|---:|
-| H200 NVL (600 W) | 13,353 | 0.305 | 11.1 h |
+| H200 NVL (600 W; warm, after 200 steps) | 14,682 | 0.277 | 10.1 h |
 | H100 SXM 80 GB (700 W; warm, after 200 steps) | 13,405 | 0.304 | 11.1 h |
 | H100 NVL (400 W) | 10,669 | 0.385 | 14.1 h |
 | H100 SXM 80 GB (500 W, its host's cap) | 7,401 | 0.550 | 20.1 h |
+
+- The H200 NVL drew 536 W on average at 1,705 MHz (1,785 max) and 58 °C: under its 600 W limit.
 
 - Of four H100 SXM pods rented on 2026-11-03, the three on EPYC 9454 hosts (Germany, Latvia)
   were capped at 500 W; the capped one benchmarked sat at its limit 99% of the time, at a mean
   798 MHz SM clock (1,980 max), with no allocator retries. The uncapped one (Australia) drew
   577 W at 1,887 MHz and 63–68 °C under load. `nvidia-smi -q -d POWER` shows a pod's limit.
 - An 80 GB card fits: CUDA sees 79.2 GiB of it and the allocator gets 78.7 GiB; training peaks
-  at 73.6 GiB allocated, 75.1 GiB reserved, and translating FLEURS dev at 74.4 GiB.
+  at 71.6 GiB allocated, 73.1 GiB reserved, and translating FLEURS dev at 74.4 GiB.
 - Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
   1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by
   0.01% and PAD accuracy by 1 point (base model). Loader workers save nothing: assembling the
