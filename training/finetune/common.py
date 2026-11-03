@@ -284,6 +284,9 @@ def evaluate_teacher_forced(
 # --------------------------------------------------------------------------- #
 # Eval row IO + selection
 # --------------------------------------------------------------------------- #
+EVAL_SET = "eval_set"  # the column read_eval_sets adds: the set a row belongs to
+
+
 def read_eval_rows(path: Path) -> list[dict[str, str]]:
     path = require_file(path, "eval rows")
     if path.suffix == ".csv":
@@ -302,6 +305,26 @@ def read_eval_rows(path: Path) -> list[dict[str, str]]:
                 rows.append({key: str(value) for key, value in row.items()})
         return rows
     raise ValueError(f"Eval rows must be .jsonl or .csv: {path}")
+
+
+def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
+    """Each pairs file's rows by set name, in the order given, each row tagged under EVAL_SET. A
+    set is named by its file's folder and stem, such as fleurs-vi/dev, and must have rows."""
+    sets: dict[str, list[dict[str, str]]] = {}
+    for path in paths:
+        path = require_file(path, "eval rows")
+        name = f"{path.parent.name}/{path.stem}"
+        if name in sets:
+            raise ValueError(f"Two pairs files are both named {name}")
+        rows = read_eval_rows(path)
+        if not rows:
+            raise ValueError(f"No rows in {path}")
+        for row in rows:
+            if EVAL_SET in row:
+                raise ValueError(f"{path} has a column {EVAL_SET!r} of its own")
+            row[EVAL_SET] = name
+        sets[name] = rows
+    return sets
 
 
 def validate_eval_rows(
@@ -335,10 +358,9 @@ def validate_eval_rows(
 
 
 def select_eval_rows(
-    rows: list[dict[str, str]], ids: list[str], id_column: str, limit: int
+    rows: list[dict[str, str]], ids: list[str], id_column: str
 ) -> list[dict[str, str]]:
-    if not ids:
-        return rows[:limit]
+    """The rows of `ids`, in that order."""
     by_id = {row[id_column]: row for row in rows}
     missing = [row_id for row_id in ids if row_id not in by_id]
     if missing:
@@ -543,6 +565,7 @@ def save_batch_outputs(
         records.append(
             {
                 "id": row[cfg.id_column],
+                EVAL_SET: row[EVAL_SET],
                 "source_audio": row[cfg.source_column],
                 "reference_text": row[cfg.reference_column],
                 "prediction_text": out_text,
@@ -668,7 +691,7 @@ def run_greedy_eval(
     checkpoint_info: Any,
     out_dir: Path,
     evaluation_seed: int | None = None,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
+) -> list[dict[str, str]]:
     """Batched free-running eval; optionally reseed each batch deterministically."""
     records: list[dict[str, str]] = []
     for batch_index, start in enumerate(range(0, len(rows), batch_size)):
@@ -684,7 +707,7 @@ def run_greedy_eval(
             # PyTorch's MPS cache keeps a finished batch's blocks without reusing them: it grew
             # 5 GiB a batch of 16 and swapped a 48 GB Mac while live tensors stayed at 6.3 GiB.
             torch.mps.empty_cache()
-    return records, score_records(records)
+    return records
 
 
 def generation_health(metrics: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
@@ -705,12 +728,39 @@ def generation_health(metrics: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     return eligible, gates
 
 
+def score_sets(records: list[dict[str, str]], names: list[str]) -> dict[str, dict[str, Any]]:
+    """Metrics and health gates of each set in `names` that has records, in that order. Sets are
+    scored apart: corpus chrF and BLEU weigh rows by length, and the gates must hold on each."""
+    scores: dict[str, dict[str, Any]] = {}
+    for name in names:
+        group = [record for record in records if record[EVAL_SET] == name]
+        if not group:
+            continue
+        metrics = score_records(group)
+        healthy, gates = generation_health(metrics)
+        metrics.update(health_eligible=healthy, health_gates=gates)
+        scores[name] = metrics
+    return scores
+
+
+def score_summary(metrics: dict[str, Any]) -> str:
+    """One line of a set's metrics, as eval.py and train.py print them."""
+    count = metrics["num_predictions"]
+    return (
+        f"chrf={metrics['chrf']:.2f} bleu={metrics['bleu']:.2f} "
+        f"length_ratio={metrics['mean_length_ratio']:.2f} eos={metrics['eos_found']}/{count} "
+        f"empty={metrics['empty_predictions']} repeat4={metrics['repeated_4gram_predictions']} "
+        f"end_offset={metrics['median_end_offset_s']:.1f}s "
+        f"health={'pass' if metrics['health_eligible'] else 'fail'}"
+    )
+
+
 def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
-                "id", "source_audio", "reference_text", "prediction_text", "eos_found",
+                "id", EVAL_SET, "source_audio", "reference_text", "prediction_text", "eos_found",
                 "generated_text_tokens", "end_offset_s", "mono_wav", "stereo_wav", "text_file",
             ],
         )

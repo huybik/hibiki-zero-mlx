@@ -69,8 +69,9 @@ The second command packs each shard into a flat memory-mapped array beside it
 (`<cache-dir>/.packed/`, 70 GB, ~30 s): every later start loads the 3.44M rows in ~9 s instead
 of unpickling them for 7.5 minutes, and keeps them out of RAM. Training builds missing packs
 itself, so this only moves that work before `run` checks the free disk. The third builds the
-real-Vietnamese evaluation sets; training translates FLEURS dev at every validation to choose
-its checkpoint, and refuses to start without it
+evaluation sets; training translates FLEURS dev and the held-out `en-vi-val` rows at every
+validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
+without them
 ([sft-training](agent-memory/sft-training.md#evaluation-sets)).
 
 ## Run
@@ -88,9 +89,9 @@ streams in batches of at most 4,608 frames, one epoch (131,553 steps), peak LR `
 warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW
 `(0.9, 0.95)` with weight decay `0.1`, checkpoints every 1,000 steps and validation every 9,000
 ([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced
-losses, translates FLEURS dev free-running, and promotes the checkpoint that passes the
-generation health gates with the highest chrF
-([sft-training](agent-memory/sft-training.md#checkpoints-and-recovery)).
+losses, translates FLEURS dev and the `en-vi-val` sets free-running, scoring each set apart, and
+promotes the checkpoint whose every set passes the generation health gates with the highest
+FLEURS dev chrF ([sft-training](agent-memory/sft-training.md#checkpoints-and-recovery)).
 
 A new run needs an empty `runs/RUN_NAME/` and a public `HIBIKI_HF_REPO` whose `RUN_NAME/`
 prefix is empty. It records the run identity and commit in `runs/RUN_NAME/run_id.json` (uploaded
@@ -185,7 +186,8 @@ Runs recorded before the `inference/`/`training/` split, such as
 
 ## Evaluate a checkpoint
 
-Training has already translated FLEURS dev at every validation (`runs/RUN_NAME/val_log.jsonl`,
+Training has already translated FLEURS dev and the `en-vi-val` sets at every validation
+(`runs/RUN_NAME/val_log.jsonl`,
 `runs/RUN_NAME/eval/stepNNNNNN/predictions.csv`). Check the promoted checkpoint on the other
 sets, such as MultiMed `select`, the non-regression gate
 ([plan](vi_en_parity_plan.md#2-evaluation-sets)), or teacher-forced on another cache:
@@ -203,4 +205,5 @@ sets, such as MultiMed `select`, the non-regression gate
 
 `validate` reports teacher-forced losses on a cache's validation streams. `eval` runs correct-source
 free-running generation on rows with `id`, `vi_audio` and `text_en` columns and
-writes predictions, BLEU/chrF/WER, and a generation-health verdict.
+writes predictions, BLEU/chrF/WER, and a generation-health verdict. `--pairs` takes several
+files; `--limit` applies to each, and each is scored as its own set.
