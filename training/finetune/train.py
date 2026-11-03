@@ -545,6 +545,12 @@ def main() -> None:
         lm_kwargs_overrides={"gradient_checkpointing": False},
     )
     lm.train()
+    # The training forward attends causally over the whole stream (lm_training): the longest
+    # padded stream must fit the attention context, checked here rather than at its first batch.
+    context = lm.transformer.layers[0].self_attn.context
+    longest = math.ceil(frames[1] / streams.FRAME_BUCKET) * streams.FRAME_BUCKET
+    if context is not None and longest > context:
+        raise ValueError(f"--stream-seconds allows {longest} frames, over the context of {context}")
     common.enable_full_finetune(lm)
     params = common.trainable_parameters(lm)
     if not params:
