@@ -120,3 +120,8 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
   8 s and 26 s of stall. With the fsync a pair takes ~40 s on the 700 W SXM's 1.1 GB/s disk, so
   saves closer together than that (20 steps in the end-to-end test) wait for the previous one;
   1,000 steps apart they never do.
+- Host RAM of `en_speech_streams_epoch1b` at step 68,750 (700 W SXM, 2026-11-03, one sample):
+  the trainer held its 38.5 GiB of pinned checkpoint buffers (shared memory, allocated once) and
+  5 GiB of its own; each of the 4 loader workers 3 GiB plus 12 GiB of mapped packs. The cgroup
+  counted 147 GiB of its 181 GiB limit, 135 GiB of it reclaimable page cache of the packs, so
+  about 50 GiB is the real need, under the 80 GiB `preflight` floor.

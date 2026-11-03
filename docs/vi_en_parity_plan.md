@@ -65,8 +65,18 @@ grows sentence by sentence.
    ([sft-data-caches](agent-memory/sft-data-caches.md#builds)). The trainer builds streams from its
    rows; nothing needs re-encoding.
 2. Noisy Vietnamese re-encode (next): for a few thousand hours, encode the Vietnamese side again
-   with noise, room reverb, a phone-mic band and speed 0.9–1.1×, reusing each row's English codes
+   with noise, room reverb, a phone-mic band and speed changes, reusing each row's English codes
    and text timing (no wav2vec2; about half the Mimi work of a row).
+   - Measure first: score a checkpoint on `en-vi-val` clean and degraded (noise, reverb, a
+     16 kHz band). If the degraded score falls toward FLEURS dev, the channel is the gap and
+     this stage pays; if it stays near clean, the gap is real Vietnamese speech (stage 3), which
+     noise cannot teach.
+   - Band limits (16 kHz as FLEURS, 8 kHz as MultiMed, a phone band) and low-bitrate Opus are
+     the cheapest and closest to the evaluation sets: the TTS source is full-band 24 kHz.
+   - Speed only 1.0–1.1× while the cached delays are reused: a slowed source moves Vietnamese
+     words past the English that translates them, teaching the model to guess ahead.
+   - Augment ~60% of rows and keep the rest clean. Encoding on the pod's GPU after a run takes
+     hours where the Mac takes days.
 3. Real Vietnamese source tranche (later): real Vietnamese speech (GigaSpeech 2 vi, Bud500; check
    licences) with LLM-translated text and voice-cloned English TTS targets, timed causally. This
    is the paper's stage-4 analogue and the main defence against the TTS-only source.
@@ -211,7 +221,15 @@ Vietnamese text cannot keep up with its speech.
    - The run validates with its commit's old settings, so its gates cannot pass and it promotes
      nothing. Even at the new settings a third of FLEURS rows never end, short of the gate's 91%.
      Its checkpoints are scored with `eval.py`'s new defaults as each reaches the recovery repo,
-     which keeps the newest two pairs.
+     which keeps the newest two pairs; each validation step's model is copied to the run's
+     `offline_best/` there, pruned to the newest and the best by FLEURS dev chrF.
+   - To step 63,000 (of 131,553) teacher-forced validation loss kept falling but slowed
+     (3.17, 2.94, 2.85, 2.79, 2.76, 2.73, 2.72 every 9,000 steps), with content accuracy flat
+     at 0.63 since 54,000. It sits ~0.2 above the training loss, a gap nearly unchanged since
+     18,000, so no overfitting. FLEURS dev chrF at the run's settings rose 12.3 → 17.8; on the
+     Mac at the new ones, 20.7, 22.6, 23.1 at 18k, 36k, 45k. A second epoch waits for the end
+     of this one and the in-domain comparison: more passes over TTS speech cannot fix EOS or
+     the real-speech gap.
 4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
