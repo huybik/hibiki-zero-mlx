@@ -90,8 +90,10 @@ main transformer, worth +6.1% there:
   were capped at 500 W; the capped one benchmarked sat at its limit 99% of the time, at a mean
   798 MHz SM clock (1,980 max), with no allocator retries. The uncapped one (Australia) drew
   577 W at 1,887 MHz and 63–68 °C under load. `nvidia-smi -q -d POWER` shows a pod's limit.
-- An 80 GB card fits: CUDA sees 79.2 GiB of it and the allocator gets 78.7 GiB; training peaks
-  at 71.6 GiB allocated, 73.1 GiB reserved, and translating FLEURS dev at 74.4 GiB.
+- An 80 GB card fits: CUDA sees 79.2 GiB of it and the allocator gets 78.7 GiB. Training
+  peaked at 73.6 GiB allocated and 75.1 GiB reserved there before the compiled main transformer,
+  and translating FLEURS dev at 74.4 GiB; with it, 71.6 and 73.1 GiB on the H200 NVL (where main
+  also reserved 75.1). The compiled path has not run on an 80 GB card.
 - Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
   1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by
   0.01% and PAD accuracy by 1 point (base model). Loader workers save nothing: assembling the

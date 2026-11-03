@@ -121,8 +121,8 @@ if not hopper or torch.cuda.get_device_capability(0) != (9, 0):
 if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-# Training's 4,608-frame batches peak at 73.1 GiB reserved, validation's translation at 74.4:
-# an 80 GB card fits (CUDA sees 79.2 GiB of it).
+# Training's 4,608-frame batches peak at 75.1 GiB reserved or less, validation's translation
+# at 74.4: an 80 GB card fits (CUDA sees 79.2 GiB of it).
 if memory_gib < 78:
     raise RuntimeError(f"an 80 GB GPU or larger is required, got {memory_gib:.1f} GiB")
 

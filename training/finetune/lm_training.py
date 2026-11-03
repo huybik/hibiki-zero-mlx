@@ -18,16 +18,16 @@
   same reason as the depformer's slices.
 - The main transformer's training forward. Its 28 layers run as one compiled function with
   dynamic shapes, with moshi's RMS norms and rope inline and `is_causal` attention (training is
-  at offset 0, T below its 3,000-frame context). Compiling moshi's own forward instead
+  at offset 0, T within its 3,000-frame context). Compiling moshi's own forward instead
   recompiles for every batch shape, until dynamo's limit leaves new shapes eager.
 
     moshi (per layer, 16 steps)            here
     x[:, t:t+1] ─► linear_t ─┐ ×16         x[16, N, C] ─unbind─► linear_t ─┐ ×16
     backward: 16 zero-filled grads + adds  backward: one stack ───────────┘
 
-Generation (`LMGen`) and validation (the LM in eval mode) keep moshi's own transformer, depformer
-and gating. `install()` also lets each compiled
-function keep 64 graphs instead of dynamo's 8, so none of moshi's runs eagerly.
+In eval mode (teacher-forced validation, generation) the main transformer is moshi's own, and
+generation (`LMGen`) also keeps moshi's depformer and gating. `install()` also lets each
+compiled function keep 64 graphs instead of dynamo's 8, so none of moshi's runs eagerly.
 """
 from __future__ import annotations
 
@@ -48,8 +48,9 @@ class _CausalSDPA:
     """Namespace proxy injected as moshi.modules.transformer.F (rebinds only that module's
     global, not torch.nn.functional itself).
 
-    In training (offset 0, T << cfg.context) moshi's boolean attention mask is exactly
-    lower-triangular, so it becomes is_causal=True, which the flash kernel accepts. The verdict
+    At offset 0 (teacher-forced validation, and Mimi's encoder) with T within the context, moshi's
+    boolean attention mask is exactly lower-triangular, so it becomes is_causal=True, which the
+    flash kernel accepts; Mimi's windowed masks are not and fall through. The verdict
     is checked once per query and mask shape and cached (checking every call would sync the host
     per layer). At offset 0 a model's mask depends only on T and its context, and the models
     here differ in heads as well as context (Mimi: 8 heads of 64, 250 frames; the LM: 16 of 128,
@@ -238,7 +239,8 @@ def _transformer_layers(transformer: Any, x: torch.Tensor) -> torch.Tensor:
     return out.to(x.dtype)
 
 
-# Compiled on first call; every batch shape shares one dynamic graph.
+# Compiled on first call with dynamic shapes: two graphs, as batches under 4,096 frames get
+# their own (an inductor fusion guard).
 _compiled_transformer_layers = torch.compile(_transformer_layers, dynamic=True)
 
 
@@ -250,15 +252,17 @@ def _check_transformer(transformer: Any, steps: int, args: tuple, kwargs: dict) 
     if transformer.positional_embedding != "rope_concat":
         raise RuntimeError("The training transformer needs rope_concat positions")
     for layer in transformer.layers:
+        if layer.cross_attention is not None or layer.skip_self_attn or layer.weights_per_step:
+            raise RuntimeError("Unsupported transformer layer")
         attention = layer.self_attn
         if not attention.causal or attention.cross_attention or len(attention.in_projs) != 1:
             raise RuntimeError("Unsupported transformer attention")
         if attention.context is not None and steps > attention.context:
             raise RuntimeError(f"{steps} frames exceed the attention context {attention.context}")
-        if layer.cross_attention is not None or layer.skip_self_attn or layer.weights_per_step:
-            raise RuntimeError("Unsupported transformer layer")
-        if not isinstance(layer.gating, ActivationGating) or not isinstance(
-            layer.gating.linear_in, torch.nn.Linear
+        gating = layer.gating
+        if not isinstance(gating, ActivationGating) or not (
+            isinstance(gating.linear_in, torch.nn.Linear)
+            and isinstance(gating.linear_out, torch.nn.Linear)
         ):
             raise RuntimeError("Unsupported transformer feed-forward")
         if not (isinstance(layer.norm1, RMSNorm) and isinstance(layer.norm2, RMSNorm)):
