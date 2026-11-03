@@ -75,13 +75,14 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
 
 ## By GPU
 
-The same benchmark by GPU (one epoch is 131,553 steps); only the H200 row has the compiled
-main transformer, worth +6.1% there:
+The same benchmark by GPU (one epoch is 131,553 steps); the H200 NVL and 700 W SXM rows have
+the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 and 13,405 →
+14,399), the other two predate it:
 
 | GPU (power limit) | frames/s | s/step | one epoch |
 |---|---:|---:|---:|
 | H200 NVL (600 W; warm, after 200 steps) | 14,682 | 0.277 | 10.1 h |
-| H100 SXM 80 GB (700 W; warm, after 200 steps) | 13,405 | 0.304 | 11.1 h |
+| H100 SXM 80 GB (700 W; warm, after 200 steps) | 14,399 | 0.283 | 10.3 h |
 | H100 NVL (400 W) | 10,669 | 0.385 | 14.1 h |
 | H100 SXM 80 GB (500 W, its host's cap) | 7,401 | 0.550 | 20.1 h |
 
@@ -93,8 +94,8 @@ main transformer, worth +6.1% there:
   577 W at 1,887 MHz and 63–68 °C under load. `nvidia-smi -q -d POWER` shows a pod's limit.
 - An 80 GB card fits: CUDA sees 79.2 GiB of it and the allocator gets 78.7 GiB. Training
   peaked at 73.6 GiB allocated and 75.1 GiB reserved there before the compiled main transformer,
-  and translating FLEURS dev at 74.4 GiB; with it, 71.6 and 73.1 GiB on the H200 NVL (where main
-  also reserved 75.1). The compiled path has not run on an 80 GB card.
+  and translating FLEURS dev at 74.4 GiB; with it, 71.6 and 73.1 GiB on both the H200 NVL
+  (where main also reserved 75.1) and the 700 W SXM, with no allocator retries.
 - Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
   1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by
   0.01% and PAD accuracy by 1 point (base model). Loader workers save nothing: assembling the
