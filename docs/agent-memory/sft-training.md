@@ -175,16 +175,20 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
   - a clean tracked tree;
   - exact Torch and Moshi versions; one H100 or H200 with compute capability 9.0;
   - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
-    when lower than `/proc/meminfo`, which shows the host on Vast) and the free disk its caller
-    asks for;
+    when lower than `/proc/meminfo`, which shows the host on Vast) and 130 GiB of disk: free
+    space plus, for `run`, what the run dir already holds (each hard-linked inode once);
   - the SHA-256 of the four upstream files in `weights/`.
-- `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues:
-  - without `runs/RUN_NAME/run_id.json`: preflight with 130 GiB free, an empty run dir, an empty
-    `RUN_NAME/` prefix in a public `HIBIKI_HF_REPO`; it writes `run_id.json` (commit plus
-    random id, uploaded as `RUN_NAME/run.json`) and `train_args.json` (ARGS);
-  - with it: the saved ARGS (other ARGS are refused), preflight with 50 GiB free, a remote pair
-    no newer than the newest local one, a local `best.json` no older than the remote's newest
-    `best/` marker, and a `run_id.json` commit equal to HEAD.
+- `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
+  It holds `flock` on `runs/.RUN_NAME.lock` (inherited by the trainer and the sync), so a
+  second launcher of a running run exits; then preflight:
+  - without `runs/RUN_NAME/run_id.json`: an empty run dir (a start cut short before
+    `run_id.json` leaves only `train_args.json`, which is removed) and an empty `RUN_NAME/`
+    prefix in a public `HIBIKI_HF_REPO`; it writes `train_args.json` (ARGS), then `run_id.json`
+    (commit plus random id), then uploads it as `RUN_NAME/run.json`;
+  - with it: the saved ARGS (other ARGS are refused), a remote pair no newer than the newest
+    local one, a local `best.json` no older than the remote's newest `best/` marker, and a
+    `run_id.json` commit equal to HEAD; a missing remote `run.json` (its upload failed) is
+    uploaded if the prefix is otherwise empty.
   Either way it runs `train.py --out-dir runs/RUN_NAME ARGS…` beside the `hf_sync` watcher, and
   kills training if sync dies. On an interruptible pod the boot script runs it
   ([docs/finetune.md](../finetune.md#interruptible-pods)).
@@ -216,8 +220,12 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
   and `val_log.jsonl` past the resumed step are dropped. A start without a pair begins at step 0
   and removes the logs, `best.json` and `eval/` of a run cut short before its first save.
 - A pair is saved before its validation, and a validation's log line is written after its
-  promotion. A resume first validates its own step if `val_log.jsonl` lacks it, the final step
-  included; a finished run refuses to resume. A replacement pod has `val_log.jsonl` only if it
+  promotion. A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl`
+  lacks validates it first; a finished run refuses to resume. Promotion relinks
+  `best_stepS.safetensors` unless it is already this run's `model_stepS` (a replacement pod can
+  restore best S beside an older pair, then retrain S). A torn last log line is dropped on
+  resume, and the checkpoint writer's thread is not a daemon, so a crash still finishes the pair
+  being written. A replacement pod has `val_log.jsonl` only if it
   restored the run's `artifacts/` (synced whenever the training process exits); without it,
   the resumed step's validation runs again and may promote it on sampling noise.
 - `h100.sh run` refuses to continue unless the local `best.json` is at least as new as the

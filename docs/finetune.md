@@ -17,7 +17,8 @@ interruptible pod reruns it on boot.
   ([sft-training](agent-memory/sft-training.md#speed)).
 - NVIDIA driver 580 or newer (CUDA 13), at least 80 GiB of RAM in the container, and Bash 5.1+.
 - About 400 GB of disk: ~100 GB of environment, weights, caches and evaluation sets, 70 GB of
-  cache packs, and 130 GiB free for the run (`run` checks it).
+  cache packs, and 130 GiB for the run: free, plus what a continued run already holds (`run`
+  checks it).
 - Interruptible pods work. Their disk survives a preemption, and the boot hook below continues
   the run; checkpoints every 1,000 steps (5–6.5 min) bound the work a preemption loses.
 
@@ -105,8 +106,8 @@ claimed the run; running it again continues the same claim.
 ### Interruptible pods
 
 A preempted container restarts with its disk intact but nothing running. Its boot script,
-`/root/onstart.sh` on Vast, can continue the run (`run` only continues a run that exists, so
-the line is safe to leave in place):
+`/root/onstart.sh` on Vast, can continue the run (`run` only continues a run that exists and
+exits while another launcher holds it, so the line is safe to leave in place):
 
 ```bash
 cat >> /root/onstart.sh <<'EOF'

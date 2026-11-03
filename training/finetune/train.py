@@ -252,8 +252,10 @@ def promote_best(
         "validation-cadence model checkpoint",
     )
     model_path = out_dir / f"best_step{step:06d}.safetensors"
-    # Only the promoted model's link survives startup and promotion, so an existing one is this
-    # checkpoint already (a resume can validate the promoted step again).
+    # A resume can validate the promoted step again: its link is this checkpoint already, unless
+    # a replacement pod restored that best model beside an older pair and retrained the step.
+    if model_path.exists() and not os.path.samefile(model_path, checkpoint_path):
+        model_path.unlink()
     if not model_path.exists():
         os.link(checkpoint_path, model_path)
     state = {
@@ -281,7 +283,8 @@ class CheckpointWriter:
     `save` enqueues the copies off the GPU on the current stream, so later optimizer steps
     cannot change the snapshot, and returns at once; the thread waits for the copies, writes the
     model then the trainer file (a pair is complete once both exist) and prunes old pairs. The
-    pinned buffers are reused, so a save first waits for the previous write."""
+    pinned buffers are reused, so a save first waits for the previous write. The thread is not a
+    daemon: if training raises, the interpreter finishes the pair before it exits."""
 
     def __init__(self, model: Any, optimizer: Any, args: argparse.Namespace, out_dir: Path):
         self.model = model
@@ -327,7 +330,6 @@ class CheckpointWriter:
         self.thread = threading.Thread(
             target=self._write,
             args=(copied, model_state, trainer_state, model_path, trainer_path),
-            daemon=True,
         )
         self.thread.start()
 
@@ -375,12 +377,20 @@ def load_newest_pair(
 
 
 def keep_log_lines(path: Path, last_step: int) -> list[dict[str, Any]]:
-    """Drop the lines of a jsonl log past `last_step` (written after the pair a run resumes)."""
+    """Drop the lines of a jsonl log past `last_step` (written after the pair a run resumes), and
+    a last line cut short by a crash."""
     if not path.is_file():
         return []
-    items = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    items = []
+    for index, line in enumerate(lines):
+        try:
+            items.append(json.loads(line))
+        except json.JSONDecodeError:
+            if index != len(lines) - 1:
+                raise
     kept = [item for item in items if int(item["step"]) <= last_step]
-    if len(kept) != len(items):
+    if len(kept) != len(lines):
         atomic_write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in kept), path)
     return kept
 

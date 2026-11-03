@@ -42,14 +42,15 @@ class _CausalSDPA:
 
     In training (offset 0, T << cfg.context) moshi's boolean attention mask is exactly
     lower-triangular, so it becomes is_causal=True, which the flash kernel accepts. The verdict
-    is checked once per mask shape and cached (checking every call would sync the host per
-    layer); every same-shape mask moshi builds at offset 0 is identical, and streaming decode has
-    T_q=1 != T_k so it falls through. Keys and values with fewer heads than the queries are
-    grouped (`_keep_kv_heads`).
+    is checked once per query and mask shape and cached (checking every call would sync the host
+    per layer). At offset 0 a model's mask depends only on T and its context, and the models
+    here differ in heads as well as context (Mimi: 8 heads of 64, 250 frames; the LM: 16 of 128,
+    3,000), so a shape's mask is fixed. Streaming decode has T_q=1 != T_k, so it falls through.
+    Keys and values with fewer heads than the queries are grouped (`_keep_kv_heads`).
     """
 
     def __init__(self):
-        self._causal_shapes: dict[tuple[int, ...], bool] = {}
+        self._causal_shapes: dict[tuple[tuple[int, ...], tuple[int, ...]], bool] = {}
 
     def __getattr__(self, name: str) -> Any:
         return getattr(F, name)
@@ -62,7 +63,7 @@ class _CausalSDPA:
             and q.shape[-2] == k.shape[-2]
             and attn_mask.shape[-2:] == (q.shape[-2], k.shape[-2])
         ):
-            key = tuple(attn_mask.shape)
+            key = (tuple(q.shape), tuple(attn_mask.shape))
             causal = self._causal_shapes.get(key)
             if causal is None:
                 T = q.shape[-2]

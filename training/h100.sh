@@ -81,7 +81,8 @@ setup() {
 }
 
 preflight() {
-  local minimum_free_gib="${1:-190}"
+  # The run needs MIN GiB of disk: free space plus what RUN_DIR (when given) already holds.
+  local minimum_gib="$1" run_dir="${2:-}"
   require_python
   require_cuda_driver
   require_hopper_gpu
@@ -89,7 +90,7 @@ preflight() {
   git diff --cached --quiet || die "staged changes must be committed before training"
 
   local profile
-  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_free_gib" <<'PY'
+  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_gib" "$run_dir" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -101,7 +102,8 @@ from pathlib import Path
 import torch
 
 root = Path(sys.argv[1])
-minimum_free_gib = float(sys.argv[2])
+minimum_gib = float(sys.argv[2])
+run_dir = Path(sys.argv[3]) if sys.argv[3] else None
 
 if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
     raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
@@ -141,8 +143,20 @@ host_gib = host_bytes / 2**30
 if host_gib < 80:
     raise RuntimeError(f"at least 80 GiB of RAM required, got {host_gib:.1f}")
 free_gib = shutil.disk_usage(root).free / 2**30
-if free_gib < minimum_free_gib:
-    raise RuntimeError(f"at least {minimum_free_gib:.0f} GiB free disk required")
+# A continued run's pairs, promoted model and staged uploads are disk it already has; the
+# promoted model is a hard link, so each inode counts once.
+held = {}
+if run_dir is not None and run_dir.is_dir():
+    for path in run_dir.rglob("*"):
+        stat = path.lstat()
+        if path.is_file() and not path.is_symlink():
+            held[(stat.st_dev, stat.st_ino)] = stat.st_blocks * 512
+held_gib = sum(held.values()) / 2**30
+if free_gib + held_gib < minimum_gib:
+    raise RuntimeError(
+        f"at least {minimum_gib:.0f} GiB of disk required for the run, got {free_gib:.0f} free"
+        f" and {held_gib:.0f} held by the run"
+    )
 
 expected_hashes = {
     "weights/config.json": "a99f354a6131034b688fc9f91c889dc10e7eeff96ce65e94447be33d1be325a5",
@@ -261,6 +275,16 @@ else:
         raise RuntimeError("restore run_id.json before resume")
     if json.loads(identity.read_text())["commit"] != sys.argv[4]:
         raise RuntimeError("training code changed since this run was created")
+    if "run.json" not in remote_files:
+        # The start wrote run_id.json but its upload failed: finish the claim.
+        if remote_files:
+            raise RuntimeError(f"{prefix} holds files but no run.json")
+        api.upload_file(
+            path_or_fileobj=identity,
+            path_in_repo=f"{prefix}run.json",
+            repo_id=sys.argv[1],
+            commit_message="Start full training run",
+        )
 print(f"HF disaster recovery: {info.id}/tree/main/{prefix.rstrip('/')}")
 PY
 
@@ -306,6 +330,13 @@ run() {
   done
   local run_dir="$RUNS_DIR/$run_name"
   export HIBIKI_HF_PREFIX="$run_name"
+  # One launcher per run: the boot hook's and a manual one would clean each other's files. The
+  # trainer and the sync inherit the lock, so it holds until all of them exit.
+  mkdir -p "$RUNS_DIR"
+  exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
+  flock -n "$lock_fd" || die "$run_name is already running"
+  # Two pairs, the promoted model, and a pair the sync still uploads after it is pruned.
+  preflight 130 "$run_dir"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
     local -a saved
@@ -314,13 +345,12 @@ run() {
     if [[ $# -gt 0 && "$*" != "${saved[*]}" ]]; then
       die "$run_name was started with other arguments; run it with none to continue"
     fi
-    preflight 50
     run_with_sync "$run_dir" resume \
       "$PYTHON" -m training.finetune.train --out-dir "$run_dir" "${saved[@]}"
   else
     [[ $# -gt 0 ]] || die "a new run needs its train args (--cache-dir, --val-cache-dir, ...)"
-    # Two pairs, the promoted model, and a pair the sync still uploads after it is pruned.
-    preflight 130
+    # A start cut short before run_id.json leaves only these behind.
+    rm -f "$run_dir/train_args.json" "$run_dir/.run_id.json.tmp"
     require_empty_dir "$run_dir"
     run_with_sync "$run_dir" fresh "$PYTHON" -m training.finetune.train --out-dir "$run_dir" "$@"
   fi
