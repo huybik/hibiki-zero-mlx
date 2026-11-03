@@ -11,7 +11,8 @@ import numpy as np
 
 
 class Rejected(Exception):
-    """A data fault in one row (bad audio, too long); any other error stops the run."""
+    """A data fault in one row (bad audio, too long), which the cache builder rejects; any other
+    error stops its run. The noisy re-encode stops on either."""
 
 
 def decode(data: bytes) -> tuple[np.ndarray, int]:

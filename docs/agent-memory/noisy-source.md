@@ -129,8 +129,9 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   | `libriheavy-medium-00260` (anquachdev voiced) | 99.97% | 9.1% |
 
   On Libriheavy, libopus (sphn) and FFmpeg's decoder (PyAV) differ: 2 samples apart, then up to
-  0.45 in amplitude. On Common Voice they agree to 1e-7, so the 36 `cv27` shards written before
-  the switch are PyAV's.
+  0.45 in amplitude. The 36 `cv27` shards written before the switch (`cv27-00000`–`00035`) stay:
+  over every selected row of them (Mac, av 15.1.0 and soxr 1.1.0, PR #52's review), the old
+  decode has PyAV's sample count and, after soxr, lies under 1e-6 from it.
 
 ## Evaluation
 

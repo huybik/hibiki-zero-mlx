@@ -1,6 +1,7 @@
 # SFT grounded caches
 
-Read when touching `training/prep/cache_codes.py`, `training/prep/publish_caches.py`,
+Read when touching `training/prep/cache_codes.py`, `training/prep/audio.py`,
+`training/prep/publish_caches.py`,
 `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or
 `training/paths.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) · [Speed](#speed) · [Builds](#builds) ·
@@ -22,8 +23,8 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 
 - The trainer runs on the H100 pod; the caches reach it through the cache repo
   ([Publishing](#publishing), [docs/finetune.md](../finetune.md)). `CACHE_FORMAT` lives in
-  `training/paths.py` so the trainer never imports the builder's Mac-only packages (PyAV, MLX),
-  which the pod does not install.
+  `training/paths.py` so the trainer never imports the builder's Mac-only MLX, which the pod
+  does not install (the pod has PyAV, for the noisy re-encode).
 
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
   straight from its parquet shards, the split taken from the folder. FLEURS is dropped.
@@ -62,7 +63,7 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
   word later. An unspoken piece inside a word (`"It`, `(see`) is spread over that word's span
   with it, as before (half of Libriheavy rows; kept unchanged in this build). Leading ones were rejected before 2026-10-27 (51k Libriheavy
   rows, 1.7%).
-- Only data faults reject a row: `cache_codes.Rejected` (undecodable or non-mono audio, a duration
+- Only data faults reject a row: `audio.Rejected` (undecodable or non-mono audio, a duration
   mismatch, the frame cap) and `text_timing.AlignmentError`. Any other error, such as a dead
   decode worker (`BrokenProcessPool`), an MLX error or PyAV running out of memory, stops the run
   before the shard is written, so a rerun rebuilds it rather than skipping lost rows. A shard

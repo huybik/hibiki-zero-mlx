@@ -2,11 +2,12 @@
 """Re-encode the Vietnamese source of a grounded cache under simulated recording conditions.
 
 Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the same rows in the
-same order. A seeded --fraction of the rows get new Vietnamese source codes: their clip, decoded
-from the EN-VI dataset's parquet shard that the cache shard was built from, decoded and resampled
-by the cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions and Mimi-encoded in float32. Text,
-English codes, frame counts and both EOS positions stay as they were. Each row records its
-conditions under `source_conditions` (None for a row kept clean).
+same order. A seeded --fraction of the rows get new Vietnamese source codes: their clip, taken
+from the EN-VI dataset's parquet shard that the cache shard was built from, is decoded and
+resampled by the cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions
+and Mimi-encoded in float32. Text, English codes, frame counts and both EOS positions stay as
+they were. Each row records its conditions under `source_conditions` (None for a row kept
+clean).
 
 Two steps, so the download runs while the GPU still trains:
 
@@ -179,13 +180,13 @@ def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
                 time.sleep(60 * attempt)
         table = pq.read_table(path, columns=["id", "vi_audio"])
         ids = table.column("id").to_pylist()
-        audio = table.column("vi_audio").combine_chunks().field("bytes")
+        opus = table.column("vi_audio").combine_chunks().field("bytes")
         keep = pa.array([selected(args.seed, row_id, args.fraction) for row_id in ids])
         slim = pa.table(
             {
                 "id": table.column("id"),
                 # Null for the rows that stay clean.
-                "vi_opus": pc.if_else(keep, audio, pa.scalar(None, audio.type)),
+                "vi_opus": pc.if_else(keep, opus, pa.scalar(None, opus.type)),
             }
         )
         meta = {"file": source, "bytes": path.stat().st_size}
@@ -279,7 +280,11 @@ class Encoder:
             ):
                 self._write(pending)
                 pending = []
-            clip = torch.from_numpy(clips[index].result()).to(self.device)
+            try:
+                pcm = clips[index].result()
+            except audio.Rejected as exc:
+                raise RuntimeError(f"{sample['id']}: {exc}") from exc
+            clip = torch.from_numpy(pcm).to(self.device)
             if math.ceil(clip.shape[-1] / FRAME_SAMPLES) != sample["vi_frames"]:
                 raise RuntimeError(
                     f"{sample['id']}: {clip.shape[-1]} samples, the cache has "

@@ -119,6 +119,7 @@ trains from the first run's final model:
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
 V=data/cache/en-vi-grounded-v2/validation
+# A .venv made before PyAV joined `h100.sh setup` needs it: ./.venv/bin/python -m pip install av==15.1.0
 # From a second worktree of the PR's commit: a preempted first run resumes only on its own commit.
 nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
 # After the first run's final save and sync (its final pair is in PREVIOUS_RUN/checkpoints/ on the Hub):
