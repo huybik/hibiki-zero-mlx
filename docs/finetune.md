@@ -10,7 +10,8 @@ interruptible pod reruns it on boot.
 ## Pod requirements
 
 - One Hopper GPU with at least 80 GB: an H100 SXM (80 GB), H100 NVL (94 GB) or H200 / H200 NVL
-  (141 GB). Training peaks at 75.1 GiB reserved or less, validation at 74.4 GiB.
+  (141 GB). Training peaks at 75.1 GiB reserved or less, and validation below that
+  ([sft-speed](agent-memory/sft-speed.md#measurements)).
 - The GPU at its stock power limit (`nvidia-smi -q -d POWER`): an H100 SXM its host capped at
   500 W instead of 700 W trained 1.8x slower than one at 700 W, and some providers cap every
   SXM they rent out. One epoch takes ~10 h on an H200 NVL or a 700 W H100 SXM and ~14 h on an

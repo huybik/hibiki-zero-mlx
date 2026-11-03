@@ -33,7 +33,7 @@ from torch.utils.data import DataLoader
 from training.finetune import lm_training
 from training.finetune.hibiki_helpers import (
     audio_read,
-    decode_outputs,
+    decode_wavs,
     encode_inputs,
     get_lmgen,
     stack_and_pad_audio,
@@ -479,25 +479,19 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Autoregressive greedy generation
 # --------------------------------------------------------------------------- #
-def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any, warn: bool) -> list[dict[str, Any]]:
+def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any) -> list[dict[str, Any]]:
     eos_id = int(text_tokenizer.eos_id())
     pad_id = int(text_tokenizer.pad_id())
     decoded: list[dict[str, Any]] = []
     for output_idx in range(batch_text_tokens.shape[0]):
         text_tokens: list[int] = batch_text_tokens[output_idx].tolist()
-        if eos_id in text_tokens:
-            eos_idx = text_tokens.index(eos_id)
-            eos_found = True
-        else:
-            if warn:
-                print(
-                    "warning: model did not generate output EOS token for "
-                    f"entry {output_idx}; truncating text after the last non-pad token."
-                )
-            eos_idx = len(text_tokens) - 1
-            while eos_idx > 0 and text_tokens[eos_idx] == pad_id:
-                eos_idx -= 1
-            eos_found = False
+        eos_found = eos_id in text_tokens
+        if not eos_found:
+            print(
+                "warning: model did not generate output EOS token for "
+                f"entry {output_idx}; ending the output after its last word."
+            )
+        eos_idx = text_tokens.index(eos_id) if eos_found else len(text_tokens)
         words = [index for index, token in enumerate(text_tokens[:eos_idx]) if token > pad_id]
         content_tokens = [text_tokens[index] for index in words]
         decoded.append(
@@ -506,6 +500,8 @@ def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any, warn: bool) -
                 "eos_found": eos_found,
                 "generated_text_tokens": len(content_tokens),
                 "last_word_frame": words[-1] if words else None,
+                # Where the output stops: at the EOS, or after the last word without one.
+                "end_frame": eos_idx if eos_found else (words[-1] + 1 if words else 0),
             }
         )
     return decoded
@@ -646,21 +642,20 @@ def generate_batch(
     if not output_text_tokens:
         raise RuntimeError("LM generation produced no output tokens; increase --gen-duration")
     batch_text_tokens = torch.concat(output_text_tokens, dim=-1)
-    text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer, warn=cfg.text_only)
+    text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer)
+    end_frames = [t.pop("end_frame") for t in text_outputs]
     # How far the last generated word's text token lands after the source audio ends: the
-    # paper's End Offset, measured to the end of the audio instead of its last word.
+    # paper's End Offset, measured to the end of the audio instead of its last word. Output
+    # index i is the token sampled at step i, which is where the saved audio places it; the
+    # model chose it having heard (i - 1) frames of source.
     for t, duration in zip(text_outputs, audio_durations, strict=True):
         frame = t.pop("last_word_frame")
         t["end_offset_s"] = "" if frame is None else round(frame / mimi.frame_rate - duration, 2)
     if cfg.text_only:
-        outputs = [{**t, "wav": None} for t in text_outputs]
+        wavs = [None] * len(text_outputs)
     else:
-        batch_codes = torch.concat(output_audio_tokens, dim=-1)
-        decoded_outputs = decode_outputs(batch_codes, batch_text_tokens, mimi, text_tokenizer)
-        outputs = [
-            {**t, "wav": wav, "text": text}
-            for (wav, text), t in zip(decoded_outputs, text_outputs, strict=True)
-        ]
+        wavs = decode_wavs(torch.concat(output_audio_tokens, dim=-1), end_frames, mimi)
+    outputs = [{**t, "wav": wav} for t, wav in zip(text_outputs, wavs, strict=True)]
     return save_batch_outputs(
         rows, files, input_wavs, outputs, mimi.sample_rate, out_dir, cfg, batch_start
     )
