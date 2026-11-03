@@ -150,6 +150,9 @@ GPU; beside it Mimi encodes on the CPU in fp32 and decodes on the Neural Engine
 (`export_mimi_coreml.py`; fp16 on the Neural Engine shifts the encoder's codes, codebook 0 on 6%
 of frames, so the encoder stays on the CPU, [mimi-npu](agent-memory/mimi-npu.md)). File mode
 should send the source EOS at the end of the input, as upstream does; live mode never sends it.
+Sample the Vietnamese model as the paper does: temperature 0.8, top-k 250 on every token. The MLX
+runtime's text sampling (0.4, top-k 25) suits upstream, but at 0.4 the fine-tuned model lags and
+seldom ends ([analysis](analysis/eos_and_lag.md)).
 
 ## Order
 
@@ -163,9 +166,16 @@ should send the source EOS at the end of the input, as upstream does; live mode 
    `en-vi-grounded-v2/train` on a 700 W H100 SXM (~10.5 h with validations). The first validation
    (step 9,000, ~45 min in) replaces a separate smoke run. On the first attempt
    (`en_speech_streams_epoch1`, which then ran out of memory) the training loss fell from 10.1
-   to 3.05 and teacher-forced content accuracy reached 0.51 (PAD 0.947), but FLEURS dev
-   translations came out short (length ratio 0.58, chrF 12.1) and only 50 of 361 found EOS;
-   later validations show whether that recovers.
+   to 3.05 and teacher-forced content accuracy reached 0.51 (PAD 0.947).
+   - By step 36,000 content accuracy was 0.62 and FLEURS dev chrF 15.9, but only 38 of 361
+     rows found EOS.
+   - That came from the decode, not the training. The run's validation samples text at 0.4 with
+     an 8 s tail; at the paper's 0.8 and a longer tail, the step-18,000 model ended 33 of 48
+     FLEURS rows instead of 11, and chrF rose from 18 to 22
+     ([analysis](analysis/eos_and_lag.md)).
+   - The run validates with its commit's old settings, so its gates cannot pass and it promotes
+     nothing. Its checkpoints are scored with `eval.py`'s new defaults as each reaches the
+     recovery repo, which keeps the newest two pairs.
 4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before

@@ -200,8 +200,17 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 ## Side tools
 
 - `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,
-  `text_en`). Despite its name, `run_greedy_eval` samples (text 0.4, audio 0.8). Its defaults
-  are `common.GenerationConfig`'s, which training's checkpoint selection uses too.
+  `text_en`). Its defaults are `common.GenerationConfig`'s, which training's checkpoint
+  selection uses too.
+  - Despite its name, `run_greedy_eval` samples every token at temperature 0.8, top-k 250, as
+    the paper does (Sec. 4.5).
+  - It generates until every row has emitted the text EOS, or 20 s past the batch's longest
+    source.
+  - Each prediction records `end_offset_s`, the time from the end of the source audio to the
+    last generated word; the metrics report their median.
+  - Decided 2026-11-03. At text temperature 0.4 the step-18,000 model fell behind, stalled and
+    ended 11 of 48 FLEURS rows, against 33 at 0.8. Its EOS came up to 14 s after a row ended,
+    and an 8 s tail cut a third of them ([analysis](../analysis/eos_and_lag.md)).
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.

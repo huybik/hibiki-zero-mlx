@@ -700,6 +700,7 @@ def main() -> None:
             f"chrf={free_running['chrf']:.2f} bleu={free_running['bleu']:.2f} "
             f"length_ratio={free_running['mean_length_ratio']:.2f} "
             f"eos={free_running['eos_found']}/{free_running['num_predictions']} "
+            f"end_offset={free_running['median_end_offset_s']:.1f}s "
             f"health={'pass' if healthy else 'fail'}"
         )
         # chrF weighs recall, so overlong output barely lowers it: the gates come first. Promotion

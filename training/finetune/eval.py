@@ -156,6 +156,7 @@ def main() -> None:
         f"wer={100 * metrics['wer']:.2f}% overlong={metrics['overlong_predictions']} "
         f"repeat4={metrics['repeated_4gram_predictions']} "
         f"bleu={metrics['bleu']:.2f} chrf={metrics['chrf']:.2f} "
+        f"end_offset={metrics['median_end_offset_s']:.1f}s "
         f"health={'pass' if health_eligible else 'fail'}"
     )
     print(f"Metrics: {summary}")

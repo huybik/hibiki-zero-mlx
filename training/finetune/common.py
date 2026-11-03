@@ -458,6 +458,8 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "wer": word_error_rate(references, hypotheses),
     }
     metrics.update(length_repetition_metrics(references, hypotheses))
+    offsets = [float(record["end_offset_s"]) for record in records if record["end_offset_s"] != ""]
+    metrics["median_end_offset_s"] = float(np.median(offsets)) if offsets else float("nan")
     metrics["bleu"] = sacrebleu.corpus_bleu(hypotheses, [references]).score
     metrics["chrf"] = sacrebleu.corpus_chrf(hypotheses, [references]).score
     if nonempty_pairs:
@@ -496,12 +498,14 @@ def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any, warn: bool) -
             while eos_idx > 0 and text_tokens[eos_idx] == pad_id:
                 eos_idx -= 1
             eos_found = False
-        content_tokens = [token for token in text_tokens[:eos_idx] if token > pad_id]
+        words = [index for index, token in enumerate(text_tokens[:eos_idx]) if token > pad_id]
+        content_tokens = [text_tokens[index] for index in words]
         decoded.append(
             {
                 "text": text_tokenizer.decode(content_tokens),
                 "eos_found": eos_found,
                 "generated_text_tokens": len(content_tokens),
+                "last_word_frame": words[-1] if words else None,
             }
         )
     return decoded
@@ -553,6 +557,7 @@ def save_batch_outputs(
                 "prediction_text": out_text,
                 "eos_found": bool(output["eos_found"]),
                 "generated_text_tokens": int(output["generated_text_tokens"]),
+                "end_offset_s": output["end_offset_s"],
                 "mono_wav": mono_wav,
                 "stereo_wav": stereo_wav,
                 "text_file": repo_display_path(paths["text"]),
@@ -570,12 +575,17 @@ class GenerationConfig:
     reference_column: str = "text_en"
     id_column: str = "id"
     gen_duration: float = 0.0  # seconds; 0 generates the batch's longest source plus tail_s
-    tail_s: float = 8.0
+    # The translation runs seconds behind the source: the text EOS came up to 14 s after a FLEURS
+    # row ended, and 8 s cut a third of them.
+    tail_s: float = 20.0
     stop_on_eos: bool = True
     text_only: bool = False  # skip decoding and writing the generated audio
     tag: str | None = None  # appended to every output file's name
+    # The paper samples every token at temperature 0.8, top-k 250 (Sec. 4.5), as the checkpoint's
+    # lm_gen_config does. At a text temperature of 0.4 a word must beat PAD outright, so the model
+    # falls behind, stalls and seldom ends.
     audio_temp: float = 0.8
-    text_temp: float = 0.4
+    text_temp: float = 0.8
     top_k: int = 250
     top_k_text: int = 250
 
@@ -637,26 +647,18 @@ def generate_batch(
         raise RuntimeError("LM generation produced no output tokens; increase --gen-duration")
     batch_text_tokens = torch.concat(output_text_tokens, dim=-1)
     text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer, warn=cfg.text_only)
+    # How far the last generated word's text token lands after the source audio ends: the
+    # paper's End Offset, measured to the end of the audio instead of its last word.
+    for t, duration in zip(text_outputs, audio_durations, strict=True):
+        frame = t.pop("last_word_frame")
+        t["end_offset_s"] = "" if frame is None else round(frame / mimi.frame_rate - duration, 2)
     if cfg.text_only:
-        outputs = [
-            {
-                "wav": None,
-                "text": t["text"],
-                "eos_found": t["eos_found"],
-                "generated_text_tokens": t["generated_text_tokens"],
-            }
-            for t in text_outputs
-        ]
+        outputs = [{**t, "wav": None} for t in text_outputs]
     else:
         batch_codes = torch.concat(output_audio_tokens, dim=-1)
         decoded_outputs = decode_outputs(batch_codes, batch_text_tokens, mimi, text_tokenizer)
         outputs = [
-            {
-                "wav": wav,
-                "text": text,
-                "eos_found": t["eos_found"],
-                "generated_text_tokens": t["generated_text_tokens"],
-            }
+            {**t, "wav": wav, "text": text}
             for (wav, text), t in zip(decoded_outputs, text_outputs, strict=True)
         ]
     return save_batch_outputs(
@@ -713,7 +715,7 @@ def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
             handle,
             fieldnames=[
                 "id", "source_audio", "reference_text", "prediction_text", "eos_found",
-                "generated_text_tokens", "mono_wav", "stereo_wav", "text_file",
+                "generated_text_tokens", "end_offset_s", "mono_wav", "stereo_wav", "text_file",
             ],
         )
         writer.writeheader()
