@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""Maintain rolling disaster-recovery checkpoints in a public HF model repo."""
+"""Maintain rolling disaster-recovery checkpoints in a public HF model repo.
+
+The trainer saves a pair every --save-every steps, often enough to bound what a preemption loses;
+a pair is 37.5 GB, so while training runs only the pairs at its validation steps are uploaded.
+The final sync, once the training process has exited, uploads the newest pair whatever its step.
+"""
 from __future__ import annotations
 
 import argparse
@@ -22,7 +27,7 @@ STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
 STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
 STAGED_BEST = re.compile(r"best_step(\d+)$")
-RUN_METADATA = ("run_config.json",)
+RUN_METADATA = ("run_config.json", "train_args.json")
 RUN_ARTIFACTS = (
     "train_log.jsonl",
     "val_log.jsonl",
@@ -326,6 +331,15 @@ def sync_run_artifacts(run_dir: Path, repo: str) -> None:
     print(f"Synced {len(paths)} training logs.", flush=True)
 
 
+def upload_cadence(run_dir: Path) -> int:
+    """The steps whose pairs are uploaded during training: the run's validation cadence."""
+    config = run_dir / "run_config.json"
+    if not config.is_file():
+        return 0
+    values = json.loads(config.read_text(encoding="utf-8"))
+    return int(values["val_every"] or values["save_every"])
+
+
 def sync_once(run_dir: Path, repo: str, final: bool) -> None:
     clean_staging(run_dir)
     files = remote_files(repo)
@@ -347,7 +361,12 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
         elif step in uploaded:
             uploaded.remove(step)
     remote_latest = max(uploaded, default=-1)
-    wanted = [pair for pair in local_pairs if pair[0] > remote_latest]
+    cadence = upload_cadence(run_dir)
+    wanted = [
+        pair
+        for pair in local_pairs
+        if pair[0] > remote_latest and (final or (cadence and pair[0] % cadence == 0))
+    ]
     newest_pair = max([*staged_pairs, *(pair[0] for pair in wanted)], default=None)
     for step, stage in staged_pairs.items():
         if step != newest_pair or step < remote_latest:

@@ -8,8 +8,12 @@ replays that order. Each validation reports teacher-forced losses on a fixed, se
 and batch order of the validation cache (so --val-batches takes a random subset) and translates
 the --eval-pairs rows of real Vietnamese speech free-running (FLEURS dev by default, as
 `eval.py` does). Of the checkpoints that pass the generation health gates, the one with the
-highest chrF is promoted to best_stepNNNNNN.safetensors. Resume only from the newest complete
-model/trainer pair of the same run.
+highest chrF is promoted to best_stepNNNNNN.safetensors.
+
+Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
+snapshot written by a background thread, so a save stalls training only for the copy off the
+GPU. A start in an --out-dir that holds complete pairs resumes the newest one, so a preempted run
+continues by running the same command again.
 """
 from __future__ import annotations
 
@@ -17,6 +21,8 @@ import argparse
 import json
 import math
 import os
+import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -86,7 +92,7 @@ LOG_LOSSES = (
 
 
 def parse_args() -> argparse.Namespace:
-    # No abbreviations: h100.sh must be able to reject --out-dir/--resume-checkpoint.
+    # No abbreviations: h100.sh must be able to reject --out-dir.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
     parser.add_argument("--val-cache-dir", type=Path, required=True)
@@ -139,13 +145,14 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/eval/fleurs-vi/dev.jsonl"),
         help="Pairs (training.prep.eval_sets) translated free-running at each validation.",
     )
-    parser.add_argument("--eval-batch-size", type=int, default=16)
-    parser.add_argument("--save-every", type=int, default=9000)
+    # bf16 at batch 64 decodes FLEURS dev in ~1,750 steps of ~22 ms on the H100.
+    parser.add_argument("--eval-batch-size", type=int, default=64)
+    # Frequent saves bound the work a preemption loses; the snapshot costs ~2 s.
+    parser.add_argument("--save-every", type=int, default=1000)
     parser.add_argument("--keep-checkpoints", type=int, default=2)
     parser.add_argument("--log-every", type=int, default=10)
-    parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=4, help="Stream-assembly workers.")
     return parser.parse_args()
 
 
@@ -268,63 +275,114 @@ def promote_best(
     return state
 
 
-def save_checkpoint(
-    model: Any,
-    optimizer: Any,
-    args: argparse.Namespace,
-    step: int,
-    out_dir: Path,
-) -> Path:
-    model_path = out_dir / f"model_step{step:06d}.safetensors"
-    trainer_path = out_dir / f"trainer_step{step:06d}.pt"
-    clean_incomplete_checkpoints(out_dir)
-    if model_path.is_file() and trainer_path.is_file():
-        prune_checkpoint_pairs(out_dir, args.keep_checkpoints)
-        return model_path
-    if args.keep_checkpoints > 0:
-        prune_checkpoint_pairs(out_dir, max(1, args.keep_checkpoints - 1))
-    common.save_model(model, model_path, build_metadata(args))
-    try:
-        atomic_torch_save(
-            {
-                "step": step,
-                "optimizer": optimizer.state_dict(),
-                "model": model_path.name,
-                "args": {
-                    key: str(value) if isinstance(value, Path) else value
-                    for key, value in vars(args).items()
-                },
+class CheckpointWriter:
+    """Saves checkpoint pairs from a pinned host snapshot in a background thread.
+
+    `save` enqueues the copies off the GPU on the current stream, so later optimizer steps
+    cannot change the snapshot, and returns at once; the thread waits for the copies, writes the
+    model then the trainer file (a pair is complete once both exist) and prunes old pairs. The
+    pinned buffers are reused, so a save first waits for the previous write."""
+
+    def __init__(self, model: Any, optimizer: Any, args: argparse.Namespace, out_dir: Path):
+        self.model = model
+        self.optimizer = optimizer
+        self.args = args
+        self.out_dir = out_dir
+        self.buffers: dict[tuple[Any, ...], torch.Tensor] = {}
+        self.thread: threading.Thread | None = None
+        self.error: BaseException | None = None
+
+    def _host(self, value: Any, key: tuple[Any, ...]) -> Any:
+        if torch.is_tensor(value):
+            buffer = self.buffers.get(key)
+            if buffer is None or buffer.shape != value.shape or buffer.dtype != value.dtype:
+                buffer = torch.empty(value.shape, dtype=value.dtype, pin_memory=True)
+                self.buffers[key] = buffer
+            return buffer.copy_(value.detach(), non_blocking=True)
+        if isinstance(value, dict):
+            return {name: self._host(item, (*key, name)) for name, item in value.items()}
+        if isinstance(value, list):
+            return [self._host(item, (*key, index)) for index, item in enumerate(value)]
+        return value
+
+    def save(self, step: int) -> None:
+        self.wait()
+        model_path = self.out_dir / f"model_step{step:06d}.safetensors"
+        trainer_path = self.out_dir / f"trainer_step{step:06d}.pt"
+        if model_path.is_file() and trainer_path.is_file():  # a resume at a save step
+            return
+        model_state = self._host(self.model.state_dict(), ("model",))
+        optimizer_state = self._host(self.optimizer.state_dict(), ("optimizer",))
+        copied = torch.cuda.Event()
+        copied.record()
+        trainer_state = {
+            "step": step,
+            "optimizer": optimizer_state,
+            "model": model_path.name,
+            "args": {
+                key: str(value) if isinstance(value, Path) else value
+                for key, value in vars(self.args).items()
             },
-            trainer_path,
+        }
+        self.thread = threading.Thread(
+            target=self._write,
+            args=(copied, model_state, trainer_state, model_path, trainer_path),
+            daemon=True,
         )
-    except BaseException:
-        model_path.unlink(missing_ok=True)
-        raise
-    prune_checkpoint_pairs(out_dir, args.keep_checkpoints)
-    return model_path
+        self.thread.start()
+
+    def _write(self, copied, model_state, trainer_state, model_path, trainer_path) -> None:
+        try:
+            copied.synchronize()
+            clean_incomplete_checkpoints(self.out_dir)
+            if self.args.keep_checkpoints > 0:  # room for the new pair before it is written
+                prune_checkpoint_pairs(self.out_dir, max(1, self.args.keep_checkpoints - 1))
+            common.save_state(model_state, model_path, build_metadata(self.args))
+            atomic_torch_save(trainer_state, trainer_path)
+            prune_checkpoint_pairs(self.out_dir, self.args.keep_checkpoints)
+        except BaseException as exc:  # raised by the next wait()
+            model_path.unlink(missing_ok=True)
+            self.error = exc
+
+    def wait(self) -> None:
+        if self.thread is not None:
+            self.thread.join()
+            self.thread = None
+        if self.error is not None:
+            error, self.error = self.error, None
+            raise RuntimeError("Checkpoint write failed") from error
 
 
-def load_resume_checkpoint(
-    model: Any,
-    optimizer: Any,
-    resume_path: Path,
-    device: torch.device,
-    dtype: torch.dtype,
+def load_newest_pair(
+    model: Any, optimizer: Any, out_dir: Path, device: torch.device, dtype: torch.dtype
 ) -> int:
-    pairs = checkpoint_pairs(resume_path.parent)
-    if not pairs or pairs[-1][2].resolve() != resume_path.resolve():
-        raise RuntimeError("--resume-checkpoint must be the newest complete pair")
-    checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
-    model_path = require_file(resume_path.parent / checkpoint["model"], "resume model")
+    """Load the newest complete pair in `out_dir` and return its step, or 0 without one."""
+    pairs = checkpoint_pairs(out_dir)
+    if not pairs:
+        return 0
+    step, model_path, trainer_path = pairs[-1]
+    checkpoint = torch.load(trainer_path, map_location="cpu", weights_only=False)
+    if int(checkpoint["step"]) != step or checkpoint["model"] != model_path.name:
+        raise RuntimeError(f"{trainer_path.name} does not match {model_path.name}")
     common.load_model(model, model_path, dtype)
     optimizer.load_state_dict(checkpoint["optimizer"])
     for state in optimizer.state.values():
         for key, value in list(state.items()):
             if torch.is_tensor(value):
                 state[key] = value.to(device=device)
-    step = int(checkpoint["step"])
-    print(f"Resumed step {step} from {repo_display_path(resume_path)}")
+    print(f"Resumed step {step} from {repo_display_path(trainer_path)}")
     return step
+
+
+def keep_log_lines(path: Path, last_step: int) -> list[dict[str, Any]]:
+    """Drop the lines of a jsonl log past `last_step` (written after the pair a run resumes)."""
+    if not path.is_file():
+        return []
+    items = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    kept = [item for item in items if int(item["step"]) <= last_step]
+    if len(kept) != len(items):
+        atomic_write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in kept), path)
+    return kept
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -363,6 +421,9 @@ def learning_rate(step: int, peak: float, warmup_steps: int, total_steps: int) -
 
 
 def main() -> None:
+    # Validation builds and frees a bf16 model and generation caches between training steps;
+    # expandable segments keep the freed memory reusable for the training batches.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     args = parse_args()
     validate_args(args)
     common.seed_all(args.seed)
@@ -378,12 +439,17 @@ def main() -> None:
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
     args.eval_pairs = require_file(args.eval_pairs, "evaluation pairs")
-    if args.resume_checkpoint is not None:
-        args.resume_checkpoint = require_file(args.resume_checkpoint, "resume checkpoint")
 
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     clean_incomplete_checkpoints(out_dir)
+    resuming = bool(checkpoint_pairs(out_dir))
+    if not resuming:
+        # A start without a pair begins at step 0: logs of a run cut short before its first save
+        # describe steps that will be trained again.
+        for name in ("train_log.jsonl", "val_log.jsonl", "best.json"):
+            (out_dir / name).unlink(missing_ok=True)
+        shutil.rmtree(out_dir / "eval", ignore_errors=True)
     best_state = load_best_state(out_dir)
     best_model = None if best_state is None else out_dir / str(best_state["model"])
     for path in out_dir.glob("best_step*.safetensors"):
@@ -411,11 +477,12 @@ def main() -> None:
     val_dataset = streams.StreamDataset(
         val_rows, layout, silence, frames, streams.VALIDATION_SEED
     )
+    # In the main process: forking workers at a validation would fork the checkpoint writer's
+    # thread too, and its 300 batches assemble in ~3 s.
     val_dataloader = DataLoader(
         val_dataset,
         batch_sampler=val_dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
         collate_fn=streams.collate,
-        num_workers=args.num_workers,
     )
     print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows")
     # Checkpoints are selected on free-running translation, sampled as eval.py samples.
@@ -474,19 +541,14 @@ def main() -> None:
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
 
     val_log_path = out_dir / "val_log.jsonl"
+    log_path = out_dir / "train_log.jsonl"
+    global_step = load_newest_pair(lm, optimizer, out_dir, device, dtype) if resuming else 0
     # Steps already validated. A pair is saved before its validation, so a run cut short there
-    # validates on resume; a replacement pod has no val_log and validates again.
-    validated: set[int] = set()
-    global_step = 0
-    if args.resume_checkpoint is not None:
-        global_step = load_resume_checkpoint(
-            lm, optimizer, args.resume_checkpoint, device, dtype
-        )
-        if val_log_path.is_file():
-            lines = val_log_path.read_text(encoding="utf-8").splitlines()
-            validated = {int(json.loads(line)["step"]) for line in lines if line}
+    # validates on resume; a replacement pod without val_log validates again.
+    validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
+    keep_log_lines(log_path, global_step)
     if global_step > total_steps or (global_step == total_steps and global_step in validated):
-        raise RuntimeError("Resume checkpoint is already at or beyond the requested stop")
+        raise RuntimeError("The run is already at or beyond the requested stop")
 
     def jsonable(value: Any) -> Any:
         if isinstance(value, Path):
@@ -512,7 +574,7 @@ def main() -> None:
         }
     )
     run_config_path = out_dir / "run_config.json"
-    if args.resume_checkpoint is None:
+    if not resuming:
         atomic_write_text(
             json.dumps(run_config, indent=2, sort_keys=True) + "\n", run_config_path
         )
@@ -524,21 +586,24 @@ def main() -> None:
             if previous.get(key) != run_config.get(key):
                 raise RuntimeError(f"Same-run resume contract changed: {key}")
 
+    writer = CheckpointWriter(lm, optimizer, args, out_dir)
+
     def training_batches(start_step: int):
         """The planned batches from `start_step` on, epoch after epoch."""
         offset = start_step % batches_per_epoch
         while True:
+            writer.wait()  # the workers fork; the writer's thread must not be running
             yield from DataLoader(
                 dataset,
                 batch_sampler=batches[offset:],
                 collate_fn=streams.collate,
                 num_workers=args.num_workers,
+                pin_memory=True,
             )
             offset = 0
 
     data_iter = training_batches(global_step)
     condition_cache: dict[int, Any | None] = {}
-    log_path = out_dir / "train_log.jsonl"
 
     def empty_log() -> dict[str, Any]:
         return {
@@ -571,19 +636,24 @@ def main() -> None:
             args.val_batches,
         )
         eval_dir = out_dir / "eval" / f"step{step:06d}"
-        lm.eval()
+        # Generation runs on a bf16 copy, as eval.py loads a checkpoint: 1.8x faster than the
+        # fp32 masters, and the room it takes is the gradients' freed above.
+        generator = checkpoint_info.get_moshi(device=device, dtype=torch.bfloat16)
+        generator.load_state_dict(lm.state_dict())
+        generator.eval()
         records, free_running = common.run_greedy_eval(
             eval_rows,
             generation,
             args.eval_batch_size,
             mimi,
-            lm,
+            generator,
             text_tokenizer,
             checkpoint_info,
             eval_dir,
             args.seed,
         )
-        lm.train()
+        del generator
+        torch.cuda.empty_cache()
         common.write_predictions(eval_dir / "predictions.csv", records)
         healthy, gates = common.generation_health(free_running)
         free_running.update(health_eligible=healthy, health_gates=gates)
@@ -598,8 +668,10 @@ def main() -> None:
             f"health={'pass' if healthy else 'fail'}"
         )
         # chrF weighs recall, so overlong output barely lowers it: the gates come first. Promotion
-        # precedes the log line, which marks the step done for a resume.
+        # links the step's model file, so its write must be done, and precedes the log line,
+        # which marks the step done for a resume.
         if healthy:
+            writer.wait()
             best_state = promote_best(step, float(free_running["chrf"]), out_dir, best_state)
         item = {"step": step, "teacher_forced": teacher_forced, "free_running": free_running}
         with val_log_path.open("a", encoding="utf-8") as handle:
@@ -616,7 +688,7 @@ def main() -> None:
             group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
         batch = next(data_iter)
-        codes = batch["codes"].to(device=device, dtype=torch.long)
+        codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size = int(codes.shape[0])
         if batch_size not in condition_cache:
             condition_cache[batch_size] = common.batch_condition_tensors(
@@ -679,13 +751,14 @@ def main() -> None:
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:
-            save_checkpoint(lm, optimizer, args, global_step, out_dir)
+            writer.save(global_step)
         if args.val_every and global_step % args.val_every == 0:
             run_validation(global_step)
 
-    save_checkpoint(lm, optimizer, args, global_step, out_dir)
+    writer.save(global_step)
     if global_step not in validated:
         run_validation(global_step)
+    writer.wait()
     print(
         f"Saved final full-model checkpoint at step {global_step} "
         f"in {repo_display_path(out_dir)}"

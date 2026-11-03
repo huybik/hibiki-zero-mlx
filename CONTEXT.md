@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-02
+Last verified: 2026-11-03
 
 ## Purpose
 
@@ -23,7 +23,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload ─► HF common-vi-en
     ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
-    ─► h100.sh train → finetune/train.py ─► runs/, HF recovery repo
+    ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
   checkpoints ─► tools/convert_mlx_{q4,bf16}.py ─► weights/… ─► main.py · hibiki_mlx/ · macos/
@@ -79,7 +79,7 @@ inference/ (Apple Silicon, MLX)
 - Apple Silicon runs inference, the translation, the Vietnamese TTS, the dataset publisher and
   the Mimi cache build; training and evaluation run on CUDA →
   [sft-training](docs/agent-memory/sft-training.md).
-- Production runs go only through `training/h100.sh train`, which ties a run to its commit and
+- Production runs go only through `training/h100.sh run`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
   codebooks, with fixed EOS and -1 positions. The trainer joins rows into streams and never

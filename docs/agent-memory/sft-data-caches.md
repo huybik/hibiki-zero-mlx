@@ -279,4 +279,9 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 - T = max(text end, target length, source length + 1).
 - The trainer joins rows into multi-sentence streams without changing the cache
   ([sft-training](sft-training.md#trainer)); batches are right-padded with -1 to a multiple of
-  the frame bucket.
+  the frame bucket. It reads the rows from packs it derives beside the shards
+  (`<cache-dir>/.packed/`, 70 GB for `en-vi-grounded-v2/train`).
+- Checked on the pod after download (2026-11-03): all 1,835 `en-vi-grounded-v2` shards match
+  the Hub's SHA-256; the 3,441,391 train and 9,313 validation rows all have this layout (int32,
+  T = max(en, vi) + 1, PAD before the delay, one tokenizer EOS value, codes in range); no id
+  repeats; every planned stream assembles.
