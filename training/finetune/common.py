@@ -284,22 +284,16 @@ def evaluate_teacher_forced(
 # --------------------------------------------------------------------------- #
 # Eval row IO + selection
 # --------------------------------------------------------------------------- #
-EVAL_SET = "eval_set"  # the column read_eval_rows adds: the set a row belongs to
-
-
-def eval_set_name(path: Path) -> str:
-    """A pairs file's set name: its folder and stem, such as fleurs-vi/dev."""
-    return f"{path.parent.name}/{path.stem}"
+EVAL_SET = "eval_set"  # the column read_eval_sets adds: the set a row belongs to
 
 
 def read_eval_rows(path: Path) -> list[dict[str, str]]:
-    """A pairs file's rows, each tagged under EVAL_SET with the file's set name."""
     path = require_file(path, "eval rows")
-    rows: list[dict[str, str]] = []
     if path.suffix == ".csv":
         with path.open("r", newline="", encoding="utf-8") as handle:
-            rows = [{k: v or "" for k, v in row.items()} for row in csv.DictReader(handle)]
-    elif path.suffix == ".jsonl":
+            return [{k: v or "" for k, v in row.items()} for row in csv.DictReader(handle)]
+    if path.suffix == ".jsonl":
+        rows: list[dict[str, str]] = []
         with path.open("r", encoding="utf-8") as handle:
             for line_no, line in enumerate(handle, 1):
                 line = line.strip()
@@ -309,14 +303,28 @@ def read_eval_rows(path: Path) -> list[dict[str, str]]:
                 if not isinstance(row, dict):
                     raise ValueError(f"{path}:{line_no} is not a JSON object")
                 rows.append({key: str(value) for key, value in row.items()})
-    else:
-        raise ValueError(f"Eval rows must be .jsonl or .csv: {path}")
-    name = eval_set_name(path)
-    for row in rows:
-        if EVAL_SET in row:
-            raise ValueError(f"{path} has a column {EVAL_SET!r} of its own")
-        row[EVAL_SET] = name
-    return rows
+        return rows
+    raise ValueError(f"Eval rows must be .jsonl or .csv: {path}")
+
+
+def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
+    """Each pairs file's rows by set name, in the order given, each row tagged under EVAL_SET. A
+    set is named by its file's folder and stem, such as fleurs-vi/dev, and must have rows."""
+    sets: dict[str, list[dict[str, str]]] = {}
+    for path in paths:
+        path = require_file(path, "eval rows")
+        name = f"{path.parent.name}/{path.stem}"
+        if name in sets:
+            raise ValueError(f"Two pairs files are both named {name}")
+        rows = read_eval_rows(path)
+        if not rows:
+            raise ValueError(f"No rows in {path}")
+        for row in rows:
+            if EVAL_SET in row:
+                raise ValueError(f"{path} has a column {EVAL_SET!r} of its own")
+            row[EVAL_SET] = name
+        sets[name] = rows
+    return sets
 
 
 def validate_eval_rows(

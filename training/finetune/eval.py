@@ -94,22 +94,14 @@ def main() -> None:
     common.seed_all(args.seed)
 
     ids = common.ids_from_args(args.ids, args.ids_file)
-    sets = [common.read_eval_rows(path) for path in args.pairs]
-    names = [common.eval_set_name(path) for path in args.pairs]
-    if len(names) != len(set(names)):
-        raise ValueError(f"Pairs files must have distinct set names: {names}")
+    sets = common.read_eval_sets(args.pairs)
+    rows = [row for set_rows in sets.values() for row in set_rows]
+    # Every row, before selection: --ids must not pick one of two rows that share an id.
+    common.validate_eval_rows(rows, args.source_column, args.reference_column, args.id_column)
     if ids:
-        rows = common.select_eval_rows([row for rows in sets for row in rows], ids, args.id_column)
+        rows = common.select_eval_rows(rows, ids, args.id_column)
     else:
-        rows = [row for rows in sets for row in rows[: args.limit]]
-    common.validate_eval_rows(
-        rows,
-        args.source_column,
-        args.reference_column,
-        args.id_column,
-    )
-    if not rows:
-        raise RuntimeError(f"No rows selected from {names}")
+        rows = [row for set_rows in sets.values() for row in set_rows[: args.limit]]
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "model weight")
@@ -146,7 +138,7 @@ def main() -> None:
         out_dir,
         args.seed,
     )
-    metrics = common.score_sets(records, names)
+    metrics = common.score_sets(records, list(sets))
 
     predictions_path = out_dir / "predictions.csv"
     common.write_predictions(predictions_path, records)

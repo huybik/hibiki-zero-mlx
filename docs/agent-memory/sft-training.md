@@ -73,7 +73,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     minutes of speech, and `en-vi-val` Common Voice and Libriheavy, 180 rows each, 54 minutes)
     in one pass, free-running on a bf16 copy of the model, shortest first in batches of
     `--eval-batch-size` 64 that mix the sets, each batch generated until every row ends or 20 s
-    past its longest row. Mimi codes 8 rows at a time (`hibiki_helpers.MIMI_CHUNK_ROWS`).
+    past its longest row: at most 4,918 generation steps. Mimi codes 8 rows at a time
+    (`hibiki_helpers.MIMI_CHUNK_ROWS`).
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". Batches pad to 16-frame
   buckets (`streams.FRAME_BUCKET`), and training requires torch compile (moshi's and
   `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only
@@ -162,7 +163,11 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
   step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
 - Training's chrF ranks the checkpoints of one run. It generates with bf16 weights, as `eval.py`
   does, but in length-sorted batches of 64, while `eval.py` defaults to batch 1 in file order, so
-  the two give different numbers for the same checkpoint; compare runs with `eval.py`.
+  the two give different numbers for the same checkpoint; compare runs with `eval.py`. A set's
+  score also depends on the rows it shares batches with (batches are reseeded by index, and a
+  row that never ends generates until its batch does), so FLEURS chrF from the mixed batches
+  does not compare with a run that validated on FLEURS alone, and `eval.py`'s numbers change
+  with its `--pairs` list.
 - A start in an out-dir with complete pairs resumes the newest one, and only if
   `run_config.json` matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences,
   seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
@@ -261,6 +266,8 @@ on 2026-11-01, `en-vi-val` on 2026-11-03:
   of `anquachdev/common-vi-en` at `2ce8777`: Common Voice dev (173 speakers) and Libriheavy dev
   (68 speakers). Its Vietnamese is the TTS the training data uses, so read against FLEURS it
   separates translation failures from the real-speech gap. `sphn` decodes the Opus clips but
-  keeps the encoder's pre-skip (312 samples) and the last packet's padding; the builder drops
-  both, matching PyAV's decode to the sample, then writes 48 kHz WAV (a few peaks above full
-  scale clip). The rows keep `speaker` and `source_row`.
+  keeps the encoder's pre-skip (312 samples) and the last packet's padding (168 or 648 samples
+  here); the builder drops both, matching PyAV's decode to the sample, then writes 48 kHz WAV (a
+  few peaks above full scale clip). It refuses a clip that is not mono, has an output gain, or
+  decodes shorter than its stored duration or a 20 ms packet or more longer. The rows keep
+  `speaker` and `source_row`.

@@ -513,15 +513,9 @@ def main() -> None:
     print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows")
     # Checkpoints are selected on free-running translation, sampled as eval.py samples.
     generation = common.GenerationConfig(text_only=True)
-    eval_sets = [common.eval_set_name(path) for path in args.eval_pairs]
-    if len(eval_sets) != len(set(eval_sets)):
-        raise ValueError(f"--eval-pairs files must have distinct set names: {eval_sets}")
-    eval_rows = []
-    for path in args.eval_pairs:
-        rows_of_set = common.read_eval_rows(path)
-        if not rows_of_set:
-            raise RuntimeError(f"No rows in {path}")
-        eval_rows.extend(rows_of_set)
+    rows_by_set = common.read_eval_sets(args.eval_pairs)
+    eval_sets = list(rows_by_set)
+    eval_rows = [row for rows in rows_by_set.values() for row in rows]
     common.validate_eval_rows(
         eval_rows,
         generation.source_column,

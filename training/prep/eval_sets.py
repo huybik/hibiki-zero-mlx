@@ -156,26 +156,35 @@ def build_multimed(out_dir: Path) -> None:
         write_rows(out_dir / "multimed-vi" / f"{name}.jsonl", [rows[i] for i in sorted(indexes)])
 
 
-def opus_head_pre_skip(data: bytes) -> int:
-    """The samples an Ogg Opus decoder must drop from the start (RFC 7845 section 5.1)."""
+def opus_pre_skip(data: bytes, name: str) -> int:
+    """The samples a decoder drops from the start of an Ogg Opus stream (RFC 7845 section 5.1),
+    which must be mono and without output gain, the only streams this decodes as a conforming
+    decoder would."""
     head = data.find(b"OpusHead")
     if head < 0:
-        raise RuntimeError("Not an Ogg Opus stream")
+        raise RuntimeError(f"{name}: not an Ogg Opus stream")
+    channels = data[head + 9]
+    gain = int.from_bytes(data[head + 16 : head + 18], "little", signed=True)
+    if channels != 1 or gain:
+        raise RuntimeError(f"{name}: Opus stream has {channels} channels and output gain {gain}")
     return int.from_bytes(data[head + 10 : head + 12], "little")
 
 
 def decode_opus(data: bytes, duration_s: float, name: str) -> Any:
-    """Decode a 48 kHz Ogg Opus clip to the stored duration. sphn keeps the encoder's pre-skip and
-    the last packet's padding, which a conforming decoder drops."""
+    """Decode a 48 kHz Ogg Opus clip to its stored duration. sphn returns every packet's samples:
+    the encoder's pre-skip, which this drops, and the last packet's padding, which the cut at the
+    stored duration drops (on these clips it ends where the last granule position does)."""
+    pre_skip = opus_pre_skip(data, name)
     wav, rate = sphn.read_opus_bytes(data)
     if rate != OPUS_RATE:
         raise RuntimeError(f"{name}: Opus decoded at {rate} Hz")
-    wav = wav[:, opus_head_pre_skip(data) :]
+    wav = wav[:, pre_skip:]
     samples = round(duration_s * OPUS_RATE)
     # As the cache builder's duration gate: a truncated clip decodes without error, only shorter.
-    if wav.shape[-1] < samples - 0.02 * OPUS_RATE:
+    # A whole one holds its stored samples and less than one 20 ms packet of padding.
+    if not 0 <= wav.shape[-1] - samples < 0.02 * OPUS_RATE:
         decoded = wav.shape[-1] / OPUS_RATE
-        raise RuntimeError(f"{name}: decoded {decoded:.2f} s, stored {duration_s:.2f} s")
+        raise RuntimeError(f"{name}: decoded {decoded:.3f} s, stored {duration_s:.3f} s")
     return wav[:, :samples]
 
 

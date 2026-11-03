@@ -89,9 +89,9 @@ streams in batches of at most 4,608 frames, one epoch (131,553 steps), peak LR `
 warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW
 `(0.9, 0.95)` with weight decay `0.1`, checkpoints every 1,000 steps and validation every 9,000
 ([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced
-losses, translates FLEURS dev free-running, and promotes the checkpoint that passes the
-generation health gates with the highest chrF
-([sft-training](agent-memory/sft-training.md#checkpoints-and-recovery)).
+losses, translates FLEURS dev and the `en-vi-val` sets free-running, scoring each set apart, and
+promotes the checkpoint whose every set passes the generation health gates with the highest
+FLEURS dev chrF ([sft-training](agent-memory/sft-training.md#checkpoints-and-recovery)).
 
 A new run needs an empty `runs/RUN_NAME/` and a public `HIBIKI_HF_REPO` whose `RUN_NAME/`
 prefix is empty. It records the run identity and commit in `runs/RUN_NAME/run_id.json` (uploaded
@@ -186,7 +186,8 @@ Runs recorded before the `inference/`/`training/` split, such as
 
 ## Evaluate a checkpoint
 
-Training has already translated FLEURS dev at every validation (`runs/RUN_NAME/val_log.jsonl`,
+Training has already translated FLEURS dev and the `en-vi-val` sets at every validation
+(`runs/RUN_NAME/val_log.jsonl`,
 `runs/RUN_NAME/eval/stepNNNNNN/predictions.csv`). Check the promoted checkpoint on the other
 sets, such as MultiMed `select`, the non-regression gate
 ([plan](vi_en_parity_plan.md#2-evaluation-sets)), or teacher-forced on another cache:

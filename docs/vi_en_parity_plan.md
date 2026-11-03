@@ -102,9 +102,10 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
    long real speech.
 2. Loss as above; LR peak 1e-6, 5% warmup, cosine to 0; one pass over the pool.
 3. Each validation logs teacher-forced losses on streams of the cache's `validation/` split and
-   translates FLEURS dev free-running. The trainer promotes the checkpoint that passes the health
-   gates (nonempty, EOS, repeated 4-grams, length ratio) with the highest chrF, and keeps it
-   beside the newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
+   translates FLEURS dev and the held-out `en-vi-val` rows free-running, scoring each set apart.
+   The trainer promotes the checkpoint whose every set passes the health gates (nonempty, EOS,
+   repeated 4-grams, length ratio) with the highest FLEURS dev chrF, and keeps it beside the
+   newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
    chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
 
 ### 4. GRPO
