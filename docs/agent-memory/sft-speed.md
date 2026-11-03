@@ -89,4 +89,7 @@ The same benchmark on the final path, by GPU (one epoch is 131,553 steps):
   382 s.
 - The checkpoint writer stalls training for the copy to pinned memory (0.6 s per save on the
   H200 NVL) and writes the 37.5 GB in the background (16 s on the H200 NVL pod's disk, 37 s on
-  the SXM's). The first save also allocates the pinned buffers: 8 s and 26 s of stall.
+  the capped SXM's, both before the fsync). The first save also allocates the pinned buffers:
+  8 s and 26 s of stall. With the fsync a pair takes ~40 s on the 700 W SXM's 1.1 GB/s disk, so
+  saves closer together than that (20 steps in the end-to-end test) wait for the previous one;
+  1,000 steps apart they never do.
