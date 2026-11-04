@@ -115,7 +115,7 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
   330 (2026-11-04).
 - Training holds 76 GB of the 80, so validation cannot run beside it.
 - On an idle H100 with `eval.py`, the KV cache sized to the batch's steps
-  ([sft-training](sft-training.md#side-tools)) cut the five sets' generation from 151 to 109 s
+  ([sft-evaluation](sft-evaluation.md#side-tools)) cut the five sets' generation from 151 to 109 s
   and the peak from 38.5 to 19.5 GiB. Each set's chrF moved by up to 1.3 either way (sampling
   noise); FLEURS went 24.58 → 24.62.
 - Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the

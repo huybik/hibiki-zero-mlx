@@ -86,7 +86,7 @@ grows sentence by sentence.
 ### 2. Evaluation sets
 
 Built by `training.prep.eval_sets` into `data/eval/`; evaluation only, never training
-([sft-training](agent-memory/sft-training.md#evaluation-sets)).
+([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)).
 
 | Set | Speech | Role |
 |---|---|---|
@@ -238,7 +238,7 @@ Vietnamese text cannot keep up with its speech.
      cache (stage 1.2) as a new run from this run's final model, with new streams (seed 43) and
      validation every 18,000 steps ([finetune](finetune.md#a-second-epoch-on-the-noisy-cache)), which translate
      all five sets as `eval.py` does; one Mac call over them takes 21.5 min
-     ([sft-training](agent-memory/sft-training.md#side-tools)).
+     ([sft-evaluation](agent-memory/sft-evaluation.md#side-tools)).
    - That run, `en_speech_noisy_epoch2`, moved to a cheaper 700 W H100 SXM at step 18,000
      ([finetune](finetune.md#move-a-running-run-to-another-pod)) and should end about 13:15 UTC
      on 2026-11-04.

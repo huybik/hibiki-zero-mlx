@@ -114,7 +114,7 @@ MultiMed-ST's Vietnamese `corrected.test` and the EN-VI dataset's validation spl
 `eval.py` pair files under `data/eval/`: real Vietnamese speech, and 360 held-out rows of the
 training data's own domain (`en-vi-val`). It needs huggingface_hub, pyarrow, sphn, soxr and torch,
 so it runs on the Mac or the pod; rerunning rebuilds them. They are for evaluation only
-([sft-training](../../docs/agent-memory/sft-training.md#evaluation-sets)). `en-vi-val-noisy`, built
+([sft-evaluation](../../docs/agent-memory/sft-evaluation.md#evaluation-sets)). `en-vi-val-noisy`, built
 on request from the built `en-vi-val`, holds the same rows under simulated recording conditions
 ([noisy-source](../../docs/agent-memory/noisy-source.md#evaluation)); the first build downloads
 the noise bank (1.3 GB) into `--bank-dir`.
