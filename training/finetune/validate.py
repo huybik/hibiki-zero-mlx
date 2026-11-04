@@ -72,7 +72,8 @@ def main() -> None:
     cache_dir = require_dir(args.cache_dir, "code cache directory")
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
-    args.model_weight = require_file(args.model_weight, "model weight")
+    if checkpoint is None:  # a checkpoint replaces the base weights, which are never read
+        args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
 

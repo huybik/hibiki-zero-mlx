@@ -75,7 +75,7 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
 
 ## By GPU
 
-The same benchmark by GPU (one epoch is 131,553 steps); the H200 NVL and 700 W SXM rows have
+The same benchmark by GPU (one epoch is about 131,700 steps); the H200 NVL and 700 W SXM rows have
 the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 and 13,405 →
 14,399), the other two predate it:
 

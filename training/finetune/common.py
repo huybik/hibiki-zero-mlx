@@ -125,10 +125,11 @@ def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
         raise RuntimeError(f"Checkpoint is missing model tensors: {missing[:5]}")
     if unexpected := sorted(actual - expected):
         raise RuntimeError(f"Checkpoint has unexpected tensors: {unexpected[:5]}")
-    state = {
-        name: tensor.to(dtype=dtype) if tensor.dtype.is_floating_point else tensor
-        for name, tensor in state.items()
-    }
+    # Converted in place, each fp32 tensor freed as it goes: a 12.5 GB fp32 checkpoint and its
+    # bf16 copy whole at once held 18 GiB on the Mac.
+    for name, tensor in state.items():
+        if tensor.dtype.is_floating_point:
+            state[name] = tensor.to(dtype=dtype)
     model.load_state_dict(state, strict=True)
     print(f"Loaded {len(state)} model tensors from {repo_display_path(path)}")
 

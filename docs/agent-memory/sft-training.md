@@ -56,7 +56,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - Multi-row streams run 68 s median (p10 37, p90 104), 6 rows each, with 21% of the Vietnamese
   side silent; the 2 s overhang cap binds at the median join. Batches hold 4 streams median,
   filling 98.9% of the padded frames and 88.5% of the 4,608-frame budget (6,152 rows of four
-  shards, 2026-11-02).
+  shards, 2026-11-02, before single-row streams).
 - The full `en_speech` cache (3,441,391 rows) plans one epoch of 131,703 batches with seed 43
   (the second run). Single-row streams changed every plan, the validation streams' too, so
   teacher-forced validation losses do not compare across that change (2026-11-04).
@@ -246,10 +246,10 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
     - PyTorch's MPS cache keeps each finished batch's blocks without reusing them (5 GiB a batch,
       to 50 GB and swap; `gc.collect()` frees nothing): `run_greedy_eval` empties it after each
       batch on MPS, which holds it at 7 GiB (2026-11-03).
-    - With `--checkpoint`, `eval.py` and `validate.py` build the model without reading
-      `--model-weight` (`common.load_lm`), which the checkpoint overwrites: 3.4 s against 11.0 s
-      on MPS, the same tensors (2026-11-04). An fp32 base as `--model-weight` held 18 GiB while
-      it loaded.
+    - With `--checkpoint`, `eval.py` and `validate.py` neither need nor read `--model-weight`
+      (`common.load_lm`), which the checkpoint overwrites: 3.4 s against 11.0 s on MPS, the same
+      tensors (2026-11-04). `load_model` converts an fp32 checkpoint tensor by tensor, so its
+      fp32 and bf16 copies are never whole at once (that held 18 GiB).
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.
