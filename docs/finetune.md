@@ -150,8 +150,9 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 
 - `--model-weight` loads the full fp32 model (moshi's loader is strict; for Hibiki models it
   also copies the text embedding's PAD row over row 2, which got no gradient in the first run).
-  The hard link keeps it while the previous run's folder is pruned, and a resume needs it at the
-  same path.
+  The hard link keeps it while the previous run's folder is pruned. Keep it at the same path
+  until the run ends: a resume needs it there, and so does every validation, which reloads it
+  to build its bf16 generator.
   A replacement pod downloads it from `PREVIOUS_RUN/checkpoints/` in the recovery repo.
 - A new `--seed` draws new streams: the noisy split has the same rows, so seed 42 would replay
   the first run's streams and batch order.
@@ -160,13 +161,22 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 - The run starts a new warmup and cosine decay. Validation every 18,000 steps (7 per epoch plus
   the final step) halves its share of the run; it also scores `en-vi-val-noisy`, so the run shows
   what the channel costs as it trains.
+- The EOS gate can fail at every validation, and then the trainer promotes nothing, and the sync
+  keeps only the newest two validation pairs. For `en_speech_noisy_epoch2`, a script beside the
+  run keeps the best validation model by FLEURS dev chrF, whatever the gates. After each
+  validation it copies that model server side (`CommitOperationCopy`) to
+  `RUN_NAME/offline_best/`, with its scores in `best.json`. `hf_sync` never prunes that folder.
 
 ### Interruptible pods
 
 A preempted container restarts with its disk intact but nothing running. Its boot script,
 `/root/onstart.sh` on Vast, can continue the run, retrying every 5 minutes until `run`
 succeeds; a finished run exits 0 at once. `run` only continues a run that exists and exits
-while another launcher holds it, so the line can stay while the run lasts. To stop a run for
+while another launcher holds it, so the line can stay while the run lasts. The same loop also
+reruns a run that stops on its own, after a crash or after three failed syncs in a row. So start
+a run through it by hand, not with a bare `run`, and add it to `/root/onstart.sh`. For a launcher
+already running bare, start a loop that waits for its lock first:
+`bash -c 'flock runs/.RUN_NAME.lock true; until …; done'`. To stop a run for
 good, remove the line from `/root/onstart.sh`, kill the loop
 (`pkill -f 'until ./training/h100.sh run RUN_NAME'`), then send the launcher SIGTERM:
 
@@ -242,7 +252,8 @@ another pod:
 
 1. Wait for a validation's `val step=` lines.
 2. Send the launcher SIGTERM. Its final sync uploads the newest pair and the logs.
-3. Restore the run on the new pod as above, and run it.
+3. Restore the run on the new pod as above, and start it through the boot hook's loop
+   ([interruptible pods](#interruptible-pods)).
 
 `en_speech_noisy_epoch2` moved this way at step 18,000 on 2026-11-04, with the GPUs idle ~25 min
 between the two pods.
