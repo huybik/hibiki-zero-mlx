@@ -51,8 +51,9 @@ inference/ (Apple Silicon, MLX)
   to step 135k in `docs/analysis/`: teacher-forced loss improves, but free-running translation
   fails. FLEURS and MultiMed-ST now serve only as real-Vietnamese evaluation sets
   ([sft-evaluation](docs/agent-memory/sft-evaluation.md#evaluation-sets)).
-- The first stream run, `en_speech_streams_epoch1b` (one epoch of `en-vi-grounded-v2/train`),
-  started on 2026-11-03 on a 700 W H100 SXM ([plan](docs/vi_en_parity_plan.md#order)).
+- Two stream runs are done on a 700 W H100 SXM: `en_speech_streams_epoch1b` (one epoch of
+  `en-vi-grounded-v2/train`) and `en_speech_noisy_epoch2` (one epoch of its noisy copy, from the
+  first's final model). FLEURS test chrF went 24.7 → 29.5 ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
   the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:
@@ -72,8 +73,8 @@ inference/ (Apple Silicon, MLX)
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
-- Next (user, 2026-11-04): a learning-rate test after the second run, a third VI→EN epoch only
-  if a higher rate wins, then the real-Vietnamese tranche
+- Next (user, 2026-11-04): a learning-rate test, then a third VI→EN epoch only if a higher rate
+  won (none did: no third epoch), then the real-Vietnamese tranche (its SFT at 3e-6)
   ([real-vi-tranche](docs/agent-memory/real-vi-tranche.md)) and two-way speech in one model,
   prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). Its trainer
   waits in PR #59 ([grpo_plan](docs/grpo_plan.md)).

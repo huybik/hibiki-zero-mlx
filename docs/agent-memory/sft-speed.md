@@ -125,6 +125,26 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
 - Translating FLEURS dev (bf16, batch 64, 8 s tail, 1,747 steps): 42 s on the H200 NVL,
   48–53 s on the capped SXM. Batch 96 takes 34 s but 100.3 GiB. Before these changes (fp32,
   batch 16) it took 382 s.
+- Translating FLEURS dev alone on the idle 700 W SXM (run 2's final model, `eval.py
+  --text-only`, `--seed 43`, 20 s tail; 2026-11-04), by `--batch-size`:
+
+  | Batch | Rows/s | Step (steady) | Peak | GPU busy · power |
+  |---:|---:|---:|---:|---:|
+  | 64 | 8.4 | 15.8 ms | 19.5 GiB | 87% · 267 W |
+  | 128 | 12.2 | 18.8 ms | 21.6 GiB | 84% · 309 W |
+  | 256 | 14.4 | ~30 ms | 28.0 GiB | 83% · 338 W |
+
+  - About 13 ms of a step does not grow with the batch, so a bigger batch is nearly free. The
+    GPU looks busy at full clock but draws under half its 700 W, and the process holds one CPU
+    core, which points to a long chain of small kernels per step rather than memory (not yet
+    traced). The first batch of each call runs 20–40% slower; at 256, FLEURS dev is one full
+    batch (the 30 ms) and a 105-row tail, which understates that size.
+  - Batch size changes the scores (FLEURS dev chrF 29.07, 29.40, 29.69 at 64, 128, 256:
+    sampling noise), so compare checkpoints at one batch size; the test-set scores of both runs
+    ([plan](../vi_en_parity_plan.md#order)) are at 64. Size GRPO rollouts and new standalone
+    scoring larger.
+  - py-spy cannot attach in the pod's container (ptrace denied); `nsys` is installed there for
+    a kernel timeline.
 - The checkpoint writer stalls training for the copy to pinned memory (0.6 s per save on the
   H200 NVL) and writes the 37.5 GB in the background (16 s on the H200 NVL pod's disk, 37 s on
   the capped SXM's, both before the fsync). The first save also allocates the pinned buffers:
