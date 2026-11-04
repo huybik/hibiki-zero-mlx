@@ -89,8 +89,9 @@ corpora's terms for `huybik` that day.
     17,030 runs of ~17 chunks, 213 of them crossing a shard boundary. The chunks sample a reading
     rather than cover it: the gap to the previous chunk is 63 s at p50 and 401 s at p90, and only
     15% of seams are within 1 s.
-  - The names' times predate trimming: decoded audio differs from end − start by +0.09 s at p50
-    and up to −1.2 s (viVoice's by −0.38 to +0.52 s), so seams come from alignment.
+  - The names' times predate trimming: decoded audio differs from end − start by +0.09 s at p50,
+    and 1,143 of 197,808 clips are over 1.5 s shorter (the worst 9.1 s; viVoice's differ by −0.38
+    to +0.52 s), so seams come from alignment, not from the names.
   - Some readers are platforms (`Voiz`, `Fonos.vn`, `HTV`, `VOH`, `TV5050`) rather than one
     voice, and `Voiz` may be viVoice's `@VoizFM`: check for shared audio before using both.
   - Text is lower case with sentence punctuation, and chunks start and end mid-sentence.
@@ -268,15 +269,18 @@ other corpora ─► their transcripts, word times by forced alignment ───
   bandwidth (flag sources at 16 kHz or below).
 - Speaker labels cannot pick the TTS reference: YODAS has none, and GigaSpeech 2's recordings
   and some corpus "speakers" (platforms) hold several voices. On every source, cluster speaker
-  embeddings per doc to pick each row's reference and drop overlapped speech. The same
-  embeddings and a dialect classifier check the North, Central and South balance.
+  embeddings per doc (per channel for viVoice, whose docs are single rows) to pick each row's
+  reference and drop overlapped speech. The same embeddings and a dialect classifier check the
+  North, Central and South balance.
 - Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
   parquet sorted by `seq`, audio re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under
   `/workspace/tranche/repo/<public|restricted>/<source>/segments/`, and `push` uploads that
   folder to its repo. `doc` is the recording as far as the corpus tells and never spans shards:
   a PhoAudiobook reader's run in rising time, a GigaSpeech 2 recording (its tars hold segments
   out of order, and with no times its neighbours are only consecutive segment numbers), and for
-  viVoice the row itself. `speaker` is the corpus's label, none for GigaSpeech 2.
+  viVoice the row itself. `speaker` is the corpus's label, none for GigaSpeech 2. A PhoAudiobook
+  doc can join two readings when the second starts later than the first ended (190 gaps within
+  a doc exceed 1 h), so translation takes context only across small gaps.
   One worker took 6 min for GigaSpeech 2's first archive (19,967 segments, 24.1 h);
   PhoAudiobook's first shard gave 1,299 clips (4.4 h), viVoice's 742 of its 2,508 (1.6 h; the
   rest outside 5–22.4 s).

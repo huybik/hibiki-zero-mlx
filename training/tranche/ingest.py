@@ -6,7 +6,7 @@ own order ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline
                      re-encode their audio to Ogg Opus and write
                      <root>/<repo>/<source>/segments/<shard>.parquet; the download is deleted
   push <source>      upload <root>/<repo>/<source>/segments to its tranche repo (a rerun skips
-                     files already committed)
+                     files already committed); a restricted source goes only to a private repo
 
 Sources go to the public repo, or to the private one where their terms forbid redistribution
 (PhoAudiobook, GigaSpeech 2). Rows, sorted by seq within a shard:
@@ -18,7 +18,7 @@ Sources go to the public repo, or to the private one where their terms forbid re
   speaker   the corpus's reader or channel, which can be a platform rather than one voice;
             none for GigaSpeech 2, whose recordings may hold several voices
   start_s, end_s  the times the corpus names the clip by, within the recording; the trimmed
-            audio differs from end - start by up to ~1 s, so seams come from alignment
+            audio can be seconds shorter than end - start, so seams come from alignment
   text      the corpus transcript; duration_s, source_rate and audio {bytes, path} of the clip
 A rerun skips shards already written. CPU only; from the repo root on the box:
   .venv/bin/python -m training.tranche.ingest segments pho --shards 0:40
@@ -132,16 +132,20 @@ def rows_of(name: str, shard: int, local: Path) -> Iterator[dict]:
                    "end_s": end, "text": r["text"], "data": r["audio"]["bytes"]}
     else:
         archive = local.name.split(".")[0]
-        texts = giga_texts(archive)
+        texts = giga_texts(archive)  # the refined transcripts: segments without one are dropped
+        found = 0
         with tarfile.open(local, "r|gz") as tar:  # members come in file-system order
             for member in tar:
                 key = Path(member.name).stem
                 if member.isfile() and key in texts:
+                    found += 1
                     _, recording, segment = key.split("-")
                     yield {"id": f"giga/{key}", "doc": f"giga/{archive}-{recording}",
                            "seq": int(recording) * 1_000_000 + int(segment), "speaker": None,
                            "start_s": None, "end_s": None, "text": texts[key],
                            "data": tar.extractfile(member).read()}
+        if found != len(texts):
+            raise ValueError(f"archive {archive}: {len(texts) - found} of {len(texts)} transcripts have no audio")
 
 
 def giga_texts(archive: str) -> dict[str, str]:
@@ -214,11 +218,14 @@ def segments(args: argparse.Namespace) -> None:
 def push(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi
 
+    api = HfApi()
     dest = SOURCES[args.source].dest
     # upload_folder never creates the repo, so a missing one fails instead of appearing public.
-    HfApi().upload_folder(repo_id=REPOS[dest], repo_type="dataset", folder_path=args.root / dest,
-                          allow_patterns=[f"{args.source}/segments/*.parquet"],
-                          commit_message=f"{args.source} segments")
+    if dest == "restricted" and not api.dataset_info(REPOS[dest]).private:
+        raise SystemExit(f"{REPOS[dest]} is not private: {args.source} may not be published")
+    api.upload_folder(repo_id=REPOS[dest], repo_type="dataset", folder_path=args.root / dest,
+                      allow_patterns=[f"{args.source}/segments/*.parquet"],
+                      commit_message=f"{args.source} segments")
 
 
 def main() -> None:
