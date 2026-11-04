@@ -38,8 +38,9 @@ committed tests, and its prefix reference left out the sentence being spoken.
   min form, times R_t, summed over t. The streams are text (q = 0) and the 16 audio codebooks,
   weighted c_0 = 100 and c_q = 1. It maximizes (1/G) Σ_i Σ_q c_q L_q^(i).
 - π_old is replaced by π_θ every τ = 20 updates.
-- Optimization: AdamW at 2e-7, batch 32 inputs (128 rollouts), 2,000 updates. It evaluates every
-  10·τ updates (BLEU and text LAAL) and keeps the best quality/latency checkpoint.
+- Optimization: learning rate 2e-7 (the optimizer is not named), batch 32 inputs (128
+  rollouts), 2,000 updates. It evaluates every 10·τ updates and keeps the best quality/latency
+  checkpoint; its ablations track BLEU and text LAAL.
 - Ablations:
   - α is the latency/quality knob: a higher α gives better quality and more lag.
   - The full reference in place of prefixes improves quality but costs latency.
