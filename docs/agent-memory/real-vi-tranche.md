@@ -3,7 +3,7 @@
 Read when choosing or building the real-Vietnamese source data (plan stage 1.3), its English TTS
 or its licences.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [Corpora](#corpora) ·
-[YODAS sample](#yodas-layout-and-sample) ·
+[Corpus samples](#corpus-samples) · [YODAS sample](#yodas-layout-and-sample) ·
 [English TTS](#english-tts) · [First tranche](#first-tranche) · [Models](#models) ·
 [Pipeline](#pipeline)
 
@@ -13,18 +13,20 @@ FLEURS's content, which only real Vietnamese speech can teach
 ([noisy-source](noisy-source.md#evaluation)). The tranche follows the paper's recipe for a new
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
-Researched 2026-11-04 from the corpora's and models' own cards; no code yet.
+Researched 2026-11-04 from the corpora's and models' own cards; the only code so far is the
+English TTS bake-off.
 
 ## Decision
 
 - The tranche is research, so non-commercial corpora are in (user, 2026-11-04). Weights trained on
   them are research-only:
-  - Bud500 and viVoice are CC BY-NC-SA, and the recovery repo is public, so mark it and every
-    checkpoint trained on them non-commercial (CC BY-NC-SA 4.0) before the first such run.
+  - viVoice is CC BY-NC-SA and PhoAudiobook and GigaSpeech 2 research-only, and the recovery
+    repo is public, so mark it and every checkpoint trained on them non-commercial (CC BY-NC-SA
+    4.0) before the first such run.
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
 - First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
-  ~10k h with GigaSpeech 2 and more YODAS ([First tranche](#first-tranche)).
+  ~10k h with more GigaSpeech 2 and YODAS ([First tranche](#first-tranche)).
 - A commercial build still needs a legal sign-off on:
   - YODAS's CC BY, which each uploader declared. Uploaders cannot be credited, because the
     dataset scrambles video ids, and some uploads are re-uploads of other people's content.
@@ -40,10 +42,10 @@ Researched 2026-11-04 from the corpora's and models' own cards; no code yet.
 | YODAS3 vi, [`espnet/yodas3`](https://huggingface.co/datasets/espnet/yodas3)@`81d802f` (670 GB) | 12.6k (44k videos, none in v1/v2) | ~95% YouTube ASR captions with word timestamps; whole videos | CC BY 3.0 | ~250 h, then the scale-up pool |
 | Common Voice 27 vi (Mozilla Data Collective) | 23 (7.8 validated), 419 speakers | Read prompts | CC0 | speakers |
 | FOSD, `doof-ferb/fpt_fosd`@`e6ff950` ([source](https://data.mendeley.com/datasets/k9sxg2twv4/4)) | 30 (the mirror's "100h" is wrong) | FPT 2018, sentences without punctuation | CC BY 4.0 | read speech |
-| [PhoAudiobook](https://huggingface.co/datasets/thivux/phoaudiobook) (VinAI) | 941 (+554 augmented), 710 speakers | Audiobooks: book text, long continuous reading | Research or education only | first tranche |
-| [viVoice](https://huggingface.co/datasets/capleaf/viVoice) | 1,017, 186 channels | Clean YouTube speech | CC BY-NC-SA 4.0 | first tranche |
-| [Bud500](https://huggingface.co/datasets/linhtran92/viet_bud500) | 500 | Mixed domains | CC BY-NC-SA 4.0 | first tranche |
-| [GigaSpeech 2 vi](https://huggingface.co/datasets/speechcolab/gigaspeech2)@`8dc0d0e` | 6,039 refined | YouTube and podcasts, iteratively refined transcripts | Non-commercial research and education (access terms) | scale-up pool |
+| [PhoAudiobook](https://huggingface.co/datasets/thivux/phoaudiobook)@`f19f241` (VinAI, gated) | 941 (+554 augmented), 710 speakers | Audiobooks: book text, long continuous reading | Research or education only | first tranche |
+| [viVoice](https://huggingface.co/datasets/capleaf/viVoice)@`693e988` (gated) | 1,017, 186 channels | Clean YouTube speech | CC BY-NC-SA 4.0 | first tranche, 5–22.4 s clips |
+| [Bud500](https://huggingface.co/datasets/linhtran92/viet_bud500)@`4b30571` (gated) | 500 | Mixed domains | CC BY-NC-SA 4.0 | not used ([samples](#corpus-samples)) |
+| [GigaSpeech 2 vi](https://huggingface.co/datasets/speechcolab/gigaspeech2)@`8dc0d0e` (gated) | 6,039 refined | YouTube and podcasts, iteratively refined transcripts | Non-commercial research and education (access terms) | ~300 h first, then the scale-up pool |
 | [VIVOS](https://huggingface.co/datasets/AILAB-VNUHCM/vivos) | 15 | Read sentences | CC BY-NC-SA 4.0 | read speech |
 | VLSP2020 100h, LSVSC 100h (dialect-tagged), VietSpeech 1,100h | 1.3k | Spontaneous, dialects, "social resources" | Only mirrors claim CC BY or Apache; primary terms or audio source unknown | after checking their terms allow research use |
 | [ViMD](https://huggingface.co/datasets/nguyendv02/ViMD_Dataset) (102 h, 63 provinces); LEMAS vi | | | CC BY-NC-ND (no derivatives); LEMAS repackages GigaSpeech 2 and YODAS | not used |
@@ -60,6 +62,34 @@ Researched 2026-11-04 from the corpora's and models' own cards; no code yet.
     `nhatminh/vi-asr-relabel` and `FluidInference/fleurs-full`.
   - YODAS may hold the same videos: drop every row whose transcript shares long n-grams with
     FLEURS vi or MultiMed-ST vi.
+
+### Corpus samples
+
+Measured 2026-11-04 on the box from one train shard each. The user accepted the four gated
+corpora's terms for `huybik` that day.
+
+- PhoAudiobook: parquet (`audio` as float32 WAV at 16 kHz, `text`, `speaker`), 803 train shards
+  of ~210 MB.
+  - Chunks run 10–16 s (p5/p50/p95 10.2/11.6/15.6 s), all within 5–22.4 s.
+  - Shards go reader by reader in time order; a chunk's start and end are in its file name
+    (`chunk-2541_74-2554_64_…`). The chunks sample a reading rather than cover it: the gap to
+    the previous one is 0.4 s at p10 and 28 s at p50.
+  - Text is lower case with sentence punctuation, and chunks start and end mid-sentence.
+- viVoice: parquet (`channel`, `text`, `audio` as 24 kHz WAV), 354 shards of ~480 MB.
+  - Rows are shuffled across channels (169 in one shard) and carry no video id, so neighbours
+    cannot be rejoined.
+  - Clips are single sentences, cased and punctuated, mostly short (p5/p50/p95 1.0/3.3/9.8 s):
+    55% of the hours, ~560 h of the corpus, are in 5–22.4 s clips.
+- Bud500: 1.6–3.7 s fragments cut mid-phrase (1% of the hours in 5–22.4 s), lower case without
+  punctuation, with no speaker or order. It cannot give rows of whole sentences, so it is dropped
+  and GigaSpeech 2 takes its place.
+- GigaSpeech 2 vi: `data/vi/train/N.tar.gz` (16 kHz WAV per segment, ~3.2 GB each; 828 GB for
+  the three languages) and `train_refined.tsv` (5.0M segments, upper case, no punctuation).
+  - Ids `<archive>-<recording>-<segment>` keep each recording's order, with gaps where refinement
+    dropped segments: 120k recordings, with 15 segments at p50 and 117 at p90.
+  - Its transcripts need the ASR's punctuation, and agreement between the two is a filter.
+- FOSD: 48 kHz MP3, lower case without punctuation, p50 2.9 s (38% of the hours in 5–22.4 s).
+  VIVOS: upper-case prompts, 46 train speakers, in one tar.
 
 ### YODAS layout and sample
 
@@ -118,18 +148,28 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   - OpenVoice v2 (22.05 kHz).
 - Kyutai's `tts-0.75b-en-public` (CC BY 4.0, clones by an audio prefix, English only) is a fourth
   candidate if time allows: it is the closest to the paper's setup.
-- None publishes Vietnamese→English speaker similarity, so a bake-off chooses, on the H100:
-  1. 300 real Vietnamese clips from 150+ speakers (Common Voice and a YODAS sample), each with a
-     5–10 s reference from another utterance of the same speaker and the clip's translation;
-  2. each model's cloning modes at fixed seeds, every output round-tripped through Mimi (16
-     codebooks), as training sees it;
+- From the cards and repos (2026-11-04): VoxCPM2 lists Vietnamese among its languages and
+  dots.tts benchmarks it; Qwen3-TTS, CosyVoice3 and LongCat do not. LongCat is out: it needs the
+  reference's transcript and was trained on Chinese and English only. No licence of the other
+  four restricts training on their outputs. Only CosyVoice3 (Triton/TRT-LLM) and VoxCPM2 (Nano-vLLM
+  or vLLM-Omni) document batched serving; their Python APIs, like dots.tts's, run one request at
+  a time, and Qwen3-TTS takes lists.
+- None publishes Vietnamese→English speaker similarity, so a bake-off chooses, on the H100
+  (`training/tranche/bakeoff.py`, each model in its own uv env under `/workspace/envs`):
+  1. real Vietnamese clips, one pair per speaker: PhoAudiobook readers, viVoice channels and
+     GigaSpeech 2 recordings, each clip with another 5–16 s clip of the same speaker as its
+     reference, and an `en-vi-val` English line to speak;
+  2. each model's cloning modes at fixed seeds (VoxCPM2 reference-only and with the reference's
+     transcript; dots.tts and Qwen3-TTS x-vector and with the transcript; CosyVoice3
+     cross-lingual), every output round-tripped through Mimi (16 codebooks), as training sees it;
   3. scores:
-     - speaker similarity (WavLM-Large speaker verification) between the Vietnamese reference
-       and the English output, anchored by same-speaker Vietnamese pairs (ceiling) and
-       random-speaker pairs (floor);
+     - speaker similarity (WeSpeaker ResNet293-LM: the seed-tts-eval WavLM-Large checkpoint is
+       only on Google Drive) between the row's own Vietnamese clip and the English output,
+       anchored by the clip against its reference (ceiling; rows under 0.4 are not one speaker)
+       and against another speaker's clip (floor);
      - Whisper-large-v3 WER on the English, and the share of broken clips: WER over 20%, or a
-       duration per character far off;
-     - throughput at batch 1, 16 and 64, giving H100-hours per 1,000 h;
+       duration per character off the median by 2× either way;
+     - the real-time factor at batch 1, one model at a time; batching only for the winner;
   4. drop a model with more than 2% broken clips, take the highest similarity at WER ≤ 3% and
      at most ~50 H100-hours per 1,000 h, then listen blind to 20 pairs.
 
@@ -139,8 +179,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 
 | Source | Hours | Why |
 |---|---:|---|
-| PhoAudiobook, viVoice, Bud500 | ~1,300, capped per speaker or channel | The cleanest real speech with the most speakers; accurate transcripts where they come from text (audiobooks) |
-| YODAS (owsmv4-selected videos) | ~700 | Spontaneous speech, many genres |
+| PhoAudiobook, viVoice | ~1,300, capped per speaker or channel | The cleanest real speech with the most speakers; accurate transcripts where they come from text (audiobooks) |
+| GigaSpeech 2 (recordings' segment runs) | ~300 | YouTube and podcasts, ordered within a recording |
+| YODAS (owsmv4-selected videos) | ~400 | Spontaneous speech, many genres |
 | Common Voice vi, FOSD, VIVOS | ~65 | More speakers, read sentences |
 
 - Check each corpus's transcripts on a sample before trusting them; re-transcribe a corpus only
@@ -207,3 +248,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
 - YODAS has no speaker labels and a video may hold several speakers: cluster speaker embeddings
   per video to pick each row's reference and drop overlapped speech. The same embeddings and a
   dialect classifier check the North, Central and South balance.
+- The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
+  (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
+  Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
+  left 16 GB free, short of the LR test's next checkpoint save (2026-11-04).
