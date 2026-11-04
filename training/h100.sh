@@ -70,6 +70,7 @@ setup() {
     einops==0.8.2 \
     huggingface-hub==2.4.0 \
     numpy==2.5.4 \
+    protobuf==7.36.2 \
     pyarrow==26.0.0 \
     sacrebleu==2.6.0 \
     safetensors==0.8.0 \
