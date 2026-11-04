@@ -73,7 +73,7 @@ itself, so this only moves that work before `run` checks the free disk. The thir
 evaluation sets into `data/eval/` (`training.prep.eval_sets` builds them anew); training translates FLEURS dev and the held-out `en-vi-val` rows at every
 validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
 without them
-([sft-training](agent-memory/sft-training.md#evaluation-sets)).
+([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)).
 
 ## Run
 
@@ -92,7 +92,7 @@ warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused 
 ([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced
 losses, translates FLEURS dev and the `en-vi-val` sets free-running, scoring each set apart, and
 promotes the checkpoint whose every set passes the generation health gates with the highest
-FLEURS dev chrF ([sft-training](agent-memory/sft-training.md#checkpoints-and-recovery)).
+FLEURS dev chrF ([sft-evaluation](agent-memory/sft-evaluation.md#checkpoint-selection)).
 
 A new run needs an empty `runs/RUN_NAME/` and a public `HIBIKI_HF_REPO` whose `RUN_NAME/`
 prefix is empty. It records the run identity and commit in `runs/RUN_NAME/run_id.json` (uploaded

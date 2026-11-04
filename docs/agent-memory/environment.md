@@ -10,12 +10,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   (Python 3.13), which has the inference and data dependencies installed, including `anthropic`
   and `google-genai` for the translation. The macOS app
   hard-codes the same path. Its PyTorch is 2.15.0, the pod's pin, for the MPS eval
-  ([sft-training](sft-training.md#side-tools)), with moshi 0.2.13 as on the pod.
+  ([sft-evaluation](sft-evaluation.md#side-tools)), with moshi 0.2.13 as on the pod.
 - Inference needs MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, and sounddevice for the
   microphone. Install with `pip install -e ./inference/moshi-mlx` then `pip install -e .`; both
   are editable installs, so moving either directory requires reinstalling them.
 - CUDA training uses only the environment that `./training/h100.sh setup` builds; see
-  [sft-training](sft-training.md).
+  [sft-recovery](sft-recovery.md).
 
 ## Secrets
 
@@ -38,12 +38,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)), and `/Volumes/data/datasets/phomt-grounded-v2-5s/`
   the restored PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)). FLEURS,
   MultiMed-ST and `en-vi-val` are evaluation sets only, built into `data/eval/`
-  ([sft-training](sft-training.md#evaluation-sets)).
+  ([sft-evaluation](sft-evaluation.md#evaluation-sets)).
 - Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
   (`HF_HOME`).
 - The Mac keeps no run checkpoints or evaluation outputs: the pod's validation scores every
   checkpoint on all evaluation sets, as `eval.py` would (user's decision, 2026-11-04). The sets
-  themselves are on the Hub ([sft-training](sft-training.md#evaluation-sets)). To score a
+  themselves are on the Hub ([sft-evaluation](sft-evaluation.md#evaluation-sets)). To score a
   checkpoint on the Mac anyway, put its bf16 copy under
   `/Volumes/data/models/hibiki/runs/<run>/checkpoints/`, never the internal disk (a 3B checkpoint
   is 5.8 GiB in bf16, 11.6 GiB in fp32), and delete it once scored.

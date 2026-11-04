@@ -195,7 +195,7 @@ step 131,553, 2026-11-04 (chrF; "Both" is corpus chrF over the 360 rows):
 | FLEURS dev (real speech) | | | 23.5 | 24.9 |
 
 The second run's own validation translates its five sets the way `eval.py` now batches them:
-one pass in its order, batch 64, `--seed 43` ([sft-training](sft-training.md#side-tools)). Run
+one pass in its order, batch 64, `--seed 43` ([sft-evaluation](sft-evaluation.md#side-tools)). Run
 that way on the Mac, the first run's final model scores FLEURS dev 25.1, `en-vi-val` 42.2 · 44.0 ·
 43.5 and `en-vi-val-noisy` 34.6 · 39.2 · 38.0 (CV · LH · both), within 0.4 of the table above.
 These are the baseline for the second run's validation, up to Mac/CUDA numerics. On the H100 with

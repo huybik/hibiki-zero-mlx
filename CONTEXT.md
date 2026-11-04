@@ -50,7 +50,7 @@ inference/ (Apple Silicon, MLX)
 - The last run, on PhoMT and FLEURS (`grounded_v2_full_direct_voice_5epoch`), is analysed up
   to step 135k in `docs/analysis/`: teacher-forced loss improves, but free-running translation
   fails. FLEURS and MultiMed-ST now serve only as real-Vietnamese evaluation sets
-  ([sft-training](docs/agent-memory/sft-training.md#evaluation-sets)).
+  ([sft-evaluation](docs/agent-memory/sft-evaluation.md#evaluation-sets)).
 - The first stream run, `en_speech_streams_epoch1b` (one epoch of `en-vi-grounded-v2/train`),
   started on 2026-11-03 on a 700 W H100 SXM ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
@@ -91,13 +91,13 @@ inference/ (Apple Silicon, MLX)
   the Mimi cache build; training, evaluation and the noisy source re-encode run on CUDA →
   [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh run`, which ties a run to its commit and
-  HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
+  HF recovery prefix → [sft-recovery](docs/agent-memory/sft-recovery.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
   codebooks, with fixed EOS and -1 positions. The trainer joins rows into streams and never
   rewrites the cache →
   [sft-data-caches](docs/agent-memory/sft-data-caches.md).
 - Resume only from the newest complete model and optimizer pair of the same run →
-  [sft-training](docs/agent-memory/sft-training.md).
+  [sft-recovery](docs/agent-memory/sft-recovery.md).
 - In MLX, give each thread its own `rustymimi.Tokenizer` and pass NumPy arrays, not MLX arrays,
   between threads → [mlx-inference](docs/agent-memory/mlx-inference.md).
 - `mx.compile` only functions that see a small, fixed set of input shapes; fed a new shape per call,
@@ -113,7 +113,9 @@ inference/ (Apple Silicon, MLX)
 | MLX inference, conversion, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/` |
 | Swift runtime, iOS app, on-device tests | [swift-runtime](docs/agent-memory/swift-runtime.md) | `inference/swift/` |
 | Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
-| SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
+| SFT trainer: streams, defaults, precision, objective | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
+| SFT H100 launcher, checkpoints, resume, HF recovery sync | [sft-recovery](docs/agent-memory/sft-recovery.md) | `training/h100.sh`, `training/finetune/hf_sync.py` |
+| SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |
 | Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/audio.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
