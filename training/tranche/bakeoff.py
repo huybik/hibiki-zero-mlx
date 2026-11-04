@@ -8,8 +8,9 @@ Each step runs on the box in its own env (`training/tranche/envs.sh` builds them
   clips  repo .venv                real Vietnamese clips (PhoAudiobook, viVoice, GigaSpeech 2), each
                                    with another clip of the same speaker as its reference and an
                                    English line to speak (`en-vi-val`'s English)
-  synth  /workspace/envs/<model>   voice every clip's line in its speaker's voice, in each of the
-                                   model's cloning modes, one row at a time, timed
+  synth  /workspace/envs/<env>     voice every clip's line in its speaker's voice, in each of the
+                                   model's cloning modes, one row at a time, timed (envs voxcpm,
+                                   dots, qwentts and cosyvoice)
   mimi   repo .venv                round-trip every output through Mimi at 16 codebooks, as the
                                    trainer hears it
   score  /workspace/envs/score     speaker similarity to the row's own Vietnamese clip (WeSpeaker
@@ -21,12 +22,13 @@ From the repo root:
   .venv/bin/python -m training.tranche.bakeoff mimi                             # cosyvoice3
   /workspace/envs/score/bin/python -m training.tranche.bakeoff score
 
-A step skips the outputs it already wrote, so it resumes.
+synth and mimi skip what they already wrote, so they resume; run mimi once every synth is done.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import tarfile
@@ -201,8 +203,9 @@ def load_model(model: str):
         tts = VoxCPM.from_pretrained(path, load_denoiser=False)
 
         def generate(row, mode, seed):
+            torch.manual_seed(seed)  # voxcpm 2.0.3's generate takes no seed
             extra = {"prompt_wav_path": row["ref"], "prompt_text": row["ref_text"]} if mode == "ult" else {}
-            wav = tts.generate(text=row["text_en"], reference_wav_path=row["ref"], seed=seed, **extra)
+            wav = tts.generate(text=row["text_en"], reference_wav_path=row["ref"], **extra)
             return np.asarray(wav, dtype=np.float32), tts.tts_model.sample_rate
     elif model == "dots":
         from dots_tts.runtime import DotsTtsRuntime
@@ -254,24 +257,32 @@ def synth(args: argparse.Namespace) -> None:
         out = args.root / "out" / system
         out.mkdir(parents=True, exist_ok=True)
         log(f"{system}: {len(rows)} rows")
-        with (out / "timing.jsonl").open("a") as timing:
+        timing_path = out / "timing.jsonl"
+        recorded = {json.loads(line)["id"] for line in timing_path.open()} if timing_path.exists() else set()
+        first = True  # this process's first row of the mode carries its warm-up
+        with timing_path.open("a") as timing:
             for k, row in enumerate(rows):
-                path = out / f"{row['id']}.wav"
-                if path.exists():
+                if row["id"] in recorded:
                     continue
+                path = out / f"{row['id']}.wav"
                 torch.cuda.synchronize()
                 start = time.perf_counter()
-                record = {"id": row["id"], "first": k == 0}
+                record = {"id": row["id"], "first": first}
+                first = False
                 try:
                     wav, rate = generate(row, mode, SEED + k)
+                    if len(wav) < rate // 2:
+                        raise ValueError(f"only {len(wav) / rate:.2f} s of audio")
                 except Exception as exc:  # a failed row is a result: it counts as broken
                     record["error"] = f"{type(exc).__name__}: {exc}"[:300]
                     log(f"{system} {row['id']}: {record['error']}")
                 else:
                     torch.cuda.synchronize()
-                    sf.write(path, np.clip(wav, -1, 1), rate, subtype="PCM_16")
                     record |= {"seconds": round(time.perf_counter() - start, 3),
                                "audio_s": round(len(wav) / rate, 3)}
+                    part = path.with_name(path.name + ".part")
+                    sf.write(part, np.clip(wav, -1, 1), rate, subtype="PCM_16", format="WAV")
+                    os.replace(part, path)
                 timing.write(json.dumps(record) + "\n")
                 timing.flush()
         log(f"{system}: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
@@ -296,7 +307,9 @@ def mimi(args: argparse.Namespace) -> None:
         with torch.no_grad():
             x = torch.from_numpy(pcm).to("cuda")[None, None]
             y = codec.decode(codec.encode(x))[0, 0, : x.shape[-1]].float().cpu().numpy()
-        sphn.write_wav(str(dst), y, codec.sample_rate)
+        part = dst.with_name(dst.name + ".part")
+        sphn.write_wav(str(part), y, codec.sample_rate)
+        os.replace(part, dst)
     log("Mimi round trip done")
 
 
@@ -307,6 +320,7 @@ def score(args: argparse.Namespace) -> None:
     import jiwer
     import soundfile as sf
     import torch
+    import torchaudio
     import wespeaker
     from transformers import pipeline
 
@@ -314,13 +328,21 @@ def score(args: argparse.Namespace) -> None:
     rows = {r["id"]: r for r in read_rows(root)}
     systems = sorted(p.name for p in (root / "out").iterdir() if p.is_dir())
 
-    speaker = wespeaker.load_model_local(snapshot(*WESPEAKER))
+    speaker = wespeaker.load_model(snapshot(*WESPEAKER))
     speaker.set_device("cuda")
     cache: dict[str, torch.Tensor] = {}
 
     def embed(path: str) -> torch.Tensor:
+        """WeSpeaker's own extract_embedding, with the features moved to the GPU (its current
+        code leaves them on the CPU) and every file read the same way, whatever its sample format."""
         if path not in cache:
-            cache[path] = torch.nn.functional.normalize(speaker.extract_embedding(path).float(), dim=-1)
+            pcm, rate = sf.read(path, dtype="float32", always_2d=True)
+            x = torch.from_numpy(pcm.mean(axis=1))[None] * (1 << 15)  # its int16 scale
+            x = torchaudio.functional.resample(x, rate, speaker.resample_rate)
+            with torch.no_grad():
+                out = speaker.model(speaker.compute_features(x, speaker.resample_rate).to("cuda"))
+            out = out[-1] if isinstance(out, tuple) else out
+            cache[path] = torch.nn.functional.normalize(out[0].float().cpu(), dim=-1)
         return cache[path]
 
     def cos(a: str, b: str) -> float:
@@ -340,7 +362,9 @@ def score(args: argparse.Namespace) -> None:
         for path in paths:
             pcm, rate = sf.read(path, dtype="float32")
             audio.append({"raw": pcm, "sampling_rate": rate})
-        out = asr(audio, batch_size=32, generate_kwargs={"language": "english", "task": "transcribe"})
+        # Timestamps make it long-form: without them it hears only the first 30 s.
+        out = asr(audio, batch_size=32, return_timestamps=True,
+                  generate_kwargs={"language": "english", "task": "transcribe"})
         return [o["text"] for o in out]
 
     table = []
@@ -350,7 +374,7 @@ def score(args: argparse.Namespace) -> None:
         for line in (root / "out" / system / "timing.jsonl").open():
             t = json.loads(line)
             timing[t["id"]] = t
-        done = [i for i in ids if (root / "out" / system / f"{i}.wav").exists()]
+        done = [i for i in ids if i in timing and "error" not in timing[i]]
         for kind in ("raw", "mimi"):
             folder = root / ("out" if kind == "raw" else "mimi") / system
             paths = [str(folder / f"{i}.wav") for i in done]
@@ -380,16 +404,19 @@ def score(args: argparse.Namespace) -> None:
              "| System | Rows | Failed | Broken (Mimi) | WER raw / Mimi | SIM raw / Mimi | SIM by source (Mimi) | RTF |",
              "|---|---:|---:|---:|---:|---:|---|---:|"]
     for t in table:
-        def pick(kind: str) -> list[dict]:
-            return [r for r in per_row if r["system"] == t["system"] and r["kind"] == kind and r["id"] in same]
+        # WER and the broken share over every row; similarity only where the reference is the speaker.
+        def pick(kind: str, only_same: bool) -> list[dict]:
+            return [r for r in per_row if r["system"] == t["system"] and r["kind"] == kind
+                    and (r["id"] in same or not only_same)]
 
-        raw, mim = pick("raw"), pick("mimi")
-        by_source = " ".join(f"{s} {np.mean([r['sim'] for r in mim if r['source'] == s]):.3f}"
-                             for s in ("pho", "vivoice", "giga") if any(r["source"] == s for r in mim))
+        raw, mim = pick("raw", False), pick("mimi", False)
+        raw_same, mim_same = pick("raw", True), pick("mimi", True)
+        by_source = " ".join(f"{s} {np.mean([r['sim'] for r in mim_same if r['source'] == s]):.3f}"
+                             for s in ("pho", "vivoice", "giga") if any(r["source"] == s for r in mim_same))
         broken = (sum(r["broken"] for r in mim) + t["failed"]) / max(len(mim) + t["failed"], 1)
         lines.append(f"| {t['system']} | {t['rows']} | {t['failed']} | {broken:.1%} | "
                      f"{np.mean([r['wer'] for r in raw]):.3f} / {np.mean([r['wer'] for r in mim]):.3f} | "
-                     f"{np.mean([r['sim'] for r in raw]):.3f} / {np.mean([r['sim'] for r in mim]):.3f} | "
+                     f"{np.mean([r['sim'] for r in raw_same]):.3f} / {np.mean([r['sim'] for r in mim_same]):.3f} | "
                      f"{by_source} | {t['rtf']:.3f} |")
     (root / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))

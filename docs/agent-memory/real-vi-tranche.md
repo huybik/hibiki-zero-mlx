@@ -14,7 +14,7 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the only code so far is the
-English TTS bake-off.
+English TTS bake-off and the ASR and translation checks (`training/tranche/`).
 
 ## Decision
 
@@ -209,7 +209,7 @@ here is published or estimated, to be measured on the box first:
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame |
 | VI→EN translation | `tencent/Hy-MT2-30B-A3B` (Apache-2.0 on its card since a licence change: pin the commit), vLLM on the box | `google/gemma-4-31b-it` (Apache-2.0) | FLORES XCOMET 93.85 against Gemini 3.1 Pro's 94.42; ~1 h per 10M words (estimate). Score ~200 of our sentences with xCOMET first |
 | English TTS | VoxCPM2 | Qwen3-TTS 1.7B | Bake-off below |
-| TTS bake-off scoring | WavLM-Large SV (scoring only) | ReDimNet2-B6 | |
+| TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
 
 - Ruled out, non-commercial or with licences that bar training on outputs: ChunkFormer-vie,

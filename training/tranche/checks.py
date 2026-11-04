@@ -89,7 +89,12 @@ def mt(args: argparse.Namespace) -> None:
     import sacrebleu
     from vllm import LLM, SamplingParams
 
-    rows = [r for r in inputs(args.root) if r["set"] == "fleurs-dev" or r["id"].endswith(".clip")]
+    # FLEURS dev holds 361 readings of 149 sentences: translate each sentence once.
+    rows, seen = [], set()
+    for r in inputs(args.root):
+        if (r["set"] == "fleurs-dev" and r["text_vi"] not in seen) or r["id"].endswith(".clip"):
+            rows.append(r)
+            seen.add(r["text_vi"])
     llm = LLM(model=snapshot(*MT), dtype="bfloat16", max_model_len=4096, gpu_memory_utilization=0.85)
     params = SamplingParams(**MT_SAMPLING, max_tokens=512, seed=1234)
     messages = [[{"role": "user", "content": MT_PROMPT.format(text=r["text_vi"])}] for r in rows]

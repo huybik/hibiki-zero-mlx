@@ -32,7 +32,7 @@ $UV pip install -q -p $E/cosyvoice -r $E/cosyvoice-requirements.txt --index-stra
 log score; mk score 3.12
 # WeSpeaker calls torchaudio.set_audio_backend, which torchaudio 2.9 removed.
 $UV pip install -q -p $E/score torch==2.8.0 torchaudio==2.8.0 transformers soundfile jiwer onnxruntime \
-  "wespeaker @ git+https://github.com/wenet-e2e/wespeaker.git"
+  "wespeaker @ git+https://github.com/wenet-e2e/wespeaker.git@9fecd6cb4f47475d01761d87c826298dff4ef18c"
 log asr; mk asr 3.12
 $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
 log mt; mk mt 3.12  # vLLM 0.33 has Hy-MT2's architecture (HYV3ForCausalLM); qwen-asr pins vLLM 0.14
