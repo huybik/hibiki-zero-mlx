@@ -43,8 +43,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   (`HF_HOME`).
 - The Mac keeps no run checkpoints or evaluation outputs: the pod's validation scores every
   checkpoint on all evaluation sets, as `eval.py` would (user's decision, 2026-11-04). The sets
-  themselves, with their audio, are in the dataset repo `huybik/hibiki-zero-vi-full-sft` under
-  `eval/`. To score a checkpoint on the Mac anyway, put its bf16 copy under
+  themselves are on the Hub ([sft-training](sft-training.md#evaluation-sets)). To score a
+  checkpoint on the Mac anyway, put its bf16 copy under
   `/Volumes/data/models/hibiki/runs/<run>/checkpoints/`, never the internal disk (a 3B checkpoint
   is 5.8 GiB in bf16, 11.6 GiB in fp32), and delete it once scored.
 - Gitignored local state: `data/` (restored Mimi caches, `data/eval/`), `runs/` (training runs and eval

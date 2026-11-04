@@ -62,14 +62,15 @@ limit (429) partway; logged in they do not, and `hf download` resumes where it s
   --include "en-vi-grounded-v2/*/shard_*.pt"
 ./.venv/bin/python -m training.finetune.streams \
   data/cache/en-vi-grounded-v2/train data/cache/en-vi-grounded-v2/validation
-./.venv/bin/python -m training.prep.eval_sets
+./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data \
+  --include "eval/*"
 ```
 
 The second command packs each shard into a flat memory-mapped array beside it
 (`<cache-dir>/.packed/`, 70 GB, ~30 s): every later start loads the 3.44M rows in ~9 s instead
 of unpickling them for 7.5 minutes, and keeps them out of RAM. Training builds missing packs
-itself, so this only moves that work before `run` checks the free disk. The third builds the
-evaluation sets; training translates FLEURS dev and the held-out `en-vi-val` rows at every
+itself, so this only moves that work before `run` checks the free disk. The third downloads the
+evaluation sets into `data/eval/` (`training.prep.eval_sets` builds them anew); training translates FLEURS dev and the held-out `en-vi-val` rows at every
 validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
 without them
 ([sft-training](agent-memory/sft-training.md#evaluation-sets)).
@@ -114,7 +115,12 @@ under simulated rooms, noise and bands ([noisy-source](agent-memory/noisy-source
 `fetch` while the first run still trains: it downloads the 442 GB of parquet shards (~3.2 h at
 the pod's ~39 MB/s) and keeps ~80 GB of the selected rows' Vietnamese audio, pausing below 50 GB
 of free disk. Once the run has finished, `encode` writes the shards on the GPU, and a new run
-trains from the first run's final model:
+trains from the first run's final model. Built once on 2026-11-04, the split is also in the
+dataset repo under `en-vi-grounded-v2-noisy/train/` (1,832 shards, 73 GB). Another pod downloads
+it with `--include "en-vi-grounded-v2-noisy/train/*"` and packs it rather than running `fetch` and
+`encode`.
+
+```bash
 
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
@@ -228,6 +234,27 @@ Continuing is interruption recovery for the same run only:
   the resumed step's validation if the run's logs were not restored (the final sync then
   replaces the remote logs with the resumed run's only);
 - it cannot extend the stop step or start a different run.
+
+### Move a running run to another pod
+
+While training runs, `hf_sync` uploads only the pairs of validation steps. To move a run to
+another pod:
+
+1. Wait for a validation's `val step=` lines.
+2. Send the launcher SIGTERM. Its final sync uploads the newest pair and the logs.
+3. Restore the run on the new pod as above, and run it.
+
+`en_speech_noisy_epoch2` moved this way at step 18,000 on 2026-11-04, with the GPUs idle ~25 min
+between the two pods.
+
+A run continues only on the commit in its `run.json`. To move it to a commit that changes no part
+of training, only validation or docs (check with `git diff`):
+
+1. Set `commit` in `runs/RUN_NAME/run_id.json` to the new HEAD.
+2. Upload that file unchanged as `RUN_NAME/run.json` before `run`; `hf_sync` requires the two to
+   be byte-equal.
+
+That run moved from 991b3a4 to e852735 this way, to take the batch-sized KV cache.
 
 Runs recorded before the `inference/`/`training/` split, such as
 `grounded_v2_full_direct_voice_5epoch`, follow their own commit's `docs/finetune.md`.

@@ -106,7 +106,16 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
 - Since 2026-11-03 validation also translates the 360 `en-vi-val` rows (54 minutes of speech)
   in the same batches as FLEURS dev: 12 batches instead of 6, the biggest 64 rows of up to
   22.1 s and the last 17 rows of up to 32 s, at most 4,918 generation steps against 2,647.
-  Record the next run's validation peak and time here.
+- The second run's validation at step 18,000 (H100 SXM, 2026-11-04; five sets, 1,081 rows,
+  moshi's full KV cache) took 5.5 min, peaking at 76.1 GB in use (nvidia-smi):
+  - the teacher-forced pass took ~110 s with the GPU mostly idle, bound by the pod's 7.7-CPU
+    quota, of which an upload took 1.3;
+  - generation took 157 s in 17 batches, at 64.6 GB, with CPU gaps between batches.
+- Training holds 76 GB of the 80, so validation cannot run beside it.
+- On an idle H100 with `eval.py`, the KV cache sized to the batch's steps
+  ([sft-training](sft-training.md#side-tools)) cut the five sets' generation from 151 to 109 s
+  and the peak from 38.5 to 19.5 GiB. Each set's chrF moved by up to 1.3 either way (sampling
+  noise); FLEURS went 24.58 → 24.62.
 - Teacher-forced validation runs under bf16 autocast, as training's losses do: 50 s for the
   1,429 streams on the capped SXM against 83 s on fp32 weights without it; the loss moves by
   0.01% and PAD accuracy by 1 point (base model). Loader workers save nothing: assembling the

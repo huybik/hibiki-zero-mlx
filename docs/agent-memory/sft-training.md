@@ -261,7 +261,8 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 or the pod)
 writes `eval.py` pair files under `data/eval/`; they are never trained on
 ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). FLEURS and MultiMed-ST built and checked
-on 2026-11-01, `en-vi-val` on 2026-11-03:
+on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the dataset repo under
+`eval/`, audio included, and a pod downloads them ([finetune](../finetune.md#set-up-a-pod)):
 
 | File | Rows | Hours | Use |
 |---|---:|---:|---|
