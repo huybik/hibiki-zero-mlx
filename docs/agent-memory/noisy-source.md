@@ -198,7 +198,15 @@ The second run's own validation translates its five sets the way `eval.py` now b
 one pass in its order, batch 64, `--seed 43` ([sft-training](sft-training.md#side-tools)). Run
 that way on the Mac, the first run's final model scores FLEURS dev 25.1, `en-vi-val` 42.2 · 44.0 ·
 43.5 and `en-vi-val-noisy` 34.6 · 39.2 · 38.0 (CV · LH · both), within 0.4 of the table above.
-These are the baseline for the second run's validation, up to Mac/CUDA numerics.
+These are the baseline for the second run's validation, up to Mac/CUDA numerics. On the H100 with
+the same protocol, the first run's final model scores FLEURS dev 24.6, `en-vi-val` 42.6 · 43.5 and
+`en-vi-val-noisy` 34.0 · 40.2 (CV · LH).
+
+The second run's own validation at step 18,000 (2026-11-04) scores:
+- FLEURS dev 27.5, `en-vi-val` 43.0 · 43.7 and `en-vi-val-noisy` 38.4 · 41.5 (CV · LH);
+- 268 of 361 FLEURS rows ended, where the first run ended at most 64 at any validation.
+
+It still fails the 91% EOS gate, so no checkpoint is promoted yet.
 
 - By condition, against the same rows clean: reverb −6.1 chrF; SNR under 15 dB −8.8 (15 dB
   and up −2.9); phone band −8.9, 8 kHz −7.8, 16 kHz −4.7.

@@ -62,14 +62,15 @@ limit (429) partway; logged in they do not, and `hf download` resumes where it s
   --include "en-vi-grounded-v2/*/shard_*.pt"
 ./.venv/bin/python -m training.finetune.streams \
   data/cache/en-vi-grounded-v2/train data/cache/en-vi-grounded-v2/validation
-./.venv/bin/python -m training.prep.eval_sets
+./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data \
+  --include "eval/*"
 ```
 
 The second command packs each shard into a flat memory-mapped array beside it
 (`<cache-dir>/.packed/`, 70 GB, ~30 s): every later start loads the 3.44M rows in ~9 s instead
 of unpickling them for 7.5 minutes, and keeps them out of RAM. Training builds missing packs
-itself, so this only moves that work before `run` checks the free disk. The third builds the
-evaluation sets; training translates FLEURS dev and the held-out `en-vi-val` rows at every
+itself, so this only moves that work before `run` checks the free disk. The third downloads the
+evaluation sets into `data/eval/` (`training.prep.eval_sets` builds them anew); training translates FLEURS dev and the held-out `en-vi-val` rows at every
 validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
 without them
 ([sft-training](agent-memory/sft-training.md#evaluation-sets)).
@@ -114,7 +115,12 @@ under simulated rooms, noise and bands ([noisy-source](agent-memory/noisy-source
 `fetch` while the first run still trains: it downloads the 442 GB of parquet shards (~3.2 h at
 the pod's ~39 MB/s) and keeps ~80 GB of the selected rows' Vietnamese audio, pausing below 50 GB
 of free disk. Once the run has finished, `encode` writes the shards on the GPU, and a new run
-trains from the first run's final model:
+trains from the first run's final model. Built once on 2026-11-04, the split is also in the
+dataset repo under `en-vi-grounded-v2-noisy/train/` (1,832 shards, 73 GB). Another pod downloads
+it with `--include "en-vi-grounded-v2-noisy/train/*"` and packs it rather than running `fetch` and
+`encode`.
+
+```bash
 
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
@@ -144,8 +150,9 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 
 - `--model-weight` loads the full fp32 model (moshi's loader is strict; for Hibiki models it
   also copies the text embedding's PAD row over row 2, which got no gradient in the first run).
-  The hard link keeps it while the previous run's folder is pruned, and a resume needs it at the
-  same path.
+  The hard link keeps it while the previous run's folder is pruned. Keep it at the same path
+  until the run ends: a resume needs it there, and so does every validation, which reloads it
+  to build its bf16 generator.
   A replacement pod downloads it from `PREVIOUS_RUN/checkpoints/` in the recovery repo.
 - A new `--seed` draws new streams: the noisy split has the same rows, so seed 42 would replay
   the first run's streams and batch order.
@@ -154,13 +161,22 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 - The run starts a new warmup and cosine decay. Validation every 18,000 steps (7 per epoch plus
   the final step) halves its share of the run; it also scores `en-vi-val-noisy`, so the run shows
   what the channel costs as it trains.
+- The EOS gate can fail at every validation, and then the trainer promotes nothing, and the sync
+  keeps only the newest two validation pairs. For `en_speech_noisy_epoch2`, a script beside the
+  run keeps the best validation model by FLEURS dev chrF, whatever the gates. After each
+  validation it copies that model server side (`CommitOperationCopy`) to
+  `RUN_NAME/offline_best/`, with its scores in `best.json`. `hf_sync` never prunes that folder.
 
 ### Interruptible pods
 
 A preempted container restarts with its disk intact but nothing running. Its boot script,
 `/root/onstart.sh` on Vast, can continue the run, retrying every 5 minutes until `run`
 succeeds; a finished run exits 0 at once. `run` only continues a run that exists and exits
-while another launcher holds it, so the line can stay while the run lasts. To stop a run for
+while another launcher holds it, so the line can stay while the run lasts. The same loop also
+reruns a run that stops on its own, after a crash or after three failed syncs in a row. So start
+a run through it by hand, not with a bare `run`, and add it to `/root/onstart.sh`. For a launcher
+already running bare, start a loop that waits for its lock first:
+`bash -c 'flock runs/.RUN_NAME.lock true; until …; done'`. To stop a run for
 good, remove the line from `/root/onstart.sh`, kill the loop
 (`pkill -f 'until ./training/h100.sh run RUN_NAME'`), then send the launcher SIGTERM:
 
@@ -228,6 +244,28 @@ Continuing is interruption recovery for the same run only:
   the resumed step's validation if the run's logs were not restored (the final sync then
   replaces the remote logs with the resumed run's only);
 - it cannot extend the stop step or start a different run.
+
+### Move a running run to another pod
+
+While training runs, `hf_sync` uploads only the pairs of validation steps. To move a run to
+another pod:
+
+1. Wait for a validation's `val step=` lines.
+2. Send the launcher SIGTERM. Its final sync uploads the newest pair and the logs.
+3. Restore the run on the new pod as above, and start it through the boot hook's loop
+   ([interruptible pods](#interruptible-pods)).
+
+`en_speech_noisy_epoch2` moved this way at step 18,000 on 2026-11-04, with the GPUs idle ~25 min
+between the two pods.
+
+A run continues only on the commit in its `run.json`. To move it to a commit that changes no part
+of training, only validation or docs (check with `git diff`):
+
+1. Set `commit` in `runs/RUN_NAME/run_id.json` to the new HEAD.
+2. Upload that file unchanged as `RUN_NAME/run.json` before `run`; `hf_sync` requires the two to
+   be byte-equal.
+
+That run moved from 991b3a4 to e852735 this way, to take the batch-sized KV cache.
 
 Runs recorded before the `inference/`/`training/` split, such as
 `grounded_v2_full_direct_voice_5epoch`, follow their own commit's `docs/finetune.md`.

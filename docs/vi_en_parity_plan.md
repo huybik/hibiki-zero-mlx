@@ -238,6 +238,18 @@ Vietnamese text cannot keep up with its speech.
      validation every 18,000 steps ([finetune](finetune.md#a-second-epoch-on-the-noisy-cache)), which translate
      all five sets as `eval.py` does; one Mac call over them takes 21.5 min
      ([sft-training](agent-memory/sft-training.md#side-tools)).
+   - That run, `en_speech_noisy_epoch2`, moved to a cheaper 700 W H100 SXM at step 18,000
+     ([finetune](finetune.md#move-a-running-run-to-another-pod)) and should end about 13:15 UTC
+     on 2026-11-04.
+     - Its step-18,000 validation fails the EOS gate, so its best validation model by FLEURS dev
+       chrF is kept in `offline_best/` on the Hub.
+     - Once it ends, the pod scores its final model and the first run's on FLEURS test and both
+       MultiMed-ST halves, using the trainer's protocol. Results go to `<run>/eval/test_step*/`.
+   - Fix in the trainer before the next run:
+     - The gradient norm is neither checked nor logged, so a non-finite one reaches AdamW. The
+       loss is checked every 10 steps, so a NaN update on a save step would be saved and resumed.
+     - Each validation reloads `--model-weight` from disk to build its generator.
+     - The first train-log line after a validation counts the validation in its s/step.
 4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
