@@ -9,7 +9,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 - Local work uses the conda base interpreter `/opt/homebrew/Caskroom/miniconda/base/bin/python`
   (Python 3.13), which has the inference and data dependencies installed, including `anthropic`
   and `google-genai` for the translation. The macOS app
-  hard-codes the same path.
+  hard-codes the same path. Its PyTorch is 2.15.0, the pod's pin, for the MPS eval
+  ([sft-training](sft-training.md#side-tools)), with moshi 0.2.13 as on the pod.
 - Inference needs MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, and sounddevice for the
   microphone. Install with `pip install -e ./inference/moshi-mlx` then `pip install -e .`; both
   are editable installs, so moving either directory requires reinstalling them.

@@ -168,13 +168,13 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
   `metric` `free_running_chrf`, `chrf`). A run whose checkpoints all fail the gates promotes
   none. `val_log.jsonl` holds `teacher_forced` and, under `free_running`, each set's metrics per
   step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
-- Training's chrF ranks the checkpoints of one run. It generates with bf16 weights, as `eval.py`
-  does, but in length-sorted batches of 64, while `eval.py` defaults to batch 1 in file order, so
-  the two give different numbers for the same checkpoint; compare runs with `eval.py`. A set's
-  score also depends on the rows it shares batches with (batches are reseeded by index, and a
-  row that never ends generates until its batch does), so FLEURS chrF from the mixed batches
-  does not compare with a run that validated on FLEURS alone, and `eval.py`'s numbers change
-  with its `--pairs` list.
+- Training's chrF ranks the checkpoints of one run. Training and `eval.py` both translate through
+  `run_greedy_eval`, rows sorted by `duration_s`, in bf16 batches of 64 by default, and `eval.py`
+  passes every `--pairs` file in one call, so given the trainer's `--eval-pairs` in order and its `--seed`, `eval.py` builds the trainer's
+  batches; device numerics still differ. A set's score depends on the rows it shares batches with
+  (batches are reseeded by index, and a row that never ends generates until its batch does), so
+  FLEURS chrF from mixed batches does not compare with FLEURS scored alone: compare checkpoints
+  under one `--pairs` list, seed and batch size.
 - A start in an out-dir with complete pairs resumes the newest one, and only if
   `run_config.json` matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences,
   seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
@@ -231,8 +231,18 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
     ended 11 of 48 FLEURS rows, against 27 at 0.8 with the same 8 s tail and 33 with a longer
     one. Its EOS came up to 14 s after a row ended, and the 8 s tail cut a third of them
     ([analysis](../analysis/eos_and_lag.md)).
-  - On the Mac, `--device mps` scores a running run's checkpoints while the pod trains: FLEURS
-    dev takes 20–25 min at batch 16. Measured 2026-11-03 on a 48 GB Mac:
+  - On the Mac (48 GB M4 Pro, torch 2.15), `--device mps` scores a running run's checkpoints
+    while the pod trains. One call over the second run's five sets in its order with `--seed 43`
+    (1,081 rows) takes 21.5 min at batch 64, with a 23 GB peak footprint and swap flat; three
+    calls at batch 16 on torch 2.13 took ~75 min. Measured 2026-11-04:
+    - A step is bound by per-op dispatch, not the GPU: 120 ms at batch 16 and 171 at 64, so rows
+      per second nearly triple from 16 to 64. Batch 96 adds ~15% for 4 GiB more and pads more.
+    - The KV cache sized to the batch's steps (`generate_batch`) took a batch-64 step from 318 to
+      202 ms and 27 to 12 GiB (torch 2.13). Greedy text tokens matched the full cache over 150
+      steps; 97% of audio tokens did, the rest split off at bf16 near-ties.
+    - torch 2.13 stepped 18% slower and, after batches of 16, ran a batch of 9 at half speed.
+      moshi's `torch.compile` gains nothing on MPS (`NO_TORCH_COMPILE=1` is within noise).
+    Measured 2026-11-03:
     - PyTorch's MPS cache kept each finished batch's blocks without reusing them. It grew 5 GiB
       a batch to 50 GB and swap, while live tensors stayed at 6.3 GiB, and `gc.collect()` freed
       nothing. `run_greedy_eval` empties it after each batch on MPS, which holds it at 7 GiB.

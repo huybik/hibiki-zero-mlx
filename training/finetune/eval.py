@@ -1,5 +1,11 @@
 #!/usr/bin/env python
-"""Generate free-running validation outputs with a base or full-SFT model."""
+"""Generate free-running validation outputs with a base or full-SFT model.
+
+Rows run as training validates them: every --pairs file in one pass, in length-sorted batches
+(64 by default) reseeded per batch from --seed. Given the trainer's --eval-pairs in its order
+and its --seed, the batches are the trainer's; each set's score depends on the rows it shares
+batches with, so runs compare under the same --pairs list.
+"""
 from __future__ import annotations
 
 import argparse
@@ -46,8 +52,8 @@ def parse_args() -> argparse.Namespace:
         "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model dtype."
     )
     parser.add_argument("--limit", type=int, default=128, help="Max rows of each pairs file.")
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--ids", default="", help="Comma-separated ids in that order; bypasses --limit.")
+    parser.add_argument("--batch-size", type=int, default=64, help="Rows per batch, as training validates.")
+    parser.add_argument("--ids", default="", help="Comma-separated ids; bypasses --limit.")
     parser.add_argument("--ids-file", type=Path, help="Text file of ids, one per line; bypasses --limit.")
     parser.add_argument(
         "--gen-duration",
@@ -97,7 +103,9 @@ def main() -> None:
     sets = common.read_eval_sets(args.pairs)
     rows = [row for set_rows in sets.values() for row in set_rows]
     # Every row, before selection: --ids must not pick one of two rows that share an id.
-    common.validate_eval_rows(rows, args.source_column, args.reference_column, args.id_column)
+    common.validate_eval_rows(
+        rows, args.source_column, args.reference_column, args.id_column, duration_column="duration_s"
+    )
     if ids:
         rows = common.select_eval_rows(rows, ids, args.id_column)
     else:

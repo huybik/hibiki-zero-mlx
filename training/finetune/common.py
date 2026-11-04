@@ -26,6 +26,7 @@ import sacrebleu
 import sphn
 import torch
 from moshi.models import loaders
+from moshi.modules.transformer import set_attention_context
 from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
@@ -638,6 +639,11 @@ def generate_batch(
     output_audio_tokens: list[Any] = []
     finished = torch.zeros(batch_wavs.shape[0], dtype=torch.bool, device=codes.device)
     eos_id = int(text_tokenizer.eos_id())
+    # moshi sizes the main transformer's KV cache to its whole context (3,000 frames) and attends
+    # over every slot at each step, written or not, while a batch takes only its own steps. A
+    # cache of those steps gives the same attention (unwritten slots are masked out) and, at batch
+    # 64 on the Mac, is 15 GiB smaller and steps faster.
+    set_attention_context(lm.transformer, min(warmup_codes.shape[-1] + codes.shape[-1], lm.context))
     start_time = time.time()
     with torch.no_grad(), lm_gen.streaming(batch_wavs.shape[0]):
         for step in range(warmup_codes.shape[-1]):
@@ -651,6 +657,7 @@ def generate_batch(
             finished |= tokens[:, 0, 0] == eos_id
             if cfg.stop_on_eos and bool(finished.all().detach().cpu()):
                 break
+    set_attention_context(lm.transformer, lm.context)
     elapsed = time.time() - start_time
     print(
         f"Generated batch {batch_start}-{batch_start + len(rows) - 1} "
@@ -692,7 +699,10 @@ def run_greedy_eval(
     out_dir: Path,
     evaluation_seed: int | None = None,
 ) -> list[dict[str, str]]:
-    """Batched free-running eval; optionally reseed each batch deterministically."""
+    """Batched free-running eval of rows with `duration_s`, in length order; optionally reseed each
+    batch deterministically."""
+    # Batches of similar length pad less: on FLEURS dev, 6,000 generation steps instead of 8,300.
+    rows = sorted(rows, key=lambda row: float(row["duration_s"]))
     records: list[dict[str, str]] = []
     for batch_index, start in enumerate(range(0, len(rows), batch_size)):
         if evaluation_seed is not None:

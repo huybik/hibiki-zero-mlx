@@ -194,6 +194,12 @@ step 131,553, 2026-11-04 (chrF; "Both" is corpus chrF over the 360 rows):
 | `en-vi-val-noisy` | 34.4 | 37.5 | 36.7 | 34.9 · 39.6 · 38.4 |
 | FLEURS dev (real speech) | | | 23.5 | 24.9 |
 
+The second run's checkpoints are scored as `eval.py` now batches: one call over its five sets in
+its order, batch 64, `--seed 43` ([sft-training](sft-training.md#side-tools)). The first run's
+final model scores there FLEURS dev 25.1, `en-vi-val` 42.2 · 44.0 · 43.5 and `en-vi-val-noisy`
+34.6 · 39.2 · 38.0 (CV · LH · both), within 0.4 of the table above; compare the second run with
+these.
+
 - By condition, against the same rows clean: reverb −6.1 chrF; SNR under 15 dB −8.8 (15 dB
   and up −2.9); phone band −8.9, 8 kHz −7.8, 16 kHz −4.7.
 - The channel so costs ~5 of the ~18 points between clean TTS and FLEURS. The rest is real
