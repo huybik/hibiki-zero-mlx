@@ -5,13 +5,22 @@ own order ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline
   segments <source>  download each source shard at its pinned commit, keep its usable segments,
                      re-encode their audio to Ogg Opus and write
                      <root>/<repo>/<source>/segments/<shard>.parquet; the download is deleted
-  push <source>      upload <root>/<repo>/<source> to its tranche repo (resumable)
+  push <source>      upload <root>/<repo>/<source>/segments to its tranche repo (a rerun skips
+                     files already committed)
 
 Sources go to the public repo, or to the private one where their terms forbid redistribution
-(PhoAudiobook, GigaSpeech 2). Rows: id, source, doc (the reader, channel or recording whose
-segments share a voice), seq (order within doc), speaker, start_s/end_s (within the recording,
-where the corpus gives them), text (the corpus transcript), duration_s, source_rate, audio
-{bytes, path}. A rerun skips shards already written. CPU only; from the repo root on the box:
+(PhoAudiobook, GigaSpeech 2). Rows, sorted by seq within a shard:
+  id, source
+  doc       the recording the row comes from, as far as the corpus tells; a doc never spans
+            shards. PhoAudiobook: one reader's run of chunks in rising time (it names no book);
+            GigaSpeech 2: the recording; viVoice: the row itself (its rows are shuffled).
+  seq       the row's order within its shard, and so within its doc
+  speaker   the corpus's reader or channel, which can be a platform rather than one voice;
+            none for GigaSpeech 2, whose recordings may hold several voices
+  start_s, end_s  the times the corpus names the clip by, within the recording; the trimmed
+            audio differs from end - start by up to ~1 s, so seams come from alignment
+  text      the corpus transcript; duration_s, source_rate and audio {bytes, path} of the clip
+A rerun skips shards already written. CPU only; from the repo root on the box:
   .venv/bin/python -m training.tranche.ingest segments pho --shards 0:40
 """
 from __future__ import annotations
@@ -22,7 +31,7 @@ import os
 import re
 import tarfile
 from collections.abc import Iterator
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,9 +45,9 @@ REPOS = {"public": "huybik/hibiki-zero-vi-real", "restricted": "huybik/hibiki-ze
 OPUS_BITRATE = 32_000  # real speech, noise included; Mimi keeps far less than this
 OPUS_COMPLEXITY = 5
 ROW_S = (5.0, 22.4)  # the trainer's row lengths, for sources whose rows cannot be rejoined
-# PhoAudiobook's train split is 940 h of clips of 10 s and more plus 554 h of "augmented short
-# audio" (its card): only the originals are kept.
-PHO_MIN_S = 10.0
+# PhoAudiobook's train split is 947 h of 10-20 s chunks plus 554 h of "augmented short audio" (its
+# card), cut from the same readings: only the originals, which this suffix names, are kept.
+PHO_ORIGINAL = "_trimmed_norm_float32.wav"
 
 
 @dataclass(frozen=True)
@@ -47,10 +56,12 @@ class Source:
     revision: str
     pattern: str  # the source shards, a regex over the repo's file names
     dest: str  # "public" or "restricted"
+    shards: int | None = None  # how many of the sorted shards hold usable rows; None: all
 
 
 SOURCES = {
-    "pho": Source("thivux/phoaudiobook", "f19f241", r"data/train-\d+-of-\d+\.parquet", "restricted"),
+    # Shards 224-802 hold only augmented audio.
+    "pho": Source("thivux/phoaudiobook", "f19f241", r"data/train-\d+-of-\d+\.parquet", "restricted", 224),
     "vivoice": Source("capleaf/viVoice", "693e988", r"data/train-\d+-of-\d+\.parquet", "public"),
     "giga": Source("speechcolab/gigaspeech2", "8dc0d0e", r"data/vi/train/\d+\.tar\.gz", "restricted"),
 }
@@ -100,41 +111,47 @@ def times(path: str) -> tuple[float, float]:
 
 
 def rows_of(name: str, shard: int, local: Path) -> Iterator[dict]:
-    """(row fields, audio bytes) of one downloaded source shard, in its own order."""
-    if name in ("pho", "vivoice"):
+    """The usable rows of one downloaded source shard, each with its source audio as `data`."""
+    if name == "pho":
+        last = None  # (reader, end) of the previous original
+        for k, r in enumerate(pq.read_table(local).to_pylist()):
+            if not r["audio"]["path"].endswith(PHO_ORIGINAL):
+                continue
+            start, end = times(r["audio"]["path"])
+            row_id = f"pho/{shard:05d}/{k:05d}"
+            if last is None or last[0] != r["speaker"] or start < last[1]:  # another reading
+                doc = row_id
+            last = (r["speaker"], end)
+            yield {"id": row_id, "doc": doc, "seq": k, "speaker": r["speaker"], "start_s": start,
+                   "end_s": end, "text": r["text"], "data": r["audio"]["bytes"]}
+    elif name == "vivoice":
         for k, r in enumerate(pq.read_table(local).to_pylist()):
             start, end = times(r["audio"]["path"])
-            speaker = r["speaker"] if name == "pho" else r["channel"]
-            yield {"id": f"{name}/{shard:05d}/{k:05d}", "doc": speaker, "seq": shard * 100_000 + k,
-                   "speaker": speaker, "start_s": start, "end_s": end, "text": r["text"],
-                   "data": r["audio"]["bytes"]}
+            row_id = f"vivoice/{shard:05d}/{k:05d}"
+            yield {"id": row_id, "doc": row_id, "seq": k, "speaker": r["channel"], "start_s": start,
+                   "end_s": end, "text": r["text"], "data": r["audio"]["bytes"]}
     else:
-        texts = giga_texts()
-        with tarfile.open(local, "r|gz") as tar:
+        archive = local.name.split(".")[0]
+        texts = giga_texts(archive)
+        with tarfile.open(local, "r|gz") as tar:  # members come in file-system order
             for member in tar:
                 key = Path(member.name).stem
                 if member.isfile() and key in texts:
-                    archive, recording, segment = key.split("-")
-                    doc = f"{archive}-{recording}"
-                    yield {"id": f"giga/{key}", "doc": doc, "seq": int(segment), "speaker": doc,
+                    _, recording, segment = key.split("-")
+                    yield {"id": f"giga/{key}", "doc": f"giga/{archive}-{recording}",
+                           "seq": int(recording) * 1_000_000 + int(segment), "speaker": None,
                            "start_s": None, "end_s": None, "text": texts[key],
                            "data": tar.extractfile(member).read()}
 
 
-_GIGA_TEXTS: dict[str, str] = {}
-
-
-def giga_texts() -> dict[str, str]:
-    """GigaSpeech 2's refined transcripts by segment id, read once per worker."""
+def giga_texts(archive: str) -> dict[str, str]:
+    """GigaSpeech 2's refined transcripts of one archive's segments, by segment id."""
     from huggingface_hub import hf_hub_download
 
-    if not _GIGA_TEXTS:
-        src = SOURCES["giga"]
-        path = hf_hub_download(src.repo, "data/vi/train_refined.tsv", repo_type="dataset", revision=src.revision)
-        for line in open(path):
-            key, text = line.rstrip("\n").split("\t", 1)
-            _GIGA_TEXTS[key] = text
-    return _GIGA_TEXTS
+    src = SOURCES["giga"]
+    path = hf_hub_download(src.repo, "data/vi/train_refined.tsv", repo_type="dataset", revision=src.revision)
+    with open(path) as f:
+        return dict(line.rstrip("\n").split("\t", 1) for line in f if line.startswith(f"{archive}-"))
 
 
 def ingest_shard(name: str, index: int, file: str, out: Path) -> str:
@@ -155,13 +172,11 @@ def ingest_shard(name: str, index: int, file: str, out: Path) -> str:
             if name == "vivoice" and not ROW_S[0] <= duration <= ROW_S[1]:  # shuffled: no neighbours
                 dropped += 1
                 continue
-            if name == "pho" and duration < PHO_MIN_S:  # its augmented short copies
-                dropped += 1
-                continue
             rows.append(row | {"source": name, "duration_s": round(duration, 3), "source_rate": rate,
                                "audio": {"bytes": encode_opus(pcm, rate), "path": f"{row['id'].replace('/', '_')}.opus"}})
     finally:
         local.unlink()
+    rows.sort(key=lambda r: r["seq"])
     part = dst.with_name(dst.name + ".part")
     pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), part, compression="zstd")
     os.replace(part, dst)
@@ -169,39 +184,41 @@ def ingest_shard(name: str, index: int, file: str, out: Path) -> str:
     return f"{file}: {len(rows)} rows, {hours:.2f} h, {dropped} dropped"
 
 
-def shard_files(name: str, selection: str | None) -> list[str]:
+def shard_files(name: str) -> list[str]:
+    """The source's usable shards in numeric order; a shard's index here names its rows."""
     from huggingface_hub import HfApi
 
     src = SOURCES[name]
     files = sorted((f for f in HfApi().list_repo_files(src.repo, repo_type="dataset", revision=src.revision)
                     if re.fullmatch(src.pattern, f)), key=lambda f: [int(n) for n in re.findall(r"\d+", f)])
-    if selection:
-        start, _, stop = selection.partition(":")
-        files = files[int(start or 0): int(stop) if stop else None]
-    return files
+    return files[:src.shards]
 
 
 def segments(args: argparse.Namespace) -> None:
     name = args.source
     out = args.root / SOURCES[name].dest / name / "segments"
     out.mkdir(parents=True, exist_ok=True)
-    files = shard_files(name, args.shards)
-    print(f"{name}: {len(files)} shards -> {out}", flush=True)
-    # Each shard's rows keep their order through its index in the whole list.
-    everything = shard_files(name, None)
+    files = shard_files(name)
+    picked = range(len(files))[args.shards]
+    print(f"{name}: {len(picked)} of {len(files)} shards -> {out}", flush=True)
     with ProcessPoolExecutor(args.workers) as pool:
-        jobs = [pool.submit(ingest_shard, name, everything.index(f), f, out) for f in files]
-        for job in jobs:
-            print(job.result(), flush=True)
+        jobs = [pool.submit(ingest_shard, name, i, files[i], out) for i in picked]
+        try:
+            for job in as_completed(jobs):
+                print(job.result(), flush=True)
+        except BaseException:
+            pool.shutdown(cancel_futures=True)  # stop at the first failure, not after the queue
+            raise
 
 
 def push(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi
 
     dest = SOURCES[args.source].dest
-    folder = args.root / dest
-    HfApi().upload_large_folder(repo_id=REPOS[dest], repo_type="dataset", folder_path=folder,
-                                allow_patterns=[f"{args.source}/segments/*.parquet"])
+    # upload_folder never creates the repo, so a missing one fails instead of appearing public.
+    HfApi().upload_folder(repo_id=REPOS[dest], repo_type="dataset", folder_path=args.root / dest,
+                          allow_patterns=[f"{args.source}/segments/*.parquet"],
+                          commit_message=f"{args.source} segments")
 
 
 def main() -> None:
@@ -210,7 +227,8 @@ def main() -> None:
     steps = parser.add_subparsers(dest="step", required=True)
     p = steps.add_parser("segments")
     p.add_argument("source", choices=sorted(SOURCES))
-    p.add_argument("--shards", help="a slice of the sorted source shards, e.g. 0:40")
+    p.add_argument("--shards", type=lambda s: slice(*(int(n) if n else None for n in s.split(":"))),
+                   default=slice(None), help="a slice of the usable source shards, e.g. 0:40")
     p.add_argument("--workers", type=int, default=8)
     p = steps.add_parser("push")
     p.add_argument("source", choices=sorted(SOURCES))

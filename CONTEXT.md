@@ -39,7 +39,8 @@ inference/ (Apple Silicon, MLX)
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
   builder in MLX, the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
   and HF recovery sync) and `tranche/` (the real-Vietnamese tranche on the box: so far the English
-  TTS bake-off and the ASR and translation checks, each model in its own uv env). Its modules run from the repo root as
+  TTS bake-off, the ASR and translation checks, each model in its own uv env, and the ingest of
+  the corpora's segments to the tranche repos). Its modules run from the repo root as
   `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
   publisher, the cache builder and the evaluation-set builder runs on CUDA only.
 - `docs/` holds plans, analyses and reports.

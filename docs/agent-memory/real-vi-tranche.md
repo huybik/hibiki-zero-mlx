@@ -79,13 +79,20 @@ Researched 2026-11-04 from the corpora's and models' own cards; the code so far
 Measured 2026-11-04 on the box from one train shard each. The user accepted the four gated
 corpora's terms for `huybik` that day.
 
-- PhoAudiobook: parquet (`audio` as float32 WAV at 16 kHz, `text`, `speaker`), 803 train shards
-  of 67–499 MB, 1,042,919 rows: 940 h of clips of 10 s and more, and 554 h of "augmented short
-  audio" (its card), which ingest drops.
-  - Chunks run 10–16 s (p5/p50/p95 10.2/11.6/15.6 s), all within 5–22.4 s.
-  - Shards go reader by reader in time order; a chunk's start and end are in its file name
-    (`chunk-2541_74-2554_64_…`). The chunks sample a reading rather than cover it: the gap to
-    the previous one is 0.4 s at p10 and 28 s at p50.
+- PhoAudiobook: parquet (`audio` as 16-bit PCM WAV at 16 kHz, though named float32, `text`,
+  `speaker`), 803 train shards of 67–499 MB, 1,042,919 rows. From the names in every shard:
+  - Shards 0–222 and the first 360 rows of 223 are the 290,037 original chunks
+    (`chunk-<start>-<end>_trimmed_norm_float32.wav`, 947 h by their names, 10–20 s, p50 11.4 s).
+    The rest, through shard 802, are the 752,882 "augmented short audio" clips (its card; 554 h,
+    at most 10 s, cut inside the originals' spans), which ingest never downloads.
+  - Each reader's chunks come as runs in rising time, one per reading, which carries no book id:
+    17,030 runs of ~17 chunks, 213 of them crossing a shard boundary. The chunks sample a reading
+    rather than cover it: the gap to the previous chunk is 63 s at p50 and 401 s at p90, and only
+    15% of seams are within 1 s.
+  - The names' times predate trimming: decoded audio differs from end − start by +0.09 s at p50
+    and up to −1.2 s (viVoice's by −0.38 to +0.52 s), so seams come from alignment.
+  - Some readers are platforms (`Voiz`, `Fonos.vn`, `HTV`, `VOH`, `TV5050`) rather than one
+    voice, and `Voiz` may be viVoice's `@VoizFM`: check for shared audio before using both.
   - Text is lower case with sentence punctuation, and chunks start and end mid-sentence.
 - viVoice: parquet (`channel`, `text`, `audio` as 24 kHz WAV), 354 shards of ~480 MB.
   - Rows are shuffled across channels (169 in one shard) and carry no video id, so neighbours
@@ -259,15 +266,20 @@ other corpora ─► their transcripts, word times by forced alignment ───
   within a run.
 - Filter rows on syllables per second, transcript confidence, language ID, clipping and
   bandwidth (flag sources at 16 kHz or below).
-- YODAS has no speaker labels and a video may hold several speakers: cluster speaker embeddings
-  per video to pick each row's reference and drop overlapped speech. The same embeddings and a
-  dialect classifier check the North, Central and South balance.
+- Speaker labels cannot pick the TTS reference: YODAS has none, and GigaSpeech 2's recordings
+  and some corpus "speakers" (platforms) hold several voices. On every source, cluster speaker
+  embeddings per doc to pick each row's reference and drop overlapped speech. The same
+  embeddings and a dialect classifier check the North, Central and South balance.
 - Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
-  parquet in the source's order (`doc`, `seq`, the times the corpus gives), audio re-encoded to
-  32 kbps Ogg Opus (~16 MB per hour), under `/workspace/tranche/repo/<public|restricted>/<source>/segments/`,
-  and `push` uploads that folder to its repo. One worker took 6 min for GigaSpeech 2's first
-  archive (19,967 segments, 24.1 h); PhoAudiobook's first shard gave 1,299 clips (4.4 h),
-  viVoice's 742 of its 2,508 (1.6 h; the rest outside 5–22.4 s).
+  parquet sorted by `seq`, audio re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under
+  `/workspace/tranche/repo/<public|restricted>/<source>/segments/`, and `push` uploads that
+  folder to its repo. `doc` is the recording as far as the corpus tells and never spans shards:
+  a PhoAudiobook reader's run in rising time, a GigaSpeech 2 recording (its tars hold segments
+  out of order, and with no times its neighbours are only consecutive segment numbers), and for
+  viVoice the row itself. `speaker` is the corpus's label, none for GigaSpeech 2.
+  One worker took 6 min for GigaSpeech 2's first archive (19,967 segments, 24.1 h);
+  PhoAudiobook's first shard gave 1,299 clips (4.4 h), viVoice's 742 of its 2,508 (1.6 h; the
+  rest outside 5–22.4 s).
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
