@@ -25,8 +25,8 @@ From the repo root:
 synth and mimi skip what they already wrote, so they resume; run mimi once every synth is done.
 synth's workers need CUDA MPS (`nvidia-cuda-mps-control -d`): without it the GPU runs one
 process's kernels at a time, and 4 workers gained 2.2x over one instead of 3.1x. Run one synth at
-a time with the GPU otherwise idle, and each in one go: its RTF is the wall time from its first
-row to its last.
+a time with the GPU otherwise idle: a system's RTF sums each run's wall time, from its first row's
+start (once every worker has loaded) to its last row's end, over the audio voiced.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from pathlib import Path
 
 import numpy as np
 
-from training.paths import DEFAULT_MIMI_WEIGHT
+from training.paths import DEFAULT_MIMI_WEIGHT, cpu_budget
 
 ROOT = Path("/workspace/tranche/bakeoff")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -265,52 +265,51 @@ def load_model(model: str):
     return generate
 
 
-def synth_worker(args: argparse.Namespace, mode: str, worker: int) -> None:
-    """Voice every args.workers-th row of the mode, from row `worker`, appending to its timing."""
+def synth_worker(args: argparse.Namespace, mode: str, todo, start, run: str) -> None:
+    """Load the model, wait for every worker to load, then voice rows from `todo` until its end
+    marker, appending each row's record to the mode's timing."""
     import soundfile as sf
     import torch
 
-    torch.set_num_threads(max(1, (os.cpu_count() or 1) // args.workers))
-    rows = read_rows(args.root)[: args.limit]
+    torch.set_num_threads(max(1, int(cpu_budget() // args.workers)))
+    generate = load_model(args.model)
+    start.wait()  # so the wall clock times every worker running, not their load skew
     system = f"{args.model}-{mode}"
     out = args.root / "out" / system
-    timing_path = out / "timing.jsonl"
-    recorded = {json.loads(line)["id"] for line in timing_path.open()} if timing_path.exists() else set()
-    todo = [(k, row) for k, row in enumerate(rows)
-            if k % args.workers == worker and row["id"] not in recorded]
-    if not todo:
-        return
-    generate = load_model(args.model)
+    out.mkdir(parents=True, exist_ok=True)
     # Every worker appends one line per write() to the shared file, which O_APPEND keeps whole.
-    with timing_path.open("a") as timing:
-        for k, row in todo:
+    with (out / "timing.jsonl").open("a") as timing:
+        while (item := todo.get()) is not None:
+            k, row = item
             path = out / f"{row['id']}.wav"
             torch.cuda.synchronize()
-            start = time.perf_counter()
-            record = {"id": row["id"], "workers": args.workers}
+            began = time.perf_counter()
+            record = {"id": row["id"], "run": run, "workers": args.workers}
             try:
                 wav, rate = generate(row, mode, SEED + k)
                 if len(wav) < rate // 2:
                     raise ValueError(f"only {len(wav) / rate:.2f} s of audio")
+            except torch.OutOfMemoryError:
+                raise  # the GPU's limit, not the model's: the row stays unrecorded for a rerun
             except Exception as exc:  # a failed row is a result: it counts as broken
                 record["error"] = f"{type(exc).__name__}: {exc}"[:300]
                 log(f"{system} {row['id']}: {record['error']}")
             else:
                 torch.cuda.synchronize()
-                record |= {"seconds": round(time.perf_counter() - start, 3),
-                           "audio_s": round(len(wav) / rate, 3)}
+                record["audio_s"] = round(len(wav) / rate, 3)
                 part = path.with_name(path.name + ".part")
                 sf.write(part, np.clip(wav, -1, 1), rate, subtype="PCM_16", format="WAV")
                 os.replace(part, path)
-            record["end"] = round(time.time(), 3)
+            record |= {"seconds": round(time.perf_counter() - began, 3), "end": round(time.time(), 3)}
             timing.write(json.dumps(record) + "\n")
             timing.flush()
-    log(f"{system} worker {worker}: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
+    log(f"{system} worker: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
 
 
 def synth(args: argparse.Namespace) -> None:
-    """Each mode in turn, its rows split over args.workers processes sharing the GPU: one row at a
-    time per process, as the models' Python APIs run, so the GPU fills from several."""
+    """Each mode in turn, its unrecorded rows shared out to args.workers processes on the GPU: one
+    row at a time per process, as the models' Python APIs run, so the GPU fills from several. A
+    failed worker stops them all; a rerun voices what is left."""
     import multiprocessing
 
     mps = Path(os.environ.get("CUDA_MPS_PIPE_DIRECTORY", "/tmp/nvidia-mps")) / "control"
@@ -318,23 +317,38 @@ def synth(args: argparse.Namespace) -> None:
         raise SystemExit(f"no CUDA MPS daemon ({mps}): start it with `nvidia-cuda-mps-control -d`")
     spawn = multiprocessing.get_context("spawn")  # CUDA can't follow a fork
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # so `kill` reaches the finally below
+    rows = read_rows(args.root)[: args.limit]
     for mode in MODELS[args.model][2]:
         system = f"{args.model}-{mode}"
-        (args.root / "out" / system).mkdir(parents=True, exist_ok=True)
-        log(f"{system}: {args.workers} workers")
-        procs = [spawn.Process(target=synth_worker, args=(args, mode, w)) for w in range(args.workers)]
+        timing = args.root / "out" / system / "timing.jsonl"
+        recorded = {json.loads(line)["id"] for line in timing.open()} if timing.exists() else set()
+        todo = [(k, row) for k, row in enumerate(rows) if row["id"] not in recorded]
+        if not todo:
+            continue
+        queue, start = spawn.Queue(), spawn.Barrier(args.workers)
+        queue.cancel_join_thread()  # rows left in it when workers fail must not hold this process
+        for item in todo + [None] * args.workers:
+            queue.put(item)
+        run = time.strftime("%Y%m%dT%H%M%S")
+        log(f"{system}: {len(todo)} rows, {args.workers} workers")
+        procs = [spawn.Process(target=synth_worker, args=(args, mode, queue, start, run))
+                 for _ in range(args.workers)]
         try:
             for p in procs:
                 p.start()
-            for p in procs:
-                p.join()
+            while any(p.is_alive() for p in procs):
+                if any(p.exitcode for p in procs):
+                    break  # one failed: the finally stops the rest
+                time.sleep(5)
         finally:  # a stopped synth stops its workers, which would otherwise hold the GPU
+            start.abort()
             for p in procs:
                 if p.is_alive():
                     p.terminate()
+                p.join()
         failed = [w for w, p in enumerate(procs) if p.exitcode]
         if failed:
-            raise SystemExit(f"{system}: workers {failed} failed")
+            raise SystemExit(f"{system}: workers {failed} failed or were stopped; rerun to voice the rest")
         log(f"{system}: done")
 
 
@@ -437,13 +451,16 @@ def score(args: argparse.Namespace) -> None:
                                 "floor": floor[i], "wer": wer, "hyp": hyp,
                                 "s_per_char": timing[i]["audio_s"] / max(len(rows[i]["text_en"]), 1)})
         failed = sum("error" in t for t in timing.values())
-        voiced = [t for t in timing.values() if "seconds" in t]
-        # Wall time from the first row's start to the last row's end, per second of audio: the
-        # GPU's cost with every worker running, warm-ups included.
-        wall = max(t["end"] for t in voiced) - min(t["end"] - t["seconds"] for t in voiced) if voiced else 0
+        # Each run's wall time, from its first row's start to its last row's end, summed over
+        # runs and divided by the audio voiced: the GPU's cost with every worker running.
+        runs = defaultdict(list)
+        for t in timing.values():
+            runs[t["run"]].append(t)
+        wall = sum(max(t["end"] for t in r) - min(t["end"] - t["seconds"] for t in r) for r in runs.values())
+        audio = sum(t.get("audio_s", 0) for t in timing.values())
         table.append({"system": system, "rows": len(done), "failed": failed,
-                      "workers": voiced[0]["workers"] if voiced else 0,
-                      "rtf": wall / sum(t["audio_s"] for t in voiced) if voiced else float("nan")})
+                      "workers": "/".join(sorted({str(t["workers"]) for t in timing.values()})),
+                      "rtf": wall / audio if audio else float("nan")})
 
     pace = float(np.median([r["s_per_char"] for r in per_row]))
     for r in per_row:
