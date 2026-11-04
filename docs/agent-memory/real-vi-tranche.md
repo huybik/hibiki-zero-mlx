@@ -196,6 +196,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   4. drop a model with more than 2% broken clips, take the highest similarity at WER ≤ 3%, then
      listen blind to 20 pairs; the winner must reach ~50 H100-hours per 1,000 h (RTF 0.05) on its
      batched runtime, or the runner-up is measured the same way.
+- `training/tranche/envs.sh` builds those envs. The vLLM env needs `flashinfer-jit-cache` at
+  FlashInfer's version and CUDA: without it Hy-MT2's first load compiles the fused FP8 MoE
+  kernels itself, about an hour on the box's 15 CPUs with the GPU idle (2026-11-05).
 
 ## First tranche
 

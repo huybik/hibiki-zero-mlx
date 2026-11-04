@@ -38,6 +38,10 @@ $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
 log mt; mk mt 3.12  # vLLM 0.33 has Hy-MT2's architecture (HYV3ForCausalLM); qwen-asr pins vLLM 0.14
 $UV pip install -q -p $E/mt vllm==0.33.0 sacrebleu==2.6.0 pyarrow
 $E/mt/bin/python -c "from vllm import ModelRegistry; assert 'HYV3ForCausalLM' in ModelRegistry.get_supported_archs()"
+# FlashInfer's prebuilt kernels for the flashinfer and CUDA vLLM brought: without them the first
+# run compiles the fused MoE itself (248 CUTLASS objects, 9 done in 18 min on 15 CPUs).
+fi=$($E/mt/bin/python -c "import flashinfer, torch; print(flashinfer.__version__, 'cu' + torch.version.cuda.replace('.', ''))")
+$UV pip install -q -p $E/mt "flashinfer-jit-cache==${fi% *}+${fi#* }" --index-url "https://flashinfer.ai/whl/${fi#* }"
 for e in voxcpm dots qwentts cosyvoice score asr mt; do
   echo "$e: $($E/$e/bin/python -c 'import torch; print(torch.__version__, torch.version.cuda)')"
 done
