@@ -1,131 +1,164 @@
-# GRPO preparation plan
+# GRPO plan
 
-Preparation for Hibiki-Zero style GRPO reinforcement learning on one H100,
-following arXiv 2602.11072v2 §3.3 (process rewards) and §4.2.5 (RL protocol),
-adapted to this repo's grounded-v2 caches, training streams and full-model trainer.
+The reinforcement learning stage of [vi_en_parity_plan.md](vi_en_parity_plan.md#4-grpo), on one
+H100. It follows the Hibiki-Zero paper ([arXiv 2602.11072v2](https://arxiv.org/abs/2602.11072),
+§3.3 and §4.2.5, checked against the HTML of 22 Jul 2026), applied to this repo's streams,
+trainer and launcher. Rewritten 2026-11-04. The first plan named a separate launcher and
+committed tests, and its prefix reference left out the sentence being spoken.
 
-Parent plan: [docs/vi_en_parity_plan.md](vi_en_parity_plan.md) §4. This doc defines the WHAT;
-run phases strictly sequentially, one implementer per phase, commit per phase.
+```text
+ every τ=20 updates (π_old = π_θ):
+   cached streams ─► bf16 copy of π_θ samples G=4 rollouts each, T frames, no early stop
+                 ─► BLEU process rewards at reward frames ─► group-normalized advantages
+                 ─► π_θ logprobs of the rollouts, no grad (π_old's, exact)
+ each update:    32 streams × 4 rollouts ─► clipped ratio loss × advantage ─► AdamW
+ every 200:      the SFT validation's free-running sets ─► chrF and end offset ─► promote
+```
 
-## 1. What the paper does (verified against the v2 HTML)
+## 1. The paper's method
 
-- Start from the fine-tuned supervised model. RL data = ST training inputs
-  (speech X + known **sentence-level** reference translation y). No KL term.
-- For each input, π_old generates **G=4** free-running translations, each to a
-  **fixed length T** frames (paper: T=1500 @ 12.5 Hz ≈ 120 s). Decoding:
-  temperature 0.8, top-k 250, both text and audio streams. No early stop.
-- **Process rewards**: split source sentences at frame indexes t_i; at reward
-  frame t let y_t be the gold translation of source sentences fully spoken up
-  to t. r_t(i) = (1−α)·BLEU(ŷ_t, y_t) + α·BLEU(ŷ_T, y_T), α=0.4.
-- Reward frames (t'_j) sit at the **end timestamp of every n_w=8 input words**
-  (regular pattern tied to input content beat ad-hoc placement).
-- Normalize rewards per reward frame across the group ((r−mean)/std over the
-  G samples); advantage at step t = sum of normalized rewards at later reward
-  frames: R_t = Σ_{t'_j>t} r̄_(t'_j)  — later steps see more evidence.
-- Clipped PPO-style ratio π_θ/π_old per codebook q and frame t, ε=0.2,
-  min-form, times R_t. Codebook weights **c_0=100, c_q=1 for q≥1** (text
-  stream upweighted 100× vs each audio codebook). Maximize (1/G)ΣΣ c_q L_q.
-- π_old is refreshed from π_θ every **τ=20** updates. AdamW LR **2e-7**,
-  batch **32**, **2000** updates. Eval every 10·τ; ship best quality/latency.
-- Ablations: α is the latency↔quality knob; n_w<8 adds nothing; using the
-  FULL reference instead of sentence prefixes improves quality but hurts
-  latency (noisy optimistic intermediate scores); **RL cannot teach
-  simultaneous behavior to a model supervised with full-sentence delay** —
-  it only sharpens what SFT left room for.
+- It starts from the supervised model. Its RL data are the inputs of its coarse speech
+  translation data: 30–75 s utterances with sentence-level reference translations. There is no
+  KL term.
+- For each input, π_old samples G = 4 translations, each a fixed T = 1,500 frames (120 s), at
+  temperature 0.8 and top-k 250 on text and audio. It does not stop at EOS.
+- Process reward of rollout i at frame t (Eq. 3):
+  r = (1 − α)·BLEU(ŷ_t, y_t) + α·BLEU(ŷ_T, y_T), with α = 0.4.
+  - ŷ_t is the text the model emitted up to t.
+  - y_t joins the reference translations of the input sentences up to S(t), the sentence being
+    spoken at t, that sentence included. Rewarding the unfinished sentence's whole translation
+    is what pushes latency down.
+- Reward frames t′_j sit at the end of every n_w = 8 input words. A regular pattern along the
+  input beat other placements, and n_w < 8 gained nothing.
+- Each reward frame's rewards are normalized over the group: (r − mean) / std over the G
+  rollouts.
+- The advantage of every token at frame t is R_t = Σ over reward frames t′_j > t of the
+  normalized rewards. Tokens after the last reward frame get none.
+- The loss is the clipped PPO ratio π_θ / π_old per output stream q and frame t (ε = 0.2), in
+  min form, times R_t, summed over t. The streams are text (q = 0) and the 16 audio codebooks,
+  weighted c_0 = 100 and c_q = 1. It maximizes (1/G) Σ_i Σ_q c_q L_q^(i).
+- π_old is replaced by π_θ every τ = 20 updates.
+- Optimization: learning rate 2e-7 (the optimizer is not named), batch 32 inputs (128
+  rollouts), 2,000 updates. It evaluates every 10·τ updates and keeps the best quality/latency
+  checkpoint; its ablations track BLEU and text LAAL.
+- Ablations:
+  - α is the latency/quality knob: a higher α gives better quality and more lag.
+  - The full reference in place of prefixes improves quality but costs latency.
+  - RL cannot teach a model supervised at full-sentence delay to start a sentence early; it only
+    sharpens what the SFT left room for. Our SFT delays each row's English by U[0, 0.5 × its
+    Vietnamese duration], as the paper's δ = 0.5, so there is that room.
 
-## 2. Mapping to this repo
+## 2. In this repo
 
-| Paper concept | Repo reality |
-| --- | --- |
-| Input sentence boundaries t_i | Rollouts run on training streams (`training/finetune/streams.py`), so each cache row's Vietnamese start and end frames are known exactly. Within a row, split `text_vi` on punctuation and map each sentence end proportionally by word count over the row's `vi_frames` (no VI forced alignment). |
-| Reward frames every 8 input words | Every 8 Vietnamese words, same proportional mapping onto source frames. |
-| Gold sentence prefixes y_t | The `text_en` of the stream's rows whose Vietnamese has ended by t, then sentence prefixes within a row. Prefix noise is a known risk (paper Exp. A). |
-| Fixed-T rollouts | T = the stream's frames plus a silent tail (measure VRAM before fixing the stream length). `stop_on_eos=False`; PAD/EOS handling exactly as free-running eval. Streams contain silent stretches; add a penalty on words emitted while the source has been silent longer than the pending translation needs. |
-| Rollout decoding | Reuse the `common.generate_batch` streaming loop (`training/finetune/common.py`) minus output saving, with `lm_gen` config identical to `training/finetune/eval.py` (temp/top-k flags). eval.py samples at the paper's 0.8 / top-k 250. |
-| Token logprobs for ratios | Rollouts stored as grounded-v2 style code tensors `[1+n_q, T]`; each update re-forwards the batch under grad (bf16 autocast + gradient checkpointing like SFT) to get text + per-codebook audio logprobs. Never backprop through generation. |
-| Batch 32 | 32 groups × G=4 = 128 sequences per update is likely beyond one H100 for a 3B multistream model. Micro-batch the ratio/loss computation with grad accumulation to an effective 32; measure real throughput in Phase B before freezing the horizon. |
-| Data | Streams planned from the `en_speech` cache, whose English is the corpus's gold text, with a seed of their own; rows the SFT run trained on are fine, the evaluation sets in `data/eval/` never enter. |
-| Init checkpoint | `--init-checkpoint` pointing at the promoted checkpoint of the stream-recipe SFT. Loading path mirrors `common.load_model`. |
+| Paper | Here |
+|---|---|
+| Inputs, sentences | Streams planned by `streams.StreamDataset` from the noisy `en_speech` train cache, with their own `--seed` and 30–75 s, the paper's lengths. One cache row is one sentence. The stream plan gives each row's `vi_start` and `vi_frames`. |
+| References y | Each row's English is its own cache text stream (non-PAD tokens, decoded). No external metadata is needed. |
+| S(t), y_t | The rows whose Vietnamese has started by frame t, in order. A gap after a row belongs to that row, as the paper's sentence i runs from t_i to t_{i+1}. |
+| Reward frames | The cache has no Vietnamese words or timings. Use one reward frame every 2.5 s of Vietnamese speech, counted inside rows only (≈ 8 syllables at the TTS's pace; check the rate on 1,000 rows' `text_vi` once), plus frame T. The paper has no frame after the last input word. We add T so the tail, where the translation finishes, is trained by the final BLEU. |
+| BLEU | `sacrebleu.sentence_bleu` (already pinned) per rollout and reward frame, in CPU worker processes while the GPU generates the next batch. A frame whose group has zero std gets advantage 0. |
+| Rollouts | Fed from cached Vietnamese codes, so no Mimi encode or decode: warm-up codes, then the stream's source with its EOS, then silence to T, through `LMGen` as `common.generate_batch` drives it (sized KV cache, `stop_on_eos` off). Store each rollout in the cache layout `[33, T]`: sampled text and English codes, plus the source. |
+| π_old logprobs | At each refresh, one no-grad pass of π_θ (fp32 masters under bf16 autocast, the update's own forward) over the window's rollouts. The ratio is then exactly 1 at the first update after a refresh. Logprobs at the sampling temperature 0.8, top-k ignored. |
+| Generation model | A bf16 copy of π_θ made at each refresh, as SFT validation builds its generator. |
+| Update | The SFT training forward (`lm_training`'s compiled transformer, step-major depformer) returns per-token logprobs of the 17 output streams. Micro-batches fit the 4,608-frame budget, accumulated to 128 rollouts. Fused AdamW (0.9, 0.95), weight decay 0.1, grad clip 1.0, the gradient norm checked as in SFT. |
+| Evaluation | Every 10·τ = 200 updates, the SFT validation's free-running pass over its five sets, unchanged. Quality is FLEURS dev chrF. Latency is the median `end_offset_s`, the stand-in for the paper's text LAAL. |
+| Promotion | The best FLEURS dev chrF among checkpoints that pass the health gates and whose FLEURS end offset is no worse than the starting model's. |
+| Start | Run 2's chosen checkpoint as `--model-weight`: its best validation by FLEURS dev chrF (`offline_best/`) or its final model, whichever scores better on the test sets. |
 
-Expectation setting: the SFT draws each row's delay from U[0, 0.5 × its
-Vietnamese duration], leaving the exploration room paper Exp. B requires, so
-this stage can cut latency as well as sharpen EOS, length control and
-repetition recovery (the step-135k failure modes).
+Out of the first version:
 
-## 3. Phases
+- the parity plan's penalty for speech while the source is silent;
+- an α sweep;
+- GRPO on a distilled student.
 
-### Phase A — Rollout + reward engine (`training/finetune/grpo_rollout.py`)
+Add one only if the rollouts show a need for it.
 
-1. Batched free-running generation of G samples per input from any checkpoint,
-   writing a rollout shard per batch: ids, sampled code tensors `[1+n_q,T]`,
-   decoded text per sample, EOS flags, lengths. Deterministic seeding per
-   (manifest position, group member).
-2. Reward computer: from `text_vi`/`text_en` build source-sentence frame map,
-   reward frames every 8 VI words, prefix references from `text_en`;
-   r_t(i) per Eq. 3 scored separately for each group member (sentence-level
-   sacrebleu, already a dependency via `sacrebleu==2.6.0` in `training/h100.sh`
-   setup). One corpus BLEU over the whole group gives every member the same
-   reward, so the group-normalized advantages are all zero.
-3. Group statistics + advantages per Eq. 5–6 saved alongside.
-4. Offline unit checks runnable locally (CPU, tiny fixtures): reward math
-   on synthetic texts, frame-map monotonicity, advantage sum ordering.
+## 3. Code
 
-Exit gate: given a fixture rollout, rewards/advantages match hand-computed
-values; generation on a few validation rows reproduces eval.py behavior
-(same texts modulo seed) with `stop_on_eos` disabled.
+- `training/finetune/rewards.py`: pure functions on text and frames:
+  - reward frames from a stream plan;
+  - prefix references;
+  - process rewards;
+  - group normalization;
+  - advantages per frame.
+- `training/finetune/grpo.py`: the loop in the diagram (stream planning, rollouts, old logprobs,
+  updates, evaluation, checkpoints, logs).
+- `training/finetune/checkpoints.py`: what `train.py` and `grpo.py` share, moved out of
+  `train.py` unchanged:
+  - `CheckpointWriter`;
+  - checkpoint pairs, pruning and resume;
+  - `promote_best`;
+  - `keep_log_lines`;
+  - the atomic writes.
+- `training/h100.sh grpo RUN_NAME [ARGS]`: `run`'s claim, preflight, lock, saved arguments and
+  `hf_sync`, starting `training.finetune.grpo`. `hf_sync` needs no change, since `grpo.py`
+  writes the SFT run's files:
+  - `model_stepN`/`trainer_stepN` pairs;
+  - `run_config.json` with `val_every` and `save_every`;
+  - `train_log.jsonl`, `val_log.jsonl` and `best.json`.
+- Saves land on refresh boundaries (`--save-every` a multiple of τ). A resume therefore starts a
+  window: it rebuilds π_old from the saved π_θ and draws that window's rollouts again, seeded by
+  update index.
+- No test files in the repo: rewards are checked by scratch scripts on the Mac's CPU, the rest on
+  the box.
 
-### Phase B — GRPO trainer core (`training/finetune/grpo.py`)
+## 4. Cost, to be measured
 
-1. Load init checkpoint + rollout shards; recompute logprobs under grad;
-   clipped ratio loss with c_0=100/c_q=1 weights; bf16 autocast, fp32 master
-   optimizer state, fused AdamW(0.9,0.95), wd 0.1, grad clip 1.0 — matching
-   SFT conventions in `training/finetune/train.py`.
-2. π_old refresh every τ=20 (deepcopy of weights or stale-parameter buffer);
-   assert ratio == 1.0 exactly on the first update after each refresh.
-3. Same-run resume contract in the spirit of `train.py`: run_config.json,
-   trainer/model checkpoint pairs, atomic saves, keep-N pruning.
-4. Receipt + JSONL logs (reward mean/std per frame index, KL-free ratio
-   stats, entropy proxy, grad norm, s/step).
-5. Smoke mode: tiny manifest, 3 updates, τ=2, asserting refresh semantics and
-   finite losses.
+Measured numbers (from [sft-speed](agent-memory/sft-speed.md)):
 
-Exit gate: smoke passes on H100 (and CPU micro-smoke locally); loss decreases
-or stays flat with sane ratio ranges over the smoke window; resume from
-step-2 checkpoint reproduces step-3 loss within tolerance.
+- **SFT forward and backward:** 14,400 frames/s on the 700 W H100 SXM.
+- **Training memory:** the fp32 masters, gradients and AdamW states take ~50 GB.
+- **KV cache:** ~115 KB per row and frame.
 
-### Phase C — Launcher, eval, recovery (`training/grpo.sh`, `training/finetune/hf_sync.py`)
+Estimates from those, at T = 1,200 frames (75 s of input plus a 21 s tail):
 
-1. New dedicated `training/grpo.sh` launcher (not new subcommands inside
-   `h100.sh`, which is hard-gated to the frozen grounded-v2 SFT contract):
-   same environment conventions (reuse the venv built by
-   `./training/h100.sh setup`, identical Torch/moshi pins), plus
-   `preflight-grpo` (artifact hashes + init-checkpoint + GRPO manifest pin),
-   `rollout`, `train-grpo`, `resume-grpo`; VRAM monitor as in SFT smoke.
-   Its smoke marker and commit gate are tracked separately from the SFT
-   smoke so the two launchers never invalidate each other.
-2. Periodic free-running evaluation every 10·τ updates on FLEURS-vi dev and
-   MultiMed-ST `select` (`data/eval/`) via the Phase A/B stack:
-   BLEU/chrF + the existing health gates in
-   `common.generation_health` (`training/finetune/common.py`) as hard promotion
-   filters; promote best quality/latency trade-off, never the newest.
-3. HF sync under a distinct public prefix (e.g. `grounded_v2_grpo_v1`),
-   keeping two complete recovery pairs like the SFT run.
+| Per update (128 rollouts) | Estimate |
+|---|---|
+| Generation, batches of 128 at ~30 ms/step | ~36 s |
+| Old logprobs, amortized over τ | ~4 s |
+| Update, 153,600 frames forward and backward | ~11 s |
+| Rewards on the CPU, overlapped with generation | ~0 s |
+| **Total** | **~50 s; 1,000 updates ≈ 14 h ≈ $20** |
 
-Exit gate: end-to-end dry run — rollout → N updates → eval → promote →
-resume — passes on the pod; promotion refuses a checkpoint failing any gate.
+- **Generation memory:** the masters and AdamW states (37.5 GB), plus the bf16 copy (5.8 GB),
+  plus a KV cache of 128 × 1,200 frames (~18 GB). That fits; 256 rows would not.
+- **Gradients:** freed before each refresh, as validation does now.
 
-### Phase D — Run bookkeeping
+## 5. Phases (each profiled on the box before the next)
 
-Freeze the GRPO data manifest (row-disjoint from all validation manifests),
-receipt, and run docs (`docs/finetune.md` section); decide final T, effective
-batch, and update budget (start 500–1000) from Phase B/C measurements.
+1. **Rewards and rollouts.**
+   - Build `rewards.py`, the rollout engine and a profiling entry point.
+   - On the box:
+     - sample G = 4 rollouts for 32 streams from run 2's start checkpoint;
+     - time generation at batch 64, 128 and 192 and T = 1,200 or 1,500, recording milliseconds
+       per step, the peak memory and GPU utilization sampled every 0.5 s;
+     - time the CPU rewards.
+   - Exit: the reward mean rises with the rollouts' BLEU, the advantages are zero-mean per frame,
+     a hand-checked stream matches, and the generation batch and T are chosen from the numbers.
+2. **Updates.**
+   - Build the old-logprob pass, the clipped loss and the τ refresh, and run a smoke test of a few
+     updates with τ = 2 on the box.
+   - Exit:
+     - the ratio is exactly 1 on each refresh's first update;
+     - the losses and gradient norm are finite;
+     - update throughput is measured per micro-batch size;
+     - the GPU stays busy, or the gap is explained.
+3. **Run bookkeeping.**
+   - Build `checkpoints.py`, `h100.sh grpo`, evaluation and promotion.
+   - Dry run on the box: rollouts, 2 windows, evaluation, save, kill, resume, sync.
+   - Exit: the resume repeats the window and the Hub holds the pair and logs.
+4. **The run.**
+   - α = 0.4 and the paper's settings, for 1,000 updates first: 5 evaluations, extended if chrF
+     or the end offset is still improving.
+   - Then the real-Vietnamese tranche (parity plan, stage 1.3), which this cannot replace: the
+     rollouts are TTS speech.
 
-## 4. Risks
+## 6. Risks
 
 | Risk | Mitigation |
-| --- | --- |
-| VRAM: 128 live sequences × T frames | Grad accumulation + gradient checkpointing; fix T after measuring; shrink group-batch if needed |
-| Prefix-reference noise (paper Exp. A) | Keep α=0.4 initially; ablate α only after a stable baseline |
-| Proportional VI sentence/word timing is approximate | Unit fixtures bound the error; ablate n_w and prefix scheme later |
-| RL destabilizes SFT gains | LR 2e-7, ε=0.2 clip, τ=20, hard health-gate promotion, keep best pre-RL checkpoint as fallback artifact |
-| Rollout cost dominates wall-clock | Measure gen RT (eval logs show ~xRT); reuse rollouts across τ-window updates as the paper does |
+|---|---|
+| Memory at T × batch | Measure in phase 1; shrink the generation batch, not T |
+| Generation dominates the time | Batch size and the sized KV cache from phase 1; rewards overlap on the CPU |
+| Reward frames by speech time are approximate | The paper finds n_w insensitive below 8; check the syllable rate once |
+| RL undoes SFT gains | LR 2e-7, ε = 0.2, τ = 20, promotion on gates and FLEURS, the start checkpoint kept |
+| Rewards fit the TTS references' style (the paper's train BLEU ~60 against ~30 in evaluation) | Select on FLEURS, real speech, never on rollout BLEU |

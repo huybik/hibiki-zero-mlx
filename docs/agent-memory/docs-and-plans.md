@@ -15,8 +15,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
 - The plan's stage 7 keeps EN→VI as a possible step once the VI→EN phone model works (user,
   2026-11-03). The tokenizer blocks it first: Vietnamese text needs ~10 tokens/s of speech
   against the text stream's 12.5.
-- [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage. No GRPO code exists; build it from
-  that plan once SFT passes its promotion gate.
+- [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage, checked against the paper on
+  2026-11-04. It is built next, from the second run's chosen checkpoint, and each phase is
+  profiled on the H100 before the next; the Mac only checks the reward math on its CPU.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
   ([sft-training](sft-training.md)).
 
