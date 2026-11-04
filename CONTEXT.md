@@ -72,7 +72,11 @@ inference/ (Apple Silicon, MLX)
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
-- GRPO (roadmap phase 4) is planned in [docs/grpo_plan.md](docs/grpo_plan.md) but has no code.
+- Next (user, 2026-11-04): a learning-rate test after the second run, a third VI→EN epoch only
+  if a higher rate wins, then the real-Vietnamese tranche
+  ([real-vi-tranche](docs/agent-memory/real-vi-tranche.md)) and two-way speech in one model,
+  prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). Its trainer
+  waits in PR #59 ([grpo_plan](docs/grpo_plan.md)).
 
 ## Essential invariants
 
@@ -118,6 +122,7 @@ inference/ (Apple Silicon, MLX)
 | SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |
+| Real-Vietnamese source data: corpora and licences, the English voice-cloning TTS, the tranche pipeline | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | not built yet |
 | Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/audio.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
