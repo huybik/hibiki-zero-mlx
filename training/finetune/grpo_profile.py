@@ -3,11 +3,14 @@
 
 The policy's fp32 weights and AdamW's two states stay resident as in training, and each stage
 runs on real streams from the start checkpoint:
-- rollout generation at each --gen-batch: time per step and peak memory;
+- rollout generation at each --gen-batch: time per step and peak memory, timed on a second
+  call so moshi's compilation and the CUDA graph capture stay out;
 - the rewards of the rollouts, serially and in --reward-workers worker processes;
-- the no-grad logprob pass and the loss's forward and backward at each --micro-batch.
-Results go to <out-dir>/profile.json, with a few streams' references, rollouts and rewards to
-read. Sample GPU utilization beside it (nvidia-smi every 0.5 s).
+- π_old's logprob pass (the update's forward, gradients on) and the update's forward and backward
+  at each --micro-batch, and the first update's largest ratio deviation, which should be 0.
+A size that runs out of memory is recorded and skipped. <out-dir>/profile.json is rewritten after
+each stage, with a few streams' references, rollouts and rewards to read. Sample GPU utilization
+beside it (nvidia-smi every 0.5 s).
 """
 from __future__ import annotations
 
@@ -83,6 +86,9 @@ def main() -> None:
     report: dict = {"frames": args.frames, "group": args.group,
                     "stream_frames": [dataset.streams[i].frames for i in stream_ids]}
 
+    def write(report: dict) -> None:
+        (out_dir / "profile.json").write_text(json.dumps(report, indent=2) + "\n")
+
     lm = info.get_moshi(device=device, dtype=torch.float32, load_weight=False,
                         lm_kwargs_overrides={"gradient_checkpointing": False})
     common.load_model(lm, args.model_weight, torch.float32)
@@ -99,10 +105,12 @@ def main() -> None:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
+        generate = functools.partial(
+            grpo.sample_window, generator, info, sources[:gen_batch], gen_batch, silence_frame,
+            args.seed, 0.8, 250, lambda *_: None)
         try:
-            seconds = timed(functools.partial(
-                grpo.sample_window, generator, info, sources[:gen_batch], gen_batch,
-                silence_frame, args.seed, 0.8, 250, lambda *_: None))
+            generate()  # compiles and captures
+            seconds = timed(generate)
         except torch.cuda.OutOfMemoryError:
             report[f"generate_batch_{gen_batch}"] = "out of memory"
             print(f"generate batch {gen_batch}: out of memory", flush=True)
@@ -115,6 +123,7 @@ def main() -> None:
             "rollouts_per_s": gen_batch / seconds, "peak_gib": peak}
         print(f"generate batch {gen_batch}: {1000 * seconds / steps:.1f} ms/step, "
               f"{gen_batch / seconds:.2f} rollouts/s, peak {peak:.1f} GiB", flush=True)
+        write(report)
     if not fitting:
         raise RuntimeError("No --gen-batch fits")
     gc.collect()
@@ -126,25 +135,26 @@ def main() -> None:
     torch.cuda.empty_cache()
 
     # Phase 1: rewards.
-    skip = {layout.pad_id, int(tokenizer.eos_id())}
+    eos_id, pad_id = int(tokenizer.eos_id()), int(tokenizer.pad_id())
     jobs = []
     for group, index in enumerate(stream_ids):
-        sentences = grpo.stream_sentences(dataset.streams[index], rows, tokenizer, layout.pad_id)
+        sentences = grpo.stream_sentences(dataset.streams[index], rows, tokenizer)
         tokens = rollouts[group * args.group : (group + 1) * args.group, 0].numpy().copy()
         jobs.append((tokens, sentences))
     start = time.time()
-    results = [rewards.group_advantages(tokens, sentences, skip, tokenizer.decode)
+    results = [rewards.group_advantages(tokens, sentences, eos_id, pad_id, tokenizer.decode)
                for tokens, sentences in jobs]
     serial = time.time() - start
     start = time.time()
-    [future.result() for future in [pool.submit(grpo._group_rewards, tokens, sentences, skip,
+    [future.result() for future in [pool.submit(grpo._group_rewards, tokens, sentences,
                                                 rewards.ALPHA) for tokens, sentences in jobs]]
     parallel = time.time() - start
     report["rewards"] = {"groups": len(jobs), "serial_s": serial, "parallel_s": parallel}
     print(f"rewards of {len(jobs)} groups: {serial:.1f} s serial, {parallel:.1f} s in "
           f"{args.reward_workers} workers", flush=True)
+    write(report)
 
-    # Phase 2: the no-grad logprob pass and the update's forward and backward.
+    # Phase 2: π_old's logprob pass and the update's forward and backward.
     codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
     advantages = torch.from_numpy(np.concatenate([r[2] for r in results])).float()
     weights = torch.ones(1 + lm.dep_q, device=device)
@@ -162,9 +172,6 @@ def main() -> None:
                 logprobs, mask = grpo.token_logprobs(lm, batch, condition, 0.8)
             return logprobs.detach(), mask
 
-        old, mask = score()  # compiles
-        no_grad_s = timed(score, 3)
-
         def update():
             with autocast:
                 loss, _ = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
@@ -172,6 +179,8 @@ def main() -> None:
             loss.backward()
 
         try:
+            old, mask = score()  # compiles
+            score_s = timed(score, 3)
             update()  # compiles
             update_s = timed(update, 3)
         except torch.cuda.OutOfMemoryError:
@@ -188,22 +197,23 @@ def main() -> None:
         lm.zero_grad(set_to_none=True)
         report[f"micro_batch_{micro}"] = {
             "first_update_ratio_max_deviation": float(stats["max_deviation"]),
-            "logprob_frames_per_s": frames / no_grad_s,
+            "logprob_frames_per_s": frames / score_s,
             "update_frames_per_s": frames / update_s, "peak_gib": peak,
             "sampled_logprob_mean": float(old[mask].mean())}
-        print(f"micro batch {micro}: logprobs {frames / no_grad_s:,.0f} frames/s, update "
+        print(f"micro batch {micro}: logprobs {frames / score_s:,.0f} frames/s, update "
               f"{frames / update_s:,.0f} frames/s, peak {peak:.1f} GiB", flush=True)
+        write(report)
 
     report["samples"] = []
     for (tokens, sentences), (frames, group_rewards, _) in list(zip(jobs, results))[:4]:
         report["samples"].append({
             "reference": " ".join(sentence.reference for sentence in sentences),
-            "rollouts": [rewards.emitted_texts(row, frames[-1:], skip, tokenizer.decode)[0]
-                         for row in tokens],
+            "rollouts": [rewards.emitted_texts(row, frames[-1:], eos_id, pad_id,
+                                               tokenizer.decode)[0] for row in tokens],
             "final_bleu": group_rewards[:, -1].tolist(),
         })
     report["final_bleu_mean"] = float(np.mean([r[1][:, -1].mean() for r in results]))
-    (out_dir / "profile.json").write_text(json.dumps(report, indent=2) + "\n")
+    write(report)
     print(json.dumps({k: v for k, v in report.items() if k not in ("samples", "stream_frames")},
                      indent=2))
     del adam_states

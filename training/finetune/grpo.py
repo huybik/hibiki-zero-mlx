@@ -6,8 +6,9 @@ Every --tau updates, π_old becomes the current policy:
    updates;
 2. the rollouts get BLEU process rewards and group-normalized advantages (`rewards.py`) in CPU
    workers, while the GPU keeps generating;
-3. the policy itself scores them, giving π_old's logprobs. It runs the update's own forward,
-   gradients enabled and the result detached, because a no-grad forward picks other bf16 kernels.
+3. the policy itself scores them, giving π_old's logprobs. It runs the update's own forward on
+   the update's own micro-batches, gradients enabled and the result detached: a no-grad forward,
+   or another batch shape, picks other bf16 kernels.
    The first update's ratio is then exactly 1 (MPS: 1.000000 against a no-grad pass's 1.0012,
    with 6 tokens clipped).
 Each update then takes --streams streams' rollouts, in micro-batches. Its loss is the clipped
@@ -36,6 +37,7 @@ import math
 import multiprocessing
 import os
 import shutil
+import sys
 import time
 from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
@@ -155,16 +157,16 @@ def grpo_loss(
 
 
 def stream_sentences(
-    stream: streams.Stream, rows: list[streams.Row], tokenizer: Any, pad_id: int
+    stream: streams.Stream, rows: list[streams.Row], tokenizer: Any
 ) -> list[rewards.Sentence]:
     """Each row of `stream` as a sentence: its Vietnamese span and its English reference, the
-    decoded text stream of its cache row."""
-    eos_id = int(tokenizer.eos_id())
+    words of its cache row's text stream (tokens above PAD, as evaluation decodes)."""
+    pad_id = int(tokenizer.pad_id())
     sentences = []
     for piece in stream.pieces:
         row = rows[piece.row]
         tokens = row.codes[0, row.delay_frames : row.en_frames].tolist()
-        words = [token for token in tokens if token not in (pad_id, eos_id)]
+        words = [token for token in tokens if token > pad_id]
         sentences.append(
             rewards.Sentence(piece.vi_start, piece.vi_start + row.vi_frames, tokenizer.decode(words))
         )
@@ -192,14 +194,17 @@ def _start_reward_worker(tokenizer_path: str) -> None:
 
 
 def _group_rewards(
-    tokens: np.ndarray, sentences: list[rewards.Sentence], skip: set[int], alpha: float
+    tokens: np.ndarray, sentences: list[rewards.Sentence], alpha: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    return rewards.group_advantages(tokens, sentences, skip, _TOKENIZER.decode, alpha)
+    return rewards.group_advantages(tokens, sentences, int(_TOKENIZER.eos_id()),
+                                    int(_TOKENIZER.pad_id()), _TOKENIZER.decode, alpha)
 
 
 def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
-    """Reward workers, forked now, before CUDA or any thread starts: a fork pool starts its
-    workers at the first submit."""
+    """Reward workers, forked now, before CUDA or any thread starts: from Python 3.11 a fork pool
+    starts all its workers at the first submit (3.10 spawned them on demand, later)."""
+    if sys.version_info < (3, 11):
+        raise RuntimeError("GRPO's reward workers need Python 3.11 or newer")
     pool = ProcessPoolExecutor(
         workers,
         mp_context=multiprocessing.get_context("fork"),
@@ -249,7 +254,21 @@ def sample_window(
         outputs[start : start + len(batch)] = sampled.to(device="cpu", dtype=torch.int32)
         on_batch(start, start + len(batch), outputs[start : start + len(batch)])
         del lm_gen, sampled
+        gc.collect()  # moshi's streaming state holds the KV cache in reference cycles
     return outputs
+
+
+def micro_batches(
+    window: int, per_update: int, size: int, update: int | None = None
+) -> list[tuple[int, int]]:
+    """Row ranges of the micro-batches of one update (`update`) or of every update in the
+    window, cut within each update's rows."""
+    updates = range(window) if update is None else [update]
+    return [
+        (start, min(start + size, (index + 1) * per_update))
+        for index in updates
+        for start in range(index * per_update, (index + 1) * per_update, size)
+    ]
 
 
 def parse_args() -> argparse.Namespace:
@@ -270,7 +289,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=1200, help="Rollout length T.")
     parser.add_argument("--streams", type=int, default=32, help="Streams per update.")
     parser.add_argument("--group", type=int, default=4, help="Rollouts per stream (G).")
-    parser.add_argument("--updates", type=int, default=1000)
+    parser.add_argument(
+        "--updates", type=int, default=2000,
+        help="The paper's 2,000; every evaluation promotes, so a plateaued run can just be stopped.",
+    )
     parser.add_argument("--tau", type=int, default=20, help="Updates per π_old.")
     parser.add_argument("--lr", type=float, default=2e-7)
     parser.add_argument("--adam-beta1", type=float, default=0.9)
@@ -301,8 +323,10 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     if args.group < 2:
         raise ValueError("--group needs at least 2 rollouts to normalize")
-    if args.save_every % args.tau or args.eval_every % args.save_every:
-        raise ValueError("--save-every must be a multiple of --tau, --eval-every of --save-every")
+    if args.save_every % args.tau or args.eval_every % args.save_every or args.updates % args.tau:
+        raise ValueError(
+            "--save-every and --updates must be multiples of --tau, --eval-every of --save-every"
+        )
     if args.gen_batch % args.group:
         raise ValueError("--gen-batch must hold whole groups")
     if round(args.stream_seconds[1] * streams.FRAME_RATE) >= args.frames:
@@ -343,7 +367,6 @@ def main() -> None:
     dataset = streams.StreamDataset(rows, layout, silence, stream_frames, args.seed)
     if len(dataset) < args.updates * args.streams:
         raise ValueError(f"{len(dataset)} streams, fewer than {args.updates} updates need")
-    skip = {layout.pad_id, int(tokenizer.eos_id())}
     print(f"Planned {len(dataset)} streams from {len(rows)} rows; {args.updates} updates use "
           f"{args.updates * args.streams}")
 
@@ -395,11 +418,11 @@ def main() -> None:
             if previous.get(key) != run_config.get(key):
                 raise RuntimeError(f"Same-run resume contract changed: {key}")
     writer = CheckpointWriter(lm, optimizer, args, out_dir)
-    # The start's end offset on the first set: a promoted checkpoint may not end later.
-    start_offset = next(
-        (item["free_running"][eval_sets[0]]["median_end_offset_s"] for item in logged
-         if int(item["step"]) == 0), None,
-    )
+    # The start's end offset on the first set, which a promoted checkpoint may not exceed. It is
+    # kept in run_config.json, which hf_sync uploads as it changes, unlike the logs.
+    start_offset = json.loads(config_path.read_text(encoding="utf-8")).get("start_end_offset_s")
+    if step and start_offset is None:
+        raise RuntimeError("run_config.json lacks the start's start_end_offset_s")
 
     def evaluate(at: int) -> None:
         nonlocal best_state, start_offset
@@ -420,6 +443,9 @@ def main() -> None:
             print(f"val step={at} {name} {common.score_summary(metrics)}")
         if at == 0:
             start_offset = first["median_end_offset_s"]
+            stored = json.loads(config_path.read_text(encoding="utf-8"))
+            stored["start_end_offset_s"] = start_offset
+            atomic_write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", config_path)
         elif healthy and first["median_end_offset_s"] <= start_offset:
             writer.wait()
             best_state = promote_best(at, float(first["chrf"]), out_dir, best_state)
@@ -432,8 +458,6 @@ def main() -> None:
 
     if step % args.eval_every == 0 and step not in validated:
         evaluate(step)
-    if start_offset is None:
-        raise RuntimeError("The run's step-0 evaluation is missing from val_log.jsonl")
 
     per_update = args.streams * args.group
     while step < args.updates:
@@ -451,13 +475,16 @@ def main() -> None:
             for offset in range(0, end - start, args.group):
                 group = (start + offset) // args.group
                 stream = dataset.streams[stream_ids[group]]
-                sentences = stream_sentences(stream, rows, tokenizer, layout.pad_id)
+                sentences = stream_sentences(stream, rows, tokenizer)
                 tokens = rollouts[offset : offset + args.group, 0].numpy().copy()
-                jobs[group] = pool.submit(_group_rewards, tokens, sentences, skip, args.alpha)
+                jobs[group] = pool.submit(_group_rewards, tokens, sentences, args.alpha)
 
         generator = bf16_copy(info, lm, device)
+        # Seeds unique to the window and its batches: (seed, step) times the 10,000 batches a
+        # window may hold.
         rollouts = sample_window(generator, info, sources, args.gen_batch, silence_frame,
-                                 args.seed * 1_000_003 + step, args.temperature, args.top_k, submit)
+                                 (args.seed * 1_000_003 + step) * 10_000, args.temperature,
+                                 args.top_k, submit)
         del generator
         gc.collect()
         torch.cuda.empty_cache()
@@ -470,13 +497,14 @@ def main() -> None:
 
         # 2. π_old's logprobs: the policy before this window's first update, through the update's
         # own forward (gradients enabled, never backpropagated).
+        # Micro-batches cut as each update cuts them: the same rows in the same batch shapes.
         old_logprobs = torch.empty((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
         with autocast:
-            for start in range(0, len(codes), args.micro_batch):
-                batch = codes[start : start + args.micro_batch].to(device=device, dtype=torch.long)
-                condition = common.batch_condition_tensors(lm, info.model_type, len(batch))
+            for start, end in micro_batches(window, per_update, args.micro_batch):
+                batch = codes[start:end].to(device=device, dtype=torch.long)
+                condition = common.batch_condition_tensors(lm, info.model_type, end - start)
                 logprobs, _ = token_logprobs(lm, batch, condition, args.temperature)
-                old_logprobs[start : start + len(batch)] = logprobs.detach().cpu()
+                old_logprobs[start:end] = logprobs.detach().cpu()
                 del logprobs
         scored = time.time() - window_started
 
@@ -486,8 +514,7 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             first = update * per_update
             totals = {"loss": 0.0, "ratio_sum": 0, "clipped": 0, "tokens": 0, "max_deviation": 0}
-            for start in range(first, first + per_update, args.micro_batch):
-                end = min(start + args.micro_batch, first + per_update)
+            for start, end in micro_batches(window, per_update, args.micro_batch, update):
                 batch = codes[start:end].to(device=device, dtype=torch.long)
                 condition = common.batch_condition_tensors(lm, info.model_type, end - start)
                 with autocast:

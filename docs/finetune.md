@@ -171,7 +171,8 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 
 A preempted container restarts with its disk intact but nothing running. Its boot script,
 `/root/onstart.sh` on Vast, can continue the run, retrying every 5 minutes until `run`
-succeeds; a finished run exits 0 at once. `run` only continues a run that exists and exits
+succeeds; a finished run exits 0 at once. A GRPO run's line uses `grpo` in place of `run`
+([grpo](agent-memory/grpo.md#running)). `run` only continues a run that exists and exits
 while another launcher holds it, so the line can stay while the run lasts. The same loop also
 reruns a run that stops on its own, after a crash or after three failed syncs in a row. So start
 a run through it by hand, not with a bare `run`, and add it to `/root/onstart.sh`. For a launcher
