@@ -4,7 +4,8 @@ Read when choosing or building the real-Vietnamese source data (plan stage 1.3),
 or its licences.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [Corpora](#corpora) ·
 [YODAS sample](#yodas-layout-and-sample) ·
-[English TTS](#english-tts) · [First tranche](#first-tranche) · [Pipeline](#pipeline)
+[English TTS](#english-tts) · [First tranche](#first-tranche) · [Models](#models) ·
+[Pipeline](#pipeline)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
 bands) costs ~5 of the 15–18 chrF between held-out TTS and FLEURS dev; the rest is real voices and
@@ -106,6 +107,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 | [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) (2B) | Seed test-en WER 1.84, similarity 75.3; 48 kHz | Vietnamese is one of its 30 languages, so a Vietnamese reference is in distribution; clones from the reference alone; batched serving through vLLM-Omni. Output varies between runs (its authors suggest 1–3 tries) |
 | [Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | WER 1.24, similarity 0.775; 24 kHz | No Vietnamese; its best mode needs the reference's transcript |
 | [Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | WER 2.24, similarity 71.8; 24 kHz | A cross-lingual mode; the smallest and fastest |
+| [dots.tts-base](https://huggingface.co/dots-studio/dots.tts-base) (Apache-2.0) | WER 1.34, similarity 76.8 | New; no serving stack |
+| [LongCat-AudioDiT-3.5B](https://github.com/meituan-longcat/LongCat-AudioDiT) (MIT) | WER 1.50, similarity 78.6 | New; English and Chinese only |
 
 - Ruled out:
   - non-commercial weights (F5-TTS, MaskGCT, Llasa, Spark-TTS, XTTS-v2, OpenAudio S1-mini, Fish S2);
@@ -144,10 +147,36 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   where they are poor (always for YODAS).
 - Keep a corpus's own order (an audiobook's consecutive sentences, a video's runs) so that the
   trainer can join real neighbours into streams.
-- Rough cost per 1,000 h, from published speeds: the English TTS ~20–50 H100-hours, the
-  translation ~$40 (as on Gemini for EN→VI, [en-vi-gemini](en-vi-gemini.md)), plus
-  re-transcription where needed: ~$70–120 and 1–3 days of the box. Box time, not money, bounds
-  the scale-up; past ~5k h a second GPU for generation pays.
+- Rough box time per 1,000 h, from published speeds: the English TTS ~20–50 H100-hours, the
+  ASR and the translation ~1 h each, alignment and diarization less: 1–3 days of the box,
+  ~$35–100. Box time, not money, bounds the scale-up; past ~5k h a second GPU for generation
+  pays.
+
+## Models
+
+The newest commercially usable model per step, from their cards (2026-11-04); every H100 speed
+here is published or estimated, to be measured on the box first:
+
+| Step | Pick (licence) | Runner-up | Notes |
+|---|---|---|---|
+| VAD | Silero VAD v6.2.3 (MIT) | FireRedVAD | |
+| Diarization, overlap | `nvidia/Nemotron-3-Diarization` (OpenMDW-1.1) | pyannote community-1 (CC BY 4.0, gated) | DIHARD III DER 12.7 against 20.2; up to 8 speakers |
+| Speaker embedding (voice reference) | WeSpeaker ResNet293-LM (CC BY 4.0) | TitaNet-Large | |
+| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. Rows where the two ASRs disagree are dropped |
+| Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Qwen3-ASR's own language tag cross-checks |
+| Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
+| English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame |
+| VI→EN translation | `tencent/Hy-MT2-30B-A3B` (Apache-2.0 on its card since a licence change: pin the commit), vLLM on the box | `google/gemma-4-31b-it` (Apache-2.0) | FLORES XCOMET 93.85 against Gemini 3.1 Pro's 94.42; ~1 h per 10M words (estimate). Score ~200 of our sentences with xCOMET first |
+| English TTS | VoxCPM2 | Qwen3-TTS 1.7B | Bake-off below |
+| TTS bake-off scoring | WavLM-Large SV (scoring only) | ReDimNet2-B6 | |
+| Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
+
+- Ruled out, non-commercial or with licences that bar training on outputs: ChunkFormer-vie,
+  hynt Zipformer, MMS-FA and MMS-LID, `wav2vec2-base-vi-vlsp2020`, Hunyuan-MT 1.x / HY-MT1.5,
+  TranslateGemma.
+- The Gemini, Claude and OpenAI terms forbid using outputs to build competing models, so open
+  models on the box produce anything that becomes training data.
+- For EN→VI, `pnnbao-ump/VieNeu-TTS-v3-Turbo` (Apache-2.0) is the newest open VieNeu.
 
 ## Pipeline
 
@@ -163,7 +192,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
-  ─► LLM VI→EN per row, the previous rows as context (the existing translators)
+  ─► LLM VI→EN per row on the box, the previous rows as context
   ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```

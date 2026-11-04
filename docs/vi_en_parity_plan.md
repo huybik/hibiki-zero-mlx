@@ -215,14 +215,33 @@ Vietnamese text cannot keep up with its speech.
    how much of the real-speech gap any data closes. The 8-codebook phone student loses more.
    Still to check on the box: 32 codebooks, and a control degradation of similar strength on
    both languages, to tell Mimi's loss from Whisper's weaker Vietnamese robustness.
-2. Give Vietnamese syllables their own tokens (to about one per syllable) by replacing ~6k
-   pieces English never uses, so the text embedding, the head and every runtime keep
-   `text_card` 48,000 and only the tokenizer file changes. On 30,748 dataset rows (2026-11-04)
-   English used 22,867 of the 48,000 pieces (25,133 never), and the 4,000 most frequent
-   lowercase syllables cover 97.9% of Vietnamese words (6,000: 98.8%). Choose the pieces from
-   the whole corpus's English and check that its English tokens come out identical; start each
-   new piece's embedding and head row from the pieces it used to split into. The earlier
-   Vietnamese ASR pilot, on the old pieces, emitted broken bytes in 110 of 128 outputs.
+2. Give Vietnamese syllables their own tokens by replacing pieces English never uses, so the text
+   embedding, the head and every runtime keep `text_card` 48,000 and only the tokenizer file
+   changes. Prototyped 2026-11-04 (a unigram model, identity normalizer, so input must be NFC):
+   - Over all 3.63M rows English uses 35,621 normal pieces and never 12,017. The swap takes
+     slots among those, accented foreign words first. Each new piece scores just above the best
+     other split of its own text, and every piece that changes any English row is dropped.
+   - The 6k set (98 letters, 3,930 lowercase syllables, 1,226 capitalized, 238 all-caps, 508
+     without `▁`), on 9,522 held-out rows:
+
+     | Vietnamese | Original | 6k swap |
+     |---|---:|---:|
+     | Tokens per word | 4.10 | 1.28 |
+     | Byte pieces | 42.6% | 0.08% |
+     | Tokens/s of speech, mean (p90), with one PAD per word | 17.2 (22.4) | 7.7 (9.5) |
+
+     English came out identical on 60,377 rows. The full check over every English row runs on
+     the box. The prototype (models, init maps, `work/full_run.sh`) is in
+     `/Volumes/data/datasets/tokenizer_vi_prototype/`, to become a repo tool. 4k gives 1.29 and 8k 1.28 tokens/word: 6k is the choice.
+   - A few Libriheavy rows hold Vietnamese text and block common pieces (`và`, `trong`, `còn`,
+     `Các`); dropping those rows would bring 1.16 tokens/word.
+   - New pieces start from the mean of the rows of the pieces they used to split into
+     (`text_emb`, `depformer_text_emb`, `text_linear`).
+   - To change with it: `tokenizer_name` in the config and the MLX and Swift bundles; and the
+     streaming decoders (`hibiki_mlx/pipeline.py`, `main.py`, Swift `Vocabulary.text()`), which
+     print one piece at a time and must assemble UTF-8 from byte pieces.
+   - `text_timing._spoken_group` folds text to ASCII for the English aligner (`đi` becomes
+     "I"), so Vietnamese timing needs its own aligner (step 3).
 3. Build an EN→VI cache: Vietnamese text word-timed by a Vietnamese CTC aligner
    (`wav2vec2-base-960h` is English-only), the random delay on the Vietnamese target, and
    source and target codebooks swapped in the `[33, T]` rows.
