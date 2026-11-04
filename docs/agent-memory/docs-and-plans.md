@@ -12,12 +12,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
   port and the A15 device test are done ([swift-runtime](swift-runtime.md)): the 3B runs at
   0.4x real time sustained there, so the plan takes the shrink branch. It records the decisions
   with their reasons and the timing the cache teaches.
-- The plan's stage 7 keeps EN→VI as a possible step once the VI→EN phone model works (user,
-  2026-11-03). The tokenizer blocks it first: Vietnamese text needs ~10 tokens/s of speech
-  against the text stream's 12.5.
+- The plan's stage 7 is two-way speech in one model, prepared now beside the real-Vietnamese
+  tranche (user, 2026-11-04). The tokenizer blocks it first: Vietnamese text needs ~10 tokens/s
+  of speech against the text stream's 12.5, so Vietnamese syllables replace pieces English
+  never uses. The tranche's research is in [real-vi-tranche](real-vi-tranche.md).
 - [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage, checked against the paper on
-  2026-11-04. It is built next, from the second run's chosen checkpoint, and each phase is
-  profiled on the H100 before the next; the Mac only checks the reward math on its CPU.
+  2026-11-04. Its trainer is built (PR #59). It runs last, from the final SFT model, and each
+  phase is profiled on the H100 before the next; the Mac only checks the reward math on its CPU.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
   ([sft-training](sft-training.md)).
 
