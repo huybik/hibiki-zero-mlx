@@ -76,14 +76,17 @@ DOWNLOAD_ATTEMPTS = 4  # one failed download would leave its shard unwritten ove
 
 
 def cpu_budget() -> float:
-    """The CPUs this process may use: a container's quota (cgroup v2 `cpu.max`), which
-    `os.cpu_count()` does not show, else every CPU."""
-    limit = Path("/sys/fs/cgroup/cpu.max")
-    if limit.exists():
-        quota, period = limit.read_text().split()
+    """The CPUs this process may use: the CPUs it may run on, capped by a container's CPU quota
+    (cgroup v2 or v1), which neither `nproc` nor `os.cpu_count()` shows."""
+    cpus = float(len(os.sched_getaffinity(0)))
+    v2, v1 = Path("/sys/fs/cgroup/cpu.max"), Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+    if v2.exists():
+        quota, period = v2.read_text().split()
         if quota != "max":
-            return int(quota) / int(period)
-    return float(os.cpu_count())
+            cpus = min(cpus, int(quota) / int(period))
+    elif v1.exists() and (quota := int(v1.read_text())) > 0:
+        cpus = min(cpus, quota / int(v1.with_name("cpu.cfs_period_us").read_text()))
+    return cpus
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,13 +108,11 @@ def parse_args() -> argparse.Namespace:
     encode.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"))
     encode.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     encode.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    # One CPU stays for the process that feeds the GPU: workers past the budget exhaust a
-    # container's quota, and the throttle stalls that process with them.
     encode.add_argument(
         "--workers",
         type=int,
-        default=max(1, math.floor(cpu_budget()) - 1),
-        help="Decode processes (default: the CPU budget less one).",
+        help="Decode processes (default: the CPU budget less one; set it when the encode shares "
+        "the machine).",
     )
     encode.add_argument(
         "--batch-seconds", type=float, default=640.0, help="Padded audio per Mimi batch."
@@ -290,7 +291,8 @@ class Encoder:
 
     def shard(self, samples: list[dict[str, Any]], clips: dict[int, Future]) -> float:
         """Replace the source codes of the rows in `clips` (sample index -> decoded clip), shortest
-        first in padded batches; return the seconds of audio encoded."""
+        first in padded batches; return the seconds of audio encoded. Empties `clips`, so each
+        clip's PCM is freed once it is encoded."""
         pending: list[tuple[dict[str, Any], torch.Tensor]] = []
         seconds = 0.0
         for index in sorted(clips, key=lambda index: samples[index]["vi_frames"]):
@@ -303,7 +305,7 @@ class Encoder:
                 self._write(pending)
                 pending = []
             try:
-                pcm = clips[index].result()
+                pcm = clips.pop(index).result()
             except audio.Rejected as exc:
                 raise RuntimeError(f"{sample['id']}: {exc}") from exc
             clip = torch.from_numpy(pcm).to(self.device)
@@ -377,8 +379,8 @@ def load(
     pool: ProcessPoolExecutor,
     shard_path: Path,
 ) -> Loaded | None:
-    """Loader thread: the shard, its source checked against it, and its selected rows submitted
-    to the decode workers; None when its source is missing and no fetch runs."""
+    """The shard, its source checked against it, and its selected rows submitted to the decode
+    workers; None when its source is missing and no fetch runs."""
     source_path = wait_for_source(args.out_dir, shard_name(shard_path))
     if source_path is None:
         return None
@@ -395,7 +397,7 @@ def load(
     ids = table.column("id").to_pylist()
     opus = table.column("vi_opus").to_pylist()
     samples = payload["samples"]
-    todo: dict[int, bytes] = {}
+    opus_rows: dict[int, bytes] = {}
     for index, sample in enumerate(samples):
         file, row = sample["source_row"].split("#r")
         row = int(row)
@@ -406,39 +408,41 @@ def load(
             continue
         conditions = bank.draw(f"{settings['seed']}:{sample['id']}")
         sample["source_conditions"] = dataclasses.asdict(conditions)
-        todo[index] = opus[row]
+        opus_rows[index] = opus[row]
     # Shortest first, the order Encoder.shard takes them in, so its first batch is ready first.
-    order = sorted(todo, key=lambda index: samples[index]["vi_frames"])
-    clips = {index: pool.submit(decode, todo[index]) for index in order}
+    order = sorted(opus_rows, key=lambda index: samples[index]["vi_frames"])
+    clips = {index: pool.submit(decode, opus_rows[index]) for index in order}
     return Loaded(source_path, payload, clips)
 
 
 def encode_shards(
     args: argparse.Namespace, settings: dict[str, Any], split: str, shards: list[Path]
 ) -> list[str]:
-    """Write the noisy shards; return the names of those whose source is missing. While the GPU
-    encodes one shard, a thread loads the next and the workers decode its clips."""
+    """Write the noisy shards; return the names of those whose source is missing. Each shard's
+    clips are queued before the GPU encodes the shard before it, so the workers decode them
+    meanwhile."""
     encoder = Encoder(args)
+    # One CPU stays for this process, which feeds the GPU: workers past the budget exhaust a
+    # container's quota, and the throttle stalls this process with them.
+    workers = args.workers or max(1, math.floor(cpu_budget()) - 1)
+    print(f"{workers} decode workers", flush=True)
     spawn = multiprocessing.get_context("spawn")
     missing: list[str] = []
-    # The loader submits to the pool, so it shuts down first.
-    with (
-        ProcessPoolExecutor(args.workers, mp_context=spawn) as pool,
-        ThreadPoolExecutor(1) as loader,
-    ):
-        load_shard = functools.partial(load, args, settings, split, encoder.bank, pool)
-        ahead = loader.submit(load_shard, shards[0])
+    with ProcessPoolExecutor(workers, mp_context=spawn) as pool:
+        queue = functools.partial(load, args, settings, split, encoder.bank, pool)
+        ahead = queue(shards[0])
         last = time.perf_counter()
         for number, shard_path in enumerate(shards, 1):
-            shard = ahead.result()
+            shard = ahead
             if number < len(shards):
-                ahead = loader.submit(load_shard, shards[number])
+                ahead = queue(shards[number])
             if shard is None:
                 print(f"{shard_path.name}: no fetched source, skipped", flush=True)
                 missing.append(shard_name(shard_path))
                 last = time.perf_counter()
                 continue
             payload = shard.payload
+            count = len(shard.clips)
             seconds = encoder.shard(payload["samples"], shard.clips)
             payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings
             out_path = args.out_dir / shard_path.name
@@ -448,11 +452,11 @@ def encode_shards(
             partial.replace(out_path)
             durable(args.out_dir)
             shard.source_path.unlink()
-            # Since the previous shard: with the next shard loading meanwhile, the pace.
+            # Since the previous shard: with the next one decoding meanwhile, the pace.
             now = time.perf_counter()
             wall, last = now - last, now
             print(
-                f"{shard_path.name}: {len(shard.clips)} of {len(payload['samples'])} rows "
+                f"{shard_path.name}: {count} of {len(payload['samples'])} rows "
                 f"re-encoded, {seconds / 3600:.2f} h in {wall:.0f} s ({seconds / wall:.0f}x RT) "
                 f"[{number}/{len(shards)}]",
                 flush=True,

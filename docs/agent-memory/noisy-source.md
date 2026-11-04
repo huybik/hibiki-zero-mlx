@@ -112,8 +112,10 @@ came out identical to the first encode's.
 - Per shard: decode (PyAV and soxr in the workers, and the PCM back to the main process)
   ~48 CPU-s, ~450x real time per CPU; augment and Mimi on the GPU ~7 s (Mimi ~6 s); loading the
   shard and its source ~0.5 s; the save ~0.4 s.
-- `encode` pipelines shards: a loader thread reads the next shard and submits its clips, shortest
-  first, while the GPU encodes the current one. Two shards of PCM in flight hold ~4 GB of RAM.
+- `encode` overlaps shards: it loads the next shard and queues its clips, shortest first, before
+  the GPU encodes the current one, so the workers decode them meanwhile. Each clip's PCM is
+  freed once encoded. (A loader thread hid the ~0.5 s load as well, but a failure could then
+  wait on that thread, for as long as a running fetch had not written the next source.)
 - Seconds per shard after the first (which adds ~10 s of start-up):
 
   | Loop | Workers | s/shard | Real time |
@@ -123,9 +125,12 @@ came out identical to the first encode's.
   | pipelined | 7 | ~8 | ~2,450x |
   | pipelined | 6 (default) | ~8 | ~2,450x |
   | pipelined | 5 | ~8.5 | ~2,350x |
+  | pipelined, no loader thread (current) | 6 | ~8 | ~2,400x |
 
-  `--workers` defaults to the CPU budget less one (6 here), which keeps the throttle off (2 s
-  summed over all threads in a run of six shards, against 21 s with 7 workers).
+  `--workers` defaults to the CPU budget less one (6 here): the CPUs the process may run on,
+  capped by the cgroup v2 or v1 quota. It keeps the throttle off (2 s summed over all threads in
+  a run of six shards, against 21 s with 7 workers). Set it by hand when the encode shares the
+  container (a fetch, another encode).
 - `--batch-seconds` stays 640: 1280 was no faster and changed some codes (the kernels depend on
   the batch's shape), and 2560 ran out of memory beside another encode's 32 GB.
 - Decode and the GPU now take about the same time per shard, so the next gain needs more CPU (a
