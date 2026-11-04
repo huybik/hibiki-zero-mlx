@@ -2,28 +2,18 @@
 ([vi-tokenizer](../../docs/agent-memory/vi-tokenizer.md)).
 
   texts:  the dataset's text_en, text_vi and vi_duration_s, read from the Hub by range requests
-          (no audio), one parquet per shard under <work>/texts/{train,validation}/
-  count:  English piece use, Vietnamese word-form counts and Vietnamese piece use -> counts.pkl
-  verify: for each candidate model, the rows whose text_en ids differ from the base model's (and
-          the new pieces in them, merged into --exclude), plus Vietnamese tokens per word, byte
-          share, unk, round trip and tokens/s of speech of every text_vi row -> a JSON report
+          (no audio), one parquet per shard under <work>/texts/<revision>/{train,validation}/
+  count:  English piece use, Vietnamese word-form counts and Vietnamese piece use
+  verify: for each candidate model, the rows whose text_en ids differ from the base model's and
+          the new pieces in them, plus Vietnamese tokens per word, byte share, unk, round trip
+          and tokens/s of speech of every text_vi row
 
-Runs on the box (CUDA-free, many cores): --workers defaults to every core. --sample K reads K
-evenly spaced train shards plus every validation shard (a smoke test).
-
-  python -m training.vi_tokenizer.corpus texts  [--work W]
-  python -m training.vi_tokenizer.corpus count  [--work W] [--sample K]
-  python -m training.vi_tokenizer.corpus verify [--work W] [--sample K] --out report.json MODEL...
-
-`python -m training.vi_tokenizer.build run` chains these with the model builds.
+`python -m training.vi_tokenizer.build run` chains them with the model builds.
 """
 from __future__ import annotations
 
-import argparse
 import collections
-import json
 import os
-import pickle
 import time
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Pool
@@ -33,11 +23,8 @@ import numpy as np
 import pyarrow.parquet as pq
 import sentencepiece as spm
 
-from training.paths import DEFAULT_TOKENIZER
-
 DATASET = ("anquachdev/common-vi-en", "2ce8777")  # repo, revision (checked 2026-11-05)
 COLUMNS = ["text_en", "text_vi", "vi_duration_s"]
-WORK = Path("/workspace/vi_tokenizer")
 SPLITS = ("train", "validation")
 
 _cfg: dict = {}
@@ -51,18 +38,25 @@ def log(msg: str) -> None:
 # --- texts -------------------------------------------------------------------------------------
 
 
-def texts(work: Path, threads: int = 32) -> None:
-    """threads: concurrent shard reads, each waiting on the Hub's latency."""
+def texts(work: Path, sample: int | None, threads: int = 32) -> list[Path]:
+    """-> the local text shards, train then validation, fetching those not yet on disk. sample:
+    that many evenly spaced train shards (all validation). threads: concurrent shard reads, each
+    waiting on the Hub's latency."""
     from huggingface_hub import HfApi, HfFileSystem
 
     repo, rev = DATASET
     sha = HfApi().dataset_info(repo, revision=rev).sha
-    names = [f for f in HfApi().list_repo_files(repo, repo_type="dataset", revision=sha)
-             if f.endswith(".parquet") and f.split("/")[1] in SPLITS]
+    names = sorted(f for f in HfApi().list_repo_files(repo, repo_type="dataset", revision=sha)
+                   if f.endswith(".parquet") and f.split("/")[1] in SPLITS)
+    train = [f for f in names if f.split("/")[1] == "train"]
+    if sample:
+        train = [train[int(i * len(train) / sample)] for i in range(sample)]
+    names = train + [f for f in names if f.split("/")[1] == "validation"]
+    root = work / "texts" / rev
+    files = [root / name.split("/", 1)[1] for name in names]
     fs = HfFileSystem()
 
-    def fetch(name: str) -> None:
-        dst = work / "texts" / name.split("/", 1)[1]
+    def fetch(name: str, dst: Path) -> None:
         if dst.exists():
             return
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -76,24 +70,14 @@ def texts(work: Path, threads: int = 32) -> None:
 
     t0 = time.time()
     with ThreadPoolExecutor(threads) as pool:
-        for n, _ in enumerate(pool.map(fetch, names), 1):
+        for n, _ in enumerate(pool.map(fetch, names, files), 1):
             if n % 200 == 0:
                 log(f"{n}/{len(names)} shards {time.time() - t0:.0f}s")
-    log(f"{len(names)} shards' text in {work / 'texts'}")
+    log(f"{len(names)} shards' text in {root}")
+    return files
 
 
 # --- count and verify --------------------------------------------------------------------------
-
-
-def shards(work: Path, sample: int | None) -> list[Path]:
-    train = sorted((work / "texts/train").glob("*.parquet"))
-    val = sorted((work / "texts/validation").glob("*.parquet"))
-    if not train or not val:
-        raise SystemExit(f"no train or validation texts under {work}/texts: run `texts` first")
-    if sample:
-        step = len(train) / sample
-        train = [train[int(i * step)] for i in range(sample)]
-    return train + val
 
 
 def split_word(word: str) -> tuple[str, str]:
@@ -177,8 +161,7 @@ def run_pool(fn, files: list[Path], cfg: dict, workers: int):
         yield from pool.imap_unordered(fn, files, chunksize=1)
 
 
-def count(work: Path, base_model: Path, workers: int, sample: int | None) -> Path:
-    files = shards(work, sample)
+def count(files: list[Path], base_model: Path, workers: int) -> dict:
     t0 = time.time()
     agg = {s: {"en_counts": 0, "vi_counts": 0, "en_chars": collections.Counter(), "forms": collections.Counter(),
                "rows": 0, "shards": 0} for s in SPLITS}
@@ -192,11 +175,8 @@ def count(work: Path, base_model: Path, workers: int, sample: int | None) -> Pat
         a["shards"] += 1
         if n % 200 == 0:
             log(f"count: {n}/{len(files)} shards {time.time() - t0:.0f}s")
-    out = work / "counts.pkl"
-    with out.open("wb") as f:
-        pickle.dump(agg, f)
     log(f"counted {len(files)} shards, rows {({s: a['rows'] for s, a in agg.items()})} in {time.time() - t0:.0f}s")
-    return out
+    return agg
 
 
 def summarize(per_model: list[list[dict]], dur: np.ndarray, words: np.ndarray, names: list[str]) -> list[dict]:
@@ -233,11 +213,8 @@ def summarize(per_model: list[list[dict]], dur: np.ndarray, words: np.ndarray, n
     return rows
 
 
-def verify(work: Path, base_model: Path, models: list[Path], out: Path, workers: int,
-           sample: int | None) -> dict:
-    """Report on every model; merge the new pieces that changed an English row into
-    <work>/excluded.json. -> the report."""
-    files = shards(work, sample)
+def verify(files: list[Path], base_model: Path, models: list[Path], workers: int) -> dict:
+    """-> a report on the base model and every model, by split."""
     names = [m.name for m in [base_model] + models]
     t0 = time.time()
     res = {s: {"dur": [], "words": [], "models": [[] for _ in names]} for s in SPLITS}
@@ -250,42 +227,12 @@ def verify(work: Path, base_model: Path, models: list[Path], out: Path, workers:
             slot.append(m)
         if n % 200 == 0:
             log(f"verify: {n}/{len(files)} shards {time.time() - t0:.0f}s")
-    report = {"shards": len(files), "sample": sample}
+    report = {"shards": len(files)}
     for split, a in res.items():
         report[split] = summarize(a["models"], np.concatenate(a["dur"]), np.concatenate(a["words"]), names)
-    out.write_text(json.dumps(report, ensure_ascii=False, indent=1))
-    culprits = {p for split in SPLITS for row in report[split][1:] for p in row["en_culprits"]}
-    excluded = work / "excluded.json"
-    old = set(json.loads(excluded.read_text())) if excluded.exists() else set()
-    excluded.write_text(json.dumps(sorted(old | culprits), ensure_ascii=False))
     for split in SPLITS:
         for row in report[split][1:]:
             log(f"{split} {row['model']}: {row['en_diff_rows']} of {row['en_rows']} English rows differ; "
                 f"Vietnamese {row['tokens_per_word']:.3f} tokens/word")
-    log(f"{len(culprits)} new pieces changed English rows; verified in {time.time() - t0:.0f}s")
+    log(f"verified in {time.time() - t0:.0f}s")
     return report
-
-
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=["texts", "count", "verify"])
-    p.add_argument("models", nargs="*", type=Path)
-    p.add_argument("--work", type=Path, default=WORK)
-    p.add_argument("--base-model", type=Path, default=DEFAULT_TOKENIZER)
-    p.add_argument("--out", type=Path, help="verify: the report")
-    p.add_argument("--workers", type=int, default=os.cpu_count(), help="count, verify: processes")
-    p.add_argument("--threads", type=int, default=32, help="texts: concurrent shard reads")
-    p.add_argument("--sample", type=int, help="evenly spaced train shards to read (default: all)")
-    args = p.parse_args()
-    if args.step == "verify" and (not args.models or not args.out):
-        p.error("verify needs --out and at least one model")
-    if args.step == "texts":
-        texts(args.work, args.threads)
-    elif args.step == "count":
-        count(args.work, args.base_model, args.workers, args.sample)
-    else:
-        verify(args.work, args.base_model, args.models, args.out, args.workers, args.sample)
-
-
-if __name__ == "__main__":
-    main()

@@ -23,12 +23,14 @@ tokenizer file and the new rows' weights change.
   characters. The lowest-scoring piece stays, since the minimum score sets the unknown penalty.
 - New pieces: the Vietnamese letters the vocab lacks, then the `text_vi` word forms that save the
   most tokens (`▁core` after a space, bare `core` after punctuation, in their own case).
-- Scores: shortest first, each new piece scores 0.1 above the best other split of its own text,
-  within the old NORMAL range, so the unknown penalty and user symbols keep their scores.
-- English stays identical: a superset (the base plus the top 16k new pieces appended) is encoded
-  over every `text_en` row once, and each new piece that changes any row is excluded. Then each
-  model is built and checked over every row again, excluding further culprits, including pieces
-  that re-split an excluded surface (bare `và` taking ` và`), until no English row differs.
+- Scores: shortest first, each new piece scores at least 0.1 above the best other split of its
+  own text, kept inside the old NORMAL range, so the unknown penalty and user symbols keep their
+  scores. Most land at the floor (`min + 0.01`), since their other splits go through bytes.
+- English stays identical: a superset (the base plus the new letters and the top 16k word forms
+  appended) is encoded over every `text_en` row once, and each new piece that changes any row is
+  excluded. Then each model is built and checked over every row again, excluding further
+  culprits, until no English row differs. A new piece that re-splits an excluded surface (bare
+  `và` taking ` và` once `▁và` is out) is left out as it is built.
 - Each model comes with `<model>_init.json`: for every replaced slot, the base tokenizer's split
   of the new piece. A new row starts as the mean of those ORIGINAL rows of `text_emb`,
   `depformer_text_emb` and `text_linear`, read from a copy of the old tables, since some of them
@@ -39,18 +41,22 @@ tokenizer file and the new rows' weights change.
 On the box, CPU only, from the repo root:
 
 ```text
-python -m training.vi_tokenizer.build run          # texts, count, superset check, models, checks
+python -m training.vi_tokenizer.build run                    # the 6k model, ~7 min plus fetching
+python -m training.vi_tokenizer.build run 4000 8000 --sample 20   # a smoke test of other sizes
 ```
 
-- `corpus texts` reads only `text_en`, `text_vi` and `vi_duration_s` of `anquachdev/common-vi-en`
-  (pinned) by exact range requests, one small parquet per shard, into
-  `/workspace/vi_tokenizer/texts/`. With `cache_type="none"` and 32 threads it fetches ~3 shards/s
-  without 429s; the default 1 MB readahead over-reads ~40× and ran at 0.24 shards/s.
-- The other files land in `/workspace/vi_tokenizer/`: `counts.pkl`, `excluded.json`,
+- `run` is the only entry point, so a model under its final name has passed the English check: a
+  run that fails removes its models. Each run starts from no exclusions.
+- The texts: only `text_en`, `text_vi` and `vi_duration_s` of `anquachdev/common-vi-en` (pinned),
+  by exact range requests, one small parquet per shard, into
+  `/workspace/vi_tokenizer/texts/<revision>/`, kept for later runs. With `cache_type="none"` and
+  32 threads it fetches ~3 shards/s without 429s; the default 1 MB readahead over-reads ~40× and
+  ran at 0.24 shards/s.
+- The other files land in `/workspace/vi_tokenizer/`, or `sample<K>/` under it for
+  `--sample K` (K evenly spaced train shards, every validation shard): `excluded.json`,
   `superset_16000.model`, the models with their init maps, and `verify_*.json` (per model:
   Vietnamese tokens per word, byte share, tokens/s of speech, English rows that differ and the
   pieces that changed them).
-- `--sample K` reads K evenly spaced train shards plus validation: a smoke test.
 - It needs `protobuf` beside `sentencepiece` for the model proto (`training/h100.sh setup`).
 
 ## Results
