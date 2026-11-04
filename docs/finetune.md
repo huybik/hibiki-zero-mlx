@@ -252,6 +252,6 @@ sets, such as MultiMed `select`, the non-regression gate
 ```
 
 `validate` reports teacher-forced losses on a cache's validation streams. `eval` runs correct-source
-free-running generation on rows with `id`, `vi_audio` and `text_en` columns and
+free-running generation on rows with `id`, `vi_audio`, `text_en` and `duration_s` columns and
 writes predictions, BLEU/chrF/WER, and a generation-health verdict. `--pairs` takes several
-files; `--limit` applies to each, and each is scored as its own set.
+files, all their rows unless `--limit` caps each, and each is scored as its own set.

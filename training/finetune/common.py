@@ -26,6 +26,7 @@ import sacrebleu
 import sphn
 import torch
 from moshi.models import loaders
+from moshi.modules.transformer import set_attention_context
 from moshi.run_inference import get_condition_tensors
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
@@ -350,10 +351,14 @@ def validate_eval_rows(
         raise ValueError(f"Eval rows must have unique {id_column!r} values")
     if duration_column is not None:
         for row in rows:
-            duration = float(row[duration_column])
-            if duration <= 0:
+            try:
+                duration = float(row[duration_column])
+            except ValueError:
+                duration = math.nan
+            if not duration > 0:  # also rejects NaN, which would break the length sort
                 raise ValueError(
-                    f"Eval duration must be positive for {id_column}={row[id_column]}"
+                    f"Eval {duration_column} must be a positive number for "
+                    f"{id_column}={row[id_column]}, got {row[duration_column]!r}"
                 )
 
 
@@ -638,19 +643,27 @@ def generate_batch(
     output_audio_tokens: list[Any] = []
     finished = torch.zeros(batch_wavs.shape[0], dtype=torch.bool, device=codes.device)
     eos_id = int(text_tokenizer.eos_id())
+    # moshi sizes the main transformer's KV cache to its whole context (3,000 frames) and attends
+    # over every slot at each step, written or not, while a batch takes only its own steps. A
+    # cache of those steps gives the same attention (unwritten slots are masked out) and, at batch
+    # 64 on the Mac, is 15 GiB smaller and steps faster.
+    set_attention_context(lm.transformer, min(warmup_codes.shape[-1] + codes.shape[-1], lm.context))
     start_time = time.time()
-    with torch.no_grad(), lm_gen.streaming(batch_wavs.shape[0]):
-        for step in range(warmup_codes.shape[-1]):
-            _ = lm_gen.step(warmup_codes[:, :, step : step + 1])
-        for step in range(codes.shape[-1]):
-            tokens = lm_gen.step(codes[:, :, step : step + 1])
-            if tokens is None:
-                continue
-            output_text_tokens.append(tokens[:, 0, :])
-            output_audio_tokens.append(tokens[:, 1:, :])
-            finished |= tokens[:, 0, 0] == eos_id
-            if cfg.stop_on_eos and bool(finished.all().detach().cpu()):
-                break
+    try:
+        with torch.no_grad(), lm_gen.streaming(batch_wavs.shape[0]):
+            for step in range(warmup_codes.shape[-1]):
+                _ = lm_gen.step(warmup_codes[:, :, step : step + 1])
+            for step in range(codes.shape[-1]):
+                tokens = lm_gen.step(codes[:, :, step : step + 1])
+                if tokens is None:
+                    continue
+                output_text_tokens.append(tokens[:, 0, :])
+                output_audio_tokens.append(tokens[:, 1:, :])
+                finished |= tokens[:, 0, 0] == eos_id
+                if cfg.stop_on_eos and bool(finished.all().detach().cpu()):
+                    break
+    finally:
+        set_attention_context(lm.transformer, lm.context)
     elapsed = time.time() - start_time
     print(
         f"Generated batch {batch_start}-{batch_start + len(rows) - 1} "
@@ -692,7 +705,10 @@ def run_greedy_eval(
     out_dir: Path,
     evaluation_seed: int | None = None,
 ) -> list[dict[str, str]]:
-    """Batched free-running eval; optionally reseed each batch deterministically."""
+    """Batched free-running eval of rows with `duration_s`, in length order; optionally reseed each
+    batch deterministically."""
+    # Batches of similar length pad less: on FLEURS dev, 6,000 generation steps instead of 8,300.
+    rows = sorted(rows, key=lambda row: float(row["duration_s"]))
     records: list[dict[str, str]] = []
     for batch_index, start in enumerate(range(0, len(rows), batch_size)):
         if evaluation_seed is not None:

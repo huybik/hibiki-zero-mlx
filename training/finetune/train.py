@@ -525,9 +525,7 @@ def main() -> None:
     )
     for row in eval_rows:
         require_file(row[generation.source_column], "evaluation audio")
-    # Batches of similar length pad less: on FLEURS dev, 6,000 generation steps instead of 8,300.
     # The sets share batches, so one pass translates them all.
-    eval_rows.sort(key=lambda row: float(row["duration_s"]))
     print(
         f"Validation translates {len(eval_rows)} rows of {', '.join(eval_sets)}; "
         f"{eval_sets[0]} selects the checkpoint"
