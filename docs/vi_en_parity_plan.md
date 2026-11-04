@@ -230,12 +230,14 @@ Vietnamese text cannot keep up with its speech.
      Mac at the new ones, 20.7, 22.6, 23.1 at 18k, 36k, 45k; on held-out TTS (`en-vi-val`) at
      18k, 31.4 (Common Voice) and 36.3 (Libriheavy). Its final model (step 131,553) has
      FLEURS dev 24.9 and `en-vi-val` 43.4 on the Mac, 18.8 and val loss 2.673 at the run's
-     settings; the channel still costs 5.0 (`en-vi-val-noisy` 38.4). More passes over clean TTS speech cannot
-     fix the real-speech gap, so the second epoch trains on the noisy cache (stage 1.2) as a
-     new run from this run's final model, with new streams (seed 43) and validation every
-     18,000 steps ([finetune](finetune.md#a-second-epoch-on-the-noisy-cache)). The Mac scores
-     only chosen checkpoints: one FLEURS or `en-vi-val` pass takes it ~30 min, a checkpoint
-     comes every ~43.
+     settings; the channel still costs 5.0 (`en-vi-val-noisy` 38.4). Those Mac numbers are at
+     batch 16; as `eval.py` now batches, the same model scores 25.1, 43.5 and 38.0, the second
+     run's baseline ([noisy-source](agent-memory/noisy-source.md#evaluation)). More passes over
+     clean TTS speech cannot fix the real-speech gap, so the second epoch trains on the noisy
+     cache (stage 1.2) as a new run from this run's final model, with new streams (seed 43) and
+     validation every 18,000 steps ([finetune](finetune.md#a-second-epoch-on-the-noisy-cache)), which translate
+     all five sets as `eval.py` does; one Mac call over them takes 21.5 min
+     ([sft-training](agent-memory/sft-training.md#side-tools)).
 4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before

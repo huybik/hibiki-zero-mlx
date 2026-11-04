@@ -35,7 +35,8 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="+",
         required=True,
-        help="Pairs files (.jsonl or .csv) with source audio, reference text and id columns; each "
+        help="Pairs files (.jsonl or .csv) with source audio, reference text, id and duration_s "
+        "columns; each "
         "is scored as its own set.",
     )
     parser.add_argument(
@@ -51,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16", help="Model dtype."
     )
-    parser.add_argument("--limit", type=int, default=128, help="Max rows of each pairs file.")
+    parser.add_argument("--limit", type=int, help="Max rows of each pairs file; all by default.")
     parser.add_argument("--batch-size", type=int, default=64, help="Rows per batch, as training validates.")
     parser.add_argument("--ids", default="", help="Comma-separated ids; bypasses --limit.")
     parser.add_argument("--ids-file", type=Path, help="Text file of ids, one per line; bypasses --limit.")
@@ -90,8 +91,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.limit <= 0 and not (args.ids or args.ids_file):
-        raise ValueError("--limit must be positive unless --ids/--ids-file is set")
+    if args.limit is not None and args.limit <= 0:
+        raise ValueError("--limit must be positive")
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
 

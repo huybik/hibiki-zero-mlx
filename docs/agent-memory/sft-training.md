@@ -170,11 +170,12 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
   step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
 - Training's chrF ranks the checkpoints of one run. Training and `eval.py` both translate through
   `run_greedy_eval`, rows sorted by `duration_s`, in bf16 batches of 64 by default, and `eval.py`
-  passes every `--pairs` file in one call, so given the trainer's `--eval-pairs` in order and its `--seed`, `eval.py` builds the trainer's
-  batches; device numerics still differ. A set's score depends on the rows it shares batches with
-  (batches are reseeded by index, and a row that never ends generates until its batch does), so
-  FLEURS chrF from mixed batches does not compare with FLEURS scored alone: compare checkpoints
-  under one `--pairs` list, seed and batch size.
+  passes every row of every `--pairs` file in one call, so given the trainer's `--eval-pairs` in
+  order and its `--seed`, `eval.py` builds the trainer's batches; device numerics still differ.
+  A set's score depends on the rows it shares batches with (batches are reseeded by index, and a
+  row that never ends generates until its batch does), so FLEURS chrF from mixed batches does not
+  compare with FLEURS scored alone: compare checkpoints under one `--pairs` list, seed and batch
+  size.
 - A start in an out-dir with complete pairs resumes the newest one, and only if
   `run_config.json` matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences,
   seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
@@ -219,8 +220,8 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 ## Side tools
 
 - `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,
-  `text_en`). Its defaults are `common.GenerationConfig`'s, which training's checkpoint
-  selection uses too.
+  `text_en`, `duration_s`). Its defaults are `common.GenerationConfig`'s, which training's
+  checkpoint selection uses too.
   - Despite its name, `run_greedy_eval` samples every token at temperature 0.8, top-k 250, as
     the paper does (Sec. 4.5).
   - It generates until every row has emitted the text EOS, or 20 s past the batch's longest
@@ -242,12 +243,12 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
       steps; 97% of audio tokens did, the rest split off at bf16 near-ties.
     - torch 2.13 stepped 18% slower and, after batches of 16, ran a batch of 9 at half speed.
       moshi's `torch.compile` gains nothing on MPS (`NO_TORCH_COMPILE=1` is within noise).
-    Measured 2026-11-03:
-    - PyTorch's MPS cache kept each finished batch's blocks without reusing them. It grew 5 GiB
-      a batch to 50 GB and swap, while live tensors stayed at 6.3 GiB, and `gc.collect()` freed
-      nothing. `run_greedy_eval` empties it after each batch on MPS, which holds it at 7 GiB.
-    - An fp32 training checkpoint as `--model-weight` holds 18 GiB while it loads. Convert it to
-      bf16 first; the eval runs in bf16, so the scores are the same.
+    - Measured 2026-11-03: PyTorch's MPS cache kept each finished batch's blocks without reusing
+      them. It grew 5 GiB a batch to 50 GB and swap, while live tensors stayed at 6.3 GiB, and
+      `gc.collect()` freed nothing. `run_greedy_eval` empties it after each batch on MPS, which
+      holds it at 7 GiB.
+    - Measured 2026-11-03: an fp32 training checkpoint as `--model-weight` holds 18 GiB while it
+      loads. Convert it to bf16 first; the eval runs in bf16, so the scores are the same.
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.

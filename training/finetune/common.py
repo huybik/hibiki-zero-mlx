@@ -351,10 +351,14 @@ def validate_eval_rows(
         raise ValueError(f"Eval rows must have unique {id_column!r} values")
     if duration_column is not None:
         for row in rows:
-            duration = float(row[duration_column])
-            if duration <= 0:
+            try:
+                duration = float(row[duration_column])
+            except ValueError:
+                duration = math.nan
+            if not duration > 0:  # also rejects NaN, which would break the length sort
                 raise ValueError(
-                    f"Eval duration must be positive for {id_column}={row[id_column]}"
+                    f"Eval {duration_column} must be a positive number for "
+                    f"{id_column}={row[id_column]}, got {row[duration_column]!r}"
                 )
 
 
@@ -645,19 +649,21 @@ def generate_batch(
     # 64 on the Mac, is 15 GiB smaller and steps faster.
     set_attention_context(lm.transformer, min(warmup_codes.shape[-1] + codes.shape[-1], lm.context))
     start_time = time.time()
-    with torch.no_grad(), lm_gen.streaming(batch_wavs.shape[0]):
-        for step in range(warmup_codes.shape[-1]):
-            _ = lm_gen.step(warmup_codes[:, :, step : step + 1])
-        for step in range(codes.shape[-1]):
-            tokens = lm_gen.step(codes[:, :, step : step + 1])
-            if tokens is None:
-                continue
-            output_text_tokens.append(tokens[:, 0, :])
-            output_audio_tokens.append(tokens[:, 1:, :])
-            finished |= tokens[:, 0, 0] == eos_id
-            if cfg.stop_on_eos and bool(finished.all().detach().cpu()):
-                break
-    set_attention_context(lm.transformer, lm.context)
+    try:
+        with torch.no_grad(), lm_gen.streaming(batch_wavs.shape[0]):
+            for step in range(warmup_codes.shape[-1]):
+                _ = lm_gen.step(warmup_codes[:, :, step : step + 1])
+            for step in range(codes.shape[-1]):
+                tokens = lm_gen.step(codes[:, :, step : step + 1])
+                if tokens is None:
+                    continue
+                output_text_tokens.append(tokens[:, 0, :])
+                output_audio_tokens.append(tokens[:, 1:, :])
+                finished |= tokens[:, 0, 0] == eos_id
+                if cfg.stop_on_eos and bool(finished.all().detach().cpu()):
+                    break
+    finally:
+        set_attention_context(lm.transformer, lm.context)
     elapsed = time.time() - start_time
     print(
         f"Generated batch {batch_start}-{batch_start + len(rows) - 1} "
