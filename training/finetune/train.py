@@ -660,13 +660,23 @@ def main() -> None:
             "min_batch": math.inf,
             "max_batch": 0,
             "max_frames": 0,
+            "grad_norm": 0.0,
+            "max_grad_norm": None,
         }
+
+    def check_gradients(step: int) -> None:
+        """Raise on a non-finite gradient norm since the last log. The losses cannot show the last
+        step's update, so a save checks first: a NaN update saved at a save step would be resumed
+        by every restart."""
+        if log["max_grad_norm"] is not None and not math.isfinite(float(log["max_grad_norm"])):
+            raise RuntimeError(f"Non-finite gradient norm by step {step}")
 
     log = empty_log()
     last_log_time = time.time()
 
     def run_validation(step: int) -> None:
-        nonlocal best_state
+        nonlocal best_state, last_log_time
+        started = time.time()
         # The next step zeroes the gradients anyway; freed now, they leave room for generation.
         optimizer.zero_grad(set_to_none=True)
         teacher_forced = common.evaluate_teacher_forced(
@@ -679,8 +689,11 @@ def main() -> None:
         )
         eval_dir = out_dir / "eval" / f"step{step:06d}"
         # Generation runs on a bf16 copy, as eval.py loads a checkpoint: 1.8x faster than the
-        # fp32 masters, and the room it takes is the gradients' freed above.
-        generator = checkpoint_info.get_moshi(device=device, dtype=torch.bfloat16)
+        # fp32 masters, and the room it takes is the gradients' freed above. Built without
+        # loading --model-weight: the copy overwrites every tensor anyway.
+        generator = checkpoint_info.get_moshi(
+            device=device, dtype=torch.bfloat16, load_weight=False
+        )
         generator.load_state_dict(lm.state_dict())
         generator.eval()
         records = common.run_greedy_eval(
@@ -718,10 +731,18 @@ def main() -> None:
             writer.wait()
             chrf = float(free_running[eval_sets[0]]["chrf"])
             best_state = promote_best(step, chrf, out_dir, best_state)
-        item = {"step": step, "teacher_forced": teacher_forced, "free_running": free_running}
+        seconds = time.time() - started
+        item = {
+            "step": step,
+            "seconds": seconds,
+            "teacher_forced": teacher_forced,
+            "free_running": free_running,
+        }
         with val_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, sort_keys=True) + "\n")
         validated.add(step)
+        print(f"val step={step} took {seconds:.0f} s")
+        last_log_time += seconds  # the next train-log line times training steps only
 
     resumed_at_validation = args.val_every and global_step % args.val_every == 0
     if global_step and resumed_at_validation and global_step not in validated:
@@ -744,10 +765,21 @@ def main() -> None:
         loss = losses["loss"]
         loss.backward()
         if args.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
+            grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
+        else:
+            grad_norm = torch.nn.utils.get_total_norm(
+                [param.grad for param in params if param.grad is not None]
+            )
         optimizer.step()
         global_step += 1
 
+        # Summed on the GPU, as the losses are: checked and logged without a sync per step.
+        grad_norm = grad_norm.detach()
+        log["grad_norm"] += grad_norm
+        previous_max = log["max_grad_norm"]
+        log["max_grad_norm"] = (
+            grad_norm if previous_max is None else torch.maximum(previous_max, grad_norm)
+        )
         for key in LOG_LOSSES:
             log["losses"][key] += losses[key].detach()
         log["steps"] += 1
@@ -766,6 +798,7 @@ def main() -> None:
             means = {key: float(value) / steps for key, value in log["losses"].items()}
             if not math.isfinite(means["loss"]):
                 raise RuntimeError(f"Non-finite loss by step {global_step}")
+            check_gradients(global_step)
             if writer.error is not None:
                 writer.wait()  # raises the failed write now, not at the next save
             now = time.time()
@@ -785,6 +818,8 @@ def main() -> None:
                 "sec_per_step": (now - last_log_time) / steps,
                 "log_steps": steps,
                 "lr": lr_value,
+                "grad_norm": float(log["grad_norm"]) / steps,
+                "max_grad_norm": float(log["max_grad_norm"]),
             }
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(item, sort_keys=True) + "\n")
@@ -792,16 +827,19 @@ def main() -> None:
                 f"step={global_step} loss={item['loss']:.4f} "
                 f"audio={item['audio_loss']:.4f} text={item['text_loss']:.4f} "
                 f"B={item['streams'] / steps:.1f} T<={item['max_padded_frames']} "
-                f"lr={item['lr']:.1e} s/step={item['sec_per_step']:.3f}"
+                f"lr={item['lr']:.1e} grad_norm={item['grad_norm']:.3f} "
+                f"s/step={item['sec_per_step']:.3f}"
             )
             log = empty_log()
             last_log_time = now
 
         if args.save_every and global_step % args.save_every == 0:
+            check_gradients(global_step)
             writer.save(global_step)
         if args.val_every and global_step % args.val_every == 0:
             run_validation(global_step)
 
+    check_gradients(global_step)
     writer.save(global_step)
     if global_step not in validated:
         run_validation(global_step)

@@ -53,17 +53,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   order is shuffled once; every epoch replays it, and resume skips the planned batches.
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset.
-- Measured on 6,152 rows of `cv27-00010`, `libriheavy-medium-00050`,
-  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-02, 30–120 s, before single-row
-  streams): 981 streams of 68 s
-  median (p10 37, p90 104; none under 30 s), 6 rows each, 21% of the Vietnamese side silent; the
-  2 s overhang cap binds at the median join, since the English runs longer than the Vietnamese;
-  batches hold 4 streams median, streams filling 98.9% of the padded frames (88.5% of the
-  4,608-frame budget; 30–75 s streams filled 92.4%).
-- The full `en_speech` cache (3,441,391 rows) planned into 622,220 streams in 131,553 batches,
-  one epoch, before single-row streams (planned and every stream assembled on the pod,
-  2026-11-03). They change every plan, the validation streams' too, so teacher-forced
-  validation losses do not compare across that change.
+- Multi-row streams run 68 s median (p10 37, p90 104), 6 rows each, with 21% of the Vietnamese
+  side silent; the 2 s overhang cap binds at the median join. Batches hold 4 streams median,
+  filling 98.9% of the padded frames and 88.5% of the 4,608-frame budget (6,152 rows of four
+  shards, 2026-11-02).
+- The full `en_speech` cache (3,441,391 rows) plans one epoch of 131,703 batches with seed 43
+  (the second run). Single-row streams changed every plan, the validation streams' too, so
+  teacher-forced validation losses do not compare across that change (2026-11-04).
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
   index, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's size or mtime changes),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
@@ -73,12 +69,17 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
-    fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0;
+    fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0. Each train-log line
+    holds its steps' mean and max gradient norm before clipping (`grad_norm`, `max_grad_norm`),
+    summed on the GPU without a sync per step. A non-finite norm raises at the next log step and
+    before any save: the losses cannot show the last step's update, and a NaN pair saved would be
+    resumed by every restart;
   - checkpoints every 1,000 steps (~6.5 min) and validation every 9,000; `--val-every` must be
     a multiple of `--save-every`, because promotion hard-links the checkpoint saved at that step;
   - each validation translates the rows of every `--eval-pairs` file (FLEURS dev, 361 rows, 72
     minutes of speech, and `en-vi-val` Common Voice and Libriheavy, 180 rows each, 54 minutes)
-    in one pass, free-running on a bf16 copy of the model, shortest first in batches of
+    in one pass, free-running on a bf16 copy of the model (built without reading
+    `--model-weight`), shortest first in batches of
     `--eval-batch-size` 64 that mix the sets, each batch generated until every row ends or 20 s
     past its longest row: at most 4,918 generation steps. Mimi codes 8 rows at a time
     (`hibiki_helpers.MIMI_CHUNK_ROWS`).
@@ -104,11 +105,8 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
   against 1 for a word token or EOS.
 - Loss = 1.0 × audio + 1.0 × text. Logs and validation also report the semantic and acoustic
   CE and the word and PAD CE and accuracy unweighted.
-- On the upstream model and two 96-frame streams (Mac CPU, fp32): loss 8.61, word CE 13.3 (it
-  knows no Vietnamese), PAD accuracy 0.64.
-- The previous objective (uniform codebooks; only PADs before the first word supervised, at
-  0.05) is described in [docs/analysis/loss_function.md](../analysis/loss_function.md) for the
-  run it trained.
+- The upstream model on two 96-frame streams: loss 8.61, word CE 13.3, PAD accuracy 0.64. The
+  previous objective is in [docs/analysis/loss_function.md](../analysis/loss_function.md).
 
 ## Launcher
 
@@ -161,12 +159,15 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 - Each pairs file is scored as its own set, named `<folder>/<stem>` (`common.score_sets`;
   decided 2026-11-03). One blended score would hide the gap between the training data's own
   domain and real speech, weigh sets by their length (corpus chrF and BLEU) and let one set's
-  rows carry another's EOS gate.
+  rows carry another's gates.
 - `best_step*.safetensors` is a hard link to the checkpoint whose every set passes the
-  generation health gates (`common.generation_health`) with a strictly higher corpus chrF on
-  the first set, FLEURS dev, because the phone hears real speech (`best.json`: `step`, `model`,
-  `metric` `free_running_chrf`, `chrf`). A run whose checkpoints all fail the gates promotes
-  none. `val_log.jsonl` holds `teacher_forced` and, under `free_running`, each set's metrics per
+  generation health gates (`common.generation_health`: nonempty, repeated 4-grams, length ratio)
+  with a strictly higher corpus chrF on the first set, FLEURS dev, because the phone hears real
+  speech (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`). A run whose
+  checkpoints all fail the gates promotes none. The EOS count is reported, not gated (decided
+  2026-11-04): no checkpoint of either stream run reached the 91% it once needed (at best 268 of
+  361 FLEURS rows) while chrF rose, so it blocked every promotion. `val_log.jsonl` holds
+  `teacher_forced`, the validation's `seconds` and, under `free_running`, each set's metrics per
   step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
 - Training's chrF ranks the checkpoints of one run. Training and `eval.py` both translate through
   `run_greedy_eval`, rows sorted by `duration_s`, in bf16 batches of 64 by default, and `eval.py`
@@ -235,21 +236,20 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
   - On the Mac (48 GB M4 Pro, torch 2.15), `--device mps` can score a checkpoint, though the
     pod's validation now scores every one ([environment](environment.md#storage)). One call over
     the second run's five sets in its order with `--seed 43` (1,081 rows) takes 21.5 min at batch
-    64, with a 23 GB peak footprint and swap flat; three calls at batch 16 on torch 2.13 took ~75
-    min. Measured 2026-11-04:
+    64, with a 23 GB peak footprint and swap flat. Measured 2026-11-04:
     - A step is bound by per-op dispatch, not the GPU: 120 ms at batch 16 and 171 at 64, so rows
       per second nearly triple from 16 to 64. Batch 96 adds ~15% for 4 GiB more and pads more.
     - The KV cache sized to the batch's steps (`generate_batch`) took a batch-64 step from 318 to
       202 ms and 27 to 12 GiB (torch 2.13). Greedy text tokens matched the full cache over 150
       steps; 97% of audio tokens did, the rest split off at bf16 near-ties.
-    - torch 2.13 stepped 18% slower and, after batches of 16, ran a batch of 9 at half speed.
-      moshi's `torch.compile` gains nothing on MPS (`NO_TORCH_COMPILE=1` is within noise).
-    - Measured 2026-11-03: PyTorch's MPS cache kept each finished batch's blocks without reusing
-      them. It grew 5 GiB a batch to 50 GB and swap, while live tensors stayed at 6.3 GiB, and
-      `gc.collect()` freed nothing. `run_greedy_eval` empties it after each batch on MPS, which
-      holds it at 7 GiB.
-    - Measured 2026-11-03: an fp32 training checkpoint as `--model-weight` holds 18 GiB while it
-      loads. Convert it to bf16 first; the eval runs in bf16, so the scores are the same.
+    - moshi's `torch.compile` gains nothing on MPS (`NO_TORCH_COMPILE=1` is within noise).
+    - PyTorch's MPS cache keeps each finished batch's blocks without reusing them (5 GiB a batch,
+      to 50 GB and swap; `gc.collect()` frees nothing): `run_greedy_eval` empties it after each
+      batch on MPS, which holds it at 7 GiB (2026-11-03).
+    - With `--checkpoint`, `eval.py` and `validate.py` build the model without reading
+      `--model-weight` (`common.load_lm`), which the checkpoint overwrites: 3.4 s against 11.0 s
+      on MPS, the same tensors (2026-11-04). An fp32 base as `--model-weight` held 18 GiB while
+      it loaded.
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.

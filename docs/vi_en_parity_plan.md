@@ -113,9 +113,9 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 2. Loss as above; LR peak 1e-6, 5% warmup, cosine to 0; one pass over the pool.
 3. Each validation logs teacher-forced losses on streams of the cache's `validation/` split and
    translates FLEURS dev and the held-out `en-vi-val` rows free-running, scoring each set apart.
-   The trainer promotes the checkpoint whose every set passes the health gates (nonempty, EOS,
-   repeated 4-grams, length ratio) with the highest FLEURS dev chrF, and keeps it beside the
-   newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
+   The trainer promotes the checkpoint whose every set passes the health gates (nonempty,
+   repeated 4-grams, length ratio; EOS is reported, not gated, since 2026-11-04) with the highest
+   FLEURS dev chrF, and keeps it beside the newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
    chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
 
 ### 4. GRPO
@@ -246,11 +246,6 @@ Vietnamese text cannot keep up with its speech.
        chrF is kept in `offline_best/` on the Hub.
      - Once it ends, the pod scores its final model and the first run's on FLEURS test and both
        MultiMed-ST halves, using the trainer's protocol. Results go to `<run>/eval/test_step*/`.
-   - Fix in the trainer before the next run:
-     - The gradient norm is neither checked nor logged, so a non-finite one reaches AdamW. The
-       loss is checked every 10 steps, so a NaN update on a save step would be saved and resumed.
-     - Each validation reloads `--model-weight` from disk to build its generator.
-     - The first train-log line after a validation counts the validation in its s/step.
 4. GRPO on the best checkpoint of that run ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before

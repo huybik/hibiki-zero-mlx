@@ -89,12 +89,7 @@ def main() -> None:
     )
     print(f"Planned {len(dataset)} streams from {len(rows)} rows of {repo_display_path(cache_dir)}")
 
-    print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
-    lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
-    if checkpoint is not None:
-        common.load_model(lm, checkpoint, dtype)
-    else:
-        print("Using the base model.")
+    lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
 
     weights = common.LossWeights(
         audio=args.audio_loss_weight,

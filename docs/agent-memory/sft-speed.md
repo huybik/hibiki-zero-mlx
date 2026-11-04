@@ -111,6 +111,8 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
   - the teacher-forced pass took ~110 s with the GPU mostly idle, bound by the pod's 7.7-CPU
     quota, of which an upload took 1.3;
   - generation took 157 s in 17 batches, at 64.6 GB, with CPU gaps between batches.
+- From step 36,000 the same validation runs with the batch-sized KV cache (below): 212 s, not
+  330 (2026-11-04).
 - Training holds 76 GB of the 80, so validation cannot run beside it.
 - On an idle H100 with `eval.py`, the KV cache sized to the batch's steps
   ([sft-training](sft-training.md#side-tools)) cut the five sets' generation from 151 to 109 s

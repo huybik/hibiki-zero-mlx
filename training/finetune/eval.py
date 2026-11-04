@@ -128,12 +128,7 @@ def main() -> None:
     print(f"Loading Mimi on {device} from {repo_display_path(args.mimi_weight)}")
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
-    print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
-    lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
-    if checkpoint is not None:
-        common.load_model(lm, checkpoint, dtype)
-    else:
-        print("Using the base model.")
+    lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
     lm.eval()
 
     records = common.run_greedy_eval(
