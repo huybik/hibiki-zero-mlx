@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import io
 import math
 import os
 import random
@@ -35,7 +34,6 @@ os.environ.setdefault(
     "ARROW_DEFAULT_MEMORY_POOL", "system"
 )  # mimalloc keeps freed buffers on macOS
 
-import av  # noqa: E402
 import mlx.core as mx  # noqa: E402
 import numpy as np  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
@@ -53,6 +51,7 @@ from training.paths import (  # noqa: E402
     require_dir,
     require_file,
 )
+from training.prep.audio import Rejected, decode  # noqa: E402
 from training.prep.mimi_mlx import FRAME_SAMPLES, SAMPLE_RATE, MimiEncoder  # noqa: E402
 from training.prep.text_timing import (  # noqa: E402
     ALIGNMENT_NAME,
@@ -125,31 +124,6 @@ def parse_args() -> argparse.Namespace:
     if not (math.isfinite(args.target_delay_ratio) and args.target_delay_ratio >= 0):
         parser.error("--target-delay-ratio must be finite and non-negative")
     return args
-
-
-class Rejected(Exception):
-    """A data fault in one row (bad audio, too long); any other error stops the run."""
-
-
-def decode(data: bytes) -> tuple[np.ndarray, int]:
-    """Opus or MP3 bytes -> mono float32 PCM at its own rate (Opus 48 kHz, MP3 32/48 kHz)."""
-    try:
-        with av.open(io.BytesIO(data)) as container:
-            chunks, rate = [], 0
-            for frame in container.decode(audio=0):
-                if frame.format.name != "fltp" or frame.layout.nb_channels != 1:
-                    raise Rejected(
-                        f"expected mono fltp audio, got {frame.format.name} {frame.layout.name}"
-                    )
-                chunks.append(frame.to_ndarray()[0])
-                rate = frame.sample_rate
-    except av.error.MemoryError:
-        raise
-    except av.FFmpegError as exc:
-        raise Rejected(f"undecodable audio: {exc}") from None
-    if not chunks:
-        raise Rejected("no audio frames")
-    return np.concatenate(chunks), rate
 
 
 def prepare(vi_audio: bytes, en_audio: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

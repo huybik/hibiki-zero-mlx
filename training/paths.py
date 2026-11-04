@@ -50,10 +50,14 @@ def require_dir(path: str | Path, label: str) -> Path:
 
 
 def durable(path: Path) -> None:
-    """Flush a file or directory to the drive itself; on macOS fsync stops at the drive's cache."""
+    """Flush a file or directory to the drive itself: F_FULLFSYNC on macOS, where fsync stops at
+    the drive's cache; fsync on Linux."""
     fd = os.open(path, os.O_RDONLY)
     try:
-        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+        if hasattr(fcntl, "F_FULLFSYNC"):
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+        else:
+            os.fsync(fd)
     finally:
         os.close(fd)
 

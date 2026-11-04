@@ -76,6 +76,9 @@ to the last generated word's text token; the free-running metrics report their m
 
   This is GRPO's target ([grpo_plan](../grpo_plan.md)).
 - A fifth of the cache rows and a third of the FLEURS rows still never end; their P(EOS) stays
-  near 0.
+  near 0. The same rows joined into streams ended more often (32 of 48 against 16 at 0.4), and
+  training streams last 30–120 s, so the model had never met the source EOS after one sentence:
+  from 2026-11-04 a tenth of the streams hold one row
+  ([sft-training](../agent-memory/sft-training.md#trainer)).
 - The real-speech gap: the [plan](../vi_en_parity_plan.md#risks) lists the noisy re-encode and a
   real-Vietnamese tranche.

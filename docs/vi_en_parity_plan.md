@@ -48,6 +48,7 @@ grows sentence by sentence.
 | Decision | Why |
 |---|---|
 | Stay on Hibiki-Zero 3B; the phone model is the 3B or a smaller copy of it | One tokenizer, codec and runtime. Hibiki-M 1B shares Mimi and the tokenizer but only knows FR→EN |
+| A tenth of the streams hold one sentence (2026-11-04) | Trained on 30–120 s streams only, the first run never saw the source end after one sentence, and never ended a third of FLEURS dev's single sentences (EOS on 55 of 361 rows at step 9,000, against 124 of 128 for the earlier single-sentence run) |
 | Train on multi-sentence streams of 30–120 s, not single sentences (120 s from 2026-11-02) | Upstream's coarse stage trained on 30–75 s utterances and its RL stage on 120 s; upstream 3B degrades after ~1.6 min of input; a phone hears a continuous stream |
 | Gaps between sentences are silence codes on both sides, sometimes long | Teach "stay quiet while nobody speaks"; the MLX runtime already has to cut the model off in silence (`PAD_STOP`) |
 | Source after its EOS is silence codes, not `-1` | Upstream inference (`add_input_eos`) feeds encoded silence there; `-1` is an empty input the model never sees at inference |
@@ -64,10 +65,19 @@ grows sentence by sentence.
 1. The cache, built unchanged and finished on 2026-11-02
    ([sft-data-caches](agent-memory/sft-data-caches.md#builds)). The trainer builds streams from its
    rows; nothing needs re-encoding.
-2. Noisy Vietnamese re-encode (next): for a few thousand hours, encode the Vietnamese side again
-   with noise, room reverb, a phone-mic band and speed 0.9–1.1×, reusing each row's English codes
-   and text timing (no wav2vec2; about half the Mimi work of a row).
-3. Real Vietnamese source tranche (later): real Vietnamese speech (GigaSpeech 2 vi, Bud500; check
+2. Noisy Vietnamese re-encode (built 2026-11-04, the second epoch's data):
+   `training.prep.mimi_cache_cuda` copies the cache with the Vietnamese source of a seeded 60% of
+   the rows re-encoded under room reverb, background noise, a narrowed band (16 kHz as FLEURS,
+   8 kHz as MultiMed, a phone band) and a level change, reusing each row's English codes and
+   text timing; it runs on the pod's GPU after a run, where the Mac would take days
+   ([noisy-source](agent-memory/noisy-source.md)).
+   - `en-vi-val-noisy` measures the channel. At step 63,000 of the first run it cost 4.8 chrF
+     (41.5 → 36.7) of the ~18 between clean TTS and FLEURS dev (23.5)
+     ([noisy-source](agent-memory/noisy-source.md#evaluation)): the noise makes the model
+     robust to rooms and phones, but most of the FLEURS gap is real speech, for stage 3.
+   - Left out: speed changes, since a source slowed or sped against the cached delays moves
+     Vietnamese words past the English that translates them; and low-bitrate Opus.
+3. Real Vietnamese source tranche (next after the noisy epoch; the larger lever, see 1.2): real Vietnamese speech (GigaSpeech 2 vi, Bud500; check
    licences) with LLM-translated text and voice-cloned English TTS targets, timed causally. This
    is the paper's stage-4 analogue and the main defence against the TTS-only source.
 4. First run pool: `en-vi-grounded-v2/train`. `cv-anquach` (16 kHz English targets) and the PhoMT
@@ -211,7 +221,21 @@ Vietnamese text cannot keep up with its speech.
    - The run validates with its commit's old settings, so its gates cannot pass and it promotes
      nothing. Even at the new settings a third of FLEURS rows never end, short of the gate's 91%.
      Its checkpoints are scored with `eval.py`'s new defaults as each reaches the recovery repo,
-     which keeps the newest two pairs.
+     which keeps the newest two pairs; each validation step's model is copied to the run's
+     `offline_best/` there, pruned to the newest and the best by FLEURS dev chrF.
+   - To step 63,000 (of 131,553) teacher-forced validation loss kept falling but slowed
+     (3.17, 2.94, 2.85, 2.79, 2.76, 2.73, 2.72 every 9,000 steps), with content accuracy flat
+     at 0.63 since 54,000. It sits ~0.2 above the training loss, a gap nearly unchanged since
+     18,000, so no overfitting. FLEURS dev chrF at the run's settings rose 12.3 → 17.8; on the
+     Mac at the new ones, 20.7, 22.6, 23.1 at 18k, 36k, 45k; on held-out TTS (`en-vi-val`) at
+     18k, 31.4 (Common Voice) and 36.3 (Libriheavy). Its final model (step 131,553) has
+     FLEURS dev 24.9 and `en-vi-val` 43.4 on the Mac, 18.8 and val loss 2.673 at the run's
+     settings; the channel still costs 5.0 (`en-vi-val-noisy` 38.4). More passes over clean TTS speech cannot
+     fix the real-speech gap, so the second epoch trains on the noisy cache (stage 1.2) as a
+     new run from this run's final model, with new streams (seed 43) and validation every
+     18,000 steps ([finetune](finetune.md#a-second-epoch-on-the-noisy-cache)). The Mac scores
+     only chosen checkpoints: one FLEURS or `en-vi-val` pass takes it ~30 min, a checkpoint
+     comes every ~43.
 4. GRPO on the best checkpoint of that run.
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before

@@ -66,6 +66,7 @@ setup() {
     torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
   "$PYTHON" -m pip install \
     aiohttp==3.14.5 \
+    av==15.1.0 \
     einops==0.8.2 \
     huggingface-hub==2.4.0 \
     numpy==2.5.4 \
@@ -73,6 +74,7 @@ setup() {
     sacrebleu==2.6.0 \
     safetensors==0.8.0 \
     sentencepiece==0.2.2 \
+    soxr==1.1.0 \
     sphn==0.2.1 \
     tqdm==4.70.1
   "$PYTHON" -m pip install --no-deps moshi==0.2.13

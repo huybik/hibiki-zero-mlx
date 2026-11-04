@@ -40,6 +40,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   ([sft-training](sft-training.md#evaluation-sets)).
 - Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
   (`HF_HOME`).
+- Run checkpoints scored on the Mac go to `/Volumes/data/models/hibiki/runs/<run>/checkpoints/`
+  (bf16 copies of the fp32 models), never the internal disk: a 3B checkpoint is 5.8 GiB in bf16,
+  11.6 GiB in fp32. Keep the newest and the best by FLEURS dev chrF; delete the rest once scored
+  (user's rule, 2026-11-03).
 - Gitignored local state: `data/` (restored Mimi caches, `data/eval/`), `runs/` (training runs and eval
   outputs), `translations/` and `output/`.
 

@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-03
+Last verified: 2026-11-04
 
 ## Purpose
 
@@ -23,6 +23,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload ─► HF common-vi-en
     ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
+    ─► prep/mimi_cache_cuda (CUDA, the pod: Vietnamese source re-encoded under prep/augment) ─► *-noisy
     ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
@@ -36,7 +37,7 @@ inference/ (Apple Silicon, MLX)
   native MLX Swift runtime with its iOS benchmark app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
-  builder in MLX, the evaluation-set builder) and `finetune/` (the generic SFT trainer, evaluation
+  builder in MLX, the evaluation-set builder, the noisy source re-encode) and `finetune/` (the generic SFT trainer, evaluation
   and HF recovery sync). Its modules run from the repo root as
   `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
   publisher, the cache builder and the evaluation-set builder runs on CUDA only.
@@ -75,11 +76,18 @@ inference/ (Apple Silicon, MLX)
 
 ## Essential invariants
 
+- Profile before any long job (a cache build, an encode, a training run) and optimize it until
+  its costliest resource stays busy; only then start the real run. Time each stage on a few
+  shards, sample the GPU (`nvidia-smi` every 0.5 s) and know the CPU budget (a container's quota
+  in `/sys/fs/cgroup/cpu.max`, not `nproc`); compare variants on the same rows. The user's rule
+  since the first noisy encode ran ~3 h with its GPU idle half the time →
+  [noisy-source](docs/agent-memory/noisy-source.md#speed),
+  [sft-data-caches](docs/agent-memory/sft-data-caches.md#speed).
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
   and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
 - Apple Silicon runs inference, the translation, the Vietnamese TTS, the dataset publisher and
-  the Mimi cache build; training and evaluation run on CUDA →
+  the Mimi cache build; training, evaluation and the noisy source re-encode run on CUDA →
   [sft-training](docs/agent-memory/sft-training.md).
 - Production runs go only through `training/h100.sh run`, which ties a run to its commit and
   HF recovery prefix → [sft-training](docs/agent-memory/sft-training.md).
@@ -106,7 +114,8 @@ inference/ (Apple Silicon, MLX)
 | Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
 | SFT trainer, H100 launcher, checkpoints, recovery, eval | [sft-training](docs/agent-memory/sft-training.md) | `training/h100.sh`, `training/finetune/` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
-| Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
+| Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |
+| Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/audio.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |

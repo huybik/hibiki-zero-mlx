@@ -112,12 +112,32 @@ nohup caffeinate -i python -m training.prep.publish_caches --dataset-dir $D --ou
 `training.prep.eval_sets` downloads FLEURS `vi_vn` (with the `en_us` text of each sentence),
 MultiMed-ST's Vietnamese `corrected.test` and the EN-VI dataset's validation split, and writes
 `eval.py` pair files under `data/eval/`: real Vietnamese speech, and 360 held-out rows of the
-training data's own domain (`en-vi-val`). It needs only huggingface_hub, pyarrow and sphn, so it
-runs on the Mac or the pod; rerunning rebuilds them. They are for evaluation only
-([sft-training](../../docs/agent-memory/sft-training.md#evaluation-sets)).
+training data's own domain (`en-vi-val`). It needs huggingface_hub, pyarrow, sphn, soxr and torch,
+so it runs on the Mac or the pod; rerunning rebuilds them. They are for evaluation only
+([sft-training](../../docs/agent-memory/sft-training.md#evaluation-sets)). `en-vi-val-noisy`, built
+on request from the built `en-vi-val`, holds the same rows under simulated recording conditions
+([noisy-source](../../docs/agent-memory/noisy-source.md#evaluation)); the first build downloads
+the noise bank (1.3 GB) into `--bank-dir`.
 
 ```bash
 python -m training.prep.eval_sets  # fleurs-vi/{dev,test}, multimed-vi/{select,final}, en-vi-val/{cv27,libriheavy}
+python -m training.prep.eval_sets --sets en-vi-val-noisy  # en-vi-val-noisy/{cv27,libriheavy}
+```
+
+## Noisy source cache
+
+Runs on the pod. `training.prep.mimi_cache_cuda` copies a clean cache split shard by shard,
+re-encoding the Vietnamese source of a seeded 60% of the rows under drawn room reverb, noise,
+band and level ([noisy-source](../../docs/agent-memory/noisy-source.md)). `fetch` downloads
+each shard's parquet from `anquachdev/common-vi-en`, keeps only the selected rows' Vietnamese
+audio and can run while the GPU trains; `encode` needs the GPU, waits for what a running fetch
+has not written yet, and ends with `every shard written`. A rerun of either skips the shards
+written.
+
+```bash
+C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
+nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O   # once the GPU is free
 ```
 
 ## Vietnamese translations of `en_speech`

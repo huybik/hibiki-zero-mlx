@@ -11,16 +11,21 @@ Writes, under --out-dir (default data/eval):
   en-vi-val/{cv27,libriheavy}.jsonl  seeded samples of the EN-VI dataset's validation split (Common
                                    Voice dev and Libriheavy dev, Vietnamese TTS in the English
                                    speaker's voice): the training data's own domain, held out.
+  en-vi-val-noisy/{cv27,libriheavy}.jsonl  the same rows with every clip under `augment`'s
+                                   simulated recording conditions (24 kHz WAV, resampled as eval.py
+                                   resamples the clean clips), against which the clean set shows
+                                   what the channel alone costs.
 
 Each row holds `id`, `vi_audio` (the clip's path), `text_vi`, `text_en` and `duration_s`. These sets
-are for evaluation only and never enter training. Needs huggingface_hub, pyarrow and sphn; runs on
-the Mac or the pod.
+are for evaluation only and never enter training. Needs huggingface_hub, pyarrow, sphn, soxr and
+torch; runs on the Mac or the pod.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import random
 import tarfile
@@ -29,9 +34,11 @@ from typing import Any
 
 import pyarrow.parquet as pq
 import sphn
+import torch
 from huggingface_hub import hf_hub_download
 
 from training.paths import repo_display_path, resolve_repo_path
+from training.prep import augment
 
 FLEURS_REPO = "google/fleurs"
 FLEURS_REVISION = "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
@@ -49,6 +56,7 @@ EN_VI_SOURCES = {
 EN_VI_ROWS = 180  # per source
 EN_VI_SEED = 0
 OPUS_RATE = 48_000
+NOISY_SEED = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,8 +65,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sets",
         nargs="+",
-        choices=("fleurs", "multimed", "en-vi-val"),
+        choices=("fleurs", "multimed", "en-vi-val", "en-vi-val-noisy"),
         default=["fleurs", "multimed", "en-vi-val"],
+    )
+    parser.add_argument(
+        "--bank-dir",
+        type=Path,
+        default=Path("data/rirs_noises"),
+        help="Where `augment` keeps OpenSLR 28 (downloaded on first use); for en-vi-val-noisy.",
     )
     return parser.parse_args()
 
@@ -172,9 +186,10 @@ def opus_pre_skip(data: bytes, name: str) -> int:
 def decode_opus(data: bytes, duration_s: float, name: str) -> Any:
     """Decode a 48 kHz Ogg Opus clip to its stored duration. sphn returns every packet's samples:
     the encoder's pre-skip, which this drops, and the last packet's padding, which the cut at the
-    stored duration drops. That matches PyAV, the cache builder's decoder, to the sample. The
-    granule positions cannot serve instead: the TTS encoder counts the pre-skip twice, so they
-    run 312 samples past the audio."""
+    stored duration drops. The granule positions cannot serve instead: the TTS encoder counts the
+    pre-skip twice, so they run 312 samples past the audio. sphn decodes with libopus and PyAV, the
+    cache builder's decoder, with FFmpeg's own: they agree on the Common Voice clips but not on
+    the Libriheavy ones, so this is not the training decode (`training.prep.audio` is)."""
     pre_skip = opus_pre_skip(data, name)
     wav, rate = sphn.read_opus_bytes(data)
     if rate != OPUS_RATE:
@@ -224,6 +239,31 @@ def build_en_vi_val(out_dir: Path) -> None:
         write_rows(out_dir / "en-vi-val" / f"{source}.jsonl", rows)
 
 
+def build_en_vi_val_noisy(out_dir: Path, bank_dir: Path) -> None:
+    bank = augment.Bank(augment.fetch_bank(bank_dir), "cpu")
+    for source in EN_VI_SOURCES:
+        audio_dir = out_dir / "en-vi-val-noisy" / "audio" / source
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        rows = []
+        clean = (out_dir / "en-vi-val" / f"{source}.jsonl").read_text().splitlines()
+        for row in map(json.loads, clean):
+            # Resampled as eval.py resamples the clean clip (hibiki_helpers.audio_read), so the
+            # two sets differ by the conditions alone.
+            wav, rate = sphn.read(resolve_repo_path(Path(row["vi_audio"])))
+            clip = torch.from_numpy(sphn.resample(wav, rate, augment.SAMPLE_RATE)[0])
+            conditions = bank.draw(f"{NOISY_SEED}:{row['id']}")
+            noisy = bank.apply(clip, conditions)
+            path = audio_dir / Path(row["vi_audio"]).name
+            sphn.write_wav(path, noisy.numpy()[None], augment.SAMPLE_RATE)
+            name = row["id"].removeprefix("en-vi-val/")
+            rows.append(
+                row
+                | {"id": f"en-vi-val-noisy/{name}", "vi_audio": repo_display_path(path)}
+                | {"conditions": dataclasses.asdict(conditions)}
+            )
+        write_rows(out_dir / "en-vi-val-noisy" / f"{source}.jsonl", rows)
+
+
 def main() -> None:
     args = parse_args()
     out_dir = resolve_repo_path(args.out_dir)
@@ -233,6 +273,8 @@ def main() -> None:
         build_multimed(out_dir)
     if "en-vi-val" in args.sets:
         build_en_vi_val(out_dir)
+    if "en-vi-val-noisy" in args.sets:
+        build_en_vi_val_noisy(out_dir, resolve_repo_path(args.bank_dir))
 
 
 if __name__ == "__main__":

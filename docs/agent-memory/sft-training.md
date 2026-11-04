@@ -28,7 +28,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   previous English ends; a 0.3–1.5 s gap (3–10 s one time in ten) separates the Vietnamese, and
   is stretched so the previous English overhangs the next Vietnamese by at most 2 s. Silent
   stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
-  the last row keeps the source and text EOS, and the source after its EOS stays silence. The
+  the last row keeps the source and text EOS, and the source after its EOS stays silence. A tenth
+  of the streams (`streams.SINGLE_ROW_STREAMS`, from 2026-11-04) hold one row, lead to both EOS,
+  as a single-sentence evaluation feeds it: the first run, on 30–120 s streams only, never saw the
+  source end after one sentence and never ended a third of the FLEURS rows. On the three shards
+  below (seed 43) they are 9.8% of the streams and 2.4% of the frames (median 200 frames). The
   cache itself is never changed. The silence track is encoded on the CPU in float32, so every
   machine and resume gets the same codes but for a rare residual near-tie (1 of 1,876 frames
   between thread counts).
@@ -50,13 +54,16 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset.
 - Measured on 6,152 rows of `cv27-00010`, `libriheavy-medium-00050`,
-  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-02, 30–120 s): 981 streams of 68 s
+  `libriheavy-large-00000-00003` and a PhoMT shard (2026-11-02, 30–120 s, before single-row
+  streams): 981 streams of 68 s
   median (p10 37, p90 104; none under 30 s), 6 rows each, 21% of the Vietnamese side silent; the
   2 s overhang cap binds at the median join, since the English runs longer than the Vietnamese;
   batches hold 4 streams median, streams filling 98.9% of the padded frames (88.5% of the
   4,608-frame budget; 30–75 s streams filled 92.4%).
-- The full `en_speech` cache (3,441,391 rows) plans into 622,220 streams in 131,553 batches,
-  one epoch (planned and every stream assembled on the pod, 2026-11-03).
+- The full `en_speech` cache (3,441,391 rows) planned into 622,220 streams in 131,553 batches,
+  one epoch, before single-row streams (planned and every stream assembled on the pod,
+  2026-11-03). They change every plan, the validation streams' too, so teacher-forced
+  validation losses do not compare across that change.
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
   index, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's size or mtime changes),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
@@ -238,7 +245,8 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 
 ## Evaluation sets
 
-`training.prep.eval_sets` (huggingface_hub, pyarrow and sphn, so it runs on the Mac or the pod)
+`training.prep.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, so it runs on the Mac
+or the pod)
 writes `eval.py` pair files under `data/eval/`; they are never trained on
 ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). FLEURS and MultiMed-ST built and checked
 on 2026-11-01, `en-vi-val` on 2026-11-03:
@@ -251,6 +259,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03:
 | `multimed-vi/final.jsonl` | 1,719 | 3.02 | final report |
 | `en-vi-val/cv27.jsonl` | 180 | 0.25 | in-domain check at each validation |
 | `en-vi-val/libriheavy.jsonl` | 180 | 0.66 | in-domain check at each validation |
+| `en-vi-val-noisy/{cv27,libriheavy}.jsonl` | 360 | 0.91 | the same rows under simulated recording conditions ([noisy-source](noisy-source.md#evaluation)) |
 
 - FLEURS `google/fleurs` at `70bb2e8`: `vi_vn` 16 kHz WAV read speech; `text_en` is the `en_us`
   raw text of the same sentence id (every Vietnamese row has one). Several speakers read each
@@ -267,8 +276,11 @@ on 2026-11-01, `en-vi-val` on 2026-11-03:
   (68 speakers). Its Vietnamese is the TTS the training data uses, so read against FLEURS it
   separates translation failures from the real-speech gap. `sphn` decodes the Opus clips but
   keeps the encoder's pre-skip (312 samples) and the last packet's padding (168 or 648 samples
-  here); the builder drops both, matching PyAV's decode to the sample, then writes 48 kHz WAV (a
-  few peaks above full scale clip). It cuts at the stored duration, not the last granule: the TTS
+  here); the builder drops both, then writes 48 kHz WAV (a few peaks above full scale clip). That
+  is the training decode (PyAV, FFmpeg's own Opus decoder) on the Common Voice clips, but not on
+  the Libriheavy ones: libopus there sits 2 samples off with differences up to 0.45 (pod,
+  2026-11-04; [noisy-source](noisy-source.md#checks)). Scores are comparable across checkpoints
+  either way. It cuts at the stored duration, not the last granule: the TTS
   encoder (`tts_en_speech.encode`) counts the pre-skip twice, so granules run 312 samples high. It refuses a clip that is not mono, has an output gain, or
   decodes shorter than its stored duration or a 20 ms packet or more longer. The rows keep
   `speaker` and `source_row`.
