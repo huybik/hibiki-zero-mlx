@@ -50,6 +50,8 @@ def texts(work: Path, sample: int | None, threads: int = 32) -> list[Path]:
                    if f.endswith(".parquet") and f.split("/")[1] in SPLITS)
     train = [f for f in names if f.split("/")[1] == "train"]
     if sample:
+        if sample >= len(train):
+            raise SystemExit(f"--sample {sample}: the dataset has {len(train)} train shards")
         train = [train[int(i * len(train) / sample)] for i in range(sample)]
     names = train + [f for f in names if f.split("/")[1] == "validation"]
     root = work / "texts" / rev

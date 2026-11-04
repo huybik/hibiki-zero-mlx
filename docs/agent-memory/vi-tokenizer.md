@@ -45,8 +45,10 @@ python -m training.vi_tokenizer.build run                    # the 6k model, ~7 
 python -m training.vi_tokenizer.build run 4000 8000 --sample 20   # a smoke test of other sizes
 ```
 
-- `run` is the only entry point, so a model under its final name has passed the English check: a
-  run that fails removes its models. Each run starts from no exclusions.
+- `run` is the only entry point, and it builds models in `candidates/` under its folder, moving
+  each up only after it passes, so a model under its final name has passed the English check.
+  Each run starts from no exclusions, and the sizes of one run share them: the 6k model of
+  `run 6000 8000` also leaves out a piece that only the 8k model's English check caught.
 - The texts: only `text_en`, `text_vi` and `vi_duration_s` of `anquachdev/common-vi-en` (pinned),
   by exact range requests, one small parquet per shard, into
   `/workspace/vi_tokenizer/texts/<revision>/`, kept for later runs. With `cache_type="none"` and

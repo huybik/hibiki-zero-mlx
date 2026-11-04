@@ -7,8 +7,8 @@
      over 48k), whose English check finds every new piece that would change an English row;
   3. the 48k-vocab models, each with N never-used slots replaced and its embedding init map
      (<model>_init.json), checked over every row; each new piece that changed an English row is
-     excluded and the models rebuilt until none does (5 rounds at most). A run that fails removes
-     its models.
+     excluded and the models rebuilt until none does (5 rounds at most). They are built in
+     <work>/candidates/ and move up into <work> only once they pass.
 
 Each run starts from no exclusions. Its files land in --work (default /workspace/vi_tokenizer),
 or <work>/sample<K>/ with --sample K: excluded.json (the new pieces that changed an English row),
@@ -289,7 +289,10 @@ def check(files: list[Path], args: argparse.Namespace, models: list[Path], out: 
 def run(args: argparse.Namespace) -> None:
     base, sizes = args.base_model, args.sizes or [6000]
     work = args.work / f"sample{args.sample}" if args.sample else args.work
-    work.mkdir(parents=True, exist_ok=True)
+    candidates = work / "candidates"  # unchecked models; one that passes moves up into work
+    candidates.mkdir(parents=True, exist_ok=True)
+    for old in work.glob("verify_models_*.json"):  # an earlier run's rounds
+        old.unlink()
     files = corpus.texts(args.work, args.sample)
     counts = corpus.count(files, base, args.workers)
     superset = write_superset(base, work, SUPERSET, counts, set())
@@ -297,19 +300,20 @@ def run(args: argparse.Namespace) -> None:
     for n in range(1, ROUNDS + 1):
         (work / "excluded.json").write_text(json.dumps(sorted(excluded), ensure_ascii=False))
         print("excluded new pieces:", len(excluded), flush=True)
-        built = [write_model(base, work, size, counts, excluded) for size in sizes]
+        built = [write_model(base, candidates, size, counts, excluded) for size in sizes]
         for b in built:
             print(json.dumps(b, ensure_ascii=False), flush=True)
         report, culprits = check(files, args, [Path(b["path"]) for b in built], work / f"verify_models_{n}.json")
         if not english_differs(report):
+            for b in built:
+                path = Path(b["path"])
+                for f in (path, path.with_name(path.stem + "_init.json")):
+                    os.replace(f, work / f.name)
             corpus.log(f"round {n}: no English row differs; models and their init maps in {work}")
             return
         if not culprits:
             break  # rows differ with no new piece in them: another round cannot help
         excluded |= culprits
-    for b in built:
-        Path(b["path"]).unlink()
-        Path(b["path"]).with_name(Path(b["path"]).stem + "_init.json").unlink()
     raise SystemExit(f"English rows still differ after round {n}; see {work}/verify_models_{n}.json")
 
 
@@ -322,8 +326,10 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=os.cpu_count(), help="corpus pass processes")
     p.add_argument("--sample", type=int, help="evenly spaced train shards to read, all validation (default: all)")
     args = p.parse_args()
-    if any(n <= 0 or n % 1000 for n in args.sizes):
-        p.error("sizes must be positive multiples of 1000")
+    if any(n <= 0 or n % 1000 for n in args.sizes) or len(set(args.sizes)) < len(args.sizes):
+        p.error("sizes must be distinct positive multiples of 1000")
+    if args.sample is not None and args.sample <= 0:
+        p.error("--sample must be positive")
     run(args)
 
 
