@@ -95,8 +95,11 @@ inference/ (Apple Silicon, MLX)
   caches, tokenizer passes) runs on the H100 box, written and optimized for CUDA; so do training
   and evaluation. The user games on the Mac and doesn't want it slowed: local runs stay small (a
   check, a sample), single-process and under `nice -n 19`, and subagents get the same rule (user,
-  2026-11-04). The Mac keeps the MLX inference work; the existing MLX TTS and cache builder
-  produced the current data → [sft-training](docs/agent-memory/sft-training.md).
+  2026-11-04). Overnight in the user's time (UTC+7) the Mac (M4 Pro, 48 GB) may also take a share
+  of a box job when that shortens it, such as MLX translation or TTS of some shards, or the
+  downloads; size each night job to finish by morning (user, 2026-11-04). The Mac keeps the MLX
+  inference work; the existing MLX TTS and cache builder produced the current data →
+  [sft-training](docs/agent-memory/sft-training.md).
 - Pick the newest version of any third-party model (ASR, TTS, LLM, aligner) the pipeline uses,
   for its efficiency and accuracy (user, 2026-11-04).
 - Production runs go only through `training/h100.sh run`, which ties a run to its commit and
