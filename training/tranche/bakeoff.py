@@ -51,7 +51,7 @@ VIVOICE = ("capleaf/viVoice", "693e988", 354)
 GIGA = ("speechcolab/gigaspeech2", "8dc0d0e")
 MODELS = {
     "voxcpm2": ("openbmb/VoxCPM2", "32279ef", ["ref", "ult"]),
-    "dots": ("dots-studio/dots.tts-base", "b5aac65", ["xvec", "cont"]),
+    "dots": ("dots-studio/dots.tts-soar", "2f9b3e1", ["xvec", "cont"]),  # post-trained; base is pretraining
     "qwen3tts": ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", "fd4b254", ["xvec", "icl"]),
     "cosyvoice3": ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", "29e01c4", ["xling"]),
 }
@@ -109,12 +109,16 @@ def phoaudiobook(rng: random.Random, n: int) -> list[tuple[str, tuple, tuple]]:
 
     repo, rev, count = PHO
     pairs: list = []
+    used: set[str] = set()  # a reader can span several shards
     for shard in np.linspace(0, count - 1, 40).astype(int):
         name = f"data/train-{shard:05d}-of-{count:05d}.parquet"
         groups = defaultdict(list)
         for r in pq.read_table(hf_hub_download(repo, name, repo_type="dataset", revision=rev)).to_pylist():
-            groups[r["speaker"]].append((*decode(r["audio"]["bytes"]), r["text"]))
-        pairs += pairs_from_groups(groups, rng, 1)
+            if r["speaker"] not in used:
+                groups[r["speaker"]].append((*decode(r["audio"]["bytes"]), r["text"]))
+        picked = pairs_from_groups(groups, rng, 1)
+        used |= {speaker for speaker, _, _ in picked}
+        pairs += picked
     rng.shuffle(pairs)
     return pairs[:n]
 
@@ -215,8 +219,11 @@ def load_model(model: str):
 
         def generate(row, mode, seed):
             seed_everything(seed)
-            out = tts.generate(text=row["text_en"], prompt_audio_path=row["ref"], language="en",
-                               prompt_text=row["ref_text"] if mode == "cont" else None,
+            # With a transcript, dots puts the language tag on it, which here is Vietnamese: tag
+            # only the x-vector mode's English text.
+            cont = mode == "cont"
+            out = tts.generate(text=row["text_en"], prompt_audio_path=row["ref"],
+                               language=None if cont else "en", prompt_text=row["ref_text"] if cont else None,
                                num_steps=10, guidance_scale=1.2)
             return out["audio"].float().cpu().squeeze().numpy(), out["sample_rate"]
     elif model == "qwen3tts":
@@ -236,7 +243,12 @@ def load_model(model: str):
         from cosyvoice.cli.cosyvoice import AutoModel
         from cosyvoice.utils.common import set_all_random_seed
 
-        tts = AutoModel(model_dir=path)
+        # The card ranks the RL-tuned LLM (llm.rl.pt) above llm.pt, which the loader hardcodes:
+        # load the snapshot through a folder of links with llm.pt pointing at the RL weights.
+        model_dir = Path(tempfile.mkdtemp(prefix="cosyvoice3-rl-"))
+        for f in Path(path).iterdir():
+            (model_dir / f.name).symlink_to((Path(path) / ("llm.rl.pt" if f.name == "llm.pt" else f.name)).resolve())
+        tts = AutoModel(model_dir=str(model_dir))
 
         def generate(row, mode, seed):
             set_all_random_seed(seed)
@@ -362,8 +374,8 @@ def score(args: argparse.Namespace) -> None:
         for path in paths:
             pcm, rate = sf.read(path, dtype="float32")
             audio.append({"raw": pcm, "sampling_rate": rate})
-        # Timestamps make it long-form: without them it hears only the first 30 s.
-        out = asr(audio, batch_size=32, return_timestamps=True,
+        # Chunked, so a clip over 30 s is heard whole and still batches with the rest.
+        out = asr(audio, batch_size=32, chunk_length_s=30,
                   generate_kwargs={"language": "english", "task": "transcribe"})
         return [o["text"] for o in out]
 
