@@ -95,8 +95,14 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
 - Sizes for `en-vi-grounded-v2/train`: 1,832 parquets, 442.7 GB; 9,057 h of Vietnamese, ~5,400 h
   re-encoded. The pod downloads at ~39 MB/s (16 at a time; one alone ~10 MB/s; reading only the
   needed columns over HTTP was no faster), so `fetch` takes ~3.2 h and keeps ~80 GB of sources.
-  On the pod's H100, `encode` runs at ~1,400x real time: ~12 s for a 4.8 h `cv27` shard, so
+  On the pod's H100, `encode` runs at ~1,400–1,550x real time: ~12 s for a 4.8 h `cv27` shard, so
   ~4 h for the split (its CPU alone: 24x).
+- `encode` leaves the GPU idle about half the time (2026-11-04, nvidia-smi every 0.5 s: ~10 s at
+  0%, then ~8 s at 75–100%, per Libriheavy shard). Its loop is serial per shard: load the shard
+  and source, decode in the workers, then augment and Mimi on the GPU, then save and fsync. The
+  main process is at ~80% CPU; the 24 decode workers averaged ~11% each. Before the next encode
+  (another epoch's conditions, another split), overlap shard N+1's load and decode with shard
+  N's GPU work, and its save with the next shard: about twice as fast.
 - PyAV must be in the pod's environment (`h100.sh setup` pins it; an older venv needs
   `.venv/bin/python -m pip install av==15.1.0`).
 
