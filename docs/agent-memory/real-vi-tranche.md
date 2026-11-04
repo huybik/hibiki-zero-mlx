@@ -13,8 +13,8 @@ FLEURS's content, which only real Vietnamese speech can teach
 ([noisy-source](noisy-source.md#evaluation)). The tranche follows the paper's recipe for a new
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
-Researched 2026-11-04 from the corpora's and models' own cards; the only code so far is the
-English TTS bake-off and the ASR and translation checks (`training/tranche/`).
+Researched 2026-11-04 from the corpora's and models' own cards; the code so far
+(`training/tranche/`) is the English TTS bake-off, the ASR and translation checks, and ingest.
 
 ## Decision
 
@@ -80,7 +80,8 @@ Measured 2026-11-04 on the box from one train shard each. The user accepted the 
 corpora's terms for `huybik` that day.
 
 - PhoAudiobook: parquet (`audio` as float32 WAV at 16 kHz, `text`, `speaker`), 803 train shards
-  of ~210 MB.
+  of 67–499 MB, 1,042,919 rows: 940 h of clips of 10 s and more, and 554 h of "augmented short
+  audio" (its card), which ingest drops.
   - Chunks run 10–16 s (p5/p50/p95 10.2/11.6/15.6 s), all within 5–22.4 s.
   - Shards go reader by reader in time order; a chunk's start and end are in its file name
     (`chunk-2541_74-2554_64_…`). The chunks sample a reading rather than cover it: the gap to
@@ -261,6 +262,12 @@ other corpora ─► their transcripts, word times by forced alignment ───
 - YODAS has no speaker labels and a video may hold several speakers: cluster speaker embeddings
   per video to pick each row's reference and drop overlapped speech. The same embeddings and a
   dialect classifier check the North, Central and South balance.
+- Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
+  parquet in the source's order (`doc`, `seq`, the times the corpus gives), audio re-encoded to
+  32 kbps Ogg Opus (~16 MB per hour), under `/workspace/tranche/repo/<public|restricted>/<source>/segments/`,
+  and `push` uploads that folder to its repo. One worker took 6 min for GigaSpeech 2's first
+  archive (19,967 segments, 24.1 h); PhoAudiobook's first shard gave 1,299 clips (4.4 h),
+  viVoice's 742 of its 2,508 (1.6 h; the rest outside 5–22.4 s).
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
