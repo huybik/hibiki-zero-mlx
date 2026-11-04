@@ -120,9 +120,10 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 
 ### 4. GRPO
 
-[docs/grpo_plan.md](grpo_plan.md), on streams with silent stretches, plus a penalty on speech
-while the source is silent. RL the teacher before any distillation; a short GRPO on a distilled
-student afterwards.
+[docs/grpo_plan.md](grpo_plan.md): the paper's GRPO with BLEU process rewards on 30–75 s
+streams of the noisy cache, from the second run's chosen checkpoint, built and profiled on the
+H100 (2026-11-04). RL the teacher before any distillation. A penalty on speech while the source
+is silent, and a short GRPO on a distilled student, come later if needed.
 
 ### 5. The phone model
 
@@ -250,7 +251,7 @@ Vietnamese text cannot keep up with its speech.
        loss is checked every 10 steps, so a NaN update on a save step would be saved and resumed.
      - Each validation reloads `--model-weight` from disk to build its generator.
      - The first train-log line after a validation counts the validation in its s/step.
-4. GRPO on the best checkpoint of that run.
+4. GRPO on the best checkpoint of that run ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
 5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.
