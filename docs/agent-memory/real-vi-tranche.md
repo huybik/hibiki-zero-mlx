@@ -252,3 +252,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
   left 16 GB free, short of the LR test's next checkpoint save (2026-11-04).
+- The box's huggingface_hub keeps file contents in a shared store, `$HF_HOME/hub/blobs/<xx>/<sha256>`,
+  each with a `.refs` file naming the repo blobs that use it. Deleting a `models--…` or
+  `datasets--…` folder frees nothing; delete a shared blob (with its `.lock` and `.refs`) once
+  none of its refs exists (32 GB left behind by LongCat and the corpus samples, 2026-11-04).
