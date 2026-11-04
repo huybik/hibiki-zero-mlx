@@ -58,7 +58,7 @@ committed tests, and its prefix reference left out the sentence being spoken.
 | Reward frames | The cache has no Vietnamese words or timings. Use one reward frame every 2.5 s of Vietnamese speech, counted inside rows only (≈ 8 syllables at the TTS's pace; check the rate on 1,000 rows' `text_vi` once), plus frame T. The paper has no frame after the last input word. We add T so the tail, where the translation finishes, is trained by the final BLEU. |
 | BLEU | `sacrebleu.sentence_bleu` (already pinned) per rollout and reward frame, in CPU worker processes while the GPU generates the next batch. A frame whose group has zero std gets advantage 0. |
 | Rollouts | Fed from cached Vietnamese codes, so no Mimi encode or decode: warm-up codes, then the stream's source with its EOS, then silence to T, through `LMGen` as `common.generate_batch` drives it (sized KV cache, `stop_on_eos` off). Store each rollout in the cache layout `[33, T]`: sampled text and English codes, plus the source. |
-| π_old logprobs | At each refresh, one no-grad pass of π_θ (fp32 masters under bf16 autocast, the update's own forward) over the window's rollouts. The ratio is then exactly 1 at the first update after a refresh. Logprobs at the sampling temperature 0.8, top-k ignored. |
+| π_old logprobs | At each refresh, one pass of π_θ over the window's rollouts through the update's own forward (fp32 masters under bf16 autocast, gradients enabled, the result detached). The ratio is then exactly 1 at the first update after a refresh. A no-grad pass picks other bf16 kernels: on MPS it gave 1.0012 and clipped 6 tokens. Logprobs at the sampling temperature 0.8, top-k ignored. |
 | Generation model | A bf16 copy of π_θ made at each refresh, as SFT validation builds its generator. |
 | Update | The SFT training forward (`lm_training`'s compiled transformer, step-major depformer) returns per-token logprobs of the 17 output streams. Micro-batches fit the 4,608-frame budget, accumulated to 128 rollouts. Fused AdamW (0.9, 0.95), weight decay 0.1, grad clip 1.0, the gradient norm checked as in SFT. |
 | Evaluation | Every 10·τ = 200 updates, the SFT validation's free-running pass over its five sets, unchanged. Quality is FLEURS dev chrF. Latency is the median `end_offset_s`, the stand-in for the paper's text LAAL. |
@@ -90,6 +90,8 @@ Add one only if the rollouts show a need for it.
   - `promote_best`;
   - `keep_log_lines`;
   - the atomic writes.
+- `training/finetune/grpo_profile.py`: phases 1 and 2's profiler (generation, rewards,
+  old logprobs, update), with the policy and AdamW states resident.
 - `training/h100.sh grpo RUN_NAME [ARGS]`: `run`'s claim, preflight, lock, saved arguments and
   `hf_sync`, starting `training.finetune.grpo`. `hf_sync` needs no change, since `grpo.py`
   writes the SFT run's files:

@@ -16,8 +16,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
   2026-11-03). The tokenizer blocks it first: Vietnamese text needs ~10 tokens/s of speech
   against the text stream's 12.5.
 - [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage, checked against the paper on
-  2026-11-04. It is built next, from the second run's chosen checkpoint, and each phase is
-  profiled on the H100 before the next; the Mac only checks the reward math on its CPU.
+  2026-11-04. The code and its checks are in [grpo](grpo.md); each phase is profiled on the H100
+  before the next, and the Mac only checks correctness.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
   ([sft-training](sft-training.md)).
 
