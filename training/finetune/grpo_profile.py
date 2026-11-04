@@ -155,8 +155,8 @@ def main() -> None:
     write(report)
 
     # Phase 2: π_old's logprob pass and the update's forward and backward.
-    codes = torch.cat([grpo.mask_after_eos(rollouts.clone(), eos_id), sources.to(torch.int32)],
-                      dim=1)
+    codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
+    keep = grpo.before_eos(rollouts, eos_id)
     advantages = torch.from_numpy(np.concatenate([r[2] for r in results])).float()
     weights = torch.ones(1 + lm.dep_q, device=device)
     weights[0] = 100.0
@@ -176,6 +176,7 @@ def main() -> None:
         def update():
             with autocast:
                 loss, _ = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
+                                         keep[:micro].to(device),
                                          weights, 0.2, 0.8)
             loss.backward()
 
@@ -194,6 +195,7 @@ def main() -> None:
         frames = micro * args.frames
         with autocast:
             _, stats = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
+                                         keep[:micro].to(device),
                                       weights, 0.2, 0.8)
         lm.zero_grad(set_to_none=True)
         report[f"micro_batch_{micro}"] = {

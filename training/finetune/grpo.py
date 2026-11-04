@@ -135,13 +135,16 @@ def grpo_loss(
     condition_tensors: Any | None,
     old_logprobs: torch.Tensor,
     advantages: torch.Tensor,
+    keep: torch.Tensor,
     stream_weights: torch.Tensor,
     epsilon: float,
     temperature: float,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """The negated clipped objective summed over a micro-batch's tokens (Eq. 7-8), with the sums
-    behind its ratio statistics. `advantages` is [B, T], `stream_weights` [1 + dep_q]."""
+    """The negated clipped objective summed over a micro-batch's kept tokens (Eq. 7-8), with the
+    sums behind its ratio statistics. `advantages` is [B, T], `keep` [B, 1 + dep_q, T] (from
+    `before_eos`), `stream_weights` [1 + dep_q]."""
     logprobs, mask = token_logprobs(lm, codes, condition_tensors, temperature)
+    mask = mask & keep
     ratio = torch.exp(logprobs - old_logprobs)
     advantage = advantages[:, None, :]
     objective = torch.minimum(ratio * advantage, ratio.clamp(1 - epsilon, 1 + epsilon) * advantage)
@@ -196,7 +199,9 @@ def _start_reward_worker(tokenizer_path: str, trainer: int) -> None:
     # A forked worker holds the launcher's run lock too, and a pool never notices its parent
     # dying: without this, a killed trainer leaves workers that keep the lock and block every
     # relaunch. PR_SET_PDEATHSIG (1) kills the worker with the trainer.
-    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    if libc.prctl(1, signal.SIGKILL) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG)")
     if os.getppid() != trainer:  # the trainer died before the call
         os._exit(1)
     _TOKENIZER = sentencepiece.SentencePieceProcessor(tokenizer_path)
@@ -268,18 +273,18 @@ def sample_window(
     return outputs
 
 
-def mask_after_eos(rollouts: torch.Tensor, eos_id: int) -> torch.Tensor:
-    """Rollouts [N, 1 + dep_q, T] with text after each one's first EOS and audio from it on set
-    to -1, as SFT streams end: no reward reads those tokens, so they stay out of the loss.
-    Positions before the EOS see the same inputs, so the ratio stays exactly 1."""
+def before_eos(rollouts: torch.Tensor, eos_id: int) -> torch.Tensor:
+    """Which tokens of rollouts [N, 1 + dep_q, T] the loss keeps: text through each one's first
+    EOS and audio before it, as SFT streams end. No reward reads the rest. The sampled tokens stay
+    in place as inputs: set to -1, they would change what the delayed codebooks of the two frames
+    before the EOS were sampled from."""
     frames = rollouts.shape[-1]
     is_eos = rollouts[:, 0] == eos_id
     first = torch.where(is_eos.any(dim=1), is_eos.int().argmax(dim=1), frames)
     index = torch.arange(frames, device=rollouts.device)
-    rollouts[:, 0][index[None] > first[:, None]] = -1
-    audio = (index[None] >= first[:, None])[:, None].expand_as(rollouts[:, 1:])
-    rollouts[:, 1:][audio] = -1
-    return rollouts
+    text = index[None] <= first[:, None]
+    audio = (index[None] < first[:, None])[:, None].expand(-1, rollouts.shape[1] - 1, -1)
+    return torch.cat([text[:, None], audio], dim=1)
 
 
 def micro_batches(
@@ -363,6 +368,7 @@ def main() -> None:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     args = parse_args()
     validate_args(args)
+    args.tokenizer = require_file(args.tokenizer, "tokenizer")  # before the workers load it
     pool = reward_pool(args.reward_workers, args.tokenizer)
     device = common.check_device("cuda")
     torch.set_float32_matmul_precision("high")
@@ -371,7 +377,6 @@ def main() -> None:
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "start checkpoint")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    args.tokenizer = require_file(args.tokenizer, "tokenizer")
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -516,8 +521,8 @@ def main() -> None:
         advantages = torch.from_numpy(np.concatenate([result[2] for result in results])).float()
         final_bleu = np.concatenate([result[1][:, -1] for result in results])
         eos_rate = (rollouts[:, 0] == tokenizer.eos_id()).any(dim=1).float()
-        codes = torch.cat([mask_after_eos(rollouts, int(tokenizer.eos_id())),
-                           sources.to(torch.int32)], dim=1)
+        keep = before_eos(rollouts, int(tokenizer.eos_id()))
+        codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
         rewarded = time.time() - window_started
 
         # 2. π_old's logprobs: the policy before this window's first update, through the update's
@@ -545,8 +550,8 @@ def main() -> None:
                 with autocast:
                     loss, stats = grpo_loss(
                         lm, batch, condition, old_logprobs[start:end].to(device),
-                        advantages[start:end].to(device), stream_weights, args.epsilon,
-                        args.temperature)
+                        advantages[start:end].to(device), keep[start:end].to(device),
+                        stream_weights, args.epsilon, args.temperature)
                 (loss / per_update).backward()
                 totals["loss"] += loss.detach()
                 totals["max_deviation"] = torch.maximum(

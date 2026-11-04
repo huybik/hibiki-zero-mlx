@@ -16,10 +16,12 @@ streams of the noisy `en_speech` cache. Checkpoints, resume and logs are the SFT
      each of the window's `--streams` (32) × 20 streams;
   2. CPU workers compute the rewards as each generation batch lands;
   3. the policy scores every rollout, giving π_old's logprobs.
-- **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on are
-  set to -1, as SFT streams end. No reward reads them, so training them would only add noise; in a
-  single-row stream they are most of the frames. Positions before the EOS see the same inputs, so
-  the ratio stays exactly 1. `eos_rate` in the train log is the share of rollouts that ended.
+- **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on stay
+  out of the loss (`before_eos`), as SFT streams end. No reward reads them, so training them would
+  only add noise; in a single-row stream they are most of the frames. They stay in place as
+  inputs: set to -1, they would change the context of the delayed codebooks in the two frames
+  before the EOS (shown on a tiny CPU model). `eos_rate` in the train log is the share of
+  rollouts that ended.
 - **An update** takes its own 128 rollouts in `--micro-batch` forwards, cut within its own rows.
   π_old's pass cuts them the same way, because another batch shape picks other kernels. Every
   rollout is used by exactly one update.
@@ -54,6 +56,8 @@ streams of the noisy `en_speech` cache. Checkpoints, resume and logs are the SFT
     whenever it changes. The logs reach the Hub only at the end, so a restore needs this file.
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
   has stopped improving is simply stopped; its stop cannot be extended.
+- **Losing work:** `hf_sync` uploads only evaluation-step pairs, so a lost pod costs up to
+  `--eval-every` (200) updates. A preemption on the same disk costs at most a window.
 - **Saves** land on window boundaries (`--save-every` 20 updates, and `--updates` a multiple of
   τ). A resume starts its window again with the same seeds, unique to each window and batch
   (32-bit, from `SeedSequence((seed, step, batch))`).
