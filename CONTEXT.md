@@ -91,9 +91,14 @@ inference/ (Apple Silicon, MLX)
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
   and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
-- Apple Silicon runs inference, the translation, the Vietnamese TTS, the dataset publisher and
-  the Mimi cache build; training, evaluation and the noisy source re-encode run on CUDA →
-  [sft-training](docs/agent-memory/sft-training.md).
+- Every data-generation job from 2026-11-04 on (ASR, alignment, translation calls, TTS, Mimi
+  caches, tokenizer passes) runs on the H100 box, written and optimized for CUDA; so do training
+  and evaluation. The user games on the Mac and doesn't want it slowed: local runs stay small (a
+  check, a sample), single-process and under `nice -n 19`, and subagents get the same rule (user,
+  2026-11-04). The Mac keeps the MLX inference work; the existing MLX TTS and cache builder
+  produced the current data → [sft-training](docs/agent-memory/sft-training.md).
+- Pick the newest version of any third-party model (ASR, TTS, LLM, aligner) the pipeline uses,
+  for its efficiency and accuracy (user, 2026-11-04).
 - Production runs go only through `training/h100.sh run`, which ties a run to its commit and
   HF recovery prefix → [sft-recovery](docs/agent-memory/sft-recovery.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source

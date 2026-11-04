@@ -3,6 +3,7 @@
 Read when choosing or building the real-Vietnamese source data (plan stage 1.3), its English TTS
 or its licences.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [Corpora](#corpora) ·
+[YODAS sample](#yodas-layout-and-sample) ·
 [English TTS](#english-tts) · [Pipeline](#pipeline)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
@@ -48,6 +49,41 @@ Researched 2026-11-04 from the corpora's and models' own cards; no code yet.
   - YODAS may hold the same videos: drop every row whose transcript shares long n-grams with
     FLEURS vi or MultiMed-ST vi.
 
+### YODAS layout and sample
+
+Measured 2026-11-04 from the index files and one yodas2 shard (the sample is on the Mac under
+`/Volumes/data/datasets/yodas_sample/`, with 20 cut clips in `cuts_owsmv4_on_yodas2/`):
+
+- owsmv4 keeps Kaldi files for all 75 languages together under `dump/raw/yodas0.10/` (vie
+  4,644 h, the cleaned subset) and `yodas0.00/` (vie 7,751 h, unfiltered): `text` (12.3 GB),
+  `wav.scp`, `utt2spk`. Ids are `<YouTube id>_<start ms>_<end ms>_vie_asr`. Its audio is 16 kHz
+  FLAC inside 500 `data_wav.ark` files of 36.8 GB, readable by HTTP range per segment.
+- yodas2 vi is `data/{vi000,vi100,vi101}/audio/NNNNNNNN.tar.gz`: 1,437 shards of ~1.48 GB, each
+  ~10 h of whole-video 24 kHz WAV, readable only whole. All 38,596 owsmv4 vie videos are yodas2
+  videos, and owsmv4's segment times match the yodas2 audio within 0.4 ms. 4,324 of owsmv4's
+  hours come from YouTube ASR captions (vi100/101), 320 from uploaders' (vi000).
+- yodas3 vi: 80 WebDataset tars of ~8.6 GB (Opus `.webm`) and metadata parquets whose
+  transcripts carry punctuation and, for auto captions, word times.
+
+| owsmv4 vie | 0.10 | 0.00 |
+|---|---:|---:|
+| Segments / videos | 620,326 / 38,596 | 1,033,917 / 48,784 |
+| Segment length p5 / p50 / p95 | 18.5 / 28.2 / 29.8 s | 18.0 / 28.3 / 29.9 s |
+| Minutes per video p50 / p90 | 3.9 / 16.6 | 5.5 / 22.1 |
+| Hours under a 20-minute cap per video | 3,825 | 5,914 |
+| Gaps between a video's segments: 0 / ≤ 2 s / > 10 s | 49% / 65% / 29% | 69% / 88% / 5% |
+| Contiguous hours in runs of 2–10 min / ≥ 10 min (gaps ≤ 2 s joined) | 1,684 / 227 | 3,305 / 2,947 |
+
+- The segments are 25–30 s windows, not sentences: only 7.6% last 5–22.4 s, and their edges
+  fall inside speech, often mid-phrase.
+- The text is YouTube ASR: of 200 random segments 8 have any punctuation, casing is random,
+  misrecognitions are common, and the median pace is 2.8 syllables/s (p5 1.2: some are not
+  speech). Re-transcription is required.
+- Of 20 clips, 5 clip at full scale and 6 have nothing above 8 kHz (upsampled sources).
+- ~700 h costs ~185 GB of yodas2 shards (the best 125, 0.33 GB per kept hour in vi100/101,
+  2.15 in vi000), streamed and cut on the box, or ~43 GB of 16 kHz FLAC by range reads from the
+  owsmv4 arks.
+
 ## English TTS
 
 Kyutai's TTS 1.6B, the paper's, is out: its voice conditioning is closed and only precomputed
@@ -85,8 +121,11 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 
 ## Pipeline
 
-Planned; the output is the EN-VI dataset's own parquet schema, so `cache_codes` and the trainer
-take it unchanged ([sft-data-caches](sft-data-caches.md#flow)):
+Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04). The rows take
+the EN-VI dataset's own parquet schema, and the cache keeps its format, so the trainer takes it
+unchanged; the build needs a CUDA counterpart of the MLX `cache_codes` (Mimi in moshi's torch, as
+`mimi_cache_cuda` encodes it, and the English CTC on CUDA)
+([sft-data-caches](sft-data-caches.md#flow)):
 
 ```text
 YODAS video audio (24 kHz)
@@ -95,13 +134,19 @@ YODAS video audio (24 kHz)
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
   ─► LLM VI→EN per row, the video's previous rows as context (the existing translators)
   ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
-  ─► EN-VI parquet ─► cache_codes ─► trainer
+  ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
 
+- Rows come from re-transcribing contiguous runs, never from owsmv4's segments: choose videos
+  whose 0.10 subset keeps ≥ 70% of the 0.00 speech (16,729 videos, 2,145 h under the cap), take
+  their 0.00 runs (gaps ≤ 2 s joined), and spend each video's 20 minutes on one or two of its
+  longest runs. Each row stores its `run_id` and `gap_before`, so the trainer joins rows only
+  within a run.
+- Filter rows on syllables per second, transcript confidence, language ID, clipping and
+  bandwidth (flag sources at 16 kHz or below).
 - YODAS has no speaker labels and a video may hold several speakers: cluster speaker embeddings
   per video to pick each row's reference and drop overlapped speech. The same embeddings and a
   dialect classifier check the North, Central and South balance.
-- Cap each video at ~20 min so the hours spread over many speakers.
 - Rough cost from published speeds, to be measured: the TTS ~20–50 H100-hours per 1,000 h; the
   translation about the EN→VI runs' (~$39 per 1,000 h on Gemini,
   [en-vi-gemini](en-vi-gemini.md)).

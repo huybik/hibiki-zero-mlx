@@ -197,8 +197,21 @@ word. Spoken at FLEURS pace, Vietnamese text needs 10.3 tokens/s on average, 13.
 at most. The text stream carries one token per 12.5 Hz frame and needs room for PAD, so
 Vietnamese text cannot keep up with its speech.
 
-1. Check Mimi on Vietnamese first (cheap go/no-go): encode and decode real Vietnamese speech and
-   compare a Vietnamese ASR's error before and after, to see whether the tones survive.
+1. Mimi on Vietnamese (measured 2026-11-04, Whisper large-v3-turbo, 80 FLEURS dev clips against
+   their Vietnamese transcripts and 80 real English dataset clips against theirs):
+
+   | Audio | English WER | Vietnamese WER (CER) |
+   |---|---:|---:|
+   | Original | 6.8% | 14.3% (10.5%) |
+   | Mimi, 16 codebooks | 6.3% | 27.8% (20.4%) |
+   | Mimi, 8 codebooks | 8.9% | 42.0% (32.2%) |
+
+   Mimi leaves English intact but doubles the Vietnamese errors, and stripping the diacritics
+   barely lowers them, so the loss is not only tones. It matters for both directions: EN→VI
+   speaks through Mimi, and VI→EN hears Vietnamese only through its 16 codebooks, which may cap
+   how much of the real-speech gap any data closes. The 8-codebook phone student loses more.
+   Still to check on the box: 32 codebooks, and a control degradation of similar strength on
+   both languages, to tell Mimi's loss from Whisper's weaker Vietnamese robustness.
 2. Give Vietnamese syllables their own tokens (to about one per syllable) by replacing ~6k
    pieces English never uses, so the text embedding, the head and every runtime keep
    `text_card` 48,000 and only the tokenizer file changes. On 30,748 dataset rows (2026-11-04)
