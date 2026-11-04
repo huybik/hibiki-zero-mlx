@@ -1,16 +1,12 @@
 #!/usr/bin/env python
-"""Checks of the tranche's Vietnamese ASR and VI→EN translation models on the box, before the
-pipeline relies on them ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#models)).
+"""Check of the tranche's Vietnamese ASR on the box, before the pipeline relies on it
+([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#models)).
 
   asr  /workspace/envs/asr   Qwen3-ASR-1.7B (vLLM backend) on FLEURS dev and the bake-off's clips
                              and references: WER and CER against each set's own transcript, the
                              detected language, speed
-  mt   /workspace/envs/mt    Hy-MT2-30B-A3B (vLLM) on FLEURS dev's Vietnamese text against its
-                             English (chrF, BLEU; FLEURS shares FLORES's sentences, which MT models
-                             may have trained on) and on the bake-off clips' transcripts, kept for
-                             reading; speed
 
-Both write <root>/checks/<step>.jsonl (one row per input) and print a summary. From the repo root:
+It writes <root>/checks/asr.jsonl (one row per input) and prints a summary. From the repo root:
   /workspace/envs/asr/bin/python -m training.tranche.checks asr
 """
 from __future__ import annotations
@@ -25,11 +21,6 @@ from pathlib import Path
 ROOT = Path("/workspace/tranche/bakeoff")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ASR = ("Qwen/Qwen3-ASR-1.7B", "7278e1e")
-MT = ("tencent/Hy-MT2-30B-A3B", "d3ead4d")
-# The card's settings for the 30B-A3B model.
-MT_SAMPLING = {"temperature": 0.7, "top_p": 1.0, "top_k": -1, "repetition_penalty": 1.0}
-MT_PROMPT = ("Translate the following text into English. Note that you should only output the "
-             "translated result without any additional explanation:\n\n{text}")
 
 
 def snapshot(repo: str, revision: str) -> str:
@@ -85,33 +76,6 @@ def asr(args: argparse.Namespace) -> None:
               f"  detected not Vietnamese: {other}")
 
 
-def mt(args: argparse.Namespace) -> None:
-    import sacrebleu
-    from vllm import LLM, SamplingParams
-
-    # FLEURS dev holds 361 readings of 149 sentences: translate each sentence once.
-    rows, seen = [], set()
-    for r in inputs(args.root):
-        if (r["set"] == "fleurs-dev" and r["text_vi"] not in seen) or r["id"].endswith(".clip"):
-            rows.append(r)
-            seen.add(r["text_vi"])
-    llm = LLM(model=snapshot(*MT), dtype="bfloat16", max_model_len=4096, gpu_memory_utilization=0.85)
-    params = SamplingParams(**MT_SAMPLING, max_tokens=512, seed=1234)
-    messages = [[{"role": "user", "content": MT_PROMPT.format(text=r["text_vi"])}] for r in rows]
-    start = time.perf_counter()
-    outputs = llm.chat(messages, params)
-    seconds = time.perf_counter() - start
-    tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
-    for r, o in zip(rows, outputs, strict=True):
-        r["mt"] = o.outputs[0].text.strip()
-    write(args.root / "checks/mt.jsonl", rows)
-    fleurs = [r for r in rows if r["set"] == "fleurs-dev"]
-    hyps, refs = [r["mt"] for r in fleurs], [[r["text_en"] for r in fleurs]]
-    print(f"{len(rows)} texts in {seconds:.0f} s, {tokens / seconds:.0f} output tokens/s")
-    print(f"FLEURS dev: chrF {sacrebleu.corpus_chrf(hyps, refs).score:.1f}  "
-          f"BLEU {sacrebleu.corpus_bleu(hyps, refs).score:.1f}")
-
-
 def write(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as f:
@@ -121,9 +85,9 @@ def write(path: Path, rows: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("step", choices=["asr", "mt"])
+    parser.add_argument("step", choices=["asr"])
     args = parser.parse_args()
-    {"asr": asr, "mt": mt}[args.step](args)
+    asr(args)
 
 
 if __name__ == "__main__":

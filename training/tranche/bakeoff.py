@@ -9,8 +9,8 @@ Each step runs on the box in its own env (`training/tranche/envs.sh` builds them
                                    with another clip of the same speaker as its reference and an
                                    English line to speak (`en-vi-val`'s English)
   synth  /workspace/envs/<env>     voice every clip's line in its speaker's voice, in each of the
-                                   model's cloning modes, one row at a time, timed (envs voxcpm,
-                                   dots, qwentts and cosyvoice)
+                                   model's cloning modes, timed, its rows split over --workers
+                                   processes on the GPU (envs voxcpm, dots, qwentts and cosyvoice)
   mimi   repo .venv                round-trip every output through Mimi at 16 codebooks, as the
                                    trainer hears it
   score  /workspace/envs/score     speaker similarity to the row's own Vietnamese clip (WeSpeaker
@@ -18,11 +18,15 @@ Each step runs on the box in its own env (`training/tranche/envs.sh` builds them
 
 From the repo root:
   .venv/bin/python -m training.tranche.bakeoff clips
-  /workspace/envs/voxcpm/bin/python -m training.tranche.bakeoff synth voxcpm2   # dots, qwen3tts,
-  .venv/bin/python -m training.tranche.bakeoff mimi                             # cosyvoice3
+  /workspace/envs/voxcpm/bin/python -m training.tranche.bakeoff synth voxcpm2 --workers 8  # dots,
+  .venv/bin/python -m training.tranche.bakeoff mimi                     # qwen3tts, cosyvoice3
   /workspace/envs/score/bin/python -m training.tranche.bakeoff score
 
 synth and mimi skip what they already wrote, so they resume; run mimi once every synth is done.
+synth's workers need CUDA MPS (`nvidia-cuda-mps-control -d`): without it the GPU runs one
+process's kernels at a time, and 4 workers gained 2.2x over one instead of 3.1x. Run one synth at
+a time with the GPU otherwise idle, and each in one go: its RTF is the wall time from its first
+row to its last.
 """
 from __future__ import annotations
 
@@ -30,6 +34,7 @@ import argparse
 import json
 import os
 import random
+import signal
 import sys
 import tarfile
 import tempfile
@@ -260,46 +265,77 @@ def load_model(model: str):
     return generate
 
 
-def synth(args: argparse.Namespace) -> None:
+def synth_worker(args: argparse.Namespace, mode: str, worker: int) -> None:
+    """Voice every args.workers-th row of the mode, from row `worker`, appending to its timing."""
     import soundfile as sf
     import torch
 
+    torch.set_num_threads(max(1, (os.cpu_count() or 1) // args.workers))
     rows = read_rows(args.root)[: args.limit]
+    system = f"{args.model}-{mode}"
+    out = args.root / "out" / system
+    timing_path = out / "timing.jsonl"
+    recorded = {json.loads(line)["id"] for line in timing_path.open()} if timing_path.exists() else set()
+    todo = [(k, row) for k, row in enumerate(rows)
+            if k % args.workers == worker and row["id"] not in recorded]
+    if not todo:
+        return
     generate = load_model(args.model)
+    # Every worker appends one line per write() to the shared file, which O_APPEND keeps whole.
+    with timing_path.open("a") as timing:
+        for k, row in todo:
+            path = out / f"{row['id']}.wav"
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+            record = {"id": row["id"], "workers": args.workers}
+            try:
+                wav, rate = generate(row, mode, SEED + k)
+                if len(wav) < rate // 2:
+                    raise ValueError(f"only {len(wav) / rate:.2f} s of audio")
+            except Exception as exc:  # a failed row is a result: it counts as broken
+                record["error"] = f"{type(exc).__name__}: {exc}"[:300]
+                log(f"{system} {row['id']}: {record['error']}")
+            else:
+                torch.cuda.synchronize()
+                record |= {"seconds": round(time.perf_counter() - start, 3),
+                           "audio_s": round(len(wav) / rate, 3)}
+                part = path.with_name(path.name + ".part")
+                sf.write(part, np.clip(wav, -1, 1), rate, subtype="PCM_16", format="WAV")
+                os.replace(part, path)
+            record["end"] = round(time.time(), 3)
+            timing.write(json.dumps(record) + "\n")
+            timing.flush()
+    log(f"{system} worker {worker}: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
+
+
+def synth(args: argparse.Namespace) -> None:
+    """Each mode in turn, its rows split over args.workers processes sharing the GPU: one row at a
+    time per process, as the models' Python APIs run, so the GPU fills from several."""
+    import multiprocessing
+
+    mps = Path(os.environ.get("CUDA_MPS_PIPE_DIRECTORY", "/tmp/nvidia-mps")) / "control"
+    if args.workers > 1 and not mps.exists():
+        raise SystemExit(f"no CUDA MPS daemon ({mps}): start it with `nvidia-cuda-mps-control -d`")
+    spawn = multiprocessing.get_context("spawn")  # CUDA can't follow a fork
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # so `kill` reaches the finally below
     for mode in MODELS[args.model][2]:
         system = f"{args.model}-{mode}"
-        out = args.root / "out" / system
-        out.mkdir(parents=True, exist_ok=True)
-        log(f"{system}: {len(rows)} rows")
-        timing_path = out / "timing.jsonl"
-        recorded = {json.loads(line)["id"] for line in timing_path.open()} if timing_path.exists() else set()
-        first = True  # this process's first row of the mode carries its warm-up
-        with timing_path.open("a") as timing:
-            for k, row in enumerate(rows):
-                if row["id"] in recorded:
-                    continue
-                path = out / f"{row['id']}.wav"
-                torch.cuda.synchronize()
-                start = time.perf_counter()
-                record = {"id": row["id"], "first": first}
-                first = False
-                try:
-                    wav, rate = generate(row, mode, SEED + k)
-                    if len(wav) < rate // 2:
-                        raise ValueError(f"only {len(wav) / rate:.2f} s of audio")
-                except Exception as exc:  # a failed row is a result: it counts as broken
-                    record["error"] = f"{type(exc).__name__}: {exc}"[:300]
-                    log(f"{system} {row['id']}: {record['error']}")
-                else:
-                    torch.cuda.synchronize()
-                    record |= {"seconds": round(time.perf_counter() - start, 3),
-                               "audio_s": round(len(wav) / rate, 3)}
-                    part = path.with_name(path.name + ".part")
-                    sf.write(part, np.clip(wav, -1, 1), rate, subtype="PCM_16", format="WAV")
-                    os.replace(part, path)
-                timing.write(json.dumps(record) + "\n")
-                timing.flush()
-        log(f"{system}: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
+        (args.root / "out" / system).mkdir(parents=True, exist_ok=True)
+        log(f"{system}: {args.workers} workers")
+        procs = [spawn.Process(target=synth_worker, args=(args, mode, w)) for w in range(args.workers)]
+        try:
+            for p in procs:
+                p.start()
+            for p in procs:
+                p.join()
+        finally:  # a stopped synth stops its workers, which would otherwise hold the GPU
+            for p in procs:
+                if p.is_alive():
+                    p.terminate()
+        failed = [w for w, p in enumerate(procs) if p.exitcode]
+        if failed:
+            raise SystemExit(f"{system}: workers {failed} failed")
+        log(f"{system}: done")
 
 
 # --- mimi --------------------------------------------------------------------------------------
@@ -401,9 +437,13 @@ def score(args: argparse.Namespace) -> None:
                                 "floor": floor[i], "wer": wer, "hyp": hyp,
                                 "s_per_char": timing[i]["audio_s"] / max(len(rows[i]["text_en"]), 1)})
         failed = sum("error" in t for t in timing.values())
-        steady = [t for t in timing.values() if "seconds" in t and not t["first"]]
-        rtf = float(np.median([t["seconds"] / t["audio_s"] for t in steady])) if steady else float("nan")
-        table.append({"system": system, "rows": len(done), "failed": failed, "rtf": rtf})
+        voiced = [t for t in timing.values() if "seconds" in t]
+        # Wall time from the first row's start to the last row's end, per second of audio: the
+        # GPU's cost with every worker running, warm-ups included.
+        wall = max(t["end"] for t in voiced) - min(t["end"] - t["seconds"] for t in voiced) if voiced else 0
+        table.append({"system": system, "rows": len(done), "failed": failed,
+                      "workers": voiced[0]["workers"] if voiced else 0,
+                      "rtf": wall / sum(t["audio_s"] for t in voiced) if voiced else float("nan")})
 
     pace = float(np.median([r["s_per_char"] for r in per_row]))
     for r in per_row:
@@ -415,8 +455,8 @@ def score(args: argparse.Namespace) -> None:
     lines = [f"{len(same)} of {len(ids)} rows have a same-speaker reference (cosine >= {SAME_SPEAKER}); "
              f"ceiling {np.mean([ceiling[i] for i in same]):.3f}, floor {np.mean([floor[i] for i in same]):.3f}",
              "",
-             "| System | Rows | Failed | Broken (Mimi) | WER raw / Mimi | SIM raw / Mimi | SIM by source (Mimi) | RTF |",
-             "|---|---:|---:|---:|---:|---:|---|---:|"]
+             "| System | Rows | Failed | Broken (Mimi) | WER raw / Mimi | SIM raw / Mimi | SIM by source (Mimi) | Workers | RTF |",
+             "|---|---:|---:|---:|---:|---:|---|---:|---:|"]
     for t in table:
         # WER and the broken share over every row; similarity only where the reference is the speaker.
         def pick(kind: str, only_same: bool) -> list[dict]:
@@ -431,7 +471,7 @@ def score(args: argparse.Namespace) -> None:
         lines.append(f"| {t['system']} | {t['rows']} | {t['failed']} | {broken:.1%} | "
                      f"{np.mean([r['wer'] for r in raw]):.3f} / {np.mean([r['wer'] for r in mim]):.3f} | "
                      f"{np.mean([r['sim'] for r in raw_same]):.3f} / {np.mean([r['sim'] for r in mim_same]):.3f} | "
-                     f"{by_source} | {t['rtf']:.3f} |")
+                     f"{by_source} | {t['workers']} | {t['rtf']:.3f} |")
     (root / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
@@ -447,6 +487,7 @@ def main() -> None:
     p = steps.add_parser("synth")
     p.add_argument("model", choices=sorted(MODELS))
     p.add_argument("--limit", type=int)
+    p.add_argument("--workers", type=int, default=8, help="processes sharing the GPU through MPS, ~6 GiB each")
     steps.add_parser("mimi")
     steps.add_parser("score")
     args = parser.parse_args()

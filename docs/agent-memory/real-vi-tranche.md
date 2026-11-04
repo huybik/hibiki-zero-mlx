@@ -14,7 +14,7 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the only code so far is the
-English TTS bake-off and the ASR and translation checks (`training/tranche/`).
+English TTS bake-off and the ASR check (`training/tranche/`).
 
 ## Decision
 
@@ -182,7 +182,13 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
        and against another speaker's clip (floor);
      - Whisper-large-v3 WER on the English, and the share of broken clips: WER over 20%, or a
        duration per character off the median by 2× either way;
-     - the real-time factor at batch 1, one model at a time; batching only for the winner;
+     - speed: wall time per second of audio, one model at a time, its rows split over 8
+       processes sharing the GPU through CUDA MPS. The models' Python APIs run one request at a
+       time and leave the GPU two-thirds idle; MPS lets the processes' kernels overlap, where
+       plain processes take turns. Qwen3-TTS on 64 rows: RTF 0.89 with one process, 0.40 with 4
+       without MPS, 0.29 with 4 and 0.17 with 8 under MPS (2026-11-05). The winner's batched
+       runtime (vLLM-Omni serves Qwen3-TTS and VoxCPM2 with CUDA graphs, CosyVoice3 has
+       TensorRT-LLM) is measured after; no Qwen3-TTS is newer than the January 2026 release;
   4. drop a model with more than 2% broken clips, take the highest similarity at WER ≤ 3% and
      at most ~50 H100-hours per 1,000 h, then listen blind to 20 pairs.
 
@@ -202,8 +208,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 - Keep a corpus's own order (an audiobook's consecutive sentences, a video's runs) so that the
   trainer can join real neighbours into streams.
 - Rough box time per 1,000 h, from published speeds: the English TTS ~20–50 H100-hours, the
-  ASR and the translation ~1 h each, alignment and diarization less: 1–3 days of the box,
-  ~$35–100. Box time, not money, bounds the scale-up; past ~5k h a second GPU for generation
+  ASR ~1 h, alignment and diarization less: 1–3 days of the box, ~$35–100. The translation runs
+  off the box, on OpenRouter. Box time, not money, bounds the scale-up; past ~5k h a second GPU for generation
   pays.
 
 ## Models
@@ -220,7 +226,7 @@ here is published or estimated, to be measured on the box first:
 | Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Qwen3-ASR's own language tag cross-checks |
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame |
-| VI→EN translation | `tencent/Hy-MT2-30B-A3B` (Apache-2.0 on its card since a licence change: pin the commit), vLLM on the box | `google/gemma-4-31b-it` (Apache-2.0) | FLORES XCOMET 93.85 against Gemini 3.1 Pro's 94.42; ~1 h per 10M words (estimate). Score ~200 of our sentences with xCOMET first |
+| VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)) (user, 2026-11-05: no model on the box) | `tencent/Hy-MT2-30B-A3B` (Apache-2.0 on its card since a licence change: pin the commit), vLLM on the box | EN→VI cost $0.09 per million characters, within ~0.1 of Gemini in adequacy. Contributor mode lets Meta train on what it is sent: the transcripts of copyrighted audiobooks and videos go to it, where the EN→VI work sent only public-domain Libriheavy text |
 | English TTS | VoxCPM2 | Qwen3-TTS 1.7B | Bake-off below |
 | TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
@@ -229,7 +235,7 @@ here is published or estimated, to be measured on the box first:
   hynt Zipformer, MMS-FA and MMS-LID, `wav2vec2-base-vi-vlsp2020`, Hunyuan-MT 1.x / HY-MT1.5,
   TranslateGemma.
 - The Gemini, Claude and OpenAI terms forbid using outputs to build competing models, so open
-  models on the box produce anything that becomes training data.
+  models on the box, or Muse, produce anything that becomes training data.
 - For EN→VI, `pnnbao-ump/VieNeu-TTS-v3-Turbo` (Apache-2.0) is the newest open VieNeu.
 
 ## Pipeline
@@ -246,7 +252,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
-  ─► LLM VI→EN per row on the box, the previous rows as context
+  ─► Muse VI→EN per row (OpenRouter), the previous rows as context
   ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
