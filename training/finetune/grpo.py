@@ -186,10 +186,19 @@ def stream_source(
 _TOKENIZER: Any = None
 
 
-def _start_reward_worker(tokenizer_path: str) -> None:
+def _start_reward_worker(tokenizer_path: str, trainer: int) -> None:
     global _TOKENIZER
+    import ctypes
+    import signal
+
     import sentencepiece
 
+    # A forked worker holds the launcher's run lock too, and a pool never notices its parent
+    # dying: without this, a killed trainer leaves workers that keep the lock and block every
+    # relaunch. PR_SET_PDEATHSIG (1) kills the worker with the trainer.
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)
+    if os.getppid() != trainer:  # the trainer died before the call
+        os._exit(1)
     _TOKENIZER = sentencepiece.SentencePieceProcessor(tokenizer_path)
 
 
@@ -209,7 +218,7 @@ def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
         workers,
         mp_context=multiprocessing.get_context("fork"),
         initializer=_start_reward_worker,
-        initargs=(str(tokenizer),),
+        initargs=(str(tokenizer), os.getpid()),
     )
     pool.submit(int).result()
     return pool
@@ -229,18 +238,19 @@ def sample_window(
     sources: torch.Tensor,
     gen_batch: int,
     silence_frame: torch.Tensor,
-    seed: int,
+    seed_key: tuple[int, ...],
     temperature: float,
     top_k: int,
     on_batch: Any,
 ) -> torch.Tensor:
     """Rollouts [N, 1 + dep_q, T] int32 on the CPU for `sources` [N, Q, T], in batches of
-    `gen_batch`, each seeded from `seed`; `on_batch(start, end, rollouts)` after each."""
+    `gen_batch`, each seeded from (`seed_key`, its index) as a 32-bit seed (NumPy's limit);
+    `on_batch(start, end, rollouts)` after each."""
     count, _, frames = sources.shape
     outputs = torch.empty((count, 1 + generator.dep_q, frames), dtype=torch.int32)
     steps = frames + max(generator.delays)
     for index, start in enumerate(range(0, count, gen_batch)):
-        common.seed_all(seed + index)
+        common.seed_all(int(np.random.SeedSequence([*seed_key, index]).generate_state(1)[0]))
         batch = sources[start : start + gen_batch].to(silence_frame.device)
         lm_gen = get_lmgen(
             generator, info, batch_size=len(batch), temp=temperature, temp_text=temperature,
@@ -256,6 +266,20 @@ def sample_window(
         del lm_gen, sampled
         gc.collect()  # moshi's streaming state holds the KV cache in reference cycles
     return outputs
+
+
+def mask_after_eos(rollouts: torch.Tensor, eos_id: int) -> torch.Tensor:
+    """Rollouts [N, 1 + dep_q, T] with text after each one's first EOS and audio from it on set
+    to -1, as SFT streams end: no reward reads those tokens, so they stay out of the loss.
+    Positions before the EOS see the same inputs, so the ratio stays exactly 1."""
+    frames = rollouts.shape[-1]
+    is_eos = rollouts[:, 0] == eos_id
+    first = torch.where(is_eos.any(dim=1), is_eos.int().argmax(dim=1), frames)
+    index = torch.arange(frames, device=rollouts.device)
+    rollouts[:, 0][index[None] > first[:, None]] = -1
+    audio = (index[None] >= first[:, None])[:, None].expand_as(rollouts[:, 1:])
+    rollouts[:, 1:][audio] = -1
+    return rollouts
 
 
 def micro_batches(
@@ -443,6 +467,8 @@ def main() -> None:
             print(f"val step={at} {name} {common.score_summary(metrics)}")
         if at == 0:
             start_offset = first["median_end_offset_s"]
+            if not math.isfinite(start_offset):
+                raise RuntimeError(f"The start emitted no word on {eval_sets[0]}")
             stored = json.loads(config_path.read_text(encoding="utf-8"))
             stored["start_end_offset_s"] = start_offset
             atomic_write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", config_path)
@@ -480,11 +506,8 @@ def main() -> None:
                 jobs[group] = pool.submit(_group_rewards, tokens, sentences, args.alpha)
 
         generator = bf16_copy(info, lm, device)
-        # Seeds unique to the window and its batches: (seed, step) times the 10,000 batches a
-        # window may hold.
         rollouts = sample_window(generator, info, sources, args.gen_batch, silence_frame,
-                                 (args.seed * 1_000_003 + step) * 10_000, args.temperature,
-                                 args.top_k, submit)
+                                 (args.seed, step), args.temperature, args.top_k, submit)
         del generator
         gc.collect()
         torch.cuda.empty_cache()
@@ -492,7 +515,9 @@ def main() -> None:
         results = [jobs[group].result() for group in range(len(stream_ids))]
         advantages = torch.from_numpy(np.concatenate([result[2] for result in results])).float()
         final_bleu = np.concatenate([result[1][:, -1] for result in results])
-        codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
+        eos_rate = (rollouts[:, 0] == tokenizer.eos_id()).any(dim=1).float()
+        codes = torch.cat([mask_after_eos(rollouts, int(tokenizer.eos_id())),
+                           sources.to(torch.int32)], dim=1)
         rewarded = time.time() - window_started
 
         # 2. π_old's logprobs: the policy before this window's first update, through the update's
@@ -542,6 +567,7 @@ def main() -> None:
                 "ratio_max_deviation": float(totals["max_deviation"]),
                 "grad_norm": float(grad_norm),
                 "final_bleu": float(final_bleu[first : first + per_update].mean()),
+                "eos_rate": float(eos_rate[first : first + per_update].mean()),
                 "lr": args.lr,
                 "sec_per_update": time.time() - update_started,
                 "window_generate_s": generated,

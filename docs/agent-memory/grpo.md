@@ -16,6 +16,10 @@ streams of the noisy `en_speech` cache. Checkpoints, resume and logs are the SFT
      each of the window's `--streams` (32) × 20 streams;
   2. CPU workers compute the rewards as each generation batch lands;
   3. the policy scores every rollout, giving π_old's logprobs.
+- **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on are
+  set to -1, as SFT streams end. No reward reads them, so training them would only add noise; in a
+  single-row stream they are most of the frames. Positions before the EOS see the same inputs, so
+  the ratio stays exactly 1. `eos_rate` in the train log is the share of rollouts that ended.
 - **An update** takes its own 128 rollouts in `--micro-batch` forwards, cut within its own rows.
   π_old's pass cuts them the same way, because another batch shape picks other kernels. Every
   rollout is used by exactly one update.
@@ -51,9 +55,13 @@ streams of the noisy `en_speech` cache. Checkpoints, resume and logs are the SFT
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
   has stopped improving is simply stopped; its stop cannot be extended.
 - **Saves** land on window boundaries (`--save-every` 20 updates, and `--updates` a multiple of
-  τ). A resume starts its window again with the same seeds, unique to each window and batch.
+  τ). A resume starts its window again with the same seeds, unique to each window and batch
+  (32-bit, from `SeedSequence((seed, step, batch))`).
 - **Reward workers** are forked when the pool starts, before CUDA and any thread. A fork pool
   starts all its workers at the first submit only from Python 3.11, which GRPO requires.
+  - Forked workers also hold the launcher's run lock, and a pool never notices its parent dying.
+  - So each worker sets `PR_SET_PDEATHSIG` and dies with the trainer. Otherwise a killed trainer
+    would leave workers holding the lock, and every relaunch would exit "already running".
 
 ## Checks
 
@@ -85,8 +93,8 @@ Not yet run on CUDA. Phase 1 and 2 profiles and the dry run go here.
   - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
     old-logprob pass and the update at each `--micro-batch`.
   - It holds the fp32 policy and AdamW's states resident throughout.
-  - It times each generation size on a second call, after compilation and the CUDA graph
-    capture.
+  - It times each generation size on a second call, after compilation. Each batch's CUDA graph
+    capture stays in the time, as in a run.
   - An out-of-memory size is recorded and skipped, and `profile.json` is rewritten after each
     stage.
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-batch

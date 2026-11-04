@@ -4,7 +4,7 @@
 The policy's fp32 weights and AdamW's two states stay resident as in training, and each stage
 runs on real streams from the start checkpoint:
 - rollout generation at each --gen-batch: time per step and peak memory, timed on a second
-  call so moshi's compilation and the CUDA graph capture stay out;
+  call so moshi's compilation stays out (each batch's CUDA graph capture stays in, as in a run);
 - the rewards of the rollouts, serially and in --reward-workers worker processes;
 - π_old's logprob pass (the update's forward, gradients on) and the update's forward and backward
   at each --micro-batch, and the first update's largest ratio deviation, which should be 0.
@@ -107,7 +107,7 @@ def main() -> None:
         torch.cuda.reset_peak_memory_stats()
         generate = functools.partial(
             grpo.sample_window, generator, info, sources[:gen_batch], gen_batch, silence_frame,
-            args.seed, 0.8, 250, lambda *_: None)
+            (args.seed,), 0.8, 250, lambda *_: None)
         try:
             generate()  # compiles and captures
             seconds = timed(generate)
@@ -129,7 +129,7 @@ def main() -> None:
     gc.collect()
     torch.cuda.empty_cache()
     rollouts = grpo.sample_window(generator, info, sources, max(fitting), silence_frame,
-                                  args.seed, 0.8, 250, lambda *_: None)
+                                  (args.seed,), 0.8, 250, lambda *_: None)
     del generator
     gc.collect()
     torch.cuda.empty_cache()
@@ -155,7 +155,8 @@ def main() -> None:
     write(report)
 
     # Phase 2: π_old's logprob pass and the update's forward and backward.
-    codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
+    codes = torch.cat([grpo.mask_after_eos(rollouts.clone(), eos_id), sources.to(torch.int32)],
+                      dim=1)
     advantages = torch.from_numpy(np.concatenate([r[2] for r in results])).float()
     weights = torch.ones(1 + lm.dep_q, device=device)
     weights[0] = 100.0
