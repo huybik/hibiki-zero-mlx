@@ -146,6 +146,8 @@ inference/ (Apple Silicon, MLX)
 - Training caches (the dataset repo; the model repo of the same name holds runs):
   https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
 - EN-VI speech and text pairs: https://huggingface.co/datasets/anquachdev/common-vi-en
+- Real-Vietnamese tranche: https://huggingface.co/datasets/huybik/hibiki-zero-vi-real (public,
+  gated) and `huybik/hibiki-zero-vi-real-restricted` (private; never public)
 
 ## Maintaining context
 

@@ -25,6 +25,17 @@ English TTS bake-off and the ASR and translation checks (`training/tranche/`).
     4.0) before the first such run.
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
+- Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
+  `<source>/segments/`, `<source>/rows/` and `cache/<source>/`, so the box keeps only the shards
+  in flight and the Mac can take a share.
+  - [`huybik/hibiki-zero-vi-real`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real):
+    public, gated with automatic approval on research-only, no-impersonation terms, CC BY-NC-SA
+    4.0 overall; viVoice, YODAS, FOSD and VIVOS.
+  - [`huybik/hibiki-zero-vi-real-restricted`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real-restricted):
+    private; PhoAudiobook, whose user agreement forbids distributing it "in any original or
+    modified form", and GigaSpeech 2, whose terms allow sharing only with people who accept
+    them. Never make it public. Its first tranche (~1,100 h, ~37 GB) fits the free account's
+    100 GB of private storage; a scale-up past that needs PRO (1 TB private).
 - First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
   ~10k h with more GigaSpeech 2 and YODAS ([First tranche](#first-tranche)).
 - A commercial build still needs a legal sign-off on:
