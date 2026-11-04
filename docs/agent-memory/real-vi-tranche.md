@@ -245,7 +245,8 @@ here is published or estimated, to be measured on the box first:
 
 ## Pipeline
 
-Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04). The rows take
+Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04), except the
+translation if Muse wins it. The rows take
 the EN-VI dataset's own parquet schema, and the cache keeps its format, so the trainer takes it
 unchanged; the build needs a CUDA counterpart of the MLX `cache_codes` (Mimi in moshi's torch, as
 `mimi_cache_cuda` encodes it, and the English CTC on CUDA)

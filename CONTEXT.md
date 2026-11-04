@@ -86,7 +86,7 @@ inference/ (Apple Silicon, MLX)
   evaluation pass) and optimize it until its costliest resource stays busy; only then start the
   real run. Time each stage on a few
   shards, sample the GPU (`nvidia-smi` every 0.5 s) and know the CPU budget (a container's quota
-  in `/sys/fs/cgroup/cpu.max`, not `nproc`); compare variants on the same rows. The user's rule
+  in `/sys/fs/cgroup/cpu.max`, not `nproc`; `h100.sh cpus` makes new shells follow it); compare variants on the same rows. The user's rule
   since the first noisy encode ran ~3 h with its GPU idle half the time →
   [noisy-source](docs/agent-memory/noisy-source.md#speed),
   [sft-data-caches](docs/agent-memory/sft-data-caches.md#speed).

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Hopper (H100/H200) setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery.
 #
-#   setup             a pinned .venv (Torch 2.15 on CUDA 13.4)
+#   setup             a pinned .venv (Torch 2.15 on CUDA 13.4), then cpus
+#   cpus              the container's CPU quota into /etc/environment for every later shell; rerun
+#                     after a container restart, which rewrites the file
 #   preflight         GPU, driver, pins, memory, disk, upstream weights
 #   run RUN_NAME ...  start a run, or continue it: the same command resumes the newest local
 #                     pair with the run's saved arguments, so a preempted pod reruns it on boot
@@ -80,6 +82,21 @@ setup() {
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
   echo "Training environment installed in $VENV"
+  cpus
+}
+
+cpus() {
+  # nproc, os.cpu_count(), torch (64 threads, 32 compile workers) and ninja (one build job per
+  # core) count the host's cores, not the container's quota in cgroup cpu.max. PAM loads
+  # /etc/environment into every ssh session, so later shells and what they start follow the
+  # quota: build tools (MAX_JOBS), torch, OpenMP, BLAS and nproc (OMP_NUM_THREADS) and
+  # torch.compile's workers. Several processes sharing the quota still split it themselves.
+  require_python
+  local n
+  n="$("$PYTHON" -c 'from training.paths import cpu_budget; print(max(1, int(cpu_budget())))')"
+  sed -i '/^\(MAX_JOBS\|OMP_NUM_THREADS\|TORCHINDUCTOR_COMPILE_THREADS\)=/d' /etc/environment
+  printf '%s=%s\n' MAX_JOBS "$n" OMP_NUM_THREADS "$n" TORCHINDUCTOR_COMPILE_THREADS "$n" >> /etc/environment
+  echo "New shells get $n CPUs: MAX_JOBS, OMP_NUM_THREADS, TORCHINDUCTOR_COMPILE_THREADS"
 }
 
 preflight() {
@@ -383,6 +400,9 @@ case "$command" in
   setup)
     setup
     ;;
+  cpus)
+    cpus
+    ;;
   preflight)
     preflight 130
     ;;
@@ -390,7 +410,7 @@ case "$command" in
     run "$@"
     ;;
   *)
-    echo "usage: $0 setup|preflight|run RUN_NAME [ARGS...]" >&2
+    echo "usage: $0 setup|cpus|preflight|run RUN_NAME [ARGS...]" >&2
     exit 1
     ;;
 esac

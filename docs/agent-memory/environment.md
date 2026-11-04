@@ -16,6 +16,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   are editable installs, so moving either directory requires reinstalling them.
 - CUDA training uses only the environment that `./training/h100.sh setup` builds; see
   [sft-recovery](sft-recovery.md).
+- A rented box shows the host's cores (`nproc` 128) but its container may use only its quota
+  (`/sys/fs/cgroup/cpu.max`, 15.36 CPUs on the Illinois H100), and torch (64 threads, 32
+  compile workers), ninja and BLAS size themselves by the cores. `setup` ends with
+  `h100.sh cpus`, which writes `MAX_JOBS`, `OMP_NUM_THREADS` and `TORCHINDUCTOR_COMPILE_THREADS`
+  at the quota into `/etc/environment`, loaded by every ssh session; rerun it after a container
+  restart. Code that starts several processes splits the quota itself (`training.paths.cpu_budget`).
 
 ## Secrets
 

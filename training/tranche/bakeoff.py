@@ -289,7 +289,7 @@ def synth_worker(args: argparse.Namespace, mode: str, todo, start, run: str) -> 
                 wav, rate = generate(row, mode, SEED + k)
                 if len(wav) < rate // 2:
                     raise ValueError(f"only {len(wav) / rate:.2f} s of audio")
-            except torch.OutOfMemoryError:
+            except torch.cuda.OutOfMemoryError:  # torch.OutOfMemoryError is 2.4+; cosyvoice pins 2.3.1
                 raise  # the GPU's limit, not the model's: the row stays unrecorded for a rerun
             except Exception as exc:  # a failed row is a result: it counts as broken
                 record["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -341,8 +341,9 @@ def synth(args: argparse.Namespace) -> None:
                     break  # one failed: the finally stops the rest
                 time.sleep(5)
         finally:  # a stopped synth stops its workers, which would otherwise hold the GPU
-            start.abort()
-            for p in procs:
+            for p in procs:  # terminate, not Barrier.abort(), which hangs on a killed waiter
+                if p.pid is None:
+                    continue  # never started
                 if p.is_alive():
                     p.terminate()
                 p.join()
