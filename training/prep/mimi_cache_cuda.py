@@ -17,7 +17,7 @@ Two steps, so the download runs while the GPU still trains:
                           audio; 60% of that is kept)
     encode (CUDA)         .sources + clean shard ─► workers: PyAV decode, soxr to 24 kHz
                           ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted.
-                          The next shard loads and decodes while the GPU encodes this one.
+                          The next shard's clips decode while the GPU encodes this one.
 
 The first fetch writes <out-dir>/manifest.json (seed, fraction, dataset revision, bank SHA-256);
 later fetches and every encode require the same. `encode` waits for a source that a running
@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import fcntl
-import functools
 import json
 import math
 import multiprocessing
@@ -111,8 +110,8 @@ def parse_args() -> argparse.Namespace:
     encode.add_argument(
         "--workers",
         type=int,
-        help="Decode processes (default: the CPU budget less one; set it when the encode shares "
-        "the machine).",
+        help="Decode processes (default: the CPU budget less one; lower it when another CPU-bound "
+        "job shares the machine).",
     )
     encode.add_argument(
         "--batch-seconds", type=float, default=640.0, help="Padded audio per Mimi batch."
@@ -424,43 +423,47 @@ def encode_shards(
     encoder = Encoder(args)
     # One CPU stays for this process, which feeds the GPU: workers past the budget exhaust a
     # container's quota, and the throttle stalls this process with them.
-    workers = args.workers or max(1, math.floor(cpu_budget()) - 1)
+    workers = args.workers if args.workers is not None else max(1, math.floor(cpu_budget()) - 1)
     print(f"{workers} decode workers", flush=True)
     spawn = multiprocessing.get_context("spawn")
     missing: list[str] = []
     with ProcessPoolExecutor(workers, mp_context=spawn) as pool:
-        queue = functools.partial(load, args, settings, split, encoder.bank, pool)
-        ahead = queue(shards[0])
-        last = time.perf_counter()
-        for number, shard_path in enumerate(shards, 1):
-            shard = ahead
-            if number < len(shards):
-                ahead = queue(shards[number])
-            if shard is None:
-                print(f"{shard_path.name}: no fetched source, skipped", flush=True)
-                missing.append(shard_name(shard_path))
-                last = time.perf_counter()
-                continue
-            payload = shard.payload
-            count = len(shard.clips)
-            seconds = encoder.shard(payload["samples"], shard.clips)
-            payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings
-            out_path = args.out_dir / shard_path.name
-            partial = out_path.with_name(f".{out_path.name}.tmp")
-            torch.save(payload, partial)
-            durable(partial)
-            partial.replace(out_path)
-            durable(args.out_dir)
-            shard.source_path.unlink()
-            # Since the previous shard: with the next one decoding meanwhile, the pace.
-            now = time.perf_counter()
-            wall, last = now - last, now
-            print(
-                f"{shard_path.name}: {count} of {len(payload['samples'])} rows "
-                f"re-encoded, {seconds / 3600:.2f} h in {wall:.0f} s ({seconds / wall:.0f}x RT) "
-                f"[{number}/{len(shards)}]",
-                flush=True,
-            )
+        try:
+            ahead = load(args, settings, split, encoder.bank, pool, shards[0])
+            last = time.perf_counter()
+            for number, shard_path in enumerate(shards, 1):
+                shard = ahead
+                if number < len(shards):
+                    ahead = load(args, settings, split, encoder.bank, pool, shards[number])
+                if shard is None:
+                    print(f"{shard_path.name}: no fetched source, skipped", flush=True)
+                    missing.append(shard_name(shard_path))
+                    last = time.perf_counter()
+                    continue
+                payload = shard.payload
+                count = len(shard.clips)
+                seconds = encoder.shard(payload["samples"], shard.clips)
+                payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings
+                out_path = args.out_dir / shard_path.name
+                partial = out_path.with_name(f".{out_path.name}.tmp")
+                torch.save(payload, partial)
+                durable(partial)
+                partial.replace(out_path)
+                durable(args.out_dir)
+                shard.source_path.unlink()
+                # Since the previous shard: with the next one decoding meanwhile, the pace.
+                now = time.perf_counter()
+                wall, last = now - last, now
+                print(
+                    f"{shard_path.name}: {count} of {len(payload['samples'])} rows re-encoded, "
+                    f"{seconds / 3600:.2f} h in {wall:.0f} s ({seconds / wall:.0f}x RT) "
+                    f"[{number}/{len(shards)}]",
+                    flush=True,
+                )
+        except BaseException:
+            # Without this, leaving the pool decodes every queued clip before the error shows.
+            pool.shutdown(cancel_futures=True)
+            raise
     return missing
 
 

@@ -114,8 +114,10 @@ came out identical to the first encode's.
   shard and its source ~0.5 s; the save ~0.4 s.
 - `encode` overlaps shards: it loads the next shard and queues its clips, shortest first, before
   the GPU encodes the current one, so the workers decode them meanwhile. Each clip's PCM is
-  freed once encoded. (A loader thread hid the ~0.5 s load as well, but a failure could then
-  wait on that thread, for as long as a running fetch had not written the next source.)
+  freed once encoded; on an error the queued clips are cancelled. The next shard's load sits on
+  the GPU's path (~0.5 s, ~2%): a loader thread hid it, but needed more care to fail cleanly. An
+  encode that overtakes a running fetch still waits for the next source before encoding the
+  current shard, so a failure there shows only once the fetch has written it.
 - Seconds per shard after the first (which adds ~10 s of start-up):
 
   | Loop | Workers | s/shard | Real time |
@@ -123,14 +125,17 @@ came out identical to the first encode's.
   | serial (the first encode) | 24 | ~14 | ~1,450x |
   | pipelined | 24 | ~10 | ~1,900x |
   | pipelined | 7 | ~8 | ~2,450x |
-  | pipelined | 6 (default) | ~8 | ~2,450x |
+  | pipelined | 6 | ~8 | ~2,450x |
   | pipelined | 5 | ~8.5 | ~2,350x |
-  | pipelined, no loader thread (current) | 6 | ~8 | ~2,400x |
+  | pipelined, no loader thread (current) | 6 (default) | ~8 | ~2,400x |
 
   `--workers` defaults to the CPU budget less one (6 here): the CPUs the process may run on,
   capped by the cgroup v2 or v1 quota. It keeps the throttle off (2 s summed over all threads in
-  a run of six shards, against 21 s with 7 workers). Set it by hand when the encode shares the
-  container (a fetch, another encode).
+  a run of six shards, against 21 s with 7 workers). Lower it when another CPU-bound job shares
+  the container (two encodes split the budget: 3 workers each here); a fetch is network-bound
+  and needs no share. It reads the quota at the cgroup namespace's root, which a container has
+  as its own; under `--cgroupns=host` or a parent cgroup's quota it misses the limit, so check
+  the printed worker count.
 - `--batch-seconds` stays 640: 1280 was no faster and changed some codes (the kernels depend on
   the batch's shape), and 2560 ran out of memory beside another encode's 32 GB.
 - Decode and the GPU now take about the same time per shard, so the next gain needs more CPU (a
