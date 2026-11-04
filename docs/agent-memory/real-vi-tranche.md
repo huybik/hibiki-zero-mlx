@@ -4,7 +4,8 @@ Read when choosing or building the real-Vietnamese source data (plan stage 1.3),
 or its licences.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [Corpora](#corpora) ·
 [YODAS sample](#yodas-layout-and-sample) ·
-[English TTS](#english-tts) · [Pipeline](#pipeline)
+[English TTS](#english-tts) · [First tranche](#first-tranche) · [Models](#models) ·
+[Pipeline](#pipeline)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
 bands) costs ~5 of the 15–18 chrF between held-out TTS and FLEURS dev; the rest is real voices and
@@ -16,9 +17,15 @@ Researched 2026-11-04 from the corpora's and models' own cards; no code yet.
 
 ## Decision
 
-- The first ~1,000 h come from YouTube video that uploaders marked CC BY (YODAS) plus Common Voice
-  vi and FOSD, nothing non-commercial (user, 2026-11-04): the model ships in a commercial app.
-- Before the model ships, a legal sign-off on:
+- The tranche is research, so non-commercial corpora are in (user, 2026-11-04). Weights trained on
+  them are research-only:
+  - Bud500 and viVoice are CC BY-NC-SA, and the recovery repo is public, so mark it and every
+    checkpoint trained on them non-commercial (CC BY-NC-SA 4.0) before the first such run.
+  - Each source gets its own cache, so a commercial model is the same SFT without the
+    non-commercial caches (~10 h of training); the generated data is kept either way.
+- First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
+  ~10k h with GigaSpeech 2 and more YODAS ([First tranche](#first-tranche)).
+- A commercial build still needs a legal sign-off on:
   - YODAS's CC BY, which each uploader declared. Uploaders cannot be credited, because the
     dataset scrambles video ids, and some uploads are re-uploads of other people's content.
   - Cloning the voices of speakers who never consented. Several TTS cards forbid that. The
@@ -33,8 +40,13 @@ Researched 2026-11-04 from the corpora's and models' own cards; no code yet.
 | YODAS3 vi, [`espnet/yodas3`](https://huggingface.co/datasets/espnet/yodas3)@`81d802f` (670 GB) | 12.6k (44k videos, none in v1/v2) | ~95% YouTube ASR captions with word timestamps; whole videos | CC BY 3.0 | ~250 h, then the scale-up pool |
 | Common Voice 27 vi (Mozilla Data Collective) | 23 (7.8 validated), 419 speakers | Read prompts | CC0 | speakers |
 | FOSD, `doof-ferb/fpt_fosd`@`e6ff950` ([source](https://data.mendeley.com/datasets/k9sxg2twv4/4)) | 30 (the mirror's "100h" is wrong) | FPT 2018, sentences without punctuation | CC BY 4.0 | read speech |
-| VLSP2020 100h, LSVSC 100h, VietSpeech 1,100h | 1.3k | Spontaneous, dialect-tagged, "social resources" | Only mirrors claim CC BY or Apache; primary terms or audio source unknown | held until written terms |
-| GigaSpeech 2 vi (6,039 h), Bud500 (500), viVoice (1,017), PhoAudiobook (941), VIVOS (15), ViMD (102), LEMAS vi (built from GigaSpeech 2) | ~8.6k | | Non-commercial | never in a shipped model |
+| [PhoAudiobook](https://huggingface.co/datasets/thivux/phoaudiobook) (VinAI) | 941 (+554 augmented), 710 speakers | Audiobooks: book text, long continuous reading | Research or education only | first tranche |
+| [viVoice](https://huggingface.co/datasets/capleaf/viVoice) | 1,017, 186 channels | Clean YouTube speech | CC BY-NC-SA 4.0 | first tranche |
+| [Bud500](https://huggingface.co/datasets/linhtran92/viet_bud500) | 500 | Mixed domains | CC BY-NC-SA 4.0 | first tranche |
+| [GigaSpeech 2 vi](https://huggingface.co/datasets/speechcolab/gigaspeech2)@`8dc0d0e` | 6,039 refined | YouTube and podcasts, iteratively refined transcripts | Non-commercial research and education (access terms) | scale-up pool |
+| [VIVOS](https://huggingface.co/datasets/AILAB-VNUHCM/vivos) | 15 | Read sentences | CC BY-NC-SA 4.0 | read speech |
+| VLSP2020 100h, LSVSC 100h (dialect-tagged), VietSpeech 1,100h | 1.3k | Spontaneous, dialects, "social resources" | Only mirrors claim CC BY or Apache; primary terms or audio source unknown | after checking their terms allow research use |
+| [ViMD](https://huggingface.co/datasets/nguyendv02/ViMD_Dataset) (102 h, 63 provinces); LEMAS vi | | | CC BY-NC-ND (no derivatives); LEMAS repackages GigaSpeech 2 and YODAS | not used |
 
 - Emilia and Emilia-YODAS have no Vietnamese. Babel Vietnamese
   ([LDC2017S01](https://catalog.ldc.upenn.edu/LDC2017S01), 201 h of 8 kHz phone calls, four
@@ -95,6 +107,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 | [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) (2B) | Seed test-en WER 1.84, similarity 75.3; 48 kHz | Vietnamese is one of its 30 languages, so a Vietnamese reference is in distribution; clones from the reference alone; batched serving through vLLM-Omni. Output varies between runs (its authors suggest 1–3 tries) |
 | [Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | WER 1.24, similarity 0.775; 24 kHz | No Vietnamese; its best mode needs the reference's transcript |
 | [Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | WER 2.24, similarity 71.8; 24 kHz | A cross-lingual mode; the smallest and fastest |
+| [dots.tts-base](https://huggingface.co/dots-studio/dots.tts-base) (Apache-2.0) | WER 1.34, similarity 76.8 | New; no serving stack |
+| [LongCat-AudioDiT-3.5B](https://github.com/meituan-longcat/LongCat-AudioDiT) (MIT) | WER 1.50, similarity 78.6 | New; English and Chinese only |
 
 - Ruled out:
   - non-commercial weights (F5-TTS, MaskGCT, Llasa, Spark-TTS, XTTS-v2, OpenAudio S1-mini, Fish S2);
@@ -119,6 +133,51 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   4. drop a model with more than 2% broken clips, take the highest similarity at WER ≤ 3% and
      at most ~50 H100-hours per 1,000 h, then listen blind to 20 pairs.
 
+## First tranche
+
+~2,000 h, then measure:
+
+| Source | Hours | Why |
+|---|---:|---|
+| PhoAudiobook, viVoice, Bud500 | ~1,300, capped per speaker or channel | The cleanest real speech with the most speakers; accurate transcripts where they come from text (audiobooks) |
+| YODAS (owsmv4-selected videos) | ~700 | Spontaneous speech, many genres |
+| Common Voice vi, FOSD, VIVOS | ~65 | More speakers, read sentences |
+
+- Check each corpus's transcripts on a sample before trusting them; re-transcribe a corpus only
+  where they are poor (always for YODAS).
+- Keep a corpus's own order (an audiobook's consecutive sentences, a video's runs) so that the
+  trainer can join real neighbours into streams.
+- Rough box time per 1,000 h, from published speeds: the English TTS ~20–50 H100-hours, the
+  ASR and the translation ~1 h each, alignment and diarization less: 1–3 days of the box,
+  ~$35–100. Box time, not money, bounds the scale-up; past ~5k h a second GPU for generation
+  pays.
+
+## Models
+
+The newest commercially usable model per step, from their cards (2026-11-04); every H100 speed
+here is published or estimated, to be measured on the box first:
+
+| Step | Pick (licence) | Runner-up | Notes |
+|---|---|---|---|
+| VAD | Silero VAD v6.2.3 (MIT) | FireRedVAD | |
+| Diarization, overlap | `nvidia/Nemotron-3-Diarization` (OpenMDW-1.1) | pyannote community-1 (CC BY 4.0, gated) | DIHARD III DER 12.7 against 20.2; up to 8 speakers |
+| Speaker embedding (voice reference) | WeSpeaker ResNet293-LM (CC BY 4.0) | TitaNet-Large | |
+| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. Rows where the two ASRs disagree are dropped |
+| Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Qwen3-ASR's own language tag cross-checks |
+| Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
+| English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame |
+| VI→EN translation | `tencent/Hy-MT2-30B-A3B` (Apache-2.0 on its card since a licence change: pin the commit), vLLM on the box | `google/gemma-4-31b-it` (Apache-2.0) | FLORES XCOMET 93.85 against Gemini 3.1 Pro's 94.42; ~1 h per 10M words (estimate). Score ~200 of our sentences with xCOMET first |
+| English TTS | VoxCPM2 | Qwen3-TTS 1.7B | Bake-off below |
+| TTS bake-off scoring | WavLM-Large SV (scoring only) | ReDimNet2-B6 | |
+| Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
+
+- Ruled out, non-commercial or with licences that bar training on outputs: ChunkFormer-vie,
+  hynt Zipformer, MMS-FA and MMS-LID, `wav2vec2-base-vi-vlsp2020`, Hunyuan-MT 1.x / HY-MT1.5,
+  TranslateGemma.
+- The Gemini, Claude and OpenAI terms forbid using outputs to build competing models, so open
+  models on the box produce anything that becomes training data.
+- For EN→VI, `pnnbao-ump/VieNeu-TTS-v3-Turbo` (Apache-2.0) is the newest open VieNeu.
+
 ## Pipeline
 
 Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04). The rows take
@@ -128,11 +187,12 @@ unchanged; the build needs a CUDA counterpart of the MLX `cache_codes` (Mimi in 
 ([sft-data-caches](sft-data-caches.md#flow)):
 
 ```text
-YODAS video audio (24 kHz)
-  ─► Vietnamese ASR with punctuation and word times (the captions are ASR-grade)
-  ─► sentences ─► rows of whole sentences, 5–22.4 s, kept in order per video
+YODAS runs (24 kHz) ─► Vietnamese ASR: punctuation, word times ─────────┐
+other corpora ─► their transcripts, word times by forced alignment ─────┤ (ASR where they are poor)
+                                                                        ▼
+  rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
-  ─► LLM VI→EN per row, the video's previous rows as context (the existing translators)
+  ─► LLM VI→EN per row on the box, the previous rows as context
   ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
@@ -147,6 +207,3 @@ YODAS video audio (24 kHz)
 - YODAS has no speaker labels and a video may hold several speakers: cluster speaker embeddings
   per video to pick each row's reference and drop overlapped speech. The same embeddings and a
   dialect classifier check the North, Central and South balance.
-- Rough cost from published speeds, to be measured: the TTS ~20–50 H100-hours per 1,000 h; the
-  translation about the EN→VI runs' (~$39 per 1,000 h on Gemini,
-  [en-vi-gemini](en-vi-gemini.md)).
