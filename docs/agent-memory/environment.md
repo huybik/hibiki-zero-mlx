@@ -41,10 +41,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   ([sft-training](sft-training.md#evaluation-sets)).
 - Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
   (`HF_HOME`).
-- Run checkpoints scored on the Mac go to `/Volumes/data/models/hibiki/runs/<run>/checkpoints/`
-  (bf16 copies of the fp32 models), never the internal disk: a 3B checkpoint is 5.8 GiB in bf16,
-  11.6 GiB in fp32. Keep the newest and the best by FLEURS dev chrF; delete the rest once scored
-  (user's rule, 2026-11-03).
+- The Mac keeps no run checkpoints or evaluation outputs: the pod's validation scores every
+  checkpoint on all evaluation sets, as `eval.py` would (user's decision, 2026-11-04). The sets
+  themselves, with their audio, are in the dataset repo `huybik/hibiki-zero-vi-full-sft` under
+  `eval/`. To score a checkpoint on the Mac anyway, put its bf16 copy under
+  `/Volumes/data/models/hibiki/runs/<run>/checkpoints/`, never the internal disk (a 3B checkpoint
+  is 5.8 GiB in bf16, 11.6 GiB in fp32), and delete it once scored.
 - Gitignored local state: `data/` (restored Mimi caches, `data/eval/`), `runs/` (training runs and eval
   outputs), `translations/` and `output/`.
 

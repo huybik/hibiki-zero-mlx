@@ -232,10 +232,11 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
     ended 11 of 48 FLEURS rows, against 27 at 0.8 with the same 8 s tail and 33 with a longer
     one. Its EOS came up to 14 s after a row ended, and the 8 s tail cut a third of them
     ([analysis](../analysis/eos_and_lag.md)).
-  - On the Mac (48 GB M4 Pro, torch 2.15), `--device mps` scores a running run's checkpoints
-    while the pod trains. One call over the second run's five sets in its order with `--seed 43`
-    (1,081 rows) takes 21.5 min at batch 64, with a 23 GB peak footprint and swap flat; three
-    calls at batch 16 on torch 2.13 took ~75 min. Measured 2026-11-04:
+  - On the Mac (48 GB M4 Pro, torch 2.15), `--device mps` can score a checkpoint, though the
+    pod's validation now scores every one ([environment](environment.md#storage)). One call over
+    the second run's five sets in its order with `--seed 43` (1,081 rows) takes 21.5 min at batch
+    64, with a 23 GB peak footprint and swap flat; three calls at batch 16 on torch 2.13 took ~75
+    min. Measured 2026-11-04:
     - A step is bound by per-op dispatch, not the GPU: 120 ms at batch 16 and 171 at 64, so rows
       per second nearly triple from 16 to 64. Batch 96 adds ~15% for 4 GiB more and pads more.
     - The KV cache sized to the batch's steps (`generate_batch`) took a batch-64 step from 318 to
