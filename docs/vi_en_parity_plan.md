@@ -296,16 +296,30 @@ Vietnamese text cannot keep up with its speech.
      all five sets as `eval.py` does; one Mac call over them takes 21.5 min
      ([sft-evaluation](agent-memory/sft-evaluation.md#side-tools)).
    - That run, `en_speech_noisy_epoch2`, moved to a cheaper 700 W H100 SXM at step 18,000
-     ([finetune](finetune.md#move-a-running-run-to-another-pod)) and should end about 13:15 UTC
-     on 2026-11-04.
-     - Its step-18,000 validation fails the EOS gate, so its best validation model by FLEURS dev
-       chrF is kept in `offline_best/` on the Hub.
-     - Once it ends, the pod scores its final model and the first run's on FLEURS test and both
-       MultiMed-ST halves, using the trainer's protocol. Results go to `<run>/eval/test_step*/`.
-     - FLEURS dev chrF by validation: 27.5, 27.4, 27.5, then 28.8 at step 72,000 (291 of 361
-       rows ended). The noisy sets at 18,000 and 72,000: Common Voice 38.4 and 37.8,
-       Libriheavy 41.5 and 42.7.
-4. A learning-rate test on the box once run 2 ends: 10k steps from its final model at peak LR
+     ([finetune](finetune.md#move-a-running-run-to-another-pod)) and ended at step 131,703 at
+     13:06 UTC on 2026-11-04.
+     - FLEURS dev chrF by validation (every 18,000 steps, then the last step): 27.5, 27.4, 27.5,
+       28.8, 29.1, 29.0, 29.0, 29.5, with 237–291 of 361 rows ended. The final model is the best
+       and is kept in `offline_best/` on the Hub (every validation fails the health gates). From
+       step 18,000 to the end, `en-vi-val` went 43.0 → 44.7 (Common Voice) and 43.7 → 45.2
+       (Libriheavy), `en-vi-val-noisy` 38.4 → 40.8 and 41.5 → 43.4.
+     - Test sets, in one `eval.py` call over FLEURS test and both MultiMed-ST halves (batch 64,
+       `--seed 43`, text only), its final model against the first run's. Predictions are on the
+       Hub under `<run>/eval/test_step*/`.
+
+       | Set (rows) | chrF | BLEU | Rows ended |
+       |---|---:|---:|---:|
+       | FLEURS test (857) | 29.5 vs 24.7 | 5.4 vs 4.0 | 653 vs 378 |
+       | MultiMed-ST select (1,718) | 24.9 vs 23.3 | 3.0 vs 2.9 | 893 vs 479 |
+       | MultiMed-ST final (1,719) | 24.7 vs 23.2 | 3.1 vs 3.1 | 829 vs 514 |
+
+     - FLEURS BLEU stays near 5 while the held-out TTS rows score 15–20. At step 90,000 FLEURS
+       dev's n-gram precisions were 28, 6, 2 and 1%, 45 of 361 hypotheses shared a 4-gram with
+       their reference, and hypotheses ran 19% long; lowercasing and dropping punctuation moved
+       BLEU only from 4.2 to 4.5. On real speech the model drifts from the source (paraphrase,
+       invented content), which only real Vietnamese speech in training (stage 1.3) addresses.
+4. A learning-rate test on the box, running since 13:31 UTC on 2026-11-04 at ~1 h a rate (10k
+   steps at 0.275 s and four validations): 10k steps from run 2's final model at peak LR
    1e-6 (the control), 3e-6 and 1e-5, with the same seed, data and validation. The paper's
    language stage trained at 3e-5 with ~15× more audio per step, so 1e-6 may be a polish rate;
    an earlier recipe collapsed into silence at 3e-5 to 5e-5, so the test stops at 1e-5.
