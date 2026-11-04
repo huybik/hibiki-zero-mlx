@@ -1,9 +1,10 @@
 # Noisy Vietnamese source
 
-Read when touching `training/prep/augment.py`, `training/prep/noisy_cache.py`, the
+Read when touching `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py`, the
 `en-vi-val-noisy` evaluation set or a `*-noisy` cache.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Conditions](#conditions) ·
-[Noisy cache](#noisy-cache) · [Checks](#checks) · [Evaluation](#evaluation)
+[Noisy cache](#noisy-cache) · [Speed](#speed) · [Checks](#checks) ·
+[Evaluation](#evaluation)
 
 ## Why
 
@@ -56,7 +57,7 @@ clip ─► reverb p 0.5 ─► + noise p 0.8, SNR U[5, 30] dB ─► band ─�
 
 ## Noisy cache
 
-`training.prep.noisy_cache` writes, for each `shard_<name>.pt` of a clean cache split, a shard
+`training.prep.mimi_cache_cuda` writes, for each `shard_<name>.pt` of a clean cache split, a shard
 with the same rows in the same order, in two steps that share `--out-dir`:
 
 ```text
@@ -95,16 +96,40 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
 - Sizes for `en-vi-grounded-v2/train`: 1,832 parquets, 442.7 GB; 9,057 h of Vietnamese, ~5,400 h
   re-encoded. The pod downloads at ~39 MB/s (16 at a time; one alone ~10 MB/s; reading only the
   needed columns over HTTP was no faster), so `fetch` takes ~3.2 h and keeps ~80 GB of sources.
-  On the pod's H100, `encode` runs at ~1,400–1,550x real time: ~12 s for a 4.8 h `cv27` shard, so
-  ~4 h for the split (its CPU alone: 24x).
-- `encode` leaves the GPU idle about half the time (2026-11-04, nvidia-smi every 0.5 s: ~10 s at
-  0%, then ~8 s at 75–100%, per Libriheavy shard). Its loop is serial per shard: load the shard
-  and source, decode in the workers, then augment and Mimi on the GPU, then save and fsync. The
-  main process is at ~80% CPU; the 24 decode workers averaged ~11% each. Before the next encode
-  (another epoch's conditions, another split), overlap shard N+1's load and decode with shard
-  N's GPU work, and its save with the next shard: about twice as fast.
+  `encode` takes ~2.3 h for the split on the pod ([Speed](#speed)).
 - PyAV must be in the pod's environment (`h100.sh setup` pins it; an older venv needs
   `.venv/bin/python -m pip install av==15.1.0`).
+
+## Speed
+
+Measured on the pod (H100, 2026-11-04) on six `libriheavy-medium` shards of 5–6 h re-encoded
+each, every variant run from the same sources. At the default batch size every variant's shards
+came out identical to the first encode's.
+
+- The container may use 7.68 CPUs (`/sys/fs/cgroup/cpu.max`), though `nproc` shows 32. Decode
+  workers past that budget exhaust the quota, and the throttle stalls the process that feeds the
+  GPU with them; lowering the workers' priority (nice 19) changed nothing.
+- Per shard: decode (PyAV and soxr in the workers, and the PCM back to the main process)
+  ~48 CPU-s, ~450x real time per CPU; augment and Mimi on the GPU ~7 s (Mimi ~6 s); loading the
+  shard and its source ~0.5 s; the save ~0.4 s.
+- `encode` pipelines shards: a loader thread reads the next shard and submits its clips, shortest
+  first, while the GPU encodes the current one. Two shards of PCM in flight hold ~4 GB of RAM.
+- Seconds per shard after the first (which adds ~10 s of start-up):
+
+  | Loop | Workers | s/shard | Real time |
+  |---|---:|---:|---:|
+  | serial (the first encode) | 24 | ~14 | ~1,450x |
+  | pipelined | 24 | ~10 | ~1,900x |
+  | pipelined | 7 | ~8 | ~2,450x |
+  | pipelined | 6 (default) | ~8 | ~2,450x |
+  | pipelined | 5 | ~8.5 | ~2,350x |
+
+  `--workers` defaults to the CPU budget less one (6 here), which keeps the throttle off (2 s
+  summed over all threads in a run of six shards, against 21 s with 7 workers).
+- `--batch-seconds` stays 640: 1280 was no faster and changed some codes (the kernels depend on
+  the batch's shape), and 2560 ran out of memory beside another encode's 32 GB.
+- Decode and the GPU now take about the same time per shard, so the next gain needs more CPU (a
+  pod with a larger quota) as well as a faster GPU step.
 
 ## Checks
 

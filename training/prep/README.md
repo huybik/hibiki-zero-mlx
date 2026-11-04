@@ -126,7 +126,7 @@ python -m training.prep.eval_sets --sets en-vi-val-noisy  # en-vi-val-noisy/{cv2
 
 ## Noisy source cache
 
-Runs on the pod. `training.prep.noisy_cache` copies a clean cache split shard by shard,
+Runs on the pod. `training.prep.mimi_cache_cuda` copies a clean cache split shard by shard,
 re-encoding the Vietnamese source of a seeded 60% of the rows under drawn room reverb, noise,
 band and level ([noisy-source](../../docs/agent-memory/noisy-source.md)). `fetch` downloads
 each shard's parquet from `anquachdev/common-vi-en`, keeps only the selected rows' Vietnamese
@@ -136,8 +136,8 @@ written.
 
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
-nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
-./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O   # once the GPU is free
+nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O   # once the GPU is free
 ```
 
 ## Vietnamese translations of `en_speech`

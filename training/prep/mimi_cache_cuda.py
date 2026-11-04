@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Re-encode the Vietnamese source of a grounded cache under simulated recording conditions.
+"""Mimi on CUDA for the grounded caches: re-encode the Vietnamese source of a cache split.
 
 Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the same rows in the
 same order. A seeded --fraction of the rows get new Vietnamese source codes: their clip, taken
@@ -7,7 +7,8 @@ from the EN-VI dataset's parquet shard that the cache shard was built from, is d
 resampled by the cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions
 and Mimi-encoded in float32. Text, English codes, frame counts and both EOS positions stay as
 they were. Each row records its conditions under `source_conditions` (None for a row kept
-clean).
+clean). The noisy second epoch is --seed 0, --fraction 0.6; another epoch's conditions take
+another --seed and --out-dir.
 
 Two steps, so the download runs while the GPU still trains:
 
@@ -15,7 +16,8 @@ Two steps, so the download runs while the GPU still trains:
                           of the selected rows only (30% of a parquet's bytes is Vietnamese
                           audio; 60% of that is kept)
     encode (CUDA)         .sources + clean shard ─► workers: PyAV decode, soxr to 24 kHz
-                          ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted
+                          ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted.
+                          The next shard loads and decodes while the GPU encodes this one.
 
 The first fetch writes <out-dir>/manifest.json (seed, fraction, dataset revision, bank SHA-256);
 later fetches and every encode require the same. `encode` waits for a source that a running
@@ -28,9 +30,11 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import fcntl
+import functools
 import json
 import math
 import multiprocessing
+import os
 import random
 import shutil
 import tempfile
@@ -66,9 +70,20 @@ SOURCES = ".sources"
 FETCH_LOCK = ".fetch.lock"
 ENCODE_LOCK = ".encode.lock"
 MANIFEST = "manifest.json"
-META_KEY = b"noisy_cache"
+META_KEY = b"noisy_cache"  # in each source's parquet metadata, as fetched
 WAIT_S = 30
 DOWNLOAD_ATTEMPTS = 4  # one failed download would leave its shard unwritten overnight
+
+
+def cpu_budget() -> float:
+    """The CPUs this process may use: a container's quota (cgroup v2 `cpu.max`), which
+    `os.cpu_count()` does not show, else every CPU."""
+    limit = Path("/sys/fs/cgroup/cpu.max")
+    if limit.exists():
+        quota, period = limit.read_text().split()
+        if quota != "max":
+            return int(quota) / int(period)
+    return float(os.cpu_count())
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,7 +105,14 @@ def parse_args() -> argparse.Namespace:
     encode.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"))
     encode.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     encode.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    encode.add_argument("--workers", type=int, default=24, help="Decode processes.")
+    # One CPU stays for the process that feeds the GPU: workers past the budget exhaust a
+    # container's quota, and the throttle stalls that process with them.
+    encode.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, math.floor(cpu_budget()) - 1),
+        help="Decode processes (default: the CPU budget less one).",
+    )
     encode.add_argument(
         "--batch-seconds", type=float, default=640.0, help="Padded audio per Mimi batch."
     )
@@ -203,7 +225,7 @@ def fetch(args: argparse.Namespace) -> None:
     (args.out_dir / SOURCES).mkdir(parents=True, exist_ok=True)
     shards = todo(cache_dir, args.out_dir)
     print(f"{len(shards)} shards to fetch for {args.out_dir}", flush=True)
-    busy = f"another noisy_cache fetch uses {args.out_dir}"
+    busy = f"another mimi_cache_cuda fetch uses {args.out_dir}"
     with (
         exclusive(args.out_dir / FETCH_LOCK, busy),
         ThreadPoolExecutor(args.jobs) as pool,
@@ -321,7 +343,7 @@ def wait_for_source(out_dir: Path, name: str) -> Path | None:
 def encode(args: argparse.Namespace) -> None:
     cache_dir = require_dir(args.cache_dir, "clean cache split")
     split = cache_dir.name
-    busy = f"another noisy_cache encode uses {args.out_dir}"
+    busy = f"another mimi_cache_cuda encode uses {args.out_dir}"
     with exclusive(args.out_dir / ENCODE_LOCK, busy):
         settings = manifest(args)
         # Sources of shards already written: a stop between the shard's rename and the unlink.
@@ -338,50 +360,86 @@ def encode(args: argparse.Namespace) -> None:
         print(f"{args.out_dir}: every shard written", flush=True)
 
 
+@dataclasses.dataclass
+class Loaded:
+    """A clean shard with its rows' conditions drawn and their clips queued for decoding."""
+
+    source_path: Path
+    payload: dict[str, Any]
+    clips: dict[int, Future]  # sample index -> the decoded clip
+
+
+def load(
+    args: argparse.Namespace,
+    settings: dict[str, Any],
+    split: str,
+    bank: augment.Bank,
+    pool: ProcessPoolExecutor,
+    shard_path: Path,
+) -> Loaded | None:
+    """Loader thread: the shard, its source checked against it, and its selected rows submitted
+    to the decode workers; None when its source is missing and no fetch runs."""
+    source_path = wait_for_source(args.out_dir, shard_name(shard_path))
+    if source_path is None:
+        return None
+    table = pq.read_table(source_path)
+    source = json.loads(table.schema.metadata[META_KEY])
+    payload = torch.load(shard_path, map_location="cpu")
+    if payload.get("format") != CACHE_FORMAT:
+        raise RuntimeError(f"{shard_path} is not a {CACHE_FORMAT} shard")
+    if (
+        payload["source"] != source
+        or source["file"] != f"data/{split}/{shard_name(shard_path)}.parquet"
+    ):
+        raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {source}")
+    ids = table.column("id").to_pylist()
+    opus = table.column("vi_opus").to_pylist()
+    samples = payload["samples"]
+    todo: dict[int, bytes] = {}
+    for index, sample in enumerate(samples):
+        file, row = sample["source_row"].split("#r")
+        row = int(row)
+        if file != source["file"] or ids[row] != sample["id"]:
+            raise RuntimeError(f"{sample['source_row']} holds {ids[row]}, not {sample['id']}")
+        sample["source_conditions"] = None
+        if opus[row] is None:
+            continue
+        conditions = bank.draw(f"{settings['seed']}:{sample['id']}")
+        sample["source_conditions"] = dataclasses.asdict(conditions)
+        todo[index] = opus[row]
+    # Shortest first, the order Encoder.shard takes them in, so its first batch is ready first.
+    order = sorted(todo, key=lambda index: samples[index]["vi_frames"])
+    clips = {index: pool.submit(decode, todo[index]) for index in order}
+    return Loaded(source_path, payload, clips)
+
+
 def encode_shards(
     args: argparse.Namespace, settings: dict[str, Any], split: str, shards: list[Path]
 ) -> list[str]:
-    """Write the noisy shards; return the names of those whose source is missing."""
+    """Write the noisy shards; return the names of those whose source is missing. While the GPU
+    encodes one shard, a thread loads the next and the workers decode its clips."""
     encoder = Encoder(args)
     spawn = multiprocessing.get_context("spawn")
     missing: list[str] = []
-    with ProcessPoolExecutor(args.workers, mp_context=spawn) as pool:
+    # The loader submits to the pool, so it shuts down first.
+    with (
+        ProcessPoolExecutor(args.workers, mp_context=spawn) as pool,
+        ThreadPoolExecutor(1) as loader,
+    ):
+        load_shard = functools.partial(load, args, settings, split, encoder.bank, pool)
+        ahead = loader.submit(load_shard, shards[0])
+        last = time.perf_counter()
         for number, shard_path in enumerate(shards, 1):
-            started = time.perf_counter()
-            source_path = wait_for_source(args.out_dir, shard_name(shard_path))
-            if source_path is None:
+            shard = ahead.result()
+            if number < len(shards):
+                ahead = loader.submit(load_shard, shards[number])
+            if shard is None:
                 print(f"{shard_path.name}: no fetched source, skipped", flush=True)
                 missing.append(shard_name(shard_path))
+                last = time.perf_counter()
                 continue
-            table = pq.read_table(source_path)
-            source = json.loads(table.schema.metadata[META_KEY])
-            payload = torch.load(shard_path, map_location="cpu")
-            if payload.get("format") != CACHE_FORMAT:
-                raise RuntimeError(f"{shard_path} is not a {CACHE_FORMAT} shard")
-            if (
-                payload["source"] != source
-                or source["file"] != f"data/{split}/{shard_name(shard_path)}.parquet"
-            ):
-                raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {source}")
-            ids = table.column("id").to_pylist()
-            opus = table.column("vi_opus").to_pylist()
-            del table
-            clips: dict[int, Future] = {}
-            for index, sample in enumerate(payload["samples"]):
-                file, row = sample["source_row"].split("#r")
-                row = int(row)
-                if file != source["file"] or ids[row] != sample["id"]:
-                    raise RuntimeError(
-                        f"{sample['source_row']} holds {ids[row]}, not {sample['id']}"
-                    )
-                sample["source_conditions"] = None
-                if opus[row] is None:
-                    continue
-                conditions = encoder.bank.draw(f"{settings['seed']}:{sample['id']}")
-                sample["source_conditions"] = dataclasses.asdict(conditions)
-                clips[index] = pool.submit(decode, opus[row])
-            del opus
-            seconds = encoder.shard(payload["samples"], clips)
+            payload = shard.payload
+            seconds = encoder.shard(payload["samples"], shard.clips)
             payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings
             out_path = args.out_dir / shard_path.name
             partial = out_path.with_name(f".{out_path.name}.tmp")
@@ -389,11 +447,13 @@ def encode_shards(
             durable(partial)
             partial.replace(out_path)
             durable(args.out_dir)
-            source_path.unlink()
-            wall = time.perf_counter() - started
+            shard.source_path.unlink()
+            # Since the previous shard: with the next shard loading meanwhile, the pace.
+            now = time.perf_counter()
+            wall, last = now - last, now
             print(
-                f"{shard_path.name}: {len(clips)} of {len(payload['samples'])} rows re-encoded, "
-                f"{seconds / 3600:.2f} h in {wall:.0f} s ({seconds / wall:.0f}x RT) "
+                f"{shard_path.name}: {len(shard.clips)} of {len(payload['samples'])} rows "
+                f"re-encoded, {seconds / 3600:.2f} h in {wall:.0f} s ({seconds / wall:.0f}x RT) "
                 f"[{number}/{len(shards)}]",
                 flush=True,
             )

@@ -121,13 +121,13 @@ C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
 V=data/cache/en-vi-grounded-v2/validation
 # A .venv made before PyAV joined `h100.sh setup` needs it: ./.venv/bin/python -m pip install av==15.1.0
 # From a second worktree of the PR's commit: a preempted first run resumes only on its own commit.
-nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
 # After the first run's final save and sync (its final pair is in PREVIOUS_RUN/checkpoints/ on the Hub):
 ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.safetensors
 rm runs/PREVIOUS_RUN/trainer_step*.pt runs/PREVIOUS_RUN/model_stepOTHER.safetensors
 rm -r $C/.packed                                            # 70 GB
 ./.venv/bin/python -m training.prep.eval_sets --sets en-vi-val-noisy
-./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O   # ends with "every shard written"
+./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O   # ends with "every shard written"
 rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean shards stay on the Hub
 ./.venv/bin/python -m training.finetune.streams $O $V       # pack before run checks the free disk
 ./training/h100.sh run RUN_NAME --cache-dir $O --val-cache-dir $V \

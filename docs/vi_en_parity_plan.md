@@ -66,7 +66,7 @@ grows sentence by sentence.
    ([sft-data-caches](agent-memory/sft-data-caches.md#builds)). The trainer builds streams from its
    rows; nothing needs re-encoding.
 2. Noisy Vietnamese re-encode (built 2026-11-04, the second epoch's data):
-   `training.prep.noisy_cache` copies the cache with the Vietnamese source of a seeded 60% of
+   `training.prep.mimi_cache_cuda` copies the cache with the Vietnamese source of a seeded 60% of
    the rows re-encoded under room reverb, background noise, a narrowed band (16 kHz as FLEURS,
    8 kHz as MultiMed, a phone band) and a level change, reusing each row's English codes and
    text timing; it runs on the pod's GPU after a run, where the Mac would take days

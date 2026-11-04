@@ -1,5 +1,6 @@
-"""Audio decoding shared by the cache builder (`cache_codes`) and the noisy re-encode
-(`noisy_cache`), so a re-encoded clip has the samples, and so the frames, the cache was built from.
+"""Audio decoding shared by the cache builder (`cache_codes`) and the CUDA re-encode
+(`mimi_cache_cuda`), so a re-encoded clip has the samples, and so the frames, the cache was built
+from.
 """
 
 from __future__ import annotations
