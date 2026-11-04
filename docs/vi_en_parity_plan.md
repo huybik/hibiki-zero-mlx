@@ -318,13 +318,24 @@ Vietnamese text cannot keep up with its speech.
        their reference, and hypotheses ran 19% long; lowercasing and dropping punctuation moved
        BLEU only from 4.2 to 4.5. On real speech the model drifts from the source (paraphrase,
        invented content), which only real Vietnamese speech in training (stage 1.3) addresses.
-4. A learning-rate test on the box, running since 13:31 UTC on 2026-11-04 at ~1 h a rate (10k
-   steps at 0.275 s and four validations): 10k steps from run 2's final model at peak LR
-   1e-6 (the control), 3e-6 and 1e-5, with the same seed, data and validation. The paper's
-   language stage trained at 3e-5 with ~15× more audio per step, so 1e-6 may be a polish rate;
-   an earlier recipe collapsed into silence at 3e-5 to 5e-5, so the test stops at 1e-5.
-5. A third VI→EN epoch at the winning rate, only if a higher rate lifts FLEURS dev by ~1.5 chrF
-   or more.
+4. Done: a learning-rate test on the box (2026-11-04, 13:31–16:28 UTC): 10k steps from run 2's
+   final model at peak LR 1e-6 (the control), 3e-6 and 1e-5 (5% warmup, cosine to 0, `--seed
+   44`, the noisy cache), validated every 2,500 steps. The paper's language stage trained at
+   3e-5 with ~15× more audio per step; an earlier recipe collapsed into silence at 3e-5 to 5e-5,
+   so the test stopped at 1e-5. No rate beats run 2's final model (FLEURS dev chrF 29.47,
+   teacher-forced loss 2.6108):
+
+   | Peak LR | FLEURS dev chrF at 2.5k / 5k / 7.5k / 10k | Rows ended at 10k | TF loss at 10k |
+   |---|---|---:|---:|
+   | 1e-6 | 30.1 / 29.2 / 29.9 / 29.0 | 289 | 2.614 |
+   | 3e-6 | 28.3 / 27.6 / 29.2 / 29.2 | 291 | 2.621 |
+   | 1e-5 | 26.0 / 27.0 / 27.2 / 28.9 | 314 | 2.647 |
+
+   A higher rate first knocks the model back (−2 chrF at 3e-6, −3.4 at 1e-5) and only recovers
+   as the cosine reaches 0; 1e-6 stays within FLEURS dev's ±0.6 noise. The model has converged
+   on `en_speech`, so there is no third epoch on it. The tranche SFT, on new data, takes 3e-6:
+   the highest rate whose dip recovers within the test.
+5. Skipped: a third VI→EN epoch on `en_speech` (it needed ~1.5 chrF from a higher rate).
 6. In parallel: the real-Vietnamese tranche (stage 1.3) and the two-way preparation (stage 7),
    then the two-way pilot.
 7. The final SFT: both directions on `en_speech` and the tranche.

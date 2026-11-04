@@ -73,8 +73,8 @@ inference/ (Apple Silicon, MLX)
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
-- Next (user, 2026-11-04): a learning-rate test (running), a third VI→EN epoch only
-  if a higher rate wins, then the real-Vietnamese tranche
+- Next (user, 2026-11-04): a learning-rate test, then a third VI→EN epoch only if a higher rate
+  won (none did: no third epoch), then the real-Vietnamese tranche (its SFT at 3e-6)
   ([real-vi-tranche](docs/agent-memory/real-vi-tranche.md)) and two-way speech in one model,
   prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). Its trainer
   waits in PR #59 ([grpo_plan](docs/grpo_plan.md)).
