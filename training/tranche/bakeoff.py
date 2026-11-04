@@ -148,7 +148,7 @@ def gigaspeech2(rng: random.Random, n: int) -> list[tuple[str, tuple, tuple]]:
     for line in open(hf_hub_download(repo, "data/vi/train_refined.tsv", repo_type="dataset", revision=rev)):
         key, text = line.rstrip("\n").split("\t", 1)
         if key.startswith("0-"):
-            texts[key] = text
+            texts[key] = text.lower()  # all upper case, unlike the other sources' prompts
     groups = defaultdict(list)
     archive = hf_hub_download(repo, "data/vi/train/0.tar.gz", repo_type="dataset", revision=rev)
     with tarfile.open(archive, "r|gz") as tar:
@@ -209,7 +209,9 @@ def load_model(model: str):
         def generate(row, mode, seed):
             torch.manual_seed(seed)  # voxcpm 2.0.3's generate takes no seed
             extra = {"prompt_wav_path": row["ref"], "prompt_text": row["ref_text"]} if mode == "ult" else {}
-            wav = tts.generate(text=row["text_en"], reference_wav_path=row["ref"], **extra)
+            # Its default retries an output whose length is off up to 3 times and keeps the last;
+            # off, so its broken share counts as the other models' do.
+            wav = tts.generate(text=row["text_en"], reference_wav_path=row["ref"], retry_badcase=False, **extra)
             return np.asarray(wav, dtype=np.float32), tts.tts_model.sample_rate
     elif model == "dots":
         from dots_tts.runtime import DotsTtsRuntime

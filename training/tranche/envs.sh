@@ -31,7 +31,7 @@ $UV pip install -q -p $E/cosyvoice -r $E/cosyvoice-requirements.txt --index-stra
   --no-build-isolation-package openai-whisper
 log score; mk score 3.12
 # WeSpeaker calls torchaudio.set_audio_backend, which torchaudio 2.9 removed.
-$UV pip install -q -p $E/score torch==2.8.0 torchaudio==2.8.0 transformers soundfile jiwer onnxruntime \
+$UV pip install -q -p $E/score torch==2.8.0 torchaudio==2.8.0 transformers==5.22.1 soundfile jiwer onnxruntime \
   "wespeaker @ git+https://github.com/wenet-e2e/wespeaker.git@9fecd6cb4f47475d01761d87c826298dff4ef18c"
 log asr; mk asr 3.12
 $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
