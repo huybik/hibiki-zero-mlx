@@ -57,7 +57,7 @@ grows sentence by sentence.
 | Batches by frame budget; warmup + cosine LR | Attention is ~2.5% of compute at 1,500 frames, so cost tracks frames, not rows; the constant 1e-6 LR kept moving the model after its optimum |
 | Choose checkpoints by free-running chrF on real Vietnamese speech, inside training (2026-11-02) | All training and cache-validation speech is VieNeu TTS, and the last run's teacher-forced loss kept improving while its translations got worse |
 | GRPO comes last, after every SFT stage (user, 2026-11-04) | SFT on new data retrains the timing its data teaches and would undo most of what RL tuned; the paper's order is base, fine-tune, then RL |
-| The real-Vietnamese tranche uses commercially usable data only: YODAS (YouTube marked CC BY), Common Voice vi, FOSD (user, 2026-11-04) | The model ships in a commercial app; the cleaner corpora (GigaSpeech 2, Bud500, viVoice, PhoAudiobook) are non-commercial ([real-vi-tranche](agent-memory/real-vi-tranche.md)) |
+| The real-Vietnamese tranche is research and includes non-commercial corpora; their weights are research-only, and each source has its own cache (user, 2026-11-04) | The non-commercial corpora (PhoAudiobook, viVoice, Bud500, GigaSpeech 2) have cleaner transcripts, more speakers and long-form audio than YODAS; a commercial model is the same SFT without their caches ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
 | Two-way speech in one model whose output language follows the input language, prepared now beside the tranche (user, 2026-11-04) | A conversation needs both directions with no language-ID step; Hibiki-Zero has no conditioning input; two 3B models do not fit a 6 GB phone ([stage 7](#7-two-way-speech)) |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
@@ -80,12 +80,15 @@ grows sentence by sentence.
      robust to rooms and phones, but most of the FLEURS gap is real speech, for stage 3.
    - Left out: speed changes, since a source slowed or sped against the cached delays moves
      Vietnamese words past the English that translates them; and low-bitrate Opus.
-3. Real Vietnamese source tranche (in preparation; the larger lever, see 1.2): ~1,000 h of real
-   Vietnamese speech, mostly YouTube video marked CC BY (YODAS), with its transcript translated by
-   an LLM and the English voiced in each speaker's own voice by a TTS chosen in a bake-off
-   (VoxCPM2, Qwen3-TTS, CosyVoice3) ([real-vi-tranche](agent-memory/real-vi-tranche.md)). This
-   is the paper's recipe for a new language and the main defence against the TTS-only source.
-   Its rows serve both directions ([stage 7](#7-two-way-speech)).
+3. Real Vietnamese source tranche (in preparation; the larger lever, see 1.2): a first ~2,000 h of
+   real Vietnamese speech (PhoAudiobook, viVoice, Bud500, ~700 h of YouTube video marked CC BY
+   from YODAS, Common Voice, FOSD, VIVOS), its transcript translated by an LLM and the English
+   voiced in each speaker's own voice by a TTS chosen in a bake-off (VoxCPM2, Qwen3-TTS,
+   CosyVoice3) ([real-vi-tranche](agent-memory/real-vi-tranche.md)). This is the paper's recipe
+   for a new language and the main defence against the TTS-only source. The paper adapted
+   Italian with 850 h, but from related languages; Vietnamese starts from TTS only, so the lift
+   per 1,000 h on FLEURS and MultiMed decides the scale-up toward ~10k h (GigaSpeech 2, more
+   YODAS). Its rows serve both directions ([stage 7](#7-two-way-speech)).
 4. First run pool: `en-vi-grounded-v2/train`. `cv-anquach` (16 kHz English targets) and the PhoMT
    cache (half its rows not voice-matched) stay out of the first run and come back as ablations.
 
@@ -303,7 +306,7 @@ Vietnamese text cannot keep up with its speech.
 | Risk | Mitigation |
 |---|---|
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
-| The tranche's licences: YouTube uploaders' own CC BY, and English voices cloned from speakers who never consented | Legal sign-off before the model ships ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
+| The tranche's licences: non-commercial corpora; YouTube uploaders' own CC BY; English voices cloned from speakers who never consented | Research-only weights, marked CC BY-NC-SA on the public recovery repo; one cache per source, so a commercial build drops the non-commercial ones; legal sign-off before anything ships ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
 | EN→VI training costs VI→EN quality | The two-way pilot's gate: VI→EN FLEURS dev within 1 chrF |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
 | 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi encoder calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone |
