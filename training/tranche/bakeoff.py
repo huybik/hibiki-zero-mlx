@@ -35,9 +35,11 @@ import json
 import os
 import random
 import signal
+import socket
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -256,11 +258,18 @@ def load_model(model: str):
         for f in Path(path).iterdir():
             (model_dir / f.name).symlink_to((Path(path) / ("llm.rl.pt" if f.name == "llm.pt" else f.name)).resolve())
         tts = AutoModel(model_dir=str(model_dir))
+        # Its LLM runs in a thread whose error would end there, the row then saved from whatever
+        # tokens it made: keep the error to raise it here.
+        failed: list[BaseException] = []
+        threading.excepthook = lambda a: failed.append(a.exc_value)
 
         def generate(row, mode, seed):
             set_all_random_seed(seed)
+            failed.clear()
             parts = [o["tts_speech"] for o in tts.inference_cross_lingual(
                 "You are a helpful assistant.<|endofprompt|>" + row["text_en"], row["ref"], stream=False)]
+            if failed:
+                raise failed[0]
             return torch.cat(parts, dim=-1).squeeze(0).float().numpy(), tts.sample_rate
     return generate
 
@@ -292,6 +301,7 @@ def synth_worker(args: argparse.Namespace, mode: str, todo, start, run: str) -> 
             except torch.cuda.OutOfMemoryError:  # torch.OutOfMemoryError is 2.4+; cosyvoice pins 2.3.1
                 raise  # the GPU's limit, not the model's: the row stays unrecorded for a rerun
             except Exception as exc:  # a failed row is a result: it counts as broken
+                torch.cuda.synchronize()  # unless the GPU context broke (MPS shares a fault): then die
                 record["error"] = f"{type(exc).__name__}: {exc}"[:300]
                 log(f"{system} {row['id']}: {record['error']}")
             else:
@@ -306,6 +316,16 @@ def synth_worker(args: argparse.Namespace, mode: str, todo, start, run: str) -> 
     log(f"{system} worker: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
 
 
+def mps_running(control: Path) -> bool:
+    """A stale socket file from before a restart refuses the connection."""
+    try:
+        with socket.socket(socket.AF_UNIX) as s:
+            s.connect(str(control))
+        return True
+    except OSError:
+        return False
+
+
 def synth(args: argparse.Namespace) -> None:
     """Each mode in turn, its unrecorded rows shared out to args.workers processes on the GPU: one
     row at a time per process, as the models' Python APIs run, so the GPU fills from several. A
@@ -313,7 +333,7 @@ def synth(args: argparse.Namespace) -> None:
     import multiprocessing
 
     mps = Path(os.environ.get("CUDA_MPS_PIPE_DIRECTORY", "/tmp/nvidia-mps")) / "control"
-    if args.workers > 1 and not mps.exists():
+    if args.workers > 1 and not mps_running(mps):
         raise SystemExit(f"no CUDA MPS daemon ({mps}): start it with `nvidia-cuda-mps-control -d`")
     spawn = multiprocessing.get_context("spawn")  # CUDA can't follow a fork
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # so `kill` reaches the finally below

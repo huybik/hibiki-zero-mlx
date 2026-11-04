@@ -199,6 +199,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 - `training/tranche/envs.sh` builds those envs. The vLLM env needs `flashinfer-jit-cache` at
   FlashInfer's version and CUDA: without it Hy-MT2's first load compiles the fused FP8 MoE
   kernels itself, about an hour on the box's 15 CPUs with the GPU idle (2026-11-05).
+- The MPS daemon outlives the bake-off, and every later CUDA job on the box runs as its client:
+  stop it with `echo quit | nvidia-cuda-mps-control` before the trainer.
 
 ## First tranche
 
@@ -234,7 +236,7 @@ here is published or estimated, to be measured on the box first:
 | Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Qwen3-ASR's own language tag cross-checks |
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame |
-| VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)), unless `tencent/Hy-MT2-30B-A3B-FP8` (Apache-2.0 on its card since a licence change: pin the commit) on the box, tuned for throughput, costs less at the box's $1.4/h and runs fast enough (user, 2026-11-05): `checks mt` measures it | the other of the two | EN→VI on Muse cost $0.09 per million characters, within ~0.1 of Gemini in adequacy. Contributor mode lets Meta train on what it is sent: the transcripts of copyrighted audiobooks and videos would go to it, where the EN→VI work sent only public-domain Libriheavy text |
+| VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)), unless `tencent/Hy-MT2-30B-A3B-FP8` (Apache-2.0 on its card since a licence change: pin the commit) on the box, tuned for throughput, costs less at the box's $1.4/h and runs fast enough (user, 2026-11-05): `checks mt` measures it. With the card's prompt (2026-11-05): 21,000 rows (46.1 h) in 82 s, $0.012 per million characters and 0.5 box-hours per 1,000 h against Muse's $0.084; FLEURS dev chrF 63.9 against Muse's 66.6; a blind Opus judge on 300 tranche rows gave adequacy 3.82 against 4.45 and fluency 4.60 against 3.94, since it completes a segment's unfinished sentence, inventing what was not yet said (29 rows at adequacy ≤ 2, Muse 5). The check now tells it to leave fragments unfinished; that rerun decides | the other of the two | EN→VI on Muse cost $0.09 per million characters, within ~0.1 of Gemini in adequacy. Contributor mode lets Meta train on what it is sent: the transcripts of copyrighted audiobooks and videos would go to it, where the EN→VI work sent only public-domain Libriheavy text |
 | English TTS | VoxCPM2 | Qwen3-TTS 1.7B | Bake-off below |
 | TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |

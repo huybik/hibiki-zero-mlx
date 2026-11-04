@@ -32,11 +32,16 @@ ASR = ("Qwen/Qwen3-ASR-1.7B", "7278e1e")
 MT = ("tencent/Hy-MT2-30B-A3B-FP8", "b69671c")  # Tencent's own FP8 weights
 # The card's settings for the 30B-A3B model, and its plain and background-information prompts.
 MT_SAMPLING = {"temperature": 0.7, "top_p": 1.0, "top_k": -1, "repetition_penalty": 1.0}
-MT_PROMPT = ("Translate the following text into English. Note that you should only output the "
-             "translated result without any additional explanation:\n\n{text}")
+# Each adds that a segment cut from speech may stop mid-sentence: the card's prompt alone made the
+# model complete such fragments, inventing what the speaker had not yet said.
+FRAGMENT = (" The text is a segment cut from speech and may start or stop mid-sentence: translate "
+            "exactly what it says, leaving an unfinished sentence unfinished, without completing, "
+            "adding or dropping anything.")
+MT_PROMPT = ("Translate the following text into English." + FRAGMENT + " Note that you should only "
+             "output the translated result without any additional explanation:\n\n{text}")
 MT_CONTEXT_PROMPT = ("[Background Information]\n{background}\n\nPlease translate the following text "
                      "into English, taking the provided background information into consideration."
-                     "\n\n[Source Text]\n{text}")
+                     + FRAGMENT + "\n\n[Source Text]\n{text}")
 SEGMENTS = {"pho": "huybik/hibiki-zero-vi-real-restricted", "giga": "huybik/hibiki-zero-vi-real-restricted",
             "vivoice": "huybik/hibiki-zero-vi-real"}
 BACKGROUND_ROWS = 2
@@ -110,6 +115,8 @@ def corpus_rows(per_source: int) -> list[dict]:
                 taken += pq.ParquetFile(fh).read(columns=["id", "doc", "text", "duration_s"]).to_pylist()
             if len(taken) >= per_source:
                 break
+        if len(taken) < per_source:
+            raise SystemExit(f"{source}: {len(taken)} segments in {repo}, fewer than {per_source}")
         taken = taken[:per_source]
         for k, r in enumerate(taken):
             earlier = [p["text"] for p in taken[max(0, k - BACKGROUND_ROWS):k] if p["doc"] == r["doc"]]
@@ -124,14 +131,16 @@ def mt(args: argparse.Namespace) -> None:
 
     # FLEURS dev holds 361 readings of 149 sentences: translate each sentence once.
     fleurs, seen = [], set()
-    for r in inputs(args.root):
-        if r["set"] == "fleurs-dev" and r["text_vi"] not in seen:
-            fleurs.append(r | {"background": ""})
+    for line in open(REPO_ROOT / "data/eval/fleurs-vi/dev.jsonl"):
+        r = json.loads(line)
+        if r["text_vi"] not in seen:
+            fleurs.append({"set": "fleurs-dev", "id": r["id"], "text_vi": r["text_vi"],
+                           "text_en": r["text_en"], "background": ""})
             seen.add(r["text_vi"])
     corpus = corpus_rows(args.rows)
     llm = LLM(model=snapshot(*MT), max_model_len=4096, gpu_memory_utilization=0.9,
-              max_num_seqs=args.max_num_seqs)
-    params = SamplingParams(**MT_SAMPLING, max_tokens=1024, seed=1234)
+              max_num_seqs=args.max_num_seqs, seed=1234)  # a per-request seed samples row by row
+    params = SamplingParams(**MT_SAMPLING, max_tokens=1024)
 
     def translate(rows: list[dict]) -> tuple[float, int, int]:
         messages = [[{"role": "user", "content": (MT_CONTEXT_PROMPT if r["background"] else MT_PROMPT).format(

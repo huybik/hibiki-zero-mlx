@@ -20,8 +20,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   (`/sys/fs/cgroup/cpu.max`, 15.36 CPUs on the Illinois H100), and torch (64 threads, 32
   compile workers), ninja and BLAS size themselves by the cores. `setup` ends with
   `h100.sh cpus`, which writes `MAX_JOBS`, `OMP_NUM_THREADS` and `TORCHINDUCTOR_COMPILE_THREADS`
-  at the quota into `/etc/environment`, loaded by every ssh session; rerun it after a container
-  restart. Code that starts several processes splits the quota itself (`training.paths.cpu_budget`).
+  at the quota into `/etc/environment`, loaded by every ssh session (not a tmux server started
+  before it, nor what starts outside a login); rerun it after a container restart. Code that starts several processes splits the quota itself (`training.paths.cpu_budget`).
 
 ## Secrets
 

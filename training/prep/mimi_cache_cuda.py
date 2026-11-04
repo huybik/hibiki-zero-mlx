@@ -33,7 +33,6 @@ import fcntl
 import json
 import math
 import multiprocessing
-import os
 import random
 import shutil
 import tempfile

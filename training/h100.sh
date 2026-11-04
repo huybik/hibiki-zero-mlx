@@ -94,6 +94,8 @@ cpus() {
   require_python
   local n
   n="$("$PYTHON" -c 'from training.paths import cpu_budget; print(max(1, int(cpu_budget())))')"
+  touch /etc/environment
+  [ -z "$(tail -c 1 /etc/environment)" ] || echo >> /etc/environment  # end its last line
   sed -i '/^\(MAX_JOBS\|OMP_NUM_THREADS\|TORCHINDUCTOR_COMPILE_THREADS\)=/d' /etc/environment
   printf '%s=%s\n' MAX_JOBS "$n" OMP_NUM_THREADS "$n" TORCHINDUCTOR_COMPILE_THREADS "$n" >> /etc/environment
   echo "New shells get $n CPUs: MAX_JOBS, OMP_NUM_THREADS, TORCHINDUCTOR_COMPILE_THREADS"
