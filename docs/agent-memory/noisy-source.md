@@ -206,7 +206,7 @@ The second run's own validation at step 18,000 (2026-11-04) scores:
 - FLEURS dev 27.5, `en-vi-val` 43.0 · 43.7 and `en-vi-val-noisy` 38.4 · 41.5 (CV · LH);
 - 268 of 361 FLEURS rows ended, where the first run ended at most 64 at any validation.
 
-It still fails the 91% EOS gate, so no checkpoint is promoted yet.
+Its commit still gates EOS at 91% (removed from the gates on 2026-11-04), so it promotes nothing.
 
 - By condition, against the same rows clean: reverb −6.1 chrF; SNR under 15 dB −8.8 (15 dB
   and up −2.9); phone band −8.9, 8 kHz −7.8, 16 kHz −4.7.

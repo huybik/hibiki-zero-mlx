@@ -113,7 +113,8 @@ def main() -> None:
         rows = [row for set_rows in sets.values() for row in set_rows[: args.limit]]
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
-    args.model_weight = require_file(args.model_weight, "model weight")
+    if checkpoint is None:  # a checkpoint replaces the base weights, which are never read
+        args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
     out_dir = resolve_repo_path(args.out_dir)
@@ -128,12 +129,7 @@ def main() -> None:
     print(f"Loading Mimi on {device} from {repo_display_path(args.mimi_weight)}")
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
-    print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
-    lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
-    if checkpoint is not None:
-        common.load_model(lm, checkpoint, dtype)
-    else:
-        print("Using the base model.")
+    lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
     lm.eval()
 
     records = common.run_greedy_eval(

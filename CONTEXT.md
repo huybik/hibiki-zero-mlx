@@ -76,8 +76,9 @@ inference/ (Apple Silicon, MLX)
 
 ## Essential invariants
 
-- Profile before any long job (a cache build, an encode, a training run) and optimize it until
-  its costliest resource stays busy; only then start the real run. Time each stage on a few
+- Profile every job before its full run (a cache build, an encode, a training or GRPO run, an
+  evaluation pass) and optimize it until its costliest resource stays busy; only then start the
+  real run. Time each stage on a few
   shards, sample the GPU (`nvidia-smi` every 0.5 s) and know the CPU budget (a container's quota
   in `/sys/fs/cgroup/cpu.max`, not `nproc`); compare variants on the same rows. The user's rule
   since the first noisy encode ran ~3 h with its GPU idle half the time →

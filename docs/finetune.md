@@ -86,7 +86,7 @@ without them
 The first stream run trains on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
 back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
 `RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–120 s
-streams in batches of at most 4,608 frames, one epoch (131,553 steps), peak LR `1e-6` with 5%
+streams in batches of at most 4,608 frames, one epoch (about 131,700 steps), peak LR `1e-6` with 5%
 warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW
 `(0.9, 0.95)` with weight decay `0.1`, checkpoints every 1,000 steps and validation every 9,000
 ([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced
@@ -151,8 +151,8 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 - `--model-weight` loads the full fp32 model (moshi's loader is strict; for Hibiki models it
   also copies the text embedding's PAD row over row 2, which got no gradient in the first run).
   The hard link keeps it while the previous run's folder is pruned. Keep it at the same path
-  until the run ends: a resume needs it there, and so does every validation, which reloads it
-  to build its bf16 generator.
+  until the run ends: a resume needs it there, and `en_speech_noisy_epoch2`'s commit also
+  reloads it at every validation.
   A replacement pod downloads it from `PREVIOUS_RUN/checkpoints/` in the recovery repo.
 - A new `--seed` draws new streams: the noisy split has the same rows, so seed 42 would replay
   the first run's streams and batch order.
@@ -161,9 +161,9 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 - The run starts a new warmup and cosine decay. Validation every 18,000 steps (7 per epoch plus
   the final step) halves its share of the run; it also scores `en-vi-val-noisy`, so the run shows
   what the channel costs as it trains.
-- The EOS gate can fail at every validation, and then the trainer promotes nothing, and the sync
-  keeps only the newest two validation pairs. For `en_speech_noisy_epoch2`, a script beside the
-  run keeps the best validation model by FLEURS dev chrF, whatever the gates. After each
+- `en_speech_noisy_epoch2` runs a commit that still gated EOS, which fails at every
+  validation, so it promotes nothing, and the sync keeps only the newest two validation pairs. A
+  script beside the run keeps its best validation model by FLEURS dev chrF, whatever the gates. After each
   validation it copies that model server side (`CommitOperationCopy`) to
   `RUN_NAME/offline_best/`, with its scores in `best.json`. `hf_sync` never prunes that folder.
 

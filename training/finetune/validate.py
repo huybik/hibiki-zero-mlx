@@ -72,7 +72,8 @@ def main() -> None:
     cache_dir = require_dir(args.cache_dir, "code cache directory")
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
-    args.model_weight = require_file(args.model_weight, "model weight")
+    if checkpoint is None:  # a checkpoint replaces the base weights, which are never read
+        args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
 
@@ -89,12 +90,7 @@ def main() -> None:
     )
     print(f"Planned {len(dataset)} streams from {len(rows)} rows of {repo_display_path(cache_dir)}")
 
-    print(f"Loading LM on {device} from {repo_display_path(args.model_weight)}")
-    lm = checkpoint_info.get_moshi(device=device, dtype=dtype)
-    if checkpoint is not None:
-        common.load_model(lm, checkpoint, dtype)
-    else:
-        print("Using the base model.")
+    lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
 
     weights = common.LossWeights(
         audio=args.audio_loss_weight,
