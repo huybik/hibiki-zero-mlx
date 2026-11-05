@@ -38,11 +38,12 @@ inference/ (Apple Silicon, MLX)
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
   builder in MLX, the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
-  and HF recovery sync) and `tranche/` (the real-Vietnamese tranche on the box: so far the English
-  TTS bake-off, the ASR check, each model in its own uv env, and the ingest of
-  the corpora's segments to the tranche repos). Its modules run from the repo root as
+  and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: so far the English
+  TTS bake-off, the ASR check, each model in its own uv env, and the ingest of the corpora's
+  segments to the tranche repos) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
+  CPUs). Its modules run from the repo root as
   `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
-  publisher, the cache builder and the evaluation-set builder runs on CUDA only.
+  publisher, the cache builder, the evaluation-set builder and the tokenizer swap runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
@@ -136,6 +137,7 @@ inference/ (Apple Silicon, MLX)
 | The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off |
 | The tranche's English voice-cloning TTS: candidates, bake-off, scores, tuning | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/bakeoff.py`, `training/tranche/envs.sh` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
+| Vietnamese tokenizer swap for two-way text: build, English check, embedding init map | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
 | Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/audio.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
