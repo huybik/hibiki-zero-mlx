@@ -16,12 +16,13 @@ the environment and the ASR server up:
       --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
       (one API process decodes and featurizes ~11 requests/s on the CPU, below the TTS's ~25 rows/s)
   /workspace/envs/nanovox/bin/python -m training.tranche.voice run pho vivoice giga
-      every shard of segments and text_en on the Hub without en_audio yet: each row voiced with its
+      every segments shard (each has its text_en) on the Hub without en_audio yet: each row voiced with its
       own clip and transcript as prompt and reference, heard by the ASR, voiced again while broken
       (WER over 20% or pace off by 2x) up to 3 tries, the best try kept; writes
       <root>/<public|restricted>/<source>/en_audio/<shard> (id, en_audio as 24 kHz Ogg Opus,
       en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
-      30 min and at its end. A rerun skips the shards already written or pushed.
+      30 min and at its end. A rerun skips the shards already written or pushed, and first pushes
+      any written but not yet pushed.
   /workspace/envs/nanovox/bin/python -m training.tranche.voice bench --concurrency 512 --repeats 8
       the bake-off's rows in its `ult` setup (prompt and reference: the row's reference clip),
       timed; --write saves the first pass as <out>/out/<system>/ in the bake-off's layout, beside a
@@ -385,11 +386,17 @@ class Checker:
     and the pace against the bake-off's median. Each check also encodes the 24 kHz Ogg Opus kept."""
 
     def __init__(self, url: str):
+        import threading
+
         import httpx
         from transformers import WhisperTokenizer
 
         self.url = url
         self.client = httpx.Client(timeout=300, limits=httpx.Limits(max_connections=ASR_CALLS))
+        # PyAV's encoder resamples into libopus's 20 ms frames through an ffmpeg filter graph that
+        # holds a thread per host CPU (224 on the box) while it lives: a few encodes at a time keep
+        # the checkers under the container's thread limit.
+        self.encoding = threading.BoundedSemaphore(4)
         from huggingface_hub import snapshot_download
 
         repo, revision = WHISPER_NORMALIZER
@@ -423,8 +430,10 @@ class Checker:
         duration = len(wav) / OUT_RATE
         pace = duration / max(len(text), 1)
         broken = wer > BROKEN_WER or not 0.5 * PACE <= pace <= 2 * PACE
-        return {"wer": round(wer, 4), "broken": broken, "asr": asr, "duration": round(duration, 3),
-                "audio": encode_opus(resample_poly(wav, 1, 2).astype(np.float32), OUT_RATE // 2)}
+        pcm = resample_poly(wav, 1, 2).astype(np.float32)
+        with self.encoding:
+            audio = encode_opus(pcm, OUT_RATE // 2)
+        return {"wer": round(wer, 4), "broken": broken, "asr": asr, "duration": round(duration, 3), "audio": audio}
 
 
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
@@ -466,6 +475,22 @@ def write_shard(shard: Shard) -> None:
     os.replace(part, shard.dst)
 
 
+def push_en_audio(root: Path, source: str) -> None:
+    """`ingest push <source> --part en_audio`, tried again after a transient Hub error."""
+    from training.tranche import ingest
+
+    for attempt in range(4):
+        try:
+            ingest.push(argparse.Namespace(root=root, source=source, part="en_audio"))
+            log(f"pushed {source} en_audio")
+            return
+        except Exception as exc:  # noqa: BLE001 - the Hub's 5xx and timeouts come as many types
+            if attempt == 3:
+                raise
+            log(f"push {source} failed ({type(exc).__name__}: {exc}); again in {60 * 2 ** attempt} s")
+            time.sleep(60 * 2 ** attempt)
+
+
 def run(args: argparse.Namespace) -> None:
     """Every shard of each source in turn, the next one loading while the engine voices; the engine
     is kept full with retries first, then new rows. A shard is written once every row has a kept
@@ -490,6 +515,9 @@ def run(args: argparse.Namespace) -> None:
             dst = args.root / ingest.SOURCES[source].dest / source / "en_audio" / name
             if name not in done and not dst.exists():
                 todo.append((source, name))
+        local = {p.name for p in (args.root / ingest.SOURCES[source].dest / source / "en_audio").glob("*.parquet")}
+        if local - done:  # written by an earlier run that stopped before pushing them
+            push_en_audio(args.root, source)
     todo = todo[: args.limit]
     log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
     if not todo:
@@ -525,7 +553,7 @@ def run(args: argparse.Namespace) -> None:
 
     def push(source: str) -> None:
         pushed[source] = time.monotonic()
-        uploads.append(pushes.submit(ingest.push, argparse.Namespace(root=args.root, source=source, part="en_audio")))
+        uploads.append(pushes.submit(push_en_audio, args.root, source))
 
     def next_shard() -> bool:
         nonlocal fresh, loading_done

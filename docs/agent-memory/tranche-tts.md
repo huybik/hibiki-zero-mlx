@@ -110,7 +110,7 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
     path does. The VAE is causal, so right-padding a batch changes no row.
   - The fp16 decoder is 57 dB SNR from fp32 and 3.4x faster compiled. cuDNN spends ~0.9 s
     planning each new conv shape, so batch widths round up to 64 frames, each width has one
-    batch size, and every shape is warmed at start (~30 s).
+    batch size, and every shape up to 1,024 frames (41 s) is warmed at start (~30 s).
   - Gained nothing: a decode thread on its own CUDA stream (the engine keeps the GPU busy).
     Left: fewer diffusion steps or FP8, which change the output.
   - Quality on the bake-off's 281 rows (its 9 hard lines out), Mimi round trip: broken 8.2%,
@@ -126,8 +126,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 - The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
   follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
   `thread_count = 1`, and audio decodes in threads, not spawned processes. PyAV's
-  `AudioResampler` builds a filter graph whose threads pile up across decodes (4,075 after 400
-  clips), so `voice.py` resamples with scipy.
+  `AudioResampler` builds a filter graph holding a thread per host CPU while it lives (4,075
+  threads from 20 decoding threads), so `voice.py` resamples with scipy. Its Opus encoder builds
+  one too, so at most 4 checker threads encode at once.
 - `training/tranche/envs.sh` builds those envs.
 - `synth` checks for the MPS daemon with `nvidia-cuda-mps-control` itself: on driver 615 its
   socket is seqpacket, and a stream connect fails with EPROTOTYPE while the daemon runs.
