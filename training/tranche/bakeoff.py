@@ -36,7 +36,7 @@ import os
 import random
 import re
 import signal
-import socket
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -317,13 +317,14 @@ def synth_worker(args: argparse.Namespace, mode: str, todo, start, run: str) -> 
     log(f"{system} worker: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
 
 
-def mps_running(control: Path) -> bool:
-    """A stale socket file from before a restart refuses the connection."""
+def mps_running() -> bool:
+    """Asks the daemon through its own client, which finds it wherever CUDA_MPS_PIPE_DIRECTORY
+    points and fails on a stale socket from before a restart; the socket's type changes between
+    drivers (seqpacket on 615), so a plain connect is no test."""
     try:
-        with socket.socket(socket.AF_UNIX) as s:
-            s.connect(str(control))
-        return True
-    except OSError:
+        return subprocess.run(["nvidia-cuda-mps-control"], input="get_server_list\n", text=True,
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -333,9 +334,8 @@ def synth(args: argparse.Namespace) -> None:
     failed worker stops them all; a rerun voices what is left."""
     import multiprocessing
 
-    mps = Path(os.environ.get("CUDA_MPS_PIPE_DIRECTORY", "/tmp/nvidia-mps")) / "control"
-    if args.workers > 1 and not mps_running(mps):
-        raise SystemExit(f"no CUDA MPS daemon ({mps}): start it with `nvidia-cuda-mps-control -d`")
+    if args.workers > 1 and not mps_running():
+        raise SystemExit("no CUDA MPS daemon: start it with `nvidia-cuda-mps-control -d`")
     spawn = multiprocessing.get_context("spawn")  # CUDA can't follow a fork
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # so `kill` reaches the finally below
     rows = read_rows(args.root)[: args.limit]
