@@ -20,8 +20,10 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   multi-sentence sequences of `--stream-seconds` (30–120 s, `streams.STREAM_SECONDS`, decided
   2026-11-02: upstream's coarse stage used 30–75 s and its RL stage 120 s, and upstream degrades
   after ~1.6 minutes of input, so streams practise long input).
-  PhoMT rows of one source chunk (`phomt_s<N>r<M>`, which spans talk boundaries) stay in order;
-  every other row is random, Libriheavy included: its segment numbers are not reading order and
+  The rows of one document stay together in order: a tranche row's `doc` and `seq` (a
+  PhoAudiobook reader's run, a GigaSpeech 2 recording; a viVoice row is its own doc,
+  [real-vi-tranche](real-vi-tranche.md#cache)) and a PhoMT source chunk (`phomt_s<N>r<M>`, which
+  spans talk boundaries, its doc and seq read from the id); every other row is random, Libriheavy included: its segment numbers are not reading order and
   segments overlap ([en-speech-corpus](en-speech-corpus.md#quality-filters)). A stream closes when
   the next row overflows its drawn length, unless it is still under the minimum; the length range
   must exceed the longest row plus a long gap, so no stream but the last ends short. Each row's English starts its cached delay after its Vietnamese, never before the
@@ -61,7 +63,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   (the second run). Single-row streams changed every plan, the validation streams' too, so
   teacher-forced validation losses do not compare across that change (2026-11-04).
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
-  index, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's size or mtime changes),
+  index and each row's doc and seq, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's
+  size or mtime changes or `PACK_VERSION` does: 3 since the docs, 2026-11-05),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
   a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling

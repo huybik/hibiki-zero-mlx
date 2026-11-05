@@ -4,7 +4,8 @@ Read when choosing or building the real-Vietnamese source data (plan stage 1.3),
 pipeline, or its licences. The corpora, their licences and measured layouts are in
 [vi-corpora](vi-corpora.md); the English TTS is in [tranche-tts](tranche-tts.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [English TTS](#english-tts) ·
-[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline) · [Filters](#filters)
+[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline) · [Filters](#filters) ·
+[Cache](#cache)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
 bands) costs ~5 of the 15–18 chrF between held-out TTS and FLEURS dev; the rest is real voices and
@@ -14,7 +15,7 @@ language: real source speech, its transcript translated sentence by sentence, an
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the code so far
 (`training/tranche/`) is the English TTS bake-off, the ASR check, ingest, translate, the
-English TTS (`voice.py`) and the row filters (`filters.py`).
+English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`cache.py`).
 
 ## Decision
 
@@ -221,3 +222,37 @@ thresholds, so they can change without measuring again.
     2026-11-05 by `/workspace/restart_filters.sh` (log `/workspace/logs/filters-asr.log`).
   - First PhoAudiobook shards: CER median 0.000, p90 0.03–0.04, about one row a shard detected
     as another language.
+
+## Cache
+
+`training/tranche/cache.py build <sources>` (CUDA, the training `.venv`) turns each segments shard
+whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `cache/<source>/shard_<shard>.pt`
+of its tranche repo, in `cache_codes`'s format ([sft-data-caches](sft-data-caches.md#row-layout)),
+one cache per source (see [Decision](#decision)). A sample also holds `doc` and `seq`, so the
+trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay draws use split
+`train`.
+
+- A row is dropped, with the first reason in the shard's `rejected`, when `en_broken`; when
+  `en_asr` has Vietnamese letters `text_en` lacks; when its language is not Vietnamese; when its
+  CER is over `--max-cer`; when it overlaps an evaluation sentence; then on `cache_codes`'s own
+  gates (decoded duration, frame cap, CTC alignment score 0.5, token timing).
+- `--max-cer` 0.10, from the first 16 PhoAudiobook shards (20,784 rows, 2026-11-05): p90 0.033,
+  p99 0.102, p99.5 0.167; 1.04% of rows over 0.10, 0.56% over 0.15. Over 0.10 the transcript and
+  the clip differ by phrases (a repeated clause, punctuation spelled out as "chấm", the words of a
+  cut edge); from 0.05 to 0.10 mostly by homophones (sinh/xin) and a syllable at the cut. The
+  English translates the transcript, so a phrase the clip lacks teaches the model to say what was
+  not spoken. Check it on viVoice and GigaSpeech 2 once their `asr_vi` lands.
+- The Vietnamese-letter rule drops 118 of 10,392 rows on PhoAudiobook shards 0–7 (1.1%), 49 of
+  them broken anyway. Of the rest, about half are lead-ins the TTS spoke in Vietnamese ("Không.
+  Being rejected…", "Bước ngoặt khác, managing the farm") and half Vietnamese names the ASR spelled
+  otherwise ("Tào Chí Viễn" for "Tào Trí Viễn"). Comparing words with their diacritics folded
+  would keep 27 more (0.26%), not worth a second rule.
+- CTC: transformers' wav2vec2-base-960h in float32 over padded batches, the first GroupNorm's
+  statistics taken over each clip's own frames and the encoder given the attention mask, as
+  `wav2vec2_mlx` masks; on CPU, 8 clips batched match each alone (same argmax, log-probabilities
+  within 3e-3). Mimi as in `mimi_cache_cuda` (float32, TF32 off, 640 s batches). The Viterbi runs
+  in the decode workers while Mimi encodes; the next shard's files download in a thread and its
+  clips decode in the workers.
+- Needs `data/eval` (on the box `.venv/bin/python -m training.prep.eval_sets --sets fleurs
+  multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
+  server on the GPU, ~1.3 GB of it is free, so the build runs after them.

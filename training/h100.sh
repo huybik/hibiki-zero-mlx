@@ -71,6 +71,7 @@ setup() {
     av==15.1.0 \
     einops==0.8.2 \
     huggingface-hub==2.4.0 \
+    num2words==0.5.14 \
     numpy==2.5.4 \
     protobuf==7.36.2 \
     pyarrow==26.0.0 \
@@ -79,7 +80,8 @@ setup() {
     sentencepiece==0.2.2 \
     soxr==1.1.0 \
     sphn==0.2.1 \
-    tqdm==4.70.1
+    tqdm==4.70.1 \
+    transformers==5.22.1
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
   echo "Training environment installed in $VENV"
