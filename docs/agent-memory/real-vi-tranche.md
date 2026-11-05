@@ -203,11 +203,14 @@ other corpora ─► their transcripts, word times by forced alignment ───
     random, so a re-ingested shard differs in bytes and uploads again.
 - Translate (`training/tranche/translate.py`, CPU, runs on the Mac) reads each segments shard's
   `id`, `doc` and `text` from the Hub, translates on Muse Spark 1.3 Contributor with the prompt
-  the blind judge tested, in batches of up to 40 consecutive rows and 6,000 characters that never
-  join two docs of more than one row (viVoice's one-row docs share batches), and writes
-  `<root>/<public|restricted>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest push
-  <source> --part text_en` uploads it beside the segments. A reply that does not parse splits its
-  batch in halves down to one row; a row failing alone keeps `text_en` null. One PhoAudiobook
+  the blind judge tested, in batches of up to 40 consecutive rows and 6,000 characters that end
+  wherever a doc of more than one row starts or ends (viVoice's one-row docs share batches), and
+  writes `<root>/<public|restricted>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest
+  push <source> --part text_en` uploads it beside the segments. A reply that does not parse, or
+  that writes letters of a script its Vietnamese lacks (Muse wrote Chinese mid-sentence in 22 of
+  the first 24,681 rows, "the keeper of the江湖 ledger"), splits its batch in halves down to one
+  row; a row failing alone keeps `text_en` null, a rerun translates the null and broken rows
+  again, and a run stops once more than 1% of its rows fail alone. One PhoAudiobook
   shard (1,299 rows) takes ~58 calls and $0.02, eight shards in flight at 64 calls.
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
