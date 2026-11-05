@@ -195,16 +195,23 @@ other corpora ─► their transcripts, word times by forced alignment ───
 `training/tranche/filters.py` measures what the cache build drops rows on; the build applies the
 thresholds, so they can change without measuring again.
 
+- Both filters compare text by `spoken`: lower-case NFC syllables without punctuation, digits
+  written out by num2words' Vietnamese, and `ngàn`/`linh`/`nhăm` folded to `nghìn`/`lẻ`/`lăm`.
+  PhoAudiobook and GigaSpeech 2 spell numbers; Qwen3-ASR and FLEURS write digits, and on the
+  first PhoAudiobook shards rows with digits made 48% of those over 0.1 CER before (15 of 51
+  digit rows over 0.1, 4 after). num2words reads a long digit run (a phone number) as one number.
 - Evaluation overlap (`filters overlap`, Mac or box, text columns only): a row is dropped when its
-  transcript shares a 13-syllable run (over `checks.words`) with a FLEURS vi dev or test or
-  MultiMed-ST vi select or final sentence (`overlaps`, with the sets in `data/eval/`). On the first
-  tranche no row does (2026-11-05). Runs of 10 syllables or fewer match only stock broadcast
-  phrases ("cảm ơn quý vị và các bạn đã quan tâm", 80 rows at 10, 257 rows at 8), and the 9 sentences under 9
-  syllables ("được", "alo") would match everyday speech, so shorter sentences add no runs.
+  transcript holds a 13-syllable run of a FLEURS vi dev or test or MultiMed-ST vi select or final
+  sentence, or a whole sentence of 9–12 syllables (62 of them) (`overlaps`, with the sets in
+  `data/eval/`). On the first tranche no row does (2026-11-05). Runs of 10 syllables or fewer
+  match stock broadcast phrases ("cảm ơn quý vị và các bạn đã quan tâm", 80 rows at 10, 257 at
+  8), and the 18 sentences under 9 syllables ("được", "alo", "vùng nông thôn") everyday speech,
+  so those are not matched.
 - Vietnamese ASR (`filters asr`, box): every row heard by Qwen3-ASR-1.7B on the shared ASR
-  server, language detected, not forced (unforced, it writes `language <Name><asr_text>…`), up to
+  server, language detected, not forced (unforced, it writes `language <Name><asr_text>…`; a reply
+  without that header is all transcript with language `""`, as qwen_asr parses it), up to
   512 tokens, written as `<source>/asr_vi/<shard>` (`id`, `asr_vi`, `language`, `cer` against the
-  corpus transcript over `checks.words`) and pushed every 30 min and at each source's end. The
+  corpus transcript over `spoken`) and pushed every 30 min and at each source's end. The
   rows where the two disagree, or the language is not Vietnamese, are the ones the build drops.
   - The client decodes each clip to 16 kHz WAV (4 processes): sent as Opus, the server's 8 API
     processes saturated the box's 27 cores at 21 rows/s and starved the TTS's main process.

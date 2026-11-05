@@ -2,14 +2,14 @@
 """Row filters of the tranche, measured before the cache build drops rows on them
 ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#filters)).
 
-  overlap            count the segments rows that share a run of OVERLAP_N syllables with a FLEURS vi
-                     or MultiMed-ST vi evaluation sentence (data/eval/, built by
+  overlap            count the segments rows that share a run of OVERLAP_N syllables (or a whole
+                     shorter sentence) with a FLEURS vi or MultiMed-ST vi evaluation sentence (data/eval/, built by
                      training.prep.eval_sets); the cache build drops those rows with `overlaps`.
                      Reads only the id and text columns from the Hub; runs on the Mac or the box
   asr <sources...>   hear every segments row with Qwen3-ASR-1.7B on the ASR server, its language
                      detected rather than forced, and write
                      <root>/<public|restricted>/<source>/asr_vi/<shard> (id, asr_vi, language, cer
-                     against the corpus transcript, over checks.words); pushes each source's
+                     against the corpus transcript, over `spoken`); pushes each source's
                      folder every 30 min and at its end. A rerun skips the shards written or pushed,
                      and first pushes any written but not yet pushed
 
@@ -21,12 +21,15 @@ From the repo root, with the HF token in the environment; `asr` on the box with 
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import time
+import unicodedata
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from multiprocessing import get_context
 from pathlib import Path
 
-from training.tranche.checks import words
 from training.tranche.ingest import REPOS, ROOT, SOURCES, push_part
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +37,11 @@ EVAL_SETS = ("fleurs-vi/dev", "fleurs-vi/test", "multimed-vi/select", "multimed-
 # Syllables. Over the first tranche, no row shares a 13-syllable run with an evaluation sentence;
 # runs of 10 or fewer match only stock broadcast phrases ("cảm ơn quý vị và các bạn đã quan tâm", 80 rows).
 OVERLAP_N = 13
+# An evaluation sentence of MIN_SENTENCE..OVERLAP_N - 1 syllables is matched whole; shorter ones
+# ("được", "alo", "vùng nông thôn") would match everyday speech, not leaked content.
+MIN_SENTENCE = 9
+# Spellings the corpora mix for the same number word, folded to num2words' choice.
+NUMBER_VARIANTS = {"ngàn": "nghìn", "linh": "lẻ", "nhăm": "lăm"}
 ASR_URL = "http://localhost:8100/v1/audio/transcriptions"
 ASR_MAX_TOKENS = 512  # as voice.py: a looping transcript comes back long instead of running on
 ASR_TIMEOUT_S = 60
@@ -46,24 +54,40 @@ def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
 
 
-def eval_grams(eval_dir: Path = REPO_ROOT / "data/eval") -> set[tuple[str, ...]]:
-    """Every OVERLAP_N-syllable run of the evaluation sentences. A shorter sentence has none: the
-    few there are (9 of 4,655 under 9 syllables, "được", "alo", "vùng nông thôn") would match
-    everyday speech, not leaked content."""
+def spoken(text: str) -> list[str]:
+    """Lower-case NFC syllables without punctuation, numbers written out as Vietnamese words:
+    PhoAudiobook and GigaSpeech 2 spell numbers, while Qwen3-ASR and FLEURS write digits (on
+    PhoAudiobook, digit rows were 48% of those over 0.1 CER before this)."""
+    from num2words import num2words
+
+    text = unicodedata.normalize("NFC", text).lower()
+    text = re.sub(r"(?<=\d)[.,](?=\d{3}\b)", "", text)  # 1.500.000: thousands separators
+    text = re.sub(r"\d+", lambda m: f" {num2words(int(m.group()), lang='vi')} ", text)
+    return [NUMBER_VARIANTS.get(w, w) for w in re.sub(r"[^\w\s]", " ", text).split()]
+
+
+Grams = dict[int, set[tuple[str, ...]]]  # evaluation runs by length
+
+
+def eval_grams(eval_dir: Path = REPO_ROOT / "data/eval") -> Grams:
+    """Every OVERLAP_N-syllable run of the evaluation sentences, and each sentence of
+    MIN_SENTENCE..OVERLAP_N - 1 syllables whole."""
     import json
 
-    grams = set()
+    grams: Grams = {}
     for name in EVAL_SETS:
         for line in open(eval_dir / f"{name}.jsonl"):
-            w = words(json.loads(line)["text_vi"])
-            grams.update(tuple(w[i:i + OVERLAP_N]) for i in range(len(w) - OVERLAP_N + 1))
+            w = spoken(json.loads(line)["text_vi"])
+            if len(w) >= MIN_SENTENCE:
+                n = min(len(w), OVERLAP_N)
+                grams.setdefault(n, set()).update(tuple(w[i:i + n]) for i in range(len(w) - n + 1))
     return grams
 
 
-def overlaps(text: str, grams: set[tuple[str, ...]]) -> bool:
-    """Whether the transcript shares an OVERLAP_N-syllable run with an evaluation sentence."""
-    w = words(text)
-    return any(tuple(w[i:i + OVERLAP_N]) in grams for i in range(len(w) - OVERLAP_N + 1))
+def overlaps(text: str, grams: Grams) -> bool:
+    """Whether the transcript holds one of the evaluation runs."""
+    w = spoken(text)
+    return any(tuple(w[i:i + n]) in runs for n, runs in grams.items() for i in range(len(w) - n + 1))
 
 
 def overlap(args: argparse.Namespace) -> None:
@@ -71,6 +95,7 @@ def overlap(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi, HfFileSystem
 
     grams = eval_grams()
+    log("evaluation runs: " + ", ".join(f"{len(runs)} of {n}" for n, runs in sorted(grams.items())))
     fs, api = HfFileSystem(), HfApi()
 
     def read(path: str) -> list[tuple[str, str]]:
@@ -113,7 +138,9 @@ class Hearer:
 
     def hear(self, audio: bytes) -> tuple[str, str]:
         """WAV bytes -> (language, transcript). Unforced, the model writes `language <Name><asr_text><text>`,
-        and `language None` for audio with no speech."""
+        and `language None` for audio with no speech; a reply without the header is all
+        transcript, its language unknown (""), as qwen_asr's own parser reads it. Clips over 30 s,
+        which the server would split and join headers into, do not occur (rows are under 22.4 s)."""
         import httpx
 
         for attempt in range(3):  # the server drops an idle keep-alive connection now and then
@@ -125,9 +152,10 @@ class Hearer:
                 if attempt == 2:
                     raise
         reply.raise_for_status()
-        head, tag, text = reply.json()["text"].partition("<asr_text>")
+        raw = reply.json()["text"]
+        head, tag, text = raw.partition("<asr_text>")
         if not tag or not head.startswith("language "):
-            raise ValueError(f"unexpected ASR output: {head[:200]!r}")
+            return "", raw.strip()
         language = head.removeprefix("language ").strip()
         return ("", "") if language == "None" else (language, text.strip())
 
@@ -145,7 +173,7 @@ def asr_shard(source: str, name: str, root: Path, hearer: Hearer, decoders, pool
     heard = list(pool.map(hearer.hear, decoders.map(wav_16k, audio, chunksize=32)))
     cer = []
     for text, (_, asr) in zip(seg.column("text").to_pylist(), heard):
-        ref, hyp = " ".join(words(text)), " ".join(words(asr))
+        ref, hyp = " ".join(spoken(text)), " ".join(spoken(asr))
         cer.append(jiwer.cer(ref, hyp) if ref else float(bool(hyp)))
     table = pa.table({"id": seg.column("id"), "asr_vi": pa.array([h[1] for h in heard], pa.string()),
                       "language": pa.array([h[0] for h in heard], pa.string()),
@@ -174,17 +202,14 @@ def asr(args: argparse.Namespace) -> None:
             push_part(args.root, source, "asr_vi")
     todo = todo[: args.limit]
     log(f"{len(todo)} shards to hear: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
-    import os
-    from concurrent.futures import ProcessPoolExecutor
-    from multiprocessing import get_context
-
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"  # the decoders' thread pools, under the box's thread limit (voice.py)
     decoders = ProcessPoolExecutor(DECODERS, mp_context=get_context("spawn"))
     hearer = Hearer(args.asr)
     pushed = {s: time.monotonic() for s in args.sources}
     began, rows = time.monotonic(), 0
-    with ThreadPoolExecutor(CONCURRENCY) as pool:
+    pool = ThreadPoolExecutor(CONCURRENCY)
+    try:
         for k, (source, name) in enumerate(todo):
             t = pq.read_table(asr_shard(source, name, args.root, hearer, decoders, pool))
             rows += t.num_rows
@@ -197,7 +222,9 @@ def asr(args: argparse.Namespace) -> None:
             if last or time.monotonic() - pushed[source] > PUSH_S:
                 push_part(args.root, source, "asr_vi")
                 pushed[source] = time.monotonic()
-    decoders.shutdown()
+    finally:  # after a failure, queued requests and decodes are dropped rather than run
+        pool.shutdown(wait=False, cancel_futures=True)
+        decoders.shutdown(wait=False, cancel_futures=True)
     log(f"done: {rows} rows in {(time.monotonic() - began) / 3600:.2f} h")
 
 
