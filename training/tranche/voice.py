@@ -14,12 +14,12 @@ Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with
 the environment and the ASR server up:
   /workspace/envs/asr/bin/qwen-asr-serve <Qwen3-ASR-1.7B snapshot> --served-model-name asr \
       --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
-      (one API process decodes and featurizes ~11 requests/s on the CPU, below the TTS's ~25 rows/s)
+      (one API process decodes and featurizes ~11 requests/s on the CPU, below the TTS's ~13 attempts/s)
   /workspace/envs/nanovox/bin/python -m training.tranche.voice run pho vivoice giga
       every segments shard (each has its text_en) on the Hub without en_audio yet: each row voiced with its
       own clip and transcript as prompt and reference, heard by the ASR, voiced again while broken
       (WER over 20% or pace off by 2x) up to 3 tries, the best try kept; writes
-      <root>/<public|restricted>/<source>/en_audio/<shard> (id, en_audio as 24 kHz Ogg Opus,
+      <root>/<public|restricted>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
       en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
       30 min and at its end. A rerun skips the shards already written or pushed, and first pushes
       any written but not yet pushed.

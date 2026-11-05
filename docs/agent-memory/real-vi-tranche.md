@@ -26,8 +26,8 @@ English TTS (`voice.py`).
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
 - Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
-  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/` and `cache/<source>/`, so the box keeps only the shards
-  in flight and the Mac can take a share.
+  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/` and `cache/<source>/`, so a rerun
+  or the Mac picks up from the Hub. The box keeps what it wrote and downloaded (disk is ample).
   - [`huybik/hibiki-zero-vi-real`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real):
     public, gated with automatic approval on research-only, no-impersonation terms, CC BY-NC-SA
     4.0 overall; viVoice, YODAS, FOSD and VIVOS.
@@ -37,8 +37,9 @@ English TTS (`voice.py`).
     them. Never make it public. Its segments take 21 GB for 1,277 h (~16 MB per hour), and
     the rows' English speech will about double that: the first tranche fits the free account's
     100 GB of private storage, and a scale-up past ~3,000 h needs PRO (1 TB private).
-  - Each repo's card has a config per folder (`vivoice-segments`, `pho-segments`,
-    `giga-segments`) declaring `audio` as Audio, so the viewer and `datasets` decode it.
+  - Each repo's card declares only the segments configs (`vivoice-segments`, `pho-segments`,
+    `giga-segments`, `audio` as Audio), so the viewer and `datasets` decode those. `en_audio` has
+    no config: its readers decode the Opus bytes themselves.
 - First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
   ~10k h with more GigaSpeech 2 and YODAS ([First tranche](#first-tranche)).
 - A commercial build still needs a legal sign-off on:
@@ -114,7 +115,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
   ─► Muse VI→EN (OpenRouter) in batches of a doc's consecutive rows, which give each other context
-  ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
+  ─► English TTS in the row speaker's voice (prompt and reference: the row's own clip and transcript)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
 
@@ -127,8 +128,8 @@ other corpora ─► their transcripts, word times by forced alignment ───
   bandwidth (flag sources at 16 kHz or below).
 - Speaker labels cannot pick the TTS reference: YODAS has none, and GigaSpeech 2's recordings
   and some corpus "speakers" (platforms) hold several voices. On every source, cluster speaker
-  embeddings per doc (per channel for viVoice, whose docs are single rows) to pick each row's
-  reference and drop overlapped speech. The same embeddings and a dialect classifier check the
+  embeddings per doc (per channel for viVoice, whose docs are single rows) to drop overlapped
+  speech; the TTS needs no reference pick, as it prompts each row with its own clip. The same embeddings and a dialect classifier check the
   North, Central and South balance.
 - Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
   parquet sorted by `seq`, audio re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under

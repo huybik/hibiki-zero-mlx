@@ -58,7 +58,7 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
        This speed compares the models; production cost is the winner's batched runtime
        (vLLM-Omni serves Qwen3-TTS and VoxCPM2 with CUDA graphs, CosyVoice3 has TensorRT-LLM),
        measured after. No Qwen3-TTS is newer than the January 2026 release;
-  4. production verifies every output with Whisper and voices a broken one again, so a mode's
+  4. production verifies every output with an ASR (Qwen3-ASR) and voices a broken one again, so a mode's
      broken share is its retry cost, not a bar: take the highest voice match whose kept rows'
      WER is near the best, then listen blind to 20 pairs; the winner must reach ~50 H100-hours
      per 1,000 h (RTF 0.05, retries included) on its batched runtime, or the runner-up is
@@ -90,7 +90,7 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   Qwen3-TTS. dots.tts was marked unusable twice, the others never. The ear and the speaker
   embedding disagree: the highest voice match lost most often, so the embedding score ranks
   modes but does not decide. **VoxCPM2 with transcript is the TTS**: the ear's pick and the
-  fastest model, served batched by vLLM-Omni.
+  fastest model, run batched on nano-vllm-voxcpm's engine.
 - Before the full run, the chosen model is tuned for throughput on the box, with quality checked
   unchanged against the bake-off's outputs (user, 2026-11-05). `training/tranche/voice.py` runs
   nano-vllm-voxcpm 2.0.5's engine in its own process (env `nanovox`): LM and diffusion steps as
@@ -123,11 +123,17 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   again while broken (WER over 20% under Whisper's normalizer, or pace off by 2x), up to 3
   tries. Two viVoice shards: 1.05 tries a row, 1.5% still broken. Those rows are mostly the ASR
   mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
-  PhoAudiobook: 1.02–1.06 tries a row, ~1–1.6% still broken. Each check asks for at most 512
+  PhoAudiobook: 1.01–1.06 tries a row, 0.2–2.2% still broken per shard. Prompted with the
+  Vietnamese transcript, VoxCPM2 sometimes speaks a Vietnamese clause before the English; under
+  ~20% of the words it passes the WER check (~0.05% of rows, e.g. pho/00003/00588), so the cache
+  build also drops rows whose `en_asr` has Vietnamese letters absent from `text_en`. The TTS
+  overshoots full scale on 3% of PhoAudiobook rows and 15% of viVoice rows (at most 0.23% of
+  samples, hard-clipped by the Opus encode). Opus decodes at 48 kHz whatever the 24 kHz input,
+  so readers resample. Each check asks for at most 512
   transcript tokens (`max_completion_tokens`, as `checks.py`): uncapped, ASR decoding is greedy, so
   an output it loops on ran to the model's 65k context past any timeout, every try (one in the
-  first ~8,000). Capped, it comes back long and scores broken; a timeout or HTTP error then means
-  the server is in trouble and stops the run.
+  first ~8,000). Capped, it comes back long and scores broken; a timeout (after 3 tries of 60 s)
+  or an HTTP error then means the server is in trouble and stops the run.
 - The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
   its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
   a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).
