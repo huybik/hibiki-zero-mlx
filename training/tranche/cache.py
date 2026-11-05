@@ -78,10 +78,10 @@ SPLIT = "train"  # the delay draw's key, as cache_codes seeds it
 SEED = 1234  # cache_codes' defaults: the delay seed, ratio and the alignment floor
 DELAY_RATIO = 0.5
 DURATION_TOLERANCE_S = 0.02
-# Above 0.10 (PhoAudiobook's p99) the corpus transcript and the ASR differ by phrases: a repeated
-# clause, numbers or punctuation spelled out, words the clip cuts; below it, mostly homophones and
-# a syllable clipped at the edge (real-vi-tranche#cache).
-MAX_CER = 0.10
+# Above 0.15 the corpus transcript and the clip differ by phrases (PhoAudiobook's repeated clauses);
+# from 0.10 to 0.15 mostly the ASR's misses on names and loanwords, numbers and percentages spelled
+# otherwise, a word at a cut edge (real-vi-tranche#cache).
+MAX_CER = 0.15
 VI_LETTERS = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
 MIMI_BATCH_S = 640.0  # padded audio per Mimi batch, as mimi_cache_cuda
 CTC_BATCH_S = 640.0

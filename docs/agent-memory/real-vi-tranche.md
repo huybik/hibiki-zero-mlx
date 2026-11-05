@@ -236,12 +236,23 @@ trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
   `en_asr` has Vietnamese letters `text_en` lacks; when its language is not Vietnamese; when its
   CER is over `--max-cer`; when it overlaps an evaluation sentence; then on `cache_codes`'s own
   gates (decoded duration, frame cap, CTC alignment score 0.5, token timing).
-- `--max-cer` 0.10, from the first 16 PhoAudiobook shards (20,784 rows, 2026-11-05): p90 0.033,
-  p99 0.102, p99.5 0.167; 1.04% of rows over 0.10, 0.56% over 0.15. Over 0.10 the transcript and
-  the clip differ by phrases (a repeated clause, punctuation spelled out as "chấm", the words of a
-  cut edge); from 0.05 to 0.10 mostly by homophones (sinh/xin) and a syllable at the cut. The
-  English translates the transcript, so a phrase the clip lacks teaches the model to say what was
-  not spoken. Check it on viVoice and GigaSpeech 2 once their `asr_vi` lands.
+- `--max-cer` 0.15 for every source (2026-11-06), from the CER of the first shards:
+
+  | Source | Rows | p90 | p99 | Over 0.10 | Over 0.15 |
+  |---|---:|---:|---:|---:|---:|
+  | PhoAudiobook (16 shards) | 20,784 | 0.033 | 0.102 | 1.04% | 0.56% |
+  | viVoice (30 shards) | 23,040 | 0.061 | 0.151 | 3.58% | 1.02% |
+
+  Over 0.15 the transcript and the clip differ by phrases: PhoAudiobook transcripts that repeat
+  the clip's last clause (0.17–0.34), punctuation spelled out ("chấm ba chấm"). The English
+  translates the transcript, so such a row teaches the model to say what was not spoken. From
+  0.10 to 0.15 the corpus is mostly right: on viVoice the ASR mangles English names and loanwords
+  ("Jujutsu Kaisen" heard as "Shikai Sen", "Berserk" as "bơm sơn"), and percentages and year
+  ranges are spelled otherwise ("30%" against "ba mươi phần trăm"); on PhoAudiobook a word at a
+  cut edge or a number's spelling. Of 16 viVoice rows sampled there, one had a wrong fact ("dài
+  200 tấn" where the speaker says "dài 282 mét"). 0.10 would drop 2.6% more of viVoice for that.
+  From 0.05 to 0.10 the two differ by homophones (sinh/xin) and edge syllables. Check it on
+  GigaSpeech 2 once its `asr_vi` lands.
 - The Vietnamese-letter rule drops 118 of 10,392 rows on PhoAudiobook shards 0–7 (1.1%), 49 of
   them broken anyway. Of the rest, about half are lead-ins the TTS spoke in Vietnamese ("Không.
   Being rejected…", "Bước ngoặt khác, managing the farm") and half Vietnamese names the ASR spelled
