@@ -89,9 +89,6 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   profiled on a slice (user, 2026-11-05): batched serving, CUDA graphs, batch size and
   concurrency swept to the GPU's limit, quality checked unchanged against the bake-off's
   outputs. The full run starts only from the tuned setup.
-- `training/tranche/envs.sh` builds those envs. A recent vLLM (0.33) needs `flashinfer-jit-cache`
-  at FlashInfer's version and CUDA beside it: without it a fused FP8 MoE model's first load
-  compiles the kernels itself, about an hour on the box's 15 CPUs with the GPU idle (Hy-MT2,
-  2026-11-05).
+- `training/tranche/envs.sh` builds those envs.
 - The MPS daemon outlives the bake-off, and every later CUDA job on the box runs as its client:
   stop it with `echo quit | nvidia-cuda-mps-control` before the trainer.
