@@ -5,8 +5,9 @@ own order ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline
   segments <source>  download each source shard at its pinned commit, keep its usable segments,
                      re-encode their audio to Ogg Opus and write
                      <root>/<repo>/<source>/segments/<shard>.parquet; the download is deleted
-  push <source>      upload <root>/<repo>/<source>/segments to its tranche repo (a rerun skips
-                     files already committed); a restricted source goes only to a private repo
+  push <source>      upload <root>/<repo>/<source>/segments, or with --part text_en its
+                     translations, to its tranche repo (a rerun skips files already committed); a
+                     restricted source goes only to a private repo
 
 Sources go to the public repo, or to the private one where their terms forbid redistribution
 (PhoAudiobook, GigaSpeech 2). Rows, sorted by seq within a shard:
@@ -224,8 +225,8 @@ def push(args: argparse.Namespace) -> None:
     if dest == "restricted" and not api.dataset_info(REPOS[dest]).private:
         raise SystemExit(f"{REPOS[dest]} is not private: {args.source} may not be published")
     api.upload_folder(repo_id=REPOS[dest], repo_type="dataset", folder_path=args.root / dest,
-                      allow_patterns=[f"{args.source}/segments/*.parquet"],
-                      commit_message=f"{args.source} segments")
+                      allow_patterns=[f"{args.source}/{args.part}/*.parquet"],
+                      commit_message=f"{args.source} {args.part}")
 
 
 def main() -> None:
@@ -239,6 +240,8 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=8)
     p = steps.add_parser("push")
     p.add_argument("source", choices=sorted(SOURCES))
+    p.add_argument("--part", choices=["segments", "text_en"], default="segments",
+                   help="the folder to upload: the segments, or their translations (translate.py)")
     args = parser.parse_args()
     {"segments": segments, "push": push}[args.step](args)
 

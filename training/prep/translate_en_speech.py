@@ -556,14 +556,16 @@ def gemini(out: Path, keys: list[str], batch_chars: int) -> None:
                 time.sleep(GEMINI_POLL)
 
 
-def muse_call(client: httpx.Client, stop: threading.Event, key: str,
-              lines: list[str]) -> tuple[list[str] | None, str, Counter, dict]:
+def muse_call(client: httpx.Client, stop: threading.Event, key: str, lines: list[str],
+              instructions: str = INSTRUCTIONS) -> tuple[list[str] | None, str, Counter, dict]:
+    """One Muse call on numbered lines -> the translated lines or None, the raw reply, the usage and
+    the key. instructions: the system prompt (the tranche passes its VI→EN one)."""
     failures = 0
     while True:
         try:
             response = client.post(MUSE_URL, json={
                 "model": MUSE_MODEL, "max_tokens": MAX_TOKENS, "reasoning": {"effort": "minimal"},  # cannot be off
-                "messages": [{"role": "system", "content": INSTRUCTIONS}, {"role": "user", "content": numbered(lines)}]})
+                "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": numbered(lines)}]})
             reply = response.json()
         except (httpx.TransportError, json.JSONDecodeError) as error:
             transient = f"{type(error).__name__}: {error}"
