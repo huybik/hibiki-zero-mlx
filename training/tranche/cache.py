@@ -131,6 +131,7 @@ _aligner: CTCWordAligner | None = None
 
 
 def align(
+    files: Path,
     log_probs: np.ndarray,
     lead: list[int],
     groups: list[tuple[list[int], str]],
@@ -139,10 +140,10 @@ def align(
     eos_id: int,
 ) -> tuple[list[int], list[int], float]:
     """Worker: the row's text tokens and their frames, and the alignment score; raises
-    AlignmentError to reject the row."""
+    AlignmentError to reject the row. `files`: the aligner snapshot, resolved by the parent."""
     global _aligner
     if _aligner is None:
-        _aligner = CTCWordAligner(aligner_files(), DEFAULT_MIN_ALIGNMENT_SCORE)
+        _aligner = CTCWordAligner(files, DEFAULT_MIN_ALIGNMENT_SCORE)
     alignment = _aligner.align(log_probs, groups)
     tokens, frames = timed_sentencepiece_tokens(lead, groups, alignment, raw_target_frames, delay_frames, eos_id)
     return tokens, frames, alignment.score
@@ -276,7 +277,7 @@ def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
         return f"Vietnamese letters in en_asr: {''.join(sorted(letters))}"
     if row["language"] != "Vietnamese":
         return f"language {row['language'] or 'none'}"
-    if row["cer"] > max_cer:
+    if round(row["cer"], 6) > max_cer:  # float32: 0.1 is stored as 0.10000000149
         return f"CER {row['cer']:.3f} over {max_cer}"
     if overlaps(row["text"], grams):
         return "overlaps an evaluation sentence"
@@ -294,15 +295,23 @@ class Loaded:
     clips: dict[int, Future] = field(default_factory=dict)  # row index -> (vi24, en24, en16)
 
 
-def load(source: str, name: str, files: dict[str, Path], max_cer: float, grams, pool: ProcessPoolExecutor) -> Loaded:
-    rows = read_parts(source, name, files)
-    shard = Loaded(source, name, rows, [])
+def read_shard(source: str, name: str, max_cer: float, grams) -> tuple[Loaded, dict[int, tuple[bytes, bytes]]]:
+    """The shard downloaded, read and gated (in the download thread), with the kept rows' audio."""
+    rows = read_parts(source, name, fetch(source, name))
+    shard, audio = Loaded(source, name, rows, []), {}
     for index, row in enumerate(rows):
         if reason := gate(row, max_cer, grams):
             shard.rejected.append({"id": row["id"], "reason": reason})
         else:
-            shard.clips[index] = pool.submit(prepare, row["audio"]["bytes"], row["en_audio"]["bytes"])
+            audio[index] = (row["audio"]["bytes"], row["en_audio"]["bytes"])
         row["audio"] = row["en_audio"] = None
+    return shard, audio
+
+
+def queue(read: tuple[Loaded, dict[int, tuple[bytes, bytes]]], pool: ProcessPoolExecutor) -> Loaded:
+    """The read shard with its kept rows' clips submitted to the decode workers."""
+    shard, audio = read
+    shard.clips = {index: pool.submit(prepare, *clips) for index, clips in audio.items()}
     return shard
 
 
@@ -331,6 +340,7 @@ class Builder:
         self.cfg = read_json(args.config_path)
         self.tokenizer = sentencepiece.SentencePieceProcessor(str(require_file(args.tokenizer, "text tokenizer")))
         self.eos_id = int(self.tokenizer.eos_id())
+        self.aligner_files = aligner_files()
         self.models = Models(args, self.cfg)
 
     def pending(self, index: int, row: dict[str, Any], clips: tuple[np.ndarray, ...]) -> Pending:
@@ -348,6 +358,8 @@ class Builder:
         room_s = ((self.args.max_frames - 1) * FRAME_SAMPLES - len(en24)) / SAMPLE_RATE
         delay_s = target_delay_s(row["id"], SPLIT, min(DELAY_RATIO * round(row["duration_s"], 2), room_s), SEED)
         pad = int(round(delay_s * SAMPLE_RATE))
+        if int(self.models.ctc._get_feat_extract_output_lengths(torch.tensor(len(en16)))) < 1:
+            raise Rejected("the English clip is shorter than one CTC frame")
         lead, groups = sentencepiece_groups(row["text_en"], self.tokenizer)
         return Pending(index, row, vi24, np.concatenate([np.zeros(pad, np.float32), en24]), en16, lead, groups,
                        delay_s, int(round(delay_s * FRAME_RATE)), vi_frames, math.ceil((pad + len(en24)) / FRAME_SAMPLES))
@@ -365,7 +377,7 @@ class Builder:
                 rejected.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
         shard.clips.clear()
         log_probs = self.models.ctc_log_probs([p.en16 for p in todo])
-        aligned = [pool.submit(align, lp, p.lead, p.groups, p.en_frames - p.delay_frames, p.delay_frames, self.eos_id)
+        aligned = [pool.submit(align, self.aligner_files, lp, p.lead, p.groups, p.en_frames - p.delay_frames, p.delay_frames, self.eos_id)
                    for lp, p in zip(log_probs, todo, strict=True)]
         after_ctc()
         vi_codes = self.models.mimi_codes([p.vi24 for p in todo])
@@ -436,31 +448,35 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
 
 
 def build(args: argparse.Namespace) -> None:
-    todo = todo_shards(args)
-    log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
-    if not todo:
-        return
+    # Taken first: a second run must not push or load models onto a GPU the first one uses.
+    with exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"):
+        todo = todo_shards(args)
+        log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
+        if todo:
+            build_shards(args, todo)
+
+
+def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
     grams = eval_grams()
     builder = Builder(args)
     workers = args.workers or max(1, math.floor(cpu_budget()) - 1)
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"  # the spawned workers' thread pools, under the box's thread limit (voice.py)
     pushed = {s: time.monotonic() for s in args.sources}
-    with (exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"),
-          ThreadPoolExecutor(1) as downloads,
+    with (ThreadPoolExecutor(1) as reads,
           ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool):
         try:
-            ahead = load(*todo[0], fetch(*todo[0]), args.max_cer, grams, pool)
+            ahead = queue(read_shard(*todo[0], args.max_cer, grams), pool)
             began, last = time.monotonic(), time.perf_counter()
             for k, (source, name) in enumerate(todo):
                 shard = ahead
-                # The next shard's files download while this one builds.
-                files = downloads.submit(fetch, *todo[k + 1]) if k + 1 < len(todo) else None
+                # The next shard downloads, reads and is gated in a thread while this one builds.
+                read = reads.submit(read_shard, *todo[k + 1], args.max_cer, grams) if k + 1 < len(todo) else None
 
                 def load_next() -> None:
                     nonlocal ahead
-                    if files is not None:
-                        ahead = load(*todo[k + 1], files.result(), args.max_cer, grams, pool)
+                    if read is not None:
+                        ahead = queue(read.result(), pool)
 
                 payload = builder.build(shard, pool, load_next)
                 write(payload, cache_dir(args.root, source) / shard_file(name))

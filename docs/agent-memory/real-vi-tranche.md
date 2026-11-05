@@ -249,10 +249,12 @@ trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
   would keep 27 more (0.26%), not worth a second rule.
 - CTC: transformers' wav2vec2-base-960h in float32 over padded batches, the first GroupNorm's
   statistics taken over each clip's own frames and the encoder given the attention mask, as
-  `wav2vec2_mlx` masks; on CPU, 8 clips batched match each alone (same argmax, log-probabilities
-  within 3e-3). Mimi as in `mimi_cache_cuda` (float32, TF32 off, 640 s batches). The Viterbi runs
-  in the decode workers while Mimi encodes; the next shard's files download in a thread and its
-  clips decode in the workers.
+  `wav2vec2_mlx` masks. On CPU, 8 clips of a shard batched against each alone keep every argmax,
+  their log-probabilities within 2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards
+  differ by 3.1e-3); Mimi's batched codes equal the clip-alone ones on all 16 codebooks (moshi's
+  Mimi is causal). Mimi as in `mimi_cache_cuda` (float32, TF32 off, 640 s batches). The Viterbi
+  runs in the decode workers while Mimi encodes; the next shard is downloaded, read and gated in
+  a thread, and its clips decode in the workers behind this shard's alignments.
 - Needs `data/eval` (on the box `.venv/bin/python -m training.prep.eval_sets --sets fleurs
   multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
   server on the GPU, ~1.3 GB of it is free, so the build runs after them.
