@@ -64,27 +64,33 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
      per 1,000 h (RTF 0.05, retries included) on its batched runtime, or the runner-up is
      measured the same way. (The first rule, broken ≤ 2% and WER ≤ 3%, passed only CosyVoice3,
      which barely clones, and Qwen3-TTS x-vector, at half the others' voice match.)
-- The run of 2026-11-05: 290 rows, 8 workers per model. Whisper's normalizer deletes text in
-  brackets, which scored correct readings of a parenthetical as broken; `score` now unbrackets
-  first, and leaves out the 7 lines most systems break (Latin, rare names like "Cloak N Dagga",
-  one mis-encoded line). Broken share and voice match (Mimi, 0 = another speaker, 1 = the
-  speaker's own other clip; ceiling 0.742, floor 0.266):
+- The run of 2026-11-05 (rerun on Japan 59219222, same seeds): 290 rows, 8 workers per model.
+  Whisper's normalizer deletes text in brackets, which scored correct readings of a parenthetical
+  as broken; `score` now unbrackets first, and leaves out the 9 lines most systems break (Latin,
+  rare names like "Cloak N Dagga", one mis-encoded line). 211 of the other 281 rows are one
+  speaker. Broken share and voice match (Mimi, 0 = another speaker, 1 = the speaker's own other
+  clip; ceiling 0.741, floor 0.268):
 
   | Mode | Broken | Voice match | RTF |
   |---|---:|---:|---:|
-  | CosyVoice3 cross-lingual | 0.0% | 0.12 | 0.18 |
-  | Qwen3-TTS x-vector | 1.8% | 0.22 | 0.13 |
-  | VoxCPM2 reference only | 3.9% | 0.29 | 0.08 |
-  | Qwen3-TTS with transcript | 4.9% | 0.32 | 0.14 |
-  | VoxCPM2 with transcript (`ult`) | 8.5% | 0.35 | 0.08 |
-  | dots.tts with transcript | 9.5% | 0.40 | 0.31 |
-  | dots.tts x-vector | 8.8% | 0.43 | 0.20 |
+  | CosyVoice3 cross-lingual | 0.0% | 0.11 | 0.19 |
+  | Qwen3-TTS x-vector | 1.4% | 0.21 | 0.16 |
+  | VoxCPM2 reference only | 3.6% | 0.29 | 0.08 |
+  | Qwen3-TTS with transcript | 5.0% | 0.31 | 0.16 |
+  | VoxCPM2 with transcript (`ult`) | 8.2% | 0.34 | 0.08 |
+  | dots.tts with transcript | 8.9% | 0.40 | 0.32 |
+  | dots.tts x-vector | 8.2% | 0.43 | 0.20 |
 
   The broken rows of the cloning modes are sampling glitches a retry fixes: dots.tts babbling
   "Nhi, Nhi…", silence or "Subtitles by the Amara.org community", VoxCPM2 garbling names.
-  VoxCPM2 with transcript is the pick, pending the blind listening: the fastest model one
-  request at a time, served batched by vLLM-Omni. dots.tts keeps the voice a little better
-  but has no batched runtime and runs 2.5–4× slower.
+- Blind listening (user, 2026-11-05): 20 one-speaker rows none of the three broke (7
+  PhoAudiobook, 10 viVoice, 3 GigaSpeech 2), the Vietnamese clip against Mimi-round-tripped
+  VoxCPM2 `ult`, dots.tts x-vector and Qwen3-TTS x-vector in shuffled order. Closest voice:
+  VoxCPM2 11, Qwen3-TTS 7, dots.tts 2; viVoice went 8–1–1 to VoxCPM2, PhoAudiobook 5–2 to
+  Qwen3-TTS. dots.tts was marked unusable twice, the others never. The ear and the speaker
+  embedding disagree: the highest voice match lost most often, so the embedding score ranks
+  modes but does not decide. **VoxCPM2 with transcript is the TTS**: the ear's pick and the
+  fastest model, served batched by vLLM-Omni.
 - Before the full tranche run, the chosen TTS model is optimized for throughput on the box and
   profiled on a slice (user, 2026-11-05): batched serving, CUDA graphs, batch size and
   concurrency swept to the GPU's limit, quality checked unchanged against the bake-off's
