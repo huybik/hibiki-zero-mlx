@@ -90,5 +90,7 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   concurrency swept to the GPU's limit, quality checked unchanged against the bake-off's
   outputs. The full run starts only from the tuned setup.
 - `training/tranche/envs.sh` builds those envs.
+- `synth` checks for the MPS daemon with `nvidia-cuda-mps-control` itself: on driver 615 its
+  socket is seqpacket, and a stream connect fails with EPROTOTYPE while the daemon runs.
 - The MPS daemon outlives the bake-off, and every later CUDA job on the box runs as its client:
   stop it with `echo quit | nvidia-cuda-mps-control` before the trainer.
