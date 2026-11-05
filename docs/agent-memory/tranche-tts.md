@@ -123,7 +123,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   again while broken (WER over 20% under Whisper's normalizer, or pace off by 2x), up to 3
   tries. Two viVoice shards: 1.05 tries a row, 1.5% still broken. Those rows are mostly the ASR
   mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
-  PhoAudiobook: 1.02–1.04 tries a row, ~1% still broken.
+  PhoAudiobook: 1.02–1.04 tries a row, ~1% still broken. Some outputs keep the ASR server past
+  any timeout, every try (one in the first ~8,000): a check that times out 3 times counts as
+  broken with `en_asr` null, so the row is voiced again.
 - The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
   its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
   a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).

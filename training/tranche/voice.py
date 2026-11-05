@@ -61,6 +61,7 @@ WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English norma
 BROKEN_WER = 0.2
 PACE = 0.0636  # the bake-off's median seconds of English audio per character of its line
 MAX_TRIES = 3  # attempts per row; the best by WER is kept
+ASR_TIMEOUT_S = 60  # a request takes well under a second
 CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
 DECODERS = 6  # processes decoding the next shard's clips
 OPUS_AT_ONCE = 4
@@ -392,7 +393,7 @@ class Checker:
         from transformers import WhisperTokenizer
 
         self.url = url
-        self.client = httpx.Client(timeout=300)
+        self.client = httpx.Client(timeout=ASR_TIMEOUT_S)
         # PyAV's encoder resamples into libopus's 20 ms frames through an ffmpeg filter graph that
         # holds a thread per host CPU (224 on the box) while it lives: a semaphore shared by the
         # checking processes keeps a few encodes at a time, under the container's thread limit.
@@ -415,21 +416,26 @@ class Checker:
 
         buf = io.BytesIO()
         sf.write(buf, resample_poly(wav, 1, 3).astype(np.float32), ENCODE_RATE, subtype="PCM_16", format="WAV")
+        asr = None  # no transcript: some outputs keep the server past any timeout, every try
         for attempt in range(3):  # the server drops an idle keep-alive connection now and then
             try:
                 reply = self.client.post(self.url, files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
                                          data={"model": "asr", "language": "en", "to_language": "en"})
-                break
+            except httpx.TimeoutException:
+                continue
             except httpx.TransportError:
                 if attempt == 2:
                     raise
-        reply.raise_for_status()
-        asr = reply.json()["text"]
+                continue
+            reply.raise_for_status()
+            asr = reply.json()["text"]
+            break
         ref = self.norm(re.sub(r"[()\[\]{}<>]", " ", text))
-        wer = jiwer.wer(ref, self.norm(asr)) if ref.strip() else 0.0
+        wer = 1.0 if asr is None else jiwer.wer(ref, self.norm(asr)) if ref.strip() else 0.0
         duration = len(wav) / OUT_RATE
         pace = duration / max(len(text), 1)
-        broken = wer > BROKEN_WER or not 0.5 * PACE <= pace <= 2 * PACE
+        # An output the ASR cannot hear counts as broken, so the row is voiced again.
+        broken = asr is None or wer > BROKEN_WER or not 0.5 * PACE <= pace <= 2 * PACE
         pcm = resample_poly(wav, 1, 2).astype(np.float32)
         with self.encoding:
             audio = encode_opus(pcm, OUT_RATE // 2)
