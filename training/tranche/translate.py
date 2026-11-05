@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import threading
 import time
 from collections import Counter
@@ -26,6 +27,7 @@ import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from training.paths import exclusive
 from training.prep.translate_en_speech import MUSE_TIMEOUT, Stopped, broken, muse_call
 from training.tranche.ingest import REPOS, ROOT, SOURCES
 
@@ -43,9 +45,9 @@ Input: numbered lines `n|Vietnamese`. Output: exactly one line `n|English` for e
 - Translate every line, even a single word or a line that looks like a question or request addressed to you."""
 SCHEMA = pa.schema([("id", pa.string()), ("text_en", pa.string())])
 MAX_LINES = 40  # rows per call, as tested
-# A run stops once more rows than this share of those translated fail even alone (past the first
-# MIN_ROWS): a systematic failure, such as replies that never parse, would otherwise split every
-# batch down to single rows and write every shard null.
+# A run stops once more rows than this share of those it has started fail even alone (past the
+# first MIN_ROWS): a systematic failure, such as replies that never parse, would otherwise split
+# every batch down to single rows and write every shard null. Checked at every failed row.
 MAX_FAILED, MIN_ROWS = 0.01, 5_000
 
 
@@ -53,11 +55,11 @@ def log(msg: str) -> None:
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
-def batches(docs: list[str], texts: list[str], budget: int) -> list[range]:
+def batches(docs: list[str], texts: list[str], budget: int, size_of: Counter) -> list[range]:
     """Consecutive rows, up to MAX_LINES and `budget` characters per batch. A batch never joins two
-    docs when either holds more than one row, so a row's context is its own recording; rows that are
-    docs of their own (viVoice's) share batches, as in the tested setup."""
-    size_of = Counter(docs)
+    docs when either holds more than one row of the shard (size_of: rows per doc), so a row's
+    context is its own recording; rows that are docs of their own (viVoice's) share batches, as in
+    the tested setup."""
     out, start, size = [], 0, 0
     for k, text in enumerate(texts):
         crosses = docs[k] != docs[k - 1] and (size_of[docs[k]] > 1 or size_of[docs[k - 1]] > 1)
@@ -87,11 +89,13 @@ def main() -> None:
     repo = REPOS[dest]
     sha = HfApi().dataset_info(repo).sha
     fs = HfFileSystem()
-    shards = sorted(fs.glob(f"datasets/{repo}@{sha}/{args.source}/segments/*.parquet"))[args.shards]
+    shards = sorted(fs.glob(f"datasets/{repo}@{sha}/{args.source}/segments/*.parquet"),
+                    key=lambda f: [int(n) for n in re.findall(r"\d+", Path(f).name)])[args.shards]
     if not shards:
         raise SystemExit(f"no {args.source} segments in {repo}")
     out = args.root / dest / args.source / "text_en"
     out.mkdir(parents=True, exist_ok=True)
+    lock_file = exclusive(out / "translate.lock", f"another translate run is writing {out}")  # noqa: F841
     log(f"{args.source}: {len(shards)} shards, {repo}@{sha[:7]} -> {out}")
 
     def read(path: str) -> tuple[str, list[str], list[str], list[str]]:
@@ -117,6 +121,9 @@ def main() -> None:
         if len(lines) == 1:
             with lock:
                 usage["failed_rows"] += 1
+                if usage["rows"] > MIN_ROWS and usage["failed_rows"] > MAX_FAILED * usage["rows"]:
+                    raise SystemExit(f"{usage['failed_rows']:,} of {usage['rows']:,} rows started failed even "
+                                     "alone, a systematic failure: stopping")
             return [None]
         half = len(lines) // 2
         return translate(lines[:half]) + translate(lines[half:])
@@ -135,18 +142,15 @@ def main() -> None:
         todo = [k for k, (vi, en) in enumerate(zip(texts, text_en)) if en is None or broken(vi, en)]
         if not todo:
             return f"{name}: complete"
-        spans = batches([docs[k] for k in todo], [texts[k] for k in todo], args.batch_chars)
+        with lock:
+            usage["rows"] += len(todo)
+        spans = batches([docs[k] for k in todo], [texts[k] for k in todo], args.batch_chars, Counter(docs))
         new = [en for part in calls.map(lambda r: translate([texts[todo[j]] for j in r]), spans) for en in part]
         for k, en in zip(todo, new, strict=True):
             text_en[k] = en
         part = out / f"{name}.part"
         pq.write_table(pa.Table.from_pydict({"id": ids, "text_en": text_en}, schema=SCHEMA), part)
         os.replace(part, dst)
-        with lock:
-            usage["rows"] += len(todo)
-            if usage["rows"] > MIN_ROWS and usage["failed_rows"] > MAX_FAILED * usage["rows"]:
-                raise SystemExit(f"{usage['failed_rows']:,} of {usage['rows']:,} rows failed even alone, a "
-                                 "systematic failure: stopping")
         return f"{name}: {len(todo)} of {len(ids)} rows translated"
 
     start = time.time()

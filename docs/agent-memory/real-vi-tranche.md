@@ -161,7 +161,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
-  ─► Muse VI→EN per row (OpenRouter), the previous rows as context
+  ─► Muse VI→EN (OpenRouter) in batches of a doc's consecutive rows, which give each other context
   ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
@@ -210,8 +210,11 @@ other corpora ─► their transcripts, word times by forced alignment ───
   that writes letters of a script its Vietnamese lacks (Muse wrote Chinese mid-sentence in 22 of
   the first 24,681 rows, "the keeper of the江湖 ledger"), splits its batch in halves down to one
   row; a row failing alone keeps `text_en` null, a rerun translates the null and broken rows
-  again, and a run stops once more than 1% of its rows fail alone. One PhoAudiobook
-  shard (1,299 rows) takes ~58 calls and $0.02, eight shards in flight at 64 calls.
+  again; a run stops at the first failed row that takes failures past 1% of the rows it has
+  started (once past 5,000), and a lock keeps a second run off the same folder. A shard is
+  written only once all its rows are done, so a crash loses the shards in flight (eight
+  GigaSpeech 2 shards hold ~170k rows). One PhoAudiobook shard (1,299 rows) takes ~45 calls and
+  $0.01, eight shards in flight at 64 calls.
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
