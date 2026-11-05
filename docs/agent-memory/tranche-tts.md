@@ -125,7 +125,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
 - The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
   follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
-  `thread_count = 1`, and audio decodes in threads, not spawned processes.
+  `thread_count = 1`, and audio decodes in threads, not spawned processes. PyAV's
+  `AudioResampler` builds a filter graph whose threads pile up across decodes (4,075 after 400
+  clips), so `voice.py` resamples with scipy.
 - `training/tranche/envs.sh` builds those envs.
 - `synth` checks for the MPS daemon with `nvidia-cuda-mps-control` itself: on driver 615 its
   socket is seqpacket, and a stream connect fails with EPROTOTYPE while the daemon runs.

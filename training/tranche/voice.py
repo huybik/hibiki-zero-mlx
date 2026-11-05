@@ -348,18 +348,22 @@ def bench(args: argparse.Namespace) -> None:
 
 
 def decode_16k(data: bytes) -> np.ndarray:
-    """A segment's Ogg Opus -> mono float32 at 16 kHz, the VAE encoder's rate."""
+    """A segment's Ogg Opus -> mono float32 at 16 kHz, the VAE encoder's rate. Resampled by scipy:
+    PyAV's AudioResampler builds an ffmpeg filter graph whose threads (one per host CPU) pile up."""
     import io
 
     import av
+    from scipy.signal import resample_poly
 
     with av.open(io.BytesIO(data)) as container:
         stream = container.streams.audio[0]
         stream.codec_context.thread_count = 1  # ffmpeg's default is a thread per host CPU (224)
-        resampler = av.AudioResampler(format="flt", layout="mono", rate=ENCODE_RATE)
-        chunks = [f.to_ndarray()[0] for frame in container.decode(stream) for f in resampler.resample(frame)]
-        chunks += [f.to_ndarray()[0] for f in resampler.resample(None)]
-    return np.concatenate(chunks)
+        frames = [f.to_ndarray().astype(np.float32) for f in container.decode(stream)]
+        rate = stream.codec_context.sample_rate
+    pcm = np.concatenate(frames, axis=-1)
+    pcm = pcm.mean(axis=0) if pcm.ndim == 2 and frames[0].shape[0] > 1 else pcm.reshape(-1)
+    g = np.gcd(ENCODE_RATE, rate)
+    return resample_poly(pcm, ENCODE_RATE // g, rate // g).astype(np.float32)
 
 
 @dataclass
