@@ -123,6 +123,13 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   again while broken (WER over 20% under Whisper's normalizer, or pace off by 2x), up to 3
   tries. Two viVoice shards: 1.05 tries a row, 1.5% still broken. Those rows are mostly the ASR
   mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
+  PhoAudiobook: 1.02–1.04 tries a row, ~1% still broken.
+- The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
+  its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
+  a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).
+  Decoding and checking run in spawned processes: as threads, their Python held the GIL and
+  starved the engine loop (GPU at 2%). One ASR API process featurizes ~11 requests/s on the
+  CPU, so the server runs 8.
 - The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
   follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
   `thread_count = 1`, and audio decodes in threads, not spawned processes. PyAV's
