@@ -13,7 +13,7 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the code so far
-(`training/tranche/`) is the English TTS bake-off, the ASR check, and ingest.
+(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest and translate.
 
 ## Decision
 
@@ -161,7 +161,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
-  ─► Muse VI→EN per row (OpenRouter), the previous rows as context
+  ─► Muse VI→EN (OpenRouter) in batches of a doc's consecutive rows, which give each other context
   ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
@@ -186,7 +186,9 @@ other corpora ─► their transcripts, word times by forced alignment ───
   out of order, and with no times its neighbours are only consecutive segment numbers), and for
   viVoice the row itself. `speaker` is the corpus's label, none for GigaSpeech 2. A PhoAudiobook
   doc can join two readings when the second starts later than the first ended (190 gaps within
-  a doc exceed 1 h), so translation takes context only across small gaps.
+  a doc exceed 1 h). Its rows are not contiguous speech: the corpus keeps parts of each reading,
+  and consecutive rows of a doc start a median 40 s after the previous one ended (p90 4 min,
+  three shards measured, 2026-11-05), so a stream joined from them has seams in time.
   - Ingested and pushed on 2026-11-04 (`run_ingest.sh` on the box; each source's local copy
     deleted once pushed), and checked end to end against the sources:
 
@@ -199,6 +201,33 @@ other corpora ─► their transcripts, word times by forced alignment ───
   - The audio decodes to within 0.5 ms of `duration_s`. Clips under 1 s (some of GigaSpeech
     2's) decode 6.5 ms long, as ffmpeg cannot trim a one-page Ogg stream. Ogg serial numbers are
     random, so a re-ingested shard differs in bytes and uploads again.
+- Translate (`training/tranche/translate.py`, CPU, runs on the Mac) reads each segments shard's
+  `id`, `doc` and `text` from the Hub, translates on Muse Spark 1.3 Contributor with the prompt
+  the blind judge tested, in batches of up to 40 consecutive rows and 6,000 characters that end
+  wherever a doc of more than one row starts or ends (viVoice's one-row docs share batches), and
+  writes `<root>/<public|restricted>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest
+  push <source> --part text_en` uploads it beside the segments. A reply that does not parse, or
+  that writes letters of a script its Vietnamese lacks (Muse wrote Chinese mid-sentence in 22 of
+  the first 24,681 rows, "the keeper of the江湖 ledger"), splits its batch in halves down to one
+  row; a row failing alone keeps `text_en` null, a rerun translates the null and broken rows
+  again; a run stops at the first failed row that takes failures past 1% of the rows it has
+  started (once past 5,000), and a lock keeps a second run off the same folder. A shard is
+  written only once all its rows are done, so a crash loses the shards in flight (eight
+  GigaSpeech 2 shards hold ~170k rows). Eight shards are in flight.
+- Concurrency (2026-11-05): `--concurrency` defaults to 128. OpenRouter served 128 calls at once to
+  Contributor with no 429s (two empty replies, retried); more is untested. Rows per call fall
+  where docs are short (PhoAudiobook 11–25 a shard), and each call costs a few seconds beyond its
+  rows, so short-doc sources need the concurrency, and a higher MAX_LINES would not help them.
+  Measured on the full tranche:
+
+  | Source | Rows | Concurrency | Calls | Time | Cost |
+  |---|---:|---:|---:|---:|---:|
+  | PhoAudiobook | 290,037 | 64 | 17,675 | 29 min | $3.86 |
+  | GigaSpeech 2 | 281,133 | 128 | 11,400 | 8.8 min | $2.99 |
+  | viVoice | 269,350 | 128 | 7,299 | 17 min | $2.90 |
+
+  All 840,520 rows translated, none failed, $9.75; pushed and checked against the segments on
+  the Hub (same shards and ids, no null or broken row) on 2026-11-05.
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
