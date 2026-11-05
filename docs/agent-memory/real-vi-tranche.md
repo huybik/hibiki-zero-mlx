@@ -217,7 +217,23 @@ thresholds, so they can change without measuring again.
     processes saturated the box's 27 cores at 21 rows/s and starved the TTS's main process.
   - Beside the English TTS on the same GPU it hears ~20 rows/s, bound by the engine (the TTS
     holds the GPU at 100%), and slows the TTS ~30% (a PhoAudiobook shard every ~2.0 min against
-    ~1.55): ~12 h for 840,520 rows, about what running it after the TTS would take. Started
-    2026-11-05 by `/workspace/restart_filters.sh` (log `/workspace/logs/filters-asr.log`).
+    ~1.55): ~12 h for 840,520 rows, about what running it after the TTS would take. It runs as
+    `/workspace/restart.sh filters` (log `/workspace/logs/filters.log`).
   - First PhoAudiobook shards: CER median 0.000, p90 0.03–0.04, about one row a shard detected
     as another language.
+  - Checked end to end on the box (2026-11-05), beside the running jobs: `asr pho --limit 1`
+    into a scratch `--root`, its push stubbed, heard shard 0 in 79 s. The shard holds the
+    segments' 1,299 ids in order, `id`/`asr_vi`/`language` as strings and `cer` as float32, no
+    nulls; CER recomputed over `spoken` matches every row; a rerun skips it and pushes what is
+    unpushed. Against the running job's own pass over the shard, 1,239 transcripts are
+    identical and 60 differ (48 in punctuation or case only, the rest by at most 0.042 CER):
+    the server's batching. The reply parser reads the five reply shapes (a language header,
+    `language None`, an empty transcript, no header). The job's first push put 30 shards in the
+    private repo, byte-identical to the local ones. `filters overlap` on the box finds no row
+    of the 840,520; `overlaps` matches a 13-syllable run and a whole 9–12-syllable sentence, not
+    a 12-syllable run or shorter sentences.
+  - The highest CERs are faults of the corpus: PhoAudiobook transcripts that repeat the clip's
+    last clause (0.24–0.34), numbers and punctuation spelled oddly ("chấm ba chấm", "triệu
+    bốn nghìn"), abbreviations ("tp. hcm"); then words the ASR loses at a clip's cut edges.
+    `spoken` leaves `%` and decimal commas unspoken (the ASR's "80%" against the corpus's "tám
+    mươi phần trăm"), which adds at most ~0.04 CER to ~0.5% of rows, so it stays.
