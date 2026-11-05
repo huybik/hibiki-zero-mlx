@@ -90,6 +90,7 @@ def encode_opus(pcm: np.ndarray, rate: int) -> bytes:
     buf = io.BytesIO()
     with av.open(buf, "w", format="ogg") as out:
         stream = out.add_stream("libopus", rate=rate, layout="mono")
+        stream.codec_context.thread_count = 1  # ffmpeg's default is a thread per host CPU
         stream.bit_rate = OPUS_BITRATE
         stream.options = {"compression_level": str(OPUS_COMPLEXITY)}
         frame = av.AudioFrame.from_ndarray(np.clip(pcm, -1, 1)[None].astype(np.float32), format="flt",
@@ -240,8 +241,9 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=8)
     p = steps.add_parser("push")
     p.add_argument("source", choices=sorted(SOURCES))
-    p.add_argument("--part", choices=["segments", "text_en"], default="segments",
-                   help="the folder to upload: the segments, or their translations (translate.py)")
+    p.add_argument("--part", choices=["segments", "text_en", "en_audio"], default="segments",
+                   help="the folder to upload: the segments, their translations (translate.py) or their "
+                        "English speech (voice.py)")
     args = parser.parse_args()
     {"segments": segments, "push": push}[args.step](args)
 

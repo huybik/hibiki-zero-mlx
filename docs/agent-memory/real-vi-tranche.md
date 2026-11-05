@@ -13,7 +13,8 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the code so far
-(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest and translate.
+(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest, translate and the
+English TTS (`voice.py`).
 
 ## Decision
 
@@ -25,8 +26,8 @@ Researched 2026-11-04 from the corpora's and models' own cards; the code so far
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
 - Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
-  `<source>/segments/`, `<source>/rows/` and `cache/<source>/`, so the box keeps only the shards
-  in flight and the Mac can take a share.
+  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/` and `cache/<source>/`, so a rerun
+  or the Mac picks up from the Hub. The box keeps what it wrote and downloaded (disk is ample).
   - [`huybik/hibiki-zero-vi-real`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real):
     public, gated with automatic approval on research-only, no-impersonation terms, CC BY-NC-SA
     4.0 overall; viVoice, YODAS, FOSD and VIVOS.
@@ -36,8 +37,9 @@ Researched 2026-11-04 from the corpora's and models' own cards; the code so far
     them. Never make it public. Its segments take 21 GB for 1,277 h (~16 MB per hour), and
     the rows' English speech will about double that: the first tranche fits the free account's
     100 GB of private storage, and a scale-up past ~3,000 h needs PRO (1 TB private).
-  - Each repo's card has a config per folder (`vivoice-segments`, `pho-segments`,
-    `giga-segments`) declaring `audio` as Audio, so the viewer and `datasets` decode it.
+  - Each repo's card declares only the segments configs (`vivoice-segments`, `pho-segments`,
+    `giga-segments`, `audio` as Audio), so the viewer and `datasets` decode those. `en_audio` has
+    no config: its readers decode the Opus bytes themselves.
 - First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
   ~10k h with more GigaSpeech 2 and YODAS ([First tranche](#first-tranche)).
 - A commercial build still needs a legal sign-off on:
@@ -86,7 +88,7 @@ here is published or estimated, to be measured on the box first:
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame |
 | VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)) (user, 2026-11-05), for every source. Contributor mode lets Meta train on what it is sent, PhoAudiobook's and GigaSpeech 2's transcripts included; the user chose it over standard Muse Spark 1.3 (~17× the price, ~$170 for 2,000 h against ~$10) | `tencent/Hy-MT2-30B-A3B-FP8` on the box | A check on the box, since removed, measured Hy-MT2 (2026-11-05; vLLM 0.33 needs `flashinfer-jit-cache` beside it, or the FP8 MoE's first load compiles its kernels for about an hour): 21,000 rows (46.1 h) in 82–89 s, $0.013 per million characters against Muse's $0.084, but less faithful. FLEURS dev chrF 63.3 against Muse's 66.6. A blind Opus judge on 300 tranche rows gave it adequacy 3.90 against 4.44 (fluency 4.51 against 3.96), 26 rows at adequacy ≤ 2 against Muse's 8: it completes a segment's unfinished sentence and slips on pronouns, even when told to leave fragments unfinished (3.82 with the card's prompt). At ~$8 saved per 2,000 h, quality decides |
-| English TTS | VoxCPM2, with the reference's transcript, verified by Whisper and retried | dots.tts-soar | [bake-off](tranche-tts.md), pending the blind listening |
+| English TTS | VoxCPM2, prompted by the row's own clip and transcript, checked by Qwen3-ASR and retried (`training/tranche/voice.py`) | dots.tts-soar | [bake-off and tuning](tranche-tts.md); chosen by blind listening |
 | TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
 
@@ -113,7 +115,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
   ─► Muse VI→EN (OpenRouter) in batches of a doc's consecutive rows, which give each other context
-  ─► English TTS in the row speaker's voice (reference: another stretch of the same speaker)
+  ─► English TTS in the row speaker's voice (prompt and reference: the row's own clip and transcript)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
 
@@ -126,8 +128,8 @@ other corpora ─► their transcripts, word times by forced alignment ───
   bandwidth (flag sources at 16 kHz or below).
 - Speaker labels cannot pick the TTS reference: YODAS has none, and GigaSpeech 2's recordings
   and some corpus "speakers" (platforms) hold several voices. On every source, cluster speaker
-  embeddings per doc (per channel for viVoice, whose docs are single rows) to pick each row's
-  reference and drop overlapped speech. The same embeddings and a dialect classifier check the
+  embeddings per doc (per channel for viVoice, whose docs are single rows) to drop overlapped
+  speech; the TTS needs no reference pick, as it prompts each row with its own clip. The same embeddings and a dialect classifier check the
   North, Central and South balance.
 - Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
   parquet sorted by `seq`, audio re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under

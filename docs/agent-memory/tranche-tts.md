@@ -1,6 +1,6 @@
 # Tranche English TTS
 
-Read when touching `training/tranche/bakeoff.py` or `envs.sh`, or choosing, tuning or running the
+Read when touching `training/tranche/bakeoff.py`, `voice.py` or `envs.sh`, or choosing, tuning or running the
 English TTS that voices the real-Vietnamese tranche's targets in each speaker's voice.
 Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tranche.md)
 
@@ -58,7 +58,7 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
        This speed compares the models; production cost is the winner's batched runtime
        (vLLM-Omni serves Qwen3-TTS and VoxCPM2 with CUDA graphs, CosyVoice3 has TensorRT-LLM),
        measured after. No Qwen3-TTS is newer than the January 2026 release;
-  4. production verifies every output with Whisper and voices a broken one again, so a mode's
+  4. production verifies every output with an ASR (Qwen3-ASR) and voices a broken one again, so a mode's
      broken share is its retry cost, not a bar: take the highest voice match whose kept rows'
      WER is near the best, then listen blind to 20 pairs; the winner must reach ~50 H100-hours
      per 1,000 h (RTF 0.05, retries included) on its batched runtime, or the runner-up is
@@ -90,11 +90,65 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   Qwen3-TTS. dots.tts was marked unusable twice, the others never. The ear and the speaker
   embedding disagree: the highest voice match lost most often, so the embedding score ranks
   modes but does not decide. **VoxCPM2 with transcript is the TTS**: the ear's pick and the
-  fastest model, served batched by vLLM-Omni.
-- Before the full tranche run, the chosen TTS model is optimized for throughput on the box and
-  profiled on a slice (user, 2026-11-05): batched serving, CUDA graphs, batch size and
-  concurrency swept to the GPU's limit, quality checked unchanged against the bake-off's
-  outputs. The full run starts only from the tuned setup.
+  fastest model, run batched on nano-vllm-voxcpm's engine.
+- Before the full run, the chosen model is tuned for throughput on the box, with quality checked
+  unchanged against the bake-off's outputs (user, 2026-11-05). `training/tranche/voice.py` runs
+  nano-vllm-voxcpm 2.0.5's engine in its own process (env `nanovox`): LM and diffusion steps as
+  CUDA graphs, up to 512 rows at once. Measured on the bake-off's 290 rows, repeated (H100,
+  2026-11-05; RTF is wall time over audio voiced):
+
+  | Setup | RTF |
+  |---|---:|
+  | voxcpm 2.0.3, 8 processes under MPS (the bake-off) | 0.084 |
+  | nano-vllm's server, 64 / 128 / 512 requests at once | 0.0080 / 0.0069 / 0.0065 |
+  | its engine without per-step audio decode, rows decoded in fp32 batches | 0.0043 |
+  | the same, VAE decoder in fp16 under torch.compile, fixed batch shapes | 0.0032 |
+
+  - Profiling (a stack sampler in the process; ptrace is blocked in the container) put ~70% of
+    the server's loop in its streaming VAE decoder, which loops over every stream in Python in
+    each causal conv layer. `voice.py` decodes each row once it ends, as voxcpm's non-streaming
+    path does. The VAE is causal, so right-padding a batch changes no row.
+  - The fp16 decoder is 57 dB SNR from fp32 and 3.4x faster compiled. cuDNN spends ~0.9 s
+    planning each new conv shape, so batch widths round up to 64 frames, each width has one
+    batch size, and every shape up to 1,024 frames (41 s) is warmed at start (~30 s).
+  - Gained nothing: a decode thread on its own CUDA stream (the engine keeps the GPU busy).
+    Left: fewer diffusion steps or FP8, which change the output.
+  - Quality on the bake-off's 281 rows (its 9 hard lines out), Mimi round trip: broken 8.2%,
+    11.0%, 11.0% over three batched passes against voxcpm's 8.2%, and voice match 0.339–0.350
+    against 0.338. Only 6 rows broke in all three passes.
+- `voice.py run` voices the tranche (see its docstring). Each row is prompted with its own clip
+  and Vietnamese transcript, as the paper conditions on the source speaker. The bake-off cloned
+  from another clip of the speaker only to score similarity fairly. Every output is heard by
+  Qwen3-ASR-1.7B (`qwen-asr-serve` from env `asr`, `to_language=en` to force English) and voiced
+  again while broken (WER over 20% under Whisper's normalizer, or pace off by 2x), up to 3
+  tries. Two viVoice shards: 1.05 tries a row, 1.5% still broken. Those rows are mostly the ASR
+  mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
+  PhoAudiobook: 1.01–1.06 tries a row, 0.2–2.2% still broken per shard. Prompted with the
+  Vietnamese transcript, VoxCPM2 sometimes speaks a Vietnamese clause before the English; under
+  ~20% of the words it passes the WER check (~0.05% of rows, e.g. pho/00003/00588), so the cache
+  build also drops rows whose `en_asr` has Vietnamese letters absent from `text_en`. The TTS
+  overshoots full scale on 3% of PhoAudiobook rows and 15% of viVoice rows (at most 0.23% of
+  samples, hard-clipped by the Opus encode). Opus decodes at 48 kHz whatever the 24 kHz input,
+  so readers resample. Each check asks for at most 512
+  transcript tokens (`max_completion_tokens`, as `checks.py`): uncapped, ASR decoding is greedy, so
+  an output it loops on ran to the model's 65k context past any timeout, every try (one in the
+  first ~8,000). Capped, it comes back long and scores broken; a timeout (after 3 tries of 60 s)
+  or an HTTP error then means the server is in trouble and stops the run.
+- The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
+  its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
+  a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).
+  Decoding and checking run in spawned processes: as threads, their Python held the GIL and
+  starved the engine loop (GPU at 2%). One ASR API process featurizes ~11 requests/s on the
+  CPU, so the server runs 8.
+- The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
+  follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
+  `thread_count = 1`. PyAV's `AudioResampler` builds a filter graph holding a thread per host CPU
+  while it lives (4,075 threads from 20 decoding threads), so `voice.py` resamples with scipy. Its
+  Opus encoder builds one too, so a semaphore shared by the checking processes lets at most 4
+  encode at once.
+- A crashed run drops its queued checks rather than running them, so its GPU memory frees within
+  a few minutes. Stop a run by its PID file (`/workspace/logs/voice-run.pid`), never `pkill -f`:
+  its spawned workers look like vLLM's own processes.
 - `training/tranche/envs.sh` builds those envs.
 - `synth` checks for the MPS daemon with `nvidia-cuda-mps-control` itself: on driver 615 its
   socket is seqpacket, and a stream connect fails with EPROTOTYPE while the daemon runs.
