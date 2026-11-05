@@ -90,7 +90,7 @@ SPLIT_ORDER = {"validation": 0, "train": 1}
 GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_POLL = 60  # seconds between checks on running batch jobs
 GEMINI_TIMEOUT = 600_000  # ms an HTTP read may stall before the call fails and is retried
-MUSE_MODEL = "meta/muse-spark-1.3-contributor"  # Meta trains on its input and output: Libriheavy only
+MUSE_MODEL = "meta/muse-spark-1.3-contributor"  # Meta trains on its input and output: used for Libriheavy and the real-VI tranche
 MUSE_URL = "https://openrouter.ai/api/v1/chat/completions"
 MUSE_TIMEOUT = 600  # seconds an HTTP read may stall before the call fails and is retried
 

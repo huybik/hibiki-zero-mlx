@@ -10,7 +10,7 @@ or holds another script is split in halves down to single rows; a row that fails
 text_en null, and a rerun translates again the rows left null or broken. CPU only, from the repo root with the key in the environment:
 
   set -a && . ./.env && set +a
-  .venv/bin/python -m training.tranche.translate pho --root /Volumes/data/datasets/tranche
+  python -m training.tranche.translate pho --root /Volumes/data/datasets/tranche
 """
 from __future__ import annotations
 
