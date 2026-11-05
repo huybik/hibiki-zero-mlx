@@ -213,8 +213,17 @@ other corpora ─► their transcripts, word times by forced alignment ───
   again; a run stops at the first failed row that takes failures past 1% of the rows it has
   started (once past 5,000), and a lock keeps a second run off the same folder. A shard is
   written only once all its rows are done, so a crash loses the shards in flight (eight
-  GigaSpeech 2 shards hold ~170k rows). One PhoAudiobook shard (1,299 rows) takes ~45 calls and
-  $0.01, eight shards in flight at 64 calls.
+  GigaSpeech 2 shards hold ~170k rows). Eight shards are in flight.
+- Concurrency (2026-11-05): `--concurrency` defaults to 128. OpenRouter served 128 calls at once to
+  Contributor with no 429s (two empty replies, retried); more is untested. Rows per call fall
+  where docs are short (PhoAudiobook 11–25 a shard), and each call costs a few seconds beyond its
+  rows, so short-doc sources need the concurrency, and a higher MAX_LINES would not help them.
+  Measured on the full tranche:
+
+  | Source | Rows | Concurrency | Calls | Time | Cost |
+  |---|---:|---:|---:|---:|---:|
+  | PhoAudiobook | 290,037 | 64 | 17,675 | 29 min | $3.86 |
+  | GigaSpeech 2 | 281,133 | 128 | 11,400 | 8.8 min | $2.99 |
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and

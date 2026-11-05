@@ -80,7 +80,7 @@ def main() -> None:
                         default=slice(None), help="a slice of the source's segments shards, e.g. 0:1")
     parser.add_argument("--key", default="OPEN_ROUTER", help="the environment variable holding the key")
     parser.add_argument("--batch-chars", type=int, default=6_000, help="Vietnamese characters per call")
-    parser.add_argument("--concurrency", type=int, default=64)
+    parser.add_argument("--concurrency", type=int, default=128)
     args = parser.parse_args()
 
     from huggingface_hub import HfApi, HfFileSystem
