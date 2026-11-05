@@ -4,7 +4,7 @@ Read when choosing or building the real-Vietnamese source data (plan stage 1.3),
 pipeline, or its licences. The corpora, their licences and measured layouts are in
 [vi-corpora](vi-corpora.md); the English TTS is in [tranche-tts](tranche-tts.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [English TTS](#english-tts) ·
-[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline)
+[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline) · [Filters](#filters)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
 bands) costs ~5 of the 15–18 chrF between held-out TTS and FLEURS dev; the rest is real voices and
@@ -13,8 +13,8 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the code so far
-(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest, translate and the
-English TTS (`voice.py`).
+(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest, translate, the
+English TTS (`voice.py`) and the row filters (`filters.py`).
 
 ## Decision
 
@@ -26,7 +26,7 @@ English TTS (`voice.py`).
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
 - Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
-  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/` and `cache/<source>/`, so a rerun
+  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/`, `<source>/asr_vi/` and `cache/<source>/`, so a rerun
   or the Mac picks up from the Hub. The box keeps what it wrote and downloaded (disk is ample).
   - [`huybik/hibiki-zero-vi-real`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real):
     public, gated with automatic approval on research-only, no-impersonation terms, CC BY-NC-SA
@@ -189,3 +189,28 @@ other corpora ─► their transcripts, word times by forced alignment ───
   each with a `.refs` file naming the repo blobs that use it. Deleting a `models--…` or
   `datasets--…` folder frees nothing; delete a shared blob (with its `.lock` and `.refs`) once
   none of its refs exists (32 GB left behind by LongCat and the corpus samples, 2026-11-04).
+
+## Filters
+
+`training/tranche/filters.py` measures what the cache build drops rows on; the build applies the
+thresholds, so they can change without measuring again.
+
+- Evaluation overlap (`filters overlap`, Mac or box, text columns only): a row is dropped when its
+  transcript shares a 13-syllable run (over `checks.words`) with a FLEURS vi dev or test or
+  MultiMed-ST vi select or final sentence (`overlaps`, with the sets in `data/eval/`). On the first
+  tranche no row does (2026-11-05). Runs of 10 syllables or fewer match only stock broadcast
+  phrases ("cảm ơn quý vị và các bạn đã quan tâm", 80 rows at 10, 257 rows at 8), and the 9 sentences under 9
+  syllables ("được", "alo") would match everyday speech, so shorter sentences add no runs.
+- Vietnamese ASR (`filters asr`, box): every row heard by Qwen3-ASR-1.7B on the shared ASR
+  server, language detected, not forced (unforced, it writes `language <Name><asr_text>…`), up to
+  512 tokens, written as `<source>/asr_vi/<shard>` (`id`, `asr_vi`, `language`, `cer` against the
+  corpus transcript over `checks.words`) and pushed every 30 min and at each source's end. The
+  rows where the two disagree, or the language is not Vietnamese, are the ones the build drops.
+  - The client decodes each clip to 16 kHz WAV (4 processes): sent as Opus, the server's 8 API
+    processes saturated the box's 27 cores at 21 rows/s and starved the TTS's main process.
+  - Beside the English TTS on the same GPU it hears ~20 rows/s, bound by the engine (the TTS
+    holds the GPU at 100%), and slows the TTS ~30% (a PhoAudiobook shard every ~2.0 min against
+    ~1.55): ~12 h for 840,520 rows, about what running it after the TTS would take. Started
+    2026-11-05 by `/workspace/restart_filters.sh` (log `/workspace/logs/filters-asr.log`).
+  - First PhoAudiobook shards: CER median 0.000, p90 0.03–0.04, about one row a shard detected
+    as another language.

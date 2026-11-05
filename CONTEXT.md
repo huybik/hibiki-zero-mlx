@@ -38,9 +38,9 @@ inference/ (Apple Silicon, MLX)
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
   builder in MLX, the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
-  and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: so far the English
-  TTS bake-off, the ASR check, each model in its own uv env, and the ingest of the corpora's
-  segments to the tranche repos) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
+  and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: the English
+  TTS bake-off, the ASR check, each model in its own uv env, the ingest of the corpora's
+  segments to the tranche repos, their translation, the English TTS and the row filters) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
   CPUs). Its modules run from the repo root as
   `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
   publisher, the cache builder, the evaluation-set builder and the tokenizer swap runs on CUDA only.

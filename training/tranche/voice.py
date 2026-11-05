@@ -491,22 +491,6 @@ def write_shard(shard: Shard) -> None:
     os.replace(part, shard.dst)
 
 
-def push_en_audio(root: Path, source: str) -> None:
-    """`ingest push <source> --part en_audio`, tried again after a transient Hub error."""
-    from training.tranche import ingest
-
-    for attempt in range(4):
-        try:
-            ingest.push(argparse.Namespace(root=root, source=source, part="en_audio"))
-            log(f"pushed {source} en_audio")
-            return
-        except Exception as exc:  # noqa: BLE001 - the Hub's 5xx and timeouts come as many types
-            if attempt == 3:
-                raise
-            log(f"push {source} failed ({type(exc).__name__}: {exc}); again in {60 * 2 ** attempt} s")
-            time.sleep(60 * 2 ** attempt)
-
-
 def run(args: argparse.Namespace) -> None:
     """Every shard of each source in turn, the next one loading while the engine voices; the engine
     is kept full with retries first, then new rows. A shard is written once every row has a kept
@@ -533,7 +517,7 @@ def run(args: argparse.Namespace) -> None:
                 todo.append((source, name))
         local = {p.name for p in (args.root / ingest.SOURCES[source].dest / source / "en_audio").glob("*.parquet")}
         if local - done:  # written by an earlier run that stopped before pushing them
-            push_en_audio(args.root, source)
+            ingest.push_part(args.root, source, "en_audio")
     todo = todo[: args.limit]
     log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
     if not todo:
@@ -576,7 +560,7 @@ def run(args: argparse.Namespace) -> None:
 
     def push(source: str) -> None:
         pushed[source] = time.monotonic()
-        uploads.append(pushes.submit(push_en_audio, args.root, source))
+        uploads.append(pushes.submit(ingest.push_part, args.root, source, "en_audio"))
 
     def next_shard() -> bool:
         nonlocal fresh, loading_done
