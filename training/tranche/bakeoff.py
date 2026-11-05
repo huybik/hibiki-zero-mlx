@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """English TTS bake-off for the real-Vietnamese tranche: which model best voices a real Vietnamese
-speaker in English ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#english-tts)).
+speaker in English ([tranche-tts](../../docs/agent-memory/tranche-tts.md)).
 
 Each step runs on the box in its own env (`training/tranche/envs.sh` builds them), all under
 --root (default /workspace/tranche/bakeoff):
@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import random
+import re
 import signal
 import socket
 import sys
@@ -440,7 +441,12 @@ def score(args: argparse.Namespace) -> None:
 
     asr = pipeline("automatic-speech-recognition", model=snapshot(*WHISPER), dtype=torch.float16,
                    device="cuda")
-    norm = asr.tokenizer.normalize
+    whisper_norm = asr.tokenizer.normalize
+
+    def norm(text: str) -> str:
+        """Whisper's English normalizer, which deletes text inside brackets: unbracketed first, so a
+        line's parenthetical is scored like the rest of it."""
+        return whisper_norm(re.sub(r"[()\[\]{}]", " ", text))
 
     def transcribe(paths: list[str]) -> list[str]:
         audio = []
@@ -489,26 +495,40 @@ def score(args: argparse.Namespace) -> None:
     with (root / "scores.jsonl").open("w") as f:
         f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in per_row)
 
-    same = {i for i in ids if ceiling[i] >= SAME_SPEAKER}
-    lines = [f"{len(same)} of {len(ids)} rows have a same-speaker reference (cosine >= {SAME_SPEAKER}); "
-             f"ceiling {np.mean([ceiling[i] for i in same]):.3f}, floor {np.mean([floor[i] for i in same]):.3f}",
+    # A line most systems break is the line's problem (Latin, rare names, mis-encoded text), not a
+    # model's: it is listed and left out of every system's figures.
+    breaks = defaultdict(int)
+    for r in per_row:
+        breaks[r["id"]] += r["kind"] == "mimi" and r["broken"]
+    hard = {i for i, n in breaks.items() if n > len(systems) / 2}
+    same = {i for i in ids if ceiling[i] >= SAME_SPEAKER and i not in hard}
+    top, bottom = np.mean([ceiling[i] for i in same]), np.mean([floor[i] for i in same])
+    lines = [f"{len(hard)} lines broken by most systems, left out: "
+             + "; ".join(f"{i} ({rows[i]['text_en'][:60]})" for i in sorted(hard)),
              "",
-             "| System | Rows | Failed | Broken (Mimi) | WER raw / Mimi | SIM raw / Mimi | SIM by source (Mimi) | Workers | RTF |",
-             "|---|---:|---:|---:|---:|---:|---|---:|---:|"]
+             f"{len(same)} of {len(ids) - len(hard)} rows have a same-speaker reference (cosine >= {SAME_SPEAKER}); "
+             f"ceiling {top:.3f}, floor {bottom:.3f}. Voice match: the Mimi similarity from floor (0) to "
+             "ceiling (1). WER: the rows that are not broken, the ones a verify-and-retry run keeps.",
+             "",
+             "| System | Rows | Failed | Broken (Mimi) | WER kept raw / Mimi | SIM raw / Mimi | Voice match | "
+             "SIM by source (Mimi) | Workers | RTF |",
+             "|---|---:|---:|---:|---:|---:|---:|---|---:|---:|"]
     for t in table:
-        # WER and the broken share over every row; similarity only where the reference is the speaker.
+        # The broken share and WER over every row; similarity only where the reference is the speaker.
         def pick(kind: str, only_same: bool) -> list[dict]:
             return [r for r in per_row if r["system"] == t["system"] and r["kind"] == kind
-                    and (r["id"] in same or not only_same)]
+                    and r["id"] not in hard and (r["id"] in same or not only_same)]
 
         raw, mim = pick("raw", False), pick("mimi", False)
         raw_same, mim_same = pick("raw", True), pick("mimi", True)
         by_source = " ".join(f"{s} {np.mean([r['sim'] for r in mim_same if r['source'] == s]):.3f}"
                              for s in ("pho", "vivoice", "giga") if any(r["source"] == s for r in mim_same))
         broken = (sum(r["broken"] for r in mim) + t["failed"]) / max(len(mim) + t["failed"], 1)
+        sim = np.mean([r["sim"] for r in mim_same])
         lines.append(f"| {t['system']} | {t['rows']} | {t['failed']} | {broken:.1%} | "
-                     f"{np.mean([r['wer'] for r in raw]):.3f} / {np.mean([r['wer'] for r in mim]):.3f} | "
-                     f"{np.mean([r['sim'] for r in raw_same]):.3f} / {np.mean([r['sim'] for r in mim_same]):.3f} | "
+                     f"{np.mean([r['wer'] for r in raw if not r['broken']]):.3f} / "
+                     f"{np.mean([r['wer'] for r in mim if not r['broken']]):.3f} | "
+                     f"{np.mean([r['sim'] for r in raw_same]):.3f} / {sim:.3f} | {(sim - bottom) / (top - bottom):.2f} | "
                      f"{by_source} | {t['workers']} | {t['rtf']:.3f} |")
     (root / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
