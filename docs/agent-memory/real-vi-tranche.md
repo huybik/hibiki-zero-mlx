@@ -224,6 +224,10 @@ other corpora ─► their transcripts, word times by forced alignment ───
   |---|---:|---:|---:|---:|---:|
   | PhoAudiobook | 290,037 | 64 | 17,675 | 29 min | $3.86 |
   | GigaSpeech 2 | 281,133 | 128 | 11,400 | 8.8 min | $2.99 |
+  | viVoice | 269,350 | 128 | 7,299 | 17 min | $2.90 |
+
+  All 840,520 rows translated, none failed, $9.75; pushed and checked against the segments on
+  the Hub (same shards and ids, no null or broken row) on 2026-11-05.
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
