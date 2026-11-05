@@ -1,13 +1,11 @@
 #!/usr/bin/env python
 """Check of the tranche's Vietnamese ASR on the box, before the pipeline relies on it
-([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#models)).
+([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#models)): Qwen3-ASR-1.7B (vLLM
+backend) on FLEURS dev and the bake-off's clips and references, scored by WER and CER against each
+set's own transcript, with the detected language and the speed. Writes <root>/checks/asr.jsonl
+(one row per input) and prints a summary. From the repo root:
 
-  asr  /workspace/envs/asr   Qwen3-ASR-1.7B (vLLM backend) on FLEURS dev and the bake-off's clips
-                             and references: WER and CER against each set's own transcript, the
-                             detected language, speed
-
-It writes <root>/checks/asr.jsonl (one row per input) and prints a summary. From the repo root:
-  /workspace/envs/asr/bin/python -m training.tranche.checks asr
+  /workspace/envs/asr/bin/python -m training.tranche.checks
 """
 from __future__ import annotations
 
@@ -85,9 +83,7 @@ def write(path: Path, rows: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("step", choices=["asr"])
-    args = parser.parse_args()
-    asr(args)
+    asr(parser.parse_args())
 
 
 if __name__ == "__main__":

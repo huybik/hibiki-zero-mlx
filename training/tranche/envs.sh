@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The tranche's envs on the box, at the versions their repos document (researched 2026-11-04): one
 # uv env per TTS bake-off candidate (training/tranche/bakeoff.py), one for its scoring, and one for
-# the ASR check (training/tranche/checks.py). Built without uv's cache, which on /workspace grows by
-# tens of GB.
+# the ASR check (training/tranche/checks.py). Built without uv's cache, which
+# on /workspace grows by tens of GB.
 set -Eeuo pipefail
 export UV_NO_CACHE=1
 log() { echo "$(date -u '+%F %T') $*"; }

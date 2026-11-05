@@ -1,10 +1,10 @@
 # Real-Vietnamese tranche
 
-Read when choosing or building the real-Vietnamese source data (plan stage 1.3), its English TTS
-or its licences.
+Read when choosing or building the real-Vietnamese source data (plan stage 1.3), its models and
+pipeline, or its licences. The corpora, their licences and measured layouts are in
+[vi-corpora](vi-corpora.md); the English TTS is in [tranche-tts](tranche-tts.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [English TTS](#english-tts) ·
-[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline). The corpora, their
-licences and measured layouts are in [vi-corpora](vi-corpora.md).
+[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
 bands) costs ~5 of the 15–18 chrF between held-out TTS and FLEURS dev; the rest is real voices and
@@ -48,58 +48,8 @@ Researched 2026-11-04 from the corpora's and models' own cards; the code so far
 
 ## English TTS
 
-Kyutai's TTS 1.6B, the paper's, is out: its voice conditioning is closed and only precomputed
-embeddings ship ([card](https://huggingface.co/kyutai/tts-1.6b-en_fr)). The finalists, with
-Apache code and weights, at least 24 kHz, cloning from any reference clip:
-
-| Model | Published English numbers | Notes |
-|---|---|---|
-| [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) (2B) | Seed test-en WER 1.84, similarity 75.3; 48 kHz | Vietnamese is one of its 30 languages, so a Vietnamese reference is in distribution; clones from the reference alone; batched serving through vLLM-Omni. Output varies between runs (its authors suggest 1–3 tries) |
-| [Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | WER 1.24, similarity 0.775; 24 kHz | No Vietnamese; its best mode needs the reference's transcript |
-| [Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | WER 2.24, similarity 71.8; 24 kHz | A cross-lingual mode; the smallest and fastest |
-| [dots.tts-soar](https://huggingface.co/dots-studio/dots.tts-soar) (Apache-2.0; post-trained from dots.tts-base) | WER 1.30, similarity 77.1 | New; no serving stack |
-| [LongCat-AudioDiT-3.5B](https://github.com/meituan-longcat/LongCat-AudioDiT) (MIT) | WER 1.50, similarity 78.6 | New; English and Chinese only |
-
-- Ruled out:
-  - non-commercial weights (F5-TTS, MaskGCT, Llasa, Spark-TTS, XTTS-v2, OpenAudio S1-mini, Fish S2);
-  - licences that bar training other models on the output (IndexTTS-2 §3.4(c), Higgs Audio v2);
-  - VibeVoice (research only, an audible disclaimer in every output);
-  - MegaTTS 3 (its cloning encoder is unreleased);
-  - OpenVoice v2 (22.05 kHz).
-- Kyutai's `tts-0.75b-en-public` (CC BY 4.0, clones by an audio prefix, English only) is a fourth
-  candidate if time allows: it is the closest to the paper's setup.
-- From the cards and repos (2026-11-04): VoxCPM2 lists Vietnamese among its languages and
-  dots.tts benchmarks it; Qwen3-TTS, CosyVoice3 and LongCat do not. LongCat is out: it needs the
-  reference's transcript and was trained on Chinese and English only. No licence of the other
-  four restricts training on their outputs. Only CosyVoice3 (Triton/TRT-LLM) and VoxCPM2 (Nano-vLLM
-  or vLLM-Omni) document batched serving; their Python APIs, like dots.tts's, run one request at
-  a time, and Qwen3-TTS takes lists.
-- None publishes Vietnamese→English speaker similarity, so a bake-off chooses, on the H100
-  (`training/tranche/bakeoff.py`, each model in its own uv env under `/workspace/envs`):
-  1. real Vietnamese clips, one pair per speaker: PhoAudiobook readers, viVoice channels and
-     GigaSpeech 2 recordings, each clip with another 5–16 s clip of the same speaker as its
-     reference, and an `en-vi-val` English line to speak;
-  2. each model's cloning modes at fixed seeds (VoxCPM2 reference-only and with the reference's
-     transcript; dots.tts and Qwen3-TTS x-vector and with the transcript; CosyVoice3
-     cross-lingual), every output round-tripped through Mimi (16 codebooks), as training sees it.
-     Each model runs its best release: `dots.tts-soar` (post-trained; `-base` is its pretraining
-     baseline) and CosyVoice3's RL-tuned LLM (`llm.rl.pt`, ranked above `llm.pt` on its card);
-  3. scores:
-     - speaker similarity (WeSpeaker ResNet293-LM: the seed-tts-eval WavLM-Large checkpoint is
-       only on Google Drive) between the row's own Vietnamese clip and the English output,
-       anchored by the clip against its reference (ceiling; rows under 0.4 are not one speaker)
-       and against another speaker's clip (floor);
-     - Whisper-large-v3 WER on the English, and the share of broken clips: WER over 20%, or a
-       duration per character off the median by 2× either way;
-     - speed: wall time per second of audio, one model at a time, its rows split over 8
-       processes sharing the GPU through CUDA MPS. The models' Python APIs run one request at a
-       time and leave the GPU two-thirds idle; MPS lets the processes' kernels overlap, where
-       plain processes take turns. Qwen3-TTS on 64 rows: RTF 0.89 with one process, 0.40 with 4
-       without MPS, 0.29 with 4 and 0.17 with 8 under MPS (2026-11-05). The winner's batched
-       runtime (vLLM-Omni serves Qwen3-TTS and VoxCPM2 with CUDA graphs, CosyVoice3 has
-       TensorRT-LLM) is measured after; no Qwen3-TTS is newer than the January 2026 release;
-  4. drop a model with more than 2% broken clips, take the highest similarity at WER ≤ 3% and
-     at most ~50 H100-hours per 1,000 h, then listen blind to 20 pairs.
+The English targets are voiced in each row's speaker's voice: the candidates, the bake-off that
+chose VoxCPM2, its scores and running it are in [tranche-tts](tranche-tts.md).
 
 ## First tranche
 
@@ -117,8 +67,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 - Keep a corpus's own order (an audiobook's consecutive sentences, a video's runs) so that the
   trainer can join real neighbours into streams.
 - Rough box time per 1,000 h, from published speeds: the English TTS ~20–50 H100-hours, the
-  ASR ~1 h, alignment and diarization less: 1–3 days of the box, ~$35–100. The translation runs
-  off the box, on OpenRouter. Box time, not money, bounds the scale-up; past ~5k h a second GPU for generation
+  ASR ~1 h, the translation ~1 h if it runs on the box, alignment and diarization less: 1–3 days
+  of the box, ~$35–100. Box time, not money, bounds the scale-up; past ~5k h a second GPU for generation
   pays.
 
 ## Models
@@ -131,12 +81,12 @@ here is published or estimated, to be measured on the box first:
 | VAD | Silero VAD v6.2.3 (MIT) | FireRedVAD | |
 | Diarization, overlap | `nvidia/Nemotron-3-Diarization` (OpenMDW-1.1) | pyannote community-1 (CC BY 4.0, gated) | DIHARD III DER 12.7 against 20.2; up to 8 speakers |
 | Speaker embedding (voice reference) | WeSpeaker ResNet293-LM (CC BY 4.0) | TitaNet-Large | |
-| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. Rows where the two ASRs disagree are dropped |
+| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. `checks` (2026-11-05): WER 5.5% on FLEURS dev, 1.8% PhoAudiobook, 7.7% viVoice (3 of 300 clips detected as another language), 4.9% GigaSpeech 2; 941 clips in 11 s. Rows where the two ASRs disagree are dropped |
 | Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Qwen3-ASR's own language tag cross-checks |
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame |
-| VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)) (user, 2026-11-05: no model on the box) | `tencent/Hy-MT2-30B-A3B` (Apache-2.0 on its card since a licence change: pin the commit), vLLM on the box | EN→VI cost $0.09 per million characters, within ~0.1 of Gemini in adequacy. Contributor mode lets Meta train on what it is sent: the transcripts of copyrighted audiobooks and videos go to it, where the EN→VI work sent only public-domain Libriheavy text |
-| English TTS | VoxCPM2 | Qwen3-TTS 1.7B | Bake-off below |
+| VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)) (user, 2026-11-05), for every source. Contributor mode lets Meta train on what it is sent, PhoAudiobook's and GigaSpeech 2's transcripts included; the user chose it over standard Muse Spark 1.3 (~17× the price, ~$170 for 2,000 h against ~$10) | `tencent/Hy-MT2-30B-A3B-FP8` on the box | A check on the box, since removed, measured Hy-MT2 (2026-11-05; vLLM 0.33 needs `flashinfer-jit-cache` beside it, or the FP8 MoE's first load compiles its kernels for about an hour): 21,000 rows (46.1 h) in 82–89 s, $0.013 per million characters against Muse's $0.084, but less faithful. FLEURS dev chrF 63.3 against Muse's 66.6. A blind Opus judge on 300 tranche rows gave it adequacy 3.90 against 4.44 (fluency 4.51 against 3.96), 26 rows at adequacy ≤ 2 against Muse's 8: it completes a segment's unfinished sentence and slips on pronouns, even when told to leave fragments unfinished (3.82 with the card's prompt). At ~$8 saved per 2,000 h, quality decides |
+| English TTS | VoxCPM2, with the reference's transcript, verified by Whisper and retried | dots.tts-soar | [bake-off](tranche-tts.md), pending the blind listening |
 | TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
 
@@ -149,7 +99,8 @@ here is published or estimated, to be measured on the box first:
 
 ## Pipeline
 
-Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04). The rows take
+Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04), except the
+translation, on Muse. The rows take
 the EN-VI dataset's own parquet schema, and the cache keeps its format, so the trainer takes it
 unchanged; the build needs a CUDA counterpart of the MLX `cache_codes` (Mimi in moshi's torch, as
 `mimi_cache_cuda` encodes it, and the English CTC on CUDA)

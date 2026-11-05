@@ -35,7 +35,6 @@ import dataclasses
 import json
 import math
 import multiprocessing
-import os
 import random
 import re
 import shutil
@@ -49,7 +48,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from training.paths import CACHE_FORMAT
+from training.paths import CACHE_FORMAT, cpu_budget
 
 FRAME_RATE = 12.5
 # Stream lengths, seconds. Upstream's coarse stage trained on 30-75 s utterances and its RL stage
@@ -191,7 +190,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
         print(f"[streams] packing {len(stale)} of {len(shard_paths)} cache shards", flush=True)
         # Forked like DataLoader workers: packing touches only files and host memory, and fork
         # neither re-runs the caller's script nor starts a fresh BLAS thread pool per worker.
-        workers = min(PACK_WORKERS, os.cpu_count() or 1, len(stale))
+        workers = min(PACK_WORKERS, max(1, int(cpu_budget())), len(stale))
         with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("fork")) as pool:
             list(pool.map(pack_shard, stale))
     rows: list[Row] = []

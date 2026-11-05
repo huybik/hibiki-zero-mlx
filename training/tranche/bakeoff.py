@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """English TTS bake-off for the real-Vietnamese tranche: which model best voices a real Vietnamese
-speaker in English ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#english-tts)).
+speaker in English ([tranche-tts](../../docs/agent-memory/tranche-tts.md)).
 
 Each step runs on the box in its own env (`training/tranche/envs.sh` builds them), all under
 --root (default /workspace/tranche/bakeoff):
@@ -25,8 +25,8 @@ From the repo root:
 synth and mimi skip what they already wrote, so they resume; run mimi once every synth is done.
 synth's workers need CUDA MPS (`nvidia-cuda-mps-control -d`): without it the GPU runs one
 process's kernels at a time, and 4 workers gained 2.2x over one instead of 3.1x. Run one synth at
-a time with the GPU otherwise idle, and each in one go: its RTF is the wall time from its first
-row to its last.
+a time with the GPU otherwise idle: a system's RTF sums each run's wall time, from its first row's
+start (once every worker has loaded) to its last row's end, over the audio voiced.
 """
 from __future__ import annotations
 
@@ -34,17 +34,20 @@ import argparse
 import json
 import os
 import random
+import re
 import signal
+import socket
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 
-from training.paths import DEFAULT_MIMI_WEIGHT
+from training.paths import DEFAULT_MIMI_WEIGHT, cpu_budget
 
 ROOT = Path("/workspace/tranche/bakeoff")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -256,85 +259,118 @@ def load_model(model: str):
         for f in Path(path).iterdir():
             (model_dir / f.name).symlink_to((Path(path) / ("llm.rl.pt" if f.name == "llm.pt" else f.name)).resolve())
         tts = AutoModel(model_dir=str(model_dir))
+        # Its LLM runs in a thread whose error would end there, the row then saved from whatever
+        # tokens it made: keep the error to raise it here.
+        failed: list[BaseException] = []
+        threading.excepthook = lambda a: failed.append(a.exc_value)
 
         def generate(row, mode, seed):
             set_all_random_seed(seed)
+            failed.clear()
             parts = [o["tts_speech"] for o in tts.inference_cross_lingual(
                 "You are a helpful assistant.<|endofprompt|>" + row["text_en"], row["ref"], stream=False)]
+            if failed:
+                raise failed[0]
             return torch.cat(parts, dim=-1).squeeze(0).float().numpy(), tts.sample_rate
     return generate
 
 
-def synth_worker(args: argparse.Namespace, mode: str, worker: int) -> None:
-    """Voice every args.workers-th row of the mode, from row `worker`, appending to its timing."""
+def synth_worker(args: argparse.Namespace, mode: str, todo, start, run: str) -> None:
+    """Load the model, wait for every worker to load, then voice rows from `todo` until its end
+    marker, appending each row's record to the mode's timing."""
     import soundfile as sf
     import torch
 
-    torch.set_num_threads(max(1, (os.cpu_count() or 1) // args.workers))
-    rows = read_rows(args.root)[: args.limit]
+    torch.set_num_threads(max(1, int(cpu_budget() // args.workers)))
+    generate = load_model(args.model)
+    start.wait()  # so the wall clock times every worker running, not their load skew
     system = f"{args.model}-{mode}"
     out = args.root / "out" / system
-    timing_path = out / "timing.jsonl"
-    recorded = {json.loads(line)["id"] for line in timing_path.open()} if timing_path.exists() else set()
-    todo = [(k, row) for k, row in enumerate(rows)
-            if k % args.workers == worker and row["id"] not in recorded]
-    if not todo:
-        return
-    generate = load_model(args.model)
+    out.mkdir(parents=True, exist_ok=True)
     # Every worker appends one line per write() to the shared file, which O_APPEND keeps whole.
-    with timing_path.open("a") as timing:
-        for k, row in todo:
+    with (out / "timing.jsonl").open("a") as timing:
+        while (item := todo.get()) is not None:
+            k, row = item
             path = out / f"{row['id']}.wav"
             torch.cuda.synchronize()
-            start = time.perf_counter()
-            record = {"id": row["id"], "workers": args.workers}
+            began = time.perf_counter()
+            record = {"id": row["id"], "run": run, "workers": args.workers}
             try:
                 wav, rate = generate(row, mode, SEED + k)
                 if len(wav) < rate // 2:
                     raise ValueError(f"only {len(wav) / rate:.2f} s of audio")
+            except torch.cuda.OutOfMemoryError:  # torch.OutOfMemoryError is 2.4+; cosyvoice pins 2.3.1
+                raise  # the GPU's limit, not the model's: the row stays unrecorded for a rerun
             except Exception as exc:  # a failed row is a result: it counts as broken
+                torch.cuda.synchronize()  # unless the GPU context broke (MPS shares a fault): then die
                 record["error"] = f"{type(exc).__name__}: {exc}"[:300]
                 log(f"{system} {row['id']}: {record['error']}")
             else:
                 torch.cuda.synchronize()
-                record |= {"seconds": round(time.perf_counter() - start, 3),
-                           "audio_s": round(len(wav) / rate, 3)}
+                record["audio_s"] = round(len(wav) / rate, 3)
                 part = path.with_name(path.name + ".part")
                 sf.write(part, np.clip(wav, -1, 1), rate, subtype="PCM_16", format="WAV")
                 os.replace(part, path)
-            record["end"] = round(time.time(), 3)
+            record |= {"seconds": round(time.perf_counter() - began, 3), "end": round(time.time(), 3)}
             timing.write(json.dumps(record) + "\n")
             timing.flush()
-    log(f"{system} worker {worker}: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
+    log(f"{system} worker: done; peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB")
+
+
+def mps_running(control: Path) -> bool:
+    """A stale socket file from before a restart refuses the connection."""
+    try:
+        with socket.socket(socket.AF_UNIX) as s:
+            s.connect(str(control))
+        return True
+    except OSError:
+        return False
 
 
 def synth(args: argparse.Namespace) -> None:
-    """Each mode in turn, its rows split over args.workers processes sharing the GPU: one row at a
-    time per process, as the models' Python APIs run, so the GPU fills from several."""
+    """Each mode in turn, its unrecorded rows shared out to args.workers processes on the GPU: one
+    row at a time per process, as the models' Python APIs run, so the GPU fills from several. A
+    failed worker stops them all; a rerun voices what is left."""
     import multiprocessing
 
     mps = Path(os.environ.get("CUDA_MPS_PIPE_DIRECTORY", "/tmp/nvidia-mps")) / "control"
-    if args.workers > 1 and not mps.exists():
+    if args.workers > 1 and not mps_running(mps):
         raise SystemExit(f"no CUDA MPS daemon ({mps}): start it with `nvidia-cuda-mps-control -d`")
     spawn = multiprocessing.get_context("spawn")  # CUDA can't follow a fork
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # so `kill` reaches the finally below
+    rows = read_rows(args.root)[: args.limit]
     for mode in MODELS[args.model][2]:
         system = f"{args.model}-{mode}"
-        (args.root / "out" / system).mkdir(parents=True, exist_ok=True)
-        log(f"{system}: {args.workers} workers")
-        procs = [spawn.Process(target=synth_worker, args=(args, mode, w)) for w in range(args.workers)]
+        timing = args.root / "out" / system / "timing.jsonl"
+        recorded = {json.loads(line)["id"] for line in timing.open()} if timing.exists() else set()
+        todo = [(k, row) for k, row in enumerate(rows) if row["id"] not in recorded]
+        if not todo:
+            continue
+        queue, start = spawn.Queue(), spawn.Barrier(args.workers)
+        queue.cancel_join_thread()  # rows left in it when workers fail must not hold this process
+        for item in todo + [None] * args.workers:
+            queue.put(item)
+        run = time.strftime("%Y%m%dT%H%M%S")
+        log(f"{system}: {len(todo)} rows, {args.workers} workers")
+        procs = [spawn.Process(target=synth_worker, args=(args, mode, queue, start, run))
+                 for _ in range(args.workers)]
         try:
             for p in procs:
                 p.start()
-            for p in procs:
-                p.join()
+            while any(p.is_alive() for p in procs):
+                if any(p.exitcode for p in procs):
+                    break  # one failed: the finally stops the rest
+                time.sleep(5)
         finally:  # a stopped synth stops its workers, which would otherwise hold the GPU
-            for p in procs:
+            for p in procs:  # terminate, not Barrier.abort(), which hangs on a killed waiter
+                if p.pid is None:
+                    continue  # never started
                 if p.is_alive():
                     p.terminate()
+                p.join()
         failed = [w for w, p in enumerate(procs) if p.exitcode]
         if failed:
-            raise SystemExit(f"{system}: workers {failed} failed")
+            raise SystemExit(f"{system}: workers {failed} failed or were stopped; rerun to voice the rest")
         log(f"{system}: done")
 
 
@@ -407,6 +443,11 @@ def score(args: argparse.Namespace) -> None:
                    device="cuda")
     norm = asr.tokenizer.normalize
 
+    def norm_line(text: str) -> str:
+        """A line to speak, normalized as Whisper's output is but unbracketed first: the normalizer
+        deletes text in brackets, which a line's parenthetical is not (Whisper's own tags are)."""
+        return norm(re.sub(r"[()\[\]{}<>]", " ", text))
+
     def transcribe(paths: list[str]) -> list[str]:
         audio = []
         for path in paths:
@@ -430,20 +471,23 @@ def score(args: argparse.Namespace) -> None:
             paths = [str(folder / f"{i}.wav") for i in done]
             hyps = transcribe(paths)
             for i, path, hyp in zip(done, paths, hyps, strict=True):
-                ref = norm(rows[i]["text_en"])
+                ref = norm_line(rows[i]["text_en"])
                 wer = jiwer.wer(ref, norm(hyp)) if ref else 0.0
                 per_row.append({"system": system, "kind": kind, "id": i, "source": rows[i]["source"],
                                 "sim": cos(rows[i]["clip"], path), "ceiling": ceiling[i],
                                 "floor": floor[i], "wer": wer, "hyp": hyp,
                                 "s_per_char": timing[i]["audio_s"] / max(len(rows[i]["text_en"]), 1)})
-        failed = sum("error" in t for t in timing.values())
-        voiced = [t for t in timing.values() if "seconds" in t]
-        # Wall time from the first row's start to the last row's end, per second of audio: the
-        # GPU's cost with every worker running, warm-ups included.
-        wall = max(t["end"] for t in voiced) - min(t["end"] - t["seconds"] for t in voiced) if voiced else 0
+        failed = {i for i, t in timing.items() if "error" in t}
+        # Each run's wall time, from its first row's start to its last row's end, summed over
+        # runs and divided by the audio voiced: the GPU's cost with every worker running.
+        runs = defaultdict(list)
+        for t in timing.values():
+            runs[t["run"]].append(t)
+        wall = sum(max(t["end"] for t in r) - min(t["end"] - t["seconds"] for t in r) for r in runs.values())
+        audio = sum(t.get("audio_s", 0) for t in timing.values())
         table.append({"system": system, "rows": len(done), "failed": failed,
-                      "workers": voiced[0]["workers"] if voiced else 0,
-                      "rtf": wall / sum(t["audio_s"] for t in voiced) if voiced else float("nan")})
+                      "workers": "/".join(sorted({str(t["workers"]) for t in timing.values()})),
+                      "rtf": wall / audio if audio else float("nan")})
 
     pace = float(np.median([r["s_per_char"] for r in per_row]))
     for r in per_row:
@@ -451,27 +495,46 @@ def score(args: argparse.Namespace) -> None:
     with (root / "scores.jsonl").open("w") as f:
         f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in per_row)
 
-    same = {i for i in ids if ceiling[i] >= SAME_SPEAKER}
-    lines = [f"{len(same)} of {len(ids)} rows have a same-speaker reference (cosine >= {SAME_SPEAKER}); "
-             f"ceiling {np.mean([ceiling[i] for i in same]):.3f}, floor {np.mean([floor[i] for i in same]):.3f}",
-             "",
-             "| System | Rows | Failed | Broken (Mimi) | WER raw / Mimi | SIM raw / Mimi | SIM by source (Mimi) | Workers | RTF |",
-             "|---|---:|---:|---:|---:|---:|---|---:|---:|"]
+    # A line most systems break or fail is the line's problem (Latin, rare names, mis-encoded
+    # text), not a model's: it is listed and left out of every system's figures.
+    breaks = defaultdict(int)
+    for r in per_row:
+        breaks[r["id"]] += r["kind"] == "mimi" and r["broken"]
     for t in table:
-        # WER and the broken share over every row; similarity only where the reference is the speaker.
-        def pick(kind: str, only_same: bool) -> list[dict]:
-            return [r for r in per_row if r["system"] == t["system"] and r["kind"] == kind
-                    and (r["id"] in same or not only_same)]
+        for i in t["failed"]:
+            breaks[i] += 1
+    hard = {i for i, n in breaks.items() if n > len(systems) / 2}
+    same = {i for i in ids if ceiling[i] >= SAME_SPEAKER and i not in hard}
+    lines = [f"{len(hard)} lines broken by most systems, left out: "
+             + "; ".join(f"{i} ({rows[i]['text_en'][:60]})" for i in sorted(hard)),
+             "",
+             f"{len(same)} of {len(ids) - len(hard)} rows have a same-speaker reference (cosine >= {SAME_SPEAKER}); "
+             f"ceiling {np.mean([ceiling[i] for i in same]):.3f}, floor {np.mean([floor[i] for i in same]):.3f}. "
+             "Broken: of every row. WER and similarity: of the rows that are not broken, the ones a "
+             "verify-and-retry run keeps; similarity only where the reference is the speaker. Voice match: "
+             "the Mimi similarity from those rows' floor (0) to their ceiling (1).",
+             "",
+             "| System | Rows | Failed | Broken (Mimi) | WER kept raw / Mimi | SIM kept raw / Mimi | Voice match | "
+             "SIM by source (Mimi) | Workers | RTF |",
+             "|---|---:|---:|---:|---:|---:|---:|---|---:|---:|"]
+    for t in table:
+        def kept(kind: str, only_same: bool) -> list[dict]:
+            return [r for r in per_row if r["system"] == t["system"] and r["kind"] == kind and not r["broken"]
+                    and r["id"] not in hard and (r["id"] in same or not only_same)]
 
-        raw, mim = pick("raw", False), pick("mimi", False)
-        raw_same, mim_same = pick("raw", True), pick("mimi", True)
+        mim_all = [r for r in per_row if r["system"] == t["system"] and r["kind"] == "mimi" and r["id"] not in hard]
+        failed = len(t["failed"] - hard)
+        broken = (sum(r["broken"] for r in mim_all) + failed) / max(len(mim_all) + failed, 1)
+        raw, mim = kept("raw", False), kept("mimi", False)
+        raw_same, mim_same = kept("raw", True), kept("mimi", True)
         by_source = " ".join(f"{s} {np.mean([r['sim'] for r in mim_same if r['source'] == s]):.3f}"
                              for s in ("pho", "vivoice", "giga") if any(r["source"] == s for r in mim_same))
-        broken = (sum(r["broken"] for r in mim) + t["failed"]) / max(len(mim) + t["failed"], 1)
-        lines.append(f"| {t['system']} | {t['rows']} | {t['failed']} | {broken:.1%} | "
+        match = (np.mean([r["sim"] - r["floor"] for r in mim_same])
+                 / np.mean([r["ceiling"] - r["floor"] for r in mim_same]))
+        lines.append(f"| {t['system']} | {t['rows']} | {failed} | {broken:.1%} | "
                      f"{np.mean([r['wer'] for r in raw]):.3f} / {np.mean([r['wer'] for r in mim]):.3f} | "
                      f"{np.mean([r['sim'] for r in raw_same]):.3f} / {np.mean([r['sim'] for r in mim_same]):.3f} | "
-                     f"{by_source} | {t['workers']} | {t['rtf']:.3f} |")
+                     f"{match:.2f} | {by_source} | {t['workers']} | {t['rtf']:.3f} |")
     (root / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
