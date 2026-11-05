@@ -61,7 +61,9 @@ WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English norma
 BROKEN_WER = 0.2
 PACE = 0.0636  # the bake-off's median seconds of English audio per character of its line
 MAX_TRIES = 3  # attempts per row; the best by WER is kept
-ASR_CALLS = 64  # concurrent requests to the ASR server
+CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
+DECODERS = 6  # processes decoding the next shard's clips
+OPUS_AT_ONCE = 4
 PUSH_S = 1800
 MAX_OPEN = 3  # shards in the engine at once: those finishing their slowest rows, and the next
 
@@ -385,18 +387,16 @@ class Checker:
     bake-off scored: Whisper's English normalizer over both sides (the line unbracketed first), WER,
     and the pace against the bake-off's median. Each check also encodes the 24 kHz Ogg Opus kept."""
 
-    def __init__(self, url: str):
-        import threading
-
+    def __init__(self, url: str, encoding):
         import httpx
         from transformers import WhisperTokenizer
 
         self.url = url
-        self.client = httpx.Client(timeout=300, limits=httpx.Limits(max_connections=ASR_CALLS))
+        self.client = httpx.Client(timeout=300)
         # PyAV's encoder resamples into libopus's 20 ms frames through an ffmpeg filter graph that
-        # holds a thread per host CPU (224 on the box) while it lives: a few encodes at a time keep
-        # the checkers under the container's thread limit.
-        self.encoding = threading.BoundedSemaphore(4)
+        # holds a thread per host CPU (224 on the box) while it lives: a semaphore shared by the
+        # checking processes keeps a few encodes at a time, under the container's thread limit.
+        self.encoding = encoding
         from huggingface_hub import snapshot_download
 
         repo, revision = WHISPER_NORMALIZER
@@ -436,6 +436,18 @@ class Checker:
         return {"wer": round(wer, 4), "broken": broken, "asr": asr, "duration": round(duration, 3), "audio": audio}
 
 
+_checker: Checker | None = None
+
+
+def _start_checker(url: str, encoding) -> None:
+    global _checker
+    _checker = Checker(url, encoding)
+
+
+def _check(text: str, wav: np.ndarray) -> dict:
+    return _checker.check(text, wav)
+
+
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download
@@ -450,7 +462,7 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     if missing := [i for i in ids if not en.get(i)]:
         raise SystemExit(f"{source}/{name}: {len(missing)} rows without text_en, e.g. {missing[0]}")
     audio = [a["bytes"] for a in seg.column("audio").to_pylist()]
-    clips = list(pool.map(decode_16k, audio))
+    clips = list(pool.map(decode_16k, audio, chunksize=32))
     return Shard(source, name, root / dest / source / "en_audio" / name, ids, seg.column("text").to_pylist(),
                  [en[i] for i in ids], clips, {})
 
@@ -497,11 +509,11 @@ def run(args: argparse.Namespace) -> None:
     attempt, and each source's written shards are pushed every PUSH_S and at its end."""
     import queue
     import threading
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+    from multiprocessing import get_context
 
     from huggingface_hub import HfApi
 
-    from training.paths import cpu_budget
     from training.tranche import ingest
 
     api = HfApi()
@@ -523,7 +535,13 @@ def run(args: argparse.Namespace) -> None:
     if not todo:
         return
 
-    pool = ThreadPoolExecutor(max(1, int(cpu_budget()) - 6))  # PyAV decodes without the GIL
+    # Decoding and checking run in processes: as threads, their Python (PyAV's frame loop, the
+    # normalizer, scipy, Opus) held the GIL from the engine loop and starved the GPU. Their thread
+    # pools stay at one thread each.
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_NUM_THREADS"):
+        os.environ[name] = "1"
+    spawn = get_context("spawn")
+    pool = ProcessPoolExecutor(DECODERS, mp_context=spawn)
     loaded: queue.Queue = queue.Queue(maxsize=1)  # one shard ahead
 
     def loader():
@@ -536,8 +554,9 @@ def run(args: argparse.Namespace) -> None:
 
     threading.Thread(target=loader, name="shard-loader", daemon=True).start()
     voicer = Voicer(args.concurrency, args.gpu_memory)
-    checker = Checker(args.asr)
-    checks = ThreadPoolExecutor(ASR_CALLS)
+    checks = ProcessPoolExecutor(CHECKERS, mp_context=spawn, initializer=_start_checker,
+                                 initargs=(args.asr, spawn.BoundedSemaphore(OPUS_AT_ONCE)))
+    checking: dict = {}  # future -> its request
     inflight = set()
     retries: list[Request] = []
     fresh: Iterator[Request] = iter(())
@@ -611,10 +630,12 @@ def run(args: argparse.Namespace) -> None:
             voicer.submit(req)
         out = voicer.step() if voicer.active else voicer.flush()
         for req, wav in out:
-            inflight.add(checks.submit(lambda r=req, w=wav: (r, checker.check(r.text, w))))
+            fut = checks.submit(_check, req.text, wav)
+            checking[fut] = req
+            inflight.add(fut)
         for fut in [f for f in inflight if f.done()]:
             inflight.discard(fut)
-            settle(*fut.result())
+            settle(checking.pop(fut), fut.result())
         for fut in [f for f in uploads if f.done()]:
             uploads.remove(fut)
             fut.result()  # a failed upload stops the run; a rerun pushes what is written
