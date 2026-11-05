@@ -234,7 +234,8 @@ trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
 
 - A row is dropped, with the first reason in the shard's `rejected`, when `en_broken`; when
   `en_asr` has Vietnamese letters `text_en` lacks; when its language is not Vietnamese; when its
-  CER is over `--max-cer`; when it overlaps an evaluation sentence; then on `cache_codes`'s own
+  CER is over `--max-cer`; when the ASR hears more nghìn/triệu/tỷ than the transcript holds; when
+  it overlaps an evaluation sentence; then on `cache_codes`'s own
   gates (decoded duration, frame cap, CTC alignment score 0.5, token timing).
 - `--max-cer` 0.15 for every source (2026-11-06), from the CER of the first shards:
 
@@ -242,6 +243,7 @@ trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
   |---|---:|---:|---:|---:|---:|
   | PhoAudiobook (16 shards) | 20,784 | 0.033 | 0.102 | 1.04% | 0.56% |
   | viVoice (30 shards) | 23,040 | 0.061 | 0.151 | 3.58% | 1.02% |
+  | GigaSpeech 2 (2 shards) | 42,255 | 0.083 | 0.288 | 7.92% | 4.00% |
 
   Over 0.15 the transcript and the clip differ by phrases: PhoAudiobook transcripts that repeat
   the clip's last clause (0.17–0.34), punctuation spelled out ("chấm ba chấm"). The English
@@ -251,8 +253,16 @@ trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
   ranges are spelled otherwise ("30%" against "ba mươi phần trăm"); on PhoAudiobook a word at a
   cut edge or a number's spelling. Of 16 viVoice rows sampled there, one had a wrong fact ("dài
   200 tấn" where the speaker says "dài 282 mét"). 0.10 would drop 2.6% more of viVoice for that.
-  From 0.05 to 0.10 the two differ by homophones (sinh/xin) and edge syllables. Check it on
-  GigaSpeech 2 once its `asr_vi` lands.
+  From 0.05 to 0.10 the two differ by homophones (sinh/xin) and edge syllables. GigaSpeech 2's
+  machine transcripts are the worst: over 0.15 its clips hold whole sentences more than their
+  transcript (CER 1–1.9) or numbers lose their magnitude; from 0.10 to 0.15, of 20 rows sampled,
+  5 write "một mươi" for "mười" (the same number), 5 leave out fillers ("cái"), and 5 have a wrong
+  number.
+- Magnitudes: GigaSpeech 2's transcripts drop nghìn, triệu and tỷ from numbers ("hơn một chuyến
+  tàu" where the speaker says "hơn một nghìn chuyến", "ba ba trăm linh" for 3,300), at any CER. A
+  row is dropped when the ASR (over `spoken`, so digits count) has more of them than the
+  transcript: 2.06% of GigaSpeech 2's first 42,255 rows, 1.45% under the CER cut; 0.2% of
+  PhoAudiobook's and viVoice's, mostly the ASR mishearing ("tết tỷ").
 - The Vietnamese-letter rule drops 118 of 10,392 rows on PhoAudiobook shards 0–7 (1.1%), 49 of
   them broken anyway. Of the rest, about half are lead-ins the TTS spoke in Vietnamese ("Không.
   Being rejected…", "Bước ngoặt khác, managing the farm") and half Vietnamese names the ASR spelled

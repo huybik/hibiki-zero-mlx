@@ -16,6 +16,7 @@ A row is dropped, with the first reason that applies (the shard's `rejected`), w
   - the ASR of its English writes Vietnamese letters its text_en lacks (a Vietnamese lead-in);
   - Qwen3-ASR heard its clip as another language than Vietnamese, or none;
   - its corpus transcript and that ASR differ by more than --max-cer (CER over `filters.spoken`);
+  - the ASR hears more nghìn/triệu/tỷ than the transcript holds (GigaSpeech 2's transcripts drop them);
   - its transcript overlaps an evaluation sentence (`filters.overlaps`; needs data/eval);
   - a clip decodes more than 0.02 s off its stored duration, or the row exceeds --max-frames;
   - its English text fails CTC alignment or token timing.
@@ -68,7 +69,7 @@ from training.prep.text_timing import (
     sentencepiece_groups,
     timed_sentencepiece_tokens,
 )
-from training.tranche.filters import eval_grams, overlaps
+from training.tranche.filters import eval_grams, overlaps, spoken
 from training.tranche.ingest import REPOS, ROOT, SOURCES, push_part
 
 SAMPLE_RATE = 24_000  # Mimi
@@ -82,6 +83,9 @@ DURATION_TOLERANCE_S = 0.02
 # from 0.10 to 0.15 mostly the ASR's misses on names and loanwords, numbers and percentages spelled
 # otherwise, a word at a cut edge (real-vi-tranche#cache).
 MAX_CER = 0.15
+# GigaSpeech 2's transcripts drop these from numbers ("hơn một chuyến" where the speaker says "hơn
+# một nghìn chuyến"), a wrong fact the CER barely sees (real-vi-tranche#cache).
+MAGNITUDES = ("nghìn", "triệu", "tỷ")
 VI_LETTERS = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
 MIMI_BATCH_S = 640.0  # padded audio per Mimi batch, as mimi_cache_cuda
 CTC_BATCH_S = 640.0
@@ -252,6 +256,11 @@ def fetch(source: str, name: str) -> dict[str, Path]:
     return {part: Path(hf_hub_download(repo, f"{source}/{part}/{name}", repo_type="dataset")) for part in PARTS}
 
 
+def magnitudes(text: str) -> int:
+    words = spoken(text)
+    return sum(words.count(m) for m in MAGNITUDES)
+
+
 def read_parts(source: str, name: str, files: dict[str, Path]) -> list[dict[str, Any]]:
     """The shard's rows with every part's columns, in the segments' order."""
     import pyarrow.parquet as pq
@@ -260,7 +269,7 @@ def read_parts(source: str, name: str, files: dict[str, Path]) -> list[dict[str,
     rows = get("segments", ["id", "doc", "seq", "text", "duration_s", "audio"])
     for part, columns in (("text_en", ["id", "text_en"]),
                           ("en_audio", ["id", "en_audio", "en_duration_s", "en_asr", "en_broken"]),
-                          ("asr_vi", ["id", "language", "cer"])):
+                          ("asr_vi", ["id", "asr_vi", "language", "cer"])):
         other = get(part, columns)
         if [r["id"] for r in other] != [r["id"] for r in rows]:
             raise RuntimeError(f"{source}/{part}/{name} does not hold the segments' rows in their order")
@@ -279,6 +288,8 @@ def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
         return f"language {row['language'] or 'none'}"
     if round(row["cer"], 6) > max_cer:  # float32: 0.1 is stored as 0.10000000149
         return f"CER {row['cer']:.3f} over {max_cer}"
+    if magnitudes(row["asr_vi"]) > magnitudes(row["text"]):
+        return "the ASR hears a nghìn/triệu/tỷ the transcript lacks"
     if overlaps(row["text"], grams):
         return "overlaps an evaluation sentence"
     return None
