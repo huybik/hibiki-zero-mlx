@@ -30,7 +30,7 @@ from pathlib import Path
 import sentencepiece as spm
 from sentencepiece import sentencepiece_model_pb2 as pb
 
-from training.paths import DEFAULT_TOKENIZER
+from training.paths import DEFAULT_TOKENIZER, cpu_budget
 from training.vi_tokenizer import corpus
 
 WORDS = Path(__file__).with_name("english_words.txt.gz")  # macOS /usr/share/dict/words (Webster's 2nd)
@@ -323,7 +323,8 @@ def main() -> None:
     p.add_argument("sizes", nargs="*", type=int, help="slots to replace per model, multiples of 1000 (default 6000)")
     p.add_argument("--work", type=Path, default=WORK)
     p.add_argument("--base-model", type=Path, default=DEFAULT_TOKENIZER)
-    p.add_argument("--workers", type=int, default=os.cpu_count(), help="corpus pass processes")
+    p.add_argument("--workers", type=int, default=max(1, int(cpu_budget())),
+                   help="corpus pass processes (default: the container's CPU quota)")
     p.add_argument("--sample", type=int, help="evenly spaced train shards to read, all validation (default: all)")
     args = p.parse_args()
     if any(n <= 0 or n % 1000 for n in args.sizes) or len(set(args.sizes)) < len(args.sizes):

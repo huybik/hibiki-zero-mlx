@@ -60,6 +60,9 @@ python -m training.vi_tokenizer.build run 4000 8000 --sample 20   # a smoke test
   Vietnamese tokens per word, byte share, tokens/s of speech, English rows that differ and the
   pieces that changed them).
 - It needs `protobuf` beside `sentencepiece` for the model proto (`training/h100.sh setup`).
+- The corpus passes run `--workers` processes, by default the container's CPU quota
+  (`training.paths.cpu_budget`), not `nproc`, which counts the host's cores (224 on a box with
+  a 27-CPU quota).
 
 ## Results
 
