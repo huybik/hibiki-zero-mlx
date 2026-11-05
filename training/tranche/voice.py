@@ -13,7 +13,8 @@ audio as decoded alone. Prompts are encoded in fp32 batches the same way.
 Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with the HF token in
 the environment and the ASR server up:
   /workspace/envs/asr/bin/qwen-asr-serve <Qwen3-ASR-1.7B snapshot> --served-model-name asr \
-      --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 &
+      --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
+      (one API process decodes and featurizes ~11 requests/s on the CPU, below the TTS's ~25 rows/s)
   /workspace/envs/nanovox/bin/python -m training.tranche.voice run pho vivoice giga
       every shard of segments and text_en on the Hub without en_audio yet: each row voiced with its
       own clip and transcript as prompt and reference, heard by the ASR, voiced again while broken
