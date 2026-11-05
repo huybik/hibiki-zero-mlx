@@ -123,9 +123,11 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   again while broken (WER over 20% under Whisper's normalizer, or pace off by 2x), up to 3
   tries. Two viVoice shards: 1.05 tries a row, 1.5% still broken. Those rows are mostly the ASR
   mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
-  PhoAudiobook: 1.02–1.04 tries a row, ~1% still broken. Some outputs keep the ASR server past
-  any timeout, every try (one in the first ~8,000): a check that times out 3 times counts as
-  broken with `en_asr` null, so the row is voiced again.
+  PhoAudiobook: 1.02–1.06 tries a row, ~1–1.6% still broken. Each check asks for at most 512
+  transcript tokens (`max_completion_tokens`, as `checks.py`): uncapped, ASR decoding is greedy, so
+  an output it loops on ran to the model's 65k context past any timeout, every try (one in the
+  first ~8,000). Capped, it comes back long and scores broken; a timeout or HTTP error then means
+  the server is in trouble and stops the run.
 - The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
   its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
   a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).
@@ -134,10 +136,13 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   CPU, so the server runs 8.
 - The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
   follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
-  `thread_count = 1`, and audio decodes in threads, not spawned processes. PyAV's
-  `AudioResampler` builds a filter graph holding a thread per host CPU while it lives (4,075
-  threads from 20 decoding threads), so `voice.py` resamples with scipy. Its Opus encoder builds
-  one too, so at most 4 checker threads encode at once.
+  `thread_count = 1`. PyAV's `AudioResampler` builds a filter graph holding a thread per host CPU
+  while it lives (4,075 threads from 20 decoding threads), so `voice.py` resamples with scipy. Its
+  Opus encoder builds one too, so a semaphore shared by the checking processes lets at most 4
+  encode at once.
+- A crashed run drops its queued checks rather than running them, so its GPU memory frees within
+  a few minutes. Stop a run by its PID file (`/workspace/logs/voice-run.pid`), never `pkill -f`:
+  its spawned workers look like vLLM's own processes.
 - `training/tranche/envs.sh` builds those envs.
 - `synth` checks for the MPS daemon with `nvidia-cuda-mps-control` itself: on driver 615 its
   socket is seqpacket, and a stream connect fails with EPROTOTYPE while the daemon runs.

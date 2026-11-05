@@ -62,6 +62,7 @@ BROKEN_WER = 0.2
 PACE = 0.0636  # the bake-off's median seconds of English audio per character of its line
 MAX_TRIES = 3  # attempts per row; the best by WER is kept
 ASR_TIMEOUT_S = 60  # a request takes well under a second
+ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
 CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
 DECODERS = 6  # processes decoding the next shard's clips
 OPUS_AT_ONCE = 4
@@ -416,13 +417,11 @@ class Checker:
 
         buf = io.BytesIO()
         sf.write(buf, resample_poly(wav, 1, 3).astype(np.float32), ENCODE_RATE, subtype="PCM_16", format="WAV")
-        asr = None  # no transcript: some outputs keep the server past any timeout, every try
         for attempt in range(3):  # the server drops an idle keep-alive connection now and then
             try:
                 reply = self.client.post(self.url, files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
-                                         data={"model": "asr", "language": "en", "to_language": "en"})
-            except httpx.TimeoutException:
-                continue
+                                         data={"model": "asr", "language": "en", "to_language": "en",
+                                               "max_completion_tokens": ASR_MAX_TOKENS})
             except httpx.TransportError:
                 if attempt == 2:
                     raise
@@ -431,11 +430,10 @@ class Checker:
             asr = reply.json()["text"]
             break
         ref = self.norm(re.sub(r"[()\[\]{}<>]", " ", text))
-        wer = 1.0 if asr is None else jiwer.wer(ref, self.norm(asr)) if ref.strip() else 0.0
+        wer = jiwer.wer(ref, self.norm(asr)) if ref.strip() else 0.0
         duration = len(wav) / OUT_RATE
         pace = duration / max(len(text), 1)
-        # An output the ASR cannot hear counts as broken, so the row is voiced again.
-        broken = asr is None or wer > BROKEN_WER or not 0.5 * PACE <= pace <= 2 * PACE
+        broken = wer > BROKEN_WER or not 0.5 * PACE <= pace <= 2 * PACE
         pcm = resample_poly(wav, 1, 2).astype(np.float32)
         with self.encoding:
             audio = encode_opus(pcm, OUT_RATE // 2)
@@ -626,31 +624,33 @@ def run(args: argparse.Namespace) -> None:
             if left[shard.source] == 0 or time.monotonic() - pushed[shard.source] > PUSH_S:
                 push(shard.source)
 
-    while True:
-        while voicer.room:
-            req = retries.pop() if retries else next(fresh, None)
-            if req is None:
-                if loading_done or len(shards) >= MAX_OPEN or not next_shard():
-                    break  # a few shards open: those finishing and the next
-                continue
-            voicer.submit(req)
-        out = voicer.step() if voicer.active else voicer.flush()
-        for req, wav in out:
-            fut = checks.submit(_check, req.text, wav)
-            checking[fut] = req
-            inflight.add(fut)
-        for fut in [f for f in inflight if f.done()]:
-            inflight.discard(fut)
-            settle(checking.pop(fut), fut.result())
-        for fut in [f for f in uploads if f.done()]:
-            uploads.remove(fut)
-            fut.result()  # a failed upload stops the run; a rerun pushes what is written
-        if loading_done and not voicer.active and not voicer.waiting and not inflight and not retries:
-            break
-        if not voicer.active and not out:
-            time.sleep(0.05)  # waiting on checks: their retries refill the engine
-    checks.shutdown()
-    pool.shutdown()
+    try:
+        while True:
+            while voicer.room:
+                req = retries.pop() if retries else next(fresh, None)
+                if req is None:
+                    if loading_done or len(shards) >= MAX_OPEN or not next_shard():
+                        break  # a few shards open: those finishing and the next
+                    continue
+                voicer.submit(req)
+            out = voicer.step() if voicer.active else voicer.flush()
+            for req, wav in out:
+                fut = checks.submit(_check, req.text, wav)
+                checking[fut] = req
+                inflight.add(fut)
+            for fut in [f for f in inflight if f.done()]:
+                inflight.discard(fut)
+                settle(checking.pop(fut), fut.result())
+            for fut in [f for f in uploads if f.done()]:
+                uploads.remove(fut)
+                fut.result()  # a failed upload stops the run; a rerun pushes what is written
+            if loading_done and not voicer.active and not voicer.waiting and not inflight and not retries:
+                break
+            if not voicer.active and not out:
+                time.sleep(0.05)  # waiting on checks: their retries refill the engine
+    finally:  # after a crash, queued checks are dropped, not run, so the GPU frees promptly
+        checks.shutdown(wait=False, cancel_futures=True)
+        pool.shutdown(wait=False, cancel_futures=True)
     pushes.shutdown()
     for fut in uploads:
         fut.result()
