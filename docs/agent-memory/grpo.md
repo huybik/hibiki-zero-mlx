@@ -101,6 +101,21 @@ Not yet run on CUDA. Phase 1 and 2 profiles and the dry run go here.
     capture stays in the time, as in a run.
   - An out-of-memory size is recorded and skipped, and `profile.json` is rewritten after each
     stage.
+- **Profiled on the box** (2026-11-06, 700 W H100 SXM, from `tranche_epoch1b`'s final model, the
+  tranche caches, T 1,200, fp32 policy and AdamW states resident):
+
+  | Stage | Measured |
+  |---|---|
+  | Generation, batch 64 / 128 / 192 | 17.5 / 22.2 / 27.0 ms a step; 3.05 / 4.80 / 5.91 rollouts/s; peak 49 / 57 / 66 GiB |
+  | Rewards, 48 groups | 0.65 s serial, 0.14 s in 8 workers |
+  | π_old's logprobs, micro-batch 2 | 43,900 frames/s |
+  | Update, micro-batch 2 | 14,400 frames/s, peak 74 GiB; 3 and 4 run out of memory |
+  | First update's ratio | exactly 1 (max deviation 0) |
+
+  So the defaults are `--gen-batch` 192 and `--micro-batch` 2: an update of 128 rollouts takes
+  ~22 s of generation, ~3.5 s of old logprobs and ~10.6 s of update, ~36 s (the plan estimated
+  ~50 s); 1,000 updates ~10 h plus ~30 min of evaluations. The rollouts' mean final BLEU from
+  that model was 26.2. The profile's GPU sat idle 39% of its 5.3 min, between its stages.
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-batch
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
