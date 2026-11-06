@@ -321,6 +321,27 @@ Vietnamese text cannot keep up with its speech.
 5. Skipped: a third VI→EN epoch on `en_speech` (it needed ~1.5 chrF from a higher rate).
 6. In parallel: the real-Vietnamese tranche (stage 1.3) and the two-way preparation (stage 7),
    then the two-way pilot.
+   - Done (2026-11-06, the box): `tranche_epoch1b`, one epoch of the first tranche's three caches
+     (777,090 rows, 1,760 h of real Vietnamese; 26,176 steps at 0.277 s, 16:37–18:43 UTC+7) from
+     run 2's final model, peak LR 3e-6, `--seed 45`, validated every 8,000 steps (5–6 min each
+     with MultiMed select). Every validation passed the health gates and promoted; the final
+     model is the best. FLEURS dev chrF by validation: 37.40, 38.50, 39.14, 39.58 (run 2: 29.47).
+     Held-out TTS (`en-vi-val`) stayed within ~2 of run 2 (final 44.5 and 43.1 against 44.7 and
+     45.2; noisy 39.9 and 41.0 against 40.8 and 43.4). Fewer FLEURS dev rows end inside the tail
+     as it trains (300, 252, 226, 217 of 361), the median end offset ~4.5 s.
+     - Test sets, in one `eval.py` call (batch 64, `--seed 43`, text only), against run 2's final
+       model; predictions and metrics on the Hub under `tranche_epoch1b/eval/test_step026176/`:
+
+       | Set (rows) | chrF | BLEU | Rows ended |
+       |---|---:|---:|---:|
+       | FLEURS test (857) | 38.6 vs 29.5 | 10.5 vs 5.4 | 504 vs 653 |
+       | MultiMed-ST select (1,718) | 34.6 vs 24.9 | 9.6 vs 3.0 | 985 vs 893 |
+       | MultiMed-ST final (1,719) | 34.8 vs 24.7 | 9.8 vs 3.1 | 981 vs 829 |
+
+     - The first ~1,760 h of real speech lifts every real-speech set by 9–10 chrF; the lift per
+       1,000 h decides the scale-up toward ~10k h (stage 1.3). GRPO comes next, its rollouts on
+       the tranche caches (already on the box) rather than the noisy `en_speech` cache (73 GB, ~5 h
+       at the box's ~4 MB/s Hub download).
 7. The final SFT: both directions on `en_speech` and the tranche.
 8. GRPO, last, on the final SFT model and both directions
    ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
