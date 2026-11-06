@@ -2,8 +2,8 @@
 # The tranche's envs on the box, at the versions their repos document (researched 2026-11-04): one
 # uv env per TTS bake-off candidate (training/tranche/bakeoff.py), one for its scoring, one for the
 # production TTS (training/tranche/voice.py) and one for the ASR check (training/tranche/checks.py),
-# which also serves voice.py's checks (qwen-asr-serve). Built without uv's cache, which
-# on /workspace grows by tens of GB.
+# which also serves voice.py's checks (qwen-asr-serve), and one for the VI→EN server
+# (training/tranche/translate.py). Built without uv's cache, which on /workspace grows by tens of GB.
 set -Eeuo pipefail
 export UV_NO_CACHE=1
 log() { echo "$(date -u '+%F %T') $*"; }
@@ -46,7 +46,13 @@ $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
 log translate; mk translate 3.12
 # training/tranche/translate.py on the box: it imports translate_en_speech (anthropic, google-genai) and ingest (av).
 $UV pip install -q -p $E/translate httpx pyarrow anthropic google-genai huggingface_hub av==15.1.0 numpy
-for e in voxcpm nanovox dots qwentts cosyvoice score asr; do  # translate has no torch
+log mt; mk mt 3.12  # the server translate.py calls (`translate serve`); qwen-asr pins vLLM 0.14
+$UV pip install -q -p $E/mt vllm==0.33.0
+# FlashInfer's prebuilt kernels for the flashinfer and CUDA vLLM brought: without them the first
+# run compiles its kernels itself (an FP8 MoE took about an hour).
+fi=$($E/mt/bin/python -c "import flashinfer, torch; print(flashinfer.__version__, 'cu' + torch.version.cuda.replace('.', ''))")
+$UV pip install -q -p $E/mt "flashinfer-jit-cache==${fi% *}+${fi#* }" --index-url "https://flashinfer.ai/whl/${fi#* }"
+for e in voxcpm nanovox dots qwentts cosyvoice score asr mt; do  # translate has no torch
   echo "$e: $($E/$e/bin/python -c 'import torch; print(torch.__version__, torch.version.cuda)')"
 done
 du -sh $E; df -h /workspace | tail -1
