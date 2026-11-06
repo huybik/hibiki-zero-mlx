@@ -104,9 +104,12 @@ draws use split `train`.
   two gaps a shard, 2.4–4.2 s after the CTC while `load_next` waited for the next shard's read,
   and 0.6–1.6 s for the save. The read was the Hub download: ~4 MB/s on the box, 10–18 s for a
   viVoice shard's 60 MB (mostly `en_audio`) against ~8 s of GPU work, and parallel downloads got
-  no more. `fetch` now takes the box's own `en_audio` and `asr_vi` under `--root` where voice and
-  filters wrote them (0.4–0.6 s a shard; segments and `text_en` come from the HF cache), and the
-  save runs in a thread while the next shard builds.
+  no more. `fetch` now takes any part's copy under `--root` where the box wrote one (today voice's
+  `en_audio` and filters' `asr_vi`: 0.4–0.6 s a shard; segments and `text_en` come from the HF
+  cache), and the save runs in a thread while the next shard builds. A review (2026-11-06) found
+  every local `asr_vi` and `en_audio` the size of its Hub copy, hashes equal on all `asr_vi` and
+  12 sampled `en_audio`. A part regenerated elsewhere and pushed would lose to the stale local
+  copy: delete the local one first.
 
 ## Scale-up
 
