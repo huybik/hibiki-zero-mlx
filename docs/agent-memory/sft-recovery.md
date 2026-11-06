@@ -95,5 +95,9 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   never saw its own uploads, failed verification three times and stopped at step 210. Checked:
   the tree gives the siblings' files and sizes exactly where those were complete (369 and 5,390
   files).
+- The Hub caps a repo at 20,000 files. The recovery repo held 16,223 on 2026-11-06, most of them
+  per-row evaluation `.txt` files of `en_speech_streams_epoch1b` (9,736) and
+  `en_speech_noisy_epoch2` (5,390); a folder upload over the cap commits in parts until one is
+  refused. Upload an evaluation as its `predictions.csv` and `metrics.json` only.
 - `hf_sync` never restores anything; restoring is the manual procedure in
   [docs/finetune.md](../finetune.md).

@@ -57,6 +57,9 @@ inference/ (Apple Silicon, MLX)
 - Two stream runs are done on a 700 W H100 SXM: `en_speech_streams_epoch1b` (one epoch of
   `en-vi-grounded-v2/train`) and `en_speech_noisy_epoch2` (one epoch of its noisy copy, from the
   first's final model). FLEURS test chrF went 24.7 → 29.5 ([plan](docs/vi_en_parity_plan.md#order)).
+- The third, `tranche_epoch1b` (2026-11-06), trained one epoch of the real-Vietnamese tranche's
+  caches from run 2's final model: FLEURS test chrF 29.5 → 38.6, MultiMed-ST 24.9 → 34.6
+  ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
   the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:
