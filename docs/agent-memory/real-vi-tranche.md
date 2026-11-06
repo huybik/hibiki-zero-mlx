@@ -23,7 +23,8 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
   them are research-only:
   - viVoice is CC BY-NC-SA and PhoAudiobook and GigaSpeech 2 research-only, and the recovery
     repo is public, so mark it and every checkpoint trained on them non-commercial (CC BY-NC-SA
-    4.0) before the first such run.
+    4.0) before the first such run. Marked 2026-11-06: the repo was CC BY-NC-SA 4.0 already, and
+    its card now names the tranche runs (`tranche_epoch1/` on) research-only.
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
 - Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
