@@ -28,7 +28,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from training.paths import exclusive
-from training.prep.translate_en_speech import broken
+from training.prep.translate_en_speech import NON_LATIN, broken
 from training.tranche.ingest import REPO, ROOT, SOURCES
 
 # Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (real-vi-tranche, Models).
@@ -59,10 +59,12 @@ def log(msg: str) -> None:
 
 
 def bad(vi: str, en: str | None) -> bool:
-    """A reply cut at max_tokens, empty, holding letters of a script its Vietnamese lacks, left in
-    Vietnamese, or far longer than its row (the model now and then translates the context rows too:
+    """A reply cut at max_tokens, empty, holding letters of a script its Vietnamese lacks or brackets,
+    left in Vietnamese, or far longer than its row (the model now and then translates the context rows too:
     1 in 2,000 rows of the check; English runs ~1.2× the Vietnamese's characters)."""
     if en is None or not en.strip() or broken(vi, en) or len(en) > 2.5 * len(vi) + 20:
+        return True
+    if "[" in en and "[" not in vi:  # "[Name]", "[a specific time]": the TTS would read them
         return True
     words = re.sub(r"[^\w\s]", " ", unicodedata.normalize("NFC", en).lower()).split()
     return sum(w in VIETNAMESE_WORDS for w in words) >= 2
@@ -94,22 +96,30 @@ def translate(llm, vi: list[str], prompts: list[str], again: list[bool]) -> tupl
     generate call over the rows still without one: greedy first, then sampled at Qwen3.5's
     non-thinking settings, seeded afresh each try (the engine's own seed is fixed) so that a rerun
     draws anew; a row that failed in an earlier run (`again`) is sampled from its first try. Stops
-    the run when more than half the rows fail a try: a systematic failure."""
+    the run when more than half the rows of a try over more than MIN_ROWS fail it: a systematic
+    failure."""
     from vllm import SamplingParams
 
     greedy = SamplingParams(max_tokens=MAX_TOKENS, temperature=0)
     en: list[str | None] = [None] * len(vi)
     last = [""] * len(vi)
+    banned: dict[int, set[str]] = {}  # a row's letters of other scripts from its earlier replies
     todo = list(range(len(vi)))
     for attempt in range(TRIES):
-        sampled = SamplingParams(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
-                                 seed=int.from_bytes(os.urandom(4)))
-        params = [sampled if attempt or again[k] else greedy for k in todo]
+        sampling = dict(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
+                        seed=int.from_bytes(os.urandom(4)))
+        sampled = SamplingParams(**sampling)
+        # The model writes some Sino-Vietnamese names in Chinese every try ("King Tran Thai宗" for
+        # Trần Thái Tông): later tries may not use what earlier ones wrote.
+        params = [greedy if not (attempt or again[k]) else
+                  SamplingParams(**sampling, bad_words=sorted(banned[k])) if k in banned else sampled for k in todo]
         outputs = llm.chat([[{"role": "user", "content": prompts[k]}] for k in todo], params, use_tqdm=False,
                            chat_template_kwargs={"enable_thinking": False})
         for k, output in zip(todo, outputs, strict=True):
             reply = output.outputs[0]
             last[k] = reply.text
+            if foreign := set(NON_LATIN.findall(reply.text)) - set(NON_LATIN.findall(vi[k])):
+                banned.setdefault(k, set()).update(foreign)
             text = reply.text.strip() if reply.finish_reason == "stop" else None
             if not bad(vi[k], text):
                 en[k] = text
@@ -171,7 +181,7 @@ def main() -> None:
             # row already written, which may be voiced.
             todo = [(s, k) for s, (_, _, _, _, text_en) in enumerate(loaded) for k, en in enumerate(text_en)
                     if en is None]
-            if todo and llm is None:  # before the next reads start: vLLM forks its engine process
+            if todo and llm is None:
                 llm, start = engine(args.gpu_memory), time.time()
             if g + 1 < len(groups):  # the next group's reads overlap this group's translation
                 pending = readers.map(read, groups[g + 1])

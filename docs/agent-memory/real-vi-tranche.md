@@ -227,18 +227,26 @@ other corpora ─► their transcripts, word times by forced alignment ───
     rows broke in the TTS 59.8% of the time against 21.3% (archives 13–24).
   - The first try is greedy with thinking off. A reply is tried again, sampled (temperature 0.7,
     top-p 0.8, top-k 20, a fresh seed each try: the engine's own is fixed), up to six tries in all
-    (the later ones cover a few rows a group, in seconds), when it is cut at 512 tokens, empty, holds letters of a script its Vietnamese lacks, holds
-    two of 28 frequent Vietnamese words, each with a diacritic (left in Vietnamese; names lose their
-    diacritics, so "Nguyen Phu Trong" is right: ASCII words such as trong and khi stay out), or runs
-    past 2.5× its Vietnamese's characters plus 20 (the model now and then translates the context
-    rows too: 1 in 2,000 rows of the bake-off; English runs ~1.2× the Vietnamese).
+    (the later ones cover a few rows a group, in seconds), when it is:
+    - cut at 512 tokens, or empty;
+    - holding letters of a script its Vietnamese lacks. The 35B writes some Sino-Vietnamese names
+      in Chinese every try ("King Tran Thai宗" for Trần Thái Tông, 55 rows of archives 51–164), so
+      a row's later tries may not use the letters its earlier ones wrote (`bad_words`);
+    - holding brackets its Vietnamese lacks ("[Name]", "[a specific time]");
+    - left in Vietnamese: two of 25 frequent Vietnamese words, each with a diacritic. Words that
+      are also name syllables stay out: ASCII ones (trong, khi: "Nguyen Phu Trong" is right), and
+      như, lại, từ, which a name left with its diacritics holds ("Như Xuân");
+    - longer than 2.5× its Vietnamese's characters plus 20: the model now and then translates the
+      context rows too (1 in 2,000 rows of the bake-off; English runs ~1.2× the Vietnamese).
+  - The 35B keeps the diacritics of 0.73% of its rows' names ("Đỗ Hoàng Việt"; Muse 0.05%) despite
+    the prompt; nothing rejects them.
   - A row failing every try keeps `text_en` null, is logged with its last reply, and holds its
     shard back from voice. A rerun tries only the null rows, sampled from the first try; a row
     already written is never translated again, as it may be voiced.
-  - A run stops when more than half a group's rows fail a try, or once more than 1% of the rows it
-    has tried fail every try (checked after each group, past 5,000); a lock keeps a second run off
-    the same folder. Shards are written four at a time, once all their rows are done, so a crash
-    loses the four in flight.
+  - A run stops when more than half the rows of a try over more than 5,000 fail it, or once more
+    than 1% of the rows it has tried fail every try (checked after each group, past 5,000); a lock
+    keeps a second run off the same folder. Shards are written four at a time, once all their rows
+    are done, so a crash loses the four in flight.
   - Muse Spark 1.3 Contributor through OpenRouter translated the first tranche and GigaSpeech 2
     archives 13–50 (2026-11-05/06), in batches of up to 40 consecutive rows: all 840,520 rows of
     the first tranche in ~55 min for $9.75. It wrote Chinese mid-sentence in 22 of the first
