@@ -10,7 +10,7 @@ kept, the model answers in capitals, which the TTS spells out. The first try is 
 at max_tokens, still in Vietnamese, holding letters of another script or far too long is tried
 again sampled, up to TRIES times; a row failing every try keeps text_en null, and a rerun tries
 the null rows again (and only those: a written row may already be voiced). It takes the GPU memory
-voice holds, so the two take turns. From the repo root, in the env /workspace/envs/mt (`envs.sh`):
+voice and the ASR server hold, so they take turns. From the repo root, in the env /workspace/envs/mt (`envs.sh`):
 
   python -m training.tranche.translate giga --shards 51:
 """
@@ -48,11 +48,10 @@ GROUP = 4  # shards translated together: one generate call keeps the GPU's batch
 # MIN_ROWS): a systematic failure would otherwise write every shard null.
 MAX_FAILED, MIN_ROWS = 0.01, 5_000
 # Frequent Vietnamese words, each with a diacritic: two of them in a reply mean it was left (partly) in
-# Vietnamese. Names lose their diacritics (the prompt asks so), so a name never trips it: ASCII words
-# such as trong and khi are left out, as "Nguyen Phu Trong" is right.
+# Vietnamese. Words that are also name syllables stay out: ASCII ones (trong, khi: "Nguyen Phu Trong"
+# is right), and như, lại, từ, which a name the model leaves with its diacritics holds ("Như Xuân").
 VIETNAMESE_WORDS = {"và", "của", "là", "được", "những", "các", "này", "với", "không", "có", "một", "đã", "để",
-                    "thì", "người", "từ", "đến", "về", "cũng", "nhiều", "sẽ", "đó", "như", "lại", "phải", "còn",
-                    "rằng", "bị"}
+                    "thì", "người", "đến", "về", "cũng", "nhiều", "sẽ", "đó", "phải", "còn", "rằng", "bị"}
 
 
 def log(msg: str) -> None:
@@ -85,8 +84,9 @@ def engine(gpu_memory: float):
     from vllm import LLM
 
     return LLM(model=snapshot_download(MODEL[0], revision=MODEL[1]), quantization="fp8",
-               gpu_memory_utilization=gpu_memory, max_model_len=4096, max_num_seqs=256,
-               enable_prefix_caching=False, limit_mm_per_prompt={"image": 0, "video": 0})
+               gpu_memory_utilization=gpu_memory, max_model_len=4096, max_num_seqs=512,
+               max_num_batched_tokens=16384, enable_prefix_caching=False,
+               limit_mm_per_prompt={"image": 0, "video": 0})
 
 
 def translate(llm, vi: list[str], prompts: list[str], again: list[bool]) -> tuple[list[str | None], list[str]]:
@@ -129,8 +129,8 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--shards", type=lambda s: slice(*(int(n) if n else None for n in s.split(":"))),
                         default=slice(None), help="a slice of the source's segments shards, e.g. 0:1")
-    parser.add_argument("--gpu-memory", type=float, default=0.75,
-                        help="the engine's share of the GPU (beside the ASR server's 0.2, voice stopped)")
+    parser.add_argument("--gpu-memory", type=float, default=0.9,
+                        help="the engine's share of the GPU, with voice and the ASR server stopped")
     args = parser.parse_args()
 
     from huggingface_hub import HfApi, HfFileSystem
