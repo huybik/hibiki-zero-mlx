@@ -242,6 +242,8 @@ import sys
 from pathlib import Path
 
 from huggingface_hub import HfApi
+from huggingface_hub.errors import RemoteEntryNotFoundError
+from huggingface_hub.hf_api import RepoFile
 
 
 def steps(paths, pattern):
@@ -249,15 +251,19 @@ def steps(paths, pattern):
 
 
 api = HfApi()
-info = api.model_info(sys.argv[1], files_metadata=True)
+info = api.model_info(sys.argv[1])
 if info.private:
     raise RuntimeError("recovery model repo must be public")
 prefix = sys.argv[5].strip("/") + "/"
-remote_files = [
-    item.rfilename.removeprefix(prefix)
-    for item in info.siblings
-    if item.rfilename.startswith(prefix)
-]
+# The tree listing pages through any repo; model_info's siblings stop at 10,000 files.
+try:
+    remote_files = [
+        item.path.removeprefix(prefix)
+        for item in api.list_repo_tree(sys.argv[1], path_in_repo=prefix.rstrip("/"), recursive=True)
+        if isinstance(item, RepoFile)
+    ]
+except RemoteEntryNotFoundError:  # nothing under the prefix yet
+    remote_files = []
 run_dir = Path(sys.argv[3])
 if sys.argv[2] == "fresh":
     if remote_files:
