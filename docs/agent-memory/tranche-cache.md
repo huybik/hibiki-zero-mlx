@@ -127,6 +127,9 @@ build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× o
   TF32 or bf16 if word starts stay within a frame of float32 on real rows.
 - Per-shard fixed costs weigh on small shards (viVoice's 3.8 h of Mimi audio ran ~1,100× against
   PhoAudiobook's ~1,400×): fuller last batches across shard boundaries, or bigger shards.
+- After the local-read fix viVoice ran ~1,300–1,400× (~10 s a shard), the GPU idle 17%: ~1.0 s at
+  each shard's start (its decodes, queued behind the last shard's alignments, and the `pending`
+  loop) and ~0.6 s within it. Queuing the next shard's decodes earlier would close the first.
 - CPU: 25 workers on the 26.9-CPU quota averaged 10.5 CPUs but throttled 14% of the 100 ms
   periods in bursts (`/sys/fs/cgroup/cpu.stat`); check the main process is not the one stalled.
 
