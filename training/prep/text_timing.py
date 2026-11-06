@@ -126,33 +126,19 @@ def _ctc_token_frames(
     return frames, float(probabilities.sum() / len(probabilities))
 
 
-class EnglishCTCAligner:
-    """wav2vec2-base-960h CTC word timing: `log_probs` queues the MLX float32 forward
-    (`wav2vec2_mlx`) and `align` runs the Viterbi on its result, so a caller can keep the GPU busy
-    while the CPU aligns. The word spans equal PyTorch CPU float32's on 6,180 of 6,181 words, with
-    the same rejections (measured on mlx-audio's eager model, whose rows this port builds but for
-    float near-ties).
-    """
+class CTCWordAligner:
+    """wav2vec2-base-960h CTC word timing on the CPU: the Viterbi over a clip's log-probabilities,
+    whichever runtime computed them (MLX on the Mac, `EnglishCTCAligner`; CUDA on the box,
+    `training.tranche.cache`)."""
 
-    def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
+    def __init__(self, files: Path, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
+        """`files`: the pinned snapshot, from `aligner_files`."""
         import json
-
-        from huggingface_hub import snapshot_download
-
-        from training.prep.wav2vec2_mlx import Wav2Vec2CTC
 
         if not 0 <= min_score <= 1:
             raise ValueError("Minimum CTC alignment score must be in [0, 1]")
         self.min_score = min_score
-        root = Path(
-            snapshot_download(
-                ALIGNER_REPO,
-                revision=ALIGNER_REVISION,
-                allow_patterns=["model.safetensors", "vocab.json"],
-            )
-        )
-        self.model = Wav2Vec2CTC(root / "model.safetensors")
-        self.vocab = json.loads((root / "vocab.json").read_text())
+        self.vocab = json.loads((files / "vocab.json").read_text())
         self.blank_id = int(self.vocab[CTC_BLANK])
 
     def _targets(
@@ -170,10 +156,6 @@ class EnglishCTCAligner:
                 target_ids.append(int(self.vocab[char]))
             ranges.append((start, len(target_ids)))
         return target_ids, ranges
-
-    def log_probs(self, waveform_16khz: np.ndarray) -> Any:
-        """The clip's lazy MLX CTC log-probabilities [frames, vocab]."""
-        return self.model.log_probs(waveform_16khz)
 
     def align(self, log_probs: np.ndarray, groups: list[tuple[list[int], str]]) -> Alignment:
         """Word spans of `groups` as fractions of the clip, from its CTC log-probabilities; raises
@@ -193,6 +175,39 @@ class EnglishCTCAligner:
         ):
             raise AlignmentError("CTC alignment produced invalid word spans")
         return Alignment(spans=spans, score=score)
+
+
+def aligner_files() -> Path:
+    """The pinned aligner snapshot: its weights and vocabulary."""
+    from huggingface_hub import snapshot_download
+
+    return Path(
+        snapshot_download(
+            ALIGNER_REPO,
+            revision=ALIGNER_REVISION,
+            allow_patterns=["model.safetensors", "vocab.json"],
+        )
+    )
+
+
+class EnglishCTCAligner(CTCWordAligner):
+    """`CTCWordAligner` with the model in MLX: `log_probs` queues the float32 forward
+    (`wav2vec2_mlx`) and `align` runs the Viterbi on its result, so a caller can keep the GPU busy
+    while the CPU aligns. The word spans equal PyTorch CPU float32's on 6,180 of 6,181 words, with
+    the same rejections (measured on mlx-audio's eager model, whose rows this port builds but for
+    float near-ties).
+    """
+
+    def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
+        from training.prep.wav2vec2_mlx import Wav2Vec2CTC
+
+        files = aligner_files()
+        super().__init__(files, min_score)
+        self.model = Wav2Vec2CTC(files / "model.safetensors")
+
+    def log_probs(self, waveform_16khz: np.ndarray) -> Any:
+        """The clip's lazy MLX CTC log-probabilities [frames, vocab]."""
+        return self.model.log_probs(waveform_16khz)
 
 
 def timed_sentencepiece_tokens(

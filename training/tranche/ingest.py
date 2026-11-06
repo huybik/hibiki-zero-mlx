@@ -6,8 +6,9 @@ own order ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline
                      re-encode their audio to Ogg Opus and write
                      <root>/<repo>/<source>/segments/<shard>.parquet; the download is deleted
   push <source>      upload <root>/<repo>/<source>/segments, or with --part another stage's
-                     folder (text_en, en_audio, asr_vi), to its tranche repo (a rerun skips files already committed); a
-                     restricted source goes only to a private repo
+                     folder (text_en, en_audio, asr_vi; cache: <root>/<repo>/cache/<source>), to its
+                     tranche repo (a rerun skips files already committed); a restricted source goes
+                     only to a private repo
 
 Sources go to the public repo, or to the private one where their terms forbid redistribution
 (PhoAudiobook, GigaSpeech 2). Rows, sorted by seq within a shard:
@@ -225,8 +226,9 @@ def push(args: argparse.Namespace) -> None:
     # upload_folder never creates the repo, so a missing one fails instead of appearing public.
     if dest == "restricted" and not api.dataset_info(REPOS[dest]).private:
         raise SystemExit(f"{REPOS[dest]} is not private: {args.source} may not be published")
+    pattern = f"cache/{args.source}/*.pt" if args.part == "cache" else f"{args.source}/{args.part}/*.parquet"
     api.upload_folder(repo_id=REPOS[dest], repo_type="dataset", folder_path=args.root / dest,
-                      allow_patterns=[f"{args.source}/{args.part}/*.parquet"],
+                      allow_patterns=[pattern],
                       commit_message=f"{args.source} {args.part}")
 
 
@@ -258,9 +260,10 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=8)
     p = steps.add_parser("push")
     p.add_argument("source", choices=sorted(SOURCES))
-    p.add_argument("--part", choices=["segments", "text_en", "en_audio", "asr_vi"], default="segments",
+    p.add_argument("--part", choices=["segments", "text_en", "en_audio", "asr_vi", "cache"], default="segments",
                    help="the folder to upload: the segments, their translations (translate.py), their "
-                        "English speech (voice.py) or their Vietnamese ASR (filters.py)")
+                        "English speech (voice.py), their Vietnamese ASR (filters.py) or their "
+                        "training cache (cache.py)")
     args = parser.parse_args()
     {"segments": segments, "push": push}[args.step](args)
 

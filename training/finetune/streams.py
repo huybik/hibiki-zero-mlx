@@ -1,10 +1,11 @@
 """Multi-sentence training streams assembled from grounded cache rows.
 
 A stream joins cached rows (`[33, T]`: text, 16 English target and 16 Vietnamese source
-codebooks) the way a speaker talks on. Consecutive PhoMT rows of one source chunk
-(`phomt_s<N>r<M>`, in order, spanning talk boundaries) stay together; every other row follows at
-random. Libriheavy segment numbers are not reading order, and about a quarter of a recording's
-segments overlap another's text, so its rows are not grouped. Each row's Vietnamese follows the
+codebooks) the way a speaker talks on. The rows of one document stay together, in order: a tranche
+row's `doc` and `seq` (a PhoAudiobook reader's run, a GigaSpeech 2 recording; a viVoice row is its
+own doc), and a PhoMT source chunk (`phomt_s<N>r<M>`, spanning talk boundaries); every other row
+follows at random. Libriheavy segment numbers are not reading order, and about a quarter of a
+recording's segments overlap another's text, so its rows are not grouped. Each row's Vietnamese follows the
 previous one after a gap. Its English starts the row's cached delay after its Vietnamese, never
 before the previous English ends, and a gap is stretched so the previous English overhangs the
 next Vietnamese by at most MAX_OVERHANG.
@@ -70,7 +71,7 @@ SILENCE_WARMUP = 16  # frames of Mimi's start-up codes when it encodes from a fr
 # Teacher-forced validation streams and their batch order use one fixed seed, so every run and
 # validate.py score the same streams, and --val-batches takes a random subset.
 VALIDATION_SEED = 0
-PHOMT_ID = re.compile(r"^(phomt_s\d+)r(\d+)$")  # consecutive rows of one source chunk
+PHOMT_ID = re.compile(r"^(phomt_s\d+)r(\d+)$")  # consecutive rows of one source chunk: doc, seq
 PACK_WORKERS = 32
 
 
@@ -94,6 +95,8 @@ class Row:
     vi_frames: int  # source length; the cached source EOS sits here
     en_frames: int  # target length including the delay; the cached text EOS sits here
     delay_frames: int
+    doc: str | None  # rows of one doc join streams together, in seq order
+    seq: int
 
 
 @dataclass(frozen=True)
@@ -109,7 +112,7 @@ class Stream:
     frames: int
 
 
-PACK_VERSION = 2
+PACK_VERSION = 3  # 3: docs.json
 PACK_DIR = ".packed"  # beside the shards: <cache-dir>/.packed/<shard stem>/
 
 
@@ -143,7 +146,7 @@ def pack_shard(shard_path: Path) -> None:
     )
     if 2 * layout.dep_q != int(config["n_q"]):
         raise RuntimeError(f"{shard_path} has unequal source and target codebooks")
-    chunks, index, ids = [], [], []
+    chunks, index, ids, docs = [], [], [], []
     offset = 0
     for sample in payload["samples"]:
         codes = sample["codes"]
@@ -163,6 +166,13 @@ def pack_shard(shard_path: Path) -> None:
             )
         )
         ids.append(str(sample["id"]))
+        match = PHOMT_ID.match(str(sample["id"]))
+        if "doc" in sample:
+            docs.append([str(sample["doc"]), int(sample["seq"])])
+        elif match:
+            docs.append([match.group(1), int(match.group(2))])
+        else:
+            docs.append(None)
         offset += codes.numel()
     target = _pack_dir(shard_path)
     temporary = target.with_name(f".{target.name}.tmp")
@@ -171,6 +181,7 @@ def pack_shard(shard_path: Path) -> None:
     (np.concatenate(chunks) if chunks else np.empty(0, np.int32)).tofile(temporary / "codes.bin")
     np.save(temporary / "index.npy", np.array(index, dtype=np.int64).reshape(-1, 5))
     (temporary / "ids.json").write_text(json.dumps(ids))
+    (temporary / "docs.json").write_text(json.dumps(docs))
     (temporary / "pack.json").write_text(
         json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout)})
     )
@@ -210,8 +221,9 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
             str(path), shared=False, size=path.stat().st_size // 4, dtype=torch.int32
         ).numpy()
         ids = json.loads((directory / "ids.json").read_text())
-        for row_id, (offset, frames, vi_frames, en_frames, delay) in zip(
-            ids, np.load(directory / "index.npy").tolist()
+        docs = json.loads((directory / "docs.json").read_text())
+        for row_id, doc, (offset, frames, vi_frames, en_frames, delay) in zip(
+            ids, docs, np.load(directory / "index.npy").tolist(), strict=True
         ):
             if frames > max_frames:
                 dropped += 1
@@ -224,6 +236,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
                     vi_frames=vi_frames,
                     en_frames=en_frames,
                     delay_frames=delay,
+                    doc=doc[0] if doc else None,
+                    seq=doc[1] if doc else 0,
                 )
             )
     if layout is None or not rows:
@@ -252,15 +266,14 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
             f"{longest}-frame row and a {LONG_GAP[1]}-frame gap"
         )
     rng = random.Random(seed)
-    chunks: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    docs: dict[str, list[tuple[int, int]]] = defaultdict(list)
     units: list[list[int]] = []
     for index, row in enumerate(rows):
-        match = PHOMT_ID.match(row.id)
-        if match is None:
+        if row.doc is None:
             units.append([index])
         else:
-            chunks[match.group(1)].append((int(match.group(2)), index))
-    units.extend([index for _, index in sorted(chunk)] for chunk in chunks.values())
+            docs[row.doc].append((row.seq, index))
+    units.extend([index for _, index in sorted(doc)] for doc in docs.values())
     rng.shuffle(units)
 
     streams: list[Stream] = []
