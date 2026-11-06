@@ -53,14 +53,17 @@ draws use split `train`.
   nghìn, 2 kept rows in GigaSpeech 2's 245k; it does not fold "tỉ" into "tỷ", which drops ~14
   rows a source whose transcript writes "tỉ" ("ba tỉ" against the ASR's "3 tỷ"). Changing
   `spoken` would also change the CER `filters asr` stored.
-- Over the whole first tranche (`asr_vi` complete on 2026-11-06, 840,520 rows in 9.13 h), the
-  gates that need no English drop, in their order:
+- The full build (2026-11-06, 591 shards, 2.0 h of GPU time) kept 777,090 of 840,520 rows. Each
+  gate's share of the source's rows, in the gates' order (a row counts under its first):
 
-  | Source | Rows | Language | CER over 0.15 | Magnitudes | Total |
-  |---|---:|---:|---:|---:|---:|
-  | PhoAudiobook | 290,037 | 0.01% | 0.48% | 0.17% | 0.66% |
-  | viVoice | 269,350 | 0.03% | 0.99% | 0.17% | 1.20% |
-  | GigaSpeech 2 | 281,133 | 0.03% | 3.91% | 1.39% | 5.34% |
+  | Source | Rows | Kept | Broken English | VI letters | Language | CER > 0.15 | Magnitudes | Frames | Alignment |
+  |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+  | PhoAudiobook | 290,037 | 98.0% | 0.68% | 0.65% | 0.01% | 0.17% | 0.24% | 0.15% | 0.07% |
+  | viVoice | 269,350 | 96.6% | 1.21% | 1.03% | 0.03% | 0.85% | 0.17% | 0.02% | 0.12% |
+  | GigaSpeech 2 | 281,133 | 82.7% | 11.07% | 1.91% | 0.02% | 2.61% | 1.15% | 0.03% | 0.48% |
+
+  No row overlapped an evaluation sentence. The trainer plans 134,066 streams from them, 1,760 h
+  of Vietnamese source, 26,176 batches an epoch.
 - The Vietnamese-letter rule drops 118 of 10,392 rows on PhoAudiobook shards 0–7 (1.1%), 49 of
   them broken anyway. Of the rest, about half are lead-ins the TTS spoke in Vietnamese ("Không.
   Being rejected…", "Bước ngoặt khác, managing the farm") and half Vietnamese names the ASR spelled
@@ -125,6 +128,11 @@ build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× o
 - Mimi stays float32 with TF32 off (other precisions change the codes, unlike the existing
   caches); `torch.compile` or CUDA graphs on its encoder keep the codes. wav2vec2 may run in
   TF32 or bf16 if word starts stay within a frame of float32 on real rows.
+- Per-row costs: GigaSpeech 2 ran at 825× (4 min a 20k-row shard) against PhoAudiobook's 1,478×
+  and viVoice's 1,172×; its rows are short (4.3 s), so the main thread's per-row Python (`pending`,
+  collecting the alignments, `assemble_codes`, the sample dicts) likely holds the GPU idle longer
+  per hour of audio. Measure it before the scale-up, which is mostly GigaSpeech 2, and move it into
+  the workers.
 - Per-shard fixed costs weigh on small shards (viVoice's 3.8 h of Mimi audio ran ~1,100× against
   PhoAudiobook's ~1,400×): fuller last batches across shard boundaries, or bigger shards.
 - After the local-read fix viVoice ran ~1,300–1,400× (~10 s a shard), the GPU idle 17%: ~1.0 s at
