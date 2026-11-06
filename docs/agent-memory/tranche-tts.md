@@ -123,7 +123,14 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   again while broken (WER over 20% under Whisper's normalizer, or pace off by 2x), up to 3
   tries. Two viVoice shards: 1.05 tries a row, 1.5% still broken. Those rows are mostly the ASR
   mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
-  PhoAudiobook: 1.01–1.06 tries a row, 0.2–2.2% still broken per shard. Prompted with the
+  PhoAudiobook: 1.01–1.06 tries a row, 0.2–2.2% still broken per shard. GigaSpeech 2: 1.35–1.40
+  tries a row, 10.2–11.9% still broken per shard. On its shard 0, 2,007 of the 2,085 broken rows fail
+  on WER, 78 on pace; clips under 2 s break most (23%, against 7% from 3 to 8 s), where one
+  Vietnamese name the ASR spells otherwise ("Binh Dinh" heard as "Benin") is over 20% of the words.
+  Of 12 sampled, 5 look like that ASR noise and 7 are real faults: a word repeated or dropped, a
+  number changed ("177" spoken as "100"), a Vietnamese clause. Ignoring spaces and punctuation would
+  pass only 23 of the 2,085, so the rule stays and the cache drops them. The full run voiced 2,138.1
+  h in 13.43 h (done 2026-11-06 12:17). Prompted with the
   Vietnamese transcript, VoxCPM2 sometimes speaks a Vietnamese clause before the English; under
   ~20% of the words it passes the WER check (~0.05% of rows, e.g. pho/00003/00588), so the cache
   build also drops rows whose `en_asr` has Vietnamese letters absent from `text_en`. The TTS

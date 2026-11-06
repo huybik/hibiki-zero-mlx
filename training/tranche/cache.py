@@ -460,6 +460,7 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
 
 def build(args: argparse.Namespace) -> None:
     # Taken first: a second run must not push or load models onto a GPU the first one uses.
+    args.root.mkdir(parents=True, exist_ok=True)
     with exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"):
         todo = todo_shards(args)
         log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))

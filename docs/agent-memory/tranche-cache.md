@@ -77,3 +77,20 @@ draws use split `train`.
 - Needs `data/eval` (on the box `.venv/bin/python -m training.prep.eval_sets --sets fleurs
   multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
   server on the GPU, ~1.3 GB of it is free, so the build runs after them.
+- Checked end to end on the box (2026-11-06, after the TTS and the ASR server), into a scratch
+  `--root` with the push stubbed: PhoAudiobook shards 0–1, viVoice 0, GigaSpeech 2 0. Every
+  PhoAudiobook row (2,572) has the trainer's layout (`T = max(en, vi) + 1`, one text EOS at
+  `en_frames`, the codec EOS at `vi_frames`, -1 after). Against the CPU build of shard 0's first
+  24 rows, shapes, text rows and delays are identical, alignment scores within 0.0021, and
+  0.0074% of audio codes differ (Mimi's float32 on CPU against CUDA). `streams` packs the shards
+  and plans streams that keep a doc's rows in order: of adjacent pieces, 1,883 are the next `seq`,
+  18 skip a dropped row, 61 change doc. transformers reports `wav2vec2.masked_spec_embed` as
+  missing from the checkpoint: it only masks in training, so the CTC is unaffected.
+- Kept: PhoAudiobook 99.0%, viVoice 96.6%, GigaSpeech 2 83.0% (of its shard 0: `en_broken`
+  10.4%, CER 2.7%, Vietnamese letters 2.1%, magnitudes 1.3%, alignment 0.4%, language and frame
+  cap 0.06%). GigaSpeech 2's broken English is in [tranche-tts](tranche-tts.md).
+- Speed: a warm PhoAudiobook shard (1,299 rows, 9.6 h of Mimi audio, Vietnamese and English) in
+  21 s, 1,609× real time, the GPU 74–100% busy; a GigaSpeech 2 shard (19,967 rows, 49.9 h) in
+  161 s with the model load, the GPU idle its first ~60 s while the clips decode and 85–95% busy
+  after (the build reads and decodes the next shard behind the current one). ~49 GB of GPU at
+  its peak. ~2.6 h for the tranche.
