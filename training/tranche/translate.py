@@ -1,18 +1,17 @@
 #!/usr/bin/env python
-"""VI→EN translation of the tranche's segments on the box, by Index-Translate-9B that vLLM serves on
-the GPU ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline)).
+"""VI→EN translation of the tranche's segments on the box: Index-Translate-35B-A3B in vLLM, in this
+process, on the GPU ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline)).
 
 Reads each segments shard's id, doc and text from its tranche repo on the Hub (only those columns, no
-audio), translates each row in its own call, with up to CONTEXT_ROWS earlier rows of its doc as
+audio), translates each row as its own prompt, with up to CONTEXT_ROWS earlier rows of its doc as
 context, and writes <root>/<source>/text_en/<shard>.parquet (id, text_en) beside the segments'
 layout; `ingest push` uploads it. A transcript all in capitals (GigaSpeech 2's) goes in lowercased:
 kept, the model answers in capitals, which the TTS spells out. The first try is greedy; a reply cut
-at max_tokens, still in Vietnamese or holding letters of another script is tried again sampled, up
-to TRIES times; a row failing every try keeps text_en null, and a rerun tries the null rows again
-(and only those: a written row may already be voiced). The client needs no GPU; from the repo root, with the server up (`serve` prints
-its command):
+at max_tokens, still in Vietnamese, holding letters of another script or far too long is tried
+again sampled, up to TRIES times; a row failing every try keeps text_en null, and a rerun tries
+the null rows again (and only those: a written row may already be voiced). It takes the GPU memory
+voice holds, so the two take turns. From the repo root, in the env /workspace/envs/mt (`envs.sh`):
 
-  python -m training.tranche.translate serve
   python -m training.tranche.translate giga --shards 51:
 """
 from __future__ import annotations
@@ -20,60 +19,43 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import threading
 import time
 import unicodedata
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from training.paths import exclusive
-from training.prep.translate_en_speech import Stopped, broken
+from training.prep.translate_en_speech import broken
 from training.tranche.ingest import REPO, ROOT, SOURCES
 
-# Chosen on the box against Hy-MT2-30B-A3B and Muse (real-vi-tranche, Models). Apache-2.0.
-MODEL = ("IndexTeam/Index-Translate-9B-FP8", "d467e031548df719a665509ce5bfc63c6a62af5c")
-URL = "http://localhost:8200/v1/chat/completions"  # the server's model name is `mt`
-TIMEOUT = 600  # seconds a call may wait: a full server queues calls behind its batch
+# Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (real-vi-tranche, Models).
+# Apache-2.0; BF16 weights, quantized to FP8 as they load.
+MODEL = ("IndexTeam/Index-Translate-35B-A3B-preview", "7e4029e0df842502cb009cf493d6467c247043b3")
 MAX_TOKENS = 512  # a row's English takes ~20 tokens, the longest a few hundred
 TRIES = 3  # per row and run: greedy, then sampled
-SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20}  # Qwen3.5's non-thinking settings; unseeded, so a rerun draws anew
 CONTEXT_ROWS = 2
-PROMPT = ("Translate the following Vietnamese text into English. The text is a segment cut from speech and may "
-          "start or stop mid-sentence: translate exactly what it says, leaving an unfinished sentence unfinished, "
-          "without completing, adding or dropping anything. Write the English with normal capitalization and "
-          "punctuation, and Vietnamese names without diacritics (Bắc Giang as Bac Giang). Write only what is "
-          "spoken: no brackets, notes or explanations. Output only the translation.")
+# The short form scored as the long one on the bake-off (FLEURS dev chrF 64.8 against 64.7, archive
+# 50 against Muse 68.7 against 69.1, on Index-Translate-9B) with 21% fewer prompt tokens.
+PROMPT = ("Translate this Vietnamese speech segment into English. It may start or stop mid-sentence: translate "
+          "exactly what it says, without completing, adding or dropping anything. Use normal capitalization and "
+          "punctuation, Vietnamese names without diacritics, no brackets or notes. Output only the translation.")
 SCHEMA = pa.schema([("id", pa.string()), ("text_en", pa.string())])
-# A run stops once more rows than this share of those it has started fail every try (past the
-# first MIN_ROWS): a systematic failure would otherwise write every shard null. Checked at every
-# failed row.
+GROUP = 4  # shards translated together: one generate call keeps the GPU's batch full across a shard's end
+# A run stops once more rows than this share of those it has tried fail every try (past the first
+# MIN_ROWS): a systematic failure would otherwise write every shard null.
 MAX_FAILED, MIN_ROWS = 0.01, 5_000
-
-
-def log(msg: str) -> None:
-    print(time.strftime("%H:%M:%S"), msg, flush=True)
-
-
-def serve_command(gpu_memory: float) -> list[str]:
-    """The vLLM server translate calls (env /workspace/envs/mt, `envs.sh`). The keep-alive outlasts
-    httpx's own 5 s, so the server never closes a connection the client is about to reuse."""
-    from huggingface_hub import snapshot_download
-
-    return ["env", "VLLM_HTTP_TIMEOUT_KEEP_ALIVE=600", "/workspace/envs/mt/bin/vllm", "serve",
-            snapshot_download(MODEL[0], revision=MODEL[1]), "--served-model-name", "mt", "--port", "8200",
-            "--gpu-memory-utilization", str(gpu_memory), "--max-model-len", "4096", "--max-num-seqs", "512"]
-
-
 # Frequent Vietnamese words no English sentence or Vietnamese name holds: two of them in a reply mean
 # it was left (partly) in Vietnamese. Names keep or drop their diacritics without tripping it.
 VIETNAMESE_WORDS = {"và", "của", "là", "được", "những", "các", "này", "trong", "với", "không", "có", "một", "đã",
                     "để", "thì", "người", "từ", "đến", "về", "cũng", "nhiều", "sẽ", "đó", "như", "khi", "lại",
                     "phải", "còn", "rằng", "bị"}
+
+
+def log(msg: str) -> None:
+    print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
 def bad(vi: str, en: str | None) -> bool:
@@ -86,43 +68,60 @@ def bad(vi: str, en: str | None) -> bool:
     return sum(w in VIETNAMESE_WORDS for w in words) >= 2
 
 
-def call(client: httpx.Client, url: str, prompt: str, attempt: int) -> tuple[str | None, Counter]:
-    """One row -> its English, or None when cut at MAX_TOKENS; and the usage. Thinking off; greedy
-    on the first attempt, sampled after. The server is on this box, so any
-    HTTP error stops the run rather than being retried."""
-    sampling = {"temperature": 0} if attempt == 0 else SAMPLING
-    response = client.post(url, json={
-        "model": "mt", "max_tokens": MAX_TOKENS, **sampling, "chat_template_kwargs": {"enable_thinking": False},
-        "messages": [{"role": "user", "content": prompt}]})
-    response.raise_for_status()
-    reply = response.json()
-    choice, meta = reply["choices"][0], reply["usage"]
-    en = (choice["message"]["content"] or "").strip() if choice["finish_reason"] == "stop" else None
-    return en, Counter(calls=1, input_tokens=meta["prompt_tokens"], output_tokens=meta["completion_tokens"])
-
-
 def prompt(texts: list[str], docs: list[str], k: int) -> str:
     """Row k's prompt, with up to CONTEXT_ROWS earlier rows of its doc (only rows of the same doc:
     viVoice's rows are docs of their own)."""
     context = [texts[j] for j in range(max(0, k - CONTEXT_ROWS), k) if docs[j] == docs[k]]
-    background = ("\n\nEarlier in the same recording (context only, do not translate):\n" + "\n".join(context)
+    background = ("\n\nContext, earlier in the recording (do not translate):\n" + "\n".join(context)
                   if context else "")
-    return f"{PROMPT}{background}\n\nText to translate:\n{texts[k]}"
+    return f"{PROMPT}{background}\n\nSegment:\n{texts[k]}"
+
+
+def engine(gpu_memory: float):
+    """Prefix caching off: on this hybrid (linear-attention) model it never hit, and its aligned state
+    blocks cut the sequences that fit by ~3×. Images and video off, so requests skip the processor."""
+    from huggingface_hub import snapshot_download
+    from vllm import LLM
+
+    return LLM(model=snapshot_download(MODEL[0], revision=MODEL[1]), quantization="fp8",
+               gpu_memory_utilization=gpu_memory, max_model_len=4096, max_num_seqs=256,
+               enable_prefix_caching=False, limit_mm_per_prompt={"image": 0, "video": 0})
+
+
+def translate(llm, vi: list[str], prompts: list[str]) -> list[str | None]:
+    """-> each row's English, None where it fails every try. Each try is one generate call over the
+    rows still without one: greedy first, then sampled at Qwen3.5's non-thinking settings, seeded
+    afresh each run so that a rerun draws anew."""
+    from vllm import SamplingParams
+
+    en: list[str | None] = [None] * len(vi)
+    todo = list(range(len(vi)))
+    for attempt in range(TRIES):
+        params = (SamplingParams(max_tokens=MAX_TOKENS, temperature=0) if attempt == 0 else
+                  SamplingParams(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
+                                 seed=int.from_bytes(os.urandom(4))))
+        outputs = llm.chat([[{"role": "user", "content": prompts[k]}] for k in todo], params, use_tqdm=False,
+                           chat_template_kwargs={"enable_thinking": False})
+        for k, output in zip(todo, outputs, strict=True):
+            reply = output.outputs[0]
+            text = reply.text.strip() if reply.finish_reason == "stop" else None
+            if not bad(vi[k], text):
+                en[k] = text
+        todo = [k for k in todo if en[k] is None]
+        if not todo:
+            break
+    return en
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("source", choices=sorted(SOURCES) + ["serve"])
+    parser.add_argument("source", choices=sorted(SOURCES))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--shards", type=lambda s: slice(*(int(n) if n else None for n in s.split(":"))),
                         default=slice(None), help="a slice of the source's segments shards, e.g. 0:1")
-    parser.add_argument("--url", default=URL, help="the vLLM server's chat completions")
-    parser.add_argument("--concurrency", type=int, default=512, help="calls at once: the server's --max-num-seqs")
-    parser.add_argument("--gpu-memory", type=float, default=0.7, help="serve: the server's share of the GPU")
+    parser.add_argument("--gpu-memory", type=float, default=0.75,
+                        help="the engine's share of the GPU (beside the ASR server's 0.2, voice stopped)")
     args = parser.parse_args()
-    if args.source == "serve":
-        print(" ".join(serve_command(args.gpu_memory)))
-        return
 
     from huggingface_hub import HfApi, HfFileSystem
 
@@ -138,74 +137,53 @@ def main() -> None:
     lock_file = exclusive(out / "translate.lock", f"another translate run is writing {out}")  # noqa: F841
     log(f"{args.source}: {len(shards)} shards, {repo}@{sha[:7]} -> {out}")
 
-    def read(path: str) -> tuple[str, list[str], list[str], list[str]]:
+    def read(path: str) -> tuple[str, list[str], list[str], list[str], list[str | None]]:
+        """A shard's name, ids, docs, texts (all-capital ones lowercased) and existing text_en."""
         with fs.open(path, "rb", cache_type="none") as fh:  # only these columns' chunks, not the audio
             t = pq.ParquetFile(fh).read(columns=["id", "doc", "text"])
+        name = Path(path).name
         ids, docs, texts = (t.column(c).to_pylist() for c in ("id", "doc", "text"))
-        return Path(path).name, ids, docs, [text.lower() if text.isupper() else text for text in texts]
-
-    client = httpx.Client(timeout=TIMEOUT, limits=httpx.Limits(max_connections=args.concurrency))
-    stop, lock, usage = threading.Event(), threading.Lock(), Counter()
-
-    def translate(vi: str, row_prompt: str) -> str | None:
-        """-> the row's English, None when it fails every try."""
-        for attempt in range(TRIES):
-            if stop.is_set():
-                raise Stopped
-            en, used = call(client, args.url, row_prompt, attempt)
-            with lock:
-                usage.update(used)
-            if not bad(vi, en):
-                return en
-        with lock:
-            usage["failed_rows"] += 1
-            if usage["rows"] > MIN_ROWS and usage["failed_rows"] > MAX_FAILED * usage["rows"]:
-                raise SystemExit(f"{usage['failed_rows']:,} of {usage['rows']:,} rows started failed every "
-                                 "try, a systematic failure: stopping")
-        return None
-
-    def shard(path: str) -> str:
-        """Translate a shard's rows that have no translation yet: all of them, or on a rerun those
-        left null."""
-        name, ids, docs, texts = read(path)
-        dst = out / name
         text_en = [None] * len(ids)
-        if dst.exists():
-            t = pq.read_table(dst)
+        if (out / name).exists():
+            t = pq.read_table(out / name)
             if t.column("id").to_pylist() != ids:
-                raise SystemExit(f"{dst} holds other rows than its segments shard")
+                raise SystemExit(f"{out / name} holds other rows than its segments shard")
             text_en = t.column("text_en").to_pylist()
-        todo = [k for k, en in enumerate(text_en) if en is None]  # never a row already written (perhaps voiced)
-        if not todo:
-            return f"{name}: complete"
-        with lock:
-            usage["rows"] += len(todo)
-        for k, en in zip(todo, calls.map(lambda k: translate(texts[k], prompt(texts, docs, k)), todo), strict=True):
-            text_en[k] = en
-        part = out / f"{name}.part"
-        pq.write_table(pa.Table.from_pydict({"id": ids, "text_en": text_en}, schema=SCHEMA), part)
-        os.replace(part, dst)
-        with lock:
-            usage["rows_done"] += len(todo)
-        return f"{name}: {len(todo)} of {len(ids)} rows translated"
+        return name, ids, docs, [text.lower() if text.isupper() else text for text in texts], text_en
 
-    start = time.time()
-    # Several shards at once, so that each shard's last rows don't leave call slots idle.
-    with ThreadPoolExecutor(args.concurrency) as calls, ThreadPoolExecutor(4) as shards_pool:
-        try:
-            for done, job in enumerate(as_completed([shards_pool.submit(shard, s) for s in shards]), 1):
-                with lock:
-                    u = usage.copy()
-                minutes = (time.time() - start) / 60
-                log(f"{job.result()}; {done}/{len(shards)} shards, {u['rows_done'] / 60 / minutes:.0f} rows/s, "
-                    f"{u['calls']} calls, {u['failed_rows']} rows failed, {u['input_tokens'] / 1e6:.1f}M tokens "
-                    f"in, {u['output_tokens'] / 1e6:.1f}M out, {minutes:.1f} min")
-        except BaseException:
-            stop.set()
-            shards_pool.shutdown(wait=False, cancel_futures=True)
-            calls.shutdown(wait=True, cancel_futures=True)
-            raise
-    failed = usage["failed_rows"]
+    llm, tried, failed, start = None, 0, 0, time.time()
+    with ThreadPoolExecutor(GROUP) as readers:
+        groups = [shards[i:i + GROUP] for i in range(0, len(shards), GROUP)]
+        pending = readers.map(read, groups[0]) if groups else []
+        for g, group in enumerate(groups):
+            loaded = list(pending)
+            if g + 1 < len(groups):  # the next group's reads overlap this group's translation
+                pending = readers.map(read, groups[g + 1])
+            # Rows without a translation: all of a new shard, or on a rerun those left null; never a
+            # row already written, which may be voiced.
+            todo = [(s, k) for s, (_, _, _, _, text_en) in enumerate(loaded) for k, en in enumerate(text_en)
+                    if en is None]
+            if not todo:
+                log(f"{', '.join(shard[0] for shard in loaded)}: complete")
+                continue
+            if llm is None:
+                llm, start = engine(args.gpu_memory), time.time()
+            en = translate(llm, [loaded[s][3][k] for s, k in todo],
+                           [prompt(loaded[s][3], loaded[s][2], k) for s, k in todo])
+            for (s, k), text in zip(todo, en, strict=True):
+                loaded[s][4][k] = text
+            for name, ids, _, _, text_en in loaded:
+                part = out / f"{name}.part"
+                pq.write_table(pa.Table.from_pydict({"id": ids, "text_en": text_en}, schema=SCHEMA), part)
+                os.replace(part, out / name)
+            tried += len(todo)
+            failed += sum(text is None for text in en)
+            minutes = (time.time() - start) / 60
+            log(f"{', '.join(shard[0] for shard in loaded)}: {len(todo)} rows translated, "
+                f"{sum(text is None for text in en)} failed; {min((g + 1) * GROUP, len(shards))}/{len(shards)} shards, "
+                f"{tried / 60 / minutes:.0f} rows/s, {minutes:.1f} min")
+            if tried > MIN_ROWS and failed > MAX_FAILED * tried:
+                raise SystemExit(f"{failed:,} of {tried:,} rows failed every try, a systematic failure: stopping")
     log(f"{args.source}: done; {failed} rows without a translation")
 
 

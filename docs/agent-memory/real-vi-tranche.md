@@ -104,10 +104,37 @@ here is published or estimated, to be measured on the box first:
 | Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Not run: the gate uses Qwen3-ASR's own language tag ([tranche-cache](tranche-cache.md#gates)) |
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame. Not run: the tranche cache keeps `wav2vec2-base-960h`, as the existing caches do |
-| VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)) (user, 2026-11-05), for every source. Contributor mode lets Meta train on what it is sent, PhoAudiobook's and GigaSpeech 2's transcripts included; the user chose it over standard Muse Spark 1.3 (~17× the price, ~$170 for 2,000 h against ~$10) | `tencent/Hy-MT2-30B-A3B-FP8` on the box | A check on the box, since removed, measured Hy-MT2 (2026-11-05; vLLM 0.33 needs `flashinfer-jit-cache` beside it, or the FP8 MoE's first load compiles its kernels for about an hour): 21,000 rows (46.1 h) in 82–89 s, $0.013 per million characters against Muse's $0.084, but less faithful. FLEURS dev chrF 63.3 against Muse's 66.6. A blind Opus judge on 300 tranche rows gave it adequacy 3.90 against 4.44 (fluency 4.51 against 3.96), 26 rows at adequacy ≤ 2 against Muse's 8: it completes a segment's unfinished sentence and slips on pronouns, even when told to leave fragments unfinished (3.82 with the card's prompt). At ~$8 saved per 2,000 h, quality decides |
+| VI→EN translation | `IndexTeam/Index-Translate-35B-A3B-preview` (Apache-2.0, Qwen3.5 MoE, FP8 as it loads) in vLLM 0.33 on the box, a row per prompt (`training/tranche/translate.py`), from GigaSpeech 2 archive 51 on (2026-11-06) | `IndexTeam/Index-Translate-9B-FP8` | [bake-off below](#vien-on-the-box). Before: Muse Spark 1.3 Contributor through OpenRouter (user, 2026-11-05) for the first tranche and GigaSpeech 2 archives 13–50, until Meta blocked the key on 2026-11-06 21:46 UTC+7 (HTTP 403 `user_blocked`, "repeated policy violations"); paid APIs (Gemini 3.1 Flash-Lite, ~$1.2 an archive on OpenRouter's batch price) were too dear for the user |
 | English TTS | VoxCPM2, prompted by the row's own clip and transcript, checked by Qwen3-ASR and retried (`training/tranche/voice.py`) | dots.tts-soar | [bake-off and tuning](tranche-tts.md); chosen by blind listening |
 | TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
+
+### VI→EN on the box
+
+Bake-off, 2026-11-06, vLLM 0.33 beside the ASR server, greedy, thinking off. FLEURS dev: its 149
+sentences against their English. Archive 50: its first 2,000 rows, lowercased, against Muse's
+English, both lowercased (Muse's misplaced lines count against every system). chrF/BLEU:
+
+| Model, prompt | FLEURS dev | Archive 50 |
+|---|---:|---:|
+| Index-Translate-35B-A3B, a row per prompt, short | 65.1 / 37.7 | 70.5 / 42.6 |
+| Index-Translate-9B, a row per prompt | 64.7 / 36.8 | 69.1 / 40.4 |
+| Index-Translate-9B, a row per prompt, short | 64.8 / 36.7 | 68.7 / 40.1 |
+| Index-Translate-9B, the card's prompt (Chinese, no context) | 63.6 / 35.4 | 64.4 / 34.4 |
+| Index-Translate-9B, Muse's 40 numbered lines | 63.8 / 36.4 | 66.2 / 41.1 |
+| Hy-MT2-30B-A3B, a row per prompt | 63.1 / 35.1 | |
+| Hy-MT2-30B-A3B, Muse's 40 numbered lines (39 replies split) | 58.8 / 29.3 | 54.6 / 26.4 |
+
+- "A row per prompt": the fragment instruction (translate exactly, leave an unfinished sentence
+  unfinished), the doc's two earlier rows as context, names without diacritics, no brackets.
+  Without the last two rules 8.3% of rows kept Vietnamese diacritics on names (Muse 0.05%), and
+  a few added `[he]`. In 40-line batches the 9B moved words between neighbouring lines.
+- On FLEURS, Gemini 2.5 Flash scored 66.8, Muse 66.6, Gemini 3.1 Flash-Lite 66.3, DeepSeek V3.2
+  64.8 and Claude Haiku 4.5 63.6 (OpenRouter, Muse's 40-line prompt).
+- Speed on archive 51 (19,707 rows), served over HTTP to a Python client: the 9B 70 rows/s
+  (prefix caching on: each sequence's aligned state took ~1,000 tokens of cache and capped the
+  batch near 345), 84 rows/s with it off; the 35B 110 rows/s. The GPU sat at 46% and ~300 W while
+  the client's 512 threads held a core: in-process generation replaced the server.
 
 - Ruled out, non-commercial or with licences that bar training on outputs: ChunkFormer-vie,
   hynt Zipformer, MMS-FA and MMS-LID, `wav2vec2-base-vi-vlsp2020`, Hunyuan-MT 1.x / HY-MT1.5,
@@ -180,14 +207,14 @@ other corpora ─► their transcripts, word times by forced alignment ───
   stopping on "rows without text_en"). Translation still lists the Hub's segments and translates
   every shard without a local `text_en`: give it `--shards` past the shards translated elsewhere.
   Voice queues a shard only once its `text_en` is on the Hub or here.
-- Translate (`training/tranche/translate.py`; the client in the env `/workspace/envs/translate`,
-  the vLLM server in `/workspace/envs/mt`, both built by `envs.sh`) reads each segments shard's
-  `id`, `doc` and `text` from the Hub and translates each row in its own call, with up to two
+- Translate (`training/tranche/translate.py`, in the env `/workspace/envs/mt` that `envs.sh`
+  builds) runs Index-Translate-35B-A3B in vLLM in its own process. It reads each segments shard's
+  `id`, `doc` and `text` from the Hub, translates each row as its own prompt, with up to two
   earlier rows of its doc as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`,
   `text_en`); `ingest push <source> --part text_en` uploads it beside the segments.
-  - The server: `translate serve` prints its command (model `mt` on :8200). Start it from
-    `/workspace/restart.sh mt`. It takes the GPU memory voice holds, so translation and voice run
-    one after the other, the translation in bursts that run ahead of voice.
+  - It takes the GPU memory voice holds (0.75 of it, beside the ASR server), so translation and
+    voice take turns: translation in bursts that run ahead of voice. Four shards go into each
+    generate call, and the next four are read meanwhile.
   - GigaSpeech 2's transcripts are all capitals: a transcript all in capitals goes in lowercased,
     because kept, the model answers in capitals (Muse did on 5.7% of archive 50's rows), and such
     rows broke in the TTS 59.8% of the time against 21.3% (archives 13–24).
@@ -200,9 +227,9 @@ other corpora ─► their transcripts, word times by forced alignment ───
   - A row failing every try keeps `text_en` null and holds its shard back from voice. A rerun
     tries only the null rows, sampling afresh; a row already written is never translated again,
     as it may be voiced.
-  - A run stops at the first failed row that takes failures past 1% of the rows it has started
-    (once past 5,000), and a lock keeps a second run off the same folder. A shard is written only
-    once all its rows are done, so a crash loses the four shards in flight.
+  - A run stops once more than 1% of the rows it has tried fail every try (past 5,000), and a lock
+    keeps a second run off the same folder. Shards are written four at a time, once all their rows
+    are done, so a crash loses the four in flight.
   - Muse Spark 1.3 Contributor through OpenRouter translated the first tranche and GigaSpeech 2
     archives 13–50 (2026-11-05/06), in batches of up to 40 consecutive rows: all 840,520 rows of
     the first tranche in ~55 min for $9.75. It wrote Chinese mid-sentence in 22 of the first
