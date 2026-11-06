@@ -4,7 +4,7 @@
 
 Reads each segments shard's id, doc and text from its tranche repo on the Hub (only those columns, no
 audio), translates its rows in their order, in batches of consecutive rows of one doc so that a row's
-neighbours give it context, and writes <root>/<repo>/<source>/text_en/<shard>.parquet (id,
+neighbours give it context, and writes <root>/<source>/text_en/<shard>.parquet (id,
 text_en) beside the segments' layout; `ingest push` uploads it. A batch whose reply does not parse
 or holds another script is split in halves down to single rows; a row that fails alone keeps
 text_en null, and a rerun translates again the rows left null or broken. CPU only, from the repo root with the key in the environment:
@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 
 from training.paths import exclusive
 from training.prep.translate_en_speech import MUSE_TIMEOUT, Stopped, broken, muse_call
-from training.tranche.ingest import REPOS, ROOT, SOURCES
+from training.tranche.ingest import REPO, ROOT, SOURCES
 
 PRICE = (0.10, 0.20)  # Contributor $ per million input and output tokens
 # Tested on 300 tranche rows against Hy-MT2 with a blind judge (real-vi-tranche, Models).
@@ -85,15 +85,14 @@ def main() -> None:
 
     from huggingface_hub import HfApi, HfFileSystem
 
-    dest = SOURCES[args.source].dest
-    repo = REPOS[dest]
+    repo = REPO
     sha = HfApi().dataset_info(repo).sha
     fs = HfFileSystem()
     shards = sorted(fs.glob(f"datasets/{repo}@{sha}/{args.source}/segments/*.parquet"),
                     key=lambda f: [int(n) for n in re.findall(r"\d+", Path(f).name)])[args.shards]
     if not shards:
         raise SystemExit(f"no {args.source} segments in {repo}")
-    out = args.root / dest / args.source / "text_en"
+    out = args.root / args.source / "text_en"
     out.mkdir(parents=True, exist_ok=True)
     lock_file = exclusive(out / "translate.lock", f"another translate run is writing {out}")  # noqa: F841
     log(f"{args.source}: {len(shards)} shards, {repo}@{sha[:7]} -> {out}")

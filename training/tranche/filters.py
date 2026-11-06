@@ -8,7 +8,7 @@
                      Reads only the id and text columns from the Hub; runs on the Mac or the box
   asr <sources...>   hear every segments row with Qwen3-ASR-1.7B on the ASR server, its language
                      detected rather than forced, and write
-                     <root>/<public|restricted>/<source>/asr_vi/<shard> (id, asr_vi, language, cer
+                     <root>/<source>/asr_vi/<shard> (id, asr_vi, language, cer
                      against the corpus transcript, over `spoken`); pushes each source's
                      folder every 30 min and at its end. A rerun skips the shards written or pushed,
                      and first pushes any written but not yet pushed
@@ -30,7 +30,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
 
-from training.tranche.ingest import REPOS, ROOT, SOURCES, push_part
+from training.tranche.ingest import REPO, ROOT, SOURCES, push_part
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EVAL_SETS = ("fleurs-vi/dev", "fleurs-vi/test", "multimed-vi/select", "multimed-vi/final")
@@ -103,8 +103,8 @@ def overlap(args: argparse.Namespace) -> None:
             t = pq.ParquetFile(fh).read(columns=["id", "text"])
         return list(zip(*t.to_pydict().values()))
 
-    for source, spec in SOURCES.items():
-        repo = REPOS[spec.dest]
+    for source in SOURCES:
+        repo = REPO
         sha = api.dataset_info(repo).sha
         shards = sorted(fs.glob(f"datasets/{repo}@{sha}/{source}/segments/*.parquet"))
         with ThreadPoolExecutor(16) as pool:
@@ -166,7 +166,6 @@ def asr_shard(source: str, name: str, root: Path, hearer: Hearer, decoders, pool
     import pyarrow.parquet as pq
     from training.tranche.ingest import part_file
 
-    dest = SOURCES[source].dest
     seg = pq.read_table(part_file(root, source, "segments", name), columns=["id", "text", "audio"])
     audio = [a["bytes"] for a in seg.column("audio").to_pylist()]
     heard = list(pool.map(hearer.hear, decoders.map(wav_16k, audio, chunksize=32)))
@@ -177,7 +176,7 @@ def asr_shard(source: str, name: str, root: Path, hearer: Hearer, decoders, pool
     table = pa.table({"id": seg.column("id"), "asr_vi": pa.array([h[1] for h in heard], pa.string()),
                       "language": pa.array([h[0] for h in heard], pa.string()),
                       "cer": pa.array(cer, pa.float32())})
-    dst = root / dest / source / "asr_vi" / name
+    dst = root / source / "asr_vi" / name
     dst.parent.mkdir(parents=True, exist_ok=True)
     part = dst.with_name(dst.name + ".part")
     pq.write_table(table, part)
@@ -192,9 +191,9 @@ def asr(args: argparse.Namespace) -> None:
     api = HfApi()
     todo = []
     for source in args.sources:
-        files = api.list_repo_files(REPOS[SOURCES[source].dest], repo_type="dataset")
+        files = api.list_repo_files(REPO, repo_type="dataset")
         done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/asr_vi/")}
-        folder = args.root / SOURCES[source].dest / source / "asr_vi"
+        folder = args.root / source / "asr_vi"
         todo += [(source, f.rsplit("/", 1)[1]) for f in sorted(files) if f.startswith(f"{source}/segments/")
                  and f.rsplit("/", 1)[1] not in done and not (folder / f.rsplit("/", 1)[1]).exists()]
         if {p.name for p in folder.glob("*.parquet")} - done:  # written by an earlier run that stopped before pushing them

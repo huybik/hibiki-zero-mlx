@@ -4,7 +4,7 @@ rows ([tranche-cache](../../docs/agent-memory/tranche-cache.md)), in the format 
 Mac's MLX builder `training.prep.cache_codes` ([sft-data-caches](../../docs/agent-memory/sft-data-caches.md)).
 
   build <sources...>  every shard whose segments, text_en, en_audio and asr_vi are on the Hub
-                      becomes <root>/<public|restricted>/cache/<source>/shard_<shard stem>.pt:
+                      becomes <root>/cache/<source>/shard_<shard stem>.pt:
                       the rows the filters below keep, the English text timed by wav2vec2-base-960h
                       CTC (the `text_timing` Viterbi) and both clips Mimi-encoded in float32, each
                       sample with its `doc` and `seq` so the trainer joins a document's rows in
@@ -70,7 +70,7 @@ from training.prep.text_timing import (
     timed_sentencepiece_tokens,
 )
 from training.tranche.filters import eval_grams, overlaps, spoken
-from training.tranche.ingest import REPOS, ROOT, SOURCES, part_file, push_part
+from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, part_file, push_part
 
 SAMPLE_RATE = 24_000  # Mimi
 CTC_RATE = 16_000
@@ -418,7 +418,7 @@ class Builder:
 
 
 def cache_dir(root: Path, source: str) -> Path:
-    return root / SOURCES[source].dest / "cache" / source
+    return root / "cache" / source
 
 
 def shard_file(name: str) -> str:
@@ -440,11 +440,11 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
     from huggingface_hub import HfApi
 
     api, todo = HfApi(), []
+    files, cached = (api.list_repo_files(r, repo_type="dataset") for r in (REPO, CACHE_REPO))
     for source in args.sources:
-        files = api.list_repo_files(REPOS[SOURCES[source].dest], repo_type="dataset")
         parts = {part: {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/{part}/")}
                  for part in ("segments", "text_en", "en_audio", "asr_vi")}
-        pushed = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"cache/{source}/")}
+        pushed = {f.rsplit("/", 1)[1] for f in cached if f.startswith(f"{source}/")}
         local = {p.name for p in cache_dir(args.root, source).glob("shard_*.pt")}
         ready = set.intersection(*parts.values())
         waiting = len(parts["segments"] - ready)

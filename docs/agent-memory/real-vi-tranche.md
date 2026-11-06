@@ -27,21 +27,32 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
     its card now names the tranche runs (`tranche_epoch1/` on) research-only.
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
-- Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
-  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/`, `<source>/asr_vi/` and `cache/<source>/`, so a rerun
-  or the Mac picks up from the Hub. The box keeps what it wrote and downloaded (disk is ample).
-  - [`huybik/hibiki-zero-vi-real`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real):
-    public, gated with automatic approval on research-only, no-impersonation terms, CC BY-NC-SA
-    4.0 overall; viVoice, YODAS, FOSD and VIVOS.
-  - [`huybik/hibiki-zero-vi-real-restricted`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real-restricted):
-    private; PhoAudiobook, whose user agreement forbids distributing it "in any original or
-    modified form", and GigaSpeech 2, whose terms allow sharing only with people who accept
-    them. Never make it public. Its segments take 21 GB for 1,277 h (~16 MB per hour), and
-    the rows' English speech will about double that: the first tranche fits the free account's
-    100 GB of private storage, and a scale-up past ~3,000 h needs PRO (1 TB private).
-  - Each repo's card declares only the segments configs (`vivoice-segments`, `pho-segments`,
-    `giga-segments`, `audio` as Audio), so the viewer and `datasets` decode those. `en_audio` has
-    no config: its readers decode the Opus bytes themselves.
+- Storage (user, 2026-11-06: every source public and gated, on the anquachdev account, the
+  user's): every stage writes to the Hub shard by shard, `<source>/segments/`, `<source>/text_en/`,
+  `<source>/en_audio/` and `<source>/asr_vi/` of `ingest.REPO`, and the caches to `<source>/` of
+  `ingest.CACHE_REPO`, so a rerun or another machine picks up from the Hub. The box keeps what it
+  wrote and downloaded under `/workspace/tranche/repo/<source>/<part>/` and `…/cache/<source>/`.
+  - [`anquachdev/en-vi-speech-20k`](https://huggingface.co/datasets/anquachdev/en-vi-speech-20k)
+    (`REPO`): PhoMT's synthetic pairs in `data/` (config `default`; the repo was
+    `anquachdev/PhoMT-en-vi-speech` until 2026-11-06, and the old name redirects) and every part
+    of the tranche but the caches. [`anquachdev/mimi-en-vi-speech-20k`](https://huggingface.co/datasets/anquachdev/mimi-en-vi-speech-20k)
+    (`CACHE_REPO`): the caches, `<source>/shard_<shard>.pt`.
+  - Both are gated with automatic approval: research-only, no-impersonation terms, each folder
+    under its source's terms, and GigaSpeech 2's terms of access in full (their clause 4 lets a
+    researcher give access to those who first agree to them; the user: our derived data complies).
+    PhoAudiobook is shared with its author's permission (the user asked, 2026-11-06).
+  - Pushes take `HF_TOKEN_AN`, a write token of anquachdev (`/workspace/.env` on the box; the jobs'
+    scripts source it). Reads use huybik's own token, granted access through both gates. `push`
+    refuses a repo that is not gated.
+  - Why: huybik's free account has 100 GB of private storage, and the first tranche's private
+    repo already used 56 GB (~44 MB per hour of GigaSpeech 2: segments 16, `en_audio` 20, cache 8).
+  - The first tranche was in `huybik/hibiki-zero-vi-real` (public, gated: viVoice) and
+    `huybik/hibiki-zero-vi-real-restricted` (private: PhoAudiobook, GigaSpeech 2 archives 0–12;
+    never make it public). Both stay as they were; their files were copied to the new repos
+    (2026-11-06, ~30 MB/s with 8 downloads at once against ~5 MB/s for one).
+  - The card of `REPO` declares the segments configs (`pho-segments`, `vivoice-segments`,
+    `giga-segments`, `audio` as Audio) beside PhoMT's `default`, so the viewer and `datasets`
+    decode those. `en_audio` has no config: its readers decode the Opus bytes themselves.
 - First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
   ~10k h with more GigaSpeech 2 and YODAS ([First tranche](#first-tranche)).
 - A commercial build still needs a legal sign-off on:
@@ -135,7 +146,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
   North, Central and South balance.
 - Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
   parquet sorted by `seq`, audio re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under
-  `/workspace/tranche/repo/<public|restricted>/<source>/segments/`, and `push` uploads that
+  `/workspace/tranche/repo/<source>/segments/`, and `push` uploads that
   folder to its repo. `doc` is the recording as far as the corpus tells and never spans shards:
   a PhoAudiobook reader's run in rising time, a GigaSpeech 2 recording (its tars hold segments
   out of order, and with no times its neighbours are only consecutive segment numbers), and for
@@ -158,14 +169,18 @@ other corpora ─► their transcripts, word times by forced alignment ───
     random, so a re-ingested shard differs in bytes and uploads again.
 - Each stage reads a shard's parts through `ingest.part_file`: the copy under `--root` where a
   stage on the box wrote one (all write whole, by a rename, and keep their files after pushing),
-  else the Hub's. The box downloads from the tranche repos at ~5 MB/s, and a second copy in the HF
-  cache doubles a shard's disk. Translation still lists the Hub's segments and translates every
-  shard without a local `text_en`: give it `--shards` past the shards translated elsewhere.
-- Translate (`training/tranche/translate.py`, CPU, runs on the Mac) reads each segments shard's
+  else the Hub's. The box downloads from the tranche repos at ~5 MB/s a stream, and a second copy
+  in the HF cache doubles a shard's disk. A part regenerated elsewhere and pushed loses to a stale
+  local copy: delete the local one first (`text_en` refilled on another machine would leave voice
+  stopping on "rows without text_en"). Translation still lists the Hub's segments and translates
+  every shard without a local `text_en`: give it `--shards` past the shards translated elsewhere.
+  Voice queues a shard only once its `text_en` is on the Hub or here.
+- Translate (`training/tranche/translate.py`, CPU; on the box `/workspace/translate_loop.sh` in
+  the env `/workspace/envs/translate`, which `envs.sh` builds, follows the ingest) reads each segments shard's
   `id`, `doc` and `text` from the Hub, translates on Muse Spark 1.3 Contributor with the prompt
   the blind judge tested, in batches of up to 40 consecutive rows and 6,000 characters that end
   wherever a doc of more than one row starts or ends (viVoice's one-row docs share batches), and
-  writes `<root>/<public|restricted>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest
+  writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest
   push <source> --part text_en` uploads it beside the segments. A reply that does not parse, or
   that writes letters of a script its Vietnamese lacks (Muse wrote Chinese mid-sentence in 22 of
   the first 24,681 rows, "the keeper of the江湖 ledger"), splits its batch in halves down to one

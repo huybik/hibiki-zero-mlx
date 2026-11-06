@@ -19,7 +19,7 @@ the environment and the ASR server up:
       every segments shard (each has its text_en) on the Hub without en_audio yet: each row voiced with its
       own clip and transcript as prompt and reference, heard by the ASR, voiced again while broken
       (WER over 20% or pace off by 2x) up to 3 tries, the best try kept; writes
-      <root>/<public|restricted>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
+      <root>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
       en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
       30 min and at its end. A rerun skips the shards already written or pushed, and first pushes
       any written but not yet pushed.
@@ -376,7 +376,7 @@ def decode_16k(data: bytes) -> np.ndarray:
 class Shard:
     source: str
     name: str  # the segments file's name
-    dst: Path  # <root>/<dest>/<source>/en_audio/<name>
+    dst: Path  # <root>/<source>/en_audio/<name>
     ids: list[str]
     texts: list[str]  # Vietnamese transcripts: the prompts' texts
     texts_en: list[str]
@@ -455,9 +455,8 @@ def _check(text: str, wav: np.ndarray) -> dict:
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     import pyarrow.parquet as pq
 
-    from training.tranche.ingest import SOURCES, part_file
+    from training.tranche.ingest import part_file
 
-    dest = SOURCES[source].dest
     get = lambda part: pq.read_table(part_file(root, source, part, name))  # noqa: E731
     seg = get("segments").select(["id", "text", "audio"])
     en = dict(zip(*get("text_en").select(["id", "text_en"]).to_pydict().values()))
@@ -466,7 +465,7 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
         raise SystemExit(f"{source}/{name}: {len(missing)} rows without text_en, e.g. {missing[0]}")
     audio = [a["bytes"] for a in seg.column("audio").to_pylist()]
     clips = list(pool.map(decode_16k, audio, chunksize=32))
-    return Shard(source, name, root / dest / source / "en_audio" / name, ids, seg.column("text").to_pylist(),
+    return Shard(source, name, root / source / "en_audio" / name, ids, seg.column("text").to_pylist(),
                  [en[i] for i in ids], clips, {})
 
 
@@ -506,15 +505,17 @@ def run(args: argparse.Namespace) -> None:
     api = HfApi()
     todo = []
     for source in args.sources:
-        repo = ingest.REPOS[ingest.SOURCES[source].dest]
-        files = api.list_repo_files(repo, repo_type="dataset")
+        files = api.list_repo_files(ingest.REPO, repo_type="dataset")
         done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/en_audio/")}
+        # A shard waits for its translation, pushed or still only here (translate runs beside voice).
+        translated = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/text_en/")}
+        translated |= {p.name for p in (args.root / source / "text_en").glob("*.parquet")}
         for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
             name = f.rsplit("/", 1)[1]
-            dst = args.root / ingest.SOURCES[source].dest / source / "en_audio" / name
-            if name not in done and not dst.exists():
+            dst = args.root / source / "en_audio" / name
+            if name in translated and name not in done and not dst.exists():
                 todo.append((source, name))
-        local = {p.name for p in (args.root / ingest.SOURCES[source].dest / source / "en_audio").glob("*.parquet")}
+        local = {p.name for p in (args.root / source / "en_audio").glob("*.parquet")}
         if local - done:  # written by an earlier run that stopped before pushing them
             ingest.push_part(args.root, source, "en_audio")
     todo = todo[: args.limit]
