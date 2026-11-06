@@ -248,12 +248,16 @@ def vietnamese_letters(en_asr: str, text_en: str) -> set[str]:
     return {c for c in unicodedata.normalize("NFC", en_asr).lower() if c in VI_LETTERS} - have
 
 
-def fetch(source: str, name: str) -> dict[str, Path]:
-    """The shard's input files from the Hub (the HF cache keeps them)."""
+def fetch(root: Path, source: str, name: str) -> dict[str, Path]:
+    """The shard's input files: the copy under `root` where the box wrote one (voice and filters
+    keep what they push, written whole by a rename), else the Hub's (the HF cache keeps it). The
+    box's Hub downloads ran ~4 MB/s, slower than the GPU takes a viVoice shard's 60 MB."""
     from huggingface_hub import hf_hub_download
 
-    repo = REPOS[SOURCES[source].dest]
-    return {part: Path(hf_hub_download(repo, f"{source}/{part}/{name}", repo_type="dataset")) for part in PARTS}
+    dest = SOURCES[source].dest
+    local = {part: root / dest / source / part / name for part in PARTS}
+    return {part: path if path.exists() else Path(hf_hub_download(REPOS[dest], f"{source}/{part}/{name}", repo_type="dataset"))
+            for part, path in local.items()}
 
 
 def magnitudes(text: str) -> list[int]:
@@ -307,9 +311,9 @@ class Loaded:
     clips: dict[int, Future] = field(default_factory=dict)  # row index -> (vi24, en24, en16)
 
 
-def read_shard(source: str, name: str, max_cer: float, grams) -> tuple[Loaded, dict[int, tuple[bytes, bytes]]]:
-    """The shard downloaded, read and gated (in the download thread), with the kept rows' audio."""
-    rows = read_parts(source, name, fetch(source, name))
+def read_shard(root: Path, source: str, name: str, max_cer: float, grams) -> tuple[Loaded, dict[int, tuple[bytes, bytes]]]:
+    """The shard fetched, read and gated (in the read thread), with the kept rows' audio."""
+    rows = read_parts(source, name, fetch(root, source, name))
     shard, audio = Loaded(source, name, rows, []), {}
     for index, row in enumerate(rows):
         if reason := gate(row, max_cer, grams):
@@ -476,15 +480,16 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"  # the spawned workers' thread pools, under the box's thread limit (voice.py)
     pushed = {s: time.monotonic() for s in args.sources}
-    with (ThreadPoolExecutor(1) as reads,
+    with (ThreadPoolExecutor(1) as reads, ThreadPoolExecutor(1) as writes,
           ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool):
         try:
-            ahead = queue(read_shard(*todo[0], args.max_cer, grams), pool)
+            ahead = queue(read_shard(args.root, *todo[0], args.max_cer, grams), pool)
+            written: Future | None = None  # the last shard's save, which runs while the next one builds
             began, last = time.monotonic(), time.perf_counter()
             for k, (source, name) in enumerate(todo):
                 shard = ahead
                 # The next shard downloads, reads and is gated in a thread while this one builds.
-                read = reads.submit(read_shard, *todo[k + 1], args.max_cer, grams) if k + 1 < len(todo) else None
+                read = reads.submit(read_shard, args.root, *todo[k + 1], args.max_cer, grams) if k + 1 < len(todo) else None
 
                 def load_next() -> None:
                     nonlocal ahead
@@ -492,7 +497,9 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
                         ahead = queue(read.result(), pool)
 
                 payload = builder.build(shard, pool, load_next)
-                write(payload, cache_dir(args.root, source) / shard_file(name))
+                if written is not None:
+                    written.result()
+                written = writes.submit(write, payload, cache_dir(args.root, source) / shard_file(name))
                 now = time.perf_counter()
                 wall, last = now - last, now
                 kept = payload["samples"]
@@ -502,6 +509,7 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
                     f"{hours:.2f} h of Mimi audio in {wall:.0f} s ({hours * 3600 / wall:.0f}x RT) [{k + 1}/{len(todo)}]")
                 last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
                 if last_of_source or time.monotonic() - pushed[source] > PUSH_S:
+                    written.result()
                     push_part(args.root, source, "cache")
                     pushed[source] = time.monotonic()
             log(f"done: {len(todo)} shards in {(time.monotonic() - began) / 3600:.2f} h")

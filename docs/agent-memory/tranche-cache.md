@@ -5,7 +5,7 @@ grounded caches, its row gates and their thresholds. The tranche and its other s
 [real-vi-tranche](real-vi-tranche.md); the row layout in
 [sft-data-caches](sft-data-caches.md#row-layout).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Codes and timing](#codes-and-timing) ·
-[Running](#running)
+[Running](#running) · [Scale-up](#scale-up)
 
 `training/tranche/cache.py build <sources>` (CUDA, the training `.venv`) turns each segments shard
 whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `cache/<source>/shard_<shard>.pt` of
@@ -100,3 +100,36 @@ draws use split `train`.
   161 s with the model load, the GPU idle its first ~60 s while the clips decode and 85–95% busy
   after (the build reads and decodes the next shard behind the current one). ~49 GB of GPU at
   its peak. ~2.6 h for the tranche.
+- In the full build (2026-11-06) viVoice ran ~1,000–1,170× with the GPU idle 34% of the time:
+  two gaps a shard, 2.4–4.2 s after the CTC while `load_next` waited for the next shard's read,
+  and 0.6–1.6 s for the save. The read was the Hub download: ~4 MB/s on the box, 10–18 s for a
+  viVoice shard's 60 MB (mostly `en_audio`) against ~8 s of GPU work, and parallel downloads got
+  no more. `fetch` now takes any part's copy under `--root` where the box wrote one (today voice's
+  `en_audio` and filters' `asr_vi`: 0.4–0.6 s a shard; segments and `text_en` come from the HF
+  cache), and the save runs in a thread while the next shard builds. A review (2026-11-06) found
+  every local `asr_vi` and `en_audio` the size of its Hub copy, hashes equal on all `asr_vi` and
+  12 sampled `en_audio`. A part regenerated elsewhere and pushed would lose to the stale local
+  copy: delete the local one first.
+
+## Scale-up
+
+Before building a larger tranche (the plan's ~10k h: more GigaSpeech 2 and YODAS), optimize the
+build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× on the Mimi audio
+(both clips, ~2.1× the Vietnamese hours), 10k h of source takes ~13–19 h of GPU. In order:
+
+- Keep the inputs on local disk: the box's Hub downloads ran ~4 MB/s and parallel downloads got
+  no more, so a build that downloads starves the GPU. Run the TTS and the ASR on the box that
+  builds (their outputs stay under `--root`), or move the parts there well before the build.
+- Measure where the GPU time goes, Mimi against wav2vec2 (never split yet), with `nvidia-smi`
+  every 0.2 s and the gaps lined up with the shard log; aim for under 10% idle.
+- Mimi stays float32 with TF32 off (other precisions change the codes, unlike the existing
+  caches); `torch.compile` or CUDA graphs on its encoder keep the codes. wav2vec2 may run in
+  TF32 or bf16 if word starts stay within a frame of float32 on real rows.
+- Per-shard fixed costs weigh on small shards (viVoice's 3.8 h of Mimi audio ran ~1,100× against
+  PhoAudiobook's ~1,400×): fuller last batches across shard boundaries, or bigger shards.
+- After the local-read fix viVoice ran ~1,300–1,400× (~10 s a shard), the GPU idle 17%: ~1.0 s at
+  each shard's start (its decodes, queued behind the last shard's alignments, and the `pending`
+  loop) and ~0.6 s within it. Queuing the next shard's decodes earlier would close the first.
+- CPU: 25 workers on the 26.9-CPU quota averaged 10.5 CPUs but throttled 14% of the 100 ms
+  periods in bursts (`/sys/fs/cgroup/cpu.stat`); check the main process is not the one stalled.
+
