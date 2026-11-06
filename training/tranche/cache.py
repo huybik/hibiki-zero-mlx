@@ -256,9 +256,9 @@ def fetch(source: str, name: str) -> dict[str, Path]:
     return {part: Path(hf_hub_download(repo, f"{source}/{part}/{name}", repo_type="dataset")) for part in PARTS}
 
 
-def magnitudes(text: str) -> int:
+def magnitudes(text: str) -> list[int]:
     words = spoken(text)
-    return sum(words.count(m) for m in MAGNITUDES)
+    return [words.count(m) for m in MAGNITUDES]
 
 
 def read_parts(source: str, name: str, files: dict[str, Path]) -> list[dict[str, Any]]:
@@ -287,8 +287,9 @@ def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
     if row["language"] != "Vietnamese":
         return f"language {row['language'] or 'none'}"
     if round(row["cer"], 6) > max_cer:  # float32: 0.1 is stored as 0.10000000149
-        return f"CER {row['cer']:.3f} over {max_cer}"
-    if magnitudes(row["asr_vi"]) > magnitudes(row["text"]):
+        return f"CER {round(row['cer'], 6)} over {max_cer}"
+    # Word by word: a swapped magnitude (the ASR's tỷ for the transcript's triệu) is a wrong fact.
+    if any(heard > written for heard, written in zip(magnitudes(row["asr_vi"]), magnitudes(row["text"]))):
         return "the ASR hears a nghìn/triệu/tỷ the transcript lacks"
     if overlaps(row["text"], grams):
         return "overlaps an evaluation sentence"
