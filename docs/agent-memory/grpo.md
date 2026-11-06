@@ -116,6 +116,11 @@ Not yet run on CUDA. Phase 1 and 2 profiles and the dry run go here.
   ~22 s of generation, ~3.5 s of old logprobs and ~10.6 s of update, ~36 s (the plan estimated
   ~50 s); 1,000 updates ~10 h plus ~30 min of evaluations. The rollouts' mean final BLEU from
   that model was 26.2. The profile's GPU sat idle 39% of its 5.3 min, between its stages.
+- **Dry run** (2026-11-06, `h100.sh grpo grpo_dryrun`, τ 2, 4 updates of 4 streams × 4, stopped
+  before its checkpoint sync when GRPO was deferred): every update's ratio mean 1.000–1.001, the
+  loss finite (−925 to 368), but the gradient norm before clipping 0.42–0.95 million against SFT's
+  ~8–15. Check the loss's scale (text weight 100, sums over tokens) before a run; the resume and
+  the Hub's pair were not reached.
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-batch
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
