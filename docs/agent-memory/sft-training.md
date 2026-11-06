@@ -22,7 +22,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   after ~1.6 minutes of input, so streams practise long input).
   The rows of one document stay together in order: a tranche row's `doc` and `seq` (a
   PhoAudiobook reader's run, a GigaSpeech 2 recording; a viVoice row is its own doc,
-  [real-vi-tranche](real-vi-tranche.md#cache)) and a PhoMT source chunk (`phomt_s<N>r<M>`, which
+  [tranche-cache](tranche-cache.md)) and a PhoMT source chunk (`phomt_s<N>r<M>`, which
   spans talk boundaries, its doc and seq read from the id); every other row is random, Libriheavy included: its segment numbers are not reading order and
   segments overlap ([en-speech-corpus](en-speech-corpus.md#quality-filters)). A stream closes when
   the next row overflows its drawn length, unless it is still under the minimum; the length range

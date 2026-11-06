@@ -90,7 +90,7 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
   frames of 40 built rows); the rest are near-ties in the residual codebooks.
 - `cache_rows` holds the delay draw and the `[33, T]` assembly, and `text_timing.CTCWordAligner`
   the CPU Viterbi, both without MLX: the tranche's CUDA builder (`training.tranche.cache`,
-  [real-vi-tranche](real-vi-tranche.md#cache)) builds rows the same way.
+  [tranche-cache](tranche-cache.md)) builds rows the same way.
 - CTC: `text_timing.EnglishCTCAligner` runs `wav2vec2_mlx.Wav2Vec2CTC` in float32, one clip
   at a time, then a numpy Viterbi (the same frames as the former torch loop). The port pads each
   clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional

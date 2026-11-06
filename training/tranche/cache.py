@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """The tranche's training caches, built on CUDA: each segments shard's rows as grounded-v2 cache
-rows ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#cache)), in the format of the
+rows ([tranche-cache](../../docs/agent-memory/tranche-cache.md)), in the format of the
 Mac's MLX builder `training.prep.cache_codes` ([sft-data-caches](../../docs/agent-memory/sft-data-caches.md)).
 
   build <sources...>  every shard whose segments, text_en, en_audio and asr_vi are on the Hub
@@ -81,10 +81,10 @@ DELAY_RATIO = 0.5
 DURATION_TOLERANCE_S = 0.02
 # Above 0.15 the corpus transcript and the clip differ by phrases (PhoAudiobook's repeated clauses);
 # from 0.10 to 0.15 mostly the ASR's misses on names and loanwords, numbers and percentages spelled
-# otherwise, a word at a cut edge (real-vi-tranche#cache).
+# otherwise, a word at a cut edge (tranche-cache#gates).
 MAX_CER = 0.15
 # GigaSpeech 2's transcripts drop these from numbers ("hơn một chuyến" where the speaker says "hơn
-# một nghìn chuyến"), a wrong fact the CER barely sees (real-vi-tranche#cache).
+# một nghìn chuyến"), a wrong fact the CER barely sees (tranche-cache#gates).
 MAGNITUDES = ("nghìn", "triệu", "tỷ")
 VI_LETTERS = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
 MIMI_BATCH_S = 640.0  # padded audio per Mimi batch, as mimi_cache_cuda

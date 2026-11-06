@@ -2,10 +2,10 @@
 
 Read when choosing or building the real-Vietnamese source data (plan stage 1.3), its models and
 pipeline, or its licences. The corpora, their licences and measured layouts are in
-[vi-corpora](vi-corpora.md); the English TTS is in [tranche-tts](tranche-tts.md).
+[vi-corpora](vi-corpora.md); the English TTS is in [tranche-tts](tranche-tts.md), the cache build in
+[tranche-cache](tranche-cache.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [English TTS](#english-tts) ·
-[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline) · [Filters](#filters) ·
-[Cache](#cache)
+[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline) · [Filters](#filters)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
 bands) costs ~5 of the 15–18 chrF between held-out TTS and FLEURS dev; the rest is real voices and
@@ -84,8 +84,8 @@ here is published or estimated, to be measured on the box first:
 | VAD | Silero VAD v6.2.3 (MIT) | FireRedVAD | |
 | Diarization, overlap | `nvidia/Nemotron-3-Diarization` (OpenMDW-1.1) | pyannote community-1 (CC BY 4.0, gated) | DIHARD III DER 12.7 against 20.2; up to 8 speakers |
 | Speaker embedding (voice reference) | WeSpeaker ResNet293-LM (CC BY 4.0) | TitaNet-Large | |
-| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. `checks` (2026-11-05): WER 5.5% on FLEURS dev, 1.8% PhoAudiobook, 7.7% viVoice (3 of 300 clips detected as another language), 4.9% GigaSpeech 2; 941 clips in 11 s. Parakeet was not run: the gate compares Qwen3-ASR with the corpus transcript ([Cache](#cache)) |
-| Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Not run: the gate uses Qwen3-ASR's own language tag ([Cache](#cache)) |
+| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. `checks` (2026-11-05): WER 5.5% on FLEURS dev, 1.8% PhoAudiobook, 7.7% viVoice (3 of 300 clips detected as another language), 4.9% GigaSpeech 2; 941 clips in 11 s. Parakeet was not run: the gate compares Qwen3-ASR with the corpus transcript ([tranche-cache](tranche-cache.md#gates)) |
+| Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Not run: the gate uses Qwen3-ASR's own language tag ([tranche-cache](tranche-cache.md#gates)) |
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame. Not run: the tranche cache keeps `wav2vec2-base-960h`, as the existing caches do |
 | VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)) (user, 2026-11-05), for every source. Contributor mode lets Meta train on what it is sent, PhoAudiobook's and GigaSpeech 2's transcripts included; the user chose it over standard Muse Spark 1.3 (~17× the price, ~$170 for 2,000 h against ~$10) | `tencent/Hy-MT2-30B-A3B-FP8` on the box | A check on the box, since removed, measured Hy-MT2 (2026-11-05; vLLM 0.33 needs `flashinfer-jit-cache` beside it, or the FP8 MoE's first load compiles its kernels for about an hour): 21,000 rows (46.1 h) in 82–89 s, $0.013 per million characters against Muse's $0.084, but less faithful. FLEURS dev chrF 63.3 against Muse's 66.6. A blind Opus judge on 300 tranche rows gave it adequacy 3.90 against 4.44 (fluency 4.51 against 3.96), 26 rows at adequacy ≤ 2 against Muse's 8: it completes a segment's unfinished sentence and slips on pronouns, even when told to leave fragments unfinished (3.82 with the card's prompt). At ~$8 saved per 2,000 h, quality decides |
@@ -238,68 +238,3 @@ thresholds, so they can change without measuring again.
     bốn nghìn"), abbreviations ("tp. hcm"); then words the ASR loses at a clip's cut edges.
     `spoken` leaves `%` and decimal commas unspoken (the ASR's "80%" against the corpus's "tám
     mươi phần trăm"), which adds at most ~0.04 CER to ~0.5% of rows, so it stays.
-
-## Cache
-
-`training/tranche/cache.py build <sources>` (CUDA, the training `.venv`) turns each segments shard
-whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `cache/<source>/shard_<shard>.pt`
-of its tranche repo, in `cache_codes`'s format ([sft-data-caches](sft-data-caches.md#row-layout)),
-one cache per source (see [Decision](#decision)). A sample also holds `doc` and `seq`, so the
-trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay draws use split
-`train`.
-
-- A row is dropped, with the first reason in the shard's `rejected`, when `en_broken`; when
-  `en_asr` has Vietnamese letters `text_en` lacks; when its language is not Vietnamese; when its
-  CER is over `--max-cer`; when the ASR hears more nghìn/triệu/tỷ than the transcript holds; when
-  it overlaps an evaluation sentence; then on `cache_codes`'s own
-  gates (decoded duration, frame cap, CTC alignment score 0.5, token timing).
-- `--max-cer` 0.15 for every source (2026-11-06), from the CER of the first shards:
-
-  | Source | Rows | p90 | p99 | Over 0.10 | Over 0.15 |
-  |---|---:|---:|---:|---:|---:|
-  | PhoAudiobook (16 shards) | 20,784 | 0.033 | 0.102 | 1.04% | 0.56% |
-  | viVoice (30 shards) | 23,040 | 0.061 | 0.151 | 3.58% | 1.02% |
-  | GigaSpeech 2 (2 shards) | 42,255 | 0.083 | 0.288 | 7.92% | 4.00% |
-
-  Over 0.15 the transcript and the clip differ by phrases: PhoAudiobook transcripts that repeat
-  the clip's last clause (0.17–0.34), punctuation spelled out ("chấm ba chấm"). The English
-  translates the transcript, so such a row teaches the model to say what was not spoken. From
-  0.10 to 0.15 the corpus is mostly right: on viVoice the ASR mangles English names and loanwords
-  ("Jujutsu Kaisen" heard as "Shikai Sen", "Berserk" as "bơm sơn"), and percentages and year
-  ranges are spelled otherwise ("30%" against "ba mươi phần trăm"); on PhoAudiobook a word at a
-  cut edge or a number's spelling. Of 16 viVoice rows sampled there, one had a wrong fact ("dài
-  200 tấn" where the speaker says "dài 282 mét"). 0.10 would drop 2.6% more of viVoice for that.
-  From 0.05 to 0.10 the two differ by homophones (sinh/xin) and edge syllables. GigaSpeech 2's
-  machine transcripts are the worst: over 0.15 its clips hold whole sentences more than their
-  transcript (CER 1–1.9) or numbers lose their magnitude; from 0.10 to 0.15, of 20 rows sampled,
-  5 write "một mươi" for "mười" (the same number), 5 leave out fillers ("cái"), and 5 have a wrong
-  number.
-- Magnitudes: GigaSpeech 2's transcripts drop nghìn, triệu and tỷ from numbers ("hơn một chuyến
-  tàu" where the speaker says "hơn một nghìn chuyến", "ba ba trăm linh" for 3,300), at any CER. A
-  row is dropped when the ASR (over `spoken`, so digits count) has more of them than the
-  transcript: 2.06% of GigaSpeech 2's first 42,255 rows, 1.45% under the CER cut; 0.2% of
-  PhoAudiobook's and viVoice's, mostly the ASR mishearing ("tết tỷ").
-- Over the whole first tranche (`asr_vi` complete on 2026-11-06, 840,520 rows in 9.13 h), the
-  gates that need no English drop, in their order:
-
-  | Source | Rows | Language | CER over 0.15 | Magnitudes | Total |
-  |---|---:|---:|---:|---:|---:|
-  | PhoAudiobook | 290,037 | 0.01% | 0.48% | 0.17% | 0.66% |
-  | viVoice | 269,350 | 0.03% | 0.99% | 0.17% | 1.20% |
-  | GigaSpeech 2 | 281,133 | 0.03% | 3.91% | 1.39% | 5.34% |
-- The Vietnamese-letter rule drops 118 of 10,392 rows on PhoAudiobook shards 0–7 (1.1%), 49 of
-  them broken anyway. Of the rest, about half are lead-ins the TTS spoke in Vietnamese ("Không.
-  Being rejected…", "Bước ngoặt khác, managing the farm") and half Vietnamese names the ASR spelled
-  otherwise ("Tào Chí Viễn" for "Tào Trí Viễn"). Comparing words with their diacritics folded
-  would keep 27 more (0.26%), not worth a second rule.
-- CTC: transformers' wav2vec2-base-960h in float32 over padded batches, the first GroupNorm's
-  statistics taken over each clip's own frames and the encoder given the attention mask, as
-  `wav2vec2_mlx` masks. On CPU, 8 clips of a shard batched against each alone keep every argmax,
-  their log-probabilities within 2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards
-  differ by 3.1e-3); Mimi's batched codes equal the clip-alone ones on all 16 codebooks (moshi's
-  Mimi is causal). Mimi as in `mimi_cache_cuda` (float32, TF32 off, 640 s batches). The Viterbi
-  runs in the decode workers while Mimi encodes; the next shard is downloaded, read and gated in
-  a thread, and its clips decode in the workers behind this shard's alignments.
-- Needs `data/eval` (on the box `.venv/bin/python -m training.prep.eval_sets --sets fleurs
-  multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
-  server on the GPU, ~1.3 GB of it is free, so the build runs after them.
