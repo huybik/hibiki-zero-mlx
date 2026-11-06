@@ -33,7 +33,6 @@ import fcntl
 import json
 import math
 import multiprocessing
-import os
 import random
 import shutil
 import tempfile
@@ -55,6 +54,7 @@ from training.paths import (
     CACHE_FORMAT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
+    cpu_budget,
     durable,
     exclusive,
     read_json,
@@ -72,20 +72,6 @@ MANIFEST = "manifest.json"
 META_KEY = b"noisy_cache"  # in each source's parquet metadata, as fetched
 WAIT_S = 30
 DOWNLOAD_ATTEMPTS = 4  # one failed download would leave its shard unwritten overnight
-
-
-def cpu_budget() -> float:
-    """The CPUs this process may use: the CPUs it may run on, capped by a container's CPU quota
-    (cgroup v2 or v1), which neither `nproc` nor `os.cpu_count()` shows."""
-    cpus = float(len(os.sched_getaffinity(0)))
-    v2, v1 = Path("/sys/fs/cgroup/cpu.max"), Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
-    if v2.exists():
-        quota, period = v2.read_text().split()
-        if quota != "max":
-            cpus = min(cpus, int(quota) / int(period))
-    elif v1.exists() and (quota := int(v1.read_text())) > 0:
-        cpus = min(cpus, quota / int(v1.with_name("cpu.cfs_period_us").read_text()))
-    return cpus
 
 
 def parse_args() -> argparse.Namespace:

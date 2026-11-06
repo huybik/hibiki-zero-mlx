@@ -90,5 +90,11 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - logs, on the final sync only.
   It requires a public repo and a remote `run.json` byte-equal to the local `run_id.json`. It
   polls every 60 s and aborts after three failures.
+- The sync and the launcher list the run's remote files with `list_repo_tree` under the prefix,
+  which pages through any repo. `model_info(files_metadata=True).siblings` stops at 10,000
+  files: once the recovery repo held 16,210 (2026-11-06), the first tranche run (`tranche_epoch1`)
+  never saw its own uploads, failed verification three times and stopped at step 210. Checked:
+  the tree gives the siblings' files and sizes exactly where those were complete (369 and 5,390
+  files).
 - `hf_sync` never restores anything; restoring is the manual procedure in
   [docs/finetune.md](../finetune.md).

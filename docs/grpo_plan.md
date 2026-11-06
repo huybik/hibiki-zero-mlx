@@ -63,7 +63,7 @@ committed tests, and its prefix reference left out the sentence being spoken.
 | Update | The SFT training forward (`lm_training`'s compiled transformer, step-major depformer) returns per-token logprobs of the 17 output streams. Micro-batches fit the 4,608-frame budget, accumulated to 128 rollouts. Fused AdamW (0.9, 0.95), weight decay 0.1, grad clip 1.0, the gradient norm checked as in SFT. |
 | Evaluation | Every 10·τ = 200 updates, the SFT validation's free-running pass over its five sets, unchanged. Quality is FLEURS dev chrF. Latency is the median `end_offset_s`, the stand-in for the paper's text LAAL. |
 | Promotion | The best FLEURS dev chrF among checkpoints that pass the health gates and whose FLEURS end offset is no worse than the starting model's. |
-| Start | Run 2's chosen checkpoint as `--model-weight`: its best validation by FLEURS dev chrF (`offline_best/`) or its final model, whichever scores better on the test sets. |
+| Start | The final SFT model as `--model-weight`, after the real-Vietnamese tranche and the two-way SFT (GRPO is the last stage, user 2026-11-04; [parity plan](vi_en_parity_plan.md#order)): its best validation by FLEURS dev chrF or its final model, whichever scores better on the test sets. The box profile and dry run may use run 2's final model. |
 
 Out of the first version:
 
@@ -131,7 +131,7 @@ Estimates from those, at T = 1,200 frames (75 s of input plus a 21 s tail):
 1. **Rewards and rollouts.**
    - Build `rewards.py`, the rollout engine and a profiling entry point.
    - On the box:
-     - sample G = 4 rollouts for 32 streams from run 2's start checkpoint;
+     - sample G = 4 rollouts for 32 streams from a start checkpoint;
      - time generation at batch 64, 128 and 192 and T = 1,200 or 1,500, recording milliseconds
        per step, the peak memory and GPU utilization sampled every 0.5 s;
      - time the CPU rewards.

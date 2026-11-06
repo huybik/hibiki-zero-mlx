@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import RemoteEntryNotFoundError
+from huggingface_hub.hf_api import RepoFile
 
 POLL_S = 60
 REMOTE_KEEP = 2
@@ -67,12 +69,15 @@ def remote_path(path: str) -> str:
 
 
 def remote_files(repo: str) -> dict[str, int]:
+    """The run's files under its prefix with their sizes, from the tree listing, which pages
+    through any repo: `model_info`'s siblings stop at 10,000 files, and past that a run's own
+    uploads never verify."""
     prefix = f"{REMOTE_ROOT}/"
-    return {
-        item.rfilename.removeprefix(prefix): item.size
-        for item in HfApi().model_info(repo, files_metadata=True).siblings
-        if item.rfilename.startswith(prefix) and item.size is not None
-    }
+    try:
+        items = list(HfApi().list_repo_tree(repo, path_in_repo=REMOTE_ROOT, recursive=True))
+    except RemoteEntryNotFoundError:  # nothing uploaded under the prefix yet
+        return {}
+    return {item.path.removeprefix(prefix): item.size for item in items if isinstance(item, RepoFile)}
 
 
 def remote_pairs(files: dict[str, int]) -> list[int]:

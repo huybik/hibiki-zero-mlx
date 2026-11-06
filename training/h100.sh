@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Hopper (H100/H200) setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery.
 #
-#   setup             a pinned .venv (Torch 2.15 on CUDA 13.4)
+#   setup             a pinned .venv (Torch 2.15 on CUDA 13.4), then cpus
+#   cpus              the container's CPU quota into /etc/environment for every later shell; rerun
+#                     after a container restart, which rewrites the file
 #   preflight         GPU, driver, pins, memory, disk, upstream weights
 #   run RUN_NAME ...  start an SFT run, or continue it: the same command resumes the newest local
 #                     pair with the run's saved arguments, so a preempted pod reruns it on boot
@@ -70,17 +72,37 @@ setup() {
     av==15.1.0 \
     einops==0.8.2 \
     huggingface-hub==2.4.0 \
+    num2words==0.5.14 \
     numpy==2.5.4 \
+    protobuf==7.36.2 \
     pyarrow==26.0.0 \
     sacrebleu==2.6.0 \
     safetensors==0.8.0 \
     sentencepiece==0.2.2 \
     soxr==1.1.0 \
     sphn==0.2.1 \
-    tqdm==4.70.1
+    tqdm==4.70.1 \
+    transformers==5.22.1
   "$PYTHON" -m pip install --no-deps moshi==0.2.13
   "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
   echo "Training environment installed in $VENV"
+  cpus
+}
+
+cpus() {
+  # nproc, os.cpu_count(), torch (64 threads, 32 compile workers) and ninja (one build job per
+  # core) count the host's cores, not the container's quota in cgroup cpu.max. PAM loads
+  # /etc/environment into every ssh session, so later shells and what they start follow the
+  # quota: build tools (MAX_JOBS), torch, OpenMP, BLAS and nproc (OMP_NUM_THREADS) and
+  # torch.compile's workers. Several processes sharing the quota still split it themselves.
+  require_python
+  local n
+  n="$("$PYTHON" -c 'from training.paths import cpu_budget; print(max(1, int(cpu_budget())))')"
+  touch /etc/environment
+  [ -z "$(tail -c 1 /etc/environment)" ] || echo >> /etc/environment  # end its last line
+  sed -i '/^\(MAX_JOBS\|OMP_NUM_THREADS\|TORCHINDUCTOR_COMPILE_THREADS\)=/d' /etc/environment
+  printf '%s=%s\n' MAX_JOBS "$n" OMP_NUM_THREADS "$n" TORCHINDUCTOR_COMPILE_THREADS "$n" >> /etc/environment
+  echo "New shells get $n CPUs: MAX_JOBS, OMP_NUM_THREADS, TORCHINDUCTOR_COMPILE_THREADS"
 }
 
 preflight() {
@@ -221,6 +243,8 @@ import sys
 from pathlib import Path
 
 from huggingface_hub import HfApi
+from huggingface_hub.errors import RemoteEntryNotFoundError
+from huggingface_hub.hf_api import RepoFile
 
 
 def steps(paths, pattern):
@@ -228,15 +252,19 @@ def steps(paths, pattern):
 
 
 api = HfApi()
-info = api.model_info(sys.argv[1], files_metadata=True)
+info = api.model_info(sys.argv[1])
 if info.private:
     raise RuntimeError("recovery model repo must be public")
 prefix = sys.argv[5].strip("/") + "/"
-remote_files = [
-    item.rfilename.removeprefix(prefix)
-    for item in info.siblings
-    if item.rfilename.startswith(prefix)
-]
+# The tree listing pages through any repo; model_info's siblings stop at 10,000 files.
+try:
+    remote_files = [
+        item.path.removeprefix(prefix)
+        for item in api.list_repo_tree(sys.argv[1], path_in_repo=prefix.rstrip("/"), recursive=True)
+        if isinstance(item, RepoFile)
+    ]
+except RemoteEntryNotFoundError:  # nothing under the prefix yet
+    remote_files = []
 run_dir = Path(sys.argv[3])
 if sys.argv[2] == "fresh":
     if remote_files:
@@ -385,6 +413,9 @@ case "$command" in
   setup)
     setup
     ;;
+  cpus)
+    cpus
+    ;;
   preflight)
     preflight 130
     ;;
@@ -395,7 +426,7 @@ case "$command" in
     run training.finetune.grpo "$@"
     ;;
   *)
-    echo "usage: $0 setup|preflight|run RUN_NAME [ARGS...]|grpo RUN_NAME [ARGS...]" >&2
+    echo "usage: $0 setup|cpus|preflight|run RUN_NAME [ARGS...]|grpo RUN_NAME [ARGS...]" >&2
     exit 1
     ;;
 esac

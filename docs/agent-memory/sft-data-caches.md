@@ -1,6 +1,6 @@
 # SFT grounded caches
 
-Read when touching `training/prep/cache_codes.py`, `training/prep/audio.py`,
+Read when touching `training/prep/cache_codes.py`, `training/prep/cache_rows.py`, `training/prep/audio.py`,
 `training/prep/publish_caches.py`,
 `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or
 `training/paths.py`.
@@ -88,6 +88,9 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
   ceil(samples / 1920) frames. Against moshi 0.2.13 PyTorch on CPU in float32, 99.98% of frames
   are equal on all 16 codebooks and every first codebook (65,237 frames of 504 clips; 12,704
   frames of 40 built rows); the rest are near-ties in the residual codebooks.
+- `cache_rows` holds the delay draw and the `[33, T]` assembly, and `text_timing.CTCWordAligner`
+  the CPU Viterbi, both without MLX: the tranche's CUDA builder (`training.tranche.cache`,
+  [tranche-cache](tranche-cache.md)) builds rows the same way.
 - CTC: `text_timing.EnglishCTCAligner` runs `wav2vec2_mlx.Wav2Vec2CTC` in float32, one clip
   at a time, then a numpy Viterbi (the same frames as the former torch loop). The port pads each
   clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional

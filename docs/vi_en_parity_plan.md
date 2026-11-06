@@ -56,6 +56,9 @@ grows sentence by sentence.
 | Audio codebook 0 weighted ×100; every text PAD supervised at 0.5 | Kyutai's `moshi-finetune` defaults. Before, codebook 0 was 1/16 of the audio loss and PADs after the first word had no loss, so nothing taught when not to emit a word; the last run's length ratio grew 1.06 → 1.28 → 2.05 |
 | Batches by frame budget; warmup + cosine LR | Attention is ~2.5% of compute at 1,500 frames, so cost tracks frames, not rows; the constant 1e-6 LR kept moving the model after its optimum |
 | Choose checkpoints by free-running chrF on real Vietnamese speech, inside training (2026-11-02) | All training and cache-validation speech is VieNeu TTS, and the last run's teacher-forced loss kept improving while its translations got worse |
+| GRPO comes last, after every SFT stage (user, 2026-11-04) | SFT on new data retrains the timing its data teaches and would undo most of what RL tuned; the paper's order is base, fine-tune, then RL |
+| The real-Vietnamese tranche is research and includes non-commercial corpora; their weights are research-only, and each source has its own cache (user, 2026-11-04) | The non-commercial corpora (PhoAudiobook, viVoice, Bud500, GigaSpeech 2) have cleaner transcripts, more speakers and long-form audio than YODAS; a commercial model is the same SFT without their caches ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
+| Two-way speech in one model whose output language follows the input language, prepared now beside the tranche (user, 2026-11-04) | A conversation needs both directions with no language-ID step; Hibiki-Zero has no conditioning input; two 3B models do not fit a 6 GB phone ([stage 7](#7-two-way-speech)) |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
@@ -77,9 +80,15 @@ grows sentence by sentence.
      robust to rooms and phones, but most of the FLEURS gap is real speech, for stage 3.
    - Left out: speed changes, since a source slowed or sped against the cached delays moves
      Vietnamese words past the English that translates them; and low-bitrate Opus.
-3. Real Vietnamese source tranche (next after the noisy epoch; the larger lever, see 1.2): real Vietnamese speech (GigaSpeech 2 vi, Bud500; check
-   licences) with LLM-translated text and voice-cloned English TTS targets, timed causally. This
-   is the paper's stage-4 analogue and the main defence against the TTS-only source.
+3. Real Vietnamese source tranche (in preparation; the larger lever, see 1.2): a first ~2,000 h of
+   real Vietnamese speech (PhoAudiobook, viVoice, Bud500, ~700 h of YouTube video marked CC BY
+   from YODAS, Common Voice, FOSD, VIVOS), its transcript translated by an LLM and the English
+   voiced in each speaker's own voice by a TTS chosen in a bake-off (VoxCPM2, Qwen3-TTS,
+   CosyVoice3) ([real-vi-tranche](agent-memory/real-vi-tranche.md)). This is the paper's recipe
+   for a new language and the main defence against the TTS-only source. The paper adapted
+   Italian with 850 h, but from related languages; Vietnamese starts from TTS only, so the lift
+   per 1,000 h on FLEURS and MultiMed decides the scale-up toward ~10k h (GigaSpeech 2, more
+   YODAS). Its rows serve both directions ([stage 7](#7-two-way-speech)).
 4. First run pool: `en-vi-grounded-v2/train`. `cv-anquach` (16 kHz English targets) and the PhoMT
    cache (half its rows not voice-matched) stay out of the first run and come back as ablations.
 
@@ -120,10 +129,11 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 
 ### 4. GRPO
 
-[docs/grpo_plan.md](grpo_plan.md): the paper's GRPO with BLEU process rewards on 30–75 s
-streams of the noisy cache, from the second run's chosen checkpoint, built and profiled on the
-H100 (2026-11-04). RL the teacher before any distillation. A penalty on speech while the source
-is silent, and a short GRPO on a distilled student, come later if needed.
+[docs/grpo_plan.md](grpo_plan.md): the paper's GRPO with BLEU process rewards on 30–75 s streams,
+the last training stage (user, 2026-11-04): from the final SFT model, on both directions, after the
+real-Vietnamese tranche. Its trainer is built (PR #59) and is profiled on the H100 before its run.
+RL the teacher before any distillation. A penalty on speech while the source is silent, and a short
+GRPO on a distilled student, come later if needed.
 
 ### 5. The phone model
 
@@ -167,16 +177,21 @@ Sample the Vietnamese model as the paper does: temperature 0.8, top-k 250 on eve
 runtime's text sampling (0.4, top-k 25) suits upstream, but at 0.4 the fine-tuned model lags and
 seldom ends ([analysis](analysis/eos_and_lag.md)).
 
-### 7. English to Vietnamese (later)
+### 7. Two-way speech
 
-A possible next step once the VI→EN phone model works (user, 2026-11-03), not started. Every
-dataset row holds real English audio, Vietnamese audio voiced in the same speaker's voice and
-both texts, so the data serves both directions; EN→VI is the paper's own setup (real source,
-synthetic target).
+One model translates a conversation both ways, each side in its speaker's own voice: Vietnamese
+in, English out; English in, Vietnamese out (user, 2026-11-04). Hibiki-Zero has no conditioning
+input, so the output language follows the input language. It is prepared now, beside the
+tranche, and a pilot gates it before the final SFT. Every dataset row holds real English audio,
+Vietnamese audio voiced in the same speaker's voice and both texts, so the data serves both
+directions; EN→VI is the paper's own setup (real source, synthetic target). The tranche's rows
+flip the other way and give EN→VI real Vietnamese targets.
 
 ```text
-VI→EN (now):   source = TTS Vietnamese audio  ─►  target = real English audio + English text
-EN→VI (later): source = real English audio    ─►  target = TTS Vietnamese audio + Vietnamese text
+VI→EN:  en_speech  TTS Vietnamese  ─►  real English + English text
+        tranche    real Vietnamese ─►  TTS English  + English text
+EN→VI:  en_speech  real English    ─►  TTS Vietnamese  + Vietnamese text
+        tranche    TTS English     ─►  real Vietnamese + Vietnamese text
 ```
 
 The tokenizer blocks it first. Measured on the FLEURS dev sentences (361 rows, 2026-11-03), it
@@ -185,20 +200,44 @@ word. Spoken at FLEURS pace, Vietnamese text needs 10.3 tokens/s on average, 13.
 at most. The text stream carries one token per 12.5 Hz frame and needs room for PAD, so
 Vietnamese text cannot keep up with its speech.
 
-1. Check Mimi on Vietnamese first (cheap go/no-go): encode and decode real Vietnamese speech and
-   compare a Vietnamese ASR's error before and after, to see whether the tones survive.
-2. Add ~5–8k Vietnamese syllable tokens (to about one token per syllable): grow the text
-   embedding and head past `text_card` 48,000; the MLX and Swift runtimes take the new size.
+1. Mimi on Vietnamese (measured 2026-11-04, Whisper large-v3-turbo, 80 FLEURS dev clips against
+   their Vietnamese transcripts and 80 real English dataset clips against theirs):
+
+   | Audio | English WER | Vietnamese WER (CER) |
+   |---|---:|---:|
+   | Original | 6.8% | 14.3% (10.5%) |
+   | Mimi, 16 codebooks | 6.3% | 27.8% (20.4%) |
+   | Mimi, 8 codebooks | 8.9% | 42.0% (32.2%) |
+
+   Mimi leaves English intact but doubles the Vietnamese errors, and stripping the diacritics
+   barely lowers them, so the loss is not only tones. It matters for both directions: EN→VI
+   speaks through Mimi, and VI→EN hears Vietnamese only through its 16 codebooks, which may cap
+   how much of the real-speech gap any data closes. The 8-codebook phone student loses more.
+   Still to check on the box: 32 codebooks, and a control degradation of similar strength on
+   both languages, to tell Mimi's loss from Whisper's weaker Vietnamese robustness.
+2. Give Vietnamese syllables their own tokens by replacing pieces English never uses, so the text
+   embedding, the head and every runtime keep `text_card` 48,000 and only the tokenizer file
+   changes. Built 2026-11-04 by `training/vi_tokenizer`
+   ([vi-tokenizer](agent-memory/vi-tokenizer.md)): 6,000 slots English never uses now hold
+   Vietnamese letters and words. Vietnamese text drops from 4.10 to 1.28 tokens per word and
+   from 17.2 to 7.7 tokens/s of speech with one PAD per word (held-out rows), and English is
+   identical on all 3.63M rows. New pieces start from the mean of the rows of the pieces they
+   used to split into. Still to build with the pilot: the config, the init on the checkpoint,
+   the runtimes' UTF-8 assembly from byte pieces, and a Vietnamese aligner (step 3), since
+   `text_timing._spoken_group` folds text to ASCII for the English aligner.
 3. Build an EN→VI cache: Vietnamese text word-timed by a Vietnamese CTC aligner
    (`wav2vec2-base-960h` is English-only), the random delay on the Vietnamese target, and
    source and target codebooks swapped in the `[33, T]` rows.
 4. Evaluation: FLEURS `en_us` speech with the `vi_vn` sentences as references (paired by
    sentence id, as the VI→EN sets are), held-out Common Voice dev and Libriheavy dev rows, and
    a Vietnamese ASR on the output audio.
-5. Train EN→VI as its own fine-tune, since the model must learn to speak a new language. If the
-   phone should ship one model, a joint fine-tune can then mix both caches (the trainer already
-   mixes caches). Hibiki-Zero has no target-language switch, so the output language follows the
-   input language; keep the joint model only if it matches both single-direction models.
+5. A pilot of ~10k steps from the VI→EN model, both directions mixed (the trainer already mixes
+   caches), with the new tokenizer. It passes if EN→VI chrF rises with healthy outputs and VI→EN
+   FLEURS dev stays within 1 chrF. Then the final SFT trains both directions on `en_speech` and
+   the tranche, and GRPO covers both. An EN→VI-only fine-tune is the fallback if the mixed pilot
+   learns EN→VI too slowly.
+6. The app must keep the model's own speech out of the microphone, or the model translates its
+   own translation.
 
 ## Order
 
@@ -240,24 +279,62 @@ Vietnamese text cannot keep up with its speech.
      all five sets as `eval.py` does; one Mac call over them takes 21.5 min
      ([sft-evaluation](agent-memory/sft-evaluation.md#side-tools)).
    - That run, `en_speech_noisy_epoch2`, moved to a cheaper 700 W H100 SXM at step 18,000
-     ([finetune](finetune.md#move-a-running-run-to-another-pod)) and should end about 13:15 UTC
-     on 2026-11-04.
-     - Its step-18,000 validation fails the EOS gate, so its best validation model by FLEURS dev
-       chrF is kept in `offline_best/` on the Hub.
-     - Once it ends, the pod scores its final model and the first run's on FLEURS test and both
-       MultiMed-ST halves, using the trainer's protocol. Results go to `<run>/eval/test_step*/`.
-4. GRPO on the best checkpoint of that run ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
-5. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
+     ([finetune](finetune.md#move-a-running-run-to-another-pod)) and ended at step 131,703 at
+     13:06 UTC on 2026-11-04.
+     - FLEURS dev chrF by validation (every 18,000 steps, then the last step): 27.5, 27.4, 27.5,
+       28.8, 29.1, 29.0, 29.0, 29.5, with 237–291 of 361 rows ended. The final model is the best
+       and is kept in `offline_best/` on the Hub (every validation fails the health gates). From
+       step 18,000 to the end, `en-vi-val` went 43.0 → 44.7 (Common Voice) and 43.7 → 45.2
+       (Libriheavy), `en-vi-val-noisy` 38.4 → 40.8 and 41.5 → 43.4.
+     - Test sets, in one `eval.py` call over FLEURS test and both MultiMed-ST halves (batch 64,
+       `--seed 43`, text only), its final model against the first run's. Predictions are on the
+       Hub under `<run>/eval/test_step*/`.
+
+       | Set (rows) | chrF | BLEU | Rows ended |
+       |---|---:|---:|---:|
+       | FLEURS test (857) | 29.5 vs 24.7 | 5.4 vs 4.0 | 653 vs 378 |
+       | MultiMed-ST select (1,718) | 24.9 vs 23.3 | 3.0 vs 2.9 | 893 vs 479 |
+       | MultiMed-ST final (1,719) | 24.7 vs 23.2 | 3.1 vs 3.1 | 829 vs 514 |
+
+     - FLEURS BLEU stays near 5 while the held-out TTS rows score 15–20. At step 90,000 FLEURS
+       dev's n-gram precisions were 28, 6, 2 and 1%, 45 of 361 hypotheses shared a 4-gram with
+       their reference, and hypotheses ran 19% long; lowercasing and dropping punctuation moved
+       BLEU only from 4.2 to 4.5. On real speech the model drifts from the source (paraphrase,
+       invented content), which only real Vietnamese speech in training (stage 1.3) addresses.
+4. Done: a learning-rate test on the box (2026-11-04, 13:31–16:28 UTC): 10k steps from run 2's
+   final model at peak LR 1e-6 (the control), 3e-6 and 1e-5 (5% warmup, cosine to 0, `--seed
+   44`, the noisy cache), validated every 2,500 steps. The paper's language stage trained at
+   3e-5 with ~15× more audio per step; an earlier recipe collapsed into silence at 3e-5 to 5e-5,
+   so the test stopped at 1e-5. No rate beats run 2's final model (FLEURS dev chrF 29.47,
+   teacher-forced loss 2.6108):
+
+   | Peak LR | FLEURS dev chrF at 2.5k / 5k / 7.5k / 10k | Rows ended at 10k | TF loss at 10k |
+   |---|---|---:|---:|
+   | 1e-6 | 30.1 / 29.2 / 29.9 / 29.0 | 289 | 2.614 |
+   | 3e-6 | 28.3 / 27.6 / 29.2 / 29.2 | 291 | 2.621 |
+   | 1e-5 | 26.0 / 27.0 / 27.2 / 28.9 | 314 | 2.647 |
+
+   A higher rate first knocks the model back (−2 chrF at 3e-6, −3.4 at 1e-5) and only recovers
+   as the cosine reaches 0; 1e-6 stays within FLEURS dev's ±0.6 noise. The model has converged
+   on `en_speech`, so there is no third epoch on it. The tranche SFT, on new data, takes 3e-6:
+   the highest rate whose dip recovers within the test.
+5. Skipped: a third VI→EN epoch on `en_speech` (it needed ~1.5 chrF from a higher rate).
+6. In parallel: the real-Vietnamese tranche (stage 1.3) and the two-way preparation (stage 7),
+   then the two-way pilot.
+7. The final SFT: both directions on `en_speech` and the tranche.
+8. GRPO, last, on the final SFT model and both directions
+   ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
+9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.
-6. Possibly, once the VI→EN phone model works: EN→VI
-   ([stage 7](#7-english-to-vietnamese-later)).
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
 | TTS-only Vietnamese source | Real-speech evaluation from day one; noisy re-encode; real-VI tranche |
+| The tranche's licences: non-commercial corpora; YouTube uploaders' own CC BY; English voices cloned from speakers who never consented | Research-only weights, marked CC BY-NC-SA on the public recovery repo; one cache per source, so a commercial build drops the non-commercial ones; legal sign-off before anything ships ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
+| EN→VI training costs VI→EN quality | The two-way pilot's gate: VI→EN FLEURS dev within 1 chrF |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
 | 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi encoder calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone |
 | Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; SFT streams of up to 120 s; reset the session in silence if needed |

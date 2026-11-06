@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-04
+Last verified: 2026-11-06
 
 ## Purpose
 
@@ -37,10 +37,13 @@ inference/ (Apple Silicon, MLX)
   native MLX Swift runtime with its iOS benchmark app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
-  builder in MLX, the evaluation-set builder, the noisy source re-encode) and `finetune/` (the generic SFT trainer, evaluation
-  and HF recovery sync). Its modules run from the repo root as
+  builder in MLX, the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
+  and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: the English
+  TTS bake-off, the ASR check, each model in its own uv env, the ingest of the corpora's
+  segments to the tranche repos, their translation, the English TTS, the row filters and the CUDA cache build) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
+  CPUs). Its modules run from the repo root as
   `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
-  publisher, the cache builder and the evaluation-set builder runs on CUDA only.
+  publisher, the cache builder, the evaluation-set builder and the tokenizer swap runs on CUDA only.
 - `docs/` holds plans, analyses and reports.
 - Gitignored: `weights/` (shared by both sides), `data/` (pairs, caches), `runs/` (training
   runs and eval outputs) and `translations/` (inference outputs).
@@ -51,8 +54,9 @@ inference/ (Apple Silicon, MLX)
   to step 135k in `docs/analysis/`: teacher-forced loss improves, but free-running translation
   fails. FLEURS and MultiMed-ST now serve only as real-Vietnamese evaluation sets
   ([sft-evaluation](docs/agent-memory/sft-evaluation.md#evaluation-sets)).
-- The first stream run, `en_speech_streams_epoch1b` (one epoch of `en-vi-grounded-v2/train`),
-  started on 2026-11-03 on a 700 W H100 SXM ([plan](docs/vi_en_parity_plan.md#order)).
+- Two stream runs are done on a 700 W H100 SXM: `en_speech_streams_epoch1b` (one epoch of
+  `en-vi-grounded-v2/train`) and `en_speech_noisy_epoch2` (one epoch of its noisy copy, from the
+  first's final model). FLEURS test chrF went 24.7 → 29.5 ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
   the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:
@@ -72,9 +76,12 @@ inference/ (Apple Silicon, MLX)
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
-- GRPO (roadmap phase 4, [docs/grpo_plan.md](docs/grpo_plan.md)) is built in
-  `training/finetune/grpo.py` and checked on the Mac. Next it is profiled on the H100, phase by
-  phase, then run from the second run's chosen checkpoint ([grpo](docs/agent-memory/grpo.md)).
+- Next (user, 2026-11-04): a learning-rate test, then a third VI→EN epoch only if a higher rate
+  won (none did: no third epoch), then the real-Vietnamese tranche (its SFT at 3e-6)
+  ([real-vi-tranche](docs/agent-memory/real-vi-tranche.md)) and two-way speech in one model,
+  prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). GRPO is built in
+  `training/finetune/grpo.py` and checked on the Mac; it is profiled on the H100 phase by phase
+  before its run ([grpo](docs/agent-memory/grpo.md)).
 
 ## Essential invariants
 
@@ -82,16 +89,24 @@ inference/ (Apple Silicon, MLX)
   evaluation pass) and optimize it until its costliest resource stays busy; only then start the
   real run. Time each stage on a few
   shards, sample the GPU (`nvidia-smi` every 0.5 s) and know the CPU budget (a container's quota
-  in `/sys/fs/cgroup/cpu.max`, not `nproc`); compare variants on the same rows. The user's rule
+  in `/sys/fs/cgroup/cpu.max`, not `nproc`; `h100.sh cpus` makes new shells follow it); compare variants on the same rows. The user's rule
   since the first noisy encode ran ~3 h with its GPU idle half the time →
   [noisy-source](docs/agent-memory/noisy-source.md#speed),
   [sft-data-caches](docs/agent-memory/sft-data-caches.md#speed).
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
   and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
-- Apple Silicon runs inference, the translation, the Vietnamese TTS, the dataset publisher and
-  the Mimi cache build; training, evaluation and the noisy source re-encode run on CUDA →
+- Every data-generation job from 2026-11-04 on (ASR, alignment, translation calls, TTS, Mimi
+  caches, tokenizer passes) runs on the H100 box, written and optimized for CUDA; so do training
+  and evaluation. The user games on the Mac and doesn't want it slowed: local runs stay small (a
+  check, a sample), single-process and under `nice -n 19`, and subagents get the same rule (user,
+  2026-11-04). Overnight in the user's time (UTC+7) the Mac (M4 Pro, 48 GB) may also take a share
+  of a box job when that shortens it, such as MLX translation or TTS of some shards, or the
+  downloads; size each night job to finish by morning (user, 2026-11-04). The Mac keeps the MLX
+  inference work; the existing MLX TTS and cache builder produced the current data →
   [sft-training](docs/agent-memory/sft-training.md).
+- Pick the newest version of any third-party model (ASR, TTS, LLM, aligner) the pipeline uses,
+  for its efficiency and accuracy (user, 2026-11-04).
 - Production runs go only through `training/h100.sh run`, which ties a run to its commit and
   HF recovery prefix → [sft-recovery](docs/agent-memory/sft-recovery.md).
 - Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
@@ -121,6 +136,11 @@ inference/ (Apple Silicon, MLX)
 | GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |
+| The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off and the cache |
+| The tranche's CUDA cache build: row gates and their thresholds, CTC and Mimi on CUDA, running it | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
+| The tranche's English voice-cloning TTS: candidates, bake-off, scores, tuning | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/bakeoff.py`, `training/tranche/voice.py`, `training/tranche/envs.sh` |
+| Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
+| Vietnamese tokenizer swap for two-way text: build, English check, embedding init map | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
 | Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/audio.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
@@ -138,6 +158,8 @@ inference/ (Apple Silicon, MLX)
 - Training caches (the dataset repo; the model repo of the same name holds runs):
   https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
 - EN-VI speech and text pairs: https://huggingface.co/datasets/anquachdev/common-vi-en
+- Real-Vietnamese tranche: https://huggingface.co/datasets/huybik/hibiki-zero-vi-real (public,
+  gated) and `huybik/hibiki-zero-vi-real-restricted` (private; never public)
 
 ## Maintaining context
 
