@@ -31,8 +31,12 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   (the later ones cover a few rows a group, in seconds), when it is:
   - cut at 512 tokens, or empty;
   - holding letters of a script its Vietnamese lacks. The 35B writes some Sino-Vietnamese names
-    in Chinese every try ("King Tran Thai宗" for Trần Thái Tông, 55 rows of archives 51–164), so
-    a row's later tries may not use the letters its earlier ones wrote (`bad_words`);
+    in Chinese ("King Tran Thai宗" for Trần Thái Tông: 2 of the 6 such rows of archives 51–66
+    failed three tries), so a row's later tries may not emit the token ids its earlier replies
+    wrote such letters with (`logit_bias` −100; exact ids, since a letter also hides in
+    multi-letter tokens such as 太宗 and 江湖 and in byte pieces, which decode to U+FFFD; at most
+    1,000, under vLLM 0.33's 1,024. Its `bad_words` would block single-letter tokens only, and
+    raises past 128);
   - holding brackets its Vietnamese lacks ("[Name]", "[a specific time]");
   - left in Vietnamese: two of 25 frequent Vietnamese words, each with a diacritic. Words that
     are also name syllables stay out: ASCII ones (trong, khi: "Nguyen Phu Trong" is right), and

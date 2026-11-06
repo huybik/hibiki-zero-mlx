@@ -7,10 +7,11 @@ audio), translates each row as its own prompt, with up to CONTEXT_ROWS earlier r
 context, and writes <root>/<source>/text_en/<shard>.parquet (id, text_en) beside the segments'
 layout; `ingest push` uploads it. A transcript all in capitals (GigaSpeech 2's) goes in lowercased:
 kept, the model answers in capitals, which the TTS spells out. The first try is greedy; a reply cut
-at max_tokens, still in Vietnamese, holding letters of another script or far too long is tried
-again sampled, up to TRIES times; a row failing every try keeps text_en null, and a rerun tries
-the null rows again (and only those: a written row may already be voiced). It takes the GPU memory
-voice and the ASR server hold, so they take turns. From the repo root, in the env /workspace/envs/mt (`envs.sh`):
+at max_tokens, still in Vietnamese, holding letters of another script or brackets, or far too long
+is tried again sampled, up to TRIES times, never again with the tokens it wrote another script
+with. A row failing every try keeps text_en null, and a rerun tries the null rows again (and only
+those: a written row may already be voiced). It takes the GPU memory voice and the ASR server
+hold, so they take turns. From the repo root, in the env /workspace/envs/mt (`envs.sh`):
 
   python -m training.tranche.translate giga --shards 51:
 """
@@ -35,6 +36,7 @@ from training.tranche.ingest import REPO, ROOT, SOURCES
 # Apache-2.0; BF16 weights, quantized to FP8 as they load.
 MODEL = ("IndexTeam/Index-Translate-35B-A3B-preview", "7e4029e0df842502cb009cf493d6467c247043b3")
 MAX_TOKENS = 512  # a row's English takes ~20 tokens, the longest a few hundred
+BANNED = 1000  # token ids a row's later tries may not emit, at most: vLLM's V2 runner takes 1,024 biases
 TRIES = 6  # per row and run: greedy, then sampled; a failing row holds its whole shard back, and retries cost seconds
 CONTEXT_ROWS = 2
 # The short form scored as the long one on the bake-off (FLEURS dev chrF 64.8 against 64.7, archive
@@ -101,25 +103,31 @@ def translate(llm, vi: list[str], prompts: list[str], again: list[bool]) -> tupl
     from vllm import SamplingParams
 
     greedy = SamplingParams(max_tokens=MAX_TOKENS, temperature=0)
+    tokenizer = llm.get_tokenizer()
     en: list[str | None] = [None] * len(vi)
     last = [""] * len(vi)
-    banned: dict[int, set[str]] = {}  # a row's letters of other scripts from its earlier replies
+    banned: dict[int, set[int]] = {}  # token ids a row's earlier replies wrote other scripts with
     todo = list(range(len(vi)))
     for attempt in range(TRIES):
         sampling = dict(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
                         seed=int.from_bytes(os.urandom(4)))
         sampled = SamplingParams(**sampling)
         # The model writes some Sino-Vietnamese names in Chinese every try ("King Tran Thai宗" for
-        # Trần Thái Tông): later tries may not use what earlier ones wrote.
+        # Trần Thái Tông): a row's later tries may not emit the tokens its earlier replies wrote
+        # other scripts with (exact ids: a letter also hides in multi-letter and byte tokens).
         params = [greedy if not (attempt or again[k]) else
-                  SamplingParams(**sampling, bad_words=sorted(banned[k])) if k in banned else sampled for k in todo]
+                  SamplingParams(**sampling, logit_bias={t: -100 for t in sorted(banned[k])[:BANNED]})
+                  if k in banned else sampled for k in todo]
         outputs = llm.chat([[{"role": "user", "content": prompts[k]}] for k in todo], params, use_tqdm=False,
                            chat_template_kwargs={"enable_thinking": False})
         for k, output in zip(todo, outputs, strict=True):
             reply = output.outputs[0]
             last[k] = reply.text
-            if foreign := set(NON_LATIN.findall(reply.text)) - set(NON_LATIN.findall(vi[k])):
-                banned.setdefault(k, set()).update(foreign)
+            own = set(NON_LATIN.findall(vi[k]))
+            if set(NON_LATIN.findall(reply.text)) - own:  # a partial character decodes to U+FFFD
+                banned.setdefault(k, set()).update(
+                    t for t in reply.token_ids
+                    if "\ufffd" in (piece := tokenizer.decode([t])) or set(NON_LATIN.findall(piece)) - own)
             text = reply.text.strip() if reply.finish_reason == "stop" else None
             if not bad(vi[k], text):
                 en[k] = text
@@ -181,7 +189,7 @@ def main() -> None:
             # row already written, which may be voiced.
             todo = [(s, k) for s, (_, _, _, _, text_en) in enumerate(loaded) for k, en in enumerate(text_en)
                     if en is None]
-            if todo and llm is None:
+            if todo and llm is None:  # before the next group's reads: none is in flight as it starts
                 llm, start = engine(args.gpu_memory), time.time()
             if g + 1 < len(groups):  # the next group's reads overlap this group's translation
                 pending = readers.map(read, groups[g + 1])
