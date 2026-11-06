@@ -4,7 +4,7 @@ Read when choosing or building the real-Vietnamese source data (plan stage 1.3),
 pipeline, or its licences. The corpora, their licences and measured layouts are in
 [vi-corpora](vi-corpora.md); the English TTS is in [tranche-tts](tranche-tts.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [English TTS](#english-tts) ·
-[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline)
+[First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline) · [Filters](#filters)
 
 Every Vietnamese source the model has trained on is VieNeu TTS. The channel (rooms, noise, phone
 bands) costs ~5 of the 15–18 chrF between held-out TTS and FLEURS dev; the rest is real voices and
@@ -13,8 +13,8 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the code so far
-(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest, translate and the
-English TTS (`voice.py`).
+(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest, translate, the
+English TTS (`voice.py`) and the row filters (`filters.py`).
 
 ## Decision
 
@@ -26,7 +26,7 @@ English TTS (`voice.py`).
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
 - Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
-  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/` and `cache/<source>/`, so a rerun
+  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/`, `<source>/asr_vi/` and `cache/<source>/`, so a rerun
   or the Mac picks up from the Hub. The box keeps what it wrote and downloaded (disk is ample).
   - [`huybik/hibiki-zero-vi-real`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real):
     public, gated with automatic approval on research-only, no-impersonation terms, CC BY-NC-SA
@@ -189,3 +189,51 @@ other corpora ─► their transcripts, word times by forced alignment ───
   each with a `.refs` file naming the repo blobs that use it. Deleting a `models--…` or
   `datasets--…` folder frees nothing; delete a shared blob (with its `.lock` and `.refs`) once
   none of its refs exists (32 GB left behind by LongCat and the corpus samples, 2026-11-04).
+
+## Filters
+
+`training/tranche/filters.py` measures what the cache build drops rows on; the build applies the
+thresholds, so they can change without measuring again.
+
+- Both filters compare text by `spoken`: lower-case NFC syllables without punctuation, digits
+  written out by num2words' Vietnamese, and `ngàn`/`linh`/`nhăm` folded to `nghìn`/`lẻ`/`lăm`.
+  PhoAudiobook and GigaSpeech 2 spell numbers; Qwen3-ASR and FLEURS write digits, and on the
+  first PhoAudiobook shards rows with digits made 48% of those over 0.1 CER before (15 of 51
+  digit rows over 0.1, 4 after). num2words reads a long digit run (a phone number) as one number.
+- Evaluation overlap (`filters overlap`, Mac or box, text columns only): a row is dropped when its
+  transcript holds a 13-syllable run of a FLEURS vi dev or test or MultiMed-ST vi select or final
+  sentence, or a whole sentence of 9–12 syllables (62 of them) (`overlaps`, with the sets in
+  `data/eval/`). On the first tranche no row does (2026-11-05). Runs of 10 syllables or fewer
+  match stock broadcast phrases ("cảm ơn quý vị và các bạn đã quan tâm", 80 rows at 10, 257 at
+  8), and the 18 sentences under 9 syllables ("được", "alo", "vùng nông thôn") everyday speech,
+  so those are not matched.
+- Vietnamese ASR (`filters asr`, box): every row heard by Qwen3-ASR-1.7B on the shared ASR
+  server, language detected, not forced (unforced, it writes `language <Name><asr_text>…`; a reply
+  without that header is all transcript with language `""`, as qwen_asr parses it), up to
+  512 tokens, written as `<source>/asr_vi/<shard>` (`id`, `asr_vi`, `language`, `cer` against the
+  corpus transcript over `spoken`) and pushed every 30 min and at each source's end. The
+  rows where the two disagree, or the language is not Vietnamese, are the ones the build drops.
+  - The client decodes each clip to 16 kHz WAV (4 processes): sent as Opus, the server's 8 API
+    processes saturated the box's 27 cores at 21 rows/s and starved the TTS's main process.
+  - Beside the English TTS on the same GPU it hears ~20 rows/s, bound by the engine (the TTS
+    holds the GPU at 100%), and slows the TTS ~30% (a PhoAudiobook shard every ~2.0 min against
+    ~1.55): ~12 h for 840,520 rows, about what running it after the TTS would take. It runs as
+    `/workspace/restart.sh filters` (log `/workspace/logs/filters.log`).
+  - First PhoAudiobook shards: CER median 0.000, p90 0.03–0.04, about one row a shard detected
+    as another language.
+  - Checked end to end on the box (2026-11-05), beside the running jobs: `asr pho --limit 1`
+    into a scratch `--root`, its push stubbed, heard shard 0 in 79 s. The shard holds the
+    segments' 1,299 ids in order, `id`/`asr_vi`/`language` as strings and `cer` as float32, no
+    nulls; CER recomputed over `spoken` matches every row; a rerun skips it and pushes what is
+    unpushed. Against the running job's own pass over the shard, 1,239 transcripts are
+    identical and 60 differ (48 in punctuation or case only, the rest by at most 0.042 CER):
+    the server's batching. The reply parser reads the five reply shapes (a language header,
+    `language None`, an empty transcript, no header). The job's first push put 30 shards in the
+    private repo, byte-identical to the local ones. `filters overlap` on the box finds no row
+    of the 840,520; `overlaps` matches a 13-syllable run and a whole 9–12-syllable sentence, not
+    a 12-syllable run or shorter sentences.
+  - The highest CERs are faults of the corpus: PhoAudiobook transcripts that repeat the clip's
+    last clause (0.24–0.34), numbers and punctuation spelled oddly ("chấm ba chấm", "triệu
+    bốn nghìn"), abbreviations ("tp. hcm"); then words the ASR loses at a clip's cut edges.
+    `spoken` leaves `%` and decimal commas unspoken (the ASR's "80%" against the corpus's "tám
+    mươi phần trăm"), which adds at most ~0.04 CER to ~0.5% of rows, so it stays.

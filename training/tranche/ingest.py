@@ -5,8 +5,8 @@ own order ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline
   segments <source>  download each source shard at its pinned commit, keep its usable segments,
                      re-encode their audio to Ogg Opus and write
                      <root>/<repo>/<source>/segments/<shard>.parquet; the download is deleted
-  push <source>      upload <root>/<repo>/<source>/segments, or with --part text_en its
-                     translations, to its tranche repo (a rerun skips files already committed); a
+  push <source>      upload <root>/<repo>/<source>/segments, or with --part another stage's
+                     folder (text_en, en_audio, asr_vi), to its tranche repo (a rerun skips files already committed); a
                      restricted source goes only to a private repo
 
 Sources go to the public repo, or to the private one where their terms forbid redistribution
@@ -230,6 +230,23 @@ def push(args: argparse.Namespace) -> None:
                       commit_message=f"{args.source} {args.part}")
 
 
+def push_part(root: Path, source: str, part: str) -> None:
+    """`push`, tried again after a transient Hub error, for the stages that push as they go."""
+    import time
+
+    for attempt in range(4):
+        try:
+            push(argparse.Namespace(root=root, source=source, part=part))
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), f"pushed {source} {part}", flush=True)
+            return
+        except Exception as exc:  # noqa: BLE001 - the Hub's 5xx and timeouts come as many types
+            if attempt == 3:
+                raise
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), f"push {source} {part} failed "
+                  f"({type(exc).__name__}: {exc}); again in {60 * 2 ** attempt} s", flush=True)
+            time.sleep(60 * 2 ** attempt)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -241,9 +258,9 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=8)
     p = steps.add_parser("push")
     p.add_argument("source", choices=sorted(SOURCES))
-    p.add_argument("--part", choices=["segments", "text_en", "en_audio"], default="segments",
-                   help="the folder to upload: the segments, their translations (translate.py) or their "
-                        "English speech (voice.py)")
+    p.add_argument("--part", choices=["segments", "text_en", "en_audio", "asr_vi"], default="segments",
+                   help="the folder to upload: the segments, their translations (translate.py), their "
+                        "English speech (voice.py) or their Vietnamese ASR (filters.py)")
     args = parser.parse_args()
     {"segments": segments, "push": push}[args.step](args)
 

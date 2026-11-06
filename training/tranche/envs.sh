@@ -18,7 +18,7 @@ log nanovox; mk nanovox 3.12
 # The production TTS (training/tranche/voice.py): nano-vllm-voxcpm needs flash-attn, whose newest
 # prebuilt wheel is for torch 2.10 on CUDA 13.
 $UV pip install -q -p $E/nanovox "torch==2.10.*" "torchaudio==2.10.*" --index-url https://download.pytorch.org/whl/cu130
-$UV pip install -q -p $E/nanovox nano-vllm-voxcpm==2.0.5 pyarrow av httpx jiwer "torch==2.10.*" "torchaudio==2.10.*" \
+$UV pip install -q -p $E/nanovox nano-vllm-voxcpm==2.0.5 pyarrow av httpx jiwer num2words "torch==2.10.*" "torchaudio==2.10.*" \
   "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" \
   --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
 log dots; mk dots 3.12
