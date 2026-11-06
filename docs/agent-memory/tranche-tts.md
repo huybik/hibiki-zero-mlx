@@ -144,6 +144,20 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 - The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
   its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
   a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).
+- The scale-up (GigaSpeech 2 from archive 13, 2026-11-06) runs one try a row (`MAX_TRIES` 1): time,
+  not source rows, bounds it. On six of the first tranche's GigaSpeech 2 shards (131,669 rows,
+  158 h), counting each row's tries:
+
+  | Tries | Rows kept | Kept Vietnamese h per h of English voiced |
+  |---:|---:|---:|
+  | 1 | 77.1% | 0.660 |
+  | 2 | 85.8% | 0.607 |
+  | 3 | 89.0% | 0.571 |
+
+  Clips under 2 s are 13.4% of the rows and 4.8% of the hours, 24.8% broken at 1.72 tries a row.
+  Fewer flow-matching steps cost more than they save (2,000 rows of shard 0, the ASR server
+  beside, one try): 10 steps RTF 0.00524, 22.2% broken, mean WER 0.188; 6 steps 0.00448, 24.0%,
+  0.317; 4 steps 0.00384, 33.9%, 0.373. `TIMESTEPS` stays 10.
   Decoding and checking run in spawned processes: as threads, their Python held the GIL and
   starved the engine loop (GPU at 2%). One ASR API process featurizes ~11 requests/s on the
   CPU, so the server runs 8.

@@ -60,7 +60,9 @@ MAX_WAIT_S = 120
 WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English normalizer only
 BROKEN_WER = 0.2
 PACE = 0.0636  # the bake-off's median seconds of English audio per character of its line
-MAX_TRIES = 3  # attempts per row; the best by WER is kept
+# Attempts per row, the best by WER kept. 1 from the scale-up on (2026-11-06): on GigaSpeech 2 a retry
+# costs more TTS time than its rows give back (tranche-tts.md); the first tranche ran 3.
+MAX_TRIES = 1
 ASR_TIMEOUT_S = 60  # a request takes well under a second
 ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
 CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
