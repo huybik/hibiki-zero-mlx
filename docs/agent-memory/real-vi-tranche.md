@@ -118,8 +118,8 @@ here is published or estimated, to be measured on the box first:
 
 ## Pipeline
 
-Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04), except the
-translation, on Muse. The rows take
+Built for CUDA: every stage runs on the H100 box (user, 2026-11-04; the translation too since
+2026-11-06). The rows take
 the EN-VI dataset's own parquet schema, and the cache keeps its format, so the trainer takes it
 unchanged; the build needs a CUDA counterpart of the MLX `cache_codes` (Mimi in moshi's torch, as
 `mimi_cache_cuda` encodes it, and the English CTC on CUDA)
@@ -131,7 +131,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
-  ─► Muse VI→EN (OpenRouter) in batches of a doc's consecutive rows, which give each other context
+  ─► VI→EN on the box, a row per call with its doc's two earlier rows as context
   ─► English TTS in the row speaker's voice (prompt and reference: the row's own clip and transcript)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
@@ -180,34 +180,33 @@ other corpora ─► their transcripts, word times by forced alignment ───
   stopping on "rows without text_en"). Translation still lists the Hub's segments and translates
   every shard without a local `text_en`: give it `--shards` past the shards translated elsewhere.
   Voice queues a shard only once its `text_en` is on the Hub or here.
-- Translate (`training/tranche/translate.py`, CPU; on the box `/workspace/translate_loop.sh` in
-  the env `/workspace/envs/translate`, which `envs.sh` builds, follows the ingest) reads each segments shard's
-  `id`, `doc` and `text` from the Hub, translates on Muse Spark 1.3 Contributor with the prompt
-  the blind judge tested, in batches of up to 40 consecutive rows and 6,000 characters that end
-  wherever a doc of more than one row starts or ends (viVoice's one-row docs share batches), and
-  writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest
-  push <source> --part text_en` uploads it beside the segments. A reply that does not parse, or
-  that writes letters of a script its Vietnamese lacks (Muse wrote Chinese mid-sentence in 22 of
-  the first 24,681 rows, "the keeper of the江湖 ledger"), splits its batch in halves down to one
-  row; a row failing alone keeps `text_en` null, a rerun translates the null and broken rows
-  again; a run stops at the first failed row that takes failures past 1% of the rows it has
-  started (once past 5,000), and a lock keeps a second run off the same folder. A shard is
-  written only once all its rows are done, so a crash loses the shards in flight (eight
-  GigaSpeech 2 shards hold ~170k rows). Eight shards are in flight.
-- Concurrency (2026-11-05): `--concurrency` defaults to 128. OpenRouter served 128 calls at once to
-  Contributor with no 429s (two empty replies, retried); more is untested. Rows per call fall
-  where docs are short (PhoAudiobook 11–25 a shard), and each call costs a few seconds beyond its
-  rows, so short-doc sources need the concurrency, and a higher MAX_LINES would not help them.
-  Measured on the full tranche:
-
-  | Source | Rows | Concurrency | Calls | Time | Cost |
-  |---|---:|---:|---:|---:|---:|
-  | PhoAudiobook | 290,037 | 64 | 17,675 | 29 min | $3.86 |
-  | GigaSpeech 2 | 281,133 | 128 | 11,400 | 8.8 min | $2.99 |
-  | viVoice | 269,350 | 128 | 7,299 | 17 min | $2.90 |
-
-  All 840,520 rows translated, none failed, $9.75; pushed and checked against the segments on
-  the Hub (same shards and ids, no null or broken row) on 2026-11-05.
+- Translate (`training/tranche/translate.py`; the client in the env `/workspace/envs/translate`,
+  the vLLM server in `/workspace/envs/mt`, both built by `envs.sh`) reads each segments shard's
+  `id`, `doc` and `text` from the Hub and translates each row in its own call, with up to two
+  earlier rows of its doc as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`,
+  `text_en`); `ingest push <source> --part text_en` uploads it beside the segments.
+  - The server: `translate serve` prints its command (model `mt` on :8200). Start it from
+    `/workspace/restart.sh mt`. It takes the GPU memory voice holds, so translation and voice run
+    one after the other, the translation in bursts that run ahead of voice.
+  - GigaSpeech 2's transcripts are all capitals: a transcript all in capitals goes in lowercased,
+    because kept, the model answers in capitals (Muse did on 5.7% of archive 50's rows), and such
+    rows broke in the TTS 59.8% of the time against 21.3% (archives 13–24).
+  - The first try is greedy with thinking off. A reply is tried again, sampled (temperature 0.7,
+    top-p 0.8, top-k 20, unseeded), up to three tries in all, when it is cut at 512 tokens, empty,
+    holds letters of a script its Vietnamese lacks, holds two of 30 frequent Vietnamese words (left
+    in Vietnamese; names, with or without diacritics, never trip it), or runs past 2.5× its
+    Vietnamese's characters plus 20 (the model now and then translates the context rows too: 1 in
+    2,000 rows of the bake-off; English runs ~1.2× the Vietnamese).
+  - A row failing every try keeps `text_en` null and holds its shard back from voice. A rerun
+    tries only the null rows, sampling afresh; a row already written is never translated again,
+    as it may be voiced.
+  - A run stops at the first failed row that takes failures past 1% of the rows it has started
+    (once past 5,000), and a lock keeps a second run off the same folder. A shard is written only
+    once all its rows are done, so a crash loses the four shards in flight.
+  - Muse Spark 1.3 Contributor through OpenRouter translated the first tranche and GigaSpeech 2
+    archives 13–50 (2026-11-05/06), in batches of up to 40 consecutive rows: all 840,520 rows of
+    the first tranche in ~55 min for $9.75. It wrote Chinese mid-sentence in 22 of the first
+    24,681 rows ("the keeper of the江湖 ledger").
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and

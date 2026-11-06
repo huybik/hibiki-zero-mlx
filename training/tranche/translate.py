@@ -8,8 +8,8 @@ context, and writes <root>/<source>/text_en/<shard>.parquet (id, text_en) beside
 layout; `ingest push` uploads it. A transcript all in capitals (GigaSpeech 2's) goes in lowercased:
 kept, the model answers in capitals, which the TTS spells out. The first try is greedy; a reply cut
 at max_tokens, still in Vietnamese or holding letters of another script is tried again sampled, up
-to TRIES times; a row failing every try keeps text_en null, and a rerun translates the null and
-bad rows again. The client needs no GPU; from the repo root, with the server up (`serve` prints
+to TRIES times; a row failing every try keeps text_en null, and a rerun tries the null rows again
+(and only those: a written row may already be voiced). The client needs no GPU; from the repo root, with the server up (`serve` prints
 its command):
 
   python -m training.tranche.translate serve
@@ -40,8 +40,8 @@ MODEL = ("IndexTeam/Index-Translate-9B-FP8", "d467e031548df719a665509ce5bfc63c6a
 URL = "http://localhost:8200/v1/chat/completions"  # the server's model name is `mt`
 TIMEOUT = 600  # seconds a call may wait: a full server queues calls behind its batch
 MAX_TOKENS = 512  # a row's English takes ~20 tokens, the longest a few hundred
-TRIES = 3  # per row and run: greedy, then sampled at TEMPERATURE
-TEMPERATURE = 0.7
+TRIES = 3  # per row and run: greedy, then sampled
+SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20}  # Qwen3.5's non-thinking settings; unseeded, so a rerun draws anew
 CONTEXT_ROWS = 2
 PROMPT = ("Translate the following Vietnamese text into English. The text is a segment cut from speech and may "
           "start or stop mid-sentence: translate exactly what it says, leaving an unfinished sentence unfinished, "
@@ -69,24 +69,28 @@ def serve_command(gpu_memory: float) -> list[str]:
             "--gpu-memory-utilization", str(gpu_memory), "--max-model-len", "4096", "--max-num-seqs", "512"]
 
 
-def vietnamese(text: str) -> bool:
-    """Whether most words carry Vietnamese diacritics or đ: a reply left untranslated. A name or two
-    with its diacritics stays well below half."""
-    words = text.split()
-    marked = sum(bool(re.search(r"[̛̣̀́̃̉̂̆]", unicodedata.normalize("NFD", w)))
-                 or "đ" in w.lower() for w in words)
-    return marked > len(words) / 2
+# Frequent Vietnamese words no English sentence or Vietnamese name holds: two of them in a reply mean
+# it was left (partly) in Vietnamese. Names keep or drop their diacritics without tripping it.
+VIETNAMESE_WORDS = {"và", "của", "là", "được", "những", "các", "này", "trong", "với", "không", "có", "một", "đã",
+                    "để", "thì", "người", "từ", "đến", "về", "cũng", "nhiều", "sẽ", "đó", "như", "khi", "lại",
+                    "phải", "còn", "rằng", "bị"}
 
 
 def bad(vi: str, en: str | None) -> bool:
-    return en is None or not en.strip() or broken(vi, en) or vietnamese(en)
+    """A reply cut at max_tokens, empty, holding letters of a script its Vietnamese lacks, left in
+    Vietnamese, or far longer than its row (the model now and then translates the context rows too:
+    1 in 2,000 rows of the check; English runs ~1.2× the Vietnamese's characters)."""
+    if en is None or not en.strip() or broken(vi, en) or len(en) > 2.5 * len(vi) + 20:
+        return True
+    words = re.sub(r"[^\w\s]", " ", unicodedata.normalize("NFC", en).lower()).split()
+    return sum(w in VIETNAMESE_WORDS for w in words) >= 2
 
 
 def call(client: httpx.Client, url: str, prompt: str, attempt: int) -> tuple[str | None, Counter]:
     """One row -> its English, or None when cut at MAX_TOKENS; and the usage. Thinking off; greedy
-    on the first attempt, sampled (seeded by the attempt) after. The server is on this box, so any
+    on the first attempt, sampled after. The server is on this box, so any
     HTTP error stops the run rather than being retried."""
-    sampling = {"temperature": 0} if attempt == 0 else {"temperature": TEMPERATURE, "seed": attempt}
+    sampling = {"temperature": 0} if attempt == 0 else SAMPLING
     response = client.post(url, json={
         "model": "mt", "max_tokens": MAX_TOKENS, **sampling, "chat_template_kwargs": {"enable_thinking": False},
         "messages": [{"role": "user", "content": prompt}]})
@@ -161,8 +165,8 @@ def main() -> None:
         return None
 
     def shard(path: str) -> str:
-        """Translate a shard's rows that have no good translation yet: all of them, or on a rerun
-        those left null or bad."""
+        """Translate a shard's rows that have no translation yet: all of them, or on a rerun those
+        left null."""
         name, ids, docs, texts = read(path)
         dst = out / name
         text_en = [None] * len(ids)
@@ -171,7 +175,7 @@ def main() -> None:
             if t.column("id").to_pylist() != ids:
                 raise SystemExit(f"{dst} holds other rows than its segments shard")
             text_en = t.column("text_en").to_pylist()
-        todo = [k for k, (vi, en) in enumerate(zip(texts, text_en)) if bad(vi, en)]
+        todo = [k for k, en in enumerate(text_en) if en is None]  # never a row already written (perhaps voiced)
         if not todo:
             return f"{name}: complete"
         with lock:
