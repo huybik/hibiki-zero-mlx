@@ -10,7 +10,7 @@ pass of the VAE decoder in fp16 under torch.compile (3.4x fp32's speed; 57 dB SN
 which voxcpm runs). The VAE is causal throughout, so a batch's right padding leaves every row's
 audio as decoded alone. Prompts are encoded in fp32 batches the same way.
 
-Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with the HF token in
+Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in
 the environment and the ASR server up:
   /workspace/envs/asr/bin/qwen-asr-serve <Qwen3-ASR-1.7B snapshot> --served-model-name asr \
       --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
@@ -19,7 +19,7 @@ the environment and the ASR server up:
       every segments shard (each has its text_en) on the Hub without en_audio yet: each row voiced with its
       own clip and transcript as prompt and reference, heard by the ASR, voiced again while broken
       (WER over 20% or pace off by 2x) up to 3 tries, the best try kept; writes
-      <root>/<public|restricted>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
+      <root>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
       en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
       30 min and at its end. A rerun skips the shards already written or pushed, and first pushes
       any written but not yet pushed.
@@ -60,7 +60,9 @@ MAX_WAIT_S = 120
 WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English normalizer only
 BROKEN_WER = 0.2
 PACE = 0.0636  # the bake-off's median seconds of English audio per character of its line
-MAX_TRIES = 3  # attempts per row; the best by WER is kept
+# Attempts per row, the best by WER kept. 1 from the scale-up on (2026-11-06): on GigaSpeech 2 a retry
+# costs more TTS time than its rows give back (tranche-tts.md); the first tranche ran 3.
+MAX_TRIES = 1
 ASR_TIMEOUT_S = 60  # a request takes well under a second
 ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
 CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
@@ -376,7 +378,7 @@ def decode_16k(data: bytes) -> np.ndarray:
 class Shard:
     source: str
     name: str  # the segments file's name
-    dst: Path  # <root>/<dest>/<source>/en_audio/<name>
+    dst: Path  # <root>/<source>/en_audio/<name>
     ids: list[str]
     texts: list[str]  # Vietnamese transcripts: the prompts' texts
     texts_en: list[str]
@@ -454,12 +456,10 @@ def _check(text: str, wav: np.ndarray) -> dict:
 
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     import pyarrow.parquet as pq
-    from huggingface_hub import hf_hub_download
 
-    from training.tranche.ingest import REPOS, SOURCES
+    from training.tranche.ingest import part_file
 
-    dest = SOURCES[source].dest
-    get = lambda part: pq.read_table(hf_hub_download(REPOS[dest], f"{source}/{part}/{name}", repo_type="dataset"))  # noqa: E731
+    get = lambda part: pq.read_table(part_file(root, source, part, name))  # noqa: E731
     seg = get("segments").select(["id", "text", "audio"])
     en = dict(zip(*get("text_en").select(["id", "text_en"]).to_pydict().values()))
     ids = seg.column("id").to_pylist()
@@ -467,7 +467,7 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
         raise SystemExit(f"{source}/{name}: {len(missing)} rows without text_en, e.g. {missing[0]}")
     audio = [a["bytes"] for a in seg.column("audio").to_pylist()]
     clips = list(pool.map(decode_16k, audio, chunksize=32))
-    return Shard(source, name, root / dest / source / "en_audio" / name, ids, seg.column("text").to_pylist(),
+    return Shard(source, name, root / source / "en_audio" / name, ids, seg.column("text").to_pylist(),
                  [en[i] for i in ids], clips, {})
 
 
@@ -504,18 +504,28 @@ def run(args: argparse.Namespace) -> None:
 
     from training.tranche import ingest
 
+    import pyarrow.parquet as pq
+
+    ingest.an_token()
     api = HfApi()
     todo = []
     for source in args.sources:
-        repo = ingest.REPOS[ingest.SOURCES[source].dest]
-        files = api.list_repo_files(repo, repo_type="dataset")
+        files = api.list_repo_files(ingest.REPO, repo_type="dataset")
         done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/en_audio/")}
+        # A shard waits for its translation, pushed or still only here (translate runs beside voice),
+        # and while a row of it has none (translate's next pass fills it).
+        translated = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/text_en/")}
+        for p in (args.root / source / "text_en").glob("*.parquet"):
+            if pq.read_table(p, columns=["text_en"]).column("text_en").null_count:
+                translated.discard(p.name)
+            else:
+                translated.add(p.name)
         for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
             name = f.rsplit("/", 1)[1]
-            dst = args.root / ingest.SOURCES[source].dest / source / "en_audio" / name
-            if name not in done and not dst.exists():
+            dst = args.root / source / "en_audio" / name
+            if name in translated and name not in done and not dst.exists():
                 todo.append((source, name))
-        local = {p.name for p in (args.root / ingest.SOURCES[source].dest / source / "en_audio").glob("*.parquet")}
+        local = {p.name for p in (args.root / source / "en_audio").glob("*.parquet")}
         if local - done:  # written by an earlier run that stopped before pushing them
             ingest.push_part(args.root, source, "en_audio")
     todo = todo[: args.limit]

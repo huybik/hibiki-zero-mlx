@@ -4,14 +4,15 @@ own order ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline
 
   segments <source>  download each source shard at its pinned commit, keep its usable segments,
                      re-encode their audio to Ogg Opus and write
-                     <root>/<repo>/<source>/segments/<shard>.parquet; the download is deleted
-  push <source>      upload <root>/<repo>/<source>/segments, or with --part another stage's
-                     folder (text_en, en_audio, asr_vi; cache: <root>/<repo>/cache/<source>), to its
-                     tranche repo (a rerun skips files already committed); a restricted source goes
-                     only to a private repo
+                     <root>/<source>/segments/<shard>.parquet; the download is deleted
+  push <source>      upload <root>/<source>/segments, or with --part another stage's folder
+                     (text_en, en_audio, asr_vi; cache: <root>/cache/<source>, to CACHE_REPO), to
+                     the tranche repo (a rerun skips files already committed), only while it is gated
 
-Sources go to the public repo, or to the private one where their terms forbid redistribution
-(PhoAudiobook, GigaSpeech 2). Rows, sorted by seq within a shard:
+Every source goes to the public repos of the anquachdev account (`REPO`, `CACHE_REPO`), gated by the
+sources' terms: GigaSpeech 2's own terms of access, which let a researcher share it with those who first
+agree to them; PhoAudiobook with its author's permission (the user, 2026-11-06). Rows, sorted by
+seq within a shard:
   id, source
   doc       the recording the row comes from, as far as the corpus tells; a doc never spans
             shards. PhoAudiobook: one reader's run of chunks in rising time (it names no book);
@@ -43,7 +44,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 ROOT = Path("/workspace/tranche/repo")
-REPOS = {"public": "huybik/hibiki-zero-vi-real", "restricted": "huybik/hibiki-zero-vi-real-restricted"}
+# Public, gated by the sources' terms (GigaSpeech 2's in full); the anquachdev account's, so pushes take
+# HF_TOKEN_AN. REPO holds every part but the caches (beside PhoMT's synthetic pairs in data/), as
+# <source>/<part>/<shard>; CACHE_REPO the caches, as <source>/shard_<shard>.pt.
+REPO = "anquachdev/en-vi-speech-20k"
+CACHE_REPO = "anquachdev/mimi-en-vi-speech-20k"
 OPUS_BITRATE = 32_000  # real speech, noise included; Mimi keeps far less than this
 OPUS_COMPLEXITY = 5
 ROW_S = (5.0, 22.4)  # the trainer's row lengths, for sources whose rows cannot be rejoined
@@ -57,15 +62,14 @@ class Source:
     repo: str
     revision: str
     pattern: str  # the source shards, a regex over the repo's file names
-    dest: str  # "public" or "restricted"
     shards: int | None = None  # how many of the sorted shards hold usable rows; None: all
 
 
 SOURCES = {
     # Shards 224-802 hold only augmented audio.
-    "pho": Source("thivux/phoaudiobook", "f19f241", r"data/train-\d+-of-\d+\.parquet", "restricted", 224),
-    "vivoice": Source("capleaf/viVoice", "693e988", r"data/train-\d+-of-\d+\.parquet", "public"),
-    "giga": Source("speechcolab/gigaspeech2", "8dc0d0e", r"data/vi/train/\d+\.tar\.gz", "restricted"),
+    "pho": Source("thivux/phoaudiobook", "f19f241", r"data/train-\d+-of-\d+\.parquet", 224),
+    "vivoice": Source("capleaf/viVoice", "693e988", r"data/train-\d+-of-\d+\.parquet"),
+    "giga": Source("speechcolab/gigaspeech2", "8dc0d0e", r"data/vi/train/\d+\.tar\.gz"),
 }
 SCHEMA = pa.schema([
     ("id", pa.string()), ("source", pa.string()), ("doc", pa.string()), ("seq", pa.int64()),
@@ -203,7 +207,7 @@ def shard_files(name: str) -> list[str]:
 
 def segments(args: argparse.Namespace) -> None:
     name = args.source
-    out = args.root / SOURCES[name].dest / name / "segments"
+    out = args.root / name / "segments"
     out.mkdir(parents=True, exist_ok=True)
     files = shard_files(name)
     picked = range(len(files))[args.shards]
@@ -218,24 +222,43 @@ def segments(args: argparse.Namespace) -> None:
             raise
 
 
+def an_token() -> str:
+    """The write token of the anquachdev account, which owns REPO and CACHE_REPO; the stages that
+    push read it at their start, so a missing one stops them before any work."""
+    return os.environ["HF_TOKEN_AN"]
+
+
 def push(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi
 
-    api = HfApi()
-    dest = SOURCES[args.source].dest
-    # upload_folder never creates the repo, so a missing one fails instead of appearing public.
-    if dest == "restricted" and not api.dataset_info(REPOS[dest]).private:
-        raise SystemExit(f"{REPOS[dest]} is not private: {args.source} may not be published")
-    pattern = f"cache/{args.source}/*.pt" if args.part == "cache" else f"{args.source}/{args.part}/*.parquet"
-    api.upload_folder(repo_id=REPOS[dest], repo_type="dataset", folder_path=args.root / dest,
-                      allow_patterns=[pattern],
+    api = HfApi(token=an_token())
+    repo, folder, pattern = ((CACHE_REPO, args.root / "cache", f"{args.source}/*.pt") if args.part == "cache"
+                             else (REPO, args.root, f"{args.source}/{args.part}/*.parquet"))
+    # upload_folder never creates the repo, so a missing one fails instead of appearing ungated.
+    if not api.dataset_info(repo).gated:
+        raise SystemExit(f"{repo} is not gated: its sources may go only to those who accept their terms")
+    api.upload_folder(repo_id=repo, repo_type="dataset", folder_path=folder, allow_patterns=[pattern],
                       commit_message=f"{args.source} {args.part}")
+
+
+def part_file(root: Path, source: str, part: str, name: str) -> Path:
+    """A shard's part (segments, text_en, en_audio, asr_vi): the box's own copy under `root` where a
+    stage wrote one (each writes whole, by a rename, and keeps it after pushing), else the Hub's (the
+    HF cache keeps it). The box's downloads through Xet run ~5 MB/s (`HF_HUB_DISABLE_XET=1`: ~140 MB/s), and a second copy in
+    the HF cache doubles a shard's disk."""
+    local = root / source / part / name
+    if local.exists():
+        return local
+    from huggingface_hub import hf_hub_download
+
+    return Path(hf_hub_download(REPO, f"{source}/{part}/{name}", repo_type="dataset"))
 
 
 def push_part(root: Path, source: str, part: str) -> None:
     """`push`, tried again after a transient Hub error, for the stages that push as they go."""
     import time
 
+    an_token()  # a missing token is not a Hub error: fail now, not after the retries
     for attempt in range(4):
         try:
             push(argparse.Namespace(root=root, source=source, part=part))

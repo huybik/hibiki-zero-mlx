@@ -43,7 +43,10 @@ $UV pip install -q -p $E/score torch==2.8.0 torchaudio==2.8.0 transformers==5.22
   "wespeaker @ git+https://github.com/wenet-e2e/wespeaker.git@9fecd6cb4f47475d01761d87c826298dff4ef18c"
 log asr; mk asr 3.12
 $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
-for e in voxcpm nanovox dots qwentts cosyvoice score asr; do
+log translate; mk translate 3.12
+# training/tranche/translate.py on the box: it imports translate_en_speech (anthropic, google-genai) and ingest (av).
+$UV pip install -q -p $E/translate httpx pyarrow anthropic google-genai huggingface_hub av==15.1.0 numpy
+for e in voxcpm nanovox dots qwentts cosyvoice score asr; do  # translate has no torch
   echo "$e: $($E/$e/bin/python -c 'import torch; print(torch.__version__, torch.version.cuda)')"
 done
 du -sh $E; df -h /workspace | tail -1
