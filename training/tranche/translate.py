@@ -47,11 +47,12 @@ GROUP = 4  # shards translated together: one generate call keeps the GPU's batch
 # A run stops once more rows than this share of those it has tried fail every try (past the first
 # MIN_ROWS): a systematic failure would otherwise write every shard null.
 MAX_FAILED, MIN_ROWS = 0.01, 5_000
-# Frequent Vietnamese words no English sentence or Vietnamese name holds: two of them in a reply mean
-# it was left (partly) in Vietnamese. Names keep or drop their diacritics without tripping it.
-VIETNAMESE_WORDS = {"và", "của", "là", "được", "những", "các", "này", "trong", "với", "không", "có", "một", "đã",
-                    "để", "thì", "người", "từ", "đến", "về", "cũng", "nhiều", "sẽ", "đó", "như", "khi", "lại",
-                    "phải", "còn", "rằng", "bị"}
+# Frequent Vietnamese words, each with a diacritic: two of them in a reply mean it was left (partly) in
+# Vietnamese. Names lose their diacritics (the prompt asks so), so a name never trips it: ASCII words
+# such as trong and khi are left out, as "Nguyen Phu Trong" is right.
+VIETNAMESE_WORDS = {"và", "của", "là", "được", "những", "các", "này", "với", "không", "có", "một", "đã", "để",
+                    "thì", "người", "từ", "đến", "về", "cũng", "nhiều", "sẽ", "đó", "như", "lại", "phải", "còn",
+                    "rằng", "bị"}
 
 
 def log(msg: str) -> None:
@@ -88,29 +89,38 @@ def engine(gpu_memory: float):
                enable_prefix_caching=False, limit_mm_per_prompt={"image": 0, "video": 0})
 
 
-def translate(llm, vi: list[str], prompts: list[str]) -> list[str | None]:
-    """-> each row's English, None where it fails every try. Each try is one generate call over the
-    rows still without one: greedy first, then sampled at Qwen3.5's non-thinking settings, seeded
-    afresh each run so that a rerun draws anew."""
+def translate(llm, vi: list[str], prompts: list[str], again: list[bool]) -> tuple[list[str | None], list[str]]:
+    """-> each row's English (None where it fails every try) and its last reply. Each try is one
+    generate call over the rows still without one: greedy first, then sampled at Qwen3.5's
+    non-thinking settings, seeded afresh each try (the engine's own seed is fixed) so that a rerun
+    draws anew; a row that failed in an earlier run (`again`) is sampled from its first try. Stops
+    the run when more than half the rows fail a try: a systematic failure."""
     from vllm import SamplingParams
 
+    greedy = SamplingParams(max_tokens=MAX_TOKENS, temperature=0)
     en: list[str | None] = [None] * len(vi)
+    last = [""] * len(vi)
     todo = list(range(len(vi)))
     for attempt in range(TRIES):
-        params = (SamplingParams(max_tokens=MAX_TOKENS, temperature=0) if attempt == 0 else
-                  SamplingParams(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
-                                 seed=int.from_bytes(os.urandom(4))))
+        sampled = SamplingParams(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
+                                 seed=int.from_bytes(os.urandom(4)))
+        params = [sampled if attempt or again[k] else greedy for k in todo]
         outputs = llm.chat([[{"role": "user", "content": prompts[k]}] for k in todo], params, use_tqdm=False,
                            chat_template_kwargs={"enable_thinking": False})
         for k, output in zip(todo, outputs, strict=True):
             reply = output.outputs[0]
+            last[k] = reply.text
             text = reply.text.strip() if reply.finish_reason == "stop" else None
             if not bad(vi[k], text):
                 en[k] = text
-        todo = [k for k in todo if en[k] is None]
+        failing = [k for k in todo if en[k] is None]
+        if len(todo) > MIN_ROWS and len(failing) > len(todo) / 2:
+            raise SystemExit(f"{len(failing):,} of {len(todo):,} rows failed try {attempt + 1}, a systematic "
+                             f"failure: stopping; e.g. {last[failing[0]][:300]!r}")
+        todo = failing
         if not todo:
             break
-    return en
+    return en, last
 
 
 def main() -> None:
@@ -154,34 +164,38 @@ def main() -> None:
     llm, tried, failed, start = None, 0, 0, time.time()
     with ThreadPoolExecutor(GROUP) as readers:
         groups = [shards[i:i + GROUP] for i in range(0, len(shards), GROUP)]
-        pending = readers.map(read, groups[0]) if groups else []
+        pending = readers.map(read, groups[0])
         for g, group in enumerate(groups):
             loaded = list(pending)
-            if g + 1 < len(groups):  # the next group's reads overlap this group's translation
-                pending = readers.map(read, groups[g + 1])
             # Rows without a translation: all of a new shard, or on a rerun those left null; never a
             # row already written, which may be voiced.
             todo = [(s, k) for s, (_, _, _, _, text_en) in enumerate(loaded) for k, en in enumerate(text_en)
                     if en is None]
+            if todo and llm is None:  # before the next reads start: vLLM forks its engine process
+                llm, start = engine(args.gpu_memory), time.time()
+            if g + 1 < len(groups):  # the next group's reads overlap this group's translation
+                pending = readers.map(read, groups[g + 1])
             if not todo:
                 log(f"{', '.join(shard[0] for shard in loaded)}: complete")
                 continue
-            if llm is None:
-                llm, start = engine(args.gpu_memory), time.time()
-            en = translate(llm, [loaded[s][3][k] for s, k in todo],
-                           [prompt(loaded[s][3], loaded[s][2], k) for s, k in todo])
+            again = [(out / loaded[s][0]).exists() for s, _ in todo]
+            en, last = translate(llm, [loaded[s][3][k] for s, k in todo],
+                                 [prompt(loaded[s][3], loaded[s][2], k) for s, k in todo], again)
             for (s, k), text in zip(todo, en, strict=True):
                 loaded[s][4][k] = text
             for name, ids, _, _, text_en in loaded:
                 part = out / f"{name}.part"
                 pq.write_table(pa.Table.from_pydict({"id": ids, "text_en": text_en}, schema=SCHEMA), part)
                 os.replace(part, out / name)
+            for (s, k), text, reply in zip(todo, en, last, strict=True):
+                if text is None:
+                    log(f"failed every try: {loaded[s][1][k]} {loaded[s][3][k][:120]!r} -> {reply[:200]!r}")
             tried += len(todo)
             failed += sum(text is None for text in en)
             minutes = (time.time() - start) / 60
             log(f"{', '.join(shard[0] for shard in loaded)}: {len(todo)} rows translated, "
-                f"{sum(text is None for text in en)} failed; {min((g + 1) * GROUP, len(shards))}/{len(shards)} shards, "
-                f"{tried / 60 / minutes:.0f} rows/s, {minutes:.1f} min")
+                f"{sum(text is None for text in en)} failed; {min((g + 1) * GROUP, len(shards))}/{len(shards)} "
+                f"shards, {tried / 60 / minutes:.0f} rows/s, {minutes:.1f} min")
             if tried > MIN_ROWS and failed > MAX_FAILED * tried:
                 raise SystemExit(f"{failed:,} of {tried:,} rows failed every try, a systematic failure: stopping")
     log(f"{args.source}: done; {failed} rows without a translation")

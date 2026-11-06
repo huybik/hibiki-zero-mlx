@@ -219,17 +219,19 @@ other corpora ─► their transcripts, word times by forced alignment ───
     because kept, the model answers in capitals (Muse did on 5.7% of archive 50's rows), and such
     rows broke in the TTS 59.8% of the time against 21.3% (archives 13–24).
   - The first try is greedy with thinking off. A reply is tried again, sampled (temperature 0.7,
-    top-p 0.8, top-k 20, unseeded), up to three tries in all, when it is cut at 512 tokens, empty,
-    holds letters of a script its Vietnamese lacks, holds two of 30 frequent Vietnamese words (left
-    in Vietnamese; names, with or without diacritics, never trip it), or runs past 2.5× its
-    Vietnamese's characters plus 20 (the model now and then translates the context rows too: 1 in
-    2,000 rows of the bake-off; English runs ~1.2× the Vietnamese).
-  - A row failing every try keeps `text_en` null and holds its shard back from voice. A rerun
-    tries only the null rows, sampling afresh; a row already written is never translated again,
-    as it may be voiced.
-  - A run stops once more than 1% of the rows it has tried fail every try (past 5,000), and a lock
-    keeps a second run off the same folder. Shards are written four at a time, once all their rows
-    are done, so a crash loses the four in flight.
+    top-p 0.8, top-k 20, a fresh seed each try: the engine's own is fixed), up to three tries in
+    all, when it is cut at 512 tokens, empty, holds letters of a script its Vietnamese lacks, holds
+    two of 28 frequent Vietnamese words, each with a diacritic (left in Vietnamese; names lose their
+    diacritics, so "Nguyen Phu Trong" is right: ASCII words such as trong and khi stay out), or runs
+    past 2.5× its Vietnamese's characters plus 20 (the model now and then translates the context
+    rows too: 1 in 2,000 rows of the bake-off; English runs ~1.2× the Vietnamese).
+  - A row failing every try keeps `text_en` null, is logged with its last reply, and holds its
+    shard back from voice. A rerun tries only the null rows, sampled from the first try; a row
+    already written is never translated again, as it may be voiced.
+  - A run stops when more than half a group's rows fail a try, or once more than 1% of the rows it
+    has tried fail every try (checked after each group, past 5,000); a lock keeps a second run off
+    the same folder. Shards are written four at a time, once all their rows are done, so a crash
+    loses the four in flight.
   - Muse Spark 1.3 Contributor through OpenRouter translated the first tranche and GigaSpeech 2
     archives 13–50 (2026-11-05/06), in batches of up to 40 consecutive rows: all 840,520 rows of
     the first tranche in ~55 min for $9.75. It wrote Chinese mid-sentence in 22 of the first
