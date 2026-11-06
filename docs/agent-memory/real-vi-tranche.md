@@ -263,6 +263,14 @@ trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
   row is dropped when the ASR (over `spoken`, so digits count) has more of them than the
   transcript: 2.06% of GigaSpeech 2's first 42,255 rows, 1.45% under the CER cut; 0.2% of
   PhoAudiobook's and viVoice's, mostly the ASR mishearing ("tết tỷ").
+- Over the whole first tranche (`asr_vi` complete on 2026-11-06, 840,520 rows in 9.13 h), the
+  gates that need no English drop, in their order:
+
+  | Source | Rows | Language | CER over 0.15 | Magnitudes | Total |
+  |---|---:|---:|---:|---:|---:|
+  | PhoAudiobook | 290,037 | 0.01% | 0.48% | 0.17% | 0.66% |
+  | viVoice | 269,350 | 0.03% | 0.99% | 0.17% | 1.20% |
+  | GigaSpeech 2 | 281,133 | 0.03% | 3.91% | 1.39% | 5.34% |
 - The Vietnamese-letter rule drops 118 of 10,392 rows on PhoAudiobook shards 0–7 (1.1%), 49 of
   them broken anyway. Of the rest, about half are lead-ins the TTS spoke in Vietnamese ("Không.
   Being rejected…", "Bước ngoặt khác, managing the farm") and half Vietnamese names the ASR spelled
