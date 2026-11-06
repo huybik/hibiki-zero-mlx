@@ -44,9 +44,15 @@ draws use split `train`.
   number.
 - Magnitudes: GigaSpeech 2's transcripts drop nghìn, triệu and tỷ from numbers ("hơn một chuyến
   tàu" where the speaker says "hơn một nghìn chuyến", "ba ba trăm linh" for 3,300), at any CER. A
-  row is dropped when the ASR (over `spoken`, so digits count) has more of them than the
-  transcript: 2.06% of GigaSpeech 2's first 42,255 rows, 1.45% under the CER cut; 0.2% of
-  PhoAudiobook's and viVoice's, mostly the ASR mishearing ("tết tỷ").
+  row is dropped when the ASR (over `spoken`, so digits count) has more of any one of them than
+  the transcript, word by word, so a swapped magnitude drops too (a viVoice transcript's "2,1
+  triệu đồng" where the ASR hears tỷ; summed counts kept it): 2.06% of GigaSpeech 2's first
+  42,255 rows, 1.45% under the CER cut; 0.2% of PhoAudiobook's and viVoice's, mostly the ASR
+  mishearing ("tết tỷ"); word by word adds ~0.13% of PhoAudiobook's. Left as they are (a review,
+  2026-11-06): `spoken` reads "20.000đ" or "7.940kg" (digits glued to a unit) without their
+  nghìn, 2 kept rows in GigaSpeech 2's 245k; it does not fold "tỉ" into "tỷ", which drops ~14
+  rows a source whose transcript writes "tỉ" ("ba tỉ" against the ASR's "3 tỷ"). Changing
+  `spoken` would also change the CER `filters asr` stored.
 - Over the whole first tranche (`asr_vi` complete on 2026-11-06, 840,520 rows in 9.13 h), the
   gates that need no English drop, in their order:
 
