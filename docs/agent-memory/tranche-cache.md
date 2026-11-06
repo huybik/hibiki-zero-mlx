@@ -5,7 +5,7 @@ grounded caches, its row gates and their thresholds. The tranche and its other s
 [real-vi-tranche](real-vi-tranche.md); the row layout in
 [sft-data-caches](sft-data-caches.md#row-layout).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Codes and timing](#codes-and-timing) ·
-[Running](#running)
+[Running](#running) · [Scale-up](#scale-up)
 
 `training/tranche/cache.py build <sources>` (CUDA, the training `.venv`) turns each segments shard
 whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `cache/<source>/shard_<shard>.pt` of
@@ -107,3 +107,23 @@ draws use split `train`.
   no more. `fetch` now takes the box's own `en_audio` and `asr_vi` under `--root` where voice and
   filters wrote them (0.4–0.6 s a shard; segments and `text_en` come from the HF cache), and the
   save runs in a thread while the next shard builds.
+
+## Scale-up
+
+Before building a larger tranche (the plan's ~10k h: more GigaSpeech 2 and YODAS), optimize the
+build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× on the Mimi audio
+(both clips, ~2.1× the Vietnamese hours), 10k h of source takes ~13–19 h of GPU. In order:
+
+- Keep the inputs on local disk: the box's Hub downloads ran ~4 MB/s and parallel downloads got
+  no more, so a build that downloads starves the GPU. Run the TTS and the ASR on the box that
+  builds (their outputs stay under `--root`), or move the parts there well before the build.
+- Measure where the GPU time goes, Mimi against wav2vec2 (never split yet), with `nvidia-smi`
+  every 0.2 s and the gaps lined up with the shard log; aim for under 10% idle.
+- Mimi stays float32 with TF32 off (other precisions change the codes, unlike the existing
+  caches); `torch.compile` or CUDA graphs on its encoder keep the codes. wav2vec2 may run in
+  TF32 or bf16 if word starts stay within a frame of float32 on real rows.
+- Per-shard fixed costs weigh on small shards (viVoice's 3.8 h of Mimi audio ran ~1,100× against
+  PhoAudiobook's ~1,400×): fuller last batches across shard boundaries, or bigger shards.
+- CPU: 25 workers on the 26.9-CPU quota averaged 10.5 CPUs but throttled 14% of the 100 ms
+  periods in bursts (`/sys/fs/cgroup/cpu.stat`); check the main process is not the one stalled.
+
