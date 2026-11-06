@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """VI→EN translation of the tranche's segments on the box: Index-Translate-35B-A3B in vLLM, in this
-process, on the GPU ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline)).
+process, on the GPU ([tranche-translate](../../docs/agent-memory/tranche-translate.md)).
 
 Reads each segments shard's id, doc and text from its tranche repo on the Hub (only those columns, no
 audio), translates each row as its own prompt, with up to CONTEXT_ROWS earlier rows of its doc as
@@ -31,7 +31,7 @@ from training.paths import exclusive
 from training.prep.translate_en_speech import NON_LATIN, broken
 from training.tranche.ingest import REPO, ROOT, SOURCES
 
-# Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (real-vi-tranche, Models).
+# Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (tranche-translate, Bake-off).
 # Apache-2.0; BF16 weights, quantized to FP8 as they load.
 MODEL = ("IndexTeam/Index-Translate-35B-A3B-preview", "7e4029e0df842502cb009cf493d6467c247043b3")
 MAX_TOKENS = 512  # a row's English takes ~20 tokens, the longest a few hundred
