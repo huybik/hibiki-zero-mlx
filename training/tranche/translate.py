@@ -35,7 +35,7 @@ from training.tranche.ingest import REPO, ROOT, SOURCES
 # Apache-2.0; BF16 weights, quantized to FP8 as they load.
 MODEL = ("IndexTeam/Index-Translate-35B-A3B-preview", "7e4029e0df842502cb009cf493d6467c247043b3")
 MAX_TOKENS = 512  # a row's English takes ~20 tokens, the longest a few hundred
-TRIES = 3  # per row and run: greedy, then sampled
+TRIES = 6  # per row and run: greedy, then sampled; a failing row holds its whole shard back, and retries cost seconds
 CONTEXT_ROWS = 2
 # The short form scored as the long one on the bake-off (FLEURS dev chrF 64.8 against 64.7, archive
 # 50 against Muse 68.7 against 69.1, on Index-Translate-9B) with 21% fewer prompt tokens.

@@ -212,15 +212,22 @@ other corpora ─► their transcripts, word times by forced alignment ───
   `id`, `doc` and `text` from the Hub, translates each row as its own prompt, with up to two
   earlier rows of its doc as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`,
   `text_en`); `ingest push <source> --part text_en` uploads it beside the segments.
-  - It takes the GPU memory voice holds (0.75 of it, beside the ASR server), so translation and
-    voice take turns: translation in bursts that run ahead of voice. Four shards go into each
-    generate call, and the next four are read meanwhile.
+  - It takes the GPU memory voice and the ASR server hold (0.9 of it), so translation and voice
+    take turns: `/workspace/translate_burst.sh FIRST` (voice, filters and the ASR server stopped
+    first) translates every pushed shard from FIRST on, pushes `text_en` and restarts them. Four
+    shards go into each generate call, and the next four are read meanwhile.
+  - Speed (2026-11-07, GigaSpeech 2, ~21,700 rows an archive): 204 rows/s, an archive in ~1.8 min,
+    at 0.9 of the GPU, 512 sequences and 16k-token prefill steps; 125 rows/s at 0.75 beside the
+    ASR server with 256 (PyTorch's allocator hitting out-of-memory). The GPU sits near 58% and
+    430 W while vLLM's engine loop and the main process each hold a core: the engine is
+    CPU-bound. Chat templates and tokenizing take 0.08 ms a row. py-spy cannot attach in this
+    container (no ptrace).
   - GigaSpeech 2's transcripts are all capitals: a transcript all in capitals goes in lowercased,
     because kept, the model answers in capitals (Muse did on 5.7% of archive 50's rows), and such
     rows broke in the TTS 59.8% of the time against 21.3% (archives 13–24).
   - The first try is greedy with thinking off. A reply is tried again, sampled (temperature 0.7,
-    top-p 0.8, top-k 20, a fresh seed each try: the engine's own is fixed), up to three tries in
-    all, when it is cut at 512 tokens, empty, holds letters of a script its Vietnamese lacks, holds
+    top-p 0.8, top-k 20, a fresh seed each try: the engine's own is fixed), up to six tries in all
+    (the later ones cover a few rows a group, in seconds), when it is cut at 512 tokens, empty, holds letters of a script its Vietnamese lacks, holds
     two of 28 frequent Vietnamese words, each with a diacritic (left in Vietnamese; names lose their
     diacritics, so "Nguyen Phu Trong" is right: ASCII words such as trong and khi stay out), or runs
     past 2.5× its Vietnamese's characters plus 20 (the model now and then translates the context
