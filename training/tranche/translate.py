@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""VI→EN translation of the tranche's segments on Muse Spark 1.3 Contributor through OpenRouter
+"""VI→EN translation of the tranche's segments on Gemini 2.5 Flash through OpenRouter
 ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline)).
 
 Reads each segments shard's id, doc and text from its tranche repo on the Hub (only those columns, no
@@ -31,7 +31,10 @@ from training.paths import exclusive
 from training.prep.translate_en_speech import MUSE_TIMEOUT, Stopped, broken, muse_call
 from training.tranche.ingest import REPO, ROOT, SOURCES
 
-PRICE = (0.10, 0.20)  # Contributor $ per million input and output tokens
+# Muse Spark 1.3 Contributor translated the first tranche and GigaSpeech 2 to archive 50, until Meta
+# blocked the key (2026-11-06); Gemini 2.5 Flash matched it on FLEURS dev (real-vi-tranche, Models).
+MODEL = "google/gemini-2.5-flash"
+PRICE = (0.30, 2.50)  # $ per million input and output tokens
 # Tested on 300 tranche rows against Hy-MT2 with a blind judge (real-vi-tranche, Models).
 INSTRUCTIONS = """You translate Vietnamese transcripts of speech into English. An English text-to-speech voice will read each translated line as its own audio clip.
 
@@ -112,7 +115,7 @@ def main() -> None:
         mid-sentence), splits its batch in halves."""
         if stop.is_set():
             raise Stopped
-        en, _, used, _ = muse_call(client, stop, args.key, lines, INSTRUCTIONS)
+        en, _, used, _ = muse_call(client, stop, args.key, lines, INSTRUCTIONS, MODEL)
         with lock:
             usage.update(used)
         if en is not None and not any(broken(vi, e) for vi, e in zip(lines, en)):

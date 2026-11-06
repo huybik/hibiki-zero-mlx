@@ -557,14 +557,15 @@ def gemini(out: Path, keys: list[str], batch_chars: int) -> None:
 
 
 def muse_call(client: httpx.Client, stop: threading.Event, key: str, lines: list[str],
-              instructions: str) -> tuple[list[str] | None, str, Counter, dict]:
-    """One Muse call on numbered lines -> the translated lines or None, the raw reply, the usage and
-    the key. instructions: the system prompt (EN→VI here, VI→EN in training/tranche/translate.py)."""
+              instructions: str, model: str) -> tuple[list[str] | None, str, Counter, dict]:
+    """One OpenRouter call on numbered lines -> the translated lines or None, the raw reply, the usage
+    and the key. instructions: the system prompt (EN→VI here, VI→EN in training/tranche/translate.py);
+    model: MUSE_MODEL here, translate.MODEL there."""
     failures = 0
     while True:
         try:
             response = client.post(MUSE_URL, json={
-                "model": MUSE_MODEL, "max_tokens": MAX_TOKENS, "reasoning": {"effort": "minimal"},  # cannot be off
+                "model": model, "max_tokens": MAX_TOKENS, "reasoning": {"effort": "minimal"},  # cannot be off
                 "messages": [{"role": "system", "content": instructions}, {"role": "user", "content": numbered(lines)}]})
             reply = response.json()
         except (httpx.TransportError, json.JSONDecodeError) as error:
@@ -612,7 +613,7 @@ def muse(out: Path, key: str, batch_chars: int, concurrency: int) -> None:
                               headers={"Authorization": f"Bearer {os.environ[key]}"})
         stop = threading.Event()
         with log_path.open("a") as accepted, (out / "muse" / "rejects.jsonl").open("a") as rejected:
-            failed = rounds(texts, pending, lambda lines: muse_call(client, stop, key, lines, INSTRUCTIONS), stop, done,
+            failed = rounds(texts, pending, lambda lines: muse_call(client, stop, key, lines, INSTRUCTIONS, MUSE_MODEL), stop, done,
                             accepted, rejected, batch_chars, concurrency)
         if len(failed) > len(mine) / 10:
             raise SystemExit(f"{len(failed):,} of {len(mine):,} claimed lines fail even alone, a systematic "
