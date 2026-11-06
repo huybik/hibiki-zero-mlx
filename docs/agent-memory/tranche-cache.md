@@ -100,3 +100,10 @@ draws use split `train`.
   161 s with the model load, the GPU idle its first ~60 s while the clips decode and 85–95% busy
   after (the build reads and decodes the next shard behind the current one). ~49 GB of GPU at
   its peak. ~2.6 h for the tranche.
+- In the full build (2026-11-06) viVoice ran ~1,000–1,170× with the GPU idle 34% of the time:
+  two gaps a shard, 2.4–4.2 s after the CTC while `load_next` waited for the next shard's read,
+  and 0.6–1.6 s for the save. The read was the Hub download: ~4 MB/s on the box, 10–18 s for a
+  viVoice shard's 60 MB (mostly `en_audio`) against ~8 s of GPU work, and parallel downloads got
+  no more. `fetch` now takes the box's own `en_audio` and `asr_vi` under `--root` where voice and
+  filters wrote them (0.4–0.6 s a shard; segments and `text_en` come from the HF cache), and the
+  save runs in a thread while the next shard builds.
