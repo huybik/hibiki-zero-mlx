@@ -164,11 +164,10 @@ def asr_shard(source: str, name: str, root: Path, hearer: Hearer, decoders, pool
     import jiwer
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from huggingface_hub import hf_hub_download
+    from training.tranche.ingest import part_file
 
     dest = SOURCES[source].dest
-    seg = pq.read_table(hf_hub_download(REPOS[dest], f"{source}/segments/{name}", repo_type="dataset"),
-                        columns=["id", "text", "audio"])
+    seg = pq.read_table(part_file(root, source, "segments", name), columns=["id", "text", "audio"])
     audio = [a["bytes"] for a in seg.column("audio").to_pylist()]
     heard = list(pool.map(hearer.hear, decoders.map(wav_16k, audio, chunksize=32)))
     cer = []

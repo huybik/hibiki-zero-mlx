@@ -156,6 +156,11 @@ other corpora ─► their transcripts, word times by forced alignment ───
   - The audio decodes to within 0.5 ms of `duration_s`. Clips under 1 s (some of GigaSpeech
     2's) decode 6.5 ms long, as ffmpeg cannot trim a one-page Ogg stream. Ogg serial numbers are
     random, so a re-ingested shard differs in bytes and uploads again.
+- Each stage reads a shard's parts through `ingest.part_file`: the copy under `--root` where a
+  stage on the box wrote one (all write whole, by a rename, and keep their files after pushing),
+  else the Hub's. The box downloads from the tranche repos at ~5 MB/s, and a second copy in the HF
+  cache doubles a shard's disk. Translation still lists the Hub's segments and translates every
+  shard without a local `text_en`: give it `--shards` past the shards translated elsewhere.
 - Translate (`training/tranche/translate.py`, CPU, runs on the Mac) reads each segments shard's
   `id`, `doc` and `text` from the Hub, translates on Muse Spark 1.3 Contributor with the prompt
   the blind judge tested, in batches of up to 40 consecutive rows and 6,000 characters that end

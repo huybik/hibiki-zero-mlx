@@ -232,6 +232,19 @@ def push(args: argparse.Namespace) -> None:
                       commit_message=f"{args.source} {args.part}")
 
 
+def part_file(root: Path, source: str, part: str, name: str) -> Path:
+    """A shard's part (segments, text_en, en_audio, asr_vi): the box's own copy under `root` where a
+    stage wrote one (each writes whole, by a rename, and keeps it after pushing), else the Hub's (the
+    HF cache keeps it). The box's downloads from the tranche repos run ~5 MB/s, and a second copy in
+    the HF cache doubles a shard's disk."""
+    local = root / SOURCES[source].dest / source / part / name
+    if local.exists():
+        return local
+    from huggingface_hub import hf_hub_download
+
+    return Path(hf_hub_download(REPOS[SOURCES[source].dest], f"{source}/{part}/{name}", repo_type="dataset"))
+
+
 def push_part(root: Path, source: str, part: str) -> None:
     """`push`, tried again after a transient Hub error, for the stages that push as they go."""
     import time

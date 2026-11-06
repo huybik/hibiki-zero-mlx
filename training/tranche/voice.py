@@ -454,12 +454,11 @@ def _check(text: str, wav: np.ndarray) -> dict:
 
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     import pyarrow.parquet as pq
-    from huggingface_hub import hf_hub_download
 
-    from training.tranche.ingest import REPOS, SOURCES
+    from training.tranche.ingest import SOURCES, part_file
 
     dest = SOURCES[source].dest
-    get = lambda part: pq.read_table(hf_hub_download(REPOS[dest], f"{source}/{part}/{name}", repo_type="dataset"))  # noqa: E731
+    get = lambda part: pq.read_table(part_file(root, source, part, name))  # noqa: E731
     seg = get("segments").select(["id", "text", "audio"])
     en = dict(zip(*get("text_en").select(["id", "text_en"]).to_pydict().values()))
     ids = seg.column("id").to_pylist()

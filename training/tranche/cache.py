@@ -70,7 +70,7 @@ from training.prep.text_timing import (
     timed_sentencepiece_tokens,
 )
 from training.tranche.filters import eval_grams, overlaps, spoken
-from training.tranche.ingest import REPOS, ROOT, SOURCES, push_part
+from training.tranche.ingest import REPOS, ROOT, SOURCES, part_file, push_part
 
 SAMPLE_RATE = 24_000  # Mimi
 CTC_RATE = 16_000
@@ -249,15 +249,8 @@ def vietnamese_letters(en_asr: str, text_en: str) -> set[str]:
 
 
 def fetch(root: Path, source: str, name: str) -> dict[str, Path]:
-    """The shard's input files: the copy under `root` where the box wrote one (voice and filters
-    keep what they push, written whole by a rename), else the Hub's (the HF cache keeps it). The
-    box's Hub downloads ran ~4 MB/s, slower than the GPU takes a viVoice shard's 60 MB."""
-    from huggingface_hub import hf_hub_download
-
-    dest = SOURCES[source].dest
-    local = {part: root / dest / source / part / name for part in PARTS}
-    return {part: path if path.exists() else Path(hf_hub_download(REPOS[dest], f"{source}/{part}/{name}", repo_type="dataset"))
-            for part, path in local.items()}
+    """The shard's input files, the box's own copies first (`ingest.part_file`)."""
+    return {part: part_file(root, source, part, name) for part in PARTS}
 
 
 def magnitudes(text: str) -> list[int]:
