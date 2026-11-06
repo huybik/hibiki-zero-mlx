@@ -10,7 +10,7 @@ pass of the VAE decoder in fp16 under torch.compile (3.4x fp32's speed; 57 dB SN
 which voxcpm runs). The VAE is causal throughout, so a batch's right padding leaves every row's
 audio as decoded alone. Prompts are encoded in fp32 batches the same way.
 
-Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with the HF token in
+Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in
 the environment and the ASR server up:
   /workspace/envs/asr/bin/qwen-asr-serve <Qwen3-ASR-1.7B snapshot> --served-model-name asr \
       --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
@@ -504,14 +504,22 @@ def run(args: argparse.Namespace) -> None:
 
     from training.tranche import ingest
 
+    import pyarrow.parquet as pq
+
+    ingest.an_token()
     api = HfApi()
     todo = []
     for source in args.sources:
         files = api.list_repo_files(ingest.REPO, repo_type="dataset")
         done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/en_audio/")}
-        # A shard waits for its translation, pushed or still only here (translate runs beside voice).
+        # A shard waits for its translation, pushed or still only here (translate runs beside voice),
+        # and while a row of it has none (translate's next pass fills it).
         translated = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/text_en/")}
-        translated |= {p.name for p in (args.root / source / "text_en").glob("*.parquet")}
+        for p in (args.root / source / "text_en").glob("*.parquet"):
+            if pq.read_table(p, columns=["text_en"]).column("text_en").null_count:
+                translated.discard(p.name)
+            else:
+                translated.add(p.name)
         for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
             name = f.rsplit("/", 1)[1]
             dst = args.root / source / "en_audio" / name

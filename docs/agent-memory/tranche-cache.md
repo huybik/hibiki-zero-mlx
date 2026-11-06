@@ -119,7 +119,8 @@ Before building a larger tranche (the plan's ~10k h: more GigaSpeech 2 and YODAS
 build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× on the Mimi audio
 (both clips, ~2.1× the Vietnamese hours), 10k h of source takes ~13–19 h of GPU. In order:
 
-- Keep the inputs on local disk: the box's Hub downloads ran ~4 MB/s and parallel downloads got
+- Keep the inputs on local disk, or download them with `HF_HUB_DISABLE_XET=1`: through Xet the box's
+  Hub downloads ran ~4 MB/s (plain HTTP: 143 MB/s with 8 at once, 2026-11-06), and parallel Xet downloads got
   no more, so a build that downloads starves the GPU. Run the TTS and the ASR on the box that
   builds (their outputs stay under `--root`), or move the parts there well before the build.
 - Measure where the GPU time goes, Mimi against wav2vec2 (never split yet), with `nvidia-smi`

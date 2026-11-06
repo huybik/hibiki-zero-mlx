@@ -24,7 +24,7 @@ A row is dropped, with the first reason that applies (the shard's `rejected`), w
 Decode workers (PyAV, soxr) feed the GPU, which runs the CTC forward over padded batches (the
 padding masked, so each clip's emissions are its own) and Mimi over padded batches; the CTC
 Viterbi runs in the workers while Mimi encodes. Env: the training .venv (training/h100.sh setup).
-From the repo root on the box, with the HF token in the environment:
+From the repo root on the box, with HF_TOKEN_AN (pushes) in the environment:
   .venv/bin/python -m training.tranche.cache build pho vivoice giga
 """
 from __future__ import annotations
@@ -457,6 +457,9 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
 
 
 def build(args: argparse.Namespace) -> None:
+    from training.tranche.ingest import an_token
+
+    an_token()
     # Taken first: a second run must not push or load models onto a GPU the first one uses.
     args.root.mkdir(parents=True, exist_ok=True)
     with exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"):

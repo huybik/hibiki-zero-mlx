@@ -40,7 +40,9 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
   - Both are gated with automatic approval: research-only, no-impersonation terms, each folder
     under its source's terms, and GigaSpeech 2's terms of access in full (their clause 4 lets a
     researcher give access to those who first agree to them; the user: our derived data complies).
-    PhoAudiobook is shared with its author's permission (the user asked, 2026-11-06).
+    PhoAudiobook, whose user agreement forbids distributing it "in any original or modified form",
+    is shared with its author's permission: the user asked the author and allowed it here
+    (2026-11-06).
   - Pushes take `HF_TOKEN_AN`, a write token of anquachdev (`/workspace/.env` on the box; the jobs'
     scripts source it). Reads use huybik's own token, granted access through both gates. `push`
     refuses a repo that is not gated.
@@ -48,8 +50,10 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
     repo already used 56 GB (~44 MB per hour of GigaSpeech 2: segments 16, `en_audio` 20, cache 8).
   - The first tranche was in `huybik/hibiki-zero-vi-real` (public, gated: viVoice) and
     `huybik/hibiki-zero-vi-real-restricted` (private: PhoAudiobook, GigaSpeech 2 archives 0–12;
-    never make it public). Both stay as they were; their files were copied to the new repos
-    (2026-11-06, ~30 MB/s with 8 downloads at once against ~5 MB/s for one).
+    never make it public). Both stay as they were; their files are copied to the new repos
+    (2026-11-06: 143 MB/s over plain HTTP, 8 downloads at once with `HF_HUB_DISABLE_XET=1`; through
+    Xet ~30 MB/s, and its threads hung after ~13 min). Re-uploading files the Hub already holds takes
+    seconds: Xet deduplicates across repos (the first tranche's 591 caches in 20 s).
   - The card of `REPO` declares the segments configs (`pho-segments`, `vivoice-segments`,
     `giga-segments`, `audio` as Audio) beside PhoMT's `default`, so the viewer and `datasets`
     decode those. `en_audio` has no config: its readers decode the Opus bytes themselves.
@@ -169,7 +173,8 @@ other corpora ─► their transcripts, word times by forced alignment ───
     random, so a re-ingested shard differs in bytes and uploads again.
 - Each stage reads a shard's parts through `ingest.part_file`: the copy under `--root` where a
   stage on the box wrote one (all write whole, by a rename, and keep their files after pushing),
-  else the Hub's. The box downloads from the tranche repos at ~5 MB/s a stream, and a second copy
+  else the Hub's. The box downloads through Xet at ~5 MB/s a stream (plain HTTP, `HF_HUB_DISABLE_XET=1`,
+  reached 143 MB/s with 8 at once), and a second copy
   in the HF cache doubles a shard's disk. A part regenerated elsewhere and pushed loses to a stale
   local copy: delete the local one first (`text_en` refilled on another machine would leave voice
   stopping on "rows without text_en"). Translation still lists the Hub's segments and translates

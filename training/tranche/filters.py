@@ -13,7 +13,7 @@
                      folder every 30 min and at its end. A rerun skips the shards written or pushed,
                      and first pushes any written but not yet pushed
 
-From the repo root, with the HF token in the environment; `asr` on the box with the ASR server up
+From the repo root, with HF_TOKEN_AN (pushes) in the environment; `asr` on the box with the ASR server up
 (see voice.py):
   python -m training.tranche.filters overlap
   /workspace/envs/nanovox/bin/python -m training.tranche.filters asr pho vivoice giga
@@ -188,6 +188,9 @@ def asr(args: argparse.Namespace) -> None:
     import pyarrow.parquet as pq
     from huggingface_hub import HfApi
 
+    from training.tranche.ingest import an_token
+
+    an_token()
     api = HfApi()
     todo = []
     for source in args.sources:

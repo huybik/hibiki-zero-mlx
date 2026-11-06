@@ -222,10 +222,16 @@ def segments(args: argparse.Namespace) -> None:
             raise
 
 
+def an_token() -> str:
+    """The write token of the anquachdev account, which owns REPO and CACHE_REPO; the stages that
+    push read it at their start, so a missing one stops them before any work."""
+    return os.environ["HF_TOKEN_AN"]
+
+
 def push(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi
 
-    api = HfApi(token=os.environ["HF_TOKEN_AN"])
+    api = HfApi(token=an_token())
     repo, folder, pattern = ((CACHE_REPO, args.root / "cache", f"{args.source}/*.pt") if args.part == "cache"
                              else (REPO, args.root, f"{args.source}/{args.part}/*.parquet"))
     # upload_folder never creates the repo, so a missing one fails instead of appearing ungated.
@@ -238,7 +244,7 @@ def push(args: argparse.Namespace) -> None:
 def part_file(root: Path, source: str, part: str, name: str) -> Path:
     """A shard's part (segments, text_en, en_audio, asr_vi): the box's own copy under `root` where a
     stage wrote one (each writes whole, by a rename, and keeps it after pushing), else the Hub's (the
-    HF cache keeps it). The box's downloads from the tranche repos run ~5 MB/s, and a second copy in
+    HF cache keeps it). The box's downloads through Xet run ~5 MB/s (`HF_HUB_DISABLE_XET=1`: ~140 MB/s), and a second copy in
     the HF cache doubles a shard's disk."""
     local = root / source / part / name
     if local.exists():
@@ -252,6 +258,7 @@ def push_part(root: Path, source: str, part: str) -> None:
     """`push`, tried again after a transient Hub error, for the stages that push as they go."""
     import time
 
+    an_token()  # a missing token is not a Hub error: fail now, not after the retries
     for attempt in range(4):
         try:
             push(argparse.Namespace(root=root, source=source, part=part))
