@@ -69,7 +69,12 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
 - Burst 1 (archives 51–156, three tries, 2026-11-07) left 118 rows null in 67 archives; a rerun
   with the Chinese-token ban left 42 (about half echoed Vietnamese, half context leaks or
   expansions); a rerun with context-free tries and the echo ban left none, but 6 of its 42 rows
-  dodged the ban (above) and were set null again before the push, for a rerun with the check.
+  dodged the ban (above) and were set null again before the push. Their rerun on 4f81680 wrote
+  all six in ASCII: "Shuttlecock kicking" for đá cầu, but names still guessed ("Chic Huong" for
+  chị Hương, "Lawyer Throm"). Burst 2 translated archives 159–215 with one row failing every try
+  (giga/185-325-10, "[crowned]" in brackets each time), so archive 185 is held from voice; the
+  35B was deleted after the burst (203 archives translated, more than voice reaches by the
+  rental's end).
 - The 35B keeps the diacritics of 0.73% of its rows' names ("Đỗ Hoàng Việt"; Muse 0.05%) despite
   the prompt; only a row already retried under bans is rejected for them.
 - A row failing every try keeps `text_en` null, is logged with its last reply, and holds its
