@@ -44,12 +44,15 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
     như, lại, từ, which a name left with its diacritics holds ("Như Xuân"). Some rows come back as
     their own Vietnamese, capitalized, every try ("Bà Hằng kể lúc đó…"), so the row's later tries
     may not emit the tokens that reply wrote Vietnamese letters with;
-  - on a try under such bans, holding any Vietnamese letter, or two of the 25 words written
-    without diacritics ("do" left out: it is English). The model dodges a ban with the word's
-    first token and another ending: Chị is 'Ch'+'ị', so "ChỊ Huong", "Bá Hàng", "Cà khịa" for
-    đá cầu (4 of the 42 rows of burst 2's rerun). Some dodges stay English-looking and pass
-    ("Chia Hoa" for chị Hòa, "Lawyer Thang" for luật sư Thơm). Over all rows the folded words
-    fire on 0.24% (name syllables: Thi, Da, Co), so only rows under bans are held to it;
+  - on a try under such bans, holding any Vietnamese letter (after NFC, or a lone combining
+    mark), or two of 24 of those words written without diacritics, lowercase and whole ("do"
+    left out: it is English; Thi in a name, I've and co-founder don't count). The model dodges a
+    ban with the word's first token and another ending: Chị is 'Ch'+'ị', so "ChỊ Huong", "Bá
+    Hàng", "Cà khịa" for đá cầu (4 of the 42 rows of burst 2's rerun). Such a reply bans its
+    Vietnamese-letter tokens too. Some dodges stay English-looking and pass ("Chia Hoa" for chị
+    Hòa, "Lawyer Thang" for luật sư Thơm). Over 119,488 accepted rows (archives 60–160, every
+    20th) the folded words fire on 4, all Vietnamese left in ("con doi art"); a Vietnamese
+    letter is in 0.81% (names kept with diacritics), so only rows under bans are held to it;
   - from a prompt with context rows, longer than 2.5× its Vietnamese's characters plus 20: the
     model now and then translates the context rows too (1 in 2,000 rows of the bake-off; English
     runs ~1.2× the Vietnamese). Without context rows, longer than 4× plus 40: only a reply that
@@ -65,7 +68,7 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   expansions); a rerun with context-free tries and the echo ban left none, but 6 of its 42 rows
   dodged the ban (above) and were set null again before the push, for a rerun with the check.
 - The 35B keeps the diacritics of 0.73% of its rows' names ("Đỗ Hoàng Việt"; Muse 0.05%) despite
-  the prompt; nothing rejects them.
+  the prompt; only a row already retried under bans is rejected for them.
 - A row failing every try keeps `text_en` null, is logged with its last reply, and holds its
   shard back from voice. A rerun tries only the null rows, sampled from the first try; a row
   already written is never translated again, as it may be voiced.

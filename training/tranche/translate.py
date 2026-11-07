@@ -63,19 +63,29 @@ def log(msg: str) -> None:
 
 
 def fold(text: str) -> str:
-    """Lowercase, without diacritics (đ as d)."""
-    text = unicodedata.normalize("NFD", text.lower().replace("đ", "d"))
+    """Without diacritics (đ as d)."""
+    text = unicodedata.normalize("NFD", text.replace("Đ", "D").replace("đ", "d"))
     return "".join(c for c in text if not unicodedata.combining(c))
 
 
 # "do" (đó) is also English.
 FOLDED_WORDS = {fold(w) for w in VIETNAMESE_WORDS} - {"do"}
+EDGES = ".,;:!?\"'()…“”‘’"
 
 
 def left_in_vietnamese(en: str, folded: bool = False) -> bool:
-    """Two or more of VIETNAMESE_WORDS; `folded`, also written without their diacritics."""
-    text, words = (fold(en), FOLDED_WORDS) if folded else (unicodedata.normalize("NFC", en).lower(), VIETNAMESE_WORDS)
-    return sum(w in words for w in re.sub(r"[^\w\s]", " ", text).split()) >= 2
+    """Two or more of VIETNAMESE_WORDS; `folded`, written without their diacritics, lowercase and
+    whole (not name syllables such as Thi, nor 've or co- in I've, co-founder)."""
+    if folded:
+        return sum(w.strip(EDGES) in FOLDED_WORDS for w in fold(en).split()) >= 2
+    words = re.sub(r"[^\w\s]", " ", unicodedata.normalize("NFC", en).lower()).split()
+    return sum(w in VIETNAMESE_WORDS for w in words) >= 2
+
+
+def vietnamese_letters(text: str) -> bool:
+    """A Vietnamese letter, precomposed or as a base letter and combining marks; or a lone mark."""
+    return bool(VIETNAMESE_LETTER.search(unicodedata.normalize("NFC", text))) or any(
+        unicodedata.combining(c) for c in text)
 
 
 def bad(vi: str, en: str | None, context: bool, banned: bool) -> bool:
@@ -93,7 +103,7 @@ def bad(vi: str, en: str | None, context: bool, banned: bool) -> bool:
         return True
     if "[" in en and "[" not in vi:  # "[Name]", "[a specific time]": the TTS would read them
         return True
-    if banned and (VIETNAMESE_LETTER.search(en) or left_in_vietnamese(en, folded=True)):
+    if banned and (vietnamese_letters(en) or left_in_vietnamese(en, folded=True)):
         return True
     return left_in_vietnamese(en)
 
@@ -160,12 +170,13 @@ def translate(llm, vi: list[str], prompts: list[str], bare: list[str],
                 continue
             own = set(NON_LATIN.findall(vi[k]))
             foreign = bool(set(NON_LATIN.findall(reply.text)) - own)
-            echoed = left_in_vietnamese(reply.text)
+            # Under bans, any Vietnamese letter: its tokens are never needed in this row's English.
+            echoed = left_in_vietnamese(reply.text) or (k in banned and vietnamese_letters(reply.text))
             if foreign or echoed:
                 for t in reply.token_ids:
                     piece = tokenizer.decode([t])
                     if (foreign and ("\ufffd" in piece or set(NON_LATIN.findall(piece)) - own)
-                            or echoed and VIETNAMESE_LETTER.search(piece)):
+                            or echoed and vietnamese_letters(piece)):
                         banned.setdefault(k, {}).pop(t, None)  # re-banned: the newest again
                         banned[k][t] = None
         failing = [k for k in todo if en[k] is None]
