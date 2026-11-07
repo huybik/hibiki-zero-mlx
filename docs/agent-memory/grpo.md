@@ -5,7 +5,7 @@ Read when touching `training/finetune/grpo.py`, `grpo_profile.py`, `rewards.py` 
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Checks](#checks) · [Running](#running)
 
 The stage after SFT ([plan](../grpo_plan.md)): the paper's GRPO with BLEU process rewards, on
-streams of the noisy `en_speech` cache. Checkpoints, resume and logs are the SFT run's
+streams of the `--cache-dir` caches (the first run: the Vietnamese tranche's). Checkpoints, resume and logs are the SFT run's
 ([sft-recovery](sft-recovery.md)), and evaluation is SFT validation's free-running pass
 ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
 
@@ -13,7 +13,9 @@ streams of the noisy `en_speech` cache. Checkpoints, resume and logs are the SFT
 
 - **A window** is `--tau` (20) updates. Each window:
   1. a bf16 copy of the policy samples `--group` (4) rollouts of `--frames` (T, 1,200) frames for
-     each of the window's `--streams` (32) × 20 streams;
+     each of the window's `--streams` (32) × 20 streams. Updates take the planned streams in a
+     seeded order: planning keeps a document's rows together, so in plan order one long
+     recording (~75 streams) would fill 2–3 updates;
   2. CPU workers compute the rewards as each generation batch lands;
   3. the policy scores every rollout, giving π_old's logprobs.
 - **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on stay
@@ -49,9 +51,14 @@ streams of the noisy `en_speech` cache. Checkpoints, resume and logs are the SFT
     cache has no Vietnamese words.
   - Normalization uses the group's unbiased std plus 1e-4, so a frame where every rollout scores
     the same gets 0.
-- **Evaluation** runs at update 0 and every `--eval-every` (200) updates, as SFT validation's
-  five sets. Promotion goes to the best FLEURS dev chrF among checkpoints that pass the gates and
-  whose FLEURS median end offset is no later than update 0's.
+- **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
+  free-running pass on `EVAL_PAIRS`' five sets (FLEURS dev, the clean and noisy en-vi-val cv27
+  and libriheavy). Promotion goes to the best FLEURS dev chrF among checkpoints that pass the
+  gates and whose FLEURS median end offset is at most `LATENCY_SLACK_S` (0.2 s) past update 0's.
+  - The slack: in the dry run, update 2 (two updates at 2e-7, in effect the start) had the
+    better chrF (39.90 against 39.29) but measured 4.6 s against 4.5 s. Without slack it was
+    blocked, and a blocked checkpoint is not kept (2 pairs).
+  - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted`.
   - That baseline is stored as `start_end_offset_s` in `run_config.json`, which `hf_sync` uploads
     whenever it changes. The logs reach the Hub only at the end, so a restore needs this file.
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
@@ -88,7 +95,7 @@ On the Mac (MPS, bf16 upstream model, 2026-11-04):
   - a no-grad old pass gave a ratio of 1.0012 and clipped 6 tokens;
   - one step along the gradient raised Σ c·A·logp.
 
-Not yet run on CUDA. Phase 1 and 2 profiles and the dry run go here.
+The CUDA profile and dry run are under [Running](#running).
 
 ## Running
 
@@ -130,6 +137,17 @@ Not yet run on CUDA. Phase 1 and 2 profiles and the dry run go here.
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
   an SFT run's use `run`: either subcommand on the other's run fails at argument parsing.
+  - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
+    must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
+  - **Disk:** the preflight needs 130 GiB, free plus what the run directory holds. An SFT run's
+    pairs on the same disk (~81 GiB) go first, once they are on the Hub.
+  - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync (~5 min): it
+    uploads the newest pair, the best and the logs, which reach the Hub only then. A group kill
+    (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing restarts a crashed run.
+  - Relaunching a finished run loads the model and exits 0 (`train.py` exits before loading).
+  - No commits in the run's worktree while it runs: a resume needs `run_id.json`'s commit at
+    HEAD, and the preflight a clean tree.
+
   `train_log.jsonl` holds, per update:
   - the loss, the ratio mean and its maximum deviation, and the clip fraction;
   - the gradient norm and the final BLEU;

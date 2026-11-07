@@ -3,7 +3,7 @@
 
 Every --tau updates, π_old becomes the current policy:
 1. a bf16 copy of it samples --group rollouts of --frames frames for each stream of the window's
-   updates;
+   updates (the planned streams in a seeded order);
 2. the rollouts get BLEU process rewards and group-normalized advantages (`rewards.py`) in CPU
    workers, while the GPU keeps generating;
 3. the policy itself scores them, giving π_old's logprobs. It runs the update's own forward on
@@ -18,7 +18,8 @@ rollouts.
 
 Every --eval-every updates, and at the start, the run translates --eval-pairs free-running, as SFT
 validation does. It promotes the checkpoint with the best chrF on the first set among those that
-pass the health gates and end no later than the start (that set's median end offset).
+pass the health gates and end no more than LATENCY_SLACK_S later than the start (that set's
+median end offset); val_log.jsonl records each evaluation's verdict.
 
 Rollouts replay a cached stream's Vietnamese through `LMGen` and keep every sampled text and
 audio token in the training frame layout, so the training forward scores them in exactly the
@@ -84,6 +85,7 @@ EVAL_PAIRS = [
     Path("data/eval/en-vi-val-noisy/cv27.jsonl"),
     Path("data/eval/en-vi-val-noisy/libriheavy.jsonl"),
 ]
+LATENCY_SLACK_S = 0.2  # how far past the start's FLEURS median end offset a checkpoint may promote
 
 
 def rollout(lm_gen: Any, sources: torch.Tensor, silence: torch.Tensor) -> torch.Tensor:
@@ -398,6 +400,9 @@ def main() -> None:
         raise ValueError(f"{len(dataset)} streams, fewer than {args.updates} updates need")
     print(f"Planned {len(dataset)} streams from {len(rows)} rows; {args.updates} updates use "
           f"{args.updates * args.streams}")
+    # Planned streams follow their documents (a long recording fills ~75 in a row), so updates
+    # take them in a seeded order: the same on a resume.
+    order = np.random.default_rng(args.seed).permutation(len(dataset))
 
     generation = common.GenerationConfig(text_only=True)
     rows_by_set = common.read_eval_sets(args.eval_pairs)
@@ -477,11 +482,16 @@ def main() -> None:
             stored = json.loads(config_path.read_text(encoding="utf-8"))
             stored["start_end_offset_s"] = start_offset
             atomic_write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", config_path)
-        elif healthy and first["median_end_offset_s"] <= start_offset:
+        # The gate allows LATENCY_SLACK_S: two sampled evaluations of the same model differ by
+        # ~0.1 s, and a blocked checkpoint is not kept.
+        on_time = first["median_end_offset_s"] <= start_offset + LATENCY_SLACK_S
+        promoted = at > 0 and healthy and on_time
+        if promoted:
             writer.wait()
             best_state = promote_best(at, float(first["chrf"]), out_dir, best_state)
         seconds = time.time() - started
-        item = {"step": at, "seconds": seconds, "free_running": free_running}
+        item = {"step": at, "seconds": seconds, "free_running": free_running, "healthy": healthy,
+                "on_time": on_time, "promoted": promoted}
         with val_log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, sort_keys=True) + "\n")
         validated.add(at)
@@ -496,7 +506,7 @@ def main() -> None:
         window_started = time.time()
         # 1. π_old's rollouts for the window, rewards in the workers as each batch lands.
         optimizer.zero_grad(set_to_none=True)
-        stream_ids = [index for update in range(step, step + window)
+        stream_ids = [int(order[index]) for update in range(step, step + window)
                       for index in range(update * args.streams, (update + 1) * args.streams)]
         sources = torch.stack([stream_source(dataset, index, silence)
                                for index in stream_ids for _ in range(args.group)])
