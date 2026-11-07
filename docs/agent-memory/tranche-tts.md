@@ -139,8 +139,10 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   so readers resample. Each check asks for at most 512
   transcript tokens (`max_completion_tokens`, as `checks.py`): uncapped, ASR decoding is greedy, so
   an output it loops on ran to the model's 65k context past any timeout, every try (one in the
-  first ~8,000). Capped, it comes back long and scores broken; a timeout (after 3 tries of 60 s)
-  or an HTTP error then means the server is in trouble and stops the run.
+  first ~8,000). Capped, it comes back long and scores broken. The server still stalls past a 60 s
+  try now and then and recovers within minutes; with 3 tries that ended a run three times in two
+  days (2026-11-06/07), each losing the shards in flight, so a check now tries 10 times (`ASR_TRIES`)
+  before a timeout stops the run; an HTTP error stops it at once.
 - The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
   its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
   a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).

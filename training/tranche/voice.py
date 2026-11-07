@@ -65,6 +65,9 @@ PACE = 0.0636  # the bake-off's median seconds of English audio per character of
 # costs more TTS time than its rows give back (tranche-tts.md); the first tranche ran 3.
 MAX_TRIES = 1
 ASR_TIMEOUT_S = 60  # a request takes well under a second
+# The server stalls past a try now and then and recovers within minutes: 3 tries ended a run three
+# times in two days (2026-11-06, 11-07 17:22 and 23:17 UTC+7), each losing the shards in flight.
+ASR_TRIES = 10
 ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
 CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
 DECODER_SHARE = 4  # processes decoding the next shard's clips: a quarter of the CPU quota (6 of 26)
@@ -421,13 +424,13 @@ class Checker:
 
         buf = io.BytesIO()
         sf.write(buf, resample_poly(wav, 1, 3).astype(np.float32), ENCODE_RATE, subtype="PCM_16", format="WAV")
-        for attempt in range(3):  # the server drops an idle keep-alive connection now and then
+        for attempt in range(ASR_TRIES):  # it also drops an idle keep-alive connection now and then
             try:
                 reply = self.client.post(self.url, files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
                                          data={"model": "asr", "language": "en", "to_language": "en",
                                                "max_completion_tokens": ASR_MAX_TOKENS})
             except httpx.TransportError:
-                if attempt == 2:
+                if attempt == ASR_TRIES - 1:
                     raise
                 continue
             reply.raise_for_status()
