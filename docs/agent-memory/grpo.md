@@ -119,8 +119,13 @@ Not yet run on CUDA. Phase 1 and 2 profiles and the dry run go here.
 - **Dry run** (2026-11-06, `h100.sh grpo grpo_dryrun`, τ 2, 4 updates of 4 streams × 4, stopped
   before its checkpoint sync when GRPO was deferred): every update's ratio mean 1.000–1.001, the
   loss finite (−925 to 368), but the gradient norm before clipping 0.42–0.95 million against SFT's
-  ~8–15. Check the loss's scale (text weight 100, sums over tokens) before a run; the resume and
-  the Hub's pair were not reached.
+  ~8–15. The resume and the Hub's pair were not reached.
+- **The gradient norm's scale** (checked 2026-11-07): the loss sums the weighted objective over
+  every kept token of the update's 128 rollouts (no mean), so its norm runs ~10⁵ times SFT's
+  (a mean loss). Grad clip 1.0 rescales it to 1 every update, as it already does SFT's ~10, and
+  AdamW's step does not depend on the gradient's scale: after the clip a parameter's gradient is
+  ~1/√3.1e9 ≈ 2e-5, far above eps 1e-8. So the scale changes nothing and the loss stays as the
+  paper writes it (Σ_q c_q Σ_t).
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-batch
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
