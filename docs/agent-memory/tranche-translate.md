@@ -44,15 +44,18 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
     như, lại, từ, which a name left with its diacritics holds ("Như Xuân"). Some rows come back as
     their own Vietnamese, capitalized, every try ("Bà Hằng kể lúc đó…"), so the row's later tries
     may not emit the tokens that reply wrote Vietnamese letters with;
-  - on a try under such bans, holding any Vietnamese letter (after NFC, or a lone combining
-    mark), or two of 24 of those words written without diacritics, lowercase and whole ("do"
-    left out: it is English; Thi in a name, I've and co-founder don't count). The model dodges a
+  - on a try under such bans, or for a row that failed in an earlier run, holding any Vietnamese
+    letter (after NFC) or combining mark, or two different ones of 23 of those words written
+    without diacritics, lowercase and whole ("do" and "den" left out: they are English; Thi in a
+    name, I've and co-founder don't count). The model dodges a
     ban with the word's first token and another ending: Chị is 'Ch'+'ị', so "ChỊ Huong", "Bá
     Hàng", "Cà khịa" for đá cầu (4 of the 42 rows of burst 2's rerun). Such a reply bans its
     Vietnamese-letter tokens too. Some dodges stay English-looking and pass ("Chia Hoa" for chị
-    Hòa, "Lawyer Thang" for luật sư Thơm). Over 119,488 accepted rows (archives 60–160, every
-    20th) the folded words fire on 4, all Vietnamese left in ("con doi art"); a Vietnamese
-    letter is in 0.81% (names kept with diacritics), so only rows under bans are held to it;
+    Hòa, "Lawyer Thang" for luật sư Thơm). Over all 3.65M local GigaSpeech 2 rows the folded
+    words fired on 64 before "den" left and distinct words counted, about half correct English
+    ("gambling den … gambling den", "de la Mora"); a Vietnamese letter is in 0.54% (names kept
+    with diacritics), so only strict rows are held to it. 13 capital letters (Ẻ, Ỗ, Ũ…) have no
+    token and decode as byte pieces, so they reject a reply but are never banned;
   - from a prompt with context rows, longer than 2.5× its Vietnamese's characters plus 20: the
     model now and then translates the context rows too (1 in 2,000 rows of the bake-off; English
     runs ~1.2× the Vietnamese). Without context rows, longer than 4× plus 40: only a reply that

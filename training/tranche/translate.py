@@ -68,42 +68,45 @@ def fold(text: str) -> str:
     return "".join(c for c in text if not unicodedata.combining(c))
 
 
-# "do" (đó) is also English.
-FOLDED_WORDS = {fold(w) for w in VIETNAMESE_WORDS} - {"do"}
+# "do" (đó) and "den" (đến) are also English.
+FOLDED_WORDS = {fold(w) for w in VIETNAMESE_WORDS} - {"do", "den"}
 EDGES = ".,;:!?\"'()…“”‘’"
 
 
 def left_in_vietnamese(en: str, folded: bool = False) -> bool:
-    """Two or more of VIETNAMESE_WORDS; `folded`, written without their diacritics, lowercase and
-    whole (not name syllables such as Thi, nor 've or co- in I've, co-founder)."""
+    """Two or more of VIETNAMESE_WORDS; `folded`, two different ones written without their
+    diacritics, lowercase and whole (not name syllables such as Thi, nor 've or co- in I've,
+    co-founder)."""
     if folded:
-        return sum(w.strip(EDGES) in FOLDED_WORDS for w in fold(en).split()) >= 2
+        return len({w.strip(EDGES) for w in fold(en).split()} & FOLDED_WORDS) >= 2
     words = re.sub(r"[^\w\s]", " ", unicodedata.normalize("NFC", en).lower()).split()
     return sum(w in VIETNAMESE_WORDS for w in words) >= 2
 
 
 def vietnamese_letters(text: str) -> bool:
-    """A Vietnamese letter, precomposed or as a base letter and combining marks; or a lone mark."""
+    """A Vietnamese letter, precomposed or as a base letter and combining marks; or any combining
+    mark."""
     return bool(VIETNAMESE_LETTER.search(unicodedata.normalize("NFC", text))) or any(
         unicodedata.combining(c) for c in text)
 
 
-def bad(vi: str, en: str | None, context: bool, banned: bool) -> bool:
+def bad(vi: str, en: str | None, context: bool, strict: bool) -> bool:
     """A reply cut at max_tokens, empty, holding letters of a script its Vietnamese lacks or brackets,
     left in Vietnamese, or far longer than its row. From a prompt with context rows the model now
     and then translates them too (1 in 2,000 rows of the check; English runs ~1.2× the Vietnamese's
     characters), so the limit is tight there; without them a long reply is mostly an expansion
     ("nội ngoại sản nhi": "internal medicine, surgery, obstetrics and gynecology, pediatrics"), and
-    the limit only stops a reply that runs on. A row whose tokens are `banned` may hold no
-    Vietnamese letter at all and no Vietnamese words without their diacritics: the model dodges a
-    ban with the word's first piece and another ending ("ChỊ Huong", "Bá Hàng"), or in ASCII."""
+    the limit only stops a reply that runs on. A `strict` reply (its row under bans, or failed in
+    an earlier run) may hold no Vietnamese letter at all and no Vietnamese words without their
+    diacritics: the model dodges a ban with the word's first piece and another ending ("ChỊ Huong",
+    "Bá Hàng"), or in ASCII."""
     if en is None or not en.strip() or broken(vi, en):
         return True
     if len(en) > (2.5 * len(vi) + 20 if context else 4 * len(vi) + 40):
         return True
     if "[" in en and "[" not in vi:  # "[Name]", "[a specific time]": the TTS would read them
         return True
-    if banned and (vietnamese_letters(en) or left_in_vietnamese(en, folded=True)):
+    if strict and (vietnamese_letters(en) or left_in_vietnamese(en, folded=True)):
         return True
     return left_in_vietnamese(en)
 
@@ -147,8 +150,9 @@ def translate(llm, vi: list[str], prompts: list[str], bare: list[str],
     # - those its earlier replies wrote other scripts with. The model writes some Sino-Vietnamese
     #   names in Chinese every try ("King Tran Thai宗" for Trần Thái Tông); exact ids, as a letter
     #   also hides in multi-letter tokens (太宗) and byte pieces (which decode to U+FFFD);
-    # - those a reply left in Vietnamese wrote Vietnamese letters with: some rows come back as
-    #   their own Vietnamese, capitalized, every try.
+    # - those a reply left in Vietnamese, or a strict reply (bad()) holding Vietnamese letters,
+    #   wrote Vietnamese letters with: some rows come back as their own Vietnamese, capitalized,
+    #   every try, and under bans the model writes the word's first token with another ending.
     banned: dict[int, dict[int, None]] = {}
     todo = list(range(len(vi)))
     for attempt in range(TRIES):
@@ -165,13 +169,14 @@ def translate(llm, vi: list[str], prompts: list[str], bare: list[str],
             reply = output.outputs[0]
             last[k] = reply.text
             text = reply.text.strip() if reply.finish_reason == "stop" else None
-            if not bad(vi[k], text, context=not plain[k] and prompts[k] != bare[k], banned=k in banned):
+            strict = k in banned or again[k]
+            if not bad(vi[k], text, context=not plain[k] and prompts[k] != bare[k], strict=strict):
                 en[k] = text
                 continue
             own = set(NON_LATIN.findall(vi[k]))
             foreign = bool(set(NON_LATIN.findall(reply.text)) - own)
-            # Under bans, any Vietnamese letter: its tokens are never needed in this row's English.
-            echoed = left_in_vietnamese(reply.text) or (k in banned and vietnamese_letters(reply.text))
+            # A strict reply's Vietnamese letters: their tokens are never needed in its row's English.
+            echoed = left_in_vietnamese(reply.text) or (strict and vietnamese_letters(reply.text))
             if foreign or echoed:
                 for t in reply.token_ids:
                     piece = tokenizer.decode([t])
