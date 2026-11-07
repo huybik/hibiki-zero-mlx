@@ -47,7 +47,9 @@ BAKEOFF = Path("/workspace/tranche/bakeoff")
 BENCH = Path("/workspace/tranche/voice-bench")
 MODEL = ("openbmb/VoxCPM2", "32279ef")  # the bake-off's revision
 CFG = 2.0  # voxcpm 2.0.3's generate defaults, which the bake-off ran
-TIMESTEPS = 10
+# Flow-matching steps: 8 from 2026-11-08 (tranche-tts#speed: the diffusion head is ~92% of a decode step;
+# 8 matched 10 on broken share, kept-row WER and voice match, 8.5% less GPU per kept row; voxcpm runs 10)
+TIMESTEPS = 8
 MIN_PATCHES = 4  # voxcpm stops no earlier than its fourth patch (`i > min_len`, min_len 2)
 MAX_MODEL_LEN = 4096
 ENCODE_RATE, OUT_RATE = 16000, 48000

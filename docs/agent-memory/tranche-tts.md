@@ -159,7 +159,31 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   Clips under 2 s are 13.4% of the rows and 4.8% of the hours, 24.8% broken at 1.72 tries a row.
   Fewer flow-matching steps cost more than they save (2,000 rows of shard 0, the ASR server
   beside, one try): 10 steps RTF 0.00524, 22.2% broken, mean WER 0.188; 6 steps 0.00448, 24.0%,
-  0.317; 4 steps 0.00384, 33.9%, 0.373. `TIMESTEPS` stays 10.
+  0.317; 4 steps 0.00384, 33.9%, 0.373.
+- Quality against speed (2026-11-08; the user: changing the audio is fine if quality stays good).
+  The diffusion head is ~92% of a decode step: 141 ms for 512 rows at 10 steps (9 estimator calls
+  at double batch for guidance; the first step is a zero init), 83 ms at 6. The same 2,000 kept rows
+  of archive 147, one pass each, the production check, voice match (WeSpeaker, raw outputs, against
+  the row's Vietnamese clip; paired difference ± standard error); cost per kept row is RTF over the
+  share not broken:
+
+  | Variant | RTF (generation) | Broken | Kept WER median | Voice match | Cost per kept row |
+  |---|---:|---:|---:|---:|---:|
+  | 10 steps | 0.00407 | 16.2% | 0.035 | 0.618 | 1 |
+  | 8 steps | 0.00368 | 17.2% | 0.038 | −0.001 ± 0.001 | 0.915 |
+  | 6 steps | 0.00331 | 19.7% | 0.043 | −0.008 ± 0.001 | 0.849 |
+  | No reference audio (prompt only) | 0.00389 | 15.8% | 0.035 | −0.020 ± 0.001 | 0.951 |
+  | Guidance on the first 4 calls only | 0.00351 | 30.3% | 0.056 | −0.053 ± 0.002 | 1.04 |
+  | Guidance on the first 2 calls only | 0.00321 | 58.1% | 0.077 | −0.113 ± 0.002 | 1.58 |
+
+  `TIMESTEPS` is 8: no measurable loss. 6 steps costs ~3.5 points of broken rows and 1% of voice
+  match; dropping the reference costs 3% of voice match; a guidance interval breaks rows.
+- Measured, not shipped (2026-11-07/08): Qwen3-ASR-0.6B as the check served 122 requests/s against
+  the 1.7B's 138 (the server is bound by its API processes' CPU featurizing, not the GPU) and agreed
+  with the 1.7B on broken 89% of rows (the 1.7B with itself on the Opus round trip: 95%), flagging 3
+  points more. The VAE's residual units fused for torch.compile (the depthwise conv as shifted
+  multiply-adds, exact to 1e-6) gave 5% in the engine: there the decoder takes ~300 ms a batch, as
+  eager, where alone compiled it takes ~173 ms (not yet explained).
   Decoding and checking run in spawned processes: as threads, their Python held the GIL and
   starved the engine loop (GPU at 2%). One ASR API process featurizes ~11 requests/s on the
   CPU, so the server runs 8.
