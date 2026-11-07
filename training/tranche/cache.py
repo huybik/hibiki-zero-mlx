@@ -4,7 +4,7 @@ rows ([tranche-cache](../../docs/agent-memory/tranche-cache.md)), in the format 
 Mac's MLX builder `training.prep.cache_codes` ([sft-data-caches](../../docs/agent-memory/sft-data-caches.md)).
 
   build <sources...>  every shard whose segments, text_en, en_audio and asr_vi are on the Hub
-                      becomes <root>/<public|restricted>/cache/<source>/shard_<shard stem>.pt:
+                      becomes <root>/cache/<source>/shard_<shard stem>.pt:
                       the rows the filters below keep, the English text timed by wav2vec2-base-960h
                       CTC (the `text_timing` Viterbi) and both clips Mimi-encoded in float32, each
                       sample with its `doc` and `seq` so the trainer joins a document's rows in
@@ -24,7 +24,7 @@ A row is dropped, with the first reason that applies (the shard's `rejected`), w
 Decode workers (PyAV, soxr) feed the GPU, which runs the CTC forward over padded batches (the
 padding masked, so each clip's emissions are its own) and Mimi over padded batches; the CTC
 Viterbi runs in the workers while Mimi encodes. Env: the training .venv (training/h100.sh setup).
-From the repo root on the box, with the HF token in the environment:
+From the repo root on the box, with HF_TOKEN_AN (pushes) in the environment:
   .venv/bin/python -m training.tranche.cache build pho vivoice giga
 """
 from __future__ import annotations
@@ -70,7 +70,7 @@ from training.prep.text_timing import (
     timed_sentencepiece_tokens,
 )
 from training.tranche.filters import eval_grams, overlaps, spoken
-from training.tranche.ingest import REPOS, ROOT, SOURCES, push_part
+from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, part_file, push_part
 
 SAMPLE_RATE = 24_000  # Mimi
 CTC_RATE = 16_000
@@ -249,15 +249,8 @@ def vietnamese_letters(en_asr: str, text_en: str) -> set[str]:
 
 
 def fetch(root: Path, source: str, name: str) -> dict[str, Path]:
-    """The shard's input files: the copy under `root` where the box wrote one (voice and filters
-    keep what they push, written whole by a rename), else the Hub's (the HF cache keeps it). The
-    box's Hub downloads ran ~4 MB/s, slower than the GPU takes a viVoice shard's 60 MB."""
-    from huggingface_hub import hf_hub_download
-
-    dest = SOURCES[source].dest
-    local = {part: root / dest / source / part / name for part in PARTS}
-    return {part: path if path.exists() else Path(hf_hub_download(REPOS[dest], f"{source}/{part}/{name}", repo_type="dataset"))
-            for part, path in local.items()}
+    """The shard's input files, the box's own copies first (`ingest.part_file`)."""
+    return {part: part_file(root, source, part, name) for part in PARTS}
 
 
 def magnitudes(text: str) -> list[int]:
@@ -425,7 +418,7 @@ class Builder:
 
 
 def cache_dir(root: Path, source: str) -> Path:
-    return root / SOURCES[source].dest / "cache" / source
+    return root / "cache" / source
 
 
 def shard_file(name: str) -> str:
@@ -447,11 +440,11 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
     from huggingface_hub import HfApi
 
     api, todo = HfApi(), []
+    files, cached = (api.list_repo_files(r, repo_type="dataset") for r in (REPO, CACHE_REPO))
     for source in args.sources:
-        files = api.list_repo_files(REPOS[SOURCES[source].dest], repo_type="dataset")
         parts = {part: {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/{part}/")}
                  for part in ("segments", "text_en", "en_audio", "asr_vi")}
-        pushed = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"cache/{source}/")}
+        pushed = {f.rsplit("/", 1)[1] for f in cached if f.startswith(f"{source}/")}
         local = {p.name for p in cache_dir(args.root, source).glob("shard_*.pt")}
         ready = set.intersection(*parts.values())
         waiting = len(parts["segments"] - ready)
@@ -464,6 +457,9 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
 
 
 def build(args: argparse.Namespace) -> None:
+    from training.tranche.ingest import an_token
+
+    an_token()
     # Taken first: a second run must not push or load models onto a GPU the first one uses.
     args.root.mkdir(parents=True, exist_ok=True)
     with exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"):

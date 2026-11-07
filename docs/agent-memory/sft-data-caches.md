@@ -264,7 +264,8 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   `pairs_w*.jsonl` and `manifest.json`) whose English clip lasts at least 5 s
   (`en_duration_s`) and whose codes fit 280 frames. Kept rows, shard names and metadata are
   unchanged.
-- `grounded-v2/` was built from `anquachdev/PhoMT-en-vi-speech` at revision `33400f7` (565 GB of
+- `grounded-v2/` was built from `anquachdev/PhoMT-en-vi-speech` (renamed
+  `anquachdev/en-vi-speech-20k` on 2026-11-06; the old name redirects) at revision `33400f7` (565 GB of
   TTS audio on both sides) by the since-removed `cache_phomt_stream.py`, so it is never
   rebuilt. Filter from it if the rule changes. A row's cached English length counts the
   inserted delay; `en_frames - target_delay_frames` is within a frame of the clip.

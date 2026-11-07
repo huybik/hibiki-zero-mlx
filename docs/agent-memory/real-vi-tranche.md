@@ -2,8 +2,8 @@
 
 Read when choosing or building the real-Vietnamese source data (plan stage 1.3), its models and
 pipeline, or its licences. The corpora, their licences and measured layouts are in
-[vi-corpora](vi-corpora.md); the English TTS is in [tranche-tts](tranche-tts.md), the cache build in
-[tranche-cache](tranche-cache.md).
+[vi-corpora](vi-corpora.md); the translation is in [tranche-translate](tranche-translate.md), the
+English TTS in [tranche-tts](tranche-tts.md), the cache build in [tranche-cache](tranche-cache.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [English TTS](#english-tts) ·
 [First tranche](#first-tranche) · [Models](#models) · [Pipeline](#pipeline) · [Filters](#filters)
 
@@ -27,21 +27,36 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
     its card now names the tranche runs (`tranche_epoch1/` on) research-only.
   - Each source gets its own cache, so a commercial model is the same SFT without the
     non-commercial caches (~10 h of training); the generated data is kept either way.
-- Storage (user, 2026-11-04: public, for research): every stage writes to the Hub shard by shard,
-  `<source>/segments/`, `<source>/text_en/`, `<source>/en_audio/`, `<source>/asr_vi/` and `cache/<source>/`, so a rerun
-  or the Mac picks up from the Hub. The box keeps what it wrote and downloaded (disk is ample).
-  - [`huybik/hibiki-zero-vi-real`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real):
-    public, gated with automatic approval on research-only, no-impersonation terms, CC BY-NC-SA
-    4.0 overall; viVoice, YODAS, FOSD and VIVOS.
-  - [`huybik/hibiki-zero-vi-real-restricted`](https://huggingface.co/datasets/huybik/hibiki-zero-vi-real-restricted):
-    private; PhoAudiobook, whose user agreement forbids distributing it "in any original or
-    modified form", and GigaSpeech 2, whose terms allow sharing only with people who accept
-    them. Never make it public. Its segments take 21 GB for 1,277 h (~16 MB per hour), and
-    the rows' English speech will about double that: the first tranche fits the free account's
-    100 GB of private storage, and a scale-up past ~3,000 h needs PRO (1 TB private).
-  - Each repo's card declares only the segments configs (`vivoice-segments`, `pho-segments`,
-    `giga-segments`, `audio` as Audio), so the viewer and `datasets` decode those. `en_audio` has
-    no config: its readers decode the Opus bytes themselves.
+- Storage (user, 2026-11-06: every source public and gated, on the anquachdev account, the
+  user's): every stage writes to the Hub shard by shard, `<source>/segments/`, `<source>/text_en/`,
+  `<source>/en_audio/` and `<source>/asr_vi/` of `ingest.REPO`, and the caches to `<source>/` of
+  `ingest.CACHE_REPO`, so a rerun or another machine picks up from the Hub. The box keeps what it
+  wrote and downloaded under `/workspace/tranche/repo/<source>/<part>/` and `…/cache/<source>/`.
+  - [`anquachdev/en-vi-speech-20k`](https://huggingface.co/datasets/anquachdev/en-vi-speech-20k)
+    (`REPO`): PhoMT's synthetic pairs in `data/` (config `default`; the repo was
+    `anquachdev/PhoMT-en-vi-speech` until 2026-11-06, and the old name redirects) and every part
+    of the tranche but the caches. [`anquachdev/mimi-en-vi-speech-20k`](https://huggingface.co/datasets/anquachdev/mimi-en-vi-speech-20k)
+    (`CACHE_REPO`): the caches, `<source>/shard_<shard>.pt`.
+  - Both are gated with automatic approval: research-only, no-impersonation terms, each folder
+    under its source's terms, and GigaSpeech 2's terms of access in full (their clause 4 lets a
+    researcher give access to those who first agree to them; the user: our derived data complies).
+    PhoAudiobook, whose user agreement forbids distributing it "in any original or modified form",
+    is shared with its author's permission: the user asked the author and allowed it here
+    (2026-11-06).
+  - Pushes take `HF_TOKEN_AN`, a write token of anquachdev (`/workspace/.env` on the box; the jobs'
+    scripts source it). Reads use huybik's own token, granted access through both gates. `push`
+    refuses a repo that is not gated.
+  - Why: huybik's free account has 100 GB of private storage, and the first tranche's private
+    repo already used 56 GB (~44 MB per hour of GigaSpeech 2: segments 16, `en_audio` 20, cache 8).
+  - The first tranche was in `huybik/hibiki-zero-vi-real` (public, gated: viVoice) and
+    `huybik/hibiki-zero-vi-real-restricted` (private: PhoAudiobook, GigaSpeech 2 archives 0–12;
+    never make it public). Both stay as they were; their files are copied to the new repos
+    (2026-11-06: 143 MB/s over plain HTTP, 8 downloads at once with `HF_HUB_DISABLE_XET=1`; through
+    Xet ~30 MB/s, and its threads hung after ~13 min). Re-uploading files the Hub already holds takes
+    seconds: Xet deduplicates across repos (the first tranche's 591 caches in 20 s).
+  - The card of `REPO` declares the segments configs (`pho-segments`, `vivoice-segments`,
+    `giga-segments`, `audio` as Audio) beside PhoMT's `default`, so the viewer and `datasets`
+    decode those. `en_audio` has no config: its readers decode the Opus bytes themselves.
 - First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
   ~10k h with more GigaSpeech 2 and YODAS ([First tranche](#first-tranche)).
 - A commercial build still needs a legal sign-off on:
@@ -89,7 +104,7 @@ here is published or estimated, to be measured on the box first:
 | Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Not run: the gate uses Qwen3-ASR's own language tag ([tranche-cache](tranche-cache.md#gates)) |
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame. Not run: the tranche cache keeps `wav2vec2-base-960h`, as the existing caches do |
-| VI→EN translation | Muse Spark 1.3 Contributor (`meta/muse-spark-1.3-contributor`) through OpenRouter, as the EN→VI text was ([en-vi-muse](en-vi-muse.md)) (user, 2026-11-05), for every source. Contributor mode lets Meta train on what it is sent, PhoAudiobook's and GigaSpeech 2's transcripts included; the user chose it over standard Muse Spark 1.3 (~17× the price, ~$170 for 2,000 h against ~$10) | `tencent/Hy-MT2-30B-A3B-FP8` on the box | A check on the box, since removed, measured Hy-MT2 (2026-11-05; vLLM 0.33 needs `flashinfer-jit-cache` beside it, or the FP8 MoE's first load compiles its kernels for about an hour): 21,000 rows (46.1 h) in 82–89 s, $0.013 per million characters against Muse's $0.084, but less faithful. FLEURS dev chrF 63.3 against Muse's 66.6. A blind Opus judge on 300 tranche rows gave it adequacy 3.90 against 4.44 (fluency 4.51 against 3.96), 26 rows at adequacy ≤ 2 against Muse's 8: it completes a segment's unfinished sentence and slips on pronouns, even when told to leave fragments unfinished (3.82 with the card's prompt). At ~$8 saved per 2,000 h, quality decides |
+| VI→EN translation | `IndexTeam/Index-Translate-35B-A3B-preview` (Apache-2.0, Qwen3.5 MoE, FP8 as it loads) in vLLM 0.33 on the box, a row per prompt (`training/tranche/translate.py`), from GigaSpeech 2 archive 51 on (2026-11-06) | `IndexTeam/Index-Translate-9B-FP8` | [bake-off](tranche-translate.md#bake-off). Before: Muse Spark 1.3 Contributor through OpenRouter (user, 2026-11-05) for the first tranche and GigaSpeech 2 archives 13–50, until Meta blocked the key on 2026-11-06 21:46 UTC+7 (HTTP 403 `user_blocked`, "repeated policy violations"); paid APIs (Gemini 3.1 Flash-Lite, ~$1.2 an archive on OpenRouter's batch price) were too dear for the user |
 | English TTS | VoxCPM2, prompted by the row's own clip and transcript, checked by Qwen3-ASR and retried (`training/tranche/voice.py`) | dots.tts-soar | [bake-off and tuning](tranche-tts.md); chosen by blind listening |
 | TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
@@ -103,8 +118,8 @@ here is published or estimated, to be measured on the box first:
 
 ## Pipeline
 
-Planned, and built for CUDA: every stage runs on the H100 box (user, 2026-11-04), except the
-translation, on Muse. The rows take
+Built for CUDA: every stage runs on the H100 box (user, 2026-11-04; the translation too since
+2026-11-06). The rows take
 the EN-VI dataset's own parquet schema, and the cache keeps its format, so the trainer takes it
 unchanged; the build needs a CUDA counterpart of the MLX `cache_codes` (Mimi in moshi's torch, as
 `mimi_cache_cuda` encodes it, and the English CTC on CUDA)
@@ -116,7 +131,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
-  ─► Muse VI→EN (OpenRouter) in batches of a doc's consecutive rows, which give each other context
+  ─► VI→EN on the box, a row per call with its doc's two earlier rows as context
   ─► English TTS in the row speaker's voice (prompt and reference: the row's own clip and transcript)
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
@@ -135,7 +150,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
   North, Central and South balance.
 - Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
   parquet sorted by `seq`, audio re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under
-  `/workspace/tranche/repo/<public|restricted>/<source>/segments/`, and `push` uploads that
+  `/workspace/tranche/repo/<source>/segments/`, and `push` uploads that
   folder to its repo. `doc` is the recording as far as the corpus tells and never spans shards:
   a PhoAudiobook reader's run in rising time, a GigaSpeech 2 recording (its tars hold segments
   out of order, and with no times its neighbours are only consecutive segment numbers), and for
@@ -156,33 +171,19 @@ other corpora ─► their transcripts, word times by forced alignment ───
   - The audio decodes to within 0.5 ms of `duration_s`. Clips under 1 s (some of GigaSpeech
     2's) decode 6.5 ms long, as ffmpeg cannot trim a one-page Ogg stream. Ogg serial numbers are
     random, so a re-ingested shard differs in bytes and uploads again.
-- Translate (`training/tranche/translate.py`, CPU, runs on the Mac) reads each segments shard's
-  `id`, `doc` and `text` from the Hub, translates on Muse Spark 1.3 Contributor with the prompt
-  the blind judge tested, in batches of up to 40 consecutive rows and 6,000 characters that end
-  wherever a doc of more than one row starts or ends (viVoice's one-row docs share batches), and
-  writes `<root>/<public|restricted>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest
-  push <source> --part text_en` uploads it beside the segments. A reply that does not parse, or
-  that writes letters of a script its Vietnamese lacks (Muse wrote Chinese mid-sentence in 22 of
-  the first 24,681 rows, "the keeper of the江湖 ledger"), splits its batch in halves down to one
-  row; a row failing alone keeps `text_en` null, a rerun translates the null and broken rows
-  again; a run stops at the first failed row that takes failures past 1% of the rows it has
-  started (once past 5,000), and a lock keeps a second run off the same folder. A shard is
-  written only once all its rows are done, so a crash loses the shards in flight (eight
-  GigaSpeech 2 shards hold ~170k rows). Eight shards are in flight.
-- Concurrency (2026-11-05): `--concurrency` defaults to 128. OpenRouter served 128 calls at once to
-  Contributor with no 429s (two empty replies, retried); more is untested. Rows per call fall
-  where docs are short (PhoAudiobook 11–25 a shard), and each call costs a few seconds beyond its
-  rows, so short-doc sources need the concurrency, and a higher MAX_LINES would not help them.
-  Measured on the full tranche:
-
-  | Source | Rows | Concurrency | Calls | Time | Cost |
-  |---|---:|---:|---:|---:|---:|
-  | PhoAudiobook | 290,037 | 64 | 17,675 | 29 min | $3.86 |
-  | GigaSpeech 2 | 281,133 | 128 | 11,400 | 8.8 min | $2.99 |
-  | viVoice | 269,350 | 128 | 7,299 | 17 min | $2.90 |
-
-  All 840,520 rows translated, none failed, $9.75; pushed and checked against the segments on
-  the Hub (same shards and ids, no null or broken row) on 2026-11-05.
+- Each stage reads a shard's parts through `ingest.part_file`: the copy under `--root` where a
+  stage on the box wrote one (all write whole, by a rename, and keep their files after pushing),
+  else the Hub's. The box downloads through Xet at ~5 MB/s a stream (plain HTTP, `HF_HUB_DISABLE_XET=1`,
+  reached 143 MB/s with 8 at once), and a second copy
+  in the HF cache doubles a shard's disk. A part regenerated elsewhere and pushed loses to a stale
+  local copy: delete the local one first (`text_en` refilled on another machine would leave voice
+  stopping on "rows without text_en"). Translation still lists the Hub's segments and translates
+  every shard without a local `text_en`: give it `--shards` past the shards translated elsewhere.
+  Voice queues a shard only once its `text_en` is on the Hub or here.
+- Translate (`training/tranche/translate.py`): Index-Translate-35B-A3B in vLLM on the box, a row
+  per prompt, written as `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en`) and pushed
+  with `ingest push <source> --part text_en`; its model choice, checks, speed and runs are in
+  [tranche-translate](tranche-translate.md).
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
   (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and

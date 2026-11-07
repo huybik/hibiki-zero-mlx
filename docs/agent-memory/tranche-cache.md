@@ -8,8 +8,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Codes and timing](
 [Running](#running) · [Scale-up](#scale-up)
 
 `training/tranche/cache.py build <sources>` (CUDA, the training `.venv`) turns each segments shard
-whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `cache/<source>/shard_<shard>.pt` of
-its tranche repo, in `cache_codes`'s format ([sft-data-caches](sft-data-caches.md#row-layout)),
+whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`,
+pushed to `<source>/` of the cache repo (`ingest.CACHE_REPO`), in `cache_codes`'s format ([sft-data-caches](sft-data-caches.md#row-layout)),
 one cache per source (see [Decision](real-vi-tranche.md#decision)). A sample also holds `doc` and
 `seq`, so the trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
 draws use split `train`.
@@ -107,12 +107,11 @@ draws use split `train`.
   two gaps a shard, 2.4–4.2 s after the CTC while `load_next` waited for the next shard's read,
   and 0.6–1.6 s for the save. The read was the Hub download: ~4 MB/s on the box, 10–18 s for a
   viVoice shard's 60 MB (mostly `en_audio`) against ~8 s of GPU work, and parallel downloads got
-  no more. `fetch` now takes any part's copy under `--root` where the box wrote one (today voice's
-  `en_audio` and filters' `asr_vi`: 0.4–0.6 s a shard; segments and `text_en` come from the HF
-  cache), and the save runs in a thread while the next shard builds. A review (2026-11-06) found
-  every local `asr_vi` and `en_audio` the size of its Hub copy, hashes equal on all `asr_vi` and
-  12 sampled `en_audio`. A part regenerated elsewhere and pushed would lose to the stale local
-  copy: delete the local one first.
+  no more (one stream; 8 at once reached ~30 MB/s later the same day). `fetch` now takes each
+  part's copy under `--root` where the box has one (`ingest.part_file`, which voice and filters
+  use too; from GigaSpeech 2 archive 13 on, every part is local), and the save runs in a thread
+  while the next shard builds. A review (2026-11-06) found every local `asr_vi` and `en_audio` the
+  size of its Hub copy, hashes equal on all `asr_vi` and 12 sampled `en_audio`.
 
 ## Scale-up
 
@@ -120,7 +119,8 @@ Before building a larger tranche (the plan's ~10k h: more GigaSpeech 2 and YODAS
 build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× on the Mimi audio
 (both clips, ~2.1× the Vietnamese hours), 10k h of source takes ~13–19 h of GPU. In order:
 
-- Keep the inputs on local disk: the box's Hub downloads ran ~4 MB/s and parallel downloads got
+- Keep the inputs on local disk, or download them with `HF_HUB_DISABLE_XET=1`: through Xet the box's
+  Hub downloads ran ~4 MB/s (plain HTTP: 143 MB/s with 8 at once, 2026-11-06), and parallel Xet downloads got
   no more, so a build that downloads starves the GPU. Run the TTS and the ASR on the box that
   builds (their outputs stay under `--root`), or move the parts there well before the build.
 - Measure where the GPU time goes, Mimi against wav2vec2 (never split yet), with `nvidia-smi`

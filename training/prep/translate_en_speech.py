@@ -559,7 +559,7 @@ def gemini(out: Path, keys: list[str], batch_chars: int) -> None:
 def muse_call(client: httpx.Client, stop: threading.Event, key: str, lines: list[str],
               instructions: str) -> tuple[list[str] | None, str, Counter, dict]:
     """One Muse call on numbered lines -> the translated lines or None, the raw reply, the usage and
-    the key. instructions: the system prompt (EN→VI here, VI→EN in training/tranche/translate.py)."""
+    the key. instructions: the system prompt."""
     failures = 0
     while True:
         try:

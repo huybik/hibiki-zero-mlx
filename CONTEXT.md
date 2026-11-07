@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-06
+Last verified: 2026-11-07
 
 ## Purpose
 
@@ -57,6 +57,9 @@ inference/ (Apple Silicon, MLX)
 - Two stream runs are done on a 700 W H100 SXM: `en_speech_streams_epoch1b` (one epoch of
   `en-vi-grounded-v2/train`) and `en_speech_noisy_epoch2` (one epoch of its noisy copy, from the
   first's final model). FLEURS test chrF went 24.7 → 29.5 ([plan](docs/vi_en_parity_plan.md#order)).
+- The third, `tranche_epoch1b` (2026-11-06), trained one epoch of the real-Vietnamese tranche's
+  caches from run 2's final model: FLEURS test chrF 29.5 → 38.6, MultiMed-ST 24.9 → 34.6
+  ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
   the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:
@@ -136,7 +139,8 @@ inference/ (Apple Silicon, MLX)
 | GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |
-| The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off and the cache |
+| The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off, the translation and the cache |
+| The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
 | The tranche's CUDA cache build: row gates and their thresholds, CTC and Mimi on CUDA, running it | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
 | The tranche's English voice-cloning TTS: candidates, bake-off, scores, tuning | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/bakeoff.py`, `training/tranche/voice.py`, `training/tranche/envs.sh` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
@@ -158,8 +162,11 @@ inference/ (Apple Silicon, MLX)
 - Training caches (the dataset repo; the model repo of the same name holds runs):
   https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
 - EN-VI speech and text pairs: https://huggingface.co/datasets/anquachdev/common-vi-en
-- Real-Vietnamese tranche: https://huggingface.co/datasets/huybik/hibiki-zero-vi-real (public,
-  gated) and `huybik/hibiki-zero-vi-real-restricted` (private; never public)
+- Real-Vietnamese tranche: https://huggingface.co/datasets/anquachdev/en-vi-speech-20k (public,
+  gated; also PhoMT's pairs, formerly `anquachdev/PhoMT-en-vi-speech`) and its caches,
+  https://huggingface.co/datasets/anquachdev/mimi-en-vi-speech-20k (gated). The first tranche's
+  old repos: `huybik/hibiki-zero-vi-real` and `huybik/hibiki-zero-vi-real-restricted` (private;
+  never public)
 
 ## Maintaining context
 

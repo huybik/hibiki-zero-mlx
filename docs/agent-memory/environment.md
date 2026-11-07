@@ -29,7 +29,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   the anquachdev account, which owns the dataset `anquachdev/common-vi-en`), `MDC_API_KEY`, the
   paid Gemini API keys
   `GEMINI_API_KEY_1` and `GEMINI_API_KEY_2` (`GEMINI_API_KEY` is the same key as `_2`) and the
-  paid OpenRouter key `OPEN_ROUTER`. Never
+  paid OpenRouter key `OPEN_ROUTER`. The H100 box's `/workspace/.env` (mode 600) holds `OPEN_ROUTER`
+  and `HF_TOKEN_AN`. Never
   print, log or commit their values. Export them into a command's environment without echoing
   them.
 
