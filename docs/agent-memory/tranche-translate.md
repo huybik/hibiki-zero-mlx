@@ -44,13 +44,26 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
     như, lại, từ, which a name left with its diacritics holds ("Như Xuân"). Some rows come back as
     their own Vietnamese, capitalized, every try ("Bà Hằng kể lúc đó…"), so the row's later tries
     may not emit the tokens that reply wrote Vietnamese letters with;
-  - from a prompt with context, longer than 2.5× its Vietnamese's characters plus 20: the model
-    now and then translates the context rows too (1 in 2,000 rows of the bake-off; English runs
-    ~1.2× the Vietnamese). Without context nothing can leak, and a long reply is an expansion
-    ("nội ngoại sản nhi": "internal medicine, surgery, obstetrics and gynecology, pediatrics").
+  - on a try under such bans, holding any Vietnamese letter, or two of the 25 words written
+    without diacritics ("do" left out: it is English). The model dodges a ban with the word's
+    first token and another ending: Chị is 'Ch'+'ị', so "ChỊ Huong", "Bá Hàng", "Cà khịa" for
+    đá cầu (4 of the 42 rows of burst 2's rerun). Some dodges stay English-looking and pass
+    ("Chia Hoa" for chị Hòa, "Lawyer Thang" for luật sư Thơm). Over all rows the folded words
+    fire on 0.24% (name syllables: Thi, Da, Co), so only rows under bans are held to it;
+  - from a prompt with context rows, longer than 2.5× its Vietnamese's characters plus 20: the
+    model now and then translates the context rows too (1 in 2,000 rows of the bake-off; English
+    runs ~1.2× the Vietnamese). Without context rows, longer than 4× plus 40: only a reply that
+    runs on.
+- Dropping the context costs meaning on some rows: the tight gate rejects a right expansion with
+  context ("nội ngoại sản nhi" as "internal medicine, surgery, obstetrics and gynecology,
+  pediatrics", 65 characters against 62.5), and the context-free tries then write "internal and
+  external, products and children" (2 rows); 6 of burst 2's 42 rerun rows lost meaning so
+  ("Bác sĩ Bạch Thị | Chính cảnh báo" as "The main warning"). A looser gate (2.5× plus 50) would
+  keep both expansions but let short rows' leaks through; at ~1 row in 50,000 it stays.
 - Burst 1 (archives 51–156, three tries, 2026-11-07) left 118 rows null in 67 archives; a rerun
   with the Chinese-token ban left 42 (about half echoed Vietnamese, half context leaks or
-  expansions); a rerun with context-free tries and the echo ban left none.
+  expansions); a rerun with context-free tries and the echo ban left none, but 6 of its 42 rows
+  dodged the ban (above) and were set null again before the push, for a rerun with the check.
 - The 35B keeps the diacritics of 0.73% of its rows' names ("Đỗ Hoàng Việt"; Muse 0.05%) despite
   the prompt; nothing rejects them.
 - A row failing every try keeps `text_en` null, is logged with its last reply, and holds its
