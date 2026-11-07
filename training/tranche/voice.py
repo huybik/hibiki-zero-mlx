@@ -47,8 +47,9 @@ BAKEOFF = Path("/workspace/tranche/bakeoff")
 BENCH = Path("/workspace/tranche/voice-bench")
 MODEL = ("openbmb/VoxCPM2", "32279ef")  # the bake-off's revision
 CFG = 2.0  # voxcpm 2.0.3's generate defaults, which the bake-off ran
-# Flow-matching steps: 8 from 2026-11-08 (tranche-tts#speed: the diffusion head is ~92% of a decode step;
-# 8 matched 10 on broken share, kept-row WER and voice match, 8.5% less GPU per kept row; voxcpm runs 10)
+# Flow-matching steps: 8 from 2026-11-08 (tranche-tts.md, "Quality against speed": the diffusion head is
+# ~92% of a decode step; 8 was within noise of 10 on broken share, kept-row WER and voice match, for 8.5%
+# less GPU per kept row; voxcpm runs 10)
 TIMESTEPS = 8
 MIN_PATCHES = 4  # voxcpm stops no earlier than its fourth patch (`i > min_len`, min_len 2)
 MAX_MODEL_LEN = 4096
@@ -434,6 +435,7 @@ class Checker:
             except httpx.TransportError:
                 if attempt == ASR_TRIES - 1:
                     raise
+                time.sleep(10)  # a refused connection (the server restarting) fails at once
                 continue
             reply.raise_for_status()
             asr = reply.json()["text"]
