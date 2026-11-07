@@ -8,7 +8,7 @@ each causal conv layer, which took ~70% of the engine loop at 256 streams. Each 
 decoded once the row ends, as voxcpm's own non-streaming path decodes it, many rows per batched
 pass of the VAE decoder in fp16 under torch.compile (3.4x fp32's speed; 57 dB SNR against fp32,
 which voxcpm runs). The VAE is causal throughout, so a batch's right padding leaves every row's
-audio as decoded alone. Prompts are encoded in fp32 batches the same way.
+audio as decoded alone. Prompts are encoded in fp16 batches the same way.
 
 Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in
 the environment and the ASR server up:
@@ -210,11 +210,13 @@ class Voicer:
         self.active: dict[str, Request] = {}  # by engine sequence id
         self.waiting: dict[int, tuple[float, list[tuple[Request, np.ndarray]]]] = {}  # by decode width
         began = time.perf_counter()
-        with torch.inference_mode():  # every shape a run meets, so none is first met mid-run
+        # Every shape a run meets, so none compiles mid-run: inputs made in inference mode, as the
+        # runs make theirs (Dynamo's guards tell inference tensors from others).
+        with torch.inference_mode():
             for width in range(BUCKET, WARM_FRAMES + 1, BUCKET):
                 self.decoder(torch.zeros(shape(width)[0], self.vae.latent_dim, width, device="cuda",
                                          dtype=torch.float16))
-                if width * self.hop <= 2 * ROW_S[1] * ENCODE_RATE:
+                if (width - BUCKET) * self.hop < ROW_S[1] * ENCODE_RATE:  # the prompts: rows' clips
                     self.encoder(torch.zeros(shape(width)[0], 1, width * self.hop, device="cuda", dtype=torch.float16))
         torch.cuda.synchronize()
         log(f"VAE warmed in {time.perf_counter() - began:.0f} s")
@@ -242,8 +244,8 @@ class Voicer:
             size = shape(width)[0]
             for k in range(0, len(members), size):
                 batch = members[k: k + size]
-                x = self._padded([clips[i] for i in batch], size, width * self.hop, self.torch.float16)
                 with self.torch.inference_mode():
+                    x = self._padded([clips[i] for i in batch], size, width * self.hop, self.torch.float16)
                     z = self.encoder(x)["mu"].float().transpose(1, 2).cpu().numpy()  # [B, width, 64]
                 for j, i in enumerate(batch):
                     out[i] = np.ascontiguousarray(z[j, : clips[i].shape[1] // self.hop])

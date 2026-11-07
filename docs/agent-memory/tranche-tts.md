@@ -110,7 +110,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
     path does. The VAE is causal, so right-padding a batch changes no row.
   - The fp16 decoder is 57 dB SNR from fp32 and 3.4x faster compiled. cuDNN spends ~0.9 s
     planning each new conv shape, so batch widths round up to 64 frames, each width has one
-    batch size, and every shape up to 1,024 frames (41 s) is warmed at start (~30 s).
+    batch size, and every decode shape up to 1,024 frames (41 s) and every prompt shape up to
+    `ROW_S`'s 22.4 s is warmed at start (below: "The VAE").
   - Gained nothing: a decode thread on its own CUDA stream (the engine keeps the GPU busy).
     Left: fewer diffusion steps or FP8, which change the output.
   - Quality on the bake-off's 281 rows (its 9 hard lines out), Mimi round trip: broken 8.2%,
@@ -214,8 +215,11 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   shape (`shape()` gives each width one), all warmed at start. Static graphs run faster than one
   dynamic graph: the decoder 132 ms a full batch against 174 (24% less, output identical), the
   prompt encode 1.92 ms a prompt against 2.98 dynamic and 4.13 for the fp32 eager encoder voxcpm
-  runs (3,000 prompts of archive 147, the GPU alone). The warm costs ~4 min a run (decoder 140 s,
-  encoder 91 s; dynamic took ~45 s), repaid within ~3 archives. The fp16 encoder's latents are
+  runs (3,000 prompts of archive 147, the GPU alone). The warm costs ~3 min a run (decoder 140 s for
+  16 widths, encoder ~50 s for 9; dynamic took ~45 s), repaid within ~3 archives. Its inputs are made
+  in inference mode as the runs' are: Dynamo's guards tell inference tensors apart, so a warm on
+  other tensors would compile every width again mid-run. Past `recompile_limit` (64 a compiled
+  module) new shapes run eager, the cached ones still compiled. The fp16 encoder's latents are
   51 dB from fp32's (the engine's own bf16 cast of them: 56 dB); on the quality test's 2,000 rows
   at 8 steps: broken 17.2% (fp32 encoder 17.2%), kept WER mean 0.054 (0.053), voice match
   −0.0007 ± 0.0014. The encode had taken ~85 s an archive of ~19k prompts, the engine's steps waiting meanwhile;
