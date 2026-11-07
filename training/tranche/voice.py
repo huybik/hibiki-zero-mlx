@@ -114,10 +114,10 @@ def build_engine(path: str, max_seqs: int, gpu_memory: float):
         def init_model(self, model_config, model_path):
             self.model = VoxCPM2Model(model_config, self.inference_timesteps, lora_config=self.lora_config)
             load_model(self.model, model_path)
-            torch.set_default_dtype(torch.float32)  # the encoder stays fp32, as voxcpm runs it
+            torch.set_default_dtype(torch.float32)  # weights folded in fp32, then halved by Voicer
             self.vae = AudioVAEV2(config=model_config.audio_vae_config)
             self.vae.load_state_dict(torch.load(os.path.join(model_path, "audiovae.pth"))["state_dict"])
-            for module in self.vae.decoder.modules():
+            for module in self.vae.modules():
                 if hasattr(module, "weight_g"):
                     remove_weight_norm(module)
             torch.set_default_dtype(torch.bfloat16)
@@ -200,9 +200,13 @@ class Voicer:
         self.hop = self.vae.encoder_chunk_size  # 640 samples at 16 kHz per frame
         self.align = self.hop * self.engine.patch_size
         self.out_hop = self.vae.decoder_chunk_size  # 1920 samples at 48 kHz per frame
-        # Memory-bound depthwise convs and Snake activations at 48 kHz: half the bytes and fused
-        # elementwise kernels. One compile serves every batch shape.
-        self.decoder = torch.compile(self.vae.decoder.half(), dynamic=True)
+        # Memory-bound depthwise convs and Snake activations: half the bytes and fused elementwise
+        # kernels. A graph per batch shape (each width has one), all warmed below: static shapes
+        # run the decoder 24% and the encoder 35% faster than one dynamic graph. The fp16 encoder's
+        # latents are 51 dB from fp32's; the quality test saw no change (tranche-tts.md, "Speed").
+        torch._dynamo.config.recompile_limit = 64  # the default 8 would fall back to eager
+        self.decoder = torch.compile(self.vae.decoder.half(), dynamic=False)
+        self.encoder = torch.compile(self.vae.encoder.half(), dynamic=False)
         self.active: dict[str, Request] = {}  # by engine sequence id
         self.waiting: dict[int, tuple[float, list[tuple[Request, np.ndarray]]]] = {}  # by decode width
         began = time.perf_counter()
@@ -211,7 +215,7 @@ class Voicer:
                 self.decoder(torch.zeros(shape(width)[0], self.vae.latent_dim, width, device="cuda",
                                          dtype=torch.float16))
                 if width * self.hop <= 2 * ROW_S[1] * ENCODE_RATE:
-                    self.vae.encoder(torch.zeros(shape(width)[0], 1, width * self.hop, device="cuda"))
+                    self.encoder(torch.zeros(shape(width)[0], 1, width * self.hop, device="cuda", dtype=torch.float16))
         torch.cuda.synchronize()
         log(f"VAE warmed in {time.perf_counter() - began:.0f} s")
 
@@ -238,9 +242,9 @@ class Voicer:
             size = shape(width)[0]
             for k in range(0, len(members), size):
                 batch = members[k: k + size]
-                x = self._padded([clips[i] for i in batch], size, width * self.hop, self.torch.float32)
+                x = self._padded([clips[i] for i in batch], size, width * self.hop, self.torch.float16)
                 with self.torch.inference_mode():
-                    z = self.vae.encoder(x)["mu"].transpose(1, 2).cpu().numpy()  # [B, width, 64]
+                    z = self.encoder(x)["mu"].float().transpose(1, 2).cpu().numpy()  # [B, width, 64]
                 for j, i in enumerate(batch):
                     out[i] = np.ascontiguousarray(z[j, : clips[i].shape[1] // self.hop])
         return out
@@ -604,9 +608,11 @@ def run(args: argparse.Namespace) -> None:
         if shard is None:
             loading_done = True
             return False
+        began_encode = time.monotonic()
         latents = voicer.encode(shard.clips)
         shard.clips = None
         key = f"{shard.source}/{shard.name}"
+        log(f"{key}: encoded {len(latents)} prompts in {time.monotonic() - began_encode:.0f} s")
         rows = [(i, t_en, t_vi) for i, t_en, t_vi in zip(shard.ids, shard.texts_en, shard.texts) if i not in shard.skipped]
         shards[key], remaining[key] = shard, len(rows)
         for i, _, _ in rows:
