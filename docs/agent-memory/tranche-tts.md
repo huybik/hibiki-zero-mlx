@@ -161,6 +161,20 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   Decoding and checking run in spawned processes: as threads, their Python held the GIL and
   starved the engine loop (GPU at 2%). One ASR API process featurizes ~11 requests/s on the
   CPU, so the server runs 8.
+- Skipped rows (2026-11-07): the cache build drops a row on its Vietnamese side alone (language,
+  CER over 0.15, a nghìn/triệu/tỷ the transcript lacks: `filters.vi_gate` on asr_vi) whatever its
+  English, 5.5% of GigaSpeech 2's rows and 6.6–6.9% of its hours (archives 147, 148). `voice.py`
+  no longer voices them: `en_tries` 0, the other English columns null. So a shard waits for its
+  asr_vi as for its text_en (`filters.py` runs ahead, beside voice).
+- Speed on one H100 (2026-11-07, 5,000 rows of GigaSpeech 2's archive 147, 7.8 h voiced, the GPU
+  to itself: no ASR server, no checks): RTF 0.0037. Of the engine's time, decode steps 45% (141 ms
+  for 512 rows), the VAE decode 30% (~320 ms a batch of ~47 rows), prefill 19%, Python 5%.
+  Submitting only once 128 slots are free (prefill in larger steps) changed nothing (RTF 0.0037);
+  1,024 sequences at 0.6 of the GPU gained 5% (decode 260 ms for 910 rows: compute-bound). In
+  production, beside the ASR server and filters, GigaSpeech 2 ran at RTF 0.0058–0.0063.
+- CPU: process pools take shares of the container's quota (`cpu_budget()`, cgroup `cpu.max`;
+  26.88 CPUs on the Japan box, `nproc` 224): voice's clip decoders a quarter, filters' a sixth.
+  The 32 checkers stay fixed: they are the ASR requests in flight, not CPU work.
 - The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
   follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
   `thread_count = 1`. PyAV's `AudioResampler` builds a filter graph holding a thread per host CPU

@@ -195,7 +195,8 @@ other corpora ─► their transcripts, word times by forced alignment ───
 
 ## Filters
 
-`training/tranche/filters.py` measures what the cache build drops rows on; the build applies the
+`training/tranche/filters.py` measures what the cache build drops rows on (its Vietnamese-side gates are
+`filters.vi_gate`, which voice.py also applies, not voicing those rows); the build applies the
 thresholds, so they can change without measuring again.
 
 - Both filters compare text by `spoken`: lower-case NFC syllables without punctuation, digits
