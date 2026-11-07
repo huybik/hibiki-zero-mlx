@@ -223,7 +223,10 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   51 dB from fp32's (the engine's own bf16 cast of them: 56 dB); on the quality test's 2,000 rows
   at 8 steps: broken 17.2% (fp32 encoder 17.2%), kept WER mean 0.054 (0.053), voice match
   −0.0007 ± 0.0014. The encode had taken ~85 s an archive of ~19k prompts, the engine's steps waiting meanwhile;
-  a run logs it per shard.
+  a run logs it per shard. In production from 2026-11-08 03:32 UTC+7 (beside filters):
+  archive 156, a run's first, RTF 0.0067 against 0.0070–0.0078 for the six first archives before it
+  on the old VAE; the encode 52–58 s an archive (~2.8 ms a prompt beside the ASR server), the warm
+  61 s (Inductor's on-disk cache held the graphs from the benchmarks).
 - CPU: process pools take shares of the container's quota (`cpu_budget()`, cgroup `cpu.max`;
   26.88 CPUs on the Japan box, `nproc` 224): voice's clip decoders a quarter, filters' a sixth.
   The 32 checkers stay fixed: they are the ASR requests in flight, not CPU work.
