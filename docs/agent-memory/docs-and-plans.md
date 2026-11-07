@@ -17,8 +17,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Roadmap](#roadmap) · [Evidence](#evi
   of speech against the text stream's 12.5, so Vietnamese syllables replace pieces English
   never uses. The tranche's research is in [real-vi-tranche](real-vi-tranche.md).
 - [docs/grpo_plan.md](../grpo_plan.md) details the GRPO stage, checked against the paper on
-  2026-11-04. Its trainer is built (PR #59). It runs last, from the final SFT model, and each
-  phase is profiled on the H100 before the next; the Mac only checks the reward math on its CPU.
+  2026-11-04. The code and its checks are in [grpo](grpo.md). It runs last, from the final SFT
+  model, and each phase is profiled on the H100 before the next; the Mac only checks correctness.
 - [docs/finetune.md](../finetune.md) is the H100 pod guide for the generic trainer
   ([sft-training](sft-training.md)).
 

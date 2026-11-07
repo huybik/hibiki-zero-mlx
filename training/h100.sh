@@ -5,8 +5,9 @@
 #   cpus              the container's CPU quota into /etc/environment for every later shell; rerun
 #                     after a container restart, which rewrites the file
 #   preflight         GPU, driver, pins, memory, disk, upstream weights
-#   run RUN_NAME ...  start a run, or continue it: the same command resumes the newest local
+#   run RUN_NAME ...  start an SFT run, or continue it: the same command resumes the newest local
 #                     pair with the run's saved arguments, so a preempted pod reruns it on boot
+#   grpo RUN_NAME ... the same for a GRPO run (training.finetune.grpo)
 
 set -Eeuo pipefail
 
@@ -269,8 +270,7 @@ if sys.argv[2] == "fresh":
     if remote_files:
         raise RuntimeError(f"fresh training requires an empty {prefix} recovery prefix")
     # The arguments a continuation of the run reuses (the training command's, after
-    # `-m training.finetune.train --out-dir DIR`), written first: run_id.json marks a run that
-    # continues.
+    # `-m MODULE --out-dir DIR`), written first: run_id.json marks a run that continues.
     (run_dir / "train_args.json").write_text(json.dumps(sys.argv[11:]) + "\n")
     identity = run_dir / "run_id.json"
     temporary = run_dir / ".run_id.json.tmp"
@@ -363,8 +363,10 @@ PY
   (( sync_status == 0 )) || return "$sync_status"
 }
 
-run() {
-  [[ $# -ge 1 ]] || die "usage: $0 run RUN_NAME [train args, needed when the run starts]"
+run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
+  local module="$1"
+  shift
+  [[ $# -ge 1 ]] || die "usage: $0 run|grpo RUN_NAME [args, needed when the run starts]"
   local run_name="$1"
   shift
   [[ "$run_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
@@ -392,16 +394,16 @@ run() {
       die "$run_name was started with other arguments; run it with none to continue"
     fi
     run_with_sync "$run_dir" resume \
-      "$PYTHON" -m training.finetune.train --out-dir "$run_dir" "${saved[@]}"
+      "$PYTHON" -m "$module" --out-dir "$run_dir" "${saved[@]}"
   else
-    [[ $# -gt 0 ]] || die "a new run needs its train args (--cache-dir, --val-cache-dir, ...)"
+    [[ $# -gt 0 ]] || die "a new run needs its arguments (--cache-dir, ...)"
     # A start cut short before run_id.json leaves only these behind.
     if [[ -d "$run_dir" && -z "$(find "$run_dir" -mindepth 1 -maxdepth 1 ! -name train_args.json \
         ! -name .run_id.json.tmp -print -quit)" ]]; then
       rm -f "$run_dir/train_args.json" "$run_dir/.run_id.json.tmp"
     fi
     require_empty_dir "$run_dir"
-    run_with_sync "$run_dir" fresh "$PYTHON" -m training.finetune.train --out-dir "$run_dir" "$@"
+    run_with_sync "$run_dir" fresh "$PYTHON" -m "$module" --out-dir "$run_dir" "$@"
   fi
 }
 
@@ -418,10 +420,13 @@ case "$command" in
     preflight 130
     ;;
   run)
-    run "$@"
+    run training.finetune.train "$@"
+    ;;
+  grpo)
+    run training.finetune.grpo "$@"
     ;;
   *)
-    echo "usage: $0 setup|cpus|preflight|run RUN_NAME [ARGS...]" >&2
+    echo "usage: $0 setup|cpus|preflight|run RUN_NAME [ARGS...]|grpo RUN_NAME [ARGS...]" >&2
     exit 1
     ;;
 esac
