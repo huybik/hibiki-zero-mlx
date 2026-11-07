@@ -8,8 +8,8 @@ context, and writes <root>/<source>/text_en/<shard>.parquet (id, text_en) beside
 layout; `ingest push` uploads it. A transcript all in capitals (GigaSpeech 2's) goes in lowercased:
 kept, the model answers in capitals, which the TTS spells out. The first try is greedy; a reply cut
 at max_tokens, still in Vietnamese, holding letters of another script or brackets, or far too long
-is tried again sampled, up to TRIES times, never again with the tokens it wrote another script
-with. A row failing every try keeps text_en null, and a rerun tries the null rows again (and only
+is tried again sampled, up to TRIES times, the later half without context rows, never again with
+the tokens it wrote another script or the Vietnamese it echoed with. A row failing every try keeps text_en null, and a rerun tries the null rows again (and only
 those: a written row may already be voiced). It takes the GPU memory voice and the ASR server
 hold, so they take turns. From the repo root, in the env /workspace/envs/mt (`envs.sh`):
 
@@ -60,22 +60,28 @@ def log(msg: str) -> None:
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
-def bad(vi: str, en: str | None) -> bool:
-    """A reply cut at max_tokens, empty, holding letters of a script its Vietnamese lacks or brackets,
-    left in Vietnamese, or far longer than its row (the model now and then translates the context rows too:
-    1 in 2,000 rows of the check; English runs ~1.2× the Vietnamese's characters)."""
-    if en is None or not en.strip() or broken(vi, en) or len(en) > 2.5 * len(vi) + 20:
-        return True
-    if "[" in en and "[" not in vi:  # "[Name]", "[a specific time]": the TTS would read them
-        return True
+def left_in_vietnamese(en: str) -> bool:
     words = re.sub(r"[^\w\s]", " ", unicodedata.normalize("NFC", en).lower()).split()
     return sum(w in VIETNAMESE_WORDS for w in words) >= 2
 
 
-def prompt(texts: list[str], docs: list[str], k: int) -> str:
-    """Row k's prompt, with up to CONTEXT_ROWS earlier rows of its doc (only rows of the same doc:
+def bad(vi: str, en: str | None, context: bool) -> bool:
+    """A reply cut at max_tokens, empty, holding letters of a script its Vietnamese lacks or brackets,
+    left in Vietnamese, or, from a prompt with context rows, far longer than its row: the model now
+    and then translates the context rows too (1 in 2,000 rows of the check; English runs ~1.2× the
+    Vietnamese's characters). Without context nothing can leak, and a long reply is an expansion
+    ("nội ngoại sản nhi": "internal medicine, surgery, obstetrics and gynecology, pediatrics")."""
+    if en is None or not en.strip() or broken(vi, en) or (context and len(en) > 2.5 * len(vi) + 20):
+        return True
+    if "[" in en and "[" not in vi:  # "[Name]", "[a specific time]": the TTS would read them
+        return True
+    return left_in_vietnamese(en)
+
+
+def prompt(texts: list[str], docs: list[str], k: int, rows: int = CONTEXT_ROWS) -> str:
+    """Row k's prompt, with up to `rows` earlier rows of its doc (only rows of the same doc:
     viVoice's rows are docs of their own)."""
-    context = [texts[j] for j in range(max(0, k - CONTEXT_ROWS), k) if docs[j] == docs[k]]
+    context = [texts[j] for j in range(max(0, k - rows), k) if docs[j] == docs[k]]
     background = ("\n\nContext, earlier in the recording (do not translate):\n" + "\n".join(context)
                   if context else "")
     return f"{PROMPT}{background}\n\nSegment:\n{texts[k]}"
@@ -93,44 +99,57 @@ def engine(gpu_memory: float):
                limit_mm_per_prompt={"image": 0, "video": 0})
 
 
-def translate(llm, vi: list[str], prompts: list[str], again: list[bool]) -> tuple[list[str | None], list[str]]:
+VIETNAMESE_LETTER = re.compile("[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]", re.I)
+
+
+def translate(llm, vi: list[str], prompts: list[str], bare: list[str],
+              again: list[bool]) -> tuple[list[str | None], list[str]]:
     """-> each row's English (None where it fails every try) and its last reply. Each try is one
     generate call over the rows still without one: greedy first, then sampled at Qwen3.5's
     non-thinking settings, seeded afresh each try (the engine's own seed is fixed) so that a rerun
-    draws anew; a row that failed in an earlier run (`again`) is sampled from its first try. Stops
-    the run when more than half the rows of a try over more than MIN_ROWS fail it: a systematic
-    failure."""
+    draws anew. The second half of the tries, and every try of a row that failed in an earlier run
+    (`again`, sampled from its first), use the prompt without context rows (`bare`). Stops the run
+    when more than half the rows of a try over more than MIN_ROWS fail it: a systematic failure."""
     from vllm import SamplingParams
 
     greedy = SamplingParams(max_tokens=MAX_TOKENS, temperature=0)
     tokenizer = llm.get_tokenizer()
     en: list[str | None] = [None] * len(vi)
     last = [""] * len(vi)
-    banned: dict[int, set[int]] = {}  # token ids a row's earlier replies wrote other scripts with
+    # Token ids a row's later tries may not emit, in the order banned (the newest BANNED are kept):
+    # - those its earlier replies wrote other scripts with. The model writes some Sino-Vietnamese
+    #   names in Chinese every try ("King Tran Thai宗" for Trần Thái Tông); exact ids, as a letter
+    #   also hides in multi-letter tokens (太宗) and byte pieces (which decode to U+FFFD);
+    # - those a reply left in Vietnamese wrote Vietnamese letters with: some rows come back as
+    #   their own Vietnamese, capitalized, every try.
+    banned: dict[int, dict[int, None]] = {}
     todo = list(range(len(vi)))
     for attempt in range(TRIES):
         sampling = dict(max_tokens=MAX_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
                         seed=int.from_bytes(os.urandom(4)))
         sampled = SamplingParams(**sampling)
-        # The model writes some Sino-Vietnamese names in Chinese every try ("King Tran Thai宗" for
-        # Trần Thái Tông): a row's later tries may not emit the tokens its earlier replies wrote
-        # other scripts with (exact ids: a letter also hides in multi-letter and byte tokens).
+        plain = {k: again[k] or attempt >= TRIES // 2 for k in todo}
         params = [greedy if not (attempt or again[k]) else
-                  SamplingParams(**sampling, logit_bias={t: -100 for t in sorted(banned[k])[:BANNED]})
+                  SamplingParams(**sampling, logit_bias={t: -100 for t in list(banned[k])[-BANNED:]})
                   if k in banned else sampled for k in todo]
-        outputs = llm.chat([[{"role": "user", "content": prompts[k]}] for k in todo], params, use_tqdm=False,
-                           chat_template_kwargs={"enable_thinking": False})
+        outputs = llm.chat([[{"role": "user", "content": bare[k] if plain[k] else prompts[k]}] for k in todo],
+                           params, use_tqdm=False, chat_template_kwargs={"enable_thinking": False})
         for k, output in zip(todo, outputs, strict=True):
             reply = output.outputs[0]
             last[k] = reply.text
-            own = set(NON_LATIN.findall(vi[k]))
-            if set(NON_LATIN.findall(reply.text)) - own:  # a partial character decodes to U+FFFD
-                banned.setdefault(k, set()).update(
-                    t for t in reply.token_ids
-                    if "\ufffd" in (piece := tokenizer.decode([t])) or set(NON_LATIN.findall(piece)) - own)
             text = reply.text.strip() if reply.finish_reason == "stop" else None
-            if not bad(vi[k], text):
+            if not bad(vi[k], text, context=not plain[k]):
                 en[k] = text
+                continue
+            own = set(NON_LATIN.findall(vi[k]))
+            foreign = bool(set(NON_LATIN.findall(reply.text)) - own)
+            echoed = left_in_vietnamese(reply.text)
+            if foreign or echoed:
+                for t in reply.token_ids:
+                    piece = tokenizer.decode([t])
+                    if (foreign and ("\ufffd" in piece or set(NON_LATIN.findall(piece)) - own)
+                            or echoed and VIETNAMESE_LETTER.search(piece)):
+                        banned.setdefault(k, {})[t] = None
         failing = [k for k in todo if en[k] is None]
         if len(todo) > MIN_ROWS and len(failing) > len(todo) / 2:
             raise SystemExit(f"{len(failing):,} of {len(todo):,} rows failed try {attempt + 1}, a systematic "
@@ -198,7 +217,8 @@ def main() -> None:
                 continue
             again = [(out / loaded[s][0]).exists() for s, _ in todo]
             en, last = translate(llm, [loaded[s][3][k] for s, k in todo],
-                                 [prompt(loaded[s][3], loaded[s][2], k) for s, k in todo], again)
+                                 [prompt(loaded[s][3], loaded[s][2], k) for s, k in todo],
+                                 [prompt(loaded[s][3], loaded[s][2], k, rows=0) for s, k in todo], again)
             for (s, k), text in zip(todo, en, strict=True):
                 loaded[s][4][k] = text
             for name, ids, _, _, text_en in loaded:

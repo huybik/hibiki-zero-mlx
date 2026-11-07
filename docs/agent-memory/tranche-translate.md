@@ -28,21 +28,29 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   rows broke in the TTS 59.8% of the time against 21.3% (archives 13–24).
 - The first try is greedy with thinking off. A reply is tried again, sampled (temperature 0.7,
   top-p 0.8, top-k 20, a fresh seed each try: the engine's own is fixed), up to six tries in all
-  (the later ones cover a few rows a group, in seconds), when it is:
+  (the later ones cover a few rows a group, in seconds). The second half of the tries, and every try
+  of a row that failed in an earlier run, drop the context rows. A reply is tried again when it is:
   - cut at 512 tokens, or empty;
   - holding letters of a script its Vietnamese lacks. The 35B writes some Sino-Vietnamese names
-    in Chinese ("King Tran Thai宗" for Trần Thái Tông: 2 of the 6 such rows of archives 51–66
-    failed three tries), so a row's later tries may not emit the token ids its earlier replies
-    wrote such letters with (`logit_bias` −100; exact ids, since a letter also hides in
-    multi-letter tokens such as 太宗 and 江湖 and in byte pieces, which decode to U+FFFD; at most
-    1,000, under vLLM 0.33's 1,024. Its `bad_words` would block single-letter tokens only, and
-    raises past 128);
+    in Chinese ("King Tran Thai宗" for Trần Thái Tông), so a row's later tries may not emit the
+    token ids its earlier replies wrote such letters with (`logit_bias` −100; exact ids, since a
+    letter also hides in multi-letter tokens such as 太宗 and 江湖 and in byte pieces, which decode
+    to U+FFFD; the newest 1,000, under vLLM 0.33's 1,024 a request. Its `bad_words` would block
+    single-letter tokens only, and raises past 128). Burst 2's rerun translated all 15 such rows
+    burst 1 had left null;
   - holding brackets its Vietnamese lacks ("[Name]", "[a specific time]");
   - left in Vietnamese: two of 25 frequent Vietnamese words, each with a diacritic. Words that
     are also name syllables stay out: ASCII ones (trong, khi: "Nguyen Phu Trong" is right), and
-    như, lại, từ, which a name left with its diacritics holds ("Như Xuân");
-  - longer than 2.5× its Vietnamese's characters plus 20: the model now and then translates the
-    context rows too (1 in 2,000 rows of the bake-off; English runs ~1.2× the Vietnamese).
+    như, lại, từ, which a name left with its diacritics holds ("Như Xuân"). Some rows come back as
+    their own Vietnamese, capitalized, every try ("Bà Hằng kể lúc đó…"), so the row's later tries
+    may not emit the tokens that reply wrote Vietnamese letters with;
+  - from a prompt with context, longer than 2.5× its Vietnamese's characters plus 20: the model
+    now and then translates the context rows too (1 in 2,000 rows of the bake-off; English runs
+    ~1.2× the Vietnamese). Without context nothing can leak, and a long reply is an expansion
+    ("nội ngoại sản nhi": "internal medicine, surgery, obstetrics and gynecology, pediatrics").
+- Burst 1 (archives 51–156, three tries, 2026-11-07) left 118 rows null in 67 archives; burst 2's
+  rerun with the Chinese-token ban left 42: about half echoed Vietnamese, half context leaks or
+  expansions.
 - The 35B keeps the diacritics of 0.73% of its rows' names ("Đỗ Hoàng Việt"; Muse 0.05%) despite
   the prompt; nothing rejects them.
 - A row failing every try keeps `text_en` null, is logged with its last reply, and holds its
