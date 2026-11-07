@@ -48,9 +48,9 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
     now and then translates the context rows too (1 in 2,000 rows of the bake-off; English runs
     ~1.2× the Vietnamese). Without context nothing can leak, and a long reply is an expansion
     ("nội ngoại sản nhi": "internal medicine, surgery, obstetrics and gynecology, pediatrics").
-- Burst 1 (archives 51–156, three tries, 2026-11-07) left 118 rows null in 67 archives; burst 2's
-  rerun with the Chinese-token ban left 42: about half echoed Vietnamese, half context leaks or
-  expansions.
+- Burst 1 (archives 51–156, three tries, 2026-11-07) left 118 rows null in 67 archives; a rerun
+  with the Chinese-token ban left 42 (about half echoed Vietnamese, half context leaks or
+  expansions); a rerun with context-free tries and the echo ban left none.
 - The 35B keeps the diacritics of 0.73% of its rows' names ("Đỗ Hoàng Việt"; Muse 0.05%) despite
   the prompt; nothing rejects them.
 - A row failing every try keeps `text_en` null, is logged with its last reply, and holds its
