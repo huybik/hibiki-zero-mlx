@@ -23,7 +23,7 @@ draws use split `train`.
   then on `cache_codes`'s own gates (decoded duration, frame cap, CTC alignment score 0.5, token
   timing). The Vietnamese side comes first since 2026-11-07, when voice.py began skipping the
   rows `vi_gate` drops at the default 0.15 (null `en_audio`); shards built before then counted
-  rows failing both sides as `en_broken`. A looser `--max-cer` turns those rows into "not voiced".
+  rows failing both sides as `en_broken` or "Vietnamese letters". A looser `--max-cer` turns those rows into "not voiced".
 - `--max-cer` 0.15 for every source (2026-11-06), from the CER of the first shards:
 
   | Source | Rows | p90 | p99 | Over 0.10 | Over 0.15 |

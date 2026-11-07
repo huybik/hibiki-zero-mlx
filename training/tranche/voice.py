@@ -502,8 +502,8 @@ def write_shard(shard: Shard) -> None:
 
 def run(args: argparse.Namespace) -> None:
     """Every shard of each source in turn, the next one loading while the engine voices; the engine
-    is kept full with retries first, then new rows. A shard is written once every row has a kept
-    attempt, and each source's written shards are pushed every PUSH_S and at its end."""
+    is kept full with retries first, then new rows. A shard is written once every voiced row has a
+    kept attempt, and each source's written shards are pushed every PUSH_S and at its end."""
     import queue
     import threading
     from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -518,7 +518,7 @@ def run(args: argparse.Namespace) -> None:
 
     ingest.an_token()
     api = HfApi()
-    todo = []
+    todo, waiting = [], 0
     for source in args.sources:
         files = api.list_repo_files(ingest.REPO, repo_type="dataset")
         done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/en_audio/")}
@@ -536,13 +536,17 @@ def run(args: argparse.Namespace) -> None:
         for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
             name = f.rsplit("/", 1)[1]
             dst = args.root / source / "en_audio" / name
-            if name in translated and name in heard and name not in done and not dst.exists():
-                todo.append((source, name))
+            if name in translated and name not in done and not dst.exists():
+                if name in heard:
+                    todo.append((source, name))
+                else:
+                    waiting += 1  # filters.py has not heard it yet: a later run takes it
         local = {p.name for p in (args.root / source / "en_audio").glob("*.parquet")}
         if local - done:  # written by an earlier run that stopped before pushing them
             ingest.push_part(args.root, source, "en_audio")
     todo = todo[: args.limit]
-    log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
+    log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources)
+        + f"; {waiting} translated but waiting for their asr_vi")
     if not todo:
         return
 

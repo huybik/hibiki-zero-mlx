@@ -165,7 +165,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   CER over 0.15, a nghìn/triệu/tỷ the transcript lacks: `filters.vi_gate` on asr_vi) whatever its
   English, 5.5% of GigaSpeech 2's rows and 6.6–6.9% of its hours (archives 147, 148). `voice.py`
   no longer voices them: `en_tries` 0, the other English columns null. So a shard waits for its
-  asr_vi as for its text_en (`filters.py` runs ahead, beside voice).
+  asr_vi as for its text_en: run `filters.py` beside voice, ahead of it (a run logs how many
+  translated shards wait for their asr_vi). Its per-shard "still broken" now counts voiced rows
+  only, so it reads lower than the ~17.7% of the shards voiced before (many skipped rows broke).
 - Speed on one H100 (2026-11-07, 5,000 rows of GigaSpeech 2's archive 147, 7.8 h voiced, the GPU
   to itself: no ASR server, no checks): RTF 0.0037. Of the engine's time, decode steps 45% (141 ms
   for 512 rows), the VAE decode 30% (~320 ms a batch of ~47 rows), prefill 19%, Python 5%.

@@ -197,7 +197,8 @@ other corpora ─► their transcripts, word times by forced alignment ───
 
 `training/tranche/filters.py` measures what the cache build drops rows on (its Vietnamese-side gates are
 `filters.vi_gate`, which voice.py also applies, not voicing those rows); the build applies the
-thresholds, so they can change without measuring again.
+thresholds, so they can change without measuring again, except that a `--max-cer` looser than
+0.15 cannot bring back the rows voice skipped at 0.15 (from 2026-11-07) without voicing them.
 
 - Both filters compare text by `spoken`: lower-case NFC syllables without punctuation, digits
   written out by num2words' Vietnamese, and `ngàn`/`linh`/`nhăm` folded to `nghìn`/`lẻ`/`lăm`.
