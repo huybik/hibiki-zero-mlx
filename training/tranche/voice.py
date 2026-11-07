@@ -16,13 +16,14 @@ the environment and the ASR server up:
       --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
       (one API process decodes and featurizes ~11 requests/s on the CPU, below the TTS's ~13 attempts/s)
   /workspace/envs/nanovox/bin/python -m training.tranche.voice run pho vivoice giga
-      every segments shard (each has its text_en) on the Hub without en_audio yet: each row voiced with its
-      own clip and transcript as prompt and reference, heard by the ASR, voiced again while broken
-      (WER over 20% or pace off by 2x) up to 3 tries, the best try kept; writes
+      every segments shard (each has its text_en and asr_vi) on the Hub without en_audio yet: each
+      row voiced with its own clip and transcript as prompt and reference, heard by the ASR, voiced
+      again while broken (WER over 20% or pace off by 2x) up to MAX_TRIES, the best try kept; writes
       <root>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
       en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
-      30 min and at its end. A rerun skips the shards already written or pushed, and first pushes
-      any written but not yet pushed.
+      30 min and at its end. Rows the cache build drops on the Vietnamese side (`filters.vi_gate`
+      on asr_vi) are not voiced: en_tries 0, the other columns null. A rerun skips the shards
+      already written or pushed, and first pushes any written but not yet pushed.
   /workspace/envs/nanovox/bin/python -m training.tranche.voice bench --concurrency 512 --repeats 8
       the bake-off's rows in its `ult` setup (prompt and reference: the row's reference clip),
       timed; --write saves the first pass as <out>/out/<system>/ in the bake-off's layout, beside a
@@ -46,7 +47,10 @@ BAKEOFF = Path("/workspace/tranche/bakeoff")
 BENCH = Path("/workspace/tranche/voice-bench")
 MODEL = ("openbmb/VoxCPM2", "32279ef")  # the bake-off's revision
 CFG = 2.0  # voxcpm 2.0.3's generate defaults, which the bake-off ran
-TIMESTEPS = 10
+# Flow-matching steps: 8 from 2026-11-08 (tranche-tts.md, "Quality against speed": the diffusion head is
+# ~92% of a decode step; 8 was within noise of 10 on broken share, kept-row WER and voice match, for 8.5%
+# less GPU per kept row; voxcpm runs 10)
+TIMESTEPS = 8
 MIN_PATCHES = 4  # voxcpm stops no earlier than its fourth patch (`i > min_len`, min_len 2)
 MAX_MODEL_LEN = 4096
 ENCODE_RATE, OUT_RATE = 16000, 48000
@@ -64,9 +68,12 @@ PACE = 0.0636  # the bake-off's median seconds of English audio per character of
 # costs more TTS time than its rows give back (tranche-tts.md); the first tranche ran 3.
 MAX_TRIES = 1
 ASR_TIMEOUT_S = 60  # a request takes well under a second
+# The server stalls past a try now and then and recovers within minutes: 3 tries ended a run three
+# times in two days (2026-11-06, 11-07 17:22 and 23:17 UTC+7), each losing the shards in flight.
+ASR_TRIES = 10
 ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
 CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
-DECODERS = 6  # processes decoding the next shard's clips
+DECODER_SHARE = 4  # processes decoding the next shard's clips: a quarter of the CPU quota (6 of 26)
 OPUS_AT_ONCE = 4
 PUSH_S = 1800
 MAX_OPEN = 3  # shards in the engine at once: those finishing their slowest rows, and the next
@@ -382,8 +389,9 @@ class Shard:
     ids: list[str]
     texts: list[str]  # Vietnamese transcripts: the prompts' texts
     texts_en: list[str]
-    clips: list[np.ndarray] | None  # 16 kHz, until encoded
+    clips: list[np.ndarray] | None  # the voiced rows' clips at 16 kHz, until encoded
     results: dict = None  # id -> the best attempt so far: {"wer", "broken", "asr", "audio", "duration", "tries"}
+    skipped: set[str] = None  # rows `filters.vi_gate` drops: not voiced, their English columns null
 
 
 class Checker:
@@ -419,14 +427,15 @@ class Checker:
 
         buf = io.BytesIO()
         sf.write(buf, resample_poly(wav, 1, 3).astype(np.float32), ENCODE_RATE, subtype="PCM_16", format="WAV")
-        for attempt in range(3):  # the server drops an idle keep-alive connection now and then
+        for attempt in range(ASR_TRIES):  # it also drops an idle keep-alive connection now and then
             try:
                 reply = self.client.post(self.url, files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
                                          data={"model": "asr", "language": "en", "to_language": "en",
                                                "max_completion_tokens": ASR_MAX_TOKENS})
             except httpx.TransportError:
-                if attempt == 2:
+                if attempt == ASR_TRIES - 1:
                     raise
+                time.sleep(10)  # a refused connection (the server restarting) fails at once
                 continue
             reply.raise_for_status()
             asr = reply.json()["text"]
@@ -457,33 +466,40 @@ def _check(text: str, wav: np.ndarray) -> dict:
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     import pyarrow.parquet as pq
 
+    from training.tranche.filters import vi_gate
     from training.tranche.ingest import part_file
 
     get = lambda part: pq.read_table(part_file(root, source, part, name))  # noqa: E731
     seg = get("segments").select(["id", "text", "audio"])
     en = dict(zip(*get("text_en").select(["id", "text_en"]).to_pydict().values()))
-    ids = seg.column("id").to_pylist()
+    ids, texts = seg.column("id").to_pylist(), seg.column("text").to_pylist()
     if missing := [i for i in ids if not en.get(i)]:
         raise SystemExit(f"{source}/{name}: {len(missing)} rows without text_en, e.g. {missing[0]}")
-    audio = [a["bytes"] for a in seg.column("audio").to_pylist()]
+    vi = get("asr_vi").select(["id", "asr_vi", "language", "cer"]).to_pylist()
+    if [r["id"] for r in vi] != ids:
+        raise SystemExit(f"{source}/{name}: its asr_vi does not hold the segments' rows in their order")
+    # The cache build drops these on the Vietnamese side whatever the English (~6% of GigaSpeech 2's hours).
+    skipped = {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
+    audio = [a["bytes"] for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
     clips = list(pool.map(decode_16k, audio, chunksize=32))
-    return Shard(source, name, root / source / "en_audio" / name, ids, seg.column("text").to_pylist(),
-                 [en[i] for i in ids], clips, {})
+    return Shard(source, name, root / source / "en_audio" / name, ids, texts, [en[i] for i in ids], clips, {}, skipped)
 
 
 def write_shard(shard: Shard) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    r = [shard.results[i] for i in shard.ids]
+    r = [shard.results.get(i) for i in shard.ids]  # None: skipped by the Vietnamese gates
+    col = lambda f, kind: pa.array([None if x is None else f(x) for x in r], kind)
     table = pa.table({
         "id": shard.ids,
-        "en_audio": [{"bytes": x["audio"], "path": f"{i.replace('/', '_')}.opus"} for i, x in zip(shard.ids, r)],
-        "en_duration_s": [x["duration"] for x in r],
-        "en_asr": [x["asr"] for x in r],
-        "en_wer": pa.array([x["wer"] for x in r], pa.float32()),
-        "en_tries": pa.array([x["tries"] for x in r], pa.int8()),
-        "en_broken": [x["broken"] for x in r],
+        "en_audio": pa.array([None if x is None else {"bytes": x["audio"], "path": f"{i.replace('/', '_')}.opus"}
+                              for i, x in zip(shard.ids, r)], pa.struct([("bytes", pa.binary()), ("path", pa.string())])),
+        "en_duration_s": col(lambda x: x["duration"], pa.float64()),
+        "en_asr": col(lambda x: x["asr"], pa.string()),
+        "en_wer": col(lambda x: x["wer"], pa.float32()),
+        "en_tries": pa.array([0 if x is None else x["tries"] for x in r], pa.int8()),
+        "en_broken": col(lambda x: x["broken"], pa.bool_()),
     })
     shard.dst.parent.mkdir(parents=True, exist_ok=True)
     part = shard.dst.with_name(shard.dst.name + ".part")
@@ -493,8 +509,8 @@ def write_shard(shard: Shard) -> None:
 
 def run(args: argparse.Namespace) -> None:
     """Every shard of each source in turn, the next one loading while the engine voices; the engine
-    is kept full with retries first, then new rows. A shard is written once every row has a kept
-    attempt, and each source's written shards are pushed every PUSH_S and at its end."""
+    is kept full with retries first, then new rows. A shard is written once every voiced row has a
+    kept attempt, and each source's written shards are pushed every PUSH_S and at its end."""
     import queue
     import threading
     from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -502,13 +518,14 @@ def run(args: argparse.Namespace) -> None:
 
     from huggingface_hub import HfApi
 
+    from training.paths import cpu_budget
     from training.tranche import ingest
 
     import pyarrow.parquet as pq
 
     ingest.an_token()
     api = HfApi()
-    todo = []
+    todo, waiting = [], 0
     for source in args.sources:
         files = api.list_repo_files(ingest.REPO, repo_type="dataset")
         done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/en_audio/")}
@@ -520,16 +537,23 @@ def run(args: argparse.Namespace) -> None:
                 translated.discard(p.name)
             else:
                 translated.add(p.name)
+        # and for its Vietnamese ASR (filters.py, running ahead), whose gates skip rows.
+        heard = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/asr_vi/")}
+        heard |= {p.name for p in (args.root / source / "asr_vi").glob("*.parquet")}
         for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
             name = f.rsplit("/", 1)[1]
             dst = args.root / source / "en_audio" / name
             if name in translated and name not in done and not dst.exists():
-                todo.append((source, name))
+                if name in heard:
+                    todo.append((source, name))
+                else:
+                    waiting += 1  # filters.py has not heard it yet: a later run takes it
         local = {p.name for p in (args.root / source / "en_audio").glob("*.parquet")}
         if local - done:  # written by an earlier run that stopped before pushing them
             ingest.push_part(args.root, source, "en_audio")
     todo = todo[: args.limit]
-    log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
+    log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources)
+        + f"; {waiting} translated but waiting for their asr_vi")
     if not todo:
         return
 
@@ -539,7 +563,7 @@ def run(args: argparse.Namespace) -> None:
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_NUM_THREADS"):
         os.environ[name] = "1"
     spawn = get_context("spawn")
-    pool = ProcessPoolExecutor(DECODERS, mp_context=spawn)
+    pool = ProcessPoolExecutor(max(1, int(cpu_budget() // DECODER_SHARE)), mp_context=spawn)
     loaded: queue.Queue = queue.Queue(maxsize=1)  # one shard ahead
 
     def loader():
@@ -566,7 +590,7 @@ def run(args: argparse.Namespace) -> None:
     pushes = ThreadPoolExecutor(1)  # uploads run beside the voicing
     pushed = {s: time.monotonic() for s in args.sources}
     uploads = []
-    began, voiced, attempts = time.monotonic(), 0.0, 0
+    began, voiced_s, attempts = time.monotonic(), 0.0, 0
 
     def push(source: str) -> None:
         pushed[source] = time.monotonic()
@@ -583,16 +607,35 @@ def run(args: argparse.Namespace) -> None:
         latents = voicer.encode(shard.clips)
         shard.clips = None
         key = f"{shard.source}/{shard.name}"
-        shards[key], remaining[key] = shard, len(shard.ids)
-        for i in shard.ids:
+        rows = [(i, t_en, t_vi) for i, t_en, t_vi in zip(shard.ids, shard.texts_en, shard.texts) if i not in shard.skipped]
+        shards[key], remaining[key] = shard, len(rows)
+        for i, _, _ in rows:
             owner[i] = shard
-        fresh = (Request(i, t_en, t_vi, lat) for i, t_en, t_vi, lat in zip(shard.ids, shard.texts_en, shard.texts, latents))
+        fresh = (Request(i, t_en, t_vi, lat) for (i, t_en, t_vi), lat in zip(rows, latents, strict=True))
+        if not rows:
+            finish(shard)
         return True
 
+    def finish(shard: Shard) -> None:
+        """Writes a shard whose voiced rows all have a kept attempt, and pushes as due."""
+        key = f"{shard.source}/{shard.name}"
+        write_shard(shard)
+        kept = list(shard.results.values())
+        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by the Vietnamese gates, "
+            f"{sum(x['tries'] for x in kept) / max(len(kept), 1):.2f} tries a row, "
+            f"{sum(x['broken'] for x in kept) / max(len(kept), 1):.1%} still broken; overall RTF "
+            f"{(time.monotonic() - began) / max(voiced_s, 1):.4f} over {voiced_s / 3600:.1f} h voiced ({attempts} attempts)")
+        for i in shard.results:
+            del owner[i]
+        del shards[key], remaining[key]
+        left[shard.source] -= 1
+        if left[shard.source] == 0 or time.monotonic() - pushed[shard.source] > PUSH_S:
+            push(shard.source)
+
     def settle(req: Request, result: dict) -> None:
-        nonlocal attempts, voiced
+        nonlocal attempts, voiced_s
         attempts += 1
-        voiced += result["duration"]
+        voiced_s += result["duration"]
         shard = owner[req.key]
         best = shard.results.get(req.key)
         result["tries"] = (best["tries"] if best else 0) + 1
@@ -606,17 +649,7 @@ def run(args: argparse.Namespace) -> None:
         key = f"{shard.source}/{shard.name}"
         remaining[key] -= 1
         if remaining[key] == 0:
-            write_shard(shard)
-            kept = list(shard.results.values())
-            log(f"{key}: {len(kept)} rows, {sum(x['tries'] for x in kept) / len(kept):.2f} tries a row, "
-                f"{sum(x['broken'] for x in kept) / len(kept):.1%} still broken; overall RTF "
-                f"{(time.monotonic() - began) / voiced:.4f} over {voiced / 3600:.1f} h voiced ({attempts} attempts)")
-            for i in shard.ids:
-                del owner[i]
-            del shards[key], remaining[key]
-            left[shard.source] -= 1
-            if left[shard.source] == 0 or time.monotonic() - pushed[shard.source] > PUSH_S:
-                push(shard.source)
+            finish(shard)
 
     try:
         while True:
@@ -648,7 +681,7 @@ def run(args: argparse.Namespace) -> None:
     pushes.shutdown()
     for fut in uploads:
         fut.result()
-    log(f"done: {voiced / 3600:.1f} h voiced in {(time.monotonic() - began) / 3600:.2f} h")
+    log(f"done: {voiced_s / 3600:.1f} h voiced in {(time.monotonic() - began) / 3600:.2f} h")
 
 
 def main() -> None:

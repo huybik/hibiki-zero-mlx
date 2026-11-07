@@ -46,7 +46,7 @@ ASR_URL = "http://localhost:8100/v1/audio/transcriptions"
 ASR_MAX_TOKENS = 512  # as voice.py: a looping transcript comes back long instead of running on
 ASR_TIMEOUT_S = 60
 CONCURRENCY = 64
-DECODERS = 4  # processes decoding the clips for the server, a few cores beside the TTS run
+DECODER_SHARE = 6  # processes decoding the clips for the server: a sixth of the CPU quota (4 of 26), beside the TTS run
 PUSH_S = 1800
 
 
@@ -88,6 +88,33 @@ def overlaps(text: str, grams: Grams) -> bool:
     """Whether the transcript holds one of the evaluation runs."""
     w = spoken(text)
     return any(tuple(w[i:i + n]) in runs for n, runs in grams.items() for i in range(len(w) - n + 1))
+
+
+# Above 0.15 the corpus transcript and the clip differ by phrases (PhoAudiobook's repeated clauses);
+# from 0.10 to 0.15 mostly the ASR's misses on names and loanwords, numbers and percentages spelled
+# otherwise, a word at a cut edge (tranche-cache#gates).
+MAX_CER = 0.15
+# GigaSpeech 2's transcripts drop these from numbers ("hơn một chuyến" where the speaker says "hơn
+# một nghìn chuyến"), a wrong fact the CER barely sees (tranche-cache#gates).
+MAGNITUDES = ("nghìn", "triệu", "tỷ")
+
+
+def magnitudes(text: str) -> list[int]:
+    words = spoken(text)
+    return [words.count(m) for m in MAGNITUDES]
+
+
+def vi_gate(row: dict, max_cer: float = MAX_CER) -> str | None:
+    """The first Vietnamese-side filter that drops a row (its `text` and this module's asr_vi
+    columns): the cache build drops such rows, so voice.py does not voice them."""
+    if row["language"] != "Vietnamese":
+        return f"language {row['language'] or 'none'}"
+    if round(row["cer"], 6) > max_cer:  # float32: 0.1 is stored as 0.10000000149
+        return f"CER {round(row['cer'], 6)} over {max_cer}"
+    # Word by word: a swapped magnitude (the ASR's tỷ for the transcript's triệu) is a wrong fact.
+    if any(heard > written for heard, written in zip(magnitudes(row["asr_vi"]), magnitudes(row["text"]))):
+        return "the ASR hears a nghìn/triệu/tỷ the transcript lacks"
+    return None
 
 
 def overlap(args: argparse.Namespace) -> None:
@@ -205,7 +232,9 @@ def asr(args: argparse.Namespace) -> None:
     log(f"{len(todo)} shards to hear: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"  # the decoders' thread pools, under the box's thread limit (voice.py)
-    decoders = ProcessPoolExecutor(DECODERS, mp_context=get_context("spawn"))
+    from training.paths import cpu_budget
+
+    decoders = ProcessPoolExecutor(max(1, int(cpu_budget() // DECODER_SHARE)), mp_context=get_context("spawn"))
     hearer = Hearer(args.asr)
     pushed = {s: time.monotonic() for s in args.sources}
     began, rows = time.monotonic(), 0

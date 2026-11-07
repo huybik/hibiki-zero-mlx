@@ -139,8 +139,10 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   so readers resample. Each check asks for at most 512
   transcript tokens (`max_completion_tokens`, as `checks.py`): uncapped, ASR decoding is greedy, so
   an output it loops on ran to the model's 65k context past any timeout, every try (one in the
-  first ~8,000). Capped, it comes back long and scores broken; a timeout (after 3 tries of 60 s)
-  or an HTTP error then means the server is in trouble and stops the run.
+  first ~8,000). Capped, it comes back long and scores broken. The server still stalls past a 60 s
+  try now and then and recovers within minutes; with 3 tries that ended a run three times in two
+  days (2026-11-06/07), each losing the shards in flight, so a check now tries 10 times (`ASR_TRIES`)
+  before a timeout stops the run; an HTTP error stops it at once.
 - The full run shares the GPU with the ASR server (`--gpu-memory-utilization 0.2`, ~25 GB with
   its graphs; the TTS holds ~55 GB at `--gpu-memory 0.45`, ~1.5 GB left). It runs at RTF ~0.007:
   a 1,299-row PhoAudiobook shard every ~2 min, ~13 h for the tranche (started 2026-11-05).
@@ -155,12 +157,55 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   | 3 | 89.0% | 0.571 |
 
   Clips under 2 s are 13.4% of the rows and 4.8% of the hours, 24.8% broken at 1.72 tries a row.
-  Fewer flow-matching steps cost more than they save (2,000 rows of shard 0, the ASR server
-  beside, one try): 10 steps RTF 0.00524, 22.2% broken, mean WER 0.188; 6 steps 0.00448, 24.0%,
-  0.317; 4 steps 0.00384, 33.9%, 0.373. `TIMESTEPS` stays 10.
+  A first test of fewer flow-matching steps (2,000 rows of shard 0, the ASR server beside, one
+  try; mean WER over all rows, broken ones included): 10 steps RTF 0.00524, 22.2% broken, mean
+  WER 0.188; 6 steps 0.00448, 24.0%, 0.317; 4 steps 0.00384, 33.9%, 0.373. It kept 10 steps; by
+  cost per kept row (below) even it favoured fewer (6 steps 0.875, 4 steps 0.863 of 10's).
   Decoding and checking run in spawned processes: as threads, their Python held the GIL and
   starved the engine loop (GPU at 2%). One ASR API process featurizes ~11 requests/s on the
-  CPU, so the server runs 8.
+  CPU, so the server runs 8 (a third of the CPU quota: `restart.sh asr`).
+- Quality against speed (2026-11-08; the user: changing the audio is fine if quality stays good).
+  The diffusion head is ~92% of a decode step: 141 ms for 512 rows at 10 steps (9 estimator calls
+  at double batch for guidance; the first step is a zero init), 83 ms at 6. The same 2,000 kept rows
+  of archive 147, one pass each, the production check, voice match (WeSpeaker, raw outputs, against
+  the row's Vietnamese clip; paired difference ± standard error); cost per kept row is RTF over the
+  share not broken:
+
+  | Variant | RTF (generation) | Broken | Kept WER median | Voice match | Cost per kept row |
+  |---|---:|---:|---:|---:|---:|
+  | 10 steps | 0.00407 | 16.2% | 0.035 | 0.618 | 1 |
+  | 8 steps | 0.00368 | 17.2% | 0.038 | −0.001 ± 0.001 | 0.915 |
+  | 6 steps | 0.00331 | 19.7% | 0.043 | −0.008 ± 0.001 | 0.849 |
+  | No reference audio (prompt only) | 0.00389 | 15.8% | 0.035 | −0.020 ± 0.001 | 0.951 |
+  | Guidance on the first 4 calls only | 0.00351 | 30.3% | 0.056 | −0.053 ± 0.002 | 1.04 |
+  | Guidance on the first 2 calls only | 0.00321 | 58.1% | 0.077 | −0.113 ± 0.002 | 1.58 |
+
+  `TIMESTEPS` is 8 from 2026-11-08 ~00:40 UTC+7 (the shards voiced before then ran 10, and the
+  figures above them were measured at 10): within noise of 10 (broken +1.0 point, kept WER median
+  +0.003, voice match unchanged). 6 steps costs ~3.5 points of broken rows and 1% of voice match;
+  dropping the reference costs 3% of voice match; a guidance interval breaks rows.
+- Measured, not shipped (2026-11-07/08): Qwen3-ASR-0.6B as the check served 122 requests/s against
+  the 1.7B's 138 (the server is bound by its API processes' CPU featurizing, not the GPU) and agreed
+  with the 1.7B on broken 89% of rows (the 1.7B with itself on the Opus round trip: 95%), flagging 3
+  points more. The VAE's residual units fused for torch.compile (the depthwise conv as shifted
+  multiply-adds, exact to 1e-6) gave 5% in the engine: there the decoder takes ~300 ms a batch, as
+  eager, where alone compiled it takes ~173 ms (not yet explained).
+- Skipped rows (2026-11-07): the cache build drops a row on its Vietnamese side alone (language,
+  CER over 0.15, a nghìn/triệu/tỷ the transcript lacks: `filters.vi_gate` on asr_vi) whatever its
+  English, 5.5% of GigaSpeech 2's rows and 6.6–6.9% of its hours (archives 147, 148). `voice.py`
+  no longer voices them: `en_tries` 0, the other English columns null. So a shard waits for its
+  asr_vi as for its text_en: run `filters.py` beside voice, ahead of it (a run logs how many
+  translated shards wait for their asr_vi). Its per-shard "still broken" now counts voiced rows
+  only, so it reads lower than the ~17.7% of the shards voiced before (many skipped rows broke).
+- Speed on one H100 (2026-11-07, 5,000 rows of GigaSpeech 2's archive 147, 7.8 h voiced, the GPU
+  to itself: no ASR server, no checks): RTF 0.0037. Of the engine's time, decode steps 45% (141 ms
+  for 512 rows), the VAE decode 30% (~320 ms a batch of ~47 rows), prefill 19%, Python 5%.
+  Submitting only once 128 slots are free (prefill in larger steps) changed nothing (RTF 0.0037);
+  1,024 sequences at 0.6 of the GPU gained 5% (decode 260 ms for 910 rows: compute-bound). In
+  production, beside the ASR server and filters, GigaSpeech 2 ran at RTF 0.0058–0.0063.
+- CPU: process pools take shares of the container's quota (`cpu_budget()`, cgroup `cpu.max`;
+  26.88 CPUs on the Japan box, `nproc` 224): voice's clip decoders a quarter, filters' a sixth.
+  The 32 checkers stay fixed: they are the ASR requests in flight, not CPU work.
 - The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
   follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
   `thread_count = 1`. PyAV's `AudioResampler` builds a filter graph holding a thread per host CPU
@@ -168,7 +213,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   Opus encoder builds one too, so a semaphore shared by the checking processes lets at most 4
   encode at once.
 - A crashed run drops its queued checks rather than running them, so its GPU memory frees within
-  a few minutes. Stop a run by its PID file (`/workspace/logs/voice-run.pid`), never `pkill -f`:
+  a few minutes, except behind a check still trying a stalled server (up to `ASR_TRIES` × ~70 s):
+  a server that hangs is surfaced ~20 min after it does, one that refuses connections at once. Stop a run by its PID file (`/workspace/logs/voice-run.pid`), never `pkill -f`:
   its spawned workers look like vLLM's own processes.
 - `training/tranche/envs.sh` builds those envs.
 - `synth` checks for the MPS daemon with `nvidia-cuda-mps-control` itself: on driver 615 its

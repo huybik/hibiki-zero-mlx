@@ -12,11 +12,14 @@ Mac's MLX builder `training.prep.cache_codes` ([sft-data-caches](../../docs/agen
                       the shards written or pushed, and first pushes any written but not yet pushed.
 
 A row is dropped, with the first reason that applies (the shard's `rejected`), when
-  - its English stayed broken after the TTS's retries (`en_broken`);
-  - the ASR of its English writes Vietnamese letters its text_en lacks (a Vietnamese lead-in);
   - Qwen3-ASR heard its clip as another language than Vietnamese, or none;
   - its corpus transcript and that ASR differ by more than --max-cer (CER over `filters.spoken`);
   - the ASR hears more nghìn/triệu/tỷ than the transcript holds (GigaSpeech 2's transcripts drop them);
+    (these three are `filters.vi_gate`, which voice.py applies before voicing: from 2026-11-07 such
+    rows have a null en_audio, and one dropped at the default --max-cer but kept by a looser one is
+    "not voiced");
+  - its English stayed broken after the TTS's retries (`en_broken`);
+  - the ASR of its English writes Vietnamese letters its text_en lacks (a Vietnamese lead-in);
   - its transcript overlaps an evaluation sentence (`filters.overlaps`; needs data/eval);
   - a clip decodes more than 0.02 s off its stored duration, or the row exceeds --max-frames;
   - its English text fails CTC alignment or token timing.
@@ -69,7 +72,7 @@ from training.prep.text_timing import (
     sentencepiece_groups,
     timed_sentencepiece_tokens,
 )
-from training.tranche.filters import eval_grams, overlaps, spoken
+from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
 from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, part_file, push_part
 
 SAMPLE_RATE = 24_000  # Mimi
@@ -79,13 +82,6 @@ SPLIT = "train"  # the delay draw's key, as cache_codes seeds it
 SEED = 1234  # cache_codes' defaults: the delay seed, ratio and the alignment floor
 DELAY_RATIO = 0.5
 DURATION_TOLERANCE_S = 0.02
-# Above 0.15 the corpus transcript and the clip differ by phrases (PhoAudiobook's repeated clauses);
-# from 0.10 to 0.15 mostly the ASR's misses on names and loanwords, numbers and percentages spelled
-# otherwise, a word at a cut edge (tranche-cache#gates).
-MAX_CER = 0.15
-# GigaSpeech 2's transcripts drop these from numbers ("hơn một chuyến" where the speaker says "hơn
-# một nghìn chuyến"), a wrong fact the CER barely sees (tranche-cache#gates).
-MAGNITUDES = ("nghìn", "triệu", "tỷ")
 VI_LETTERS = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
 MIMI_BATCH_S = 640.0  # padded audio per Mimi batch, as mimi_cache_cuda
 CTC_BATCH_S = 640.0
@@ -253,11 +249,6 @@ def fetch(root: Path, source: str, name: str) -> dict[str, Path]:
     return {part: part_file(root, source, part, name) for part in PARTS}
 
 
-def magnitudes(text: str) -> list[int]:
-    words = spoken(text)
-    return [words.count(m) for m in MAGNITUDES]
-
-
 def read_parts(source: str, name: str, files: dict[str, Path]) -> list[dict[str, Any]]:
     """The shard's rows with every part's columns, in the segments' order."""
     import pyarrow.parquet as pq
@@ -276,18 +267,16 @@ def read_parts(source: str, name: str, files: dict[str, Path]) -> list[dict[str,
 
 
 def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
-    """The first filter that drops the row, before any audio is decoded."""
+    """The first filter that drops the row, before any audio is decoded. The Vietnamese side comes
+    first: voice.py skips the rows it drops at the default --max-cer, leaving their en_audio null."""
+    if reason := vi_gate(row, max_cer):
+        return reason
+    if row["en_audio"] is None:
+        return "not voiced"  # skipped by voice.py's vi_gate at MAX_CER, here past a looser --max-cer
     if row["en_broken"]:
         return "en_broken"
     if letters := vietnamese_letters(row["en_asr"], row["text_en"]):
         return f"Vietnamese letters in en_asr: {''.join(sorted(letters))}"
-    if row["language"] != "Vietnamese":
-        return f"language {row['language'] or 'none'}"
-    if round(row["cer"], 6) > max_cer:  # float32: 0.1 is stored as 0.10000000149
-        return f"CER {round(row['cer'], 6)} over {max_cer}"
-    # Word by word: a swapped magnitude (the ASR's tỷ for the transcript's triệu) is a wrong fact.
-    if any(heard > written for heard, written in zip(magnitudes(row["asr_vi"]), magnitudes(row["text"]))):
-        return "the ASR hears a nghìn/triệu/tỷ the transcript lacks"
     if overlaps(row["text"], grams):
         return "overlaps an evaluation sentence"
     return None
