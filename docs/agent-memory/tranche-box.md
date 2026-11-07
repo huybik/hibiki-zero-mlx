@@ -1,0 +1,66 @@
+# The tranche on a rented box
+
+Read when bringing up a box for the tranche's jobs, or running them there: the scripts in
+`training/tranche/box/`, the jobs' order, what a new box needs. Back to [CONTEXT](../../CONTEXT.md).
+Sections: [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#operating).
+
+## Bring-up
+
+A rented H100 (Vast.ai) with `/workspace` as the working directory. The user rents a new box when
+one expires; everything a job writes goes to the Hub as it runs, so a new box resumes from there
+(user, 2026-11-07: "we can always rent a new box, just need to upload everything before it expire").
+
+1. Clone the repo to `/workspace/hibiki-zero`; `training/h100.sh setup` (the `.venv`).
+2. `/workspace/.env` (mode 600): `HF_TOKEN_AN`, a write token of anquachdev, for the tranche repos'
+   pushes; huybik's token in `$HF_HOME/token` for the run recovery repo. Never print either.
+3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs-min.sh` builds the `nanovox`
+   (voice.py) and `asr` (the Qwen3-ASR server) envs and downloads the models at their pinned
+   revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet hung or crawled at ~5 MB/s on the
+   Japan box; plain HTTP ran ~140 MB/s).
+4. The jobs read the tranche repos' parts locally under `/workspace/tranche/repo/<source>/<part>/`
+   and fall back to the Hub (`ingest.part_file`), so voice and filters need no download first.
+
+Round 4 SFT's inputs, all on the Hub (`restart.sh sft` reads them locally):
+- the tranche caches: `anquachdev/mimi-en-vi-speech-20k` (dataset, `<source>/shard_*.pt`) into
+  `/workspace/tranche/repo/cache/<source>/`;
+- 150 shards of the noisy en_speech cache, listed in `box/en_speech_sub.txt` (drawn by
+  `random.Random(46).sample` from the 1,832 of `huybik/hibiki-zero-vi-full-sft` (dataset)
+  `en-vi-grounded-v2-noisy/train/`; ~720 h) into `data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train/`,
+  the validation cache `en-vi-grounded-v2/validation/` into `data/cache/`, and the evaluation sets
+  ([sft-evaluation](sft-evaluation.md)) under `data/eval/`;
+- round 3's model, `huybik/hibiki-zero-vi-full-sft` (model) `tranche_epoch1b/checkpoints/model_step026176.safetensors`,
+  into `runs/tranche_epoch1b/`.
+
+## Jobs
+
+In order (user, 2026-11-07: all voicing first, then every cache, then SFT, then GRPO):
+
+| Job | Start | Done when |
+|---|---|---|
+| asr | `restart.sh asr` (the Qwen3-ASR server on :8100, beside filters and voice) | not needed after voice |
+| filters | `restart.sh filters` (asr_vi for every ingested shard) | it logs "0 shards to hear" |
+| voice | `restart.sh voice` (en_audio for every shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
+| cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
+| sft | `restart.sh sft` (round 4, `full_epoch4`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
+| grpo | `grpo_launch.sh <weight>` (PR #59, worktree `/workspace/wt-grpo`, [grpo_plan](../grpo_plan.md)) | its updates; stop with TERM to the launcher alone |
+
+Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
+process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with
+`restart.sh <job>`, never `pkill -f` (voice's spawned workers look like vLLM's processes).
+
+## Operating
+
+- `watchdog.sh`, run in the background, checks every 10 min and exits printing the first problem:
+  a job down, a new "voice run failed", voice or filters silent 30 min, the ASR server's health
+  failing twice, or voice finding 0 shards. Rerun it after handling one; stop it before a pause.
+- `pause_run.sh CMD...` runs a GPU benchmark at the next shard boundary: it stops voice and
+  filters right after a shard is written (an open shard's voicing is lost when voice stops),
+  runs the command from `/workspace/hibiki-zero` and restarts both. Nothing more fits beside
+  production: voice and the ASR server hold ~70 of the 80 GB.
+- Moving production voice to an unmerged branch for its end-to-end check: stop voice at a
+  boundary, `git checkout --detach origin/<branch>` in `/workspace/hibiki-zero`, `restart.sh
+  voice`; back to `main` after the merge. Never commit in `/workspace/hibiki-zero` while an SFT
+  runs (a resume needs its launch commit): work in a worktree.
+- Threads and pools follow the container's CPU quota (`/sys/fs/cgroup/cpu.max`, 26.88 CPUs on the
+  Japan box, `nproc` 224), as `restart.sh` and `training.paths.cpu_budget()` read it.
+- Logs hold binary bytes: `grep -a`.

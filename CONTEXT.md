@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-07
+Last verified: 2026-11-08
 
 ## Purpose
 
@@ -141,6 +141,7 @@ inference/ (Apple Silicon, MLX)
 | The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
 | The tranche's CUDA cache build: row gates and their thresholds, CTC and Mimi on CUDA, running it | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
 | The tranche's English voice-cloning TTS: candidates, bake-off, scores, tuning | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/bakeoff.py`, `training/tranche/voice.py`, `training/tranche/envs.sh` |
+| The tranche's jobs on a rented box: bring-up, job order, the restart/watchdog/pause scripts, round 4's inputs | [tranche-box](docs/agent-memory/tranche-box.md) | `training/tranche/box/` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
 | Vietnamese tokenizer swap for two-way text: build, English check, embedding init map | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
 | Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/audio.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
