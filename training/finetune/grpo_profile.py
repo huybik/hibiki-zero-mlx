@@ -80,7 +80,7 @@ def main() -> None:
     stream_frames = tuple(round(seconds * streams.FRAME_RATE) for seconds in args.stream_seconds)
     dataset = streams.StreamDataset(rows, layout, silence, stream_frames, args.seed)
     count = max(args.gen_batch)
-    stream_ids = list(range(count // args.group))
+    stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
     sources = torch.stack([grpo.stream_source(dataset, index, silence)
                            for index in stream_ids for _ in range(args.group)])
     report: dict = {"frames": args.frames, "group": args.group,

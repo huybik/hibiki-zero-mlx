@@ -58,7 +58,8 @@ streams of the `--cache-dir` caches (the first run: the Vietnamese tranche's). C
   - The slack: in the dry run, update 2 (two updates at 2e-7, in effect the start) had the
     better chrF (39.90 against 39.29) but measured 4.6 s against 4.5 s. Without slack it was
     blocked, and a blocked checkpoint is not kept (2 pairs).
-  - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted`.
+  - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted` (this step is
+    now the best).
   - That baseline is stored as `start_end_offset_s` in `run_config.json`, which `hf_sync` uploads
     whenever it changes. The logs reach the Hub only at the end, so a restore needs this file.
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
@@ -122,7 +123,8 @@ The CUDA profile and dry run are under [Running](#running).
   So the defaults are `--gen-batch` 192 and `--micro-batch` 2: an update of 128 rollouts takes
   ~22 s of generation, ~3.5 s of old logprobs and ~10.6 s of update, ~36 s (the plan estimated
   ~50 s); 1,000 updates ~10 h plus ~30 min of evaluations. The rollouts' mean final BLEU from
-  that model was 26.2. The profile's GPU sat idle 39% of its 5.3 min, between its stages.
+  that model was 26.2 (on the first streams in plan order, before the seeded order). The
+  profile's GPU sat idle 39% of its 5.3 min, between its stages.
 - **Dry run** (2026-11-06, `h100.sh grpo grpo_dryrun`, τ 2, 4 updates of 4 streams × 4, stopped
   before its checkpoint sync when GRPO was deferred): every update's ratio mean 1.000–1.001, the
   loss finite (−925 to 368), but the gradient norm before clipping 0.42–0.95 million against SFT's
@@ -145,8 +147,8 @@ The CUDA profile and dry run are under [Running](#running).
     uploads the newest pair, the best and the logs, which reach the Hub only then. A group kill
     (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing restarts a crashed run.
   - Relaunching a finished run loads the model and exits 0 (`train.py` exits before loading).
-  - No commits in the run's worktree while it runs: a resume needs `run_id.json`'s commit at
-    HEAD, and the preflight a clean tree.
+  - No commits or edits to tracked files in the run's worktree while it runs: a resume needs
+    `run_id.json`'s commit at HEAD, and the preflight no tracked changes.
 
   `train_log.jsonl` holds, per update:
   - the loss, the ratio mean and its maximum deviation, and the clip fraction;

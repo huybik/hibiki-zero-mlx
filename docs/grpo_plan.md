@@ -62,7 +62,7 @@ committed tests, and its prefix reference left out the sentence being spoken.
 | Generation model | A bf16 copy of π_θ made at each refresh, as SFT validation builds its generator. |
 | Update | The SFT training forward (`lm_training`'s compiled transformer, step-major depformer) returns per-token logprobs of the 17 output streams. Micro-batches fit the 4,608-frame budget, accumulated to 128 rollouts. Fused AdamW (0.9, 0.95), weight decay 0.1, grad clip 1.0, the gradient norm checked as in SFT. |
 | Evaluation | Every 10·τ = 200 updates, the SFT validation's free-running pass over its five sets, unchanged. Quality is FLEURS dev chrF. Latency is the median `end_offset_s`, the stand-in for the paper's text LAAL. |
-| Promotion | The best FLEURS dev chrF among checkpoints that pass the health gates and whose FLEURS end offset is no worse than the starting model's. |
+| Promotion | The best FLEURS dev chrF among checkpoints that pass the health gates and whose FLEURS end offset is at most 0.2 s worse than the starting model's (`LATENCY_SLACK_S`, [grpo](agent-memory/grpo.md)). |
 | Start | The final SFT model as `--model-weight`, after the real-Vietnamese tranche and the two-way SFT (GRPO is the last stage, user 2026-11-04; [parity plan](vi_en_parity_plan.md#order)): its best validation by FLEURS dev chrF or its final model, whichever scores better on the test sets. The box profile and dry run may use run 2's final model. |
 
 Out of the first version:

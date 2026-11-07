@@ -88,6 +88,12 @@ EVAL_PAIRS = [
 LATENCY_SLACK_S = 0.2  # how far past the start's FLEURS median end offset a checkpoint may promote
 
 
+def stream_order(count: int, seed: int) -> np.ndarray:
+    """The order updates take the planned streams in (`plan_streams` keeps a document's rows in
+    consecutive streams, so in plan order a long recording would fill several updates)."""
+    return np.random.default_rng(seed).permutation(count)
+
+
 def rollout(lm_gen: Any, sources: torch.Tensor, silence: torch.Tensor) -> torch.Tensor:
     """Sample one rollout per row of `sources` (source codes [B, Q, T], training frames):
     text and audio tokens [B, 1 + dep_q, T] in the same frames."""
@@ -402,7 +408,7 @@ def main() -> None:
           f"{args.updates * args.streams}")
     # Planned streams follow their documents (a long recording fills ~75 in a row), so updates
     # take them in a seeded order: the same on a resume.
-    order = np.random.default_rng(args.seed).permutation(len(dataset))
+    order = stream_order(len(dataset), args.seed)
 
     generation = common.GenerationConfig(text_only=True)
     rows_by_set = common.read_eval_sets(args.eval_pairs)
@@ -452,7 +458,8 @@ def main() -> None:
             if previous.get(key) != run_config.get(key):
                 raise RuntimeError(f"Same-run resume contract changed: {key}")
     writer = CheckpointWriter(lm, optimizer, args, out_dir)
-    # The start's end offset on the first set, which a promoted checkpoint may not exceed. It is
+    # The start's end offset on the first set, which a promoted checkpoint may exceed by at most
+    # LATENCY_SLACK_S. It is
     # kept in run_config.json, which hf_sync uploads as it changes, unlike the logs.
     start_offset = json.loads(config_path.read_text(encoding="utf-8")).get("start_end_offset_s")
     if step and start_offset is None:
@@ -482,13 +489,13 @@ def main() -> None:
             stored = json.loads(config_path.read_text(encoding="utf-8"))
             stored["start_end_offset_s"] = start_offset
             atomic_write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", config_path)
-        # The gate allows LATENCY_SLACK_S: two sampled evaluations of the same model differ by
-        # ~0.1 s, and a blocked checkpoint is not kept.
+        # The gate allows LATENCY_SLACK_S: two updates at 2e-7 (in effect the start) measured
+        # 0.1 s later than the start, and a blocked checkpoint is not kept.
         on_time = first["median_end_offset_s"] <= start_offset + LATENCY_SLACK_S
-        promoted = at > 0 and healthy and on_time
-        if promoted:
+        if at > 0 and healthy and on_time:
             writer.wait()
             best_state = promote_best(at, float(first["chrf"]), out_dir, best_state)
+        promoted = best_state is not None and best_state["step"] == at
         seconds = time.time() - started
         item = {"step": at, "seconds": seconds, "free_running": free_running, "healthy": healthy,
                 "on_time": on_time, "promoted": promoted}
