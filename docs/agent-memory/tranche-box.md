@@ -11,7 +11,15 @@ complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have 
 asr_vi (filters finished 2026-11-08 06:38 UTC+7); about 30 still lack en_audio, voiced until the
 box's end. The Hub's `giga/en_audio/` is the record: a voice run lists what is left. Next, on a new
 box: asr, filters (it idles, logging "0 shards to hear"; the watchdog expects it up) and voice for
-the rest (~8.6 min an archive alone on the H100, ~4 h), then cache, sft and grpo as in [Jobs](#jobs).
+the rest (~8.6 min an archive alone on the H100, ~4 h), then cache (~10 h at GigaSpeech 2's
+current build speed, [tranche-cache](tranche-cache.md#scale-up)), sft and grpo as in [Jobs](#jobs).
+
+The user's standing decisions for this work (the box's own agent memory does not travel):
+- Minimize rental cost, not wall time: one GPU, its throughput optimized; no extra GPUs for speed
+  (2026-11-07: "i want to minimize renting cost, not time").
+- Quality may change for speed if it stays good (2026-11-07), measured on the quality test
+  ([tranche-tts](tranche-tts.md)).
+- The agent merges its own PRs once the review loop and the end-to-end check pass (2026-11-06).
 
 ## Bring-up
 
