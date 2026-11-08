@@ -2,7 +2,28 @@
 
 Read when bringing up a box for the tranche's jobs, or running them there: the scripts in
 `training/tranche/box/`, the jobs' order, what a new box needs. Back to [CONTEXT](../../CONTEXT.md).
-Sections: [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#operating).
+Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#operating).
+
+## State
+
+At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
+complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
+asr_vi (filters finished 2026-11-08 06:38 UTC+7); 213 have en_audio on the Hub, 27 are left to
+voice (74–99 and 185; `end_rental.sh`, 2026-11-08 21:46 UTC+7). The Hub's `giga/en_audio/` is the
+record: a voice run lists what is left. Next, on a new
+box: asr, filters (it idles, logging "0 shards to hear"; the watchdog expects it up) and voice for
+the rest (~8.6 min an archive alone on the H100, ~4 h), then cache (~10 h at GigaSpeech 2's
+current build speed, [tranche-cache](tranche-cache.md#scale-up)), sft and grpo as in [Jobs](#jobs),
+each optimized before its full run (below).
+
+The user's standing decisions for this work (the box's own agent memory does not travel):
+- Minimize rental cost, not wall time: one GPU, its throughput optimized; no extra GPUs for speed
+  (2026-11-07: "i want to minimize renting cost, not time").
+- Quality may change for speed if it stays good (2026-11-07), measured on the quality test
+  ([tranche-tts](tranche-tts.md)).
+- The agent merges its own PRs once the review loop and the end-to-end check pass (2026-11-06).
+- Optimize every job heavily before its full run, each in its own way (2026-11-08; voicing,
+  optimized mid-run, cost more; [CONTEXT](../../CONTEXT.md#essential-invariants)).
 
 ## Bring-up
 
@@ -61,6 +82,12 @@ process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or rest
   boundary, `git checkout --detach origin/<branch>` in `/workspace/hibiki-zero`, `restart.sh
   voice`; back to `main` after the merge. Never commit in `/workspace/hibiki-zero` while an SFT
   runs (a resume needs its launch commit): work in a worktree.
+- Before the rental ends: `end_rental.sh HH:MM HH:MM` (UTC+7), detached with `setsid` (its header
+  has the line), waits from the first time for voice's next shard boundary (at most until the
+  second), stops voice, filters and the ASR server, pushes en_audio (voice itself pushes only every
+  ~35 min) and prints what the Hub holds and what is left to voice; it exits 1 if a voiced shard is
+  not on the Hub. Leave an hour: the boundary takes up to ~9 min (~13 when a run is starting), the
+  stop up to 6, the push a few. The watchdog then reports the jobs down: stop it first.
 - Threads and pools follow the container's CPU quota (`/sys/fs/cgroup/cpu.max`, 26.88 CPUs on the
   Japan box, `nproc` 224), as `restart.sh` and `training.paths.cpu_budget()` read it.
 - Logs hold binary bytes: `grep -a`.

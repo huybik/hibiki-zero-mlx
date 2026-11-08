@@ -95,6 +95,10 @@ inference/ (Apple Silicon, MLX)
   since the first noisy encode ran ~3 h with its GPU idle half the time →
   [noisy-source](docs/agent-memory/noisy-source.md#speed),
   [sft-data-caches](docs/agent-memory/sft-data-caches.md#speed).
+  Optimize every job heavily before its full run, not during it: each job's levers differ, so
+  profile where its own time goes and judge changes by its throughput per GPU-hour beside the box's
+  other jobs; a busy GPU is no proof (voicing read ~94% busy while mid-run changes still sped it
+  up; user, 2026-11-08: "we didn't optimize voicing enough and wasted lot's of time and money").
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
   and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
