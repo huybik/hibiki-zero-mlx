@@ -210,7 +210,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   production, beside the ASR server and filters, GigaSpeech 2 ran at RTF 0.0058–0.0063. Filters
   beside voice (the same ASR server and CPU quota) slows it ~20%: a run's first archive (startup
   included) ran RTF 0.0062 without filters and 0.0077–0.0081 beside them at 10 steps, 0.0070–0.0073
-  beside them at 8 (archives 145–151).
+  beside them at 8 (archives 145–151). Archive to archive (8 steps, the fp16 VAE, startup
+  excluded): RTF 0.0049–0.0057 (mean 0.0052) beside filters (archives 157–173), 0.0044 once filters
+  had finished (2026-11-08 06:38 UTC+7; archives 177–190): ~8.6 min an archive of ~21k rows.
 - The VAE (2026-11-08): both halves run compiled in fp16 with static shapes, a graph per batch
   shape (`shape()` gives each width one), all warmed at start. Static graphs run faster than one
   dynamic graph: the decoder 132 ms a full batch against 174 (24% less, output identical), the

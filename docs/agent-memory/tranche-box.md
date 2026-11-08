@@ -2,7 +2,16 @@
 
 Read when bringing up a box for the tranche's jobs, or running them there: the scripts in
 `training/tranche/box/`, the jobs' order, what a new box needs. Back to [CONTEXT](../../CONTEXT.md).
-Sections: [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#operating).
+Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#operating).
+
+## State
+
+At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
+complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
+asr_vi (filters finished 2026-11-08 06:38 UTC+7); about 30 still lack en_audio, voiced until the
+box's end. The Hub's `giga/en_audio/` is the record: a voice run lists what is left. Next, on a new
+box: asr, filters (it idles, logging "0 shards to hear"; the watchdog expects it up) and voice for
+the rest (~8.6 min an archive alone on the H100, ~4 h), then cache, sft and grpo as in [Jobs](#jobs).
 
 ## Bring-up
 
@@ -61,6 +70,10 @@ process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or rest
   boundary, `git checkout --detach origin/<branch>` in `/workspace/hibiki-zero`, `restart.sh
   voice`; back to `main` after the merge. Never commit in `/workspace/hibiki-zero` while an SFT
   runs (a resume needs its launch commit): work in a worktree.
+- Before the rental ends: `end_rental.sh HH:MM HH:MM` (UTC+7), in the background, waits from the
+  first time for voice's next shard boundary (at most until the second), stops voice, filters and
+  the ASR server, pushes en_audio and prints what the Hub holds and what is left to voice. Start it
+  an hour ahead: voice pushes only every ~35 min, and the last archive takes ~9 min.
 - Threads and pools follow the container's CPU quota (`/sys/fs/cgroup/cpu.max`, 26.88 CPUs on the
   Japan box, `nproc` 224), as `restart.sh` and `training.paths.cpu_budget()` read it.
 - Logs hold binary bytes: `grep -a`.
