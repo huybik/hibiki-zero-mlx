@@ -70,10 +70,12 @@ process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or rest
   boundary, `git checkout --detach origin/<branch>` in `/workspace/hibiki-zero`, `restart.sh
   voice`; back to `main` after the merge. Never commit in `/workspace/hibiki-zero` while an SFT
   runs (a resume needs its launch commit): work in a worktree.
-- Before the rental ends: `end_rental.sh HH:MM HH:MM` (UTC+7), in the background, waits from the
-  first time for voice's next shard boundary (at most until the second), stops voice, filters and
-  the ASR server, pushes en_audio and prints what the Hub holds and what is left to voice. Start it
-  an hour ahead: voice pushes only every ~35 min, and the last archive takes ~9 min.
+- Before the rental ends: `end_rental.sh HH:MM HH:MM` (UTC+7), detached with `setsid` (its header
+  has the line), waits from the first time for voice's next shard boundary (at most until the
+  second), stops voice, filters and the ASR server, pushes en_audio (voice itself pushes only every
+  ~35 min) and prints what the Hub holds and what is left to voice; it exits 1 if a voiced shard is
+  not on the Hub. Leave an hour: the boundary takes up to ~9 min (~13 when a run is starting), the
+  stop up to 6, the push a few. The watchdog then reports the jobs down: stop it first.
 - Threads and pools follow the container's CPU quota (`/sys/fs/cgroup/cpu.max`, 26.88 CPUs on the
   Japan box, `nproc` 224), as `restart.sh` and `training.paths.cpu_budget()` read it.
 - Logs hold binary bytes: `grep -a`.
