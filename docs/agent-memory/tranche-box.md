@@ -21,8 +21,8 @@ The user's standing decisions for this work (the box's own agent memory does not
 - Quality may change for speed if it stays good (2026-11-07), measured on the quality test
   ([tranche-tts](tranche-tts.md)).
 - The agent merges its own PRs once the review loop and the end-to-end check pass (2026-11-06).
-- Optimize each job heavily before its full run: the cache build, round 4 SFT and GRPO (2026-11-08;
-  voicing, optimized mid-run, cost more; [CONTEXT](../../CONTEXT.md#essential-invariants)).
+- Optimize every job heavily before its full run, each in its own way (2026-11-08; voicing,
+  optimized mid-run, cost more; [CONTEXT](../../CONTEXT.md#essential-invariants)).
 
 ## Bring-up
 
