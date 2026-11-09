@@ -380,9 +380,12 @@ run() {
   mkdir -p "$RUNS_DIR"
   exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
   flock -n "$lock_fd" || die "$run_name is already running"
-  # Two pairs (the default --keep-checkpoints), the promoted model, and a pair the sync still
-  # uploads after it is pruned.
-  preflight 130 "$run_dir"
+  # The kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
+  # uploads after it is pruned: 37.5 GB a pair, 12.5 the model, ~5 of margin (130 at 2, 93 at 1).
+  local keep=2 given="$*"
+  [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
+  [[ "$given" =~ --keep-checkpoints[[:space:]]+([0-9]+) ]] && keep="${BASH_REMATCH[1]}"
+  preflight $(( (keep + 1) * 75 / 2 + 18 )) "$run_dir"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
     local -a saved
