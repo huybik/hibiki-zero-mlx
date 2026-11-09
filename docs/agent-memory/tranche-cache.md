@@ -84,7 +84,7 @@ draws use split `train`.
   server on the GPU, ~1.3 GB of it is free, so the build runs after them.
 - On the Mac, when no box runs: from the repo root with `HF_TOKEN_AN` in the environment,
   `nice -n 19 python -m training.tranche.cache build giga --device mlx --root <dir> --limit <n>`
-  (system Python: mlx, moshi, sentencepiece, soxr, PyAV). Its parts come from the Hub into the HF
+  (the conda Python, as `cache_codes`). Its parts come from the Hub into the HF
   cache on `/Volumes/data`; the caches go to `<root>/cache/` and the cache repo. Give it `--limit`
   when the box builds too: each run lists the Hub once at its start, so both would build the same
   shards (wasted work, not corrupt data). Size a night's `--limit` from a profiled shard.

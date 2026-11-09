@@ -195,8 +195,8 @@ CLAUDE.md (imports this file)
   owner per fact, and keep no history.
 - Update the owning note in the same commit as the change. Knowledge with no owner gets a new
   note, added to the Topic Index.
-- A note owns a job, not a file: when two modules do the same job (run a model, build a cache),
-  one note owns it and lists every path that does it, so whoever opens either file is sent there.
+- A note owns a job, not a file: one note lists every path that does a job (runs a model, builds
+  a cache), so whoever opens any of them is sent there.
 - Change this file only when orientation, an invariant or the index changes, and update
   `Last verified` when you do.
 - Keep this file under ~1,500 words and each note under 300 lines. Split a subject into a new note

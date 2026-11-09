@@ -18,7 +18,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   └─ cache_build.Builder(device).run(keys, read, workers) ─► each Shard filled, in key order
        read             a thread, one shard ahead
        decode workers   cache_rows.prepare: PyAV, soxr to 24 kHz (Mimi) and 16 kHz (CTC,
-                        normalized); two windows of rows ahead of the device
+                        normalized); one window of rows ahead of the device
        cache_rows.plan  decode gates, delay draw, text groups ─► windows, across shard ends
        device           MLXModels | CUDAModels .encode: CTC ─► the Viterbi in the workers
                         (cache_rows.align) while the device runs Mimi
@@ -32,13 +32,16 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   new device a new `*Models` class with `window`, `cardinality` and `encode`; never a second
   pipeline (2026-11-09: an MLX path written inside the tranche's builder without reading
   `cache_codes` missed its measured MLX levers and decoded whole shards into memory).
-- `cache_build` imports MLX, moshi, torch and transformers lazily, `cache_rows` none of them, so
-  the box runs without MLX and the Mac without CUDA.
-- Windows: 64 rows on MLX (`MLX_WINDOW`), 4,096 on CUDA (`CUDA_WINDOW`). Decodes run two windows
-  ahead, so memory holds about three windows of PCM, never a shard: a GigaSpeech 2 shard's ~50 h of
-  Mimi audio is ~23 GB of float32 PCM. A window spans shard ends, so the device does not wait on a
-  shard's tail or the next one's first decodes; a shard is yielded once its last row is in, so the
-  log line gives the build's speed so far, not a shard's.
+- `cache_build` imports MLX, moshi, torch and transformers lazily, and `cache_rows` only torch, to
+  write, so the box runs without MLX and the Mac without CUDA.
+- Windows (each models class's `window`): 64 rows on MLX, 4,096 on CUDA. Decodes run one window
+  ahead (the pool runs jobs in order, so more would only queue a window's alignments behind more
+  decodes), so about two windows of PCM are held: ~0.3 GB on MLX; on CUDA ~10 GB of GigaSpeech 2's
+  short rows, ~27 GB of PhoAudiobook's long ones (3.3 MB a row), unmeasured on the box. Decoding a
+  whole shard at once held ~23 GB for a GigaSpeech 2 shard, and swapped the 48 GB Mac. A window
+  spans shard ends, so the device does not wait on a shard's tail or the next one's first decodes;
+  a shard is yielded once its last row is in, so the log line gives the build's speed so far, not
+  a shard's.
 - Workers (`default_workers`): 4 on MLX, since the Mac's CPU and GPU share one power budget; on
   CUDA the CPU budget less the main process (`paths.cpu_budget`, the container's quota). Each
   decodes and runs the Viterbi with its own `CTCWordAligner` (`init_worker`).
@@ -68,8 +71,8 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   before the shard is written, so a rerun rebuilds it rather than skipping lost rows. A shard
   whose rows all fail on data is written, empty.
 - A sample holds the row fields, the builder's `fields` and `source_row` (`<file>#r<index>`); a
-  shard holds `samples`, `rejected` (`id`, `reason`), `source`, `max_frames` and
-  `alignment_min_score`. Values are Python types and tensors only: the trainer's `torch.load`
+  shard holds `samples` in source order, `rejected` (`id`, `reason`: the builder's own gates
+  first, then the build's, in source order), `source`, `max_frames` and `alignment_min_score`. Values are Python types and tensors only: the trainer's `torch.load`
   keeps the `weights_only` default, which refuses NumPy scalars.
 - A shard is written as a hidden `.tmp`, flushed with `paths.durable` (`F_FULLFSYNC` on macOS),
   then renamed.

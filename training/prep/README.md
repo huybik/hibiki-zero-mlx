@@ -85,7 +85,7 @@ nohup caffeinate -i python -m training.prep.publish_caches --out-dir $O --follow
 ```
 
 The second machine needs Apple Silicon (or a CUDA GPU, with `--device cuda` on the commands
-below), this repo's `main`, `weights/` as in
+below and without `caffeinate`, which is macOS's), this repo's `main`, `weights/` as in
 [docs/finetune.md](../../docs/finetune.md), an `HF_TOKEN` with write access to the cache repo, and
 ~520 GB of disk: the dataset from `anquachdev/common-vi-en` at the revision the Mac's copy
 equals (~440 GB), and the whole cache (~75 GB, the Mac's part pulled in too). Name the out-dir as
