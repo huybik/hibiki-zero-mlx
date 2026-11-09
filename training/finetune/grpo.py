@@ -127,14 +127,20 @@ def token_logprobs(
     layout [B, 1 + 2 * dep_q, T]), [B, 1 + dep_q, T] float32, and where they are defined."""
     output = lm(codes, condition_tensors=condition_tensors)
     targets = codes[:, : 1 + lm.dep_q]
-    logprobs = torch.zeros(targets.shape, dtype=torch.float32, device=codes.device)
-    for rows, logits, mask in (
-        (slice(0, 1), output.text_logits, output.text_mask),
-        (slice(1, 1 + lm.dep_q), output.logits, output.mask),
-    ):
-        scores = torch.log_softmax(logits[mask].float() / temperature, dim=-1)
-        logprobs[:, rows][mask] = scores.gather(-1, targets[:, rows][mask][:, None])[:, 0]
-    return logprobs, torch.cat([output.text_mask, output.mask], dim=1)
+    text = _target_logprobs(output.text_logits, targets[:, :1], output.text_mask, temperature)
+    audio = _target_logprobs(output.logits, targets[:, 1:], output.mask, temperature)
+    return torch.cat([text, audio], dim=1), torch.cat([output.text_mask, output.mask], dim=1)
+
+
+@torch.compile(dynamic=True)
+def _target_logprobs(logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor,
+                     temperature: float) -> torch.Tensor:
+    """log softmax(logits / temperature)[target] [B, Q, T] float32, 0 where not `mask`: the fp32
+    scores stay inside the fused kernel, so no full-vocabulary fp32 copy is kept for backward and
+    no boolean indexing syncs the host (2026-11-09)."""
+    scores = logits.float() / temperature
+    picked = scores.gather(-1, torch.where(mask, targets, 0)[..., None])[..., 0]
+    return torch.where(mask, picked - torch.logsumexp(scores, dim=-1), 0.0)
 
 
 def grpo_loss(
@@ -157,9 +163,10 @@ def grpo_loss(
     advantage = advantages[:, None, :]
     objective = torch.minimum(ratio * advantage, ratio.clamp(1 - epsilon, 1 + epsilon) * advantage)
     objective = (objective * stream_weights[None, :, None] * mask).sum()
-    deviation = (ratio.detach()[mask] - 1).abs()
+    kept = ratio.detach() * mask  # masked reductions: boolean indexing would sync the host
+    deviation = (kept - mask.float()).abs()
     stats = {
-        "ratio_sum": ratio.detach()[mask].sum(),
+        "ratio_sum": kept.sum(),
         "clipped": (deviation > epsilon).sum(),
         "tokens": mask.sum(),
         "max_deviation": deviation.max(),
