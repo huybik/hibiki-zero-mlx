@@ -232,8 +232,10 @@ this build. Profile the H200 box before a full run (`--limit 2`).
   On MLX: GigaSpeech 2 short rows went 210–226× → measured 204× end-to-end (a single shard with
   a Hub push; the within-build rate was not interleaved against main on the same rows, so the
   true delta is within the ±20% swing noise). On CUDA: the read-ahead thread overlaps Hub
-  downloads with the current shard's encoding; H200 benchmark showed shard 1 (Hub inputs) at
-  855× and shard 2 at ~1,862× as the pipeline warmed up (cumulative 1,102×, 2026-11-09).
+  downloads with the current shard's encoding; H200 bfloat16 benchmark (voice paused, GPU to
+  itself) showed shard 1 at 855× and shard 2 at ~1,862× (cumulative 1,102×, 2026-11-09).
+  Production float32 with voice+ASR sharing the GPU: shard 1 at 545× (Triton warmup + Hub
+  downloads), shard 2 alone at ~877× (download overlapped by pipeline, 2026-11-09).
 - A speed lever, a device or a model goes here, for every builder at once; read both Speed
   sections first, since each device's levers were measured there and do not carry over (MLX runs
   one clip per forward, CUDA large padded batches).
