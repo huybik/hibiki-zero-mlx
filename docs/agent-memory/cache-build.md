@@ -217,13 +217,15 @@ this build. Profile the H200 box before a full run (`--limit 2`).
   approaches PhoAudiobook's 1,500–1,600× (highest measured was 1,510×). ~49 GB of GPU at peak.
 - Per-row overhead: GigaSpeech 2 (19,967 rows, 4.3 s each → ~5 windows of 4,096) has ~5×
   more plan/collect cycles than PhoAudiobook (1,299 rows, one window).
-- Mimi stays float32 with TF32 off (other precisions change the codes). `torch.compile(mimi.encode,
-  dynamic=True)` on the CUDA path keeps the codes (compile preserves float32 semantics with TF32
-  globally off) and fuses SEANet + transformer kernels; deployed 2026-11-09 (commit ff9b25f), running
-  on the H200 build from shard 74 on. `torch.compile` or CUDA graphs on its encoder keep the codes.
+- Mimi stays float32 with TF32 off (other precisions change the codes). `torch.compile` or CUDA
+  graphs on its encoder keep the codes in theory, but `torch.compile(mimi.encode, dynamic=True)`
+  crashed with `CUDA_ERROR_ILLEGAL_ADDRESS` during the inductor's autotuner benchmarking on the H200
+  box (2026-11-09): moshi's Mimi has operations the autotuner cannot benchmark safely. Reverted.
+  CUDA graphs are an alternative not yet tried.
   See `--half-ctc` above for bfloat16 CTC status.
-- `CUDA_BATCH_S` 640 → 1280 s (commit ff9b25f, H200): halves kernel-launch overhead per window on
+- `CUDA_BATCH_S` 640 → 1280 s (commit ccc448a, H200): halves kernel-launch overhead per window on
   GigaSpeech 2 (4.3 s avg, 149 → 298 clips per CTC/Mimi batch); H200 peak expected ~65–75 GB.
+  (torch.compile is NOT also active — it crashed; the batch-size change alone is deployed.)
 - CPU: 25 workers on the 26.9-CPU Japan quota averaged 10.5 CPUs but throttled 14% of the 100 ms
   periods in bursts; on H200 the quota is 32 CPUs (31 workers). Check the main process is not the
   one throttled (`/sys/fs/cgroup/cpu.stat`).

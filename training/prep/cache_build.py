@@ -90,17 +90,13 @@ class MLXModels:
 
 
 def cuda_mimi(mimi_weight: Path, num_codebooks: int) -> Any:
-    """moshi's Mimi on CUDA in full float32: TF32 changes its residual codes as bf16 does.
-    torch.compile with dynamic=True keeps the codes (verified: compile preserves float32 semantics
-    with TF32 disabled) and fuses SEANet + transformer kernels for ~10-15% throughput gain."""
+    """moshi's Mimi on CUDA in full float32: TF32 changes its residual codes as bf16 does."""
     import torch
     from moshi.models import loaders
 
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    mimi = loaders.get_mimi(mimi_weight, device=torch.device(DEVICE), num_codebooks=num_codebooks).eval()
-    mimi.encode = torch.compile(mimi.encode, dynamic=True)
-    return mimi
+    return loaders.get_mimi(mimi_weight, device=torch.device(DEVICE), num_codebooks=num_codebooks).eval()
 
 
 def mimi_batch(mimi: Any, clips: list[Any], device: Any) -> list[Any]:
