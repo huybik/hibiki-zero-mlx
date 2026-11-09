@@ -6,17 +6,24 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
+**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: brought up with the `cache/ctc-half` branch
+(commit `b84de26`), which adds `--half-ctc` to the cache build (CUDA bfloat16 transformer) and fixes a voice.py
+crash on rows without text_en. 83 giga archives cached on Hub (1 more on 2026-11-09 from the Japan box).
+Voice running for the remaining 25 (giga 74–99 excluding held-out 86 and 98, plus 185), with one
+row in archive 185 skipped (missing text_en). Cache benchmark (`--limit 2 --half-ctc`) queued via
+pause_run.sh; full cache run to start after 2000+ RT confirmed. SFT data downloading in background.
+
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
 asr_vi (filters finished 2026-11-08 06:38 UTC+7); 213 have en_audio on the Hub, and `end_rental.sh`
 (2026-11-08 21:46 UTC+7) listed 27 left to voice (74–99 and 185). Of those, 86 and 98 are now held
 out for evaluation and never voiced ([giga-heldout](sft-evaluation.md#evaluation-sets)), so 25 are
-left. The Hub's
-`giga/en_audio/` is the record: a voice run lists what is left. Next, on a new
+left. The Hub's `giga/en_audio/` is the record: a voice run lists what is left. Next, on a new
 box: asr, filters (it idles, logging "0 shards to hear"; the watchdog expects it up) and voice for
-the rest (~8.6 min an archive alone on the H100, ~3.6 h), then cache (~8 h for the 129 archives left at GigaSpeech 2's
-current build speed, [tranche-cache](tranche-cache.md#scale-up)), sft and grpo as in [Jobs](#jobs),
-each optimized before its full run (below).
+the rest (~8.6 min an archive alone on the H100; H200 speed unmeasured), then cache (~8 h for the
+~128 archives left at GigaSpeech 2's current build speed; profile first with `--limit 2 --half-ctc`,
+[tranche-cache](tranche-cache.md#scale-up)), sft and grpo as in [Jobs](#jobs), each optimized before
+its full run (below).
 
 The user's standing decisions for this work (the box's own agent memory does not travel):
 - Minimize rental cost, not wall time: one GPU, its throughput optimized; no extra GPUs for speed
