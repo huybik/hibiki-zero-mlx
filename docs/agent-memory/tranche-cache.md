@@ -100,8 +100,7 @@ draws use split `train`.
 - Kept: PhoAudiobook 99.0%, viVoice 96.6%, GigaSpeech 2 83.0% (of its shard 0: `en_broken`
   10.4%, CER 2.7%, Vietnamese letters 2.1%, magnitudes 1.3%, alignment 0.4%, language and frame
   cap 0.06%). GigaSpeech 2's broken English is in [tranche-tts](tranche-tts.md).
-- The first full build took ~2.6 h of GPU for the tranche ([cache-build](cache-build.md#speed-on-cuda)
-  has its speeds). In it (2026-11-06) viVoice ran ~1,000–1,170× with the GPU idle 34% of the time,
+- Speeds of the first full build are in [cache-build](cache-build.md#speed-on-cuda). In it (2026-11-06) viVoice ran ~1,000–1,170× with the GPU idle 34% of the time,
   mostly waiting on the next shard's Hub download (~4 MB/s on the box, 10–18 s for a viVoice
   shard's 60 MB against ~8 s of GPU work; parallel downloads got no more). `read_shard` now takes
   each part's copy under `--root` where the box has one (`ingest.part_file`, which voice and
@@ -125,6 +124,6 @@ then "heavy optimize everything before full run"). In order:
   no more, so a build that downloads starves the GPU. Run the TTS and the ASR on the box that
   builds (their outputs stay under `--root`), or move the parts there well before the build.
 - Then the build's own levers on CUDA ([cache-build](cache-build.md#speed-on-cuda)). The build now
-  streams windows across shard ends with decodes two windows ahead, aimed at the per-shard gaps
+  streams windows across shard ends with decodes a window ahead, aimed at the per-shard gaps
   above (small shards' fixed costs: viVoice's 3.8 h of Mimi audio ran ~1,100× against
   PhoAudiobook's ~1,400×); it is unprofiled on CUDA.

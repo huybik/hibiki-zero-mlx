@@ -119,7 +119,8 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   there is never sent again, so a stop loses only the unfinished commit. Failed commits are
   retried after 1, 2, 4, 8 and 16 minutes, then stop the run.
 - Then it downloads, into `<out-dir>/.pull/`, each Hub shard missing here and puts it in place,
-  so the builder, which checks for a shard as it reads it (one shard ahead of the build), skips it. Each machine so ends with
+  so the builder, which checks for a shard as it reads it (a shard and a window ahead of the
+  build), skips it. Each machine so ends with
   the whole cache (the second machine downloads the Mac's part too). A pulled shard must have
   the settings of a shard already in the out-dir (format, rates, `max_frames`,
   `alignment_min_score`, model config; pulls wait until one exists), the same source file at the

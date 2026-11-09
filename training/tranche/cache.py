@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DEFAULT_TOKENIZER, exclusive
-from training.prep.cache_build import DEVICES, Builder, default_workers, summary
+from training.prep.cache_build import MODELS, Builder, default_workers, summary
 from training.prep.cache_rows import Settings, Shard, mimi_hours, write
 from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
 from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, part_file, push_part
@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--limit", type=int, help="build only this many shards (a staged start)")
     p.add_argument("--max-cer", type=float, default=MAX_CER)
     p.add_argument("--max-frames", type=int, default=280, help="The trainer's frame cap.")
-    p.add_argument("--device", choices=DEVICES, default="cuda")
+    p.add_argument("--device", choices=list(MODELS), default="cuda")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)

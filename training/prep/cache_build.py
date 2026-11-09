@@ -35,7 +35,6 @@ from training.prep.text_timing import ALIGNER_REPO, ALIGNER_REVISION, AlignmentE
 if sys.platform == "darwin":  # before the builders' readers import pyarrow, whose mimalloc pool keeps freed buffers on macOS
     os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
-DEVICES = ("mlx", "cuda")
 # Freed MLX buffers kept for reuse across the ~36 bucketed shapes of Mimi and wav2vec2; on
 # libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
 MLX_CACHE_BYTES = 16 << 30
@@ -98,14 +97,14 @@ def cuda_mimi(mimi_weight: Path, num_codebooks: int) -> Any:
     return loaders.get_mimi(mimi_weight, device=torch.device(DEVICE), num_codebooks=num_codebooks).eval()
 
 
-def mimi_batch(mimi: Any, clips: list[Any]) -> list[Any]:
-    """The codes of 24 kHz clips (1-D tensors on the device) encoded as one right-padded batch:
-    each [codebooks, ceil(samples / 1920)] on the CPU as int32. Padding changes nothing before it:
-    Mimi's convolutions and attention are causal."""
+def mimi_batch(mimi: Any, clips: list[Any], device: Any) -> list[Any]:
+    """The codes of 24 kHz clips (1-D tensors, on the CPU or `device`) encoded on `device` as one
+    right-padded batch: each [codebooks, ceil(samples / 1920)] on the CPU as int32. Padding changes
+    nothing before it: Mimi's convolutions and attention are causal."""
     import torch
 
     frames = [math.ceil(clip.shape[-1] / FRAME_SAMPLES) for clip in clips]
-    batch = torch.zeros(len(clips), 1, max(frames) * FRAME_SAMPLES, device=clips[0].device)
+    batch = torch.zeros(len(clips), 1, max(frames) * FRAME_SAMPLES, device=device)
     for row, clip in enumerate(clips):
         batch[row, 0, : clip.shape[-1]] = clip
     with torch.no_grad():
@@ -158,7 +157,7 @@ class CUDAModels:
 
         out: list[np.ndarray] = [np.empty(0)] * len(clips)
         for group in batches([len(c) for c in clips], int(CUDA_BATCH_S * SAMPLE_RATE)):
-            codes = mimi_batch(self.mimi, [torch.from_numpy(clips[i]).to(DEVICE) for i in group])
+            codes = mimi_batch(self.mimi, [torch.from_numpy(clips[i]) for i in group], DEVICE)
             for i, row in zip(group, codes, strict=True):
                 out[i] = row.numpy()
         return out
@@ -200,6 +199,9 @@ class CUDAModels:
         return out
 
 
+MODELS = {"mlx": MLXModels, "cuda": CUDAModels}  # --device
+
+
 # --------------------------------------------------------------------------- the build
 
 
@@ -215,8 +217,7 @@ class Builder:
         self.eos_id = int(self.tokenizer.eos_id())
         self.files = aligner_files()  # resolved here, so the workers never reach the Hub
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
-        models = {"mlx": MLXModels, "cuda": CUDAModels}[device]
-        self.models = models(require_file(mimi_weight, "Mimi weight"), num_codebooks, self.files)
+        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, self.files)
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 
@@ -238,7 +239,9 @@ class Builder:
             try:
                 yield from self._stream(self._read_ahead(keys, read, reads), pool)
             except BaseException:
-                pool.shutdown(wait=False, cancel_futures=True)  # drop the queued decodes rather than run them
+                # Drop the queued decodes and the next shard's read rather than wait for them.
+                pool.shutdown(wait=False, cancel_futures=True)
+                reads.shutdown(wait=False, cancel_futures=True)
                 raise
 
     @staticmethod

@@ -287,7 +287,7 @@ class Encoder:
         return seconds
 
     def _write(self, pending: list[tuple[dict[str, Any], torch.Tensor]]) -> None:
-        codes = cache_build.mimi_batch(self.mimi, [clip for _, clip in pending])
+        codes = cache_build.mimi_batch(self.mimi, [clip for _, clip in pending], self.device)
         for (sample, _), new in zip(pending, codes, strict=True):
             source = sample["codes"][1 + self.dep_q : 1 + self.dep_q + self.source_q]
             if int(source[0, sample["vi_frames"]]) != self.card:

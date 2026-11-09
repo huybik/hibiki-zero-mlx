@@ -20,7 +20,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from training.prep.text_timing import CTC_CONVS
+from training.prep.text_timing import CTC_CONVS, ctc_frames
 
 KERNELS, STRIDES = zip(*CTC_CONVS, strict=True)  # feature-encoder convolutions, 16 kHz -> 50 Hz
 BUCKET_SAMPLES = 20_480  # 1.28 s at 16 kHz
@@ -33,11 +33,7 @@ EPS = 1e-5
 
 def _frames(samples: int) -> tuple[int, int]:
     """Frames after the first convolution and after the last, for an unpadded clip."""
-    counts = []
-    for kernel, stride in zip(KERNELS, STRIDES, strict=True):
-        samples = (samples - kernel) // stride + 1
-        counts.append(samples)
-    return counts[0], counts[-1]
+    return (samples - KERNELS[0]) // STRIDES[0] + 1, ctc_frames(samples)
 
 
 class Wav2Vec2CTC:

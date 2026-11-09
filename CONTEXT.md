@@ -102,11 +102,9 @@ inference/ (Apple Silicon, MLX)
   other jobs; a busy GPU is no proof (voicing read ~94% busy while mid-run changes still sped it
   up; user, 2026-11-08: "we didn't optimize voicing enough and wasted lot's of time and money").
 - One implementation per job: every grounded cache runs Mimi and wav2vec2 through
-  `training/prep/cache_build.py` (MLX or CUDA); a builder only reads and gates its rows →
-  [cache-build](docs/agent-memory/cache-build.md). Before adding a device, model or speed lever
-  anywhere, search for where that model or job already runs (`MimiEncoder`, `get_mimi`,
-  `Wav2Vec2`), read it and its note, and extend it (2026-11-09: a second MLX path missed
-  `cache_codes`' measured levers).
+  `training/prep/cache_build.py` → [cache-build](docs/agent-memory/cache-build.md). Before adding
+  a device, model or speed lever, search where that model already runs (`MimiEncoder`,
+  `get_mimi`, `Wav2Vec2`) and extend that code.
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
   and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).

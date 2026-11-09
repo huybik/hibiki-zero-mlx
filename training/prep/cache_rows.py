@@ -3,7 +3,8 @@ clips' decode, the row gates, the English delay draw, the text timing in the wor
 `[33, T]` code layout, a sample's fields and the shard file
 ([cache-build](../../docs/agent-memory/cache-build.md),
 [sft-data-caches](../../docs/agent-memory/sft-data-caches.md#row-layout)). No MLX, moshi or
-transformers here, and torch only to write: the box imports it without MLX, the Mac without CUDA."""
+transformers here, and torch only for a sample's codes and the write: the box imports it without
+MLX, the Mac without CUDA."""
 
 from __future__ import annotations
 

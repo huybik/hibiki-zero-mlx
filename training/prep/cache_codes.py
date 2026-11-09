@@ -30,7 +30,7 @@ from training.paths import (
     exclusive,
     require_dir,
 )
-from training.prep.cache_build import DEVICES, Builder, default_workers, summary
+from training.prep.cache_build import MODELS, Builder, default_workers, summary
 from training.prep.cache_rows import Settings, Shard, mimi_hours, write
 
 DATASET_DIR = Path("/Volumes/data/datasets/en_vi_speech")
@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build the source shards in reverse path order, as the second machine does.",
     )
-    parser.add_argument("--device", choices=DEVICES, default="mlx")
+    parser.add_argument("--device", choices=list(MODELS), default="mlx")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
@@ -139,8 +139,8 @@ def cache_path(out_dir: Path, source: Path) -> Path:
 
 
 def todo(args: argparse.Namespace, sources: list[Path]) -> Iterator[Path]:
-    """The sources without a cache shard, checked as each is read (one shard ahead of the build),
-    so a shard publish_caches brought in meanwhile is skipped."""
+    """The sources without a cache shard, checked as each is read (a shard and a window ahead of
+    the build), so a shard publish_caches brought in meanwhile is skipped."""
     for source in sources[::-1] if args.bottom_up else sources:
         if cache_path(args.out_dir, source).exists() and not args.overwrite:
             print(f"Skipping existing {cache_path(args.out_dir, source)}", flush=True)

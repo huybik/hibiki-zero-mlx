@@ -32,17 +32,19 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   new device a new `*Models` class with `window`, `cardinality` and `encode`; never a second
   pipeline (2026-11-09: an MLX path written inside the tranche's builder without reading
   `cache_codes` missed its measured MLX levers and decoded whole shards into memory).
-- `cache_build` imports MLX, moshi, torch and transformers lazily, and `cache_rows` only torch, to
-  write, so the box runs without MLX and the Mac without CUDA.
+- `cache_build` imports MLX, moshi, torch and transformers lazily, and `cache_rows` only torch (a
+  sample's codes, the write), so the box runs without MLX and the Mac without CUDA.
 - Windows (each models class's `window`): 64 rows on MLX, 4,096 on CUDA. Decodes run one window
   ahead (the pool runs jobs in order, so more would only queue a window's alignments behind more
   decodes), so about two windows of PCM are held: ~0.3 GB on MLX; on CUDA ~10 GB of GigaSpeech 2's
-  short rows, ~27 GB of PhoAudiobook's long ones (3.3 MB a row), unmeasured on the box. Decoding a
+  short rows, ~27 GB of PhoAudiobook's long ones (3.3 MB a row), unmeasured on the box. On top, the
+  builder's reads hold two shards' compressed audio (1–2.5 GB a GigaSpeech 2 shard). Decoding a
   whole shard at once held ~23 GB for a GigaSpeech 2 shard, and swapped the 48 GB Mac. A window
   spans shard ends, so the device does not wait on a shard's tail or the next one's first decodes;
   a shard is yielded once its last row is in, so the log line gives the build's speed so far, not
   a shard's.
-- Workers (`default_workers`): 4 on MLX, since the Mac's CPU and GPU share one power budget; on
+- Workers (`default_workers`): 4 on MLX, since the Mac's CPU and GPU share one power budget (two
+  kept the GPU fed when they only decoded; 4 is unmeasured now that they also run the Viterbi); on
   CUDA the CPU budget less the main process (`paths.cpu_budget`, the container's quota). Each
   decodes and runs the Viterbi with its own `CTCWordAligner` (`init_worker`).
 
@@ -110,7 +112,8 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 - Upstream (checked 2026-10-27): moshi 0.2.13, rustymimi 0.4.1 and moshi_mlx 0.3.0 are the
   newest; the Mimi stack of moshi 0.2.13 equals kyutai's main, and the local Mimi checkpoint is
   the file upstream Hibiki-Zero loads (sha256 `09b782f0…`). MLX 0.32.4 (checked 2026-10-30): none
-  of the 57 later commits on `main` changes these rows.
+  of the 57 later commits on `main` changes these rows; its new sliding-window attention would save
+  under 2%, attention being a small part of Mimi's transformer.
 
 ## CUDA
 
@@ -138,6 +141,8 @@ Checked on 2026-11-09, after both builders moved onto this build:
   within 0.005) and 0.047% of audio frames different (float near-ties). The CUDA path run on the
   CPU over the first 80 rows differed on 0.019%.
 - So a cache may be built on either device, or partly on each: rows differ only by near-ties.
+- `cache_codes` now lists an English clip shorter than one CTC frame as `Rejected`; it used to stop
+  the run with wav2vec2_mlx's ValueError.
 
 ## Speed on the Mac
 
@@ -172,7 +177,12 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   models do alone, so only less GPU work per row would help. On a mean `libriheavy-large` row
   (Vietnamese 11.5 s, English 13.6 s, delay 2.2 s) Mimi takes ~55% (SEANet 59%, transformer 24%,
   quantizer 15%) and wav2vec2 ~45%. Bucket padding adds 4.5% to each; the delay's silence is 8% of
-  Mimi's frames and must be encoded. Convolutions rewritten as matmuls gain nothing.
+  Mimi's frames and must be encoded. Convolutions rewritten as matmuls gain nothing. Untried: the
+  Mac kept idle, and High Power Mode (`powermode 0`, Automatic, so far).
+- On GigaSpeech 2's short rows (4.3 s) the tranche's first MLX path, since replaced by this build,
+  ran 130–136x (one ~50 h shard in ~24 min, M4 Pro, 2026-11-09): 135 archives would take ~52 h.
+  It is the baseline for this build on those rows, which is not yet measured; optimize before
+  judging the Mac too slow for them.
 - After the move onto this build (2026-11-09, 400 `libriheavy-dev` rows, the Mac otherwise in
   light use): 258–263x against the former builder's 265–270x, within the noise above.
 
@@ -198,6 +208,9 @@ on CUDA. Profile them on the next box before a full run (`--limit`).
   periods in bursts (`/sys/fs/cgroup/cpu.stat`); check the main process is not the one stalled.
 
 ## Changing it
+
+- Untried on both devices: queue window N+1 on the device before collecting window N's alignments
+  and samples, so the device does not idle while the main thread plans and collects.
 
 - A speed lever, a device or a model goes here, for every builder at once; read both Speed
   sections first, since each device's levers were measured there and do not carry over (MLX runs
