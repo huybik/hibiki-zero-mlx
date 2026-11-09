@@ -27,7 +27,7 @@ case $job in
   # day: 2026-11-06, 2026-11-07 17:30 UTC+7), but stops after 3 in a row.
   voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/nanovox/bin/python -m training.tranche.voice run giga; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
-  cache) cmd=(.venv/bin/python -m training.tranche.cache build pho vivoice giga) ;;
+  cache) cmd=(.venv/bin/python -m training.tranche.cache build pho vivoice giga --half-ctc) ;;
   # Round 4 SFT (2026-11-08): every tranche cache plus 150 seeded shards (~720 h) of the noisy en_speech
   # cache, from round 3's final model. Rerun with the same args resumes it (h100.sh run). Round 3
   # (tranche_epoch1b) ran from run 2's final model on the first tranche, --seed 45 --val-every 8000.
