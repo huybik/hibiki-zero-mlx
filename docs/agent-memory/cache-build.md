@@ -17,9 +17,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Shape](#shape) · [Rows](#rows) · [M
 builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows, its own gates)
   └─ cache_build.Builder(device).run(keys, read, workers) ─► each Shard filled, in key order
        read             a thread, one shard ahead
-       decode workers   cache_rows.prepare: PyAV, soxr to 24 kHz (Mimi) and 16 kHz (CTC,
-                        normalized); one window of rows ahead of the device
-       cache_rows.plan  decode gates, delay draw, text groups ─► windows, across shard ends
+       decode workers   cache_rows.prepare_row: PyAV, soxr to 24 kHz (Mimi) and 16 kHz (CTC,
+                        normalized), then cache_rows.plan (decode gates, delay draw, text groups);
+                        one window of rows ahead of the device; clips back through /dev/shm
+                        (inline where there is none) ─► windows, across shard ends
        device           MLXModels | CUDAModels .encode: CTC ─► the Viterbi in the workers
                         (cache_rows.align) while the device runs Mimi
        cache_rows       sample ─► its shard; the builder writes payload() with write()
@@ -126,9 +127,10 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 
 ## CUDA
 
-- `CUDAModels`: moshi's Mimi (`cuda_mimi`, float32) and transformers' wav2vec2-base-960h, over
-  padded batches of up to 640 s of audio, shortest first (`batches`). TF32 is off (changes Mimi's
-  residual codes as bf16 does, and moves CTC near-ties). The CTC takes the first GroupNorm's
+- `CUDAModels`: moshi's Mimi (`cuda_mimi`) and transformers' wav2vec2-base-960h in float32 with
+  TF32 matmuls and convolutions (`CUDA_TF32`, [Speed on CUDA](#speed-on-cuda)), over padded batches
+  of up to `CUDA_BATCH_S` (320 s) of audio, shortest first (`batches`; both clips of a window in one
+  sort for Mimi). `encode` runs in the build's GPU thread (`threaded`), one window queued behind it. The CTC takes the first GroupNorm's
   statistics over each clip's own frames (always float32 to avoid overflow) and gives the encoder
   the attention mask, as `wav2vec2_mlx` masks; Mimi needs no mask. `--half-ctc` runs the 12-layer
   transformer under `torch.autocast("cuda", bfloat16)`, keeping the feature extractor and lm_head
@@ -208,8 +210,37 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
 
 ## Speed on CUDA
 
+**H200 (2026-11-09, GigaSpeech 2 shards 228–229 rebuilt and compared with their Hub copies):
+1,342× → 3,286× real time**, the GPU 92–94% busy at ~640 W (was 66%, ~500 W). Steps, each measured
+on the same rows (bench: a 4,094-row window for the models, whole shards for the build):
+
+| Step | Build | Why |
+|---|---:|---|
+| fp32, encode in the main thread (before) | 1,342× | GPU idle while the main thread planned, unpickled PCM, collected |
+| TF32 (`CUDA_TF32`) + encode in a GPU thread, the next window queued | 2,014× | CTC 11.7 → 4.1 s, Mimi 13.8 → 7.9 s a window |
+| decode **and** `plan` in the workers, clips through `/dev/shm` (`cache_rows.Planned`) | 2,311× | the pool's one result pipe moved ~1.4 MB a row: ~30 s of main thread a shard |
+| pinned double-buffered staging, batch k+1 launched before k is collected | 3,298× | the GPU thread's host work hid behind kernels: a window 16.5 → 12 s |
+| `CUDA_BATCH_S` 1,280 → 320 | 3,286× | models alone 11.3 → 10.7 s a window, 27 → 7.4 GiB peak; end to end within noise |
+
+- TF32's effect on the rows: 0.021% of text token frames move (at most 4 frames), no row changes
+  its accept/reject; Mimi's first codebook 99.92% equal, residual ones 96–99%. These are near-ties:
+  the fp32 decode of TF32 codes is as close to the source as that of fp32 codes (SNR 9.043 against
+  9.040 dB on 256 clips). Shards before 2026-11-09 16:40 UTC are fp32, the rest TF32; both are
+  valid encodings. The noisy re-encode (`mimi_cache_cuda`) keeps `cuda_mimi`'s fp32 default.
+- Rejected: bf16 Mimi (half the residual codes rewritten, ~10% faster than TF32); bf16 CTC (slower
+  than TF32, 0.43% of token frames moved); `cudnn.benchmark` (no change); `torch.compile` on Mimi:
+  at 1,280 s batches it hits `CUDA_ERROR_ILLEGAL_ADDRESS` (64 channels × 30.7M samples, past int32
+  indexing), and at 320 s it runs 14% faster but its codes are wrong (19.7% equal, 0.76 dB SNR).
+- What is left: windows run ~11–12 s against 10.7 s of kernels (the GIL between the two threads),
+  plus ~10 s at a run's start (the first shard's read and window of decodes). Mimi's time is mostly
+  its first SEANet layers at 24 kHz (memory-bound convolutions, ELU, pads), CTC's its 12 layers.
+  The workers use ~15 ms of CPU a row (decode 8.9, soxr 2.3, Viterbi ~3): the 30-CPU box idles.
+- Bench scripts used: a whole-shard rebuild with stage timers and a comparison against the shard
+  on disk, and a per-window model bench with code equality and decode SNR (2026-11-09 session; the
+  method is what matters: compare on rows already built, judge precision by reconstruction).
+
 Measured on the Japan H100 SXM 700W on the tranche's rows (2026-11-06/07), before the move onto
-this build. Profile the H200 box before a full run (`--limit 2`).
+this build:
 
 - Japan H100: a warm PhoAudiobook shard (1,299 rows, 9.6 h of Mimi audio) in 21 s, 1,609× real
   time, the GPU 74–100% busy; GigaSpeech 2 archives built at 695–1,510× (mean 830×), the wide range
@@ -217,15 +248,6 @@ this build. Profile the H200 box before a full run (`--limit 2`).
   approaches PhoAudiobook's 1,500–1,600× (highest measured was 1,510×). ~49 GB of GPU at peak.
 - Per-row overhead: GigaSpeech 2 (19,967 rows, 4.3 s each → ~5 windows of 4,096) has ~5×
   more plan/collect cycles than PhoAudiobook (1,299 rows, one window).
-- Mimi stays float32 with TF32 off (other precisions change the codes). `torch.compile` or CUDA
-  graphs on its encoder keep the codes in theory, but `torch.compile(mimi.encode, dynamic=True)`
-  crashed with `CUDA_ERROR_ILLEGAL_ADDRESS` during the inductor's autotuner benchmarking on the H200
-  box (2026-11-09): moshi's Mimi has operations the autotuner cannot benchmark safely. Reverted.
-  CUDA graphs are an alternative not yet tried.
-  See `--half-ctc` above for bfloat16 CTC status.
-- `CUDA_BATCH_S` 640 → 1280 s (commit ccc448a, H200): halves kernel-launch overhead per window on
-  GigaSpeech 2 (4.3 s avg, 149 → 298 clips per CTC/Mimi batch); H200 peak expected ~65–75 GB.
-  (torch.compile is NOT also active — it crashed; the batch-size change alone is deployed.)
 - CPU: 25 workers on the 26.9-CPU Japan quota averaged 10.5 CPUs but throttled 14% of the 100 ms
   periods in bursts; on H200 the quota is 32 CPUs (31 workers). Check the main process is not the
   one throttled (`/sys/fs/cgroup/cpu.stat`).

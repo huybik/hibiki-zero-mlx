@@ -9,7 +9,9 @@ MLX, the Mac without CUDA."""
 from __future__ import annotations
 
 import math
+import os
 import random
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -153,13 +155,73 @@ def plan(
 
 
 _aligner: CTCWordAligner | None = None
+_tokenizer: Any = None
+_settings: Settings | None = None
+_pcm_dir: Path | None = None
 
 
-def init_worker(files: Path, min_score: float) -> None:
-    """Worker initializer: the process's aligner. `files`: the aligner snapshot, which the parent
-    resolved."""
-    global _aligner
+def init_worker(files: Path, min_score: float, tokenizer: Path | None = None, settings: Settings | None = None,
+                pcm_dir: Path | None = None) -> None:
+    """Worker initializer: the process's aligner, and for `prepare_row` the text tokenizer, the
+    build's settings and where to leave the clips (`pcm_dir`; None returns them in the reply).
+    `files`: the aligner snapshot, which the parent resolved."""
+    global _aligner, _tokenizer, _settings, _pcm_dir
     _aligner = CTCWordAligner(files, min_score)
+    if tokenizer is not None:
+        import sentencepiece
+
+        _tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer))
+    _settings, _pcm_dir = settings, pcm_dir
+
+
+@dataclass
+class Planned:
+    """A row's `plan` from a worker without its shard: the clips inline (`pcm`), or as one raw
+    float32 file of vi24, en24 and en16 back to back (`file`, `lengths`) that `clips` maps."""
+
+    lead: list[int]
+    groups: list[tuple[list[int], str]]
+    delay_s: float
+    delay_frames: int
+    vi_frames: int
+    en_frames: int
+    pcm: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    file: str | None = None
+    lengths: tuple[int, int, int] = (0, 0, 0)
+
+    def clips(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The three clips; a file is mapped and unlinked at once (the pages live as long as the
+        arrays do)."""
+        if self.pcm is not None:
+            return self.pcm
+        data = np.memmap(self.file, np.float32, "r")
+        os.unlink(self.file)
+        a, b = self.lengths[0], self.lengths[0] + self.lengths[1]
+        return data[:a], data[a:b], data[b:]
+
+    def row(self, shard: Shard, index: int, source: dict[str, Any]) -> Row:
+        vi24, en24, en16 = self.clips()
+        return Row(shard, index, source, vi24, en24, en16, self.lead, self.groups, self.delay_s,
+                   self.delay_frames, self.vi_frames, self.en_frames)
+
+
+def prepare_row(row: dict[str, Any], vi_audio: bytes, en_audio: bytes, split: str) -> Planned:
+    """Worker: `prepare` then `plan` (the decode gates, the delay draw, the text grouping), so the
+    main process only maps the clips: piping ~1.4 MB of PCM a row through the pool's one result
+    pipe held the main thread ~30 s per GigaSpeech 2 shard. Raises Rejected or AlignmentError."""
+    shard = Shard(None, "", split, 0, [], [])
+    p = plan(shard, 0, row, prepare(vi_audio, en_audio), _settings, _tokenizer)
+    out = Planned(p.lead, p.groups, p.delay_s, p.delay_frames, p.vi_frames, p.en_frames)
+    clips = (p.vi24, p.en24, p.en16)
+    if _pcm_dir is None:
+        out.pcm = clips
+        return out
+    out.file = str(_pcm_dir / f"{uuid.uuid4().hex}.f32")
+    with open(out.file, "wb") as f:
+        for clip in clips:
+            np.ascontiguousarray(clip, np.float32).tofile(f)
+    out.lengths = tuple(len(c) for c in clips)
+    return out
 
 
 def align(
