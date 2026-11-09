@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-cer", type=float, default=MAX_CER)
     p.add_argument("--max-frames", type=int, default=280, help="The trainer's frame cap.")
     p.add_argument("--device", choices=list(MODELS), default="cuda")
-    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX only; +~26%% CTC speed)")
+    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX) or bfloat16 (CUDA): +~26%% CTC speed")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
