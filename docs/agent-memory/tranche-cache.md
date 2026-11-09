@@ -116,8 +116,8 @@ Before building a larger tranche (the plan's ~10k h: more GigaSpeech 2 and YODAS
 build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× on the Mimi audio
 (both clips, ~2.1× the Vietnamese hours), 10k h of source takes ~13–19 h of GPU. Not done yet:
 GigaSpeech 2's first 76 archives built at 830× on average (222 s an archive of ~50 h of Mimi audio;
-110–292 s, 695–1,510×; 2026-11-06/07). 78 are cached (2026-11-09) and 135 of the voiced ones
-remain, ~8 h at that speed; optimize it heavily before the rest builds, on the next box (user, 2026-11-08: "we can optimize cache build later",
+110–292 s, 695–1,510×; 2026-11-06/07). 82 are cached (2026-11-09) and 131 of the voiced ones
+remain (104 buildable, 27 waiting for their English voice), ~8 h at that speed; optimize it heavily before the rest builds, on the next box (user, 2026-11-08: "we can optimize cache build later",
 then "heavy optimize everything before full run"). In order:
 
 - Keep the inputs on local disk, or download them with `HF_HUB_DISABLE_XET=1`: through Xet the box's

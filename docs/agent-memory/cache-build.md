@@ -182,8 +182,13 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
 - On GigaSpeech 2's short rows (4.3 s), interleaved on 2,000 rows of archive 147 (1,550 kept,
   4.77 h of Mimi audio, 2026-11-09): this build 210–226x with 2, 4 or 8 workers alike, the GPU ~95%
   busy and MLX's peak 2.2 GB; the tranche's MLX path it replaced, with its streaming fix, 219–223x.
-  That path before the fix decoded whole shards and ran 130–136x in swap. At ~220x the 135
-  GigaSpeech 2 archives left take ~31 h of the Mac (~14 min an archive).
+  That path before the fix decoded whole shards and ran 130–136x in swap. At ~220x the 131
+  GigaSpeech 2 archives left take ~30 h of the Mac (~14 min an archive).
+- PR #87 (unmerged) batches a window's clips by padded length into one Mimi and one CTC forward
+  and reported 189x against a 148–150x baseline on archives 149–152, the runs one after another
+  beside other GPU jobs. The interleaved runs above put the unbatched path at ~220x, and batching
+  gained nothing before (below), so it is unproven on this Mac; measure it interleaved before
+  adopting it, in `MLXModels`.
 - After the move onto this build (2026-11-09, 400 `libriheavy-dev` rows, the Mac otherwise in
   light use): 258–263x against the former builder's 265–270x, within the noise above.
 
