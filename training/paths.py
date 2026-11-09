@@ -86,7 +86,10 @@ def read_json(path: str | Path) -> dict[str, Any]:
 def cpu_budget() -> float:
     """The CPUs this process may use: the CPUs it may run on, capped by a container's CPU quota
     (cgroup v2 or v1), which neither `nproc` nor `os.cpu_count()` shows."""
-    cpus = float(len(os.sched_getaffinity(0)))
+    try:
+        cpus = float(len(os.sched_getaffinity(0)))
+    except AttributeError:
+        cpus = float(os.cpu_count() or 1)
     v2, v1 = Path("/sys/fs/cgroup/cpu.max"), Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
     if v2.exists():
         quota, period = v2.read_text().split()

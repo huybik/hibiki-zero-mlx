@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""The tranche's training caches, built on CUDA: each segments shard's rows as grounded-v2 cache
-rows ([tranche-cache](../../docs/agent-memory/tranche-cache.md)), in the format of the
-Mac's MLX builder `training.prep.cache_codes` ([sft-data-caches](../../docs/agent-memory/sft-data-caches.md)).
+"""The tranche's training caches: each segments shard's rows as grounded-v2 cache rows
+([tranche-cache](../../docs/agent-memory/tranche-cache.md)), in the format of the Mac's MLX builder
+`training.prep.cache_codes` ([sft-data-caches](../../docs/agent-memory/sft-data-caches.md)).
 
   build <sources...>  every shard whose segments, text_en, en_audio and asr_vi are on the Hub
                       becomes <root>/cache/<source>/shard_<shard stem>.pt:
@@ -24,11 +24,18 @@ A row is dropped, with the first reason that applies (the shard's `rejected`), w
   - a clip decodes more than 0.02 s off its stored duration, or the row exceeds --max-frames;
   - its English text fails CTC alignment or token timing.
 
-Decode workers (PyAV, soxr) feed the GPU, which runs the CTC forward over padded batches (the
-padding masked, so each clip's emissions are its own) and Mimi over padded batches; the CTC
-Viterbi runs in the workers while Mimi encodes. Env: the training .venv (training/h100.sh setup).
-From the repo root on the box, with HF_TOKEN_AN (pushes) in the environment:
-  .venv/bin/python -m training.tranche.cache build pho vivoice giga
+Two backends:
+  CUDA (default, --device cuda): Mimi and wav2vec2 on the H100 in float32, batched.
+    Decode workers (PyAV, soxr) feed the GPU; the CTC Viterbi runs in the workers while Mimi
+    encodes. Env: the training .venv (training/h100.sh setup). From the repo root on the box:
+      .venv/bin/python -m training.tranche.cache build pho vivoice giga
+  MLX (--device mlx): Mimi (mimi_mlx) and wav2vec2 (wav2vec2_mlx) on Apple Silicon in windows
+    of MLX_WINDOW rows; CTC and both Mimi encodes are queued lazily per window and evaluated
+    together so the GPU overlaps them. MLX_CACHE_BYTES of freed buffers are kept for shape reuse
+    across the ~36 bucket-length compiled programs; each window's Viterbi runs in workers while
+    the next window encodes. Env: system Python on Mac (mlx, moshi, sentencepiece, soxr, pyav).
+    From the repo root (nice -n 19 since the user games on this Mac):
+      nice -n 19 python3 -m training.tranche.cache build giga --device mlx --root <dir> --workers 8
 """
 from __future__ import annotations
 
@@ -88,6 +95,8 @@ CTC_BATCH_S = 640.0
 PUSH_S = 1800
 PARTS = ("segments", "text_en", "en_audio", "asr_vi")
 DEVICE = "cuda"
+MLX_WINDOW = 64       # rows per GPU window; bounds GPU memory to ~200 MB per window
+MLX_CACHE_BYTES = 16 << 30  # freed MLX buffers to keep for shape reuse (see cache_codes)
 
 
 def log(msg: str) -> None:
@@ -107,6 +116,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     p.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    p.add_argument("--device", choices=["cuda", "mlx"], default="cuda",
+                   help="'mlx' runs on Apple Silicon with the MLX Mimi and wav2vec2 backends")
     return parser.parse_args()
 
 
@@ -150,6 +161,15 @@ def align(
 
 
 # --------------------------------------------------------------------------- GPU
+
+
+def ctc_output_frames(samples: int) -> int:
+    """wav2vec2-base-960h feature-extractor output frames for `samples` input samples.
+    Equivalent to Wav2Vec2ForCTC._get_feat_extract_output_lengths without loading the model."""
+    n = samples
+    for kernel, stride in ((10, 5), (3, 2), (3, 2), (3, 2), (3, 2), (2, 2), (2, 2)):
+        n = (n - kernel) // stride + 1
+    return n
 
 
 def batches(lengths: list[int], budget: int) -> list[list[int]]:
@@ -232,6 +252,27 @@ class Models:
             for row, (i, count) in enumerate(zip(group, frames.tolist(), strict=True)):
                 out[i] = log_probs[row, :count]
         return out
+
+
+class MLXModels:
+    """Mimi and wav2vec2-base-960h CTC loaded for the MLX path on Apple Silicon.
+
+    Builder.build() drives them in windows of MLX_WINDOW rows, queuing CTC and both Mimi encodes
+    together per window so the hardware can overlap them, and submitting each window's Viterbi to
+    workers before the next window encodes.
+    """
+
+    def __init__(self, args: argparse.Namespace, cfg: dict[str, Any]):
+        import mlx.core as mx
+        from training.prep.mimi_mlx import MimiEncoder
+        from training.prep.text_timing import EnglishCTCAligner
+
+        mx.set_cache_limit(MLX_CACHE_BYTES)
+        num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
+        self.mimi = MimiEncoder(require_file(args.mimi_weight, "Mimi weight"), num_codebooks)
+        self.aligner = EnglishCTCAligner()
+        if self.mimi.cardinality != int(cfg["card"]):
+            raise RuntimeError(f"config card {cfg['card']} != Mimi cardinality {self.mimi.cardinality}")
 
 
 # --------------------------------------------------------------------------- shards
@@ -339,7 +380,7 @@ class Builder:
         self.tokenizer = sentencepiece.SentencePieceProcessor(str(require_file(args.tokenizer, "text tokenizer")))
         self.eos_id = int(self.tokenizer.eos_id())
         self.aligner_files = aligner_files()
-        self.models = Models(args, self.cfg)
+        self.models = MLXModels(args, self.cfg) if args.device == "mlx" else Models(args, self.cfg)
 
     def pending(self, index: int, row: dict[str, Any], clips: tuple[np.ndarray, ...]) -> Pending:
         """The decode gates, the delay draw and the text grouping; raises Rejected or AlignmentError."""
@@ -356,7 +397,7 @@ class Builder:
         room_s = ((self.args.max_frames - 1) * FRAME_SAMPLES - len(en24)) / SAMPLE_RATE
         delay_s = target_delay_s(row["id"], SPLIT, min(DELAY_RATIO * round(row["duration_s"], 2), room_s), SEED)
         pad = int(round(delay_s * SAMPLE_RATE))
-        if int(self.models.ctc._get_feat_extract_output_lengths(torch.tensor(len(en16)))) < 1:
+        if ctc_output_frames(len(en16)) < 1:
             raise Rejected("the English clip is shorter than one CTC frame")
         lead, groups = sentencepiece_groups(row["text_en"], self.tokenizer)
         return Pending(index, row, vi24, np.concatenate([np.zeros(pad, np.float32), en24]), en16, lead, groups,
@@ -374,12 +415,39 @@ class Builder:
             except (Rejected, AlignmentError) as exc:
                 rejected.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
         shard.clips.clear()
-        log_probs = self.models.ctc_log_probs([p.en16 for p in todo])
-        aligned = [pool.submit(align, self.aligner_files, lp, p.lead, p.groups, p.en_frames - p.delay_frames, p.delay_frames, self.eos_id)
-                   for lp, p in zip(log_probs, todo, strict=True)]
-        after_ctc()
-        vi_codes = self.models.mimi_codes([p.vi24 for p in todo])
-        en_codes = self.models.mimi_codes([p.en24 for p in todo])
+
+        if isinstance(self.models, MLXModels):
+            # MLX path: process in windows of MLX_WINDOW rows, queuing CTC and both Mimi encodes
+            # together per window so the hardware overlaps them. Each window's Viterbi is submitted
+            # to workers before the next window encodes, so workers and GPU stay busy together.
+            import mlx.core as mx
+            n = len(todo)
+            aligned: list[Future] = [None] * n  # type: ignore[list-item]
+            vi_codes: list[np.ndarray] = [None] * n  # type: ignore[list-item]
+            en_codes: list[np.ndarray] = [None] * n  # type: ignore[list-item]
+            for start in range(0, n, MLX_WINDOW):
+                batch = todo[start:start + MLX_WINDOW]
+                lp_lazy = [self.models.aligner.log_probs(p.en16) for p in batch]
+                vi_lazy = [self.models.mimi.encode(p.vi24) for p in batch]
+                en_lazy = [self.models.mimi.encode(p.en24) for p in batch]
+                mx.eval(*lp_lazy, *vi_lazy, *en_lazy)
+                for j, (p, lp, vi, en) in enumerate(zip(batch, lp_lazy, vi_lazy, en_lazy)):
+                    vi_codes[start + j] = np.array(vi)
+                    en_codes[start + j] = np.array(en)
+                    aligned[start + j] = pool.submit(align, self.aligner_files, np.array(lp),
+                                                     p.lead, p.groups, p.en_frames - p.delay_frames,
+                                                     p.delay_frames, self.eos_id)
+            after_ctc()
+        else:
+            # CUDA path: one batched CTC call, then Mimi overlaps Viterbi in workers.
+            log_probs = self.models.ctc_log_probs([p.en16 for p in todo])
+            aligned = [pool.submit(align, self.aligner_files, lp, p.lead, p.groups,
+                                   p.en_frames - p.delay_frames, p.delay_frames, self.eos_id)
+                       for lp, p in zip(log_probs, todo, strict=True)]
+            after_ctc()
+            vi_codes = self.models.mimi_codes([p.vi24 for p in todo])
+            en_codes = self.models.mimi_codes([p.en24 for p in todo])
+
         samples = []
         for p, future, vi, en in zip(todo, aligned, vi_codes, en_codes, strict=True):
             try:
