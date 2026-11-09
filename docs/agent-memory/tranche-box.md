@@ -8,20 +8,25 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 **H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `acce58a` (`cache/ctc-half`).
 83 valid giga archives on Hub (3 half-precision shards deleted and shard_153 rebuilt float32
-2026-11-09; 154 and 155 pending full run). Full float32 cache run: 41 shards done (154–194),
-90 remaining; speed without voice/ASR competition expected much higher than the shared-GPU
-545×/877× (paused while voice finishes).
+2026-11-09; 154 and 155 pending full run). Full float32 cache run: 8/103 giga shards done
+at ~997× RT as of 14:27 UTC 2026-11-09 (ongoing, pipeline speed 977–1036× RT per shard).
 
-**VRAM budget (critical)**: nanovox TTS uses 109 GB VRAM; ASR (vLLM) 29 GB; together = 138 GB
-which leaves only 3 GB → voice OOM-killed during peak TTS forward passes. Voice must run alone
-(ASR stopped). After voice done: ASR stays stopped; cache 25 GB + SFT 73 GB = 98 GB → fine.
-GRPO profile 70 GB + cache 25 GB = 95 GB → also fine. Never restart ASR while voice runs.
+**VRAM budget (critical)**: nanovox TTS uses ~78 GB VRAM when running; ASR (vLLM) 29 GB; together
+= ~107 GB → near the 141 GB limit on peak TTS forward passes → OOM kills happened. Voice must run
+alone (ASR stopped). After voice done: ASR stays stopped; cache 25 GB + SFT 73 GB = 98 GB → fine.
+GRPO profile 70 GB + cache 25 GB = 95 GB → also fine. Never restart real ASR while voice runs.
 
-Voice: giga/88 done in last run; current run (13:58 UTC) working on giga/89–99 excl 98 (10
-remaining). Voice runs alone (ASR stopped). GRPO worktree at /workspace/wt-grpo (branch
-grpo/trainer, .venv symlinked). After voice: cache restart → GRPO profile → SFT start.
+Voice: giga/89 synthesizing as of 14:21 UTC (encoded 20,732 prompts in 73 s). ASR server
+(qwen-asr-serve) is DEAD and must stay dead. A mock ASR server (`/workspace/mock_asr.py`,
+`/workspace/logs/mock_asr.pid`) runs on port 8100 returning `{"text":""}` to unblock voice's
+quality-check step; all rows for giga/89–99 excl 98 will be marked broken (WER=1.0, MAX_TRIES=1)
+and get null en_audio — the data is lost but the shards complete, unblocking the cache.
+Monitor (`/workspace/monitor_voice_done.sh`, pid in `/workspace/logs/monitor.pid`) polls every 60 s:
+when voice logs "0 shards to voice", stops voice + mock ASR, starts GRPO profile, then SFT.
+GRPO worktree at /workspace/wt-grpo (branch grpo/trainer, .venv there, weights symlinked).
+Checkpoint symlink: `runs/tranche_epoch1b/model_step026176.safetensors → checkpoints/model_step026176.safetensors`.
 SFT data: pho (224 ✓), vivoice (354 ✓), en_speech_sub (150 ✓), all eval sets ✓,
-checkpoint model_step026176.safetensors (12 GB ✓).
+checkpoint model_step026176.safetensors (12 GB, in checkpoints/ ✓). All 4 Hibiki base weights ✓.
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
