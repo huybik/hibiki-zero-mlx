@@ -54,6 +54,13 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
     (2026-11-06: 143 MB/s over plain HTTP, 8 downloads at once with `HF_HUB_DISABLE_XET=1`; through
     Xet ~30 MB/s, and its threads hung after ~13 min). Re-uploading files the Hub already holds takes
     seconds: Xet deduplicates across repos (the first tranche's 591 caches in 20 s).
+  - Some plain-HTTP connections from the box crawl at ~50 KB/s and never time out (2 of 4 in a test,
+    2026-11-06), and `hf_hub_download` waits on them: a copy sat 2 h on one file. Bulk copies
+    download with curl, `--speed-limit 1000000 --speed-time 30 -C -` in a retry loop, which drops
+    such a connection and resumes on a new one: `common-vi-en`'s 447 GB in 80 min, 8 files at once,
+    sha256 checked before each commit. Uploading from the Mac's own copy instead saves no download:
+    global dedup still leaves a few percent of each file to send (19 MB of a 500 MB shard), more
+    than its uplink carried (18 Mbps, Xet uploads timing out, 2026-11-07).
   - The card of `REPO` declares the segments configs (`pho-segments`, `vivoice-segments`,
     `giga-segments`, `audio` as Audio) beside PhoMT's `default`, so the viewer and `datasets`
     decode those. `en_audio` has no config: its readers decode the Opus bytes themselves.

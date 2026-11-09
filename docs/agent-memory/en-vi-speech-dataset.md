@@ -26,6 +26,10 @@ repositories the same day (447 GB, 1,842 shards; 112 commits in 83 min to `commo
 Xet had the bytes), and his old files were deleted there. On 2026-10-28 both held the 1,842
 shards at the Mac's byte sizes (`anquachdev/common-vi-en` revision `2ce8777`).
 
+A copy is `en_speech/` of the gated `anquachdev/en-vi-speech-20k` (config `en_speech`, its card's
+folder table), file for file with `data/` at `2ce8777`, every sha256 equal (2026-11-07; the user's
+"move everything there", the source left as it is). The code still reads `common-vi-en`.
+
 ## Contents
 
 ```text
@@ -152,3 +156,7 @@ built ([sft-data-caches](sft-data-caches.md#publishing)). On 2026-10-23 the obso
 the root FLEURS cache and pairs were deleted and the history squashed to one commit (user's
 choice), leaving 10.4 GB. The model repository of the same name holds training runs, not
 caches.
+
+Every file of it (10,457, 170 GB) is copied at its own path into `anquachdev/mimi-en-vi-speech-20k`,
+beside the real-Vietnamese tranche's caches, every sha256 equal (2026-11-06). `publish_caches`
+still writes to `huybik/hibiki-zero-vi-full-sft`, and the trainer reads from it.
