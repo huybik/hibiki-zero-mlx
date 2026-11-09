@@ -480,16 +480,17 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     seg = get("segments").select(["id", "text", "audio"])
     en = dict(zip(*get("text_en").select(["id", "text_en"]).to_pydict().values()))
     ids, texts = seg.column("id").to_pylist(), seg.column("text").to_pylist()
-    if missing := [i for i in ids if not en.get(i)]:
-        raise SystemExit(f"{source}/{name}: {len(missing)} rows without text_en, e.g. {missing[0]}")
+    no_en = {i for i in ids if not en.get(i)}
+    if no_en:
+        log(f"{source}/{name}: {len(no_en)} rows without text_en, e.g. {next(x for x in ids if x in no_en)}")
     vi = get("asr_vi").select(["id", "asr_vi", "language", "cer"]).to_pylist()
     if [r["id"] for r in vi] != ids:
         raise SystemExit(f"{source}/{name}: its asr_vi does not hold the segments' rows in their order")
     # The cache build drops these on the Vietnamese side whatever the English (~6% of GigaSpeech 2's hours).
-    skipped = {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
+    skipped = no_en | {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
     audio = [a["bytes"] for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
     clips = list(pool.map(decode_16k, audio, chunksize=32))
-    return Shard(source, name, root / source / "en_audio" / name, ids, texts, [en[i] for i in ids], clips, {}, skipped)
+    return Shard(source, name, root / source / "en_audio" / name, ids, texts, [en.get(i, "") for i in ids], clips, {}, skipped)
 
 
 def write_shard(shard: Shard) -> None:
