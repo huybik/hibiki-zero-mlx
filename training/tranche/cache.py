@@ -97,6 +97,7 @@ PARTS = ("segments", "text_en", "en_audio", "asr_vi")
 DEVICE = "cuda"
 MLX_WINDOW = 64       # rows per GPU window; bounds GPU memory to ~200 MB per window
 MLX_CACHE_BYTES = 16 << 30  # freed MLX buffers to keep for shape reuse (see cache_codes)
+PREFETCH = 64         # max decoded clips outstanding; bounds decoded audio to ~PREFETCH × 3.5 MB
 
 
 def log(msg: str) -> None:
@@ -307,6 +308,44 @@ def read_parts(source: str, name: str, files: dict[str, Path]) -> list[dict[str,
     return rows
 
 
+def stream_parts(source: str, name: str, files: dict[str, Path]):
+    """Yield one row dict at a time, streaming audio columns from parquet in PREFETCH-sized batches.
+    Memory at any time: one PREFETCH batch of compressed audio (~PREFETCH × 2 × 115 KB), not the
+    full shard's decoded audio (~23 GB for a GigaSpeech 2 shard)."""
+    import pyarrow.parquet as pq
+
+    get = lambda part, columns: pq.read_table(files[part], columns=columns).to_pylist()  # noqa: E731
+    ten = get("text_en", ["id", "text_en"])
+    ea_meta = get("en_audio", ["id", "en_duration_s", "en_asr", "en_broken"])
+    av = get("asr_vi", ["id", "asr_vi", "language", "cer"])
+    ids = [r["id"] for r in ten]
+    if [r["id"] for r in ea_meta] != ids or [r["id"] for r in av] != ids:
+        raise RuntimeError(f"{source}/{name}: metadata parts have mismatched row order")
+    seg_batches = pq.ParquetFile(files["segments"]).iter_batches(
+        batch_size=PREFETCH, columns=["id", "doc", "seq", "text", "duration_s", "audio"])
+    ea_batches = pq.ParquetFile(files["en_audio"]).iter_batches(
+        batch_size=PREFETCH, columns=["en_audio"])
+    global_idx = 0
+    for seg_batch, ea_batch in zip(seg_batches, ea_batches):
+        seg_rows = seg_batch.to_pylist()
+        ea_rows = ea_batch.to_pylist()
+        for i, (sr, er) in enumerate(zip(seg_rows, ea_rows)):
+            idx = global_idx + i
+            yield {
+                **sr,
+                "text_en": ten[idx]["text_en"],
+                "en_audio": er["en_audio"],
+                "en_duration_s": ea_meta[idx]["en_duration_s"],
+                "en_asr": ea_meta[idx]["en_asr"],
+                "en_broken": ea_meta[idx]["en_broken"],
+                "asr_vi": av[idx]["asr_vi"],
+                "language": av[idx]["language"],
+                "cer": av[idx]["cer"],
+            }
+        global_idx += len(seg_rows)
+        # seg_rows and ea_rows go out of scope here; audio bytes released
+
+
 def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
     """The first filter that drops the row, before any audio is decoded. The Vietnamese side comes
     first: voice.py skips the rows it drops at the default --max-cer, leaving their en_audio null."""
@@ -404,8 +443,8 @@ class Builder:
                        delay_s, int(round(delay_s * FRAME_RATE)), vi_frames, math.ceil((pad + len(en24)) / FRAME_SAMPLES))
 
     def build(self, shard: Loaded, pool: ProcessPoolExecutor, after_ctc) -> dict[str, Any]:
-        """The shard's payload. `after_ctc` runs once the CTC forward is done (the next shard's
-        load), so its decodes queue behind this shard's alignments."""
+        """The shard's payload (CUDA only). `after_ctc` runs once the CTC forward is done so the
+        next shard's decodes queue behind this shard's alignments."""
         rejected = shard.rejected
         todo: list[Pending] = []
         for index, future in shard.clips.items():
@@ -415,38 +454,13 @@ class Builder:
             except (Rejected, AlignmentError) as exc:
                 rejected.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
         shard.clips.clear()
-
-        if isinstance(self.models, MLXModels):
-            # MLX path: process in windows of MLX_WINDOW rows, queuing CTC and both Mimi encodes
-            # together per window so the hardware overlaps them. Each window's Viterbi is submitted
-            # to workers before the next window encodes, so workers and GPU stay busy together.
-            import mlx.core as mx
-            n = len(todo)
-            aligned: list[Future] = [None] * n  # type: ignore[list-item]
-            vi_codes: list[np.ndarray] = [None] * n  # type: ignore[list-item]
-            en_codes: list[np.ndarray] = [None] * n  # type: ignore[list-item]
-            for start in range(0, n, MLX_WINDOW):
-                batch = todo[start:start + MLX_WINDOW]
-                lp_lazy = [self.models.aligner.log_probs(p.en16) for p in batch]
-                vi_lazy = [self.models.mimi.encode(p.vi24) for p in batch]
-                en_lazy = [self.models.mimi.encode(p.en24) for p in batch]
-                mx.eval(*lp_lazy, *vi_lazy, *en_lazy)
-                for j, (p, lp, vi, en) in enumerate(zip(batch, lp_lazy, vi_lazy, en_lazy)):
-                    vi_codes[start + j] = np.array(vi)
-                    en_codes[start + j] = np.array(en)
-                    aligned[start + j] = pool.submit(align, self.aligner_files, np.array(lp),
-                                                     p.lead, p.groups, p.en_frames - p.delay_frames,
-                                                     p.delay_frames, self.eos_id)
-            after_ctc()
-        else:
-            # CUDA path: one batched CTC call, then Mimi overlaps Viterbi in workers.
-            log_probs = self.models.ctc_log_probs([p.en16 for p in todo])
-            aligned = [pool.submit(align, self.aligner_files, lp, p.lead, p.groups,
-                                   p.en_frames - p.delay_frames, p.delay_frames, self.eos_id)
-                       for lp, p in zip(log_probs, todo, strict=True)]
-            after_ctc()
-            vi_codes = self.models.mimi_codes([p.vi24 for p in todo])
-            en_codes = self.models.mimi_codes([p.en24 for p in todo])
+        log_probs = self.models.ctc_log_probs([p.en16 for p in todo])
+        aligned = [pool.submit(align, self.aligner_files, lp, p.lead, p.groups,
+                               p.en_frames - p.delay_frames, p.delay_frames, self.eos_id)
+                   for lp, p in zip(log_probs, todo, strict=True)]
+        after_ctc()
+        vi_codes = self.models.mimi_codes([p.vi24 for p in todo])
+        en_codes = self.models.mimi_codes([p.en24 for p in todo])
 
         samples = []
         for p, future, vi, en in zip(todo, aligned, vi_codes, en_codes, strict=True):
@@ -472,6 +486,101 @@ class Builder:
             "source": {"file": f"{shard.source}/segments/{shard.name}", "rows": len(shard.rows)},
             "max_cer": self.args.max_cer, "samples": samples, "rejected": rejected,
         }
+
+
+def build_shard_mlx(
+    builder: Builder,
+    pool: ProcessPoolExecutor,
+    source: str,
+    name: str,
+    args: argparse.Namespace,
+    grams,
+) -> dict[str, Any]:
+    """Build one MLX shard with PREFETCH-bounded audio memory.
+
+    Stream rows from the 4 parquet parts PREFETCH at a time (never the full shard's decoded audio
+    in memory at once); keep at most PREFETCH decode futures outstanding; run MLX inference in
+    MLX_WINDOW batches as results arrive, freeing vi24/en24/en16 arrays after encoding so peak
+    audio memory is ~200 MB instead of the shard's ~23 GB of decoded audio.
+    """
+    import mlx.core as mx
+
+    files = fetch(args.root, source, name)
+    pending: collections.deque = collections.deque()
+    decode_buffer: list[Pending] = []
+    all_records: list[tuple] = []  # (p, aligned_future, vi_np, en_np)
+    rejected: list[dict[str, str]] = []
+    total_rows = 0
+    row_idx = 0
+
+    def encode_window(batch: list[Pending]) -> None:
+        lp_lazy = [builder.models.aligner.log_probs(p.en16) for p in batch]
+        vi_lazy = [builder.models.mimi.encode(p.vi24) for p in batch]
+        en_lazy = [builder.models.mimi.encode(p.en24) for p in batch]
+        mx.eval(*lp_lazy, *vi_lazy, *en_lazy)
+        for p, lp, vi, en in zip(batch, lp_lazy, vi_lazy, en_lazy):
+            future = pool.submit(align, builder.aligner_files, np.array(lp),
+                                 p.lead, p.groups, p.en_frames - p.delay_frames,
+                                 p.delay_frames, builder.eos_id)
+            all_records.append((p, future, np.array(vi), np.array(en)))
+            p.vi24 = p.en24 = p.en16 = None  # free decoded audio
+
+    def drain_one() -> None:
+        idx, r, future = pending.popleft()
+        try:
+            clips = future.result()
+            p = builder.pending(idx, r, clips)
+            decode_buffer.append(p)
+            if len(decode_buffer) >= MLX_WINDOW:
+                encode_window(decode_buffer)
+                decode_buffer.clear()
+        except (Rejected, AlignmentError) as exc:
+            rejected.append({"id": r["id"], "reason": f"{type(exc).__name__}: {exc}"})
+
+    for row in stream_parts(source, name, files):
+        total_rows += 1
+        if reason := gate(row, args.max_cer, grams):
+            rejected.append({"id": row["id"], "reason": reason})
+            row_idx += 1
+            continue
+        audio = (row["audio"]["bytes"], row["en_audio"]["bytes"])
+        row["audio"] = row["en_audio"] = None
+        pending.append((row_idx, row, pool.submit(prepare, *audio)))
+        row_idx += 1
+        while len(pending) > PREFETCH:
+            drain_one()
+
+    while pending:
+        drain_one()
+
+    if decode_buffer:
+        encode_window(decode_buffer)
+        decode_buffer.clear()
+
+    samples = []
+    for p, future, vi, en in all_records:
+        try:
+            tokens, text_frames, score = future.result()
+        except AlignmentError as exc:
+            rejected.append({"id": p.row["id"], "reason": f"AlignmentError: {exc}"})
+            continue
+        codes = assemble_codes(p.row["id"], vi, en, tokens, text_frames, builder.cfg)
+        samples.append({
+            "id": p.row["id"], "split": SPLIT, "codes": torch.from_numpy(codes),
+            "frames": int(codes.shape[1]), "vi_frames": p.vi_frames, "en_frames": p.en_frames,
+            "text_tokens": len(tokens), "target_delay_s": p.delay_s, "target_delay_frames": p.delay_frames,
+            "text_en": p.row["text_en"], "text_vi": p.row["text"], "doc": p.row["doc"], "seq": int(p.row["seq"]),
+            "text_timing": ALIGNMENT_NAME, "alignment_score": score,
+            "alignment_text": " ".join(spoken for _, spoken in p.groups),
+            "source_row": f"{source}/segments/{name}#r{p.index}",
+        })
+    return {
+        "format": CACHE_FORMAT, "sample_rate": SAMPLE_RATE, "frame_rate": FRAME_RATE,
+        "alignment_min_score": DEFAULT_MIN_ALIGNMENT_SCORE, "max_frames": args.max_frames,
+        "config": {key: int(builder.cfg[key]) for key in CONFIG_KEYS},
+        "source": {"file": f"{source}/segments/{name}", "rows": total_rows},
+        "max_cer": args.max_cer, "samples": samples, "rejected": rejected,
+    }
 
 
 def cache_dir(root: Path, source: str) -> Path:
@@ -533,38 +642,60 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"  # the spawned workers' thread pools, under the box's thread limit (voice.py)
     pushed = {s: time.monotonic() for s in args.sources}
-    with (ThreadPoolExecutor(1) as reads, ThreadPoolExecutor(1) as writes,
+    is_mlx = isinstance(builder.models, MLXModels)
+    with (ThreadPoolExecutor(1) as writes,
           ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool):
         try:
-            ahead = queue(read_shard(args.root, *todo[0], args.max_cer, grams), pool)
-            written: Future | None = None  # the last shard's save, which runs while the next one builds
+            written: Future | None = None
             began, last = time.monotonic(), time.perf_counter()
-            for k, (source, name) in enumerate(todo):
-                shard = ahead
-                # The next shard downloads, reads and is gated in a thread while this one builds.
-                read = reads.submit(read_shard, args.root, *todo[k + 1], args.max_cer, grams) if k + 1 < len(todo) else None
+            if is_mlx:
+                # Streaming per shard: bounded audio memory, no shard-ahead preload.
+                for k, (source, name) in enumerate(todo):
+                    payload = build_shard_mlx(builder, pool, source, name, args, grams)
+                    if written is not None:
+                        written.result()
+                    written = writes.submit(write, payload, cache_dir(args.root, source) / shard_file(name))
+                    now = time.perf_counter()
+                    wall, last = now - last, now
+                    kept = payload["samples"]
+                    hours = sum(s["vi_frames"] + s["en_frames"] for s in kept) / FRAME_RATE / 3600
+                    reasons = collections.Counter(re.sub(r"[\d.]+", "N", r["reason"]).split(":")[0] for r in payload["rejected"])
+                    log(f"{source}/{name}: {len(kept)} of {payload['source']['rows']} rows kept, rejected {dict(reasons)}; "
+                        f"{hours:.2f} h of Mimi audio in {wall:.0f} s ({hours * 3600 / wall:.0f}x RT) [{k + 1}/{len(todo)}]")
+                    last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
+                    if last_of_source or time.monotonic() - pushed[source] > PUSH_S:
+                        written.result()
+                        push_part(args.root, source, "cache")
+                        pushed[source] = time.monotonic()
+            else:
+                # CUDA: shard-ahead preload so the next shard's decodes queue behind this one's alignments.
+                with ThreadPoolExecutor(1) as reads:
+                    ahead = queue(read_shard(args.root, *todo[0], args.max_cer, grams), pool)
+                    for k, (source, name) in enumerate(todo):
+                        shard = ahead
+                        read = reads.submit(read_shard, args.root, *todo[k + 1], args.max_cer, grams) if k + 1 < len(todo) else None
 
-                def load_next() -> None:
-                    nonlocal ahead
-                    if read is not None:
-                        ahead = queue(read.result(), pool)
+                        def load_next() -> None:
+                            nonlocal ahead
+                            if read is not None:
+                                ahead = queue(read.result(), pool)
 
-                payload = builder.build(shard, pool, load_next)
-                if written is not None:
-                    written.result()
-                written = writes.submit(write, payload, cache_dir(args.root, source) / shard_file(name))
-                now = time.perf_counter()
-                wall, last = now - last, now
-                kept = payload["samples"]
-                hours = sum(s["vi_frames"] + s["en_frames"] for s in kept) / FRAME_RATE / 3600
-                reasons = collections.Counter(re.sub(r"[\d.]+", "N", r["reason"]).split(":")[0] for r in payload["rejected"])
-                log(f"{source}/{name}: {len(kept)} of {len(shard.rows)} rows kept, rejected {dict(reasons)}; "
-                    f"{hours:.2f} h of Mimi audio in {wall:.0f} s ({hours * 3600 / wall:.0f}x RT) [{k + 1}/{len(todo)}]")
-                last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
-                if last_of_source or time.monotonic() - pushed[source] > PUSH_S:
-                    written.result()
-                    push_part(args.root, source, "cache")
-                    pushed[source] = time.monotonic()
+                        payload = builder.build(shard, pool, load_next)
+                        if written is not None:
+                            written.result()
+                        written = writes.submit(write, payload, cache_dir(args.root, source) / shard_file(name))
+                        now = time.perf_counter()
+                        wall, last = now - last, now
+                        kept = payload["samples"]
+                        hours = sum(s["vi_frames"] + s["en_frames"] for s in kept) / FRAME_RATE / 3600
+                        reasons = collections.Counter(re.sub(r"[\d.]+", "N", r["reason"]).split(":")[0] for r in payload["rejected"])
+                        log(f"{source}/{name}: {len(kept)} of {len(shard.rows)} rows kept, rejected {dict(reasons)}; "
+                            f"{hours:.2f} h of Mimi audio in {wall:.0f} s ({hours * 3600 / wall:.0f}x RT) [{k + 1}/{len(todo)}]")
+                        last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
+                        if last_of_source or time.monotonic() - pushed[source] > PUSH_S:
+                            written.result()
+                            push_part(args.root, source, "cache")
+                            pushed[source] = time.monotonic()
             log(f"done: {len(todo)} shards in {(time.monotonic() - began) / 3600:.2f} h")
         except BaseException:
             pool.shutdown(wait=False, cancel_futures=True)  # drop the queued decodes rather than run them
