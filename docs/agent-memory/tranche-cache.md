@@ -1,11 +1,11 @@
 # Tranche cache
 
-Read when touching `training/tranche/cache.py`: the CUDA build of the real-Vietnamese tranche's
-grounded caches, its row gates and their thresholds. The tranche and its other steps are in
-[real-vi-tranche](real-vi-tranche.md); the row layout in
+Read when touching `training/tranche/cache.py`: the CUDA and MLX builds of the real-Vietnamese
+tranche's grounded caches, its row gates and their thresholds. The tranche and its other steps are
+in [real-vi-tranche](real-vi-tranche.md); the row layout in
 [sft-data-caches](sft-data-caches.md#row-layout).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Codes and timing](#codes-and-timing) ·
-[Running](#running) · [Scale-up](#scale-up)
+[Running](#running) · [MLX on Mac](#mlx-on-mac) · [Scale-up](#scale-up)
 
 `training/tranche/cache.py build <sources>` (CUDA, the training `.venv`) turns each segments shard
 whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`,
@@ -115,6 +115,32 @@ draws use split `train`.
   use too; from GigaSpeech 2 archive 13 on, every part is local), and the save runs in a thread
   while the next shard builds. A review (2026-11-06) found every local `asr_vi` and `en_audio` the
   size of its Hub copy, hashes equal on all `asr_vi` and 12 sampled `en_audio`.
+
+## MLX on Mac
+
+`--device mlx` builds caches on Apple Silicon when no H100 is running (a box gap, or during the
+27-archive voice step on the new box). Env: system Python (mlx, moshi, sentencepiece, soxr, pyav).
+From the repo root (nice -n 19; never slow the user's gaming Mac):
+
+```
+nice -n 19 python3 -m training.tranche.cache build giga --device mlx --root <dir> --workers 8 \
+  --config-path weights/config.json \
+  --mimi-weight weights/mimi-pytorch-e351c8d8@125.safetensors \
+  --tokenizer weights/tokenizer_spm_48k_multi6_2.model
+```
+
+Speed (M4 Pro 48 GB, 2026-11-09, before optimization): ~130× RT (~24 min per GigaSpeech 2 shard
+of ~50 h Mimi audio). Root cause: whole-shard lazy arrays in flight → ~60 GB peak on a 48 GB Mac →
+swap. Optimization applied: `mx.set_cache_limit(16 GB)` (matches cache_codes' measured 225× at
+16 GB) and windows of 64 rows — CTC + both Mimi queued together per window, workers run Viterbi
+for window k while window k+1 encodes. Target: ~225×. Profile with --limit 2 before each full run.
+
+The 213 voiced GigaSpeech 2 archives had 76 cached after the Japan box; 137 remain. At 225×:
+137 × 50 h / 225 / 3600 × 3600 = 137 × ~13 min ≈ 30 h — too long for overnight.
+At 300×: ~10 min/shard × 137 ≈ 23 h — borderline. Wait for the H100 unless the box takes >3 days.
+
+If both Mac and new box run simultaneously: `--limit` on the Mac (todo_shards lists the Hub once
+at start; both would otherwise build the same shards, wasting work but not corrupting data).
 
 ## Scale-up
 
