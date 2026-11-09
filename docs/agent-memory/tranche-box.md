@@ -6,18 +6,16 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `28709c8` (`cache/ctc-half`).
-83 valid giga archives cached on Hub (3 half-precision shards deleted 2026-11-09: shard_153 was
-Mac MLX float16 with the GroupNorm overflow bug, shard_154 and shard_155 were H200 bfloat16
-benchmark; shard_153 rebuilt float32 on 2026-11-09; 154 and 155 pending full run). Voice running for the remaining 23 (giga 76–99
-excl. 86,98; 74 and 75 and 185 voiced 2026-11-09). Cache benchmark ran on 2 archives: 855× RT
-shard 1, 1 102× cumulative — Hub inputs dominate shard 1, pipeline warms from shard 2. Full cache
-run to use float32 (bfloat16 tested: min per-clip argmax 96.9%, did not pass; MLX float16 not
-revalidated since GroupNorm fix, unvalidated on current code). SFT data: pho caches done (219+5 shards in
-pho/ and pho/pho/), vivoice downloading to vivoice/vivoice/ (needs mv after done), en_speech_sub
-done (150 shards in hibiki-zero/data/cache/en_speech_sub/), validation cache done, eval sets done
-except en-vi-val-noisy (building, downloading OpenSLR 28). Checkpoint downloaded (12 GB). SFT
-benchmark queued once vivoice caches finish and voice+ASR stop.
+**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `8fa8760` (`cache/ctc-half`).
+83 valid giga archives on Hub (3 half-precision shards deleted and shard_153 rebuilt float32
+2026-11-09; 154 and 155 pending full run). Full float32 cache run in progress: 3 shards done
+(154–156), 128 remaining; production speed with voice+ASR sharing GPU: shard 1 545× RT (Triton
+warmup + Hub downloads), shard 2 ~877× (pipeline warmed), ~677× cumulative; ~160–255 s/shard →
+~6–9 h for 128 remaining. Voice running for giga 78–99 excl. 86,98 (74–77 and 185 voiced
+2026-11-09). SFT data: pho (224 shards in pho/ ✓), vivoice (354 shards in vivoice/ ✓,
+mv done), en_speech_sub (150 ✓), validation cache (✓), eval sets all done including
+en-vi-val-noisy (cv27 180 rows, libriheavy 180 rows ✓). Checkpoint downloaded (12 GB ✓). SFT
+starts after voice+ASR stop (~2–3 h remaining).
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
