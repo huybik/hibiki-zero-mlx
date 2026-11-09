@@ -52,9 +52,9 @@ def default_workers(device: str) -> int:
 
 
 class MLXModels:
-    """Mimi (`mimi_mlx`) and wav2vec2 (`wav2vec2_mlx`) in float32 on Apple Silicon: one clip per
-    forward (batching clips gained nothing in MLX), padded to length buckets, so each compiled
-    forward sees few shapes."""
+    """Mimi (`mimi_mlx`) and wav2vec2 (`wav2vec2_mlx`) in float32 on Apple Silicon: clips grouped
+    by bucket length and sub-batched up to MAX_BUCKET_BATCH, so each compiled forward sees few
+    shapes and peak GPU activation stays bounded."""
 
     window = 64  # rows queued on the GPU at once
 
@@ -72,16 +72,16 @@ class MLXModels:
     def encode(
         self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
     ) -> list[tuple[Future, np.ndarray, np.ndarray]]:
-        """Each row's alignment (`align` given its CTC log-probabilities) and Mimi codes. The GPU
-        runs every CTC forward first, then Mimi, so the workers align while it encodes."""
+        """Each row's alignment (`align` given its CTC log-probabilities) and Mimi codes. CTC runs
+        first as one batched pass so the workers align while Mimi encodes both sides."""
         import mlx.core as mx
 
-        log_probs = [self.ctc.log_probs(row.en16) for row in rows]
-        codes = [(self.mimi.encode(row.vi24), self.mimi.encode(row.en24)) for row in rows]
-        mx.async_eval(log_probs)
-        mx.async_eval(codes)
+        log_probs = self.ctc.log_probs_batch([row.en16 for row in rows])
+        vi_lazy = self.mimi.encode_batch([row.vi24 for row in rows])
+        en_lazy = self.mimi.encode_batch([row.en24 for row in rows])
+        mx.eval(*log_probs, *vi_lazy, *en_lazy)
         aligned = [align(row, np.array(lp)) for row, lp in zip(rows, log_probs, strict=True)]
-        return [(a, np.array(vi), np.array(en)) for a, (vi, en) in zip(aligned, codes, strict=True)]
+        return [(a, np.array(vi), np.array(en)) for a, vi, en in zip(aligned, vi_lazy, en_lazy, strict=True)]
 
 
 # --------------------------------------------------------------------------- CUDA

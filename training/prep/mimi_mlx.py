@@ -21,7 +21,8 @@ import numpy as np
 
 SAMPLE_RATE = 24000
 FRAME_SAMPLES = 1920  # one 12.5 Hz code frame
-BUCKET_FRAMES = 16  # pad lengths to a multiple of this so the compiled encoder sees few shapes
+BUCKET_FRAMES = 16   # pad lengths to a multiple of this so the compiled encoder sees few shapes
+MAX_BUCKET_BATCH = 16  # clips per sub-batch; keeps peak Mimi activation < 4 GB on M4 Pro
 RATIOS = (4, 5, 6, 8)  # SEANet strides, first to last (24 kHz -> 25 Hz)
 SEANET_INDICES = ((1, 3), (4, 6), (7, 9), (10, 12))  # (residual block, downsample) in encoder.model
 CONTEXT = 250  # encoder transformer attention window, in 25 Hz frames
@@ -161,3 +162,28 @@ class MimiEncoder:
         padded = np.zeros(math.ceil(len(pcm) / bucket) * bucket, np.float32)
         padded[: len(pcm)] = pcm
         return self._encode(mx.array(padded[None]))[0, :, :frames]
+
+    def encode_batch(self, clips: list[np.ndarray]) -> list[mx.array]:
+        """Encode multiple mono 24 kHz clips; returns lazy int32 codes per clip (same order).
+        Clips are grouped by bucket size and sub-batched at most MAX_BUCKET_BATCH at a time,
+        with each sub-batch padded to the next power of two, bounding both peak activation
+        memory and the number of shapes seen by mx.compile."""
+        bucket = BUCKET_FRAMES * FRAME_SAMPLES
+        frames = [math.ceil(len(c) / FRAME_SAMPLES) for c in clips]
+        bsizes = [math.ceil(len(c) / bucket) * bucket for c in clips]
+        groups: dict[int, list[int]] = {}
+        for i, bsize in enumerate(bsizes):
+            groups.setdefault(bsize, []).append(i)
+        out: list[mx.array | None] = [None] * len(clips)
+        for bsize, indices in groups.items():
+            for start in range(0, len(indices), MAX_BUCKET_BATCH):
+                chunk = indices[start : start + MAX_BUCKET_BATCH]
+                n = len(chunk)
+                pad_n = 1 << max(0, (n - 1).bit_length())  # next power of two ≥ n
+                batch = np.zeros((pad_n, bsize), np.float32)
+                for row, i in enumerate(chunk):
+                    batch[row, : len(clips[i])] = clips[i]
+                encoded = self._encode(mx.array(batch))  # [pad_n, codebooks, bsize//FRAME_SAMPLES]
+                for row, i in enumerate(chunk):
+                    out[i] = encoded[row, :, : frames[i]]
+        return out  # type: ignore[return-value]

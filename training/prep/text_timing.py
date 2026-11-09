@@ -137,7 +137,8 @@ def _ctc_token_frames(
 
 class CTCWordAligner:
     """wav2vec2-base-960h CTC word timing on the CPU: the Viterbi over a clip's log-probabilities,
-    whichever device computed them (`cache_build`: MLX or CUDA)."""
+    whichever runtime computed them (MLX on the Mac, `EnglishCTCAligner`; CUDA on the box,
+    `training.tranche.cache`)."""
 
     def __init__(self, files: Path, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
         """`files`: the pinned snapshot, from `aligner_files`."""
@@ -183,6 +184,30 @@ class CTCWordAligner:
         ):
             raise AlignmentError("CTC alignment produced invalid word spans")
         return Alignment(spans=spans, score=score)
+
+
+class EnglishCTCAligner(CTCWordAligner):
+    """`CTCWordAligner` with the model in MLX: `log_probs` queues the float32 forward
+    (`wav2vec2_mlx`) and `align` runs the Viterbi on its result, so a caller can keep the GPU busy
+    while the CPU aligns. The word spans equal PyTorch CPU float32's on 6,180 of 6,181 words, with
+    the same rejections (measured on mlx-audio's eager model, whose rows this port builds but for
+    float near-ties).
+    """
+
+    def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
+        from training.prep.wav2vec2_mlx import Wav2Vec2CTC
+
+        files = aligner_files()
+        super().__init__(files, min_score)
+        self.model = Wav2Vec2CTC(files / "model.safetensors")
+
+    def log_probs(self, waveform_16khz: np.ndarray) -> Any:
+        """The clip's lazy MLX CTC log-probabilities [frames, vocab]."""
+        return self.model.log_probs(waveform_16khz)
+
+    def log_probs_batch(self, clips: list[np.ndarray]) -> list[Any]:
+        """Lazy CTC log-probs per clip (batched); same order as input."""
+        return self.model.log_probs_batch(clips)
 
 
 def aligner_files() -> Path:

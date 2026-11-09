@@ -5,8 +5,8 @@ so zero padding alone changes its output. This port pads each clip to a multiple
 BUCKET_SAMPLES and masks the padding instead: the first GroupNorm's statistics, the positional
 convolution's input and the attention keys see only the clip's own frames, and the unpadded
 convolutions never reach it. A padded clip therefore gives the log-probabilities of the clip
-alone, up to float rounding, and the compiled forward sees at most ~18 shapes
-(docs/agent-memory/mlx-inference.md#memory). Against mlx-audio 0.6.1's eager model it builds
+alone, up to float rounding, and the compiled forward sees at most 18 × ceil(log2(MAX_BUCKET_BATCH)+1)
+shapes (docs/agent-memory/mlx-inference.md#memory). Against mlx-audio 0.6.1's eager model it builds
 the same cache rows but for float near-ties at CTC: on 2 of ~3,200 rows a word sits 1-2 frames
 apart.
 """
@@ -20,10 +20,10 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from training.prep.text_timing import CTC_CONVS, ctc_frames
-
-KERNELS, STRIDES = zip(*CTC_CONVS, strict=True)  # feature-encoder convolutions, 16 kHz -> 50 Hz
-BUCKET_SAMPLES = 20_480  # 1.28 s at 16 kHz
+KERNELS = (10, 3, 3, 3, 3, 2, 2)  # feature-encoder convolutions, 16 kHz -> 50 Hz
+STRIDES = (5, 2, 2, 2, 2, 2, 2)
+BUCKET_SAMPLES = 20_480    # 1.28 s at 16 kHz
+MAX_BUCKET_BATCH = 16      # clips per sub-batch; keeps peak CTC activation < 2 GB on M4 Pro
 POS_KERNEL = 128
 POS_GROUPS = 16
 NUM_HEADS = 12
@@ -33,7 +33,11 @@ EPS = 1e-5
 
 def _frames(samples: int) -> tuple[int, int]:
     """Frames after the first convolution and after the last, for an unpadded clip."""
-    return (samples - KERNELS[0]) // STRIDES[0] + 1, ctc_frames(samples)
+    counts = []
+    for kernel, stride in zip(KERNELS, STRIDES, strict=True):
+        samples = (samples - kernel) // stride + 1
+        counts.append(samples)
+    return counts[0], counts[-1]
 
 
 class Wav2Vec2CTC:
@@ -84,13 +88,14 @@ class Wav2Vec2CTC:
             )
         self.head = w["lm_head.weight"].T, w["lm_head.bias"]
         mx.eval(self.__dict__)
-        self._forward_compiled = mx.compile(self._forward)
+        self._forward_batch_compiled = mx.compile(self._forward_batch)
 
-    def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
+    def _forward_batch(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
+        """Batched forward: pcm [B, T], first_frames [B] int, frames [B] int."""
         hs = mx.conv1d(pcm[..., None], self.convs[0], stride=STRIDES[0])
-        # GroupNorm with one group per channel, over the clip's own frames only.
-        own = (mx.arange(hs.shape[1]) < first_frames)[None, :, None]
-        count = first_frames.astype(mx.float32)
+        # GroupNorm: mask padding so each clip's stats cover only its own frames.
+        own = (mx.arange(hs.shape[1])[None, :] < first_frames[:, None])[:, :, None]
+        count = first_frames.astype(mx.float32)[:, None, None]
         mean = mx.where(own, hs, 0).sum(axis=1, keepdims=True) / count
         var = mx.where(own, mx.square(hs - mean), 0).sum(axis=1, keepdims=True) / count
         hs = nn.gelu((hs - mean) * mx.rsqrt(var + EPS) * self.group_norm[0] + self.group_norm[1])
@@ -98,15 +103,14 @@ class Wav2Vec2CTC:
             hs = nn.gelu(mx.conv1d(hs, weight, stride=stride))
         hs = mx.fast.layer_norm(hs, *self.projection_norm, EPS) @ self.projection[0]
         hs = hs + self.projection[1]
-        # The positional convolution zero-pads the clip, so the padding frames enter it as zeros.
-        valid = mx.arange(hs.shape[1]) < frames
-        hs = mx.where(valid[None, :, None], hs, 0)
+        valid = mx.arange(hs.shape[1])[None, :] < frames[:, None]
+        hs = mx.where(valid[:, :, None], hs, 0)
         pos = mx.conv1d(hs, self.pos_conv[0], padding=POS_KERNEL // 2, groups=POS_GROUPS)
         hs = hs + nn.gelu(pos[:, :-1] + self.pos_conv[1])
         hs = mx.fast.layer_norm(hs, *self.encoder_norm, EPS)
         batch, steps, dim = hs.shape
         head = dim // NUM_HEADS
-        mask = valid[None, None, None, :]
+        mask = valid[:, None, None, :]
         for p in self.layers:
             qkv = hs @ p["qkv"] + p["qkv_bias"]
             q, k, v = (
@@ -126,16 +130,44 @@ class Wav2Vec2CTC:
         return logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
     def log_probs(self, pcm: np.ndarray) -> mx.array:
-        """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz float32 clip, normalized
-        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`)."""
-        if pcm.ndim != 1:
-            raise ValueError(f"wav2vec2 needs a mono clip, got shape {pcm.shape}")
-        first_frames, frames = _frames(len(pcm))
-        if frames < 1:
-            raise ValueError(f"A {len(pcm)}-sample clip is too short for one wav2vec2 frame")
-        padded = np.zeros(math.ceil(len(pcm) / BUCKET_SAMPLES) * BUCKET_SAMPLES, np.float32)
-        padded[: len(pcm)] = pcm
-        out = self._forward_compiled(
-            mx.array(padded[None]), mx.array(first_frames), mx.array(frames)
-        )
-        return out[0, :frames]
+        """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz clip."""
+        return self.log_probs_batch([pcm])[0]
+
+    def log_probs_batch(self, clips: list[np.ndarray]) -> list[mx.array]:
+        """Lazy CTC log-probs per clip, encoded in bucket-grouped sub-batches for GPU efficiency.
+        Each clip is normalized individually. Sub-batches are capped at MAX_BUCKET_BATCH and
+        padded to the next power of two, bounding both peak activation memory and compiled shapes."""
+        normed: list[np.ndarray] = []
+        clip_first: list[int] = []
+        clip_frames: list[int] = []
+        bsizes: list[int] = []
+        for pcm in clips:
+            pcm = np.asarray(pcm, np.float32)
+            pcm = (pcm - pcm.mean()) / np.sqrt(pcm.var() + 1e-7)
+            normed.append(pcm)
+            ff, fr = _frames(len(pcm))
+            clip_first.append(ff)
+            clip_frames.append(fr)
+            bsizes.append(math.ceil(len(pcm) / BUCKET_SAMPLES) * BUCKET_SAMPLES)
+        groups: dict[int, list[int]] = {}
+        for i, bsize in enumerate(bsizes):
+            groups.setdefault(bsize, []).append(i)
+        out: list[mx.array | None] = [None] * len(clips)
+        for bsize, indices in groups.items():
+            for start in range(0, len(indices), MAX_BUCKET_BATCH):
+                chunk = indices[start : start + MAX_BUCKET_BATCH]
+                n = len(chunk)
+                pad_n = 1 << max(0, (n - 1).bit_length())  # next power of two ≥ n
+                batch = np.zeros((pad_n, bsize), np.float32)
+                ff_arr = np.ones(pad_n, dtype=np.int32)   # padding rows get 1 to avoid /0 in GroupNorm
+                fr_arr = np.ones(pad_n, dtype=np.int32)
+                for row, i in enumerate(chunk):
+                    batch[row, : len(normed[i])] = normed[i]
+                    ff_arr[row] = clip_first[i]
+                    fr_arr[row] = clip_frames[i]
+                logits = self._forward_batch_compiled(
+                    mx.array(batch), mx.array(ff_arr), mx.array(fr_arr)
+                )
+                for row, i in enumerate(chunk):
+                    out[i] = logits[row, : clip_frames[i]]
+        return out  # type: ignore[return-value]
