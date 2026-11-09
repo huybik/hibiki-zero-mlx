@@ -6,14 +6,18 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `0d7a1b8` (`cache/ctc-half`).
-85 giga archives cached on Hub (83 from Japan + 2 from the H200 benchmark). Voice running for the
-remaining 23 (giga 76–99 excl. 86,98; 74 and 75 and 185 voiced 2026-11-09). Cache benchmark ran on
-2 archives: 855× RT shard 1, 1 102× cumulative — Hub inputs dominate shard 1, pipeline warms from
-shard 2. Full cache run to use float32 (bfloat16 tested: min per-clip argmax 96.9%, did not pass).
-SFT data: pho caches done, vivoice 60/354, en_speech_sub 70/150, validation cache done, eval sets
-done except en-vi-val-noisy (building). Checkpoint downloaded (12 GB). SFT benchmark queued once
-vivoice caches finish.
+**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `28709c8` (`cache/ctc-half`).
+82 valid giga archives cached on Hub (3 half-precision shards deleted 2026-11-09: shard_153 was
+Mac MLX float16 with the GroupNorm overflow bug, shard_154 and shard_155 were H200 bfloat16
+benchmark; float32 full run will rebuild them). Voice running for the remaining 23 (giga 76–99
+excl. 86,98; 74 and 75 and 185 voiced 2026-11-09). Cache benchmark ran on 2 archives: 855× RT
+shard 1, 1 102× cumulative — Hub inputs dominate shard 1, pipeline warms from shard 2. Full cache
+run to use float32 (bfloat16 tested: min per-clip argmax 96.9%, did not pass; MLX float16 passed
+at 99.3% and is still used for the Mac MLX path). SFT data: pho caches done (219+5 shards in
+pho/ and pho/pho/), vivoice downloading to vivoice/vivoice/ (needs mv after done), en_speech_sub
+done (150 shards in hibiki-zero/data/cache/en_speech_sub/), validation cache done, eval sets done
+except en-vi-val-noisy (building, downloading OpenSLR 28). Checkpoint downloaded (12 GB). SFT
+benchmark queued once vivoice caches finish and voice+ASR stop.
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
@@ -23,8 +27,8 @@ out for evaluation and never voiced ([giga-heldout](sft-evaluation.md#evaluation
 left. The Hub's `giga/en_audio/` is the record: a voice run lists what is left. Next, on a new
 box: asr, filters (it idles, logging "0 shards to hear"; the watchdog expects it up) and voice for
 the rest (~8.6 min an archive alone on the H100; H200 speed unmeasured), then cache (~8 h for the
-~128 archives left at GigaSpeech 2's current build speed; profile first with `--limit 2 --half-ctc`,
-[tranche-cache](tranche-cache.md#scale-up)), sft and grpo as in [Jobs](#jobs), each optimized before
+~128 archives left at GigaSpeech 2's current build speed; profile first with `--limit 2`
+([tranche-cache](tranche-cache.md#scale-up))), sft and grpo as in [Jobs](#jobs), each optimized before
 its full run (below).
 
 The user's standing decisions for this work (the box's own agent memory does not travel):

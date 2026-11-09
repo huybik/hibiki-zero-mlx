@@ -398,7 +398,7 @@ class Shard:
     texts_en: list[str]
     clips: list[np.ndarray] | None  # the voiced rows' clips at 16 kHz, until encoded
     results: dict = None  # id -> the best attempt so far: {"wer", "broken", "asr", "audio", "duration", "tries"}
-    skipped: set[str] = None  # rows `filters.vi_gate` drops: not voiced, their English columns null
+    skipped: set[str] = None  # rows voice.py skips: those filters.vi_gate drops or missing text_en; not voiced, their English columns null
 
 
 class Checker:
@@ -634,7 +634,7 @@ def run(args: argparse.Namespace) -> None:
         key = f"{shard.source}/{shard.name}"
         write_shard(shard)
         kept = list(shard.results.values())
-        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by the Vietnamese gates, "
+        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by voice.py (Vietnamese gates or missing text_en), "
             f"{sum(x['tries'] for x in kept) / max(len(kept), 1):.2f} tries a row, "
             f"{sum(x['broken'] for x in kept) / max(len(kept), 1):.1%} still broken; overall RTF "
             f"{(time.monotonic() - began) / max(voiced_s, 1):.4f} over {voiced_s / 3600:.1f} h voiced ({attempts} attempts)")

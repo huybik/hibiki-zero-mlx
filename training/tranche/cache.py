@@ -115,7 +115,7 @@ def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
     if reason := vi_gate(row, max_cer):
         return reason
     if row["en_audio"] is None:
-        return "not voiced"  # skipped by voice.py's vi_gate at MAX_CER, here past a looser --max-cer
+        return "not voiced"  # skipped by voice.py: vi_gate at MAX_CER, or missing text_en; also past a looser --max-cer
     if row["en_broken"]:
         return "en_broken"
     if letters := vietnamese_letters(row["en_asr"], row["text_en"]):

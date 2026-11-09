@@ -94,7 +94,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   are equal on all 16 codebooks and every first codebook (65,237 frames of 504 clips); the rest
   are near-ties in the residual codebooks.
 - CTC: `wav2vec2_mlx.Wav2Vec2CTC` in float32 by default; pass `half=True` for float16 weights
-  (~26% faster CTC; `--half-ctc` flag). One clip per forward, then the numpy Viterbi
+  (~16% faster CTC; `--half-ctc` flag). One clip per forward, then the numpy Viterbi
   (`text_timing.CTCWordAligner`) in a worker. The port pads each clip to a multiple of 1.28 s and
   masks the padding (first GroupNorm statistics, positional convolution input, attention keys), so
   it computes the clip alone and compiles over ~18 shapes. It builds the same rows as mlx-audio
@@ -103,7 +103,9 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   on 6,180 of 6,181 words. Float16 GroupNorm statistics must be computed in float32 (not cast to
   hs.dtype): `first_frames` can exceed 65504 for clips > 20.47 s, and sum-of-squares overflows
   for clips > ~8 s; keeping stats in float32 fixes both while retaining ~95% of the speed gain
-  (355× vs 367× on a 13.6 s clip; float32 baseline 305×).
+  (355× vs 367× on a 13.6 s clip; float32 baseline 305×). Quality on vivoice shard
+  `train_00003_of_00354` (831 rows, 2026-10-30): 99.3% of word spans identical to float32,
+  passing the threshold.
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (they align while
   the GPU encodes Mimi), and returns lazy Mimi codes. The *next* window's CTC is queued in
