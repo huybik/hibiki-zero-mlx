@@ -7,9 +7,9 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 ## State
 
 **H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `28709c8` (`cache/ctc-half`).
-82 valid giga archives cached on Hub (3 half-precision shards deleted 2026-11-09: shard_153 was
+83 valid giga archives cached on Hub (3 half-precision shards deleted 2026-11-09: shard_153 was
 Mac MLX float16 with the GroupNorm overflow bug, shard_154 and shard_155 were H200 bfloat16
-benchmark; float32 full run will rebuild them). Voice running for the remaining 23 (giga 76–99
+benchmark; shard_153 rebuilt float32 on 2026-11-09; 154 and 155 pending full run). Voice running for the remaining 23 (giga 76–99
 excl. 86,98; 74 and 75 and 185 voiced 2026-11-09). Cache benchmark ran on 2 archives: 855× RT
 shard 1, 1 102× cumulative — Hub inputs dominate shard 1, pipeline warms from shard 2. Full cache
 run to use float32 (bfloat16 tested: min per-clip argmax 96.9%, did not pass; MLX float16 not
