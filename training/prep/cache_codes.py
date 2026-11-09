@@ -1,16 +1,13 @@
 #!/usr/bin/env python
-"""Cache the EN-VI speech dataset as grounded Mimi code shards for SFT, on Apple Silicon.
+"""Cache the EN-VI speech dataset as grounded Mimi code shards for SFT.
 
 Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard_<name>.pt`.
 A row is
 [33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
 fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. Rows whose clips
 exceed --max-frames, or whose English text fails CTC alignment, are rejected and listed with their
-reason.
-
-Worker processes decode the Opus/MP3 bytes (PyAV) and resample them (soxr); the main process runs
-wav2vec2 CTC and the Mimi encoder in MLX on the GPU, and the CTC Viterbi on the CPU while the GPU
-encodes.
+reason. The build itself (decode, gates, wav2vec2 CTC and Mimi on --device, the Viterbi) is
+`cache_build`'s, shared with the tranche's builder.
 
 Source shards go top down in path order, or bottom up with --bottom-up on a second machine;
 `publish_caches --follow` beside each run commits the shards to the cache repo and brings in those
@@ -20,53 +17,22 @@ the other machine built, which the run then skips, so the two meet in between.
 from __future__ import annotations
 
 import argparse
-import collections
 import math
-import os
-import re
 import time
-from concurrent.futures import Future, ProcessPoolExecutor
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault(
-    "ARROW_DEFAULT_MEMORY_POOL", "system"
-)  # mimalloc keeps freed buffers on macOS
-
-import mlx.core as mx  # noqa: E402
-import numpy as np  # noqa: E402
-import pyarrow.parquet as pq  # noqa: E402
-import soxr  # noqa: E402
-import torch  # noqa: E402
-
-from training.paths import (  # noqa: E402
-    CACHE_FORMAT,
+from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_TOKENIZER,
-    durable,
     exclusive,
-    read_json,
     require_dir,
-    require_file,
 )
-from training.prep.audio import Rejected, decode  # noqa: E402
-from training.prep.cache_rows import (  # noqa: E402
-    CONFIG_KEYS,
-    FRAME_RATE,
-    assemble_codes,
-    target_delay_s,
-)
-from training.prep.mimi_mlx import FRAME_SAMPLES, SAMPLE_RATE, MimiEncoder  # noqa: E402
-from training.prep.text_timing import (  # noqa: E402
-    ALIGNMENT_NAME,
-    AlignmentError,
-    EnglishCTCAligner,
-    sentencepiece_groups,
-    timed_sentencepiece_tokens,
-)
+from training.prep.cache_build import DEVICES, Builder, default_workers, summary
+from training.prep.cache_rows import Settings, Shard, mimi_hours, write
 
-CTC_RATE = 16_000
 DATASET_DIR = Path("/Volumes/data/datasets/en_vi_speech")
 COLUMNS = [
     "id",
@@ -78,11 +44,6 @@ COLUMNS = [
     "vi_duration_s",
     "cross_lingual_timbre_matched",
 ]
-PREFETCH = 64  # rows decoded ahead of the GPU (~5 MB each)
-# Freed MLX buffers kept for reuse across the ~36 bucketed shapes of Mimi and wav2vec2; on
-# libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
-MLX_CACHE_BYTES = 16 << 30
-DURATION_TOLERANCE_S = 0.02  # healthy clips decode exactly to their stored duration
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +63,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Build the source shards in reverse path order, as the second machine does.",
     )
+    parser.add_argument("--device", choices=DEVICES, default="mlx")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
@@ -119,7 +81,9 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Reject rows below this mean forced-alignment posterior.",
     )
-    parser.add_argument("--workers", type=int, default=2, help="Audio decode processes.")
+    parser.add_argument(
+        "--workers", type=int, help="Decode and alignment processes (default: the device's)."
+    )
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
     args = parser.parse_args()
     if args.max_frames <= 0:
@@ -129,163 +93,31 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def prepare(vi_audio: bytes, en_audio: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Worker: both clips at 24 kHz for Mimi, and the English clip at 16 kHz for CTC."""
-    vi, vi_rate = decode(vi_audio)
-    en, en_rate = decode(en_audio)
-    return (
-        soxr.resample(vi, vi_rate, SAMPLE_RATE),
-        soxr.resample(en, en_rate, SAMPLE_RATE),
-        soxr.resample(en, en_rate, CTC_RATE),
-    )
+def read(source: Path) -> Shard:
+    """The source shard's rows, all kept: this dataset has no gates of its own."""
+    import pyarrow.parquet as pq
 
-
-class Cacher:
-    """GPU side of the build: gates, CTC timing and Mimi codes for one source shard at a time."""
-
-    def __init__(self, args: argparse.Namespace, cfg: dict[str, Any]):
-        import sentencepiece
-
-        self.args = args
-        self.cfg = cfg
-        self.tokenizer = sentencepiece.SentencePieceProcessor(
-            str(require_file(args.tokenizer, "text tokenizer"))
+    split = source.parent.name
+    rows = pq.read_table(source, columns=COLUMNS).to_pylist()
+    kept: list[tuple[int, dict[str, Any]]] = [
+        (
+            index,
+            {
+                "id": row["id"],
+                "text_en": row["text_en"],
+                "vi_duration_s": row["vi_duration_s"],
+                "en_duration_s": row["en_duration_s"],
+                "vi_audio": row["vi_audio"]["bytes"],
+                "en_audio": row["en_audio"]["bytes"],
+                "fields": {
+                    "text_vi": row["text_vi"],
+                    "cross_lingual_timbre_matched": row["cross_lingual_timbre_matched"],
+                },
+            },
         )
-        self.eos_id = int(self.tokenizer.eos_id())
-        self.aligner = EnglishCTCAligner(args.min_alignment_score)
-        num_codebooks = max(int(cfg["dep_q"]), int(cfg["n_q"]) - int(cfg["dep_q"]))
-        self.mimi = MimiEncoder(require_file(args.mimi_weight, "Mimi weight"), num_codebooks)
-        if self.mimi.cardinality != int(cfg["card"]):
-            raise RuntimeError(
-                f"Config card={cfg['card']} != Mimi cardinality {self.mimi.cardinality}"
-            )
-
-    def row(
-        self, split: str, row: dict[str, Any], vi24: np.ndarray, en24: np.ndarray, en16: np.ndarray
-    ) -> dict[str, Any]:
-        """One cache sample; raises Rejected or AlignmentError to reject the row."""
-        args = self.args
-        for side, pcm, stored in (
-            ("vi", vi24, row["vi_duration_s"]),
-            ("en", en24, row["en_duration_s"]),
-        ):
-            # PyAV decodes a truncated or damaged clip without error, only shorter.
-            seconds = len(pcm) / SAMPLE_RATE
-            if abs(seconds - stored) > DURATION_TOLERANCE_S:
-                raise Rejected(
-                    f"{side} audio decodes to {seconds:.2f} s, the row says {stored:.2f} s"
-                )
-        vi_frames = math.ceil(len(vi24) / FRAME_SAMPLES)
-        # Text EOS sits at en_frames, codec EOS at vi_frames.
-        frames = max(math.ceil(len(en24) / FRAME_SAMPLES), vi_frames) + 1
-        if frames > args.max_frames:
-            raise Rejected(f"{frames} frames exceed --max-frames {args.max_frames}")
-        # The delay is drawn within the room the English clip leaves under the cap, so a long clip
-        # gets a shorter delay instead of being rejected. vi_duration_s is float32 holding a
-        # multiple of 0.01; round to the decimal it stores.
-        room_s = ((args.max_frames - 1) * FRAME_SAMPLES - len(en24)) / SAMPLE_RATE
-        max_delay_s = min(args.target_delay_ratio * round(row["vi_duration_s"], 2), room_s)
-        delay_s = target_delay_s(row["id"], split, max_delay_s, args.seed)
-        pad = int(round(delay_s * SAMPLE_RATE))
-        delay_frames = int(round(delay_s * FRAME_RATE))
-        en_frames = math.ceil((pad + len(en24)) / FRAME_SAMPLES)
-        lead, groups = sentencepiece_groups(row["text_en"], self.tokenizer)
-        # Queue the CTC forward, then both Mimi encodes: the GPU encodes while the CPU aligns.
-        log_probs = self.aligner.log_probs(en16)
-        vi_codes = self.mimi.encode(vi24)
-        en_codes = self.mimi.encode(np.concatenate([np.zeros(pad, np.float32), en24]))
-        mx.async_eval(log_probs)
-        mx.async_eval(vi_codes, en_codes)
-        alignment = self.aligner.align(np.array(log_probs), groups)
-        tokens, text_frames = timed_sentencepiece_tokens(
-            lead, groups, alignment, en_frames - delay_frames, delay_frames, self.eos_id
-        )
-        codes = assemble_codes(
-            row["id"], np.array(vi_codes), np.array(en_codes), tokens, text_frames, self.cfg
-        )
-        return {
-            "id": row["id"],
-            "split": split,
-            "codes": codes,
-            "frames": int(codes.shape[1]),
-            "vi_frames": vi_frames,
-            "en_frames": en_frames,
-            "text_tokens": len(tokens),
-            "target_delay_s": delay_s,
-            "target_delay_frames": delay_frames,
-            "text_en": row["text_en"],
-            "text_vi": row["text_vi"],
-            "cross_lingual_timbre_matched": row["cross_lingual_timbre_matched"],
-            "text_timing": ALIGNMENT_NAME,
-            "alignment_score": alignment.score,
-            "alignment_text": " ".join(spoken for _, spoken in groups),
-        }
-
-    def shard(self, pool: ProcessPoolExecutor, source: Path, out_path: Path) -> None:
-        split = source.parent.name
-        source_bytes = source.stat().st_size
-        parquet = pq.ParquetFile(source)
-        rows = (
-            row
-            for group in range(parquet.num_row_groups)
-            for row in parquet.read_row_group(group, columns=COLUMNS).to_pylist()
-        )
-        pending: collections.deque[tuple[int, dict[str, Any], Future]] = collections.deque()
-        samples: list[dict[str, Any]] = []
-        rejected: list[dict[str, Any]] = []
-        audio_s = 0.0
-        started = time.perf_counter()
-        for index, row in enumerate(rows):
-            job = pool.submit(prepare, row["vi_audio"]["bytes"], row["en_audio"]["bytes"])
-            pending.append((index, row, job))
-            row["vi_audio"] = row["en_audio"] = None
-            if len(pending) < PREFETCH:
-                continue
-            audio_s += self._take(pending.popleft(), split, source, samples, rejected)
-        while pending:
-            audio_s += self._take(pending.popleft(), split, source, samples, rejected)
-
-        payload = {
-            "format": CACHE_FORMAT,
-            "sample_rate": SAMPLE_RATE,
-            "frame_rate": FRAME_RATE,
-            "alignment_min_score": self.args.min_alignment_score,
-            "max_frames": self.args.max_frames,
-            "config": {key: int(self.cfg[key]) for key in CONFIG_KEYS},
-            "source": {"file": f"data/{split}/{source.name}", "bytes": source_bytes},
-            "samples": samples,
-            "rejected": rejected,
-        }
-        tmp = out_path.with_name(out_path.name + ".tmp")
-        torch.save(payload, tmp)
-        durable(tmp)
-        tmp.replace(out_path)
-        durable(out_path.parent)
-        wall = time.perf_counter() - started
-        reasons = collections.Counter(
-            re.sub(r"[\d.]+", "N", item["reason"])[:60] for item in rejected
-        )
-        print(
-            f"{split}/{out_path.name}: {len(samples)} kept, "
-            f"{len(rejected)} rejected {dict(reasons)}; "
-            f"{audio_s / 3600:.2f} h encoded in {wall:.0f} s ({audio_s / wall:.0f}x RT)",
-            flush=True,
-        )
-
-    def _take(self, item, split, source, samples, rejected) -> float:
-        index, row, future = item
-        try:
-            vi24, en24, en16 = future.result()
-            sample = self.row(split, row, vi24, en24, en16)
-        except (Rejected, AlignmentError) as exc:
-            # Only data faults reject a row. Anything else (a dead worker's BrokenProcessPool, an
-            # MLX error) stops the run before the shard is written, so a rerun rebuilds it.
-            rejected.append({"id": row["id"], "reason": f"{type(exc).__name__}: {exc}"})
-            return 0.0
-        sample["codes"] = torch.from_numpy(sample["codes"])
-        sample["source_row"] = f"data/{split}/{source.name}#r{index}"
-        samples.append(sample)
-        return (sample["vi_frames"] + sample["en_frames"]) * FRAME_SAMPLES / SAMPLE_RATE
+        for index, row in enumerate(rows)
+    ]
+    return Shard(source, f"data/{split}/{source.name}", split, len(rows), kept, [])
 
 
 def source_shards(dataset_dir: Path, patterns: list[str]) -> list[Path]:
@@ -304,25 +136,31 @@ def cache_path(out_dir: Path, source: Path) -> Path:
     return out_dir / source.parent.name / f"shard_{source.stem}.pt"
 
 
+def todo(args: argparse.Namespace, sources: list[Path]) -> Iterator[Path]:
+    """The sources without a cache shard, checked as each is read (one shard ahead of the build),
+    so a shard publish_caches brought in meanwhile is skipped."""
+    for source in sources[::-1] if args.bottom_up else sources:
+        if cache_path(args.out_dir, source).exists() and not args.overwrite:
+            print(f"Skipping existing {cache_path(args.out_dir, source)}", flush=True)
+            continue
+        yield source
+
+
 def main() -> None:
     args = parse_args()
     sources = source_shards(args.dataset_dir, args.shards)
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    busy = f"another cache_codes run is using {args.out_dir}"
-    mx.set_cache_limit(MLX_CACHE_BYTES)
-    cacher = Cacher(args, read_json(args.config_path))
-    with (
-        exclusive(args.out_dir / ".cache_codes.lock", busy),
-        ProcessPoolExecutor(args.workers) as pool,
-    ):
-        for source in sources[::-1] if args.bottom_up else sources:
-            # Checked as each shard starts, so a shard publish_caches brought in meanwhile is skipped.
-            out_path = cache_path(args.out_dir, source)
-            if out_path.exists() and not args.overwrite:
-                print(f"Skipping existing {out_path}", flush=True)
-                continue
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            cacher.shard(pool, source, out_path)
+    settings = Settings(args.max_frames, args.min_alignment_score, args.target_delay_ratio, args.seed)
+    with exclusive(args.out_dir / ".cache_codes.lock", f"another cache_codes run is using {args.out_dir}"):
+        builder = Builder(args.device, settings, args.config_path, args.mimi_weight, args.tokenizer)
+        began, hours = time.perf_counter(), 0.0
+        workers = args.workers or default_workers(args.device)
+        for shard in builder.run(todo(args, sources), read, workers):
+            out_path = cache_path(args.out_dir, shard.key)
+            write(builder.payload(shard, {"file": shard.file, "bytes": shard.key.stat().st_size}), out_path)
+            hours += mimi_hours(shard.samples)
+            line = summary(shard, hours, time.perf_counter() - began)
+            print(f"{shard.split}/{out_path.name}: {line}", flush=True)
 
 
 if __name__ == "__main__":

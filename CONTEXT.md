@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-08
+Last verified: 2026-11-09
 
 ## Purpose
 
@@ -21,7 +21,8 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi from prep/translate_en_speech)
     ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload ─► HF common-vi-en
-    ─► prep/cache_codes (MLX; Mac top down, a second machine bottom up) ─► <out-dir>/{train,validation}
+    ─► prep/cache_codes (on prep/cache_build, MLX or CUDA; Mac top down, a second machine bottom up)
+         ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
     ─► prep/mimi_cache_cuda (CUDA, the pod: Vietnamese source re-encoded under prep/augment) ─► *-noisy
     ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
@@ -36,11 +37,12 @@ inference/ (Apple Silicon, MLX)
   vendored `moshi-mlx/`, `tools/`, `assets/leon.wav`, the `macos/` test app and `swift/`, the
   native MLX Swift runtime with its iOS benchmark app.
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
-  Vietnamese translation of its English text, the Vietnamese TTS in MLX and the grounded cache
-  builder in MLX, the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
+  Vietnamese translation of its English text, the Vietnamese TTS in MLX, the grounded cache build
+  every cache builder shares (`cache_build`, MLX or CUDA) and the EN-VI dataset's builder on it,
+  the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
   and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: the English
   TTS bake-off, the ASR check, each model in its own uv env, the ingest of the corpora's
-  segments to the tranche repos, their translation, the English TTS, the row filters and the CUDA cache build) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
+  segments to the tranche repos, their translation, the English TTS, the row filters and its cache builder) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
   CPUs). Its modules run from the repo root as
   `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
   publisher, the cache builder, the evaluation-set builder and the tokenizer swap runs on CUDA only.
@@ -94,11 +96,17 @@ inference/ (Apple Silicon, MLX)
   in `/sys/fs/cgroup/cpu.max`, not `nproc`; `h100.sh cpus` makes new shells follow it); compare variants on the same rows. The user's rule
   since the first noisy encode ran ~3 h with its GPU idle half the time →
   [noisy-source](docs/agent-memory/noisy-source.md#speed),
-  [sft-data-caches](docs/agent-memory/sft-data-caches.md#speed).
+  [cache-build](docs/agent-memory/cache-build.md#speed-on-the-mac).
   Optimize every job heavily before its full run, not during it: each job's levers differ, so
   profile where its own time goes and judge changes by its throughput per GPU-hour beside the box's
   other jobs; a busy GPU is no proof (voicing read ~94% busy while mid-run changes still sped it
   up; user, 2026-11-08: "we didn't optimize voicing enough and wasted lot's of time and money").
+- One implementation per job: every grounded cache runs Mimi and wav2vec2 through
+  `training/prep/cache_build.py` (MLX or CUDA); a builder only reads and gates its rows →
+  [cache-build](docs/agent-memory/cache-build.md). Before adding a device, model or speed lever
+  anywhere, search for where that model or job already runs (`MimiEncoder`, `get_mimi`,
+  `Wav2Vec2`), read it and its note, and extend it (2026-11-09: a second MLX path missed
+  `cache_codes`' measured levers).
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
   and OpenRouter keys) →
   [environment](docs/agent-memory/environment.md).
@@ -143,12 +151,13 @@ inference/ (Apple Silicon, MLX)
 | Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |
 | The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off, the translation and the cache |
 | The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
-| The tranche's CUDA cache build: row gates and their thresholds, CTC and Mimi on CUDA, running it | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
+| The tranche's caches: its row gates and their thresholds, running the build on the box or the Mac | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
 | The tranche's English voice-cloning TTS: candidates, bake-off, scores, tuning | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/bakeoff.py`, `training/tranche/voice.py`, `training/tranche/envs.sh` |
 | The tranche's jobs on a rented box: bring-up, job order, the restart/watchdog/pause scripts, round 4's inputs | [tranche-box](docs/agent-memory/tranche-box.md) | `training/tranche/box/` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
 | Vietnamese tokenizer swap for two-way text: build, English check, embedding init map | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
-| Grounded Mimi caches, their publishing, the MLX Mimi encoder and wav2vec2, CTC timing | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/audio.py`, `training/prep/publish_caches.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/paths.py` |
+| Every grounded cache build: rows, gates, Mimi and wav2vec2 on MLX or CUDA, each device's speed; Mimi or wav2vec2 run anywhere | [cache-build](docs/agent-memory/cache-build.md) | `training/prep/cache_build.py`, `training/prep/cache_rows.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/prep/audio.py` |
+| The EN-VI dataset's caches, their builds and publishing, the PhoMT cache, the row layout | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
@@ -186,6 +195,8 @@ CLAUDE.md (imports this file)
   owner per fact, and keep no history.
 - Update the owning note in the same commit as the change. Knowledge with no owner gets a new
   note, added to the Topic Index.
+- A note owns a job, not a file: when two modules do the same job (run a model, build a cache),
+  one note owns it and lists every path that does it, so whoever opens either file is sent there.
 - Change this file only when orientation, an invariant or the index changes, and update
   `Last verified` when you do.
 - Keep this file under ~1,500 words and each note under 300 lines. Split a subject into a new note

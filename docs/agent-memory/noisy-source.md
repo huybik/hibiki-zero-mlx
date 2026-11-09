@@ -79,7 +79,8 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
     wrong here ([Checks](#checks));
   - the clip goes under `Bank.draw(f"{seed}:{id}")`, stored as `source_conditions` (None for a
     clean row);
-  - Mimi (moshi's, float32, TF32 off) encodes the clips shortest first, in right-padded batches
+  - Mimi (moshi's, float32, TF32 off: the cache build's `cuda_mimi` and `mimi_batch`,
+    [cache-build](cache-build.md#cuda)) encodes the clips shortest first, in right-padded batches
     of up to `--batch-seconds` (640) of padded audio;
   - the codes replace rows 17–32 up to `vi_frames`.
 

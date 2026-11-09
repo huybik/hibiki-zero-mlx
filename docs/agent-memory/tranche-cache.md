@@ -1,17 +1,19 @@
 # Tranche cache
 
-Read when touching `training/tranche/cache.py`: the CUDA and MLX builds of the real-Vietnamese
-tranche's grounded caches, its row gates and their thresholds. The tranche and its other steps are
-in [real-vi-tranche](real-vi-tranche.md); the row layout in
+Read when touching `training/tranche/cache.py`: the real-Vietnamese tranche's grounded caches, its
+row gates and their thresholds, and running the build on the box (CUDA) or the Mac (MLX). The
+build itself, on either device, and what its speed depends on are in [cache-build](cache-build.md);
+the tranche and its other steps in [real-vi-tranche](real-vi-tranche.md); the row layout in
 [sft-data-caches](sft-data-caches.md#row-layout).
-Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Codes and timing](#codes-and-timing) ·
-[Running](#running) · [MLX on Mac](#mlx-on-mac) · [Scale-up](#scale-up)
+Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Running](#running) · [Scale-up](#scale-up)
 
-`training/tranche/cache.py build <sources>` (CUDA, the training `.venv`) turns each segments shard
-whose `text_en`, `en_audio` and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`,
-pushed to `<source>/` of the cache repo (`ingest.CACHE_REPO`), in `cache_codes`'s format ([sft-data-caches](sft-data-caches.md#row-layout)),
-one cache per source (see [Decision](real-vi-tranche.md#decision)). A sample also holds `doc` and
-`seq`, so the trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
+`training/tranche/cache.py build <sources>` turns each segments shard whose `text_en`, `en_audio`
+and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`, pushed to `<source>/`
+of the cache repo (`ingest.CACHE_REPO`), one cache per source (see
+[Decision](real-vi-tranche.md#decision)). Its `read_shard` fetches a shard's four parts (the box's
+own copies first, `ingest.part_file`), joins them by id and applies the gates below; the shared
+build does the rest ([cache-build](cache-build.md#shape)). A sample also holds `text_vi`, `doc`
+and `seq`, so the trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
 draws use split `train`.
 
 ## Gates
@@ -20,8 +22,8 @@ draws use split `train`.
   Vietnamese; when its CER is over `--max-cer`; when the ASR hears more nghìn/triệu/tỷ than the
   transcript holds (these three are `filters.vi_gate`); when it was not voiced; when `en_broken`;
   when `en_asr` has Vietnamese letters `text_en` lacks; when it overlaps an evaluation sentence;
-  then on `cache_codes`'s own gates (decoded duration, frame cap, CTC alignment score 0.5, token
-  timing). The Vietnamese side comes first since 2026-11-07, when voice.py began skipping the
+  then on the build's own gates (decoded duration, frame cap, CTC alignment score 0.5, token
+  timing; [cache-build](cache-build.md#rows)). The Vietnamese side comes first since 2026-11-07, when voice.py began skipping the
   rows `vi_gate` drops at the default 0.15 (null `en_audio`); shards built before then counted
   rows failing both sides as `en_broken` or "Vietnamese letters". A looser `--max-cer` turns those rows into "not voiced".
 - `--max-cer` 0.15 for every source (2026-11-06), from the CER of the first shards:
@@ -73,22 +75,19 @@ draws use split `train`.
   otherwise ("Tào Chí Viễn" for "Tào Trí Viễn"). Comparing words with their diacritics folded
   would keep 27 more (0.26%), not worth a second rule.
 
-## Codes and timing
-
-- CTC: transformers' wav2vec2-base-960h in float32 over padded batches, the first GroupNorm's
-  statistics taken over each clip's own frames and the encoder given the attention mask, as
-  `wav2vec2_mlx` masks. On CPU, 8 clips of a shard batched against each alone keep every argmax,
-  their log-probabilities within 2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards
-  differ by 3.1e-3); Mimi's batched codes equal the clip-alone ones on all 16 codebooks (moshi's
-  Mimi is causal). Mimi as in `mimi_cache_cuda` (float32, TF32 off, 640 s batches). The Viterbi
-  runs in the decode workers while Mimi encodes; the next shard is downloaded, read and gated in
-  a thread, and its clips decode in the workers behind this shard's alignments.
-
 ## Running
 
-- Needs `data/eval` (on the box `.venv/bin/python -m training.prep.eval_sets --sets fleurs
+- On the box: `restart.sh cache` ([tranche-box](tranche-box.md)), which runs
+  `.venv/bin/python -m training.tranche.cache build pho vivoice giga` (`--device cuda`, the
+  default). Needs `data/eval` (`.venv/bin/python -m training.prep.eval_sets --sets fleurs
   multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
   server on the GPU, ~1.3 GB of it is free, so the build runs after them.
+- On the Mac, when no box runs: from the repo root with `HF_TOKEN_AN` in the environment,
+  `nice -n 19 python -m training.tranche.cache build giga --device mlx --root <dir> --limit <n>`
+  (system Python: mlx, moshi, sentencepiece, soxr, PyAV). Its parts come from the Hub into the HF
+  cache on `/Volumes/data`; the caches go to `<root>/cache/` and the cache repo. Give it `--limit`
+  when the box builds too: each run lists the Hub once at its start, so both would build the same
+  shards (wasted work, not corrupt data). Size a night's `--limit` from a profiled shard.
 - Checked end to end on the box (2026-11-06, after the TTS and the ASR server), into a scratch
   `--root` with the push stubbed: PhoAudiobook shards 0–1, viVoice 0, GigaSpeech 2 0. Every
   PhoAudiobook row (2,572) has the trainer's layout (`T = max(en, vi) + 1`, one text EOS at
@@ -96,90 +95,36 @@ draws use split `train`.
   24 rows, shapes, text rows and delays are identical, alignment scores within 0.0021, and
   0.0074% of audio codes differ (Mimi's float32 on CPU against CUDA). `streams` packs the shards
   and plans streams that keep a doc's rows in order: of adjacent pieces, 1,883 are the next `seq`,
-  18 skip a dropped row, 61 change doc. transformers reports `wav2vec2.masked_spec_embed` as
-  missing from the checkpoint: it only masks in training, so the CTC is unaffected.
+  18 skip a dropped row, 61 change doc. The MLX build of a viVoice shard matches the box's
+  ([cache-build](cache-build.md#across-devices)).
 - Kept: PhoAudiobook 99.0%, viVoice 96.6%, GigaSpeech 2 83.0% (of its shard 0: `en_broken`
   10.4%, CER 2.7%, Vietnamese letters 2.1%, magnitudes 1.3%, alignment 0.4%, language and frame
   cap 0.06%). GigaSpeech 2's broken English is in [tranche-tts](tranche-tts.md).
-- Speed: a warm PhoAudiobook shard (1,299 rows, 9.6 h of Mimi audio, Vietnamese and English) in
-  21 s, 1,609× real time, the GPU 74–100% busy; a GigaSpeech 2 shard (19,967 rows, 49.9 h) in
-  161 s with the model load, the GPU idle its first ~60 s while the clips decode and 85–95% busy
-  after (the build reads and decodes the next shard behind the current one). ~49 GB of GPU at
-  its peak. ~2.6 h for the tranche.
-- In the full build (2026-11-06) viVoice ran ~1,000–1,170× with the GPU idle 34% of the time:
-  two gaps a shard, 2.4–4.2 s after the CTC while `load_next` waited for the next shard's read,
-  and 0.6–1.6 s for the save. The read was the Hub download: ~4 MB/s on the box, 10–18 s for a
-  viVoice shard's 60 MB (mostly `en_audio`) against ~8 s of GPU work, and parallel downloads got
-  no more (one stream; 8 at once reached ~30 MB/s later the same day). `fetch` now takes each
-  part's copy under `--root` where the box has one (`ingest.part_file`, which voice and filters
-  use too; from GigaSpeech 2 archive 13 on, every part is local), and the save runs in a thread
-  while the next shard builds. A review (2026-11-06) found every local `asr_vi` and `en_audio` the
-  size of its Hub copy, hashes equal on all `asr_vi` and 12 sampled `en_audio`.
-
-## MLX on Mac
-
-`--device mlx` builds caches on Apple Silicon when no H100 is running (a box gap, or during the
-27-archive voice step on the new box). Env: system Python (mlx, moshi, sentencepiece, soxr, pyav).
-From the repo root (nice -n 19; never slow the user's gaming Mac):
-
-```
-nice -n 19 python3 -m training.tranche.cache build giga --device mlx --root <dir> --workers 8 \
-  --config-path weights/config.json \
-  --mimi-weight weights/mimi-pytorch-e351c8d8@125.safetensors \
-  --tokenizer weights/tokenizer_spm_48k_multi6_2.model
-```
-
-Speed (M4 Pro 48 GB, 2026-11-09): 189× RT steady-state (shard 2 onward); shard 1 pays ~226 s for
-`mx.compile` to cache batch shapes (amortized to <0.2% over 133 shards). After optimization,
-encode = 99% of wall time; drain < 1% (GPU is the bottleneck). Profiled window=128 (179× RT)
-— M4 Pro doesn't gain from larger tiles; window=64 kept.
-Memory design (streaming fix, 2026-11-09): `build_shard_mlx()` streams rows from the 4 parquet
-parts PREFETCH=64 at a time via pyarrow `iter_batches` (audio metadata read once, audio bytes
-streamed batch by batch); at most PREFETCH=64 decode futures outstanding; each MLX_WINDOW=64
-encode frees vi24/en24/en16 immediately after. Batch optimization (2026-11-09, PR #87): clips
-in each window are bucketed by padded length and encoded in one batched Mimi + CTC forward pass
-per bucket group, replacing ~192 serial lazy evals per window with 2–3 calls. Peak: ~15 MB
-streaming batch + ~30 MB pool queue + ~224 MB decode buffer + ~144 MB Mimi codes + 16 GB MLX
-freed cache + ~9 GB system/models ≈ 26 GB (down from 41+ GB OOM). `mx.set_cache_limit` keeps
-freed Metal buffers for shape reuse.
-
-The 213 voiced GigaSpeech 2 archives had 82 cached after the Japan box + this session; 131 remain
-(104 buildable now; 27 waiting for voice input).
-At 189×: 131 × 50 h / 189 / 3600 ≈ 10 h — feasible overnight. Profile with --limit 2 before the
-full run.
-
-If both Mac and new box run simultaneously: `--limit` on the Mac (todo_shards lists the Hub once
-at start; both would otherwise build the same shards, wasting work but not corrupting data).
+- The first full build took ~2.6 h of GPU for the tranche ([cache-build](cache-build.md#speed-on-cuda)
+  has its speeds). In it (2026-11-06) viVoice ran ~1,000–1,170× with the GPU idle 34% of the time,
+  mostly waiting on the next shard's Hub download (~4 MB/s on the box, 10–18 s for a viVoice
+  shard's 60 MB against ~8 s of GPU work; parallel downloads got no more). `read_shard` now takes
+  each part's copy under `--root` where the box has one (`ingest.part_file`, which voice and
+  filters use too; from GigaSpeech 2 archive 13 on, every part is local); after that fix viVoice
+  ran ~1,300–1,400×, the GPU idle 17%, mostly at each shard's start. A review (2026-11-06) found
+  every local `asr_vi` and `en_audio` the size of its Hub copy, hashes equal on all `asr_vi` and
+  12 sampled `en_audio`.
 
 ## Scale-up
 
 Before building a larger tranche (the plan's ~10k h: more GigaSpeech 2 and YODAS), optimize the
 build first (user, 2026-11-06): at the first tranche's speed, ~1,100–1,600× on the Mimi audio
 (both clips, ~2.1× the Vietnamese hours), 10k h of source takes ~13–19 h of GPU. Not done yet:
-GigaSpeech 2's 76 archives built at 830× on average (222 s an archive of ~50 h of Mimi audio;
-110–292 s, 695–1,510×; 2026-11-06/07), so its ~164 archives left take ~10 h; optimize it heavily before
-the rest builds, on the next box (user, 2026-11-08: "we can optimize cache build later", then
-"heavy optimize everything before full run"). In order:
+GigaSpeech 2's first 76 archives built at 830× on average (222 s an archive of ~50 h of Mimi audio;
+110–292 s, 695–1,510×; 2026-11-06/07). 78 are cached (2026-11-09) and 135 of the voiced ones
+remain, ~8 h at that speed; optimize it heavily before the rest builds, on the next box (user, 2026-11-08: "we can optimize cache build later",
+then "heavy optimize everything before full run"). In order:
 
 - Keep the inputs on local disk, or download them with `HF_HUB_DISABLE_XET=1`: through Xet the box's
   Hub downloads ran ~4 MB/s (plain HTTP: 143 MB/s with 8 at once, 2026-11-06), and parallel Xet downloads got
   no more, so a build that downloads starves the GPU. Run the TTS and the ASR on the box that
   builds (their outputs stay under `--root`), or move the parts there well before the build.
-- Measure where the GPU time goes, Mimi against wav2vec2 (never split yet), with `nvidia-smi`
-  every 0.2 s and the gaps lined up with the shard log; aim for under 10% idle.
-- Mimi stays float32 with TF32 off (other precisions change the codes, unlike the existing
-  caches); `torch.compile` or CUDA graphs on its encoder keep the codes. wav2vec2 may run in
-  TF32 or bf16 if word starts stay within a frame of float32 on real rows.
-- Per-row costs: GigaSpeech 2 ran at 825× (4 min a 20k-row shard) against PhoAudiobook's 1,478×
-  and viVoice's 1,172×; its rows are short (4.3 s), so the main thread's per-row Python (`pending`,
-  collecting the alignments, `assemble_codes`, the sample dicts) likely holds the GPU idle longer
-  per hour of audio. Measure it before the scale-up, which is mostly GigaSpeech 2, and move it into
-  the workers.
-- Per-shard fixed costs weigh on small shards (viVoice's 3.8 h of Mimi audio ran ~1,100× against
-  PhoAudiobook's ~1,400×): fuller last batches across shard boundaries, or bigger shards.
-- After the local-read fix viVoice ran ~1,300–1,400× (~10 s a shard), the GPU idle 17%: ~1.0 s at
-  each shard's start (its decodes, queued behind the last shard's alignments, and the `pending`
-  loop) and ~0.6 s within it. Queuing the next shard's decodes earlier would close the first.
-- CPU: 25 workers on the 26.9-CPU quota averaged 10.5 CPUs but throttled 14% of the 100 ms
-  periods in bursts (`/sys/fs/cgroup/cpu.stat`); check the main process is not the one stalled.
-
+- Then the build's own levers on CUDA ([cache-build](cache-build.md#speed-on-cuda)). The build now
+  streams windows across shard ends with decodes two windows ahead, aimed at the per-shard gaps
+  above (small shards' fixed costs: viVoice's 3.8 h of Mimi audio ran ~1,100× against
+  PhoAudiobook's ~1,400×); it is unprofiled on CUDA.

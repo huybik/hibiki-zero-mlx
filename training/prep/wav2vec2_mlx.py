@@ -20,8 +20,9 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-KERNELS = (10, 3, 3, 3, 3, 2, 2)  # feature-encoder convolutions, 16 kHz -> 50 Hz
-STRIDES = (5, 2, 2, 2, 2, 2, 2)
+from training.prep.text_timing import CTC_CONVS
+
+KERNELS, STRIDES = zip(*CTC_CONVS, strict=True)  # feature-encoder convolutions, 16 kHz -> 50 Hz
 BUCKET_SAMPLES = 20_480  # 1.28 s at 16 kHz
 POS_KERNEL = 128
 POS_GROUPS = 16
@@ -129,15 +130,13 @@ class Wav2Vec2CTC:
         return logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
     def log_probs(self, pcm: np.ndarray) -> mx.array:
-        """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz clip."""
+        """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz float32 clip, normalized
+        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`)."""
         if pcm.ndim != 1:
             raise ValueError(f"wav2vec2 needs a mono clip, got shape {pcm.shape}")
         first_frames, frames = _frames(len(pcm))
         if frames < 1:
             raise ValueError(f"A {len(pcm)}-sample clip is too short for one wav2vec2 frame")
-        # The feature extractor's zero-mean, unit-variance input normalization, over the clip.
-        pcm = np.asarray(pcm, np.float32)
-        pcm = (pcm - pcm.mean()) / np.sqrt(pcm.var() + 1e-7)
         padded = np.zeros(math.ceil(len(pcm) / BUCKET_SAMPLES) * BUCKET_SAMPLES, np.float32)
         padded[: len(pcm)] = pcm
         out = self._forward_compiled(

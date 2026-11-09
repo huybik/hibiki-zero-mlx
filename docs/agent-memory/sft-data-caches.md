@@ -1,20 +1,18 @@
 # SFT grounded caches
 
-Read when touching `training/prep/cache_codes.py`, `training/prep/cache_rows.py`, `training/prep/audio.py`,
-`training/prep/publish_caches.py`,
-`training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or
-`training/paths.py`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builder](#builder) · [Speed](#speed) · [Builds](#builds) ·
+Read when touching `training/prep/cache_codes.py`, `training/prep/publish_caches.py` or
+`training/paths.py`: the EN-VI dataset's caches, their builds and publishing, the PhoMT cache and
+the row layout every cache shares. How rows are built and the models run, on either device, is in
+[cache-build](cache-build.md).
+Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builds](#builds) ·
 [Publishing](#publishing) · [PhoMT cache](#phomt-cache) · [Row layout](#row-layout)
 
 ## Flow
 
 ```text
 /Volumes/data/datasets/en_vi_speech/data/<split>/<name>.parquet
-  ─► cache_codes (Mac, MLX) ─► <out-dir>/<split>/shard_<name>.pt
-       workers: PyAV decode; soxr to 24 kHz (Mimi) and 16 kHz (CTC)
-       gates: decoded duration ─► frame cap ─► text groups ─► wav2vec2 CTC (text_timing)
-       GPU: CTC (wav2vec2_mlx), then Mimi (mimi_mlx); the CPU Viterbi runs while Mimi encodes
+  ─► cache_codes (--device mlx on the Mac, or cuda) ─► <out-dir>/<split>/shard_<name>.pt
+       read: every row, no gates of its own; the build is cache_build's (cache-build)
   ─► publish_caches ─► HF cache repo <out-dir name>/<split>/shard_<name>.pt ◄─ second machine
 HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 <prefix>/train + phomt-grounded-v2-5s ─► training.finetune.train --cache-dir (several)
@@ -23,8 +21,7 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 
 - The trainer runs on the H100 pod; the caches reach it through the cache repo
   ([Publishing](#publishing), [docs/finetune.md](../finetune.md)). `CACHE_FORMAT` lives in
-  `training/paths.py` so the trainer never imports the builder's Mac-only MLX, which the pod
-  does not install (the pod has PyAV, for the noisy re-encode).
+  `training/paths.py` so the trainer never imports the build.
 
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
   straight from its parquet shards, the split taken from the folder. FLEURS is dropped.
@@ -46,125 +43,21 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
     ~246k of which the old rule kept with a longer delay. PhoMT's cache was filtered under the old rule (rows over the cap dropped);
   - English text word-timed by CTC alignment with `facebook/wav2vec2-base-960h`; rows that
     fail alignment or score below 0.5 are rejected.
-- `training/paths.py` holds the repo defaults (`weights/` artifacts), file guards and `durable`.
-
-## Builder
-
-- Gates run cheapest first, and a row is rejected, with its reason, at the first one it fails:
-  a decoded clip more than 0.02 s off its stored duration (PyAV decodes a truncated or damaged
-  clip without error, only shorter); more frames than `--max-frames` (280, the trainer's cap),
-  counted from the decoded lengths as max(English frames, Vietnamese frames) + 1 before the delay;
-  the text grouping; CTC alignment; token timing. Mimi is queued with the CTC forward, so the
-  ~0.5% of rows rejected at alignment or token timing are encoded and dropped.
-- Text grouping: SentencePiece pieces group into words, and a group with nothing to speak (a
-  stray `*`, `-` or `"`; a lone `'` counts as spoken) joins the word before it. Before the first
-  word it is the lead, timed on the frames just before that word's start, so the word keeps its
-  own frame; when the lead does not fit after the delay it starts at the delay and pushes the
-  word later. An unspoken piece inside a word (`"It`, `(see`) is spread over that word's span
-  with it, as before (half of Libriheavy rows; kept unchanged in this build). Leading ones were rejected before 2026-10-27 (51k Libriheavy
-  rows, 1.7%).
-- Only data faults reject a row: `audio.Rejected` (undecodable or non-mono audio, a duration
-  mismatch, the frame cap) and `text_timing.AlignmentError`. Any other error, such as a dead
-  decode worker (`BrokenProcessPool`), an MLX error or PyAV running out of memory, stops the run
-  before the shard is written, so a rerun rebuilds it rather than skipping lost rows. A shard
-  whose rows all fail on data is written, empty (some source shards hold only 3 rows).
-- A shard holds `samples` (the row fields plus `source_row`, `data/<split>/<file>#r<index>`),
-  `rejected` (`id`, `reason`), `source` (file, bytes) and `max_frames`. Its values are Python
-  types and tensors only: the trainer's `torch.load` keeps the `weights_only` default, which
-  refuses NumPy scalars.
-- A shard is written as `.tmp`, flushed with `F_FULLFSYNC`, then renamed. A rerun skips shards
-  that exist, without checking their source again; `--overwrite` rebuilds. A lock
-  (`.cache_codes.lock`) keeps a second run off the same `--out-dir`. Run a multi-day build under
-  `caffeinate -i -s`.
-- Decoding: PyAV for every stream (the Opus clips and cv27's MP3), in `audio.decode`, which the
-  noisy re-encode shares ([noisy-source](noisy-source.md#noisy-cache)); anything but mono `fltp`
-  is rejected. Opus decodes at 48 kHz and cv27's MP3 at 32 or 48 kHz
-  ([en-speech-corpus](en-speech-corpus.md)); soxr resamples from that rate straight to each target.
-  `sphn.read` cannot decode Opus, `sphn.read_opus_bytes` keeps the 312-sample Opus pre-skip, and
-  `sphn.resample` delays its output (256 samples at 48 → 24 kHz).
-- Mimi: `mimi_mlx.MimiEncoder`, an encode-only MLX port that loads the PyTorch checkpoint. Each
-  clip is encoded whole and alone, padded to a multiple of 16 frames (so the compiled encoder
-  sees at most 18 shapes; [mlx-inference](mlx-inference.md#memory)), then cut to
-  ceil(samples / 1920) frames. Against moshi 0.2.13 PyTorch on CPU in float32, 99.98% of frames
-  are equal on all 16 codebooks and every first codebook (65,237 frames of 504 clips; 12,704
-  frames of 40 built rows); the rest are near-ties in the residual codebooks.
-- `cache_rows` holds the delay draw and the `[33, T]` assembly, and `text_timing.CTCWordAligner`
-  the CPU Viterbi, both without MLX: the tranche's CUDA builder (`training.tranche.cache`,
-  [tranche-cache](tranche-cache.md)) builds rows the same way.
-- CTC: `text_timing.EnglishCTCAligner` runs `wav2vec2_mlx.Wav2Vec2CTC` in float32, one clip
-  at a time, then a numpy Viterbi (the same frames as the former torch loop). The port pads each
-  clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional
-  convolution input, attention keys), so it computes the clip alone and compiles over ~18 shapes.
-  It builds the same rows as mlx-audio 0.6.1's eager wav2vec2 but for float near-ties (on 2 of
-  ~3,200 rows a word sits 1–2 frames apart; see [Speed](#speed)), and that model on 252 rows
-  rejects the same rows as PyTorch CPU float32 and gives the same spans on 6,180 of 6,181 words.
-- Rejected after measurement (2026-10-27):
-  - upstream moshi_mlx 0.3.0 Mimi: no attention mask and tanh GELU, 30% of codes equal on whole
-    clips (with both fixed it matches, which `mimi_mlx` does);
-  - rustymimi 0.4.1: an attention window of 251 frames, not 250, so codes differ past 10 s;
-  - streaming or chunked encoding: differs past 250 encoder frames (10 s);
-  - float16 / bfloat16 Mimi: 89% / 45% of frames equal; float16 wav2vec2: 99.3% of word spans;
-  - padded wav2vec2 without a mask: changes the emissions, since the base model has none.
-- Upstream (checked 2026-10-27): moshi 0.2.13, rustymimi 0.4.1 and moshi_mlx 0.3.0 are the
-  newest releases; the Mimi stack of moshi 0.2.13 equals kyutai's main, and the local Mimi
-  checkpoint is the file upstream Hibiki-Zero loads (sha256 `09b782f0…`).
-- MLX (checked 2026-10-30): 0.32.4 is the newest release, and none of the 57 commits on `main`
-  after it changes these rows. Its convolution fixes cover flipped (gradient) convolutions and
-  out-of-bounds weight reads that feed only dropped output channels, the addmm fix only half
-  precision, and the numpy fix only conversions between two dtypes of one width (the ports pass
-  float32 as float32). Its new sliding-window attention would save under 2%: attention is a small
-  part of Mimi's transformer.
-
-## Speed
-
-Measured on the M4 Pro Mac (10 performance + 4 efficiency cores, 48 GB), 2026-10-27/28.
-
-- Speed is real time on the Mimi audio (both clips plus the delay). It swings ±20% with the
-  Mac's other load (a stuck `ANECompilerService`, busy browser tabs, other sessions' builds), so
-  compare variants interleaved on the same rows in one process, never one run after another.
-- Heat costs more: at macOS's thermal state "fair" the build ran 120–200x instead of ~240x on the
-  same kind of rows, with the builder alone on the GPU (2026-11-02, a warm morning). Read the
-  state with `osascript -l JavaScript -e 'ObjC.import("Foundation");
-  $.NSProcessInfo.processInfo.thermalState'` (0 nominal, 1 fair, 2 serious, 3 critical);
-  `pmset -g therm` reports nothing at "fair".
-- Interleaved on the same rows (2026-10-28), the builder before → now: `cv27` 101x → 153x,
-  `libriheavy` 164x → 225x, with identical rows. Each part counts: the 16 GB MLX cache (4 GB 195x,
-  8 GB 209x; Mimi alone over real clips 275x at 1 GB, 399x at 8 GB, ~500x on one repeated
-  shape), wav2vec2 over buckets (its unique raw lengths had filled any cache with buffers never
-  reused), and the Viterbi running while Mimi encodes (+5–11%). The footprint grows to ~19 GB.
-- Whole shard: `libriheavy-dev-00001` (1,738 rows, 13.2 h) built at 189x, the old builder at
-  140–166x. Same rows kept and rejected, every Mimi code equal; on 2 rows the text of one or two
-  words sits 1–2 frames apart.
-- The full build holds ~22.1k h of Mimi audio (both clips and the mean delay: 21,558 h main,
-  521 h `cv-anquach`), ~95–110 h at 200–225x. With the Mac in use it ran 150–170x after the
-  restart (busy browser tabs and window rendering share the GPU), ~5.5 days for the Mac alone.
-- Alone: Mimi ~500x on one shape (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length
-  buckets: per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 240–290x (PyTorch CPU 86x, MPS
-  193x), its 12 layers at ~3.9 TFLOP/s in float32. One clip per forward already fills the GPU.
-- PyAV decodes Opus at ~1,430x real time per core (soundfile 413x); two workers keep the GPU fed.
-- Tried without gain: batching Mimi or wav2vec2 clips (MLX: −40% to +25%, no pattern; MPS: none
-  to −10%); grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
-  GPU busy, four CPU processes fell from 123x to 20x in total and Mimi slowed ~45%: the CPU and
-  GPU share this laptop's power.
-- Neural Engine (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
-  rules out Mimi (above) and moves 0.7% of wav2vec2's word spans. Compiling one fixed 10 s
-  wav2vec2 shape ran over 27 min in `ANECompilerService` (root, one core, cutting the build to
-  ~150x) without finishing. At best it would take wav2vec2's ~40% of GPU time off the GPU.
-- Headroom (2026-10-29, measured beside the build at 240x): the GPU is 96–98% busy, and a row
-  takes as long as its two models do alone, so only less GPU work per row would help. On a mean
-  `libriheavy-large` row (Vietnamese 11.5 s, English 13.6 s, delay 2.2 s) Mimi takes ~55%
-  (SEANet 59%, transformer 24%, quantizer 15%) and wav2vec2 ~45% (its convolutions a third).
-  Bucket padding adds 4.5% to each; the delay's silence is 8% of Mimi's frames and must be encoded.
-  Convolutions rewritten as matmuls gain nothing on Mimi's k=3 and k=7, and 8% of wav2vec2's
-  convolutions (~1% overall): MLX's conv1d is as fast. Left: a second machine, the Mac kept idle,
-  and High Power Mode (`powermode 0`, Automatic, so far; untested).
+- `training/paths.py` holds the repo defaults (`weights/` artifacts), file guards, `durable` and
+  `cpu_budget`.
+- A sample also holds `text_vi` and `cross_lingual_timbre_matched`; a shard's `source` holds the
+  file and its byte size. A rerun skips shards that exist, without checking their source again;
+  `--overwrite` rebuilds. A lock (`.cache_codes.lock`) keeps a second run off the same
+  `--out-dir`. Run a multi-day build under `caffeinate -i -s`.
 
 ## Builds
 
 The full build, started 2026-10-27 and restarted on the faster builder on 2026-10-28 after the
 first 68 `cv27` shards, ran the two out-dirs one after the other, each under
 `caffeinate -i -s` with its log in `<out-dir>/build.log`, and finished on 2026-11-02 (main at
-19:05, `cv-anquach` at 21:42, both with status 0). Every shard is on the Hub.
+19:05, `cv-anquach` at 21:42, both with status 0). Every shard is on the Hub. It holds ~22.1k h of
+Mimi audio (21,558 h main, 521 h `cv-anquach`) and ran 150–170x with the Mac in use (200–225x
+idle), ~5.5 days on the Mac alone.
 
 | Out-dir on `/Volumes/data/datasets/` | `--shards` | Source rows | Built |
 |---|---|---|---|
@@ -226,7 +119,7 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   there is never sent again, so a stop loses only the unfinished commit. Failed commits are
   retried after 1, 2, 4, 8 and 16 minutes, then stop the run.
 - Then it downloads, into `<out-dir>/.pull/`, each Hub shard missing here and puts it in place,
-  so the builder, which checks for a shard as it starts it, skips it. Each machine so ends with
+  so the builder, which checks for a shard as it reads it (one shard ahead of the build), skips it. Each machine so ends with
   the whole cache (the second machine downloads the Mac's part too). A pulled shard must have
   the settings of a shard already in the out-dir (format, rates, `max_frames`,
   `alignment_min_score`, model config; pulls wait until one exists), the same source file at the
@@ -247,8 +140,9 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   both machines time with the same model. The builder no longer sets `HF_HUB_OFFLINE`, so a
   machine's first run can download them; offline it uses the cached copy (0.4 s on a refused
   connection, ~75 s on a hanging one).
-- The second machine needs Apple Silicon (the builder is MLX only) and write access to the
-  cache repo; commands are in [training/prep/README.md](../../training/prep/README.md).
+- The second machine needs Apple Silicon, or a CUDA GPU with `--device cuda` (its rows differ
+  from the Mac's by float near-ties, [cache-build](cache-build.md#across-devices)), and write
+  access to the cache repo; commands are in [training/prep/README.md](../../training/prep/README.md).
 
 ## PhoMT cache
 

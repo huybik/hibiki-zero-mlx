@@ -121,9 +121,8 @@ here is published or estimated, to be measured on the box first:
 Built for CUDA: every stage runs on the H100 box (user, 2026-11-04; the translation too since
 2026-11-06). The rows take
 the EN-VI dataset's own parquet schema, and the cache keeps its format, so the trainer takes it
-unchanged; the build needs a CUDA counterpart of the MLX `cache_codes` (Mimi in moshi's torch, as
-`mimi_cache_cuda` encodes it, and the English CTC on CUDA)
-([sft-data-caches](sft-data-caches.md#flow)):
+unchanged; the shared cache build runs it on CUDA, or on the Mac in MLX
+([cache-build](cache-build.md)):
 
 ```text
 YODAS runs (24 kHz) ─► Vietnamese ASR: punctuation, word times ─────────┐
