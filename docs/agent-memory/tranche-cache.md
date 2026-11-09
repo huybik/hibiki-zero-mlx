@@ -87,7 +87,8 @@ draws use split `train`.
   (the conda Python, as `cache_codes`). Its parts come from the Hub into the HF
   cache on `/Volumes/data`; the caches go to `<root>/cache/` and the cache repo. Give it `--limit`
   when the box builds too: each run lists the Hub once at its start, so both would build the same
-  shards (wasted work, not corrupt data). Size a night's `--limit` from a profiled shard.
+  shards (wasted work, not corrupt data). A GigaSpeech 2 archive takes ~14 min at ~220x
+  ([cache-build](cache-build.md#speed-on-the-mac)): ~40 a night of 9 h.
 - Checked end to end on the box (2026-11-06, after the TTS and the ASR server), into a scratch
   `--root` with the push stubbed: PhoAudiobook shards 0–1, viVoice 0, GigaSpeech 2 0. Every
   PhoAudiobook row (2,572) has the trainer's layout (`T = max(en, vi) + 1`, one text EOS at

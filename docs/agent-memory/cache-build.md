@@ -43,9 +43,9 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   spans shard ends, so the device does not wait on a shard's tail or the next one's first decodes;
   a shard is yielded once its last row is in, so the log line gives the build's speed so far, not
   a shard's.
-- Workers (`default_workers`): 4 on MLX, since the Mac's CPU and GPU share one power budget (two
-  kept the GPU fed when they only decoded; 4 is unmeasured now that they also run the Viterbi); on
-  CUDA the CPU budget less the main process (`paths.cpu_budget`, the container's quota). Each
+- Workers (`default_workers`): 2 on MLX, where 2, 4 and 8 ran alike ([Speed on the
+  Mac](#speed-on-the-mac)) and the CPU and GPU share one power budget; on CUDA the CPU budget less
+  the main process (`paths.cpu_budget`, the container's quota). Each
   decodes and runs the Viterbi with its own `CTCWordAligner` (`init_worker`).
 
 ## Rows
@@ -179,10 +179,11 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   quantizer 15%) and wav2vec2 ~45%. Bucket padding adds 4.5% to each; the delay's silence is 8% of
   Mimi's frames and must be encoded. Convolutions rewritten as matmuls gain nothing. Untried: the
   Mac kept idle, and High Power Mode (`powermode 0`, Automatic, so far).
-- On GigaSpeech 2's short rows (4.3 s) the tranche's first MLX path, since replaced by this build,
-  ran 130–136x (one ~50 h shard in ~24 min, M4 Pro, 2026-11-09): 135 archives would take ~52 h.
-  It is the baseline for this build on those rows, which is not yet measured; optimize before
-  judging the Mac too slow for them.
+- On GigaSpeech 2's short rows (4.3 s), interleaved on 2,000 rows of archive 147 (1,550 kept,
+  4.77 h of Mimi audio, 2026-11-09): this build 210–226x with 2, 4 or 8 workers alike, the GPU ~95%
+  busy and MLX's peak 2.2 GB; the tranche's MLX path it replaced, with its streaming fix, 219–223x.
+  That path before the fix decoded whole shards and ran 130–136x in swap. At ~220x the 135
+  GigaSpeech 2 archives left take ~31 h of the Mac (~14 min an archive).
 - After the move onto this build (2026-11-09, 400 `libriheavy-dev` rows, the Mac otherwise in
   light use): 258–263x against the former builder's 265–270x, within the noise above.
 

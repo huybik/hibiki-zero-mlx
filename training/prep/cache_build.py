@@ -38,7 +38,7 @@ if sys.platform == "darwin":  # before the builders' readers import pyarrow, who
 # Freed MLX buffers kept for reuse across the ~36 bucketed shapes of Mimi and wav2vec2; on
 # libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
 MLX_CACHE_BYTES = 16 << 30
-MLX_WORKERS = 4  # the Mac's CPU and GPU share one power budget: few processes
+MLX_WORKERS = 2  # 2, 4 and 8 ran alike; the Mac's CPU and GPU share one power budget
 CUDA_BATCH_S = 640.0  # padded audio per batch, Mimi and CTC
 DEVICE = "cuda"  # the torch device of CUDAModels
 
