@@ -129,18 +129,24 @@ nice -n 19 python3 -m training.tranche.cache build giga --device mlx --root <dir
   --tokenizer weights/tokenizer_spm_48k_multi6_2.model
 ```
 
-Speed (M4 Pro 48 GB, 2026-11-09): 130–136× RT per GigaSpeech 2 shard (~50 h Mimi audio, ~24 min).
+Speed (M4 Pro 48 GB, 2026-11-09): 189× RT steady-state (shard 2 onward); shard 1 pays ~226 s for
+`mx.compile` to cache batch shapes (amortized to <0.2% over 133 shards). After optimization,
+encode = 99% of wall time; drain < 1% (GPU is the bottleneck). Profiled window=128 (179× RT)
+— M4 Pro doesn't gain from larger tiles; window=64 kept.
 Memory design (streaming fix, 2026-11-09): `build_shard_mlx()` streams rows from the 4 parquet
 parts PREFETCH=64 at a time via pyarrow `iter_batches` (audio metadata read once, audio bytes
 streamed batch by batch); at most PREFETCH=64 decode futures outstanding; each MLX_WINDOW=64
-encode frees vi24/en24/en16 immediately after. Peak: ~15 MB streaming batch + ~30 MB pool queue
-+ ~224 MB decode buffer + ~144 MB Mimi codes + 16 GB MLX freed cache + ~9 GB system/models ≈
-26 GB (down from 41+ GB OOM). `mx.set_cache_limit` keeps freed Metal buffers for shape reuse
-across the ~36 compiled programs. Profile with --limit 2 before each full run.
+encode frees vi24/en24/en16 immediately after. Batch optimization (2026-11-09, PR #87): clips
+in each window are bucketed by padded length and encoded in one batched Mimi + CTC forward pass
+per bucket group, replacing ~192 serial lazy evals per window with 2–3 calls. Peak: ~15 MB
+streaming batch + ~30 MB pool queue + ~224 MB decode buffer + ~144 MB Mimi codes + 16 GB MLX
+freed cache + ~9 GB system/models ≈ 26 GB (down from 41+ GB OOM). `mx.set_cache_limit` keeps
+freed Metal buffers for shape reuse.
 
-The 213 voiced GigaSpeech 2 archives had 78 cached after the Japan box + this session; 135 remain.
-At 130×: 135 × 50 h / 130 / 3600 ≈ 51 h — too long for overnight. Wait for the H100 unless the
-box takes >3 days.
+The 213 voiced GigaSpeech 2 archives had 82 cached after the Japan box + this session; 131 remain
+(104 buildable now; 27 waiting for voice input).
+At 189×: 131 × 50 h / 189 / 3600 ≈ 10 h — feasible overnight. Profile with --limit 2 before the
+full run.
 
 If both Mac and new box run simultaneously: `--limit` on the Mac (todo_shards lists the Hub once
 at start; both would otherwise build the same shards, wasting work but not corrupting data).
