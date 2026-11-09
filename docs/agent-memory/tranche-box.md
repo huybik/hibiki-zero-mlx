@@ -6,12 +6,14 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: brought up with the `cache/ctc-half` branch
-(commit `b84de26`), which adds `--half-ctc` to the cache build (CUDA bfloat16 transformer) and fixes a voice.py
-crash on rows without text_en. 83 giga archives cached on Hub (1 more on 2026-11-09 from the Japan box).
-Voice running for the remaining 25 (giga 74–99 excluding held-out 86 and 98, plus 185), with one
-row in archive 185 skipped (missing text_en). Cache benchmark (`--limit 2 --half-ctc`) queued via
-pause_run.sh; full cache run to start after 2000+ RT confirmed. SFT data downloading in background.
+**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `0d7a1b8` (`cache/ctc-half`).
+85 giga archives cached on Hub (83 from Japan + 2 from the H200 benchmark). Voice running for the
+remaining 23 (giga 76–99 excl. 86,98; 74 and 75 and 185 voiced 2026-11-09). Cache benchmark ran on
+2 archives: 855× RT shard 1, 1 102× cumulative — Hub inputs dominate shard 1, pipeline warms from
+shard 2. Full cache run to use float32 (bfloat16 tested: min per-clip argmax 96.9%, did not pass).
+SFT data: pho caches done, vivoice 60/354, en_speech_sub 70/150, validation cache done, eval sets
+done except en-vi-val-noisy (building). Checkpoint downloaded (12 GB). SFT benchmark queued once
+vivoice caches finish.
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
