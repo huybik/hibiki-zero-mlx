@@ -75,9 +75,9 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
 
 ## By GPU
 
-The same benchmark by GPU (one epoch is about 131,700 steps); the H200 NVL and 700 W SXM rows have
-the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 and 13,405 →
-14,399), the other two predate it:
+The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608); the H200 NVL and
+700 W SXM rows have the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 and
+13,405 → 14,399), the other two predate it:
 
 | GPU (power limit) | frames/s | s/step | one epoch |
 |---|---:|---:|---:|
@@ -87,6 +87,13 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
 | H100 SXM 80 GB (500 W, its host's cap) | 7,401 | 0.550 | 20.1 h |
 
 - The H200 NVL drew 536 W on average at 1,705 MHz (1,785 max) and 58 °C: under its 600 W limit.
+
+- **H200 batch_frames lever (2026-11-09)**: default 4608; H200 has 141 GB VRAM vs H100's 80 GB.
+  Increasing batch_frames amortizes fixed per-step costs (AdamW 8%, grad norm 4%, copies 5.5% ≈ 17.5%
+  of step time) over more frames. At 8192 (1.78×): peak ≈ 93 GiB (48 GiB param+opt + 45 GiB
+  activations), validation headroom ~11 GiB → total ~104 GiB, expected +~14% throughput. Round 4b
+  (full_epoch4b) uses `--batch-frames 8192`. Do not use this batch_frames to resume from a run that
+  used 4608: batch_frames is a RESUME_KEY in run_config.json and must match.
 
 - Of four H100 SXM pods rented on 2026-11-03, the three on EPYC 9454 hosts (Germany, Latvia)
   were capped at 500 W; the capped one benchmarked sat at its limit 99% of the time, at a mean

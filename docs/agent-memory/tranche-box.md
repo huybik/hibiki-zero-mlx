@@ -6,9 +6,9 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `acce58a` (`cache/ctc-half`).
+**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `ff9b25f` (`cache/ctc-half`).
 83 valid giga archives on Hub (3 half-precision shards deleted and shard_153 rebuilt float32
-2026-11-09). Cache run ongoing (giga only; pho and vivoice complete).
+2026-11-09). 
 
 **VRAM budget (critical)**: nanovox TTS uses 109 GB VRAM at peak; real ASR (vLLM) 29 GB; together
 = 138 GB → confirmed OOM kills (3 GB headroom insufficient). Voice cannot run with real ASR.
@@ -37,8 +37,20 @@ Optimal: gen-batch 192, micro-batch 3. With cache: 102.9 + 25 = ~128 GiB (13 GiB
 GRPO worktree at /workspace/wt-grpo (branch grpo/trainer, .venv at /workspace/hibiki-zero/.venv symlinked,
 weights symlinked). After SFT checkpoint: `grpo_launch.sh <weight>` from wt-grpo with gen-batch 192 micro-batch 3.
 
-**SFT round 4: RUNNING (2026-11-09, step ~170+)**. cache + SFT = ~99 GiB. SFT data: pho (224 ✓),
-vivoice (354 ✓), en_speech_sub (150 ✓), all eval sets ✓, checkpoint model_step026176.safetensors ✓.
+**Cache: RUNNING (2026-11-09 ~15:42 UTC, pid 26609, optimized)**. 74/103 giga shards complete.
+Optimizations applied (commit ff9b25f): `torch.compile(mimi.encode, dynamic=True)` + `CUDA_BATCH_S 640→1280`.
+auto_pipeline.sh (pid 26839) watches cache, then starts SFT, then GRPO sequentially.
+
+**SFT round 4b: PENDING** (auto_pipeline will run `restart.sh sft` → `h100.sh run full_epoch4b` after
+cache completes). Optimizations: `--batch-frames 8192` (from default 4608; +~14% throughput; H200 peak
+~93 GiB, well within 141 GiB). SFT data: pho (224 ✓), vivoice (354 ✓), giga (103 shards when done),
+en_speech_sub (150 ✓). Run name full_epoch4b (not full_epoch4 — that was trained on incomplete 58/103
+giga shards and was killed at step ~4290; its checkpoints at step 3000+4000 are stale and must NOT be
+used). `/workspace/restart.sh` and `/workspace/auto_pipeline.sh` are updated for full_epoch4b.
+
+**GRPO: PENDING** (auto_pipeline will run `grpo_launch.sh <best_sft_ckpt>` after SFT). Configured:
+gen-batch 192, micro-batch 3, --updates 800. auto_pipeline picks latest model_step*.safetensors from
+full_epoch4b/checkpoints/ as the seed weight (verify val chrF in sft.log to confirm it is best).
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
