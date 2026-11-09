@@ -6,16 +6,22 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `8fa8760` (`cache/ctc-half`).
+**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `acce58a` (`cache/ctc-half`).
 83 valid giga archives on Hub (3 half-precision shards deleted and shard_153 rebuilt float32
-2026-11-09; 154 and 155 pending full run). Full float32 cache run in progress: 3 shards done
-(154–156), 128 remaining; production speed with voice+ASR sharing GPU: shard 1 545× RT (Triton
-warmup + Hub downloads), shard 2 ~877× (pipeline warmed), ~677× cumulative; ~160–255 s/shard →
-~6–9 h for 128 remaining. Voice running for giga 78–99 excl. 86,98 (74–77 and 185 voiced
-2026-11-09). SFT data: pho (224 shards in pho/ ✓), vivoice (354 shards in vivoice/ ✓,
-mv done), en_speech_sub (150 ✓), validation cache (✓), eval sets all done including
-en-vi-val-noisy (cv27 180 rows, libriheavy 180 rows ✓). Checkpoint downloaded (12 GB ✓). SFT
-starts after voice+ASR stop (~2–3 h remaining).
+2026-11-09; 154 and 155 pending full run). Full float32 cache run: 41 shards done (154–194),
+90 remaining; speed without voice/ASR competition expected much higher than the shared-GPU
+545×/877× (paused while voice finishes).
+
+**VRAM budget (critical)**: nanovox TTS uses 109 GB VRAM; ASR (vLLM) 29 GB; together = 138 GB
+which leaves only 3 GB → voice OOM-killed during peak TTS forward passes. Voice must run alone
+(ASR stopped). After voice done: ASR stays stopped; cache 25 GB + SFT 73 GB = 98 GB → fine.
+GRPO profile 70 GB + cache 25 GB = 95 GB → also fine. Never restart ASR while voice runs.
+
+Voice: giga/88 done in last run; current run (13:58 UTC) working on giga/89–99 excl 98 (10
+remaining). Voice runs alone (ASR stopped). GRPO worktree at /workspace/wt-grpo (branch
+grpo/trainer, .venv symlinked). After voice: cache restart → GRPO profile → SFT start.
+SFT data: pho (224 ✓), vivoice (354 ✓), en_speech_sub (150 ✓), all eval sets ✓,
+checkpoint model_step026176.safetensors (12 GB ✓).
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
