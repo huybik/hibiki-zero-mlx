@@ -2,8 +2,8 @@
 clips' decode, the row gates, the English delay draw, the text timing in the workers, the
 `[33, T]` code layout, a sample's fields and the shard file
 ([cache-build](../../docs/agent-memory/cache-build.md),
-[sft-data-caches](../../docs/agent-memory/sft-data-caches.md#row-layout)). No MLX or CUDA here: the
-box imports it without MLX, the Mac without CUDA."""
+[sft-data-caches](../../docs/agent-memory/sft-data-caches.md#row-layout)). No MLX, moshi or
+transformers here, and torch only to write: the box imports it without MLX, the Mac without CUDA."""
 
 from __future__ import annotations
 
@@ -61,13 +61,21 @@ class Shard:
     rejected: list[dict[str, str]]
     samples: list[dict[str, Any]] = field(default_factory=list)
     left: int = 0  # rows not yet sampled or rejected by the build
+    dropped: list[tuple[int, dict[str, str]]] = field(default_factory=list)  # the build's rejections
 
     def __post_init__(self) -> None:
         self.left = len(self.rows)
 
-    def reject(self, row_id: str, exc: Exception) -> None:
-        self.rejected.append({"id": row_id, "reason": f"{type(exc).__name__}: {exc}"})
+    def reject(self, index: int, row_id: str, exc: Exception) -> None:
+        self.dropped.append((index, {"id": row_id, "reason": f"{type(exc).__name__}: {exc}"}))
         self.left -= 1
+
+    def done(self) -> Shard:
+        """The shard once its last row is in: the build's rejections after the builder's own, in
+        source order (the build rejects at decode or at alignment, windows apart)."""
+        self.rejected += [entry for _, entry in sorted(self.dropped, key=lambda item: item[0])]
+        self.dropped = []
+        return self
 
 
 @dataclass

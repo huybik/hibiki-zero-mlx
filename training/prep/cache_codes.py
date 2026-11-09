@@ -90,6 +90,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-frames must be positive")
     if not (math.isfinite(args.target_delay_ratio) and args.target_delay_ratio >= 0):
         parser.error("--target-delay-ratio must be finite and non-negative")
+    if not 0 <= args.min_alignment_score <= 1:
+        parser.error("--min-alignment-score must be in [0, 1]")
     return args
 
 

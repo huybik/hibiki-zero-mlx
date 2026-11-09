@@ -5,7 +5,7 @@ builder only reads and gates its own source rows and decides where the shards go
 ([cache-build](../../docs/agent-memory/cache-build.md)).
 
   keys ─► read (the builder's), in a thread one shard ahead: rows and the builder's own gates
-       ─► decode workers (PyAV, soxr), two windows of rows ahead of the device
+       ─► decode workers (PyAV, soxr), one window of rows ahead of the device
        ─► cache_rows.plan: decode gates, delay draw, text groups ─► windows, across shard ends
        ─► device: CTC ─► the Viterbi in the workers while the device runs Mimi
        ─► samples back to their shard ─► the shard, in order, once its last row is in
@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
@@ -31,16 +32,14 @@ from training.prep.audio import Rejected
 from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Row, Settings, Shard
 from training.prep.text_timing import ALIGNER_REPO, ALIGNER_REVISION, AlignmentError, aligner_files
 
-# Before the builders' readers import pyarrow: its mimalloc pool keeps freed buffers on macOS.
-os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
+if sys.platform == "darwin":  # before the builders' readers import pyarrow, whose mimalloc pool keeps freed buffers on macOS
+    os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
 DEVICES = ("mlx", "cuda")
 # Freed MLX buffers kept for reuse across the ~36 bucketed shapes of Mimi and wav2vec2; on
 # libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
 MLX_CACHE_BYTES = 16 << 30
-MLX_WINDOW = 64  # rows queued on the GPU at once
 MLX_WORKERS = 4  # the Mac's CPU and GPU share one power budget: few processes
-CUDA_WINDOW = 4096  # rows per batched pass
 CUDA_BATCH_S = 640.0  # padded audio per batch, Mimi and CTC
 DEVICE = "cuda"  # the torch device of CUDAModels
 
@@ -58,7 +57,7 @@ class MLXModels:
     forward (batching clips gained nothing in MLX), padded to length buckets, so each compiled
     forward sees few shapes."""
 
-    window = MLX_WINDOW
+    window = 64  # rows queued on the GPU at once
 
     def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path):
         import mlx.core as mx
@@ -129,7 +128,7 @@ class CUDAModels:
     """Mimi (moshi) and wav2vec2-base-960h CTC (transformers) in full float32 on CUDA, over padded
     batches of up to CUDA_BATCH_S of audio, shortest first."""
 
-    window = CUDA_WINDOW
+    window = 4096  # rows per batched pass
 
     def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path):
         import torch
@@ -261,29 +260,31 @@ class Builder:
             try:
                 window.append(cache_rows.plan(shard, index, row, clips.result(), self.settings, self.tokenizer))
             except (Rejected, AlignmentError) as exc:
-                shard.reject(row["id"], exc)
+                shard.reject(index, row["id"], exc)
             if len(window) == self.models.window:
                 self._encode(window, pool)
                 window = []
             while started and not started[0].left:
-                yield started.popleft()
+                yield started.popleft().done()
         self._encode(window, pool)
         if any(shard.left for shard in started):
             raise RuntimeError("the build ended with rows neither sampled nor rejected")
-        yield from started
+        for shard in started:
+            yield shard.done()
 
     def _decoded(
         self, shards: Iterator[Shard], pool: ProcessPoolExecutor, started: deque[Shard]
     ) -> Iterator[tuple[Shard, int, dict[str, Any], Future]]:
-        """Each kept row with its decode, submitted two windows ahead; a shard joins `started` as
-        its first decode is submitted."""
+        """Each kept row with its decode, submitted a window ahead (the pool runs jobs in order, so
+        more would only queue a window's alignments behind more decodes); a shard joins `started`
+        as its first decode is submitted."""
         queued: deque[tuple[Shard, int, dict[str, Any], Future]] = deque()
         for shard in shards:
             started.append(shard)
             for index, row in shard.rows:
                 clips = pool.submit(cache_rows.prepare, row.pop("vi_audio"), row.pop("en_audio"))
                 queued.append((shard, index, row, clips))
-                if len(queued) > 2 * self.models.window:
+                if len(queued) > self.models.window:
                     yield queued.popleft()
         while queued:
             yield queued.popleft()
@@ -301,7 +302,7 @@ class Builder:
             try:
                 tokens, text_frames, score = aligned.result()
             except AlignmentError as exc:
-                row.shard.reject(row.source["id"], exc)
+                row.shard.reject(row.index, row.source["id"], exc)
                 continue
             row.shard.samples.append(cache_rows.sample(row, tokens, text_frames, score, vi, en, self.cfg))
             row.shard.left -= 1

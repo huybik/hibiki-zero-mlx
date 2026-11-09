@@ -27,8 +27,8 @@ A row is dropped, with the first reason that applies (the shard's `rejected`), w
 From the repo root, with HF_TOKEN_AN (pushes) in the environment; on the box (CUDA, the training
 .venv from training/h100.sh setup):
   .venv/bin/python -m training.tranche.cache build pho vivoice giga
-on the Mac (MLX; nice, since the user games on it):
-  nice -n 19 python -m training.tranche.cache build giga --device mlx --limit 2
+on the Mac (MLX; nice, since the user games on it), into a local root:
+  nice -n 19 python -m training.tranche.cache build giga --device mlx --root /Volumes/data/datasets/tranche-mac --limit 2
 """
 from __future__ import annotations
 
