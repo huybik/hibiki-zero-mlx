@@ -93,7 +93,7 @@ These rules hold for every MLX model here (the Hibiki LM, VieNeu, Mimi, wav2vec2
 - MLX also keeps freed buffers across shapes; cap the cache with `mx.set_cache_limit` when shapes
   vary ([vi-tts](vi-tts.md#engine) caps the codec at 2 GB). Too small a cap costs speed instead:
   the cache builder cycles through ~36 bucketed shapes and ran 195x at 4 GB, 225x at 16 GB
-  ([sft-data-caches](sft-data-caches.md#speed)). Unbucketed shapes (eager wav2vec2 over raw
+  ([cache-build](cache-build.md#speed-on-the-mac)). Unbucketed shapes (eager wav2vec2 over raw
   lengths) fill any cap with buffers that are never reused.
 - PyTorch MPS keeps memory per input shape too: Mimi encode at batch 1 over per-clip lengths
   reached 28–30 GB; 16-frame length buckets held it at 8 GB.

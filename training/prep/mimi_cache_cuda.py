@@ -48,7 +48,6 @@ import pyarrow.parquet as pq
 import soxr
 import torch
 from huggingface_hub import hf_hub_download
-from moshi.models import loaders
 
 from training.paths import (
     CACHE_FORMAT,
@@ -61,10 +60,10 @@ from training.paths import (
     require_dir,
     require_file,
 )
-from training.prep import audio, augment
+from training.prep import audio, augment, cache_build
+from training.prep.cache_rows import FRAME_SAMPLES
 from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION
 
-FRAME_SAMPLES = 1920  # 24 kHz / 12.5 Hz
 SOURCES = ".sources"
 FETCH_LOCK = ".fetch.lock"
 ENCODE_LOCK = ".encode.lock"
@@ -246,33 +245,14 @@ class Encoder:
         self.dep_q = int(cfg["dep_q"])
         self.source_q = int(cfg["n_q"]) - self.dep_q
         self.card = int(cfg["card"])
-        # TF32 changes Mimi's residual codes as bf16 does, so every matmul and convolution stays
-        # full float32.
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        self.device = torch.device("cuda")
-        self.mimi = loaders.get_mimi(
-            require_file(args.mimi_weight, "Mimi weight"),
-            device=self.device,
-            num_codebooks=self.source_q,
-        ).eval()
+        self.device = torch.device(cache_build.DEVICE)
+        self.mimi = cache_build.cuda_mimi(require_file(args.mimi_weight, "Mimi weight"), self.source_q)
         if self.mimi.cardinality != self.card:
             raise RuntimeError(
                 f"config card {self.card} != Mimi cardinality {self.mimi.cardinality}"
             )
         self.bank = augment.Bank(augment.fetch_bank(args.bank_dir), self.device)
         self.batch_samples = int(args.batch_seconds * augment.SAMPLE_RATE)
-
-    def encode(self, clips: list[torch.Tensor]) -> list[torch.Tensor]:
-        """Each clip's codes [source_q, ceil(samples / 1920)]. Right padding changes nothing
-        before it: Mimi's convolutions and attention are causal."""
-        frames = [math.ceil(clip.shape[-1] / FRAME_SAMPLES) for clip in clips]
-        batch = torch.zeros(len(clips), 1, max(frames) * FRAME_SAMPLES, device=self.device)
-        for row, clip in enumerate(clips):
-            batch[row, 0, : clip.shape[-1]] = clip
-        with torch.no_grad():
-            codes = self.mimi.encode(batch)
-        return [codes[row, :, :count].to("cpu", torch.int32) for row, count in enumerate(frames)]
 
     def shard(self, samples: list[dict[str, Any]], clips: dict[int, Future]) -> float:
         """Replace the source codes of the rows in `clips` (sample index -> decoded clip), shortest
@@ -307,7 +287,7 @@ class Encoder:
         return seconds
 
     def _write(self, pending: list[tuple[dict[str, Any], torch.Tensor]]) -> None:
-        codes = self.encode([clip for _, clip in pending])
+        codes = cache_build.mimi_batch(self.mimi, [clip for _, clip in pending], self.device)
         for (sample, _), new in zip(pending, codes, strict=True):
             source = sample["codes"][1 + self.dep_q : 1 + self.dep_q + self.source_q]
             if int(source[0, sample["vi_frames"]]) != self.card:

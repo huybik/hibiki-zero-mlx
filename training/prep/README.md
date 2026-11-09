@@ -55,13 +55,14 @@ python -m training.prep.tts_en_speech --texts /Volumes/data/datasets/en_speech_v
 
 ## Grounded caches
 
-Runs on the Mac with the conda Python. `training.prep.cache_codes` turns the EN-VI dataset's
-parquet shards into SFT cache shards, one per source shard, in MLX on the GPU: PyAV decoding,
-wav2vec2 CTC word timing of the English text (`text_timing`, `wav2vec2_mlx`), then Mimi
-(`mimi_mlx`). Rows whose audio is damaged (it decodes off its stored duration), that exceed the
-trainer's 280-frame cap or that fail alignment are rejected and listed in their shard; any other
-error stops the run.
-A rerun skips the shards already built. Rules, speed and the full build are in
+`training.prep.cache_codes` turns the EN-VI dataset's parquet shards into SFT cache shards, one
+per source shard, on the cache build every builder shares (`cache_build`): PyAV decoding, wav2vec2
+CTC word timing of the English text, then Mimi, in MLX on the Mac (`--device mlx`, the default,
+with the conda Python) or on a CUDA GPU (`--device cuda`). Rows whose audio is damaged (it decodes
+off its stored duration), that exceed the trainer's 280-frame cap or that fail alignment are
+rejected and listed in their shard; any other error stops the run.
+A rerun skips the shards already built. Rules and speed are in
+[cache-build](../../docs/agent-memory/cache-build.md), the full build in
 [sft-data-caches](../../docs/agent-memory/sft-data-caches.md).
 
 ```bash
@@ -83,7 +84,8 @@ nohup caffeinate -i python -m training.prep.publish_caches --out-dir $O --follow
   --shards 'train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet' >> $O/publish.log 2>&1 &
 ```
 
-The second machine needs Apple Silicon, this repo's `main`, `weights/` as in
+The second machine needs Apple Silicon (or a CUDA GPU, with `--device cuda` on the commands
+below and without `caffeinate`, which is macOS's), this repo's `main`, `weights/` as in
 [docs/finetune.md](../../docs/finetune.md), an `HF_TOKEN` with write access to the cache repo, and
 ~520 GB of disk: the dataset from `anquachdev/common-vi-en` at the revision the Mac's copy
 equals (~440 GB), and the whole cache (~75 GB, the Mac's part pulled in too). Name the out-dir as

@@ -15,8 +15,17 @@ ALIGNER_REPO = "facebook/wav2vec2-base-960h"
 ALIGNER_REVISION = "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"  # every machine times with this one
 ALIGNMENT_NAME = "wav2vec2_ctc_word_v1"
 DEFAULT_MIN_ALIGNMENT_SCORE = 0.5
+# wav2vec2-base's feature encoder, (kernel, stride) per convolution: 16 kHz -> 50 Hz.
+CTC_CONVS = ((10, 5), (3, 2), (3, 2), (3, 2), (3, 2), (2, 2), (2, 2))
 CTC_BLANK = "<pad>"  # the aligner tokenizer's pad token
 CTC_DELIMITER = "|"  # its word delimiter
+
+
+def ctc_frames(samples: int) -> int:
+    """The CTC frames of a `samples`-long 16 kHz clip."""
+    for kernel, stride in CTC_CONVS:
+        samples = (samples - kernel) // stride + 1
+    return samples
 
 
 def _ascii(text: str) -> str:
@@ -128,8 +137,7 @@ def _ctc_token_frames(
 
 class CTCWordAligner:
     """wav2vec2-base-960h CTC word timing on the CPU: the Viterbi over a clip's log-probabilities,
-    whichever runtime computed them (MLX on the Mac, `EnglishCTCAligner`; CUDA on the box,
-    `training.tranche.cache`)."""
+    whichever device computed them (`cache_build`: MLX or CUDA)."""
 
     def __init__(self, files: Path, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
         """`files`: the pinned snapshot, from `aligner_files`."""
@@ -188,26 +196,6 @@ def aligner_files() -> Path:
             allow_patterns=["model.safetensors", "vocab.json"],
         )
     )
-
-
-class EnglishCTCAligner(CTCWordAligner):
-    """`CTCWordAligner` with the model in MLX: `log_probs` queues the float32 forward
-    (`wav2vec2_mlx`) and `align` runs the Viterbi on its result, so a caller can keep the GPU busy
-    while the CPU aligns. The word spans equal PyTorch CPU float32's on 6,180 of 6,181 words, with
-    the same rejections (measured on mlx-audio's eager model, whose rows this port builds but for
-    float near-ties).
-    """
-
-    def __init__(self, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
-        from training.prep.wav2vec2_mlx import Wav2Vec2CTC
-
-        files = aligner_files()
-        super().__init__(files, min_score)
-        self.model = Wav2Vec2CTC(files / "model.safetensors")
-
-    def log_probs(self, waveform_16khz: np.ndarray) -> Any:
-        """The clip's lazy MLX CTC log-probabilities [frames, vocab]."""
-        return self.model.log_probs(waveform_16khz)
 
 
 def timed_sentencepiece_tokens(
