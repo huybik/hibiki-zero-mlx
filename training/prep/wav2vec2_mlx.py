@@ -93,29 +93,25 @@ class Wav2Vec2CTC:
         self._forward_compiled = mx.compile(self._forward)
 
     def _to_half(self) -> None:
-        def c(x: mx.array) -> mx.array:
-            return x.astype(mx.float16)
-        def ct(t: tuple) -> tuple:
-            return tuple(c(x) for x in t)
-        self.convs = [c(w) for w in self.convs]
-        self.group_norm = ct(self.group_norm)
-        self.projection_norm = ct(self.projection_norm)
-        self.projection = ct(self.projection)
-        self.pos_conv = ct(self.pos_conv)
-        self.encoder_norm = ct(self.encoder_norm)
-        self.layers = [{k: ct(v) if isinstance(v, tuple) else c(v) for k, v in layer.items()}
-                       for layer in self.layers]
-        self.head = ct(self.head)
-        mx.eval(self.__dict__)
+        from mlx.utils import tree_map
+        skip = {"_half", "_forward_compiled"}
+        weights = {k: v for k, v in self.__dict__.items() if k not in skip}
+        for k, v in tree_map(lambda x: x.astype(mx.float16), weights).items():
+            setattr(self, k, v)
+        mx.eval({k: v for k, v in self.__dict__.items() if k not in skip})
 
     def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
         hs = mx.conv1d(pcm[..., None], self.convs[0], stride=STRIDES[0])
         # GroupNorm with one group per channel, over the clip's own frames only.
         own = (mx.arange(hs.shape[1]) < first_frames)[None, :, None]
-        count = first_frames.astype(hs.dtype)
-        mean = mx.where(own, hs, 0).sum(axis=1, keepdims=True) / count
-        var = mx.where(own, mx.square(hs - mean), 0).sum(axis=1, keepdims=True) / count
-        hs = nn.gelu((hs - mean) * mx.rsqrt(var + EPS) * self.group_norm[0] + self.group_norm[1])
+        # Statistics in float32: first_frames can exceed float16 max (65504) for clips over 20.47 s,
+        # and the sum of squares overflows float16 for clips over ~8 s.
+        count = first_frames.astype(mx.float32)
+        h_fp = hs.astype(mx.float32)
+        mean = mx.where(own, h_fp, 0).sum(axis=1, keepdims=True) / count
+        var = mx.where(own, mx.square(h_fp - mean), 0).sum(axis=1, keepdims=True) / count
+        scale = mx.rsqrt((var + EPS).astype(hs.dtype))
+        hs = nn.gelu((hs - mean.astype(hs.dtype)) * scale * self.group_norm[0] + self.group_norm[1])
         for weight, stride in zip(self.convs[1:], STRIDES[1:], strict=True):
             hs = nn.gelu(mx.conv1d(hs, weight, stride=stride))
         hs = mx.fast.layer_norm(hs, *self.projection_norm, EPS) @ self.projection[0]

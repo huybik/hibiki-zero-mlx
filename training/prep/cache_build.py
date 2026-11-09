@@ -72,13 +72,6 @@ class MLXModels:
 
     def encode(
         self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
-    ) -> list[tuple[Future, np.ndarray, np.ndarray]]:
-        """Each row's alignment and Mimi codes, fully materialized."""
-        return [(a, np.array(vi), np.array(en))
-                for a, vi, en in self.encode_async(rows, align)]
-
-    def encode_async(
-        self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
     ) -> list[tuple[Future, Any, Any]]:
         """Queue CTC and Mimi on the GPU; block until CTC is done and workers are submitted;
         return lazy Mimi codes so the caller can overlap planning the next window with Mimi."""
@@ -133,12 +126,14 @@ def batches(lengths: list[int], budget: int) -> list[list[int]]:
 
 
 class CUDAModels:
-    """Mimi (moshi) and wav2vec2-base-960h CTC (transformers) in full float32 on CUDA, over padded
-    batches of up to CUDA_BATCH_S of audio, shortest first."""
+    """Mimi (moshi, float32) and wav2vec2-base-960h CTC (transformers) on CUDA, over padded batches
+    of up to CUDA_BATCH_S of audio, shortest first. CTC runs in float32 by default; pass
+    `half_ctc=True` to run its 12-layer transformer in bfloat16 (feature extractor and lm_head
+    stay float32, so GroupNorm stats are safe and log-probs match float32 within CTC rounding)."""
 
     window = 4096  # rows per batched pass
 
-    def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path):
+    def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path, half_ctc: bool = False):
         import torch
         from transformers import Wav2Vec2ForCTC
 
@@ -149,12 +144,7 @@ class CUDAModels:
                                                   dtype=torch.float32).to(DEVICE).eval()
         if self.ctc.config.feat_extract_norm != "group":
             raise RuntimeError("the CTC forward masks the first GroupNorm of a group-norm wav2vec2")
-
-    def encode_async(
-        self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
-    ) -> list[tuple[Future, np.ndarray, np.ndarray]]:
-        """CUDA: encode is fully synchronous; alias for the pipeline interface."""
-        return self.encode(rows, align)
+        self._half_ctc = half_ctc
 
     def encode(
         self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
@@ -207,7 +197,12 @@ class CUDAModels:
                 hs, _ = w2v.feature_projection(hs.transpose(1, 2))
                 frames = self.ctc._get_feat_extract_output_lengths(lengths)
                 mask = (torch.arange(hs.shape[1]) < frames[:, None]).to(DEVICE)
-                hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
+                if self._half_ctc:
+                    with torch.autocast("cuda", dtype=torch.bfloat16):
+                        hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
+                    hs = hs.float()
+                else:
+                    hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
                 log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1).cpu().numpy()
                 for row, (i, count) in enumerate(zip(group, frames.tolist(), strict=True)):
                     out[i] = log_probs[row, :count]
@@ -233,8 +228,7 @@ class Builder:
         self.eos_id = int(self.tokenizer.eos_id())
         self.files = aligner_files()  # resolved here, so the workers never reach the Hub
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
-        kwargs = {"half_ctc": half_ctc} if device == "mlx" else {}
-        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, self.files, **kwargs)
+        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, self.files, half_ctc=half_ctc)
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 
@@ -325,7 +319,7 @@ class Builder:
             return pool.submit(cache_rows.align, log_probs, row.lead, row.groups,
                                row.en_frames - row.delay_frames, row.delay_frames, self.eos_id)
 
-        return list(zip(window, self.models.encode_async(window, align), strict=True))
+        return list(zip(window, self.models.encode(window, align), strict=True))
 
     def _encode_finish(self, pending: list) -> None:
         """Collect Mimi codes and alignment results from `_encode_start`, finalizing each row."""
