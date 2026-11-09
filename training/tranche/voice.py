@@ -486,7 +486,8 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     vi = get("asr_vi").select(["id", "asr_vi", "language", "cer"]).to_pylist()
     if [r["id"] for r in vi] != ids:
         raise SystemExit(f"{source}/{name}: its asr_vi does not hold the segments' rows in their order")
-    # The cache build drops these on the Vietnamese side whatever the English (~6% of GigaSpeech 2's hours).
+    # Skipped: rows missing text_en (left null in en_audio) and those the Vietnamese gates drop.
+    # The cache build rejects the vi_gate rows as "not voiced" and the no_en rows gracefully.
     skipped = no_en | {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
     audio = [a["bytes"] for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
     clips = list(pool.map(decode_16k, audio, chunksize=32))
@@ -497,7 +498,7 @@ def write_shard(shard: Shard) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    r = [shard.results.get(i) for i in shard.ids]  # None: skipped by the Vietnamese gates
+    r = [shard.results.get(i) for i in shard.ids]  # None: skipped (no text_en or Vietnamese gates)
     col = lambda f, kind: pa.array([None if x is None else f(x) for x in r], kind)
     table = pa.table({
         "id": shard.ids,

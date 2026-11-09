@@ -115,7 +115,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   tanh GELU, 30% of codes equal on whole clips); rustymimi 0.4.1 (an attention window of 251
   frames, not 250, so codes differ past 10 s); streaming or chunked encoding (differs past 250
   encoder frames); float16 / bfloat16 Mimi (89% / 45% of frames equal); padded wav2vec2 without
-  a mask (changes the emissions). Float16 wav2vec2 is now used with `--half-ctc` (see above).
+  a mask (changes the emissions).
 - Upstream (checked 2026-10-27): moshi 0.2.13, rustymimi 0.4.1 and moshi_mlx 0.3.0 are the
   newest; the Mimi stack of moshi 0.2.13 equals kyutai's main, and the local Mimi checkpoint is
   the file upstream Hibiki-Zero loads (sha256 `09b782f0…`). MLX 0.32.4 (checked 2026-10-30): none
@@ -128,10 +128,10 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   padded batches of up to 640 s of audio, shortest first (`batches`). TF32 is off (changes Mimi's
   residual codes as bf16 does, and moves CTC near-ties). The CTC takes the first GroupNorm's
   statistics over each clip's own frames (always float32 to avoid overflow) and gives the encoder
-  the attention mask, as `wav2vec2_mlx` masks; Mimi needs no mask. With `--half-ctc`, the 12-layer
-  transformer runs under `torch.autocast("cuda", bfloat16)`, reducing its matmul cost by ~2×
-  while keeping the feature extractor and lm_head in float32; measure span quality against float32
-  on the same rows before a full run (same rejection rate and word starts ≤ 1 frame apart is safe).
+  the attention mask, as `wav2vec2_mlx` masks; Mimi needs no mask. `--half-ctc` runs the 12-layer
+  transformer under `torch.autocast("cuda", bfloat16)`, keeping the feature extractor and lm_head
+  in float32; tested on 30 clips from giga/154 (2026-11-09): 99.0% overall argmax agreement but
+  min per-clip 96.9%, so quality threshold (all clips ≥ 99%) was not met; not used in production.
 - On CPU, 8 clips of a shard batched against each alone kept every argmax, log-probabilities within
   2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards differ by 3.1e-3); Mimi's
   batched codes equal the clip-alone ones on all 16 codebooks.
@@ -214,12 +214,9 @@ this build. Profile the H200 box before a full run (`--limit 2`).
   driven by per-shard Hub downloads (Xet, ~4 MB/s). With all inputs local: GigaSpeech 2 likely
   approaches PhoAudiobook's 1,500–1,600× (highest measured was 1,510×). ~49 GB of GPU at peak.
 - Per-row overhead: GigaSpeech 2 (19,967 rows, 4.3 s each → ~5 windows of 4,096) has ~5×
-  more plan/collect cycles than PhoAudiobook (1,299 rows, one window). Python overhead per window
-  is ~0.4 s × 5 = 2 s over 128 s total → ~1.6% idle; most of the Japan gap came from downloads.
+  more plan/collect cycles than PhoAudiobook (1,299 rows, one window).
 - Mimi stays float32 with TF32 off (other precisions change the codes). `torch.compile` or CUDA
-  graphs on its encoder keep the codes. wav2vec2 may run in bfloat16 (`--half-ctc`) if word
-  starts stay within a frame of float32 on real rows (the MLX float16 evidence on 500 rows is
-  promising: same rejection rate, mean score diff 0.003).
+  graphs on its encoder keep the codes. See `--half-ctc` above for bfloat16 CTC status.
 - CPU: 25 workers on the 26.9-CPU Japan quota averaged 10.5 CPUs but throttled 14% of the 100 ms
   periods in bursts; on H200 the quota is 32 CPUs (31 workers). Check the main process is not the
   one throttled (`/sys/fs/cgroup/cpu.stat`).
@@ -232,11 +229,9 @@ this build. Profile the H200 box before a full run (`--limit 2`).
   and plans window N+1 rows, all while Mimi_N runs; then `_encode_start(N+1)` queues CTC_N+1.
   On MLX: GigaSpeech 2 short rows went 210–226× → measured 204× end-to-end (a single shard with
   a Hub push; the within-build rate was not interleaved against main on the same rows, so the
-  true delta is within the ±20% swing noise). On CUDA: `encode` is synchronous so pipelining
-  gains nothing there but holds an extra window of host RAM (~5 GB for GigaSpeech 2).
-- CTC in bfloat16 on CUDA (PR #88): `torch.autocast("cuda", bfloat16)` on `w2v.encoder` only;
-  feature extractor and lm_head stay float32. Measure on the H200 box interleaved against float32
-  on the same 2 archives before starting the full run.
+  true delta is within the ±20% swing noise). On CUDA: the read-ahead thread overlaps Hub
+  downloads with the current shard's encoding; H200 benchmark showed shard 1 (Hub inputs) at
+  855× and shard 2 at ~1,862× as the pipeline warmed up (cumulative 1,102×, 2026-11-09).
 - A speed lever, a device or a model goes here, for every builder at once; read both Speed
   sections first, since each device's levers were measured there and do not carry over (MLX runs
   one clip per forward, CUDA large padded batches).

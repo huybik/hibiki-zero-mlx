@@ -110,7 +110,7 @@ class Wav2Vec2CTC:
         h_fp = hs.astype(mx.float32)
         mean = mx.where(own, h_fp, 0).sum(axis=1, keepdims=True) / count
         var = mx.where(own, mx.square(h_fp - mean), 0).sum(axis=1, keepdims=True) / count
-        scale = mx.rsqrt((var + EPS).astype(hs.dtype))
+        scale = mx.rsqrt(var + EPS).astype(hs.dtype)
         hs = nn.gelu((hs - mean.astype(hs.dtype)) * scale * self.group_norm[0] + self.group_norm[1])
         for weight, stride in zip(self.convs[1:], STRIDES[1:], strict=True):
             hs = nn.gelu(mx.conv1d(hs, weight, stride=stride))
@@ -140,7 +140,7 @@ class Wav2Vec2CTC:
             hs = mx.fast.layer_norm(hs + attn, *p["norm"], EPS)
             ff = nn.gelu(hs @ p["ff1"][0] + p["ff1"][1]) @ p["ff2"][0] + p["ff2"][1]
             hs = mx.fast.layer_norm(hs + ff, *p["final_norm"], EPS)
-        logits = hs @ self.head[0] + self.head[1]
+        logits = (hs @ self.head[0] + self.head[1]).astype(mx.float32)
         return logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
     def log_probs(self, pcm: np.ndarray) -> mx.array:
@@ -158,5 +158,4 @@ class Wav2Vec2CTC:
         out = self._forward_compiled(
             mx.array(padded[None], dtype=dtype), mx.array(first_frames), mx.array(frames)
         )
-        result = out[0, :frames]
-        return result.astype(mx.float32) if self._half else result
+        return out[0, :frames]  # always float32: _forward casts logits before logsumexp
