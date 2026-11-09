@@ -37,20 +37,22 @@ Optimal: gen-batch 192, micro-batch 3. With cache: 102.9 + 25 = ~128 GiB (13 GiB
 GRPO worktree at /workspace/wt-grpo (branch grpo/trainer, .venv at /workspace/hibiki-zero/.venv symlinked,
 weights symlinked). After SFT checkpoint: `grpo_launch.sh <weight>` from wt-grpo with gen-batch 192 micro-batch 3.
 
-**Cache: RUNNING (2026-11-09 ~15:42 UTC, pid 26609, optimized)**. 74/103 giga shards complete.
-Optimizations applied (commit ff9b25f): `torch.compile(mimi.encode, dynamic=True)` + `CUDA_BATCH_S 640→1280`.
-auto_pipeline.sh (pid 26839) watches cache, then starts SFT, then GRPO sequentially.
+**Cache: DONE (2026-11-09 17:51 UTC)**. All 228 buildable GigaSpeech 2 archives cached (pho 224,
+viVoice 354), on the Hub and local under `/workspace/tranche/repo/cache/`. The last 69 built in
+1.24 h at 2,743× after the CUDA build was optimized 1,342× → 3,286× ([cache-build](cache-build.md#speed-on-cuda)).
+Archives below 74 had no local inputs: one-shard read-ahead starved the GPU to ~1,450× until their
+parts were prefetched 8 at a time (a builder prefetch is drafted, not merged). Disk: the HF cache's
+copies of built shards' inputs were deleted (on the Hub), and so were the ASR/TTS envs and models
+and the local `en_audio` (voice is done on this box; `envs-min.sh` rebuilds them).
 
-**SFT round 4b: PENDING** (auto_pipeline will run `restart.sh sft` → `h100.sh run full_epoch4b` after
-cache completes). Optimizations: `--batch-frames 8192` (from default 4608; +~14% throughput; H200 peak
-~93 GiB, well within 141 GiB). SFT data: pho (224 ✓), vivoice (354 ✓), giga (103 shards when done),
-en_speech_sub (150 ✓). Run name full_epoch4b (not full_epoch4 — that was trained on incomplete 58/103
-giga shards and was killed at step ~4290; its checkpoints at step 3000+4000 are stale and must NOT be
-used). `/workspace/restart.sh` and `/workspace/auto_pipeline.sh` are updated for full_epoch4b.
+**SFT round 4b: RUNNING (started 2026-11-09 18:25 UTC, `restart.sh sft`, commit `1d26c15`)**:
+`full_epoch4b`, 6,737 h of source (540,689 streams, 4.44M rows), 57,368 steps at 0.410 s/step
+(~6.5 h + 4 validations), `--batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1`, LR 3e-6,
+seed 46, val every 15,000. Measured choices in [sft-speed](sft-speed.md#by-gpu). One kept pair
+because the disk holds ~110 GB free; `runs/full_epoch4` (70 GB, stale, not on the Hub) is the
+user's to delete. Never commit in `/workspace/hibiki-zero` while it runs (worktree `/workspace/wt-sft`).
 
-**GRPO: PENDING** (auto_pipeline will run `grpo_launch.sh <best_sft_ckpt>` after SFT). Configured:
-gen-batch 192, micro-batch 3, --updates 800. auto_pipeline picks latest model_step*.safetensors from
-full_epoch4b/checkpoints/ as the seed weight (verify val chrF in sft.log to confirm it is best).
+**GRPO: PENDING**, to be optimized after SFT (profile above was taken beside other jobs).
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
