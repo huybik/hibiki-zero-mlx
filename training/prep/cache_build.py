@@ -52,13 +52,14 @@ def default_workers(device: str) -> int:
 
 
 class MLXModels:
-    """Mimi (`mimi_mlx`) and wav2vec2 (`wav2vec2_mlx`) in float32 on Apple Silicon: one clip per
-    forward (batching clips gained nothing in MLX), padded to length buckets, so each compiled
-    forward sees few shapes."""
+    """Mimi (`mimi_mlx`) and wav2vec2 (`wav2vec2_mlx`) on Apple Silicon: one clip per forward
+    (batching clips gained nothing in MLX), padded to length buckets, so each compiled forward
+    sees few shapes. Mimi runs in float32; wav2vec2 runs in float32 by default or float16 when
+    `half_ctc=True` (log-probs cast back to float32 before the Viterbi)."""
 
     window = 64  # rows queued on the GPU at once
 
-    def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path):
+    def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path, half_ctc: bool = False):
         import mlx.core as mx
 
         from training.prep.mimi_mlx import MimiEncoder
@@ -66,22 +67,30 @@ class MLXModels:
 
         mx.set_cache_limit(MLX_CACHE_BYTES)
         self.mimi = MimiEncoder(mimi_weight, num_codebooks)
-        self.ctc = Wav2Vec2CTC(files / "model.safetensors")
+        self.ctc = Wav2Vec2CTC(files / "model.safetensors", half=half_ctc)
         self.cardinality = self.mimi.cardinality
 
     def encode(
         self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
     ) -> list[tuple[Future, np.ndarray, np.ndarray]]:
-        """Each row's alignment (`align` given its CTC log-probabilities) and Mimi codes. The GPU
-        runs every CTC forward first, then Mimi, so the workers align while it encodes."""
+        """Each row's alignment and Mimi codes, fully materialized."""
+        return [(a, np.array(vi), np.array(en))
+                for a, vi, en in self.encode_async(rows, align)]
+
+    def encode_async(
+        self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
+    ) -> list[tuple[Future, Any, Any]]:
+        """Queue CTC and Mimi on the GPU; block until CTC is done and workers are submitted;
+        return lazy Mimi codes so the caller can overlap planning the next window with Mimi."""
         import mlx.core as mx
 
         log_probs = [self.ctc.log_probs(row.en16) for row in rows]
         codes = [(self.mimi.encode(row.vi24), self.mimi.encode(row.en24)) for row in rows]
         mx.async_eval(log_probs)
         mx.async_eval(codes)
+        # np.array(lp) blocks until CTC is done; Mimi is queued and runs asynchronously after it
         aligned = [align(row, np.array(lp)) for row, lp in zip(rows, log_probs, strict=True)]
-        return [(a, np.array(vi), np.array(en)) for a, (vi, en) in zip(aligned, codes, strict=True)]
+        return [(a, vi, en) for a, (vi, en) in zip(aligned, codes, strict=True)]
 
 
 # --------------------------------------------------------------------------- CUDA
@@ -140,6 +149,12 @@ class CUDAModels:
                                                   dtype=torch.float32).to(DEVICE).eval()
         if self.ctc.config.feat_extract_norm != "group":
             raise RuntimeError("the CTC forward masks the first GroupNorm of a group-norm wav2vec2")
+
+    def encode_async(
+        self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
+    ) -> list[tuple[Future, np.ndarray, np.ndarray]]:
+        """CUDA: encode is fully synchronous; alias for the pipeline interface."""
+        return self.encode(rows, align)
 
     def encode(
         self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
@@ -208,7 +223,8 @@ MODELS = {"mlx": MLXModels, "cuda": CUDAModels}  # --device
 class Builder:
     """A cache build on one device; `run` turns a builder's source shards into cache shards."""
 
-    def __init__(self, device: str, settings: Settings, config_path: Path, mimi_weight: Path, tokenizer: Path):
+    def __init__(self, device: str, settings: Settings, config_path: Path, mimi_weight: Path, tokenizer: Path,
+                 half_ctc: bool = False):
         import sentencepiece
 
         self.settings = settings
@@ -217,7 +233,8 @@ class Builder:
         self.eos_id = int(self.tokenizer.eos_id())
         self.files = aligner_files()  # resolved here, so the workers never reach the Hub
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
-        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, self.files)
+        kwargs = {"half_ctc": half_ctc} if device == "mlx" else {}
+        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, self.files, **kwargs)
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 
@@ -256,20 +273,27 @@ class Builder:
             yield ahead.result()
 
     def _stream(self, shards: Iterator[Shard], pool: ProcessPoolExecutor) -> Iterator[Shard]:
-        """The shards filled, their rows planned and encoded in windows that run across shard ends."""
+        """The shards filled, their rows planned and encoded in windows that run across shard ends.
+        Each window's GPU work starts before the previous window's Mimi codes are collected, so the
+        GPU runs continuously: CTC_N → Mimi_N → CTC_N+1 → Mimi_N+1 → …"""
         started: deque[Shard] = deque()
         window: list[Row] = []
+        pending: list = []  # _encode_start result for the previous full window, not yet collected
         for shard, index, row, clips in self._decoded(shards, pool, started):
             try:
                 window.append(cache_rows.plan(shard, index, row, clips.result(), self.settings, self.tokenizer))
             except (Rejected, AlignmentError) as exc:
                 shard.reject(index, row["id"], exc)
             if len(window) == self.models.window:
-                self._encode(window, pool)
+                new_pending = self._encode_start(window, pool)  # queues GPU work, blocks on CTC
+                self._encode_finish(pending)                     # collects previous Mimi (already done)
+                pending = new_pending
                 window = []
             while started and not started[0].left:
                 yield started.popleft().done()
-        self._encode(window, pool)
+        new_pending = self._encode_start(window, pool)
+        self._encode_finish(pending)
+        self._encode_finish(new_pending)
         if any(shard.left for shard in started):
             raise RuntimeError("the build ended with rows neither sampled nor rejected")
         for shard in started:
@@ -292,22 +316,27 @@ class Builder:
         while queued:
             yield queued.popleft()
 
-    def _encode(self, window: list[Row], pool: ProcessPoolExecutor) -> None:
-        """The window's codes and text timing, each row's sample or rejection added to its shard."""
+    def _encode_start(self, window: list[Row], pool: ProcessPoolExecutor) -> list:
+        """Queue GPU work for `window` and submit alignment workers; return lazy Mimi codes."""
         if not window:
-            return
+            return []
 
         def align(row: Row, log_probs: np.ndarray) -> Future:
             return pool.submit(cache_rows.align, log_probs, row.lead, row.groups,
                                row.en_frames - row.delay_frames, row.delay_frames, self.eos_id)
 
-        for row, (aligned, vi, en) in zip(window, self.models.encode(window, align), strict=True):
+        return list(zip(window, self.models.encode_async(window, align), strict=True))
+
+    def _encode_finish(self, pending: list) -> None:
+        """Collect Mimi codes and alignment results from `_encode_start`, finalizing each row."""
+        for row, (aligned, vi, en) in pending:
             try:
                 tokens, text_frames, score = aligned.result()
             except AlignmentError as exc:
                 row.shard.reject(row.index, row.source["id"], exc)
                 continue
-            row.shard.samples.append(cache_rows.sample(row, tokens, text_frames, score, vi, en, self.cfg))
+            row.shard.samples.append(cache_rows.sample(row, tokens, text_frames, score,
+                                                        np.array(vi), np.array(en), self.cfg))
             row.shard.left -= 1
 
 

@@ -37,9 +37,12 @@ def _frames(samples: int) -> tuple[int, int]:
 
 
 class Wav2Vec2CTC:
-    """16 kHz float32 PCM -> CTC log-probabilities [frames, vocab] from the HF checkpoint."""
+    """16 kHz PCM -> CTC log-probabilities [frames, vocab] from the HF checkpoint.
 
-    def __init__(self, checkpoint: str | Path):
+    Runs in float32 by default; pass `half=True` to cast all weights to float16 and feed
+    float16 input, then cast log-probs back to float32 before returning."""
+
+    def __init__(self, checkpoint: str | Path, half: bool = False):
         w = {k.removeprefix("wav2vec2."): v for k, v in mx.load(str(checkpoint)).items()}
         conv = "feature_extractor.conv_layers"
         # PyTorch conv weight (out, in, k) -> MLX layout (out, k, in); the convolutions have no bias.
@@ -84,13 +87,32 @@ class Wav2Vec2CTC:
             )
         self.head = w["lm_head.weight"].T, w["lm_head.bias"]
         mx.eval(self.__dict__)
+        self._half = half
+        if half:
+            self._to_half()
         self._forward_compiled = mx.compile(self._forward)
+
+    def _to_half(self) -> None:
+        def c(x: mx.array) -> mx.array:
+            return x.astype(mx.float16)
+        def ct(t: tuple) -> tuple:
+            return tuple(c(x) for x in t)
+        self.convs = [c(w) for w in self.convs]
+        self.group_norm = ct(self.group_norm)
+        self.projection_norm = ct(self.projection_norm)
+        self.projection = ct(self.projection)
+        self.pos_conv = ct(self.pos_conv)
+        self.encoder_norm = ct(self.encoder_norm)
+        self.layers = [{k: ct(v) if isinstance(v, tuple) else c(v) for k, v in layer.items()}
+                       for layer in self.layers]
+        self.head = ct(self.head)
+        mx.eval(self.__dict__)
 
     def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
         hs = mx.conv1d(pcm[..., None], self.convs[0], stride=STRIDES[0])
         # GroupNorm with one group per channel, over the clip's own frames only.
         own = (mx.arange(hs.shape[1]) < first_frames)[None, :, None]
-        count = first_frames.astype(mx.float32)
+        count = first_frames.astype(hs.dtype)
         mean = mx.where(own, hs, 0).sum(axis=1, keepdims=True) / count
         var = mx.where(own, mx.square(hs - mean), 0).sum(axis=1, keepdims=True) / count
         hs = nn.gelu((hs - mean) * mx.rsqrt(var + EPS) * self.group_norm[0] + self.group_norm[1])
@@ -127,7 +149,8 @@ class Wav2Vec2CTC:
 
     def log_probs(self, pcm: np.ndarray) -> mx.array:
         """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz float32 clip, normalized
-        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`)."""
+        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`).
+        Always returns float32, even when the model runs in float16."""
         if pcm.ndim != 1:
             raise ValueError(f"wav2vec2 needs a mono clip, got shape {pcm.shape}")
         first_frames, frames = _frames(len(pcm))
@@ -135,7 +158,9 @@ class Wav2Vec2CTC:
             raise ValueError(f"A {len(pcm)}-sample clip is too short for one wav2vec2 frame")
         padded = np.zeros(math.ceil(len(pcm) / BUCKET_SAMPLES) * BUCKET_SAMPLES, np.float32)
         padded[: len(pcm)] = pcm
+        dtype = mx.float16 if self._half else mx.float32
         out = self._forward_compiled(
-            mx.array(padded[None]), mx.array(first_frames), mx.array(frames)
+            mx.array(padded[None], dtype=dtype), mx.array(first_frames), mx.array(frames)
         )
-        return out[0, :frames]
+        result = out[0, :frames]
+        return result.astype(mx.float32) if self._half else result

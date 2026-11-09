@@ -72,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-cer", type=float, default=MAX_CER)
     p.add_argument("--max-frames", type=int, default=280, help="The trainer's frame cap.")
     p.add_argument("--device", choices=list(MODELS), default="cuda")
+    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX only; +~26%% CTC speed)")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
@@ -189,7 +190,8 @@ def build(args: argparse.Namespace) -> None:
 
 def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
     grams = eval_grams()
-    builder = Builder(args.device, Settings(args.max_frames), args.config_path, args.mimi_weight, args.tokenizer)
+    builder = Builder(args.device, Settings(args.max_frames), args.config_path, args.mimi_weight, args.tokenizer,
+                      half_ctc=args.half_ctc)
     pushed = {s: time.monotonic() for s in args.sources}
     workers = args.workers or default_workers(args.device)
 
