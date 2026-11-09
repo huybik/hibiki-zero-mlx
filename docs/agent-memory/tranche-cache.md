@@ -129,15 +129,18 @@ nice -n 19 python3 -m training.tranche.cache build giga --device mlx --root <dir
   --tokenizer weights/tokenizer_spm_48k_multi6_2.model
 ```
 
-Speed (M4 Pro 48 GB, 2026-11-09, before optimization): ~130× RT (~24 min per GigaSpeech 2 shard
-of ~50 h Mimi audio). Root cause: whole-shard lazy arrays in flight → ~60 GB peak on a 48 GB Mac →
-swap. Optimization applied: `mx.set_cache_limit(16 GB)` (matches cache_codes' measured 225× at
-16 GB) and windows of 64 rows — CTC + both Mimi queued together per window, workers run Viterbi
-for window k while window k+1 encodes. Target: ~225×. Profile with --limit 2 before each full run.
+Speed (M4 Pro 48 GB, 2026-11-09): 130–136× RT per GigaSpeech 2 shard (~50 h Mimi audio, ~24 min).
+Memory design (streaming fix, 2026-11-09): `build_shard_mlx()` streams rows from the 4 parquet
+parts PREFETCH=64 at a time via pyarrow `iter_batches` (audio metadata read once, audio bytes
+streamed batch by batch); at most PREFETCH=64 decode futures outstanding; each MLX_WINDOW=64
+encode frees vi24/en24/en16 immediately after. Peak: ~15 MB streaming batch + ~30 MB pool queue
++ ~224 MB decode buffer + ~144 MB Mimi codes + 16 GB MLX freed cache + ~9 GB system/models ≈
+26 GB (down from 41+ GB OOM). `mx.set_cache_limit` keeps freed Metal buffers for shape reuse
+across the ~36 compiled programs. Profile with --limit 2 before each full run.
 
-The 213 voiced GigaSpeech 2 archives had 76 cached after the Japan box; 137 remain. At 225×:
-137 × 50 h / 225 / 3600 × 3600 = 137 × ~13 min ≈ 30 h — too long for overnight.
-At 300×: ~10 min/shard × 137 ≈ 23 h — borderline. Wait for the H100 unless the box takes >3 days.
+The 213 voiced GigaSpeech 2 archives had 78 cached after the Japan box + this session; 135 remain.
+At 130×: 135 × 50 h / 130 / 3600 ≈ 51 h — too long for overnight. Wait for the H100 unless the
+box takes >3 days.
 
 If both Mac and new box run simultaneously: `--limit` on the Mac (todo_shards lists the Hub once
 at start; both would otherwise build the same shards, wasting work but not corrupting data).
