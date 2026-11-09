@@ -63,13 +63,19 @@ class Source:
     revision: str
     pattern: str  # the source shards, a regex over the repo's file names
     shards: int | None = None  # how many of the sorted shards hold usable rows; None: all
+    # Shards (by their parquet name) held out of training as an evaluation set of the tranche's own
+    # distribution (eval_sets' giga-heldout): voice.py and the cache build skip them.
+    heldout: frozenset[str] = frozenset()
 
 
 SOURCES = {
     # Shards 224-802 hold only augmented audio.
     "pho": Source("thivux/phoaudiobook", "f19f241", r"data/train-\d+-of-\d+\.parquet", 224),
     "vivoice": Source("capleaf/viVoice", "693e988", r"data/train-\d+-of-\d+\.parquet"),
-    "giga": Source("speechcolab/gigaspeech2", "8dc0d0e", r"data/vi/train/\d+\.tar\.gz"),
+    # Archives 86 and 98, drawn by random.Random(0).sample(range(74, 100), 2) from the 26 archives
+    # not yet voiced or cached when they were held out (2026-11-09; 185 waits on its translation).
+    "giga": Source("speechcolab/gigaspeech2", "8dc0d0e", r"data/vi/train/\d+\.tar\.gz",
+                   heldout=frozenset({"86.parquet", "98.parquet"})),
 }
 SCHEMA = pa.schema([
     ("id", pa.string()), ("source", pa.string()), ("doc", pa.string()), ("seq", pa.int64()),

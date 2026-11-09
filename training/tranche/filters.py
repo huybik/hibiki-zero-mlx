@@ -2,9 +2,10 @@
 """Row filters of the tranche, measured before the cache build drops rows on them
 ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#filters)).
 
-  overlap            count the segments rows that share a run of OVERLAP_N syllables (or a whole
-                     shorter sentence) with a FLEURS vi or MultiMed-ST vi evaluation sentence (data/eval/, built by
-                     training.prep.eval_sets); the cache build drops those rows with `overlaps`.
+  overlap            count the segments rows (held-out shards excepted, `training_texts`) that share
+                     a run of OVERLAP_N syllables (or a whole shorter sentence) with a FLEURS vi or
+                     MultiMed-ST vi evaluation sentence (data/eval/, built by training.prep.eval_sets);
+                     the cache build drops those rows with `overlaps`.
                      Reads only the id and text columns from the Hub; runs on the Mac or the box
   asr <sources...>   hear every segments row with Qwen3-ASR-1.7B on the ASR server, its language
                      detected rather than forced, and write
@@ -26,6 +27,7 @@ import re
 import time
 import unicodedata
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
@@ -69,25 +71,64 @@ def spoken(text: str) -> list[str]:
 Grams = dict[int, set[tuple[str, ...]]]  # evaluation runs by length
 
 
-def eval_grams(eval_dir: Path = REPO_ROOT / "data/eval") -> Grams:
-    """Every OVERLAP_N-syllable run of the evaluation sentences, and each sentence of
-    MIN_SENTENCE..OVERLAP_N - 1 syllables whole."""
-    import json
+def runs(words: list[str]) -> set[tuple[str, ...]]:
+    """A sentence's runs as the overlap check matches them: every OVERLAP_N-syllable run, or the
+    whole sentence of MIN_SENTENCE..OVERLAP_N - 1 syllables; none for a shorter one."""
+    if len(words) < MIN_SENTENCE:
+        return set()
+    n = min(len(words), OVERLAP_N)
+    return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
 
+
+def grams_of(texts: Iterable[str]) -> Grams:
+    """The runs of these sentences, by length."""
     grams: Grams = {}
-    for name in EVAL_SETS:
-        for line in open(eval_dir / f"{name}.jsonl"):
-            w = spoken(json.loads(line)["text_vi"])
-            if len(w) >= MIN_SENTENCE:
-                n = min(len(w), OVERLAP_N)
-                grams.setdefault(n, set()).update(tuple(w[i:i + n]) for i in range(len(w) - n + 1))
+    for text in texts:
+        if found := runs(spoken(text)):
+            grams.setdefault(len(next(iter(found))), set()).update(found)
     return grams
 
 
+def eval_grams(eval_dir: Path = REPO_ROOT / "data/eval") -> Grams:
+    """The runs of the evaluation sentences."""
+    import json
+
+    return grams_of(json.loads(line)["text_vi"] for name in EVAL_SETS for line in open(eval_dir / f"{name}.jsonl"))
+
+
 def overlaps(text: str, grams: Grams) -> bool:
-    """Whether the transcript holds one of the evaluation runs."""
+    """Whether the transcript holds one of the runs."""
     w = spoken(text)
-    return any(tuple(w[i:i + n]) in runs for n, runs in grams.items() for i in range(len(w) - n + 1))
+    return any(tuple(w[i:i + n]) in found for n, found in grams.items() for i in range(len(w) - n + 1))
+
+
+def matches(text: str, grams: Grams) -> set[tuple[str, ...]]:
+    """The runs the transcript holds."""
+    w = spoken(text)
+    return {run for n, found in grams.items() for i in range(len(w) - n + 1) if (run := tuple(w[i:i + n])) in found}
+
+
+def training_texts(revision: str) -> Iterator[tuple[str, list[tuple[str, str, str]]]]:
+    """(source, its (id, doc, text) rows in their order) for each segments shard of REPO at
+    `revision` but the held-out ones (`Source.heldout`), sixteen shards read at a time; only those
+    columns' chunks are read, not the audio. A doc's rows are consecutive (ingest)."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem()
+
+    def read(path: str) -> list[tuple[str, str, str]]:
+        with fs.open(path, "rb", cache_type="none") as fh:
+            t = pq.ParquetFile(fh).read(columns=["id", "doc", "text"])
+        return list(zip(*t.to_pydict().values()))
+
+    with ThreadPoolExecutor(16) as pool:
+        for source, src in SOURCES.items():
+            shards = [p for p in sorted(fs.glob(f"datasets/{REPO}@{revision}/{source}/segments/*.parquet"))
+                      if p.rsplit("/", 1)[1] not in src.heldout]
+            for i in range(0, len(shards), 16):
+                for rows in pool.map(read, shards[i:i + 16]):
+                    yield source, rows
 
 
 # Above 0.15 the corpus transcript and the clip differ by phrases (PhoAudiobook's repeated clauses);
@@ -118,26 +159,24 @@ def vi_gate(row: dict, max_cer: float = MAX_CER) -> str | None:
 
 
 def overlap(args: argparse.Namespace) -> None:
-    import pyarrow.parquet as pq
-    from huggingface_hub import HfApi, HfFileSystem
+    from huggingface_hub import HfApi
 
     grams = eval_grams()
-    log("evaluation runs: " + ", ".join(f"{len(runs)} of {n}" for n, runs in sorted(grams.items())))
-    fs, api = HfFileSystem(), HfApi()
+    log("evaluation runs: " + ", ".join(f"{len(found)} of {n}" for n, found in sorted(grams.items())))
+    def report(source: str, total: int, found: list[str]) -> None:
+        log(f"{source}: {len(found)} of {total} rows overlap the evaluation sets"
+            + (f", e.g. {found[:5]}" if found else ""))
 
-    def read(path: str) -> list[tuple[str, str]]:
-        with fs.open(path, "rb", cache_type="none") as fh:  # only these columns' chunks, not the audio
-            t = pq.ParquetFile(fh).read(columns=["id", "text"])
-        return list(zip(*t.to_pydict().values()))
-
-    for source in SOURCES:
-        repo = REPO
-        sha = api.dataset_info(repo).sha
-        shards = sorted(fs.glob(f"datasets/{repo}@{sha}/{source}/segments/*.parquet"))
-        with ThreadPoolExecutor(16) as pool:
-            rows = [r for part in pool.map(read, shards) for r in part]
-        hits = [i for i, text in rows if overlaps(text, grams)]
-        log(f"{source}: {len(hits)} of {len(rows)} rows overlap the evaluation sets" + (f", e.g. {hits[:5]}" if hits else ""))
+    current, total, found = None, 0, []
+    for source, rows in training_texts(HfApi().dataset_info(REPO).sha):  # source by source
+        if source != current:
+            if current is not None:
+                report(current, total, found)
+            current, total, found = source, 0, []
+        total += len(rows)
+        found += [i for i, _, text in rows if overlaps(text, grams)]
+    if current is not None:
+        report(current, total, found)
 
 
 def wav_16k(data: bytes) -> bytes:

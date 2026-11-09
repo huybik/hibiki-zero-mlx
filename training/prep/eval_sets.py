@@ -15,10 +15,17 @@ Writes, under --out-dir (default data/eval):
                                    simulated recording conditions (24 kHz WAV, resampled as eval.py
                                    resamples the clean clips), against which the clean set shows
                                    what the channel alone costs.
+  giga-heldout/test.jsonl          a seeded sample of the real-Vietnamese tranche's own rows
+                                   from the GigaSpeech 2 archives held out of training
+                                   (`ingest.SOURCES["giga"].heldout`): real speech, the corpus
+                                   transcript, the tranche's machine English (text_en). Built
+                                   from the gated tranche repo, so it needs an HF_TOKEN granted
+                                   access, and its audio never goes to a public repo (GigaSpeech
+                                   2's terms).
 
 Each row holds `id`, `vi_audio` (the clip's path), `text_vi`, `text_en` and `duration_s`. These sets
 are for evaluation only and never enter training. Needs huggingface_hub, pyarrow, sphn, soxr and
-torch; runs on the Mac or the pod.
+torch (giga-heldout also PyAV and num2words); runs on the Mac or the pod.
 """
 
 from __future__ import annotations
@@ -57,6 +64,9 @@ EN_VI_ROWS = 180  # per source
 EN_VI_SEED = 0
 OPUS_RATE = 48_000
 NOISY_SEED = 0
+GIGA_HELDOUT_REVISION = "5111b38c705e7c0d630ff3c6f5bfaf4e5f51b0d1"  # ingest.REPO, 2026-11-08
+GIGA_HELDOUT_ROWS = 1_000
+GIGA_HELDOUT_SEED = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sets",
         nargs="+",
-        choices=("fleurs", "multimed", "en-vi-val", "en-vi-val-noisy"),
+        choices=("fleurs", "multimed", "en-vi-val", "en-vi-val-noisy", "giga-heldout"),
         default=["fleurs", "multimed", "en-vi-val"],
     )
     parser.add_argument(
@@ -264,6 +274,71 @@ def build_en_vi_val_noisy(out_dir: Path, bank_dir: Path) -> None:
         write_rows(out_dir / "en-vi-val-noisy" / f"{source}.jsonl", rows)
 
 
+def build_giga_heldout(out_dir: Path) -> None:
+    """Rows of the held-out GigaSpeech 2 archives that the training's Vietnamese-side gate keeps
+    (`filters.vi_gate`) and that share no run (the cache build's overlap rule, `filters.runs`) with
+    any training doc's transcripts joined in order, as the trainer joins a doc's rows into a stream;
+    each one segment as a cache row is, decoded as the cache build decodes. Reads the tranche repo
+    at GIGA_HELDOUT_REVISION."""
+    from itertools import groupby
+
+    from training.prep.audio import decode
+    from training.tranche import ingest
+    from training.tranche.cache import read_parts
+    from training.tranche.filters import grams_of, matches, runs, spoken, training_texts, vi_gate
+
+    columns = {
+        "segments": ["id", "doc", "text", "duration_s"],
+        "text_en": ["id", "text_en"],
+        "asr_vi": ["id", "asr_vi", "language", "cer"],
+    }
+    shards, kept = {}, []
+    for name in sorted(ingest.SOURCES["giga"].heldout):
+        files = {
+            part: download(ingest.REPO, GIGA_HELDOUT_REVISION, f"giga/{part}/{name}")
+            for part in columns
+        }
+        rows = read_parts("giga", name, files, columns)
+        if any(row["text_en"] is None for row in rows):
+            raise RuntimeError(f"giga/text_en/{name} has rows without a translation")
+        shards[name] = (files["segments"], rows)
+        kept += [(name, i, row["text"]) for i, row in enumerate(rows) if vi_gate(row) is None]
+    # GigaSpeech 2's recordings repeat stories, forecasts and outros across archives, and the same
+    # Vietnamese got the same machine English, so holding out archives does not hold out the text.
+    grams = grams_of(text for _, _, text in kept)
+    seen: set[tuple[str, ...]] = set()
+    for _, rows in training_texts(GIGA_HELDOUT_REVISION):
+        for _, doc in groupby(rows, key=lambda row: row[1]):
+            seen |= matches(" ".join(text for _, _, text in doc), grams)
+    candidates = [(name, i) for name, i, text in kept if not runs(spoken(text)) & seen]
+    print(f"giga-heldout: {len(candidates)} of {len(kept)} gated rows share no run with training")
+    random.Random(GIGA_HELDOUT_SEED).shuffle(candidates)
+    picked = sorted(candidates[:GIGA_HELDOUT_ROWS])
+    audio_dir = out_dir / "giga-heldout" / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    out = []
+    for name, (segments, rows) in shards.items():
+        indexes = [i for shard, i in picked if shard == name]
+        clips = pq.read_table(segments, columns=["audio"]).take(indexes).column("audio").to_pylist()
+        for index, clip in zip(indexes, clips, strict=True):
+            row = rows[index]
+            pcm, rate = decode(clip["bytes"])
+            wav = audio_dir / f"{row['id'].replace('/', '_')}.wav"
+            sphn.write_wav(wav, pcm[None], rate)
+            out.append(
+                {
+                    "id": f"giga-heldout/{row['id'].removeprefix('giga/')}",
+                    "vi_audio": repo_display_path(wav),
+                    "text_vi": row["text"],
+                    "text_en": row["text_en"],
+                    "duration_s": row["duration_s"],
+                    "doc": row["doc"],
+                    "source_row": f"giga/segments/{name}#r{index}",
+                }
+            )
+    write_rows(out_dir / "giga-heldout" / "test.jsonl", out)
+
+
 def main() -> None:
     args = parse_args()
     out_dir = resolve_repo_path(args.out_dir)
@@ -275,6 +350,8 @@ def main() -> None:
         build_en_vi_val(out_dir)
     if "en-vi-val-noisy" in args.sets:
         build_en_vi_val_noisy(out_dir, resolve_repo_path(args.bank_dir))
+    if "giga-heldout" in args.sets:
+        build_giga_heldout(out_dir)
 
 
 if __name__ == "__main__":

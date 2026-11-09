@@ -119,11 +119,14 @@ so it runs on the Mac or the pod; rerunning rebuilds them. They are for evaluati
 ([sft-evaluation](../../docs/agent-memory/sft-evaluation.md#evaluation-sets)). `en-vi-val-noisy`, built
 on request from the built `en-vi-val`, holds the same rows under simulated recording conditions
 ([noisy-source](../../docs/agent-memory/noisy-source.md#evaluation)); the first build downloads
-the noise bank (1.3 GB) into `--bank-dir`.
+the noise bank (1.3 GB) into `--bank-dir`. `giga-heldout`, also on request, samples the
+real-Vietnamese tranche's held-out GigaSpeech 2 archives from the gated tranche repo: it needs an
+`HF_TOKEN` granted access, PyAV and num2words, and its audio never goes to a public repo.
 
 ```bash
 python -m training.prep.eval_sets  # fleurs-vi/{dev,test}, multimed-vi/{select,final}, en-vi-val/{cv27,libriheavy}
 python -m training.prep.eval_sets --sets en-vi-val-noisy  # en-vi-val-noisy/{cv27,libriheavy}
+python -m training.prep.eval_sets --sets giga-heldout  # giga-heldout/test (gated: HF_TOKEN with access)
 ```
 
 ## Noisy source cache

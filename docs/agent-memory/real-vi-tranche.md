@@ -167,6 +167,9 @@ other corpora ─► their transcripts, word times by forced alignment ───
     | viVoice (5–22.4 s clips) | 269,350 | 571 | 186 channels | one per row | public, 9.7 GB | 30 min, 16 workers |
     | GigaSpeech 2 (archives 0–12) | 281,133 | 337 | none | per recording | private, 5.5 GB | 27 min, 4 workers |
 
+    GigaSpeech 2 archives 86 and 98 (`ingest.SOURCES["giga"].heldout`) are held out of training
+    as the tranche's own evaluation set ([giga-heldout](sft-evaluation.md#evaluation-sets)).
+
   - The audio decodes to within 0.5 ms of `duration_s`. Clips under 1 s (some of GigaSpeech
     2's) decode 6.5 ms long, as ffmpeg cannot trim a one-page Ogg stream. Ogg serial numbers are
     random, so a re-ingested shard differs in bytes and uploads again.
@@ -204,7 +207,9 @@ thresholds, so they can change without measuring again, except that a `--max-cer
   PhoAudiobook and GigaSpeech 2 spell numbers; Qwen3-ASR and FLEURS write digits, and on the
   first PhoAudiobook shards rows with digits made 48% of those over 0.1 CER before (15 of 51
   digit rows over 0.1, 4 after). num2words reads a long digit run (a phone number) as one number.
-- Evaluation overlap (`filters overlap`, Mac or box, text columns only): a row is dropped when its
+- Evaluation overlap (`filters overlap`, Mac or box, text columns only, held-out shards excepted;
+  `giga-heldout` applies the same rule the other way, [sft-evaluation](sft-evaluation.md#evaluation-sets)):
+  a row is dropped when its
   transcript holds a 13-syllable run of a FLEURS vi dev or test or MultiMed-ST vi select or final
   sentence, or a whole sentence of 9–12 syllables (62 of them) (`overlaps`, with the sets in
   `data/eval/`). On the first tranche no row does (2026-11-05). Runs of 10 syllables or fewer

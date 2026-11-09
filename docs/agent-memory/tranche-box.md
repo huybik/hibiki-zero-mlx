@@ -8,11 +8,13 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
-asr_vi (filters finished 2026-11-08 06:38 UTC+7); 213 have en_audio on the Hub, 27 are left to
-voice (74–99 and 185; `end_rental.sh`, 2026-11-08 21:46 UTC+7). The Hub's `giga/en_audio/` is the
-record: a voice run lists what is left. Next, on a new
+asr_vi (filters finished 2026-11-08 06:38 UTC+7); 213 have en_audio on the Hub, and `end_rental.sh`
+(2026-11-08 21:46 UTC+7) listed 27 left to voice (74–99 and 185). Of those, 86 and 98 are now held
+out for evaluation and never voiced ([giga-heldout](sft-evaluation.md#evaluation-sets)), so 25 are
+left. The Hub's
+`giga/en_audio/` is the record: a voice run lists what is left. Next, on a new
 box: asr, filters (it idles, logging "0 shards to hear"; the watchdog expects it up) and voice for
-the rest (~8.6 min an archive alone on the H100, ~4 h), then cache (~8 h for the 131 archives left at GigaSpeech 2's
+the rest (~8.6 min an archive alone on the H100, ~3.6 h), then cache (~8 h for the 129 archives left at GigaSpeech 2's
 current build speed, [tranche-cache](tranche-cache.md#scale-up)), sft and grpo as in [Jobs](#jobs),
 each optimized before its full run (below).
 

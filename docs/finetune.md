@@ -64,6 +64,7 @@ limit (429) partway; logged in they do not, and `hf download` resumes where it s
   data/cache/en-vi-grounded-v2/train data/cache/en-vi-grounded-v2/validation
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data \
   --include "eval/*"
+./.venv/bin/python -m training.prep.eval_sets --sets giga-heldout  # gated: HF_TOKEN with access
 ```
 
 The second command packs each shard into a flat memory-mapped array beside it
@@ -73,7 +74,8 @@ itself, so this only moves that work before `run` checks the free disk. The thir
 evaluation sets into `data/eval/` (`training.prep.eval_sets` builds them anew); training translates FLEURS dev and the held-out `en-vi-val` rows at every
 validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
 without them
-([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)).
+([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)). The fourth builds the held-out
+real-Vietnamese set, which GigaSpeech 2's terms keep off that public repo; pass it to `eval` below.
 
 ## Run
 

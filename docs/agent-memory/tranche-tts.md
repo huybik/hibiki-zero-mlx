@@ -117,7 +117,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   - Quality on the bake-off's 281 rows (its 9 hard lines out), Mimi round trip: broken 8.2%,
     11.0%, 11.0% over three batched passes against voxcpm's 8.2%, and voice match 0.339–0.350
     against 0.338. Only 6 rows broke in all three passes.
-- `voice.py run` voices the tranche (see its docstring). Each row is prompted with its own clip
+- `voice.py run` voices the tranche (see its docstring), except the shards held out for
+  evaluation (`ingest.SOURCES[...].heldout`, [giga-heldout](sft-evaluation.md#evaluation-sets)).
+  Each row is prompted with its own clip
   and Vietnamese transcript, as the paper conditions on the source speaker. The bake-off cloned
   from another clip of the speaker only to score similarity fairly. Every output is heard by
   Qwen3-ASR-1.7B (`qwen-asr-serve` from env `asr`, `to_language=en` to force English) and voiced
