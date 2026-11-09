@@ -104,6 +104,7 @@ Built by `training.prep.eval_sets` into `data/eval/`; evaluation only, never tra
 | MultiMed-ST vi `select` (half of 3,437) | real conversational medical speech, **8 kHz** telephone band; references LLM-drafted, then corrected by 5 annotators | non-regression gate |
 | MultiMed-ST vi `final` (other half) | same | final report |
 | `en-vi-val` Common Voice dev and Libriheavy dev (180 rows each) | the training data's own TTS Vietnamese, held out | in-domain check at each validation, scored apart from FLEURS |
+| `giga-heldout` (1,000 rows of GigaSpeech 2 archives 86 and 98) | the real-Vietnamese tranche's own speech, held out; machine EN references | in-domain check of the tranche models, scored apart from FLEURS |
 | Own phone recordings (to record) | conversational VI on a phone mic, incl. 2–3 min monologues | final gate before shipping |
 
 MultiMed segments are cut mid-phrase and its references are clean sentences: read chrF, not
@@ -337,6 +338,12 @@ Vietnamese text cannot keep up with its speech.
        | FLEURS test (857) | 38.6 vs 29.5 | 10.5 vs 5.4 | 504 vs 653 |
        | MultiMed-ST select (1,718) | 34.6 vs 24.9 | 9.6 vs 3.0 | 985 vs 893 |
        | MultiMed-ST final (1,719) | 34.8 vs 24.7 | 9.8 vs 3.1 | 981 vs 829 |
+
+     - The tranche's own held-out set, `giga-heldout` (1,000 rows; machine English references, so
+       read it apart from FLEURS), scored on the Mac (2026-11-09: `eval.py --device mps --dtype
+       bfloat16 --batch-size 64 --seed 43 --text-only`, 14.5 min): chrF 51.3, BLEU 24.8, WER 0.659,
+       643 rows ended, median end offset 3.34 s, health gates passed. Run 2's final model is not
+       scored on it yet.
 
      - The first ~1,760 h of real speech lifts every real-speech set by 9–10 chrF; the lift per
        1,000 h decides the scale-up toward ~10k h (stage 1.3). GRPO comes next, its rollouts on

@@ -16,7 +16,8 @@ the environment and the ASR server up:
       --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
       (one API process decodes and featurizes ~11 requests/s on the CPU, below the TTS's ~13 attempts/s)
   /workspace/envs/nanovox/bin/python -m training.tranche.voice run pho vivoice giga
-      every segments shard (each has its text_en and asr_vi) on the Hub without en_audio yet: each
+      every segments shard (each has its text_en and asr_vi) on the Hub without en_audio yet, but
+      those held out for evaluation (`ingest.SOURCES[...].heldout`): each
       row voiced with its own clip and transcript as prompt and reference, heard by the ASR, voiced
       again while broken (WER over 20% or pace off by 2x) up to MAX_TRIES, the best try kept; writes
       <root>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
@@ -548,6 +549,8 @@ def run(args: argparse.Namespace) -> None:
         heard |= {p.name for p in (args.root / source / "asr_vi").glob("*.parquet")}
         for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
             name = f.rsplit("/", 1)[1]
+            if name in ingest.SOURCES[source].heldout:
+                continue  # an evaluation set's shard: never trained on, so never voiced
             dst = args.root / source / "en_audio" / name
             if name in translated and name not in done and not dst.exists():
                 if name in heard:

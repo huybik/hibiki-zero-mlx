@@ -33,8 +33,10 @@ ingest.push_part(ingest.ROOT, "giga", "en_audio")  # tried again after a transie
 files = HfApi().list_repo_files(ingest.REPO, repo_type="dataset")
 hub = {f.rsplit("/", 1)[1] for f in files if f.startswith("giga/en_audio/")}
 local = {p.name for p in (ingest.ROOT / "giga" / "en_audio").glob("*.parquet")}
-left = sorted(f.rsplit("/", 1)[1] for f in files if f.startswith("giga/segments/") and f.rsplit("/", 1)[1] not in hub)
-print(f"giga en_audio on the Hub: {len(hub)} of 240; local not on the Hub: {sorted(local - hub) or 'none'}")
+to_voice = {f.rsplit("/", 1)[1] for f in files if f.startswith("giga/segments/")} - ingest.SOURCES["giga"].heldout
+left = sorted(to_voice - hub)
+print(f"giga en_audio on the Hub: {len(hub & to_voice)} of {len(to_voice)} (held out: {len(ingest.SOURCES['giga'].heldout)}); "
+      f"local not on the Hub: {sorted(local - hub) or 'none'}")
 print(f"left to voice ({len(left)}): {' '.join(n.split('.')[0] for n in left)}")
 sys.exit(1 if local - hub else 0)
 EOF

@@ -48,7 +48,14 @@ from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, part_file, 
 SPLIT = "train"  # the delay draw's key
 VI_LETTERS = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
 PUSH_S = 1800
-PARTS = ("segments", "text_en", "en_audio", "asr_vi")
+# The columns the build reads of each part (read_parts).
+PART_COLUMNS = {
+    "segments": ["id", "doc", "seq", "text", "duration_s", "audio"],
+    "text_en": ["id", "text_en"],
+    "en_audio": ["id", "en_audio", "en_duration_s", "en_asr", "en_broken"],
+    "asr_vi": ["id", "asr_vi", "language", "cer"],
+}
+PARTS = tuple(PART_COLUMNS)
 
 
 def log(msg: str) -> None:
@@ -82,19 +89,18 @@ def vietnamese_letters(en_asr: str, text_en: str) -> set[str]:
     return {c for c in unicodedata.normalize("NFC", en_asr).lower() if c in VI_LETTERS} - have
 
 
-def read_parts(root: Path, source: str, name: str) -> list[dict[str, Any]]:
-    """The shard's rows with every part's columns, in the segments' order; each part from the box's
-    own copy first (`ingest.part_file`)."""
+def read_parts(source: str, name: str, files: dict[str, Path],
+               columns: dict[str, list[str]] = PART_COLUMNS) -> list[dict[str, Any]]:
+    """The shard's rows with these columns of each part's file (segments' among them), in the
+    segments' order."""
     import pyarrow.parquet as pq
 
-    def get(part: str, columns: list[str]) -> list[dict[str, Any]]:
-        return pq.read_table(part_file(root, source, part, name), columns=columns).to_pylist()
+    def get(part: str) -> list[dict[str, Any]]:
+        return pq.read_table(files[part], columns=columns[part]).to_pylist()
 
-    rows = get("segments", ["id", "doc", "seq", "text", "duration_s", "audio"])
-    for part, columns in (("text_en", ["id", "text_en"]),
-                          ("en_audio", ["id", "en_audio", "en_duration_s", "en_asr", "en_broken"]),
-                          ("asr_vi", ["id", "asr_vi", "language", "cer"])):
-        other = get(part, columns)
+    rows = get("segments")
+    for part in [p for p in columns if p != "segments"]:
+        other = get(part)
         if [r["id"] for r in other] != [r["id"] for r in rows]:
             raise RuntimeError(f"{source}/{part}/{name} does not hold the segments' rows in their order")
         for row, extra in zip(rows, other, strict=True):
@@ -121,7 +127,8 @@ def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
 def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str]) -> Shard:
     """The shard fetched, read and gated (in the build's read thread)."""
     source, name = key
-    rows = read_parts(root, source, name)
+    # Each part from the box's own copy first (`ingest.part_file`).
+    rows = read_parts(source, name, {part: part_file(root, source, part, name) for part in PARTS})
     kept, rejected = [], []
     for index, row in enumerate(rows):
         if reason := gate(row, max_cer, grams):
@@ -145,8 +152,8 @@ def shard_file(name: str) -> str:
 
 
 def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
-    """The shards with every input on the Hub and no cache here or there, pushing first the caches
-    an earlier run wrote but did not push."""
+    """The shards with every input on the Hub and no cache here or there, but those held out for
+    evaluation (`Source.heldout`), pushing first the caches an earlier run wrote but did not push."""
     from huggingface_hub import HfApi
 
     api, todo = HfApi(), []
@@ -156,11 +163,12 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
                  for part in PARTS}
         pushed = {f.rsplit("/", 1)[1] for f in cached if f.startswith(f"{source}/")}
         local = {p.name for p in cache_dir(args.root, source).glob("shard_*.pt")}
-        ready = set.intersection(*parts.values())
-        waiting = len(parts["segments"] - ready)
+        heldout = SOURCES[source].heldout
+        ready = set.intersection(*parts.values()) - heldout
+        waiting = len(parts["segments"] - heldout - ready)
         todo += [(source, n) for n in sorted(ready) if shard_file(n) not in pushed | local]
-        log(f"{source}: {len(parts['segments'])} shards, {len(pushed)} cached on the Hub, {len(local - pushed)} "
-            f"only here, {waiting} waiting for an input")
+        log(f"{source}: {len(parts['segments'])} shards ({len(heldout)} held out), {len(pushed)} cached on the "
+            f"Hub, {len(local - pushed)} only here, {waiting} waiting for an input")
         if local - pushed:
             push_part(args.root, source, "cache")
     return todo[: args.limit]

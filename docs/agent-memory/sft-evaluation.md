@@ -78,8 +78,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 
 ## Evaluation sets
 
-`training.prep.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, so it runs on the Mac
-or the pod)
+`training.prep.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, and for `giga-heldout`
+PyAV and num2words, so it runs on the Mac or the pod)
 writes `eval.py` pair files under `data/eval/`; they are never trained on
 ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). FLEURS and MultiMed-ST built and checked
 on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the dataset repo under
@@ -94,6 +94,36 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 | `en-vi-val/cv27.jsonl` | 180 | 0.25 | in-domain check at each validation |
 | `en-vi-val/libriheavy.jsonl` | 180 | 0.66 | in-domain check at each validation |
 | `en-vi-val-noisy/{cv27,libriheavy}.jsonl` | 360 | 0.91 | the same rows under simulated recording conditions ([noisy-source](noisy-source.md#evaluation)) |
+| `giga-heldout/test.jsonl` | 1,000 | 1.07 | the real-Vietnamese tranche's own distribution, held out; not in `eval/` (below) |
+
+- `giga-heldout` (built 2026-11-09) samples, with `random.Random(0)`, 1,000 rows of GigaSpeech 2
+  archives 86 and 98 (`ingest.SOURCES["giga"].heldout`; 572 and 428 rows from 366 recordings,
+  clips 0.7–17.6 s, median 3.38 s), from the rows `filters.vi_gate` keeps that share no run with
+  the training text. Those archives are held out of training whole: voice.py and the cache
+  build skip them, and nothing had voiced or cached them when they were chosen.
+- Holding out archives does not hold out the text: GigaSpeech 2's recordings repeat stories,
+  forecasts and outros across archives, and the same Vietnamese got the same machine English
+  (`98-40-23` and the cached `147-317-17` share their reference). Of the 44,038 rows the gate
+  keeps, 16,717 (38%) share a run (the cache build's rule, `filters.runs`: 13 syllables, or a
+  whole sentence of 9–12) with the transcripts of a doc of any other tranche shard, all of which
+  are or will be training, joined in order as the trainer joins a doc's rows into a stream (a
+  sentence can span two segments: `98-330-175` is `85-142-95` and `-96`); they are dropped before
+  sampling (15,774 when each segment was matched alone). The rule cannot see rows under 9
+  syllables (stock phrases, not leaked content), so they make 24% of the set against 14% of the
+  gated rows (mean clip 3.84 s against 4.18 s), and 66 of those 239 equal a training segment word
+  for word ("xin chào và hẹn gặp lại"), so their references were likely trained on. `en_speech` is not scanned: its Vietnamese
+  translates English read speech.
+- Each row is one segment, as a cache row is, decoded as the cache build decodes, but written as
+  16-bit WAV (29 clips reach full scale) and resampled by `eval.py` with sphn rather than soxr;
+  `text_vi` is the corpus transcript (upper case) and `text_en` the tranche's machine English, so
+  its scores sit apart from FLEURS's human references. The build reads the tranche repo at a pinned
+  commit (`GIGA_HELDOUT_REVISION`), so every pod writes the same rows.
+- GigaSpeech 2's terms keep its audio off the public dataset repo (an upload of `data/eval` to its
+  `eval/` passes `--exclude "giga-heldout/*"`): build it where it runs, from the
+  gated tranche repo with an `HF_TOKEN` granted access (`training.prep.eval_sets --sets
+  giga-heldout`: ~5 min on the Mac, most of it reading the text columns of every training shard;
+  ~0.9 GB of parquet into the HF cache, 354 MB of 48 kHz WAV). It is not in the cache build's
+  overlap check (`filters.EVAL_SETS`): the build drops overlapping rows from the set instead.
 
 - FLEURS `google/fleurs` at `70bb2e8`: `vi_vn` 16 kHz WAV read speech; `text_en` is the `en_us`
   raw text of the same sentence id (every Vietnamese row has one). Several speakers read each
