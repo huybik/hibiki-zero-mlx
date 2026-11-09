@@ -88,7 +88,15 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
 
 - The H200 NVL drew 536 W on average at 1,705 MHz (1,785 max) and 58 °C: under its 600 W limit.
 
-- **H200 batch_frames lever (2026-11-09)**: default 4608; H200 has 141 GB VRAM vs H100's 80 GB.
+- **H200 SXM, alone on the GPU (2026-11-09; round 4's caches, steps 200–300 after warm-up, at
+  ~690 W of its 700 W cap, 99–100% busy)**: kernels of 10 warm steps at 4,608: matmuls 48.6%, fused
+  AdamW and the clip's scaling 11.7%, the depformer's attention 6.4%, the loss's boolean-mask gather
+  (IndexBackward, index_put) 4.5%. The loss now weighs masked positions 0 over the full logits in a
+  compiled CE (`common._dense_losses`; losses equal to 2e-4 on the same batches): +4.5%. Then by
+  `--batch-frames` (dense loss): 4,608 ~16,600 frames/s at 72.7 GiB; 8,192 18,420 at 97 GiB;
+  12,288 19,360 at 124.7 GiB. Round 4 runs 8,192 (12,288's +5% leaves ~16 GiB for validation).
+  Power-bound: only less work per frame helps from here.
+- **H200 batch_frames lever (2026-11-09, estimate before the measurement above)**: default 4608; H200 has 141 GB VRAM vs H100's 80 GB.
   Increasing batch_frames amortizes fixed per-step costs (AdamW 8%, grad norm 4%, copies 5.5% ≈ 17.5%
   of step time) over more frames. At 8192 (1.78×): peak ≈ 93 GiB (48 GiB param+opt + 45 GiB
   activations), validation headroom ~11 GiB → total ~104 GiB, expected +~14% throughput. Round 4b
