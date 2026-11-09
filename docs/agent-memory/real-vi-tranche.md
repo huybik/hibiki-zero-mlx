@@ -186,7 +186,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
   reached 143 MB/s with 8 at once), and a second copy
   in the HF cache doubles a shard's disk. A part regenerated elsewhere and pushed loses to a stale
   local copy: delete the local one first (`text_en` refilled on another machine would leave voice
-  stopping on "rows without text_en"). Translation still lists the Hub's segments and translates
+  skipping those rows as "rows without text_en" — logged but not voiced). Translation still lists the Hub's segments and translates
   every shard without a local `text_en`: give it `--shards` past the shards translated elsewhere.
   Voice queues a shard only once its `text_en` is on the Hub or here.
 - Translate (`training/tranche/translate.py`): Index-Translate-35B-A3B in vLLM on the box, a row

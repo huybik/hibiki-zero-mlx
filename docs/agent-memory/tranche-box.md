@@ -12,8 +12,8 @@ Mac MLX float16 with the GroupNorm overflow bug, shard_154 and shard_155 were H2
 benchmark; float32 full run will rebuild them). Voice running for the remaining 23 (giga 76–99
 excl. 86,98; 74 and 75 and 185 voiced 2026-11-09). Cache benchmark ran on 2 archives: 855× RT
 shard 1, 1 102× cumulative — Hub inputs dominate shard 1, pipeline warms from shard 2. Full cache
-run to use float32 (bfloat16 tested: min per-clip argmax 96.9%, did not pass; MLX float16 passed
-at 99.3% and is still used for the Mac MLX path). SFT data: pho caches done (219+5 shards in
+run to use float32 (bfloat16 tested: min per-clip argmax 96.9%, did not pass; MLX float16 not
+revalidated since GroupNorm fix, unvalidated on current code). SFT data: pho caches done (219+5 shards in
 pho/ and pho/pho/), vivoice downloading to vivoice/vivoice/ (needs mv after done), en_speech_sub
 done (150 shards in hibiki-zero/data/cache/en_speech_sub/), validation cache done, eval sets done
 except en-vi-val-noisy (building, downloading OpenSLR 28). Checkpoint downloaded (12 GB). SFT

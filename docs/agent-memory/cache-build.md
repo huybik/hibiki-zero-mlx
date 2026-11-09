@@ -102,10 +102,8 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   and that model on 252 rows rejects the same rows as PyTorch CPU float32 and gives the same spans
   on 6,180 of 6,181 words. Float16 GroupNorm statistics must be computed in float32 (not cast to
   hs.dtype): `first_frames` can exceed 65504 for clips > 20.47 s, and sum-of-squares overflows
-  for clips > ~8 s; keeping stats in float32 fixes both while retaining ~95% of the speed gain
-  (355× vs 367× on a 13.6 s clip; float32 baseline 305×). Quality on vivoice shard
-  `train_00003_of_00354` (831 rows, 2026-10-30): 99.3% of word spans identical to float32,
-  passing the threshold.
+  for clips > ~8 s; keeping stats in float32 fixes both while retaining ~81% of the float16
+  speed gain (355× vs 367× on a 13.6 s clip; float32 baseline 305×).
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (they align while
   the GPU encodes Mimi), and returns lazy Mimi codes. The *next* window's CTC is queued in
@@ -117,7 +115,9 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   tanh GELU, 30% of codes equal on whole clips); rustymimi 0.4.1 (an attention window of 251
   frames, not 250, so codes differ past 10 s); streaming or chunked encoding (differs past 250
   encoder frames); float16 / bfloat16 Mimi (89% / 45% of frames equal); padded wav2vec2 without
-  a mask (changes the emissions).
+  a mask (changes the emissions); MLX float16 CTC (2026-10-30 on old code: 99.3% of word spans;
+  not revalidated after the GroupNorm fix, so unvalidated on current code — `--half-ctc` does not
+  build production caches).
 - Upstream (checked 2026-10-27): moshi 0.2.13, rustymimi 0.4.1 and moshi_mlx 0.3.0 are the
   newest; the Mimi stack of moshi 0.2.13 equals kyutai's main, and the local Mimi checkpoint is
   the file upstream Hibiki-Zero loads (sha256 `09b782f0…`). MLX 0.32.4 (checked 2026-10-30): none
