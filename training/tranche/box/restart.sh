@@ -59,6 +59,7 @@ case $job in
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        # Shards beside their packs would fill the disk at the second checkpoint pair: drop them first (two-way.md).
        for d in $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train; do
+         [[ -d $d ]] || { echo "$d is missing: run envi-cache first" >&2; exit 1; }
          if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
        done
        cmd=(./training/h100.sh run twoway_sft
