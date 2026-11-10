@@ -3,8 +3,8 @@
 
 Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
 AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
-rows with --seed (`streams.py`) and batched up to --batch-frames padded frames; every epoch
-replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
+rows with --seed (`streams.py`) and batched up to --batch-frames padded frames; each update adds
+the gradients of --accum-batches batches, and every epoch replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
 and batch order of each validation cache (so --val-batches takes a random subset of each) and translates
 the rows of every --eval-pairs file free-running in one pass, sampled as `eval.py` samples, and
 scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
@@ -63,6 +63,7 @@ RESUME_KEYS = (
     "epochs",
     "max_steps",
     "batch_frames",
+    "accum_batches",
     "stream_seconds",
     "max_frames",
     "lr",
@@ -120,6 +121,11 @@ def parse_args() -> argparse.Namespace:
         "--batch-frames", type=int, default=4608, help="Padded frames per batch (streams x frames)."
     )
     parser.add_argument(
+        "--accum-batches", type=int, default=1,
+        help="Batches whose gradients add into each update: --batch-frames 4096 --accum-batches 2 "
+        "updates on 8,192 frames, round 4's, in the memory of 4,096 (an 80 GB card fits 4,608).",
+    )
+    parser.add_argument(
         "--stream-seconds",
         type=float,
         nargs=2,
@@ -175,7 +181,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    for name in ("epochs", "batch_frames", "max_frames", "eval_batch_size"):
+    for name in ("epochs", "batch_frames", "accum_batches", "max_frames", "eval_batch_size"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     for name in ("max_steps", "grad_clip", "val_every", "val_batches", "save_every"):
@@ -271,7 +277,9 @@ def main() -> None:
     )
 
     batches_per_epoch = len(batches)
-    total_steps = args.max_steps or batches_per_epoch * args.epochs
+    # A step is an update of --accum-batches batches; the last update of an epoch may take the
+    # next epoch's first batches.
+    total_steps = args.max_steps or batches_per_epoch * args.epochs // args.accum_batches
     # A finished run stops before loading the model, so a boot hook that retries the run until it
     # succeeds ends here.
     pairs = checkpoint_pairs(out_dir)
@@ -335,8 +343,8 @@ def main() -> None:
     writer = CheckpointWriter(lm, optimizer, args, out_dir)
 
     def training_batches(start_step: int):
-        """The planned batches from `start_step` on, epoch after epoch."""
-        offset = start_step % batches_per_epoch
+        """The planned batches from update `start_step` on, epoch after epoch."""
+        offset = start_step * args.accum_batches % batches_per_epoch
         while True:
             writer.wait()  # the workers fork; the writer's thread must not be running
             yield from DataLoader(
@@ -434,19 +442,31 @@ def main() -> None:
         for group in optimizer.param_groups:
             group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
-        fetch_started = time.time()
-        batch = next(data_iter)
-        log["data_seconds"] += time.time() - fetch_started  # the wait for the stream workers
-        codes = batch["codes"].to(device=device, non_blocking=True)
-        batch_size = int(codes.shape[0])
-        if batch_size not in condition_cache:
-            condition_cache[batch_size] = common.batch_condition_tensors(
-                lm, checkpoint_info.model_type, batch_size
-            )
-        with autocast:
-            losses = common.compute_batch_losses(lm, codes, condition_cache[batch_size], weights)
-        loss = losses["loss"]
-        loss.backward()
+        for _ in range(args.accum_batches):
+            fetch_started = time.time()
+            batch = next(data_iter)
+            log["data_seconds"] += time.time() - fetch_started  # the wait for the stream workers
+            codes = batch["codes"].to(device=device, non_blocking=True)
+            batch_size = int(codes.shape[0])
+            if batch_size not in condition_cache:
+                condition_cache[batch_size] = common.batch_condition_tensors(
+                    lm, checkpoint_info.model_type, batch_size
+                )
+            with autocast:
+                losses = common.compute_batch_losses(lm, codes, condition_cache[batch_size], weights)
+            # Each batch's mean loss weighs 1 / --accum-batches of the update, as the log does.
+            (losses["loss"] / args.accum_batches).backward()
+            for key in LOG_LOSSES:
+                log["losses"][key] += losses[key].detach() / args.accum_batches
+            log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
+            log["text_tokens"] += losses["content_n"] + losses["pad_n"]
+            log["streams"] += batch_size
+            log["stream_frames"] += int(batch["frames"].sum())
+            log["padded_frames"] += batch_size * int(codes.shape[-1])
+            log["source_frames"] += int(batch["source_frames"].sum())
+            log["min_batch"] = min(log["min_batch"], batch_size)
+            log["max_batch"] = max(log["max_batch"], batch_size)
+            log["max_frames"] = max(log["max_frames"], int(codes.shape[-1]))
         if args.grad_clip > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
         else:
@@ -463,18 +483,7 @@ def main() -> None:
         log["max_grad_norm"] = (
             grad_norm if previous_max is None else torch.maximum(previous_max, grad_norm)
         )
-        for key in LOG_LOSSES:
-            log["losses"][key] += losses[key].detach()
         log["steps"] += 1
-        log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
-        log["text_tokens"] += losses["content_n"] + losses["pad_n"]
-        log["streams"] += batch_size
-        log["stream_frames"] += int(batch["frames"].sum())
-        log["padded_frames"] += batch_size * int(codes.shape[-1])
-        log["source_frames"] += int(batch["source_frames"].sum())
-        log["min_batch"] = min(log["min_batch"], batch_size)
-        log["max_batch"] = max(log["max_batch"], batch_size)
-        log["max_frames"] = max(log["max_frames"], int(codes.shape[-1]))
 
         if args.log_every and global_step % args.log_every == 0:
             steps = log["steps"]
@@ -486,7 +495,7 @@ def main() -> None:
                 writer.wait()  # raises the failed write now, not at the next save
             now = time.time()
             item = {
-                "epoch": (global_step - 1) // batches_per_epoch + 1,
+                "epoch": (global_step * args.accum_batches - 1) // batches_per_epoch + 1,
                 "step": global_step,
                 **means,
                 "audio_tokens": int(log["audio_tokens"]),

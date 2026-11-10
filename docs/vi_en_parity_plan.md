@@ -434,7 +434,7 @@ Vietnamese text cannot keep up with its speech.
        length), a short delay (0.9 s).
      - Rows left silent come with `en_speech`: run 2 leaves 10 and 11 of the 180 Common Voice
        rows empty in that call, round 3 (no `en_speech`) none, round 4 (11% `en_speech`) 4 and 2.
-     - Running (2026-11-10; the user: redo round 4 if its test sets were not good,
+     - Done (2026-11-10, 05:51–16:05 UTC, the H100 SXM box; the user: redo round 4 if its test sets were not good,
        then, with these numbers, with more `en_speech`): `full_epoch4e`, round 4 again from
        round 3's final model with 500 noisy `en_speech` shards instead of 150 (2,481 h, 29% of
        8,456 h and 18% of 5.09M rows; GigaSpeech 2 falls from 81% of the rows to 71%), in round
@@ -445,16 +445,45 @@ Vietnamese text cannot keep up with its speech.
        helps, not which. `full_epoch4c`, the same rerun on round 4's own data, was stopped at
        step 1,760 for it; `full_epoch4d`, this run on the H200, was lost with that box at step
        ~15,000.
+       - Validation chrF (28k, 56k, 84k, 112k, final 131,659), every one healthy and the final
+         the best: FLEURS dev 37.1, 36.9, 37.5, 38.3, 38.4; MultiMed-ST select 35.0, 36.1, 36.3,
+         36.5, 37.3; teacher-forced 2.721 → 2.665.
+       - Test sets, both rounds in one session (the box, 2026-11-10; batch 64, `--seed 43`):
+
+         | Set | Round 4e | Round 4 (4b) |
+         |---|---:|---:|
+         | FLEURS test | 37.0 | 38.3 |
+         | MultiMed-ST select / final | 37.2 / 37.1 | 37.3 / 37.4 |
+         | `giga-heldout` | 61.5 | 62.3 |
+         | `en-vi-val` cv27 / libriheavy | 44.3 / 44.5 | 44.1 / 43.9 |
+         | `en-vi-val-noisy` cv27 / libriheavy | 39.4 / 43.4 | 40.4 / 41.3 |
+
+       - So 3.4 times the `en_speech` and 2.3 times the updates bought +0.5 on the mean of the
+         four TTS sets and lost on every real-speech set (FLEURS −1.3, `giga-heldout` −0.8). It
+         ends more outputs (FLEURS EOS 613 of 857 against 556). Round 4's final model
+         (`full_epoch4b/best/best_step057368`) is the VI→EN start.
 7. Two-way before GRPO (user, 2026-11-10; that morning's "one way first" is replaced). Round
-   4e's and 4b's test sets pick the VI→EN start, then (stage 7, [two-way](agent-memory/two-way.md#next)):
+   4's final model is the VI→EN start (round 4e's test sets above), then (stage 7, [two-way](agent-memory/two-way.md#next)):
    1. Done (2026-11-10): the pilot's prerequisites: the trainers refuse caches and weights on
       another tokenizer, the `vi-en` rows whose machine English uses a reassigned slot go (~0.03%
       of GigaSpeech 2's), and `--val-cache-dir` takes both directions' caches;
-   2. the `en-vi` caches of `en_speech` and the tranche on the box (one validation shard is
-      built so far; 1,638× real time on CUDA);
-   3. the pilot, ~10k mixed steps from the start through `init_weights`: it passes if EN→VI chrF
-      rises with healthy outputs and VI→EN FLEURS dev stays within 1 chrF;
-   4. the two-way SFT on `en_speech` and the tranche in both directions.
+   2. the training step and the `en-vi` cache build optimized first (user, 2026-11-10: "let's
+      optimize training a bit more before training two ways"), each profiled on the box. The
+      two-way run updates on 8,192 frames, as round 4 did (user, 2026-11-10, replacing that
+      morning's 4,608 without accumulation): round 4 beat round 4e's 4,608 on every real-speech
+      test set with 2.3 times fewer updates. One 8,192-frame batch needs ~97 GiB (H200), over the
+      H100's 80, so on the H100 it is two 4,096-frame batches accumulated into each update,
+      which spreads the optimizer and the clip (~12% of a step) over twice the frames; measured
+      against 4,608 before the run;
+   3. the `en-vi` caches of everything round 4e trained (user, 2026-11-10: "use more data for
+      the two ways run"): the whole tranche and the same 500 `en_speech` shards, ~8,500 h a
+      direction; the box keeps only their packs (`streams --drop-shards`), as both directions'
+      shards and packs would not fit its 350 GB;
+   4. the two-way SFT on both directions of those rows (~17k h, ~150k updates of 8,192 frames,
+      ~20 h on the H100 at round 4e's frame rate) from the start through `init_weights`, the pilot's test at its first
+      validations instead of a separate pilot: it goes on if EN→VI chrF rises with healthy
+      outputs and VI→EN FLEURS dev stays within 1 chrF of the start, scored before the run on
+      the same sets and seed.
 8. GRPO on the two-way model, both directions, optimized heavily on its box before the full run
    ([grpo](agent-memory/grpo.md#running),
    [plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)); stage 4 lists what
