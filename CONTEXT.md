@@ -63,8 +63,9 @@ inference/ (Apple Silicon, MLX)
   caches from run 2's final model: FLEURS test chrF 29.5 → 38.6, MultiMed-ST 24.9 → 34.6
   ([plan](docs/vi_en_parity_plan.md#order)).
 - The fourth, `full_epoch4b` (2026-11-10, the H200 box), one epoch of every tranche cache plus
-  150 noisy `en_speech` shards (6,737 h) from round 3's model: MultiMed-ST select 34.6 → 37.4,
-  FLEURS dev 39.6 → 39.1 (inside its noise); its test sets are not scored yet
+  150 noisy `en_speech` shards (6,737 h) from round 3's model: MultiMed-ST 34.7 → 37.4,
+  `giga-heldout` 51.3 → 61.8, FLEURS test 38.2 → 37.9 (inside its noise), the held-out TTS sets
+  −0.9. `full_epoch4c` repeats it in round 3's 4,608-frame batches (started 2026-11-10)
   ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
