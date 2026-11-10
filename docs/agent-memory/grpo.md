@@ -126,12 +126,12 @@ The CUDA profile and dry run are under [Running](#running).
 - **Optimize it heavily before its full run, on the box it runs on** (user, 2026-11-10: "remember
   to heavy optimize grpo when it phase start after sft"). `grpo_launch.sh`'s sizes (generation
   batch 512, micro-batch 4) are the H200's and do not fit an 80 GB H100 (512 peaked at 107 GiB;
-  the H100's 2026-11-06 profile fit 192 and 2). Levers measured below but not built: rollouts cut
-  to their batch's longest stream plus a tail and micro-batches cut to their last kept frame
-  (about a third of generation and update; branch `grpo/stream-length`, WIP, never run on a GPU;
-  it moves where the last reward sits, so ask the user), the GPU idle between stages (71% busy
-  on the H200), generation bound by its step count (~13 ms a step at any batch). Compare each on
-  the same streams by updates per GPU-hour.
+  the H100's 2026-11-06 profile fit 192 and 2). The levers: rollouts as long as their stream plus
+  evaluation's tail and forwards cut to their last kept token ([A rollout's length](#design),
+  about a third of generation and update; the user approved moving the last reward there,
+  2026-11-10; not yet run on a GPU), the GPU idle between stages (71% busy on the H200),
+  generation bound by its step count (~13 ms a step at any batch). Compare each on the same
+  streams by updates per GPU-hour.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --model-weight START --out-dir …`.
   - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
@@ -175,9 +175,9 @@ The CUDA profile and dry run are under [Running](#running).
   and leave 17 and 7 GiB of the card. A generation step costs ~13 ms whatever the batch, so
   generation, 55% of an update, is bound by steps: the streams average 599 frames (longest 929)
   and every rollout runs 1,202 steps, and every update forward spans 1,200 frames though the
-  loss keeps none after a rollout's EOS. Rollouts cut to their batch's longest stream plus a
-  tail, and micro-batches cut to their last kept frame, would save about a third of both; not
-  built (it changes where the last reward sits; the user's call). The profile's GPU read 71%
+  loss keeps none after a rollout's EOS. Rollouts cut to their stream plus a tail, and forwards
+  cut to their last kept token, save about a third of both (built since, above; unmeasured).
+  The profile's GPU read 71%
   busy on average, under 50% in 29% of its samples (between stages, and generation's short
   kernels).
 - **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
