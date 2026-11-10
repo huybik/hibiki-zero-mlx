@@ -131,6 +131,13 @@ On the H100 box, 2026-11-10, branch `twoway/prep`:
   and `fleurs-vi/dev` in shared batches, round 3's model moved onto the swap
   (`init_weights`): FLEURS chrF 44.5, healthy; English to Vietnamese chrF 10.1 (it answers in
   English: untrained).
+- The tokenizer checks end to end (PR #100, the same box): a 30-step `train.py` on the swap with
+  no `--tokenizer`, `vi-en` tranche shards and an `en-vi` shard, both directions' validation
+  caches (dropped 7 reassigned rows; two `teacher_forced` entries; the checkpoint's metadata the
+  swap; peak 74.9 GB); the refusals at startup (a weight on the other tokenizer, an `en-vi` shard
+  in a base run, a repeated validation cache); a base run and `eval.py`, `validate.py` (its loss
+  equal to the run's validation to the last digit), the packer and `grpo.py`/`grpo_profile.py`
+  on the swap.
 
 ## Next
 

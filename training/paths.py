@@ -35,7 +35,8 @@ def swap_slots(tokenizer: Path, base: str) -> list[int]:
     them reads the same on `tokenizer`. Raises unless `tokenizer` is a swap of `base`."""
     init_map = Path(tokenizer).with_name(f"{Path(tokenizer).stem}_init.json")
     if not init_map.is_file():
-        raise RuntimeError(f"text on {base} cannot be read by {Path(tokenizer).name}: no swap init map {init_map}")
+        raise RuntimeError(f"text on {base} cannot be read by {Path(tokenizer).name}, which is no swap of it "
+                           f"(no {init_map.name} beside it)")
     init = json.loads(init_map.read_text())
     if (init["model"], init["base_model"]) != (Path(tokenizer).name, base):
         raise RuntimeError(f"{init_map.name} swaps {init['base_model']} for {init['model']}, not {base} for {Path(tokenizer).name}")

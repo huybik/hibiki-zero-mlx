@@ -183,7 +183,7 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.keep_checkpoints < 0:
         raise ValueError("--keep-checkpoints must be non-negative")
-    if len({resolve_repo_path(path) for path in args.val_cache_dir}) != len(args.val_cache_dir):
+    if len({resolve_repo_path(path).resolve() for path in args.val_cache_dir}) != len(args.val_cache_dir):
         raise ValueError("--val-cache-dir names a cache twice")
     shortest, longest = args.stream_seconds
     if not 0 < shortest <= longest:
