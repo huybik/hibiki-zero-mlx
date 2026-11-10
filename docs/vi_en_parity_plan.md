@@ -409,9 +409,12 @@ Vietnamese text cannot keep up with its speech.
        helps, not which. `full_epoch4c`, the same rerun on round 4's own data, was stopped at
        step 1,760 for it; `full_epoch4d`, this run on the H200, was lost with that box at step
        ~15,000.
-7. The final SFT: both directions on `en_speech` and the tranche.
-8. GRPO, last, on the final SFT model and both directions
-   ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
+7. GRPO on the VI→EN model: one way is finished first (user, 2026-11-10: "can leave two ways
+   later. let's done one way first"), from round 4's best model after its test sets, optimized
+   heavily on its box before the full run ([grpo](agent-memory/grpo.md#running),
+   [plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
+8. Two-way, later: the pilot, then the final SFT on both directions and GRPO on it
+   (stage 7; its preparation is built, [two-way](agent-memory/two-way.md)).
 9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.

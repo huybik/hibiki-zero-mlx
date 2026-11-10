@@ -101,7 +101,9 @@ On the H100 box, 2026-11-10, branch `twoway/prep`:
 
 ## Next
 
-The pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)): build an `en-vi` cache
+Deferred (user, 2026-11-10: "can leave two ways later. let's done one way first"): VI→EN is
+finished first, through GRPO ([plan](../vi_en_parity_plan.md#order)). Then the pilot
+([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)): build an `en-vi` cache
 subset of `en_speech` and the tranche (only one validation shard is built so far), start from a
 model through `init_weights`, train ~10k mixed steps. It passes if English-to-Vietnamese chrF
 rises with healthy outputs and FLEURS dev stays within 1 chrF. Before it:
