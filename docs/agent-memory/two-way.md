@@ -7,7 +7,7 @@ pack's `direction`), the run's text tokenizer (`--tokenizer`, `common.run_tokeni
 two-way pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Where a direction lives](#where-a-direction-lives) ·
 [Tokenizer checks](#tokenizer-checks) · [Vietnamese aligner](#vietnamese-aligner) · [Checked](#checked) ·
-[Next](#next)
+[Pilot](#pilot) · [Next](#next)
 
 ## Design
 
@@ -138,6 +138,22 @@ On the H100 box, 2026-11-10, branch `twoway/prep`:
   in a base run, a repeated validation cache); a base run and `eval.py`, `validate.py` (its loss
   equal to the run's validation to the last digit), the packer and `grpo.py`/`grpo_profile.py`
   on the swap.
+
+## Pilot
+
+Two box jobs ([tranche-box](tranche-box.md#jobs)), `restart.sh envi-cache` then `restart.sh pilot`:
+
+- Inputs, `en-vi` (~400 h): 40 `en_speech` train shards (`box/en_speech_pilot.txt`, of round
+  4e's 500 by `random.Random(0)`) and its 3 validation shards, by `cache_codes` from the
+  dataset's copy in the tranche repo (`en_speech/`, fetched to `/workspace/en_speech_src`), into
+  `data/cache/en-vi/en-vi-grounded-v2/{train,validation}`; the first 6 giga, 14 pho and 20
+  vivoice shards (sorted names, as the builder orders them) into `<root>/cache/en-vi/<source>/`,
+  pushed to the tranche cache repo. `fleurs-en` and `en-vi-val-en` into `data/eval/`.
+- `vi-en`: the same shards' Vietnamese-to-English caches (`en_speech`'s noisy, as round 4e trains
+  it), linked into `data/cache/pilot-vi-en/<source>/`, so both directions see the same rows.
+- `twoway_pilot`: 10,000 steps of 4,608 frames at a peak 3e-6 (round 4's), seed 47, from the
+  VI→EN start through `init_weights`; validation every 2,500 steps on both directions' caches and
+  `fleurs-vi/dev` (it selects), `fleurs-en/dev`, `en-vi-val-en` and `en-vi-val`.
 
 ## Next
 

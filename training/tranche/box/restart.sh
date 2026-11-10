@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|sft: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|sft|envi-cache|pilot: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -43,7 +43,42 @@ case $job in
             --lr 3e-6 --seed 46 --save-every 4000 --val-every 28000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/multimed-vi/select.jsonl $E/en-vi-val/cv27.jsonl
             $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-noisy/cv27.jsonl $E/en-vi-val-noisy/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|sft" >&2; exit 1 ;;
+  # The two-way pilot's English-to-Vietnamese inputs (two-way.md#pilot): the English evaluation sets, the en_speech
+  # validation shards and the 40 train shards of box/en_speech_pilot.txt (of sft's 500, random.Random(0)) by cache_codes
+  # from the dataset's copy in the tranche repo (en_speech/, fetched to /workspace/en_speech_src), and the first 6 giga,
+  # 14 pho and 20 vivoice shards by the tranche builder, which pushes them to its cache repo's en-vi/.
+  envi-cache) export HF_HUB_DISABLE_XET=1
+       cmd=(bash -c 'set -e; D=/workspace/en_vi_speech/data S=/workspace/en_speech_src/en_speech; mkdir -p $D
+            ln -sfn $S/train $D/train; ln -sfn $S/validation $D/validation
+            .venv/bin/python -m training.prep.eval_sets --sets fleurs-en en-vi-val-en
+            .venv/bin/python -m training.prep.cache_codes --device cuda --direction en-vi --dataset-dir ${D%/data} \
+              --out-dir data/cache/en-vi/en-vi-grounded-v2 --shards "validation/*.parquet" $(sed "s|.*|train/&.parquet|" training/tranche/box/en_speech_pilot.txt)
+            for limit in giga:6 pho:14 vivoice:20; do
+              .venv/bin/python -m training.tranche.cache build ${limit%:*} --direction en-vi --limit ${limit#*:}; done') ;;
+  # The pilot (two-way.md#pilot): 10k steps on both directions of the same rows, envi-cache's English-to-Vietnamese
+  # shards and the Vietnamese-to-English shards of the same names (linked into data/cache/pilot-vi-en; en_speech's from
+  # the noisy cache, as sft trains it), from the VI->EN start moved onto the Vietnamese swap (init_weights writes
+  # weights/twoway_start_vi6k.safetensors). Validation every 2,500 steps, both directions teacher-forced and free-running.
+  pilot) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2 P=data/cache/pilot-vi-en
+       for pair in giga:$T/giga pho:$T/pho vivoice:$T/vivoice en_speech:data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train; do
+         name=${pair%%:*}; from=$(realpath ${pair#*:}); mkdir -p $P/$name
+         if [[ $name == en_speech ]]; then built=$V/train; else built=$T/en-vi/$name; fi
+         compgen -G "$built/shard_*.pt" > /dev/null || { echo "no shards in $built: run envi-cache" >&2; exit 1; }
+         for f in $built/shard_*.pt; do
+           [[ -f $from/$(basename $f) ]] || { echo "$from has no $(basename $f)" >&2; exit 1; }
+           ln -sfn $from/$(basename $f) $P/$name/
+         done
+       done
+       cmd=(./training/h100.sh run twoway_pilot
+            --cache-dir $T/en-vi/giga $T/en-vi/pho $T/en-vi/vivoice $V/train $P/giga $P/pho $P/vivoice $P/en_speech
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --model-weight weights/twoway_start_vi6k.safetensors --tokenizer weights/tokenizer_spm_48k_multi6_2_vi6k.model
+            --max-steps 10000 --batch-frames 4608 --eval-batch-size 64 --keep-checkpoints 1
+            --lr 3e-6 --seed 47 --save-every 2500 --val-every 2500
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl) ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|pilot" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

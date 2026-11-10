@@ -122,7 +122,9 @@ the two-way caches, pilot and SFT before GRPO):
 | voice | `restart.sh voice` (en_audio for every shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
 | cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
 | sft | `restart.sh sft` (round 4, `full_epoch4b`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
-| two-way | the `en-vi` caches, the pilot, the two-way SFT ([two-way](two-way.md#next)); scripts to come | the two-way SFT's best checkpoint |
+| envi-cache | `restart.sh envi-cache`: the pilot's `en-vi` caches and English evaluation sets ([two-way](two-way.md#pilot)) | its log ends with vivoice's "done" |
+| pilot | `init_weights` to `weights/twoway_start_vi6k.safetensors`, then `restart.sh pilot` (`twoway_pilot`, [two-way](two-way.md#pilot)) | step 10,000 validated |
+| two-way | the rest of the `en-vi` caches, the two-way SFT ([two-way](two-way.md#next)); scripts to come | the two-way SFT's best checkpoint |
 | grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)), on the two-way model | its updates; stop with TERM to the launcher alone |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
