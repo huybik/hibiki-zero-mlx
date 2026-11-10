@@ -178,10 +178,10 @@ def stream_sentences(
     sentences = []
     for piece in stream.pieces:
         row = rows[piece.row]
-        tokens = row.codes[0, row.delay_frames : row.en_frames].tolist()
+        tokens = row.codes[0, row.delay_frames : row.target_frames].tolist()
         words = [token for token in tokens if token > pad_id]
         sentences.append(
-            rewards.Sentence(piece.vi_start, piece.vi_start + row.vi_frames, tokenizer.decode(words))
+            rewards.Sentence(piece.source_start, piece.source_start + row.source_frames, tokenizer.decode(words))
         )
     return sentences
 

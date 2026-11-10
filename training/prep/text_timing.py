@@ -1,24 +1,20 @@
-"""Word-time English text tokens for the grounded-v2 training cache."""
+"""Word-time a row's target text for the grounded-v2 training cache: English against English
+audio, Vietnamese against Vietnamese audio, each with its language's CTC model (`ALIGNERS`)."""
 
 from __future__ import annotations
 
 import math
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-ALIGNER_REPO = "facebook/wav2vec2-base-960h"
-ALIGNER_REVISION = "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"  # every machine times with this one
-ALIGNMENT_NAME = "wav2vec2_ctc_word_v1"
-DEFAULT_MIN_ALIGNMENT_SCORE = 0.5
-# wav2vec2-base's feature encoder, (kernel, stride) per convolution: 16 kHz -> 50 Hz.
+# wav2vec2's feature encoder, (kernel, stride) per convolution: 16 kHz -> 50 Hz (base and large).
 CTC_CONVS = ((10, 5), (3, 2), (3, 2), (3, 2), (3, 2), (2, 2), (2, 2))
-CTC_BLANK = "<pad>"  # the aligner tokenizer's pad token
-CTC_DELIMITER = "|"  # its word delimiter
 
 
 def ctc_frames(samples: int) -> int:
@@ -32,8 +28,8 @@ def _ascii(text: str) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
 
 
-def _spoken_group(text: str) -> str:
-    """Normalize one SentencePiece word group for English CTC alignment."""
+def _spoken_english(text: str) -> str:
+    """One SentencePiece word group as wav2vec2-base-960h spells it: ASCII capitals, numbers in words."""
     from num2words import num2words
 
     text = _ascii(text)
@@ -45,14 +41,77 @@ def _spoken_group(text: str) -> str:
     return " ".join(re.sub(r"[^A-Za-z' ]+", " ", text).upper().split())
 
 
+def _spoken_vietnamese(text: str) -> str:
+    """One SentencePiece word group as omniASR spells it: lowercase NFC letters, numbers in
+    Vietnamese words. A letter its vocabulary lacks rejects the row at alignment."""
+    from num2words import num2words
+
+    text = re.sub(r"\d+", lambda match: f" {num2words(int(match.group(0)), lang='vi')} ", text)
+    text = unicodedata.normalize("NFC", text).lower()
+    return " ".join("".join(char if char.isalpha() else " " for char in text).split())
+
+
+# Vietnamese letters, NFC: the twelve vowels in each of the six tones, the consonants and the four
+# letters of loanwords (f, j, w, z).
+_VIETNAMESE = "bcdđfghjklmnpqrstvwxz" + "".join(
+    unicodedata.normalize("NFC", vowel + tone)
+    for vowel in "aăâeêioôơuưy"
+    for tone in ("", "\u0300", "\u0301", "\u0309", "\u0303", "\u0323")
+)
+
+
+@dataclass(frozen=True)
+class Aligner:
+    """The CTC model that word-times one language's text; every machine times with `revision`."""
+
+    name: str  # a sample's `text_timing`
+    repo: str
+    revision: str
+    blank: str  # the vocabulary's CTC blank
+    delimiter: str  # its token between words
+    spoken: Callable[[str], str]  # a word group in the model's alphabet
+    # The letters `spoken` may write: the Viterbi reads only their columns, the blank's and the
+    # delimiter's (`vocab_columns`), and a row with any other letter is rejected.
+    alphabet: str
+    # The lowest mean posterior of the aligned characters a row may have. The scores are each
+    # model's own: omniASR spreads its mass over 10,288 characters of every script.
+    min_score: float
+
+
+ALIGNERS = {  # by the language of the text
+    "en": Aligner("wav2vec2_ctc_word_v1", "facebook/wav2vec2-base-960h",
+                  "22aad52d435eb6dbaf354bdad9b0da84ce7d6156", "<pad>", "|", _spoken_english,
+                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5),
+    # A stock-transformers conversion of Meta's omniASR-CTC-300M-v2 (Apache-2.0).
+    "vi": Aligner("omniasr_ctc_word_v1", "aadel4/omniASR-CTC-300M-v2",
+                  "f2b3c39a62c061c27623c3f2d803294fbb954324", "<s>", " ", _spoken_vietnamese,
+                  _VIETNAMESE, 0.5),
+}
+
+
+def vocab_columns(aligner: Aligner, files: Path) -> list[int]:
+    """The vocabulary ids of the blank, the delimiter and the alphabet, in that order: the columns
+    of the log-probabilities a device hands to `CTCWordAligner`. omniASR's other 10,193 would
+    make each clip's matrix 100 times larger on its way to the alignment workers."""
+    import json
+
+    vocab = json.loads((files / "vocab.json").read_text())
+    tokens = [aligner.blank, aligner.delimiter, *aligner.alphabet]
+    missing = [token for token in tokens if token not in vocab]
+    if missing:
+        raise ValueError(f"{aligner.repo} has no vocabulary entry for {missing}")
+    return [int(vocab[token]) for token in tokens]
+
+
 def sentencepiece_groups(
-    text: str, tokenizer: Any
+    text: str, tokenizer: Any, spoken: Callable[[str], str]
 ) -> tuple[list[int], list[tuple[list[int], str]]]:
-    """SentencePiece ids grouped into spoken words for CTC alignment, after the ids of the
-    unspoken lead (a stray "*", "-" or quote before the first word), which may be empty."""
+    """SentencePiece ids grouped into spoken words for CTC alignment (`spoken`: the aligner's),
+    after the ids of the unspoken lead (a stray "*", "-" or quote before the first word), which
+    may be empty."""
     pieces = list(tokenizer.encode(text, out_type=str))
     if not pieces:
-        raise AlignmentError("Cannot align empty English text")
+        raise AlignmentError("Cannot align empty text")
     groups: list[list[str]] = []
     for piece in pieces:
         if piece.startswith("▁") or not groups:
@@ -64,18 +123,18 @@ def sentencepiece_groups(
     result: list[tuple[list[int], str]] = []
     for group in groups:
         ids = [int(tokenizer.piece_to_id(piece)) for piece in group]
-        spoken = _spoken_group(tokenizer.decode(ids))
-        if not spoken:
+        word = spoken(tokenizer.decode(ids))
+        if not word:
             (result[-1][0] if result else lead).extend(ids)
             continue
-        result.append((ids, spoken))
+        result.append((ids, word))
     if not result:
-        raise AlignmentError(f"No speakable English text in {text!r}")
+        raise AlignmentError(f"No speakable text in {text!r}")
     return lead, result
 
 
 class AlignmentError(ValueError):
-    """The English text cannot be timed against its audio: a data fault that rejects the row."""
+    """The text cannot be timed against its audio: a data fault that rejects the row."""
 
 
 @dataclass(frozen=True)
@@ -136,18 +195,17 @@ def _ctc_token_frames(
 
 
 class CTCWordAligner:
-    """wav2vec2-base-960h CTC word timing on the CPU: the Viterbi over a clip's log-probabilities,
-    whichever device computed them (`cache_build`: MLX or CUDA)."""
+    """An aligner's CTC word timing on the CPU: the Viterbi over a clip's log-probabilities in
+    `vocab_columns` order, whichever device computed them (`cache_build`: MLX or CUDA)."""
 
-    def __init__(self, files: Path, min_score: float = DEFAULT_MIN_ALIGNMENT_SCORE):
-        """`files`: the pinned snapshot, from `aligner_files`."""
-        import json
+    blank_id = 0  # the columns' order
+    delimiter_id = 1
 
+    def __init__(self, aligner: Aligner, min_score: float):
         if not 0 <= min_score <= 1:
             raise ValueError("Minimum CTC alignment score must be in [0, 1]")
         self.min_score = min_score
-        self.vocab = json.loads((files / "vocab.json").read_text())
-        self.blank_id = int(self.vocab[CTC_BLANK])
+        self.letters = {letter: column for column, letter in enumerate(aligner.alphabet, start=2)}
 
     def _targets(
         self, groups: list[tuple[list[int], str]]
@@ -156,12 +214,15 @@ class CTCWordAligner:
         ranges: list[tuple[int, int]] = []
         for group_index, (_, spoken) in enumerate(groups):
             if group_index:
-                target_ids.append(self.vocab[CTC_DELIMITER])
+                target_ids.append(self.delimiter_id)
             start = len(target_ids)
-            for char in spoken.replace(" ", CTC_DELIMITER):
-                if char not in self.vocab:
+            for char in spoken:
+                if char == " ":
+                    target_ids.append(self.delimiter_id)
+                elif char not in self.letters:
                     raise AlignmentError(f"CTC transcript contains unsupported character: {char!r}")
-                target_ids.append(int(self.vocab[char]))
+                else:
+                    target_ids.append(self.letters[char])
             ranges.append((start, len(target_ids)))
         return target_ids, ranges
 
@@ -185,15 +246,15 @@ class CTCWordAligner:
         return Alignment(spans=spans, score=score)
 
 
-def aligner_files() -> Path:
-    """The pinned aligner snapshot: its weights and vocabulary."""
+def aligner_files(aligner: Aligner) -> Path:
+    """The aligner's pinned snapshot: its weights, configuration and vocabulary."""
     from huggingface_hub import snapshot_download
 
     return Path(
         snapshot_download(
-            ALIGNER_REPO,
-            revision=ALIGNER_REVISION,
-            allow_patterns=["model.safetensors", "vocab.json"],
+            aligner.repo,
+            revision=aligner.revision,
+            allow_patterns=["model.safetensors", "config.json", "vocab.json"],
         )
     )
 

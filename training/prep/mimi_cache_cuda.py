@@ -52,6 +52,7 @@ from huggingface_hub import hf_hub_download
 from training.paths import (
     CACHE_FORMAT,
     DEFAULT_CONFIG_PATH,
+    DEFAULT_DIRECTION,
     DEFAULT_MIMI_WEIGHT,
     cpu_budget,
     durable,
@@ -354,6 +355,8 @@ def load(
     payload = torch.load(shard_path, map_location="cpu")
     if payload.get("format") != CACHE_FORMAT:
         raise RuntimeError(f"{shard_path} is not a {CACHE_FORMAT} shard")
+    if payload.get("direction", DEFAULT_DIRECTION) != DEFAULT_DIRECTION:  # its source is Vietnamese
+        raise RuntimeError(f"{shard_path} is {payload['direction']}: only a Vietnamese source is re-encoded")
     if (
         payload["source"] != source
         or source["file"] != f"data/{split}/{shard_name(shard_path)}.parquet"

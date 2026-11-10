@@ -28,7 +28,7 @@ from huggingface_hub import CommitOperationAdd, HfApi, RepoFile
 from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import disable_progress_bars
 
-from training.paths import durable, exclusive
+from training.paths import DEFAULT_DIRECTION, DEFAULT_TOKENIZER, durable, exclusive
 from training.prep.cache_codes import DATASET_DIR, cache_path, source_shards
 from training.prep.publish_en_vi_speech import COMMIT_BYTES, retried
 from training.prep.translate_en_speech import log
@@ -38,8 +38,11 @@ FOLLOW_WAIT = 600  # a cache shard is built every ~4 min
 
 
 def settings(shard: dict[str, Any]) -> dict[str, Any]:
-    """What a cache shard holds besides its rows and source: format, rates, gates, model config."""
-    return {k: v for k, v in shard.items() if k not in ("samples", "rejected", "source")}
+    """What a cache shard holds besides its rows and source: format, rates, gates, model config,
+    direction and tokenizer (a shard built before two-way training records neither: it is vi-en,
+    on the base tokenizer)."""
+    unrecorded = {"direction": DEFAULT_DIRECTION, "tokenizer": DEFAULT_TOKENIZER.name}
+    return unrecorded | {k: v for k, v in shard.items() if k not in ("samples", "rejected", "source")}
 
 
 def publish(out_dir: Path, sources: list[Path], repo: str, follow: bool) -> None:

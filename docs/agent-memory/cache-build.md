@@ -2,7 +2,7 @@
 
 Read when touching `training/prep/cache_build.py`, `training/prep/cache_rows.py`,
 `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or
-`training/prep/audio.py`, and before running Mimi or wav2vec2 anywhere else, on MLX or CUDA: how
+`training/prep/audio.py`, and before running Mimi or a CTC aligner anywhere else, on MLX or CUDA: how
 every grounded cache is built on either device, and what each device's speed depends on. The
 builders on top are in [sft-data-caches](sft-data-caches.md) (`cache_codes`, the EN-VI dataset) and
 [tranche-cache](tranche-cache.md) (`training.tranche.cache`, the tranche); the row layout is in
@@ -54,12 +54,17 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 - Gates run cheapest first, and a row is rejected, with its reason, at the first one it fails:
   a decoded clip more than 0.02 s off its stored duration (PyAV decodes a truncated or damaged
   clip without error, only shorter); more frames than `max_frames` (280, the trainer's cap),
-  counted from the decoded lengths as max(English frames, Vietnamese frames) + 1 before the delay;
-  an English clip shorter than one CTC frame; the text grouping; CTC alignment (score below 0.5);
-  token timing. Mimi is queued with the CTC forward, so the ~0.5% of rows rejected at alignment or
-  token timing are encoded and dropped.
-- The delay is drawn from U[0, min(0.5 × Vietnamese duration, room)], seeded by
-  `<seed>:<split>:<id>`, the duration rounded to the 0.01 s it stores; `room` is what the English
+  counted from the decoded lengths as max(target frames, source frames) + 1 before the delay;
+  a target clip shorter than one CTC frame; the text grouping; CTC alignment (score below the
+  aligner's `min_score`, 0.5); token timing. Mimi is queued with the CTC forward, so the ~0.5% of
+  rows rejected at alignment or token timing are encoded and dropped.
+- The direction (`Settings.direction`, `vi-en` by default, `en-vi` for two-way) says which clip
+  is the source and times the target's text against the target clip with that language's CTC
+  model (`text_timing.ALIGNERS`: wav2vec2-base-960h for English, omniASR for Vietnamese,
+  [two-way](two-way.md#vietnamese-aligner)). The CTC hands the host only the columns its Viterbi
+  reads (`vocab_columns`).
+- The delay is drawn from U[0, min(0.5 × source duration, room)], seeded by
+  `<seed>:<split>:<id>`, the duration rounded to the 0.01 s it stores; `room` is what the target
   clip leaves of the frame cap ([sft-data-caches](sft-data-caches.md#flow) has why).
 - Text grouping: SentencePiece pieces group into words, and a group with nothing to speak (a
   stray `*`, `-` or `"`; a lone `'` counts as spoken) joins the word before it. Before the first
@@ -75,8 +80,9 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   whose rows all fail on data is written, empty.
 - A sample holds the row fields, the builder's `fields` and `source_row` (`<file>#r<index>`); a
   shard holds `samples` in source order, `rejected` (`id`, `reason`: the builder's own gates
-  first, then the build's, in source order), `source`, `max_frames` and `alignment_min_score`. Values are Python types and tensors only: the trainer's `torch.load`
-  keeps the `weights_only` default, which refuses NumPy scalars.
+  first, then the build's, in source order), `source`, `max_frames`, `alignment_min_score`,
+  `direction` and `tokenizer`. Values are Python types and tensors only: the trainer's
+  `torch.load` keeps the `weights_only` default, which refuses NumPy scalars.
 - A shard is written as a hidden `.tmp`, flushed with `paths.durable` (`F_FULLFSYNC` on macOS),
   then renamed.
 - Decoding: PyAV for every stream (Opus, cv27's MP3), in `audio.decode`; anything but mono `fltp`
@@ -127,7 +133,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 
 ## CUDA
 
-- `CUDAModels`: moshi's Mimi (`cuda_mimi`) and transformers' wav2vec2-base-960h in float32 with
+- `CUDAModels`: moshi's Mimi (`cuda_mimi`) and the aligner's CTC (transformers) in float32 with
   TF32 matmuls and convolutions (`CUDA_TF32`, [Speed on CUDA](#speed-on-cuda)), over padded batches
   of up to `CUDA_BATCH_S` (320 s) of audio, shortest first (`batches`; both clips of a window in one
   sort for Mimi). `encode` runs in the build's GPU thread (`threaded`), one window queued behind it. The CTC takes the first GroupNorm's
@@ -139,10 +145,14 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 - On CPU, 8 clips of a shard batched against each alone kept every argmax, log-probabilities within
   2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards differ by 3.1e-3); Mimi's
   batched codes equal the clip-alone ones on all 16 codebooks.
+- omniASR (Vietnamese) normalizes each frame in its feature extractor, so only the attention
+  mask keeps the padding out; batched against alone it gives the same word spans (MLX does not
+  run it: build `en-vi` caches on CUDA).
 - transformers reports `wav2vec2.masked_spec_embed` as missing from the checkpoint: it only masks
   in training, so the CTC is unaffected.
-- `DEVICE` is the torch device; set to `"cpu"` it runs the CUDA path on a Mac, slowly (~3× real
-  time), which is how to check a change to it without a box.
+- `DEVICE` is the torch device. Set to `"cpu"`, the CUDA path no longer runs since its pinned
+  staging (2026-11-09): pinned memory and `torch.cuda.Event` need a GPU. Check a change to it on
+  a box.
 
 ## Across devices
 

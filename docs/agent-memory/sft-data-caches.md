@@ -123,7 +123,9 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   build), skips it. Each machine so ends with
   the whole cache (the second machine downloads the Mac's part too). A pulled shard must have
   the settings of a shard already in the out-dir (format, rates, `max_frames`,
-  `alignment_min_score`, model config; pulls wait until one exists), the same source file at the
+  `alignment_min_score`, model config, `direction` and `tokenizer`, which a shard built before
+  2026-11-10 lacks and is read as `vi-en` on the base tokenizer; pulls wait until one exists),
+  the same source file at the
   same byte size, and every source row once, kept or rejected; otherwise the run stops with it
   left in `.pull/`, and every rerun stops on it again. Then fix the cause, or delete the bad
   shard on the Hub (`HfApi().delete_file`) for this machine to build; then `rm -r .pull` and
@@ -137,8 +139,9 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 - With `--follow` it looks again every 10 min and ends once every source shard is cached here
   and on the Hub. It stops when the out-dir is gone (a dropped drive), rather than download onto
   the internal disk.
-- The aligner is pinned to `facebook/wav2vec2-base-960h` at `22aad52`, its two files only, so
-  both machines time with the same model. The builder no longer sets `HF_HUB_OFFLINE`, so a
+- Each direction's aligner is pinned (`text_timing.ALIGNERS`: `facebook/wav2vec2-base-960h` at
+  `22aad52` for English text, omniASR for Vietnamese, [two-way](two-way.md#vietnamese-aligner)),
+  its weights, `config.json` and `vocab.json` only, so every machine times with the same model. The builder no longer sets `HF_HUB_OFFLINE`, so a
   machine's first run can download them; offline it uses the cached copy (0.4 s on a refused
   connection, ~75 s on a hanging one).
 - The second machine needs Apple Silicon, or a CUDA GPU with `--device cuda` (its rows differ
@@ -170,11 +173,12 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 
 - Codes are int32 `[33, T]`:
   - row 0 is text;
-  - rows 1–16 are English target Mimi;
-  - rows 17–32 are Vietnamese source Mimi.
+  - rows 1–16 are target Mimi (English in a `vi-en` shard, every one built before 2026-11-10);
+  - rows 17–32 are source Mimi (Vietnamese there; the languages trade places in an `en-vi`
+    shard, [two-way](two-way.md)).
 - Model config: `n_q` 32, `dep_q` 16, `card` 2048, `text_card` 48000, text pad id 3.
 - Text stream: PAD fill, tokens at their CTC frames, then tokenizer EOS at the frame equal to
-  the English code length, then -1.
+  the target code length, then -1.
 - Target audio is -1 after its length, with no explicit EOS.
 - Source audio has codec EOS 2048 at `source_len`, then -1.
 - T = max(text end, target length, source length + 1).

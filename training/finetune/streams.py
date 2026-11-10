@@ -1,7 +1,9 @@
 """Multi-sentence training streams assembled from grounded cache rows.
 
-A stream joins cached rows (`[33, T]`: text, 16 English target and 16 Vietnamese source
-codebooks) the way a speaker talks on. The rows of one document stay together, in order: a tranche
+A stream joins cached rows (`[33, T]`: text, 16 target and 16 source codebooks) the way a
+speaker talks on. A cache shard has a direction, Vietnamese to English (the diagrams and names
+below) or English to Vietnamese; a stream holds rows of one direction, and a run may train on
+streams of both. The rows of one document stay together, in order: a tranche
 row's `doc` and `seq` (a PhoAudiobook reader's run, a GigaSpeech 2 recording; a viVoice row is its
 own doc), and a PhoMT source chunk (`phomt_s<N>r<M>`, spanning talk boundaries); every other row
 follows at random. Libriheavy segment numbers are not reading order, and about a quarter of a
@@ -49,7 +51,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from training.paths import CACHE_FORMAT, cpu_budget
+from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, cpu_budget
 
 FRAME_RATE = 12.5
 # Stream lengths, seconds. Upstream's coarse stage trained on 30-75 s utterances and its RL stage
@@ -92,18 +94,19 @@ class Layout:
 class Row:
     id: str
     codes: np.ndarray  # int32 [33, T], memory-mapped
-    vi_frames: int  # source length; the cached source EOS sits here
-    en_frames: int  # target length including the delay; the cached text EOS sits here
+    source_frames: int  # source length; the cached source EOS sits here
+    target_frames: int  # target length including the delay; the cached text EOS sits here
     delay_frames: int
     doc: str | None  # rows of one doc join streams together, in seq order
     seq: int
+    direction: str  # its shard's, <source>-<target>
 
 
 @dataclass(frozen=True)
 class Piece:
     row: int  # index into the rows
-    vi_start: int
-    en_start: int
+    source_start: int
+    target_start: int
 
 
 @dataclass(frozen=True)
@@ -112,7 +115,7 @@ class Stream:
     frames: int
 
 
-PACK_VERSION = 3  # 3: docs.json
+PACK_VERSION = 4  # 3: docs.json; 4: the shard's direction, the index by source and target
 PACK_DIR = ".packed"  # beside the shards: <cache-dir>/.packed/<shard stem>/
 
 
@@ -146,6 +149,9 @@ def pack_shard(shard_path: Path) -> None:
     )
     if 2 * layout.dep_q != int(config["n_q"]):
         raise RuntimeError(f"{shard_path} has unequal source and target codebooks")
+    # A sample's vi_frames and en_frames are each language's clip; the direction says which is heard.
+    direction = payload.get("direction", DEFAULT_DIRECTION)
+    source, target = direction.split("-")
     chunks, index, ids, docs = [], [], [], []
     offset = 0
     for sample in payload["samples"]:
@@ -160,8 +166,8 @@ def pack_shard(shard_path: Path) -> None:
             (
                 offset,
                 frames,
-                int(sample["vi_frames"]),
-                int(sample["en_frames"]),
+                int(sample[f"{source}_frames"]),
+                int(sample[f"{target}_frames"]),
                 int(sample["target_delay_frames"]),
             )
         )
@@ -183,7 +189,7 @@ def pack_shard(shard_path: Path) -> None:
     (temporary / "ids.json").write_text(json.dumps(ids))
     (temporary / "docs.json").write_text(json.dumps(docs))
     (temporary / "pack.json").write_text(
-        json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout)})
+        json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout), "direction": direction})
     )
     shutil.rmtree(target, ignore_errors=True)
     temporary.rename(target)
@@ -209,7 +215,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
     dropped = 0
     for shard_path in shard_paths:
         directory = _pack_dir(shard_path)
-        shard_layout = Layout(**json.loads((directory / "pack.json").read_text())["layout"])
+        pack = json.loads((directory / "pack.json").read_text())
+        shard_layout = Layout(**pack["layout"])
         if layout is None:
             layout = shard_layout
         elif shard_layout != layout:
@@ -222,7 +229,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
         ).numpy()
         ids = json.loads((directory / "ids.json").read_text())
         docs = json.loads((directory / "docs.json").read_text())
-        for row_id, doc, (offset, frames, vi_frames, en_frames, delay) in zip(
+        for row_id, doc, (offset, frames, source_frames, target_frames, delay) in zip(
             ids, docs, np.load(directory / "index.npy").tolist(), strict=True
         ):
             if frames > max_frames:
@@ -233,11 +240,12 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
                 Row(
                     id=row_id,
                     codes=row_codes.reshape(layout.rows, frames),
-                    vi_frames=vi_frames,
-                    en_frames=en_frames,
+                    source_frames=source_frames,
+                    target_frames=target_frames,
                     delay_frames=delay,
                     doc=doc[0] if doc else None,
                     seq=doc[1] if doc else 0,
+                    direction=pack["direction"],
                 )
             )
     if layout is None or not rows:
@@ -259,9 +267,10 @@ def _gap(rng: random.Random) -> int:
 
 
 def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -> list[Stream]:
-    """Cut every row, once, into streams of min_frames..max_frames frames (the last may be
-    shorter), but for a SINGLE_ROW_STREAMS share of streams that hold one row."""
-    longest = max(max(row.vi_frames, row.en_frames) for row in rows)
+    """Cut every row, once, into streams of min_frames..max_frames frames (the last of a direction
+    may be shorter), but for a SINGLE_ROW_STREAMS share of streams that hold one row. A stream
+    holds one direction's rows: the directions are planned one after the other, from one draw."""
+    longest = max(max(row.source_frames, row.target_frames) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
     # A stream still under min_frames (at most min_frames - 1) grows by at most a long gap and a
@@ -272,9 +281,20 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
             f"{longest}-frame row and a {LONG_GAP[1]}-frame gap"
         )
     rng = random.Random(seed)
+    streams: list[Stream] = []
+    for direction in sorted({row.direction for row in rows}):
+        streams += _plan_direction(rows, direction, min_frames, max_frames, rng)
+    return streams
+
+
+def _plan_direction(
+    rows: list[Row], direction: str, min_frames: int, max_frames: int, rng: random.Random
+) -> list[Stream]:
     docs: dict[str, list[tuple[int, int]]] = defaultdict(list)
     units: list[list[int]] = []
     for index, row in enumerate(rows):
+        if row.direction != direction:
+            continue
         if row.doc is None:
             units.append([index])
         else:
@@ -284,7 +304,7 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
 
     streams: list[Stream] = []
     pieces: list[Piece] = []
-    budget = vi_end = en_end = frames = 0
+    budget = source_end = target_end = frames = 0
     single = False
 
     def close() -> None:
@@ -294,15 +314,15 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
         row = rows[index]
         for _ in range(2):  # a row that overflows the stream starts the next one
             if pieces:
-                vi_start = max(vi_end + _gap(rng), en_end - MAX_OVERHANG)
+                source_start = max(source_end + _gap(rng), target_end - MAX_OVERHANG)
             else:
                 budget = rng.randint(min_frames, max_frames)
                 single = rng.random() < SINGLE_ROW_STREAMS
-                vi_start = rng.randint(0, MAX_LEAD)
-            en_start = max(vi_start + row.delay_frames, en_end)
-            next_vi_end = vi_start + row.vi_frames
-            next_en_end = en_start + row.en_frames - row.delay_frames
-            next_frames = max(next_vi_end, next_en_end) + 1  # the EOS frames
+                source_start = rng.randint(0, MAX_LEAD)
+            target_start = max(source_start + row.delay_frames, target_end)
+            next_source_end = source_start + row.source_frames
+            next_target_end = target_start + row.target_frames - row.delay_frames
+            next_frames = max(next_source_end, next_target_end) + 1  # the EOS frames
             # Close a single-row stream after its row, any other when the row overflows its budget,
             # unless it is still short and the row fits the longest stream.
             if pieces and (
@@ -310,10 +330,10 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
                 or (next_frames > budget and (frames >= min_frames or next_frames > max_frames))
             ):
                 close()
-                pieces, vi_end, en_end = [], 0, 0
+                pieces, source_end, target_end = [], 0, 0
                 continue
-            pieces.append(Piece(index, vi_start, en_start))
-            vi_end, en_end, frames = next_vi_end, next_en_end, next_frames
+            pieces.append(Piece(index, source_start, target_start))
+            source_end, target_end, frames = next_source_end, next_target_end, next_frames
             break
     if pieces:
         close()
@@ -331,11 +351,11 @@ def assemble(
     quiet = silence[:, :frames]
     last_piece = stream.pieces[-1]
     last = rows[last_piece.row]
-    text_eos = last_piece.en_start + last.en_frames - last.delay_frames
-    source_eos = last_piece.vi_start + last.vi_frames
+    text_eos = last_piece.target_start + last.target_frames - last.delay_frames
+    source_eos = last_piece.source_start + last.source_frames
     codes = torch.full((layout.rows, frames), -1, dtype=torch.int32)
     codes[0, :text_eos] = layout.pad_id
-    codes[0, text_eos] = int(last.codes[0, last.en_frames])
+    codes[0, text_eos] = int(last.codes[0, last.target_frames])
     codes[1 : 1 + q, :text_eos] = quiet[:, :text_eos]
     codes[1 + q :] = quiet
     codes[1 + q :, source_eos] = layout.card
@@ -344,25 +364,25 @@ def assemble(
         source = torch.from_numpy(row.codes)
         if (source[0, : row.delay_frames] != layout.pad_id).any():
             raise RuntimeError(f"{row.id} has text before its delay")
-        if int(source[1 + q, row.vi_frames]) != layout.card:
-            raise RuntimeError(f"{row.id} has no source EOS at {row.vi_frames}")
-        span = row.en_frames - row.delay_frames
-        codes[0, piece.en_start : piece.en_start + span] = source[
-            0, row.delay_frames : row.en_frames
+        if int(source[1 + q, row.source_frames]) != layout.card:
+            raise RuntimeError(f"{row.id} has no source EOS at {row.source_frames}")
+        span = row.target_frames - row.delay_frames
+        codes[0, piece.target_start : piece.target_start + span] = source[
+            0, row.delay_frames : row.target_frames
         ]
         # Each clip was encoded from a fresh Mimi state: English silence before the first word
         # within the start-up window stays silence, and so does the Vietnamese first frame unless
         # the clip opens the stream, where inference starts fresh too.
-        words = (source[0, row.delay_frames : row.en_frames] != layout.pad_id).nonzero()
-        first_word = row.delay_frames + int(words[0]) if len(words) else row.en_frames
+        words = (source[0, row.delay_frames : row.target_frames] != layout.pad_id).nonzero()
+        first_word = row.delay_frames + int(words[0]) if len(words) else row.target_frames
         audio_from = max(row.delay_frames, min(SILENCE_WARMUP, first_word))
-        start = piece.en_start + audio_from - row.delay_frames
-        codes[1 : 1 + q, start : piece.en_start + span] = source[
-            1 : 1 + q, audio_from : row.en_frames
+        start = piece.target_start + audio_from - row.delay_frames
+        codes[1 : 1 + q, start : piece.target_start + span] = source[
+            1 : 1 + q, audio_from : row.target_frames
         ]
-        vi_from = 0 if piece.vi_start == 0 else 1
-        codes[1 + q :, piece.vi_start + vi_from : piece.vi_start + row.vi_frames] = source[
-            1 + q :, vi_from : row.vi_frames
+        source_from = 0 if piece.source_start == 0 else 1
+        codes[1 + q :, piece.source_start + source_from : piece.source_start + row.source_frames] = source[
+            1 + q :, source_from : row.source_frames
         ]
     return codes
 
@@ -413,7 +433,7 @@ class StreamDataset(Dataset):
         return {
             "codes": assemble(stream, self.rows, self.silence, self.layout),
             "frames": stream.frames,
-            "source_frames": sum(self.rows[piece.row].vi_frames for piece in stream.pieces),
+            "source_frames": sum(self.rows[piece.row].source_frames for piece in stream.pieces),
         }
 
     def batches(self, batch_frames: int, shuffle_seed: int | None) -> list[list[int]]:
@@ -437,7 +457,7 @@ class StreamDataset(Dataset):
         return batches
 
     def exposure(self) -> dict[str, float | int]:
-        source_frames = sum(row.vi_frames for row in self.rows)
+        source_frames = sum(row.source_frames for row in self.rows)
         return {
             "rows": len(self.rows),
             "streams": len(self.streams),

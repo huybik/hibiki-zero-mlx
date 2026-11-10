@@ -1,8 +1,9 @@
-"""The build of grounded caches, on MLX (Apple Silicon) or CUDA: Mimi and wav2vec2-base-960h CTC on
-each device, and the stream of source shards through them. Every builder runs on it
-(`cache_codes`, the EN-VI dataset; `training.tranche.cache`, the real-Vietnamese tranche); a
-builder only reads and gates its own source rows and decides where the shards go
-([cache-build](../../docs/agent-memory/cache-build.md)).
+"""The build of grounded caches, on MLX (Apple Silicon) or CUDA: Mimi and the target language's
+CTC aligner (`text_timing.ALIGNERS`) on each device, and the stream of source shards through
+them, in either direction (`Settings.direction`; MLX runs only the English aligner). Every
+builder runs on it (`cache_codes`, the EN-VI dataset; `training.tranche.cache`, the
+real-Vietnamese tranche); a builder only reads and gates its own source rows and decides where
+the shards go ([cache-build](../../docs/agent-memory/cache-build.md)).
 
   keys ─► read (the builder's), in a thread one shard ahead: rows and the builder's own gates
        ─► decode workers (PyAV, soxr) and cache_rows.plan (decode gates, delay draw, text groups),
@@ -34,7 +35,7 @@ from training.paths import cpu_budget, read_json, require_file
 from training.prep import cache_rows
 from training.prep.audio import Rejected
 from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Row, Settings, Shard
-from training.prep.text_timing import ALIGNER_REPO, ALIGNER_REVISION, AlignmentError, aligner_files
+from training.prep.text_timing import Aligner, AlignmentError, aligner_files, vocab_columns
 
 if sys.platform == "darwin":  # before the builders' readers import pyarrow, whose mimalloc pool keeps freed buffers on macOS
     os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
@@ -87,15 +88,18 @@ class MLXModels:
 
     window = 64  # rows queued on the GPU at once
 
-    def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path, half_ctc: bool = False):
+    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False):
         import mlx.core as mx
 
         from training.prep.mimi_mlx import MimiEncoder
         from training.prep.wav2vec2_mlx import Wav2Vec2CTC
 
+        if aligner.repo != "facebook/wav2vec2-base-960h":
+            raise SystemExit(f"wav2vec2_mlx runs only wav2vec2-base-960h, not {aligner.repo}: build on --device cuda")
         mx.set_cache_limit(MLX_CACHE_BYTES)
         self.mimi = MimiEncoder(mimi_weight, num_codebooks)
         self.ctc = Wav2Vec2CTC(files / "model.safetensors", half=half_ctc)
+        self.columns = mx.array(vocab_columns(aligner, files))
         self.cardinality = self.mimi.cardinality
 
     def encode(
@@ -105,13 +109,13 @@ class MLXModels:
         return lazy Mimi codes so the caller can overlap planning the next window with Mimi."""
         import mlx.core as mx
 
-        log_probs = [self.ctc.log_probs(row.en16) for row in rows]
-        codes = [(self.mimi.encode(row.vi24), self.mimi.encode(row.en24)) for row in rows]
+        log_probs = [mx.take(self.ctc.log_probs(row.target16), self.columns, axis=1) for row in rows]
+        codes = [(self.mimi.encode(row.source24), self.mimi.encode(row.target24)) for row in rows]
         mx.async_eval(log_probs)
         mx.async_eval(codes)
         # np.array(lp) blocks until CTC is done; Mimi is queued and runs asynchronously after it
         aligned = [align(row, np.array(lp)) for row, lp in zip(rows, log_probs, strict=True)]
-        return [(a, vi, en) for a, (vi, en) in zip(aligned, codes, strict=True)]
+        return [(a, source, target) for a, (source, target) in zip(aligned, codes, strict=True)]
 
 
 # --------------------------------------------------------------------------- CUDA
@@ -157,26 +161,29 @@ def batches(lengths: list[int], budget: int) -> list[list[int]]:
 
 
 class CUDAModels:
-    """Mimi (moshi, float32) and wav2vec2-base-960h CTC (transformers) on CUDA, over padded batches
-    of up to CUDA_BATCH_S of audio, shortest first. CTC runs in float32 by default; pass
-    `half_ctc=True` to run its 12-layer transformer in bfloat16 (feature extractor and lm_head
-    stay float32, so GroupNorm stats are safe and log-probs match float32 within CTC rounding)."""
+    """Mimi (moshi, float32) and the aligner's wav2vec2 CTC (transformers) on CUDA, over padded
+    batches of up to CUDA_BATCH_S of audio, shortest first. CTC runs in float32 by default; pass
+    `half_ctc=True` to run its transformer in bfloat16 (feature extractor and lm_head stay
+    float32, so GroupNorm stats are safe and log-probs match float32 within CTC rounding)."""
 
     window = 4096  # rows per batched pass
     threaded = True  # encode runs in the build's GPU thread, a window ahead of the main thread
 
-    def __init__(self, mimi_weight: Path, num_codebooks: int, files: Path, half_ctc: bool = False):
+    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False):
         import torch
         from transformers import Wav2Vec2ForCTC
 
         self.mimi = cuda_mimi(mimi_weight, num_codebooks, tf32=CUDA_TF32)
         self.cardinality = self.mimi.cardinality
         # cuda_mimi's TF32 switch covers the CTC too (CUDA_TF32).
-        self.ctc = Wav2Vec2ForCTC.from_pretrained(ALIGNER_REPO, revision=ALIGNER_REVISION,
-                                                  dtype=torch.float32).to(DEVICE).eval()
-        if self.ctc.config.feat_extract_norm != "group":
-            raise RuntimeError("the CTC forward masks the first GroupNorm of a group-norm wav2vec2")
+        self.ctc = Wav2Vec2ForCTC.from_pretrained(files, dtype=torch.float32).to(DEVICE).eval()
+        # A base model (wav2vec2-base-960h) normalizes its first convolution over the whole input
+        # and takes no attention mask; a large one (omniASR) normalizes each frame and takes one.
+        self._group_norm = self.ctc.config.feat_extract_norm == "group"
+        if self.ctc.wav2vec2.adapter is not None:  # ctc_log_probs runs the encoder without it
+            raise ValueError(f"{aligner.repo} has an adapter, which ctc_log_probs does not apply")
         self._half_ctc = half_ctc
+        self._columns = torch.tensor(vocab_columns(aligner, files), device=DEVICE)
 
     def encode(
         self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
@@ -189,8 +196,8 @@ class CUDAModels:
         def landed(i: int, log_probs: np.ndarray) -> None:
             aligned[i] = align(rows[i], log_probs)
 
-        self.ctc_log_probs([row.en16 for row in rows], landed)
-        codes = self.mimi_codes([row.vi24 for row in rows] + [row.en24 for row in rows])
+        self.ctc_log_probs([row.target16 for row in rows], landed)
+        codes = self.mimi_codes([row.source24 for row in rows] + [row.target24 for row in rows])
         return list(zip(aligned, codes[: len(rows)], codes[len(rows):], strict=True))
 
     # The GPU thread's host work (padding a batch into pinned memory, the copies back) runs while
@@ -269,11 +276,11 @@ class CUDAModels:
 
     def ctc_log_probs(self, clips: list[np.ndarray],
                       landed: Callable[[int, np.ndarray], None] | None = None) -> list[np.ndarray]:
-        """Each normalized 16 kHz clip's CTC log-probabilities [frames, vocab], as computed alone:
-        the base model normalizes its first convolution over the whole input and has no attention
-        mask, so the padding is masked out of those statistics, the positional convolution's input
-        and the attention keys (as wav2vec2_mlx does). `landed(i, log_probs)` hears of each clip as
-        its batch reaches the host."""
+        """Each normalized 16 kHz clip's CTC log-probabilities [frames, `vocab_columns`], as
+        computed alone: the padding is masked out of the positional convolution's input and the
+        attention keys, and, for a base model, out of the statistics of its first convolution's
+        GroupNorm, which normalizes over the whole input (as wav2vec2_mlx does). `landed(i,
+        log_probs)` hears of each clip as its batch reaches the host."""
         import torch
 
         w2v = self.ctc.wav2vec2
@@ -284,18 +291,22 @@ class CUDAModels:
             lengths = torch.tensor([len(clips[i]) for i in group])
             batch = self._stage(clips, group, int(lengths.max()))
             with torch.no_grad():
-                hs = first.conv(batch)
-                valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
-                own = (torch.arange(hs.shape[-1])[None, :] < valid[:, None])[:, None, :].to(DEVICE, torch.float32)
-                count = own.sum(-1, keepdim=True)
-                mean = (hs * own).sum(-1, keepdim=True) / count
-                var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
-                norm = first.layer_norm
-                hs = (hs - mean) / torch.sqrt(var + norm.eps) * norm.weight[:, None] + norm.bias[:, None]
-                hs = first.activation(hs)
-                for layer in rest:
-                    hs = layer(hs)
-                hs, _ = w2v.feature_projection(hs.transpose(1, 2))
+                if self._group_norm:
+                    hs = first.conv(batch)
+                    valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
+                    own = (torch.arange(hs.shape[-1])[None, :] < valid[:, None])[:, None, :].to(DEVICE, torch.float32)
+                    count = own.sum(-1, keepdim=True)
+                    mean = (hs * own).sum(-1, keepdim=True) / count
+                    var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
+                    norm = first.layer_norm
+                    hs = (hs - mean) / torch.sqrt(var + norm.eps) * norm.weight[:, None] + norm.bias[:, None]
+                    hs = first.activation(hs)
+                    for layer in rest:
+                        hs = layer(hs)
+                    hs = hs.transpose(1, 2)
+                else:  # each frame normalized alone: the padding's frames never reach a clip's own
+                    hs = w2v.feature_extractor(batch[:, 0]).transpose(1, 2)
+                hs, _ = w2v.feature_projection(hs)
                 frames = self.ctc._get_feat_extract_output_lengths(lengths)
                 mask = (torch.arange(hs.shape[1]) < frames[:, None]).to(DEVICE)
                 if self._half_ctc:
@@ -304,7 +315,7 @@ class CUDAModels:
                     hs = hs.float()
                 else:
                     hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
-                log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1)
+                log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1)[..., self._columns]
             return (*self._to_host(log_probs), frames.tolist())
 
         def collect(group: list[int], handle: tuple[Any, Any, list[int]]) -> None:
@@ -338,14 +349,14 @@ class Builder:
         self.tokenizer_path = require_file(tokenizer, "text tokenizer")
         self.tokenizer = sentencepiece.SentencePieceProcessor(str(self.tokenizer_path))
         self.eos_id = int(self.tokenizer.eos_id())
-        self.files = aligner_files()  # resolved here, so the workers never reach the Hub
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
-        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, self.files, half_ctc=half_ctc)
+        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, settings.aligner,
+                                     aligner_files(settings.aligner), half_ctc=half_ctc)
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 
     def payload(self, shard: Shard, source: dict[str, Any], **extra: Any) -> dict[str, Any]:
-        return cache_rows.payload(shard, self.settings, self.cfg, source, **extra)
+        return cache_rows.payload(shard, self.settings, self.cfg, source, tokenizer=self.tokenizer_path.name, **extra)
 
     def run(self, keys: Iterable[Any], read: Callable[[Any], Shard], workers: int) -> Iterator[Shard]:
         """Each key's shard, read by `read`, with its samples and rejections, in order, once its last
@@ -358,8 +369,7 @@ class Builder:
             ThreadPoolExecutor(1) as reads,
             pcm_dir() as pcm,
             ProcessPoolExecutor(workers, mp_context=get_context("spawn"), initializer=cache_rows.init_worker,
-                                initargs=(self.files, self.settings.min_alignment_score, self.tokenizer_path,
-                                          self.settings, pcm)) as pool,
+                                initargs=(self.settings, self.tokenizer_path, pcm)) as pool,
         ):
             try:
                 yield from self._stream(self._read_ahead(keys, read, reads), pool)
@@ -430,9 +440,10 @@ class Builder:
         for shard in shards:
             started.append(shard)
             for index, row in shard.rows:
-                audio = row.pop("vi_audio"), row.pop("en_audio")
-                fields = {key: row[key] for key in ("id", "text_en", "vi_duration_s", "en_duration_s")}
-                clips = pool.submit(cache_rows.prepare_row, fields, *audio, shard.split)
+                audio = {side: row.pop(f"{side}_audio") for side in ("vi", "en")}
+                fields = {key: row[key] for key in ("id", "text_en", "text_vi", "vi_duration_s", "en_duration_s")}
+                clips = pool.submit(cache_rows.prepare_row, fields, audio[self.settings.source],
+                                    audio[self.settings.target], shard.split)
                 queued.append((shard, index, row, clips))
                 if len(queued) > self.models.window:
                     yield queued.popleft()
@@ -446,20 +457,20 @@ class Builder:
 
         def align(row: Row, log_probs: np.ndarray) -> Future:
             return pool.submit(cache_rows.align, log_probs, row.lead, row.groups,
-                               row.en_frames - row.delay_frames, row.delay_frames, self.eos_id)
+                               row.target_frames - row.delay_frames, row.delay_frames, self.eos_id)
 
         return list(zip(window, self.models.encode(window, align), strict=True))
 
     def _encode_finish(self, pending: list) -> None:
         """Collect Mimi codes and alignment results from `_encode_start`, finalizing each row."""
-        for row, (aligned, vi, en) in pending:
+        for row, (aligned, source, target) in pending:
             try:
                 tokens, text_frames, score = aligned.result()
             except AlignmentError as exc:
-                row.shard.reject(row.index, row.source["id"], exc)
+                row.shard.reject(row.index, row.data["id"], exc)
                 continue
-            row.shard.samples.append(cache_rows.sample(row, tokens, text_frames, score,
-                                                        np.array(vi), np.array(en), self.cfg))
+            row.shard.samples.append(cache_rows.sample(row, tokens, text_frames, score, np.array(source),
+                                                        np.array(target), self.cfg, self.settings))
             row.shard.left -= 1
 
 
