@@ -29,7 +29,7 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   checkpoints all fail the gates promotes none. The EOS count is reported, not gated (decided
   2026-11-04): no checkpoint of either stream run reached the 91% it once needed (at best 268 of
   361 FLEURS rows) while chrF rose, so it blocked every promotion. `val_log.jsonl` holds
-  `teacher_forced`, the validation's `seconds` and, under `free_running`, each set's metrics per
+  `teacher_forced` (by validation cache since 2026-11-10), the validation's `seconds` and, under `free_running`, each set's metrics per
   step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
 - Training's chrF ranks the checkpoints of one run. Training (`common.validate_free_running`,
   which SFT and GRPO share) and `eval.py` both translate through `common.translate_rows`, rows

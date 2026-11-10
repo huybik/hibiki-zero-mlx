@@ -63,7 +63,6 @@ from training.finetune.hibiki_helpers import get_lmgen
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
-    DEFAULT_TOKENIZER,
     repo_display_path,
     require_dir,
     require_file,
@@ -310,7 +309,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-weight", type=Path, required=True, help="The SFT checkpoint.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--max-frames", type=int, default=280)
     parser.add_argument(
@@ -369,14 +368,14 @@ def main() -> None:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     args = parse_args()
     validate_args(args)
-    args.tokenizer = require_file(args.tokenizer, "tokenizer")  # before the workers load it
+    args.model_weight = require_file(args.model_weight, "start checkpoint")
+    args.tokenizer = common.run_tokenizer(args.tokenizer, args.model_weight)  # before the workers load it
     pool = reward_pool(args.reward_workers, args.tokenizer)
     device = common.check_device("cuda")
     torch.set_float32_matmul_precision("high")
 
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
     args.config_path = require_file(args.config_path, "config")
-    args.model_weight = require_file(args.model_weight, "start checkpoint")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
     out_dir = resolve_repo_path(args.out_dir)

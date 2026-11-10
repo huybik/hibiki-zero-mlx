@@ -5,7 +5,7 @@ Trains every parameter from the upstream weight with fp32 masters, bf16 autocast
 AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
 rows with --seed (`streams.py`) and batched up to --batch-frames padded frames; every epoch
 replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
-and batch order of the validation cache (so --val-batches takes a random subset) and translates
+and batch order of each validation cache (so --val-batches takes a random subset of each) and translates
 the rows of every --eval-pairs file free-running in one pass, sampled as `eval.py` samples, and
 scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
 held-out Common Voice and Libriheavy rows of the training data's own domain. Of the checkpoints
@@ -46,7 +46,6 @@ from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_MODEL_WEIGHT,
-    DEFAULT_TOKENIZER,
     repo_display_path,
     require_dir,
     require_file,
@@ -113,7 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=0, help="0 trains all epochs.")
@@ -220,7 +219,7 @@ def main() -> None:
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "upstream model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    args.tokenizer = require_file(args.tokenizer, "tokenizer")
+    args.tokenizer = common.run_tokenizer(args.tokenizer, args.model_weight)
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
 
     out_dir = resolve_repo_path(args.out_dir)
@@ -241,20 +240,25 @@ def main() -> None:
         f"stream_frames={exposure['stream_frames']:,} source_hours={exposure['source_hours']:.2f} "
         f"batches={len(batches)}"
     )
-    val_rows, val_layout = streams.load_rows(val_cache_dirs, args.max_frames, args.tokenizer)
-    if val_layout != layout:
-        raise RuntimeError(f"Validation layout {val_layout} differs from training {layout}")
-    val_dataset = streams.StreamDataset(
-        val_rows, layout, silence, frames, streams.VALIDATION_SEED
-    )
-    # In the main process: forking workers at a validation would fork the checkpoint writer's
-    # thread too, and its 300 batches assemble in ~3 s.
-    val_dataloader = DataLoader(
-        val_dataset,
-        batch_sampler=val_dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
-        collate_fn=streams.collate,
-    )
-    print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows")
+    # Each validation cache is planned and scored apart, as `validate.py` scores one: a direction's
+    # losses stay visible beside the other's, and a cache's streams do not change when another
+    # joins the run. In the main process: forking workers at a validation would fork the checkpoint
+    # writer's thread too, and 300 batches assemble in ~3 s.
+    val_loaders: dict[str, DataLoader] = {}
+    val_sizes: dict[str, dict[str, int]] = {}
+    for val_cache_dir in val_cache_dirs:
+        name = repo_display_path(val_cache_dir)
+        val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer)
+        if val_layout != layout:
+            raise RuntimeError(f"Validation layout {val_layout} of {name} differs from training {layout}")
+        val_dataset = streams.StreamDataset(val_rows, layout, silence, frames, streams.VALIDATION_SEED)
+        val_loaders[name] = DataLoader(
+            val_dataset,
+            batch_sampler=val_dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
+            collate_fn=streams.collate,
+        )
+        val_sizes[name] = {"rows": len(val_rows), "streams": len(val_dataset)}
+        print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows of {name}")
     # Checkpoints are selected on free-running translation, sampled as eval.py samples. The sets
     # share batches, so one pass translates them all.
     eval_sets, eval_rows = common.load_eval_rows(args.eval_pairs)
@@ -291,8 +295,8 @@ def main() -> None:
             "stream_frames": list(frames),
             "frame_bucket": streams.FRAME_BUCKET,
             "best_metric": BEST_METRIC,
-            "val_rows": len(val_rows),
-            "val_streams": len(val_dataset),
+            "val_rows": {name: size["rows"] for name, size in val_sizes.items()},
+            "val_streams": {name: size["streams"] for name, size in val_sizes.items()},
             "eval_rows": len(eval_rows),
         }
     )
@@ -377,27 +381,26 @@ def main() -> None:
         started = time.time()
         # The next step zeroes the gradients anyway; freed now, they leave room for generation.
         optimizer.zero_grad(set_to_none=True)
-        teacher_forced = common.evaluate_teacher_forced(
-            lm,
-            val_dataloader,
-            device,
-            checkpoint_info.model_type,
-            weights,
-            args.val_batches,
-        )
+        teacher_forced = {
+            name: common.evaluate_teacher_forced(
+                lm, loader, device, checkpoint_info.model_type, weights, args.val_batches
+            )
+            for name, loader in val_loaders.items()
+        }
         # On a bf16 copy of the model, in the room the gradients freed above.
         free_running = common.validate_free_running(
             lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
             args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
         )
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
-        print(
-            f"val step={step} loss={teacher_forced['loss']:.4f} "
-            f"semantic={teacher_forced['semantic_loss']:.4f} "
-            f"content={teacher_forced['content_text_loss']:.4f} "
-            f"acc={teacher_forced['content_acc']:.3f} pad_acc={teacher_forced['pad_acc']:.3f} "
-            f"health={'pass' if healthy else 'fail'}"
-        )
+        for name, losses in teacher_forced.items():
+            print(
+                f"val step={step} {name} loss={losses['loss']:.4f} "
+                f"semantic={losses['semantic_loss']:.4f} "
+                f"content={losses['content_text_loss']:.4f} "
+                f"acc={losses['content_acc']:.3f} pad_acc={losses['pad_acc']:.3f}"
+            )
+        print(f"val step={step} health={'pass' if healthy else 'fail'}")
         for name, metrics in free_running.items():
             print(f"val step={step} {name} {common.score_summary(metrics)}")
         # chrF weighs recall, so overlong output barely lowers it: the gates come first. Promotion

@@ -200,6 +200,21 @@ def pack_shard(shard_path: Path) -> None:
     temporary.rename(target)
 
 
+def pack(cache_dirs: list[Path]) -> list[Path]:
+    """The `shard_*.pt` files of `cache_dirs`, each with a current pack (`pack_shard`), packed in
+    parallel where a shard is new, changed or packed by another `PACK_VERSION`."""
+    shard_paths = [path for d in cache_dirs for path in sorted(d.glob("shard_*.pt"))]
+    stale = [path for path in shard_paths if not _pack_is_current(path)]
+    if stale:
+        print(f"[streams] packing {len(stale)} of {len(shard_paths)} cache shards", flush=True)
+        # Forked like DataLoader workers: packing touches only files and host memory, and fork
+        # neither re-runs the caller's script nor starts a fresh BLAS thread pool per worker.
+        workers = min(PACK_WORKERS, max(1, int(cpu_budget())), len(stale))
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("fork")) as pool:
+            list(pool.map(pack_shard, stale))
+    return shard_paths
+
+
 def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple[list[Row], Layout]:
     """Every row of the grounded cache shards in `cache_dirs` that fits `max_frames` and whose
     text reads the same on `tokenizer`, the run's.
@@ -211,15 +226,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple
     A shard tokenized on another tokenizer loads only if the run's is a swap of it (`swap_slots`),
     and then without the rows whose text uses a slot the swap gave a new piece: machine English
     holds a few (two-way.md). Any other mismatch raises."""
-    shard_paths = [path for d in cache_dirs for path in sorted(d.glob("shard_*.pt"))]
-    stale = [path for path in shard_paths if not _pack_is_current(path)]
-    if stale:
-        print(f"[streams] packing {len(stale)} of {len(shard_paths)} cache shards", flush=True)
-        # Forked like DataLoader workers: packing touches only files and host memory, and fork
-        # neither re-runs the caller's script nor starts a fresh BLAS thread pool per worker.
-        workers = min(PACK_WORKERS, max(1, int(cpu_budget())), len(stale))
-        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("fork")) as pool:
-            list(pool.map(pack_shard, stale))
+    shard_paths = pack(cache_dirs)
     rows: list[Row] = []
     layout: Layout | None = None
     dropped = 0
@@ -227,8 +234,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple
     reassigned = 0
     for shard_path in shard_paths:
         directory = _pack_dir(shard_path)
-        pack = json.loads((directory / "pack.json").read_text())
-        shard_layout = Layout(**pack["layout"])
+        meta = json.loads((directory / "pack.json").read_text())
+        shard_layout = Layout(**meta["layout"])
         if layout is None:
             layout = shard_layout
         elif shard_layout != layout:
@@ -243,16 +250,20 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple
         docs = json.loads((directory / "docs.json").read_text())
         index = np.load(directory / "index.npy")
         readable = np.ones(len(index), dtype=bool)
-        if pack["tokenizer"] != Path(tokenizer).name and len(index):
-            if pack["tokenizer"] not in swapped:
+        on = meta["tokenizer"]
+        if on != Path(tokenizer).name:
+            if on not in swapped:
                 try:
-                    swapped[pack["tokenizer"]] = np.array(swap_slots(tokenizer, pack["tokenizer"]))
+                    swapped[on] = np.array(swap_slots(tokenizer, on))
                 except RuntimeError as exc:
                     raise RuntimeError(f"{shard_path}: {exc}") from None
             text = np.fromfile(directory / "text.bin", dtype=np.int32)
-            starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
-            readable = ~np.logical_or.reduceat(np.isin(text, swapped[pack["tokenizer"]], kind="table"), starts)
-            reassigned += int((~readable).sum())
+            if len(text) != int(index[:, 1].sum()):
+                raise RuntimeError(f"{directory}: text.bin holds {len(text)} frames, its index {int(index[:, 1].sum())}")
+            if len(index):
+                starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
+                readable = ~np.logical_or.reduceat(np.isin(text, swapped[on], kind="table"), starts)
+                reassigned += int((~readable).sum())
         for row_id, doc, keep, (offset, frames, source_frames, target_frames, delay) in zip(
             ids, docs, readable.tolist(), index.tolist(), strict=True
         ):
@@ -271,7 +282,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple
                     delay_frames=delay,
                     doc=doc[0] if doc else None,
                     seq=doc[1] if doc else 0,
-                    direction=pack["direction"],
+                    direction=meta["direction"],
                 )
             )
     if layout is None or not rows:
@@ -514,5 +525,5 @@ if __name__ == "__main__":
     # python -m training.finetune.streams CACHE_DIR...: build the packs before the first run.
     import sys
 
-    packed, _ = load_rows([Path(directory) for directory in sys.argv[1:]], max_frames=2**31)
-    print(f"{len(packed):,} rows packed in {len(sys.argv) - 1} cache directories")
+    packed = pack([Path(directory) for directory in sys.argv[1:]])
+    print(f"{len(packed):,} shards packed in {len(sys.argv) - 1} cache directories")

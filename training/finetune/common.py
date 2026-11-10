@@ -152,6 +152,14 @@ def check_weight_tokenizer(path: Path, tokenizer: Path) -> None:
         raise RuntimeError(f"{repo_display_path(path)} is on {on}, not --tokenizer {Path(tokenizer).name}")
 
 
+def run_tokenizer(tokenizer: Path | None, weight: Path) -> Path:
+    """The run's text tokenizer: `tokenizer` (--tokenizer), by default the one `weight` is on,
+    from `weights/`, checked against the weight before anything slow starts."""
+    path = require_file(tokenizer or DEFAULT_TOKENIZER.parent / weight_tokenizer(weight), "tokenizer")
+    check_weight_tokenizer(weight, path)
+    return path
+
+
 def bf16_copy(checkpoint_info: Any, lm: Any, device: Any) -> Any:
     """A policy's weights in a bf16 generation model, as `eval.py` loads a checkpoint: 1.8x faster
     than generating on the fp32 masters. Built without reading the base weights, which the copy

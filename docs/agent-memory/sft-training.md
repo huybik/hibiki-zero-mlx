@@ -22,10 +22,10 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   checkpoint through `get_moshi` resets it. Only the frames after a sampled EOS can differ, and
   evaluation cuts a row's text at its first EOS (found 2026-11-10).
 - Inputs are one or more `--cache-dir` grounded caches plus one or more `--val-cache-dir`
-  (a two-way run passes each direction's); rows over `--max-frames` (280) are dropped. Every
-  shard and the start weight must be on `--tokenizer`, except that a run on the Vietnamese swap
-  reads base-tokenizer shards without the rows the swap reassigned
-  ([two-way](two-way.md#tokenizer-checks)).
+  (a two-way run passes each direction's; each is planned and scored apart); rows over
+  `--max-frames` (280) are dropped. `--tokenizer` defaults to the start weight's, and every
+  shard must be on it, except that a run on the Vietnamese swap reads base-tokenizer shards
+  without the rows the swap reassigned ([two-way](two-way.md#tokenizer-checks)).
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
   multi-sentence sequences of `--stream-seconds` (30–120 s, `streams.STREAM_SECONDS`, decided
   2026-11-02: upstream's coarse stage used 30–75 s and its RL stage 120 s, and upstream degrades

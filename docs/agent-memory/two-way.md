@@ -38,9 +38,9 @@ Decided 2026-11-10, for the pilot:
 | shards | payload `direction` and `tokenizer` (its file name); samples keep `vi_frames` and `en_frames` (the target's counts its delay), both texts as the source wrote them, `text_timing` (the aligner's name); Vietnamese text is NFC'd before it is tokenized and timed |
 | `cache_codes` | `--device cuda --direction en-vi` (MLX has no Vietnamese aligner); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
 | checkpoints | metadata `text_tokenizer`: the run's `--tokenizer` file name (none before 2026-11-10: the base) |
-| trainers | each shard and the start weight checked against `--tokenizer` ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache |
+| trainers | `--tokenizer` defaults to the start weight's; each shard checked against it ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache, scored apart |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
-| streams | `PACK_VERSION` 4 stores each pack's direction (a shard without one is `vi-en`); `Row.direction`, `Piece.source_start`/`target_start` |
+| streams | `PACK_VERSION` 5 stores each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
 `mimi_cache_cuda` (the noisy re-encode) is `vi-en` only.
@@ -49,16 +49,22 @@ Decided 2026-11-10, for the pilot:
 
 Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against its inputs:
 
-- A model weight (`common.check_weight_tokenizer`, in `load_policy` and `load_lm`): its
-  `text_tokenizer` metadata (`common.weight_tokenizer`; none is the base) must be the
-  tokenizer's file name. A base weight reaches the swap only through `init_weights`.
+- A model weight: its `text_tokenizer` metadata (`common.weight_tokenizer`; none is the base)
+  must be the tokenizer's file name. `--tokenizer` defaults to that file under `weights/`
+  (`common.run_tokenizer`, at startup, before the caches load), so a pilot checkpoint evaluates
+  on the swap with no flag; `load_policy` and `load_lm` check again
+  (`common.check_weight_tokenizer`). A base weight reaches the swap only through `init_weights`.
 - A cache shard (`streams.load_rows`): its pack records the shard's `tokenizer` (none is the
   base). The same file loads whole. A shard on the base loads into a run on the swap
   without the rows whose text track uses one of the 6,000 slots the swap gave new pieces
   (`paths.swap_slots`, read from `<model>_init.json` beside the tokenizer): the rest decode the
   same on both. Anything else raises, so an `en-vi` shard never loads into a base run.
 - Packs (`PACK_VERSION` 5) keep the rows' text tracks in `text.bin` for that check, so it
-  reads ~3% of the codes.
+  reads ~3% of the codes. Old and new code repack each other's packs, so run one version on a
+  cache folder at a time.
+- Each `--val-cache-dir` gets its own stream plan and its own entry in `val_log.jsonl`'s
+  `teacher_forced` (by its path), so a direction's losses stay apart and a `vi-en` cache's
+  streams stay round 4's when an `en-vi` one joins.
 
 ## Vietnamese aligner
 
