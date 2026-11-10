@@ -175,6 +175,9 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   20 s into each write, with no wait for data (probably the model file's serialization holding
   the interpreter lock; not traced). Every 1,000 steps that is ~2.5% of a 4,608-frame run and
   ~1.5% of round 4's; round 4d saves every 4,000 (`--save-every`, `--val-every` a multiple).
+  The H100 SXM's first save (`full_epoch4e`, step 4,000, 2026-11-10): 15.4 s, then 3.4 s ~28 s
+  later, as the model file finished. The user (2026-11-10) leaves these stalls (~0.4% of a run)
+  and the 4,608 frames an update as they are: no writer process, no gradient accumulation.
 - The data feed is not a limit: the stream workers deliver 70 batches a second of 4,608 frames
   (44 of 8,192) against the 4 training takes, and a step waits 0.26 ms for its batch, 0.1% of
   its time (`data_sec_per_step` in the train log, `data=` on its line: read that before

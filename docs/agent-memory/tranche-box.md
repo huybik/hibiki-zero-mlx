@@ -47,8 +47,9 @@ metadata, so the redo took a new name. Its first Hub pair comes with the first v
 step 28,000. Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`)
 and wait for its final sync.
 
-**GRPO: PROFILED, NOT STARTED.** Alone on the GPU, `--gen-batch 512 --micro-batch 4` (in
-`grpo_launch.sh`): ~24 s an update, 800 updates ~5.3 h ([grpo](grpo.md#running)). It runs from
+**GRPO: PROFILED, NOT STARTED.** Alone on the H200, `--gen-batch 512 --micro-batch 4` (in
+`grpo_launch.sh`): ~24 s an update, 800 updates ~5.3 h ([grpo](grpo.md#running)). Those sizes
+do not fit the H100: profile and optimize it heavily there before its run (user, 2026-11-10). It runs from
 the box's checkout, `/workspace/hibiki-zero` on `main` (GRPO is merged; the `wt-*` worktrees are
 only for edits while a run holds the checkout). Start it by hand when the user says so
 (2026-11-09: no chained jobs; `/workspace/auto_pipeline.sh`, `grpo_trigger.sh` and
