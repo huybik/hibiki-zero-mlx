@@ -394,15 +394,17 @@ Vietnamese text cannot keep up with its speech.
        length), a short delay (0.9 s).
      - Rows left silent come with `en_speech`: run 2 leaves 10 and 11 of the 180 Common Voice
        rows empty in that call, round 3 (no `en_speech`) none, round 4 (11% `en_speech`) 4 and 2.
-     - Running (started 2026-11-10; the user: redo round 4 if its test sets were not good,
-       then, with these numbers, with more `en_speech`): `full_epoch4d`, round 4 again from
+     - Running (2026-11-10; the user: redo round 4 if its test sets were not good,
+       then, with these numbers, with more `en_speech`): `full_epoch4e`, round 4 again from
        round 3's final model with 500 noisy `en_speech` shards instead of 150 (2,481 h, 29% of
        8,456 h and 18% of 5.09M rows; GigaSpeech 2 falls from 81% of the rows to 71%), in round
-       3's 4,608-frame batches: 131,659 steps against round 4's 57,368 of 8,192 frames, ~9.4 h.
-       It validates every 28,000 steps on round 4's rows, seed and evaluation batch. Two things
+       3's 4,608-frame batches: 131,659 steps against round 4's 57,368 of 8,192 frames, ~10.3 h
+       on the H100. It validates every 28,000 steps on round 4's rows and seed, in batches of 64
+       rows for the 80 GB card. Two things
        change at once (the data's mix and 2.3 times the updates), so it shows whether the pair
        helps, not which. `full_epoch4c`, the same rerun on round 4's own data, was stopped at
-       step 1,760 for it.
+       step 1,760 for it; `full_epoch4d`, this run on the H200, was lost with that box at step
+       ~15,000.
 7. The final SFT: both directions on `en_speech` and the tranche.
 8. GRPO, last, on the final SFT model and both directions
    ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).

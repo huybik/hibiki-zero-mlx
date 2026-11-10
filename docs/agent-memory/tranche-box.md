@@ -6,11 +6,16 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: the checkout on `main` since 2026-11-10 (round 4 ran at `1d26c15`).
-83 valid giga archives on Hub (3 half-precision shards deleted and shard_153 rebuilt float32
-2026-11-09). 
+**H100 SXM Japan (Vast instance 60019118, 2026-11-10 12:05 – 2026-11-14 13:00 UTC+7, $2.20/h)**:
+700 W, 350 GB disk, a 26.88-CPU quota; the checkout on `main`, brought up from the Hub as below
+(nothing else on it: no tranche parts, envs or TTS/ASR models).
 
-**VRAM budget (critical)**: nanovox TTS uses 109 GB VRAM at peak; real ASR (vLLM) 29 GB; together
+**The H200 Indonesia box (59864576) went offline on 2026-11-10** at step ~15,000 of round 4d:
+everything local was lost (round 4d's checkpoints, round 4b's test outputs `eval/cmp_step*`;
+their numbers are in the [plan](../vi_en_parity_plan.md#order)). Round 4b's final pair is on the
+Hub only (deleted from the H200 after a hash check against the Hub).
+
+**VRAM budget (critical; the H200's 141 GB)**: nanovox TTS uses 109 GB VRAM at peak; real ASR (vLLM) 29 GB; together
 = 138 GB → confirmed OOM kills (3 GB headroom insufficient). Voice cannot run with real ASR.
 Without any ASR server voice.py fails (connection refused after 10 × 10 s retries). Result: giga/89–99
 excl 98 (10 shards) are unvoiced — absent from Hub, not corrupted; recoverable on a future box with
@@ -20,30 +25,27 @@ proper ASR. After voice stopped: cache 25 GB + SFT 73 GB = 98 GB → fine. GRPO 
 out; giga/89–99 excl 98 unvoiced (ASR/VRAM conflict). Never restart ASR while cache or SFT runs.
 
 **Cache: DONE (2026-11-09 17:51 UTC)**. All 228 buildable GigaSpeech 2 archives cached (pho 224,
-viVoice 354), on the Hub and local under `/workspace/tranche/repo/cache/`. The last 69 built in
+viVoice 354), on the Hub (fetched into `/workspace/tranche/repo/cache/` for SFT). The last 69 built in
 1.24 h at 2,743× after the CUDA build was optimized 1,342× → 3,286× ([cache-build](cache-build.md#speed-on-cuda)).
 Archives below 74 had no local inputs: one-shard read-ahead starved the GPU to ~1,450× until their
-parts were prefetched 8 at a time (a builder prefetch is drafted, not merged). Disk: the HF cache's
-copies of built shards' inputs were deleted (on the Hub), and so were the ASR/TTS envs and models
-and the local `en_audio` (voice is done on this box; `envs-min.sh` rebuilds them).
+parts were prefetched 8 at a time (a builder prefetch is drafted, not merged).
 
 **SFT round 4b: DONE (2026-11-09 18:25 – 2026-11-10 01:16 UTC, commit `1d26c15`)**:
 `full_epoch4b`, 6,737 h of source (540,689 streams, 4.44M rows), 57,368 steps at 0.41 s,
 `--batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1`, LR 3e-6, seed 46. Its final
-model is its best (`runs/full_epoch4b/best_step057368.safetensors`), on the Hub with its pair and
-logs; results in the [plan](../vi_en_parity_plan.md#order), with its test sets against rounds 2
-and 3 (`/workspace/test_evals.sh`, 11 min a model; outputs in each run's `eval/cmp_step*/`,
-local only).
+model is its best (`full_epoch4b/` of the model repo, with its pair and logs); results in the
+[plan](../vi_en_parity_plan.md#order), with its test sets against rounds 2 and 3
+(`/workspace/test_evals.sh`, 11 min a model; outputs in each run's `eval/cmp_step*/`, local only).
 
-**SFT round 4d: RUNNING (started 2026-11-10, `restart.sh sft`)**: `full_epoch4d`, round 4b's
-arguments with 500 `en_speech` shards for 150, `--batch-frames 4608 --save-every 4000
---val-every 28000`: 5.09M rows, 8,456 h, 131,659 steps, ~9.4 h at 0.247 s a step. The user
-(2026-11-10): redo round 4 if its test sets were not good; then, shown them, stop the first
-redo (`full_epoch4c`, round 4b's data, deleted at step 1,760), add `en_speech` shards and
-restart. Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`) and
-wait for its final sync. Disk: 101 GB free at its start (the stale `runs/full_epoch4` was
-deleted), its preflight needs 93 GiB with one kept pair; `runs/full_epoch4b` (36 GB) stays,
-and its `trainer_step057368.pt` (25 GB, on the Hub) goes first if the disk runs short.
+**SFT round 4 redo: `full_epoch4e` (`restart.sh sft`)**: round 4b's arguments with 500
+`en_speech` shards for 150, `--batch-frames 4608 --eval-batch-size 64 --save-every 4000
+--val-every 28000`: 5.09M rows, 8,456 h, 131,659 steps, ~10.3 h at the H100's 0.283 s a step.
+The user (2026-11-10): redo round 4 if its test sets were not good; then, shown them, stop the
+first redo (`full_epoch4c`, round 4b's data, deleted at step 1,760), add `en_speech` shards and
+restart. `full_epoch4d` was this run on the H200, lost with it; its Hub prefix holds only run
+metadata, so the redo took a new name. Its first Hub pair comes with the first validation, at
+step 28,000. Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`)
+and wait for its final sync.
 
 **GRPO: PROFILED, NOT STARTED.** Alone on the GPU, `--gen-batch 512 --micro-batch 4` (in
 `grpo_launch.sh`): ~24 s an update, 800 updates ~5.3 h ([grpo](grpo.md#running)). It runs from
@@ -100,7 +102,7 @@ Round 4 SFT's inputs, all on the Hub (`restart.sh sft` reads them locally):
   the validation cache `en-vi-grounded-v2/validation/` into `data/cache/`, and the evaluation sets
   ([sft-evaluation](sft-evaluation.md)) under `data/eval/`;
 - round 3's model, `huybik/hibiki-zero-vi-full-sft` (model) `tranche_epoch1b/checkpoints/model_step026176.safetensors`,
-  into `runs/tranche_epoch1b/`.
+  into `runs/`, linked as `runs/tranche_epoch1b/model_step026176.safetensors` (the path `restart.sh` reads).
 
 ## Jobs
 
