@@ -141,8 +141,11 @@ def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str]) -> Shard
         if reason := gate(row, max_cer, grams):
             rejected.append({"id": row["id"], "reason": reason})
             continue
+        # GigaSpeech 2's transcripts are upper case (vi-corpora): lower-cased, as translate.py read them,
+        # since an en-vi row writes them.
+        text_vi = row["text"].lower() if row["text"].isupper() else row["text"]
         kept.append((index, {
-            "id": row["id"], "text_en": row["text_en"], "text_vi": row["text"],
+            "id": row["id"], "text_en": row["text_en"], "text_vi": text_vi,
             "vi_duration_s": row["duration_s"], "en_duration_s": row["en_duration_s"],
             "vi_audio": row["audio"]["bytes"], "en_audio": row["en_audio"]["bytes"],
             "fields": {"doc": row["doc"], "seq": int(row["seq"])},

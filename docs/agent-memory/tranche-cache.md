@@ -14,7 +14,10 @@ of the cache repo (`ingest.CACHE_REPO`), one cache per source (see
 the other way into `<root>/cache/en-vi/<source>/` and `en-vi/<source>/` ([two-way](two-way.md)).
 Its `read_shard` fetches a shard's four parts (the box's
 own copies first, `ingest.part_file`), joins them by id and applies the gates below; the shared
-build does the rest ([cache-build](cache-build.md#shape)). A sample also holds `text_vi`, `doc`
+build does the rest ([cache-build](cache-build.md#shape)). A sample also holds `text_vi` (the
+corpus transcript; GigaSpeech 2's upper-case ones lower-cased, as `translate.py` read them, since
+an `en-vi` row writes it: lower case without punctuation, against PhoAudiobook's lower case with
+punctuation and viVoice's cased text), `doc`
 and `seq`, so the trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
 draws use split `train`. It skips the shards held out for evaluation
 (`ingest.SOURCES[...].heldout`, [giga-heldout](sft-evaluation.md#evaluation-sets)).
