@@ -170,11 +170,12 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 
 - Codes are int32 `[33, T]`:
   - row 0 is text;
-  - rows 1–16 are English target Mimi;
-  - rows 17–32 are Vietnamese source Mimi.
+  - rows 1–16 are target Mimi (English in a `vi-en` shard, every one built before 2026-11-10);
+  - rows 17–32 are source Mimi (Vietnamese there; the languages trade places in an `en-vi`
+    shard, [two-way](two-way.md)).
 - Model config: `n_q` 32, `dep_q` 16, `card` 2048, `text_card` 48000, text pad id 3.
 - Text stream: PAD fill, tokens at their CTC frames, then tokenizer EOS at the frame equal to
-  the English code length, then -1.
+  the target code length, then -1.
 - Target audio is -1 after its length, with no explicit EOS.
 - Source audio has codec EOS 2048 at `source_len`, then -1.
 - T = max(text end, target length, source length + 1).

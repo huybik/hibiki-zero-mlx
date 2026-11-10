@@ -127,9 +127,9 @@ inference/ (Apple Silicon, MLX)
   for its efficiency and accuracy (user, 2026-11-04).
 - Production runs go only through `training/h100.sh run`, which ties a run to its commit and
   HF recovery prefix → [sft-recovery](docs/agent-memory/sft-recovery.md).
-- Cache rows are `[33, T]`: text, 16 English target codebooks, then 16 Vietnamese source
-  codebooks, with fixed EOS and -1 positions. The trainer joins rows into streams and never
-  rewrites the cache →
+- Cache rows are `[33, T]`: text, 16 target codebooks, then 16 source codebooks (English
+  target, Vietnamese source in a `vi-en` cache; the other way in `en-vi`), with fixed EOS and -1
+  positions. The trainer joins rows into streams and never rewrites the cache →
   [sft-data-caches](docs/agent-memory/sft-data-caches.md).
 - Resume only from the newest complete model and optimizer pair of the same run →
   [sft-recovery](docs/agent-memory/sft-recovery.md).
@@ -161,6 +161,7 @@ inference/ (Apple Silicon, MLX)
 | The tranche's jobs on a rented box: bring-up, job order, the restart/watchdog/pause scripts, round 4's inputs | [tranche-box](docs/agent-memory/tranche-box.md) | `training/tranche/box/` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
 | Vietnamese tokenizer swap for two-way text: build, English check, embedding init map | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
+| Two-way speech: directions in caches, streams and evaluation, the Vietnamese aligner, the pilot | [two-way](docs/agent-memory/two-way.md) | `--direction`, `text_timing.ALIGNERS`, `training/prep/cache_rows.py`, `training/finetune/streams.py` |
 | Every grounded cache build: rows, gates, Mimi and wav2vec2 on MLX or CUDA, each device's speed; Mimi or wav2vec2 run anywhere | [cache-build](docs/agent-memory/cache-build.md) | `training/prep/cache_build.py`, `training/prep/cache_rows.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/prep/audio.py` |
 | The EN-VI dataset's caches, their builds and publishing, the PhoMT cache, the row layout | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |

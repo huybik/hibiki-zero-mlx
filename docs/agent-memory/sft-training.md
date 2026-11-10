@@ -33,9 +33,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   spans talk boundaries, its doc and seq read from the id); every other row is random, Libriheavy included: its segment numbers are not reading order and
   segments overlap ([en-speech-corpus](en-speech-corpus.md#quality-filters)). A stream closes when
   the next row overflows its drawn length, unless it is still under the minimum; the length range
-  must exceed the longest row plus a long gap, so no stream but the last ends short. Each row's English starts its cached delay after its Vietnamese, never before the
-  previous English ends; a 0.3–1.5 s gap (3–10 s one time in ten) separates the Vietnamese, and
-  is stretched so the previous English overhangs the next Vietnamese by at most 2 s. Silent
+  must exceed the longest row plus a long gap, so no stream but the last ends short. A stream
+  holds one direction's rows: each direction is planned apart ([two-way](two-way.md)). Each row's
+  target starts its cached delay after its source, never before the previous target ends; a
+  0.3–1.5 s gap (3–10 s one time in ten) separates the sources, and is stretched so the previous
+  target overhangs the next source by at most 2 s. Silent
   stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
   the last row keeps the source and text EOS, and the source after its EOS stays silence. A tenth
   of the streams (`streams.SINGLE_ROW_STREAMS`, from 2026-11-04) hold one row, lead to both EOS,
@@ -71,7 +73,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   teacher-forced validation losses do not compare across that change (2026-11-04).
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
   index and each row's doc and seq, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's
-  size or mtime changes or `PACK_VERSION` does: 3 since the docs, 2026-11-05),
+  size or mtime changes or `PACK_VERSION` does: 4 since each pack records its shard's direction,
+  2026-11-10; [two-way](two-way.md)),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
   a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling

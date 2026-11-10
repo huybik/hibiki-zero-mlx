@@ -58,9 +58,11 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 
 ## Side tools
 
-- `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,
-  `text_en`, `duration_s`). Its defaults are `common.GenerationConfig`'s, which training's
-  checkpoint selection uses too.
+- `eval.py` is the correct-source free-running check on a pair file (`id`, the source audio,
+  the reference text, `duration_s`): a file's audio column picks its direction
+  (`common.EVAL_DIRECTIONS`: `vi_audio` scores against `text_en`, `en_audio` against `text_vi`;
+  [two-way](two-way.md)), and files of both directions share batches. Its defaults are
+  `common.GenerationConfig`'s, which training's checkpoint selection uses too.
   - `translate_rows` samples every token at temperature 0.8, top-k 250, as the paper does
     (Sec. 4.5).
   - It generates until every row has emitted the text EOS, or 20 s past the batch's longest
@@ -112,6 +114,8 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 | `en-vi-val/libriheavy.jsonl` | 180 | 0.66 | in-domain check at each validation |
 | `en-vi-val-noisy/{cv27,libriheavy}.jsonl` | 360 | 0.91 | the same rows under simulated recording conditions ([noisy-source](noisy-source.md#evaluation)) |
 | `giga-heldout/test.jsonl` | 1,000 | 1.07 | the real-Vietnamese tranche's own distribution, held out; not in `eval/` (below) |
+| `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); not in `eval/` yet |
+| `en-vi-val-en/{cv27,libriheavy}.jsonl` | 360 | 1.04 | English to Vietnamese: `en-vi-val`'s rows with their English recordings; not in `eval/` yet |
 
 - `giga-heldout` (built 2026-11-09) samples, with `random.Random(0)`, 1,000 rows of GigaSpeech 2
   archives 86 and 98 (`ingest.SOURCES["giga"].heldout`; 572 and 428 rows from 366 recordings,

@@ -223,15 +223,19 @@ Vietnamese text cannot keep up with its speech.
    Vietnamese letters and words. Vietnamese text drops from 4.10 to 1.28 tokens per word and
    from 17.2 to 7.7 tokens/s of speech with one PAD per word (held-out rows), and English is
    identical on all 3.63M rows. New pieces start from the mean of the rows of the pieces they
-   used to split into. Still to build with the pilot: the config, the init on the checkpoint,
-   the runtimes' UTF-8 assembly from byte pieces, and a Vietnamese aligner (step 3), since
-   `text_timing._spoken_group` folds text to ASCII for the English aligner.
-3. Build an EN→VI cache: Vietnamese text word-timed by a Vietnamese CTC aligner
-   (`wav2vec2-base-960h` is English-only), the random delay on the Vietnamese target, and
-   source and target codebooks swapped in the `[33, T]` rows.
-4. Evaluation: FLEURS `en_us` speech with the `vi_vn` sentences as references (paired by
-   sentence id, as the VI→EN sets are), held-out Common Voice dev and Libriheavy dev rows, and
-   a Vietnamese ASR on the output audio.
+   used to split into (`training.vi_tokenizer.init_weights`, run on a checkpoint before its
+   run). Still to build: the trainer's check that caches and weights match `--tokenizer`, and
+   the runtimes' UTF-8 assembly from byte pieces.
+3. EN→VI caches (built 2026-11-10, [two-way](agent-memory/two-way.md)): `--direction en-vi`
+   on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2
+   (Apache-2.0, chosen over two CC-BY-NC Vietnamese CTCs; its 0.5 minimum rejects 98–99% of
+   wrong-text pairs and at most 0.5% of the right ones), the random delay on the Vietnamese
+   target, target and source codebooks in the same `[33, T]` places. A stream holds one
+   direction.
+4. Evaluation (built 2026-11-10): `fleurs-en` (FLEURS `en_us` speech with the `vi_vn`
+   sentences, paired by sentence id) and `en-vi-val-en` (the held-out Common Voice dev and
+   Libriheavy dev rows with their English recordings); `eval.py` takes either direction. A
+   Vietnamese ASR on the output audio is deferred.
 5. A pilot of ~10k steps from the VI→EN model, both directions mixed (the trainer already mixes
    caches), with the new tokenizer. It passes if EN→VI chrF rises with healthy outputs and VI→EN
    FLEURS dev stays within 1 chrF. Then the final SFT trains both directions on `en_speech` and
@@ -320,8 +324,8 @@ Vietnamese text cannot keep up with its speech.
    on `en_speech`, so there is no third epoch on it. The tranche SFT, on new data, takes 3e-6:
    the highest rate whose dip recovers within the test.
 5. Skipped: a third VI→EN epoch on `en_speech` (it needed ~1.5 chrF from a higher rate).
-6. In parallel: the real-Vietnamese tranche (stage 1.3) and the two-way preparation (stage 7),
-   then the two-way pilot.
+6. In parallel: the real-Vietnamese tranche (stage 1.3) and the two-way preparation (stage 7,
+   built and checked 2026-11-10: [two-way](agent-memory/two-way.md)), then the two-way pilot.
    - Done (2026-11-06, the box): `tranche_epoch1b`, one epoch of the first tranche's three caches
      (777,090 rows, 1,760 h of real Vietnamese; 26,176 steps at 0.277 s, 16:37–18:43 UTC+7) from
      run 2's final model, peak LR 3e-6, `--seed 45`, validated every 8,000 steps (5–6 min each

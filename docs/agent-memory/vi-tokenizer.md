@@ -2,7 +2,8 @@
 
 Read when touching `training/vi_tokenizer/`, the text tokenizer, or two-way (EN→VI) text.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [How it builds](#how-it-builds) ·
-[Running](#running) · [Results](#results) · [Still to change](#still-to-change)
+[Running](#running) · [Results](#results) · [Starting a checkpoint](#starting-a-checkpoint) ·
+[Still to change](#still-to-change)
 
 ## Why
 
@@ -92,15 +93,32 @@ maps, `excluded.json` and verify reports are also in `/Volumes/data/datasets/vi_
 - The build is deterministic: the same pinned dataset gives the same files. 4k gives 1.29 and 8k
   1.28 tokens/word on the prototype's sample, so 6k is the size.
 
+## Starting a checkpoint
+
+`python -m training.vi_tokenizer.init_weights --model-weight <a base-tokenizer checkpoint>
+--init-map weights/tokenizer_spm_48k_multi6_2_vi6k_init.json --out <new>` writes the start of a
+run on the swap, which then trains with `--model-weight <new> --tokenizer
+weights/tokenizer_spm_48k_multi6_2_vi6k.model`. Each of the 6,000 replaced rows of `text_emb`,
+`depformer_text_emb` and `text_linear` becomes the mean of its `init_from_ids` rows, read from
+the old tables (some of those are replaced slots too); every other tensor is copied. The output
+records `text_tokenizer` in its metadata, and the tool refuses an input that has it.
+
+- On round 3's model (2026-11-10, the H200's CPUs, 47 s; 12 s on the H100 box): only those
+  three tensors and 6,000 rows changed; a Vietnamese sentence went 48 → 18 tokens.
+- Right after the swap the VI→EN model writes some of the new Vietnamese pieces into its
+  English: in 8 of 96 evaluation rows, 32 of 2,351 tokens (a new row starts as the mean of the
+  pieces it merges, so its head row scores near theirs). Its FLEURS dev chrF on 40 rows was
+  44.5, healthy. The pilot's first validation shows whether training clears it.
+- Evaluation is not reproducible run to run on one seed (5 of 96 predictions equal), so compare
+  the swap's effect over a set's chrF, not row by row.
+
 ## Still to change
 
-The two-way pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)) uses the model
-through these, none of them built yet:
+The two-way pilot ([two-way](two-way.md), [plan stage 7](../vi_en_parity_plan.md#7-two-way-speech))
+still needs:
 
-- Training: `tokenizer_name` in the config, and the init map applied to the checkpoint's
-  `text_emb`, `depformer_text_emb` and `text_linear` before the first step. Text is NFC.
+- Training: the trainer refuses neither a cache nor a model weight whose tokenizer is not
+  `--tokenizer` (a shard's `tokenizer`, a weight's `text_tokenizer`).
 - The MLX and Swift bundles ship the new file.
 - The streaming decoders (`hibiki_mlx/pipeline.py`, `main.py`, Swift `Vocabulary.text()`)
   print one piece at a time and must assemble UTF-8 from byte pieces.
-- `text_timing._spoken_group` folds text to ASCII for the English aligner (`đi` becomes "I"),
-  so Vietnamese timing needs its own aligner.
