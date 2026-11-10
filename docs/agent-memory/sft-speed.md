@@ -57,7 +57,11 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   attention, one `bmm` per step group instead of per-step linears (no gain).
 - Tried on the 700 W H100 SXM (2026-11-03; 200 warm-up steps, then 80, against 13,405):
   - torchao 0.18 float8 on the main transformer's 112 linears: eager 8,587 (tensorwise) and
-    8,050 (rowwise); compiled with the transformer 13,920, and the loss moved (4.006, not 4.018);
+    8,050 (rowwise); compiled with the transformer 13,920, and the loss moved (4.006, not 4.018).
+    Again on the compiled forward with the dense loss (2026-11-10, the same card, 16 tranche and
+    `en_speech` shards, steps 151–300 from round 4's model): rowwise 14,592 frames/s against bf16's
+    15,321 (−5%), mean loss 2.1984 against 2.1968. At ~4,000 tokens a batch through 2,560-wide
+    layers the casts and scales cost more than FP8's matmuls save: matmuls stay bf16;
   - math attention in the depformer 13,381; clipping inside fused AdamW through its
     `grad_scale` (GradScaler's private hook) 13,584, +1.3%, not adopted;
   - `torch.compile(lm.transformer, dynamic=True)`: 14,390 (+7.3%, 1.5 GiB less), but two of its
