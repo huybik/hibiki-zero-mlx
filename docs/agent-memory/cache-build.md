@@ -238,7 +238,8 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
   9.040 dB on 256 clips). Shards before 2026-11-09 16:40 UTC are fp32, the rest TF32; both are
   valid encodings. The noisy re-encode (`mimi_cache_cuda`) keeps `cuda_mimi`'s fp32 default.
 - Rejected: bf16 Mimi (half the residual codes rewritten, ~10% faster than TF32); bf16 CTC (slower
-  than TF32, 0.43% of token frames moved); `cudnn.benchmark` (no change); `torch.compile` on Mimi:
+  than TF32, 0.43% of token frames moved; for omniASR too, the `en-vi` aligner: 82 s against 65 s
+  on GigaSpeech 2 shards 0–1, the H100 SXM, 2026-11-10); `cudnn.benchmark` (no change); `torch.compile` on Mimi:
   at 1,280 s batches it hits `CUDA_ERROR_ILLEGAL_ADDRESS` (64 channels × 30.7M samples, past int32
   indexing), and at 320 s it runs 14% faster but its codes are wrong (19.7% equal, 0.76 dB SNR).
 - What is left: windows run ~11–12 s against 10.7 s of kernels (the GIL between the two threads),

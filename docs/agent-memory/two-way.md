@@ -4,14 +4,14 @@ Read when touching a direction (`--direction`, `cache_rows.Settings.direction`, 
 pack's `direction`), the run's text tokenizer (`--tokenizer`, `common.run_tokenizer`,
 `paths.swap_slots`, a pack's `tokenizer` and `text.bin`), the Vietnamese aligner
 (`text_timing.ALIGNERS["vi"]`), an `en-vi` cache, the English-audio evaluation sets, or the
-two-way pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
+two-way run (`box/envi_en_speech.sh`, the `envi-cache` and `two-way` jobs; [plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Where a direction lives](#where-a-direction-lives) ·
 [Tokenizer checks](#tokenizer-checks) · [Vietnamese aligner](#vietnamese-aligner) · [Checked](#checked) ·
-[Next](#next)
+[Two-way run](#two-way-run) · [Next](#next)
 
 ## Design
 
-Decided 2026-11-10, for the pilot:
+Decided 2026-11-10, for two-way training:
 
 - A direction is `<source>-<target>`: `vi-en` (every cache built before 2026-11-10) or `en-vi`.
   The row layout holds in both: text, 16 target codebooks, 16 source codebooks
@@ -53,7 +53,7 @@ Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against 
 
 - A model weight (`common.run_tokenizer`, at startup in every entry point, before the caches
   load): its `text_tokenizer` metadata (`common.weight_tokenizer`; none is the base) must be the
-  tokenizer's file name. `--tokenizer` defaults to that file under `weights/`, so a pilot
+  tokenizer's file name. `--tokenizer` defaults to that file under `weights/`, so a two-way
   checkpoint evaluates on the swap with no flag. A base weight reaches the swap only through
   `init_weights`. The swap's `.model` needs its `_init.json` beside it in `weights/`.
 - A cache shard (`streams.load_rows`): its pack records the shard's `tokenizer` (none is the
@@ -139,13 +139,52 @@ On the H100 box, 2026-11-10, branch `twoway/prep`:
   equal to the run's validation to the last digit), the packer and `grpo.py`/`grpo_profile.py`
   on the swap.
 
+## Two-way run
+
+The user's choices (2026-11-10): optimize the training first, use more data than the 400 h
+pilot ("use more data for the two ways run"), update on round 4's 8,192 frames. So one run on
+both directions of every row round 4e trained, and the pilot's test at its first validation.
+Two box jobs ([tranche-box](tranche-box.md#jobs)):
+
+- `restart.sh envi-cache` (~8 h): `fleurs-en` and `en-vi-val-en`; `box/envi_en_speech.sh`:
+  the 3 `en_speech` validation shards and round 4e's 500 train shards (`box/en_speech_sub.txt`)
+  by `cache_codes --direction en-vi` into `data/cache/en-vi/en-vi-grounded-v2/{train,validation}`,
+  their sources fetched 25 at a time and deleted once built, then pushed to
+  `en-vi/en-vi-grounded-v2/` of `huybik/hibiki-zero-vi-full-sft` (dataset; `upload_folder`, as
+  huggingface-hub 2.4 has no `upload_large_folder`), failing unless the Hub lists every shard;
+  then every tranche shard `en-vi` (`cache build --drop-inputs`, pushed to the cache repo's
+  `en-vi/<source>/` as it goes). A rerun skips a shard built or packed.
+- Then every cache keeps only its packs on the box: `python -m training.finetune.streams
+  --drop-shards <dirs>`, the `vi-en` ones first (done 2026-11-10: 1,306 shards to version 5 packs,
+  78.7 GB freed; the trainer then loaded 5,085,492 rows on the swap, the same 1,265 reassigned
+  dropped), then the `en-vi` ones, each only once the Hub lists its shards (`--drop-shards` does
+  not check, and `envi_en_speech.sh` counts a packed shard as built): both directions' shards and
+  packs (~290 GB) would not fit the 350 GB disk beside a run's checkpoints. `two-way` refuses to
+  start while a training cache holds shards.
+- `publish_caches` names its Hub prefix after the out-dir's name, which for
+  `data/cache/en-vi/en-vi-grounded-v2` is the `vi-en` cache's: never run it on that folder.
+- The `en_speech` build restarts `cache_codes` every 25 shards (~35 s of model loading each,
+  ~12 min over the 500); its single upload commit (~17 GB) has no retry, so a Hub error there stops
+  the job before the tranche: rerun `restart.sh envi-cache`, which skips what is built.
+- `init_weights` moves round 4's final model onto the swap
+  (`weights/twoway_start_vi6k.safetensors`); `eval.py` scores it on the run's seven sets with
+  `--seed 47`, batch 64: the baseline of the pilot's test.
+- `restart.sh two-way` (`twoway_sft`): both directions' caches (~8,500 h each), 8,192-frame
+  batches computed in `--micro-frames` slices, peak 3e-6, seed 47; validation every 12,000
+  updates on both validation caches and `fleurs-vi/dev` (it selects), `fleurs-en/dev`,
+  `multimed-vi/select`, `en-vi-val` and `en-vi-val-en`. The first validation is the pilot's test:
+  EN→VI chrF up with healthy outputs, VI→EN FLEURS dev within 1 chrF of the start.
+
+Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
+2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),
+`vi-en` 2,742× (wav2vec2-base 53 s, Mimi 71 s); the GPU thread is the bound. The Vietnamese
+aligner keeps 15,843 of shard 0's 19,967 rows where the English one kept 16,574: ~730 more fail
+alignment, most "CTC emission is too short" (fast speech).
+`text_vi` is the corpus transcript: GigaSpeech 2's upper case lower-cased
+([tranche-cache](tranche-cache.md)).
+
 ## Next
 
-Two-way comes before GRPO (user, 2026-11-10, replacing that morning's "one way first"): after
-round 4e's test sets pick the VI→EN start, the pilot, then the two-way SFT, then one GRPO on
-both directions ([plan](../vi_en_parity_plan.md#order)). The pilot
-([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)): build an `en-vi` cache
-subset of `en_speech` and the tranche (only one validation shard is built so far), start from a
-model through `init_weights`, train ~10k mixed steps with both directions' validation caches
-and pairs files. It passes if English-to-Vietnamese chrF rises with healthy outputs and FLEURS
-dev stays within 1 chrF.
+Two-way comes before GRPO (user, 2026-11-10, replacing that morning's "one way first"): round
+4's final model is the VI→EN start (round 4e's test sets, [plan](../vi_en_parity_plan.md#order)),
+then the [two-way run](#two-way-run), then one GRPO on both directions.

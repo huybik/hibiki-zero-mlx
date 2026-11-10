@@ -201,10 +201,27 @@ def pack_shard(shard_path: Path) -> None:
 
 
 def pack(cache_dirs: list[Path]) -> list[Path]:
-    """The `shard_*.pt` files of `cache_dirs`, each with a current pack (`pack_shard`), packed in
-    parallel where a shard is new, changed or packed by another `PACK_VERSION`."""
-    shard_paths = [path for d in cache_dirs for path in sorted(d.glob("shard_*.pt"))]
-    stale = [path for path in shard_paths if not _pack_is_current(path)]
+    """The shards of `cache_dirs`, each with a current pack (`pack_shard`), packed in parallel
+    where a shard is new, changed or packed by another `PACK_VERSION`. A shard is a
+    `shard_*.pt`, or a pack whose `.pt` `--drop-shards` deleted (packs only on the box): that pack
+    is used as it is, and must be of this `PACK_VERSION`; a pack left without its shard any other
+    way raises, so deleting a shard never leaves its rows in a run unnoticed. Either way a
+    shard's path is `<cache-dir>/<stem>.pt`, in name order, so dropping files keeps the rows' order."""
+    shard_paths = []
+    for d in cache_dirs:
+        built = {path.name for path in d.glob("shard_*.pt") if path.exists()}  # not a broken link
+        dropped = [d / f"{p.name}.pt" for p in (d / PACK_DIR).glob("shard_*") if f"{p.name}.pt" not in built]
+        for path in dropped:
+            meta = _pack_dir(path) / "pack.json"
+            info = json.loads(meta.read_text()) if meta.is_file() else {}
+            if not info.get("dropped"):
+                raise RuntimeError(f"{_pack_dir(path)} has no shard {path.name} and was not dropped by --drop-shards: "
+                                   f"fetch the shard from the Hub, or delete the pack")
+            if info["stamp"]["version"] != PACK_VERSION:
+                raise RuntimeError(f"{_pack_dir(path)} is not a version {PACK_VERSION} pack and {path.name} is gone: "
+                                   f"fetch it from the Hub to pack it again")
+        shard_paths += sorted([d / name for name in built] + dropped)
+    stale = [path for path in shard_paths if path.exists() and not _pack_is_current(path)]
     if stale:
         print(f"[streams] packing {len(stale)} of {len(shard_paths)} cache shards", flush=True)
         # Forked like DataLoader workers: packing touches only files and host memory, and fork
@@ -522,8 +539,22 @@ def collate(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    # python -m training.finetune.streams CACHE_DIR...: build the packs before the first run.
-    import sys
+    # python -m training.finetune.streams [--drop-shards] CACHE_DIR...: build the packs before the first
+    # run; --drop-shards then deletes each packed shard_*.pt (packs only: the trainer reads nothing else),
+    # for caches whose shards are on the Hub.
+    import argparse
 
-    packed = pack([Path(directory) for directory in sys.argv[1:]])
-    print(f"{len(packed):,} shards' packs current in {len(sys.argv) - 1} cache directories")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--drop-shards", action="store_true")
+    parser.add_argument("cache_dirs", nargs="+", type=Path)
+    args = parser.parse_args()
+    packed = pack(args.cache_dirs)
+    print(f"{len(packed):,} shards' packs current in {len(args.cache_dirs)} cache directories")
+    if args.drop_shards:
+        built = [path for path in packed if path.exists()]
+        freed = sum(path.lstat().st_size for path in built)  # a link frees only itself
+        for path in built:
+            meta = _pack_dir(path) / "pack.json"  # marked first: a pack without its shard loads only so
+            meta.write_text(json.dumps(json.loads(meta.read_text()) | {"dropped": True}))
+            path.unlink()
+        print(f"dropped {len(built):,} shards, {freed / 1e9:.1f} GB")

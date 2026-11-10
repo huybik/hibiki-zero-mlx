@@ -12,9 +12,14 @@ and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`, pushe
 of the cache repo (`ingest.CACHE_REPO`), one cache per source (see
 [Decision](real-vi-tranche.md#decision)); `--direction en-vi` (its tokenizer the Vietnamese swap, `paths.DIRECTION_TOKENIZERS`) builds
 the other way into `<root>/cache/en-vi/<source>/` and `en-vi/<source>/` ([two-way](two-way.md)).
-Its `read_shard` fetches a shard's four parts (the box's
-own copies first, `ingest.part_file`), joins them by id and applies the gates below; the shared
-build does the rest ([cache-build](cache-build.md#shape)). A sample also holds `text_vi`, `doc`
+Its `read_shard` fetches a shard's four parts at once (the box's
+own copies first, `ingest.part_file`), joins them by id and applies the gates below
+(`--drop-inputs` then deletes the HF cache's copies, so a build of every shard holds a shard or
+two of inputs, not GigaSpeech 2's 216 GB); the shared
+build does the rest ([cache-build](cache-build.md#shape)). A sample also holds `text_vi` (the
+corpus transcript; GigaSpeech 2's upper-case ones lower-cased, as `translate.py` read them, since
+an `en-vi` row writes it: lower case without punctuation, against PhoAudiobook's lower case with
+punctuation and viVoice's cased text), `doc`
 and `seq`, so the trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
 draws use split `train`. It skips the shards held out for evaluation
 (`ingest.SOURCES[...].heldout`, [giga-heldout](sft-evaluation.md#evaluation-sets)).

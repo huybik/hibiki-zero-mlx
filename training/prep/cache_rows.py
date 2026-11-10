@@ -202,7 +202,7 @@ def init_worker(settings: Settings, tokenizer: Path, pcm_dir: Path | None) -> No
 class Planned:
     """A row's `plan` from a worker without its shard: the clips inline (`pcm`), or as one raw
     float32 file of source24, target24 and target16 back to back (`file`, `lengths`) that `clips`
-    maps."""
+    reads."""
 
     lead: list[int]
     groups: list[tuple[list[int], str]]
@@ -215,11 +215,11 @@ class Planned:
     lengths: tuple[int, int, int] = (0, 0, 0)
 
     def clips(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """The three clips; a file is mapped and unlinked at once (the pages live as long as the
-        arrays do)."""
+        """The three clips; a file is read and unlinked at once. Read, not mapped: numpy's memmap
+        keeps a descriptor open per file, and a window's 4,096 rows passed the box's limit of 1,024."""
         if self.pcm is not None:
             return self.pcm
-        data = np.memmap(self.file, np.float32, "r")
+        data = np.fromfile(self.file, np.float32)
         os.unlink(self.file)
         a, b = self.lengths[0], self.lengths[0] + self.lengths[1]
         return data[:a], data[a:b], data[b:]
@@ -232,7 +232,7 @@ class Planned:
 
 def prepare_row(row: dict[str, Any], source_audio: bytes, target_audio: bytes, split: str) -> Planned:
     """Worker: `prepare` then `plan` (the decode gates, the delay draw, the text grouping), so the
-    main process only maps the clips: piping ~1.4 MB of PCM a row through the pool's one result
+    main process only reads the clips: piping ~1.4 MB of PCM a row through the pool's one result
     pipe held the main thread ~30 s per GigaSpeech 2 shard. Raises Rejected or AlignmentError."""
     shard = Shard(None, "", split, 0, [], [])
     p = plan(shard, 0, row, prepare(source_audio, target_audio), _settings, _tokenizer)
