@@ -10,7 +10,7 @@ committed tests, and its prefix reference left out the sentence being spoken.
  every τ=20 updates (π_old = π_θ):
    cached streams ─► bf16 copy of π_θ samples G=4 rollouts each, T frames, no early stop
                  ─► BLEU process rewards at reward frames ─► group-normalized advantages
-                 ─► π_θ logprobs of the rollouts, no grad (π_old's, exact)
+                 ─► π_θ logprobs of the rollouts via the update's forward (π_old's, exact)
  each update:    32 streams × 4 rollouts ─► clipped ratio loss × advantage ─► AdamW
  every 200:      the SFT validation's free-running sets ─► chrF and end offset ─► promote
 ```
@@ -52,17 +52,17 @@ committed tests, and its prefix reference left out the sentence being spoken.
 
 | Paper | Here |
 |---|---|
-| Inputs, sentences | Streams planned by `streams.StreamDataset` from the noisy `en_speech` train cache, with their own `--seed` and 30–75 s, the paper's lengths. One cache row is one sentence. The stream plan gives each row's `vi_start` and `vi_frames`. |
-| References y | Each row's English is its own cache text stream (non-PAD tokens, decoded). No external metadata is needed. |
+| Inputs, sentences | Streams planned by `streams.StreamDataset` from the noisy `en_speech` train cache, with their own `--seed` and 30–75 s, the paper's lengths (a tenth hold one 5–22 s row, `streams.SINGLE_ROW_STREAMS`, as in SFT). One cache row is one sentence. The stream plan gives each row's `vi_start` and `vi_frames`. |
+| References y, ŷ | Each row's English is its own cache text stream. Both it and a rollout's text are decoded as evaluation decodes (tokens above PAD; a rollout's text ends at its first EOS, so an early EOS loses the rest). No external metadata is needed. |
 | S(t), y_t | The rows whose Vietnamese has started by frame t, in order. A gap after a row belongs to that row, as the paper's sentence i runs from t_i to t_{i+1}. |
-| Reward frames | The cache has no Vietnamese words or timings. Use one reward frame every 2.5 s of Vietnamese speech, counted inside rows only (≈ 8 syllables at the TTS's pace; check the rate on 1,000 rows' `text_vi` once), plus frame T. The paper has no frame after the last input word. We add T so the tail, where the translation finishes, is trained by the final BLEU. |
+| Reward frames | Frame boundaries: a reward at boundary b counts the text of the frames before b, and credits exactly those tokens (R_t sums the boundaries after t). The cache has no Vietnamese words or timings, so a boundary follows every 2.5 s of Vietnamese speech, counted inside rows only (≈ 8 syllables at the TTS's pace; check the rate on 1,000 rows' `text_vi` once), plus one at T. The paper has no frame after the last input word. We add T so the tail, where the translation finishes, is trained by the final BLEU. |
 | BLEU | `sacrebleu.sentence_bleu` (already pinned) per rollout and reward frame, in CPU worker processes while the GPU generates the next batch. A frame whose group has zero std gets advantage 0. |
-| Rollouts | Fed from cached Vietnamese codes, so no Mimi encode or decode: warm-up codes, then the stream's source with its EOS, then silence to T, through `LMGen` as `common.generate_batch` drives it (sized KV cache, `stop_on_eos` off). Store each rollout in the cache layout `[33, T]`: sampled text and English codes, plus the source. |
-| π_old logprobs | At each refresh, one no-grad pass of π_θ (fp32 masters under bf16 autocast, the update's own forward) over the window's rollouts. The ratio is then exactly 1 at the first update after a refresh. Logprobs at the sampling temperature 0.8, top-k ignored. |
+| Rollouts | Fed from cached Vietnamese codes, so no Mimi encode or decode: the stream's own lead of silence, then its source with its EOS, then silence to T, through `LMGen` as `common.generate_batch` drives it (sized KV cache, `stop_on_eos` off). Store each rollout in the cache layout `[33, T]`: sampled text and English codes, plus the source. |
+| π_old logprobs | At each refresh, one pass of π_θ over the window's rollouts through the update's own forward (fp32 masters under bf16 autocast, gradients enabled, the result detached), cut into the update's own micro-batches. The ratio is then exactly 1 at the first update after a refresh. A no-grad pass, or another batch shape, picks other bf16 kernels: on MPS a no-grad pass gave 1.0012 and clipped 6 tokens. Logprobs at the sampling temperature 0.8, top-k ignored. |
 | Generation model | A bf16 copy of π_θ made at each refresh, as SFT validation builds its generator. |
 | Update | The SFT training forward (`lm_training`'s compiled transformer, step-major depformer) returns per-token logprobs of the 17 output streams. Micro-batches fit the 4,608-frame budget, accumulated to 128 rollouts. Fused AdamW (0.9, 0.95), weight decay 0.1, grad clip 1.0, the gradient norm checked as in SFT. |
 | Evaluation | Every 10·τ = 200 updates, the SFT validation's free-running pass over its five sets, unchanged. Quality is FLEURS dev chrF. Latency is the median `end_offset_s`, the stand-in for the paper's text LAAL. |
-| Promotion | The best FLEURS dev chrF among checkpoints that pass the health gates and whose FLEURS end offset is no worse than the starting model's. |
+| Promotion | The best FLEURS dev chrF among checkpoints that pass the health gates and whose FLEURS end offset is at most 0.2 s worse than the starting model's (`LATENCY_SLACK_S`, [grpo](agent-memory/grpo.md)). |
 | Start | The final SFT model as `--model-weight`, after the real-Vietnamese tranche and the two-way SFT (GRPO is the last stage, user 2026-11-04; [parity plan](vi_en_parity_plan.md#order)): its best validation by FLEURS dev chrF or its final model, whichever scores better on the test sets. The box profile and dry run may use run 2's final model. |
 
 Out of the first version:
@@ -90,6 +90,8 @@ Add one only if the rollouts show a need for it.
   - `promote_best`;
   - `keep_log_lines`;
   - the atomic writes.
+- `training/finetune/grpo_profile.py`: phases 1 and 2's profiler (generation, rewards,
+  old logprobs, update), with the policy and AdamW states resident.
 - `training/h100.sh grpo RUN_NAME [ARGS]`: `run`'s claim, preflight, lock, saved arguments and
   `hf_sync`, starting `training.finetune.grpo`. `hf_sync` needs no change, since `grpo.py`
   writes the SFT run's files:
@@ -118,7 +120,7 @@ Estimates from those, at T = 1,200 frames (75 s of input plus a 21 s tail):
 | Old logprobs, amortized over τ | ~4 s |
 | Update, 153,600 frames forward and backward | ~11 s |
 | Rewards on the CPU, overlapped with generation | ~0 s |
-| **Total** | **~50 s; 1,000 updates ≈ 14 h ≈ $20** |
+| **Total** | **~50 s; 1,000 updates ≈ 14 h ≈ $20; the paper's 2,000 ≈ 28 h** |
 
 - **Generation memory:** the masters and AdamW states (37.5 GB), plus the bf16 copy (5.8 GB),
   plus a KV cache of 128 × 1,200 frames (~18 GB). That fits; 256 rows would not.
@@ -148,8 +150,9 @@ Estimates from those, at T = 1,200 frames (75 s of input plus a 21 s tail):
    - Dry run on the box: rollouts, 2 windows, evaluation, save, kill, resume, sync.
    - Exit: the resume repeats the window and the Hub holds the pair and logs.
 4. **The run.**
-   - α = 0.4 and the paper's settings, for 1,000 updates first: 5 evaluations, extended if chrF
-     or the end offset is still improving.
+   - α = 0.4 and the paper's settings, 2,000 updates. Every evaluation (each 200 updates)
+     promotes, so stop the run once two evaluations in a row improve neither FLEURS chrF nor the
+     end offset. A run cannot be extended: its stop is part of its saved arguments.
    - Then the real-Vietnamese tranche (parity plan, stage 1.3), which this cannot replace: the
      rollouts are TTS speech.
 

@@ -1,7 +1,7 @@
 # SFT launcher and recovery
 
 Read when touching `training/h100.sh`, `training/finetune/hf_sync.py`, or the checkpoint writer
-and resume in `training/finetune/train.py`.
+and resume in `training/finetune/checkpoints.py` (shared by `train.py` and `grpo.py`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Launcher](#launcher) ·
 [Checkpoints and recovery](#checkpoints-and-recovery)
 
@@ -37,7 +37,8 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
     one, a local `best.json` no older than the remote's newest `best/` marker, and a `run_id.json`
     commit equal to HEAD; a missing remote `run.json` (its upload failed) is uploaded if the prefix
     is otherwise empty.
-  Either way it runs `train.py --out-dir runs/RUN_NAME ARGS…` beside the `hf_sync` watcher, and
+  Either way it runs `train.py --out-dir runs/RUN_NAME ARGS…` (`grpo RUN_NAME` runs `grpo.py`
+  the same way, [grpo](grpo.md#running)) beside the `hf_sync` watcher, and
   kills training if sync dies. INT or TERM to the launcher stops training and waits for the sync's
   final upload (`wait` is retried: a trapped signal interrupts it). On an interruptible pod the
   boot script runs it ([docs/finetune.md](../finetune.md#interruptible-pods)).
@@ -45,7 +46,7 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
 ## Checkpoints and recovery
 
 - A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt` (12.5 + 25 GB);
-  two are kept locally. `train.CheckpointWriter` copies the model and optimizer state into
+  two are kept locally. `checkpoints.CheckpointWriter` copies the model and optimizer state into
   pinned host buffers on the training stream and returns; a thread waits for the copy, prunes
   to `--keep-checkpoints` − 1 pairs, writes the model then the trainer file (each fsynced before
   its rename, then the directory), and prunes again. The next save, a promotion (which
