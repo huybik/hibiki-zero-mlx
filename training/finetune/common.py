@@ -1,8 +1,9 @@
 """Shared training and evaluation logic for Vietnamese full-model SFT.
 
-This module owns device helpers, exact full-model checkpoint I/O, teacher-forced
-losses, autoregressive generation, text metrics, and correct-source generation
-health diagnostics. Training streams are built in `streams.py`.
+This module owns device helpers, exact full-model checkpoint I/O, the loss kernel and the
+teacher-forced losses on it, free-running (sampled) translation, text metrics, and the
+generation health gates. Training streams are built in `streams.py`; checkpoint pairs, resume
+and logs are in `checkpoints.py`.
 
 It runs on CUDA in the environment that `training/h100.sh setup` builds.
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import math
 import os
@@ -80,19 +82,15 @@ def seed_all(seed: int) -> None:
 lm_training.install()
 
 
+def require_torch_compile() -> None:
+    """The trainers' forward and loss are compiled functions (`lm_training`, `token_ce`)."""
+    if os.environ.get("NO_TORCH_COMPILE"):
+        raise ValueError("Full-model training requires torch compile; unset NO_TORCH_COMPILE")
+
+
 # --------------------------------------------------------------------------- #
 # Full-model checkpoint I/O
 # --------------------------------------------------------------------------- #
-def enable_full_finetune(model: Any) -> None:
-    """Train every language-model parameter."""
-    for param in model.parameters():
-        param.requires_grad_(True)
-
-
-def trainable_parameters(model: Any) -> list[Any]:
-    return [param for param in model.parameters() if param.requires_grad]
-
-
 def fsync_path(path: Path) -> None:
     """Flush a file, or a directory's entries, to disk: a rename alone can survive a host crash
     that the renamed file's data does not."""
@@ -132,6 +130,45 @@ def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
             state[name] = tensor.to(dtype=dtype)
     model.load_state_dict(state, strict=True)
     print(f"Loaded {len(state)} model tensors from {repo_display_path(path)}")
+
+
+def bf16_copy(checkpoint_info: Any, lm: Any, device: Any) -> Any:
+    """A policy's weights in a bf16 generation model, as `eval.py` loads a checkpoint: 1.8x faster
+    than generating on the fp32 masters. Built without reading the base weights, which the copy
+    overwrites. moshi's streaming state holds it in reference cycles: after `del`, only
+    `gc.collect()` frees its 5.8 GiB."""
+    generator = checkpoint_info.get_moshi(device=device, dtype=torch.bfloat16, load_weight=False)
+    generator.load_state_dict(lm.state_dict())
+    generator.eval()
+    return generator
+
+
+def load_policy(checkpoint_info: Any, device: Any) -> Any:
+    """The model a trainer updates (SFT's and GRPO's), from the checkpoint info's weight
+    (--model-weight): fp32 masters, every parameter trainable, in training mode.
+
+    Loading a Hibiki weight, moshi's `get_moshi` copies the text PAD's input embedding over the
+    text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
+    trains from there (cosine 0.88 to PAD's after round 4), and a resumed pair restores its own.
+    `load_lm` and `bf16_copy` keep a checkpoint's own row."""
+    lm = checkpoint_info.get_moshi(
+        device=device, dtype=torch.float32, lm_kwargs_overrides={"gradient_checkpointing": False}
+    )
+    lm.train()
+    for param in lm.parameters():
+        param.requires_grad_(True)
+    return lm
+
+
+def fused_adamw(params: list[Any], args: argparse.Namespace) -> torch.optim.AdamW:
+    """The trainers' optimizer, from --lr, --adam-beta1/2 and --weight-decay."""
+    return torch.optim.AdamW(
+        params,
+        lr=args.lr,
+        betas=(args.adam_beta1, args.adam_beta2),
+        weight_decay=args.weight_decay,
+        fused=True,
+    )
 
 
 def load_lm(checkpoint_info: Any, checkpoint: Path | None, device: Any, dtype: torch.dtype) -> Any:
@@ -193,50 +230,23 @@ def loss_means(sums: dict[str, Any], weights: LossWeights) -> dict[str, Any]:
 
 
 @torch.compile(dynamic=True)
-def _ce_parts(logits, targets, valid, weight):
-    """Per-position CE over the full logits (fp32 inside the fused kernel), zero where not valid,
-    and its weighted sum."""
+def token_ce(logits: Any, targets: Any, valid: Any, temperature: float = 1.0) -> Any:
+    """Each target token's cross-entropy under softmax(logits / temperature), float32 in the
+    shape of `targets`, and 0 where not `valid` (moshi fills the logits there with NaN, or the
+    target is -1). The one loss kernel: SFT's losses are its weighted sums, and GRPO's token
+    logprobs its negative at the sampling temperature.
+
+    Dense on purpose. The fp32 scores live only inside the fused kernel, so no full-vocabulary
+    fp32 copy is kept for the backward pass, and no boolean index gathers the valid positions
+    (a host sync, and 4.5% of an SFT step's kernels on the H200). No gradient reaches the model
+    from a masked position: `torch.where` hands its CE a 0, and where the logits are moshi's NaN
+    fill the resulting 0 x NaN stops at the fill (`_undelay_sequence` overwrites those slices in
+    place, whose backward zeroes them). The trainers still check every gradient norm."""
+    scores = logits.float() if temperature == 1.0 else logits.float() / temperature
     ce = torch.nn.functional.cross_entropy(
-        logits.float().flatten(0, -2), torch.where(valid, targets, 0).flatten(), reduction="none"
+        scores.flatten(0, -2), torch.where(valid, targets, 0).flatten(), reduction="none"
     ).view(targets.shape)
-    ce = torch.where(valid, ce, 0.0)
-    return ce, (ce * weight).sum()
-
-
-def _dense_losses(lm: Any, codes: Any, output: Any, weights: LossWeights) -> dict[str, Any]:
-    """The training losses without boolean indexing: masked positions weigh 0 instead of being
-    gathered, and the CE (fp32 inside the compiled kernel) runs over the full logits, so no host
-    sync and no gathered fp32 copy. Same sums as the indexed path below to bf16 noise (losses
-    within 2e-4 on the same batches); +4.5% training throughput on the H200 (2026-11-09)."""
-    mask = output.mask  # [B, Q, T]
-    targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
-    semantic = torch.zeros_like(mask)
-    semantic[:, 0] = True
-    semantic &= mask
-    acoustic = mask & ~semantic
-    audio_weight = torch.where(semantic, weights.first_codebook, 1.0) * mask
-    audio_ce, audio_sum = _ce_parts(output.logits, targets, mask, audio_weight)
-    tmask = output.text_mask  # [B, 1, T]
-    ttargets = codes[:, :1]
-    pad = (ttargets == lm.text_padding_token_id) & tmask
-    content = tmask & ~pad
-    text_weight = torch.where(pad, weights.text_pad, 1.0) * tmask
-    text_ce, text_sum = _ce_parts(output.text_logits, ttargets, tmask, text_weight)
-    sums = {
-        "audio_sum": audio_sum,
-        "audio_n": audio_weight.sum(),
-        "semantic_sum": (audio_ce * semantic).sum(),
-        "semantic_n": semantic.sum(),
-        "acoustic_sum": (audio_ce * acoustic).sum(),
-        "acoustic_n": acoustic.sum(),
-        "text_sum": text_sum,
-        "text_n": text_weight.sum(),
-        "content_sum": (text_ce * content).sum(),
-        "content_n": content.sum(),
-        "pad_sum": (text_ce * pad).sum(),
-        "pad_n": pad.sum(),
-    }
-    return {**sums, **loss_means(sums, weights)}
+    return torch.where(valid, ce, 0.0)
 
 
 def compute_batch_losses(
@@ -244,46 +254,46 @@ def compute_batch_losses(
     codes: Any,
     condition_tensors: Any | None,
     weights: LossWeights,
-    return_output: bool = False,
+    accuracy: bool = False,
 ) -> dict[str, Any]:
-    """Teacher-forced losses of one batch, with every component's sum and count beside them so
-    evaluation can aggregate exactly. Positions holding -1 are outside the masks."""
+    """Teacher-forced losses of one batch, as tensors on the GPU (no host sync), with every
+    component's sum and count beside them so evaluation can aggregate exactly. Positions holding
+    -1 are outside the masks. `accuracy` adds the counts of text tokens the argmax gets right
+    (`content_correct`, `pad_correct`)."""
     output = lm(codes, condition_tensors=condition_tensors)
-    if not return_output:
-        return _dense_losses(lm, codes, output, weights)
-    audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q][output.mask]
-    audio_ce = torch.nn.functional.cross_entropy(
-        output.logits[output.mask].float(), audio_targets, reduction="none"
+    audio_valid = output.mask  # [B, dep_q, T]
+    audio_ce = token_ce(
+        output.logits, codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q], audio_valid
     )
-    codebook = torch.arange(lm.dep_q, device=codes.device)[None, :, None].expand_as(output.mask)
-    semantic = codebook[output.mask] == 0
-    audio_weight = torch.where(semantic, weights.first_codebook, 1.0)
-    text_targets = codes[:, :1][output.text_mask]
-    text_ce = torch.nn.functional.cross_entropy(
-        output.text_logits[output.text_mask].float(), text_targets, reduction="none"
-    )
-    pad = text_targets == lm.text_padding_token_id
-    text_weight = torch.where(pad, weights.text_pad, 1.0)
-    # Sums and counts stay on the GPU: no host sync mid-step.
+    semantic = torch.zeros_like(audio_valid)
+    semantic[:, 0] = audio_valid[:, 0]
+    acoustic = audio_valid & ~semantic
+    audio_weight = torch.where(semantic, weights.first_codebook, 1.0) * audio_valid
+    text_valid = output.text_mask  # [B, 1, T]
+    text_targets = codes[:, :1]
+    text_ce = token_ce(output.text_logits, text_targets, text_valid)
+    pad = (text_targets == lm.text_padding_token_id) & text_valid
+    content = text_valid & ~pad
+    text_weight = torch.where(pad, weights.text_pad, 1.0) * text_valid
     sums = {
-        "audio_sum": (audio_weight * audio_ce).sum(),
+        "audio_sum": (audio_ce * audio_weight).sum(),
         "audio_n": audio_weight.sum(),
-        "semantic_sum": audio_ce[semantic].sum(),
+        "semantic_sum": (audio_ce * semantic).sum(),
         "semantic_n": semantic.sum(),
-        "acoustic_sum": audio_ce[~semantic].sum(),
-        "acoustic_n": (~semantic).sum(),
-        "text_sum": (text_weight * text_ce).sum(),
+        "acoustic_sum": (audio_ce * acoustic).sum(),
+        "acoustic_n": acoustic.sum(),
+        "text_sum": (text_ce * text_weight).sum(),
         "text_n": text_weight.sum(),
-        "content_sum": text_ce[~pad].sum(),
-        "content_n": (~pad).sum(),
-        "pad_sum": text_ce[pad].sum(),
+        "content_sum": (text_ce * content).sum(),
+        "content_n": content.sum(),
+        "pad_sum": (text_ce * pad).sum(),
         "pad_n": pad.sum(),
     }
     result = {**sums, **loss_means(sums, weights)}
-    if return_output:
-        # Only for evaluation: keeping logits alive an extra step in the train loop costs
-        # ~1 GB on a full-VRAM box.
-        result["output"] = output
+    if accuracy:
+        correct = output.text_logits.argmax(-1) == text_targets
+        result["content_correct"] = (correct & content).sum()
+        result["pad_correct"] = (correct & pad).sum()
     return result
 
 
@@ -300,8 +310,10 @@ def evaluate_teacher_forced(
     was_training = bool(lm.training)
     lm.eval()
     condition_cache: dict[int, Any | None] = {}
-    totals = {f"{name}_{part}": 0.0 for name in LOSS_SUMS for part in ("sum", "n")}
-    counts = {"batches": 0, "streams": 0, "max_frames": 0, "content_correct": 0, "pad_correct": 0}
+    keys = [f"{name}_{part}" for name in LOSS_SUMS for part in ("sum", "n")]
+    keys += ["content_correct", "pad_correct"]
+    totals = dict.fromkeys(keys, 0.0)
+    batches = streams_seen = max_frames = 0
     with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16):
         for batch_index, batch in enumerate(dataloader):
             if max_batches and batch_index >= max_batches:
@@ -311,22 +323,16 @@ def evaluate_teacher_forced(
             if batch_size not in condition_cache:
                 condition_cache[batch_size] = batch_condition_tensors(lm, model_type, batch_size)
             result = compute_batch_losses(
-                lm, codes, condition_cache[batch_size], weights, return_output=True
+                lm, codes, condition_cache[batch_size], weights, accuracy=True
             )
-            output = result.pop("output")
-            for key in totals:
-                totals[key] += float(result[key])
-            targets = codes[:, :1][output.text_mask]
-            correct = output.text_logits[output.text_mask].argmax(-1) == targets
-            pad = targets == lm.text_padding_token_id
-            counts["content_correct"] += int(correct[~pad].sum())
-            counts["pad_correct"] += int(correct[pad].sum())
-            counts["batches"] += 1
-            counts["streams"] += batch_size
-            counts["max_frames"] = max(counts["max_frames"], int(batch["frames"].max()))
+            for key, value in zip(keys, torch.stack([result[key].double() for key in keys]).tolist()):
+                totals[key] += value
+            batches += 1
+            streams_seen += batch_size
+            max_frames = max(max_frames, int(batch["frames"].max()))
     if was_training:
         lm.train()
-    if not counts["batches"]:
+    if not batches:
         raise RuntimeError("Validation dataloader produced no batches.")
     content_tokens = int(totals["content_n"])
     pad_tokens = int(totals["pad_n"])
@@ -334,12 +340,12 @@ def evaluate_teacher_forced(
         **loss_means(totals, weights),
         "audio_tokens": int(totals["semantic_n"] + totals["acoustic_n"]),
         "content_tokens": content_tokens,
-        "content_acc": counts["content_correct"] / content_tokens if content_tokens else 0.0,
+        "content_acc": totals["content_correct"] / content_tokens if content_tokens else 0.0,
         "pad_tokens": pad_tokens,
-        "pad_acc": counts["pad_correct"] / pad_tokens if pad_tokens else 0.0,
-        "batches": counts["batches"],
-        "streams": counts["streams"],
-        "max_frames": counts["max_frames"],
+        "pad_acc": totals["pad_correct"] / pad_tokens if pad_tokens else 0.0,
+        "batches": batches,
+        "streams": streams_seen,
+        "max_frames": max_frames,
     }
 
 
@@ -387,6 +393,21 @@ def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
             row[EVAL_SET] = name
         sets[name] = rows
     return sets
+
+
+def load_eval_rows(paths: list[Path]) -> tuple[list[str], list[dict[str, str]]]:
+    """A trainer's evaluation rows: the set names in the order given (the first selects the
+    checkpoint) and every set's rows, checked before the run starts rather than at its first
+    validation: the columns, unique ids, a duration and the audio file of each."""
+    cfg = TRAINER_GENERATION
+    sets = read_eval_sets(paths)
+    rows = [row for set_rows in sets.values() for row in set_rows]
+    validate_eval_rows(
+        rows, cfg.source_column, cfg.reference_column, cfg.id_column, duration_column="duration_s"
+    )
+    for row in rows:
+        require_file(row[cfg.source_column], "evaluation audio")
+    return list(sets), rows
 
 
 def validate_eval_rows(
@@ -447,7 +468,7 @@ def ids_from_args(ids: str, ids_file: Path | None) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Text metrics (autoregressive greedy eval)
+# Text metrics
 # --------------------------------------------------------------------------- #
 def normalize(text: str) -> str:
     text = ascii_text(text).lower()
@@ -565,7 +586,7 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Autoregressive greedy generation
+# Free-running (sampled) translation
 # --------------------------------------------------------------------------- #
 def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any) -> list[dict[str, Any]]:
     eos_id = int(text_tokenizer.eos_id())
@@ -670,6 +691,10 @@ class GenerationConfig:
     top_k_text: int = 250
 
 
+# How the trainers validate: eval.py's defaults, text only (checkpoints are selected on the text).
+TRAINER_GENERATION = GenerationConfig(text_only=True)
+
+
 def generate_batch(
     rows: list[dict[str, str]],
     batch_start: int,
@@ -755,7 +780,7 @@ def generate_batch(
     )
 
 
-def run_greedy_eval(
+def translate_rows(
     rows: list[dict[str, str]],
     cfg: GenerationConfig,
     batch_size: int,
@@ -766,8 +791,10 @@ def run_greedy_eval(
     out_dir: Path,
     evaluation_seed: int | None = None,
 ) -> list[dict[str, str]]:
-    """Batched free-running eval of rows with `duration_s`, in length order; optionally reseed each
-    batch deterministically."""
+    """Free-running translation of rows with `duration_s`, sampled as `cfg` says, in length order
+    in batches of `batch_size`; batch i is reseeded with `evaluation_seed` + i. A row's sample
+    therefore depends on the rows it shares a batch with: scores compare under one row list, seed
+    and batch size."""
     # Batches of similar length pad less: on FLEURS dev, 6,000 generation steps instead of 8,300.
     rows = sorted(rows, key=lambda row: float(row["duration_s"]))
     records: list[dict[str, str]] = []
@@ -846,8 +873,37 @@ def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
         writer.writerows(records)
 
 
+def validate_free_running(
+    lm: Any,
+    checkpoint_info: Any,
+    mimi: Any,
+    text_tokenizer: Any,
+    rows: list[dict[str, str]],
+    set_names: list[str],
+    batch_size: int,
+    out_dir: Path,
+    seed: int,
+) -> dict[str, dict[str, Any]]:
+    """A trainer's free-running validation of its policy `lm` (SFT's and GRPO's): translate
+    `rows` on a bf16 copy with eval.py's sampling, write `out_dir`/predictions.csv and return each
+    set's metrics and health gates (`score_sets`). The copy is freed before returning, so the
+    next training step has its memory back."""
+    generator = bf16_copy(checkpoint_info, lm, lm.device)
+    try:
+        records = translate_rows(
+            rows, TRAINER_GENERATION, batch_size, mimi, generator, text_tokenizer,
+            checkpoint_info, out_dir, seed,
+        )
+    finally:
+        del generator
+        gc.collect()
+        torch.cuda.empty_cache()
+    write_predictions(out_dir / "predictions.csv", records)
+    return score_sets(records, set_names)
+
+
 # --------------------------------------------------------------------------- #
-# Model loading (shared by all three scripts)
+# Model loading (shared by every script)
 # --------------------------------------------------------------------------- #
 def load_checkpoint_info(args: argparse.Namespace) -> Any:
     return loaders.CheckpointInfo.from_hf_repo(

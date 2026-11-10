@@ -83,13 +83,16 @@ Add one only if the rollouts show a need for it.
   - advantages per frame.
 - `training/finetune/grpo.py`: the loop in the diagram (stream planning, rollouts, old logprobs,
   updates, evaluation, checkpoints, logs).
-- `training/finetune/checkpoints.py`: what `train.py` and `grpo.py` share, moved out of
-  `train.py` unchanged:
+- `training/finetune/checkpoints.py`: the run directory `train.py` and `grpo.py` share:
   - `CheckpointWriter`;
-  - checkpoint pairs, pruning and resume;
+  - checkpoint pairs, pruning and resume (`open_run`, `load_newest_pair`), and the resume
+    contract (`claim_run_config`);
   - `promote_best`;
-  - `keep_log_lines`;
+  - `keep_log_lines`, `append_log`;
   - the atomic writes.
+- `training/finetune/common.py`: what else they share: the model and optimizer
+  (`load_policy`, `fused_adamw`), the loss kernel (`token_ce`) and the free-running validation
+  (`load_eval_rows`, `validate_free_running`).
 - `training/finetune/grpo_profile.py`: phases 1 and 2's profiler (generation, rewards,
   old logprobs, update), with the policy and AdamW states resident.
 - `training/h100.sh grpo RUN_NAME [ARGS]`: `run`'s claim, preflight, lock, saved arguments and

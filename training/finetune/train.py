@@ -20,11 +20,8 @@ continues by running the same command again.
 from __future__ import annotations
 
 import argparse
-import gc
-import json
 import math
 import os
-import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -36,12 +33,13 @@ from training.finetune import common, streams
 from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
-    atomic_write_text,
+    append_log,
     checkpoint_pairs,
-    clean_incomplete_checkpoints,
+    claim_run_config,
+    jsonable,
     keep_log_lines,
-    load_best_state,
     load_newest_pair,
+    open_run,
     promote_best,
 )
 from training.paths import (
@@ -191,13 +189,7 @@ def validate_args(args: argparse.Namespace) -> None:
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
-    if os.environ.get("NO_TORCH_COMPILE"):
-        raise ValueError("Full-model training requires torch compile; unset NO_TORCH_COMPILE")
-
-
-def stream_frames(stream_seconds: list[float]) -> tuple[int, int]:
-    shortest, longest = stream_seconds
-    return round(shortest * streams.FRAME_RATE), round(longest * streams.FRAME_RATE)
+    common.require_torch_compile()
 
 
 def learning_rate(step: int, peak: float, warmup_steps: int, total_steps: int) -> float:
@@ -218,7 +210,6 @@ def main() -> None:
     common.seed_all(args.seed)
 
     device = common.check_device("cuda")
-    dtype = torch.float32
     torch.set_float32_matmul_precision("high")
 
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
@@ -230,23 +221,10 @@ def main() -> None:
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
 
     out_dir = resolve_repo_path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    clean_incomplete_checkpoints(out_dir)
-    resuming = bool(checkpoint_pairs(out_dir))
-    if not resuming:
-        # A start without a pair begins at step 0: logs of a run cut short before its first save
-        # describe steps that will be trained again.
-        for name in ("train_log.jsonl", "val_log.jsonl", "best.json"):
-            (out_dir / name).unlink(missing_ok=True)
-        shutil.rmtree(out_dir / "eval", ignore_errors=True)
-    best_state = load_best_state(out_dir)
-    best_model = None if best_state is None else out_dir / str(best_state["model"])
-    for path in out_dir.glob("best_step*.safetensors"):
-        if path != best_model:
-            path.unlink()
+    resuming, best_state = open_run(out_dir)
 
     checkpoint_info = common.load_checkpoint_info(args)
-    frames = stream_frames(args.stream_seconds)
+    frames = streams.frame_range(args.stream_seconds)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
     # near-tie in a residual code).
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
@@ -274,21 +252,9 @@ def main() -> None:
         collate_fn=streams.collate,
     )
     print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows")
-    # Checkpoints are selected on free-running translation, sampled as eval.py samples.
-    generation = common.GenerationConfig(text_only=True)
-    rows_by_set = common.read_eval_sets(args.eval_pairs)
-    eval_sets = list(rows_by_set)
-    eval_rows = [row for rows in rows_by_set.values() for row in rows]
-    common.validate_eval_rows(
-        eval_rows,
-        generation.source_column,
-        generation.reference_column,
-        generation.id_column,
-        duration_column="duration_s",
-    )
-    for row in eval_rows:
-        require_file(row[generation.source_column], "evaluation audio")
-    # The sets share batches, so one pass translates them all.
+    # Checkpoints are selected on free-running translation, sampled as eval.py samples. The sets
+    # share batches, so one pass translates them all.
+    eval_sets, eval_rows = common.load_eval_rows(args.eval_pairs)
     print(
         f"Validation translates {len(eval_rows)} rows of {', '.join(eval_sets)}; "
         f"{eval_sets[0]} selects the checkpoint"
@@ -311,57 +277,6 @@ def main() -> None:
         first_codebook=args.first_codebook_weight,
         text_pad=args.text_pad_weight,
     )
-
-    print(f"Loading upstream Hibiki-Zero from {repo_display_path(args.model_weight)}")
-    lm = checkpoint_info.get_moshi(
-        device=device,
-        dtype=dtype,
-        lm_kwargs_overrides={"gradient_checkpointing": False},
-    )
-    lm.train()
-    # The training forward attends causally over the whole stream (lm_training): the longest
-    # padded stream must fit the attention context, checked here rather than at its first batch.
-    context = lm.transformer.layers[0].self_attn.context
-    longest = math.ceil(frames[1] / streams.FRAME_BUCKET) * streams.FRAME_BUCKET
-    if context is not None and longest > context:
-        raise ValueError(f"--stream-seconds allows {longest} frames, over the context of {context}")
-    common.enable_full_finetune(lm)
-    params = common.trainable_parameters(lm)
-    if not params:
-        raise RuntimeError("No trainable parameters")
-    print(
-        f"Trainable params: {sum(param.numel() for param in params):,} / "
-        f"{sum(param.numel() for param in lm.parameters()):,}"
-    )
-    mimi = checkpoint_info.get_mimi(device=device)
-    text_tokenizer = checkpoint_info.get_text_tokenizer()
-
-    optimizer = torch.optim.AdamW(
-        params,
-        lr=args.lr,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.weight_decay,
-        fused=True,
-    )
-    autocast = torch.autocast("cuda", dtype=torch.bfloat16)
-
-    val_log_path = out_dir / "val_log.jsonl"
-    log_path = out_dir / "train_log.jsonl"
-    global_step = load_newest_pair(lm, optimizer, out_dir, device, dtype) if resuming else 0
-    # Steps already validated. A pair is saved before its validation, so a run cut short there
-    # validates on resume; a replacement pod without val_log validates again.
-    validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
-    keep_log_lines(log_path, global_step)
-    if global_step > total_steps:
-        raise RuntimeError("The run is beyond the requested stop")
-
-    def jsonable(value: Any) -> Any:
-        if isinstance(value, Path):
-            return str(value)
-        if isinstance(value, (list, tuple)):
-            return [jsonable(item) for item in value]
-        return value
-
     run_config = {key: jsonable(value) for key, value in vars(args).items()}
     run_config.update(
         {
@@ -378,18 +293,34 @@ def main() -> None:
             "eval_rows": len(eval_rows),
         }
     )
-    run_config_path = out_dir / "run_config.json"
-    if not resuming:
-        atomic_write_text(
-            json.dumps(run_config, indent=2, sort_keys=True) + "\n", run_config_path
-        )
-    else:
-        if not run_config_path.is_file():
-            raise RuntimeError("Resume requires the original run_config.json")
-        previous = json.loads(run_config_path.read_text(encoding="utf-8"))
-        for key in RESUME_KEYS:
-            if previous.get(key) != run_config.get(key):
-                raise RuntimeError(f"Same-run resume contract changed: {key}")
+    # Before the model loads: a resume with other arguments or data stops here, in seconds.
+    claim_run_config(out_dir, run_config, RESUME_KEYS, resuming)
+
+    print(f"Loading the start model from {repo_display_path(args.model_weight)}")
+    lm = common.load_policy(checkpoint_info, device)
+    # The training forward attends causally over the whole stream (lm_training): the longest
+    # padded stream must fit the attention context, checked here rather than at its first batch.
+    context = lm.transformer.layers[0].self_attn.context
+    longest = math.ceil(frames[1] / streams.FRAME_BUCKET) * streams.FRAME_BUCKET
+    if context is not None and longest > context:
+        raise ValueError(f"--stream-seconds allows {longest} frames, over the context of {context}")
+    params = list(lm.parameters())
+    print(f"Trainable params: {sum(param.numel() for param in params):,}")
+    mimi = checkpoint_info.get_mimi(device=device)
+    text_tokenizer = checkpoint_info.get_text_tokenizer()
+
+    optimizer = common.fused_adamw(params, args)
+    autocast = torch.autocast("cuda", dtype=torch.bfloat16)
+
+    val_log_path = out_dir / "val_log.jsonl"
+    log_path = out_dir / "train_log.jsonl"
+    global_step = load_newest_pair(lm, optimizer, out_dir, device) if resuming else 0
+    # Steps already validated. A pair is saved before its validation, so a run cut short there
+    # validates on resume; a replacement pod without val_log validates again.
+    validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
+    keep_log_lines(log_path, global_step)
+    if global_step > total_steps:
+        raise RuntimeError("The run is beyond the requested stop")
 
     writer = CheckpointWriter(lm, optimizer, args, out_dir)
 
@@ -450,33 +381,11 @@ def main() -> None:
             weights,
             args.val_batches,
         )
-        eval_dir = out_dir / "eval" / f"step{step:06d}"
-        # Generation runs on a bf16 copy, as eval.py loads a checkpoint: 1.8x faster than the
-        # fp32 masters, and the room it takes is the gradients' freed above. Built without
-        # loading --model-weight: the copy overwrites every tensor anyway.
-        generator = checkpoint_info.get_moshi(
-            device=device, dtype=torch.bfloat16, load_weight=False
+        # On a bf16 copy of the model, in the room the gradients freed above.
+        free_running = common.validate_free_running(
+            lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
+            args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
         )
-        generator.load_state_dict(lm.state_dict())
-        generator.eval()
-        records = common.run_greedy_eval(
-            eval_rows,
-            generation,
-            args.eval_batch_size,
-            mimi,
-            generator,
-            text_tokenizer,
-            checkpoint_info,
-            eval_dir,
-            args.seed,
-        )
-        # moshi's streaming state holds the generator in reference cycles: without the collect,
-        # its 5.8 GiB outlive `del` and the next training step runs out of an 80 GB card.
-        del generator
-        gc.collect()
-        torch.cuda.empty_cache()
-        common.write_predictions(eval_dir / "predictions.csv", records)
-        free_running = common.score_sets(records, eval_sets)
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         print(
             f"val step={step} loss={teacher_forced['loss']:.4f} "
@@ -501,8 +410,7 @@ def main() -> None:
             "teacher_forced": teacher_forced,
             "free_running": free_running,
         }
-        with val_log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(item, sort_keys=True) + "\n")
+        append_log(val_log_path, item)
         validated.add(step)
         print(f"val step={step} took {seconds:.0f} s")
         last_log_time += seconds  # the next train-log line times training steps only
@@ -584,8 +492,7 @@ def main() -> None:
                 "grad_norm": float(log["grad_norm"]) / steps,
                 "max_grad_norm": float(log["max_grad_norm"]),
             }
-            with log_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(item, sort_keys=True) + "\n")
+            append_log(log_path, item)
             print(
                 f"step={global_step} loss={item['loss']:.4f} "
                 f"audio={item['audio_loss']:.4f} text={item['text_loss']:.4f} "

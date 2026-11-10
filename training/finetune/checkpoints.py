@@ -1,5 +1,5 @@
-"""Checkpoint pairs, resume, best-checkpoint promotion and jsonl logs, shared by the SFT trainer
-(`train.py`) and GRPO (`grpo.py`).
+"""A run directory, shared by the SFT trainer (`train.py`) and GRPO (`grpo.py`): checkpoint
+pairs, resume and its contract (`run_config.json`), best-checkpoint promotion and the jsonl logs.
 
 A pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt` (the optimizer state); a run
 resumes its newest complete pair. `hf_sync.py` uploads these files as they are.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,56 @@ def prune_checkpoint_pairs(out_dir: Path, keep: int) -> None:
     for _, model, trainer in pairs[: max(0, len(pairs) - keep)]:
         trainer.unlink()
         model.unlink()
+
+
+def open_run(out_dir: Path) -> tuple[bool, dict[str, Any] | None]:
+    """Prepare `out_dir` for a start or a resume: whether it holds a complete pair to resume, and
+    its promoted checkpoint (`best.json`). Half-written pairs go either way. A start without a
+    pair begins at step 0, so the logs, best.json and eval/ of a run cut short before its first
+    save go too: they describe steps that will be trained again."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    clean_incomplete_checkpoints(out_dir)
+    resuming = bool(checkpoint_pairs(out_dir))
+    if not resuming:
+        for name in ("train_log.jsonl", "val_log.jsonl", "best.json"):
+            (out_dir / name).unlink(missing_ok=True)
+        shutil.rmtree(out_dir / "eval", ignore_errors=True)
+    best_state = load_best_state(out_dir)
+    best_model = None if best_state is None else out_dir / str(best_state["model"])
+    for path in out_dir.glob("best_step*.safetensors"):
+        if path != best_model:
+            path.unlink()
+    return resuming, best_state
+
+
+def jsonable(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    return value
+
+
+def claim_run_config(
+    out_dir: Path, run_config: dict[str, Any], resume_keys: tuple[str, ...], resuming: bool
+) -> None:
+    """Write a new run's `run_config.json`, or hold a resumed run to the one it started with: a
+    resume must match it on `resume_keys`."""
+    path = out_dir / "run_config.json"
+    if not resuming:
+        atomic_write_text(json.dumps(run_config, indent=2, sort_keys=True) + "\n", path)
+        return
+    if not path.is_file():
+        raise RuntimeError("Resume requires the original run_config.json")
+    previous = json.loads(path.read_text(encoding="utf-8"))
+    for key in resume_keys:
+        if previous.get(key) != run_config.get(key):
+            raise RuntimeError(f"Same-run resume contract changed: {key}")
+
+
+def append_log(path: Path, item: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(item, sort_keys=True) + "\n")
 
 
 def build_metadata(args: argparse.Namespace) -> dict[str, str]:
@@ -225,10 +276,9 @@ class CheckpointWriter:
             raise RuntimeError("Checkpoint write failed") from error
 
 
-def load_newest_pair(
-    model: Any, optimizer: Any, out_dir: Path, device: torch.device, dtype: torch.dtype
-) -> int:
-    """Load the newest complete pair in `out_dir` and return its step, or 0 without one."""
+def load_newest_pair(model: Any, optimizer: Any, out_dir: Path, device: torch.device) -> int:
+    """Load the newest complete pair in `out_dir` into the fp32 `model` and its optimizer, and
+    return its step, or 0 without one."""
     pairs = checkpoint_pairs(out_dir)
     if not pairs:
         return 0
@@ -236,7 +286,7 @@ def load_newest_pair(
     checkpoint = torch.load(trainer_path, map_location="cpu", weights_only=False)
     if int(checkpoint["step"]) != step or checkpoint["model"] != model_path.name:
         raise RuntimeError(f"{trainer_path.name} does not match {model_path.name}")
-    common.load_model(model, model_path, dtype)
+    common.load_model(model, model_path, torch.float32)
     optimizer.load_state_dict(checkpoint["optimizer"])
     for state in optimizer.state.values():
         for key, value in list(state.items()):

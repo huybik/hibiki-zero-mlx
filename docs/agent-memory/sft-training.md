@@ -14,6 +14,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 `training/finetune/train.py`:
 
 - Full-model SFT from `kyutai/hibiki-zero-3b-pytorch-bf16`; every parameter is trainable.
+  `common.load_policy` builds the model for SFT and GRPO alike, through moshi's `get_moshi`,
+  which, loading a Hibiki weight, copies the text PAD's input embedding over the text EOS's (its
+  way to make a sampled early EOS read on as PAD). So every run starts with that row reset, and
+  it trains from there: cosine 0.945 to PAD's after round 3, 0.88 after round 4. `eval.py`, the
+  trainers' validation and a resumed pair keep a checkpoint's own row; a tool that loads a
+  checkpoint through `get_moshi` resets it. Only the frames after a sampled EOS can differ, and
+  evaluation cuts a row's text at its first EOS (found 2026-11-10).
 - Inputs are one or more `--cache-dir` grounded caches plus a `--val-cache-dir`; rows over
   `--max-frames` (280) are dropped.
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
@@ -100,7 +107,11 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 ## Objective
 
 `common.compute_batch_losses`, Kyutai's `moshi-finetune` weighting (decided 2026-11-01,
-[plan](../vi_en_parity_plan.md#decisions-2026-11-01)):
+[plan](../vi_en_parity_plan.md#decisions-2026-11-01)), as weighted sums of one kernel,
+`common.token_ce`: each target token's cross-entropy over the full logits, 0 where the forward's
+mask is off. Training, teacher-forced validation and GRPO's token logprobs (its negative at the
+sampling temperature) all run it, so a change to it needs all three checked
+([sft-speed](sft-speed.md#by-gpu) has why it is dense):
 
 - Audio: the weighted mean CE over the 16 English target codebooks, codebook 0 (semantic)
   weighted `--first-codebook-weight` 100 against 1 for each acoustic codebook.

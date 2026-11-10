@@ -17,7 +17,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from training.finetune import common, streams
-from training.finetune.train import stream_frames
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
@@ -78,7 +77,7 @@ def main() -> None:
     args.tokenizer = require_file(args.tokenizer, "tokenizer")
 
     checkpoint_info = common.load_checkpoint_info(args)
-    frames = stream_frames(args.stream_seconds)
+    frames = streams.frame_range(args.stream_seconds)
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
     rows, layout = streams.load_rows([cache_dir], args.max_frames)
     dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED)

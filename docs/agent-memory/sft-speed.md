@@ -92,7 +92,11 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   ~690 W of its 700 W cap, 99–100% busy)**: kernels of 10 warm steps at 4,608: matmuls 48.6%, fused
   AdamW and the clip's scaling 11.7%, the depformer's attention 6.4%, the loss's boolean-mask gather
   (IndexBackward, index_put) 4.5%. The loss now weighs masked positions 0 over the full logits in a
-  compiled CE (`common._dense_losses`; losses equal to 2e-4 on the same batches): +4.5%. Then by
+  compiled CE (`common.token_ce`): +4.5%. It replaced the indexed loss everywhere on 2026-11-10
+  (validation ran the indexed one until then): on three validation batches the losses equal the
+  indexed ones to 1e-7 and teacher-forced validation to 1e-6, and its bf16 gradients sit as far
+  from an fp32 reference as the previous kernel's (per-parameter norms: median 1.2e-3, max 9–17%,
+  both). Then by
   `--batch-frames` (dense loss): 4,608 ~16,600 frames/s at 72.7 GiB; 8,192 18,420 at 97 GiB;
   12,288 19,360 at 124.7 GiB. Round 4 runs 8,192 (12,288's +5% leaves ~16 GiB for validation).
   Power-bound: only less work per frame helps from here.

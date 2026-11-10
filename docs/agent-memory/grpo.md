@@ -37,7 +37,9 @@ streams of the `--cache-dir` caches (the first run: the Vietnamese tranche's). C
 - **π_old's logprobs** come from the update's own forward: training mode, gradients enabled, the
   result detached and never backpropagated. A no-grad forward picks other bf16 kernels, so the
   first update's ratio would not be 1.
-  - Logprobs are taken at the sampling temperature 0.8; top-k is ignored.
+  - Logprobs are taken at the sampling temperature 0.8; top-k is ignored. They are SFT's loss
+    kernel negated (`common.token_ce`, dense over the full logits), so the two trainers share
+    one kernel ([sft-training](sft-training.md#objective)).
   - Text is weighted `--text-weight` 100 against 1 for each audio codebook. Masked positions are
     the training forward's own.
 - **Rewards** (`rewards.py`, the paper's Eq. 3–6):
@@ -141,8 +143,9 @@ The CUDA profile and dry run are under [Running](#running).
   an SFT run's use `run`: either subcommand on the other's run fails at argument parsing.
   - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
-  - **Disk:** the preflight needs 130 GiB, free plus what the run directory holds. An SFT run's
-    pairs on the same disk (~81 GiB) go first, once they are on the Hub.
+  - **Disk:** the preflight needs 130 GiB (93 with `--keep-checkpoints 1`), free plus what the
+    run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
+    on the Hub.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync (~5 min): it
     uploads the newest pair, the best and the logs, which reach the Hub only then. A group kill
     (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing restarts a crashed run.

@@ -384,9 +384,11 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   flock -n "$lock_fd" || die "$run_name is already running"
   # The kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
   # uploads after it is pruned: 37.5 GB a pair, 12.5 the model, ~5 of margin (130 at 2, 93 at 1).
+  # 0 keeps every pair, which no check can bound: it gets the default's room.
   local keep=2 given="$*"
   [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
-  [[ "$given" =~ --keep-checkpoints[[:space:]]+([0-9]+) ]] && keep="${BASH_REMATCH[1]}"
+  [[ "$given" =~ --keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
+  (( keep >= 1 )) || keep=2
   preflight $(( (keep + 1) * 75 / 2 + 18 )) "$run_dir"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"

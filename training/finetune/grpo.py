@@ -37,7 +37,6 @@ import json
 import math
 import multiprocessing
 import os
-import shutil
 import sys
 import time
 from concurrent.futures import Future, ProcessPoolExecutor
@@ -51,12 +50,13 @@ from training.finetune import common, rewards, streams
 from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
+    append_log,
     atomic_write_text,
-    checkpoint_pairs,
-    clean_incomplete_checkpoints,
+    claim_run_config,
+    jsonable,
     keep_log_lines,
-    load_best_state,
     load_newest_pair,
+    open_run,
     promote_best,
 )
 from training.finetune.hibiki_helpers import get_lmgen
@@ -86,6 +86,11 @@ EVAL_PAIRS = [
     Path("data/eval/en-vi-val-noisy/libriheavy.jsonl"),
 ]
 LATENCY_SLACK_S = 0.2  # how far past the start's FLEURS median end offset a checkpoint may promote
+# The defaults the profiler measures with too.
+TEMPERATURE = 0.8  # rollouts sample, and logprobs are taken, at evaluation's temperature
+TOP_K = 250
+EPSILON = 0.2  # the ratio clip
+TEXT_WEIGHT = 100.0  # c_0: the text stream against 1 for each audio codebook
 
 
 def stream_order(count: int, seed: int) -> np.ndarray:
@@ -124,23 +129,13 @@ def token_logprobs(
     lm: Any, codes: torch.Tensor, condition_tensors: Any | None, temperature: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Logprobs at `temperature` of the text and target audio tokens of `codes` (the cache
-    layout [B, 1 + 2 * dep_q, T]), [B, 1 + dep_q, T] float32, and where they are defined."""
+    layout [B, 1 + 2 * dep_q, T]), [B, 1 + dep_q, T] float32 (0 where undefined), and where they
+    are defined. They are SFT's loss kernel negated (`common.token_ce`)."""
     output = lm(codes, condition_tensors=condition_tensors)
-    targets = codes[:, : 1 + lm.dep_q]
-    text = _target_logprobs(output.text_logits, targets[:, :1], output.text_mask, temperature)
-    audio = _target_logprobs(output.logits, targets[:, 1:], output.mask, temperature)
-    return torch.cat([text, audio], dim=1), torch.cat([output.text_mask, output.mask], dim=1)
-
-
-@torch.compile(dynamic=True)
-def _target_logprobs(logits: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor,
-                     temperature: float) -> torch.Tensor:
-    """log softmax(logits / temperature)[target] [B, Q, T] float32, 0 where not `mask`: the fp32
-    scores stay inside the fused kernel, so no full-vocabulary fp32 copy is kept for backward and
-    no boolean indexing syncs the host (2026-11-09)."""
-    scores = logits.float() / temperature
-    picked = scores.gather(-1, torch.where(mask, targets, 0)[..., None])[..., 0]
-    return torch.where(mask, picked - torch.logsumexp(scores, dim=-1), 0.0)
+    audio = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
+    text_ce = common.token_ce(output.text_logits, codes[:, :1], output.text_mask, temperature)
+    audio_ce = common.token_ce(output.logits, audio, output.mask, temperature)
+    return -torch.cat([text_ce, audio_ce], dim=1), torch.cat([output.text_mask, output.mask], dim=1)
 
 
 def grpo_loss(
@@ -244,14 +239,6 @@ def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
     return pool
 
 
-def bf16_copy(info: Any, lm: Any, device: torch.device) -> Any:
-    """The policy's weights in a bf16 generation model, as SFT validation builds it."""
-    generator = info.get_moshi(device=device, dtype=torch.bfloat16, load_weight=False)
-    generator.load_state_dict(lm.state_dict())
-    generator.eval()
-    return generator
-
-
 def sample_window(
     generator: Any,
     info: Any,
@@ -343,11 +330,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adam-beta2", type=float, default=0.95)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--epsilon", type=float, default=0.2, help="Ratio clip.")
+    parser.add_argument("--epsilon", type=float, default=EPSILON, help="Ratio clip.")
     parser.add_argument("--alpha", type=float, default=rewards.ALPHA, help="Final BLEU's share.")
-    parser.add_argument("--text-weight", type=float, default=100.0, help="c_0 against 1 per codebook.")
-    parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--top-k", type=int, default=250)
+    parser.add_argument("--text-weight", type=float, default=TEXT_WEIGHT, help="c_0 against 1 per codebook.")
+    parser.add_argument("--temperature", type=float, default=TEMPERATURE)
+    parser.add_argument("--top-k", type=int, default=TOP_K)
     parser.add_argument("--gen-batch", type=int, default=192, help="Rollouts generated at once (profiled: grpo.md).")
     parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward; 3 runs out of memory at T 1,200.")
     parser.add_argument("--reward-workers", type=int, default=8)
@@ -375,8 +362,7 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--gen-batch must hold whole groups")
     if round(args.stream_seconds[1] * streams.FRAME_RATE) >= args.frames:
         raise ValueError("--frames must exceed the longest stream")
-    if os.environ.get("NO_TORCH_COMPILE"):
-        raise ValueError("Full-model training requires torch compile; unset NO_TORCH_COMPILE")
+    common.require_torch_compile()
 
 
 def main() -> None:
@@ -394,21 +380,15 @@ def main() -> None:
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
     out_dir = resolve_repo_path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    clean_incomplete_checkpoints(out_dir)
-    resuming = bool(checkpoint_pairs(out_dir))
-    if not resuming:
-        for name in ("train_log.jsonl", "val_log.jsonl", "best.json"):
-            (out_dir / name).unlink(missing_ok=True)
-        shutil.rmtree(out_dir / "eval", ignore_errors=True)
-    best_state = load_best_state(out_dir)
+    resuming, best_state = open_run(out_dir)
 
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
-    stream_frames = tuple(round(seconds * streams.FRAME_RATE) for seconds in args.stream_seconds)
     silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames)
     rows, layout = streams.load_rows(cache_dirs, args.max_frames)
-    dataset = streams.StreamDataset(rows, layout, silence, stream_frames, args.seed)
+    dataset = streams.StreamDataset(
+        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed
+    )
     if len(dataset) < args.updates * args.streams:
         raise ValueError(f"{len(dataset)} streams, fewer than {args.updates} updates need")
     print(f"Planned {len(dataset)} streams from {len(rows)} rows; {args.updates} updates use "
@@ -416,25 +396,21 @@ def main() -> None:
     # Planned streams follow their documents (a long recording fills ~75 in a row), so updates
     # take them in a seeded order: the same on a resume.
     order = stream_order(len(dataset), args.seed)
+    eval_sets, eval_rows = common.load_eval_rows(args.eval_pairs)
 
-    generation = common.GenerationConfig(text_only=True)
-    rows_by_set = common.read_eval_sets(args.eval_pairs)
-    eval_sets = list(rows_by_set)
-    eval_rows = [row for set_rows in rows_by_set.values() for row in set_rows]
-    common.validate_eval_rows(eval_rows, generation.source_column, generation.reference_column,
-                              generation.id_column, duration_column="duration_s")
-
-    lm = info.get_moshi(device=device, dtype=torch.float32, load_weight=False,
-                        lm_kwargs_overrides={"gradient_checkpointing": False})
-    common.load_model(lm, args.model_weight, torch.float32)
-    lm.train()
-    common.enable_full_finetune(lm)
-    params = common.trainable_parameters(lm)
-    mimi = info.get_mimi(device=device)
-    optimizer = torch.optim.AdamW(
-        params, lr=args.lr, betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.weight_decay, fused=True,
+    run_config = {key: jsonable(value) for key, value in vars(args).items()}
+    run_config.update(
+        train_rows=len(rows), train_streams=len(dataset), eval_rows=len(eval_rows),
+        total_steps=args.updates, val_every=args.eval_every, best_metric=BEST_METRIC,
     )
+    # Before the model loads: a resume with other arguments or data stops here, in seconds.
+    claim_run_config(out_dir, run_config, RESUME_KEYS, resuming)
+    config_path = out_dir / "run_config.json"
+
+    lm = common.load_policy(info, device)
+    params = list(lm.parameters())
+    mimi = info.get_mimi(device=device)
+    optimizer = common.fused_adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     stream_weights = torch.ones(1 + lm.dep_q, device=device)
     stream_weights[0] = args.text_weight
@@ -442,32 +418,15 @@ def main() -> None:
 
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
-    step = load_newest_pair(lm, optimizer, out_dir, device, torch.float32) if resuming else 0
-    logged = keep_log_lines(val_log_path, step)
-    validated = {int(item["step"]) for item in logged}
+    step = load_newest_pair(lm, optimizer, out_dir, device) if resuming else 0
+    validated = {int(item["step"]) for item in keep_log_lines(val_log_path, step)}
     keep_log_lines(log_path, step)
     if step % args.tau:
         raise RuntimeError(f"Resumed step {step} is not on a --tau boundary")
-
-    run_config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-    run_config.update(
-        cache_dir=[str(path) for path in args.cache_dir],
-        eval_pairs=[str(path) for path in args.eval_pairs],
-        train_rows=len(rows), train_streams=len(dataset), eval_rows=len(eval_rows),
-        total_steps=args.updates, val_every=args.eval_every, best_metric=BEST_METRIC,
-    )
-    config_path = out_dir / "run_config.json"
-    if not resuming:
-        atomic_write_text(json.dumps(run_config, indent=2, sort_keys=True) + "\n", config_path)
-    else:
-        previous = json.loads(config_path.read_text(encoding="utf-8"))
-        for key in RESUME_KEYS:
-            if previous.get(key) != run_config.get(key):
-                raise RuntimeError(f"Same-run resume contract changed: {key}")
     writer = CheckpointWriter(lm, optimizer, args, out_dir)
     # The start's end offset on the first set, which a promoted checkpoint may exceed by at most
-    # LATENCY_SLACK_S. It is
-    # kept in run_config.json, which hf_sync uploads as it changes, unlike the logs.
+    # LATENCY_SLACK_S. It is kept in run_config.json, which hf_sync uploads as it changes, unlike
+    # the logs.
     start_offset = json.loads(config_path.read_text(encoding="utf-8")).get("start_end_offset_s")
     if step and start_offset is None:
         raise RuntimeError("run_config.json lacks the start's start_end_offset_s")
@@ -476,15 +435,10 @@ def main() -> None:
         nonlocal best_state, start_offset
         started = time.time()
         optimizer.zero_grad(set_to_none=True)
-        eval_dir = out_dir / "eval" / f"step{at:06d}"
-        generator = bf16_copy(info, lm, device)
-        records = common.run_greedy_eval(eval_rows, generation, args.eval_batch_size, mimi,
-                                         generator, tokenizer, info, eval_dir, args.seed)
-        del generator
-        gc.collect()  # moshi's streaming state holds the generator in reference cycles
-        torch.cuda.empty_cache()
-        common.write_predictions(eval_dir / "predictions.csv", records)
-        free_running = common.score_sets(records, eval_sets)
+        free_running = common.validate_free_running(
+            lm, info, mimi, tokenizer, eval_rows, eval_sets, args.eval_batch_size,
+            out_dir / "eval" / f"step{at:06d}", args.seed,
+        )
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         first = free_running[eval_sets[0]]
         for name, metrics in free_running.items():
@@ -506,8 +460,7 @@ def main() -> None:
         seconds = time.time() - started
         item = {"step": at, "seconds": seconds, "free_running": free_running, "healthy": healthy,
                 "on_time": on_time, "promoted": promoted}
-        with val_log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(item, sort_keys=True) + "\n")
+        append_log(val_log_path, item)
         validated.add(at)
         print(f"val step={at} took {seconds:.0f} s")
 
@@ -534,7 +487,7 @@ def main() -> None:
                 tokens = rollouts[offset : offset + args.group, 0].numpy().copy()
                 jobs[group] = pool.submit(_group_rewards, tokens, sentences, args.alpha)
 
-        generator = bf16_copy(info, lm, device)
+        generator = common.bf16_copy(info, lm, device)
         rollouts = sample_window(generator, info, sources, args.gen_batch, silence_frame,
                                  (args.seed, step), args.temperature, args.top_k, submit)
         del generator
@@ -603,8 +556,7 @@ def main() -> None:
                 "window_reward_wait_s": rewarded - generated,
                 "window_old_logprob_s": scored - rewarded,
             }
-            with log_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(item, sort_keys=True) + "\n")
+            append_log(log_path, item)
             print(f"update={step} loss={item['loss']:.1f} bleu={item['final_bleu']:.1f} "
                   f"ratio={item['ratio_mean']:.4f} clip={item['clip_fraction']:.4f} "
                   f"grad_norm={item['grad_norm']:.2f} s={item['sec_per_update']:.1f}", flush=True)

@@ -15,7 +15,6 @@ beside it (nvidia-smi every 0.5 s).
 from __future__ import annotations
 
 import argparse
-import functools
 import gc
 import json
 import time
@@ -64,53 +63,24 @@ def timed(function, repeats: int = 1) -> float:
     return (time.time() - start) / repeats
 
 
-def main() -> None:
-    args = parse_args()
-    pool = grpo.reward_pool(args.reward_workers, args.tokenizer)
-    device = common.check_device("cuda")
-    torch.set_float32_matmul_precision("high")
-    out_dir = resolve_repo_path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
-    args.model_weight = require_file(args.model_weight, "start checkpoint")
-    info = common.load_checkpoint_info(args)
-    tokenizer = info.get_text_tokenizer()
-    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames)
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames)
-    stream_frames = tuple(round(seconds * streams.FRAME_RATE) for seconds in args.stream_seconds)
-    dataset = streams.StreamDataset(rows, layout, silence, stream_frames, args.seed)
-    count = max(args.gen_batch)
-    stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
-    sources = torch.stack([grpo.stream_source(dataset, index, silence)
-                           for index in stream_ids for _ in range(args.group)])
-    report: dict = {"frames": args.frames, "group": args.group,
-                    "stream_frames": [dataset.streams[i].frames for i in stream_ids]}
+def profile_generation(args, info, lm, sources, silence_frame, report: dict, write) -> torch.Tensor:
+    """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, and return the rollouts
+    of every source at the largest size that fits."""
+    generator = common.bf16_copy(info, lm, lm.device)
 
-    def write(report: dict) -> None:
-        (out_dir / "profile.json").write_text(json.dumps(report, indent=2) + "\n")
+    def generate(count: int, gen_batch: int) -> torch.Tensor:
+        return grpo.sample_window(
+            generator, info, sources[:count], gen_batch, silence_frame, (args.seed,),
+            grpo.TEMPERATURE, grpo.TOP_K, lambda *_: None)
 
-    lm = info.get_moshi(device=device, dtype=torch.float32, load_weight=False,
-                        lm_kwargs_overrides={"gradient_checkpointing": False})
-    common.load_model(lm, args.model_weight, torch.float32)
-    lm.train()
-    common.enable_full_finetune(lm)
-    adam_states = [torch.zeros_like(param) for param in lm.parameters() for _ in range(2)]
-    report["resident_gib"] = torch.cuda.memory_allocated() / 2**30
-    silence_frame = silence[:, -1].long().to(device)
-
-    # Phase 1: generation.
-    generator = grpo.bf16_copy(info, lm, device)
     fitting = []
     for gen_batch in args.gen_batch:
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
-        generate = functools.partial(
-            grpo.sample_window, generator, info, sources[:gen_batch], gen_batch, silence_frame,
-            (args.seed,), 0.8, 250, lambda *_: None)
         try:
-            generate()  # compiles and captures
-            seconds = timed(generate)
+            generate(gen_batch, gen_batch)  # compiles and captures
+            seconds = timed(lambda: generate(gen_batch, gen_batch))
         except torch.cuda.OutOfMemoryError:
             report[f"generate_batch_{gen_batch}"] = "out of memory"
             print(f"generate batch {gen_batch}: out of memory", flush=True)
@@ -128,10 +98,43 @@ def main() -> None:
         raise RuntimeError("No --gen-batch fits")
     gc.collect()
     torch.cuda.empty_cache()
-    rollouts = grpo.sample_window(generator, info, sources, max(fitting), silence_frame,
-                                  (args.seed,), 0.8, 250, lambda *_: None)
-    del generator
-    gc.collect()
+    return generate(len(sources), max(fitting))
+
+
+def main() -> None:
+    args = parse_args()
+    pool = grpo.reward_pool(args.reward_workers, args.tokenizer)
+    device = common.check_device("cuda")
+    torch.set_float32_matmul_precision("high")
+    out_dir = resolve_repo_path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
+    args.model_weight = require_file(args.model_weight, "start checkpoint")
+    info = common.load_checkpoint_info(args)
+    tokenizer = info.get_text_tokenizer()
+    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames)
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames)
+    dataset = streams.StreamDataset(
+        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed
+    )
+    count = max(args.gen_batch)
+    stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
+    sources = torch.stack([grpo.stream_source(dataset, index, silence)
+                           for index in stream_ids for _ in range(args.group)])
+    report: dict = {"frames": args.frames, "group": args.group,
+                    "stream_frames": [dataset.streams[i].frames for i in stream_ids]}
+
+    def write(report: dict) -> None:
+        (out_dir / "profile.json").write_text(json.dumps(report, indent=2) + "\n")
+
+    lm = common.load_policy(info, device)
+    adam_states = [torch.zeros_like(param) for param in lm.parameters() for _ in range(2)]
+    report["resident_gib"] = torch.cuda.memory_allocated() / 2**30
+    silence_frame = silence[:, -1].long().to(device)
+
+    # Phase 1: generation.
+    rollouts = profile_generation(args, info, lm, sources, silence_frame, report, write)
+    gc.collect()  # the generator, held by nothing now: its 6 GiB must not count in phase 2's peaks
     torch.cuda.empty_cache()
 
     # Phase 1: rewards.
@@ -159,7 +162,7 @@ def main() -> None:
     keep = grpo.before_eos(rollouts, eos_id)
     advantages = torch.from_numpy(np.concatenate([r[2] for r in results])).float()
     weights = torch.ones(1 + lm.dep_q, device=device)
-    weights[0] = 100.0
+    weights[0] = grpo.TEXT_WEIGHT
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
@@ -170,14 +173,14 @@ def main() -> None:
 
         def score():
             with autocast:  # the update's forward, gradients enabled, as grpo.py scores π_old
-                logprobs, mask = grpo.token_logprobs(lm, batch, condition, 0.8)
+                logprobs, mask = grpo.token_logprobs(lm, batch, condition, grpo.TEMPERATURE)
             return logprobs.detach(), mask
 
         def update():
             with autocast:
                 loss, _ = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
-                                         keep[:micro].to(device),
-                                         weights, 0.2, 0.8)
+                                         keep[:micro].to(device), weights, grpo.EPSILON,
+                                         grpo.TEMPERATURE)
             loss.backward()
 
         try:
@@ -195,8 +198,8 @@ def main() -> None:
         frames = micro * args.frames
         with autocast:
             _, stats = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
-                                         keep[:micro].to(device),
-                                      weights, 0.2, 0.8)
+                                      keep[:micro].to(device), weights, grpo.EPSILON,
+                                      grpo.TEMPERATURE)
         lm.zero_grad(set_to_none=True)
         report[f"micro_batch_{micro}"] = {
             "first_update_ratio_max_deviation": float(stats["max_deviation"]),

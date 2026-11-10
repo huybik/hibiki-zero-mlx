@@ -24,7 +24,10 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - exact Torch and Moshi versions; one H100 or H200 with compute capability 9.0;
   - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
     when lower than `/proc/meminfo`, which shows the host on Vast) and 130 GiB of disk: free
-    space plus, for `run`, what the run dir already holds (each hard-linked inode once);
+    space plus, for `run`, what the run dir already holds (each hard-linked inode once). `run`
+    and `grpo` size it by the run's `--keep-checkpoints`: the kept pairs, the promoted model and
+    a pair the sync still uploads, 130 GiB at the default 2 and 93 at 1 (0 keeps every pair, so
+    it gets the default's);
   - the SHA-256 of the four upstream files in `weights/`.
 - `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
   It holds `flock` on `runs/.RUN_NAME.lock` (inherited by the trainer and the sync), so a
@@ -52,8 +55,10 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   its rename, then the directory), and prunes again. The next save, a promotion (which
   hard-links the model file) and the end of training wait for it; a failed write raises at the
   next log step.
-- A start in an out-dir with complete pairs resumes the newest one, and only if
-  `run_config.json` matches on `RESUME_KEYS`: data dirs, weights, hyperparameters, cadences,
+- A start in an out-dir with complete pairs resumes the newest one (`checkpoints.open_run`), and
+  only if `run_config.json` matches on `RESUME_KEYS` (`checkpoints.claim_run_config`, before the
+  model loads, so a resume with other arguments stops in seconds): data dirs, weights,
+  hyperparameters, cadences,
   seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
   and `val_log.jsonl` past the resumed step are dropped. A start without a pair begins at step 0
   and removes the logs, `best.json` and `eval/` of a run cut short before its first save.
