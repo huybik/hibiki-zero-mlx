@@ -6,8 +6,10 @@ The swap gives slots English never uses to Vietnamese pieces, so the text tables
 shapes and only those rows change meaning. Each replaced row of `text_emb`, `depformer_text_emb`
 and `text_linear` becomes the mean of the rows of the pieces the base tokenizer split the new
 piece into (`<model>_init.json`), read from the old tables, since some of those pieces are
-replaced slots themselves. Every other tensor is copied as it is. The result starts a run with
-`--model-weight <out> --tokenizer <the swapped model>`. From the repo root:
+replaced slots themselves. Every other tensor is copied as it is. The input must be on the base
+tokenizer: its `text_tokenizer` metadata (training records it) names the base, or it has none.
+The result starts a run with `--model-weight <out> --tokenizer <the swapped model>`. From the
+repo root:
 
   python -m training.vi_tokenizer.init_weights --model-weight runs/<run>/best_step<N>.safetensors \\
       --init-map weights/tokenizer_spm_48k_multi6_2_vi6k_init.json --out weights/<name>.safetensors
@@ -51,8 +53,9 @@ def main() -> None:
         raise SystemExit(f"{out} exists")
     with safe_open(str(source), framework="pt") as header:
         metadata = dict(header.metadata() or {})
-    if TOKENIZER_KEY in metadata:
-        raise SystemExit(f"{source} is already on {metadata[TOKENIZER_KEY]}: its replaced rows are not the base's")
+    on = metadata.get(TOKENIZER_KEY, init["base_model"])
+    if on != init["base_model"]:
+        raise SystemExit(f"{source} is on {on}, not {init['base_model']}: its replaced rows are not the base's")
 
     state = load_file(str(source), device="cpu")
     pieces = init["pieces"]

@@ -18,8 +18,12 @@ Decided 2026-11-10, for the pilot:
   tracks: the target text must be timed against the target audio
   ([cache-build](cache-build.md#rows)).
 - `en-vi` text is tokenized with the Vietnamese swap (`tokenizer_spm_48k_multi6_2_vi6k.model`,
-  [vi-tokenizer](vi-tokenizer.md)). It tokenizes English exactly as the base model does, so the
-  `vi-en` caches stay valid under it and one run can mix both.
+  [vi-tokenizer](vi-tokenizer.md)). It tokenizes `en_speech`'s English exactly as the base model
+  does, so those `vi-en` caches stay valid under it and one run can mix both. Machine English
+  is not covered by that check: a few rows of the tranche's `text_en` (GigaSpeech 2 3 of 19,967,
+  viVoice 1 of 734, PhoAudiobook 0 of 1,299 in the first tranche) and of PhoMT (3 of 1,351 in
+  shards 0–4) hold pieces whose slots now mean Vietnamese (`PRS` decodes as `Tùy`, `▁MCU` as
+  `Khó`). A mixed run must drop those rows (review of PR #94, 2026-11-10).
 - A stream holds one direction: `plan_streams` plans each direction apart (directions in name
   order, one RNG), so a mixed run's streams never switch language mid-stream. Switching within
   a stream comes later, if at all.
@@ -32,6 +36,7 @@ Decided 2026-11-10, for the pilot:
 | cache rows | `Settings(direction=…)`: `.source`, `.target`, `.aligner` (the target language's); a builder's rows carry `text_en` and `text_vi` |
 | shards | payload `direction` and `tokenizer` (its file name); samples keep `vi_frames` and `en_frames` (the target's counts its delay), both texts as the source wrote them, `text_timing` (the aligner's name); Vietnamese text is NFC'd before it is tokenized and timed |
 | `cache_codes` | `--device cuda --direction en-vi` (MLX has no Vietnamese aligner); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
+| checkpoints | metadata `text_tokenizer`: the run's `--tokenizer` file name (none before 2026-11-10: the base) |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
 | streams | `PACK_VERSION` 4 stores each pack's direction (a shard without one is `vi-en`); `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
@@ -74,6 +79,12 @@ vocabulary of every script, blank `<s>`, words split by `" "`.
   1,638× with the columns (its `vi-en` build: 1,586–1,818×), every row equal.
 - Batched against each clip alone (120 GigaSpeech 2 clips, TF32): the same word spans on all 118
   aligned rows, scores within 0.004.
+- The Viterbi needs 2 × letters + 1 CTC frames (50 Hz). Vietnamese spends more of them than
+  English (TTS validation rows: p99 0.86 of the frames, max 1.00, against English's 0.60–0.78),
+  so fast real speech may lose rows as "CTC emission is too short": 3 of 400 GigaSpeech 2 rows
+  failed alignment in the calibration. Read the rejections of the first `en-vi` tranche shards.
+- For Vietnamese output, chrF and BLEU see tones; WER, exact match and the repetition gate fold
+  text to ASCII (`common.ascii_text`), so they do not.
 
 ## Checked
 
@@ -90,8 +101,13 @@ On the H100 box, 2026-11-10, branch `twoway/prep`:
 
 ## Next
 
-The pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)): an `en-vi` cache subset of
-`en_speech` and the tranche, the start model through `init_weights`, ~10k mixed steps. It passes
-if English-to-Vietnamese chrF rises with healthy outputs and FLEURS dev stays within 1 chrF.
-Before it, the trainer should refuse a cache or model weight whose tokenizer is not `--tokenizer`
-(neither is checked yet).
+The pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)): build an `en-vi` cache
+subset of `en_speech` and the tranche (only one validation shard is built so far), start from a
+model through `init_weights`, train ~10k mixed steps. It passes if English-to-Vietnamese chrF
+rises with healthy outputs and FLEURS dev stays within 1 chrF. Before it:
+
+- the trainer should refuse a cache or model weight whose tokenizer is not `--tokenizer` (a
+  shard's `tokenizer`, a weight's `text_tokenizer`; neither is checked yet), and the `vi-en`
+  rows whose English uses a reassigned slot must go (above);
+- `train.py` takes one `--val-cache-dir`, so a mixed run's teacher-forced validation sees one
+  direction; free-running validation can take both directions' pairs files.

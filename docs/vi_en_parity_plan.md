@@ -226,7 +226,7 @@ Vietnamese text cannot keep up with its speech.
    used to split into (`training.vi_tokenizer.init_weights`, run on a checkpoint before its
    run). Still to build: the trainer's check that caches and weights match `--tokenizer`, and
    the runtimes' UTF-8 assembly from byte pieces.
-3. EN→VI caches (built 2026-11-10, [two-way](agent-memory/two-way.md)): `--direction en-vi`
+3. EN→VI caches (the build since 2026-11-10, one shard checked; [two-way](agent-memory/two-way.md)): `--direction en-vi`
    on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2
    (Apache-2.0, chosen over two CC-BY-NC Vietnamese CTCs; its 0.5 minimum rejects 98–99% of
    wrong-text pairs and at most 0.5% of the right ones), the random delay on the Vietnamese

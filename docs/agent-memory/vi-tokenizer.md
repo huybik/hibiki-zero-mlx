@@ -101,7 +101,8 @@ run on the swap, which then trains with `--model-weight <new> --tokenizer
 weights/tokenizer_spm_48k_multi6_2_vi6k.model`. Each of the 6,000 replaced rows of `text_emb`,
 `depformer_text_emb` and `text_linear` becomes the mean of its `init_from_ids` rows, read from
 the old tables (some of those are replaced slots too); every other tensor is copied. The output
-records `text_tokenizer` in its metadata, and the tool refuses an input that has it.
+records `text_tokenizer` in its metadata, as every training checkpoint does since 2026-11-10,
+and the tool refuses an input on any tokenizer but the base.
 
 - On round 3's model (2026-11-10, the H200's CPUs, 47 s; 12 s on the H100 box): only those
   three tensors and 6,000 rows changed; a Vietnamese sentence went 48 → 18 tokens.
@@ -118,7 +119,9 @@ The two-way pilot ([two-way](two-way.md), [plan stage 7](../vi_en_parity_plan.md
 still needs:
 
 - Training: the trainer refuses neither a cache nor a model weight whose tokenizer is not
-  `--tokenizer` (a shard's `tokenizer`, a weight's `text_tokenizer`).
+  `--tokenizer` (a shard's `tokenizer`, a weight's `text_tokenizer`, which every checkpoint
+  records since 2026-11-10), and machine English uses some reassigned slots
+  ([two-way](two-way.md#design)).
 - The MLX and Swift bundles ship the new file.
 - The streaming decoders (`hibiki_mlx/pipeline.py`, `main.py`, Swift `Vocabulary.text()`)
   print one piece at a time and must assemble UTF-8 from byte pieces.

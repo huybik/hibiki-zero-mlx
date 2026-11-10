@@ -123,7 +123,9 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   build), skips it. Each machine so ends with
   the whole cache (the second machine downloads the Mac's part too). A pulled shard must have
   the settings of a shard already in the out-dir (format, rates, `max_frames`,
-  `alignment_min_score`, model config; pulls wait until one exists), the same source file at the
+  `alignment_min_score`, model config, `direction` and `tokenizer`, which a shard built before
+  2026-11-10 lacks and is read as `vi-en` on the base tokenizer; pulls wait until one exists),
+  the same source file at the
   same byte size, and every source row once, kept or rejected; otherwise the run stops with it
   left in `.pull/`, and every rerun stops on it again. Then fix the cause, or delete the bad
   shard on the Hub (`HfApi().delete_file`) for this machine to build; then `rm -r .pull` and
