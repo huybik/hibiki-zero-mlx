@@ -15,23 +15,36 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
 ## Design
 
 - **A window** is `--tau` (20) updates. Each window:
-  1. a bf16 copy of the policy samples `--group` (4) rollouts of `--frames` (T, 1,200) frames for
-     each of the window's `--streams` (32) × 20 streams. Updates take the planned streams in a
-     seeded order: planning keeps a document's rows together, so in plan order one long
-     recording (~75 streams) would fill 2–3 updates. The plan is SFT's, late starts included: a
-     late teacher target, which GRPO never uses, still pushes the next source later (median gap
-     after a late row 4.8 s against 2.2 s in `vi-en`);
+  1. a bf16 copy of the policy samples `--group` (4) rollouts for each of the window's
+     `--streams` (32) × 20 streams. Updates take the planned streams in a seeded order: planning
+     keeps a document's rows together, so in plan order one long recording (~75 streams) would
+     fill 2–3 updates. The plan is SFT's, late starts included: a late teacher target, which GRPO
+     never uses, still pushes the next source later (median gap after a late row 4.8 s against
+     2.2 s in `vi-en`);
   2. CPU workers compute the rewards as each generation batch lands;
   3. the policy scores every rollout, giving π_old's logprobs.
+- **A rollout's length** is its stream's plus `--tail-seconds` (20 s, the tail evaluation
+  generates past a source), up to a whole 16-frame bucket and at most `--frames` (1,200, the
+  longest stream plus that tail): `grpo.rollout_frames`. Its last reward sits there, so text a
+  rollout emits later scores nothing, as evaluation would not hear it. Until 2026-11-10 every
+  rollout ran `--frames`, 21 s past the longest stream and up to 66 s past the shortest.
+  - A window's streams are generated shortest first (`sample_window`), each batch to its own
+    longest rollout; a row's frames past its own length are -1.
+  - The loss keeps what a forward of the rollout's own length scores (`kept_tokens`): a
+    codebook delayed 2 frames stops 2 frames early. So a rollout's kept tokens do not depend on
+    the rollouts it shares a batch or a micro-batch with.
 - **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on stay
-  out of the loss (`before_eos`), as SFT streams end. No reward reads them, so training them would
-  only add noise; in a single-row stream they are most of the frames. They stay in place as
+  out of the loss (`kept_tokens`), as SFT streams end. No reward reads them, so training them
+  would only add noise; in a single-row stream they are most of the frames. They stay in place as
   inputs: set to -1, they would change the context of the delayed codebooks in the two frames
   before the EOS (shown on a tiny CPU model). `eos_rate` in the train log is the share of
   rollouts that ended.
-- **An update** takes its own 128 rollouts in `--micro-batch` forwards, cut within its own rows.
-  π_old's pass cuts them the same way, because another batch shape picks other kernels. Every
-  rollout is used by exactly one update.
+- **An update** takes its own 128 rollouts in `--micro-batch` forwards, cut within its own rows,
+  each as long as its rows' last kept token needs, in 16-frame buckets (`forward_frames`,
+  `micro_frames`): the model is causal, so the frames after it change no kept logit. π_old's
+  pass cuts them the same way, because another batch shape picks other kernels. Every rollout
+  is used by exactly one update. The train log's `rollout_frames` and `forward_frames` are an
+  update's mean rollout and forward lengths.
 - **Rollout layout:** rollouts replay the stream's cached Vietnamese through `LMGen` with
   `stop_on_eos` off, and are stored in the cache's training layout (`grpo.rollout`).
   - `LMGen` reads the input given at step s as source frame s − 1 (step 0's input is never read).
