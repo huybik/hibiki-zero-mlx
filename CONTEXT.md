@@ -89,7 +89,8 @@ inference/ (Apple Silicon, MLX)
 - Next (user, 2026-11-04): a learning-rate test, then a third VI→EN epoch only if a higher rate
   won (none did: no third epoch), then the real-Vietnamese tranche (its SFT at 3e-6)
   ([real-vi-tranche](docs/agent-memory/real-vi-tranche.md)) and two-way speech in one model,
-  prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). GRPO is built in
+  prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). Then (user,
+  2026-11-10): one way first, GRPO on the VI→EN model; two-way waits. GRPO is built in
   `training/finetune/grpo.py` on the SFT trainer's run directory, loss kernel and validation, and
   is profiled on the box phase by phase before its run ([grpo](docs/agent-memory/grpo.md)).
 
