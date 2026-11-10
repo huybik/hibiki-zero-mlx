@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-09
+Last verified: 2026-11-10
 
 ## Purpose
 
@@ -39,7 +39,7 @@ inference/ (Apple Silicon, MLX)
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX, the grounded cache build
   every cache builder shares (`cache_build`, MLX or CUDA) and the EN-VI dataset's builder on it,
-  the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
+  the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, GRPO, evaluation
   and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: the English
   TTS bake-off, the ASR check, each model in its own uv env, the ingest of the corpora's
   segments to the tranche repos, their translation, the English TTS, the row filters and its cache builder) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
@@ -61,6 +61,10 @@ inference/ (Apple Silicon, MLX)
   first's final model). FLEURS test chrF went 24.7 → 29.5 ([plan](docs/vi_en_parity_plan.md#order)).
 - The third, `tranche_epoch1b` (2026-11-06), trained one epoch of the real-Vietnamese tranche's
   caches from run 2's final model: FLEURS test chrF 29.5 → 38.6, MultiMed-ST 24.9 → 34.6
+  ([plan](docs/vi_en_parity_plan.md#order)).
+- The fourth, `full_epoch4b` (2026-11-10, the H200 box), one epoch of every tranche cache plus
+  150 noisy `en_speech` shards (6,737 h) from round 3's model: MultiMed-ST select 34.6 → 37.4,
+  FLEURS dev 39.6 → 39.1 (inside its noise); its test sets are not scored yet
   ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
@@ -85,8 +89,8 @@ inference/ (Apple Silicon, MLX)
   won (none did: no third epoch), then the real-Vietnamese tranche (its SFT at 3e-6)
   ([real-vi-tranche](docs/agent-memory/real-vi-tranche.md)) and two-way speech in one model,
   prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). GRPO is built in
-  `training/finetune/grpo.py` and checked on the Mac; it is profiled on the H100 phase by phase
-  before its run ([grpo](docs/agent-memory/grpo.md)).
+  `training/finetune/grpo.py` on the SFT trainer's run directory, loss kernel and validation, and
+  is profiled on the box phase by phase before its run ([grpo](docs/agent-memory/grpo.md)).
 
 ## Essential invariants
 

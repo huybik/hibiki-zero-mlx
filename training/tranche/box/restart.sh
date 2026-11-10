@@ -29,15 +29,15 @@ case $job in
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
   cache) export HF_HUB_DISABLE_XET=1  # plain HTTP at 143 MB/s; Xet throttles to ~4 MB/s
          cmd=(.venv/bin/python -m training.tranche.cache build pho vivoice giga) ;;
-  # Round 4 SFT (2026-11-08): every tranche cache plus 150 seeded shards (~720 h) of the noisy en_speech
+  # Round 4 SFT (2026-11-08; 2026-11-09: 8,192 frames, dense loss, eval batch 128, one kept pair for the disk): every tranche cache plus 150 seeded shards (~720 h) of the noisy en_speech
   # cache, from round 3's final model. Rerun with the same args resumes it (h100.sh run). Round 3
   # (tranche_epoch1b) ran from run 2's final model on the first tranche, --seed 45 --val-every 8000.
   sft) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo E=data/eval
-       cmd=(./training/h100.sh run full_epoch4
+       cmd=(./training/h100.sh run full_epoch4b
             --cache-dir $T/cache/pho $T/cache/vivoice $T/cache/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation
-            --model-weight runs/tranche_epoch1b/model_step026176.safetensors
+            --model-weight runs/tranche_epoch1b/model_step026176.safetensors --batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1
             --lr 3e-6 --seed 46 --val-every 15000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/multimed-vi/select.jsonl $E/en-vi-val/cv27.jsonl
             $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-noisy/cv27.jsonl $E/en-vi-val-noisy/libriheavy.jsonl) ;;

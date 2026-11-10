@@ -40,6 +40,18 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   compare with FLEURS scored alone: compare checkpoints under one `--pairs` list, seed and batch
   size.
 
+- How far a score can be trusted (round 4's final model, 2026-11-10):
+  - The same checkpoint, pairs, seed and batch size in two processes gave `en-vi-val/cv27`
+    chrF 43.84 and 43.13 (79 and 80 rows ended): which graphs a process has compiled moves bf16
+    near-ties, and sampled text diverges after one. Under ~1 chrF on a 180-row set, or ~0.6 on
+    FLEURS dev, is noise; compare rounds on the test sets, in one call.
+  - A row's text ends at its first EOS, as upstream's decode cuts it, even when the EOS comes
+    before the source ends (the MLX runtime ignores those). 8–12 of FLEURS dev's 361 rows end
+    that way at each of round 4's validations, worth at most 0.2–0.5 chrF there.
+  - 2–5% of the `en-vi-val` Common Voice rows (clips under ~6 s) get no word and no EOS at all,
+    depending on the seed. The non-empty gate allows 8 of 180: nine fail a validation
+    ([grpo](grpo.md#running)).
+
 ## Side tools
 
 - `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,

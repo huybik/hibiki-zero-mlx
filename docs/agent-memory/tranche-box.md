@@ -6,7 +6,7 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: at commit `ff9b25f` (`cache/ctc-half`).
+**H200 Indonesia (Vast instance 59864576, 2026-11-09 onwards)**: the checkout on `main` since 2026-11-10 (round 4 ran at `1d26c15`).
 83 valid giga archives on Hub (3 half-precision shards deleted and shard_153 rebuilt float32
 2026-11-09). 
 
@@ -19,24 +19,6 @@ proper ASR. After voice stopped: cache 25 GB + SFT 73 GB = 98 GB → fine. GRPO 
 **Voice: DONE (stopped 2026-11-09 ~14:30 UTC)**. 230/240 giga archives voiced; giga/86 and 98 held
 out; giga/89–99 excl 98 unvoiced (ASR/VRAM conflict). Never restart ASR while cache or SFT runs.
 
-**GRPO profile: DONE (2026-11-09)**. Results:
-
-| gen-batch | rollouts/s | peak GiB |
-|---|---|---|
-| 64 | 1.75 | 49.2 |
-| 128 | 3.33 | 57.5 |
-| **192** | **6.66** | **65.7** |
-
-| micro-batch | update frames/s | peak GiB |
-|---|---|---|
-| 2 | 7,132 | 74.1 |
-| **3** | **8,827** | **102.9** |
-| 4 | OOM | — |
-
-Optimal: gen-batch 192, micro-batch 3. With cache: 102.9 + 25 = ~128 GiB (13 GiB headroom). Baseline BLEU 25.99.
-GRPO worktree at /workspace/wt-grpo (branch grpo/trainer, .venv at /workspace/hibiki-zero/.venv symlinked,
-weights symlinked). After SFT checkpoint: `grpo_launch.sh <weight>` from wt-grpo with gen-batch 192 micro-batch 3.
-
 **Cache: DONE (2026-11-09 17:51 UTC)**. All 228 buildable GigaSpeech 2 archives cached (pho 224,
 viVoice 354), on the Hub and local under `/workspace/tranche/repo/cache/`. The last 69 built in
 1.24 h at 2,743× after the CUDA build was optimized 1,342× → 3,286× ([cache-build](cache-build.md#speed-on-cuda)).
@@ -45,14 +27,21 @@ parts were prefetched 8 at a time (a builder prefetch is drafted, not merged). D
 copies of built shards' inputs were deleted (on the Hub), and so were the ASR/TTS envs and models
 and the local `en_audio` (voice is done on this box; `envs-min.sh` rebuilds them).
 
-**SFT round 4b: RUNNING (started 2026-11-09 18:25 UTC, `restart.sh sft`, commit `1d26c15`)**:
-`full_epoch4b`, 6,737 h of source (540,689 streams, 4.44M rows), 57,368 steps at 0.410 s/step
-(~6.5 h + 4 validations), `--batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1`, LR 3e-6,
-seed 46, val every 15,000. Measured choices in [sft-speed](sft-speed.md#by-gpu). One kept pair
-because the disk holds ~110 GB free; `runs/full_epoch4` (70 GB, stale, not on the Hub) is the
-user's to delete. Never commit in `/workspace/hibiki-zero` while it runs (worktree `/workspace/wt-sft`).
+**SFT round 4b: DONE (2026-11-09 18:25 – 2026-11-10 01:16 UTC, commit `1d26c15`)**:
+`full_epoch4b`, 6,737 h of source (540,689 streams, 4.44M rows), 57,368 steps at 0.41 s,
+`--batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1`, LR 3e-6, seed 46. Its final
+model is its best (`runs/full_epoch4b/best_step057368.safetensors`), on the Hub with its pair and
+logs; results in the [plan](../vi_en_parity_plan.md#order). Its test sets are not scored: the
+three-way call against rounds 2 and 3 is `/workspace/test_evals.sh` (~20 min a model; the user
+stopped it once). `runs/full_epoch4` (70 GB, stale, not on the Hub) is the user's to delete; the
+disk has 58 GB free, under GRPO's 130 GiB preflight (93 with `--keep-checkpoints 1`).
 
-**GRPO: PENDING**, to be optimized after SFT (profile above was taken beside other jobs).
+**GRPO: PROFILED, NOT STARTED.** Alone on the GPU, `--gen-batch 512 --micro-batch 4` (in
+`grpo_launch.sh`): ~24 s an update, 800 updates ~5.3 h ([grpo](grpo.md#running)). It runs from
+the box's checkout, `/workspace/hibiki-zero` on `main` (GRPO is merged; the `wt-*` worktrees are
+only for edits while a run holds the checkout). Start it by hand when the user says so
+(2026-11-09: no chained jobs; `/workspace/auto_pipeline.sh`, `grpo_trigger.sh` and
+`monitor_voice_done.sh` are leftovers of the chained attempt and not in the repo).
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
@@ -112,8 +101,8 @@ In order (user, 2026-11-07: all voicing first, then every cache, then SFT, then 
 | filters | `restart.sh filters` (asr_vi for every ingested shard) | it logs "0 shards to hear" |
 | voice | `restart.sh voice` (en_audio for every shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
 | cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
-| sft | `restart.sh sft` (round 4, `full_epoch4`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
-| grpo | `grpo_launch.sh <weight>` (PR #59, worktree `/workspace/wt-grpo`, [grpo_plan](../grpo_plan.md)) | its updates; stop with TERM to the launcher alone |
+| sft | `restart.sh sft` (round 4, `full_epoch4b`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
+| grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)) | its updates; stop with TERM to the launcher alone |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with

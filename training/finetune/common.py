@@ -325,8 +325,8 @@ def evaluate_teacher_forced(
             result = compute_batch_losses(
                 lm, codes, condition_cache[batch_size], weights, accuracy=True
             )
-            for key, value in zip(keys, torch.stack([result[key].double() for key in keys]).tolist()):
-                totals[key] += value
+            for key in keys:
+                totals[key] += float(result[key])
             batches += 1
             streams_seen += batch_size
             max_frames = max(max_frames, int(batch["frames"].max()))

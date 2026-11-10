@@ -127,6 +127,37 @@ The CUDA profile and dry run are under [Running](#running).
   ~50 s); 1,000 updates ~10 h plus ~30 min of evaluations. The rollouts' mean final BLEU from
   that model was 26.2 (on the first streams in plan order, before the seeded order). The
   profile's GPU sat idle 39% of its 5.3 min, between its stages.
+- **Profiled on the H200 box, alone on the GPU** (2026-11-10, 700 W H200 SXM, from round 4's
+  final model, the tranche caches, T 1,200; the 2026-11-09 profile there ran beside the cache
+  build and counted the leaked generator, so its micro-batch 4 "ran out of memory"):
+
+  | Stage | Measured |
+  |---|---|
+  | Generation, batch 192 / 384 / 512 / 640 | 25.1 / 36.6 / 44.4 / 52.3 ms a step; 6.36 / 8.74 / 9.60 / 10.17 rollouts/s; peak 66 / 91 / 107 / 124 GiB |
+  | Rewards, 160 groups | 2.9 s serial, 0.43 s in 8 workers |
+  | π_old's logprobs, micro-batch 2 / 3 / 4 / 6 | 53,100 / 57,900 / 58,900 / 62,300 frames/s |
+  | Update, micro-batch 2 / 3 / 4 / 6 | 16,200 / 18,600 / 19,300 / 20,400 frames/s; peak 68 / 96 / 111 / 134 GiB; 8 runs out of memory |
+  | First update's ratio | exactly 1 at every size |
+
+  So on the H200 `--gen-batch 512 --micro-batch 4` (`grpo_launch.sh`): an update of 128
+  rollouts takes ~13.3 s of generation, ~2.6 s of old logprobs and ~8.0 s of update, ~24 s
+  against ~31 s at 192 and 3; 800 updates ~5.3 h plus the evaluations. 640 and 6 gain 6% each
+  and leave 17 and 7 GiB of the card. A generation step costs ~13 ms whatever the batch, so
+  generation, 55% of an update, is bound by steps: the streams average 599 frames (longest 929)
+  and every rollout runs 1,202 steps, and every update forward spans 1,200 frames though the
+  loss keeps none after a rollout's EOS. Rollouts cut to their batch's longest stream plus a
+  tail, and micro-batches cut to their last kept frame, would save about a third of both; not
+  built (it changes where the last reward sits; the user's call). The profile's GPU read 71%
+  busy on average, under 50% in 29% of its samples (between stages, and generation's short
+  kernels).
+- **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
+  is reset to PAD's ([sft-training](sft-training.md#trainer)); until 2026-11-10 GRPO kept the
+  checkpoint's own row. Rollouts and scoring share the row, and the first ratio is still 1.
+- **The gates can fail on sampling alone:** round 4's model stays silent on 2–5% of the 180
+  `en-vi-val` Common Voice rows, depending on the seed, and the non-empty gate allows 8. A
+  two-update dry run (2026-11-10, that set alone, seed 44, batch 64) had 9 and failed at both
+  evaluations; a failed evaluation promotes nothing, though its pair still reaches the Hub
+  ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
 - **Dry run** (2026-11-06, `h100.sh grpo grpo_dryrun`, τ 2, 4 updates of 4 streams × 4, stopped
   before its checkpoint sync when GRPO was deferred): every update's ratio mean 1.000–1.001, the
   loss finite (−925 to 368), but the gradient norm before clipping 0.42–0.95 million against SFT's
