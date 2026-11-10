@@ -153,10 +153,9 @@ The CUDA profile and dry run are under [Running](#running).
 - **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
   is reset to PAD's ([sft-training](sft-training.md#trainer)); until 2026-11-10 GRPO kept the
   checkpoint's own row. Rollouts and scoring share the row, and the first ratio is still 1.
-- **The gates can fail on sampling alone:** round 4's model stays silent on 2–5% of the 180
-  `en-vi-val` Common Voice rows, depending on the seed, and the non-empty gate allows 8. A
-  two-update dry run (2026-11-10, that set alone, seed 44, batch 64) had 9 and failed at both
-  evaluations; a failed evaluation promotes nothing, though its pair still reaches the Hub
+- **A failed evaluation promotes nothing**, though its pair still reaches the Hub. The
+  non-empty gate allows a tenth of a set's rows since 2026-11-10: at 8 of 180 a two-update dry
+  run failed both its evaluations on round 4's silent Common Voice rows alone
   ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
 - **Dry run** (2026-11-06, `h100.sh grpo grpo_dryrun`, τ 2, 4 updates of 4 streams × 4, stopped
   before its checkpoint sync when GRPO was deferred): every update's ratio mean 1.000–1.001, the

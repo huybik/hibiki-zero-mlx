@@ -22,7 +22,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   domain and real speech, weigh sets by their length (corpus chrF and BLEU) and let one set's
   rows carry another's gates.
 - `best_step*.safetensors` is a hard link to the checkpoint whose every set passes the
-  generation health gates (`common.generation_health`: nonempty, repeated 4-grams, length ratio)
+  generation health gates (`common.generation_health`: at most a tenth of its rows empty, at
+  most 12 in 128 repeating a 4-gram, a mean length ratio of at most 2)
   with a strictly higher corpus chrF on the first set, FLEURS dev, because the phone hears real
   speech (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`). A run whose
   checkpoints all fail the gates promotes none. The EOS count is reported, not gated (decided
@@ -49,8 +50,11 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     before the source ends (the MLX runtime ignores those). 8–12 of FLEURS dev's 361 rows end
     that way at each of round 4's validations, worth at most 0.2–0.5 chrF there.
   - 2–5% of the `en-vi-val` Common Voice rows (clips under ~6 s) get no word and no EOS at all,
-    depending on the seed. The non-empty gate allows 8 of 180: nine fail a validation
-    ([grpo](grpo.md#running)).
+    depending on the seed. The non-empty gate allowed 8 of 180 until 2026-11-10 and a
+    two-update GRPO dry run failed it with nine, at its start and again two updates later; it
+    now allows a tenth of a set (18 of 180, 36 of FLEURS dev's 361), which sampling cannot
+    reach from 5% and a collapse into silence still fails. chrF already counts an empty row
+    as a miss.
 
 ## Side tools
 
