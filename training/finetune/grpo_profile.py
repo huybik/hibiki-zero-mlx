@@ -1,17 +1,20 @@
 #!/usr/bin/env python
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
-The policy's fp32 weights and AdamW's two states stay resident as in training, and each stage
-runs on real streams from the start checkpoint:
-- rollout generation at each --gen-batch: time per step and peak memory, timed on a second
-  call so moshi's compilation stays out (each batch's CUDA graph capture stays in, as in a run);
+The policy's fp32 weights and AdamW's two states are held as in training (on the CPU while a
+window generates, `grpo.place_trainer`), and each stage runs on real streams from the start
+checkpoint:
+- rollout generation at each --gen-batch rows of --frames: time per step and peak memory, timed
+  on a second call so moshi's compilation stays out (each batch's CUDA graph capture stays in,
+  as in a run);
 - the rewards of the rollouts, serially and in --reward-workers worker processes;
 - π_old's logprob pass (the update's forward, gradients on) and the update's forward and backward
   at each --micro-batch, and the first update's largest ratio deviation, which should be 0.
 A size that runs out of memory is recorded and skipped. Every stage runs at --frames, a run's
 longest rollout and so its peak memory; `window` then gives what a run's first window costs at
-its own lengths (`grpo.rollout_frames`, `grpo.micro_frames`), from the measured time per
-generation step and per update frame. <out-dir>/profile.json is rewritten after each stage,
+its own lengths (`grpo.rollout_frames`, `grpo.micro_frames`) for each --gen-batch's
+`--gen-frames` (rows times --frames, `grpo.generation_batches`), from a step's time fitted as a
+line in its rows and the measured time per update frame. <out-dir>/profile.json is rewritten after each stage,
 with a few streams' references, rollouts and rewards to read. Sample GPU utilization beside it
 (nvidia-smi every 0.5 s).
 """
@@ -20,7 +23,6 @@ from __future__ import annotations
 import argparse
 import gc
 import json
-import math
 import time
 from pathlib import Path
 
@@ -54,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tail-seconds", type=float, default=common.GenerationConfig.tail_s)
     parser.add_argument("--streams", type=int, default=32, help="Streams per update.")
     parser.add_argument("--tau", type=int, default=20, help="Updates per window.")
-    parser.add_argument("--gen-batch", type=int, nargs="+", default=[64, 128, 192])
+    parser.add_argument("--gen-batch", type=int, nargs="+", default=[192, 384, 512])
     parser.add_argument("--micro-batch", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--reward-workers", type=int, default=8)
     return parser.parse_args()
@@ -69,15 +71,21 @@ def timed(function, repeats: int = 1) -> float:
     return (time.time() - start) / repeats
 
 
-def profile_generation(args, info, lm, sources, silence_frame, report: dict, write) -> torch.Tensor:
-    """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, and return the rollouts
-    of every source at the largest size that fits."""
+def profile_generation(
+    args, info, lm, optimizer, sources, silence_frame, report: dict, write
+) -> torch.Tensor:
+    """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, the policy and its
+    optimizer states moved to the CPU as in a run (the caller moves them back), and return the
+    rollouts of every source at the largest size that fits."""
     generator = common.bf16_copy(info, lm, lm.device)
+    grpo.place_trainer(lm, optimizer, "cpu")
 
     def generate(count: int, gen_batch: int) -> torch.Tensor:
+        lengths = torch.full((count,), args.frames)
+        batches = grpo.generation_batches(lengths, gen_batch * args.frames, args.group)
         return grpo.sample_window(
-            generator, info, sources[:count], torch.full((count,), args.frames), gen_batch,
-            silence_frame, (args.seed,), grpo.TEMPERATURE, grpo.TOP_K, lambda *_: None)
+            generator, info, sources[:count], lengths, batches, silence_frame, (args.seed,),
+            grpo.TEMPERATURE, grpo.TOP_K, lambda *_: None)
 
     fitting = []
     for gen_batch in args.gen_batch:
@@ -109,30 +117,32 @@ def profile_generation(args, info, lm, sources, silence_frame, report: dict, wri
 
 def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report: dict) -> dict:
     """What a run's first window (--tau updates of --streams streams) costs at its own lengths.
-    Generation: its streams shortest first in batches, each as many steps as its longest rollout.
-    Updates: the forward frames of the profiled rollouts cut to their streams' lengths and kept
-    tokens, scaled to the window. Times use this profile's ms per step and frames per second."""
+    Generation: its rollouts in `grpo.generation_batches` of each --gen-batch's --gen-frames, each
+    as many steps as its longest rollout, a step's time a line in its rows fitted to the measured
+    sizes. Updates: the forward frames of the profiled rollouts cut to their streams' lengths and
+    kept tokens, scaled to the window. Times use this profile's frames per second."""
     tail = round(args.tail_seconds * streams.FRAME_RATE)
 
     def length(index: int) -> int:
         return grpo.rollout_frames(dataset.streams[index].frames, tail, args.frames)
 
     order = grpo.stream_order(len(dataset), args.seed)[: args.tau * args.streams]
-    window = sorted(length(int(index)) for index in order)
-    rollouts_in_window = len(window) * args.group
-    estimate: dict = {"streams": len(window), "rollout_frames_mean": float(np.mean(window))}
+    window = torch.tensor([length(int(index)) for index in order]).repeat_interleave(args.group)
+    estimate: dict = {"streams": len(order), "rollout_frames_mean": float(window.float().mean())}
     extra = max(delays.tolist())
-    for gen_batch in args.gen_batch:
-        measured = report.get(f"generate_batch_{gen_batch}")
-        if not isinstance(measured, dict):
-            continue
-        per_batch = gen_batch // args.group
-        steps = sum(max(window[start : start + per_batch]) + extra
-                    for start in range(0, len(window), per_batch))
-        fixed = math.ceil(len(window) / per_batch) * (args.frames + extra)
-        estimate[f"generate_batch_{gen_batch}"] = {
-            "steps": steps, "steps_at_frames": fixed,
-            "seconds_per_update": measured["ms_per_step"] * steps / 1000 / args.tau}
+    measured = {gen_batch: report[f"generate_batch_{gen_batch}"]["ms_per_step"]
+                for gen_batch in args.gen_batch
+                if isinstance(report.get(f"generate_batch_{gen_batch}"), dict)}
+    if len(measured) >= 2:
+        slope, intercept = np.polyfit(list(measured), list(measured.values()), 1)
+        estimate["ms_per_step_fit"] = {"intercept": float(intercept), "per_row": float(slope)}
+        for gen_batch in measured:
+            batches = grpo.generation_batches(window, gen_batch * args.frames, args.group)
+            steps = [int(window[rows].max()) + extra for rows in batches]
+            ms = sum(count * (intercept + slope * len(rows)) for count, rows in zip(steps, batches))
+            estimate[f"generate_batch_{gen_batch}"] = {
+                "gen_frames": gen_batch * args.frames, "batches": len(batches),
+                "steps": sum(steps), "seconds_per_update": ms / 1000 / args.tau}
     # The profiled rollouts ran to --frames; cut each to its stream's length, as a run does.
     lengths = torch.tensor([length(index) for index in stream_ids]).repeat_interleave(args.group)
     cut = rollouts.clone()
@@ -152,7 +162,7 @@ def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report:
             "forward_frames_mean": per_rollout,
             "logprob_seconds_per_update": per_update / measured["logprob_frames_per_s"],
             "update_seconds_per_update": per_update / measured["update_frames_per_s"]}
-    estimate["rollouts"] = rollouts_in_window
+    estimate["rollouts"] = len(window)
     print(json.dumps({"window": estimate}, indent=2), flush=True)
     return estimate
 
@@ -185,14 +195,19 @@ def main() -> None:
         (out_dir / "profile.json").write_text(json.dumps(report, indent=2) + "\n")
 
     lm = common.load_policy(info, device)
-    adam_states = [torch.zeros_like(param) for param in lm.parameters() for _ in range(2)]
+    optimizer = torch.optim.AdamW(lm.parameters(), fused=True)  # its states, never stepped
+    for param in lm.parameters():
+        optimizer.state[param] = {"step": torch.zeros((), device=device),
+                                  "exp_avg": torch.zeros_like(param),
+                                  "exp_avg_sq": torch.zeros_like(param)}
     report["resident_gib"] = torch.cuda.memory_allocated() / 2**30
     silence_frame = silence[:, -1].long().to(device)
 
     # Phase 1: generation.
-    rollouts = profile_generation(args, info, lm, sources, silence_frame, report, write)
+    rollouts = profile_generation(args, info, lm, optimizer, sources, silence_frame, report, write)
     gc.collect()  # the generator, held by nothing now: its 6 GiB must not count in phase 2's peaks
     torch.cuda.empty_cache()
+    grpo.place_trainer(lm, optimizer, device)
 
     # Phase 1: rewards.
     eos_id, pad_id = int(tokenizer.eos_id()), int(tokenizer.pad_id())
@@ -283,7 +298,7 @@ def main() -> None:
     write(report)
     print(json.dumps({k: v for k, v in report.items() if k not in ("samples", "stream_frames")},
                      indent=2))
-    del adam_states
+    del optimizer
     pool.shutdown()
 
 

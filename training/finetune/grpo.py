@@ -5,7 +5,9 @@ Every --tau updates, π_old becomes the current policy:
 1. a bf16 copy of it samples --group rollouts for each stream of the window's updates (the
    planned streams in a seeded order), each as long as its stream plus --tail-seconds, the tail
    evaluation generates past a source, and at most --frames. The window's streams are generated
-   shortest first, so a batch stops at its own longest rollout;
+   longest first in batches of --gen-frames (rollouts times the batch's longest), so a batch
+   stops at its own longest rollout and shorter ones batch more rows. Meanwhile the fp32 policy
+   and AdamW's states wait on the CPU, leaving the GPU's memory to the batches;
 2. the rollouts get BLEU process rewards and group-normalized advantages (`rewards.py`) in CPU
    workers, while the GPU keeps generating;
 3. the policy itself scores them, giving π_old's logprobs. It runs the update's own forward on
@@ -249,12 +251,28 @@ def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
     return pool
 
 
+def generation_batches(lengths: torch.Tensor, gen_frames: int, group: int) -> list[torch.Tensor]:
+    """The rows of each generation batch of rollouts `lengths` [N] (groups of `group` adjacent
+    rows, equally long), longest first: whole groups while the batch's rows times its first,
+    longest rollout stay within `gen_frames`, the size of its KV caches. Shorter rollouts thus
+    batch more rows, and the last, partial batch runs the fewest steps. The sort is stable, so a
+    group stays adjacent and in one batch."""
+    order = torch.argsort(lengths, stable=True, descending=True)
+    batches = []
+    start = 0
+    while start < len(order):
+        rows = max(group, gen_frames // int(lengths[order[start]]) // group * group)
+        batches.append(order[start : start + rows])
+        start += rows
+    return batches
+
+
 def sample_window(
     generator: Any,
     info: Any,
     sources: torch.Tensor,
     lengths: torch.Tensor,
-    gen_batch: int,
+    batches: list[torch.Tensor],
     silence_frame: torch.Tensor,
     seed_key: tuple[int, ...],
     temperature: float,
@@ -262,15 +280,12 @@ def sample_window(
     on_batch: Any,
 ) -> torch.Tensor:
     """Rollouts [N, 1 + dep_q, T] int32 on the CPU for `sources` [N, Q, T]: row i holds
-    `lengths[i]` sampled frames and -1 after them. Batches of `gen_batch` take the rows shortest
-    first and run to their longest row (the order is stable, so one stream's rollouts, adjacent
-    and equally long, share a batch). Each batch is seeded from (`seed_key`, its index) as a
+    `lengths[i]` sampled frames and -1 after them. Each of `batches` (row indices, from
+    `generation_batches`) runs to its longest row and is seeded from (`seed_key`, its index) as a
     32-bit seed (NumPy's limit); `on_batch(rows, rollouts)` follows it with its rows' indices."""
     count, _, frames = sources.shape
     outputs = torch.full((count, 1 + generator.dep_q, frames), -1, dtype=torch.int32)
-    order = torch.argsort(lengths, stable=True)
-    for index, start in enumerate(range(0, count, gen_batch)):
-        batch_rows = order[start : start + gen_batch]
+    for index, batch_rows in enumerate(batches):
         batch_lengths = lengths[batch_rows]
         batch_frames = int(batch_lengths.max())
         steps = batch_frames + max(generator.delays)
@@ -293,6 +308,17 @@ def sample_window(
         del lm_gen, sampled
         gc.collect()  # moshi's streaming state holds the KV cache in reference cycles
     return outputs
+
+
+def place_trainer(lm: Any, optimizer: Any, device: Any) -> None:
+    """Move the fp32 policy and AdamW's moment states to `device`: to the CPU while a window
+    generates on its bf16 copy, which frees their 37 GiB for the generation batches. The
+    parameters stay the same objects, so the optimizer still holds them."""
+    lm.to(device)
+    for state in optimizer.state.values():
+        for key in ("exp_avg", "exp_avg_sq"):
+            if key in state:
+                state[key] = state[key].to(device)
 
 
 def kept_tokens(
@@ -381,7 +407,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-weight", type=float, default=TEXT_WEIGHT, help="c_0 against 1 per codebook.")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE)
     parser.add_argument("--top-k", type=int, default=TOP_K)
-    parser.add_argument("--gen-batch", type=int, default=192, help="Rollouts generated at once (profiled: grpo.md).")
+    parser.add_argument(
+        "--gen-frames", type=int, default=230_400,
+        help="A generation batch's rollouts times its longest rollout's frames (profiled: grpo.md).",
+    )
     parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward; 3 runs out of memory at T 1,200.")
     parser.add_argument("--reward-workers", type=int, default=8)
     parser.add_argument("--eval-pairs", type=Path, nargs="+", default=EVAL_PAIRS)
@@ -394,7 +423,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    for name in ("frames", "streams", "group", "updates", "tau", "gen_batch", "micro_batch",
+    for name in ("frames", "streams", "group", "updates", "tau", "gen_frames", "micro_batch",
                  "reward_workers", "eval_batch_size", "eval_every", "save_every"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
@@ -404,8 +433,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "--save-every and --updates must be multiples of --tau, --eval-every of --save-every"
         )
-    if args.gen_batch % args.group:
-        raise ValueError("--gen-batch must hold whole groups")
+    if args.gen_frames < args.group * args.frames:
+        raise ValueError("--gen-frames must hold a group of the longest rollouts")
     if round(args.stream_seconds[1] * streams.FRAME_RATE) >= args.frames:
         raise ValueError("--frames must exceed the longest stream")
     if args.tail_seconds < 0:
@@ -476,6 +505,10 @@ def main() -> None:
     if step % args.tau:
         raise RuntimeError(f"Resumed step {step} is not on a --tau boundary")
     writer = CheckpointWriter(lm, optimizer, args, out_dir)
+    # The rows and streams (~4 million objects for the tranche) never become garbage: frozen, they
+    # stay out of the collection after every generation batch (0.6 s each otherwise).
+    gc.collect()
+    gc.freeze()
     # The start's end offset on each selecting set, which a promoted checkpoint may exceed by at
     # most LATENCY_SLACK_S. It is kept in run_config.json, which hf_sync uploads as it changes,
     # unlike the logs.
@@ -528,8 +561,8 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         stream_ids = [int(order[index]) for update in range(step, step + window)
                       for index in range(update * args.streams, (update + 1) * args.streams)]
-        sources = torch.stack([stream_source(dataset, index, silence)
-                               for index in stream_ids for _ in range(args.group)])
+        sources = torch.stack([stream_source(dataset, index, silence) for index in stream_ids])
+        sources = sources.repeat_interleave(args.group, dim=0)
         lengths = torch.tensor(
             [rollout_frames(dataset.streams[index].frames, tail, args.frames)
              for index in stream_ids]
@@ -547,12 +580,19 @@ def main() -> None:
                                           args.alpha)
 
         generator = common.bf16_copy(info, lm, device)
-        rollouts = sample_window(generator, info, sources, lengths, args.gen_batch,
-                                 silence_frame, (args.seed, step), args.temperature, args.top_k,
-                                 submit)
+        moving = time.time()
+        place_trainer(lm, optimizer, "cpu")
+        torch.cuda.empty_cache()
+        moved = time.time() - moving
+        batches = generation_batches(lengths, args.gen_frames, args.group)
+        rollouts = sample_window(generator, info, sources, lengths, batches, silence_frame,
+                                 (args.seed, step), args.temperature, args.top_k, submit)
         del generator
         gc.collect()
         torch.cuda.empty_cache()
+        moving = time.time()
+        place_trainer(lm, optimizer, device)
+        moved += time.time() - moving
         generated = time.time() - window_started
         results = [jobs[group].result() for group in range(len(stream_ids))]
         advantages = torch.zeros((len(rollouts), args.frames))
@@ -624,6 +664,8 @@ def main() -> None:
                 "lr": args.lr,
                 "sec_per_update": time.time() - update_started,
                 "window_generate_s": generated,
+                "window_gen_batches": len(batches),
+                "window_move_s": moved,
                 "window_reward_wait_s": rewarded - generated,
                 "window_old_logprob_s": scored - rewarded,
             }
