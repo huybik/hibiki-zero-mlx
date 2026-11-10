@@ -526,4 +526,4 @@ if __name__ == "__main__":
     import sys
 
     packed = pack([Path(directory) for directory in sys.argv[1:]])
-    print(f"{len(packed):,} shards packed in {len(sys.argv) - 1} cache directories")
+    print(f"{len(packed):,} shards' packs current in {len(sys.argv) - 1} cache directories")

@@ -1,8 +1,10 @@
 # Two-way speech: English to Vietnamese beside Vietnamese to English
 
 Read when touching a direction (`--direction`, `cache_rows.Settings.direction`, a shard's or
-pack's `direction`), the Vietnamese aligner (`text_timing.ALIGNERS["vi"]`), an `en-vi` cache, the
-English-audio evaluation sets, or the two-way pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
+pack's `direction`), the run's text tokenizer (`--tokenizer`, `common.run_tokenizer`,
+`paths.swap_slots`, a pack's `tokenizer` and `text.bin`), the Vietnamese aligner
+(`text_timing.ALIGNERS["vi"]`), an `en-vi` cache, the English-audio evaluation sets, or the
+two-way pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Where a direction lives](#where-a-direction-lives) ·
 [Tokenizer checks](#tokenizer-checks) · [Vietnamese aligner](#vietnamese-aligner) · [Checked](#checked) ·
 [Next](#next)

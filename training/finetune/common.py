@@ -150,6 +150,8 @@ def run_tokenizer(tokenizer: Path | None, weight: Path) -> Path:
     another tokenizer is refused, since the Vietnamese swap gives 6,000 text rows new meanings
     (`vi_tokenizer.init_weights` moves a base weight onto it)."""
     on = weight_tokenizer(weight)
+    if tokenizer is None and not (DEFAULT_TOKENIZER.parent / on).is_file():
+        raise FileNotFoundError(f"{repo_display_path(weight)} is on {on}, missing from weights/: copy it there or pass --tokenizer")
     path = require_file(tokenizer or DEFAULT_TOKENIZER.parent / on, "tokenizer")
     if on != path.name:
         raise RuntimeError(f"{repo_display_path(weight)} is on {on}, not --tokenizer {path.name}")

@@ -66,7 +66,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   of at most `--batch-frames` (4,608, as 16 rows of 288 frames before) padded frames, whose
   order is shuffled once; every epoch replays it, and resume skips the planned batches.
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
-  scores the same streams and `--val-batches` takes a random subset.
+  scores the same streams and `--val-batches` takes a random subset of each cache's.
 - Multi-row streams run 68 s median (p10 37, p90 104), 6 rows each, with 21% of the Vietnamese
   side silent; the 2 s overhang cap binds at the median join. Batches hold 4 streams median,
   filling 98.9% of the padded frames and 88.5% of the 4,608-frame budget (6,152 rows of four

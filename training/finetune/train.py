@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Full-model Hibiki-Zero Vietnamese-to-English SFT on multi-sentence streams.
+"""Full-model Hibiki-Zero SFT on multi-sentence streams, of one direction or both.
 
 Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
 AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
@@ -103,9 +103,9 @@ LOG_LOSSES = (
 def parse_args() -> argparse.Namespace:
     # No abbreviations: h100.sh must be able to reject --out-dir.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
+    parser.add_argument("--cache-dir", type=Path, nargs="+", action="extend", required=True)
     parser.add_argument(
-        "--val-cache-dir", type=Path, nargs="+", required=True,
+        "--val-cache-dir", type=Path, nargs="+", action="extend", required=True,
         help="Teacher-forced validation caches; a two-way run passes each direction's.",
     )
     parser.add_argument("--out-dir", type=Path, required=True)
@@ -183,6 +183,8 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.keep_checkpoints < 0:
         raise ValueError("--keep-checkpoints must be non-negative")
+    if len({resolve_repo_path(path) for path in args.val_cache_dir}) != len(args.val_cache_dir):
+        raise ValueError("--val-cache-dir names a cache twice")
     shortest, longest = args.stream_seconds
     if not 0 < shortest <= longest:
         raise ValueError("--stream-seconds needs 0 < MIN <= MAX")
@@ -245,8 +247,6 @@ def main() -> None:
     # joins the run. In the main process: forking workers at a validation would fork the checkpoint
     # writer's thread too, and 300 batches assemble in ~3 s.
     names = [str(path) for path in args.val_cache_dir]  # as given: h100.sh replays the arguments
-    if len(set(names)) != len(names) or len(set(val_cache_dirs)) != len(val_cache_dirs):
-        raise ValueError("--val-cache-dir names a cache twice")
     val_loaders: dict[str, DataLoader] = {}
     val_row_counts: dict[str, int] = {}
     val_stream_counts: dict[str, int] = {}
