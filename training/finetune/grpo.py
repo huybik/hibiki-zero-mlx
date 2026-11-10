@@ -22,7 +22,7 @@ codebook, summed over frames and averaged over rollouts.
 
 Every --eval-every updates, and at the start, the run translates --eval-pairs free-running, as SFT
 validation does. The first set of each direction selects (`common.selecting_sets`: FLEURS dev
-by default): the run promotes the checkpoint with the best mean chrF over them among
+both ways by default): the run promotes the checkpoint with the best mean chrF over them among
 those that pass every set's health gates and end no more than LATENCY_SLACK_S later than the start
 on each (its median end offset); val_log.jsonl records each evaluation's verdict.
 
@@ -82,12 +82,15 @@ RESUME_KEYS = (
     "top_k", "eval_pairs", "eval_batch_size", "eval_every", "save_every", "keep_checkpoints",
     "seed", "train_rows", "train_streams", "eval_rows",
 )
-EVAL_PAIRS = [
+EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both directions)
     Path("data/eval/fleurs-vi/dev.jsonl"),
+    Path("data/eval/fleurs-en/dev.jsonl"),
     Path("data/eval/en-vi-val/cv27.jsonl"),
     Path("data/eval/en-vi-val/libriheavy.jsonl"),
     Path("data/eval/en-vi-val-noisy/cv27.jsonl"),
     Path("data/eval/en-vi-val-noisy/libriheavy.jsonl"),
+    Path("data/eval/en-vi-val-en/cv27.jsonl"),
+    Path("data/eval/en-vi-val-en/libriheavy.jsonl"),
 ]
 LATENCY_SLACK_S = 0.2  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
 # The defaults the profiler measures with too.

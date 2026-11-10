@@ -72,11 +72,13 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   - Normalization uses the group's unbiased std plus 1e-4, so a frame where every rollout scores
     the same gets 0.
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
-  free-running pass on `EVAL_PAIRS`' five sets (FLEURS dev, the clean and noisy en-vi-val cv27
-  and libriheavy). The first set of each direction selects (`common.selecting_sets`; FLEURS dev
-  alone with these sets): promotion goes to the best mean chrF over them among checkpoints that
-  pass the gates and whose median end offset on each is at most `LATENCY_SLACK_S` (0.2 s) past
-  update 0's.
+  free-running pass on `EVAL_PAIRS`' eight sets, both directions of the two-way model GRPO runs
+  on (user, 2026-11-10): FLEURS dev both ways, `en-vi-val` clean and noisy, `en-vi-val-en`. The
+  first set of each direction selects (`common.selecting_sets`, by the audio a set is heard in):
+  promotion goes to the best mean chrF over them among checkpoints that pass every set's gates
+  and whose median end offset on each is at most `LATENCY_SLACK_S` (0.2 s) past update 0's.
+  The rewards need nothing per direction: a row's reference is its own text track decoded with
+  the run's tokenizer (the start weight's, the Vietnamese swap), Vietnamese for an `en-vi` row.
   - The slack: in the dry run, update 2 (two updates at 2e-7, in effect the start) had the
     better chrF (39.90 against 39.29) but measured 4.6 s against 4.5 s. Without slack it was
     blocked, and a blocked checkpoint is not kept (2 pairs).
