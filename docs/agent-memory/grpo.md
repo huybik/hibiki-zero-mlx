@@ -102,6 +102,15 @@ The CUDA profile and dry run are under [Running](#running).
 
 ## Running
 
+- **Optimize it heavily before its full run, on the box it runs on** (user, 2026-11-10: "remember
+  to heavy optimize grpo when it phase start after sft"). `grpo_launch.sh`'s sizes (generation
+  batch 512, micro-batch 4) are the H200's and do not fit an 80 GB H100 (512 peaked at 107 GiB;
+  the H100's 2026-11-06 profile fit 192 and 2). Levers measured below but not built: rollouts cut
+  to their batch's longest stream plus a tail and micro-batches cut to their last kept frame
+  (about a third of generation and update; branch `grpo/stream-length`, WIP, never run on a GPU;
+  it moves where the last reward sits, so ask the user), the GPU idle between stages (71% busy
+  on the H200), generation bound by its step count (~13 ms a step at any batch). Compare each on
+  the same streams by updates per GPU-hour.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --model-weight START --out-dir …`.
   - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
