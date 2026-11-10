@@ -399,6 +399,8 @@ def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
         for index, row in enumerate(rows):
             if taken := {EVAL_SET, SOURCE, REFERENCE} & set(row):
                 raise ValueError(f"{path} has columns {sorted(taken)} of its own")
+            if [column for column in EVAL_DIRECTIONS if column in row] != audio:
+                raise ValueError(f"{path} row {index} is heard in other audio than its first row's {audio[0]}")
             if missing := {audio[0], EVAL_DIRECTIONS[audio[0]]} - set(row):
                 raise ValueError(f"{path} row {index} is missing columns: {', '.join(sorted(missing))}")
             row[EVAL_SET] = name

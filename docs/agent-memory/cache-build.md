@@ -150,8 +150,9 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   run it: build `en-vi` caches on CUDA).
 - transformers reports `wav2vec2.masked_spec_embed` as missing from the checkpoint: it only masks
   in training, so the CTC is unaffected.
-- `DEVICE` is the torch device; set to `"cpu"` it runs the CUDA path on a Mac, slowly (~3× real
-  time), which is how to check a change to it without a box.
+- `DEVICE` is the torch device. Set to `"cpu"`, the CUDA path no longer runs since its pinned
+  staging (2026-11-09): pinned memory and `torch.cuda.Event` need a GPU. Check a change to it on
+  a box.
 
 ## Across devices
 
