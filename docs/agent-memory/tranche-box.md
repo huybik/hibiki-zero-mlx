@@ -35,7 +35,8 @@ parts were prefetched 8 at a time (a builder prefetch is drafted, not merged).
 `--batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1`, LR 3e-6, seed 46. Its final
 model is its best (`full_epoch4b/` of the model repo, with its pair and logs); results in the
 [plan](../vi_en_parity_plan.md#order), with its test sets against rounds 2 and 3
-(`/workspace/test_evals.sh`, 11 min a model; outputs in each run's `eval/cmp_step*/`, local only).
+(`box/test_evals.sh`, copied to `/workspace/`, 11 min a model; outputs in each run's
+`eval/cmp_step*/`, local only).
 
 **SFT round 4 redo: `full_epoch4e` (`restart.sh sft`)**: round 4b's arguments with 500
 `en_speech` shards for 150, `--batch-frames 4608 --eval-batch-size 64 --save-every 4000
