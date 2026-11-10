@@ -356,6 +356,7 @@ def main() -> None:
             "max_frames": 0,
             "grad_norm": 0.0,
             "max_grad_norm": None,
+            "data_seconds": 0.0,
         }
 
     def check_gradients(step: int) -> None:
@@ -424,7 +425,9 @@ def main() -> None:
         for group in optimizer.param_groups:
             group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
+        fetch_started = time.time()
         batch = next(data_iter)
+        log["data_seconds"] += time.time() - fetch_started  # the wait for the stream workers
         codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size = int(codes.shape[0])
         if batch_size not in condition_cache:
@@ -487,6 +490,7 @@ def main() -> None:
                 "max_batch_size": log["max_batch"],
                 "max_padded_frames": log["max_frames"],
                 "sec_per_step": (now - last_log_time) / steps,
+                "data_sec_per_step": log["data_seconds"] / steps,
                 "log_steps": steps,
                 "lr": lr_value,
                 "grad_norm": float(log["grad_norm"]) / steps,
@@ -498,7 +502,7 @@ def main() -> None:
                 f"audio={item['audio_loss']:.4f} text={item['text_loss']:.4f} "
                 f"B={item['streams'] / steps:.1f} T<={item['max_padded_frames']} "
                 f"lr={item['lr']:.1e} grad_norm={item['grad_norm']:.3f} "
-                f"s/step={item['sec_per_step']:.3f}"
+                f"s/step={item['sec_per_step']:.3f} data={item['data_sec_per_step']:.3f}"
             )
             log = empty_log()
             last_log_time = now

@@ -29,18 +29,17 @@ case $job in
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
   cache) export HF_HUB_DISABLE_XET=1  # plain HTTP at 143 MB/s; Xet throttles to ~4 MB/s
          cmd=(.venv/bin/python -m training.tranche.cache build pho vivoice giga) ;;
-  # Round 4 SFT again (2026-11-10, full_epoch4c): every tranche cache plus 150 seeded shards (~720 h) of the noisy en_speech
-  # cache, from round 3's final model, as full_epoch4b (2026-11-09) but in round 3's 4,608-frame batches: 106,691 steps
-  # against 4b's 57,368 of 8,192 frames. It validates at 4b's shares of the epoch (4b: every 15,000), on 4b's rows, seed
-  # and evaluation batch. Rerun with the same args resumes it (h100.sh run). Round 3 (tranche_epoch1b) ran from run 2's
-  # final model on the first tranche, --seed 45 --val-every 8000.
+  # Round 4 SFT again (2026-11-10, full_epoch4d): every tranche cache plus 500 seeded shards (~2,480 h, 29% of the hours;
+  # full_epoch4b had 150, 11%) of the noisy en_speech cache, from round 3's final model, in round 3's 4,608-frame batches:
+  # 131,659 steps. A pair every 4,000 steps: each save idles the GPU ~6 s (sft-speed.md). Rerun with the same args resumes
+  # it (h100.sh run). Round 3 (tranche_epoch1b) ran from run 2's final model on the first tranche, --seed 45 --val-every 8000.
   sft) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo E=data/eval
-       cmd=(./training/h100.sh run full_epoch4c
+       cmd=(./training/h100.sh run full_epoch4d
             --cache-dir $T/cache/pho $T/cache/vivoice $T/cache/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation
             --model-weight runs/tranche_epoch1b/model_step026176.safetensors --batch-frames 4608 --eval-batch-size 128 --keep-checkpoints 1
-            --lr 3e-6 --seed 46 --val-every 28000
+            --lr 3e-6 --seed 46 --save-every 4000 --val-every 28000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/multimed-vi/select.jsonl $E/en-vi-val/cv27.jsonl
             $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-noisy/cv27.jsonl $E/en-vi-val-noisy/libriheavy.jsonl) ;;
   *) echo "usage: $0 asr|mt|voice|filters|cache|sft" >&2; exit 1 ;;
