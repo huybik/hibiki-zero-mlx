@@ -155,9 +155,17 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   then every tranche shard `en-vi` (`cache build --drop-inputs`, pushed to the cache repo's
   `en-vi/<source>/` as it goes). A rerun skips a shard built or packed.
 - Then every cache keeps only its packs on the box: `python -m training.finetune.streams
-  --drop-shards <dirs>`, the `vi-en` ones first (their packs become version 5 and their shards go,
-  ~72 GB), then the `en-vi` ones, each only once the Hub lists its shards: both directions' shards
-  and packs (~290 GB) would not fit the 350 GB disk beside a run's checkpoints.
+  --drop-shards <dirs>`, the `vi-en` ones first (done 2026-11-10: 1,306 shards to version 5 packs,
+  78.7 GB freed; the trainer then loaded 5,085,492 rows on the swap, the same 1,265 reassigned
+  dropped), then the `en-vi` ones, each only once the Hub lists its shards (`--drop-shards` does
+  not check, and `envi_en_speech.sh` counts a packed shard as built): both directions' shards and
+  packs (~290 GB) would not fit the 350 GB disk beside a run's checkpoints. `two-way` refuses to
+  start while a training cache holds shards.
+- `publish_caches` names its Hub prefix after the out-dir's name, which for
+  `data/cache/en-vi/en-vi-grounded-v2` is the `vi-en` cache's: never run it on that folder.
+- The `en_speech` build restarts `cache_codes` every 25 shards (~35 s of model loading each,
+  ~12 min over the 500); its single upload commit (~17 GB) has no retry, so a Hub error there stops
+  the job before the tranche: rerun `restart.sh envi-cache`, which skips what is built.
 - `init_weights` moves round 4's final model onto the swap
   (`weights/twoway_start_vi6k.safetensors`); `eval.py` scores it on the run's seven sets with
   `--seed 47`, batch 64: the baseline of the pilot's test.

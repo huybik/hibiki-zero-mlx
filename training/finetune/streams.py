@@ -213,11 +213,11 @@ def pack(cache_dirs: list[Path]) -> list[Path]:
         dropped = [d / f"{p.name}.pt" for p in (d / PACK_DIR).glob("shard_*") if f"{p.name}.pt" not in built]
         for path in dropped:
             meta = _pack_dir(path) / "pack.json"
-            pack = json.loads(meta.read_text()) if meta.is_file() else {}
-            if not pack.get("dropped"):
+            info = json.loads(meta.read_text()) if meta.is_file() else {}
+            if not info.get("dropped"):
                 raise RuntimeError(f"{_pack_dir(path)} has no shard {path.name} and was not dropped by --drop-shards: "
                                    f"fetch the shard from the Hub, or delete the pack")
-            if pack["stamp"]["version"] != PACK_VERSION:
+            if info["stamp"]["version"] != PACK_VERSION:
                 raise RuntimeError(f"{_pack_dir(path)} is not a version {PACK_VERSION} pack and {path.name} is gone: "
                                    f"fetch it from the Hub to pack it again")
         shard_paths += sorted([d / name for name in built] + dropped)

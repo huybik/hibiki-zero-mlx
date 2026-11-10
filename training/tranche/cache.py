@@ -148,7 +148,7 @@ def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str], drop_inp
                 blob = path.resolve() if path.is_symlink() else None
                 path.unlink()
                 if blob is not None:
-                    blob.unlink()
+                    blob.unlink(missing_ok=True)
     kept, rejected = [], []
     for index, row in enumerate(rows):
         if reason := gate(row, max_cer, grams):
