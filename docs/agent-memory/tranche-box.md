@@ -35,12 +35,15 @@ logs; results in the [plan](../vi_en_parity_plan.md#order), with its test sets a
 and 3 (`/workspace/test_evals.sh`, 11 min a model; outputs in each run's `eval/cmp_step*/`,
 local only).
 
-**SFT round 4c: RUNNING (started 2026-11-10, `restart.sh sft`)**: `full_epoch4c`, round 4b's
-arguments with `--batch-frames 4608 --val-every 28000`: 106,691 steps, ~7.5 h at the profiled
-16,600 frames/s. The user's rule (2026-11-10): redo round 4 if its test sets were not good.
-Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`) and wait for
-its final sync. Disk: 128 GB free at its start (the stale `runs/full_epoch4` was deleted), its
-preflight needs 93 GiB with one kept pair; `runs/full_epoch4b` (36 GB) stays.
+**SFT round 4d: RUNNING (started 2026-11-10, `restart.sh sft`)**: `full_epoch4d`, round 4b's
+arguments with 500 `en_speech` shards for 150, `--batch-frames 4608 --save-every 4000
+--val-every 28000`: 5.09M rows, 8,456 h, 131,659 steps, ~9.4 h at 0.247 s a step. The user
+(2026-11-10): redo round 4 if its test sets were not good; then, shown them, stop the first
+redo (`full_epoch4c`, round 4b's data, deleted at step 1,760), add `en_speech` shards and
+restart. Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`) and
+wait for its final sync. Disk: 101 GB free at its start (the stale `runs/full_epoch4` was
+deleted), its preflight needs 93 GiB with one kept pair; `runs/full_epoch4b` (36 GB) stays,
+and its `trainer_step057368.pt` (25 GB, on the Hub) goes first if the disk runs short.
 
 **GRPO: PROFILED, NOT STARTED.** Alone on the GPU, `--gen-batch 512 --micro-batch 4` (in
 `grpo_launch.sh`): ~24 s an update, 800 updates ~5.3 h ([grpo](grpo.md#running)). It runs from
@@ -89,9 +92,11 @@ one expires; everything a job writes goes to the Hub as it runs, so a new box re
 Round 4 SFT's inputs, all on the Hub (`restart.sh sft` reads them locally):
 - the tranche caches: `anquachdev/mimi-en-vi-speech-20k` (dataset, `<source>/shard_*.pt`) into
   `/workspace/tranche/repo/cache/<source>/`;
-- 150 shards of the noisy en_speech cache, listed in `box/en_speech_sub.txt` (drawn by
-  `random.Random(46).sample` from the 1,832 of `huybik/hibiki-zero-vi-full-sft` (dataset)
-  `en-vi-grounded-v2-noisy/train/`; ~720 h) into `data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train/`,
+- 500 shards of the noisy en_speech cache, listed in `box/en_speech_sub.txt` (of the 1,832 of
+  `huybik/hibiki-zero-vi-full-sft` (dataset) `en-vi-grounded-v2-noisy/train/`: the first 150,
+  ~720 h, round 4b's, by `random.Random(46).sample`; 350 more by the same seed from the sorted
+  rest, 2026-11-10; 2,481 h, 20 GB plus 19 GB of packs; 266 s to fetch with
+  `HF_HUB_DISABLE_XET=1`) into `data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train/`,
   the validation cache `en-vi-grounded-v2/validation/` into `data/cache/`, and the evaluation sets
   ([sft-evaluation](sft-evaluation.md)) under `data/eval/`;
 - round 3's model, `huybik/hibiki-zero-vi-full-sft` (model) `tranche_epoch1b/checkpoints/model_step026176.safetensors`,

@@ -170,6 +170,15 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   8 s and 26 s of stall. With the fsync a pair takes ~40 s on the 700 W SXM's 1.1 GB/s disk, so
   saves closer together than that (20 steps in the end-to-end test) wait for the previous one;
   1,000 steps apart they never do.
+- The background write still idles the GPU once per save (H200 box, 2026-11-10, 900 steps at
+  4,608 frames with the GPU sampled every 0.2 s): 15 s at the first save, then ~5.6 s about
+  20 s into each write, with no wait for data (probably the model file's serialization holding
+  the interpreter lock; not traced). Every 1,000 steps that is ~2.5% of a 4,608-frame run and
+  ~1.5% of round 4's; round 4d saves every 4,000 (`--save-every`, `--val-every` a multiple).
+- The data feed is not a limit: the stream workers deliver 70 batches a second of 4,608 frames
+  (44 of 8,192) against the 4 training takes, and a step waits 0.26 ms for its batch, 0.1% of
+  its time (`data_sec_per_step` in the train log, `data=` on its line: read that before
+  blaming the loader). Outside the saves the GPU reads 99% busy at 683 W.
 - Host RAM of `en_speech_streams_epoch1b` at step 68,750 (700 W SXM, 2026-11-03, one sample):
   the trainer held its 38.5 GiB of pinned checkpoint buffers (shared memory, allocated once) and
   5 GiB of its own; each of the 4 loader workers 3 GiB plus 12 GiB of mapped packs. The cgroup
