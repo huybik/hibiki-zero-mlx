@@ -46,8 +46,8 @@ def _spoken_vietnamese(text: str) -> str:
     Vietnamese words. A letter its vocabulary lacks rejects the row at alignment."""
     from num2words import num2words
 
-    text = unicodedata.normalize("NFC", text).lower()
     text = re.sub(r"\d+", lambda match: f" {num2words(int(match.group(0)), lang='vi')} ", text)
+    text = unicodedata.normalize("NFC", text).lower()
     return " ".join("".join(char if char.isalpha() else " " for char in text).split())
 
 

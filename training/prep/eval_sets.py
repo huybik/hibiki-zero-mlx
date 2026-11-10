@@ -30,7 +30,7 @@ Writes, under --out-dir (default data/eval):
 Each row holds `id`, `vi_audio` (the clip's path; `en_audio` in the sets heard in English, which
 `eval.py` translates the other way), `text_vi`, `text_en` and `duration_s`. These sets
 are for evaluation only and never enter training. Needs huggingface_hub, pyarrow, sphn, soxr and
-torch (giga-heldout also PyAV and num2words); runs on the Mac or the pod.
+torch (giga-heldout also PyAV and num2words, en-vi-val-en PyAV); runs on the Mac or the pod.
 """
 
 from __future__ import annotations

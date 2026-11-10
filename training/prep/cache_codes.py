@@ -6,8 +6,8 @@ A row is
 [33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
 fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. With
 --direction en-vi the languages trade places: Vietnamese text and target, English source, for
-two-way training; that build takes the tokenizer of the Vietnamese swap (--tokenizer) and its own
---out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
+two-way training; that build runs on --device cuda (MLX has no Vietnamese aligner), tokenizes
+with the Vietnamese swap (the direction's default --tokenizer) and takes its own --out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
 rejected and listed with their reason. The build itself (decode, gates, the target language's
 CTC aligner and Mimi on --device, the Viterbi) is `cache_build`'s, shared with the tranche's
 builder.
@@ -29,7 +29,7 @@ from typing import Any
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
-    DEFAULT_TOKENIZER,
+    DIRECTION_TOKENIZERS,
     exclusive,
     require_dir,
 )
@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
                         help="<source>-<target>: the language heard, then the one spoken and written.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    parser.add_argument("--tokenizer", type=Path, help="Default: the direction's (paths.DIRECTION_TOKENIZERS).")
     parser.add_argument("--max-frames", type=int, default=280, help="The trainer's frame cap.")
     parser.add_argument(
         "--target-delay-ratio",
@@ -156,7 +156,8 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(args.max_frames, args.min_alignment_score, args.direction, args.target_delay_ratio, args.seed)
     with exclusive(args.out_dir / ".cache_codes.lock", f"another cache_codes run is using {args.out_dir}"):
-        builder = Builder(args.device, settings, args.config_path, args.mimi_weight, args.tokenizer)
+        builder = Builder(args.device, settings, args.config_path, args.mimi_weight,
+                          args.tokenizer or DIRECTION_TOKENIZERS[args.direction])
         began, hours = time.perf_counter(), 0.0
         workers = args.workers or default_workers(args.device)
         for shard in builder.run(todo(args, sources), read, workers):

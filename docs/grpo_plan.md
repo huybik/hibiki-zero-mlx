@@ -52,7 +52,7 @@ committed tests, and its prefix reference left out the sentence being spoken.
 
 | Paper | Here |
 |---|---|
-| Inputs, sentences | Streams planned by `streams.StreamDataset` from the noisy `en_speech` train cache, with their own `--seed` and 30–75 s, the paper's lengths (a tenth hold one 5–22 s row, `streams.SINGLE_ROW_STREAMS`, as in SFT). One cache row is one sentence. The stream plan gives each row's `vi_start` and `vi_frames`. |
+| Inputs, sentences | Streams planned by `streams.StreamDataset` from the noisy `en_speech` train cache, with their own `--seed` and 30–75 s, the paper's lengths (a tenth hold one 5–22 s row, `streams.SINGLE_ROW_STREAMS`, as in SFT). One cache row is one sentence. The stream plan gives each row's `source_start` and `source_frames`. |
 | References y, ŷ | Each row's English is its own cache text stream. Both it and a rollout's text are decoded as evaluation decodes (tokens above PAD; a rollout's text ends at its first EOS, so an early EOS loses the rest). No external metadata is needed. |
 | S(t), y_t | The rows whose Vietnamese has started by frame t, in order. A gap after a row belongs to that row, as the paper's sentence i runs from t_i to t_{i+1}. |
 | Reward frames | Frame boundaries: a reward at boundary b counts the text of the frames before b, and credits exactly those tokens (R_t sums the boundaries after t). The cache has no Vietnamese words or timings, so a boundary follows every 2.5 s of Vietnamese speech, counted inside rows only (≈ 8 syllables at the TTS's pace; check the rate on 1,000 rows' `text_vi` once), plus one at T. The paper has no frame after the last input word. We add T so the tail, where the translation finishes, is trained by the final BLEU. |

@@ -21,6 +21,12 @@ CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
 # A cache shard's direction, <source>-<target>, when the shard records none: the caches built
 # before two-way training are all Vietnamese to English.
 DEFAULT_DIRECTION = "vi-en"
+# Each direction's text tokenizer: Vietnamese text needs the Vietnamese swap (vi-tokenizer.md),
+# which tokenizes English as the base model does.
+DIRECTION_TOKENIZERS = {
+    "vi-en": DEFAULT_TOKENIZER,
+    "en-vi": REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2_vi6k.model",
+}
 
 
 def resolve_repo_path(path: str | Path) -> Path:

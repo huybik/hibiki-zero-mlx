@@ -10,7 +10,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Running](#running)
 `training/tranche/cache.py build <sources>` turns each segments shard whose `text_en`, `en_audio`
 and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`, pushed to `<source>/`
 of the cache repo (`ingest.CACHE_REPO`), one cache per source (see
-[Decision](real-vi-tranche.md#decision)); `--direction en-vi --tokenizer <the vi6k swap>` builds
+[Decision](real-vi-tranche.md#decision)); `--direction en-vi` (its tokenizer the Vietnamese swap, `paths.DIRECTION_TOKENIZERS`) builds
 the other way into `<root>/cache/en-vi/<source>/` and `en-vi/<source>/` ([two-way](two-way.md)).
 Its `read_shard` fetches a shard's four parts (the box's
 own copies first, `ingest.part_file`), joins them by id and applies the gates below; the shared

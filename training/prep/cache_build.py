@@ -180,6 +180,8 @@ class CUDAModels:
         # A base model (wav2vec2-base-960h) normalizes its first convolution over the whole input
         # and takes no attention mask; a large one (omniASR) normalizes each frame and takes one.
         self._group_norm = self.ctc.config.feat_extract_norm == "group"
+        if self.ctc.wav2vec2.adapter is not None:  # ctc_log_probs runs the encoder without it
+            raise ValueError(f"{aligner.repo} has an adapter, which ctc_log_probs does not apply")
         self._half_ctc = half_ctc
         self._columns = torch.tensor(vocab_columns(aligner, files), device=DEVICE)
 

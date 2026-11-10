@@ -12,7 +12,7 @@ shares (`training.prep.cache_build`, [cache-build](../../docs/agent-memory/cache
                       the shards written or pushed, and first pushes any written but not yet pushed.
                       With --direction en-vi the languages trade places for two-way training (the
                       corpus transcript timed by the Vietnamese aligner, the real clip the target,
-                      the English TTS the source; --tokenizer: the Vietnamese swap's), into
+                      the English TTS the source, tokenized by the Vietnamese swap), into
                       <root>/cache/en-vi/<source>/ and the cache repo's en-vi/<source>/.
 
 A row is dropped, with the first reason that applies (the shard's `rejected`), when
@@ -43,7 +43,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DEFAULT_TOKENIZER, exclusive
+from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DIRECTION_TOKENIZERS, exclusive
 from training.prep.cache_build import MODELS, Builder, default_workers, summary
 from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    p.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    p.add_argument("--tokenizer", type=Path, help="default: the direction's (paths.DIRECTION_TOKENIZERS)")
     return parser.parse_args()
 
 
@@ -203,7 +203,7 @@ def build(args: argparse.Namespace) -> None:
 def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
     grams = eval_grams()
     builder = Builder(args.device, Settings(args.max_frames, direction=args.direction), args.config_path,
-                      args.mimi_weight, args.tokenizer, half_ctc=args.half_ctc)
+                      args.mimi_weight, args.tokenizer or DIRECTION_TOKENIZERS[args.direction], half_ctc=args.half_ctc)
     pushed = {s: time.monotonic() for s in args.sources}
     workers = args.workers or default_workers(args.device)
 

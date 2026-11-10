@@ -433,7 +433,7 @@ class StreamDataset(Dataset):
         return {
             "codes": assemble(stream, self.rows, self.silence, self.layout),
             "frames": stream.frames,
-            "source_frames": sum(self.rows[piece.row].vi_frames for piece in stream.pieces),
+            "source_frames": sum(self.rows[piece.row].source_frames for piece in stream.pieces),
         }
 
     def batches(self, batch_frames: int, shuffle_seed: int | None) -> list[list[int]]:
