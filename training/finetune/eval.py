@@ -18,7 +18,6 @@ from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
     DEFAULT_MODEL_WEIGHT,
-    DEFAULT_TOKENIZER,
     repo_display_path,
     require_file,
     resolve_repo_path,
@@ -46,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    parser.add_argument("--tokenizer", type=Path, help="Default: the one the checkpoint (else the model weight) is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -112,7 +111,7 @@ def main() -> None:
     if checkpoint is None:  # a checkpoint replaces the base weights, which are never read
         args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    args.tokenizer = require_file(args.tokenizer, "tokenizer")
+    args.tokenizer = common.run_tokenizer(args.tokenizer, checkpoint or args.model_weight)
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

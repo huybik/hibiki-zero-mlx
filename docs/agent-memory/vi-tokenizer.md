@@ -115,13 +115,10 @@ and the tool refuses an input on any tokenizer but the base.
 
 ## Still to change
 
-The two-way pilot ([two-way](two-way.md), [plan stage 7](../vi_en_parity_plan.md#7-two-way-speech))
-still needs:
+The trainers check caches and weights against `--tokenizer`
+([two-way](two-way.md#tokenizer-checks)). The two-way runtimes
+([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)) still need:
 
-- Training: the trainer refuses neither a cache nor a model weight whose tokenizer is not
-  `--tokenizer` (a shard's `tokenizer`, a weight's `text_tokenizer`, which every checkpoint
-  records since 2026-11-10), and machine English uses some reassigned slots
-  ([two-way](two-way.md#design)).
 - The MLX and Swift bundles ship the new file.
 - The streaming decoders (`hibiki_mlx/pipeline.py`, `main.py`, Swift `Vocabulary.text()`)
   print one piece at a time and must assemble UTF-8 from byte pieces.

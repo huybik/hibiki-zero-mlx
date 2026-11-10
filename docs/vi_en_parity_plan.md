@@ -259,8 +259,9 @@ Vietnamese text cannot keep up with its speech.
    from 17.2 to 7.7 tokens/s of speech with one PAD per word (held-out rows), and English is
    identical on all 3.63M rows. New pieces start from the mean of the rows of the pieces they
    used to split into (`training.vi_tokenizer.init_weights`, run on a checkpoint before its
-   run). Still to build: the trainer's check that caches and weights match `--tokenizer`, and
-   the runtimes' UTF-8 assembly from byte pieces.
+   run). The trainers check that caches and weights match `--tokenizer`
+   ([two-way](agent-memory/two-way.md#tokenizer-checks)); still to build: the runtimes' UTF-8
+   assembly from byte pieces.
 3. EN→VI caches (the build since 2026-11-10, one shard checked; [two-way](agent-memory/two-way.md)): `--direction en-vi`
    on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2
    (Apache-2.0, chosen over two CC-BY-NC Vietnamese CTCs; its 0.5 minimum rejects 98–99% of
@@ -446,9 +447,9 @@ Vietnamese text cannot keep up with its speech.
        ~15,000.
 7. Two-way before GRPO (user, 2026-11-10; that morning's "one way first" is replaced). Round
    4e's and 4b's test sets pick the VI→EN start, then (stage 7, [two-way](agent-memory/two-way.md#next)):
-   1. the pilot's prerequisites: the trainer refuses caches and weights on another tokenizer,
-      the `vi-en` rows whose machine English uses a reassigned slot go, and validation covers
-      both directions;
+   1. Done (2026-11-10): the pilot's prerequisites: the trainers refuse caches and weights on
+      another tokenizer, the `vi-en` rows whose machine English uses a reassigned slot go (~0.03%
+      of GigaSpeech 2's), and `--val-cache-dir` takes both directions' caches;
    2. the `en-vi` caches of `en_speech` and the tranche on the box (one validation shard is
       built so far; 1,638× real time on CUDA);
    3. the pilot, ~10k mixed steps from the start through `init_weights`: it passes if EN→VI chrF

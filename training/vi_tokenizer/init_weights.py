@@ -24,11 +24,10 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import load_file
 
-from training.finetune.common import save_state
-from training.paths import require_file, resolve_repo_path
+from training.finetune.common import TOKENIZER_KEY, save_state
+from training.paths import DEFAULT_TOKENIZER, require_file, resolve_repo_path
 
 TABLES = ("text_emb.weight", "depformer_text_emb.weight", "text_linear.weight")
-TOKENIZER_KEY = "text_tokenizer"  # the output's metadata: the swapped model its rows are on
 
 
 def swap_rows(table: torch.Tensor, pieces: list[dict]) -> torch.Tensor:
@@ -53,7 +52,7 @@ def main() -> None:
         raise SystemExit(f"{out} exists")
     with safe_open(str(source), framework="pt") as header:
         metadata = dict(header.metadata() or {})
-    on = metadata.get(TOKENIZER_KEY, init["base_model"])
+    on = metadata.get(TOKENIZER_KEY, DEFAULT_TOKENIZER.name)
     if on != init["base_model"]:
         raise SystemExit(f"{source} is on {on}, not {init['base_model']}: its replaced rows are not the base's")
 

@@ -1,10 +1,13 @@
 # Two-way speech: English to Vietnamese beside Vietnamese to English
 
 Read when touching a direction (`--direction`, `cache_rows.Settings.direction`, a shard's or
-pack's `direction`), the Vietnamese aligner (`text_timing.ALIGNERS["vi"]`), an `en-vi` cache, the
-English-audio evaluation sets, or the two-way pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
+pack's `direction`), the run's text tokenizer (`--tokenizer`, `common.run_tokenizer`,
+`paths.swap_slots`, a pack's `tokenizer` and `text.bin`), the Vietnamese aligner
+(`text_timing.ALIGNERS["vi"]`), an `en-vi` cache, the English-audio evaluation sets, or the
+two-way pilot ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Where a direction lives](#where-a-direction-lives) ·
-[Vietnamese aligner](#vietnamese-aligner) · [Checked](#checked) · [Next](#next)
+[Tokenizer checks](#tokenizer-checks) · [Vietnamese aligner](#vietnamese-aligner) · [Checked](#checked) ·
+[Next](#next)
 
 ## Design
 
@@ -23,7 +26,7 @@ Decided 2026-11-10, for the pilot:
   is not covered by that check: a few rows of the tranche's `text_en` (GigaSpeech 2 3 of 19,967,
   viVoice 1 of 734, PhoAudiobook 0 of 1,299 in the first tranche) and of PhoMT (3 of 1,351 in
   shards 0–4) hold pieces whose slots now mean Vietnamese (`PRS` decodes as `Tùy`, `▁MCU` as
-  `Khó`). A mixed run must drop those rows (review of PR #94, 2026-11-10).
+  `Khó`). A mixed run drops those rows ([below](#tokenizer-checks)).
 - A stream holds one direction: `plan_streams` plans each direction apart (directions in name
   order, one RNG), so a mixed run's streams never switch language mid-stream. Switching within
   a stream comes later, if at all.
@@ -37,11 +40,41 @@ Decided 2026-11-10, for the pilot:
 | shards | payload `direction` and `tokenizer` (its file name); samples keep `vi_frames` and `en_frames` (the target's counts its delay), both texts as the source wrote them, `text_timing` (the aligner's name); Vietnamese text is NFC'd before it is tokenized and timed |
 | `cache_codes` | `--device cuda --direction en-vi` (MLX has no Vietnamese aligner); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
 | checkpoints | metadata `text_tokenizer`: the run's `--tokenizer` file name (none before 2026-11-10: the base) |
+| trainers | `--tokenizer` defaults to the start weight's; each shard checked against it ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache, scored apart |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
-| streams | `PACK_VERSION` 4 stores each pack's direction (a shard without one is `vi-en`); `Row.direction`, `Piece.source_start`/`target_start` |
+| streams | `PACK_VERSION` 5 stores each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
 `mimi_cache_cuda` (the noisy re-encode) is `vi-en` only.
+
+## Tokenizer checks
+
+Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against its inputs:
+
+- A model weight (`common.run_tokenizer`, at startup in every entry point, before the caches
+  load): its `text_tokenizer` metadata (`common.weight_tokenizer`; none is the base) must be the
+  tokenizer's file name. `--tokenizer` defaults to that file under `weights/`, so a pilot
+  checkpoint evaluates on the swap with no flag. A base weight reaches the swap only through
+  `init_weights`. The swap's `.model` needs its `_init.json` beside it in `weights/`.
+- A cache shard (`streams.load_rows`): its pack records the shard's `tokenizer` (none is the
+  base). The same file loads whole. A shard on the base loads into a run on the swap
+  without the rows whose text track uses one of the 6,000 slots the swap gave new pieces
+  (`paths.swap_slots`, read from `<model>_init.json` beside the tokenizer): the rest decode the
+  same on both. Anything else raises, so an `en-vi` shard never loads into a base run.
+  Reassigned rows in round 4e's caches (2026-11-10, the box): 1,265 of 5,086,757 (0.025%):
+  GigaSpeech 2 1,074 of 3,605,741, viVoice 167 of 260,139, PhoAudiobook 24 of 284,342, the 500
+  noisy `en_speech` shards 0 of 936,535.
+- A kept row decodes the same on the swap but keeps the base's split, not the swap's: in
+  the same shards 1.6% of GigaSpeech 2's rows, 1.0% of PhoAudiobook's and viVoice's (Vietnamese
+  names without diacritics, "Dak Lak", "Huynh Ngoc Tru"; 2–4 more pieces each), none of
+  `en_speech`'s. VI→EN English then trains on the base's split of such a name and EN→VI on the
+  swap's; both decode alike. Only a re-tokenized and re-timed `vi-en` cache would change it.
+- Packs (`PACK_VERSION` 5) keep the rows' text tracks in `text.bin` for that check, so it
+  reads ~3% of the codes. Old and new code repack each other's packs, so run one version on a
+  cache folder at a time.
+- Each `--val-cache-dir` gets its own stream plan and its own entry in `val_log.jsonl`'s
+  `teacher_forced` (by its path), so a direction's losses stay apart and a `vi-en` cache's
+  streams stay round 4's when an `en-vi` one joins.
 
 ## Vietnamese aligner
 
@@ -98,6 +131,13 @@ On the H100 box, 2026-11-10, branch `twoway/prep`:
   and `fleurs-vi/dev` in shared batches, round 3's model moved onto the swap
   (`init_weights`): FLEURS chrF 44.5, healthy; English to Vietnamese chrF 10.1 (it answers in
   English: untrained).
+- The tokenizer checks end to end (PR #100, the same box): a 30-step `train.py` on the swap with
+  no `--tokenizer`, `vi-en` tranche shards and an `en-vi` shard, both directions' validation
+  caches (dropped 7 reassigned rows; two `teacher_forced` entries; the checkpoint's metadata the
+  swap; peak 74.9 GB); the refusals at startup (a weight on the other tokenizer, an `en-vi` shard
+  in a base run, a repeated validation cache); a base run and `eval.py`, `validate.py` (its loss
+  equal to the run's validation to the last digit), the packer and `grpo.py`/`grpo_profile.py`
+  on the swap.
 
 ## Next
 
@@ -106,11 +146,6 @@ round 4e's test sets pick the VI→EN start, the pilot, then the two-way SFT, th
 both directions ([plan](../vi_en_parity_plan.md#order)). The pilot
 ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)): build an `en-vi` cache
 subset of `en_speech` and the tranche (only one validation shard is built so far), start from a
-model through `init_weights`, train ~10k mixed steps. It passes if English-to-Vietnamese chrF
-rises with healthy outputs and FLEURS dev stays within 1 chrF. Before it:
-
-- the trainer should refuse a cache or model weight whose tokenizer is not `--tokenizer` (a
-  shard's `tokenizer`, a weight's `text_tokenizer`; neither is checked yet), and the `vi-en`
-  rows whose English uses a reassigned slot must go (above);
-- `train.py` takes one `--val-cache-dir`, so a mixed run's teacher-forced validation sees one
-  direction; free-running validation can take both directions' pairs files.
+model through `init_weights`, train ~10k mixed steps with both directions' validation caches
+and pairs files. It passes if English-to-Vietnamese chrF rises with healthy outputs and FLEURS
+dev stays within 1 chrF.

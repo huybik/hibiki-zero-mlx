@@ -27,7 +27,6 @@ from training.finetune import common, grpo, rewards, streams
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
-    DEFAULT_TOKENIZER,
     require_dir,
     require_file,
     resolve_repo_path,
@@ -41,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
+    parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--max-frames", type=int, default=280)
     parser.add_argument("--stream-seconds", type=float, nargs=2, default=[30.0, 75.0])
@@ -103,17 +102,18 @@ def profile_generation(args, info, lm, sources, silence_frame, report: dict, wri
 
 def main() -> None:
     args = parse_args()
+    args.model_weight = require_file(args.model_weight, "start checkpoint")
+    args.tokenizer = common.run_tokenizer(args.tokenizer, args.model_weight)
     pool = grpo.reward_pool(args.reward_workers, args.tokenizer)
     device = common.check_device("cuda")
     torch.set_float32_matmul_precision("high")
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
-    args.model_weight = require_file(args.model_weight, "start checkpoint")
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
     silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames)
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames)
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     dataset = streams.StreamDataset(
         rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed
     )

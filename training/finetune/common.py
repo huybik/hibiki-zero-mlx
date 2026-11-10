@@ -30,6 +30,7 @@ import torch
 from moshi.models import loaders
 from moshi.modules.transformer import set_attention_context
 from moshi.run_inference import get_condition_tensors
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 
@@ -41,7 +42,7 @@ from training.finetune.hibiki_helpers import (
     get_lmgen,
     stack_and_pad_audio,
 )
-from training.paths import repo_display_path, require_file, resolve_repo_path
+from training.paths import DEFAULT_TOKENIZER, repo_display_path, require_file, resolve_repo_path
 
 
 def ascii_text(text: str) -> str:
@@ -130,6 +131,31 @@ def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
             state[name] = tensor.to(dtype=dtype)
     model.load_state_dict(state, strict=True)
     print(f"Loaded {len(state)} model tensors from {repo_display_path(path)}")
+
+
+TOKENIZER_KEY = "text_tokenizer"  # a model weight's metadata: the tokenizer its text rows are on
+
+
+def weight_tokenizer(path: Path) -> str:
+    """The tokenizer a model weight's text rows are on: its `text_tokenizer` metadata, which
+    every training checkpoint records since 2026-11-10; upstream's weight and older checkpoints
+    are on the base."""
+    with safe_open(str(path), framework="pt") as handle:
+        return (handle.metadata() or {}).get(TOKENIZER_KEY, DEFAULT_TOKENIZER.name)
+
+
+def run_tokenizer(tokenizer: Path | None, weight: Path) -> Path:
+    """The run's text tokenizer: `tokenizer` (--tokenizer), by default the one `weight` is on,
+    from `weights/`. Every entry point calls it at startup, before anything slow: a weight on
+    another tokenizer is refused, since the Vietnamese swap gives 6,000 text rows new meanings
+    (`vi_tokenizer.init_weights` moves a base weight onto it)."""
+    on = weight_tokenizer(weight)
+    if tokenizer is None and not (DEFAULT_TOKENIZER.parent / on).is_file():
+        raise FileNotFoundError(f"{repo_display_path(weight)} is on {on}, missing from weights/: copy it there or pass --tokenizer")
+    path = require_file(tokenizer or DEFAULT_TOKENIZER.parent / on, "tokenizer")
+    if on != path.name:
+        raise RuntimeError(f"{repo_display_path(weight)} is on {on}, not --tokenizer {path.name}")
+    return path
 
 
 def bf16_copy(checkpoint_info: Any, lm: Any, device: Any) -> Any:
