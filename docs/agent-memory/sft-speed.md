@@ -60,8 +60,11 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
     8,050 (rowwise); compiled with the transformer 13,920, and the loss moved (4.006, not 4.018).
     Again on the compiled forward with the dense loss (2026-11-10, the same card, 16 tranche and
     `en_speech` shards, steps 151–300 from round 4's model): rowwise 14,592 frames/s against bf16's
-    15,321 (−5%), mean loss 2.1984 against 2.1968. At ~4,000 tokens a batch through 2,560-wide
-    layers the casts and scales cost more than FP8's matmuls save: matmuls stay bf16;
+    15,321 (−5%), mean loss 2.1984 against 2.1968; tensorwise 14,717 (−3.9%). The kernel profile
+    shows the FP8 GEMMs running (`nvjet_sm90_qqtst_*`) and its amax, scale and cast kernels
+    (~12 ms a step): 285.8 ms of kernels a step against 271.8. Only the main transformer's linears
+    convert; the depformer's 16 per-codebook steps hold about as much matmul work, and at ~4,000
+    tokens a batch the casts cost more than FP8's matmuls save: matmuls stay bf16;
   - math attention in the depformer 13,381; clipping inside fused AdamW through its
     `grad_scale` (GradScaler's private hook) 13,584, +1.3%, not adopted;
   - `torch.compile(lm.transformer, dynamic=True)`: 14,390 (+7.3%, 1.5 GiB less), but two of its
@@ -70,6 +73,14 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   14,682 frames/s against 13,838 (+6.1%), 73.1 GiB reserved against 75.1, the same loss.
   Dynamo compiles it twice (batches under 4,096 frames get their own graph, an inductor fusion
   guard), so the 200 warm-up steps took 137 s against 126.
+- A warm step on the 700 W H100 SXM (2026-11-10, 4,608 frames, the dense loss; torch.profiler over
+  10 steps of 16 tranche and `en_speech` shards): 271.8 ms of kernels a step against 273.6 ms of
+  wall (the GPU 99% busy): matmuls ~45% (~600 TFLOP/s), fused AdamW 12.4% (33.6 ms; 84 GB moved:
+  memory-bound), the clip's norm and scale 5.3% (14.3 ms), the depformer's attention ~6%. Bench:
+  15,321 frames/s at 0.2697 s a step (steps 151–300). Round 4's 8,192-frame batches in
+  `--micro-frames` slices: 14,330 frames/s in slices of 3,584 (−6.5%: the slices are smaller than
+  4,608 batches, a 1,424-frame stream often alone in the last), 14,115 in 3,072; whole 4,096-frame
+  batches accumulated two to an update ran out of memory.
 - What is left (warm profile, H200 NVL): matmuls 59% of GPU time, compiled kernels 16%, fused
   AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
   elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of
