@@ -61,8 +61,9 @@ Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against 
   without the rows whose text track uses one of the 6,000 slots the swap gave new pieces
   (`paths.swap_slots`, read from `<model>_init.json` beside the tokenizer): the rest decode the
   same on both. Anything else raises, so an `en-vi` shard never loads into a base run.
-  Reassigned rows, first 6 text_en shards a source (2026-11-10, the box): GigaSpeech 2 29 of
-  132,283 (0.022%), PhoAudiobook 1 of 7,794, viVoice 2 of 4,676, `en_speech` 0 of 12,477.
+  Reassigned rows in round 4e's caches (2026-11-10, the box): 1,265 of 5,086,757 (0.025%):
+  GigaSpeech 2 1,074 of 3,605,741, viVoice 167 of 260,139, PhoAudiobook 24 of 284,342, the 500
+  noisy `en_speech` shards 0 of 936,535.
 - A kept row decodes the same on the swap but keeps the base's split, not the swap's: in
   the same shards 1.6% of GigaSpeech 2's rows, 1.0% of PhoAudiobook's and viVoice's (Vietnamese
   names without diacritics, "Dak Lak", "Huynh Ngoc Tru"; 2–4 more pieces each), none of
