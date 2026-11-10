@@ -48,6 +48,10 @@ metadata, so the redo took a new name. Its first Hub pair comes with the first v
 step 28,000. Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`)
 and wait for its final sync.
 
+**Next after round 4e (user, 2026-11-10):** its and round 4b's test sets, then two-way before
+GRPO: the `en-vi` caches, the pilot, the two-way SFT ([two-way](two-way.md#next)); GRPO then
+runs once, on the two-way model.
+
 **GRPO: PROFILED, NOT STARTED.** Alone on the H200, `--gen-batch 512 --micro-batch 4` (in
 `grpo_launch.sh`): ~24 s an update, 800 updates ~5.3 h ([grpo](grpo.md#running)). Those sizes
 do not fit the H100: profile and optimize it heavily there before its run (user, 2026-11-10). It runs from
@@ -108,7 +112,8 @@ Round 4 SFT's inputs, all on the Hub (`restart.sh sft` reads them locally):
 
 ## Jobs
 
-In order (user, 2026-11-07: all voicing first, then every cache, then SFT, then GRPO):
+In order (user, 2026-11-07: all voicing first, then every cache, then SFT, then GRPO; 2026-11-10:
+the two-way caches, pilot and SFT before GRPO):
 
 | Job | Start | Done when |
 |---|---|---|
@@ -117,7 +122,8 @@ In order (user, 2026-11-07: all voicing first, then every cache, then SFT, then 
 | voice | `restart.sh voice` (en_audio for every shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
 | cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
 | sft | `restart.sh sft` (round 4, `full_epoch4b`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
-| grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)) | its updates; stop with TERM to the launcher alone |
+| two-way | the `en-vi` caches, the pilot, the two-way SFT ([two-way](two-way.md#next)); scripts to come | the two-way SFT's best checkpoint |
+| grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)), on the two-way model | its updates; stop with TERM to the launcher alone |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with

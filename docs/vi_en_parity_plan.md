@@ -5,9 +5,9 @@ on a phone, offline. The base is Hibiki-Zero 3B (user's choice, 2026-11-01): its
 codec and runtime stay the same from training to the phone.
 
 ```text
-VI TTS (done) ─► Mimi cache (finish) ─► SFT 3B ─► GRPO 3B ─► teacher
-                 + noisy VI re-encode     streams,              │
-                 + real-VI eval sets      fixed loss            ▼
+VI TTS (done) ─► Mimi cache (finish) ─► SFT 3B ─► two-way SFT 3B ─► GRPO 3B, ─► teacher
+                 + noisy VI re-encode     streams,  (pilot first)     both ways    │
+                 + real-VI eval sets      fixed loss                               ▼
                                             on-device test of upstream Hibiki-Zero 3B q4
                                             ├─ real time on target iPhones ─► ship 3B q4
                                             └─ too slow / hot ─► shrink in the family + distill
@@ -60,6 +60,7 @@ grows sentence by sentence.
 | GRPO comes last, after every SFT stage (user, 2026-11-04) | SFT on new data retrains the timing its data teaches and would undo most of what RL tuned; the paper's order is base, fine-tune, then RL |
 | The real-Vietnamese tranche is research and includes non-commercial corpora; their weights are research-only, and each source has its own cache (user, 2026-11-04) | The non-commercial corpora (PhoAudiobook, viVoice, Bud500, GigaSpeech 2) have cleaner transcripts, more speakers and long-form audio than YODAS; a commercial model is the same SFT without their caches ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
 | Two-way speech in one model whose output language follows the input language, prepared now beside the tranche (user, 2026-11-04) | A conversation needs both directions with no language-ID step; Hibiki-Zero has no conditioning input; two 3B models do not fit a 6 GB phone ([stage 7](#7-two-way-speech)) |
+| Two-way before GRPO: after round 4e, the pilot and the two-way SFT, then one GRPO on both directions; the phone student and the parallel-heads test are cut from the two-way model and scored both ways (user, 2026-11-10, replacing that morning's "one way first") | GRPO and the student each run once, on the model that ships; GRPO on a VI→EN-only model would be undone by the two-way SFT after it |
 | Test parallel codebook heads against the depformer student once the student is trained, and adopt them only if they win (user, 2026-11-10) | The student's depformer is about a third of what a frame reads; heads that sample every codebook at once could pay for ~14–16 main layers at the 10-layer cost. But they train from scratch, add ~400 ms of heard speech lag and change three runtimes ([stage 5.4](#5-the-phone-model)) |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
@@ -134,7 +135,10 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 
 [docs/grpo_plan.md](grpo_plan.md): the paper's GRPO with BLEU process rewards on 30–75 s streams,
 the last training stage (user, 2026-11-04): from the final SFT model, on both directions, after the
-real-Vietnamese tranche. Its trainer is built (PR #59) and is profiled on the H100 before its run.
+real-Vietnamese tranche and the two-way SFT (user, 2026-11-10). Its trainer is built (PR #59) and
+is profiled on the H100 before its run. For two directions it still needs both directions'
+evaluation sets in its validation, a promotion rule over both (today: FLEURS dev chrF and its
+latency gate alone) and the Vietnamese tokenizer for the EN→VI rewards.
 RL the teacher before any distillation. A penalty on speech while the source is silent, and a short
 GRPO on a distilled student, come later if needed.
 
@@ -148,7 +152,8 @@ GRPO on a distilled student, come later if needed.
    ~200 ms/frame once throttled, against an 80 ms budget; the LM alone is 100 → 153 ms
    ([swift-runtime](agent-memory/swift-runtime.md#device-test)). Still to measure: a current
    phone (A17 Pro / A18, 8 GB) before settling the target.
-3. The 3B does not hold real time on the A15, so the shrink branch is on: drop depformer steps
+3. The 3B does not hold real time on the A15, so the shrink branch is on, cut from the two-way
+   model and scored in both directions (user, 2026-11-10): drop depformer steps
    8–15 (8 codebooks per stream; the depformer's sequential steps halve) and main layers 28 →
    ~10–14 initialised from the 3B's own, and fine-tune it on the streams directly. Only if it
    falls short of the 3B, distil from the teacher on its free-running outputs over the cached
@@ -163,7 +168,10 @@ GRPO on a distilled student, come later if needed.
    the A15 (42 → 79 ms a frame), and with Mimi's decoder on the Neural Engine the step is
    GPU-bound at 41 → 44.5 ms for all 10 minutes (an earlier, warmer run throttled at ~9). So
    the student is 8 codebooks, ~10 main layers and a 3-layer depformer; measure a current
-   phone (A17 Pro / A18) before settling it.
+   phone (A17 Pro / A18) before settling it. Two-way puts the codebook count back in question:
+   through Mimi, Whisper's Vietnamese WER is 27.8% at 16 codebooks and 42.0% at 8, against
+   English's 6.3% and 8.9% (stage 7.1), so the student's EN→VI speech is scored by a Vietnamese
+   ASR (deferred so far) at 8 and at 16 codebooks before 8 is settled.
 4. Parallel codebook heads, tested once the student is trained (user, 2026-11-10). The
    student's depformer still runs its 8 codebook steps of 3 layers one after another every
    frame: 24 small passes and ~0.26 GB of the ~0.75 GB of q4 weights a frame reads (estimated:
@@ -179,10 +187,14 @@ GRPO on a distilled student, come later if needed.
      Swift runtime each need the heads. Heads without delays would sample the codebooks
      independently, which MusicGen found worse; they are not tested.
    - The test, on the H100: a ~14-layer delay-pattern student against the trained 10-layer
-     depformer student, on the same streams for the same steps. Compare chrF on the
-     real-Vietnamese sets, the generated English speech (an English ASR's transcript scored
-     against the reference, and speaker similarity to the Vietnamese source; evaluation is
-     text-only today) and ms a frame on the phone. Adopt the heads only if they win at real time.
+     depformer student, both cut from the two-way model, on the same streams of both
+     directions for the same steps. Compare chrF in each direction (the real-Vietnamese sets,
+     `fleurs-en` and `en-vi-val-en`), the generated speech (each target language's ASR
+     transcript scored against the reference, and speaker similarity to the source; evaluation
+     is text-only today) and ms a frame on the phone. Adopt the heads only if they win at real
+     time. Heads make more codebooks cheaper than the depformer does (no sequential step each),
+     so a 16-codebook Vietnamese side fits them better, but delays 0–15 would lag 1.2 s;
+     codebooks sharing delays (two a frame) halve that.
    - If the depformer must shrink further and the heads lose: a grouped depformer, 2 codebooks a
      step (4 steps, not 8), initialised from the slices, with no added lag.
 
@@ -432,18 +444,27 @@ Vietnamese text cannot keep up with its speech.
        helps, not which. `full_epoch4c`, the same rerun on round 4's own data, was stopped at
        step 1,760 for it; `full_epoch4d`, this run on the H200, was lost with that box at step
        ~15,000.
-7. GRPO on the VI→EN model: one way is finished first (user, 2026-11-10: "can leave two ways
-   later. let's done one way first"), from round 4's best model after its test sets, optimized
-   heavily on its box before the full run ([grpo](agent-memory/grpo.md#running),
-   [plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).
-8. Two-way, later: the pilot, then the final SFT on both directions and GRPO on it
-   (stage 7; its preparation is built, [two-way](agent-memory/two-way.md)).
-9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
-   directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
-   settling it.
+7. Two-way before GRPO (user, 2026-11-10; that morning's "one way first" is replaced). Round
+   4e's and 4b's test sets pick the VI→EN start, then (stage 7, [two-way](agent-memory/two-way.md#next)):
+   1. the pilot's prerequisites: the trainer refuses caches and weights on another tokenizer,
+      the `vi-en` rows whose machine English uses a reassigned slot go, and validation covers
+      both directions;
+   2. the `en-vi` caches of `en_speech` and the tranche on the box (one validation shard is
+      built so far; 1,638× real time on CUDA);
+   3. the pilot, ~10k mixed steps from the start through `init_weights`: it passes if EN→VI chrF
+      rises with healthy outputs and VI→EN FLEURS dev stays within 1 chrF;
+   4. the two-way SFT on `en_speech` and the tranche in both directions.
+8. GRPO on the two-way model, both directions, optimized heavily on its box before the full run
+   ([grpo](agent-memory/grpo.md#running),
+   [plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)); stage 4 lists what
+   two directions add.
+9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) cut from the two-way model,
+   trained on both directions' streams directly, distilled only if it falls short; its EN→VI
+   speech is checked at 8 and 16 codebooks (stage 5.3); measure a current phone (A17 Pro / A18)
+   before settling it.
 10. Parallel codebook heads against that student, on the H100 (stage 5.4; user, 2026-11-10):
-    a ~14-layer delay-pattern student on the same streams and steps, adopted only if it wins
-    at real time.
+    a ~14-layer delay-pattern student on the same streams of both directions and the same
+    steps, adopted only if it wins at real time.
 
 ## Risks
 

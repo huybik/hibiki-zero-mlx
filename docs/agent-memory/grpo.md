@@ -5,7 +5,10 @@ Read when touching `training/finetune/grpo.py`, `grpo_profile.py`, `rewards.py` 
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Checks](#checks) · [Running](#running)
 
 The stage after SFT ([plan](../grpo_plan.md)): the paper's GRPO with BLEU process rewards, on
-streams of the `--cache-dir` caches (the first run: the Vietnamese tranche's). Checkpoints, resume and logs are the SFT run's
+streams of the `--cache-dir` caches. The first run is on the two-way model, both directions
+(user, 2026-11-10; [plan](../vi_en_parity_plan.md#4-grpo) lists what that adds: both
+directions' evaluation sets, a promotion rule over both, the Vietnamese tokenizer for the
+EN→VI rewards). Checkpoints, resume and logs are the SFT run's
 ([sft-recovery](sft-recovery.md)), and evaluation is SFT validation's free-running pass
 ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
 
