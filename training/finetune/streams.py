@@ -245,7 +245,10 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple
         readable = np.ones(len(index), dtype=bool)
         if pack["tokenizer"] != Path(tokenizer).name and len(index):
             if pack["tokenizer"] not in swapped:
-                swapped[pack["tokenizer"]] = np.array(swap_slots(tokenizer, pack["tokenizer"]))
+                try:
+                    swapped[pack["tokenizer"]] = np.array(swap_slots(tokenizer, pack["tokenizer"]))
+                except RuntimeError as exc:
+                    raise RuntimeError(f"{shard_path}: {exc}") from None
             text = np.fromfile(directory / "text.bin", dtype=np.int32)
             starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
             readable = ~np.logical_or.reduceat(np.isin(text, swapped[pack["tokenizer"]], kind="table"), starts)

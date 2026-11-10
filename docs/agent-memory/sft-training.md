@@ -21,8 +21,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   trainers' validation and a resumed pair keep a checkpoint's own row; a tool that loads a
   checkpoint through `get_moshi` resets it. Only the frames after a sampled EOS can differ, and
   evaluation cuts a row's text at its first EOS (found 2026-11-10).
-- Inputs are one or more `--cache-dir` grounded caches plus a `--val-cache-dir`; rows over
-  `--max-frames` (280) are dropped.
+- Inputs are one or more `--cache-dir` grounded caches plus one or more `--val-cache-dir`
+  (a two-way run passes each direction's); rows over `--max-frames` (280) are dropped. Every
+  shard and the start weight must be on `--tokenizer`, except that a run on the Vietnamese swap
+  reads base-tokenizer shards without the rows the swap reassigned
+  ([two-way](two-way.md#tokenizer-checks)).
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
   multi-sentence sequences of `--stream-seconds` (30–120 s, `streams.STREAM_SECONDS`, decided
   2026-11-02: upstream's coarse stage used 30–75 s and its RL stage 120 s, and upstream degrades
@@ -73,8 +76,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   teacher-forced validation losses do not compare across that change (2026-11-04).
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
   index and each row's doc and seq, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's
-  size or mtime changes or `PACK_VERSION` does: 4 since each pack records its shard's direction,
-  2026-11-10; [two-way](two-way.md)),
+  size or mtime changes or `PACK_VERSION` does: 5 since each pack records its shard's direction
+  and tokenizer and the rows' text tracks in `text.bin`, 2026-11-10; [two-way](two-way.md)),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
   a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling

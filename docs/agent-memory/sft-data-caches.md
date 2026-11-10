@@ -16,7 +16,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builds](#builds) ·
   ─► publish_caches ─► HF cache repo <out-dir name>/<split>/shard_<name>.pt ◄─ second machine
 HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 <prefix>/train + phomt-grounded-v2-5s ─► training.finetune.train --cache-dir (several)
-<prefix>/validation ─► --val-cache-dir
+<prefix>/validation ─► --val-cache-dir (several)
 ```
 
 - The trainer runs on the H100 pod; the caches reach it through the cache repo
