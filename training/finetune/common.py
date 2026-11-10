@@ -144,19 +144,15 @@ def weight_tokenizer(path: Path) -> str:
         return (handle.metadata() or {}).get(TOKENIZER_KEY, DEFAULT_TOKENIZER.name)
 
 
-def check_weight_tokenizer(path: Path, tokenizer: Path) -> None:
-    """Refuse a weight on another tokenizer than the run's: the Vietnamese swap gives 6,000 text
-    rows new meanings, and `vi_tokenizer.init_weights` moves a base weight onto it."""
-    on = weight_tokenizer(path)
-    if on != Path(tokenizer).name:
-        raise RuntimeError(f"{repo_display_path(path)} is on {on}, not --tokenizer {Path(tokenizer).name}")
-
-
 def run_tokenizer(tokenizer: Path | None, weight: Path) -> Path:
     """The run's text tokenizer: `tokenizer` (--tokenizer), by default the one `weight` is on,
-    from `weights/`, checked against the weight before anything slow starts."""
-    path = require_file(tokenizer or DEFAULT_TOKENIZER.parent / weight_tokenizer(weight), "tokenizer")
-    check_weight_tokenizer(weight, path)
+    from `weights/`. Every entry point calls it at startup, before anything slow: a weight on
+    another tokenizer is refused, since the Vietnamese swap gives 6,000 text rows new meanings
+    (`vi_tokenizer.init_weights` moves a base weight onto it)."""
+    on = weight_tokenizer(weight)
+    path = require_file(tokenizer or DEFAULT_TOKENIZER.parent / on, "tokenizer")
+    if on != path.name:
+        raise RuntimeError(f"{repo_display_path(weight)} is on {on}, not --tokenizer {path.name}")
     return path
 
 
@@ -179,7 +175,6 @@ def load_policy(checkpoint_info: Any, device: Any) -> Any:
     text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
     trains from there (cosine 0.88 to PAD's after round 4), and a resumed pair restores its own.
     `load_lm` and `bf16_copy` keep a checkpoint's own row."""
-    check_weight_tokenizer(checkpoint_info.moshi_weights, checkpoint_info.tokenizer)
     lm = checkpoint_info.get_moshi(
         device=device, dtype=torch.float32, lm_kwargs_overrides={"gradient_checkpointing": False}
     )
@@ -203,7 +198,6 @@ def fused_adamw(params: list[Any], args: argparse.Namespace) -> torch.optim.Adam
 def load_lm(checkpoint_info: Any, checkpoint: Path | None, device: Any, dtype: torch.dtype) -> Any:
     """The base model, or `checkpoint` in a model built without reading the base weights, which
     a full checkpoint overwrites anyway (12.5 GB of fp32 for a fine-tuned base)."""
-    check_weight_tokenizer(checkpoint or checkpoint_info.moshi_weights, checkpoint_info.tokenizer)
     if checkpoint is None:
         print(f"Loading the base LM on {device} from {repo_display_path(checkpoint_info.moshi_weights)}")
         return checkpoint_info.get_moshi(device=device, dtype=dtype)

@@ -244,10 +244,13 @@ def main() -> None:
     # losses stay visible beside the other's, and a cache's streams do not change when another
     # joins the run. In the main process: forking workers at a validation would fork the checkpoint
     # writer's thread too, and 300 batches assemble in ~3 s.
+    names = [str(path) for path in args.val_cache_dir]  # as given: h100.sh replays the arguments
+    if len(set(names)) != len(names) or len(set(val_cache_dirs)) != len(val_cache_dirs):
+        raise ValueError("--val-cache-dir names a cache twice")
     val_loaders: dict[str, DataLoader] = {}
-    val_sizes: dict[str, dict[str, int]] = {}
-    for val_cache_dir in val_cache_dirs:
-        name = repo_display_path(val_cache_dir)
+    val_row_counts: dict[str, int] = {}
+    val_stream_counts: dict[str, int] = {}
+    for name, val_cache_dir in zip(names, val_cache_dirs, strict=True):
         val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer)
         if val_layout != layout:
             raise RuntimeError(f"Validation layout {val_layout} of {name} differs from training {layout}")
@@ -257,7 +260,7 @@ def main() -> None:
             batch_sampler=val_dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
             collate_fn=streams.collate,
         )
-        val_sizes[name] = {"rows": len(val_rows), "streams": len(val_dataset)}
+        val_row_counts[name], val_stream_counts[name] = len(val_rows), len(val_dataset)
         print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows of {name}")
     # Checkpoints are selected on free-running translation, sampled as eval.py samples. The sets
     # share batches, so one pass translates them all.
@@ -295,8 +298,8 @@ def main() -> None:
             "stream_frames": list(frames),
             "frame_bucket": streams.FRAME_BUCKET,
             "best_metric": BEST_METRIC,
-            "val_rows": {name: size["rows"] for name, size in val_sizes.items()},
-            "val_streams": {name: size["streams"] for name, size in val_sizes.items()},
+            "val_rows": val_row_counts,
+            "val_streams": val_stream_counts,
             "eval_rows": len(eval_rows),
         }
     )

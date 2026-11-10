@@ -49,16 +49,23 @@ Decided 2026-11-10, for the pilot:
 
 Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against its inputs:
 
-- A model weight: its `text_tokenizer` metadata (`common.weight_tokenizer`; none is the base)
-  must be the tokenizer's file name. `--tokenizer` defaults to that file under `weights/`
-  (`common.run_tokenizer`, at startup, before the caches load), so a pilot checkpoint evaluates
-  on the swap with no flag; `load_policy` and `load_lm` check again
-  (`common.check_weight_tokenizer`). A base weight reaches the swap only through `init_weights`.
+- A model weight (`common.run_tokenizer`, at startup in every entry point, before the caches
+  load): its `text_tokenizer` metadata (`common.weight_tokenizer`; none is the base) must be the
+  tokenizer's file name. `--tokenizer` defaults to that file under `weights/`, so a pilot
+  checkpoint evaluates on the swap with no flag. A base weight reaches the swap only through
+  `init_weights`. The swap's `.model` needs its `_init.json` beside it in `weights/`.
 - A cache shard (`streams.load_rows`): its pack records the shard's `tokenizer` (none is the
   base). The same file loads whole. A shard on the base loads into a run on the swap
   without the rows whose text track uses one of the 6,000 slots the swap gave new pieces
   (`paths.swap_slots`, read from `<model>_init.json` beside the tokenizer): the rest decode the
   same on both. Anything else raises, so an `en-vi` shard never loads into a base run.
+  Reassigned rows, first 6 text_en shards a source (2026-11-10, the box): GigaSpeech 2 29 of
+  132,283 (0.022%), PhoAudiobook 1 of 7,794, viVoice 2 of 4,676, `en_speech` 0 of 12,477.
+- A kept row decodes the same on the swap but keeps the base's split, not the swap's: in
+  the same shards 1.6% of GigaSpeech 2's rows, 1.0% of PhoAudiobook's and viVoice's (Vietnamese
+  names without diacritics, "Dak Lak", "Huynh Ngoc Tru"; 2–4 more pieces each), none of
+  `en_speech`'s. VI→EN English then trains on the base's split of such a name and EN→VI on the
+  swap's; both decode alike. Only a re-tokenized and re-timed `vi-en` cache would change it.
 - Packs (`PACK_VERSION` 5) keep the rows' text tracks in `text.bin` for that check, so it
   reads ~3% of the codes. Old and new code repack each other's packs, so run one version on a
   cache folder at a time.

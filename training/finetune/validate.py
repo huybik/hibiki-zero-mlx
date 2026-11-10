@@ -2,7 +2,7 @@
 """Teacher-forced losses of a base or full-SFT model on the validation streams of a cache.
 
 The streams and batches are planned as `train.py` plans its validation (fixed seed, silence track
-encoded on the CPU). To reproduce the `teacher_forced` metrics of a run's `val_log.jsonl`, pass its
+encoded on the CPU). To reproduce a cache's entry in the `teacher_forced` metrics of a run's `val_log.jsonl`, pass its
 --stream-seconds, --max-frames and --batch-frames and use --dtype float32, as training validates
 its fp32 weights.
 """
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
-    parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
+    parser.add_argument("--tokenizer", type=Path, help="Default: the one the checkpoint (else the model weight) is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -78,7 +78,7 @@ def main() -> None:
     checkpoint_info = common.load_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
-    rows, layout = streams.load_rows([cache_dir], args.max_frames)
+    rows, layout = streams.load_rows([cache_dir], args.max_frames, args.tokenizer)
     dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED)
     dataloader = DataLoader(
         dataset,

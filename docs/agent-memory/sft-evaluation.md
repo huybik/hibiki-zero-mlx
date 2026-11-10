@@ -13,7 +13,7 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 
 - Checkpoints are chosen on free-running translation of real Vietnamese (decided 2026-11-02:
   the last run's teacher-forced loss kept improving while its translations got worse). Each
-  validation logs the teacher-forced losses of the cache's validation streams, then translates
+  validation logs the teacher-forced losses of each validation cache's streams, then translates
   `--eval-pairs` (default FLEURS dev, `en-vi-val/cv27` and `en-vi-val/libriheavy`, so build the
   [evaluation sets](#evaluation-sets) before training; rows need `duration_s`) with `eval.py`'s
   sampling, reseeded per batch from `--seed`.
