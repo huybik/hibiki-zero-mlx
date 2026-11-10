@@ -372,8 +372,35 @@ Vietnamese text cannot keep up with its speech.
        the same peak rate): the throughput lever is not free at a fixed rate. A code review of
        the trainer, the loss and the validation found nothing that feeds it wrong input
        (2026-11-10).
-     - Not yet scored: the test sets and `giga-heldout`, in one `eval.py` call against rounds 2
-       and 3 (batch 64, `--seed 43`), which is what settles round 4 against round 3.
+     - Test sets, in one `eval.py` call a model over eight sets (batch 64, `--seed 43`, text
+       only; 11 min a model on the H200), chrF of run 2, round 3 and round 4. Predictions and
+       metrics are on the box under `<run>/eval/cmp_step*/`, not on the Hub:
+
+       | Set (rows) | Run 2 | Round 3 | Round 4 | Round 4 BLEU (round 3) |
+       |---|---:|---:|---:|---:|
+       | FLEURS test (857) | 29.0 | 38.2 | 37.9 | 10.8 (10.4) |
+       | MultiMed-ST select (1,718) | 24.8 | 34.7 | 37.3 | 11.5 (9.6) |
+       | MultiMed-ST final (1,719) | 24.7 | 34.7 | 37.6 | 11.8 (9.7) |
+       | `giga-heldout` (1,000) | 30.4 | 51.3 | 61.8 | 36.4 (24.9) |
+       | `en-vi-val` cv27 / libriheavy (180 each) | 45.2 / 45.5 | 45.3 / 44.0 | 43.0 / 43.4 | 16.9 / 17.7 (16.3 / 16.5) |
+       | `en-vi-val-noisy` cv27 / libriheavy | 39.5 / 42.0 | 40.1 / 41.4 | 39.3 / 41.5 | 13.2 / 16.7 (12.0 / 15.5) |
+
+     - So round 4 against round 3: +2.8 on MultiMed-ST and +10.5 on GigaSpeech 2's own
+       held-out recordings, nothing on FLEURS (−0.4, inside its noise) and −0.9 on the mean of
+       the four held-out TTS sets (−2.3 on clean Common Voice, the others within noise). It
+       answers sooner (FLEURS median end offset 4.0 s against 4.3, `giga-heldout` 2.6 against
+       3.5) and runs less long (length ratio 1.10 against 1.19 on FLEURS). GigaSpeech 2 is 81%
+       of its rows: short clips (median 4.2 s), fast speech (English 1.56 times the Vietnamese's
+       length), a short delay (0.9 s).
+     - Rows left silent come with `en_speech`: run 2 leaves 10 and 11 of the 180 Common Voice
+       rows empty in that call, round 3 (no `en_speech`) none, round 4 (11% `en_speech`) 4 and 2.
+     - Running (started 2026-11-10 by the user's rule: redo round 4 if its test sets were not
+       good): `full_epoch4c`, round 4 again from round 3's final model on the same streams
+       (`--seed 46`) in round 3's 4,608-frame batches: 106,691 steps against 57,368, the one
+       thing the review found that round 4 changed beside its data. It validates at round 4's
+       shares of the epoch (steps 28,000, 56,000, 84,000 and the last), on the same rows, seed
+       and batch, so each validation reads against round 4's. Not known: whether more updates
+       move FLEURS or the TTS sets, which no optimizer setting was shown to drive.
 7. The final SFT: both directions on `en_speech` and the tranche.
 8. GRPO, last, on the final SFT model and both directions
    ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).

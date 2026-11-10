@@ -31,10 +31,16 @@ and the local `en_audio` (voice is done on this box; `envs-min.sh` rebuilds them
 `full_epoch4b`, 6,737 h of source (540,689 streams, 4.44M rows), 57,368 steps at 0.41 s,
 `--batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1`, LR 3e-6, seed 46. Its final
 model is its best (`runs/full_epoch4b/best_step057368.safetensors`), on the Hub with its pair and
-logs; results in the [plan](../vi_en_parity_plan.md#order). Its test sets are not scored: the
-three-way call against rounds 2 and 3 is `/workspace/test_evals.sh` (~20 min a model; the user
-stopped it once). `runs/full_epoch4` (70 GB, stale, not on the Hub) is the user's to delete; the
-disk has 58 GB free, under GRPO's 130 GiB preflight (93 with `--keep-checkpoints 1`).
+logs; results in the [plan](../vi_en_parity_plan.md#order), with its test sets against rounds 2
+and 3 (`/workspace/test_evals.sh`, 11 min a model; outputs in each run's `eval/cmp_step*/`,
+local only).
+
+**SFT round 4c: RUNNING (started 2026-11-10, `restart.sh sft`)**: `full_epoch4c`, round 4b's
+arguments with `--batch-frames 4608 --val-every 28000`: 106,691 steps, ~7.5 h at the profiled
+16,600 frames/s. The user's rule (2026-11-10): redo round 4 if its test sets were not good.
+Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`) and wait for
+its final sync. Disk: 128 GB free at its start (the stale `runs/full_epoch4` was deleted), its
+preflight needs 93 GiB with one kept pair; `runs/full_epoch4b` (36 GB) stays.
 
 **GRPO: PROFILED, NOT STARTED.** Alone on the GPU, `--gen-batch 512 --micro-batch 4` (in
 `grpo_launch.sh`): ~24 s an update, 800 updates ~5.3 h ([grpo](grpo.md#running)). It runs from
