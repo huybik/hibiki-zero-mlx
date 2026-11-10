@@ -35,7 +35,7 @@ from training.paths import cpu_budget, read_json, require_file
 from training.prep import cache_rows
 from training.prep.audio import Rejected
 from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Row, Settings, Shard
-from training.prep.text_timing import Aligner, AlignmentError, aligner_files
+from training.prep.text_timing import Aligner, AlignmentError, aligner_files, vocab_columns
 
 if sys.platform == "darwin":  # before the builders' readers import pyarrow, whose mimalloc pool keeps freed buffers on macOS
     os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
@@ -99,6 +99,7 @@ class MLXModels:
         mx.set_cache_limit(MLX_CACHE_BYTES)
         self.mimi = MimiEncoder(mimi_weight, num_codebooks)
         self.ctc = Wav2Vec2CTC(files / "model.safetensors", half=half_ctc)
+        self.columns = mx.array(vocab_columns(aligner, files))
         self.cardinality = self.mimi.cardinality
 
     def encode(
@@ -108,7 +109,7 @@ class MLXModels:
         return lazy Mimi codes so the caller can overlap planning the next window with Mimi."""
         import mlx.core as mx
 
-        log_probs = [self.ctc.log_probs(row.target16) for row in rows]
+        log_probs = [mx.take(self.ctc.log_probs(row.target16), self.columns, axis=1) for row in rows]
         codes = [(self.mimi.encode(row.source24), self.mimi.encode(row.target24)) for row in rows]
         mx.async_eval(log_probs)
         mx.async_eval(codes)
@@ -180,6 +181,7 @@ class CUDAModels:
         # and takes no attention mask; a large one (omniASR) normalizes each frame and takes one.
         self._group_norm = self.ctc.config.feat_extract_norm == "group"
         self._half_ctc = half_ctc
+        self._columns = torch.tensor(vocab_columns(aligner, files), device=DEVICE)
 
     def encode(
         self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
@@ -272,11 +274,11 @@ class CUDAModels:
 
     def ctc_log_probs(self, clips: list[np.ndarray],
                       landed: Callable[[int, np.ndarray], None] | None = None) -> list[np.ndarray]:
-        """Each normalized 16 kHz clip's CTC log-probabilities [frames, vocab], as computed alone:
-        the padding is masked out of the positional convolution's input and the attention keys,
-        and, for a base model, out of the statistics of its first convolution's GroupNorm, which
-        normalizes over the whole input (as wav2vec2_mlx does). `landed(i, log_probs)` hears of
-        each clip as its batch reaches the host."""
+        """Each normalized 16 kHz clip's CTC log-probabilities [frames, `vocab_columns`], as
+        computed alone: the padding is masked out of the positional convolution's input and the
+        attention keys, and, for a base model, out of the statistics of its first convolution's
+        GroupNorm, which normalizes over the whole input (as wav2vec2_mlx does). `landed(i,
+        log_probs)` hears of each clip as its batch reaches the host."""
         import torch
 
         w2v = self.ctc.wav2vec2
@@ -311,7 +313,7 @@ class CUDAModels:
                     hs = hs.float()
                 else:
                     hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
-                log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1)
+                log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1)[..., self._columns]
             return (*self._to_host(log_probs), frames.tolist())
 
         def collect(group: list[int], handle: tuple[Any, Any, list[int]]) -> None:
@@ -345,10 +347,9 @@ class Builder:
         self.tokenizer_path = require_file(tokenizer, "text tokenizer")
         self.tokenizer = sentencepiece.SentencePieceProcessor(str(self.tokenizer_path))
         self.eos_id = int(self.tokenizer.eos_id())
-        self.files = aligner_files(settings.aligner)  # resolved here, so the workers never reach the Hub
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
         self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, settings.aligner,
-                                     self.files, half_ctc=half_ctc)
+                                     aligner_files(settings.aligner), half_ctc=half_ctc)
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 
@@ -366,7 +367,7 @@ class Builder:
             ThreadPoolExecutor(1) as reads,
             pcm_dir() as pcm,
             ProcessPoolExecutor(workers, mp_context=get_context("spawn"), initializer=cache_rows.init_worker,
-                                initargs=(self.files, self.settings, self.tokenizer_path, pcm)) as pool,
+                                initargs=(self.settings, self.tokenizer_path, pcm)) as pool,
         ):
             try:
                 yield from self._stream(self._read_ahead(keys, read, reads), pool)

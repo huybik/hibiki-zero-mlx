@@ -51,6 +51,15 @@ def _spoken_vietnamese(text: str) -> str:
     return " ".join("".join(char if char.isalpha() else " " for char in text).split())
 
 
+# Vietnamese letters, NFC: the twelve vowels in each of the six tones, the consonants and the four
+# letters of loanwords (f, j, w, z).
+_VIETNAMESE = "bcdđfghjklmnpqrstvwxz" + "".join(
+    unicodedata.normalize("NFC", vowel + tone)
+    for vowel in "aăâeêioôơuưy"
+    for tone in ("", "\u0300", "\u0301", "\u0309", "\u0303", "\u0323")
+)
+
+
 @dataclass(frozen=True)
 class Aligner:
     """The CTC model that word-times one language's text; every machine times with `revision`."""
@@ -61,6 +70,9 @@ class Aligner:
     blank: str  # the vocabulary's CTC blank
     delimiter: str  # its token between words
     spoken: Callable[[str], str]  # a word group in the model's alphabet
+    # The letters `spoken` may write: the Viterbi reads only their columns, the blank's and the
+    # delimiter's (`vocab_columns`), and a row with any other letter is rejected.
+    alphabet: str
     # The lowest mean posterior of the aligned characters a row may have. The scores are each
     # model's own: omniASR spreads its mass over 10,288 characters of every script.
     min_score: float
@@ -68,11 +80,27 @@ class Aligner:
 
 ALIGNERS = {  # by the language of the text
     "en": Aligner("wav2vec2_ctc_word_v1", "facebook/wav2vec2-base-960h",
-                  "22aad52d435eb6dbaf354bdad9b0da84ce7d6156", "<pad>", "|", _spoken_english, 0.5),
+                  "22aad52d435eb6dbaf354bdad9b0da84ce7d6156", "<pad>", "|", _spoken_english,
+                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5),
     # A stock-transformers conversion of Meta's omniASR-CTC-300M-v2 (Apache-2.0).
     "vi": Aligner("omniasr_ctc_word_v1", "aadel4/omniASR-CTC-300M-v2",
-                  "f2b3c39a62c061c27623c3f2d803294fbb954324", "<s>", " ", _spoken_vietnamese, 0.5),
+                  "f2b3c39a62c061c27623c3f2d803294fbb954324", "<s>", " ", _spoken_vietnamese,
+                  _VIETNAMESE, 0.5),
 }
+
+
+def vocab_columns(aligner: Aligner, files: Path) -> list[int]:
+    """The vocabulary ids of the blank, the delimiter and the alphabet, in that order: the columns
+    of the log-probabilities a device hands to `CTCWordAligner`. omniASR's other 10,193 would
+    make each clip's matrix 100 times larger on its way to the alignment workers."""
+    import json
+
+    vocab = json.loads((files / "vocab.json").read_text())
+    tokens = [aligner.blank, aligner.delimiter, *aligner.alphabet]
+    missing = [token for token in tokens if token not in vocab]
+    if missing:
+        raise ValueError(f"{aligner.repo} has no vocabulary entry for {missing}")
+    return [int(vocab[token]) for token in tokens]
 
 
 def sentencepiece_groups(
@@ -167,19 +195,17 @@ def _ctc_token_frames(
 
 
 class CTCWordAligner:
-    """An aligner's CTC word timing on the CPU: the Viterbi over a clip's log-probabilities,
-    whichever device computed them (`cache_build`: MLX or CUDA)."""
+    """An aligner's CTC word timing on the CPU: the Viterbi over a clip's log-probabilities in
+    `vocab_columns` order, whichever device computed them (`cache_build`: MLX or CUDA)."""
 
-    def __init__(self, aligner: Aligner, files: Path, min_score: float):
-        """`files`: the pinned snapshot, from `aligner_files`."""
-        import json
+    blank_id = 0  # the columns' order
+    delimiter_id = 1
 
+    def __init__(self, aligner: Aligner, min_score: float):
         if not 0 <= min_score <= 1:
             raise ValueError("Minimum CTC alignment score must be in [0, 1]")
         self.min_score = min_score
-        self.vocab = json.loads((files / "vocab.json").read_text())
-        self.blank_id = int(self.vocab[aligner.blank])
-        self.delimiter_id = int(self.vocab[aligner.delimiter])
+        self.letters = {letter: column for column, letter in enumerate(aligner.alphabet, start=2)}
 
     def _targets(
         self, groups: list[tuple[list[int], str]]
@@ -193,10 +219,10 @@ class CTCWordAligner:
             for char in spoken:
                 if char == " ":
                     target_ids.append(self.delimiter_id)
-                elif char not in self.vocab:
+                elif char not in self.letters:
                     raise AlignmentError(f"CTC transcript contains unsupported character: {char!r}")
                 else:
-                    target_ids.append(int(self.vocab[char]))
+                    target_ids.append(self.letters[char])
             ranges.append((start, len(target_ids)))
         return target_ids, ranges
 

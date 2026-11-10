@@ -186,14 +186,14 @@ _settings: Settings | None = None
 _pcm_dir: Path | None = None
 
 
-def init_worker(files: Path, settings: Settings, tokenizer: Path, pcm_dir: Path | None) -> None:
+def init_worker(settings: Settings, tokenizer: Path, pcm_dir: Path | None) -> None:
     """Worker initializer: the process's aligner (the build's target language's), the text
     tokenizer, the build's settings and where to leave the clips (`pcm_dir`; None returns them in
-    the reply). `files`: the aligner snapshot, which the parent resolved."""
+    the reply)."""
     import sentencepiece
 
     global _aligner, _tokenizer, _settings, _pcm_dir
-    _aligner = CTCWordAligner(settings.aligner, files, settings.min_score)
+    _aligner = CTCWordAligner(settings.aligner, settings.min_score)
     _tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer))
     _settings, _pcm_dir = settings, pcm_dir
 
