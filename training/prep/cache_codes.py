@@ -4,10 +4,13 @@
 Each source shard `data/<split>/<name>.parquet` becomes `<out-dir>/<split>/shard_<name>.pt`.
 A row is
 [33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
-fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. Rows whose clips
-exceed --max-frames, or whose English text fails CTC alignment, are rejected and listed with their
-reason. The build itself (decode, gates, wav2vec2 CTC and Mimi on --device, the Viterbi) is
-`cache_build`'s, shared with the tranche's builder.
+fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. With
+--direction en-vi the languages trade places: Vietnamese text and target, English source, for
+two-way training; that build takes the tokenizer of the Vietnamese swap (--tokenizer) and its own
+--out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
+rejected and listed with their reason. The build itself (decode, gates, the target language's
+CTC aligner and Mimi on --device, the Viterbi) is `cache_build`'s, shared with the tranche's
+builder.
 
 Source shards go top down in path order, or bottom up with --bottom-up on a second machine;
 `publish_caches --follow` beside each run commits the shards to the cache repo and brings in those
@@ -31,7 +34,7 @@ from training.paths import (
     require_dir,
 )
 from training.prep.cache_build import MODELS, Builder, default_workers, summary
-from training.prep.cache_rows import Settings, Shard, mimi_hours, write
+from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 
 DATASET_DIR = Path("/Volumes/data/datasets/en_vi_speech")
 COLUMNS = [
@@ -64,6 +67,8 @@ def parse_args() -> argparse.Namespace:
         help="Build the source shards in reverse path order, as the second machine does.",
     )
     parser.add_argument("--device", choices=list(MODELS), default="mlx")
+    parser.add_argument("--direction", choices=DIRECTIONS, default=DEFAULT_DIRECTION,
+                        help="<source>-<target>: the language heard, then the one spoken and written.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
@@ -72,14 +77,13 @@ def parse_args() -> argparse.Namespace:
         "--target-delay-ratio",
         type=float,
         default=0.5,
-        help="Maximum target delay as a ratio of Vietnamese source duration, within the frame cap.",
+        help="Maximum target delay as a ratio of the source clip's duration, within the frame cap.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Seed for deterministic delays.")
     parser.add_argument(
         "--min-alignment-score",
         type=float,
-        default=0.5,
-        help="Reject rows below this mean forced-alignment posterior.",
+        help="Reject rows below this mean forced-alignment posterior (default: the target aligner's).",
     )
     parser.add_argument(
         "--workers", type=int, help="Decode and alignment processes (default: the device's)."
@@ -90,7 +94,7 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-frames must be positive")
     if not (math.isfinite(args.target_delay_ratio) and args.target_delay_ratio >= 0):
         parser.error("--target-delay-ratio must be finite and non-negative")
-    if not 0 <= args.min_alignment_score <= 1:
+    if args.min_alignment_score is not None and not 0 <= args.min_alignment_score <= 1:
         parser.error("--min-alignment-score must be in [0, 1]")
     return args
 
@@ -107,14 +111,12 @@ def read(source: Path) -> Shard:
             {
                 "id": row["id"],
                 "text_en": row["text_en"],
+                "text_vi": row["text_vi"],
                 "vi_duration_s": row["vi_duration_s"],
                 "en_duration_s": row["en_duration_s"],
                 "vi_audio": row["vi_audio"]["bytes"],
                 "en_audio": row["en_audio"]["bytes"],
-                "fields": {
-                    "text_vi": row["text_vi"],
-                    "cross_lingual_timbre_matched": row["cross_lingual_timbre_matched"],
-                },
+                "fields": {"cross_lingual_timbre_matched": row["cross_lingual_timbre_matched"]},
             },
         )
         for index, row in enumerate(rows)
@@ -152,7 +154,7 @@ def main() -> None:
     args = parse_args()
     sources = source_shards(args.dataset_dir, args.shards)
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    settings = Settings(args.max_frames, args.min_alignment_score, args.target_delay_ratio, args.seed)
+    settings = Settings(args.max_frames, args.min_alignment_score, args.direction, args.target_delay_ratio, args.seed)
     with exclusive(args.out_dir / ".cache_codes.lock", f"another cache_codes run is using {args.out_dir}"):
         builder = Builder(args.device, settings, args.config_path, args.mimi_weight, args.tokenizer)
         began, hours = time.perf_counter(), 0.0

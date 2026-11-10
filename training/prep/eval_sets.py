@@ -5,12 +5,16 @@ Writes, under --out-dir (default data/eval):
 
   fleurs-vi/{dev,test}.jsonl       FLEURS vi_vn read speech (16 kHz) with the English FLoRes text
                                    of the same sentence id; dev selects checkpoints, test reports.
+  fleurs-en/{dev,test}.jsonl       the other way, for English to Vietnamese: FLEURS en_us speech
+                                   with the Vietnamese text of the same sentence id.
   multimed-vi/{select,final}.jsonl MultiMed-ST Vietnamese `corrected.test` (8 kHz conversational
                                    medical speech, human-corrected English), split in two seeded
                                    halves: select gates checkpoints, final reports.
   en-vi-val/{cv27,libriheavy}.jsonl  seeded samples of the EN-VI dataset's validation split (Common
                                    Voice dev and Libriheavy dev, Vietnamese TTS in the English
                                    speaker's voice): the training data's own domain, held out.
+  en-vi-val-en/{cv27,libriheavy}.jsonl  the same rows heard in English (the real recordings, decoded
+                                   as the cache builder decodes them), for English to Vietnamese.
   en-vi-val-noisy/{cv27,libriheavy}.jsonl  the same rows with every clip under `augment`'s
                                    simulated recording conditions (24 kHz WAV, resampled as eval.py
                                    resamples the clean clips), against which the clean set shows
@@ -23,7 +27,8 @@ Writes, under --out-dir (default data/eval):
                                    access, and its audio never goes to a public repo (GigaSpeech
                                    2's terms).
 
-Each row holds `id`, `vi_audio` (the clip's path), `text_vi`, `text_en` and `duration_s`. These sets
+Each row holds `id`, `vi_audio` (the clip's path; `en_audio` in the sets heard in English, which
+`eval.py` translates the other way), `text_vi`, `text_en` and `duration_s`. These sets
 are for evaluation only and never enter training. Needs huggingface_hub, pyarrow, sphn, soxr and
 torch (giga-heldout also PyAV and num2words); runs on the Mac or the pod.
 """
@@ -50,6 +55,7 @@ from training.prep import augment
 FLEURS_REPO = "google/fleurs"
 FLEURS_REVISION = "70bb2e84b976b7e960aa89f1c648e09c59f894dd"
 FLEURS_RATE = 16_000
+FLEURS_LOCALES = {"vi": "vi_vn", "en": "en_us"}
 MULTIMED_REPO = "leduckhai/MultiMed-ST"
 MULTIMED_REVISION = "d8c3b300b0f2e2ec8fa2113df3bdbc25f5e64668"
 MULTIMED_FILE = "vietnamese/corrected.test-00000-of-00001.parquet"
@@ -75,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sets",
         nargs="+",
-        choices=("fleurs", "multimed", "en-vi-val", "en-vi-val-noisy", "giga-heldout"),
+        choices=("fleurs", "fleurs-en", "multimed", "en-vi-val", "en-vi-val-en", "en-vi-val-noisy", "giga-heldout"),
         default=["fleurs", "multimed", "en-vi-val"],
     )
     parser.add_argument(
@@ -109,16 +115,20 @@ def fleurs_tsv(path: Path) -> list[dict[str, str]]:
         return [dict(zip(columns, line, strict=True)) for line in reader]
 
 
-def build_fleurs(out_dir: Path) -> None:
-    english: dict[str, str] = {}
+def build_fleurs(out_dir: Path, heard: str) -> None:
+    """fleurs-<heard>: the dev and test speech of one language, each clip with the other
+    language's text of its sentence."""
+    other = "en" if heard == "vi" else "vi"
+    locale, other_locale, name = FLEURS_LOCALES[heard], FLEURS_LOCALES[other], f"fleurs-{heard}"
+    reference: dict[str, str] = {}
     for split in ("train", "dev", "test"):
-        for row in fleurs_tsv(download(FLEURS_REPO, FLEURS_REVISION, f"data/en_us/{split}.tsv")):
-            if english.setdefault(row["sentence_id"], row["raw"]) != row["raw"]:
-                raise RuntimeError(f"FLEURS en_us sentence {row['sentence_id']} has two texts")
+        for row in fleurs_tsv(download(FLEURS_REPO, FLEURS_REVISION, f"data/{other_locale}/{split}.tsv")):
+            if reference.setdefault(row["sentence_id"], row["raw"]) != row["raw"]:
+                raise RuntimeError(f"FLEURS {other_locale} sentence {row['sentence_id']} has two texts")
     for split in ("dev", "test"):
-        audio_dir = out_dir / "fleurs-vi" / "audio" / split
+        audio_dir = out_dir / name / "audio" / split
         audio_dir.mkdir(parents=True, exist_ok=True)
-        archive = download(FLEURS_REPO, FLEURS_REVISION, f"data/vi_vn/audio/{split}.tar.gz")
+        archive = download(FLEURS_REPO, FLEURS_REVISION, f"data/{locale}/audio/{split}.tar.gz")
         with tarfile.open(archive) as tar:
             for member in tar:
                 if member.isfile() and member.name.endswith(".wav"):
@@ -128,26 +138,26 @@ def build_fleurs(out_dir: Path) -> None:
                         raise RuntimeError(f"Cannot read {member.name} in {archive}")
                     target.write_bytes(source.read())
         rows, missing = [], 0
-        for row in fleurs_tsv(download(FLEURS_REPO, FLEURS_REVISION, f"data/vi_vn/{split}.tsv")):
-            if row["sentence_id"] not in english:
+        for row in fleurs_tsv(download(FLEURS_REPO, FLEURS_REVISION, f"data/{locale}/{split}.tsv")):
+            if row["sentence_id"] not in reference:
                 missing += 1
                 continue
             wav = audio_dir / row["file_name"]
             if not wav.is_file():
-                raise RuntimeError(f"FLEURS vi_vn {split} lacks the audio {row['file_name']}")
+                raise RuntimeError(f"FLEURS {locale} {split} lacks the audio {row['file_name']}")
             rows.append(
                 {
-                    "id": f"fleurs-vi/{split}/{Path(row['file_name']).stem}",
-                    "vi_audio": repo_display_path(wav),
-                    "text_vi": row["raw"],
-                    "text_en": english[row["sentence_id"]],
+                    "id": f"{name}/{split}/{Path(row['file_name']).stem}",
+                    f"{heard}_audio": repo_display_path(wav),
+                    f"text_{heard}": row["raw"],
+                    f"text_{other}": reference[row["sentence_id"]],
                     "duration_s": int(row["samples"]) / FLEURS_RATE,
                     "sentence_id": row["sentence_id"],
                 }
             )
         if missing:
-            print(f"fleurs-vi/{split}: {missing} rows have no English sentence, skipped")
-        write_rows(out_dir / "fleurs-vi" / f"{split}.jsonl", rows)
+            print(f"{name}/{split}: {missing} rows have no {other_locale} sentence, skipped")
+        write_rows(out_dir / name / f"{split}.jsonl", rows)
 
 
 def build_multimed(out_dir: Path) -> None:
@@ -214,12 +224,15 @@ def decode_opus(data: bytes, duration_s: float, name: str) -> Any:
     return wav[:, :samples]
 
 
-def build_en_vi_val(out_dir: Path) -> None:
+def build_en_vi_val(out_dir: Path, heard: str) -> None:
+    """The seeded validation rows with the clip of one language: en-vi-val holds the Vietnamese
+    TTS, en-vi-val-en the same rows' English recordings."""
+    name = "en-vi-val" if heard == "vi" else f"en-vi-val-{heard}"
     for source, shards in EN_VI_SOURCES.items():
         tables = [
             pq.read_table(
                 download(EN_VI_REPO, EN_VI_REVISION, f"data/validation/{shard}.parquet"),
-                columns=["id", "speaker", "text_vi", "text_en", "vi_audio", "vi_duration_s"],
+                columns=["id", "speaker", "text_vi", "text_en", f"{heard}_audio", f"{heard}_duration_s"],
             )
             for shard in shards
         ]
@@ -227,26 +240,34 @@ def build_en_vi_val(out_dir: Path) -> None:
             (shard, index) for shard, table in zip(shards, tables) for index in range(len(table))
         ]
         random.Random(EN_VI_SEED).shuffle(locations)
-        audio_dir = out_dir / "en-vi-val" / "audio" / source
+        audio_dir = out_dir / name / "audio" / source
         audio_dir.mkdir(parents=True, exist_ok=True)
         rows = []
         for shard, index in sorted(locations[:EN_VI_ROWS]):
             row = tables[shards.index(shard)].slice(index, 1).to_pylist()[0]
             wav = audio_dir / f"{row['id'].replace('/', '_')}.wav"
-            audio = decode_opus(row["vi_audio"]["bytes"], row["vi_duration_s"], row["id"])
-            sphn.write_wav(wav, audio, OPUS_RATE)
+            data, duration = row[f"{heard}_audio"]["bytes"], row[f"{heard}_duration_s"]
+            if heard == "vi":
+                sphn.write_wav(wav, decode_opus(data, duration, row["id"]), OPUS_RATE)
+            else:  # Common Voice's MP3 and Libriheavy's Opus, as the cache builder decodes them
+                from training.prep.audio import decode
+
+                audio, rate = decode(data)
+                if abs(len(audio) / rate - duration) > 0.02:
+                    raise RuntimeError(f"{row['id']}: decoded {len(audio) / rate:.3f} s, stored {duration:.3f} s")
+                sphn.write_wav(wav, audio, rate)
             rows.append(
                 {
-                    "id": f"en-vi-val/{row['id']}",
-                    "vi_audio": repo_display_path(wav),
+                    "id": f"{name}/{row['id']}",
+                    f"{heard}_audio": repo_display_path(wav),
                     "text_vi": row["text_vi"],
                     "text_en": row["text_en"],
-                    "duration_s": round(row["vi_duration_s"], 2),
+                    "duration_s": round(duration, 2),
                     "speaker": row["speaker"],
                     "source_row": f"data/validation/{shard}.parquet#r{index}",
                 }
             )
-        write_rows(out_dir / "en-vi-val" / f"{source}.jsonl", rows)
+        write_rows(out_dir / name / f"{source}.jsonl", rows)
 
 
 def build_en_vi_val_noisy(out_dir: Path, bank_dir: Path) -> None:
@@ -343,11 +364,15 @@ def main() -> None:
     args = parse_args()
     out_dir = resolve_repo_path(args.out_dir)
     if "fleurs" in args.sets:
-        build_fleurs(out_dir)
+        build_fleurs(out_dir, "vi")
+    if "fleurs-en" in args.sets:
+        build_fleurs(out_dir, "en")
     if "multimed" in args.sets:
         build_multimed(out_dir)
     if "en-vi-val" in args.sets:
-        build_en_vi_val(out_dir)
+        build_en_vi_val(out_dir, "vi")
+    if "en-vi-val-en" in args.sets:
+        build_en_vi_val(out_dir, "en")
     if "en-vi-val-noisy" in args.sets:
         build_en_vi_val_noisy(out_dir, resolve_repo_path(args.bank_dir))
     if "giga-heldout" in args.sets:

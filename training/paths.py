@@ -18,6 +18,9 @@ DEFAULT_TOKENIZER = REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 # Written by training.prep.cache_codes (Mac) and required by streams.load_rows (H100); kept here
 # so the trainer never imports the builder's Mac-only packages.
 CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
+# A cache shard's direction, <source>-<target>, when the shard records none: the caches built
+# before two-way training are all Vietnamese to English.
+DEFAULT_DIRECTION = "vi-en"
 
 
 def resolve_repo_path(path: str | Path) -> Path:

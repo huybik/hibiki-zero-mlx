@@ -35,9 +35,9 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="+",
         required=True,
-        help="Pairs files (.jsonl or .csv) with source audio, reference text, id and duration_s "
-        "columns; each "
-        "is scored as its own set.",
+        help="Pairs files (.jsonl or .csv) with id and duration_s columns and vi_audio and text_en "
+        "(Vietnamese to English) or en_audio and text_vi (English to Vietnamese); each is scored as "
+        "its own set.",
     )
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
@@ -83,8 +83,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--metrics-json", type=Path, help="Metrics JSON path; default <out-dir>/metrics.json.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tag", default="sft")
-    parser.add_argument("--source-column", default=defaults.source_column)
-    parser.add_argument("--reference-column", default=defaults.reference_column)
     parser.add_argument("--id-column", default=defaults.id_column)
     return parser.parse_args()
 
@@ -104,9 +102,7 @@ def main() -> None:
     sets = common.read_eval_sets(args.pairs)
     rows = [row for set_rows in sets.values() for row in set_rows]
     # Every row, before selection: --ids must not pick one of two rows that share an id.
-    common.validate_eval_rows(
-        rows, args.source_column, args.reference_column, args.id_column, duration_column="duration_s"
-    )
+    common.validate_eval_rows(rows, args.id_column, duration_column="duration_s")
     if ids:
         rows = common.select_eval_rows(rows, ids, args.id_column)
     else:

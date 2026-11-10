@@ -10,6 +10,10 @@ shares (`training.prep.cache_build`, [cache-build](../../docs/agent-memory/cache
                       sample with its `doc` and `seq` so the trainer joins a document's rows in
                       order. Pushes each source's folder every 30 min and at its end; a rerun skips
                       the shards written or pushed, and first pushes any written but not yet pushed.
+                      With --direction en-vi the languages trade places for two-way training (the
+                      corpus transcript timed by the Vietnamese aligner, the real clip the target,
+                      the English TTS the source; --tokenizer: the Vietnamese swap's), into
+                      <root>/cache/en-vi/<source>/ and the cache repo's en-vi/<source>/.
 
 A row is dropped, with the first reason that applies (the shard's `rejected`), when
   - Qwen3-ASR heard its clip as another language than Vietnamese, or none;
@@ -41,7 +45,7 @@ from typing import Any
 
 from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DEFAULT_TOKENIZER, exclusive
 from training.prep.cache_build import MODELS, Builder, default_workers, summary
-from training.prep.cache_rows import Settings, Shard, mimi_hours, write
+from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
 from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, part_file, push_part
 
@@ -72,6 +76,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-cer", type=float, default=MAX_CER)
     p.add_argument("--max-frames", type=int, default=280, help="The trainer's frame cap.")
     p.add_argument("--device", choices=list(MODELS), default="cuda")
+    p.add_argument("--direction", choices=DIRECTIONS, default=DEFAULT_DIRECTION,
+                   help="<source>-<target>: the language heard, then the one spoken and written")
     p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX) or bfloat16 (CUDA): +~16%% CTC speed (MLX fixed code, unvalidated; CUDA failed quality check)")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -136,16 +142,21 @@ def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str]) -> Shard
             rejected.append({"id": row["id"], "reason": reason})
             continue
         kept.append((index, {
-            "id": row["id"], "text_en": row["text_en"],
+            "id": row["id"], "text_en": row["text_en"], "text_vi": row["text"],
             "vi_duration_s": row["duration_s"], "en_duration_s": row["en_duration_s"],
             "vi_audio": row["audio"]["bytes"], "en_audio": row["en_audio"]["bytes"],
-            "fields": {"text_vi": row["text"], "doc": row["doc"], "seq": int(row["seq"])},
+            "fields": {"doc": row["doc"], "seq": int(row["seq"])},
         }))
     return Shard(key, f"{source}/segments/{name}", SPLIT, len(rows), kept, rejected)
 
 
-def cache_dir(root: Path, source: str) -> Path:
-    return root / "cache" / source
+def cache_key(direction: str, source: str) -> str:
+    """A source's folder under <root>/cache and in the cache repo: its name, under en-vi/ for that direction."""
+    return source if direction == DEFAULT_DIRECTION else f"{direction}/{source}"
+
+
+def cache_dir(root: Path, key: str) -> Path:
+    return root / "cache" / key
 
 
 def shard_file(name: str) -> str:
@@ -162,8 +173,9 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
     for source in args.sources:
         parts = {part: {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/{part}/")}
                  for part in PARTS}
-        pushed = {f.rsplit("/", 1)[1] for f in cached if f.startswith(f"{source}/")}
-        local = {p.name for p in cache_dir(args.root, source).glob("shard_*.pt")}
+        key = cache_key(args.direction, source)
+        pushed = {f.rsplit("/", 1)[1] for f in cached if f.startswith(f"{key}/")}
+        local = {p.name for p in cache_dir(args.root, key).glob("shard_*.pt")}
         heldout = SOURCES[source].heldout
         ready = set.intersection(*parts.values()) - heldout
         waiting = len(parts["segments"] - heldout - ready)
@@ -171,7 +183,7 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
         log(f"{source}: {len(parts['segments'])} shards ({len(heldout)} held out), {len(pushed)} cached on the "
             f"Hub, {len(local - pushed)} only here, {waiting} waiting for an input")
         if local - pushed:
-            push_part(args.root, source, "cache")
+            push_part(args.root, key, "cache")
     return todo[: args.limit]
 
 
@@ -190,8 +202,8 @@ def build(args: argparse.Namespace) -> None:
 
 def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
     grams = eval_grams()
-    builder = Builder(args.device, Settings(args.max_frames), args.config_path, args.mimi_weight, args.tokenizer,
-                      half_ctc=args.half_ctc)
+    builder = Builder(args.device, Settings(args.max_frames, direction=args.direction), args.config_path,
+                      args.mimi_weight, args.tokenizer, half_ctc=args.half_ctc)
     pushed = {s: time.monotonic() for s in args.sources}
     workers = args.workers or default_workers(args.device)
 
@@ -206,14 +218,15 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
             payload = builder.payload(shard, {"file": shard.file, "rows": shard.size}, max_cer=args.max_cer)
             if written is not None:
                 written.result()
-            written = writes.submit(write, payload, cache_dir(args.root, source) / shard_file(name))
+            key = cache_key(args.direction, source)
+            written = writes.submit(write, payload, cache_dir(args.root, key) / shard_file(name))
             hours += mimi_hours(shard.samples)
             now = time.monotonic()
             log(f"{source}/{name}: {summary(shard, hours, now - began)} [{k + 1}/{len(todo)}]")
             last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
             if last_of_source or now - pushed[source] > PUSH_S:
                 written.result()
-                push_part(args.root, source, "cache")
+                push_part(args.root, key, "cache")
                 pushed[source] = time.monotonic()
         wall = time.monotonic() - began
         log(f"done: {len(todo)} shards, {hours:.1f} h of Mimi audio in {wall / 3600:.2f} h "

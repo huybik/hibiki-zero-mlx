@@ -353,6 +353,11 @@ def evaluate_teacher_forced(
 # Eval row IO + selection
 # --------------------------------------------------------------------------- #
 EVAL_SET = "eval_set"  # the column read_eval_sets adds: the set a row belongs to
+# The columns it adds for a row's direction: the clip heard and the text its translation is
+# scored against. A pairs file holds the audio of one language (the key) and is translated into
+# the other's text.
+SOURCE, REFERENCE = "source_audio", "reference_text"
+EVAL_DIRECTIONS = {"vi_audio": "text_en", "en_audio": "text_vi"}
 
 
 def read_eval_rows(path: Path) -> list[dict[str, str]]:
@@ -376,8 +381,9 @@ def read_eval_rows(path: Path) -> list[dict[str, str]]:
 
 
 def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
-    """Each pairs file's rows by set name, in the order given, each row tagged under EVAL_SET. A
-    set is named by its file's folder and stem, such as fleurs-vi/dev, and must have rows."""
+    """Each pairs file's rows by set name, in the order given, each row tagged under EVAL_SET and
+    holding its clip and reference under SOURCE and REFERENCE. A set is named by its file's folder
+    and stem, such as fleurs-vi/dev, and must have rows."""
     sets: dict[str, list[dict[str, str]]] = {}
     for path in paths:
         path = require_file(path, "eval rows")
@@ -387,10 +393,16 @@ def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
         rows = read_eval_rows(path)
         if not rows:
             raise ValueError(f"No rows in {path}")
-        for row in rows:
-            if EVAL_SET in row:
-                raise ValueError(f"{path} has a column {EVAL_SET!r} of its own")
+        audio = [column for column in EVAL_DIRECTIONS if column in rows[0]]
+        if len(audio) != 1:
+            raise ValueError(f"{path} must hold one of the columns {', '.join(EVAL_DIRECTIONS)}, has {audio}")
+        for index, row in enumerate(rows):
+            if taken := {EVAL_SET, SOURCE, REFERENCE} & set(row):
+                raise ValueError(f"{path} has columns {sorted(taken)} of its own")
+            if missing := {audio[0], EVAL_DIRECTIONS[audio[0]]} - set(row):
+                raise ValueError(f"{path} row {index} is missing columns: {', '.join(sorted(missing))}")
             row[EVAL_SET] = name
+            row[SOURCE], row[REFERENCE] = row[audio[0]], row[EVAL_DIRECTIONS[audio[0]]]
         sets[name] = rows
     return sets
 
@@ -402,24 +414,21 @@ def load_eval_rows(paths: list[Path]) -> tuple[list[str], list[dict[str, str]]]:
     cfg = TRAINER_GENERATION
     sets = read_eval_sets(paths)
     rows = [row for set_rows in sets.values() for row in set_rows]
-    validate_eval_rows(
-        rows, cfg.source_column, cfg.reference_column, cfg.id_column, duration_column="duration_s"
-    )
+    validate_eval_rows(rows, cfg.id_column, duration_column="duration_s")
     for row in rows:
-        require_file(row[cfg.source_column], "evaluation audio")
+        require_file(row[SOURCE], "evaluation audio")
     return list(sets), rows
 
 
 def validate_eval_rows(
     rows: list[dict[str, str]],
-    source_column: str,
-    reference_column: str,
     id_column: str,
     duration_column: str | None = None,
 ) -> None:
+    """Rows of `read_eval_sets`: ids present and unique, and positive durations."""
     if not rows:
         return
-    required = [source_column, reference_column, id_column]
+    required = [id_column]
     if duration_column is not None:
         required.append(duration_column)
     for index, row in enumerate(rows):
@@ -653,8 +662,8 @@ def save_batch_outputs(
             {
                 "id": row[cfg.id_column],
                 EVAL_SET: row[EVAL_SET],
-                "source_audio": row[cfg.source_column],
-                "reference_text": row[cfg.reference_column],
+                SOURCE: row[SOURCE],
+                REFERENCE: row[REFERENCE],
                 "prediction_text": out_text,
                 "eos_found": bool(output["eos_found"]),
                 "generated_text_tokens": int(output["generated_text_tokens"]),
@@ -672,8 +681,6 @@ class GenerationConfig:
     """How free-running evaluation reads its rows, how long it generates and how it samples.
     The defaults are eval.py's, and train.py selects checkpoints with them."""
 
-    source_column: str = "vi_audio"
-    reference_column: str = "text_en"
     id_column: str = "id"
     gen_duration: float = 0.0  # seconds; 0 generates the batch's longest source plus tail_s
     # The translation runs seconds behind the source: the text EOS came up to 14 s after a FLEURS
@@ -706,7 +713,7 @@ def generate_batch(
     out_dir: Path,
 ) -> list[dict[str, str]]:
     """Sampled autoregressive decode of a batch of source clips."""
-    files = [resolve_repo_path(row[cfg.source_column]) for row in rows]
+    files = [resolve_repo_path(row[SOURCE]) for row in rows]
     input_wavs = [audio_read(path, to_sample_rate=mimi.sample_rate, mono=True)[0] for path in files]
     audio_durations = [wav.shape[-1] / mimi.sample_rate for wav in input_wavs]
     gen_duration = cfg.gen_duration if cfg.gen_duration else max(audio_durations) + cfg.tail_s
