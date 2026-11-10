@@ -64,7 +64,12 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   Mimi-only re-encode, about half the cache build).
 - The plan is drawn once with `--seed` (42); streams are length-sorted and grouped into batches
   of at most `--batch-frames` (4,608, as 16 rows of 288 frames before) padded frames, whose
-  order is shuffled once; every epoch replays it, and resume skips the planned batches.
+  order is shuffled once; every epoch replays it, and resume skips the planned batches. Each
+  batch is one update; `--micro-frames` computes it in slices of its streams of up to that many
+  padded frames, each slice's loss weighted by its share of the batch's rows and the gradients
+  added, so round 4's 8,192-frame batches run on an 80 GB card (one needs ~97 GiB at once).
+  Whole 4,096-frame batches accumulated two to an update ran out of memory there: the first's
+  12 GB of fp32 gradients stay while the second's activations build.
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset of each cache's.
 - Multi-row streams run 68 s median (p10 37, p90 104), 6 rows each, with 21% of the Vietnamese
@@ -81,7 +86,10 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
   a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling
-  the shards. `--num-workers` (4) assemble streams in the background.
+  the shards. The trainer reads only packs: `python -m training.finetune.streams --drop-shards
+  DIR...` packs and then deletes the shards (theirs stay on the Hub), and a pack without its shard
+  loads as it is if it is of the current `PACK_VERSION` (a new version needs the shard fetched
+  again); a dropped shard keeps its place in the name order, so the plan does not change. `--num-workers` (4) assemble streams in the background.
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
