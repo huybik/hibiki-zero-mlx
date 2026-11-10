@@ -12,6 +12,7 @@ VI TTS (done) ─► Mimi cache (finish) ─► SFT 3B ─► GRPO 3B ─► tea
                                             ├─ real time on target iPhones ─► ship 3B q4
                                             └─ too slow / hot ─► shrink in the family + distill
                                                                  (8 codebooks, ~10–14 layers)
+                                                                 ─► test parallel codebook heads
                                                      ─► q4 + Swift runtime (4 Hibiki-Zero deltas)
 ```
 
@@ -59,6 +60,7 @@ grows sentence by sentence.
 | GRPO comes last, after every SFT stage (user, 2026-11-04) | SFT on new data retrains the timing its data teaches and would undo most of what RL tuned; the paper's order is base, fine-tune, then RL |
 | The real-Vietnamese tranche is research and includes non-commercial corpora; their weights are research-only, and each source has its own cache (user, 2026-11-04) | The non-commercial corpora (PhoAudiobook, viVoice, Bud500, GigaSpeech 2) have cleaner transcripts, more speakers and long-form audio than YODAS; a commercial model is the same SFT without their caches ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
 | Two-way speech in one model whose output language follows the input language, prepared now beside the tranche (user, 2026-11-04) | A conversation needs both directions with no language-ID step; Hibiki-Zero has no conditioning input; two 3B models do not fit a 6 GB phone ([stage 7](#7-two-way-speech)) |
+| Test parallel codebook heads against the depformer student once the student is trained, and adopt them only if they win (user, 2026-11-10) | The student's depformer is about a third of what a frame reads; heads that sample every codebook at once could pay for ~14–16 main layers at the 10-layer cost. But they train from scratch, add ~400 ms of heard speech lag and change three runtimes ([stage 5.4](#5-the-phone-model)) |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
@@ -162,6 +164,27 @@ GRPO on a distilled student, come later if needed.
    GPU-bound at 41 → 44.5 ms for all 10 minutes (an earlier, warmer run throttled at ~9). So
    the student is 8 codebooks, ~10 main layers and a 3-layer depformer; measure a current
    phone (A17 Pro / A18) before settling it.
+4. Parallel codebook heads, tested once the student is trained (user, 2026-11-10). The
+   student's depformer still runs its 8 codebook steps of 3 layers one after another every
+   frame: 24 small passes and ~0.26 GB of the ~0.75 GB of q4 weights a frame reads (estimated:
+   8 slices of 64 MB at 6 layers, less the 0.25 GB the 3-layer cut saved; the 10 main layers
+   read 0.39 GB). The variant drops the depformer: 8 heads on the main transformer's output
+   sample every codebook in one pass, and a delay pattern (codebook k delayed k frames, as in
+   MusicGen) keeps each codebook a step behind the ones it refines. The reads it saves would pay
+   for ~14–16 main layers at the 10-layer student's cost, and the main layers carry the
+   translation.
+   - Costs: the heads train from scratch, where the student starts from the 3B's own depformer
+     slices. A frame's audio completes 7 frames after its first codebook instead of 2: +5 frames
+     (400 ms) of heard speech lag, text lag unchanged. Training, the Python MLX runtime and the
+     Swift runtime each need the heads. Heads without delays would sample the codebooks
+     independently, which MusicGen found worse; they are not tested.
+   - The test, on the H100: a ~14-layer delay-pattern student against the trained 10-layer
+     depformer student, on the same streams for the same steps. Compare chrF on the
+     real-Vietnamese sets, the generated English speech (an English ASR's transcript scored
+     against the reference, and speaker similarity to the Vietnamese source; evaluation is
+     text-only today) and ms a frame on the phone. Adopt the heads only if they win at real time.
+   - If the depformer must shrink further and the heads lose: a grouped depformer, 2 codebooks a
+     step (4 steps, not 8), initialised from the slices, with no added lag.
 
 ### 6. Quantise and package
 
@@ -418,6 +441,9 @@ Vietnamese text cannot keep up with its speech.
 9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) trained on the streams
    directly, distilled only if it falls short; measure a current phone (A17 Pro / A18) before
    settling it.
+10. Parallel codebook heads against that student, on the H100 (stage 5.4; user, 2026-11-10):
+    a ~14-layer delay-pattern student on the same streams and steps, adopted only if it wins
+    at real time.
 
 ## Risks
 
@@ -427,6 +453,6 @@ Vietnamese text cannot keep up with its speech.
 | The tranche's licences: non-commercial corpora; YouTube uploaders' own CC BY; English voices cloned from speakers who never consented | Research-only weights, marked CC BY-NC-SA on the public recovery repo; one cache per source, so a commercial build drops the non-commercial ones; legal sign-off before anything ships ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
 | EN→VI training costs VI→EN quality | The two-way pilot's gate: VI→EN FLEURS dev within 1 chrF |
 | Lag grows over long input (English 1.15–1.27× longer) | Stream gaps bound the overhang; measure lag growth on long real recordings; GRPO latency rewards |
-| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi encoder calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone |
+| 3B too slow or hot on phones | Measured on the A15: the 3B runs at 0.4x real time sustained. 10 layers, a 3-layer depformer, 2-frame Mimi encoder calls and Mimi's decoder on the Neural Engine hold real time for 10 minutes at 41–45 ms a frame (a warmer start throttled at ~9 minutes). Next: the encoder off the CPU, a current phone; parallel codebook heads could spend the depformer's share on more layers (stage 5.4) |
 | Translation degrades over long input: upstream 3B on a 64 s clip looped repeats itself after ~1.6 min and emits garbage after ~2.4 min, in Python and Swift alike | Test on long distinct speech; SFT streams of up to 120 s; reset the session in silence if needed |
 | Code-domain splicing at stream joins: each clip was encoded from a fresh Mimi state | Streams open with the encoder's start-up codes as inference does, and replace a mid-stream clip's start-up codes (Vietnamese frame 0, sometimes a syllable onset; English silence before the first word) with silence. English speech in a clip's first 16 frames and residual codebooks near joins still differ. Full fix: re-encode each clip after a silence pre-roll |
