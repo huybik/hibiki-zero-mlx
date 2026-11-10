@@ -30,6 +30,7 @@ import torch
 from moshi.models import loaders
 from moshi.modules.transformer import set_attention_context
 from moshi.run_inference import get_condition_tensors
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 
@@ -41,7 +42,7 @@ from training.finetune.hibiki_helpers import (
     get_lmgen,
     stack_and_pad_audio,
 )
-from training.paths import repo_display_path, require_file, resolve_repo_path
+from training.paths import DEFAULT_TOKENIZER, repo_display_path, require_file, resolve_repo_path
 
 
 def ascii_text(text: str) -> str:
@@ -132,6 +133,25 @@ def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
     print(f"Loaded {len(state)} model tensors from {repo_display_path(path)}")
 
 
+TOKENIZER_KEY = "text_tokenizer"  # a model weight's metadata: the tokenizer its text rows are on
+
+
+def weight_tokenizer(path: Path) -> str:
+    """The tokenizer a model weight's text rows are on: its `text_tokenizer` metadata, which
+    every training checkpoint records since 2026-11-10; upstream's weight and older checkpoints
+    are on the base."""
+    with safe_open(str(path), framework="pt") as handle:
+        return (handle.metadata() or {}).get(TOKENIZER_KEY, DEFAULT_TOKENIZER.name)
+
+
+def check_weight_tokenizer(path: Path, tokenizer: Path) -> None:
+    """Refuse a weight on another tokenizer than the run's: the Vietnamese swap gives 6,000 text
+    rows new meanings, and `vi_tokenizer.init_weights` moves a base weight onto it."""
+    on = weight_tokenizer(path)
+    if on != Path(tokenizer).name:
+        raise RuntimeError(f"{repo_display_path(path)} is on {on}, not --tokenizer {Path(tokenizer).name}")
+
+
 def bf16_copy(checkpoint_info: Any, lm: Any, device: Any) -> Any:
     """A policy's weights in a bf16 generation model, as `eval.py` loads a checkpoint: 1.8x faster
     than generating on the fp32 masters. Built without reading the base weights, which the copy
@@ -151,6 +171,7 @@ def load_policy(checkpoint_info: Any, device: Any) -> Any:
     text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
     trains from there (cosine 0.88 to PAD's after round 4), and a resumed pair restores its own.
     `load_lm` and `bf16_copy` keep a checkpoint's own row."""
+    check_weight_tokenizer(checkpoint_info.moshi_weights, checkpoint_info.tokenizer)
     lm = checkpoint_info.get_moshi(
         device=device, dtype=torch.float32, lm_kwargs_overrides={"gradient_checkpointing": False}
     )
@@ -174,6 +195,7 @@ def fused_adamw(params: list[Any], args: argparse.Namespace) -> torch.optim.Adam
 def load_lm(checkpoint_info: Any, checkpoint: Path | None, device: Any, dtype: torch.dtype) -> Any:
     """The base model, or `checkpoint` in a model built without reading the base weights, which
     a full checkpoint overwrites anyway (12.5 GB of fp32 for a fine-tuned base)."""
+    check_weight_tokenizer(checkpoint or checkpoint_info.moshi_weights, checkpoint_info.tokenizer)
     if checkpoint is None:
         print(f"Loading the base LM on {device} from {repo_display_path(checkpoint_info.moshi_weights)}")
         return checkpoint_info.get_moshi(device=device, dtype=dtype)

@@ -31,7 +31,7 @@ from training.paths import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--cache-dir", type=Path, required=True)
+    parser.add_argument("--cache-dir", type=Path, nargs="+", required=True, help="As train.py's --val-cache-dir.")
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
     )
@@ -68,7 +68,7 @@ def main() -> None:
     dtype = common.dtype_from_name(args.dtype)
     torch.set_float32_matmul_precision("high")  # TF32 matmuls, as training validates
 
-    cache_dir = require_dir(args.cache_dir, "code cache directory")
+    cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
     if checkpoint is None:  # a checkpoint replaces the base weights, which are never read
@@ -79,7 +79,7 @@ def main() -> None:
     checkpoint_info = common.load_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
-    rows, layout = streams.load_rows([cache_dir], args.max_frames)
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED)
     dataloader = DataLoader(
         dataset,
@@ -87,7 +87,7 @@ def main() -> None:
         collate_fn=streams.collate,
         num_workers=args.num_workers,
     )
-    print(f"Planned {len(dataset)} streams from {len(rows)} rows of {repo_display_path(cache_dir)}")
+    print(f"Planned {len(dataset)} streams from {len(rows)} rows of {', '.join(repo_display_path(path) for path in cache_dirs)}")
 
     lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
 
@@ -101,7 +101,7 @@ def main() -> None:
         lm, dataloader, device, checkpoint_info.model_type, weights, args.max_batches
     )
     result = {
-        "cache_dir": repo_display_path(cache_dir),
+        "cache_dir": [repo_display_path(path) for path in cache_dirs],
         "checkpoint": repo_display_path(checkpoint) if checkpoint is not None else "",
         **metrics,
     }

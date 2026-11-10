@@ -29,6 +29,19 @@ DIRECTION_TOKENIZERS = {
 }
 
 
+def swap_slots(tokenizer: Path, base: str) -> list[int]:
+    """The slots the tokenizer swap `tokenizer` gave new pieces, read from its init map
+    (`<stem>_init.json` beside it, vi-tokenizer.md): text tokenized on `base` that uses none of
+    them reads the same on `tokenizer`. Raises unless `tokenizer` is a swap of `base`."""
+    init_map = Path(tokenizer).with_name(f"{Path(tokenizer).stem}_init.json")
+    if not init_map.is_file():
+        raise RuntimeError(f"text on {base} cannot be read by {Path(tokenizer).name}, which is no swap of it")
+    init = json.loads(init_map.read_text())
+    if (init["model"], init["base_model"]) != (Path(tokenizer).name, base):
+        raise RuntimeError(f"{init_map.name} swaps {init['base_model']} for {init['model']}, not {base} for {Path(tokenizer).name}")
+    return [int(piece["id"]) for piece in init["pieces"]]
+
+
 def resolve_repo_path(path: str | Path) -> Path:
     path = Path(path)
     if path.is_absolute():

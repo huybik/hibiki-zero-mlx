@@ -51,7 +51,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, cpu_budget
+from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, swap_slots
 
 FRAME_RATE = 12.5
 # Stream lengths, seconds. Upstream's coarse stage trained on 30-75 s utterances and its RL stage
@@ -115,7 +115,7 @@ class Stream:
     frames: int
 
 
-PACK_VERSION = 4  # 3: docs.json; 4: the shard's direction, the index by source and target
+PACK_VERSION = 5  # 3: docs.json; 4: the shard's direction, the index by source and target; 5: tokenizer, text.bin
 PACK_DIR = ".packed"  # beside the shards: <cache-dir>/.packed/<shard stem>/
 
 
@@ -135,7 +135,9 @@ def _pack_is_current(shard_path: Path) -> bool:
 
 def pack_shard(shard_path: Path) -> None:
     """Write a shard's rows as one flat int32 array plus an index, which loads memory-mapped
-    in milliseconds; unpickling the shard's per-row tensors takes ~0.2 s."""
+    in milliseconds; unpickling the shard's per-row tensors takes ~0.2 s. The rows' text tracks
+    also go to `text.bin` in row order, so a run on another tokenizer reads ~3% of the codes to
+    check them (`load_rows`)."""
     payload = torch.load(shard_path, map_location="cpu")
     if payload.get("format") != CACHE_FORMAT:
         raise RuntimeError(f"Unsupported cache format in {shard_path}")
@@ -152,7 +154,7 @@ def pack_shard(shard_path: Path) -> None:
     # A sample's vi_frames and en_frames are each language's clip; the direction says which is heard.
     direction = payload.get("direction", DEFAULT_DIRECTION)
     source, target = direction.split("-")
-    chunks, index, ids, docs = [], [], [], []
+    chunks, texts, index, ids, docs = [], [], [], [], []
     offset = 0
     for sample in payload["samples"]:
         codes = sample["codes"]
@@ -161,6 +163,7 @@ def pack_shard(shard_path: Path) -> None:
                 f"{shard_path} id={sample['id']} codes are {codes.dtype} {tuple(codes.shape)}"
             )
         chunks.append(codes.reshape(-1).numpy())
+        texts.append(codes[0].numpy())
         frames = int(codes.shape[1])
         index.append(
             (
@@ -185,22 +188,29 @@ def pack_shard(shard_path: Path) -> None:
     shutil.rmtree(temporary, ignore_errors=True)
     temporary.mkdir(parents=True)
     (np.concatenate(chunks) if chunks else np.empty(0, np.int32)).tofile(temporary / "codes.bin")
+    (np.concatenate(texts) if texts else np.empty(0, np.int32)).tofile(temporary / "text.bin")
     np.save(temporary / "index.npy", np.array(index, dtype=np.int64).reshape(-1, 5))
     (temporary / "ids.json").write_text(json.dumps(ids))
     (temporary / "docs.json").write_text(json.dumps(docs))
     (temporary / "pack.json").write_text(
-        json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout), "direction": direction})
+        json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout), "direction": direction,
+                    "tokenizer": payload.get("tokenizer", DEFAULT_TOKENIZER.name)})
     )
     shutil.rmtree(target, ignore_errors=True)
     temporary.rename(target)
 
 
-def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layout]:
-    """Every row of the grounded cache shards in `cache_dirs` that fits `max_frames`.
+def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple[list[Row], Layout]:
+    """Every row of the grounded cache shards in `cache_dirs` that fits `max_frames` and whose
+    text reads the same on `tokenizer`, the run's.
 
     Rows load memory-mapped from each shard's pack (`pack_shard`), built in parallel the first
     time a shard is seen or after it changes. Startup then reads only the indexes, and the codes
-    (69 GiB for the full `en_speech` cache) stay on disk until a stream needs them."""
+    (69 GiB for the full `en_speech` cache) stay on disk until a stream needs them.
+
+    A shard tokenized on another tokenizer loads only if the run's is a swap of it (`swap_slots`),
+    and then without the rows whose text uses a slot the swap gave a new piece: machine English
+    holds a few (two-way.md). Any other mismatch raises."""
     shard_paths = [path for d in cache_dirs for path in sorted(d.glob("shard_*.pt"))]
     stale = [path for path in shard_paths if not _pack_is_current(path)]
     if stale:
@@ -213,6 +223,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
     rows: list[Row] = []
     layout: Layout | None = None
     dropped = 0
+    swapped: dict[str, np.ndarray] = {}  # by a shard's tokenizer: the slots the run's reassigned
+    reassigned = 0
     for shard_path in shard_paths:
         directory = _pack_dir(shard_path)
         pack = json.loads((directory / "pack.json").read_text())
@@ -229,9 +241,20 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
         ).numpy()
         ids = json.loads((directory / "ids.json").read_text())
         docs = json.loads((directory / "docs.json").read_text())
-        for row_id, doc, (offset, frames, source_frames, target_frames, delay) in zip(
-            ids, docs, np.load(directory / "index.npy").tolist(), strict=True
+        index = np.load(directory / "index.npy")
+        readable = np.ones(len(index), dtype=bool)
+        if pack["tokenizer"] != Path(tokenizer).name and len(index):
+            if pack["tokenizer"] not in swapped:
+                swapped[pack["tokenizer"]] = np.array(swap_slots(tokenizer, pack["tokenizer"]))
+            text = np.fromfile(directory / "text.bin", dtype=np.int32)
+            starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
+            readable = ~np.logical_or.reduceat(np.isin(text, swapped[pack["tokenizer"]], kind="table"), starts)
+            reassigned += int((~readable).sum())
+        for row_id, doc, keep, (offset, frames, source_frames, target_frames, delay) in zip(
+            ids, docs, readable.tolist(), index.tolist(), strict=True
         ):
+            if not keep:
+                continue
             if frames > max_frames:
                 dropped += 1
                 continue
@@ -250,6 +273,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
             )
     if layout is None or not rows:
         raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
+    if reassigned:
+        print(f"[streams] dropped {reassigned} rows whose text uses a slot {Path(tokenizer).name} reassigned")
     if dropped:
         print(f"[streams] dropped {dropped} rows over {max_frames} frames; kept {len(rows)}")
     return rows, layout

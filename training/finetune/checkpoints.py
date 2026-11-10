@@ -139,7 +139,7 @@ def build_metadata(args: argparse.Namespace) -> dict[str, str]:
     """A saved model's safetensors metadata; `text_tokenizer` names the tokenizer its text rows
     are on (`vi_tokenizer.init_weights` reads it)."""
     return {"target": "full", "base_model": repo_display_path(args.model_weight),
-            "text_tokenizer": Path(args.tokenizer).name}
+            common.TOKENIZER_KEY: Path(args.tokenizer).name}
 
 
 def load_best_state(out_dir: Path) -> dict[str, Any] | None:

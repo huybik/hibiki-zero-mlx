@@ -105,7 +105,10 @@ def parse_args() -> argparse.Namespace:
     # No abbreviations: h100.sh must be able to reject --out-dir.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
-    parser.add_argument("--val-cache-dir", type=Path, required=True)
+    parser.add_argument(
+        "--val-cache-dir", type=Path, nargs="+", required=True,
+        help="Teacher-forced validation caches; a two-way run passes each direction's.",
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
@@ -213,7 +216,7 @@ def main() -> None:
     torch.set_float32_matmul_precision("high")
 
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
-    val_cache_dir = require_dir(args.val_cache_dir, "validation code cache directory")
+    val_cache_dirs = [require_dir(path, "validation code cache directory") for path in args.val_cache_dir]
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "upstream model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
@@ -229,7 +232,7 @@ def main() -> None:
     # near-tie in a residual code).
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
 
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames)
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     dataset = streams.StreamDataset(rows, layout, silence, frames, args.seed)
     batches = dataset.batches(args.batch_frames, args.seed)
     exposure = dataset.exposure()
@@ -238,7 +241,7 @@ def main() -> None:
         f"stream_frames={exposure['stream_frames']:,} source_hours={exposure['source_hours']:.2f} "
         f"batches={len(batches)}"
     )
-    val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames)
+    val_rows, val_layout = streams.load_rows(val_cache_dirs, args.max_frames, args.tokenizer)
     if val_layout != layout:
         raise RuntimeError(f"Validation layout {val_layout} differs from training {layout}")
     val_dataset = streams.StreamDataset(

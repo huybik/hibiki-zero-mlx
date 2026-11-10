@@ -385,7 +385,7 @@ def main() -> None:
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
     silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames)
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames)
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     dataset = streams.StreamDataset(
         rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed
     )
