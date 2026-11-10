@@ -87,9 +87,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
   a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling
   the shards. The trainer reads only packs: `python -m training.finetune.streams --drop-shards
-  DIR...` packs and then deletes the shards (theirs stay on the Hub), and a pack without its shard
-  loads as it is if it is of the current `PACK_VERSION` (a new version needs the shard fetched
-  again); a dropped shard keeps its place in the name order, so the plan does not change. `--num-workers` (4) assemble streams in the background.
+  DIR...` packs and then deletes the shards (only once the Hub lists them), marking each pack
+  `dropped`. A pack so marked loads without its shard if it is of the current `PACK_VERSION` (a
+  new version needs the shard fetched again); one left without its shard any other way raises, so
+  deleting a shard never leaves its rows in a run unnoticed. A dropped shard keeps its place in the
+  name order, so the plan does not change. `--num-workers` (4) assemble streams in the background.
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;

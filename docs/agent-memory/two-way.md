@@ -146,17 +146,18 @@ pilot ("use more data for the two ways run"), update on round 4's 8,192 frames. 
 both directions of every row round 4e trained, and the pilot's test at its first validation.
 Two box jobs ([tranche-box](tranche-box.md#jobs)):
 
-- `restart.sh envi-cache` (~8 h): `fleurs-en` and `en-vi-val-en`; every tranche shard `en-vi`
-  (`cache build --drop-inputs`, pushed to the cache repo's `en-vi/<source>/`); then
-  `box/envi_en_speech.sh`: round 4e's 500 `en_speech` shards (`box/en_speech_sub.txt`) and the 3
-  validation shards by `cache_codes --direction en-vi` into
-  `data/cache/en-vi/en-vi-grounded-v2/{train,validation}`, their sources fetched 25 at a time
-  and deleted once built, then pushed to `en-vi/en-vi-grounded-v2/` of
-  `huybik/hibiki-zero-vi-full-sft` (dataset).
+- `restart.sh envi-cache` (~8 h): `fleurs-en` and `en-vi-val-en`; `box/envi_en_speech.sh`:
+  the 3 `en_speech` validation shards and round 4e's 500 train shards (`box/en_speech_sub.txt`)
+  by `cache_codes --direction en-vi` into `data/cache/en-vi/en-vi-grounded-v2/{train,validation}`,
+  their sources fetched 25 at a time and deleted once built, then pushed to
+  `en-vi/en-vi-grounded-v2/` of `huybik/hibiki-zero-vi-full-sft` (dataset; `upload_folder`, as
+  huggingface-hub 2.4 has no `upload_large_folder`), failing unless the Hub lists every shard;
+  then every tranche shard `en-vi` (`cache build --drop-inputs`, pushed to the cache repo's
+  `en-vi/<source>/` as it goes). A rerun skips a shard built or packed.
 - Then every cache keeps only its packs on the box: `python -m training.finetune.streams
   --drop-shards <dirs>`, the `vi-en` ones first (their packs become version 5 and their shards go,
-  ~72 GB), then the `en-vi` ones: both directions' shards and packs (~290 GB) would not fit the
-  350 GB disk beside a run's checkpoints.
+  ~72 GB), then the `en-vi` ones, each only once the Hub lists its shards: both directions' shards
+  and packs (~290 GB) would not fit the 350 GB disk beside a run's checkpoints.
 - `init_weights` moves round 4's final model onto the swap
   (`weights/twoway_start_vi6k.safetensors`); `eval.py` scores it on the run's seven sets with
   `--seed 47`, batch 64: the baseline of the pilot's test.

@@ -43,13 +43,14 @@ case $job in
             --lr 3e-6 --seed 46 --save-every 4000 --val-every 28000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/multimed-vi/select.jsonl $E/en-vi-val/cv27.jsonl
             $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-noisy/cv27.jsonl $E/en-vi-val-noisy/libriheavy.jsonl) ;;
-  # The two-way run's English-to-Vietnamese inputs (two-way.md#two-way-run): the English evaluation sets, every tranche
-  # shard by the tranche builder (pushed to its cache repo's en-vi/ as it goes; each shard's parts deleted once read),
-  # then round 4e's 500 en_speech shards (envi_en_speech.sh). ~8 h on the H100 (2,490x real time on the Mimi audio).
+  # The two-way run's English-to-Vietnamese inputs (two-way.md#two-way-run): the English evaluation sets, round 4e's 500
+  # en_speech shards (envi_en_speech.sh, which pushes them at its end), then every tranche shard by the tranche builder
+  # (pushed to its cache repo's en-vi/ as it goes; each shard's parts deleted once read). ~8 h on the H100 (2,490x real
+  # time on the Mimi audio).
   envi-cache) export HF_HUB_DISABLE_XET=1
        cmd=(bash -c 'set -e; .venv/bin/python -m training.prep.eval_sets --sets fleurs-en en-vi-val-en
-            .venv/bin/python -m training.tranche.cache build pho vivoice giga --direction en-vi --drop-inputs
-            training/tranche/box/envi_en_speech.sh') ;;
+            training/tranche/box/envi_en_speech.sh
+            .venv/bin/python -m training.tranche.cache build pho vivoice giga --direction en-vi --drop-inputs') ;;
   # The two-way SFT (two-way.md#two-way-run): round 4e's rows both ways, from round 4's final model moved onto the
   # Vietnamese swap (init_weights writes weights/twoway_start_vi6k.safetensors; --tokenizer follows the weight), in
   # round 4's 8,192-frame batches, computed in slices that fit the 80 GB card. Every cache keeps only its packs here
@@ -61,7 +62,7 @@ case $job in
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
             --model-weight weights/twoway_start_vi6k.safetensors
-            --batch-frames 8192 --micro-frames MICRO --eval-batch-size 64 --keep-checkpoints 1
+            --batch-frames 8192 --micro-frames 3584 --eval-batch-size 64 --keep-checkpoints 1
             --lr 3e-6 --seed 47 --save-every 4000 --val-every 12000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;

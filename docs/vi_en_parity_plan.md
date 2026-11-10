@@ -467,20 +467,22 @@ Vietnamese text cannot keep up with its speech.
    1. Done (2026-11-10): the pilot's prerequisites: the trainers refuse caches and weights on
       another tokenizer, the `vi-en` rows whose machine English uses a reassigned slot go (~0.03%
       of GigaSpeech 2's), and `--val-cache-dir` takes both directions' caches;
-   2. the training step and the `en-vi` cache build optimized first (user, 2026-11-10: "let's
-      optimize training a bit more before training two ways"), each profiled on the box. The
-      two-way run updates on 8,192 frames, as round 4 did (user, 2026-11-10, replacing that
-      morning's 4,608 without accumulation): round 4 beat round 4e's 4,608 on every real-speech
-      test set with 2.3 times fewer updates. One 8,192-frame batch needs ~97 GiB (H200), over the
-      H100's 80, so on the H100 it is two 4,096-frame batches accumulated into each update,
-      which spreads the optimizer and the clip (~12% of a step) over twice the frames; measured
-      against 4,608 before the run;
+   2. Done (2026-11-10): the training step and the `en-vi` cache build profiled on the box
+      (user: "let's optimize training a bit more before training two ways"). The step is 99%
+      GPU-bound: matmuls ~45%, AdamW and the clip ~18%. FP8 matmuls ran 4–5% slower (both
+      recipes), and the build's bf16 aligner slower than TF32, so neither is used. The two-way run
+      updates on round 4's 8,192 frames (user, 2026-11-10, replacing that morning's 4,608 without
+      accumulation: round 4 beat round 4e's 4,608 on every real-speech test set with 2.3 times
+      fewer updates). One such batch needs ~97 GiB, over the H100's 80, so it runs in
+      `--micro-frames` slices of 3,584: 14,330 frames/s against 15,321 for whole 4,608 batches
+      (−6.5%; [sft-speed](agent-memory/sft-speed.md)). The `en-vi` build runs at 2,490× real time
+      on the Mimi audio, ~8 h for all of it;
    3. the `en-vi` caches of everything round 4e trained (user, 2026-11-10: "use more data for
       the two ways run"): the whole tranche and the same 500 `en_speech` shards, ~8,500 h a
       direction; the box keeps only their packs (`streams --drop-shards`), as both directions'
       shards and packs would not fit its 350 GB;
    4. the two-way SFT on both directions of those rows (~17k h, ~150k updates of 8,192 frames,
-      ~20 h on the H100 at round 4e's frame rate) from the start through `init_weights`, the pilot's test at its first
+      ~23 h on the H100 at 14,330 frames/s) from the start through `init_weights`, the pilot's test at its first
       validations instead of a separate pilot: it goes on if EN→VI chrF rises with healthy
       outputs and VI→EN FLEURS dev stays within 1 chrF of the start, scored before the run on
       the same sets and seed.

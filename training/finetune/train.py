@@ -122,9 +122,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--micro-frames", type=int, default=0,
-        help="Compute each batch in slices of its streams of up to this many padded frames, their "
-        "gradients added: the same update in less memory (0: the whole batch at once). An 80 GB card "
-        "fits ~4,600 frames at once, round 4's 8,192-frame batches only in slices.",
+        help="Compute each batch in slices of its streams of up to this many padded frames, each "
+        "slice's loss weighted by its share of the rows and the gradients added: nearly the whole "
+        "batch's update (rows differ a little in tokens) in less memory (0: the whole batch at once). "
+        "An 80 GB card fits ~4,600 frames at once, round 4's 8,192-frame batches only in slices.",
     )
     parser.add_argument(
         "--stream-seconds",
@@ -447,7 +448,8 @@ def main() -> None:
         codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size, frames_padded = int(codes.shape[0]), int(codes.shape[-1])
         # Slices of the batch's streams, each a share of the update by its rows (their padded
-        # lengths are equal): the batch's mean loss, up to how its tokens fall between slices.
+        # lengths are equal): the batch's mean loss, up to how its tokens fall between slices
+        # (length-sorted streams of one batch differ little; the text term most, a few percent).
         per_slice = max(1, args.micro_frames // frames_padded) if args.micro_frames else batch_size
         for start in range(0, batch_size, per_slice):
             part = codes[start : start + per_slice]

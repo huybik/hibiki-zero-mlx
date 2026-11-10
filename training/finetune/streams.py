@@ -203,16 +203,21 @@ def pack_shard(shard_path: Path) -> None:
 def pack(cache_dirs: list[Path]) -> list[Path]:
     """The shards of `cache_dirs`, each with a current pack (`pack_shard`), packed in parallel
     where a shard is new, changed or packed by another `PACK_VERSION`. A shard is a
-    `shard_*.pt`, or a pack whose `.pt` was dropped (`--drop-shards`, packs only on the box):
-    that pack is used as it is, and must be of this `PACK_VERSION`. Either way a shard's path is
-    `<cache-dir>/<stem>.pt`, in name order, so dropping files keeps the rows' order."""
+    `shard_*.pt`, or a pack whose `.pt` `--drop-shards` deleted (packs only on the box): that pack
+    is used as it is, and must be of this `PACK_VERSION`; a pack left without its shard any other
+    way raises, so deleting a shard never leaves its rows in a run unnoticed. Either way a
+    shard's path is `<cache-dir>/<stem>.pt`, in name order, so dropping files keeps the rows' order."""
     shard_paths = []
     for d in cache_dirs:
-        built = {path.name for path in d.glob("shard_*.pt")}
+        built = {path.name for path in d.glob("shard_*.pt") if path.exists()}  # not a broken link
         dropped = [d / f"{p.name}.pt" for p in (d / PACK_DIR).glob("shard_*") if f"{p.name}.pt" not in built]
         for path in dropped:
             meta = _pack_dir(path) / "pack.json"
-            if not meta.is_file() or json.loads(meta.read_text())["stamp"]["version"] != PACK_VERSION:
+            pack = json.loads(meta.read_text()) if meta.is_file() else {}
+            if not pack.get("dropped"):
+                raise RuntimeError(f"{_pack_dir(path)} has no shard {path.name} and was not dropped by --drop-shards: "
+                                   f"fetch the shard from the Hub, or delete the pack")
+            if pack["stamp"]["version"] != PACK_VERSION:
                 raise RuntimeError(f"{_pack_dir(path)} is not a version {PACK_VERSION} pack and {path.name} is gone: "
                                    f"fetch it from the Hub to pack it again")
         shard_paths += sorted([d / name for name in built] + dropped)
@@ -549,5 +554,7 @@ if __name__ == "__main__":
         built = [path for path in packed if path.exists()]
         freed = sum(path.lstat().st_size for path in built)  # a link frees only itself
         for path in built:
+            meta = _pack_dir(path) / "pack.json"  # marked first: a pack without its shard loads only so
+            meta.write_text(json.dumps(json.loads(meta.read_text()) | {"dropped": True}))
             path.unlink()
         print(f"dropped {len(built):,} shards, {freed / 1e9:.1f} GB")

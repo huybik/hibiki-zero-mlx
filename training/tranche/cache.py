@@ -144,10 +144,11 @@ def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str], drop_inp
     rows = read_parts(source, name, files)
     if drop_inputs:
         for path in files.values():
-            if not path.is_relative_to(root):  # a snapshot link to the cache's blob
-                blob = path.resolve()
+            if not path.is_relative_to(root):  # the HF cache's: a snapshot link to its blob
+                blob = path.resolve() if path.is_symlink() else None
                 path.unlink()
-                blob.unlink()
+                if blob is not None:
+                    blob.unlink()
     kept, rejected = [], []
     for index, row in enumerate(rows):
         if reason := gate(row, max_cer, grams):
