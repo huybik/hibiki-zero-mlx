@@ -78,9 +78,13 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   wall (the GPU 99% busy): matmuls ~45% (~600 TFLOP/s), fused AdamW 12.4% (33.6 ms; 84 GB moved:
   memory-bound), the clip's norm and scale 5.3% (14.3 ms), the depformer's attention ~6%. Bench:
   15,321 frames/s at 0.2697 s a step (steps 151–300). Round 4's 8,192-frame batches in
-  `--micro-frames` slices: 14,330 frames/s in slices of 3,584 (−6.5%: the slices are smaller than
-  4,608 batches, a 1,424-frame stream often alone in the last), 14,115 in 3,072; whole 4,096-frame
-  batches accumulated two to an update ran out of memory.
+  `--micro-frames` slices: 14,330 frames/s in slices of 3,584 (−6.5%), 14,115 in 3,072; whole
+  4,096-frame batches accumulated two to an update ran out of memory. Their profile (513 ms of
+  kernels an update against 529 ms of wall): each slice after the first adds its gradients into
+  the fp32 `.grad` (12 GB read twice and written once, ~29 ms an update over ~2 more slices), about
+  what halving the optimizer's share saves, and the slices are smaller than 4,608 batches (a
+  1,424-frame stream often alone in the last). So on the 80 GB card 4,608 is the fastest update;
+  8,192 costs ~6.5% (the user's choice for the two-way run).
 - What is left (warm profile, H200 NVL): matmuls 59% of GPU time, compiled kernels 16%, fused
   AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
   elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of
