@@ -132,7 +132,7 @@ def main() -> None:
     lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
     lm.eval()
 
-    records = common.run_greedy_eval(
+    records = common.translate_rows(
         rows,
         generation,
         args.batch_size,

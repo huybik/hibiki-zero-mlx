@@ -349,6 +349,31 @@ Vietnamese text cannot keep up with its speech.
        1,000 h decides the scale-up toward ~10k h (stage 1.3). GRPO comes next, its rollouts on
        the tranche caches (already on the box) rather than the noisy `en_speech` cache (73 GB, ~5 h
        at the box's ~4 MB/s Hub download).
+   - Done (2026-11-09 18:25 – 2026-11-10 01:16 UTC, the H200 box): round 4, `full_epoch4b`, one
+     epoch of every tranche cache (GigaSpeech 2's 228 archives, PhoMT, viVoice) plus 150 shards
+     (~720 h, 11%) of the noisy `en_speech` cache: 4.44M rows, 6,737 h, 57,368 steps of 8,192
+     frames at 0.41 s, from round 3's final model, peak LR 3e-6, `--seed 46`, validated every
+     15,000 steps at evaluation batch 128. Every validation promoted; the final model is the best.
+     - chrF by validation (15k, 30k, 45k, final), against round 3's final validation (batch 64,
+       seed 45, so within sampling noise of ±0.6 at best):
+
+       | Set | Round 4 | Round 3 |
+       |---|---|---:|
+       | FLEURS dev | 37.0, 37.1, 38.5, 39.1 | 39.6 |
+       | MultiMed-ST select | 35.9, 36.9, 37.8, 37.4 | 34.6 (its test call) |
+       | `en-vi-val` cv27 / libriheavy | final 44.3 / 44.1 | 44.5 / 43.1 |
+       | `en-vi-val-noisy` cv27 / libriheavy | final 39.9 / 41.5 | 39.9 / 41.0 |
+
+     - So 3.4 times the real speech moved MultiMed-ST by ~+3 and FLEURS dev by nothing: the run
+       dipped 2.5 chrF under its start at 3e-6 (as the learning-rate test's dips, item 4) and
+       climbed back as the cosine fell. Training loss was still falling when the rate ran out
+       (word CE 1.19 → 0.87, teacher-forced validation 2.74 → 2.69). The run took 1.75 times
+       fewer optimizer steps per hour of data than round 3 (8,192 frames a batch against 4,608,
+       the same peak rate): the throughput lever is not free at a fixed rate. A code review of
+       the trainer, the loss and the validation found nothing that feeds it wrong input
+       (2026-11-10).
+     - Not yet scored: the test sets and `giga-heldout`, in one `eval.py` call against rounds 2
+       and 3 (batch 64, `--seed 43`), which is what settles round 4 against round 3.
 7. The final SFT: both directions on `en_speech` and the tranche.
 8. GRPO, last, on the final SFT model and both directions
    ([plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)).

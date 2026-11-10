@@ -398,7 +398,7 @@ class Shard:
     texts_en: list[str]
     clips: list[np.ndarray] | None  # the voiced rows' clips at 16 kHz, until encoded
     results: dict = None  # id -> the best attempt so far: {"wer", "broken", "asr", "audio", "duration", "tries"}
-    skipped: set[str] = None  # rows `filters.vi_gate` drops: not voiced, their English columns null
+    skipped: set[str] = None  # rows voice.py skips: those filters.vi_gate drops or missing text_en; not voiced, their English columns null
 
 
 class Checker:
@@ -480,23 +480,25 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     seg = get("segments").select(["id", "text", "audio"])
     en = dict(zip(*get("text_en").select(["id", "text_en"]).to_pydict().values()))
     ids, texts = seg.column("id").to_pylist(), seg.column("text").to_pylist()
-    if missing := [i for i in ids if not en.get(i)]:
-        raise SystemExit(f"{source}/{name}: {len(missing)} rows without text_en, e.g. {missing[0]}")
+    no_en = {i for i in ids if not en.get(i)}
+    if no_en:
+        log(f"{source}/{name}: {len(no_en)} rows without text_en, e.g. {next(x for x in ids if x in no_en)}")
     vi = get("asr_vi").select(["id", "asr_vi", "language", "cer"]).to_pylist()
     if [r["id"] for r in vi] != ids:
         raise SystemExit(f"{source}/{name}: its asr_vi does not hold the segments' rows in their order")
-    # The cache build drops these on the Vietnamese side whatever the English (~6% of GigaSpeech 2's hours).
-    skipped = {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
+    # Skipped: rows missing text_en (left null in en_audio) and those the Vietnamese gates drop.
+    # The cache build rejects the vi_gate rows as "not voiced" and the no_en rows gracefully.
+    skipped = no_en | {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
     audio = [a["bytes"] for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
     clips = list(pool.map(decode_16k, audio, chunksize=32))
-    return Shard(source, name, root / source / "en_audio" / name, ids, texts, [en[i] for i in ids], clips, {}, skipped)
+    return Shard(source, name, root / source / "en_audio" / name, ids, texts, [en.get(i, "") for i in ids], clips, {}, skipped)
 
 
 def write_shard(shard: Shard) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    r = [shard.results.get(i) for i in shard.ids]  # None: skipped by the Vietnamese gates
+    r = [shard.results.get(i) for i in shard.ids]  # None: skipped (no text_en or Vietnamese gates)
     col = lambda f, kind: pa.array([None if x is None else f(x) for x in r], kind)
     table = pa.table({
         "id": shard.ids,
@@ -632,7 +634,7 @@ def run(args: argparse.Namespace) -> None:
         key = f"{shard.source}/{shard.name}"
         write_shard(shard)
         kept = list(shard.results.values())
-        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by the Vietnamese gates, "
+        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by voice.py (Vietnamese gates or missing text_en), "
             f"{sum(x['tries'] for x in kept) / max(len(kept), 1):.2f} tries a row, "
             f"{sum(x['broken'] for x in kept) / max(len(kept), 1):.1%} still broken; overall RTF "
             f"{(time.monotonic() - began) / max(voiced_s, 1):.4f} over {voiced_s / 3600:.1f} h voiced ({attempts} attempts)")

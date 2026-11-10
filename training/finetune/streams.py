@@ -247,6 +247,12 @@ def load_rows(cache_dirs: list[Path], max_frames: int) -> tuple[list[Row], Layou
     return rows, layout
 
 
+def frame_range(stream_seconds: list[float]) -> tuple[int, int]:
+    """--stream-seconds MIN MAX as stream lengths in frames."""
+    shortest, longest = stream_seconds
+    return round(shortest * FRAME_RATE), round(longest * FRAME_RATE)
+
+
 def _gap(rng: random.Random) -> int:
     low, high = LONG_GAP if rng.random() < LONG_GAP_PROBABILITY else SHORT_GAP
     return rng.randint(low, high)

@@ -75,9 +75,9 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
 
 ## By GPU
 
-The same benchmark by GPU (one epoch is about 131,700 steps); the H200 NVL and 700 W SXM rows have
-the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 and 13,405 →
-14,399), the other two predate it:
+The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608); the H200 NVL and
+700 W SXM rows have the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 and
+13,405 → 14,399), the other two predate it:
 
 | GPU (power limit) | frames/s | s/step | one epoch |
 |---|---:|---:|---:|
@@ -87,6 +87,25 @@ the compiled main transformer, worth +6.1% and +7.4% there (13,838 → 14,682 an
 | H100 SXM 80 GB (500 W, its host's cap) | 7,401 | 0.550 | 20.1 h |
 
 - The H200 NVL drew 536 W on average at 1,705 MHz (1,785 max) and 58 °C: under its 600 W limit.
+
+- **H200 SXM, alone on the GPU (2026-11-09; round 4's caches, steps 200–300 after warm-up, at
+  ~690 W of its 700 W cap, 99–100% busy)**: kernels of 10 warm steps at 4,608: matmuls 48.6%, fused
+  AdamW and the clip's scaling 11.7%, the depformer's attention 6.4%, the loss's boolean-mask gather
+  (IndexBackward, index_put) 4.5%. The loss now weighs masked positions 0 over the full logits in a
+  compiled CE (`common.token_ce`): +4.5%. It replaced the indexed loss everywhere on 2026-11-10
+  (validation ran the indexed one until then): on three validation batches the losses equal the
+  indexed ones to 1e-7 and teacher-forced validation to 1e-6, and its bf16 gradients sit as far
+  from an fp32 reference as the previous kernel's (per-parameter norms: median 1.2e-3, max 9–17%,
+  both). Then by
+  `--batch-frames` (dense loss): 4,608 ~16,600 frames/s at 72.7 GiB; 8,192 18,420 at 97 GiB;
+  12,288 19,360 at 124.7 GiB. Round 4 runs 8,192 (12,288's +5% leaves ~16 GiB for validation).
+  Power-bound: only less work per frame helps from here.
+- **H200 batch_frames lever (2026-11-09, estimate before the measurement above)**: default 4608; H200 has 141 GB VRAM vs H100's 80 GB.
+  Increasing batch_frames amortizes fixed per-step costs (AdamW 8%, grad norm 4%, copies 5.5% ≈ 17.5%
+  of step time) over more frames. At 8192 (1.78×): peak ≈ 93 GiB (48 GiB param+opt + 45 GiB
+  activations), validation headroom ~11 GiB → total ~104 GiB, expected +~14% throughput. Round 4b
+  (full_epoch4b) uses `--batch-frames 8192`. Do not use this batch_frames to resume from a run that
+  used 4608: batch_frames is a RESUME_KEY in run_config.json and must match.
 
 - Of four H100 SXM pods rented on 2026-11-03, the three on EPYC 9454 hosts (Germany, Latvia)
   were capped at 500 W; the capped one benchmarked sat at its limit 99% of the time, at a mean

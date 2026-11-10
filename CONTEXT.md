@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-09
+Last verified: 2026-11-10
 
 ## Purpose
 
@@ -39,7 +39,7 @@ inference/ (Apple Silicon, MLX)
 - `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
   Vietnamese translation of its English text, the Vietnamese TTS in MLX, the grounded cache build
   every cache builder shares (`cache_build`, MLX or CUDA) and the EN-VI dataset's builder on it,
-  the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, evaluation
+  the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, GRPO, evaluation
   and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: the English
   TTS bake-off, the ASR check, each model in its own uv env, the ingest of the corpora's
   segments to the tranche repos, their translation, the English TTS, the row filters and its cache builder) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
@@ -61,6 +61,10 @@ inference/ (Apple Silicon, MLX)
   first's final model). FLEURS test chrF went 24.7 → 29.5 ([plan](docs/vi_en_parity_plan.md#order)).
 - The third, `tranche_epoch1b` (2026-11-06), trained one epoch of the real-Vietnamese tranche's
   caches from run 2's final model: FLEURS test chrF 29.5 → 38.6, MultiMed-ST 24.9 → 34.6
+  ([plan](docs/vi_en_parity_plan.md#order)).
+- The fourth, `full_epoch4b` (2026-11-10, the H200 box), one epoch of every tranche cache plus
+  150 noisy `en_speech` shards (6,737 h) from round 3's model: MultiMed-ST select 34.6 → 37.4,
+  FLEURS dev 39.6 → 39.1 (inside its noise); its test sets are not scored yet
   ([plan](docs/vi_en_parity_plan.md#order)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
@@ -84,8 +88,9 @@ inference/ (Apple Silicon, MLX)
 - Next (user, 2026-11-04): a learning-rate test, then a third VI→EN epoch only if a higher rate
   won (none did: no third epoch), then the real-Vietnamese tranche (its SFT at 3e-6)
   ([real-vi-tranche](docs/agent-memory/real-vi-tranche.md)) and two-way speech in one model,
-  prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). Its trainer
-  waits in PR #59 ([grpo_plan](docs/grpo_plan.md)).
+  prepared in parallel; GRPO last ([plan](docs/vi_en_parity_plan.md#order)). GRPO is built in
+  `training/finetune/grpo.py` on the SFT trainer's run directory, loss kernel and validation, and
+  is profiled on the box phase by phase before its run ([grpo](docs/agent-memory/grpo.md)).
 
 ## Essential invariants
 
@@ -143,8 +148,9 @@ inference/ (Apple Silicon, MLX)
 | Swift runtime, iOS app, on-device tests | [swift-runtime](docs/agent-memory/swift-runtime.md) | `inference/swift/` |
 | Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
 | SFT trainer: streams, defaults, precision, objective | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
-| SFT H100 launcher, checkpoints, resume, HF recovery sync | [sft-recovery](docs/agent-memory/sft-recovery.md) | `training/h100.sh`, `training/finetune/hf_sync.py` |
+| SFT H100 launcher, checkpoints, resume, HF recovery sync | [sft-recovery](docs/agent-memory/sft-recovery.md) | `training/h100.sh`, `training/finetune/hf_sync.py`, `training/finetune/checkpoints.py` |
 | SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/` |
+| GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |
 | The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off, the translation and the cache |

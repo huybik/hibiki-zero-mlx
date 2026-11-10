@@ -30,8 +30,9 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   361 FLEURS rows) while chrF rose, so it blocked every promotion. `val_log.jsonl` holds
   `teacher_forced`, the validation's `seconds` and, under `free_running`, each set's metrics per
   step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
-- Training's chrF ranks the checkpoints of one run. Training and `eval.py` both translate through
-  `run_greedy_eval`, rows sorted by `duration_s`, in bf16 batches of 64 by default, and `eval.py`
+- Training's chrF ranks the checkpoints of one run. Training (`common.validate_free_running`,
+  which SFT and GRPO share) and `eval.py` both translate through `common.translate_rows`, rows
+  sorted by `duration_s`, in bf16 batches of 64 by default, and `eval.py`
   passes every row of every `--pairs` file in one call, so given the trainer's `--eval-pairs` in
   order and its `--seed`, `eval.py` builds the trainer's batches; device numerics still differ.
   A set's score depends on the rows it shares batches with (batches are reseeded by index, and a
@@ -39,13 +40,25 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   compare with FLEURS scored alone: compare checkpoints under one `--pairs` list, seed and batch
   size.
 
+- How far a score can be trusted (round 4's final model, 2026-11-10):
+  - The same checkpoint, pairs, seed and batch size in two processes gave `en-vi-val/cv27`
+    chrF 43.84 and 43.13 (79 and 80 rows ended): which graphs a process has compiled moves bf16
+    near-ties, and sampled text diverges after one. Under ~1 chrF on a 180-row set, or ~0.6 on
+    FLEURS dev, is noise; compare rounds on the test sets, in one call.
+  - A row's text ends at its first EOS, as upstream's decode cuts it, even when the EOS comes
+    before the source ends (the MLX runtime ignores those). 8–12 of FLEURS dev's 361 rows end
+    that way at each of round 4's validations, worth at most 0.2–0.5 chrF there.
+  - 2–5% of the `en-vi-val` Common Voice rows (clips under ~6 s) get no word and no EOS at all,
+    depending on the seed. The non-empty gate allows 8 of 180: nine fail a validation
+    ([grpo](grpo.md#running)).
+
 ## Side tools
 
 - `eval.py` is the correct-source free-running check on a pair file (`id`, `vi_audio`,
   `text_en`, `duration_s`). Its defaults are `common.GenerationConfig`'s, which training's
   checkpoint selection uses too.
-  - Despite its name, `run_greedy_eval` samples every token at temperature 0.8, top-k 250, as
-    the paper does (Sec. 4.5).
+  - `translate_rows` samples every token at temperature 0.8, top-k 250, as the paper does
+    (Sec. 4.5).
   - It generates until every row has emitted the text EOS, or 20 s past the batch's longest
     source.
   - Each prediction records `end_offset_s`, the time from the end of the source audio to the
@@ -65,7 +78,7 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
       steps; 97% of audio tokens did, the rest split off at bf16 near-ties.
     - moshi's `torch.compile` gains nothing on MPS (`NO_TORCH_COMPILE=1` is within noise).
     - PyTorch's MPS cache keeps each finished batch's blocks without reusing them (5 GiB a batch,
-      to 50 GB and swap; `gc.collect()` frees nothing): `run_greedy_eval` empties it after each
+      to 50 GB and swap; `gc.collect()` frees nothing): `translate_rows` empties it after each
       batch on MPS, which holds it at 7 GiB (2026-11-03).
     - With `--checkpoint`, `eval.py` and `validate.py` neither need nor read `--model-weight`
       (`common.load_lm`), which the checkpoint overwrites: 3.4 s against 11.0 s on MPS, the same

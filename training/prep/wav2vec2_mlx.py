@@ -37,9 +37,12 @@ def _frames(samples: int) -> tuple[int, int]:
 
 
 class Wav2Vec2CTC:
-    """16 kHz float32 PCM -> CTC log-probabilities [frames, vocab] from the HF checkpoint."""
+    """16 kHz PCM -> CTC log-probabilities [frames, vocab] from the HF checkpoint.
 
-    def __init__(self, checkpoint: str | Path):
+    Runs in float32 by default; pass `half=True` to cast all weights to float16 and feed
+    float16 input, then cast log-probs back to float32 before returning."""
+
+    def __init__(self, checkpoint: str | Path, half: bool = False):
         w = {k.removeprefix("wav2vec2."): v for k, v in mx.load(str(checkpoint)).items()}
         conv = "feature_extractor.conv_layers"
         # PyTorch conv weight (out, in, k) -> MLX layout (out, k, in); the convolutions have no bias.
@@ -84,16 +87,31 @@ class Wav2Vec2CTC:
             )
         self.head = w["lm_head.weight"].T, w["lm_head.bias"]
         mx.eval(self.__dict__)
+        self._half = half
+        if half:
+            self._to_half()
         self._forward_compiled = mx.compile(self._forward)
+
+    def _to_half(self) -> None:
+        from mlx.utils import tree_map
+        skip = {"_half", "_forward_compiled"}
+        weights = {k: v for k, v in self.__dict__.items() if k not in skip}
+        for k, v in tree_map(lambda x: x.astype(mx.float16), weights).items():
+            setattr(self, k, v)
+        mx.eval({k: v for k, v in self.__dict__.items() if k not in skip})
 
     def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
         hs = mx.conv1d(pcm[..., None], self.convs[0], stride=STRIDES[0])
         # GroupNorm with one group per channel, over the clip's own frames only.
         own = (mx.arange(hs.shape[1]) < first_frames)[None, :, None]
+        # Statistics in float32: first_frames can exceed float16 max (65504) for clips over 20.47 s,
+        # and the sum of squares overflows float16 for clips over ~8 s.
         count = first_frames.astype(mx.float32)
-        mean = mx.where(own, hs, 0).sum(axis=1, keepdims=True) / count
-        var = mx.where(own, mx.square(hs - mean), 0).sum(axis=1, keepdims=True) / count
-        hs = nn.gelu((hs - mean) * mx.rsqrt(var + EPS) * self.group_norm[0] + self.group_norm[1])
+        h_fp = hs.astype(mx.float32)
+        mean = mx.where(own, h_fp, 0).sum(axis=1, keepdims=True) / count
+        var = mx.where(own, mx.square(h_fp - mean), 0).sum(axis=1, keepdims=True) / count
+        scale = mx.rsqrt(var + EPS).astype(hs.dtype)
+        hs = nn.gelu((hs - mean.astype(hs.dtype)) * scale * self.group_norm[0] + self.group_norm[1])
         for weight, stride in zip(self.convs[1:], STRIDES[1:], strict=True):
             hs = nn.gelu(mx.conv1d(hs, weight, stride=stride))
         hs = mx.fast.layer_norm(hs, *self.projection_norm, EPS) @ self.projection[0]
@@ -122,12 +140,13 @@ class Wav2Vec2CTC:
             hs = mx.fast.layer_norm(hs + attn, *p["norm"], EPS)
             ff = nn.gelu(hs @ p["ff1"][0] + p["ff1"][1]) @ p["ff2"][0] + p["ff2"][1]
             hs = mx.fast.layer_norm(hs + ff, *p["final_norm"], EPS)
-        logits = hs @ self.head[0] + self.head[1]
+        logits = (hs @ self.head[0] + self.head[1]).astype(mx.float32)
         return logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
     def log_probs(self, pcm: np.ndarray) -> mx.array:
         """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz float32 clip, normalized
-        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`)."""
+        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`).
+        Always returns float32, even when the model runs in float16."""
         if pcm.ndim != 1:
             raise ValueError(f"wav2vec2 needs a mono clip, got shape {pcm.shape}")
         first_frames, frames = _frames(len(pcm))
@@ -135,7 +154,8 @@ class Wav2Vec2CTC:
             raise ValueError(f"A {len(pcm)}-sample clip is too short for one wav2vec2 frame")
         padded = np.zeros(math.ceil(len(pcm) / BUCKET_SAMPLES) * BUCKET_SAMPLES, np.float32)
         padded[: len(pcm)] = pcm
+        dtype = mx.float16 if self._half else mx.float32
         out = self._forward_compiled(
-            mx.array(padded[None]), mx.array(first_frames), mx.array(frames)
+            mx.array(padded[None], dtype=dtype), mx.array(first_frames), mx.array(frames)
         )
-        return out[0, :frames]
+        return out[0, :frames]  # always float32: _forward casts logits before logsumexp
