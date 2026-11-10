@@ -80,6 +80,9 @@ def parse_args() -> argparse.Namespace:
                    help="<source>-<target>: the language heard, then the one spoken and written")
     p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX) or bfloat16 (CUDA): +~16%% CTC speed (MLX fixed code, unvalidated; CUDA failed quality check)")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
+    p.add_argument("--drop-inputs", action="store_true",
+                   help="delete each shard's parts from the HF cache once read (the box's own copies stay): "
+                        "a build of every shard then holds a shard or two of inputs, not all of them")
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     p.add_argument("--tokenizer", type=Path, help="default: the direction's (paths.DIRECTION_TOKENIZERS)")
@@ -131,11 +134,20 @@ def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
     return None
 
 
-def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str]) -> Shard:
-    """The shard fetched, read and gated (in the build's read thread)."""
+def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str], drop_inputs: bool = False) -> Shard:
+    """The shard fetched, read and gated (in the build's read thread); with `drop_inputs`, the parts
+    the HF cache holds are deleted once read, the rows being in memory."""
     source, name = key
-    # Each part from the box's own copy first (`ingest.part_file`).
-    rows = read_parts(source, name, {part: part_file(root, source, part, name) for part in PARTS})
+    # Each part from the box's own copy first (`ingest.part_file`), the four at once.
+    with ThreadPoolExecutor(len(PARTS)) as fetch:
+        files = dict(zip(PARTS, fetch.map(lambda part: part_file(root, source, part, name), PARTS), strict=True))
+    rows = read_parts(source, name, files)
+    if drop_inputs:
+        for path in files.values():
+            if not path.is_relative_to(root):  # a snapshot link to the cache's blob
+                blob = path.resolve()
+                path.unlink()
+                blob.unlink()
     kept, rejected = [], []
     for index, row in enumerate(rows):
         if reason := gate(row, max_cer, grams):
@@ -211,7 +223,7 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
     workers = args.workers or default_workers(args.device)
 
     def read(key: tuple[str, str]) -> Shard:
-        return read_shard(args.root, args.max_cer, grams, key)
+        return read_shard(args.root, args.max_cer, grams, key, args.drop_inputs)
 
     with ThreadPoolExecutor(1) as writes:
         written: Future | None = None  # the last shard's save, which runs while the next one builds
