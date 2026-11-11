@@ -104,7 +104,7 @@ def best_state(run_dir: Path) -> dict[str, object] | None:
     step = int(state["step"])
     model = run_dir / str(state["model"])
     if (
-        state["metric"] != "free_running_chrf"
+        state["metric"] != "selecting_chrf"  # checkpoints.BEST_METRIC (the sync does not load torch)
         or model.name != f"best_step{step:06d}.safetensors"
         or not model.is_file()
     ):

@@ -60,6 +60,7 @@ case $job in
   # Vietnamese swap (init_weights writes weights/twoway_start_vi6k.safetensors; --tokenizer follows the weight), in
   # round 4's 8,192-frame batches, computed in slices that fit the 80 GB card. Every cache keeps only its packs here
   # (streams --drop-shards). Validation every 12,000 updates on both directions; the first is the pilot's test.
+  # Two epochs (user, 2026-11-11), the run extended in place at step 28,000 (sft-recovery.md: extending a run).
   two-way) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        # Shards beside their packs would fill the disk at the second checkpoint pair: drop them first (two-way.md).
@@ -73,7 +74,7 @@ case $job in
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
             --model-weight weights/twoway_start_vi6k.safetensors
             --batch-frames 8192 --micro-frames 3584 --eval-batch-size 64 --keep-checkpoints 1
-            --lr 3e-6 --seed 47 --save-every 4000 --val-every 12000
+            --epochs 2 --lr 3e-6 --seed 47 --save-every 4000 --val-every 12000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way" >&2; exit 1 ;;

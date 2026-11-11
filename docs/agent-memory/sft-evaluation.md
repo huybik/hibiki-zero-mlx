@@ -24,8 +24,12 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 - `best_step*.safetensors` is a hard link to the checkpoint whose every set passes the
   generation health gates (`common.generation_health`: at most a tenth of its rows empty, at
   most 12 in 128 repeating a 4-gram, a mean length ratio of at most 2)
-  with a strictly higher corpus chrF on the first set, FLEURS dev, because the phone hears real
-  speech (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`). A run whose
+  with a strictly higher mean corpus chrF over the first set of each direction
+  (`common.selecting_sets`, by the column a set's audio is in): FLEURS dev for a VI→EN run, because
+  the phone hears real speech; FLEURS dev both ways for a two-way run (user, 2026-11-11: the
+  VI→EN set alone kept the early checkpoints, before EN→VI had learned)
+  (`best.json`: `step`, `model`, `metric` `selecting_chrf`, `chrf`; a `best.json` of the earlier
+  `free_running_chrf`, the first set's alone, does not load). A run whose
   checkpoints all fail the gates promotes none. The EOS count is reported, not gated (decided
   2026-11-04): no checkpoint of either stream run reached the 91% it once needed (at best 268 of
   361 FLEURS rows) while chrF rose, so it blocked every promotion. `val_log.jsonl` holds
@@ -106,7 +110,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 
 | File | Rows | Hours | Use |
 |---|---:|---:|---|
-| `fleurs-vi/dev.jsonl` | 361 | 1.19 | checkpoint selection |
+| `fleurs-vi/dev.jsonl` | 361 | 1.19 | checkpoint selection (Vietnamese to English) |
 | `fleurs-vi/test.jsonl` | 857 | 3.00 | final report |
 | `multimed-vi/select.jsonl` | 1,718 | 3.01 | non-regression gate |
 | `multimed-vi/final.jsonl` | 1,719 | 3.02 | final report |
@@ -114,7 +118,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 | `en-vi-val/libriheavy.jsonl` | 180 | 0.66 | in-domain check at each validation |
 | `en-vi-val-noisy/{cv27,libriheavy}.jsonl` | 360 | 0.91 | the same rows under simulated recording conditions ([noisy-source](noisy-source.md#evaluation)) |
 | `giga-heldout/test.jsonl` | 1,000 | 1.07 | the real-Vietnamese tranche's own distribution, held out; not in `eval/` (below) |
-| `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); not in `eval/` yet |
+| `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); dev selects the English-to-Vietnamese side; not in `eval/` yet |
 | `en-vi-val-en/{cv27,libriheavy}.jsonl` | 360 | 1.04 | English to Vietnamese: `en-vi-val`'s rows with their English recordings; not in `eval/` yet |
 
 - `giga-heldout` (built 2026-11-09) samples, with `random.Random(0)`, 1,000 rows of GigaSpeech 2

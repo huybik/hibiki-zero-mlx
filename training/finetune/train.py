@@ -10,8 +10,9 @@ and batch order of each validation cache (so --val-batches takes a random subset
 the rows of every --eval-pairs file free-running in one pass, sampled as `eval.py` samples, and
 scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
 held-out Common Voice and Libriheavy rows of the training data's own domain. Of the checkpoints
-whose every set passes the generation health gates, the one with the highest chrF on the first
-set is promoted to best_stepNNNNNN.safetensors.
+whose every set passes the generation health gates, the one with the highest mean chrF over the
+first set of each direction (`common.selecting_sets`: the first set, for a run of one) is
+promoted to best_stepNNNNNN.safetensors.
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
@@ -169,7 +170,7 @@ def parse_args() -> argparse.Namespace:
             Path("data/eval/en-vi-val/libriheavy.jsonl"),
         ],
         help="Pairs files (training.prep.eval_sets) translated free-running at each validation, "
-        "each scored as its own set; the first selects the checkpoint.",
+        "each scored as its own set; the first of each direction selects the checkpoint (their mean chrF).",
     )
     # bf16 at batch 64 decodes FLEURS dev with an 8 s tail in ~1,750 steps of ~22 ms on the H100.
     parser.add_argument("--eval-batch-size", type=int, default=64)
@@ -273,9 +274,10 @@ def main() -> None:
     # Checkpoints are selected on free-running translation, sampled as eval.py samples. The sets
     # share batches, so one pass translates them all.
     eval_sets, eval_rows = common.load_eval_rows(args.eval_pairs)
+    selecting = common.selecting_sets(eval_sets, eval_rows)
     print(
         f"Validation translates {len(eval_rows)} rows of {', '.join(eval_sets)}; "
-        f"{eval_sets[0]} selects the checkpoint"
+        f"{', '.join(selecting)} select the checkpoint"
     )
 
     batches_per_epoch = len(batches)
@@ -422,7 +424,7 @@ def main() -> None:
         # which marks the step done for a resume.
         if healthy:
             writer.wait()
-            chrf = float(free_running[eval_sets[0]]["chrf"])
+            chrf = sum(float(free_running[name]["chrf"]) for name in selecting) / len(selecting)
             best_state = promote_best(step, chrf, out_dir, best_state)
         seconds = time.time() - started
         item = {
