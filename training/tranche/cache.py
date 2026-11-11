@@ -216,14 +216,16 @@ def build(args: argparse.Namespace) -> None:
         todo, unpushed = todo_shards(args)
         log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
         pushes = Pushes(args.root, "cache")
-        for key in unpushed:
-            pushes.push(key)
-        if todo:
-            hours, wall = build_shards(args, todo, pushes)
-        pushes.wait()
-        if todo:  # once every shard is on the Hub, as whatever waits on this line expects
-            log(f"done: {len(todo)} shards, {hours:.1f} h of Mimi audio in {wall / 3600:.2f} h "
-                f"({hours * 3600 / max(wall, 1e-9):.0f}x RT)")
+        try:  # the lock is held until the last push ends, after a failure too
+            for key in unpushed:
+                pushes.push(key)
+            built = build_shards(args, todo, pushes) if todo else None
+        finally:
+            pushes.wait()
+    if built:  # once every shard is on the Hub, as whatever waits on this line expects
+        hours, wall = built
+        log(f"done: {len(todo)} shards, {hours:.1f} h of Mimi audio in {wall / 3600:.2f} h "
+            f"({hours * 3600 / max(wall, 1e-9):.0f}x RT)")
 
 
 def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]], pushes: Pushes) -> tuple[float, float]:

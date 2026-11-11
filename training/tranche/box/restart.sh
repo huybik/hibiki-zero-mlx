@@ -6,7 +6,7 @@ set -euo pipefail
 job=$1; L=/workspace/logs; mkdir -p $L
 cd /workspace/hibiki-zero
 set -a; . /workspace/.env; set +a  # HF_TOKEN_AN: the stages push to the anquachdev repo
-# Their pushes run in a thread beside the work (ingest.Pushes): upload progress bars would glue onto its log lines.
+# Hub progress bars (the stages' threaded pushes and downloads, hf_sync) would glue onto the jobs' log lines.
 export HF_HUB_DISABLE_PROGRESS_BARS=1
 if [[ -f $L/$job.pid ]] && kill -0 "$(cat $L/$job.pid)" 2>/dev/null; then
   kill -- -"$(cat $L/$job.pid)" || true
