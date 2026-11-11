@@ -29,7 +29,11 @@ pre-roll would remove both.
     VI   lead [row 1]  gap  [row 2]  gap ... [row n] EOS  silence ...
     EN   silence  δ1 [row 1 en] [row 2 en]  ...   [row n en] EOS -1 ...
 
-A SINGLE_ROW_STREAMS share of streams hold one row: lead, the row, both EOS.
+A SINGLE_ROW_STREAMS share of streams hold one row: lead, the row, both EOS. In a LATE_START
+share of those, the English starts only after the Vietnamese has ended:
+
+    VI   lead [row]  EOS  silence ...
+    EN   silence ...  late [row en] EOS -1 ...
 """
 
 from __future__ import annotations
@@ -62,6 +66,12 @@ STREAM_SECONDS = (30.0, 120.0)
 # 30-120 s streams, the first run never saw the source end after one sentence, and never ended a
 # third of the FLEURS rows.
 SINGLE_ROW_STREAMS = 0.1
+# The share of single-row streams whose English starts 0-1 s after the Vietnamese ends rather than
+# its cached delay after it starts. Every cached delay lands the first word before the source ends
+# (sft-training.md), so a model whose start slipped past a short clip's end had never seen that
+# state and stayed silent through the evaluation's 20 s tail.
+LATE_START = 0.5
+LATE_START_FRAMES = (0, 12)  # after the source's last frame
 # Batches pad to a multiple of this many frames, so the model sees few shapes.
 FRAME_BUCKET = 16
 MAX_LEAD = 25  # frames of silence before the first Vietnamese, drawn from [0, 2 s]
@@ -330,6 +340,9 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
     longest = max(max(row.source_frames, row.target_frames) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
+    # A late single row: the lead, its source, the late gap, its target and the EOS frame.
+    if max_frames < MAX_LEAD + 2 * longest + LATE_START_FRAMES[1] + 1:
+        raise ValueError(f"Streams of {max_frames} frames cannot hold a late-starting {longest}-frame row")
     # A stream still under min_frames (at most min_frames - 1) grows by at most a long gap and a
     # row, which must fit.
     if max_frames < min_frames - 1 + LONG_GAP[1] + longest:
@@ -377,6 +390,8 @@ def _plan_direction(
                 single = rng.random() < SINGLE_ROW_STREAMS
                 source_start = rng.randint(0, MAX_LEAD)
             target_start = max(source_start + row.delay_frames, target_end)
+            if single and not pieces and rng.random() < LATE_START:
+                target_start = source_start + row.source_frames + rng.randint(*LATE_START_FRAMES)
             next_source_end = source_start + row.source_frames
             next_target_end = target_start + row.target_frames - row.delay_frames
             next_frames = max(next_source_end, next_target_end) + 1  # the EOS frames

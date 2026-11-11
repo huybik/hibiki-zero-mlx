@@ -46,8 +46,16 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   of the streams (`streams.SINGLE_ROW_STREAMS`, from 2026-11-04) hold one row, lead to both EOS,
   as a single-sentence evaluation feeds it: the first run, on 30–120 s streams only, never saw the
   source end after one sentence and never ended a third of the FLEURS rows. On the three shards
-  below (seed 43) they are 9.8% of the streams and 2.4% of the frames (median 200 frames). The
-  cache itself is never changed. The silence track is encoded on the CPU in float32, so every
+  below (seed 43) they are 9.8% of the streams and 2.4% of the frames (median 200 frames). In
+  half of them (`streams.LATE_START`) the target starts 0–1 s after the source ends instead of its
+  cached delay after it starts: the cache draws every delay from U[0, 0.5 × the source's duration]
+  (`cache_rows.target_delay_s`), so no other row's first word comes after its source has ended
+  (0% of ~460,000 rows sampled from every cache of the two-way run, 2026-11-11), and a model whose
+  start slipped past a short clip's end stayed silent through the evaluation's 20 s tail. The
+  two-way run at step 36,000 left 16 of FLEURS-vi dev's 361 rows and 48 of FLEURS-en dev's 392
+  empty, nearly all under 9 s (the start model 3 FLEURS-vi rows); late starts came after it, and
+  change every stream plan, the teacher-forced validation streams included, so a run's loss is
+  not comparable across the change. The cache itself is never changed. The silence track is encoded on the CPU in float32, so every
   machine and resume gets the same codes but for a rare residual near-tie (1 of 1,876 frames
   between thread counts).
 - Mimi codes depend on the encoder's state. Inference encodes one stream from a fresh state, so
