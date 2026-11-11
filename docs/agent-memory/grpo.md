@@ -67,8 +67,9 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
     blocked, and a blocked checkpoint is not kept (2 pairs).
   - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted` (this step is
     now the best).
-  - That baseline is stored as `start_end_offset_s` (by selecting set) in `run_config.json`, which `hf_sync` uploads
-    whenever it changes. The logs reach the Hub only at the end, so a restore needs this file.
+  - That baseline is stored as `start_end_offset_s` (by selecting set) in `run_config.json`, which
+    `hf_sync` uploads when its size changes (adding the key at update 0 does). The logs reach the
+    Hub only at the end, so a restore needs this file.
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
   has stopped improving is simply stopped; its stop cannot be extended.
 - **Losing work:** `hf_sync` uploads only evaluation-step pairs, so a lost pod costs up to

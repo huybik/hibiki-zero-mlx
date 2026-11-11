@@ -136,9 +136,10 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 [docs/grpo_plan.md](grpo_plan.md): the paper's GRPO with BLEU process rewards on 30–75 s streams,
 the last training stage (user, 2026-11-04): from the final SFT model, on both directions, after the
 real-Vietnamese tranche and the two-way SFT (user, 2026-11-10). Its trainer is built (PR #59) and
-is profiled on the H100 before its run. For two directions it still needs both directions'
-evaluation sets in its validation, a promotion rule over both (today: FLEURS dev chrF and its
-latency gate alone) and the Vietnamese tokenizer for the EN→VI rewards.
+is profiled on the H100 before its run. Its promotion rule covers both directions (each
+direction's first evaluation set, their mean chrF and a latency gate on each, as SFT's); for two
+directions it adds both directions' evaluation sets and rewards decoded with the run's Vietnamese
+tokenizer, both on the branch `grpo/stream-length`.
 RL the teacher before any distillation. A penalty on speech while the source is silent, and a short
 GRPO on a distilled student, come later if needed.
 
