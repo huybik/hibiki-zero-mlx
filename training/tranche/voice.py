@@ -522,7 +522,7 @@ def run(args: argparse.Namespace) -> None:
     kept attempt, and each source's written shards are pushed every PUSH_S and at its end."""
     import queue
     import threading
-    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+    from concurrent.futures import ProcessPoolExecutor
     from multiprocessing import get_context
 
     from huggingface_hub import HfApi
@@ -598,14 +598,13 @@ def run(args: argparse.Namespace) -> None:
     remaining: dict[str, int] = {}  # shard -> rows without a kept attempt
     loading_done = False
     left = {s: sum(t[0] == s for t in todo) for s in args.sources}  # shards not yet written
-    pushes = ThreadPoolExecutor(1)  # uploads run beside the voicing
+    pushes = ingest.Pushes(args.root, "en_audio")  # uploads run beside the voicing
     pushed = {s: time.monotonic() for s in args.sources}
-    uploads = []
     began, voiced_s, attempts = time.monotonic(), 0.0, 0
 
     def push(source: str) -> None:
         pushed[source] = time.monotonic()
-        uploads.append(pushes.submit(ingest.push_part, args.root, source, "en_audio"))
+        pushes.push(source)
 
     def next_shard() -> bool:
         nonlocal fresh, loading_done
@@ -681,9 +680,7 @@ def run(args: argparse.Namespace) -> None:
             for fut in [f for f in inflight if f.done()]:
                 inflight.discard(fut)
                 settle(checking.pop(fut), fut.result())
-            for fut in [f for f in uploads if f.done()]:
-                uploads.remove(fut)
-                fut.result()  # a failed upload stops the run; a rerun pushes what is written
+            pushes.check()  # a failed upload stops the run; a rerun pushes what is written
             if loading_done and not voicer.active and not voicer.waiting and not inflight and not retries:
                 break
             if not voicer.active and not out:
@@ -691,9 +688,7 @@ def run(args: argparse.Namespace) -> None:
     finally:  # after a crash, queued checks are dropped, not run, so the GPU frees promptly
         checks.shutdown(wait=False, cancel_futures=True)
         pool.shutdown(wait=False, cancel_futures=True)
-    pushes.shutdown()
-    for fut in uploads:
-        fut.result()
+    pushes.wait()
     log(f"done: {voiced_s / 3600:.1f} h voiced in {(time.monotonic() - began) / 3600:.2f} h")
 
 

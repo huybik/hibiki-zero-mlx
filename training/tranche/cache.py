@@ -8,8 +8,10 @@ shares (`training.prep.cache_build`, [cache-build](../../docs/agent-memory/cache
                       the rows the filters below keep, the English text timed by wav2vec2-base-960h
                       CTC (the `text_timing` Viterbi) and both clips Mimi-encoded in float32, each
                       sample with its `doc` and `seq` so the trainer joins a document's rows in
-                      order. Pushes each source's folder every 30 min and at its end; a rerun skips
-                      the shards written or pushed, and first pushes any written but not yet pushed.
+                      order. Pushes each source's folder every 30 min and at its end, in a thread
+                      beside the build (`ingest.Pushes`), and logs `done:` once the last is in; a
+                      rerun skips the shards written or pushed, and first pushes any written but not
+                      yet pushed.
                       With --direction en-vi the languages trade places for two-way training (the
                       corpus transcript timed by the Vietnamese aligner, the real clip the target,
                       the English TTS the source, tokenized by the Vietnamese swap), into
@@ -47,7 +49,7 @@ from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DIRECTION_T
 from training.prep.cache_build import MODELS, Builder, default_workers, summary
 from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
-from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, part_file, push_part
+from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, Pushes, part_file
 
 SPLIT = "train"  # the delay draw's key
 VI_LETTERS = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
@@ -179,12 +181,13 @@ def shard_file(name: str) -> str:
     return f"shard_{name.removesuffix('.parquet')}.pt"
 
 
-def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
+def todo_shards(args: argparse.Namespace) -> tuple[list[tuple[str, str]], list[str]]:
     """The shards with every input on the Hub and no cache here or there, but those held out for
-    evaluation (`Source.heldout`), pushing first the caches an earlier run wrote but did not push."""
+    evaluation (`Source.heldout`), and the cache folders holding shards an earlier run wrote but did
+    not push."""
     from huggingface_hub import HfApi
 
-    api, todo = HfApi(), []
+    api, todo, unpushed = HfApi(), [], []
     files, cached = (api.list_repo_files(r, repo_type="dataset") for r in (REPO, CACHE_REPO))
     for source in args.sources:
         parts = {part: {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/{part}/")}
@@ -199,8 +202,8 @@ def todo_shards(args: argparse.Namespace) -> list[tuple[str, str]]:
         log(f"{source}: {len(parts['segments'])} shards ({len(heldout)} held out), {len(pushed)} cached on the "
             f"Hub, {len(local - pushed)} only here, {waiting} waiting for an input")
         if local - pushed:
-            push_part(args.root, key, "cache")
-    return todo[: args.limit]
+            unpushed.append(key)
+    return todo[: args.limit], unpushed
 
 
 def build(args: argparse.Namespace) -> None:
@@ -210,13 +213,24 @@ def build(args: argparse.Namespace) -> None:
     # Taken first: a second run must not push or load models onto a GPU the first one uses.
     args.root.mkdir(parents=True, exist_ok=True)
     with exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"):
-        todo = todo_shards(args)
+        todo, unpushed = todo_shards(args)
         log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
-        if todo:
-            build_shards(args, todo)
+        pushes = Pushes(args.root, "cache")
+        try:  # the lock is held until the last push ends, after a failure too
+            for key in unpushed:
+                pushes.push(key)
+            built = build_shards(args, todo, pushes) if todo else None
+        finally:
+            pushes.wait()
+    if built:  # once every shard is on the Hub, as whatever waits on this line expects
+        hours, wall = built
+        log(f"done: {len(todo)} shards, {hours:.1f} h of Mimi audio in {wall / 3600:.2f} h "
+            f"({hours * 3600 / max(wall, 1e-9):.0f}x RT)")
 
 
-def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
+def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]], pushes: Pushes) -> tuple[float, float]:
+    """Builds `todo`, handing each source's folder to `pushes` as due; returns the hours of Mimi
+    audio built and the build's wall time."""
     grams = eval_grams()
     builder = Builder(args.device, Settings(args.max_frames, direction=args.direction), args.config_path,
                       args.mimi_weight, args.tokenizer or DIRECTION_TOKENIZERS[args.direction], half_ctc=args.half_ctc)
@@ -241,12 +255,10 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]]) -> None:
             log(f"{source}/{name}: {summary(shard, hours, now - began)} [{k + 1}/{len(todo)}]")
             last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
             if last_of_source or now - pushed[source] > PUSH_S:
-                written.result()
-                push_part(args.root, key, "cache")
-                pushed[source] = time.monotonic()
-        wall = time.monotonic() - began
-        log(f"done: {len(todo)} shards, {hours:.1f} h of Mimi audio in {wall / 3600:.2f} h "
-            f"({hours * 3600 / max(wall, 1e-9):.0f}x RT)")
+                written.result()  # the shard is in its folder before the push lists it
+                pushes.push(key)
+                pushed[source] = now
+        return hours, time.monotonic() - began
 
 
 def main() -> None:
