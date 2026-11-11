@@ -88,7 +88,7 @@ draws use split `train`. It skips the shards held out for evaluation
 - On the box: `restart.sh cache` ([tranche-box](tranche-box.md)), which runs
   `NO_TORCH_COMPILE=1 /workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice
   giga` (`--device cuda`, the default): free-threaded Python 3.14 from `box/envs-min.sh`, ~2% faster
-  than the `.venv`, which runs it too ([cache-build](cache-build.md#speed-on-cuda)). Its "models
+  than the 3.12 `.venv` it ran in before (the `.venv` runs it too) ([cache-build](cache-build.md#speed-on-cuda)). Its "models
   loaded" line says whether the GIL is off. Needs `data/eval` (`.venv/bin/python -m training.prep.eval_sets --sets fleurs
   multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
   server on the GPU, ~1.3 GB of it is free, so the build runs after them.

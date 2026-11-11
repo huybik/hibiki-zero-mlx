@@ -64,10 +64,10 @@ setup() {
   # Free-threaded Python 3.14, as every box env that can run it (environment.md). torch.compile loads Triton, which
   # turns the GIL back on, so the trainer runs with it: 0.5246 against 3.12's 0.5297 s a step on the two-way's
   # 8,192-frame updates, the same loss (2026-11-11). safetensors and sphn have no free-threaded wheels and build from
-  # source with Rust; sphn's bundled Opus asks for CMake's pre-3.5 policies, which CMake 4 dropped. Relocatable, so an
-  # env built beside a running job can be moved into place.
+  # source with Rust; sphn's bundled Opus asks for CMake's pre-3.5 policies, which CMake 4 dropped. Relocatable: an env
+  # built in another checkout can be moved into place once the job on the old one stops (docs/finetune.md).
   export UV_NO_CACHE=1 CMAKE_POLICY_VERSION_MINIMUM=3.5
-  command -v cargo >/dev/null || [[ -x ~/.cargo/bin/cargo ]] \
+  command -v rustup >/dev/null || [[ -x ~/.cargo/bin/rustup ]] \
     || curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal
   export PATH="$HOME/.cargo/bin:$PATH"
   local partial="$VENV.partial"  # moved into place once complete: a failed setup leaves no .venv
