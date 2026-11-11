@@ -246,7 +246,8 @@ Continuing is interruption recovery for the same run only:
 - a validation the interruption cut short runs again before training continues, and so does
   the resumed step's validation if the run's logs were not restored (the final sync then
   replaces the remote logs with the resumed run's only);
-- it cannot extend the stop step or start a different run.
+- it cannot start a different run, nor extend the stop step (extending is done by hand at a
+  checkpoint: [sft-recovery](agent-memory/sft-recovery.md#checkpoints-and-recovery)).
 
 ### Move a running run to another pod
 

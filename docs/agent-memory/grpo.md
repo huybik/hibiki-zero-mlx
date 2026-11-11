@@ -58,14 +58,16 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
     the same gets 0.
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
   free-running pass on `EVAL_PAIRS`' five sets (FLEURS dev, the clean and noisy en-vi-val cv27
-  and libriheavy). Promotion goes to the best FLEURS dev chrF among checkpoints that pass the
-  gates and whose FLEURS median end offset is at most `LATENCY_SLACK_S` (0.2 s) past update 0's.
+  and libriheavy). The first set of each direction selects (`common.selecting_sets`; FLEURS dev
+  alone with these sets): promotion goes to the best mean chrF over them among checkpoints that
+  pass the gates and whose median end offset on each is at most `LATENCY_SLACK_S` (0.2 s) past
+  update 0's.
   - The slack: in the dry run, update 2 (two updates at 2e-7, in effect the start) had the
     better chrF (39.90 against 39.29) but measured 4.6 s against 4.5 s. Without slack it was
     blocked, and a blocked checkpoint is not kept (2 pairs).
   - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted` (this step is
     now the best).
-  - That baseline is stored as `start_end_offset_s` in `run_config.json`, which `hf_sync` uploads
+  - That baseline is stored as `start_end_offset_s` (by selecting set) in `run_config.json`, which `hf_sync` uploads
     whenever it changes. The logs reach the Hub only at the end, so a restore needs this file.
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
   has stopped improving is simply stopped; its stop cannot be extended.

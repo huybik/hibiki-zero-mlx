@@ -76,7 +76,7 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   to the new end (the rate steps up where the run then sits earlier in it) and the optimizer state
   carries on. `hf_sync` re-uploads `run_config.json` and `train_args.json` only when their size
   changes (an edit keeping every width, such as 2 to 3 epochs, needs a manual upload to
-  `RUN/metadata/`). `twoway_sft` went from one epoch to two this way at step 28,000 (2026-11-11).
+  `RUN/metadata/`).
 - A pair is saved before its validation, and a validation's log line is written after its promotion.
   A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl` lacks validates
   it first; a finished run exits 0 after loading the data and before loading the model (the boot

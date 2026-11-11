@@ -110,7 +110,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 
 | File | Rows | Hours | Use |
 |---|---:|---:|---|
-| `fleurs-vi/dev.jsonl` | 361 | 1.19 | checkpoint selection |
+| `fleurs-vi/dev.jsonl` | 361 | 1.19 | checkpoint selection (Vietnamese to English) |
 | `fleurs-vi/test.jsonl` | 857 | 3.00 | final report |
 | `multimed-vi/select.jsonl` | 1,718 | 3.01 | non-regression gate |
 | `multimed-vi/final.jsonl` | 1,719 | 3.02 | final report |
@@ -118,7 +118,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 | `en-vi-val/libriheavy.jsonl` | 180 | 0.66 | in-domain check at each validation |
 | `en-vi-val-noisy/{cv27,libriheavy}.jsonl` | 360 | 0.91 | the same rows under simulated recording conditions ([noisy-source](noisy-source.md#evaluation)) |
 | `giga-heldout/test.jsonl` | 1,000 | 1.07 | the real-Vietnamese tranche's own distribution, held out; not in `eval/` (below) |
-| `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); not in `eval/` yet |
+| `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); dev selects the English-to-Vietnamese side; not in `eval/` yet |
 | `en-vi-val-en/{cv27,libriheavy}.jsonl` | 360 | 1.04 | English to Vietnamese: `en-vi-val`'s rows with their English recordings; not in `eval/` yet |
 
 - `giga-heldout` (built 2026-11-09) samples, with `random.Random(0)`, 1,000 rows of GigaSpeech 2
