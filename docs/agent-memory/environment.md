@@ -22,7 +22,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   The cache builds run on it (`/workspace/envs/cache`, [cache-build](cache-build.md#speed-on-cuda)).
   Check `sys._is_gil_enabled()` after a job's imports. Importing Triton turns the GIL back on
   (triton-lang/triton#8491, open), and forcing it off under Triton killed the cache build, so a job
-  on `torch.compile` (the trainer) gains nothing from the GIL's absence; it still ran ~1% faster on
+  on `torch.compile` (the trainer; lxml through sacrebleu and the source-built sphn turn it on there
+  first) gains nothing from the GIL's absence; it still ran ~1% faster on
   3.14 (`h100.sh setup` builds it there); vLLM and flash-attn ship no free-threaded wheels (`nanovox`,
   `asr`, `mt` stay 3.12). 3.14 starts processes by `forkserver`, not `fork`: a child re-imports the
   main module (a script that works at import breaks) and gets its arguments pickled, so a

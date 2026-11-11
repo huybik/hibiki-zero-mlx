@@ -278,7 +278,8 @@ move a run onto it:
 2. Only then swap the environment: `mv .venv .venv-py312` and move the new one (built by
    `h100.sh setup` in another checkout, relocatable) to `.venv`; never under a running job, whose
    later imports and compile workers would load the other Python.
-3. Pull the commit, then steps 1–2 above, then rerun.
+3. Pull the commit, set `commit` in `run_id.json` and upload it as `run.json` (the two steps
+   above), then rerun.
 
 Runs recorded before the `inference/`/`training/` split, such as
 `grounded_v2_full_direct_voice_5epoch`, follow their own commit's `docs/finetune.md`.
