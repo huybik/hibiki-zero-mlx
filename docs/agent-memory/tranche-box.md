@@ -6,7 +6,7 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H100 SXM Japan (Vast instance 60019118, 2026-11-10 12:05 – 2026-11-14 13:00 UTC+7, $2.20/h)**:
+**H100 SXM Japan (Vast instance 60019118, 2026-11-10 12:05 – 2026-11-16 08:00 UTC+7 (the host extended it from 2026-11-14 13:00), $2.20/h)**:
 700 W, 350 GB disk, a 26.88-CPU quota; the checkout on `main`, brought up from the Hub as below
 (nothing else on it: no tranche parts, envs or TTS/ASR models).
 
