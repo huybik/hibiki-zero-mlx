@@ -30,6 +30,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `run()` overlaps a CPU Mimi encoder thread and decoder thread with the GPU LM on the main
   thread. Queues carry NumPy arrays because lazy MLX graphs are bound to their creating thread.
 - One frame is 1920 samples at 24 kHz (80 ms, 12.5 Hz).
+- The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
+  Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
+  frames (timed in "level + mimi encode"). It raises input peaking under −20 dBFS; why, and
+  what it changes, in [sft-evaluation](sft-evaluation.md#input-level), whose `eval.py` imports
+  it as `inference.hibiki_mlx.level`, so the module needs only NumPy.
 - File mode appends 8 s of silence (`tail_s`) and, once the input is consumed, stops on text
   EOS or 12 consecutive special-token frames (`PAD_STOP`).
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in

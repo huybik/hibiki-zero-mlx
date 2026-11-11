@@ -1,10 +1,10 @@
 # SFT evaluation
 
 Read when touching `training/finetune/eval.py`, `training/finetune/validate.py`,
-`training/prep/eval_sets.py`, `data/eval/`, or the validation and promotion in
-`training/finetune/train.py`.
+`training/prep/eval_sets.py`, `data/eval/`, the validation and promotion in
+`training/finetune/train.py`, or the input level stage (`inference/hibiki_mlx/level.py`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Checkpoint selection](#checkpoint-selection) ·
-[Side tools](#side-tools) · [Evaluation sets](#evaluation-sets)
+[Side tools](#side-tools) · [Evaluation sets](#evaluation-sets) · [Input level](#input-level)
 
 The trainer itself is in [sft-training](sft-training.md); checkpoint files, resume and their sync
 in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
@@ -121,17 +121,9 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 | `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); dev selects the English-to-Vietnamese side; not in `eval/` yet |
 | `en-vi-val-en/{cv27,libriheavy}.jsonl` | 360 | 1.04 | English to Vietnamese: `en-vi-val`'s rows with their English recordings; not in `eval/` yet |
 
-- `fleurs-en` keeps FLEURS `en_us`'s levels, and they are low: 191 of the 392 dev clips peak
-  under −40 dBFS (151 under −50), 97 at −20 to −10 dBFS. FLEURS-vi peaks at a median −24 dBFS,
-  Common Voice and Libriheavy at −11 and −14. Training never goes that low: `augment.GAIN_DB`
-  lowers a noisy clip by at most 15 dB, so the quietest training sources peak around −26 dBFS. Mimi
-  does not code quiet speech as it codes the same speech loud. Against a −6 dBFS peak, the semantic
-  codebook of ten loud FLEURS-en clips agrees on 96% of frames at −7 dBFS, 76% at −16, 51% at
-  −26, 19% at −36, 4% at −46 and 3% at −56, where 60% of frames take the codes of digital silence
-  (4% at −7; moshi Mimi on the CPU, 2026-11-12). The quiet clips hold most of FLEURS-en's empty
-  rows ([two-way](two-way.md#two-way-run)), so its health gate and chrF measure robustness to
-  level as much as translation. No runtime normalizes the input level before Mimi: neither
-  `eval.py`, nor `main.py --mic`, which feeds `sounddevice` samples as they come.
+- FLEURS is quiet, `fleurs-en` most: its clips peak at a median −39.6 dBFS (191 of 392 under −40),
+  `fleurs-vi`'s at −14.5 (135 of 361 under −20), against −2 to −7 for `en-vi-val`, `en-vi-val-en`
+  and MultiMed-ST: [input level](#input-level).
 
 - `giga-heldout` (built 2026-11-09) samples, with `random.Random(0)`, 1,000 rows of GigaSpeech 2
   archives 86 and 98 (`ingest.SOURCES["giga"].heldout`; 572 and 428 rows from 366 recordings,
@@ -185,3 +177,39 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
   encoder (`tts_en_speech.encode`) counts the pre-skip twice, so granules run 312 samples high. It refuses a clip that is not mono, has an output gain, or
   decodes shorter than its stored duration or a 20 ms packet or more longer. The rows keep
   `speaker` and `source_row`.
+
+## Input level
+
+Every runtime and `eval.py` raise quiet source audio before Mimi with one level stage,
+`inference/hibiki_mlx/level.py` (`Leveller`; Swift's `Audio.Leveller` mirrors it sample for
+sample, checked 2026-11-12 on five signals in 1-, 2- and whole-clip frame chunks). Each 80 ms
+frame takes one gain from a peak envelope (instant rise, 6 dB a second fall): input peaking
+above −20 dBFS passes unchanged, quieter input is raised to −20 by at most 30 dB, and nothing
+clips. `common.read_source` levels each clip as a stream of its own; `main.py` levels a file or
+a mic session, `Translator` a session (`reset` starts a new one). Scores from before the stage
+(2026-11-12) are not comparable on FLEURS: most of its clips are raised.
+
+Why (2026-11-12, the two-way run's predictions at 60,000 and 72,000; true sample peaks):
+
+- Mimi codes quiet speech differently from the same speech loud. Against a −6 dBFS peak, the
+  semantic codebook of ten loud FLEURS-en clips agrees on 96% of frames at −7 dBFS, 76% at −16,
+  51% at −26, 19% at −36, 4% at −46 and 3% at −56, where 60% of frames take the codes of digital
+  silence (4% at −7; moshi Mimi on the CPU). Levelled, those clips at −36 and −46 agree on 78%
+  and 73%, and the FLEURS-en clips that came out empty agree on 78% (5% as heard), their
+  silence codes 22% → 6%.
+- Training never hears it: its sources peak at a median −2 to −6 dBFS (`en-vi-val`'s TTS,
+  `en-vi-val-en`'s Common Voice and Libriheavy, `giga-heldout`'s GigaSpeech 2, none of its 1,000
+  under −20), the noisy copies up to 15 dB lower (`augment.GAIN_DB`).
+- The model translates quiet clips worse, then not at all. chrF of the non-empty rows by peak:
+  FLEURS-vi 28.4 under −30 dBFS, 31.0-33.3 at −30 to −20, 37.3-41.2 above −20; FLEURS-en
+  10.8-12.4 under −45, 15.5-16.4 at −45 to −40, 22.1-24.2 at −40 to −30, 26.1-29.7 above −30.
+  Empty rows: FLEURS-en 34-61 of 191 under −40, 4 of 41 at −40 to −35, 1 of 160 above −35;
+  FLEURS-vi's 3-5 all at −40 to −25 (none of 226 above −20). MultiMed-ST, peaking above
+  −12 dBFS on 90% of its clips, shows no trend.
+- The stage also raises silence, by up to 30 dB (a −66 dBFS noise floor to −36), since the gain
+  cannot tell quiet speech from a quiet room: a stream's start, and a pause once the envelope
+  has fallen under −20 dBFS (2.8 s after a −3 dBFS peak). Of the loud sets' frames it raises 21%
+  of `en-vi-val-en/cv27`'s (Common Voice's long silences; 171 of 180 clips), 5% of Libriheavy's,
+  7% of MultiMed-ST's and 2% of `en-vi-val/cv27`'s TTS (almost all before the first word); the
+  training caches were coded without it. The leon.wav gate clip (peak −3.8 dBFS) passes
+  unchanged.

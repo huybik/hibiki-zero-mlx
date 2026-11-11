@@ -2,7 +2,8 @@ import Foundation
 import MLX
 
 /// Streaming translation: source audio in, in whole 80 ms frames, and per frame a text token
-/// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`.
+/// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`. The source goes
+/// through the session's `Audio.Leveller` before Mimi.
 ///
 /// The LM runs on the GPU while Mimi encodes on the CPU and decodes on the Neural Engine
 /// (`NeuralDecoder`), as the Python runtime's codec threads overlap the LM. A step takes k
@@ -67,6 +68,7 @@ public final class Translator {
     let generator: Generator
     /// Complete target codes of finished LM steps, one frame each, not yet decoded.
     private var targets: [[Int]] = []
+    private var leveller = Audio.Leveller()
 
     /// Upstream sampling (`pipeline.py`): text at 0.4 with top-k 25, audio at 0.8 with top-k 250.
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
@@ -122,10 +124,11 @@ public final class Translator {
         Memory.clearCache()  // return load and warmup buffers instead of keeping them cached
     }
 
-    /// Starts a new session: clears the codec and the LM state, dropping audio not yet
-    /// returned (`flush` first to keep it).
+    /// Starts a new session: clears the level stage, the codec and the LM state, dropping audio
+    /// not yet returned (`flush` first to keep it).
     public func reset() {
         targets = []
+        leveller = Audio.Leveller()
         mimi.resetState()
         decoder.reset()
         generator.reset()
@@ -156,7 +159,7 @@ public final class Translator {
                 timing.decode += lap()
             }
             if i == 0 {
-                sources = encode(pcm)
+                sources = encode(leveller(pcm))
                 timing.encode += lap()
             }
             let out = generator.finish(pending, source: sources[i])

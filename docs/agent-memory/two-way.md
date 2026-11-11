@@ -196,14 +196,15 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   72,000 FLEURS-en failed the health gate (66 empty rows; chrF 18.59, 21.39 on its non-empty rows
   against 21.27 at 60,000): no promotion, while every other set rose or held (VI→EN FLEURS dev
   34.89, MultiMed 36.07, `en-vi-val-en` 26.4/33.6).
-- Why a row stays silent: mostly a quiet source. Half of FLEURS-en dev peaks under −40 dBFS,
-  below anything trained on, where Mimi codes speech differently or as silence
-  ([sft-evaluation](sft-evaluation.md#evaluation-sets)): those 191 clips hold 31-61 of its empty
-  rows at every validation from 36,000 to 72,000, the other 201 clips 4-9. Among clips peaking
-  above −40 dBFS, short ones go silent more often (under 8 s: 0.6-14% by set and step, MultiMed
-  0.6-1.4%, FLEURS-vi 3-14%; longer: 0-3%): the cache rarely starts a target after its source ends
-  (`cache_rows.target_delay_s` draws the delay from U[0, 0.5 × the source's duration]), so a model
-  whose onset slips past a short clip's end is in a state it rarely trained on.
+- Why a row stays silent: mostly a quiet source ([input level](sft-evaluation.md#input-level)).
+  Half of FLEURS-en dev peaks under −40 dBFS: those 191 clips hold 31-61 of its empty rows at
+  every validation from 36,000 to 72,000, the other 201 clips 4-9; FLEURS-vi's empty rows at
+  60,000 and 72,000 all peak at −40 to −25 dBFS. Short clips go silent a little more often at any
+  level (MultiMed-ST, 90% of it peaking above −12 dBFS: 0.6-1.4% of the clips under 8 s, 0-0.6%
+  of longer ones), as the cache rarely starts a target after its source ends
+  (`cache_rows.target_delay_s` draws the delay from U[0, 0.5 × the source's duration]). This
+  run validates without the input level stage (its commit predates it), so its scores compare
+  with each other, not with evaluations after 2026-11-12.
 
 Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
 2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),

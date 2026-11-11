@@ -20,6 +20,7 @@ import mlx.core as mx
 import numpy as np
 
 from hibiki_mlx import pipeline as f
+from hibiki_mlx.level import Leveller
 from moshi_mlx import models, utils
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root (inference/ -> ..)
@@ -69,12 +70,13 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
     def encoder():
         # Queue numpy (not mx) arrays: lazy mx graphs are bound to the creating
         # thread's stream and can't be evaluated from the LM thread.
+        leveller = Leveller()                                           # the session's level
         while not stop.is_set():
             try:
                 pcm = in_q.get(timeout=0.1)
             except queue.Empty:
                 continue
-            codes = mimi_enc.encode_step(pcm[None, None, :])             # CPU, GIL free
+            codes = mimi_enc.encode_step(leveller(pcm)[None, None, :])   # CPU, GIL free
             enc_q.put_nowait(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
 
     def decoder():

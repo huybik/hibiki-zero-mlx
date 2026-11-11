@@ -22,7 +22,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams), `Translator.swift` (k 80 ms frames per step: the LM on
     the GPU, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
-    the SentencePiece `.model` protobuf directly) and `Audio.swift`.
+    the SentencePiece `.model` protobuf directly) and `Audio.swift` (file reading, the WAV
+    writer, and `Leveller`, the input level stage `Translator.step` runs before Mimi: Python's
+    `hibiki_mlx/level.py`, equal sample for sample; `reset` starts its stream again;
+    [sft-evaluation](sft-evaluation.md#input-level)).
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (8 s silence tail,
   stop on text EOS or 12 frames of `<unk>`/`</s>`/`<pad>`, seed 299792458); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it

@@ -20,6 +20,7 @@ import numpy as np
 import sphn
 
 from hibiki_mlx import pipeline as pl
+from hibiki_mlx.level import Leveller
 from moshi_mlx import models, utils
 
 
@@ -87,6 +88,7 @@ def main() -> None:
     mx.eval(model.parameters())
 
     enc_t = dec_t = step_t = 0.0
+    leveller = Leveller()
     out_pcm: list[np.ndarray] = []
     t_all0 = time.perf_counter()
     for idx in range(total):
@@ -95,7 +97,7 @@ def main() -> None:
             t_all0 = time.perf_counter()
         pcm = in_pcms[:, idx * 1920 : (idx + 1) * 1920]
         t0 = time.perf_counter()
-        oat = mimi_enc.encode_step(pcm[None, 0:1])
+        oat = mimi_enc.encode_step(leveller(pcm[0])[None, None])
         enc_t += time.perf_counter() - t0
         oat = np.transpose(oat, (0, 2, 1))[0, :, :other_cb]
         t0 = time.perf_counter()
@@ -124,7 +126,7 @@ def main() -> None:
     )
     print(f"{'stage':<26}{'ms/frame':>10}{'% of wall':>10}")
     for name, t in [
-        ("mimi encode", enc_t),
+        ("level + mimi encode", enc_t),
         ("LM main transformer", main_t),
         (head_label, head_t[0]),
         ("mimi decode", dec_t),
