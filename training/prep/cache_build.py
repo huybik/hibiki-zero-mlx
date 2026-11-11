@@ -279,6 +279,38 @@ class CUDAModels:
         self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * SAMPLE_RATE)), launch, collect)
         return out
 
+    @staticmethod
+    def _within(lengths: Any, width: int) -> Any:
+        """[len(lengths), width] on the GPU, True where a position is within its row's length: the
+        lengths copied without blocking, since a blocking copy waits for the GPU's queue to drain."""
+        import torch
+
+        lengths = lengths.pin_memory().to(DEVICE, non_blocking=True)
+        return torch.arange(width, device=DEVICE)[None, :] < lengths[:, None]
+
+    def _encoder(self, hs: Any, mask: Any) -> Any:
+        """The wav2vec2 encoder's forward (transformers' `Wav2Vec2Encoder` and
+        `Wav2Vec2EncoderStableLayerNorm`), without its two waits on the GPU: the padding's frames
+        zeroed by `where` rather than a boolean-mask write, and the attention mask always built
+        rather than first checked for padding. Each emptied the GPU's queue every CTC batch, so the
+        encoder's launches, slowed by the GIL the main process's other threads hold, idled the GPU
+        (2026-11-11, omniASR: CTC 108 s on three GigaSpeech 2 shards against ~30 s of kernels)."""
+        import torch
+        from transformers.masking_utils import create_bidirectional_mask
+
+        encoder = self.ctc.wav2vec2.encoder
+        hs = torch.where(mask[..., None], hs, 0.0)
+        attention = create_bidirectional_mask(config=encoder.config, inputs_embeds=hs, attention_mask=mask,
+                                              allow_is_bidirectional_skip=False)
+        hs = hs + encoder.pos_conv_embed(hs)
+        stable = self.ctc.config.do_stable_layer_norm  # the layer norm after the layers, not before
+        if not stable:
+            hs = encoder.layer_norm(hs)
+        hs = encoder.dropout(hs)
+        for layer in encoder.layers:
+            hs = layer(hs, attention_mask=attention)
+        return encoder.layer_norm(hs) if stable else hs
+
     def ctc_log_probs(self, clips: list[np.ndarray],
                       landed: Callable[[list[int], list[np.ndarray]], None] | None = None) -> list[np.ndarray]:
         """Each normalized 16 kHz clip's CTC log-probabilities [frames, `vocab_columns`], as
@@ -299,7 +331,7 @@ class CUDAModels:
                 if self._group_norm:
                     hs = first.conv(batch)
                     valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
-                    own = (torch.arange(hs.shape[-1])[None, :] < valid[:, None])[:, None, :].to(DEVICE, torch.float32)
+                    own = self._within(valid, hs.shape[-1])[:, None, :].float()
                     count = own.sum(-1, keepdim=True)
                     mean = (hs * own).sum(-1, keepdim=True) / count
                     var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
@@ -313,13 +345,13 @@ class CUDAModels:
                     hs = w2v.feature_extractor(batch[:, 0]).transpose(1, 2)
                 hs, _ = w2v.feature_projection(hs)
                 frames = self.ctc._get_feat_extract_output_lengths(lengths)
-                mask = (torch.arange(hs.shape[1]) < frames[:, None]).to(DEVICE)
+                mask = self._within(frames, hs.shape[1])
                 if self._half_ctc:
                     with torch.autocast("cuda", dtype=torch.bfloat16):
-                        hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
+                        hs = self._encoder(hs, mask)
                     hs = hs.float()
                 else:
-                    hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
+                    hs = self._encoder(hs, mask)
                 log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1)[..., self._columns]
             return (*self._to_host(log_probs), frames.tolist())
 
