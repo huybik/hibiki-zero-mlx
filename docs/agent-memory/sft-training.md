@@ -45,23 +45,30 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   the last row keeps the source and text EOS, and the source after its EOS stays silence. A tenth
   of the streams (`streams.SINGLE_ROW_STREAMS`, from 2026-11-04) hold one row, lead to both EOS,
   as a single-sentence evaluation feeds it: the first run, on 30–120 s streams only, never saw the
-  source end after one sentence and never ended a third of the FLEURS rows. On the three shards
-  below (seed 43, before late starts) they were 9.8% of the streams and 2.4% of the frames
-  (median 200 frames).
+  source end after one sentence and never ended a third of the FLEURS rows.
 - Late starts: 5% of rows, in any stream (`streams.LATE_START`), start their target at a frame
   drawn from [half the source, 1 s past its end] instead of their cached delay; one that would
   push its stream past the longest keeps the delay. The cache draws every delay from U[0, 0.5 ×
   the source's duration] (`cache_rows.target_delay_s`), so a first word rarely comes after its
   source has ended: measured on the box (2026-11-11, 12 packs a cache), 0.04% of the GigaSpeech 2
-  and `en-vi` validation rows, 0.87% of the `en_speech` train rows and 1.7% of the `vi-en` CV27
-  validation rows (the English Common Voice clip's own leading silence). A model whose start
+  and `en-vi` validation rows, 0.87% of the `en_speech` train rows and 1.7% of the `vi-en`
+  validation rows (2.6% of its CV27 rows, 0% of its Libriheavy ones: the English Common Voice
+  clip's own leading silence). Planned into streams, where a target also waits for the previous
+  one, 8% of `vi-en` validation rows had their first word after the source, 0.05% of `en-vi`
+  ones. A model whose start
   slipped past a short clip's end then stayed silent through the evaluation's 20 s tail: the
   two-way run at step 36,000 left 16 of FLEURS-vi dev's 361 rows and 48 of FLEURS-en dev's 392
   empty, nearly all under 9 s (its start model 3 FLEURS-vi rows). Drawn over the second half of
   the source and past it, late starts leave no stretch of a sentence where a start has never been
-  seen; on 5–22 s rows about one in seven lands after the source, two thirds of those in a gap without a source
-  EOS, as continuous speech gives. Late starts change every stream plan, the teacher-forced
-  validation streams included, so validation losses do not compare across them.
+  seen. On the validation caches' rows (both directions, the SFT plan): 21% (`en-vi`) and 33%
+  (`vi-en`) of late targets start after their source, and with the target's own lead 23% and 57%
+  of their first words come after it, ~85% of those in a gap without a source EOS, as
+  continuous speech gives; rows with a first word after their source go from 0.05% to 1.2%
+  (`en-vi`) and 8.0% to 10.2% (`vi-en`), while the median onset moves ~0.1 s (`en-vi` 2.00 →
+  2.08 s, `vi-en` 2.80 → 2.88 s). Starts slipping more than ~1.5 s past an `en-vi` source stay
+  unseen: if short clips still go silent, widen `LATE_START_FRAMES`. Late starts change every
+  stream plan, the teacher-forced validation streams included, so validation losses do not
+  compare across them.
 - The MLX and Swift runtimes feed no source EOS after a file and stop once the input is consumed
   and the model has emitted 12 frames of PAD (`PAD_STOP`), sooner than a start in the silence
   after a short clip comes: a model trained with late starts may need a longer stop there.

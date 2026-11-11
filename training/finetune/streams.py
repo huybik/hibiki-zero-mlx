@@ -70,7 +70,7 @@ SINGLE_ROW_STREAMS = 0.1
 # The share of rows whose English starts late, its start drawn from [half the source, 1 s past its
 # end] rather than the cached delay (at most half the source) after the source starts. In the
 # caches a first word rarely comes after its source has ended (0.04% of English-to-Vietnamese rows,
-# up to 1.7% of Vietnamese-to-English ones, sft-training.md), and a model whose start slipped past
+# up to 2.6% of Vietnamese-to-English ones, sft-training.md), and a model whose start slipped past
 # a short clip's end stayed silent; a late row whose stream would then pass its longest keeps its
 # cached delay.
 LATE_START = 0.05

@@ -119,7 +119,8 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
 
 1. Streams of 30–120 s: rows at random (consecutive PhoMT rows of one source chunk stay in
    order; Libriheavy segment numbers are not reading order and overlap); each row's English
-   placed at its cached delay after its Vietnamese, never before the previous English ends;
+   placed at its cached delay after its Vietnamese (5% of rows later, [sft-training](agent-memory/sft-training.md)),
+   never before the previous English ends;
    gaps drawn so the previous English overhangs the next Vietnamese by at most 2 s. That cap
    binds at the median join, so the source "waits" for the interpreter; watch lag growth on
    long real speech.
