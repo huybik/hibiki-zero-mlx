@@ -74,7 +74,8 @@ Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against 
   cache folder at a time.
 - Each `--val-cache-dir` gets its own stream plan and its own entry in `val_log.jsonl`'s
   `teacher_forced` (by its path), so a direction's losses stay apart and a `vi-en` cache's
-  streams stay round 4's when an `en-vi` one joins.
+  streams stay the same when an `en-vi` one joins (not across a planner change, such as late
+  starts: [sft-training](sft-training.md)).
 
 ## Vietnamese aligner
 

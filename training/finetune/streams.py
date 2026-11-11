@@ -29,11 +29,12 @@ pre-roll would remove both.
     VI   lead [row 1]  gap  [row 2]  gap ... [row n] EOS  silence ...
     EN   silence  δ1 [row 1 en] [row 2 en]  ...   [row n en] EOS -1 ...
 
-A SINGLE_ROW_STREAMS share of streams hold one row: lead, the row, both EOS. In a LATE_START
-share of those, the English starts only after the Vietnamese has ended:
+A SINGLE_ROW_STREAMS share of streams hold one row: lead, the row, both EOS. A LATE_START share
+of rows, in any stream, start their English late: anywhere from half their Vietnamese (the cached
+delays' cap) to 1 s past its end, so some start in the silence after it:
 
-    VI   lead [row]  EOS  silence ...
-    EN   silence ...  late [row en] EOS -1 ...
+    VI   ... [row k]  gap  [row k+1] ...
+    EN   ...        late [row k en]  [row k+1 en] ...
 """
 
 from __future__ import annotations
@@ -66,12 +67,14 @@ STREAM_SECONDS = (30.0, 120.0)
 # 30-120 s streams, the first run never saw the source end after one sentence, and never ended a
 # third of the FLEURS rows.
 SINGLE_ROW_STREAMS = 0.1
-# The share of single-row streams whose English starts 0-1 s after the Vietnamese ends rather than
-# its cached delay after it starts. Every cached delay lands the first word before the source ends
-# (sft-training.md), so a model whose start slipped past a short clip's end had never seen that
-# state and stayed silent through the evaluation's 20 s tail.
-LATE_START = 0.5
-LATE_START_FRAMES = (0, 12)  # after the source's last frame
+# The share of rows whose English starts late, its start drawn from [half the source, 1 s past its
+# end] rather than the cached delay (at most half the source) after the source starts. In the
+# caches a first word rarely comes after its source has ended (0.04% of English-to-Vietnamese rows,
+# up to 1.7% of Vietnamese-to-English ones, sft-training.md), and a model whose start slipped past
+# a short clip's end stayed silent; a late row whose stream would then pass its longest keeps its
+# cached delay.
+LATE_START = 0.05
+LATE_START_FRAMES = 12  # past the source's end: the source EOS or the gap's first frame is frame 0
 # Batches pad to a multiple of this many frames, so the model sees few shapes.
 FRAME_BUCKET = 16
 MAX_LEAD = 25  # frames of silence before the first Vietnamese, drawn from [0, 2 s]
@@ -340,9 +343,6 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
     longest = max(max(row.source_frames, row.target_frames) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
-    # A late single row: the lead, its source, the late gap, its target and the EOS frame.
-    if max_frames < MAX_LEAD + 2 * longest + LATE_START_FRAMES[1] + 1:
-        raise ValueError(f"Streams of {max_frames} frames cannot hold a late-starting {longest}-frame row")
     # A stream still under min_frames (at most min_frames - 1) grows by at most a long gap and a
     # row, which must fit.
     if max_frames < min_frames - 1 + LONG_GAP[1] + longest:
@@ -390,8 +390,11 @@ def _plan_direction(
                 single = rng.random() < SINGLE_ROW_STREAMS
                 source_start = rng.randint(0, MAX_LEAD)
             target_start = max(source_start + row.delay_frames, target_end)
-            if single and not pieces and rng.random() < LATE_START:
-                target_start = source_start + row.source_frames + rng.randint(*LATE_START_FRAMES)
+            if rng.random() < LATE_START:
+                late = source_start + rng.randint(row.source_frames // 2, row.source_frames + LATE_START_FRAMES)
+                late_end = max(source_start + row.source_frames, late + row.target_frames - row.delay_frames)
+                if late_end + 1 <= max_frames:  # the length guarantees hold as for a cached delay
+                    target_start = max(target_start, late)
             next_source_end = source_start + row.source_frames
             next_target_end = target_start + row.target_frames - row.delay_frames
             next_frames = max(next_source_end, next_target_end) + 1  # the EOS frames
