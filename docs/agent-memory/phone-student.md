@@ -61,6 +61,9 @@ on a new box (the cut is deterministic from the parent and the weight's `student
 - The default cut (10 layers, 3 depformer layers, 8 codebooks): 1.393B parameters against the
   parent's 3.13B; untrained, a validation stream's teacher-forced loss is 11.6 (audio 8.2, text
   3.4; the parent's ~2.9).
+- Generation on the CPU (`LMGen`, moshi's per-step depformer at k slices): the default student
+  emits text and 8 codebooks a step from the 3rd step on, its Mimi at 8 codebooks; a 16-codebook
+  cut (10 layers, 1.546B parameters) text and 16, its Mimi at 16.
 - The trainer's forward pins the GPU's efficient attention and compiles: a CPU check runs eager
   with `lm_training.sdpa_kernel` replaced, and needs Hibiki's (empty) condition tensors.
 
