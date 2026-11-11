@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Hopper (H100/H200) setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery.
 #
-#   setup             a pinned .venv (Torch 2.15 on CUDA 13.4), then cpus
+#   setup             a pinned .venv (free-threaded Python 3.14, Torch 2.15 on CUDA 13.4), then cpus
 #   cpus              the container's CPU quota into /etc/environment for every later shell; rerun
 #                     after a container restart, which rewrites the file
 #   preflight         GPU, driver, pins, memory, disk, upstream weights
@@ -56,18 +56,26 @@ require_empty_dir() {
 
 setup() {
   [[ "$(uname -s)" == Linux ]] || die "setup must run on the Linux GPU pod"
-  command -v python3 >/dev/null || die "python3 is required"
+  command -v uv >/dev/null || die "uv is required"
   require_cuda_driver
   require_hopper_gpu
-  python3 -c 'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 14)))' \
-    || die "Python 3.10-3.13 is required"
   [[ ! -e "$VENV" ]] || die "refusing to reuse existing environment: $VENV"
-  export PIP_NO_CACHE_DIR=1
-  python3 -m venv "$VENV"
-  "$PYTHON" -m pip install --upgrade pip
-  "$PYTHON" -m pip install \
+  command -v cc >/dev/null && command -v cmake >/dev/null || die "a C compiler and cmake are required (source builds)"
+  # Free-threaded Python 3.14, as every box env that can run it (environment.md). torch.compile loads Triton, which
+  # turns the GIL back on, so the trainer runs with it: 0.5246 against 3.12's 0.5297 s a step on the two-way's
+  # 8,192-frame updates, the same loss (2026-11-11). safetensors and sphn have no free-threaded wheels and build from
+  # source with Rust; sphn's bundled Opus asks for CMake's pre-3.5 policies, which CMake 4 dropped. Relocatable: an env
+  # built in another checkout can be moved into place once the job on the old one stops (docs/finetune.md).
+  export UV_NO_CACHE=1 CMAKE_POLICY_VERSION_MINIMUM=3.5
+  command -v rustup >/dev/null || [[ -x ~/.cargo/bin/rustup ]] \
+    || curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal
+  export PATH="$HOME/.cargo/bin:$PATH"
+  local partial="$VENV.partial"  # moved into place once complete: a failed setup leaves no .venv
+  rm -rf "$partial"
+  uv venv -q --relocatable -p 3.14t "$partial"
+  uv pip install -q -p "$partial" \
     torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
-  "$PYTHON" -m pip install \
+  uv pip install -q -p "$partial" \
     aiohttp==3.14.5 \
     av==15.1.0 \
     einops==0.8.2 \
@@ -83,8 +91,9 @@ setup() {
     sphn==0.2.1 \
     tqdm==4.70.1 \
     transformers==5.22.1
-  "$PYTHON" -m pip install --no-deps moshi==0.2.13
-  "$PYTHON" -m pip freeze > "$VENV/h100-freeze.txt"
+  uv pip install -q -p "$partial" --no-deps moshi==0.2.13
+  uv pip freeze -p "$partial" > "$partial/h100-freeze.txt"
+  mv "$partial" "$VENV"
   echo "Training environment installed in $VENV"
   cpus
 }
@@ -121,6 +130,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import sys
+import sysconfig
 from importlib.metadata import version
 from pathlib import Path
 
@@ -130,8 +140,8 @@ root = Path(sys.argv[1])
 minimum_gib = float(sys.argv[2])
 run_dir = Path(sys.argv[3]) if sys.argv[3] else None
 
-if not ((3, 10) <= sys.version_info[:2] < (3, 14)):
-    raise RuntimeError(f"Python 3.10-3.13 required, got {sys.version.split()[0]}")
+if sys.version_info[:2] != (3, 14) or not sysconfig.get_config_var("Py_GIL_DISABLED"):
+    raise RuntimeError(f"free-threaded Python 3.14 required (h100.sh setup), got {sys.version}")
 if torch.__version__ != "2.15.0+cu134" or torch.version.cuda != "13.4":
     raise RuntimeError(f"torch 2.15.0+cu134 required, got {torch.__version__}")
 if version("moshi") != "0.2.13":

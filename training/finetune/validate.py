@@ -85,6 +85,8 @@ def main() -> None:
         batch_sampler=dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
         collate_fn=streams.collate,
         num_workers=args.num_workers,
+        # Forked, as train.py's: 3.14's default forkserver would pickle every row into each worker.
+        multiprocessing_context="fork" if args.num_workers else None,
     )
     print(f"Planned {len(dataset)} streams from {len(rows)} rows of {repo_display_path(cache_dir)}")
 

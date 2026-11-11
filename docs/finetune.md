@@ -33,6 +33,7 @@ git clone https://github.com/huybik/hibiki-zero-mlx.git hibiki-zero
 cd hibiki-zero
 export HF_HOME=/workspace/.hf_home
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
+# Needs uv (https://docs.astral.sh/uv/), a C compiler and cmake: free-threaded Python 3.14 with source builds.
 ./training/h100.sh setup
 ./.venv/bin/hf auth login
 ./.venv/bin/hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
@@ -44,9 +45,9 @@ export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
 ./training/h100.sh preflight
 ```
 
-`setup` creates a new `.venv` with Torch `2.15.0+cu134`, Moshi `0.2.13` and the
-pinned dependencies, and refuses to reuse an existing environment. `preflight`
-checks the GPU, driver, package pins, RAM (the container's limit, not the host's), free disk,
+`setup` creates a new `.venv` on free-threaded Python 3.14 with Torch `2.15.0+cu134`, Moshi
+`0.2.13` and the pinned dependencies, and refuses to reuse an existing environment. `preflight`
+checks the Python build, the GPU, driver, package pins, RAM (the container's limit, not the host's), free disk,
 and the SHA-256 of the four upstream artifacts, and requires a clean tracked worktree.
 
 Restore the training caches from the cache repo (built with
@@ -127,7 +128,6 @@ it with `--include "en-vi-grounded-v2-noisy/train/*"` and packs it rather than r
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
 V=data/cache/en-vi-grounded-v2/validation
-# A .venv made before PyAV joined `h100.sh setup` needs it: ./.venv/bin/python -m pip install av==15.1.0
 # From a second worktree of the PR's commit: a preempted first run resumes only on its own commit.
 nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
 # After the first run's final save and sync (its final pair is in PREVIOUS_RUN/checkpoints/ on the Hub):
@@ -269,6 +269,17 @@ of training, only validation or docs (check with `git diff`):
    be byte-equal.
 
 That run moved from 991b3a4 to e852735 this way, to take the batch-sized KV cache.
+
+The move to free-threaded Python 3.14 (PR #104) counts as such a commit: its `train.py` change
+only names `fork` for the DataLoader, 3.12's default, and the loss measured the same on both. To
+move a run onto it:
+
+1. Stop the run at a checkpoint, by its PID file (`restart.sh` stops its whole process group).
+2. Only then swap the environment: `mv .venv .venv-py312` and move the new one (built by
+   `h100.sh setup` in another checkout, relocatable) to `.venv`; never under a running job, whose
+   later imports and compile workers would load the other Python.
+3. Pull the commit, set `commit` in `run_id.json` and upload it as `run.json` (the two steps
+   above), then rerun.
 
 Runs recorded before the `inference/`/`training/` split, such as
 `grounded_v2_full_direct_voice_5epoch`, follow their own commit's `docs/finetune.md`.

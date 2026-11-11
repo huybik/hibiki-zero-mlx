@@ -347,12 +347,15 @@ def main() -> None:
         offset = start_step % batches_per_epoch
         while True:
             writer.wait()  # the workers fork; the writer's thread must not be running
+            # Forked, not Python 3.14's default forkserver, which would pickle the dataset into each
+            # worker: every row's codes, ~133 GiB for the two-way run, four times.
             yield from DataLoader(
                 dataset,
                 batch_sampler=batches[offset:],
                 collate_fn=streams.collate,
                 num_workers=args.num_workers,
                 pin_memory=True,
+                multiprocessing_context="fork" if args.num_workers else None,
             )
             offset = 0
 

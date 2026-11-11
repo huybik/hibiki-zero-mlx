@@ -224,8 +224,9 @@ def pack(cache_dirs: list[Path]) -> list[Path]:
     stale = [path for path in shard_paths if path.exists() and not _pack_is_current(path)]
     if stale:
         print(f"[streams] packing {len(stale)} of {len(shard_paths)} cache shards", flush=True)
-        # Forked like DataLoader workers: packing touches only files and host memory, and fork
-        # neither re-runs the caller's script nor starts a fresh BLAS thread pool per worker.
+        # Forked like train.py's DataLoader workers (named: 3.14 defaults to forkserver): packing
+        # touches only files and host memory, and fork neither re-runs the caller's script, pickles
+        # the arguments' state nor starts a fresh BLAS thread pool per worker.
         workers = min(PACK_WORKERS, max(1, int(cpu_budget())), len(stale))
         with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("fork")) as pool:
             list(pool.map(pack_shard, stale))
