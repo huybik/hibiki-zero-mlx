@@ -246,6 +246,16 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
   plus ~10 s at a run's start (the first shard's read and window of decodes). Mimi's time is mostly
   its first SEANet layers at 24 kHz (memory-bound convolutions, ELU, pads), CTC's its 12 layers.
   The workers use ~15 ms of CPU a row (decode 8.9, soxr 2.3, Viterbi ~3): the 30-CPU box idles.
+- The en-vi build (omniASR CTC, the Japan H100 SXM, 2026-11-11, pushes already beside the build):
+  ~75–80 s a GigaSpeech 2 shard, the GPU 78–80% busy on 0.5 s samples. In each ~20 s window,
+  Mimi holds it at 100% for ~10 s; the CTC part runs at 35–85% for ~9 s, with ~1 s at 0 between
+  windows. Per-thread CPU (`/proc/<pid>/task/*/stat`; the container refuses py-spy's ptrace): in the
+  dips the main thread runs ~55% (finishing the last window, reading the next one's clips), the
+  GPU thread ~40% and a third thread ~23% (likely the pool's feeder pickling the CTC outputs), so
+  the CTC part is host-bound on the one process's GIL; the 27 workers use ~1.7 CPUs. Reading and
+  gating a shard costs 3.2 s of CPU (to_pylist 1.8, gates 0.8), its write 1.0 s. Not changed mid-build
+  (~30 min left to win); the levers to measure on the next build: larger CTC batches for omniASR,
+  the CTC outputs through `/dev/shm` as the PCM, the main thread's per-row work in the workers.
 - Bench scripts used: a whole-shard rebuild with stage timers and a comparison against the shard
   on disk, and a per-window model bench with code equality and decode SNR (2026-11-09 session; the
   method is what matters: compare on rows already built, judge precision by reconstruction).
