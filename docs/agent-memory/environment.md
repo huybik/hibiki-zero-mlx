@@ -22,8 +22,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   The cache builds run on it (`/workspace/envs/cache`, [cache-build](cache-build.md#speed-on-cuda)).
   Check `sys._is_gil_enabled()` after a job's imports. Importing Triton turns the GIL back on
   (triton-lang/triton#8491, open), and forcing it off under Triton killed the cache build, so a job
-  on `torch.compile` (the trainer) gains nothing from the GIL's absence and is benchmarked against
-  3.12 first; vLLM and flash-attn ship no free-threaded wheels (`nanovox`, `asr`, `mt` stay 3.12).
+  on `torch.compile` (the trainer) gains nothing from the GIL's absence; it still ran ~1% faster on
+  3.14 (`h100.sh setup` builds it there); vLLM and flash-attn ship no free-threaded wheels (`nanovox`,
+  `asr`, `mt` stay 3.12). 3.14 starts processes by `forkserver`, not `fork`: a child re-imports the
+  main module, so a script that runs work at import breaks (name a context where `fork` matters).
 - A rented box shows the host's cores (`nproc` 128) but its container may use only its quota
   (`/sys/fs/cgroup/cpu.max`, 15.36 CPUs on the Illinois H100), and torch (64 threads, 32
   compile workers), ninja and BLAS size themselves by the cores. `setup` ends with
