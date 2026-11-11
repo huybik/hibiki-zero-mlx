@@ -33,6 +33,7 @@ git clone https://github.com/huybik/hibiki-zero-mlx.git hibiki-zero
 cd hibiki-zero
 export HF_HOME=/workspace/.hf_home
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft
+# Needs uv (https://docs.astral.sh/uv/), a C compiler and cmake: free-threaded Python 3.14 with source builds.
 ./training/h100.sh setup
 ./.venv/bin/hf auth login
 ./.venv/bin/hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
@@ -127,7 +128,6 @@ it with `--include "en-vi-grounded-v2-noisy/train/*"` and packs it rather than r
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
 V=data/cache/en-vi-grounded-v2/validation
-# A .venv made before PyAV joined `h100.sh setup` needs it: ./.venv/bin/python -m pip install av==15.1.0
 # From a second worktree of the PR's commit: a preempted first run resumes only on its own commit.
 nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
 # After the first run's final save and sync (its final pair is in PREVIOUS_RUN/checkpoints/ on the Hub):

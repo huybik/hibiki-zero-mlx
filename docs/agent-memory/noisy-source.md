@@ -98,8 +98,7 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   re-encoded. The pod downloads at ~39 MB/s (16 at a time; one alone ~10 MB/s; reading only the
   needed columns over HTTP was no faster), so `fetch` takes ~3.2 h and keeps ~80 GB of sources.
   `encode` takes ~2.3 h for the split on the pod ([Speed](#speed)).
-- PyAV must be in the pod's environment (`h100.sh setup` pins it; an older venv needs
-  `.venv/bin/python -m pip install av==15.1.0`).
+- PyAV must be in the pod's environment (`h100.sh setup` pins it).
 
 ## Speed
 

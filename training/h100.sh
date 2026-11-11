@@ -60,6 +60,7 @@ setup() {
   require_cuda_driver
   require_hopper_gpu
   [[ ! -e "$VENV" ]] || die "refusing to reuse existing environment: $VENV"
+  command -v cc >/dev/null && command -v cmake >/dev/null || die "a C compiler and cmake are required (source builds)"
   # Free-threaded Python 3.14, as every box env that can run it (environment.md). torch.compile loads Triton, which
   # turns the GIL back on, so the trainer runs with it: 0.5246 against 3.12's 0.5297 s a step on the two-way's
   # 8,192-frame updates, the same loss (2026-11-11). safetensors and sphn have no free-threaded wheels and build from
@@ -69,10 +70,12 @@ setup() {
   command -v cargo >/dev/null || [[ -x ~/.cargo/bin/cargo ]] \
     || curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal
   export PATH="$HOME/.cargo/bin:$PATH"
-  uv venv -q --relocatable -p 3.14t "$VENV"
-  uv pip install -q -p "$VENV" \
+  local partial="$VENV.partial"  # moved into place once complete: a failed setup leaves no .venv
+  rm -rf "$partial"
+  uv venv -q --relocatable -p 3.14t "$partial"
+  uv pip install -q -p "$partial" \
     torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
-  uv pip install -q -p "$VENV" \
+  uv pip install -q -p "$partial" \
     aiohttp==3.14.5 \
     av==15.1.0 \
     einops==0.8.2 \
@@ -88,8 +91,9 @@ setup() {
     sphn==0.2.1 \
     tqdm==4.70.1 \
     transformers==5.22.1
-  uv pip install -q -p "$VENV" --no-deps moshi==0.2.13
-  uv pip freeze -p "$VENV" > "$VENV/h100-freeze.txt"
+  uv pip install -q -p "$partial" --no-deps moshi==0.2.13
+  uv pip freeze -p "$partial" > "$partial/h100-freeze.txt"
+  mv "$partial" "$VENV"
   echo "Training environment installed in $VENV"
   cpus
 }
@@ -137,7 +141,7 @@ minimum_gib = float(sys.argv[2])
 run_dir = Path(sys.argv[3]) if sys.argv[3] else None
 
 if sys.version_info[:2] != (3, 14) or not sysconfig.get_config_var("Py_GIL_DISABLED"):
-    raise RuntimeError(f"free-threaded Python 3.14 required (h100.sh setup), got {sys.version.split()[0]}")
+    raise RuntimeError(f"free-threaded Python 3.14 required (h100.sh setup), got {sys.version}")
 if torch.__version__ != "2.15.0+cu134" or torch.version.cuda != "13.4":
     raise RuntimeError(f"torch 2.15.0+cu134 required, got {torch.__version__}")
 if version("moshi") != "0.2.13":

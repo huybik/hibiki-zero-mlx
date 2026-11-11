@@ -25,7 +25,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   on `torch.compile` (the trainer) gains nothing from the GIL's absence; it still ran ~1% faster on
   3.14 (`h100.sh setup` builds it there); vLLM and flash-attn ship no free-threaded wheels (`nanovox`,
   `asr`, `mt` stay 3.12). 3.14 starts processes by `forkserver`, not `fork`: a child re-imports the
-  main module, so a script that runs work at import breaks (name a context where `fork` matters).
+  main module (a script that works at import breaks) and gets its arguments pickled, so a
+  DataLoader's dataset is copied into each worker. Name `fork` where that matters (train.py's and
+  validate.py's DataLoaders, `streams.pack`, the GRPO reward pool).
 - A rented box shows the host's cores (`nproc` 128) but its container may use only its quota
   (`/sys/fs/cgroup/cpu.max`, 15.36 CPUs on the Illinois H100), and torch (64 threads, 32
   compile workers), ninja and BLAS size themselves by the cores. `setup` ends with
