@@ -29,7 +29,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
   multi-sentence sequences of `--stream-seconds` (30–120 s, `streams.STREAM_SECONDS`, decided
   2026-11-02: upstream's coarse stage used 30–75 s and its RL stage 120 s, and upstream degrades
-  after ~1.6 minutes of input, so streams practise long input).
+  after ~1.6 minutes of input, so streams practise long input). A model with fewer codebooks a
+  stream than the cache (a phone student) gets each assembled stream cut to its rows
+  (`streams.model_rows`, [phone-student](phone-student.md#training-a-student)).
   The rows of one document stay together in order: a tranche row's `doc` and `seq` (a
   PhoAudiobook reader's run, a GigaSpeech 2 recording; a viVoice row is its own doc,
   [tranche-cache](tranche-cache.md)) and a PhoMT source chunk (`phomt_s<N>r<M>`, which
