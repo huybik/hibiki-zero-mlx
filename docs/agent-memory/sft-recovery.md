@@ -70,7 +70,9 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   checkpoint: stop the run by its PID file right after a pair completes; in `run_config.json` set
   `epochs`, `total_steps` (epochs × `batches_per_epoch`) and `warmup_steps` (`total_steps` ×
   `warmup_fraction`, which the resume recomputes); add the same `--epochs` to `train_args.json`
-  and to the command that reruns it (`h100.sh run` compares the two); rerun. The cosine stretches
+  and to the command that reruns it (`h100.sh run` compares the two); rerun once the run's lock
+  is free (`flock -w <s> runs/.RUN.lock true`): the stopped run's `hf_sync` holds it until its
+  upload ends, and `h100.sh run` refuses with "already running" meanwhile. The cosine stretches
   to the new end (the rate steps up where the run then sits earlier in it), the optimizer state
   carries on, and `hf_sync` re-uploads the changed metadata. `twoway_sft` went from one epoch to
   two this way at step 28,000 (2026-11-11).
