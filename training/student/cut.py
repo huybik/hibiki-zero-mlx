@@ -174,6 +174,10 @@ def main() -> None:
     dep_arg.add_argument("--depformer-layers", help="depformer layers to keep, e.g. 0,2,5")
     dep_arg.add_argument("--num-depformer-layers", type=int, default=3, help="depformer layers to keep, spread evenly")
     args = parser.parse_args()
+    if args.heads and args.depformer_layers is not None:
+        parser.error("--depformer-layers does not apply with --heads")
+    if not args.heads and args.seed != 0:
+        parser.error("--seed applies only with --heads")
 
     weight = require_file(args.weight, "parent weight")
     parent_config = read_json(require_file(args.config_path, "parent config"))

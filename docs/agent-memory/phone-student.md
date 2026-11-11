@@ -55,13 +55,19 @@ on a new box (the cut is deterministic from the parent and the weight's `student
 
 `--heads` cuts the delay-pattern student (stage 5.4; the plan's is ~14 layers: `--num-layers 14`):
 the same main layers and codebooks, no depformer, and `training/student/heads.py`'s
-`ParallelHeads` (one linear head a codebook on the main transformer's normed output, initialized
-afresh with `--seed`) in the model's `depformer` slot.
+`ParallelHeads` (one linear head a codebook, initialized afresh with `--seed`) in the model's
+`depformer` slot. The heads read the main transformer's normed output plus the model's own text
+embedding of the step's text token (teacher-forced in training, the just-sampled token in
+generation), as the depformer's first step reads that token: speech then follows the inner
+monologue, and the comparison with the depformer student isolates the parallel heads. Text is
+sampled before audio at each step, so this adds no latency and no parameters.
 
 - Codebook j is delayed j frames (`heads.delays`, written into the config's target delays; the
   source's keep the parent's): a head predicting codebook j at a step has read codebook j-1 of the
   same frame in the step's input, as in MusicGen. moshi's own delay handling then carries it
-  through training (logits undelayed, masks) and generation (`LMGen` withholds the first 7 steps).
+  through training (logits undelayed, masks) and generation (`LMGen` withholds the first k-1
+  steps: 7 at 8 codebooks, 15 at 16). The trunk also relearns its input timing: the parent delays
+  target codebooks 1–15 by 2 frames, the heads student codebook j by j.
 - In the `depformer` slot because generation samples audio only when a depformer exists:
   `heads.py` replaces `LMGen.depformer_step` (all codebooks sampled at once from the heads; any
   other model runs moshi's steps) and, per model, `forward_depformer_training`. The depformer's

@@ -190,8 +190,8 @@ def load_policy(checkpoint_info: Any, device: Any) -> Any:
     """The model a trainer updates (SFT's and GRPO's), from the checkpoint info's weight
     (--model-weight): fp32 masters, every parameter trainable, in training mode.
 
-    Loading a Hibiki weight, moshi's `get_moshi` copies the text PAD's input embedding over the
-    text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
+    Loading a Hibiki weight, `build_lm` (moshi's `get_moshi`, or its own load for a heads student)
+    copies the text PAD's input embedding over the text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
     trains from there (cosine 0.88 to PAD's after round 4), and a resumed pair restores its own.
     `load_lm` and `bf16_copy` keep a checkpoint's own row."""
     lm = build_lm(checkpoint_info, device, torch.float32, lm_kwargs_overrides={"gradient_checkpointing": False})
