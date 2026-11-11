@@ -232,8 +232,8 @@ class Planned:
 
 
 def prepare_row(row: dict[str, Any], source_audio: bytes, target_audio: bytes, split: str) -> Planned:
-    """Worker: `prepare` then `plan` (the decode gates, the delay draw, the text grouping), so the
-    main process only reads the clips: piping ~1.4 MB of PCM a row through the pool's one result
+    """A worker's row of `prepare_rows`: `prepare` then `plan` (the decode gates, the delay draw, the
+    text grouping), so the main process only reads the clips: piping ~1.4 MB of PCM a row through the pool's one result
     pipe held the main thread ~30 s per GigaSpeech 2 shard. Raises Rejected or AlignmentError."""
     shard = Shard(None, "", split, 0, [], [])
     p = plan(shard, 0, row, prepare(source_audio, target_audio), _settings, _tokenizer)

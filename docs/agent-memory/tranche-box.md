@@ -91,8 +91,8 @@ one expires; everything a job writes goes to the Hub as it runs, so a new box re
 2. `/workspace/.env` (mode 600): `HF_TOKEN_AN`, a write token of anquachdev, for the tranche repos'
    pushes; huybik's token in `$HF_HOME/token` for the run recovery repo. Never print either.
 3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs-min.sh` builds the `nanovox`
-   (voice.py) and `asr` (the Qwen3-ASR server) envs and downloads the models at their pinned
-   revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet hung or crawled at ~5 MB/s on the
+   (voice.py), `asr` (the Qwen3-ASR server) and `cache` (the cache builds, free-threaded Python 3.14;
+   installs Rust for safetensors) envs and downloads the models at their pinned revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet hung or crawled at ~5 MB/s on the
    Japan box; plain HTTP ran ~140 MB/s).
 4. The jobs read the tranche repos' parts locally under `/workspace/tranche/repo/<source>/<part>/`
    and fall back to the Hub (`ingest.part_file`), so voice and filters need no download first.

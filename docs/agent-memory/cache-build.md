@@ -48,7 +48,10 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 - Workers (`default_workers`): 2 on MLX, where 2, 4 and 8 ran alike ([Speed on the
   Mac](#speed-on-the-mac)) and the CPU and GPU share one power budget; on CUDA the CPU budget less
   the main process (`paths.cpu_budget`, the container's quota). Each
-  decodes and runs the Viterbi with its own `CTCWordAligner` (`init_worker`).
+  decodes and runs the Viterbi with its own `CTCWordAligner` (`init_worker`). A job holds many rows
+  (32 a decode, a CTC batch's an alignment; one a row on MLX's two workers) and returns each row's
+  `Rejected` or `AlignmentError` in its place: a job a row cost the main process each row's pool
+  round trip under the GIL its GPU thread needs ([Speed on CUDA](#speed-on-cuda)).
 
 ## Rows
 
@@ -243,36 +246,37 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
   on GigaSpeech 2 shards 0–1, the H100 SXM, 2026-11-10); `cudnn.benchmark` (no change); `torch.compile` on Mimi:
   at 1,280 s batches it hits `CUDA_ERROR_ILLEGAL_ADDRESS` (64 channels × 30.7M samples, past int32
   indexing), and at 320 s it runs 14% faster but its codes are wrong (19.7% equal, 0.76 dB SNR).
-- What is left: windows run ~11–12 s against 10.7 s of kernels (the GIL between the two threads),
-  plus ~10 s at a run's start (the first shard's read and window of decodes). Mimi's time is mostly
-  its first SEANet layers at 24 kHz (memory-bound convolutions, ELU, pads), CTC's its 12 layers.
-  The workers use ~15 ms of CPU a row (decode 8.9, soxr 2.3, Viterbi ~3): the 30-CPU box idles.
-- The en-vi build (omniASR CTC, the Japan H100 SXM, 2026-11-11, pushes already beside the build):
-  ~75–80 s a GigaSpeech 2 shard, the GPU 78–80% busy on 0.5 s samples. In each ~20 s window,
-  Mimi holds it at 100% for ~10 s; the CTC part runs at 35–85% for ~9 s, with ~1 s at 0 between
-  windows. Per-thread CPU (`/proc/<pid>/task/*/stat`; the container refuses py-spy's ptrace): in the
-  dips the main thread runs ~55% (finishing the last window, reading the next one's clips), the
-  GPU thread ~40% and a third thread ~23% (likely the pool's feeder pickling the CTC outputs), so
-  the CTC part is host-bound on the one process's GIL; the 27 workers use ~1.7 CPUs. Reading and
-  gating a shard costs 3.2 s of CPU (to_pylist 1.8, gates 0.8), its write 1.0 s. Not changed mid-build
-  (~30 min left to win); the levers to measure on the next build: larger CTC batches for omniASR,
-  the CTC outputs through `/dev/shm` as the PCM, the main thread's per-row work in the workers.
+- A run's start costs ~10 s (the first shard's read and window of decodes). Mimi's time is mostly
+  its first SEANet layers at 24 kHz (memory-bound convolutions, ELU, pads), CTC's its layers. The
+  workers use ~15 ms of CPU a row (decode 8.9, soxr 2.3, Viterbi ~3): the 30-CPU box idles.
+- **The en-vi build (omniASR CTC, the Japan H100 SXM, 2026-11-11): 3,101× → 3,471×**, the GPU
+  86% → 98% busy. Each step on GigaSpeech 2 shards 0–2 (the speed between the first shard out and
+  the last, inputs fetched first, nothing pushed), every shard compared with its Hub copy:
+
+  | Step | Build | Why |
+  |---|---:|---|
+  | before | 3,101× | in each ~20 s window Mimi held the GPU at 100% for ~10 s, the CTC at 35–85% for ~9 s |
+  | a decode job of 32 rows (`DECODE_JOB_ROWS`), an alignment job of a CTC batch (`align_rows`) | 3,344× | a job a row: the main thread 100 → 51 s of CPU, the pool's manager thread 44 → 8 s, all under the GIL the GPU thread needs |
+  | the CTC encoder without its host syncs (`_encoder`, `_within`) | 3,409× | a boolean-mask write, the mask's padding check and a blocking mask copy emptied the GPU's queue every CTC batch |
+  | free-threaded Python 3.14 (`/workspace/envs/cache`), Mimi's rope eager | 3,471× | no GIL between the GPU thread and the threads feeding it; CTC 91 → 84 s |
+
+  The text timing came out as the old build's own rebuild (the same 8, 11 and 4 token frames moved
+  against the Hub copies, every accept and reject alike). Audio codes: 99.95% equal on 3.12, 99.47%
+  on 3.14 with the rope eager (unfused against Triton-fused rounding, near-ties as TF32's; decode
+  SNR unmeasured). Rejected: CTC batches of 1,280 s (3,344×); Triton under `PYTHON_GIL=0` (died
+  without a traceback in its first window). Without Triton (it turns the GIL back on) moshi's one
+  compiled function runs eager (`NO_TORCH_COMPILE=1`); safetensors is built from source.
+- What is left on it: a CTC window of 4,096 clips (17,265 s) is 6.3 s of kernels against ~7 s of
+  wall: float32 memory-efficient attention 17%, copies 15% (the attention output and the feature
+  extractor's layer norms, made contiguous), TF32 matmuls ~24%, the convolutions ~20%, layer norm
+  7%, GELU 6%. Faster needs lower precision (bf16 CTC was rejected) or fused kernels (`torch.compile`
+  needs Triton, so the GIL); Mimi's ~8 s a window is untouched.
 - Bench scripts used: a whole-shard rebuild with stage timers and a comparison against the shard
   on disk, and a per-window model bench with code equality and decode SNR (2026-11-09 session; the
   method is what matters: compare on rows already built, judge precision by reconstruction).
 
-Measured on the Japan H100 SXM 700W on the tranche's rows (2026-11-06/07), before the move onto
-this build:
-
-- Japan H100: a warm PhoAudiobook shard (1,299 rows, 9.6 h of Mimi audio) in 21 s, 1,609× real
-  time, the GPU 74–100% busy; GigaSpeech 2 archives built at 695–1,510× (mean 830×), the wide range
-  driven by per-shard Hub downloads (Xet, ~4 MB/s). With all inputs local: GigaSpeech 2 likely
-  approaches PhoAudiobook's 1,500–1,600× (highest measured was 1,510×). ~49 GB of GPU at peak.
-- Per-row overhead: GigaSpeech 2 (19,967 rows, 4.3 s each → ~5 windows of 4,096) has ~5×
-  more plan/collect cycles than PhoAudiobook (1,299 rows, one window).
-- CPU: 25 workers on the 26.9-CPU Japan quota averaged 10.5 CPUs but throttled 14% of the 100 ms
-  periods in bursts; on H200 the quota is 32 CPUs (31 workers). Check the main process is not the
-  one throttled (`/sys/fs/cgroup/cpu.stat`).
+- CPU: check the main process is not the one throttled (`/sys/fs/cgroup/cpu.stat`): 25 workers on
+  the Japan box's 26.9-CPU quota throttled 14% of the 100 ms periods in bursts (2026-11-07).
 
 ## Changing it
 
