@@ -2,7 +2,8 @@
 # Only the nanovox and asr parts of training/tranche/envs.sh (the bake-off envs are not needed), and the
 # cache build's env.
 set -Eeuo pipefail
-trap 'kill $(jobs -p) 2>/dev/null' EXIT  # a failed step stops the env builds still running beside it
+# A failed step stops the env builds still running beside it, each job's whole process group (set -m below).
+trap 'for p in $(jobs -p); do kill -- -$p 2>/dev/null || true; done' EXIT
 export UV_NO_CACHE=1
 E=/workspace/envs; mkdir -p $E
 UV="uv"
@@ -12,6 +13,7 @@ mk() { [[ -x $E/$1/bin/python ]] || $UV venv -q -p "$2" $E/$1; }
 # compiled function (its rope) runs eager under NO_TORCH_COMPILE=1. The .venv's versions (h100.sh) but av, pyarrow and
 # sentencepiece, at versions checked free of the GIL (av 15.1.0's free-threaded wheel turns it back on); safetensors has
 # no free-threaded wheel: built with Rust.
+set -m
 (command -v cargo >/dev/null || [[ -x ~/.cargo/bin/cargo ]] || curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal
  export PATH="$HOME/.cargo/bin:$PATH"
  mk cache 3.14t
@@ -27,12 +29,13 @@ cache=$!
 (mk asr 3.12; $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
  $E/asr/bin/python -c "import torch; print('asr:', torch.__version__, torch.version.cuda)") &
 asr=$!
+set +m
 mk nanovox 3.12
 $UV pip install -q -p $E/nanovox "torch==2.10.*" "torchaudio==2.10.*" --index-url https://download.pytorch.org/whl/cu130
 $UV pip install -q -p $E/nanovox nano-vllm-voxcpm==2.0.5 pyarrow av httpx jiwer num2words "torch==2.10.*" "torchaudio==2.10.*" \
   "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" \
   --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
-echo "nanovox: $($E/nanovox/bin/python -c "import torch; print(torch.__version__, torch.version.cuda)")"
+$E/nanovox/bin/python -c "import torch; print('nanovox:', torch.__version__, torch.version.cuda)"
 rc=0; wait $cache || rc=1; wait $asr || rc=1  # each by its PID: a bare wait returns 0 whatever they returned
 ((rc == 0))
 $E/asr/bin/python -c "
