@@ -21,8 +21,8 @@ snapshot_download("anquachdev/en-vi-speech-20k", repo_type="dataset", local_dir=
                   allow_patterns=sys.argv[1:], max_workers=8)
 PY
 }
-build() {  # shard paths under data/
-  .venv/bin/python -m training.prep.cache_codes --device cuda --direction en-vi --dataset-dir ${D%/data} --out-dir $OUT \
+build() {  # shard paths under data/; the cache builds' free-threaded env (envs-min.sh)
+  NO_TORCH_COMPILE=1 /workspace/envs/cache/bin/python -m training.prep.cache_codes --device cuda --direction en-vi --dataset-dir ${D%/data} --out-dir $OUT \
     --shards "$@"
 }
 built() {  # split name: its cache shard, or the pack that outlived it

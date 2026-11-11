@@ -16,6 +16,14 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   are editable installs, so moving either directory requires reinstalling them.
 - CUDA training uses only the environment that `./training/h100.sh setup` builds; see
   [sft-recovery](sft-recovery.md).
+- Free-threaded Python 3.14 (no GIL) for every box env it can run (user, 2026-11-11: "we use this
+  new python setup for everything"), at the `.venv`'s package versions except where a package's
+  free-threaded wheel turns the GIL back on (av 15.1.0; `box/envs-min.sh` pins the ones checked).
+  The cache builds run on it (`/workspace/envs/cache`, [cache-build](cache-build.md#speed-on-cuda)).
+  Check `sys._is_gil_enabled()` after a job's imports. Importing Triton turns the GIL back on
+  (triton-lang/triton#8491, open), and forcing it off under Triton killed the cache build, so a job
+  on `torch.compile` (the trainer) gains nothing from the GIL's absence and is benchmarked against
+  3.12 first; vLLM and flash-attn ship no free-threaded wheels (`nanovox`, `asr`, `mt` stay 3.12).
 - A rented box shows the host's cores (`nproc` 128) but its container may use only its quota
   (`/sys/fs/cgroup/cpu.max`, 15.36 CPUs on the Illinois H100), and torch (64 threads, 32
   compile workers), ninja and BLAS size themselves by the cores. `setup` ends with

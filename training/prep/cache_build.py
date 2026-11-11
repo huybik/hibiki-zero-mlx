@@ -34,7 +34,7 @@ import numpy as np
 from training.paths import cpu_budget, read_json, require_file
 from training.prep import cache_rows
 from training.prep.audio import Rejected
-from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Row, Settings, Shard
+from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Planned, Row, Settings, Shard
 from training.prep.text_timing import Aligner, AlignmentError, aligner_files, vocab_columns
 
 if sys.platform == "darwin":  # before the builders' readers import pyarrow, whose mimalloc pool keeps freed buffers on macOS
@@ -47,7 +47,10 @@ MLX_WORKERS = 2  # 2, 4 and 8 ran alike; the Mac's CPU and GPU share one power b
 # Padded audio per batch, Mimi and CTC. On a 4,094-row GigaSpeech 2 window (H200, TF32): CTC + Mimi took
 # 13.0, 11.0, 10.7, 10.7 and 11.3 s at 80, 160, 320, 640 and 1,280 s (peak 2.4 to 27 GiB): bigger
 # batches pad more. 1,280 s also overflows int32 indexing under torch.compile (64 channels x 30.7M).
-CUDA_BATCH_S = 320.0
+CUDA_BATCH_S = 320.0  # omniASR's CTC alone ran alike at 1,280 s (2026-11-11, the en-vi build)
+# Rows per decode job (`cache_rows.prepare_rows`); a CTC batch's rows are one alignment job. One job a
+# row cost the main process each row's pool round trip under its one GIL, beside the GPU thread.
+DECODE_JOB_ROWS = 32
 # TF32 matmuls and convolutions in CUDAModels (2026-11-09, H200, a 4,094-row GigaSpeech 2 window): CTC
 # 11.7 → 4.1 s, Mimi 13.8 → 7.9 s. 0.021% of text token frames move (at most 4 frames, no row changes
 # its accept/reject); Mimi's first codebook is 99.92% equal and the residual ones 96–99%, near-ties:
@@ -55,6 +58,9 @@ CUDA_BATCH_S = 320.0
 # 9.040 dB SNR). bf16 Mimi rewrote half the residual codes for ~10% more; bf16 CTC was slower.
 CUDA_TF32 = True
 DEVICE = "cuda"  # the torch device of CUDAModels
+# A row's alignment: its job (`cache_rows.align_rows`, a CTC batch's rows) and its place in the job's results.
+Aligned = tuple[Future, int]
+AlignJob = Callable[[list[Row], list[np.ndarray]], Future]  # Builder._encode_start's: submits one
 
 
 @contextmanager
@@ -102,11 +108,10 @@ class MLXModels:
         self.columns = mx.array(vocab_columns(aligner, files))
         self.cardinality = self.mimi.cardinality
 
-    def encode(
-        self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
-    ) -> list[tuple[Future, Any, Any]]:
-        """Queue CTC and Mimi on the GPU; block until CTC is done and workers are submitted;
-        return lazy Mimi codes so the caller can overlap planning the next window with Mimi."""
+    def encode(self, rows: list[Row], align: AlignJob) -> list[tuple[Aligned, Any, Any]]:
+        """Queue CTC and Mimi on the GPU; block until CTC is done and workers are submitted (a job a
+        row, for the Mac's two workers); return lazy Mimi codes so the caller can overlap planning
+        the next window with Mimi."""
         import mlx.core as mx
 
         log_probs = [mx.take(self.ctc.log_probs(row.target16), self.columns, axis=1) for row in rows]
@@ -114,7 +119,7 @@ class MLXModels:
         mx.async_eval(log_probs)
         mx.async_eval(codes)
         # np.array(lp) blocks until CTC is done; Mimi is queued and runs asynchronously after it
-        aligned = [align(row, np.array(lp)) for row, lp in zip(rows, log_probs, strict=True)]
+        aligned = [(align([row], [np.array(lp)]), 0) for row, lp in zip(rows, log_probs, strict=True)]
         return [(a, source, target) for a, (source, target) in zip(aligned, codes, strict=True)]
 
 
@@ -185,16 +190,16 @@ class CUDAModels:
         self._half_ctc = half_ctc
         self._columns = torch.tensor(vocab_columns(aligner, files), device=DEVICE)
 
-    def encode(
-        self, rows: list[Row], align: Callable[[Row, np.ndarray], Future]
-    ) -> list[tuple[Future, np.ndarray, np.ndarray]]:
-        """Each row's alignment (`align` given its CTC log-probabilities, as each batch lands) and
-        Mimi codes: the CTC first, so the workers align while Mimi encodes; both clips of every row
-        in one sort, so Mimi's batches come out fuller."""
+    def encode(self, rows: list[Row], align: AlignJob) -> list[tuple[Aligned, np.ndarray, np.ndarray]]:
+        """Each row's alignment (`align` given a CTC batch's rows and log-probabilities, as the batch
+        lands) and Mimi codes: the CTC first, so the workers align while Mimi encodes; both clips of
+        every row in one sort, so Mimi's batches come out fuller."""
         aligned: list[Any] = [None] * len(rows)
 
-        def landed(i: int, log_probs: np.ndarray) -> None:
-            aligned[i] = align(rows[i], log_probs)
+        def landed(group: list[int], log_probs: list[np.ndarray]) -> None:
+            job = align([rows[i] for i in group], log_probs)
+            for place, i in enumerate(group):
+                aligned[i] = (job, place)
 
         self.ctc_log_probs([row.target16 for row in rows], landed)
         codes = self.mimi_codes([row.source24 for row in rows] + [row.target24 for row in rows])
@@ -274,13 +279,45 @@ class CUDAModels:
         self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * SAMPLE_RATE)), launch, collect)
         return out
 
+    @staticmethod
+    def _within(lengths: Any, width: int) -> Any:
+        """[len(lengths), width] on the GPU, True where a position is within its row's length: the
+        lengths copied without blocking, since a blocking copy waits for the GPU's queue to drain."""
+        import torch
+
+        lengths = lengths.pin_memory().to(DEVICE, non_blocking=True)
+        return torch.arange(width, device=DEVICE)[None, :] < lengths[:, None]
+
+    def _encoder(self, hs: Any, mask: Any) -> Any:
+        """The wav2vec2 encoder's forward (transformers 5.22.1's `Wav2Vec2Encoder` and
+        `Wav2Vec2EncoderStableLayerNorm`, to check again on an upgrade), without its two waits on the GPU: the padding's frames
+        zeroed by `where` rather than a boolean-mask write, and the attention mask always built
+        rather than first checked for padding. Each emptied the GPU's queue every CTC batch, so the
+        encoder's launches, slowed by the GIL the main process's other threads hold, idled the GPU
+        (2026-11-11, omniASR: CTC 108 s on three GigaSpeech 2 shards against ~30 s of kernels)."""
+        import torch
+        from transformers.masking_utils import create_bidirectional_mask
+
+        encoder = self.ctc.wav2vec2.encoder
+        hs = torch.where(mask[..., None], hs, 0.0)
+        attention = create_bidirectional_mask(config=encoder.config, inputs_embeds=hs, attention_mask=mask,
+                                              allow_is_bidirectional_skip=False)
+        hs = hs + encoder.pos_conv_embed(hs)
+        stable = self.ctc.config.do_stable_layer_norm  # the layer norm after the layers, not before
+        if not stable:
+            hs = encoder.layer_norm(hs)
+        hs = encoder.dropout(hs)
+        for layer in encoder.layers:
+            hs = layer(hs, attention_mask=attention)
+        return encoder.layer_norm(hs) if stable else hs
+
     def ctc_log_probs(self, clips: list[np.ndarray],
-                      landed: Callable[[int, np.ndarray], None] | None = None) -> list[np.ndarray]:
+                      landed: Callable[[list[int], list[np.ndarray]], None] | None = None) -> list[np.ndarray]:
         """Each normalized 16 kHz clip's CTC log-probabilities [frames, `vocab_columns`], as
         computed alone: the padding is masked out of the positional convolution's input and the
         attention keys, and, for a base model, out of the statistics of its first convolution's
-        GroupNorm, which normalizes over the whole input (as wav2vec2_mlx does). `landed(i,
-        log_probs)` hears of each clip as its batch reaches the host."""
+        GroupNorm, which normalizes over the whole input (as wav2vec2_mlx does). `landed(indices,
+        log_probs)` hears of each batch's clips as it reaches the host."""
         import torch
 
         w2v = self.ctc.wav2vec2
@@ -294,7 +331,7 @@ class CUDAModels:
                 if self._group_norm:
                     hs = first.conv(batch)
                     valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
-                    own = (torch.arange(hs.shape[-1])[None, :] < valid[:, None])[:, None, :].to(DEVICE, torch.float32)
+                    own = self._within(valid, hs.shape[-1])[:, None, :].float()
                     count = own.sum(-1, keepdim=True)
                     mean = (hs * own).sum(-1, keepdim=True) / count
                     var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
@@ -308,13 +345,13 @@ class CUDAModels:
                     hs = w2v.feature_extractor(batch[:, 0]).transpose(1, 2)
                 hs, _ = w2v.feature_projection(hs)
                 frames = self.ctc._get_feat_extract_output_lengths(lengths)
-                mask = (torch.arange(hs.shape[1]) < frames[:, None]).to(DEVICE)
+                mask = self._within(frames, hs.shape[1])
                 if self._half_ctc:
                     with torch.autocast("cuda", dtype=torch.bfloat16):
-                        hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
+                        hs = self._encoder(hs, mask)
                     hs = hs.float()
                 else:
-                    hs = w2v.encoder(hs, attention_mask=mask).last_hidden_state
+                    hs = self._encoder(hs, mask)
                 log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1)[..., self._columns]
             return (*self._to_host(log_probs), frames.tolist())
 
@@ -324,8 +361,8 @@ class CUDAModels:
             log_probs = host.numpy()
             for row, (i, count) in enumerate(zip(group, frames, strict=True)):
                 out[i] = log_probs[row, :count]
-                if landed is not None:
-                    landed(i, out[i])
+            if landed is not None:
+                landed(group, [out[i] for i in group])
 
         self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * CTC_RATE)), launch, collect)
         return out
@@ -410,11 +447,12 @@ class Builder:
                     done.set_result(self._encode_start(rows, pool))
                     inflight.append(done)
 
-            for shard, index, row, clips in self._decoded(shards, pool, started):
-                try:
-                    window.append(clips.result().row(shard, index, row))
-                except (Rejected, AlignmentError) as exc:
-                    shard.reject(index, row["id"], exc)
+            for shard, index, row, job, place in self._decoded(shards, pool, started):
+                planned: Planned | Rejected | AlignmentError = job.result()[place]
+                if isinstance(planned, (Rejected, AlignmentError)):
+                    shard.reject(index, row["id"], planned)
+                else:
+                    window.append(planned.row(shard, index, row))
                 if len(window) == self.models.window:
                     submit(window)
                     window = []
@@ -432,43 +470,49 @@ class Builder:
 
     def _decoded(
         self, shards: Iterator[Shard], pool: ProcessPoolExecutor, started: deque[Shard]
-    ) -> Iterator[tuple[Shard, int, dict[str, Any], Future]]:
-        """Each kept row with its decode, submitted a window ahead (the pool runs jobs in order, so
-        more would only queue a window's alignments behind more decodes); a shard joins `started`
-        as its first decode is submitted."""
-        queued: deque[tuple[Shard, int, dict[str, Any], Future]] = deque()
+    ) -> Iterator[tuple[Shard, int, dict[str, Any], Future, int]]:
+        """Each kept row with its decode job (`cache_rows.prepare_rows`, DECODE_JOB_ROWS rows of its
+        shard) and its place in the job's results, submitted a window ahead (the pool runs jobs in
+        order, so more would only queue a window's alignments behind more decodes); a shard joins
+        `started` as its first job is submitted."""
+        queued: deque[tuple[Shard, int, dict[str, Any], Future, int]] = deque()
         for shard in shards:
             started.append(shard)
-            for index, row in shard.rows:
-                audio = {side: row.pop(f"{side}_audio") for side in ("vi", "en")}
-                fields = {key: row[key] for key in ("id", "text_en", "text_vi", "vi_duration_s", "en_duration_s")}
-                clips = pool.submit(cache_rows.prepare_row, fields, audio[self.settings.source],
-                                    audio[self.settings.target], shard.split)
-                queued.append((shard, index, row, clips))
-                if len(queued) > self.models.window:
+            for start in range(0, len(shard.rows), DECODE_JOB_ROWS):
+                rows = shard.rows[start: start + DECODE_JOB_ROWS]
+                job = pool.submit(cache_rows.prepare_rows, [self._decode_args(row) for _, row in rows], shard.split)
+                queued.extend((shard, index, row, job, place) for place, (index, row) in enumerate(rows))
+                while len(queued) > self.models.window:
                     yield queued.popleft()
         while queued:
             yield queued.popleft()
+
+    def _decode_args(self, row: dict[str, Any]) -> tuple[dict[str, Any], bytes, bytes]:
+        """A row's part of a decode job: its fields, then the source's and target's audio, taken from it."""
+        audio = {side: row.pop(f"{side}_audio") for side in ("vi", "en")}
+        fields = {key: row[key] for key in ("id", "text_en", "text_vi", "vi_duration_s", "en_duration_s")}
+        return fields, audio[self.settings.source], audio[self.settings.target]
 
     def _encode_start(self, window: list[Row], pool: ProcessPoolExecutor) -> list:
         """Queue GPU work for `window` and submit alignment workers; return lazy Mimi codes."""
         if not window:
             return []
 
-        def align(row: Row, log_probs: np.ndarray) -> Future:
-            return pool.submit(cache_rows.align, log_probs, row.lead, row.groups,
-                               row.target_frames - row.delay_frames, row.delay_frames, self.eos_id)
+        def align(rows: list[Row], log_probs: list[np.ndarray]) -> Future:
+            return pool.submit(cache_rows.align_rows, log_probs,
+                               [(r.lead, r.groups, r.target_frames - r.delay_frames, r.delay_frames) for r in rows],
+                               self.eos_id)
 
         return list(zip(window, self.models.encode(window, align), strict=True))
 
     def _encode_finish(self, pending: list) -> None:
         """Collect Mimi codes and alignment results from `_encode_start`, finalizing each row."""
-        for row, (aligned, source, target) in pending:
-            try:
-                tokens, text_frames, score = aligned.result()
-            except AlignmentError as exc:
-                row.shard.reject(row.index, row.data["id"], exc)
+        for row, ((job, place), source, target) in pending:
+            aligned = job.result()[place]
+            if isinstance(aligned, AlignmentError):
+                row.shard.reject(row.index, row.data["id"], aligned)
                 continue
+            tokens, text_frames, score = aligned
             row.shard.samples.append(cache_rows.sample(row, tokens, text_frames, score, np.array(source),
                                                         np.array(target), self.cfg, self.settings))
             row.shard.left -= 1

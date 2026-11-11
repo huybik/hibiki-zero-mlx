@@ -25,6 +25,7 @@ from training.prep.audio import Rejected
 from training.prep.text_timing import (
     ALIGNERS,
     Aligner,
+    AlignmentError,
     CTCWordAligner,
     ctc_frames,
     sentencepiece_groups,
@@ -231,8 +232,8 @@ class Planned:
 
 
 def prepare_row(row: dict[str, Any], source_audio: bytes, target_audio: bytes, split: str) -> Planned:
-    """Worker: `prepare` then `plan` (the decode gates, the delay draw, the text grouping), so the
-    main process only reads the clips: piping ~1.4 MB of PCM a row through the pool's one result
+    """A worker's row of `prepare_rows`: `prepare` then `plan` (the decode gates, the delay draw, the
+    text grouping), so the main process only reads the clips: piping ~1.4 MB of PCM a row through the pool's one result
     pipe held the main thread ~30 s per GigaSpeech 2 shard. Raises Rejected or AlignmentError."""
     shard = Shard(None, "", split, 0, [], [])
     p = plan(shard, 0, row, prepare(source_audio, target_audio), _settings, _tokenizer)
@@ -249,19 +250,41 @@ def prepare_row(row: dict[str, Any], source_audio: bytes, target_audio: bytes, s
     return out
 
 
-def align(
-    log_probs: np.ndarray,
-    lead: list[int],
-    groups: list[tuple[list[int], str]],
-    raw_target_frames: int,
-    delay_frames: int,
+def prepare_rows(rows: list[tuple[dict[str, Any], bytes, bytes]], split: str) -> list[Planned | Rejected | AlignmentError]:
+    """Worker: `prepare_row` over a job of rows (`row`, source audio, target audio), each row's
+    Rejected or AlignmentError in its place. A job a row cost the main process each row's pool
+    round trip under its one GIL, which the GPU thread shares (2026-11-11)."""
+    out: list[Planned | Rejected | AlignmentError] = []
+    for row, source_audio, target_audio in rows:
+        try:
+            out.append(prepare_row(row, source_audio, target_audio, split))
+        except (Rejected, AlignmentError) as exc:
+            # Its traceback, and the error it replaced, would hold the job's inputs until a GC pass.
+            exc.__traceback__ = exc.__context__ = None
+            out.append(exc)
+    return out
+
+
+def align_rows(
+    log_probs: list[np.ndarray],
+    rows: list[tuple[list[int], list[tuple[list[int], str]], int, int]],
     eos_id: int,
-) -> tuple[list[int], list[int], float]:
-    """Worker: the row's text tokens and their frames, and the alignment score; raises
-    AlignmentError to reject the row."""
-    alignment = _aligner.align(log_probs, groups)
-    tokens, frames = timed_sentencepiece_tokens(lead, groups, alignment, raw_target_frames, delay_frames, eos_id)
-    return tokens, frames, alignment.score
+) -> list[tuple[list[int], list[int], float] | AlignmentError]:
+    """Worker: for each row of a CTC batch (its log-probabilities, and its `lead`, `groups`, raw
+    target frames and delay frames), its text tokens, their frames and the alignment score, or the
+    AlignmentError that rejects it."""
+    out: list[tuple[list[int], list[int], float] | AlignmentError] = []
+    for probs, (lead, groups, raw_target_frames, delay_frames) in zip(log_probs, rows, strict=True):
+        try:
+            alignment = _aligner.align(probs, groups)
+            tokens, frames = timed_sentencepiece_tokens(lead, groups, alignment, raw_target_frames, delay_frames,
+                                                        eos_id)
+        except AlignmentError as exc:
+            exc.__traceback__ = exc.__context__ = None
+            out.append(exc)
+            continue
+        out.append((tokens, frames, alignment.score))
+    return out
 
 
 def assemble_codes(
