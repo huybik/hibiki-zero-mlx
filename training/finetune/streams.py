@@ -472,12 +472,16 @@ def silence_track(mimi: Any, frames: int, codebooks: int | None = None) -> torch
     row's delay frames), then steady silence, a few repeating patterns rather than one frame
     (codebook 0 is 1316 on ~99% of frames).
     """
+    active = mimi.num_codebooks
     if codebooks is not None:
         mimi.set_num_codebooks(codebooks)
     samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
     device = next(mimi.parameters()).device
-    with torch.no_grad():
-        codes = mimi.encode(torch.zeros(1, 1, samples, device=device))[0]
+    try:
+        with torch.no_grad():
+            codes = mimi.encode(torch.zeros(1, 1, samples, device=device))[0]
+    finally:
+        mimi.set_num_codebooks(active)  # the caller's Mimi keeps its own count
     if codes.shape[-1] != frames:
         raise RuntimeError(f"Mimi encoded {codes.shape[-1]} silence frames, expected {frames}")
     return codes.to(device="cpu", dtype=torch.int32)
@@ -495,7 +499,8 @@ def model_rows(layout: Layout, codebooks: int) -> list[int]:
 
 class StreamDataset(Dataset):
     """Streams planned once from `rows` with `seed`; each item is assembled on demand, at the
-    cache's layout, then cut to `codebooks` a stream (`model_rows`; None keeps them all)."""
+    cache's layout, then cut to `codebooks` a stream (`model_rows`; None keeps them all). `layout`
+    stays the cache's: a cut item's rows are `model_rows`, not `layout`'s."""
 
     def __init__(
         self,

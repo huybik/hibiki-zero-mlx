@@ -23,13 +23,14 @@ parent (28 layers, 16+16 codebooks, depformer 6 layers x 9 step slices)
   main layers      --layers 0,3,... | --num-layers 10 (spread: 0,3,6,9,12,15,18,21,24,27)
   emb (inputs)     target 0..k-1, then source 0..k-1 (parent emb 0..k-1, 16..16+k-1)
   depformer        --depformer-layers | --num-depformer-layers 3 (0,2,5); in each, step slices 0..k-1
-  per step         depformer_in, depformer_emb, depformer_norms, linears: the first k steps
+  per step         depformer_in, depformer_norms, linears: the first k steps (depformer_emb: steps 1..k-1)
   unchanged        text_emb, text_linear, out_norm, depformer_text_emb
 ```
 
-- `--codebooks` (k, default 8) keeps the target's and the source's first k: Mimi's codebooks are
-  residual, so they are the cache's first k. The parent's first k steps must own their slices
-  (its schedule shares slice 8 among steps 8–15, so k ≤ 8 for Hibiki-Zero).
+- `--codebooks` (k, default 8; up to 16, for stage 5.3's EN→VI check at 16) keeps the target's and
+  the source's first k: Mimi's codebooks are residual, so they are the cache's first k. The kept
+  steps' weight slices must be the parent's 0..m without gaps (Hibiki-Zero's steps 8–15 share
+  slice 8, which a cut past 9 keeps shared); the schedule is written only if the parent has one.
 - The config is the parent's with `num_layers`, `n_q` (2k), `dep_q` (k), `delays` (text, then each
   stream's first k) and the step schedule cut alike. moshi hands every config key to the model, so
   the cut's record goes only into the weight's metadata (`student`, `student_of`), beside the
@@ -44,6 +45,10 @@ parent (28 layers, 16+16 codebooks, depformer 6 layers x 9 step slices)
 assembled at the cache's layout (`[33, T]`, silence encoded at the cache's 16 codebooks), then cut
 to the model's rows (`streams.model_rows`: text, target 0..k-1, source 0..k-1). `validate.py` does
 the same; GRPO's datasets keep the 3B's full width.
+
+A student run reads `<dir>/config.json` and its start weight at every load (eval, validate,
+resume), and neither syncs to the run's Hub prefix: keep the student dir with the run, or recut it
+on a new box (the cut is deterministic from the parent and the weight's `student` record).
 
 ## Checks
 

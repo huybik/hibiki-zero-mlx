@@ -23,10 +23,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from training.paths import DEFAULT_CONFIG_PATH, read_json, repo_display_path, require_file
-
-# The parent's config keys the cut rewrites; anything else it copies unchanged.
-CUT_KEYS = ("num_layers", "n_q", "dep_q", "delays", "depformer_num_layers", "depformer_weights_per_step_schedule")
+from training.paths import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_MIMI_WEIGHT,
+    DEFAULT_TOKENIZER,
+    read_json,
+    repo_display_path,
+    require_file,
+)
 
 
 def spread(count: int, total: int) -> list[int]:
@@ -38,14 +42,9 @@ def spread(count: int, total: int) -> list[int]:
     return sorted({round(i * (total - 1) / (count - 1)) for i in range(count)})
 
 
-def indices(text: str | None, count: int | None, total: int, label: str) -> list[int]:
+def indices(text: str | None, count: int, total: int, label: str) -> list[int]:
     """Explicit comma-separated indices, or `count` spread evenly; checked against `total`."""
-    if text is not None:
-        kept = [int(part) for part in text.split(",") if part.strip()]
-    elif count is not None:
-        kept = spread(count, total)
-    else:
-        kept = list(range(total))
+    kept = [int(part) for part in text.split(",") if part.strip()] if text is not None else spread(count, total)
     if not kept or kept != sorted(set(kept)) or kept[0] < 0 or kept[-1] >= total:
         raise ValueError(f"{label}: need increasing indices in [0, {total}), got {kept}")
     return kept
@@ -64,11 +63,6 @@ def student_config(parent: dict[str, Any], layers: list[int], codebooks: int,
     delays = list(parent["delays"])
     if len(delays) != 1 + n_q:
         raise ValueError(f"expected {1 + n_q} delays, got {len(delays)}")
-    schedule = parent.get("depformer_weights_per_step_schedule") or list(range(dep_q))
-    kept_schedule = schedule[:codebooks]
-    if kept_schedule != list(range(codebooks)):
-        # Each kept step must own its slice, so the kept slices are exactly 0..codebooks-1.
-        raise ValueError(f"the parent's first {codebooks} steps share weight slices: {kept_schedule}")
     child = dict(parent)
     child.update(
         num_layers=len(layers),
@@ -76,8 +70,14 @@ def student_config(parent: dict[str, Any], layers: list[int], codebooks: int,
         dep_q=codebooks,
         delays=[delays[0], *delays[1 : 1 + codebooks], *delays[1 + dep_q : 1 + dep_q + codebooks]],
         depformer_num_layers=len(depformer_layers),
-        depformer_weights_per_step_schedule=kept_schedule,
     )
+    if (schedule := parent.get("depformer_weights_per_step_schedule")) is not None:
+        # The kept steps' slices: the parent's 0..m, which the student holds as its own 0..m (moshi
+        # sizes the per-step weights max + 1). Hibiki-Zero's steps 8-15 share slice 8.
+        kept = schedule[:codebooks]
+        if sorted(set(kept)) != list(range(max(kept) + 1)):
+            raise ValueError(f"the parent's first {codebooks} steps use weight slices with gaps: {kept}")
+        child["depformer_weights_per_step_schedule"] = kept
     record = {"main_layers": layers, "codebooks": codebooks, "depformer_layers": depformer_layers,
               "parent_num_layers": int(parent["num_layers"]), "parent_dep_q": dep_q,
               "parent_depformer_num_layers": int(parent["depformer_num_layers"])}
@@ -86,7 +86,7 @@ def student_config(parent: dict[str, Any], layers: list[int], codebooks: int,
 
 def source_key(key: str, layers: list[int], codebooks: int, depformer_layers: list[int],
                parent_dep_q: int) -> str | None:
-    """The parent tensor a student tensor copies, or None for a student key with no parent (a bug)."""
+    """The parent tensor a student tensor copies (per-step tensors keep their index)."""
     patterns: list[tuple[str, Any]] = [
         (r"^transformer\.layers\.(\d+)\.", lambda m: f"transformer.layers.{layers[int(m[1])]}."),
         # Student embeddings 0..k-1 are the target's first k; k..2k-1 the source's first k.
@@ -112,16 +112,17 @@ def cut_state(parent: dict[str, Any], child_keys: dict[str, tuple[int, ...]], la
         tensor = parent[src]
         if tuple(tensor.shape) != tuple(shape):
             raise ValueError(f"student {key} is {tuple(shape)}, its parent {src} {tuple(tensor.shape)}")
-        state[key] = tensor.contiguous().clone()
+        state[key] = tensor.contiguous()
     return state
 
 
-def student_shapes(config_path: Path, weight: Path, tokenizer: Path | None) -> dict[str, tuple[int, ...]]:
+def student_shapes(config_path: Path, weight: Path, tokenizer: Path = DEFAULT_TOKENIZER) -> dict[str, tuple[int, ...]]:
     """The names and shapes of the model moshi builds from `config_path`, on the meta device."""
     from moshi.models import loaders
 
+    # Mimi and the tokenizer are never read here; named so nothing is fetched from the Hub.
     info = loaders.CheckpointInfo.from_hf_repo(
-        "kyutai/hibiki-zero-3b-pytorch-bf16", moshi_weights=weight, mimi_weights=None,
+        "kyutai/hibiki-zero-3b-pytorch-bf16", moshi_weights=weight, mimi_weights=DEFAULT_MIMI_WEIGHT,
         tokenizer=tokenizer, config_path=config_path)
     lm = info.get_moshi(device="meta", load_weight=False)
     return {key: tuple(value.shape) for key, value in lm.state_dict().items()}
@@ -154,18 +155,21 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     config_path, out_weight = args.out_dir / "config.json", args.out_dir / "model.safetensors"
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
-    shapes = student_shapes(config_path, weight, None)
+    staged = args.out_dir / ".config.json.tmp"  # config.json only once the weight is in
+    staged.write_text(json.dumps(config, indent=2) + "\n")
+    shapes = student_shapes(staged, weight)
 
     with safe_open(str(weight), "pt") as f:
         metadata = dict(f.metadata() or {})
+        names = set(f.keys())
         needed = {source_key(key, layers, args.codebooks, depformer_layers, int(parent_config["dep_q"]))
                   for key in shapes}
-        parent = {key: f.get_tensor(key) for key in needed if key in f.keys()}
+        parent = {key: f.get_tensor(key) for key in needed & names}
     state = cut_state(parent, shapes, layers, args.codebooks, depformer_layers, int(parent_config["dep_q"]))
     metadata["student_of"] = repo_display_path(weight)
     metadata["student"] = json.dumps(record)
     save_state(state, out_weight, metadata)
+    staged.replace(config_path)
     params = sum(t.numel() for t in state.values())
     dtypes = sorted({str(t.dtype) for t in state.values()})
     print(f"student: {len(layers)} main layers {layers}, {args.codebooks} codebooks a stream, depformer layers "
