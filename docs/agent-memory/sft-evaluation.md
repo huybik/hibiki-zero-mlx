@@ -24,8 +24,12 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 - `best_step*.safetensors` is a hard link to the checkpoint whose every set passes the
   generation health gates (`common.generation_health`: at most a tenth of its rows empty, at
   most 12 in 128 repeating a 4-gram, a mean length ratio of at most 2)
-  with a strictly higher corpus chrF on the first set, FLEURS dev, because the phone hears real
-  speech (`best.json`: `step`, `model`, `metric` `free_running_chrf`, `chrf`). A run whose
+  with a strictly higher mean corpus chrF over the first set of each direction
+  (`common.selecting_sets`, by the column a set's audio is in): FLEURS dev for a VI→EN run, because
+  the phone hears real speech; FLEURS dev both ways for a two-way run (user, 2026-11-11: the
+  VI→EN set alone kept the early checkpoints, before EN→VI had learned)
+  (`best.json`: `step`, `model`, `metric` `selecting_chrf`, `chrf`; a `best.json` of the earlier
+  `free_running_chrf`, the first set's alone, does not load). A run whose
   checkpoints all fail the gates promotes none. The EOS count is reported, not gated (decided
   2026-11-04): no checkpoint of either stream run reached the 91% it once needed (at best 268 of
   361 FLEURS rows) while chrF rose, so it blocked every promotion. `val_log.jsonl` holds

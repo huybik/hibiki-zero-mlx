@@ -19,7 +19,10 @@ import torch
 from training.finetune import common
 from training.paths import repo_display_path, require_file
 
-BEST_METRIC = "free_running_chrf"
+# The mean chrF of the selecting sets (`common.selecting_sets`). Named apart from "free_running_chrf",
+# the first set's alone, which a run of both directions selected on before 2026-11-11: its best.json
+# is not comparable.
+BEST_METRIC = "selecting_chrf"
 
 
 def atomic_write_text(text: str, path: Path) -> None:

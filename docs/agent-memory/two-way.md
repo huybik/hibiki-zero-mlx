@@ -171,7 +171,7 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   `--seed 47`, batch 64: the baseline of the pilot's test.
 - `restart.sh two-way` (`twoway_sft`): both directions' caches (~8,500 h each), 8,192-frame
   batches computed in `--micro-frames` slices, peak 3e-6, seed 47; validation every 12,000
-  updates on both validation caches and `fleurs-vi/dev` (it selects), `fleurs-en/dev`,
+  updates on both validation caches and `fleurs-vi/dev` and `fleurs-en/dev` (their mean selects),
   `multimed-vi/select`, `en-vi-val` and `en-vi-val-en`. The first validation is the pilot's test:
   EN→VI chrF up with healthy outputs, VI→EN FLEURS dev within 1 chrF of the start.
 - The run (started 2026-11-11 04:32 UTC, 0.52 s an update, a validation ~7 min; on free-threaded
@@ -179,7 +179,11 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   (FLEURS-en 6.37 → 13.45, `en-vi-val-en` 7.8/8.5 → 14.5/20.8, Vietnamese but not yet faithful)
   while VI→EN FLEURS dev fell 38.54 → 36.73, 0.8 under the pilot's floor (MultiMed 37.26 → 36.09,
   `en-vi-val` flat). The user kept it running to recheck at 24,000, then extended it to two epochs
-  (287,558 updates, ~41 h more; sft-recovery.md: extending a run).
+  (287,558 updates, ~41 h more; sft-recovery.md: extending a run). At 24,000 EN→VI kept rising
+  (FLEURS-en 16.98, `en-vi-val-en` 20.4/28.0) and VI→EN kept falling (FLEURS dev 35.64, MultiMed
+  35.67, `en-vi-val` cv27 40.49): the user chose two epochs selecting on both directions' FLEURS
+  dev (the mean), applied from step 32,000. The relaunch at 28,000 was refused once ("already
+  running"): the stopped run's sync still held the run's lock for its upload; ~78 min idle.
 
 Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
 2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),

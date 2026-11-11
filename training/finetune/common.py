@@ -435,6 +435,18 @@ def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
     return sets
 
 
+def selecting_sets(eval_sets: list[str], rows: list[dict[str, str]]) -> list[str]:
+    """The sets that select a checkpoint: the first of each direction (the audio a set is heard
+    in, `EVAL_DIRECTIONS`), in the order given."""
+    heard: dict[str, str] = {}
+    for row in rows:
+        heard.setdefault(row[EVAL_SET], next(column for column in EVAL_DIRECTIONS if column in row))
+    first: dict[str, str] = {}
+    for name in eval_sets:
+        first.setdefault(heard[name], name)
+    return list(first.values())
+
+
 def load_eval_rows(paths: list[Path]) -> tuple[list[str], list[dict[str, str]]]:
     """A trainer's evaluation rows: the set names in the order given (the first selects the
     checkpoint) and every set's rows, checked before the run starts rather than at its first
