@@ -8,9 +8,9 @@ streams directly (`training.finetune.train --config-path <out>/config.json --mod
                 (the input embeddings `emb`, the depformer's steps, its norms and output `linears`)
   depformer     6 layers -> --depformer-layers, each keeping its first k step slices
 
-The student's config.json is the parent's with the cut's sizes, its `delays` and step schedule
-truncated alike, and the `student` key recording the cut; the weight keeps the parent's metadata
-(its tokenizer among it) and adds `student_of`.
+The student's config.json is the parent's with the cut's sizes and its `delays` and step schedule
+truncated alike (moshi hands every key to the model, so nothing else goes there); the weight keeps
+the parent's metadata (its tokenizer among it) and adds `student_of` and `student`, the cut.
 
   python -m training.student.cut --weight weights/twoway_sft_final.safetensors --out-dir weights/student_10l
 """
@@ -52,9 +52,10 @@ def indices(text: str | None, count: int | None, total: int, label: str) -> list
 
 
 def student_config(parent: dict[str, Any], layers: list[int], codebooks: int,
-                   depformer_layers: list[int]) -> dict[str, Any]:
-    """The parent's config with the cut's sizes. The source stream's codebooks follow the target's
-    (`n_q` = 2 x `dep_q`, as Hibiki's), and `delays` keeps text, then each stream's first `codebooks`."""
+                   depformer_layers: list[int]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The parent's config with the cut's sizes, and the cut's record. The source stream's codebooks
+    follow the target's (`n_q` = 2 x `dep_q`, as Hibiki's), and `delays` keeps text, then each
+    stream's first `codebooks`."""
     dep_q, n_q = int(parent["dep_q"]), int(parent["n_q"])
     if n_q != 2 * dep_q:
         raise ValueError(f"expected a source stream as wide as the target's, got n_q {n_q}, dep_q {dep_q}")
@@ -76,11 +77,11 @@ def student_config(parent: dict[str, Any], layers: list[int], codebooks: int,
         delays=[delays[0], *delays[1 : 1 + codebooks], *delays[1 + dep_q : 1 + dep_q + codebooks]],
         depformer_num_layers=len(depformer_layers),
         depformer_weights_per_step_schedule=kept_schedule,
-        student={"main_layers": layers, "codebooks": codebooks, "depformer_layers": depformer_layers,
-                 "parent_num_layers": int(parent["num_layers"]), "parent_dep_q": dep_q,
-                 "parent_depformer_num_layers": int(parent["depformer_num_layers"])},
     )
-    return child
+    record = {"main_layers": layers, "codebooks": codebooks, "depformer_layers": depformer_layers,
+              "parent_num_layers": int(parent["num_layers"]), "parent_dep_q": dep_q,
+              "parent_depformer_num_layers": int(parent["depformer_num_layers"])}
+    return child, record
 
 
 def source_key(key: str, layers: list[int], codebooks: int, depformer_layers: list[int],
@@ -149,7 +150,7 @@ def main() -> None:
     layers = indices(args.layers, args.num_layers, int(parent_config["num_layers"]), "--layers")
     depformer_layers = indices(args.depformer_layers, args.num_depformer_layers,
                                int(parent_config["depformer_num_layers"]), "--depformer-layers")
-    config = student_config(parent_config, layers, args.codebooks, depformer_layers)
+    config, record = student_config(parent_config, layers, args.codebooks, depformer_layers)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     config_path, out_weight = args.out_dir / "config.json", args.out_dir / "model.safetensors"
@@ -163,7 +164,7 @@ def main() -> None:
         parent = {key: f.get_tensor(key) for key in needed if key in f.keys()}
     state = cut_state(parent, shapes, layers, args.codebooks, depformer_layers, int(parent_config["dep_q"]))
     metadata["student_of"] = repo_display_path(weight)
-    metadata["student"] = json.dumps(config["student"])
+    metadata["student"] = json.dumps(record)
     save_state(state, out_weight, metadata)
     params = sum(t.numel() for t in state.values())
     dtypes = sorted({str(t.dtype) for t in state.values()})
