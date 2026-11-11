@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
-# Only the nanovox and asr parts of training/tranche/envs.sh (the bake-off envs are not needed).
+# Only the nanovox and asr parts of training/tranche/envs.sh (the bake-off envs are not needed), and the
+# cache build's env.
 set -Eeuo pipefail
 export UV_NO_CACHE=1
 E=/workspace/envs; mkdir -p $E
 UV="uv"
 mk() { [[ -x $E/$1/bin/python ]] || $UV venv -q -p "$2" $E/$1; }
+# The tranche's cache build (restart.sh cache, envi-cache) on free-threaded Python: no GIL, so its GPU thread waits on
+# none of the threads beside it (cache-build.md#speed-on-cuda). Without Triton, which turns the GIL back on: moshi's one
+# compiled function (Mimi's rope) runs eager under NO_TORCH_COMPILE=1. safetensors has no free-threaded wheel: built with Rust.
+(command -v cargo >/dev/null || [[ -x ~/.cargo/bin/cargo ]] || curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal
+ export PATH="$HOME/.cargo/bin:$PATH"
+ mk cache 3.14t
+ $UV pip install -q -p $E/cache torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
+ $UV pip install -q -p $E/cache av==19.0.2 einops==0.8.2 huggingface-hub==2.4.0 num2words==0.5.14 numpy==2.5.4 \
+   pyarrow==26.0.1 safetensors==0.8.0 sentencepiece==0.2.3 soxr==1.1.0 tqdm==4.70.1 transformers==5.22.1
+ $UV pip install -q -p $E/cache --no-deps moshi==0.2.13
+ $UV pip uninstall -q -p $E/cache triton
+ echo "cache: $($E/cache/bin/python -c "import sys, torch; print(torch.__version__, torch.version.cuda, 'GIL', sys._is_gil_enabled())")") &
 (mk asr 3.12; $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer; echo "asr: $($E/asr/bin/python -c "import torch; print(torch.__version__, torch.version.cuda)")") &
 mk nanovox 3.12
 $UV pip install -q -p $E/nanovox "torch==2.10.*" "torchaudio==2.10.*" --index-url https://download.pytorch.org/whl/cu130

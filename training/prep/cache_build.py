@@ -46,8 +46,7 @@ MLX_WORKERS = 2  # 2, 4 and 8 ran alike; the Mac's CPU and GPU share one power b
 # Padded audio per batch, Mimi and CTC. On a 4,094-row GigaSpeech 2 window (H200, TF32): CTC + Mimi took
 # 13.0, 11.0, 10.7, 10.7 and 11.3 s at 80, 160, 320, 640 and 1,280 s (peak 2.4 to 27 GiB): bigger
 # batches pad more. 1,280 s also overflows int32 indexing under torch.compile (64 channels x 30.7M).
-CUDA_BATCH_S = 320.0
-CTC_BATCH_S = CUDA_BATCH_S  # the CTC's own budget (omniASR's measured below)
+CUDA_BATCH_S = 320.0  # omniASR's CTC alone ran alike at 1,280 s (2026-11-11, the en-vi build)
 # Rows per decode job (`cache_rows.prepare_rows`); a CTC batch's rows are one alignment job. One job a
 # row cost the main process each row's pool round trip under its one GIL, beside the GPU thread.
 DECODE_JOB_ROWS = 32
@@ -364,7 +363,7 @@ class CUDAModels:
             if landed is not None:
                 landed(group, [out[i] for i in group])
 
-        self._pipelined(batches([len(c) for c in clips], int(CTC_BATCH_S * CTC_RATE)), launch, collect)
+        self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * CTC_RATE)), launch, collect)
         return out
 
 

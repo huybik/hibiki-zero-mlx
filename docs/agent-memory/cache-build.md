@@ -17,12 +17,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Shape](#shape) · [Rows](#rows) · [M
 builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows, its own gates)
   └─ cache_build.Builder(device).run(keys, read, workers) ─► each Shard filled, in key order
        read             a thread, one shard ahead
-       decode workers   cache_rows.prepare_row: PyAV, soxr to 24 kHz (Mimi) and 16 kHz (CTC,
-                        normalized), then cache_rows.plan (decode gates, delay draw, text groups);
-                        one window of rows ahead of the device; clips back through /dev/shm
-                        (inline where there is none) ─► windows, across shard ends
+       decode workers   cache_rows.prepare_rows, jobs of 32 rows of a shard: PyAV, soxr to 24 kHz
+                        (Mimi) and 16 kHz (CTC, normalized), then cache_rows.plan (decode gates,
+                        delay draw, text groups); one window of rows ahead of the device; clips
+                        back through /dev/shm (inline where there is none) ─► windows, across
+                        shard ends
        device           MLXModels | CUDAModels .encode: CTC ─► the Viterbi in the workers
-                        (cache_rows.align) while the device runs Mimi
+                        (cache_rows.align_rows, a job a CTC batch) while the device runs Mimi
        cache_rows       sample ─► its shard; the builder writes payload() with write()
 ```
 

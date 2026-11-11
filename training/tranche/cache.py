@@ -39,6 +39,7 @@ on the Mac (MLX; nice, since the user games on it), into a local root:
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -214,7 +215,9 @@ def build(args: argparse.Namespace) -> None:
     args.root.mkdir(parents=True, exist_ok=True)
     with exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"):
         todo, unpushed = todo_shards(args)
-        log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
+        gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
+        log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources)
+            + f"; Python {sys.version.split()[0]}, the GIL {gil}")
         pushes = Pushes(args.root, "cache")
         try:  # the lock is held until the last push ends, after a failure too
             for key in unpushed:

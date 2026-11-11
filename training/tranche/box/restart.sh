@@ -29,8 +29,9 @@ case $job in
   # day: 2026-11-06, 2026-11-07 17:30 UTC+7), but stops after 3 in a row.
   voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/nanovox/bin/python -m training.tranche.voice run giga; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
-  cache) export HF_HUB_DISABLE_XET=1  # plain HTTP at 143 MB/s; Xet throttles to ~4 MB/s
-         cmd=(.venv/bin/python -m training.tranche.cache build pho vivoice giga) ;;
+  # The cache builds run in the free-threaded env (envs-min.sh), Mimi's rope eager there (no Triton).
+  cache) export HF_HUB_DISABLE_XET=1 NO_TORCH_COMPILE=1  # plain HTTP at 143 MB/s; Xet throttles to ~4 MB/s
+         cmd=(/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga) ;;
   # Round 4 SFT again (2026-11-10, full_epoch4e): every tranche cache plus 500 seeded shards (~2,480 h, 29% of the hours;
   # full_epoch4b had 150, 11%) of the noisy en_speech cache, from round 3's final model, in round 3's 4,608-frame batches:
   # 131,659 steps. A pair every 4,000 steps: each save idles the GPU ~6 s (sft-speed.md). Validation batches of 64 rows fit
@@ -52,7 +53,8 @@ case $job in
   envi-cache) export HF_HUB_DISABLE_XET=1
        cmd=(bash -c 'set -e; .venv/bin/python -m training.prep.eval_sets --sets fleurs-en en-vi-val-en
             training/tranche/box/envi_en_speech.sh
-            .venv/bin/python -m training.tranche.cache build pho vivoice giga --direction en-vi --drop-inputs') ;;
+            NO_TORCH_COMPILE=1 /workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga \
+              --direction en-vi --drop-inputs') ;;
   # The two-way SFT (two-way.md#two-way-run): round 4e's rows both ways, from round 4's final model moved onto the
   # Vietnamese swap (init_weights writes weights/twoway_start_vi6k.safetensors; --tokenizer follows the weight), in
   # round 4's 8,192-frame batches, computed in slices that fit the 80 GB card. Every cache keeps only its packs here
