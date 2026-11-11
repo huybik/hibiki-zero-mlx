@@ -172,17 +172,17 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="the heads' initialization (with --heads)")
     dep_arg = parser.add_mutually_exclusive_group()
     dep_arg.add_argument("--depformer-layers", help="depformer layers to keep, e.g. 0,2,5")
-    dep_arg.add_argument("--num-depformer-layers", type=int, default=3, help="depformer layers to keep, spread evenly")
+    dep_arg.add_argument("--num-depformer-layers", type=int, help="depformer layers to keep, spread evenly (default 3)")
     args = parser.parse_args()
-    if args.heads and args.depformer_layers is not None:
-        parser.error("--depformer-layers does not apply with --heads")
+    if args.heads and (args.depformer_layers is not None or args.num_depformer_layers is not None):
+        parser.error("--depformer-layers and --num-depformer-layers do not apply with --heads")
     if not args.heads and args.seed != 0:
         parser.error("--seed applies only with --heads")
 
     weight = require_file(args.weight, "parent weight")
     parent_config = read_json(require_file(args.config_path, "parent config"))
     layers = indices(args.layers, args.num_layers, int(parent_config["num_layers"]), "--layers")
-    depformer_layers = indices(args.depformer_layers, args.num_depformer_layers,
+    depformer_layers = indices(args.depformer_layers, args.num_depformer_layers or 3,
                                int(parent_config["depformer_num_layers"]), "--depformer-layers")
     config, record = student_config(parent_config, layers, args.codebooks, depformer_layers, args.heads)
 
