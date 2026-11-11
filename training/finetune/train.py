@@ -234,13 +234,13 @@ def main() -> None:
     resuming, best_state = open_run(out_dir)
 
     checkpoint_info = common.load_checkpoint_info(args)
+    codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
     frames = streams.frame_range(args.stream_seconds)
-    # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
-    # near-tie in a residual code).
-    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
-
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
-    dataset = streams.StreamDataset(rows, layout, silence, frames, args.seed)
+    # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
+    # near-tie in a residual code); at the cache's codebooks, which streams are assembled at.
+    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
+    dataset = streams.StreamDataset(rows, layout, silence, frames, args.seed, codebooks)
     batches = dataset.batches(args.batch_frames, args.seed)
     exposure = dataset.exposure()
     print(
@@ -260,7 +260,7 @@ def main() -> None:
         val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer)
         if val_layout != layout:
             raise RuntimeError(f"Validation layout {val_layout} of {name} differs from training {layout}")
-        val_dataset = streams.StreamDataset(val_rows, layout, silence, frames, streams.VALIDATION_SEED)
+        val_dataset = streams.StreamDataset(val_rows, layout, silence, frames, streams.VALIDATION_SEED, codebooks)
         val_loaders[name] = DataLoader(
             val_dataset,
             batch_sampler=val_dataset.batches(args.batch_frames, streams.VALIDATION_SEED),
