@@ -66,6 +66,14 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
   and `val_log.jsonl` past the resumed step are dropped. A start without a pair begins at step 0
   and removes the logs, `best.json` and `eval/` of a run cut short before its first save.
+- Extending a run (more epochs) breaks that contract on purpose, so it is done by hand at a
+  checkpoint: stop the run by its PID file right after a pair completes; in `run_config.json` set
+  `epochs`, `total_steps` (epochs × `batches_per_epoch`) and `warmup_steps` (`total_steps` ×
+  `warmup_fraction`, which the resume recomputes); add the same `--epochs` to `train_args.json`
+  and to the command that reruns it (`h100.sh run` compares the two); rerun. The cosine stretches
+  to the new end (the rate steps up where the run then sits earlier in it), the optimizer state
+  carries on, and `hf_sync` re-uploads the changed metadata. `twoway_sft` went from one epoch to
+  two this way at step 28,000 (2026-11-11).
 - A pair is saved before its validation, and a validation's log line is written after its promotion.
   A resume at a validation step (a multiple of `--val-every`) that `val_log.jsonl` lacks validates
   it first; a finished run exits 0 after loading the data and before loading the model (the boot

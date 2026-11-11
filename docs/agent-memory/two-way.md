@@ -174,6 +174,12 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   updates on both validation caches and `fleurs-vi/dev` (it selects), `fleurs-en/dev`,
   `multimed-vi/select`, `en-vi-val` and `en-vi-val-en`. The first validation is the pilot's test:
   EN→VI chrF up with healthy outputs, VI→EN FLEURS dev within 1 chrF of the start.
+- The run (started 2026-11-11 04:32 UTC, 0.52 s an update, a validation ~7 min; on free-threaded
+  Python from step 8,000, [environment](environment.md#python)): at step 12,000 EN→VI rose
+  (FLEURS-en 6.37 → 13.45, `en-vi-val-en` 7.8/8.5 → 14.5/20.8, Vietnamese but not yet faithful)
+  while VI→EN FLEURS dev fell 38.54 → 36.73, 0.8 under the pilot's floor (MultiMed 37.26 → 36.09,
+  `en-vi-val` flat). The user kept it running to recheck at 24,000, then extended it to two epochs
+  (287,558 updates, ~41 h more; sft-recovery.md: extending a run).
 
 Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
 2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),
