@@ -190,6 +190,13 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   ~7 s against 9-11 s) and grow in both directions (FLEURS-vi 3 → 6 → 16, FLEURS-en 27 → 35 →
   48). The user kept it running to 48,000, to stop there if VI→EN falls again and the mean does
   not beat 26.31.
+- Why a row stays silent: no training target starts after its source has ended. The cache draws
+  the target's delay from U[0, 0.5 × the source's duration] (`cache_rows.target_delay_s`), so in
+  every training cache of both directions the first text token lands before the source ends
+  (2026-11-11, ~460,000 rows sampled from 12 packs of each: 0%; median first word 0.9-3.6 s, later
+  for longer rows), and streams add only gaps after a row. A model whose onset slips past a short
+  clip's end is in a state it never trained on, and stays silent through the 20 s tail. The
+  two-way run makes onsets slip more often (the start model rarely did); why is not measured yet.
 
 Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
 2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),
