@@ -29,8 +29,9 @@ case $job in
   # day: 2026-11-06, 2026-11-07 17:30 UTC+7), but stops after 3 in a row.
   voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/nanovox/bin/python -m training.tranche.voice run giga; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
-  # The cache builds run in the free-threaded env (envs-min.sh), Mimi's rope eager there (no Triton).
-  cache) export HF_HUB_DISABLE_XET=1 NO_TORCH_COMPILE=1  # plain HTTP at 143 MB/s; Xet throttles to ~4 MB/s
+  # The cache builds run in the free-threaded env (envs-min.sh), Mimi's rope eager there (no Triton). Plain HTTP for the
+  # Hub: 143 MB/s, where Xet throttles to ~4 MB/s.
+  cache) export HF_HUB_DISABLE_XET=1 NO_TORCH_COMPILE=1
          cmd=(/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga) ;;
   # Round 4 SFT again (2026-11-10, full_epoch4e): every tranche cache plus 500 seeded shards (~2,480 h, 29% of the hours;
   # full_epoch4b had 150, 11%) of the noisy en_speech cache, from round 3's final model, in round 3's 4,608-frame batches:

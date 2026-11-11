@@ -33,6 +33,7 @@ import numpy as np
 
 from training.paths import cpu_budget, read_json, require_file
 from training.prep import cache_rows
+from training.prep.audio import Rejected
 from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Planned, Row, Settings, Shard
 from training.prep.text_timing import Aligner, AlignmentError, aligner_files, vocab_columns
 
@@ -288,8 +289,8 @@ class CUDAModels:
         return torch.arange(width, device=DEVICE)[None, :] < lengths[:, None]
 
     def _encoder(self, hs: Any, mask: Any) -> Any:
-        """The wav2vec2 encoder's forward (transformers' `Wav2Vec2Encoder` and
-        `Wav2Vec2EncoderStableLayerNorm`), without its two waits on the GPU: the padding's frames
+        """The wav2vec2 encoder's forward (transformers 5.22.1's `Wav2Vec2Encoder` and
+        `Wav2Vec2EncoderStableLayerNorm`, to check again on an upgrade), without its two waits on the GPU: the padding's frames
         zeroed by `where` rather than a boolean-mask write, and the attention mask always built
         rather than first checked for padding. Each emptied the GPU's queue every CTC batch, so the
         encoder's launches, slowed by the GIL the main process's other threads hold, idled the GPU
@@ -447,11 +448,11 @@ class Builder:
                     inflight.append(done)
 
             for shard, index, row, job, place in self._decoded(shards, pool, started):
-                planned = job.result()[place]
-                if isinstance(planned, Planned):
-                    window.append(planned.row(shard, index, row))
-                else:
+                planned: Planned | Rejected | AlignmentError = job.result()[place]
+                if isinstance(planned, (Rejected, AlignmentError)):
                     shard.reject(index, row["id"], planned)
+                else:
+                    window.append(planned.row(shard, index, row))
                 if len(window) == self.models.window:
                     submit(window)
                     window = []

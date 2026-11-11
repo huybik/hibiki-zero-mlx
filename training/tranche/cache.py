@@ -215,9 +215,7 @@ def build(args: argparse.Namespace) -> None:
     args.root.mkdir(parents=True, exist_ok=True)
     with exclusive(args.root / ".cache.lock", f"another cache build uses {args.root}"):
         todo, unpushed = todo_shards(args)
-        gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
-        log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources)
-            + f"; Python {sys.version.split()[0]}, the GIL {gil}")
+        log(f"{len(todo)} shards to build: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
         pushes = Pushes(args.root, "cache")
         try:  # the lock is held until the last push ends, after a failure too
             for key in unpushed:
@@ -237,6 +235,9 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]], pushes: 
     grams = eval_grams()
     builder = Builder(args.device, Settings(args.max_frames, direction=args.direction), args.config_path,
                       args.mimi_weight, args.tokenizer or DIRECTION_TOKENIZERS[args.direction], half_ctc=args.half_ctc)
+    # After the models' imports, any of which could turn the GIL back on (cache-build.md#speed-on-cuda).
+    gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
+    log(f"models loaded; Python {sys.version.split()[0]}, the GIL {gil}")
     pushed = {s: time.monotonic() for s in args.sources}
     workers = args.workers or default_workers(args.device)
 
