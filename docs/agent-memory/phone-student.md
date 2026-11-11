@@ -95,6 +95,10 @@ sampled before audio at each step, so this adds no latency and no parameters.
   10-layer depformer student): loaded through `load_policy`, logits [1, 8, 120, 2048] with each
   codebook's valid positions one fewer than the last (its delay), finite untrained losses (11.6);
   `LMGen` emits from the 8th step on, text and 8 codebooks a step, every token within the card.
+- Tiny models on the CPU (dim 64, 4 codebooks; the review's script, rerun with the text token in
+  the heads): no target codebook ≤ j of a frame moves when codebook j of that frame is perturbed
+  (no leak), head j sees codebook j-1 of the same frame, and greedy `LMGen` output equals the
+  teacher-forced argmax at every valid position, audio and text, for a heads and a depformer model.
 - The trainer's forward pins the GPU's efficient attention and compiles: a CPU check runs eager
   with `lm_training.sdpa_kernel` replaced, and needs Hibiki's (empty) condition tensors.
 
