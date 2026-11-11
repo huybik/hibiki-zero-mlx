@@ -262,8 +262,8 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
 
   The text timing came out as the old build's own rebuild (the same 8, 11 and 4 token frames moved
   against the Hub copies, every accept and reject alike). Audio codes: 99.95% equal on 3.12, 99.47%
-  on 3.14 with the rope eager and PyAV 19 (FFmpeg 9; the `.venv`'s 15.1 turns the GIL back on in
-  its free-threaded wheel), near-ties as TF32's (decode SNR unmeasured). Rejected: CTC batches of 1,280 s (3,344×); Triton under `PYTHON_GIL=0` (died
+  on 3.14, all from Mimi's rope run eager (the `.venv` under `NO_TORCH_COMPILE=1` gives the same
+  codes byte for byte; PyAV 19 decodes as 15.1 to subnormals), near-ties as TF32's. Rejected: CTC batches of 1,280 s (3,344×); Triton under `PYTHON_GIL=0` (died
   without a traceback in its first window). Without Triton (it turns the GIL back on) Mimi's one
   compiled function runs eager (`NO_TORCH_COMPILE=1`); safetensors is built from source.
 - What is left on it: a CTC window of 4,096 clips (17,265 s) is 6.3 s of kernels against ~7 s of
