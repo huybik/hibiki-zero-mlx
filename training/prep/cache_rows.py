@@ -259,7 +259,9 @@ def prepare_rows(rows: list[tuple[dict[str, Any], bytes, bytes]], split: str) ->
         try:
             out.append(prepare_row(row, source_audio, target_audio, split))
         except (Rejected, AlignmentError) as exc:
-            out.append(exc.with_traceback(None))  # its traceback would hold the job's inputs until a GC pass
+            # Its traceback, and the error it replaced, would hold the job's inputs until a GC pass.
+            exc.__traceback__ = exc.__context__ = None
+            out.append(exc)
     return out
 
 
@@ -278,7 +280,8 @@ def align_rows(
             tokens, frames = timed_sentencepiece_tokens(lead, groups, alignment, raw_target_frames, delay_frames,
                                                         eos_id)
         except AlignmentError as exc:
-            out.append(exc.with_traceback(None))
+            exc.__traceback__ = exc.__context__ = None
+            out.append(exc)
             continue
         out.append((tokens, frames, alignment.score))
     return out

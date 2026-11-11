@@ -262,19 +262,19 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
 
   The text timing came out as the old build's own rebuild (the same 8, 11 and 4 token frames moved
   against the Hub copies, every accept and reject alike). Audio codes: 99.95% equal on 3.12, 99.47%
-  on 3.14 with the rope eager and PyAV 19 (FFmpeg 9; the env has pinned the `.venv`'s PyAV 15.1
-  since), near-ties as TF32's (decode SNR unmeasured). Rejected: CTC batches of 1,280 s (3,344×); Triton under `PYTHON_GIL=0` (died
+  on 3.14 with the rope eager and PyAV 19 (FFmpeg 9; the `.venv`'s 15.1 turns the GIL back on in
+  its free-threaded wheel), near-ties as TF32's (decode SNR unmeasured). Rejected: CTC batches of 1,280 s (3,344×); Triton under `PYTHON_GIL=0` (died
   without a traceback in its first window). Without Triton (it turns the GIL back on) Mimi's one
   compiled function runs eager (`NO_TORCH_COMPILE=1`); safetensors is built from source.
 - What is left on it: a CTC window of 4,096 clips (17,265 s) is 6.3 s of kernels against ~7 s of
-  wall: float32 memory-efficient attention 17%, copies 15% (the attention output and the feature
-  extractor's layer norms, made contiguous), TF32 matmuls ~24%, the convolutions ~20%, layer norm
-  7%, GELU 6%. Faster needs lower precision (bf16 CTC was rejected) or fused kernels (`torch.compile`
-  needs Triton, so the GIL); Mimi's ~8 s a window is untouched. `CUDAModels._encoder` copies
+  wall: float32 memory-efficient attention 17%, copies 15% (attention outputs, the feature
+  extractor's layer norms), TF32 matmuls ~24%, convolutions ~20%, layer norm 7%, GELU 6%. Faster
+  needs lower precision (bf16 CTC was rejected) or fused kernels (`torch.compile` needs Triton, so
+  the GIL); Mimi's ~8 s a window is untouched. Unmeasured: one worker less, as the main process now
+  uses ~1.8 CPUs and 20% of the cgroup's periods throttle. `CUDAModels._encoder` copies
   transformers 5.22.1's encoder forward without its syncs: check it again on an upgrade.
-- Bench scripts used: a whole-shard rebuild with stage timers and a comparison against the shard
-  on disk, and a per-window model bench with code equality and decode SNR (2026-11-09 session; the
-  method is what matters: compare on rows already built, judge precision by reconstruction).
+- Method (the scripts were per session): rebuild whole shards already built and compare them, bench a
+  window's models for code equality and decode SNR; judge precision by reconstruction.
 - CPU: check the main process is not the one throttled (`/sys/fs/cgroup/cpu.stat`): 25 workers on
   the Japan box's 26.9-CPU quota throttled 14% of the 100 ms periods in bursts (2026-11-07).
 
