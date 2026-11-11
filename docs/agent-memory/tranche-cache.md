@@ -117,11 +117,11 @@ draws use split `train`. It skips the shards held out for evaluation
   ran ~1,300–1,400×, the GPU idle 17%, mostly at each shard's start. A review (2026-11-06) found
   every local `asr_vi` and `en_audio` the size of its Hub copy, hashes equal on all `asr_vi` and
   12 sampled `en_audio`.
-- The pushes run in their own thread, in order, while the build goes on (`build`'s `push`); a
-  push that fails its retries stops the build at the next one, and the run ends once the last
-  push is in, after its `done:` line. In the en-vi build (2026-11-10) they ran in the build's loop:
-  uploads to the Hub ran ~5 MB/s (~1–2 MB/s a file), so each 30-minute push of ~25 GigaSpeech 2
-  shards held the GPU idle 726–808 s, a third of the build's time.
+- The pushes run in their own thread, in order, while the build goes on (`ingest.Pushes`, which
+  voice.py uses too); a push that fails its retries stops the build at the next one, and `done:`
+  is logged once the last push is in. In the en-vi build (2026-11-10) they ran in the build's
+  loop: uploads to the Hub ran ~5 MB/s (~1–2 MB/s a file), so each 30-minute push of ~25
+  GigaSpeech 2 shards held the GPU idle 726–808 s, a third of the build's time.
 
 ## Scale-up
 

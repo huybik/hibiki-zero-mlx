@@ -34,7 +34,7 @@ import os
 import re
 import tarfile
 from collections.abc import Iterator
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -271,11 +271,40 @@ def push_part(root: Path, source: str, part: str) -> None:
             print(time.strftime("%Y-%m-%d %H:%M:%S"), f"pushed {source} {part}", flush=True)
             return
         except Exception as exc:  # noqa: BLE001 - the Hub's 5xx and timeouts come as many types
+            # Printed here too: a push in a thread (`Pushes`) may never have its error read when the
+            # stage fails first.
+            again = f"again in {60 * 2 ** attempt} s" if attempt < 3 else "giving up"
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), f"push {source} {part} failed "
+                  f"({type(exc).__name__}: {exc}); {again}", flush=True)
             if attempt == 3:
                 raise
-            print(time.strftime("%Y-%m-%d %H:%M:%S"), f"push {source} {part} failed "
-                  f"({type(exc).__name__}: {exc}); again in {60 * 2 ** attempt} s", flush=True)
             time.sleep(60 * 2 ** attempt)
+
+
+class Pushes:
+    """A stage's pushes (`push_part`), in order in one thread beside its work: in the cache build's
+    loop each held the GPU idle ~13 min at the box's ~5 MB/s to the Hub (2026-11-10). A push that
+    failed its retries is raised by the next `push` or `check`, and by `wait`, which returns once
+    the last push is in."""
+
+    def __init__(self, root: Path, part: str) -> None:
+        self.root, self.part = root, part
+        self._thread = ThreadPoolExecutor(1, thread_name_prefix=f"push-{part}")
+        self._pending: list[Future] = []
+
+    def push(self, source: str) -> None:
+        self.check()
+        self._pending.append(self._thread.submit(push_part, self.root, source, self.part))
+
+    def check(self) -> None:
+        for future in [f for f in self._pending if f.done()]:
+            self._pending.remove(future)
+            future.result()
+
+    def wait(self) -> None:
+        self._thread.shutdown()
+        for future in self._pending:
+            future.result()
 
 
 def main() -> None:
