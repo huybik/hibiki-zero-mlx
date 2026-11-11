@@ -183,7 +183,13 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   (FLEURS-en 16.98, `en-vi-val-en` 20.4/28.0) and VI→EN kept falling (FLEURS dev 35.64, MultiMed
   35.67, `en-vi-val` cv27 40.49): the user chose two epochs selecting on both directions' FLEURS
   dev (the mean), applied from step 32,000: the restated `best.json` promotes step 24,000 (mean
-  26.31 against 12,000's 25.09, both healthy).
+  26.31 against 12,000's 25.09, both healthy). At 36,000 VI→EN fell again (FLEURS dev 33.75,
+  MultiMed 35.43), EN→VI gained little (FLEURS-en 17.87; `en-vi-val-en` 23.1/29.9), the mean fell
+  to 25.81 and FLEURS-en failed the health gate (344 of 392 rows non-empty against 353): no
+  promotion. Empty rows (no text token, no EOS, within the 20 s tail) are short clips (median
+  ~7 s against 9-11 s) and grow in both directions (FLEURS-vi 3 → 6 → 16, FLEURS-en 27 → 35 →
+  48). The user kept it running to 48,000, to stop there if VI→EN falls again and the mean does
+  not beat 26.31.
 
 Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
 2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),
