@@ -188,8 +188,10 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   to 25.81 and FLEURS-en failed the health gate (344 of 392 rows non-empty against 353): no
   promotion. Empty rows (no text token, no EOS, within the 20 s tail) are short clips (median
   ~7 s against 9-11 s) and grow in both directions (FLEURS-vi 3 → 6 → 16, FLEURS-en 27 → 35 →
-  48). The user kept it running to 48,000, to stop there if VI→EN falls again and the mean does
-  not beat 26.31.
+  48). The user kept it running to 48,000, to stop there if VI→EN fell again and the mean did
+  not beat 26.31. At 48,000 VI→EN recovered (FLEURS dev 35.52, empty rows 16 → 5, MultiMed 35.40
+  with 13), EN→VI rose (FLEURS-en 18.35, `en-vi-val-en` 24.0/30.9) and the mean, 26.93, promoted
+  step 48,000: the run goes on. The empty rows move between validations rather than grow.
 - Why a row stays silent: no training target starts after its source has ended. The cache draws
   the target's delay from U[0, 0.5 × the source's duration] (`cache_rows.target_delay_s`), so in
   every training cache of both directions the first text token lands before the source ends
