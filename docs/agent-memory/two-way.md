@@ -191,14 +191,19 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   48). The user kept it running to 48,000, to stop there if VI→EN fell again and the mean did
   not beat 26.31. At 48,000 VI→EN recovered (FLEURS dev 35.52, empty rows 16 → 5, MultiMed 35.40
   with 13), EN→VI rose (FLEURS-en 18.35, `en-vi-val-en` 24.0/30.9) and the mean, 26.93, promoted
-  step 48,000: the run goes on. The empty rows move between validations rather than grow.
-- Why a row stays silent: no training target starts after its source has ended. The cache draws
-  the target's delay from U[0, 0.5 × the source's duration] (`cache_rows.target_delay_s`), so in
-  every training cache of both directions the first text token lands before the source ends
-  (2026-11-11, ~460,000 rows sampled from 12 packs of each: 0%; median first word 0.9-3.6 s, later
-  for longer rows), and streams add only gaps after a row. A model whose onset slips past a short
-  clip's end is in a state it never trained on, and stays silent through the 20 s tail. The
-  two-way run makes onsets slip more often (the start model rarely did); why is not measured yet.
+  step 48,000: the run goes on. At 60,000 the mean, 27.11, promoted (EN→VI FLEURS-en 19.66,
+  `en-vi-val-en` 25.9/33.2; VI→EN FLEURS dev 34.57, MultiMed 35.19, `en-vi-val` cv27 42.88). At
+  72,000 FLEURS-en failed the health gate (66 empty rows; chrF 18.59, 21.39 on its non-empty rows
+  against 21.27 at 60,000): no promotion, while every other set rose or held (VI→EN FLEURS dev
+  34.89, MultiMed 36.07, `en-vi-val-en` 26.4/33.6).
+- Why a row stays silent: mostly a quiet source. Half of FLEURS-en dev peaks under −40 dBFS,
+  below anything trained on, where Mimi codes speech differently or as silence
+  ([sft-evaluation](sft-evaluation.md#evaluation-sets)): those 191 clips hold 31-61 of its empty
+  rows at every validation from 36,000 to 72,000, the other 201 clips 4-9. Among clips peaking
+  above −40 dBFS, short ones go silent more often (under 8 s: 0.6-14% by set and step, MultiMed
+  0.6-1.4%, FLEURS-vi 3-14%; longer: 0-3%): the cache rarely starts a target after its source ends
+  (`cache_rows.target_delay_s` draws the delay from U[0, 0.5 × the source's duration]), so a model
+  whose onset slips past a short clip's end is in a state it rarely trained on.
 
 Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
 2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),

@@ -121,6 +121,18 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 | `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); dev selects the English-to-Vietnamese side; not in `eval/` yet |
 | `en-vi-val-en/{cv27,libriheavy}.jsonl` | 360 | 1.04 | English to Vietnamese: `en-vi-val`'s rows with their English recordings; not in `eval/` yet |
 
+- `fleurs-en` keeps FLEURS `en_us`'s levels, and they are low: 191 of the 392 dev clips peak
+  under −40 dBFS (151 under −50), 97 at −20 to −10 dBFS. FLEURS-vi peaks at a median −24 dBFS,
+  Common Voice and Libriheavy at −11 and −14. Training never goes that low: `augment.GAIN_DB`
+  lowers a noisy clip by at most 15 dB, so the quietest training sources peak around −26 dBFS. Mimi
+  does not code quiet speech as it codes the same speech loud. Against a −6 dBFS peak, the semantic
+  codebook of ten loud FLEURS-en clips agrees on 96% of frames at −7 dBFS, 76% at −16, 51% at
+  −26, 19% at −36, 4% at −46 and 3% at −56, where 60% of frames take the codes of digital silence
+  (4% at −7; moshi Mimi on the CPU, 2026-11-12). The quiet clips hold most of FLEURS-en's empty
+  rows ([two-way](two-way.md#two-way-run)), so its health gate and chrF measure robustness to
+  level as much as translation. No runtime normalizes the input level before Mimi: neither
+  `eval.py`, nor `main.py --mic`, which feeds `sounddevice` samples as they come.
+
 - `giga-heldout` (built 2026-11-09) samples, with `random.Random(0)`, 1,000 rows of GigaSpeech 2
   archives 86 and 98 (`ingest.SOURCES["giga"].heldout`; 572 and 428 rows from 366 recordings,
   clips 0.7–17.6 s, median 3.38 s), from the rows `filters.vi_gate` keeps that share no run with
