@@ -182,8 +182,8 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   (287,558 updates, ~41 h more; sft-recovery.md: extending a run). At 24,000 EN→VI kept rising
   (FLEURS-en 16.98, `en-vi-val-en` 20.4/28.0) and VI→EN kept falling (FLEURS dev 35.64, MultiMed
   35.67, `en-vi-val` cv27 40.49): the user chose two epochs selecting on both directions' FLEURS
-  dev (the mean), applied from step 32,000. The relaunch at 28,000 was refused once ("already
-  running"): the stopped run's sync still held the run's lock for its upload; ~78 min idle.
+  dev (the mean), applied from step 32,000: the restated `best.json` promotes step 24,000 (mean
+  26.31 against 12,000's 25.09, both healthy).
 
 Build speed (2026-11-10, the H100 SXM, GigaSpeech 2 shards 0 and 1, both directions): `en-vi`
 2,490× real time on the Mimi audio (omniASR 65 s on 42.8 h of Vietnamese, Mimi 72 s on 108 h),

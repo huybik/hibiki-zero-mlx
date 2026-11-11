@@ -448,8 +448,8 @@ def selecting_sets(eval_sets: list[str], rows: list[dict[str, str]]) -> list[str
 
 
 def load_eval_rows(paths: list[Path]) -> tuple[list[str], list[dict[str, str]]]:
-    """A trainer's evaluation rows: the set names in the order given (the first selects the
-    checkpoint) and every set's rows, checked before the run starts rather than at its first
+    """A trainer's evaluation rows: the set names in the order given (each direction's first
+    selects the checkpoint, `selecting_sets`) and every set's rows, checked before the run starts rather than at its first
     validation: the columns, unique ids, a duration and the audio file of each."""
     cfg = TRAINER_GENERATION
     sets = read_eval_sets(paths)
