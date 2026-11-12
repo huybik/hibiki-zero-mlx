@@ -159,7 +159,7 @@ public final class Translator {
                 timing.decode += lap()
             }
             if i == 0 {
-                sources = encode(leveller(pcm))
+                sources = encode(try leveller(pcm))
                 timing.encode += lap()
             }
             let out = generator.finish(pending, source: sources[i])

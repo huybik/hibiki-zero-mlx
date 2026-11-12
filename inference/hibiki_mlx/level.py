@@ -3,49 +3,60 @@ Mimi encodes it. Mimi codes quiet speech differently from the same speech loud (
 −46 dBFS keeps 4% of the semantic codes it has at −6 dBFS), so quiet input was translated worse,
 or not at all (docs/agent-memory/sft-evaluation.md#input-level).
 
-Each 80 ms frame is scaled by one gain, set from a peak envelope that rises at once to a louder
-frame and falls 6 dB a second after it:
+Each 80 ms frame takes one gain, set from two trackers of the frame peaks: a signal envelope that
+rises at once to a louder frame and falls 6 dB a second, and a noise floor that falls at once to
+a quieter frame and rises 1.5 dB a second:
 
-    envelope = max(frame peak, previous envelope × RELEASE)
-    gain     = TARGET_PEAK / envelope, between 1 and MAX_GAIN
+    envelope = max(peak, previous envelope × RELEASE)
+    floor    = max(NOISE_CEILING / MAX_GAIN, min(peak, previous floor × RISE))
+    gain     = min(TARGET_PEAK / envelope, NOISE_CEILING / floor), at least 1
 
-Audio peaking above TARGET_PEAK passes unchanged: only quieter input is raised, and a raised
-frame never peaks above TARGET_PEAK, so nothing clips. Silence and pauses longer than about
-3 s are raised too, up to MAX_GAIN, as a stream's start is: the gain cannot tell quiet speech
-from a quiet room. It is causal and frame by frame, so a stream gives the same samples in any
+Quiet speech is raised toward TARGET_PEAK, by at most MAX_GAIN, but never so far that its noise
+floor passes NOISE_CEILING: the gain cannot tell quiet speech from a quiet room, so pauses and a
+stream's start, where the envelope falls toward the floor, end up near the ceiling rather than at
+the speech target, and a recording whose floor is above the ceiling is left as it is. Frames
+whose envelope is above TARGET_PEAK pass unchanged, and a raised frame never peaks above it, so
+nothing clips. It is causal and frame by frame, so a stream gives the same samples in any
 whole-frame chunks. The MLX runtime and the PyTorch evaluation use this module; the Swift
-runtime mirrors it (`Leveller` in Audio.swift).
+runtime mirrors it (`Audio.Leveller`).
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
 FRAME = 1920  # samples at 24 kHz: one Mimi frame, 80 ms
 FRAME_RATE = 12.5
-# Training sources peak at a median −2 to −5 dBFS, their noisy copies up to 15 dB lower
-# (augment.GAIN_DB). The two-way model translated FLEURS clips peaking above −20 dBFS as well
-# as louder ones, and those under −30 worse; under −35 some came out empty.
 TARGET_PEAK = 10 ** (-20 / 20)
 MAX_GAIN = 10 ** (30 / 20)  # speech peaking at −50 dBFS reaches the target
+NOISE_CEILING = 10 ** (-40 / 20)  # quieter than the trained noisy sources' noise
 RELEASE = 10 ** (-6 / 20 / FRAME_RATE)  # per frame: the envelope falls 6 dB a second
+RISE = 10 ** (1.5 / 20 / FRAME_RATE)  # per frame: the floor rises 1.5 dB a second
 
 
 class Leveller:
-    """One stream's level stage: call it on the stream's samples (1-D, 24 kHz) in order, in
+    """One stream's level stage: call it on the stream's samples (1-D float, 24 kHz) in order, in
     chunks of whole frames (the last chunk may end mid-frame); a new stream takes a new one."""
 
     def __init__(self) -> None:
         self.envelope = 0.0
+        self.noise_floor = math.inf  # the first frame sets it
 
     def __call__(self, pcm: np.ndarray) -> np.ndarray:
+        if pcm.ndim != 1 or pcm.dtype.kind != "f":
+            raise ValueError(f"the level stage takes 1-D float samples, not {pcm.dtype} {pcm.shape}")
         out = np.empty_like(pcm)
-        for start in range(0, pcm.shape[-1], FRAME):
+        for start in range(0, len(pcm), FRAME):
             frame = pcm[start : start + FRAME]
-            self.envelope = max(float(np.abs(frame).max()), self.envelope * RELEASE)
-            if self.envelope * MAX_GAIN <= TARGET_PEAK:
-                gain = MAX_GAIN
-            else:
-                gain = max(1.0, TARGET_PEAK / self.envelope)
-            out[start : start + FRAME] = frame * np.float32(gain) if gain != 1.0 else frame
+            peak = float(np.abs(frame).max())
+            if not math.isfinite(peak):
+                raise ValueError(f"non-finite source sample in samples {start}-{start + len(frame)}")
+            self.envelope = max(peak, self.envelope * RELEASE)
+            self.noise_floor = max(NOISE_CEILING / MAX_GAIN, min(peak, self.noise_floor * RISE))
+            gain = NOISE_CEILING / self.noise_floor
+            if self.envelope > 0:
+                gain = min(gain, TARGET_PEAK / self.envelope)
+            out[start : start + FRAME] = frame * np.float32(gain) if gain > 1.0 else frame
         return out

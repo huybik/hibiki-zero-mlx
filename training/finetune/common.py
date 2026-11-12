@@ -744,8 +744,9 @@ TRAINER_GENERATION = GenerationConfig(text_only=True)
 
 
 def read_source(path: Path, sample_rate: int) -> torch.Tensor:
-    """A source clip as the runtimes feed it to Mimi: mono at Mimi's rate, then the level stage
-    (inference/hibiki_mlx/level.py) as a stream of its own; [1, samples]."""
+    """A source clip at Mimi's rate (stereo averaged to mono, where the runtimes take the first
+    channel), through the runtimes' level stage (inference/hibiki_mlx/level.py) as a stream of
+    its own; [1, samples]."""
     wav = audio_read(path, to_sample_rate=sample_rate, mono=True)[0]
     return torch.from_numpy(Leveller()(wav[0].numpy()))[None]
 

@@ -10,12 +10,14 @@ public enum HibikiError: Error, CustomStringConvertible {
     case unsupported(String)
     case missingFile(URL)
     case badTokenizer(String)
+    case badAudio(String)
 
     public var description: String {
         switch self {
         case .unsupported(let what): "unsupported model config: \(what)"
         case .missingFile(let url): "missing \(url.path)"
         case .badTokenizer(let what): "bad tokenizer: \(what)"
+        case .badAudio(let what): "bad audio: \(what)"
         }
     }
 }
