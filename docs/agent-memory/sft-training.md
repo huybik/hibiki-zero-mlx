@@ -67,9 +67,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   order is shuffled once; every epoch replays it, and resume skips the planned batches. Each
   batch is one update; `--micro-frames` computes it in slices of its streams of up to that many
   padded frames, each slice's loss weighted by its share of the batch's rows and the gradients
-  added, so round 4's 8,192-frame batches run on an 80 GB card (one needs ~97 GiB at once).
-  Whole 4,096-frame batches accumulated two to an update ran out of memory there: the first's
-  12 GB of fp32 gradients stay while the second's activations build.
+  added, so round 4's 8,192-frame batches ran on an 80 GB card with fp32 moments (one needed
+  ~97 GiB at once). Whole 4,096-frame batches accumulated two to an update ran out of memory
+  there: the first's 12 GB of fp32 gradients stay while the second's activations build.
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
   scores the same streams and `--val-batches` takes a random subset of each cache's.
 - Multi-row streams run 68 s median (p10 37, p90 104), 6 rows each, with 21% of the Vietnamese
@@ -95,7 +95,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
-    fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0. Each train-log line
+    AdamW with 8-bit moments (`common.adamw`, [sft-speed](sft-speed.md#8-bit-moments)), betas
+    (0.9, 0.95) and weight decay 0.1; grad clip 1.0. Each train-log line
     holds its steps' mean and max gradient norm before clipping (`grad_norm`, `max_grad_norm`),
     summed on the GPU without a sync per step. A non-finite norm raises at the next log step and
     before any save: the losses cannot show the last step's update, and a NaN pair saved would be

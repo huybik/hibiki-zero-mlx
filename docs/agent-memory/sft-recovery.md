@@ -27,10 +27,10 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - free-threaded Python 3.14, exact Torch and Moshi versions; one H100 or H200 with compute
     capability 9.0;
   - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
-    when lower than `/proc/meminfo`, which shows the host on Vast) and 130 GiB of disk: free
+    when lower than `/proc/meminfo`, which shows the host on Vast) and 75 GiB of disk: free
     space plus, for `run`, what the run dir already holds (each hard-linked inode once). `run`
     and `grpo` size it by the run's `--keep-checkpoints`: the kept pairs, the promoted model and
-    a pair the sync still uploads, 130 GiB at the default 2 and 93 at 1 (0 keeps every pair, so
+    a pair the sync still uploads, 75 GiB at the default 2 and 56 at 1 (0 keeps every pair, so
     it gets the default's);
   - the SHA-256 of the four upstream files in `weights/`.
 - `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
@@ -52,8 +52,8 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
 
 ## Checkpoints and recovery
 
-- A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt` (12.5 + 25 GB);
-  two are kept locally. `checkpoints.CheckpointWriter` copies the model and optimizer state into
+- A complete pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt` (12.5 + 6.4 GB:
+  the fp32 weights, and the optimizer's 8-bit moments); two are kept locally. `checkpoints.CheckpointWriter` copies the model and optimizer state into
   pinned host buffers on the training stream and returns; a thread waits for the copy, prunes
   to `--keep-checkpoints` − 1 pairs, writes the model then the trainer file (each fsynced before
   its rename, then the directory), and prunes again. The next save, a promotion (which

@@ -33,6 +33,7 @@ from moshi.run_inference import get_condition_tensors
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
+from torchao.optim import AdamW8bit
 
 from inference.hibiki_mlx.level import Leveller
 from training.finetune import lm_training
@@ -187,14 +188,17 @@ def load_policy(checkpoint_info: Any, device: Any) -> Any:
     return lm
 
 
-def fused_adamw(params: list[Any], args: argparse.Namespace) -> torch.optim.AdamW:
-    """The trainers' optimizer, from --lr, --adam-beta1/2 and --weight-decay."""
-    return torch.optim.AdamW(
+def adamw(params: list[Any], args: argparse.Namespace) -> AdamW8bit:
+    """The trainers' optimizer, from --lr, --adam-beta1/2 and --weight-decay: AdamW on the fp32
+    weights, its two moments kept in 8 bits (torchao: blocks of 256 values, each with its own
+    scale; a tensor under 4,096 values keeps fp32 moments). For the 3.1B weights the moments take
+    6.3 GB, not 25, and a step moves 16 bytes a weight, not fused AdamW's 28. Its learning rate is
+    a CPU tensor, so a schedule sets it with `group["lr"].fill_(...)`."""
+    return AdamW8bit(
         params,
         lr=args.lr,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.weight_decay,
-        fused=True,
     )
 
 

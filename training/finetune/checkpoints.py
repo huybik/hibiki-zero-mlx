@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 from training.finetune import common
 from training.paths import repo_display_path, require_file
@@ -222,6 +223,10 @@ class CheckpointWriter:
         self.error: BaseException | None = None
 
     def _host(self, value: Any, key: tuple[Any, ...]) -> Any:
+        if is_traceable_wrapper_subclass(value):  # an 8-bit moment: its codes, scales and map
+            names, context = value.__tensor_flatten__()
+            inner = {name: self._host(getattr(value, name), (*key, name)) for name in names}
+            return type(value).__tensor_unflatten__(inner, context, value.shape, value.stride())
         if torch.is_tensor(value):
             buffer = self.buffers.get(key)
             if buffer is None or buffer.shape != value.shape or buffer.dtype != value.dtype:
@@ -282,7 +287,7 @@ class CheckpointWriter:
             raise RuntimeError("Checkpoint write failed") from error
 
 
-def load_newest_pair(model: Any, optimizer: Any, out_dir: Path, device: torch.device) -> int:
+def load_newest_pair(model: Any, optimizer: Any, out_dir: Path) -> int:
     """Load the newest complete pair in `out_dir` into the fp32 `model` and its optimizer, and
     return its step, or 0 without one."""
     pairs = checkpoint_pairs(out_dir)
@@ -293,11 +298,7 @@ def load_newest_pair(model: Any, optimizer: Any, out_dir: Path, device: torch.de
     if int(checkpoint["step"]) != step or checkpoint["model"] != model_path.name:
         raise RuntimeError(f"{trainer_path.name} does not match {model_path.name}")
     common.load_model(model, model_path, torch.float32)
-    optimizer.load_state_dict(checkpoint["optimizer"])
-    for state in optimizer.state.values():
-        for key, value in list(state.items()):
-            if torch.is_tensor(value):
-                state[key] = value.to(device=device)
+    optimizer.load_state_dict(checkpoint["optimizer"])  # the moments move to their weights' device
     print(f"Resumed step {step} from {repo_display_path(trainer_path)}")
     return step
 

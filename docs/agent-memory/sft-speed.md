@@ -1,9 +1,9 @@
 # SFT training speed
 
-Read when touching `training/finetune/lm_training.py`, or when choosing a GPU pod or measuring
-training, validation or checkpoint speed.
+Read when touching `training/finetune/lm_training.py` or the trainers' optimizer
+(`common.adamw`), or when choosing a GPU pod or measuring training, validation or checkpoint speed.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Fast path](#fast-path) ·
-[Measurements](#measurements) · [By GPU](#by-gpu)
+[8-bit moments](#8-bit-moments) · [Measurements](#measurements) · [By GPU](#by-gpu)
 
 The trainer itself is in [sft-training](sft-training.md); the pod procedure in
 [docs/finetune.md](../finetune.md).
@@ -40,6 +40,28 @@ does that), with outputs of the same kind. With the compiled main transformer (H
 loss equal (9.301917), logits within 2.6e-6 and every gradient within 1.2e-5; in bf16 its
 gradients are a median 7.8e-3 (max 9.9e-2) from the fp32 reference, moshi's own 8.6e-3
 (1.3e-1).
+
+## 8-bit moments
+
+- `common.adamw`, both trainers' optimizer, is torchao's `AdamW8bit` (0.18.0, pinned in `h100.sh
+  setup`) on the fp32 weights: AdamW's two moments are kept in 8 bits, in blocks of 256 values with
+  a scale each, through a dynamic-tree map (arXiv 2110.02861); the 101 tensors under 4,096 values
+  (162k weights: norms, biases) keep fp32 moments. For the 3.13B weights the moments take 6.4 GB,
+  not 25, and a step reads and writes 16 bytes a weight, not fused AdamW's 28. A checkpoint pair
+  is 18.9 GB, not 37.5.
+- Why: fused AdamW was 12.4% of a 4,608-frame step and bandwidth-bound (below), and its 25 GB of
+  moments left no room for a whole 8,192-frame update on an 80 GB card (it peaked at 97 GiB on
+  the H200 SXM), so round 4's batches ran in `--micro-frames` slices, 6.5% slower.
+- torchao, not bitsandbytes' `AdamW8bit`: bitsandbytes 0.50.2 calls `torch.cuda.synchronize()`
+  after each of the model's 504 tensors (`sync_gpu` in `Optimizer8bit.step`), so the GPU would
+  idle through Python's launch of every one; torchao compiles one kernel per tensor shape (18) and
+  queues them without a sync. Its learning rate is a CPU tensor, which the schedule sets with
+  `fill_`, and its moments are tensor subclasses, whose codes, scales and maps `CheckpointWriter`
+  pins (`__tensor_flatten__`), not a dequantized fp32 copy.
+- Checked on the box's CPU (2026-11-12; a 256→512→256 MLP, 200 steps, clip 1.0, cosine LR): the
+  loss equals fp32 AdamW's to 4 digits, each weight's total update is within 1.5–1.7% of fp32
+  AdamW's (cosine 0.9999), and a snapshot saved through `CheckpointWriter._host` and loaded back
+  resumes bit for bit, its moments still 8-bit.
 
 ## Measurements
 
@@ -184,8 +206,8 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   - py-spy cannot attach in the pod's container (ptrace denied); `nsys` is installed there for
     a kernel timeline.
 - The checkpoint writer stalls training for the copy to pinned memory (0.6 s per save on the
-  H200 NVL) and writes the 37.5 GB in the background (16 s on the H200 NVL pod's disk, 37 s on
-  the capped SXM's, both before the fsync). The first save also allocates the pinned buffers:
+  H200 NVL) and writes the pair in the background (with fp32 moments, 37.5 GB: 16 s on the H200
+  NVL pod's disk, 37 s on the capped SXM's, both before the fsync). The first save also allocates the pinned buffers:
   8 s and 26 s of stall. With the fsync a pair takes ~40 s on the 700 W SXM's 1.1 GB/s disk, so
   saves closer together than that (20 steps in the end-to-end test) wait for the previous one;
   1,000 steps apart they never do.

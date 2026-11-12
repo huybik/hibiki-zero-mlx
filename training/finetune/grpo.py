@@ -412,7 +412,7 @@ def main() -> None:
     lm = common.load_policy(info, device)
     params = list(lm.parameters())
     mimi = info.get_mimi(device=device)
-    optimizer = common.fused_adamw(params, args)
+    optimizer = common.adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     stream_weights = torch.ones(1 + lm.dep_q, device=device)
     stream_weights[0] = args.text_weight
@@ -420,7 +420,7 @@ def main() -> None:
 
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
-    step = load_newest_pair(lm, optimizer, out_dir, device) if resuming else 0
+    step = load_newest_pair(lm, optimizer, out_dir) if resuming else 0
     validated = {int(item["step"]) for item in keep_log_lines(val_log_path, step)}
     keep_log_lines(log_path, step)
     if step % args.tau:

@@ -64,7 +64,8 @@ setup() {
   # Free-threaded Python 3.14, as every box env that can run it (environment.md). torch.compile loads Triton, which
   # turns the GIL back on, so the trainer runs with it: 0.5246 against 3.12's 0.5297 s a step on the two-way's
   # 8,192-frame updates, the same loss (2026-11-11). safetensors and sphn have no free-threaded wheels and build from
-  # source with Rust; sphn's bundled Opus asks for CMake's pre-3.5 policies, which CMake 4 dropped. Relocatable: an env
+  # source with Rust; sphn's bundled Opus asks for CMake's pre-3.5 policies, which CMake 4 dropped. torchao (the 8-bit
+  # AdamW) installs its pure-Python wheel: the abi3 one cannot load on free-threaded Python. Relocatable: an env
   # built in another checkout can be moved into place once the job on the old one stops (docs/finetune.md).
   export UV_NO_CACHE=1 CMAKE_POLICY_VERSION_MINIMUM=3.5
   command -v rustup >/dev/null || [[ -x ~/.cargo/bin/rustup ]] \
@@ -89,6 +90,7 @@ setup() {
     sentencepiece==0.2.2 \
     soxr==1.1.0 \
     sphn==0.2.1 \
+    torchao==0.18.0 \
     tqdm==4.70.1 \
     transformers==5.22.1
   uv pip install -q -p "$partial" --no-deps moshi==0.2.13
@@ -174,7 +176,7 @@ for limit in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_i
     if text != "max":
         host_bytes = min(host_bytes, int(text))
 host_gib = host_bytes / 2**30
-# The packed cache stays on disk; the checkpoint snapshot pins 37.5 GB.
+# The packed cache stays on disk; the checkpoint snapshot pins 19 GB.
 if host_gib < 80:
     raise RuntimeError(f"at least 80 GiB of RAM required, got {host_gib:.1f}")
 free_gib = shutil.disk_usage(root).free / 2**30
@@ -393,13 +395,14 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
   flock -n "$lock_fd" || die "$run_name is already running"
   # The kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
-  # uploads after it is pruned: 37.5 GB a pair, 12.5 the model, ~5 of margin (130 at 2, 93 at 1).
+  # uploads after it is pruned: 19 GB a pair (the model's 12.5 and its 8-bit moments' 6.4), 12.5 the
+  # model, ~5 of margin (75 at 2, 56 at 1).
   # 0 keeps every pair, which no check can bound: it gets the default's room.
   local keep=2 given="$*"
   [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
   [[ "$given" =~ --keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
   (( keep >= 1 )) || keep=2
-  preflight $(( (keep + 1) * 75 / 2 + 18 )) "$run_dir"
+  preflight $(( (keep + 1) * 19 + 18 )) "$run_dir"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
     local -a saved
@@ -432,7 +435,7 @@ case "$command" in
     cpus
     ;;
   preflight)
-    preflight 130
+    preflight 75
     ;;
   run)
     run training.finetune.train "$@"

@@ -18,7 +18,7 @@ interruptible pod reruns it on boot.
   H100 NVL ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
 - NVIDIA driver 580 or newer (CUDA 13), at least 80 GiB of RAM in the container, and Bash 5.1+.
 - 350 GB of disk: the environment, weights, caches, their 70 GB of packs and the evaluation sets
-  took 157 GiB on a pod, and the run needs 130 GiB: free, plus what a continued run already
+  took 157 GiB on a pod, and the run needs 75 GiB: free, plus what a continued run already
   holds (`run` checks it).
 - Interruptible pods work. Their disk survives a preemption, and the boot hook below continues
   the run; checkpoints every 1,000 steps (5–6.5 min) bound the work a preemption loses.
@@ -90,8 +90,8 @@ The first stream run trains on the `en_speech` cache alone; the PhoMT cache and 
 back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
 `RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–120 s
 streams in batches of at most 4,608 frames, one epoch (about 131,700 steps), peak LR `1e-6` with 5%
-warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW
-`(0.9, 0.95)` with weight decay `0.1`, checkpoints every 1,000 steps and validation every 9,000
+warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, AdamW with
+8-bit moments `(0.9, 0.95)` with weight decay `0.1`, checkpoints every 1,000 steps and validation every 9,000
 ([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced
 losses, translates FLEURS dev and the `en-vi-val` sets free-running, scoring each set apart, and
 promotes the checkpoint whose every set passes the generation health gates with the highest

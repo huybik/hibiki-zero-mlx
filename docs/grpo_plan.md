@@ -91,7 +91,7 @@ Add one only if the rollouts show a need for it.
   - `keep_log_lines`, `append_log`;
   - the atomic writes.
 - `training/finetune/common.py`: what else they share: the model and optimizer
-  (`load_policy`, `fused_adamw`), the loss kernel (`token_ce`) and the free-running validation
+  (`load_policy`, `adamw`), the loss kernel (`token_ce`) and the free-running validation
   (`load_eval_rows`, `validate_free_running`).
 - `training/finetune/grpo_profile.py`: phases 1 and 2's profiler (generation, rewards,
   old logprobs, update), with the policy and AdamW states resident.
@@ -125,8 +125,8 @@ Estimates from those, at T = 1,200 frames (75 s of input plus a 21 s tail):
 | Rewards on the CPU, overlapped with generation | ~0 s |
 | **Total** | **~50 s; 1,000 updates ≈ 14 h ≈ $20; the paper's 2,000 ≈ 28 h** |
 
-- **Generation memory:** the masters and AdamW states (37.5 GB), plus the bf16 copy (5.8 GB),
-  plus a KV cache of 128 × 1,200 frames (~18 GB). That fits; 256 rows would not.
+- **Generation memory:** the fp32 weights and AdamW's 8-bit moments (18.9 GB), plus the bf16
+  copy (5.8 GB), plus a KV cache of 128 × 1,200 frames (~18 GB). That fits; 256 rows would not.
 - **Gradients:** freed before each refresh, as validation does now.
 
 ## 5. Phases (each profiled on the box before the next)

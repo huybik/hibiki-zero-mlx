@@ -188,7 +188,7 @@ The CUDA profile and dry run are under [Running](#running).
   an SFT run's use `run`: either subcommand on the other's run fails at argument parsing.
   - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
-  - **Disk:** the preflight needs 130 GiB (93 with `--keep-checkpoints 1`), free plus what the
+  - **Disk:** the preflight needs 75 GiB (56 with `--keep-checkpoints 1`), free plus what the
     run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
     on the Hub.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync (~5 min): it

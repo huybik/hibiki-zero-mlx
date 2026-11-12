@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 """Full-model Hibiki-Zero SFT on multi-sentence streams, of one direction or both.
 
-Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
-AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
-rows with --seed (`streams.py`) and batched up to --batch-frames padded frames, one update a batch,
-computed in slices of up to --micro-frames where it would not fit the card; every epoch replays
-that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
+Trains every parameter from the upstream weight with fp32 weights, bf16 autocast and AdamW with
+8-bit moments (`common.adamw`), under a linear warmup then cosine decay. Streams are planned once
+from the grounded cache rows with --seed (`streams.py`) and batched up to --batch-frames padded
+frames, one update a batch, computed in slices of up to --micro-frames where it would not fit the
+card; every epoch replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
 and batch order of each validation cache (so --val-batches takes a random subset of each) and translates
 the rows of every --eval-pairs file free-running in one pass, sampled as `eval.py` samples, and
 scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
@@ -126,7 +126,7 @@ def parse_args() -> argparse.Namespace:
         help="Compute each batch in slices of its streams of up to this many padded frames, each "
         "slice's loss weighted by its share of the rows and the gradients added: nearly the whole "
         "batch's update (rows differ a little in tokens) in less memory (0: the whole batch at once). "
-        "An 80 GB card fits ~4,600 frames at once, round 4's 8,192-frame batches only in slices.",
+        "With fp32 moments an 80 GB card fit ~4,600 frames at once, round 4's 8,192 only in slices.",
     )
     parser.add_argument(
         "--stream-seconds",
@@ -329,12 +329,12 @@ def main() -> None:
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
-    optimizer = common.fused_adamw(params, args)
+    optimizer = common.adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
 
     val_log_path = out_dir / "val_log.jsonl"
     log_path = out_dir / "train_log.jsonl"
-    global_step = load_newest_pair(lm, optimizer, out_dir, device) if resuming else 0
+    global_step = load_newest_pair(lm, optimizer, out_dir) if resuming else 0
     # Steps already validated. A pair is saved before its validation, so a run cut short there
     # validates on resume; a replacement pod without val_log validates again.
     validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
@@ -445,7 +445,7 @@ def main() -> None:
     while global_step < total_steps:
         lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
         for group in optimizer.param_groups:
-            group["lr"] = lr_value
+            group["lr"].fill_(lr_value)
         optimizer.zero_grad(set_to_none=True)
         fetch_started = time.time()
         batch = next(data_iter)
