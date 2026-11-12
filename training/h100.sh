@@ -64,8 +64,8 @@ setup() {
   # Free-threaded Python 3.14, as every box env that can run it (environment.md). torch.compile loads Triton, which
   # turns the GIL back on, so the trainer runs with it: 0.5246 against 3.12's 0.5297 s a step on the two-way's
   # 8,192-frame updates, the same loss (2026-11-11). safetensors and sphn have no free-threaded wheels and build from
-  # source with Rust; sphn's bundled Opus asks for CMake's pre-3.5 policies, which CMake 4 dropped. torchao (the 8-bit
-  # AdamW) installs its pure-Python wheel: the abi3 one cannot load on free-threaded Python. Relocatable: an env
+  # source with Rust; sphn's bundled Opus asks for CMake's pre-3.5 policies, which CMake 4 dropped. bitsandbytes (the
+  # 8-bit AdamW) ships CUDA 13.2 kernels, which it loads under the 13.4 runtime with a warning. Relocatable: an env
   # built in another checkout can be moved into place once the job on the old one stops (docs/finetune.md).
   export UV_NO_CACHE=1 CMAKE_POLICY_VERSION_MINIMUM=3.5
   command -v rustup >/dev/null || [[ -x ~/.cargo/bin/rustup ]] \
@@ -79,6 +79,7 @@ setup() {
   uv pip install -q -p "$partial" \
     aiohttp==3.14.5 \
     av==15.1.0 \
+    bitsandbytes==0.50.2 \
     einops==0.8.2 \
     huggingface-hub==2.4.0 \
     num2words==0.5.14 \
@@ -90,7 +91,6 @@ setup() {
     sentencepiece==0.2.2 \
     soxr==1.1.0 \
     sphn==0.2.1 \
-    torchao==0.18.0 \
     tqdm==4.70.1 \
     transformers==5.22.1
   uv pip install -q -p "$partial" --no-deps moshi==0.2.13
@@ -148,6 +148,9 @@ if torch.__version__ != "2.15.0+cu134" or torch.version.cuda != "13.4":
     raise RuntimeError(f"torch 2.15.0+cu134 required, got {torch.__version__}")
 if version("moshi") != "0.2.13":
     raise RuntimeError(f"moshi 0.2.13 required, got {version('moshi')}")
+# The trainer files pickle its 8-bit optimizer states.
+if version("bitsandbytes") != "0.50.2":
+    raise RuntimeError(f"bitsandbytes 0.50.2 required, got {version('bitsandbytes')}")
 if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
     raise RuntimeError("exactly one CUDA GPU is required")
 name = torch.cuda.get_device_name(0)

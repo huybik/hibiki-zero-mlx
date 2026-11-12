@@ -2,7 +2,7 @@
 """Maintain rolling disaster-recovery checkpoints in a public HF model repo.
 
 The trainer saves a pair every --save-every steps, often enough to bound what a preemption loses;
-a pair is 37.5 GB, so while training runs only the pairs at its validation steps are uploaded.
+a pair is 18.9 GB, so while training runs only the pairs at its validation steps are uploaded.
 The final sync, once the training process has exited, uploads the newest pair whatever its step.
 """
 from __future__ import annotations

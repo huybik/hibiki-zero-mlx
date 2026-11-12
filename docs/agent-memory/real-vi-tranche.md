@@ -194,7 +194,7 @@ other corpora ─► their transcripts, word times by forced alignment ───
   with `ingest push <source> --part text_en`; its model choice, checks, speed and runs are in
   [tranche-translate](tranche-translate.md).
 - The box's 350 GB disk holds the noisy training cache (143 GB) and a run's checkpoint pair
-  (37.5 GB, plus a second while it saves), so tranche data streams through it shard by shard.
+  (18.9 GB, plus a second while it saves), so tranche data streams through it shard by shard.
   Build uv envs with `--no-cache`: the cache on `/workspace` grew ~35 GB in one env build and
   left 16 GB free, short of the LR test's next checkpoint save (2026-11-04).
 - The box's huggingface_hub keeps file contents in a shared store, `$HF_HOME/hub/blobs/<xx>/<sha256>`,

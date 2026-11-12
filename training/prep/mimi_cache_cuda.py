@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     fetch.add_argument("--fraction", type=float, default=0.6, help="Rows given new conditions.")
     fetch.add_argument("--seed", type=int, default=0)
     fetch.add_argument("--jobs", type=int, default=16, help="Parallel downloads.")
-    # A trainer on the same disk needs a checkpoint pair (37.5 GB) beyond its steady state while
+    # A trainer on the same disk needs a checkpoint pair (18.9 GB) beyond its steady state while
     # the recovery sync still uploads the pair it pruned.
     fetch.add_argument(
         "--min-free-gb", type=float, default=50.0, help="Pause while the disk has less free."

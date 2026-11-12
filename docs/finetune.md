@@ -145,7 +145,7 @@ rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean s
 ```
 
 - Disk: the noisy split's shards (73 GB) and packs (70 GB) replace the clean ones. `run` checks
-  130 GiB free before the trainer packs a split itself, so pack first; with the clean shards still
+  75 GiB free before the trainer packs a split itself, so pack first; with the clean shards still
   there the run fills the 350 GB disk at its first checkpoints.
 - `encode` skips a shard whose source a failed download left missing, and exits non-zero naming
   it: run `fetch` again (it retries each download 4 times), then `encode`.

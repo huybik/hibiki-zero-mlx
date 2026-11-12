@@ -70,7 +70,7 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   (`random.Random(f"{seed}:select:{id}").random() < --fraction`, 0.6), null for the others, in
   `.sources/`, about a fifth of the parquet's bytes, and deletes the download. It pauses while the disk has
   less than `--min-free-gb` (50) free: a trainer on the same disk needs a checkpoint pair
-  (37.5 GB) beyond its steady state while the sync still uploads the pair it pruned. Its first run
+  (18.9 GB; 37.5 for a run from before the 8-bit moments) beyond its steady state while the sync still uploads the pair it pruned. Its first run
   writes `manifest.json` (seed, fraction, dataset revision, bank SHA-256); a later fetch with
   other values stops.
 - `encode` re-encodes the rows whose source holds audio:

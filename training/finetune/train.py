@@ -5,14 +5,14 @@ Trains every parameter from the upstream weight with fp32 weights, bf16 autocast
 8-bit moments (`common.adamw`), under a linear warmup then cosine decay. Streams are planned once
 from the grounded cache rows with --seed (`streams.py`) and batched up to --batch-frames padded
 frames, one update a batch, computed in slices of up to --micro-frames where it would not fit the
-card; every epoch replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
-and batch order of each validation cache (so --val-batches takes a random subset of each) and translates
-the rows of every --eval-pairs file free-running in one pass, sampled as `eval.py` samples, and
-scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
-held-out Common Voice and Libriheavy rows of the training data's own domain. Of the checkpoints
-whose every set passes the generation health gates, the one with the highest mean chrF over the
-first set of each direction (`common.selecting_sets`: the first set, for a run of one) is
-promoted to best_stepNNNNNN.safetensors.
+card; every epoch replays that order. Each validation reports teacher-forced losses on a fixed,
+seeded stream plan and batch order of each validation cache (so --val-batches takes a random subset
+of each) and translates the rows of every --eval-pairs file free-running in one pass, sampled as
+`eval.py` samples, and scores each file as its own set. By default these are FLEURS dev (real
+Vietnamese speech) and held-out Common Voice and Libriheavy rows of the training data's own domain.
+Of the checkpoints whose every set passes the generation health gates, the one with the highest mean
+chrF over the first set of each direction (`common.selecting_sets`: the first set, for a run of one)
+is promoted to best_stepNNNNNN.safetensors.
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
@@ -445,7 +445,7 @@ def main() -> None:
     while global_step < total_steps:
         lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
         for group in optimizer.param_groups:
-            group["lr"].fill_(lr_value)
+            group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
         fetch_started = time.time()
         batch = next(data_iter)

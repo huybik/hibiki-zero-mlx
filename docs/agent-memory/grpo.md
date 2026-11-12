@@ -121,13 +121,13 @@ The CUDA profile and dry run are under [Running](#running).
   `python -m training.finetune.grpo_profile --cache-dir … --model-weight START --out-dir …`.
   - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
     old-logprob pass and the update at each `--micro-batch`.
-  - It holds the fp32 policy and AdamW's states resident throughout.
+  - It holds the fp32 policy and AdamW's 8-bit states resident throughout (`common.adamw`).
   - It times each generation size on a second call, after compilation. Each batch's CUDA graph
     capture stays in the time, as in a run.
   - An out-of-memory size is recorded and skipped, and `profile.json` is rewritten after each
     stage.
 - **Profiled on the box** (2026-11-06, 700 W H100 SXM, from `tranche_epoch1b`'s final model, the
-  tranche caches, T 1,200, fp32 policy and AdamW states resident):
+  tranche caches, T 1,200, fp32 policy and fp32 AdamW states resident: 18.7 GB more than now):
 
   | Stage | Measured |
   |---|---|
@@ -188,9 +188,9 @@ The CUDA profile and dry run are under [Running](#running).
   an SFT run's use `run`: either subcommand on the other's run fails at argument parsing.
   - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
-  - **Disk:** the preflight needs 75 GiB (56 with `--keep-checkpoints 1`), free plus what the
-    run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
-    on the Hub.
+  - **Disk:** the preflight needs 75 GiB (56 with `--keep-checkpoints 1`), free plus what the run
+    directory holds. An SFT run's pairs on the same disk (~81 GiB with fp32 moments, ~47 with 8-bit)
+    go first, once they are on the Hub.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync (~5 min): it
     uploads the newest pair, the best and the logs, which reach the Hub only then. A group kill
     (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing restarts a crashed run.

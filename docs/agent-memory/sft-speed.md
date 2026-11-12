@@ -43,25 +43,37 @@ gradients are a median 7.8e-3 (max 9.9e-2) from the fp32 reference, moshi's own 
 
 ## 8-bit moments
 
-- `common.adamw`, both trainers' optimizer, is torchao's `AdamW8bit` (0.18.0, pinned in `h100.sh
-  setup`) on the fp32 weights: AdamW's two moments are kept in 8 bits, in blocks of 256 values with
-  a scale each, through a dynamic-tree map (arXiv 2110.02861); the 101 tensors under 4,096 values
-  (162k weights: norms, biases) keep fp32 moments. For the 3.13B weights the moments take 6.4 GB,
-  not 25, and a step reads and writes 16 bytes a weight, not fused AdamW's 28. A checkpoint pair
-  is 18.9 GB, not 37.5.
+- `common.adamw`, both trainers' optimizer, is bitsandbytes' `AdamW8bit` (0.50.2, pinned in
+  `h100.sh setup` and checked by `preflight`) on the fp32 weights: AdamW's two moments are kept in
+  8 bits, in blocks of 256 values with a scale each, through a dynamic-tree map (arXiv
+  2110.02861); the 101 tensors under 4,096 values (162k weights: norms, biases) keep fp32 moments.
+  For the 3.13B weights the moments take 6.4 GB, not 25, and a step reads and writes 16 bytes a
+  weight, not fused AdamW's 28. A checkpoint pair is 18.9 GB, not 37.5.
 - Why: fused AdamW was 12.4% of a 4,608-frame step and bandwidth-bound (below), and its 25 GB of
   moments left no room for a whole 8,192-frame update on an 80 GB card (it peaked at 97 GiB on
   the H200 SXM), so round 4's batches ran in `--micro-frames` slices, 6.5% slower.
-- torchao, not bitsandbytes' `AdamW8bit`: bitsandbytes 0.50.2 calls `torch.cuda.synchronize()`
-  after each of the model's 504 tensors (`sync_gpu` in `Optimizer8bit.step`), so the GPU would
-  idle through Python's launch of every one; torchao compiles one kernel per tensor shape (18) and
-  queues them without a sync. Its learning rate is a CPU tensor, which the schedule sets with
-  `fill_`, and its moments are tensor subclasses, whose codes, scales and maps `CheckpointWriter`
-  pins (`__tensor_flatten__`), not a dequantized fp32 copy.
+- bitsandbytes, not torchao's `AdamW8bit` (0.18.0), measured on the box's CPU (2026-11-12, the
+  model's 504 tensor shapes scaled down):
+  - torchao builds a new `torch.compile` wrapper for every tensor on every step, and dynamo keeps
+    each one (`cached_backends`): +78 KiB of host memory a step, ~10 GiB an epoch. Its Python
+    takes ~0.4 ms a tensor (0.2 compiled once), 0.1–0.2 s a step against a 0.27 s step at 4,608
+    frames. Its moments are tensor subclasses and its learning rate a tensor, which the
+    checkpoint writer and the schedule would have to special-case.
+  - bitsandbytes spends 3 ms of Python a step around its kernels, and its states are plain
+    tensors (uint8 codes, fp32 scales and maps) that `CheckpointWriter` and `load_state_dict`
+    take as they are.
+  - Its costs: it ships CUDA 13.2 kernels, which it loads under the 13.4 runtime with a warning;
+    it calls `torch.cuda.synchronize()` after each tensor's update (`sync_gpu` in
+    `Optimizer8bit.step`), so the GPU idles while Python launches the next, ~15 ms a step by
+    estimate; and `import bitsandbytes` loads Triton, which turns the GIL back on, so
+    `common.adamw` imports it, not the module.
+- Embeddings get 8-bit moments too. bitsandbytes recommends its `StableEmbedding` for language
+  models, and Hugging Face's Trainer keeps embedding moments at 32 bits with it; the loss check
+  beside fused AdamW covers this.
 - Checked on the box's CPU (2026-11-12; a 256→512→256 MLP, 200 steps, clip 1.0, cosine LR): the
   loss equals fp32 AdamW's to 4 digits, each weight's total update is within 1.5–1.7% of fp32
-  AdamW's (cosine 0.9999), and a snapshot saved through `CheckpointWriter._host` and loaded back
-  resumes bit for bit, its moments still 8-bit.
+  AdamW's (cosine 0.9999), and a snapshot through `CheckpointWriter._host`, saved and loaded back,
+  resumes bit for bit with uint8 moments.
 
 ## Measurements
 
@@ -107,10 +119,10 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   what halving the optimizer's share saves, and the slices are smaller than 4,608 batches (a
   1,424-frame stream often alone in the last). So on the 80 GB card 4,608 is the fastest update;
   8,192 costs ~6.5% (the user's choice for the two-way run).
-- What is left (warm profile, H200 NVL): matmuls 59% of GPU time, compiled kernels 16%, fused
-  AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
-  elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of
-  each new batch shape also builds cuDNN attention plans (~75 ms).
+- What is left (warm profile, H200 NVL, with fused AdamW): matmuls 59% of GPU time, compiled kernels
+  16%, fused AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
+  elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of each
+  new batch shape also builds cuDNN attention plans (~75 ms).
 - Generation (`LMGen`, ms per step at batch 16/32/64): fp32 57/93/164, bf16 31/47/80, bf16 with
   GQA 16/18/22.
 

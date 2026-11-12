@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
-The policy's fp32 weights and AdamW's two states stay resident as in training, and each stage
-runs on real streams from the start checkpoint:
+The policy's fp32 weights and AdamW's 8-bit states (`common.adamw`) stay resident as in training,
+and each stage runs on real streams from the start checkpoint:
 - rollout generation at each --gen-batch: time per step and peak memory, timed on a second
   call so moshi's compilation stays out (each batch's CUDA graph capture stays in, as in a run);
 - the rewards of the rollouts, serially and in --reward-workers worker processes;
@@ -128,7 +128,14 @@ def main() -> None:
         (out_dir / "profile.json").write_text(json.dumps(report, indent=2) + "\n")
 
     lm = common.load_policy(info, device)
-    adam_states = [torch.zeros_like(param) for param in lm.parameters() for _ in range(2)]
+    # The optimizer's states, resident as in training; it never steps here.
+    optimizer = common.adamw(
+        list(lm.parameters()),
+        argparse.Namespace(lr=0.0, adam_beta1=0.9, adam_beta2=0.95, weight_decay=0.0),
+    )
+    group = optimizer.param_groups[0]
+    for index, param in enumerate(group["params"]):
+        optimizer.init_state(group, param, 0, index)
     report["resident_gib"] = torch.cuda.memory_allocated() / 2**30
     silence_frame = silence[:, -1].long().to(device)
 
@@ -222,7 +229,7 @@ def main() -> None:
     write(report)
     print(json.dumps({k: v for k, v in report.items() if k not in ("samples", "stream_frames")},
                      indent=2))
-    del adam_states
+    del optimizer
     pool.shutdown()
 
 

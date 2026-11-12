@@ -60,7 +60,7 @@ committed tests, and its prefix reference left out the sentence being spoken.
 | Rollouts | Fed from cached Vietnamese codes, so no Mimi encode or decode: the stream's own lead of silence, then its source with its EOS, then silence to T, through `LMGen` as `common.generate_batch` drives it (sized KV cache, `stop_on_eos` off). Store each rollout in the cache layout `[33, T]`: sampled text and English codes, plus the source. |
 | π_old logprobs | At each refresh, one pass of π_θ over the window's rollouts through the update's own forward (fp32 masters under bf16 autocast, gradients enabled, the result detached), cut into the update's own micro-batches. The ratio is then exactly 1 at the first update after a refresh. A no-grad pass, or another batch shape, picks other bf16 kernels: on MPS a no-grad pass gave 1.0012 and clipped 6 tokens. Logprobs at the sampling temperature 0.8, top-k ignored. |
 | Generation model | A bf16 copy of π_θ made at each refresh, as SFT validation builds its generator. |
-| Update | The SFT training forward (`lm_training`'s compiled transformer, step-major depformer) returns per-token logprobs of the 17 output streams. Micro-batches fit the 4,608-frame budget, accumulated to 128 rollouts. Fused AdamW (0.9, 0.95), weight decay 0.1, grad clip 1.0, the gradient norm checked as in SFT. |
+| Update | The SFT training forward (`lm_training`'s compiled transformer, step-major depformer) returns per-token logprobs of the 17 output streams. Micro-batches fit the 4,608-frame budget, accumulated to 128 rollouts. AdamW with 8-bit moments (0.9, 0.95), weight decay 0.1, grad clip 1.0, the gradient norm checked as in SFT. |
 | Evaluation | Every 10·τ = 200 updates, the SFT validation's free-running pass over its five sets, unchanged. Quality is FLEURS dev chrF. Latency is the median `end_offset_s`, the stand-in for the paper's text LAAL. |
 | Promotion | The best FLEURS dev chrF among checkpoints that pass the health gates and whose FLEURS end offset is at most 0.2 s worse than the starting model's (`LATENCY_SLACK_S`, [grpo](agent-memory/grpo.md)). |
 | Start | The final SFT model as `--model-weight`, after the real-Vietnamese tranche and the two-way SFT (GRPO is the last stage, user 2026-11-04; [parity plan](vi_en_parity_plan.md#order)): its best validation by FLEURS dev chrF or its final model, whichever scores better on the test sets. The box profile and dry run may use run 2's final model. |
@@ -112,7 +112,7 @@ Add one only if the rollouts show a need for it.
 Measured numbers (from [sft-speed](agent-memory/sft-speed.md)):
 
 - **SFT forward and backward:** 14,400 frames/s on the 700 W H100 SXM.
-- **Training memory:** the fp32 masters, gradients and AdamW states take ~50 GB.
+- **Training memory:** the fp32 weights and gradients and AdamW's 8-bit moments take ~31 GB.
 - **KV cache:** ~115 KB per row and frame.
 
 Estimates from those, at T = 1,200 frames (75 s of input plus a 21 s tail):
