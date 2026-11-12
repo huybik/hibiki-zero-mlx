@@ -193,8 +193,8 @@ def adamw(params: list[Any], args: argparse.Namespace) -> torch.optim.Optimizer:
     with its own scale; a tensor under 4,096 values keeps fp32 moments). For the 3.1B weights the
     moments take 6.4 GB, not 25, and a step moves 16 bytes a weight, not fused AdamW's 28
     (docs/agent-memory/sft-speed.md#8-bit-moments)."""
-    # Imported here: bitsandbytes loads Triton, which turns the GIL back on in eval.py, validate.py
-    # and the other importers of this module that never build an optimizer.
+    # Imported here, so eval.py, validate.py and the tokenizer swap, which never build an optimizer,
+    # neither need bitsandbytes nor load its CUDA library (and its CUDA-version warning).
     import bitsandbytes
 
     return bitsandbytes.optim.AdamW8bit(

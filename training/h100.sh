@@ -133,7 +133,7 @@ import hashlib
 import shutil
 import sys
 import sysconfig
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import torch
@@ -149,8 +149,12 @@ if torch.__version__ != "2.15.0+cu134" or torch.version.cuda != "13.4":
 if version("moshi") != "0.2.13":
     raise RuntimeError(f"moshi 0.2.13 required, got {version('moshi')}")
 # The trainer files pickle its 8-bit optimizer states.
-if version("bitsandbytes") != "0.50.2":
-    raise RuntimeError(f"bitsandbytes 0.50.2 required, got {version('bitsandbytes')}")
+try:
+    bitsandbytes_version = version("bitsandbytes")
+except PackageNotFoundError:
+    bitsandbytes_version = "none"
+if bitsandbytes_version != "0.50.2":
+    raise RuntimeError(f"bitsandbytes 0.50.2 required (h100.sh setup), got {bitsandbytes_version}")
 if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
     raise RuntimeError("exactly one CUDA GPU is required")
 name = torch.cuda.get_device_name(0)
@@ -160,6 +164,11 @@ if not hopper or torch.cuda.get_device_capability(0) != (9, 0):
     raise RuntimeError(f"an H100 or H200 (compute capability 9.0) is required, got {name}")
 if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
+# A library that fails to load leaves a stand-in that raises only at the first optimizer step.
+from bitsandbytes.cextension import lib as bitsandbytes_lib
+
+if not bitsandbytes_lib.compiled_with_cuda:
+    raise RuntimeError("bitsandbytes loaded no CUDA library; its log above says why")
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
 # Training's 4,608-frame batches peak at 75.1 GiB reserved or less, and validation's translation
 # below that: an 80 GB card fits (CUDA sees 79.2 GiB of it).

@@ -59,21 +59,26 @@ gradients are a median 7.8e-3 (max 9.9e-2) from the fp32 reference, moshi's own 
     takes ~0.4 ms a tensor (0.2 compiled once), 0.1–0.2 s a step against a 0.27 s step at 4,608
     frames. Its moments are tensor subclasses and its learning rate a tensor, which the
     checkpoint writer and the schedule would have to special-case.
-  - bitsandbytes spends 3 ms of Python a step around its kernels, and its states are plain
-    tensors (uint8 codes, fp32 scales and maps) that `CheckpointWriter` and `load_state_dict`
-    take as they are.
-  - Its costs: it ships CUDA 13.2 kernels, which it loads under the 13.4 runtime with a warning;
-    it calls `torch.cuda.synchronize()` after each tensor's update (`sync_gpu` in
-    `Optimizer8bit.step`), so the GPU idles while Python launches the next, ~15 ms a step by
-    estimate; and `import bitsandbytes` loads Triton, which turns the GIL back on, so
-    `common.adamw` imports it, not the module.
-- Embeddings get 8-bit moments too. bitsandbytes recommends its `StableEmbedding` for language
-  models, and Hugging Face's Trainer keeps embedding moments at 32 bits with it; the loss check
-  beside fused AdamW covers this.
-- Checked on the box's CPU (2026-11-12; a 256→512→256 MLP, 200 steps, clip 1.0, cosine LR): the
-  loss equals fp32 AdamW's to 4 digits, each weight's total update is within 1.5–1.7% of fp32
-  AdamW's (cosine 0.9999), and a snapshot through `CheckpointWriter._host`, saved and loaded back,
-  resumes bit for bit with uint8 moments.
+  - bitsandbytes' `step` spends 3 ms of Python a step outside its op calls (the dispatch and the
+    ctypes launch not counted), and its states are plain tensors (uint8 codes, fp32 scales and
+    maps) that `CheckpointWriter` and `load_state_dict` take as they are.
+  - Its costs: it ships CUDA 13.2 kernels, which it loads under the 13.4 runtime with a warning
+    (`preflight` fails if none loads, which would otherwise surface at the first step); and it
+    calls `torch.cuda.synchronize()` after each tensor's update (`sync_gpu` in
+    `Optimizer8bit.step`), so the GPU idles while Python launches the next, ~15–30 ms a step by
+    estimate, against the ~15 ms its 8-bit traffic saves. Its kernels launch on the legacy
+    default stream, which every op in `training/` uses, so the sync is not needed here.
+  - `common.adamw` imports it, so the tools that never build an optimizer do not load its CUDA
+    library.
+- Embeddings get 8-bit moments too (49 modules, 313M weights). bitsandbytes recommends its
+  `StableEmbedding` for language models, and Hugging Face's Trainer keeps embedding moments at 32
+  bits with it (+1.9 GB here).
+- Checked on the box's CPU (2026-11-12; a 256→512→256 MLP, 200 steps, clip 1.0, cosine LR), on
+  bitsandbytes' pure-PyTorch CPU backend, whose arithmetic differs from the CUDA kernel's (weight
+  decay after the update, its own quantiser, non-finite gradients): the loss equals fp32 AdamW's
+  to 4 digits, each weight's total update is within 1.5–1.7% of fp32 AdamW's (cosine 0.9999), and
+  a snapshot through `CheckpointWriter._host`, saved and loaded back, resumes bit for bit with
+  uint8 moments.
 
 ## Measurements
 
@@ -117,8 +122,8 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   kernels an update against 529 ms of wall): each slice after the first adds its gradients into
   the fp32 `.grad` (12 GB read twice and written once, ~29 ms an update over ~2 more slices), about
   what halving the optimizer's share saves, and the slices are smaller than 4,608 batches (a
-  1,424-frame stream often alone in the last). So on the 80 GB card 4,608 is the fastest update;
-  8,192 costs ~6.5% (the user's choice for the two-way run).
+  1,424-frame stream often alone in the last). So with fused AdamW 4,608 is the fastest update on
+  the 80 GB card; 8,192 costs ~6.5% (the user's choice for the two-way run).
 - What is left (warm profile, H200 NVL, with fused AdamW): matmuls 59% of GPU time, compiled kernels
   16%, fused AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
   elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of each
@@ -155,7 +160,7 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   Power-bound: only less work per frame helps from here.
 - **H200 batch_frames lever (2026-11-09, estimate before the measurement above)**: default 4608; H200 has 141 GB VRAM vs H100's 80 GB.
   Increasing batch_frames amortizes fixed per-step costs (AdamW 8%, grad norm 4%, copies 5.5% ≈ 17.5%
-  of step time) over more frames. At 8192 (1.78×): peak ≈ 93 GiB (48 GiB param+opt + 45 GiB
+  of step time) over more frames. At 8192 (1.78×): peak ≈ 93 GiB (48 GiB param+fp32 opt + 45 GiB
   activations), validation headroom ~11 GiB → total ~104 GiB, expected +~14% throughput. Round 4b
   (full_epoch4b) uses `--batch-frames 8192`. Do not use this batch_frames to resume from a run that
   used 4608: batch_frames is a RESUME_KEY in run_config.json and must match.

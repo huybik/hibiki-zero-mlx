@@ -100,7 +100,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     holds its steps' mean and max gradient norm before clipping (`grad_norm`, `max_grad_norm`),
     summed on the GPU without a sync per step. A non-finite norm raises at the next log step and
     before any save: the losses cannot show the last step's update, and a NaN pair saved would be
-    resumed by every restart;
+    resumed by every restart. Until then the 8-bit kernel skips a non-finite gradient's elements
+    and zeroes their moments, while the fp32-moment tensors take the NaN;
   - checkpoints every 1,000 steps (~6.5 min) and validation every 9,000; `--val-every` must be
     a multiple of `--save-every`, because promotion hard-links the checkpoint saved at that step;
   - each validation translates the rows of every `--eval-pairs` file (FLEURS dev, 361 rows, 72
