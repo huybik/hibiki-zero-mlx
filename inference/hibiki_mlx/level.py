@@ -8,17 +8,21 @@ rises at once to a louder frame and falls 6 dB a second, and a noise floor that 
 a quieter frame and rises 1.5 dB a second:
 
     envelope = max(peak, previous envelope × RELEASE)
-    floor    = max(NOISE_CEILING / MAX_GAIN, min(peak, previous floor × RISE))
+    floor    = max(NOISE_CEILING / MAX_GAIN, min(peak, previous floor × RISE)),
+               kept as it was while the frame is digitally silent (under SILENCE)
     gain     = min(TARGET_PEAK / envelope, NOISE_CEILING / floor), at least 1
 
 Quiet speech is raised toward TARGET_PEAK, by at most MAX_GAIN, but never so far that its noise
 floor passes NOISE_CEILING: the gain cannot tell quiet speech from a quiet room, so pauses and a
 stream's start, where the envelope falls toward the floor, end up near the ceiling rather than at
-the speech target, and a recording whose floor is above the ceiling is left as it is. Frames
-whose envelope is above TARGET_PEAK pass unchanged, and a raised frame never peaks above it, so
-nothing clips. It is causal and frame by frame, so a stream gives the same samples in any
-whole-frame chunks. The MLX runtime and the PyTorch evaluation use this module; the Swift
-runtime mirrors it (`Audio.Leveller`).
+the speech target, and a recording whose floor is above the ceiling is left as it is. Digital
+silence (a muted input, a padded file) says nothing about the room, so it leaves the floor alone.
+A real room that gets louder (a fan switched on) is raised toward the target until the floor has
+risen to the new level at 1.5 dB a second: 17 s from a −70 dBFS room to a −45 one. Frames whose
+envelope is above TARGET_PEAK pass unchanged, and a raised frame never peaks above it, so nothing
+clips. It is causal and frame by frame, so a stream gives the same samples in any whole-frame
+chunks. The MLX runtime and the PyTorch evaluation use this module; the Swift runtime mirrors it
+(`Audio.Leveller`).
 """
 
 from __future__ import annotations
@@ -31,7 +35,8 @@ FRAME = 1920  # samples at 24 kHz: one Mimi frame, 80 ms
 FRAME_RATE = 12.5
 TARGET_PEAK = 10 ** (-20 / 20)
 MAX_GAIN = 10 ** (30 / 20)  # speech peaking at −50 dBFS reaches the target
-NOISE_CEILING = 10 ** (-40 / 20)  # quieter than the trained noisy sources' noise
+NOISE_CEILING = 10 ** (-40 / 20)  # where 90% of the English training recordings' floors stay
+SILENCE = 2.0**-15  # one 16-bit step, −90.3 dBFS: a frame under it holds no room to measure
 RELEASE = 10 ** (-6 / 20 / FRAME_RATE)  # per frame: the envelope falls 6 dB a second
 RISE = 10 ** (1.5 / 20 / FRAME_RATE)  # per frame: the floor rises 1.5 dB a second
 
@@ -42,19 +47,21 @@ class Leveller:
 
     def __init__(self) -> None:
         self.envelope = 0.0
-        self.noise_floor = math.inf  # the first frame sets it
+        self.noise_floor = math.inf  # the first frame not digitally silent sets it
 
     def __call__(self, pcm: np.ndarray) -> np.ndarray:
         if pcm.ndim != 1 or pcm.dtype.kind != "f":
-            raise ValueError(f"the level stage takes 1-D float samples, not {pcm.dtype} {pcm.shape}")
+            raise ValueError(f"the level stage takes 1-D float samples, not {pcm.dtype}{pcm.shape}")
         out = np.empty_like(pcm)
         for start in range(0, len(pcm), FRAME):
             frame = pcm[start : start + FRAME]
             peak = float(np.abs(frame).max())
             if not math.isfinite(peak):
-                raise ValueError(f"non-finite source sample in samples {start}-{start + len(frame)}")
+                end = start + len(frame)
+                raise ValueError(f"non-finite sample in this call's samples {start}-{end}")
             self.envelope = max(peak, self.envelope * RELEASE)
-            self.noise_floor = max(NOISE_CEILING / MAX_GAIN, min(peak, self.noise_floor * RISE))
+            if peak >= SILENCE:
+                self.noise_floor = max(NOISE_CEILING / MAX_GAIN, min(peak, self.noise_floor * RISE))
             gain = NOISE_CEILING / self.noise_floor
             if self.envelope > 0:
                 gain = min(gain, TARGET_PEAK / self.envelope)

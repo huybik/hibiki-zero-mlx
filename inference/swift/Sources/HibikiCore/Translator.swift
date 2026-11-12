@@ -45,7 +45,7 @@ public final class Translator {
         public var lmStart = 0.0
         /// Mimi decoding the finished LM steps' audio tokens on the Neural Engine.
         public var decode = 0.0
-        /// Mimi encoding the input frames on the CPU.
+        /// The level stage and Mimi encoding the input frames on the CPU.
         public var encode = 0.0
         /// Waiting for the LM after the CPU work.
         public var lmWait = 0.0
@@ -135,7 +135,8 @@ public final class Translator {
     }
 
     /// Translates k whole frames (k × 1920 samples): k LM steps, one Mimi encode of the k
-    /// frames, and the decoding of every LM step finished before the last. If it throws, the
+    /// frames, and the decoding of every LM step finished before the last. Bad audio
+    /// (`HibikiError.badAudio`) throws with the session as it was; after any other error the
     /// session is broken: `reset` before the next step.
     public func step(_ pcm: [Float]) throws -> Output {
         let frames = pcm.count / Audio.frameSize
@@ -147,6 +148,12 @@ public final class Translator {
             defer { clock = now }
             return seconds(clock, now)
         }
+        // Levelled before any state moves, on a copy kept only if it succeeds: bad audio
+        // throws with the session as it was.
+        var next = leveller
+        let source = try next(pcm)
+        leveller = next
+        timing.encode += lap()
 
         var sources: [[Int]] = []
         var audio: [Float] = []
@@ -159,7 +166,7 @@ public final class Translator {
                 timing.decode += lap()
             }
             if i == 0 {
-                sources = encode(try leveller(pcm))
+                sources = encode(source)
                 timing.encode += lap()
             }
             let out = generator.finish(pending, source: sources[i])
