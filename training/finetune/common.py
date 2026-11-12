@@ -748,7 +748,10 @@ def read_source(path: Path, sample_rate: int) -> torch.Tensor:
     channel), through the runtimes' level stage (inference/hibiki_mlx/level.py) as a stream of
     its own; [1, samples]."""
     wav = audio_read(path, to_sample_rate=sample_rate, mono=True)[0]
-    return torch.from_numpy(Leveller()(wav[0].numpy()))[None]
+    try:
+        return torch.from_numpy(Leveller()(wav[0].numpy()))[None]
+    except ValueError as error:
+        raise ValueError(f"{path}: {error}") from error
 
 
 def generate_batch(

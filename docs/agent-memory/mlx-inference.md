@@ -41,7 +41,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - File mode appends 8 s of silence (`tail_s`) and, once the input is consumed, stops on text
   EOS or 12 consecutive special-token frames (`PAD_STOP`).
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
-  workers, which adds one frame of output latency.
+  workers, which adds one frame of output latency. A worker's error ends the session and is
+  raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the
+  translation toward speech level ([input level](sft-evaluation.md#input-level)).
 - rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
   start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
   such limit ([swift-runtime](swift-runtime.md)).

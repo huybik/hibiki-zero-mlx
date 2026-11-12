@@ -136,10 +136,10 @@ inference/ (Apple Silicon, MLX)
 - Resume only from the newest complete model and optimizer pair of the same run →
   [sft-recovery](docs/agent-memory/sft-recovery.md).
 - Source audio reaches Mimi only through the input level stage (`inference/hibiki_mlx/level.py`,
-  Swift's `Audio.Leveller`): in the MLX and Swift runtimes and in `eval.py`. Mimi codes quiet
-  speech so differently that the model translated it worse, and under −35 dBFS often not at all.
-  The training caches are coded without it: their sources are loud →
-  [sft-evaluation](docs/agent-memory/sft-evaluation.md#input-level).
+  Swift's `Audio.Leveller`): in the MLX and Swift runtimes, `eval.py` and the trainers' validation
+  (`common.read_source`). Mimi codes quiet speech so differently that the model translated it
+  worse, and under −35 dBFS often not at all. The training caches are coded without it: their
+  sources are loud → [sft-evaluation](docs/agent-memory/sft-evaluation.md#input-level).
 - In MLX, give each thread its own `rustymimi.Tokenizer` and pass NumPy arrays, not MLX arrays,
   between threads → [mlx-inference](docs/agent-memory/mlx-inference.md).
 - `mx.compile` only functions that see a small, fixed set of input shapes; fed a new shape per call,

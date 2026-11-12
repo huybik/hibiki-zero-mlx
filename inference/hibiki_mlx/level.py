@@ -16,13 +16,13 @@ Quiet speech is raised toward TARGET_PEAK, by at most MAX_GAIN, but never so far
 floor passes NOISE_CEILING: the gain cannot tell quiet speech from a quiet room, so pauses and a
 stream's start, where the envelope falls toward the floor, end up near the ceiling rather than at
 the speech target, and a recording whose floor is above the ceiling is left as it is. Digital
-silence (a muted input, a padded file) says nothing about the room, so it leaves the floor alone.
-A real room that gets louder (a fan switched on) is raised toward the target until the floor has
-risen to the new level at 1.5 dB a second: 17 s from a −70 dBFS room to a −45 one. Frames whose
-envelope is above TARGET_PEAK pass unchanged, and a raised frame never peaks above it, so nothing
-clips. It is causal and frame by frame, so a stream gives the same samples in any whole-frame
-chunks. The MLX runtime and the PyTorch evaluation use this module; the Swift runtime mirrors it
-(`Audio.Leveller`).
+silence (a mute that outputs zeros, a padded file) says nothing about the room, so it leaves the
+floor alone. A real room that gets louder (a fan switched on) is raised toward the target until
+the floor has risen to the new level at 1.5 dB a second: 17 s from a −70 dBFS room to a −45 one.
+Frames whose envelope is above TARGET_PEAK pass unchanged, and a raised frame never peaks above
+it (to float32 rounding), so nothing clips. It is causal and frame by frame, so a stream gives
+the same samples in any whole-frame chunks. The MLX runtime and the PyTorch evaluation use this
+module; the Swift runtime mirrors it (`Audio.Leveller`).
 """
 
 from __future__ import annotations

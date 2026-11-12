@@ -182,15 +182,16 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 
 Every runtime and `eval.py` raise quiet source audio before Mimi with one level stage,
 `inference/hibiki_mlx/level.py` (`Leveller`; Swift's `Audio.Leveller` mirrors it sample for
-sample: equal on eight signals in 1-, 2- and whole-clip frame chunks, 2026-11-12). Each 80 ms
+sample: equal on eleven signals in 1-, 2- and whole-clip frame chunks, 2026-11-12). Each 80 ms
 frame takes one gain from two trackers of the frame peaks, a signal envelope (instant rise,
 6 dB a second fall) and a noise floor (instant fall, 1.5 dB a second rise; digitally silent
 frames, under one 16-bit step, leave it as it is): quiet speech is raised toward −20 dBFS, by at
 most 30 dB, unless that would lift its noise floor past −40 dBFS. Frames whose envelope is above
 −20 dBFS pass unchanged, and nothing clips. Non-finite or multichannel input is an error (Swift:
-`HibikiError.badAudio`, the session left as it was). `common.read_source` levels each clip as a stream of its own
-(its `_stereo.wav` keeps the levelled source, what the model heard); `main.py` levels a file's
-first channel or a mic session, `Translator` a session (`reset` starts a new one). Scores from
+`HibikiError.badAudio`, the session left as it was). `common.read_source` levels each clip as a
+stream of its own (its `_stereo.wav` keeps the levelled source, what the model heard);
+`main.py` levels a file's first channel or a mic session, `Translator` a session (`reset` starts
+a new one). Scores from
 before the stage (2026-11-12) do not compare with later ones on any set, most of all on FLEURS.
 
 Why (2026-11-12, the two-way run's predictions at 60,000 and 72,000; true sample peaks):
@@ -215,18 +216,25 @@ alone a stream's start and every pause once the envelope fell under −20 dBFS (
 −3 dBFS peak) were raised to −20 like speech (a −45 dBFS room to −20, and 22% of
 `en-vi-val-noisy`'s frames). With the floor tracker, noise-only streams at −66 and −45 dBFS come
 out with their loudest frame at −36 to −37, as do −45 dBFS noise after 2 s of digital silence and
-a −55 room after a 3 s mute. The ceiling sits where the English training recordings' quietest
+a −55 room after a 3 s mute that outputs zeros. The ceiling sits where the English training recordings' quietest
 80 ms frame stays in 90% of clips (Common Voice −40, Libriheavy −48 dBFS at p90; medians −63; the
 VieNeu TTS is digital silence; the tranche's GigaSpeech 2 runs louder, median −33, and
 `en-vi-val-noisy` −43). What it costs or leaves:
 
 - Speech whose quietest frames are less than ~20 dB under its peaks is raised less: leon.wav
-  (continuous narration) lowered 30 to 50 dB comes out at −29 dBFS each time.
+  (continuous narration) lowered 30 to 50 dB comes out at −29 dBFS each time. Quiet speech whose
+  pauses are exact zeros (noise-gated, trimmed) is raised less still, as only its speech frames
+  set the floor: leon with its quietest 30% of frames zeroed, lowered 45 dB, comes out at −34.
 - Frames from −90 to −70 dBFS set the floor at its lowest, so a real room that gets louder (a
   fan switched on) is raised toward −20 until the floor has risen to it: −75 dBFS for 2 s, then
-  −45 noise, comes out at −20 for ~6 s and under −38 after 20 s. Only digital silence is left
-  out of the floor; leaving out everything under −70 cost the quiet FLEURS clips' agreement
-  0.74 → 0.59, because their own floor is under −70 (FLEURS-en median −83).
+  −45 noise, comes out near −20 at its onset, −22 to −25 at 4 s, −27 at 6 s and −33 at 10 s,
+  its loudest frame settling near −37 once the floor has caught up (~15 s; three noise seeds).
+  A mute that dithers (±1 16-bit step) counts as such a
+  room. Only digital silence is left out of the floor; leaving out everything under −70 cost the
+  quiet FLEURS clips' agreement 0.74 → 0.59, because their own floor is under −70 (FLEURS-en
+  median −83, 2-3 16-bit steps).
+- Mic mode on speakers: the stage raises the echo of the translation like any quiet sound, up
+  to speech level a few seconds after the user stops talking, so use headphones.
 - Frames raised, over every clip: FLEURS-en 72%, FLEURS-vi 49%, Common Voice English 20%,
   `en-vi-val-noisy` 14-17%, MultiMed-ST 5%, Libriheavy 5%, the TTS 1%. The training caches were
   coded without the stage. leon.wav as it is (peak −3.8 dBFS) passes unchanged.

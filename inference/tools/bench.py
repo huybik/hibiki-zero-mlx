@@ -4,7 +4,7 @@
   python inference/tools/bench.py --model 3b            # per-stage ms table + projections
   python inference/tools/bench.py --model 3b --silence  # silence-in gate (rms/peak)
 
-Splits each frame into mimi encode / LM main transformer / LM depformer /
+Splits each frame into level + mimi encode / LM main transformer / LM depformer /
 mimi decode using mx.eval barriers, then reports RT factor, artifact size and a
 projected iPhone frame time. The projection is a documented assumption, not a
 measurement: --scale is the assumed A18 Pro / M4 Pro GPU throughput ratio for

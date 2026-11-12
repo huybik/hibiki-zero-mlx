@@ -9,6 +9,9 @@ You get streamed EN text + 24 kHz EN audio. Both modes use hibiki_mlx.pipeline
 model directory. File mode is the 3-thread
 pipelined path; mic mode pipelines encode->LM->decode across threads so the live
 critical path is just the LM step (~22 ms on M4 for 3B, budget 80 ms).
+
+Use headphones in mic mode: the input level stage raises quiet sound toward speech
+level, the speakers' echo of the translation included, which the model then hears.
 """
 import argparse
 import queue
@@ -53,6 +56,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
     dec_q: queue.Queue = queue.Queue()                # LM -> decoder
     out_q: queue.Queue = queue.Queue()
     stop = threading.Event()
+    failed: list[BaseException] = []                  # a worker's error, raised at the end
 
     def on_input(indata, frames, t, status):
         in_q.put_nowait(indata[:, 0].copy())          # (1920,) float32 mic frame
@@ -71,16 +75,13 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
         # Queue numpy (not mx) arrays: lazy mx graphs are bound to the creating
         # thread's stream and can't be evaluated from the LM thread.
         leveller = Leveller()                                           # the session's level
-        try:
-            while not stop.is_set():
-                try:
-                    pcm = in_q.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                codes = mimi_enc.encode_step(leveller(pcm)[None, None, :])  # CPU, GIL free
-                enc_q.put_nowait(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
-        finally:
-            stop.set()                                                  # an error ends the session
+        while not stop.is_set():
+            try:
+                pcm = in_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            codes = mimi_enc.encode_step(leveller(pcm)[None, None, :])   # CPU, GIL free
+            enc_q.put_nowait(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
 
     def decoder():
         while not stop.is_set():
@@ -91,7 +92,17 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
             out = mimi_dec.decode_step(at)                              # CPU, GIL free
             out_q.put_nowait(out[0, 0])                                 # (1920,) float32
 
-    workers = [threading.Thread(target=fn, daemon=True) for fn in (encoder, decoder)]
+    def guarded(loop):
+        def run():                                                      # an error ends the session
+            try:
+                loop()
+            except BaseException as error:
+                failed.append(error)
+            finally:
+                stop.set()
+        return run
+
+    workers = [threading.Thread(target=guarded(fn), daemon=True) for fn in (encoder, decoder)]
     for worker in workers:
         worker.start()
     try:
@@ -122,6 +133,8 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
         stop.set()
         for worker in workers:
             worker.join()
+    if failed:
+        raise failed[0]
 
 
 def main():
