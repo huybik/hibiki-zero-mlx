@@ -403,7 +403,8 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   [[ "$given" =~ --keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
   (( keep >= 1 )) || keep=2
   local ram=80
-  [[ "$module" == training.finetune.grpo ]] && ram=100  # its second pinned copy (grpo.HostOffload)
+  # GRPO pins a second copy (grpo.HostOffload): 77 GiB pinned and ~17 GiB more it cannot give back.
+  [[ "$module" == training.finetune.grpo ]] && ram=128
   preflight $(( (keep + 1) * 75 / 2 + 18 )) "$run_dir" "$ram"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"

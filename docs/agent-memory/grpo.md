@@ -164,9 +164,11 @@ The CUDA profile and dry run are under [Running](#running).
   The profiler's estimate for the first window at its own lengths (640 streams; rollouts average
   819 frames and forwards 635 after the EOS cut; 90% of rollouts end) at `--gen-frames 614400`
   (512 rows of 1,200): ~11.7 s of generation, ~1.6 s of old logprobs and ~5.3 s of update, so
-  ~18.6 s an update. That compares with ~33 s at full length with the states on the GPU (batch
-  256: ~19.8 + 3.1 + 10.0 s). So 800 updates take ~4.1 h and 2,000 ~10.3 h, plus the
-  evaluations. The rollouts' mean final BLEU was 33.5.
+  ~18.6 s an update. The profile overstates the short forwards' speed: in a run (2026-11-13, the
+  end-to-end check below) an update took ~20.5 s, with ~11.0 s of generation, 2.4 s of old
+  logprobs and 7.0 s of update. That compares with main's full-length rollouts at 34.4 s on the
+  same streams. So 800 updates take ~4.9 h and 2,000 ~12 h with the evaluations (~3.7 min each).
+  The rollouts' mean final BLEU was 33.5.
 - **The cut changes almost no reward** (2026-11-13). The same full-length rollouts were scored
   over 1,200 frames and over their cut length: the final model, GRPO's first 128 streams in its
   seeded order, 4 rollouts each.
@@ -178,6 +180,26 @@ The CUDA profile and dry run are under [Running](#running).
 
   So what the cut drops is the rare late babble, and the groups' order, which the advantages
   follow, holds.
+- **End-to-end check** (2026-11-13, on 60447659, no Hub). A 40-update run at the launcher's
+  sizes was stopped after its step-20 pair and resumed. Beside it, main ran 20 updates on the
+  same streams.
+  - The first ratio was exactly 1 at the start and after the resume. No recompile landed
+    between π_old's pass and an update.
+  - The resumed state equalled the saved pair bit for bit, and every `HostOffload` round trip
+    restored all 2,016 tensors exactly.
+  - Generation peaked at 72.6 of 79.2 GiB, in a batch of 724 rows of 848 frames. Its peak
+    follows ~6.3 + 1.07e-4 × rows × frames GiB, so `--gen-frames 614400` holds ~6 GiB in
+    reserve in any window.
+  - Host memory: 77 GiB pinned (the writer's copy and `HostOffload`'s) and ~17 GiB more that
+    can't be given back, so GRPO's preflight needs 128 GiB of RAM.
+  - Against main over the same 20 updates: final BLEU 32.45 against 32.50 and `eos_rate`
+    0.922 against 0.920, with no systematic difference in loss or clipping.
+  - Each process pays once: ~63–80 s of compilation in its first π_old pass, and 10–19 s each
+    to pin the writer's and the offload's buffers.
+  - A resumed window draws statistically equivalent rollouts, not identical ones: generation
+    isn't bit-reproducible across processes.
+  - Evaluation itself moves ~±0.7 chrF between runs of the same weights, so judge a trend over
+    several evaluations, not one.
 - **Profiled on the H200 box, alone on the GPU** (2026-11-10, 700 W H200 SXM, from round 4's
   final model, the tranche caches, T 1,200; the 2026-11-09 profile there ran beside the cache
   build and counted the leaked generator, so its micro-batch 4 "ran out of memory"):
@@ -219,7 +241,8 @@ The CUDA profile and dry run are under [Running](#running).
 - **The two-way run** (user, 2026-11-13): `grpo_launch.sh weights/twoway_final.safetensors`,
   the two-way SFT's final model (`runs/twoway_sft/model_step287558.safetensors`, hard-linked
   into `weights/`), at the H100 profile's sizes, `--updates 2000`. It is judged at 800 from its
-  evaluations and goes on while the selecting chrF still rises. The rate is constant, so the
+  evaluations (every 200, against update 0 too, since promotion only compares checkpoints), and
+  goes on while the selecting chrF still rises beyond that noise. The rate is constant, so the
   longer `--updates` is the same run up to 800. Its caches are real Vietnamese speech to
   English (the tranche) and English to Vietnamese from the tranche's voice-cloned English and
   `en_speech`'s real recordings.

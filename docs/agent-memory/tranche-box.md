@@ -61,7 +61,7 @@ first validation ([two-way](two-way.md#two-way-run)); GRPO then runs once, on th
 
 **GRPO: PROFILED AND OPTIMIZED ON THE H100, NOT STARTED.** At `grpo_launch.sh`'s sizes
 (`--gen-frames 614400 --micro-batch 2`, rollouts cut to their stream plus the tail, the policy
-and AdamW's states in host memory while generating): ~18.6 s an update, 800 updates ~4.1 h
+and AdamW's states in host memory while generating): ~20.5 s an update, 800 updates ~4.9 h
 ([grpo](grpo.md#running)). The user's go-ahead (2026-11-13): from the two-way SFT's final model,
 judged at update 800 and continued to 2,000 while it still improves. It runs from
 the box's checkout, `/workspace/hibiki-zero` on `main` (GRPO is merged; the `wt-*` worktrees are
