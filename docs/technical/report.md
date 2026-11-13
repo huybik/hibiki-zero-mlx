@@ -164,7 +164,7 @@ The benchmark matrix made the product split explicit:
 
 The 1B q4 model is smaller and faster, and on the n=30 French benchmark it scored better than the multilingual 3B because it is a dedicated FR->EN model. It is not yet a Vietnamese phone model.
 
-**Decision:** keep q4 group size 32. Stock `moshi-mlx` and `moshi-swift` use this contract for `.q4.safetensors`; a different group size saves little and breaks the downstream loader. [`check_swift_compat.py` at `5ff5a4e`](https://github.com/huybik/hibiki-zero-mlx/blob/5ff5a4e/inference/tools/check_swift_compat.py) reproduced the strict loader path and reported 7/7 checks for the staged artifact (removed since: both runtimes now quantize by the model's per-layer `quantization` record and load strictly). This proves format compatibility, not iPhone speed [R7].
+**Decision (superseded 2026-11-14):** keep q4 group size 32, the contract stock `moshi-mlx` and `moshi-swift` use for `.q4.safetensors`. Both runtimes now quantize by the model's per-layer `quantization` record, so any group size loads, and the two-way model ships with 6-bit, group-64 transformer linears (4 bits lost ~4 chrF on VI->EN; [mlx-inference](../agent-memory/mlx-inference.md#model-directories)). [`check_swift_compat.py` at `5ff5a4e`](https://github.com/huybik/hibiki-zero-mlx/blob/5ff5a4e/inference/tools/check_swift_compat.py) reproduced the strict loader path and reported 7/7 checks for the staged artifact (removed since: both runtimes now quantize by the model's per-layer `quantization` record and load strictly). This proves format compatibility, not iPhone speed [R7].
 
 ---
 

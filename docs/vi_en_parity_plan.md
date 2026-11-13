@@ -217,9 +217,9 @@ codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-me
    loading strictly; the two-way GRPO model is 3.28 GB at 6 bits and 2.65 GB at 4, against 7.7 GB
    in bf16. Both runtimes' file mode feeds a file as training's evaluation does (the source EOS
    after the clip, 20 s of silence, stopping at the first text EOS after it; live mode never
-   sends the EOS) and samples as the model's `lm_gen_config` says: temperature 0.8, top-k 250 on every token, the paper's and
-   training's; at the runtimes' old text 0.4, top-k 25 the fine-tuned model lagged and seldom
-   ended ([analysis](analysis/eos_and_lag.md)). `inference/tools/gate.py` scores a model
+   sends the EOS) and samples as the model's `lm_gen_config` says: temperature 0.8, top-k 250 on
+   every token, the paper's and training's; at the runtimes' old text 0.4, top-k 25 the
+   fine-tuned model lagged and seldom ended ([analysis](analysis/eos_and_lag.md)). `inference/tools/gate.py` scores a model
    directory as training scores checkpoints ([mlx-inference](agent-memory/mlx-inference.md)).
 2. Gated (2026-11-14, GRPO update 600, every FLEURS dev row): 6 bits keeps bf16's chrF both
    ways (VI→EN 42.15 against 42.57, EN→VI 37.50 against 37.21, both within the paired

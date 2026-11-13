@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""hibiki-zero MLX translation — realtime mic or a file, on q4 or bf16 weights.
+"""hibiki-zero MLX translation — realtime mic or a file, on quantized or bf16 weights.
 
   python inference/main.py path/to/audio.wav   # file -> translations/<stem>_translated.wav
   python inference/main.py --mic               # mic  -> speakers, live (Ctrl-C to stop)

@@ -71,9 +71,9 @@ with `LmConfig.from_config_dict`'s defaults and fails on any setting it does not
 
 - Depformer weights per step: a staged weights file holds a full copy for each of the 16
   codebook steps, but steps 8–15 share one weight set (`depformer_weights_per_step_schedule`).
-  `Depformer.remap` loads each set once into `depformer.cores.N`: of the 3B's q4 file (2.65 GB),
-  2.19 GB of LM weights (computed from its header; uniform q4, which the device numbers below
-  ran, loaded 1.96 of 2.41 GB). MLX loads safetensors lazily, so the dropped copies are never
+  `Depformer.remap` loads each set once into `depformer.cores.N`: of the 3B's 6-bit file
+  (3.28 GB), 2.69 GB of LM weights, and of its 4-bit file (2.65 GB), 2.19 GB (computed from
+  their headers; uniform q4, which the device numbers below ran, loaded 1.96 of 2.41 GB). MLX loads safetensors lazily, so the dropped copies are never
   read.
 - Quantized weights load as `pipeline.py` loads them: every `Quantizable` (Linear, Embedding) at
   the `quantization` record's default or its own entry, looked up by the checkpoint's path

@@ -16,7 +16,7 @@ inference/            Apple Silicon · MLX
   main.py             file and microphone translation CLI
   hibiki_mlx/         pipelined runtime (CPU Mimi codec overlapped with the GPU LM)
   moshi-mlx/          minimal vendored MLX model with the Hibiki-Zero deltas
-  tools/              q4/BF16 staging, q4-against-BF16 gate, benchmark, Core ML Mimi
+  tools/              quantized/BF16 staging, the quantization gate, benchmark, Core ML Mimi
   assets/leon.wav     French gate clip
   macos/              native SwiftUI file and microphone test app
 training/             CUDA · PyTorch
