@@ -120,12 +120,16 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
   - 4,608-frame batches at peak LR 2.25e-6 (user, 2026-11-13): round 4's 3e-6 at 8,192 frames
-    scaled by sqrt(4,608 / 8,192), Adam's square-root rule. With AdamW each update moves the
-    weights about the rate whatever the batch, so 4,608 at 3e-6 took 1.78 times the movement per
-    hour of data, and this model loses real speech when pushed: the learning-rate test's dips, and
-    round 4e (4,608 at 3e-6) lost every real-speech test set to round 4 (8,192), its data mix
-    changed too ([plan](../vi_en_parity_plan.md#order), items 4 and 6). The rule is untested here;
-    linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0.
+    scaled by sqrt(4,608 / 8,192). With AdamW each update moves the weights about the rate
+    whatever the batch, so 4,608 at 3e-6 moved them 1.78 times as far per hour of data as round 4,
+    and this model loses real speech when pushed: the learning-rate test's dips, and round 4e
+    (4,608 at 3e-6) lost every real-speech test set to round 4 (8,192), its data mix changed too
+    ([plan](../vi_en_parity_plan.md#order), items 4 and 6). The square-root rule for Adam
+    (Malladi et al., 2022) keeps the drift and noise per sample of data where gradient noise
+    dominates; at 2.25e-6 the movement per hour of data is 1.33 times round 4's (weight decay's
+    too). It is applied in part (the full rule also scales 1 − β1, 1 − β2 and ε; the betas stay
+    (0.9, 0.95)) and is untested on this model.
+  - Linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0.
     The next run ends sooner, since the two-way run's last 12% of updates, the rate under 4% of
     its peak, gained nothing (user, 2026-11-13; [two-way](two-way.md#two-way-run)); `--max-steps`
     shortens the whole cosine, not only its tail. A floor held at the end instead would keep the

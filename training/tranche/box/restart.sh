@@ -59,8 +59,9 @@ case $job in
   # The two-way SFT (two-way.md#two-way-run): round 4e's rows both ways, from round 4's final model moved onto the
   # Vietnamese swap (init_weights writes weights/twoway_start_vi6k.safetensors; --tokenizer follows the weight), in
   # the trainer's whole 4,608-frame batches at its 2.25e-6 peak. Every cache keeps only its packs here (streams
-  # --drop-shards). Validation every 20,000 updates on both directions. Two epochs (user, 2026-11-11). twoway_sft itself
-  # ran round 4's 8,192-frame batches in slices at 3e-6, so this no longer resumes it: a new run takes a new name.
+  # --drop-shards). Validation every 20,000 updates on both directions. twoway_sft ran round 4's 8,192-frame batches
+  # in slices at 3e-6, so this is a new run, twoway_sft_4608. Two epochs (user, 2026-11-11), but the next run ends
+  # sooner (sft-training.md#trainer): decide its --max-steps with the user before launching it.
   two-way) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        # Shards beside their packs would fill the disk at the second checkpoint pair: drop them first (two-way.md).
@@ -68,7 +69,7 @@ case $job in
          [[ -d $d ]] || { echo "$d is missing: run envi-cache first" >&2; exit 1; }
          if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
        done
-       cmd=(./training/h100.sh run twoway_sft
+       cmd=(./training/h100.sh run twoway_sft_4608
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation

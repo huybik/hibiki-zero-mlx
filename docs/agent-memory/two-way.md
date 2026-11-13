@@ -177,7 +177,8 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   EN→VI chrF up with healthy outputs, VI→EN FLEURS dev within 1 chrF of the start.
   `restart.sh two-way` now launches the SFT recipe instead (whole 4,608-frame batches at peak
   2.25e-6, validation every 20,000: [sft-training](sft-training.md#trainer)), so it no longer
-  resumes `twoway_sft`; a new two-way run takes a new name.
+  resumes `twoway_sft`: it starts `twoway_sft_4608`, at two epochs until its length is decided
+  with the user (the next run ends sooner, [sft-training](sft-training.md#trainer)).
 - The run (started 2026-11-11 04:32 UTC, 0.52 s an update, a validation ~7 min; on free-threaded
   Python from step 8,000, [environment](environment.md#python)): at step 12,000 EN→VI rose
   (FLEURS-en 6.37 → 13.45, `en-vi-val-en` 7.8/8.5 → 14.5/20.8, Vietnamese but not yet faithful)
