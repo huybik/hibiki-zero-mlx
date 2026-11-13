@@ -89,7 +89,7 @@ real-Vietnamese set, which GigaSpeech 2's terms keep off that public repo; pass 
 The first stream run trains on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
 back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
 `RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–120 s
-streams in batches of at most 4,608 frames, one epoch (about 131,700 steps), peak LR `1e-6` with 5%
+streams in batches of at most 4,608 frames, one epoch (about 131,700 steps), peak LR `2.25e-6` with 5%
 warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW
 `(0.9, 0.95)` with weight decay `0.1`, checkpoints every 1,000 steps and validation every 9,000
 ([sft-training](agent-memory/sft-training.md#trainer)). Each validation logs teacher-forced

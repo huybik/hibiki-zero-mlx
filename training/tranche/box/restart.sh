@@ -58,9 +58,10 @@ case $job in
               --direction en-vi --drop-inputs') ;;
   # The two-way SFT (two-way.md#two-way-run): round 4e's rows both ways, from round 4's final model moved onto the
   # Vietnamese swap (init_weights writes weights/twoway_start_vi6k.safetensors; --tokenizer follows the weight), in
-  # round 4's 8,192-frame batches, computed in slices that fit the 80 GB card. Every cache keeps only its packs here
-  # (streams --drop-shards). Validation every 12,000 updates on both directions; the first is the pilot's test.
-  # Two epochs (user, 2026-11-11), the run extended in place at step 28,000 (sft-recovery.md: extending a run).
+  # the trainer's whole 4,608-frame batches at its 2.25e-6 peak. Every cache keeps only its packs here (streams
+  # --drop-shards). Validation every 20,000 updates on both directions. twoway_sft ran round 4's 8,192-frame batches
+  # in slices at 3e-6, so this is a new run, twoway_sft_4608. Two epochs (user, 2026-11-11), but the next run ends
+  # sooner (sft-training.md#trainer): decide its --max-steps with the user before launching it.
   two-way) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        # Shards beside their packs would fill the disk at the second checkpoint pair: drop them first (two-way.md).
@@ -68,13 +69,13 @@ case $job in
          [[ -d $d ]] || { echo "$d is missing: run envi-cache first" >&2; exit 1; }
          if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
        done
-       cmd=(./training/h100.sh run twoway_sft
+       cmd=(./training/h100.sh run twoway_sft_4608
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
             --model-weight weights/twoway_start_vi6k.safetensors
-            --batch-frames 8192 --micro-frames 3584 --eval-batch-size 64 --keep-checkpoints 1
-            --epochs 2 --lr 3e-6 --seed 47 --save-every 4000 --val-every 12000
+            --eval-batch-size 64 --keep-checkpoints 1
+            --epochs 2 --seed 47 --save-every 4000 --val-every 20000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way" >&2; exit 1 ;;

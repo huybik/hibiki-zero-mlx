@@ -56,6 +56,7 @@ grows sentence by sentence.
 | Keep the source EOS and text EOS at the end of each stream | Upstream models termination this way and forces the input EOS in offline use; a live stream simply never sends it |
 | Audio codebook 0 weighted ×100; every text PAD supervised at 0.5 | Kyutai's `moshi-finetune` defaults. Before, codebook 0 was 1/16 of the audio loss and PADs after the first word had no loss, so nothing taught when not to emit a word; the last run's length ratio grew 1.06 → 1.28 → 2.05 |
 | Batches by frame budget; warmup + cosine LR | Attention is ~2.5% of compute at 1,500 frames, so cost tracks frames, not rows; the constant 1e-6 LR kept moving the model after its optimum |
+| SFT updates on whole 4,608-frame batches at peak 2.25e-6 on the 80 GB H100 (user, 2026-11-13, replacing the two-way run's 8,192 at 3e-6) | 8,192 runs there only in slices, 6.5% slower. With AdamW each update moves the weights about the rate, so 4,608 at 3e-6 moved the model 1.78 times as far per hour of data, and round 4e did that and lost every real-speech test set to round 4 (its data mix changed too); 3e-6 × sqrt(4,608 / 8,192), Adam's square-root rule, keeps round 4's drift and noise per sample where gradient noise dominates (1.33 times its movement per hour of data; untested here, [sft-training](agent-memory/sft-training.md#trainer)) |
 | Choose checkpoints by free-running chrF on real Vietnamese speech, inside training (2026-11-02) | All training and cache-validation speech is VieNeu TTS, and the last run's teacher-forced loss kept improving while its translations got worse |
 | GRPO comes last, after every SFT stage (user, 2026-11-04) | SFT on new data retrains the timing its data teaches and would undo most of what RL tuned; the paper's order is base, fine-tune, then RL |
 | The real-Vietnamese tranche is research and includes non-commercial corpora; their weights are research-only, and each source has its own cache (user, 2026-11-04) | The non-commercial corpora (PhoAudiobook, viVoice, Bud500, GigaSpeech 2) have cleaner transcripts, more speakers and long-form audio than YODAS; a commercial model is the same SFT without their caches ([real-vi-tranche](agent-memory/real-vi-tranche.md#decision)) |
@@ -124,7 +125,7 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
    gaps drawn so the previous English overhangs the next Vietnamese by at most 2 s. That cap
    binds at the median join, so the source "waits" for the interpreter; watch lag growth on
    long real speech.
-2. Loss as above; LR peak 1e-6, 5% warmup, cosine to 0; one pass over the pool.
+2. Loss as above; 5% warmup to the trainer's peak, then cosine to 0 ([sft-training](agent-memory/sft-training.md#trainer)); one pass over the pool.
 3. Each validation logs teacher-forced losses on streams of the cache's `validation/` split and
    translates FLEURS dev and the held-out `en-vi-val` rows free-running, scoring each set apart.
    The trainer promotes the checkpoint whose every set passes the health gates (nonempty,
@@ -498,7 +499,9 @@ Vietnamese text cannot keep up with its speech.
 9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) cut from the two-way model,
    trained on both directions' streams directly, distilled only if it falls short; its EN→VI
    speech is checked at 8 and 16 codebooks (stage 5.3); measure a current phone (A17 Pro / A18)
-   before settling it.
+   before settling it. Its profile measures frames/s at 4,608, 8,192 and 12,288 frames per
+   update first (user, 2026-11-13): a smaller model may fit larger batches whole and run them
+   faster.
 10. Parallel codebook heads against that student, on the H100 (stage 5.4; user, 2026-11-10):
     a ~14-layer delay-pattern student on the same streams of both directions and the same
     steps, adopted only if it wins at real time.

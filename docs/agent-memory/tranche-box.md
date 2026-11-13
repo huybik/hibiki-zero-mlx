@@ -132,7 +132,7 @@ the two-way caches and run before GRPO):
 | cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
 | sft | `restart.sh sft` (round 4, `full_epoch4b`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
 | envi-cache | `restart.sh envi-cache`: every `en-vi` cache and the English evaluation sets ([two-way](two-way.md#two-way-run)) | "en_speech en-vi done", then the tranche builder's "done:" line, logged once its last push is in (a rerun with nothing left logs "0 shards to build", then pushes any leftovers before it exits) |
-| two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft`, [two-way](two-way.md#two-way-run)) | its best checkpoint, then the test sets both ways |
+| two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft_4608`, [two-way](two-way.md#two-way-run); `twoway_sft` ran before at 8,192 frames) | its best checkpoint, then the test sets both ways |
 | grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)), on the two-way model | its updates; stop with TERM to the launcher alone |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own

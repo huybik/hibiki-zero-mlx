@@ -3,9 +3,8 @@
 
 Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
 AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
-rows with --seed (`streams.py`) and batched up to --batch-frames padded frames, one update a batch,
-computed in slices of up to --micro-frames where it would not fit the card; every epoch replays
-that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
+rows with --seed (`streams.py`) and batched up to --batch-frames padded frames, one update a batch;
+every epoch replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
 and batch order of each validation cache (so --val-batches takes a random subset of each) and translates
 the rows of every --eval-pairs file free-running in one pass, sampled as `eval.py` samples, and
 scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
@@ -119,14 +118,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=0, help="0 trains all epochs.")
     parser.add_argument(
-        "--batch-frames", type=int, default=4608, help="Padded frames per batch (streams x frames)."
-    )
-    parser.add_argument(
-        "--micro-frames", type=int, default=0,
-        help="Compute each batch in slices of its streams of up to this many padded frames, each "
-        "slice's loss weighted by its share of the rows and the gradients added: nearly the whole "
-        "batch's update (rows differ a little in tokens) in less memory (0: the whole batch at once). "
-        "An 80 GB card fits ~4,600 frames at once, round 4's 8,192-frame batches only in slices.",
+        "--batch-frames", type=int, default=4608,
+        help="Padded frames per batch (streams x frames), one update each; an 80 GB card fits 4,608 at once.",
     )
     parser.add_argument(
         "--stream-seconds",
@@ -139,7 +132,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-frames", type=int, default=280, help="Cache rows longer than this are dropped."
     )
-    parser.add_argument("--lr", type=float, default=1e-6, help="Peak learning rate.")
+    parser.add_argument(
+        "--lr", type=float, default=2.25e-6,
+        help="Peak learning rate. 2.25e-6 is round 4's 3e-6 at 8,192-frame batches times "
+        "sqrt(4,608 / 8,192), Adam's square-root rule for the smaller batch.",
+    )
     parser.add_argument(
         "--warmup-fraction", type=float, default=0.05, help="Share of steps warming up linearly."
     )
@@ -187,7 +184,7 @@ def validate_args(args: argparse.Namespace) -> None:
     for name in ("epochs", "batch_frames", "max_frames", "eval_batch_size"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
-    for name in ("max_steps", "grad_clip", "val_every", "val_batches", "save_every", "micro_frames"):
+    for name in ("max_steps", "grad_clip", "val_every", "val_batches", "save_every"):
         if getattr(args, name) < 0:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.keep_checkpoints < 0:
@@ -452,23 +449,17 @@ def main() -> None:
         log["data_seconds"] += time.time() - fetch_started  # the wait for the stream workers
         codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size, frames_padded = int(codes.shape[0]), int(codes.shape[-1])
-        # Slices of the batch's streams, each a share of the update by its rows (their padded
-        # lengths are equal): the batch's mean loss, up to how its tokens fall between slices
-        # (length-sorted streams of one batch differ little; the text term most, a few percent).
-        per_slice = max(1, args.micro_frames // frames_padded) if args.micro_frames else batch_size
-        for start in range(0, batch_size, per_slice):
-            part = codes[start : start + per_slice]
-            rows = int(part.shape[0])
-            if rows not in condition_cache:
-                condition_cache[rows] = common.batch_condition_tensors(lm, checkpoint_info.model_type, rows)
-            with autocast:
-                losses = common.compute_batch_losses(lm, part, condition_cache[rows], weights)
-            share = rows / batch_size
-            (losses["loss"] * share).backward()
-            for key in LOG_LOSSES:
-                log["losses"][key] += losses[key].detach() * share
-            log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
-            log["text_tokens"] += losses["content_n"] + losses["pad_n"]
+        if batch_size not in condition_cache:
+            condition_cache[batch_size] = common.batch_condition_tensors(
+                lm, checkpoint_info.model_type, batch_size
+            )
+        with autocast:
+            losses = common.compute_batch_losses(lm, codes, condition_cache[batch_size], weights)
+        losses["loss"].backward()
+        for key in LOG_LOSSES:
+            log["losses"][key] += losses[key].detach()
+        log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
+        log["text_tokens"] += losses["content_n"] + losses["pad_n"]
         if args.grad_clip > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
         else:
