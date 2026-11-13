@@ -125,8 +125,10 @@ the base (2026-11-14):
   exists yet: that is [plan stage 6](../vi_en_parity_plan.md#6-quantise-and-package).
 - Their streaming text decoders assemble UTF-8 from byte pieces split across frames
   ([mlx-inference](mlx-inference.md#runtime), [swift-runtime](swift-runtime.md#layout)). The swap
-  still writes some characters as bytes: 11 Vietnamese letters where no longer piece covers them
-  (`Â Ã Í Ò Ó Ô Ù Ú Ă ă ị`, as in `Ô tô`), and anything outside Vietnamese and English (emoji, CJK).
+  still writes some characters as bytes where no longer piece covers them: 11 Vietnamese letters
+  anywhere (`Â Ã Í Ò Ó Ô Ù Ú Ă ă ị`, as in `Ô tô`), 6 more after punctuation or inside a word,
+  having only a word-initial piece (`Ê Ý ý ạ ả ụ`, as in `(ạ)`), and anything outside Vietnamese
+  and English (emoji, CJK).
 - Checked end to end on a tiny random-weight model (the 3B's weights were off the Mac): staged
   from a checkpoint naming the swap, its directory held and loaded the swap in `main.py` and the
   Swift CLI; with its text head pointed at four byte pieces, both printed the 2-byte characters

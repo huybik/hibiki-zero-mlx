@@ -66,6 +66,9 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
   --minutes 10
 ```
 
+This copies `weights/`, upstream's q4 model; for a staged model directory, copy its files instead,
+with the tokenizer its `config.json` names (`tokenizer_name`).
+
 `--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models
 on the phone; `--chunk K` and `--unpaced` work as in `bench`. The phone must be unlocked, and a new developer certificate trusted once under
 Settings > General > VPN & Device Management. Keep the app in the foreground: iOS stops GPU

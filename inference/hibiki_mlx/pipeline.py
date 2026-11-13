@@ -72,11 +72,12 @@ def text_special_ids(tokenizer) -> set[int]:
 
 
 class TextDecoder:
-    """The text of a stream of text tokens, one token at a time, as the tokenizer decodes the
-    whole stream. A byte-fallback piece (`<0xE1>`) carries one UTF-8 byte, so a character the
-    vocabulary lacks spans several tokens: its text comes out once its sequence is complete, an
-    invalid sequence as U+FFFD, and `flush` returns what is left when the stream ends. Special
-    tokens add nothing and do not break a sequence."""
+    """The text of a stream of text tokens, one token at a time: for valid UTF-8, what the
+    tokenizer decodes from the stream's non-special tokens. A byte-fallback piece (`<0xE1>`)
+    carries one UTF-8 byte, so a character the vocabulary lacks spans several tokens: its text
+    comes out once its sequence is complete, an invalid run of bytes as one U+FFFD (SentencePiece
+    writes one per byte), and `flush` returns what is left when the stream ends. Special tokens
+    add nothing and do not break a sequence."""
 
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer

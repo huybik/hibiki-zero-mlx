@@ -18,23 +18,26 @@ from moshi_mlx import models
 MODEL_NAME = "hibiki.bf16.safetensors"
 ARTIFACT_FORMAT = "hibiki_mlx_bf16_v1"
 WEIGHTS = Path(__file__).resolve().parents[2] / "weights"  # inference/tools/ -> ../..
+# Upstream's tokenizer, which a checkpoint without `text_tokenizer` is on (training/paths.py
+# DEFAULT_TOKENIZER).
+BASE_TOKENIZER = "tokenizer_spm_48k_multi6_2.model"
 
 
-def checkpoint_tokenizer(checkpoint: Path, cfg: dict) -> str:
+def checkpoint_tokenizer(checkpoint: Path) -> str:
     """The tokenizer file the checkpoint's text rows are on: its safetensors metadata
     `text_tokenizer`, which every training checkpoint records (`weight_tokenizer` in
-    training/finetune/common.py), else upstream's, which `cfg` names (upstream's weight and
-    checkpoints before 2026-11-10)."""
+    training/finetune/common.py), else upstream's (upstream's weight and checkpoints before
+    2026-11-10)."""
     with open(checkpoint, "rb") as handle:
         header = json.loads(handle.read(struct.unpack("<Q", handle.read(8))[0]))
-    return header.get("__metadata__", {}).get("text_tokenizer", cfg["tokenizer_name"])
+    return header.get("__metadata__", {}).get("text_tokenizer", BASE_TOKENIZER)
 
 
 def convert(args: argparse.Namespace) -> None:
     if args.out_dir.exists():
         raise FileExistsError(f"Refusing to overwrite model directory: {args.out_dir}")
     cfg = json.loads(args.config.read_text())
-    on = checkpoint_tokenizer(args.checkpoint, cfg)
+    on = checkpoint_tokenizer(args.checkpoint)
     tokenizer = args.tokenizer or WEIGHTS / on
     if tokenizer.name != on:
         raise ValueError(f"{args.checkpoint} is on {on}, not --tokenizer {tokenizer.name}")

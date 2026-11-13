@@ -59,11 +59,12 @@ public struct Vocabulary {
     }
 }
 
-/// The text of a stream of text tokens, as the tokenizer decodes the whole stream (`TextDecoder`
-/// in pipeline.py). A byte-fallback piece carries one UTF-8 byte, so a character the vocabulary
-/// lacks spans several tokens, which may fall in different steps: its text comes out once its
-/// sequence is complete, an invalid sequence as U+FFFD, and `flush` returns what is left when
-/// the stream ends. Special tokens add nothing and do not break a sequence.
+/// The text of a stream of text tokens, as `TextDecoder` in pipeline.py: for valid UTF-8, what
+/// the tokenizer decodes from the stream's non-special tokens. A byte-fallback piece carries one
+/// UTF-8 byte, so a character the vocabulary lacks spans several tokens, which may fall in
+/// different steps: its text comes out once its sequence is complete, an invalid run of bytes as
+/// one U+FFFD, and `flush` returns what is left when the stream ends. Special tokens add nothing
+/// and do not break a sequence.
 struct TextDecoder {
     let vocabulary: Vocabulary
     /// The start of a UTF-8 sequence that later tokens may complete.

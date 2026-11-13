@@ -42,12 +42,14 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   EOS or 12 consecutive special-token frames (`PAD_STOP`).
 - Text comes from `TextDecoder` (both modes): a byte-fallback piece (`<0xE1>`) carries one
   UTF-8 byte, so a character the tokenizer lacks spans frames; the decoder (an incremental UTF-8
-  codec with `errors="replace"`) prints it once complete, an invalid sequence as U+FFFD, skips
-  `<unk>`/`</s>`/`<pad>` without breaking a sequence, and `flush` ends the stream. Its stream
-  equals SentencePiece's `decode` of the non-special tokens (2026-11-14, scratch check: the
-  repo's ~6,500 lines of docs and Vietnamese sentences, on both tokenizers, PADs between pieces);
-  without byte pieces its text equals the old piece-by-piece output. Mic mode prints the flushed
-  tail before `[stopping]`.
+  codec with `errors="replace"`) prints it once complete, skips `<unk>`/`</s>`/`<pad>` without
+  breaking a sequence, and `flush` ends the stream. For valid UTF-8 its stream equals
+  SentencePiece's `decode` of the non-special tokens, as the evaluation decodes
+  (`decode_text_batch`; 2026-11-14, scratch check: the repo's ~6,500 lines of docs and
+  Vietnamese sentences, on both tokenizers, PADs between pieces); an invalid run of bytes is one
+  U+FFFD where SentencePiece writes one per byte. Without byte pieces its text equals the old
+  piece-by-piece output. `<s>` is printed as before. Mic mode prints the flushed tail before
+  `[stopping]`.
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers, which adds one frame of output latency. A worker's error ends the session and is
   raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the
@@ -71,9 +73,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   tokenizer that weight is on.
 - `inference/tools/convert_mlx_bf16.py` stages an exact PyTorch checkpoint (for example an SFT
   `model_step*.safetensors`) into a new directory and refuses to overwrite. It ships the
-  tokenizer the checkpoint is on: its safetensors metadata `text_tokenizer` (else upstream's,
-  which `--config` names), from `weights/` or `--tokenizer`, whose file name must match; the
-  directory's `config.json` names it. A two-way checkpoint stages with the swap and no flag.
+  tokenizer the checkpoint is on: its safetensors metadata `text_tokenizer` (else the base, as
+  in training), from `weights/` or `--tokenizer`, whose file name must match; the directory's
+  `config.json` names it. A two-way checkpoint stages with the swap and no flag.
 
 ## Vendored moshi-mlx
 
