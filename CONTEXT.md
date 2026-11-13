@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-12
+Last verified: 2026-11-13
 
 ## Purpose
 
@@ -67,6 +67,10 @@ inference/ (Apple Silicon, MLX)
   `giga-heldout` 51.3 → 61.8, FLEURS test 38.2 → 37.9 (inside its noise), the held-out TTS sets
   −0.9. `full_epoch4e` repeats it with 500 `en_speech` shards (29% of 8,456 h) in round 3's
   4,608-frame batches (2026-11-10, an H100) ([plan](docs/vi_en_parity_plan.md#order)).
+- The fifth, `twoway_sft` (2026-11-11 to 13, an H100), trained both directions of round 4e's rows
+  for two epochs from round 4's final model on the Vietnamese tokenizer swap. Scored with the
+  input level stage: EN→VI FLEURS-en 7.8 → 33.7 chrF, VI→EN FLEURS dev 41.3 → 39.6 and
+  MultiMed-ST 37.3 → 37.7 ([two-way](docs/agent-memory/two-way.md#two-way-run)).
 - [docs/vi_en_parity_plan.md](docs/vi_en_parity_plan.md) is the active plan (2026-11-01):
   Hibiki-Zero 3B from training to the phone. For the data,
   the `en_speech` corpus is built and all its transcripts are translated to Vietnamese:

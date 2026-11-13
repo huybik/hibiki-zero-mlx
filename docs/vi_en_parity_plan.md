@@ -486,7 +486,9 @@ Vietnamese text cannot keep up with its speech.
       ~23 h on the H100 at 14,330 frames/s) from the start through `init_weights`, the pilot's test at its first
       validations instead of a separate pilot: it goes on if EN→VI chrF rises with healthy
       outputs and VI→EN FLEURS dev stays within 1 chrF of the start, scored before the run on
-      the same sets and seed.
+      the same sets and seed. Done 2026-11-13, two epochs (287,558 updates): with the input
+      level stage, EN→VI FLEURS-en 7.8 → 33.7, VI→EN FLEURS dev 41.3 → 39.6 (past the 1-chrF
+      floor), MultiMed-ST and `en-vi-val` held ([two-way](agent-memory/two-way.md#two-way-run)).
 8. GRPO on the two-way model, both directions, optimized heavily on its box before the full run
    ([grpo](agent-memory/grpo.md#running),
    [plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)); stage 4 lists what
