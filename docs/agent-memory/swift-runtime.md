@@ -22,10 +22,17 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams), `Translator.swift` (k 80 ms frames per step: the LM on
     the GPU, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
-    the SentencePiece `.model` protobuf directly) and `Audio.swift` (file reading, the WAV
+    the SentencePiece `.model` protobuf directly, and `TextDecoder`) and `Audio.swift` (file reading, the WAV
     writer, and `Leveller`, the input level stage `Translator.step` runs before Mimi: Python's
     `hibiki_mlx/level.py`, equal sample for sample; `reset` starts its stream again;
     [sft-evaluation](sft-evaluation.md#input-level)).
+- `Translator.Output.text` is what the step's tokens complete: `TextDecoder` assembles UTF-8
+  from byte-fallback pieces (`<0xE1>`, type BYTE) across frames and steps, as `TextDecoder` in
+  `pipeline.py` does, an invalid sequence as U+FFFD; `flush` returns the rest. Fed the same
+  token streams (2026-11-14, scratch harness compiling `Vocabulary.swift`: 364 streams on both
+  tokenizers, PADs between pieces), it returns Python's text call for call, and the same whole
+  text at 2, 3 and 5 tokens per call. `config.json` must name `tokenizer_name`
+  ([mlx-inference](mlx-inference.md#model-directories)).
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (8 s silence tail,
   stop on text EOS or 12 frames of `<unk>`/`</s>`/`<pad>`, seed 299792458); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
@@ -90,8 +97,8 @@ kept):
 `Translator.step` starts LM step t on the GPU with `asyncEval`, meanwhile decodes the audio of
 step t − 1 on the Neural Engine ([mimi-npu](mimi-npu.md)) and encodes frame t on the CPU, then
 waits for the LM, as `pipeline.py` overlaps rustymimi threads with the LM. An LM step's audio is
-decoded during a later one, so it comes out after its text; `flush` returns what is left when
-the input ends (the CLI's `translate` and `Bench` call it). A step can take k frames
+decoded during a later one, so it comes out after its text; `flush` returns the audio and text
+left when the input ends (the CLI's `translate` and `Bench` call it). A step can take k frames
 ([chunks](#chunks)).
 
 - One thread drives both devices: mlx-swift 0.32 holds a global lock through every `eval`,

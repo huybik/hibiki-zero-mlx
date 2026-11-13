@@ -71,13 +71,15 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
         try wav.append(out.pcm)
         for (frame, token) in zip(idx..., out.textTokens) where frame >= steps {
             if token == translator.vocabulary.eos { break steps }
-            padRun = translator.vocabulary.text(token) == nil ? padRun + 1 : 0
+            padRun = translator.vocabulary.special.contains(token) ? padRun + 1 : 0
             if padRun >= padStop { break steps }
         }
     }
-    try wav.append(translator.flush())
+    let tail = try translator.flush()
+    try wav.append(tail.pcm)
+    text += tail.text
     let wall = Date().timeIntervalSince(start)
-    print()
+    print(tail.text)
     let textURL = output.deletingPathExtension().appendingPathExtension("txt")
     try (text.trimmingCharacters(in: .whitespaces) + "\n").write(
         to: textURL, atomically: true, encoding: .utf8)

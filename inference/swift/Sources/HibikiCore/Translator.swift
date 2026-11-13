@@ -28,7 +28,8 @@ public final class Translator {
     public struct Output {
         /// One text token per input frame.
         public let textTokens: [Int]
-        /// The text they add; special tokens add none.
+        /// The text they complete: a character spread over byte-fallback pieces comes out with
+        /// its last byte, in this step or a later one; special tokens add none.
         public let text: String
         /// Translated audio at 24 kHz decoded during this step, 1920 samples for each LM step
         /// that finished since the last decode (this step's last one comes with the next step);
@@ -69,6 +70,7 @@ public final class Translator {
     /// Complete target codes of finished LM steps, one frame each, not yet decoded.
     private var targets: [[Int]] = []
     private var leveller = Audio.Leveller()
+    private var textDecoder: TextDecoder
 
     /// Upstream sampling (`pipeline.py`): text at 0.4 with top-k 25, audio at 0.8 with top-k 250.
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
@@ -98,12 +100,12 @@ public final class Translator {
             }
             return url
         }
-        vocabulary = try Vocabulary(
-            url: file(config.tokenizerName ?? "tokenizer_spm_48k_multi6_2.model"))
+        vocabulary = try Vocabulary(url: file(config.tokenizerName))
         if vocabulary.pieces.count != config.textCard {
             throw HibikiError.badTokenizer(
                 "\(vocabulary.pieces.count) pieces for text_card \(config.textCard)")
         }
+        textDecoder = TextDecoder(vocabulary)
         mimi = try Mimi.load(
             url: file(config.mimiName ?? "mimi-pytorch-e351c8d8@125.safetensors"),
             numCodebooks: config.nQ - config.depQ)
@@ -124,11 +126,12 @@ public final class Translator {
         Memory.clearCache()  // return load and warmup buffers instead of keeping them cached
     }
 
-    /// Starts a new session: clears the level stage, the codec and the LM state, dropping audio
-    /// not yet returned (`flush` first to keep it).
+    /// Starts a new session: clears the level stage, the codec, the LM state and the text,
+    /// dropping audio and text not yet returned (`flush` first to keep them).
     public func reset() {
         targets = []
         leveller = Audio.Leveller()
+        textDecoder = TextDecoder(vocabulary)
         mimi.resetState()
         decoder.reset()
         generator.reset()
@@ -162,7 +165,7 @@ public final class Translator {
             let pending = generator.start()
             timing.lmStart += lap()
             if i == frames - 1 {
-                audio = try flush()
+                audio = try decodeTargets()
                 timing.decode += lap()
             }
             if i == 0 {
@@ -174,14 +177,18 @@ public final class Translator {
             tokens.append(out.text)
             if let target = out.target { targets.append(target) }
         }
-        return Output(
-            textTokens: tokens, text: tokens.compactMap(vocabulary.text).joined(), pcm: audio,
-            timing: timing)
+        return Output(textTokens: tokens, text: textDecoder(tokens), pcm: audio, timing: timing)
     }
 
-    /// Decodes the audio of the finished LM steps that no step has returned yet; empty if there
-    /// is none. Call it when the input ends. If it throws, `reset` before the next step.
-    public func flush() throws -> [Float] {
+    /// What the session still holds when the input ends: the audio of the finished LM steps
+    /// that no step has returned yet, and the text of a character the model left unfinished
+    /// (U+FFFD); both empty if there is none. If it throws, `reset` before the next step.
+    public func flush() throws -> (pcm: [Float], text: String) {
+        (try decodeTargets(), textDecoder.flush())
+    }
+
+    /// Decodes the audio of the finished LM steps that no step has returned yet.
+    private func decodeTargets() throws -> [Float] {
         var pcm: [Float] = []
         while let target = targets.first {
             pcm += try decoder.decode(target)

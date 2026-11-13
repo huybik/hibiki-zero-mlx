@@ -263,8 +263,8 @@ Vietnamese text cannot keep up with its speech.
    identical on all 3.63M rows. New pieces start from the mean of the rows of the pieces they
    used to split into (`training.vi_tokenizer.init_weights`, run on a checkpoint before its
    run). The trainers check that caches and weights match `--tokenizer`
-   ([two-way](agent-memory/two-way.md#tokenizer-checks)); still to build: the runtimes' UTF-8
-   assembly from byte pieces.
+   ([two-way](agent-memory/two-way.md#tokenizer-checks)); the Apple Silicon runtimes ship it with
+   the model and assemble UTF-8 from byte pieces ([vi-tokenizer](agent-memory/vi-tokenizer.md#runtimes)).
 3. EN→VI caches (the build since 2026-11-10, one shard checked; [two-way](agent-memory/two-way.md)): `--direction en-vi`
    on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2
    (Apache-2.0, chosen over two CC-BY-NC Vietnamese CTCs; its 0.5 minimum rejects 98–99% of

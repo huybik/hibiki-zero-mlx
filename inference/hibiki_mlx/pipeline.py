@@ -11,6 +11,7 @@ sequential loop; we just stop letting the CPU and GPU idle on each other.
 Usage: python inference/tools/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
 
+import codecs
 import json
 import queue
 import sys
@@ -70,6 +71,31 @@ def text_special_ids(tokenizer) -> set[int]:
     return {tokenizer.unk_id(), tokenizer.eos_id(), tokenizer.pad_id()}
 
 
+class TextDecoder:
+    """The text of a stream of text tokens, one token at a time: for valid UTF-8, what the
+    tokenizer decodes from the stream's non-special tokens. A byte-fallback piece (`<0xE1>`)
+    carries one UTF-8 byte, so a character the vocabulary lacks spans several tokens: its text
+    comes out once its sequence is complete, an invalid run of bytes as one U+FFFD (SentencePiece
+    writes one per byte), and `flush` returns what is left when the stream ends. Special tokens
+    add nothing and do not break a sequence."""
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.special = text_special_ids(tokenizer)
+        self.utf8 = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def __call__(self, token: int) -> str:
+        if token in self.special:
+            return ""
+        piece = self.tokenizer.id_to_piece(token)
+        if self.tokenizer.is_byte(token):
+            return self.utf8.decode(bytes([int(piece[1:-1], 16)]))
+        return self.utf8.decode(piece.replace("▁", " ").encode())
+
+    def flush(self) -> str:
+        return self.utf8.decode(b"", final=True)
+
+
 def load(weights_dir: Path):
     cfg_path = weights_dir / "config.json"
     _require_file(
@@ -78,14 +104,17 @@ def load(weights_dir: Path):
     )
     cfg = json.loads(cfg_path.read_text())
     model_name = _model_name(cfg)
-    tokenizer_name = cfg.get("tokenizer_name", "tokenizer_spm_48k_multi6_2.model")
+    if "tokenizer_name" not in cfg:
+        raise ValueError(f"{cfg_path} names no tokenizer_name: the tokenizer the weights are on")
+    tokenizer_name = cfg["tokenizer_name"]
     _require_file(
         weights_dir / model_name,
         "Use a staged MLX model directory, or run the matching conversion script.",
     )
     _require_file(
         weights_dir / tokenizer_name,
-        "Download or copy the tokenizer into the MLX model directory.",
+        "A model directory holds the tokenizer its config.json names "
+        "(convert_mlx_bf16.py copies it in).",
     )
     lm_config = models.LmConfig.from_config_dict(cfg)
     model = models.Lm(lm_config)
@@ -196,7 +225,8 @@ def run(
     dec_t.start()
 
     text_pieces: list[str] = []
-    special_text_tokens = text_special_ids(text_tok)
+    text = TextDecoder(text_tok)
+    special_text_tokens = text.special
     eos_token = text_tok.eos_id()
     processed = 0
     pad_run = 0
@@ -208,9 +238,7 @@ def run(
         text_token = gen.step(mx.array(oat), ct)
         tt = text_token[0].item()  # sync this frame's LM
         processed += 1
-        if tt not in special_text_tokens:
-            piece = text_tok.id_to_piece(tt).replace("▁", " ")
-            text_pieces.append(piece)
+        text_pieces.append(text(tt))
         audio = gen.last_audio_tokens()
         if audio is not None and gen_cb > 0:
             dec_q.put(np.array(audio[:, :, None]).astype(np.uint32))
@@ -240,11 +268,11 @@ def run(
     if out_pcm:
         pcm = np.concatenate(out_pcm, axis=-1)[0, 0]
         sphn.write_wav(outfile, pcm, 24000)
-    text = "".join(text_pieces).strip()
+    transcript = ("".join(text_pieces) + text.flush()).strip()
     text_path = Path(text_outfile) if text_outfile else Path(outfile).with_suffix(".txt")
     text_path.parent.mkdir(parents=True, exist_ok=True)
-    text_path.write_text(text + "\n")
-    print(text)
+    text_path.write_text(transcript + "\n", encoding="utf-8")
+    print(transcript)
     print(
         f"\n[{processed} frames ({steps} audio) in {wall:.2f}s -> {processed / wall:.1f} frames/s "
         f"({steps / wall / 12.5:.2f}x RT), out: {outfile}, text: {text_path}]"
