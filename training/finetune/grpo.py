@@ -313,15 +313,49 @@ def sample_window(
     return outputs
 
 
-def place_trainer(lm: Any, optimizer: Any, device: Any) -> None:
-    """Move the fp32 policy and AdamW's moment states to `device`: to the CPU while a window
-    generates on its bf16 copy, which frees their 37 GiB for the generation batches. The
-    parameters stay the same objects, so the optimizer still holds them."""
-    lm.to(device)
-    for state in optimizer.state.values():
-        for key in ("exp_avg", "exp_avg_sq"):
-            if key in state:
-                state[key] = state[key].to(device)
+class HostOffload:
+    """GPU storages parked in pinned host memory while a phase that never reads them runs. A
+    window generates on a bf16 copy, so the fp32 policy and AdamW's states (37.5 GB on the 3.1B
+    model) wait on the host and the generation batches get the GPU's memory (grpo.md#running).
+    `to_host` copies each storage out and shrinks it to nothing, so nothing may read those tensors
+    until `to_device` restores them exactly; the tensors, the optimizer's and the compiled
+    forward's alike, stay the same objects. The pinned buffers are allocated once per storage and
+    reused (AdamW's states appear at the first update)."""
+
+    def __init__(self) -> None:
+        self.host: dict[int, torch.Tensor] = {}
+        self.out: list[tuple[torch.UntypedStorage, torch.Tensor]] = []
+
+    def to_host(self, tensors: list[torch.Tensor]) -> None:
+        if self.out:
+            raise RuntimeError("HostOffload.to_host while storages are already out")
+        storages = {}
+        for tensor in tensors:
+            storage = tensor.untyped_storage()
+            if storage.nbytes():
+                storages.setdefault(storage._cdata, storage)  # its StorageImpl: shared views once
+        for key, storage in storages.items():
+            if key not in self.host:
+                self.host[key] = torch.empty(storage.nbytes(), dtype=torch.uint8, pin_memory=True)
+            self.host[key].untyped_storage().copy_(storage, non_blocking=True)
+            self.out.append((storage, self.host[key]))
+        torch.cuda.synchronize()  # every copy has landed before its storage goes
+        for storage, _ in self.out:
+            storage.resize_(0)
+        torch.cuda.empty_cache()  # whole segments for the generation batches
+
+    def to_device(self) -> None:
+        for storage, host in self.out:
+            storage.resize_(host.numel())
+            storage.copy_(host.untyped_storage(), non_blocking=True)
+        torch.cuda.synchronize()
+        self.out = []
+
+
+def trainer_tensors(lm: Any, optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
+    """The fp32 policy's parameters and AdamW's state tensors (none before its first step)."""
+    return [*lm.parameters(), *(value for state in optimizer.state.values()
+                                for value in state.values() if torch.is_tensor(value))]
 
 
 def kept_tokens(
@@ -557,6 +591,7 @@ def main() -> None:
         evaluate(step)
 
     per_update = args.streams * args.group
+    offload = HostOffload()
     while step < args.updates:
         window = min(args.tau, args.updates - step)
         window_started = time.time()
@@ -584,8 +619,7 @@ def main() -> None:
 
         generator = common.bf16_copy(info, lm, device)
         moving = time.time()
-        place_trainer(lm, optimizer, "cpu")
-        torch.cuda.empty_cache()
+        offload.to_host(trainer_tensors(lm, optimizer))
         moved = time.time() - moving
         batches = generation_batches(lengths, args.gen_frames, args.group)
         rollouts = sample_window(generator, info, sources, lengths, batches, silence_frame,
@@ -594,7 +628,7 @@ def main() -> None:
         gc.collect()
         torch.cuda.empty_cache()
         moving = time.time()
-        place_trainer(lm, optimizer, device)
+        offload.to_device()
         moved += time.time() - moving
         generated = time.time() - window_started
         results = [jobs[group].result() for group in range(len(stream_ids))]

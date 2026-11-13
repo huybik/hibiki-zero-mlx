@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
-The policy's fp32 weights and AdamW's two states are held as in training (on the CPU while a
-window generates, `grpo.place_trainer`), and each stage runs on real streams from the start
+The policy's fp32 weights and AdamW's two states are held as in training (in pinned host memory
+while a window generates, `grpo.HostOffload`), and each stage runs on real streams from the start
 checkpoint:
 - rollout generation at each --gen-batch rows of --frames: time per step and peak memory, timed
   on a second call so moshi's compilation stays out (each batch's CUDA graph capture stays in,
@@ -75,10 +75,12 @@ def profile_generation(
     args, info, lm, optimizer, sources, silence_frame, report: dict, write
 ) -> torch.Tensor:
     """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, the policy and its
-    optimizer states moved to the CPU as in a run (the caller moves them back), and return the
-    rollouts of every source at the largest size that fits."""
+    optimizer states in host memory as a run parks them, and return the rollouts of every source
+    at the largest size that fits, with them back on the GPU."""
     generator = common.bf16_copy(info, lm, lm.device)
-    grpo.place_trainer(lm, optimizer, "cpu")
+    offload = grpo.HostOffload()
+    offload.to_host(grpo.trainer_tensors(lm, optimizer))
+    report["resident_while_generating_gib"] = torch.cuda.memory_allocated() / 2**30
 
     def generate(count: int, gen_batch: int) -> torch.Tensor:
         lengths = torch.full((count,), args.frames)
@@ -96,6 +98,8 @@ def profile_generation(
             generate(gen_batch, gen_batch)  # compiles and captures
             seconds = timed(lambda: generate(gen_batch, gen_batch))
         except torch.cuda.OutOfMemoryError:
+            # Running out while it builds its streaming state leaves some modules streaming.
+            generator._stop_streaming()
             report[f"generate_batch_{gen_batch}"] = "out of memory"
             print(f"generate batch {gen_batch}: out of memory", flush=True)
             continue
@@ -112,7 +116,12 @@ def profile_generation(
         raise RuntimeError("No --gen-batch fits")
     gc.collect()
     torch.cuda.empty_cache()
-    return generate(len(sources), max(fitting))
+    rollouts = generate(len(sources), max(fitting))
+    del generator
+    gc.collect()  # the generator's 6 GiB must not count in phase 2's peaks
+    torch.cuda.empty_cache()
+    offload.to_device()
+    return rollouts
 
 
 def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report: dict) -> dict:
@@ -205,9 +214,6 @@ def main() -> None:
 
     # Phase 1: generation.
     rollouts = profile_generation(args, info, lm, optimizer, sources, silence_frame, report, write)
-    gc.collect()  # the generator, held by nothing now: its 6 GiB must not count in phase 2's peaks
-    torch.cuda.empty_cache()
-    grpo.place_trainer(lm, optimizer, device)
 
     # Phase 1: rewards.
     eos_id, pad_id = int(tokenizer.eos_id()), int(tokenizer.pad_id())
