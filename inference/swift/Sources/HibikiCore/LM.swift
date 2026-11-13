@@ -361,9 +361,11 @@ final class HibikiLM: Module {
     /// Loads `config.json` and the weights it names (`moshi_name`) of a staged model directory,
     /// quantized as its `quantization` says (bf16 without one), strictly.
     static func load(directory: URL) throws -> HibikiLM {
-        let cfg = try JSONDecoder().decode(
-            HibikiConfig.self,
-            from: Data(contentsOf: directory.appending(path: "config.json")))
+        let configURL = directory.appending(path: "config.json")
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            throw HibikiError.missingFile(configURL)  // stage the model with convert_mlx.py
+        }
+        let cfg = try JSONDecoder().decode(HibikiConfig.self, from: Data(contentsOf: configURL))
         try cfg.validate()
         let url = directory.appending(path: cfg.moshiName)
         guard FileManager.default.fileExists(atPath: url.path) else {
