@@ -170,11 +170,14 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
 - `init_weights` moves round 4's final model onto the swap
   (`weights/twoway_start_vi6k.safetensors`); `eval.py` scores it on the run's seven sets with
   `--seed 47`, batch 64: the baseline of the pilot's test.
-- `restart.sh two-way` (`twoway_sft`): both directions' caches (~8,500 h each), 8,192-frame
-  batches computed in `--micro-frames` slices, peak 3e-6, seed 47; validation every 12,000
+- `twoway_sft` (`restart.sh two-way` then): both directions' caches (~8,500 h each), 8,192-frame
+  batches computed in `--micro-frames` slices of 3,584, peak 3e-6, seed 47; validation every 12,000
   updates on both validation caches and `fleurs-vi/dev` and `fleurs-en/dev` (their mean selects),
   `multimed-vi/select`, `en-vi-val` and `en-vi-val-en`. The first validation is the pilot's test:
   EN→VI chrF up with healthy outputs, VI→EN FLEURS dev within 1 chrF of the start.
+  `restart.sh two-way` now launches the SFT recipe instead (whole 4,608-frame batches at peak
+  2.25e-6, validation every 20,000: [sft-training](sft-training.md#trainer)), so it no longer
+  resumes `twoway_sft`; a new two-way run takes a new name.
 - The run (started 2026-11-11 04:32 UTC, 0.52 s an update, a validation ~7 min; on free-threaded
   Python from step 8,000, [environment](environment.md#python)): at step 12,000 EN→VI rose
   (FLEURS-en 6.37 → 13.45, `en-vi-val-en` 7.8/8.5 → 14.5/20.8, Vietnamese but not yet faithful)

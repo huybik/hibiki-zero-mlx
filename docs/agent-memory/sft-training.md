@@ -90,9 +90,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - The plan is drawn once with `--seed` (42); streams are length-sorted and grouped into batches
   of at most `--batch-frames` (4,608, as 16 rows of 288 frames before) padded frames, whose
   order is shuffled once; every epoch replays it, and resume skips the planned batches. Each
-  batch is one update; `--micro-frames` computes it in slices of its streams of up to that many
-  padded frames, each slice's loss weighted by its share of the batch's rows and the gradients
-  added, so round 4's 8,192-frame batches run on an 80 GB card (one needs ~97 GiB at once).
+  batch is one update, computed whole: 4,608 frames fit an 80 GB card, round 4's 8,192 need ~97
+  GiB at once. Round 4 ran them on the H200; the two-way run on the H100 in slices of its streams
+  (`--micro-frames`, 6.5% slower, removed with the move to 4,608: [sft-speed](sft-speed.md)).
   Whole 4,096-frame batches accumulated two to an update ran out of memory there: the first's
   12 GB of fp32 gradients stay while the second's activations build.
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
@@ -119,7 +119,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   name order, so the plan does not change. `--num-workers` (4) assemble streams in the background.
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
-  - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0.
+  - 4,608-frame batches at peak LR 2.25e-6 (user, 2026-11-13): round 4's 3e-6 at 8,192 frames
+    scaled by sqrt(4,608 / 8,192), Adam's square-root rule. With AdamW each update moves the
+    weights about the rate whatever the batch, so 4,608 at 3e-6 took 1.78 times the movement per
+    hour of data, and this model loses real speech when pushed: the learning-rate test's dips, and
+    round 4e (4,608 at 3e-6) lost every real-speech test set to round 4 (8,192), its data mix
+    changed too ([plan](../vi_en_parity_plan.md#order), items 4 and 6). The rule is untested here;
+    linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0.
     The next run ends sooner, since the two-way run's last 12% of updates, the rate under 4% of
     its peak, gained nothing (user, 2026-11-13; [two-way](two-way.md#two-way-run)); `--max-steps`
     shortens the whole cosine, not only its tail. A floor held at the end instead would keep the

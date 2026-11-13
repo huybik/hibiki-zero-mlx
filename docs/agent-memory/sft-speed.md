@@ -99,7 +99,8 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   the fp32 `.grad` (12 GB read twice and written once, ~29 ms an update over ~2 more slices), about
   what halving the optimizer's share saves, and the slices are smaller than 4,608 batches (a
   1,424-frame stream often alone in the last). So on the 80 GB card 4,608 is the fastest update;
-  8,192 costs ~6.5% (the user's choice for the two-way run).
+  8,192 cost ~6.5% (the two-way run's). SFT updates on 4,608 since, at a lower peak
+  ([sft-training](sft-training.md#trainer); user, 2026-11-13), and `--micro-frames` is gone.
 - What is left (warm profile, H200 NVL): matmuls 59% of GPU time, compiled kernels 16%, fused
   AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
   elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of
