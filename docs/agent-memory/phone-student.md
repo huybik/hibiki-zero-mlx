@@ -104,8 +104,16 @@ sampled before audio at each step, so this adds no latency and no parameters.
 
 ## Next
 
-- Train both students on the GPU once one is free: the end-to-end check of the cut, the heads
-  and the codebook cut (the GPU runs the two-way SFT until ~02:50 UTC 2026-11-12, then GRPO).
+- Train both students on the GPU once GRPO frees it: the end-to-end check of the cut, the heads
+  and the codebook cut.
+- Profile each student before its run (user, 2026-11-13): frames/s and peak memory at 4,608,
+  8,192 and 12,288 frames per update (`--batch-frames`), each a 300-step run timed over steps
+  151–300, as [sft-speed](sft-speed.md#measurements) measured the 3B. A ~10-layer student should
+  fit 8,192 or more at once on 80 GB, so the slicing that cost the 3B 6.5% there does not apply;
+  on the H200 the 3B ran 11% faster per frame at 8,192 and 17% at 12,288 than at 4,608. The
+  trainer's peak, 2.25e-6, is set for 4,608 (Adam's square-root rule,
+  [sft-training](sft-training.md#trainer)): another batch scales it by sqrt(frames / 4,608), and
+  a cut model may need a higher one anyway.
 - Speech evaluation in both directions: each target language's ASR transcript against the
   reference and speaker similarity to the source (evaluation is text-only today).
 - The MLX and Swift runtimes for the student's config (the Swift app already times untrained cuts)
