@@ -116,5 +116,25 @@ sampled before audio at each step, so this adds no latency and no parameters.
   a cut model may need a higher one anyway.
 - Speech evaluation in both directions: each target language's ASR transcript against the
   reference and speaker similarity to the source (evaluation is text-only today).
+- Architecture changes wait for the trained student's scores (2026-11-13). The untrained cut
+  already holds real time on the A15 (41 → 44.5 ms a frame, GPU-bound,
+  [swift-runtime](swift-runtime.md#device-test)), so the budget has room; what costs quality is
+  8 codebooks (Whisper's Vietnamese WER through Mimi 42.0% at 8 against 27.8% at 16) and the 10
+  layers. In order, each only if the scores call for it:
+  1. Vietnamese speech poor at 8 codebooks: a 16-codebook student with the same 3-layer
+     depformer (`--codebooks 16`). Its steps 8–15 share one weight slice, so a frame reads ~4%
+     more weights, but runs 24 more sequential passes (estimated +12 ms on the A15): time it on
+     the phone first.
+  2. The parallel heads ([Parallel heads](#parallel-heads)): no depformer passes, ~4 more main
+     layers for the same time, +400 ms of heard speech lag; adopted only if they win.
+  3. A grouped depformer (2 codebooks a step) if 16 codebooks are too slow and the heads lose.
+  Two levers that change no layer:
+  - Trim the text vocabulary to the pieces English and Vietnamese use: the text head reads all
+    48,000 rows every frame (~0.1 GB at 8 bits, ~12% of a student frame's reads, estimated), and
+    the three text tables are ~245M of the student's 1.39B parameters. Needs an id map through
+    training, evaluation and both runtimes; count the pieces the two languages use first.
+  - 1-frame steps again: 2-frame steps came in when the CPU also decoded Mimi; with decoding on
+    the Neural Engine the CPU's encode (20–28 ms a frame) is under the GPU's step, so 1-frame
+    steps may hold real time with up to 160 ms less latency. One phone run decides.
 - The MLX and Swift runtimes for the student's config (the Swift app already times untrained cuts)
   and for the heads.
