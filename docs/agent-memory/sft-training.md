@@ -94,9 +94,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   name order, so the plan does not change. `--num-workers` (4) assemble streams in the background.
 - Defaults:
   - 1 epoch (`--max-steps` overrides);
-  - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0;
-    fused AdamW with betas (0.9, 0.95) and weight decay 0.1; grad clip 1.0. Each train-log line
-    holds its steps' mean and max gradient norm before clipping (`grad_norm`, `max_grad_norm`),
+  - peak LR 1e-6, linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0.
+    The next run ends sooner, since the two-way run's last 12% of updates, the rate under 4% of
+    its peak, gained nothing (user, 2026-11-13; [two-way](two-way.md#two-way-run)); `--max-steps`
+    shortens the whole cosine, not only its tail. A floor held at the end instead would keep the
+    model moving, as the constant 1e-6 before the cosine did
+    ([plan](../vi_en_parity_plan.md#decisions-2026-11-01)). Fused AdamW with betas (0.9, 0.95)
+    and weight decay 0.1; grad clip 1.0. Each train-log line holds its steps' mean and max gradient norm before clipping (`grad_norm`, `max_grad_norm`),
     summed on the GPU without a sync per step. A non-finite norm raises at the next log step and
     before any save: the losses cannot show the last step's update, and a NaN pair saved would be
     resumed by every restart;

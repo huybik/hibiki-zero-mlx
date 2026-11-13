@@ -196,6 +196,43 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   72,000 FLEURS-en failed the health gate (66 empty rows; chrF 18.59, 21.39 on its non-empty rows
   against 21.27 at 60,000): no promotion, while every other set rose or held (VI→EN FLEURS dev
   34.89, MultiMed 36.07, `en-vi-val-en` 26.4/33.6).
+- The run ended 2026-11-13 02:39 UTC after 287,558 updates (every validation is in its
+  `val_log.jsonl`). chrF, FLEURS-en's empty rows in brackets, against the start (`eval.py`,
+  seed 47):
+
+  | Step | Mean | FLEURS-vi | FLEURS-en | MultiMed | `en-vi-val` cv27 / libri | `en-vi-val-en` cv27 / libri |
+  |---|---:|---:|---:|---:|---:|---:|
+  | start | 22.46 | 38.54 | 6.37 (94) | 37.26 | 42.11 / 44.08 | 7.84 / 8.52 |
+  | 96,000 | 27.15 | 33.69 | 20.61 (23) | 35.57 | 41.36 / 42.40 | 27.02 / 35.79 |
+  | 120,000 | 29.29 | 36.42 | 22.15 (34) | 37.02 | 42.03 / 43.19 | 29.67 / 37.47 |
+  | 156,000 | 30.04 | 37.78 | 22.29 (45) | 37.23 | 42.25 / 44.92 | 29.95 / 38.58 |
+  | 168,000 | 29.64 | 36.46 | 22.82 (28) | 37.27 | 43.75 / 44.26 | 31.99 / 38.38 |
+  | 192,000 | 27.98 | 34.34 | 21.62 (34) | 36.13 | 41.82 / 44.12 | 29.64 / 38.67 |
+  | 228,000 | 29.60 | 35.88 | 23.32 (44) | 37.05 | 44.13 / 45.09 | 31.90 / 40.30 |
+  | 252,000 | 30.51 | 37.09 | 23.93 (34) | 37.06 | 43.34 / 45.88 | 32.91 / 37.79 |
+  | 287,558 | 30.13 | 37.22 | 23.03 (41) | 37.30 | 44.58 / 44.78 | 32.81 / 39.72 |
+
+  - Promoted: 96,000, 120,000, 132,000, 144,000, 168,000, 240,000 and 252,000, the best. Every
+    health failure was FLEURS-en's empty rows (41-66 against the 39 allowed, at 84,000, 108,000,
+    156,000, 216,000, 228,000 and the final), at 156,000 and 216,000 with the highest mean yet.
+  - The second epoch began at update 143,779. VI→EN dipped from 180,000 to 204,000 (the three
+    Vietnamese-speech sets 1-2 chrF under 168,000) while both teacher-forced validation losses
+    kept falling (VI→EN 2.677 → 2.671, EN→VI 2.575 → 2.560), and climbed back as the rate fell,
+    as the learning-rate test's dips did ([plan](../vi_en_parity_plan.md#order), item 4).
+  - The best came at 88% of the updates, the rate at 4% of its peak, and nothing after it scored
+    higher (264,000 29.66, 276,000 30.27, the final 30.13): the last 12% gained nothing
+    ([sft-training](sft-training.md#trainer)).
+  - Against the start: EN→VI rose 6.37 → 23.93 on FLEURS-en and 7.8/8.5 → 32.9/37.8 on
+    `en-vi-val-en`; VI→EN held on MultiMed (37.26 → 37.06) and rose on `en-vi-val` (+1.2/+1.8),
+    but FLEURS dev ended 1.45 under the start, past the pilot's 1-chrF floor.
+  - Rescored with the [input level stage](sft-evaluation.md#input-level) (2026-11-13, `eval.py`
+    seed 47; seeds move a mean ~0.6), the checkpoints tie. Mean (FLEURS-en's empty rows):
+    156,000 36.51 (5), 216,000 36.28 (5), 228,000 36.09 (3), 252,000 36.37 (4), the final 36.68
+    (2; FLEURS-vi 39.63, FLEURS-en 33.73, MultiMed-ST 37.67, `en-vi-val` 43.58/45.43,
+    `en-vi-val-en` 32.73/38.82). The final leads 252,000 by 0.31, inside the noise, so the
+    shorter-run reading holds. The start scores 41.31 on FLEURS-vi with the stage (24.55 mean;
+    FLEURS-en 7.79, 53 empty), so two-way costs VI→EN 1.7-2.0 on FLEURS dev, about twice the
+    seed noise, while MultiMed-ST (37.33) and `en-vi-val` (43.56/43.58) hold or rise.
 - Why a row stays silent: mostly a quiet source ([input level](sft-evaluation.md#input-level)).
   Half of FLEURS-en dev peaks under −40 dBFS: those 191 clips hold 31-61 of its empty rows at
   every validation from 36,000 to 72,000, the other 201 clips 4-9; FLEURS-vi's empty rows at
@@ -218,4 +255,6 @@ alignment, most "CTC emission is too short" (fast speech).
 
 Two-way comes before GRPO (user, 2026-11-10, replacing that morning's "one way first"): round
 4's final model is the VI→EN start (round 4e's test sets, [plan](../vi_en_parity_plan.md#order)),
-then the [two-way run](#two-way-run), then one GRPO on both directions.
+then the [two-way run](#two-way-run) (done 2026-11-13), then one GRPO on both directions. Its
+start is not chosen yet: the final model (`runs/twoway_sft/model_step287558.safetensors`) and
+the promoted `best_step252000` tie under the input level stage; both are on the recovery repo.
