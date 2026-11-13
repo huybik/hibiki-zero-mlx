@@ -28,7 +28,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   longest stream plus that tail): `grpo.rollout_frames`. Its last reward sits there, so text a
   rollout emits later scores nothing, as evaluation would not hear it. Until 2026-11-10 every
   rollout ran `--frames`, 21 s past the longest stream and up to 66 s past the shortest.
-  - A window's streams are generated shortest first (`sample_window`), each batch to its own
+  - A window's streams are generated longest first (`sample_window`), each batch to its own
     longest rollout; a row's frames past its own length are -1.
   - The loss keeps what a forward of the rollout's own length scores (`kept_tokens`): a
     codebook delayed 2 frames stops 2 frames early. So a rollout's kept tokens do not depend on

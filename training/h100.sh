@@ -115,8 +115,9 @@ cpus() {
 }
 
 preflight() {
-  # The run needs MIN GiB of disk: free space plus what RUN_DIR (when given) already holds.
-  local minimum_gib="$1" run_dir="${2:-}"
+  # The run needs MIN GiB of disk: free space plus what RUN_DIR (when given) already holds;
+  # RAM_GIB (default 80) of RAM.
+  local minimum_gib="$1" run_dir="${2:-}" minimum_ram_gib="${3:-80}"
   require_python
   require_cuda_driver
   require_hopper_gpu
@@ -124,7 +125,7 @@ preflight() {
   git diff --cached --quiet || die "staged changes must be committed before training"
 
   local profile
-  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_gib" "$run_dir" <<'PY'
+  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_gib" "$run_dir" "$minimum_ram_gib" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -139,6 +140,7 @@ import torch
 root = Path(sys.argv[1])
 minimum_gib = float(sys.argv[2])
 run_dir = Path(sys.argv[3]) if sys.argv[3] else None
+minimum_ram_gib = float(sys.argv[4])
 
 if sys.version_info[:2] != (3, 14) or not sysconfig.get_config_var("Py_GIL_DISABLED"):
     raise RuntimeError(f"free-threaded Python 3.14 required (h100.sh setup), got {sys.version}")
@@ -174,9 +176,10 @@ for limit in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_i
     if text != "max":
         host_bytes = min(host_bytes, int(text))
 host_gib = host_bytes / 2**30
-# The packed cache stays on disk; the checkpoint snapshot pins 37.5 GB.
-if host_gib < 80:
-    raise RuntimeError(f"at least 80 GiB of RAM required, got {host_gib:.1f}")
+# The packed cache stays on disk; the checkpoint snapshot pins 37.5 GB, and GRPO pins as much
+# again for the policy and AdamW's states while it generates (grpo.HostOffload).
+if host_gib < minimum_ram_gib:
+    raise RuntimeError(f"at least {minimum_ram_gib:.0f} GiB of RAM required, got {host_gib:.1f}")
 free_gib = shutil.disk_usage(root).free / 2**30
 # A continued run's pairs, promoted model and staged uploads are disk it already has; the
 # promoted model is a hard link, so each inode counts once.
@@ -399,7 +402,9 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
   [[ "$given" =~ --keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
   (( keep >= 1 )) || keep=2
-  preflight $(( (keep + 1) * 75 / 2 + 18 )) "$run_dir"
+  local ram=80
+  [[ "$module" == training.finetune.grpo ]] && ram=100  # its second pinned copy (grpo.HostOffload)
+  preflight $(( (keep + 1) * 75 / 2 + 18 )) "$run_dir" "$ram"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
     local -a saved

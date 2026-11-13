@@ -29,6 +29,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from moshi.modules.streaming import StreamingModule
+
 from training.finetune import common, grpo, rewards, streams
 from training.paths import (
     DEFAULT_CONFIG_PATH,
@@ -98,8 +100,11 @@ def profile_generation(
             generate(gen_batch, gen_batch)  # compiles and captures
             seconds = timed(lambda: generate(gen_batch, gen_batch))
         except torch.cuda.OutOfMemoryError:
-            # Running out while it builds its streaming state leaves some modules streaming.
-            generator._stop_streaming()
+            # Running out while it builds its streaming state leaves some modules streaming, the
+            # detached depformer among them, which moshi's own _stop_streaming skips.
+            for module in generator.modules():
+                if isinstance(module, StreamingModule):
+                    module._streaming_state = None
             report[f"generate_batch_{gen_batch}"] = "out of memory"
             print(f"generate batch {gen_batch}: out of memory", flush=True)
             continue

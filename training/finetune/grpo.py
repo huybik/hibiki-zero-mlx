@@ -109,7 +109,8 @@ def stream_order(count: int, seed: int) -> np.ndarray:
 def rollout_frames(stream_frames: int, tail: int, limit: int) -> int:
     """A rollout's length: its stream and `tail` frames more, up to a whole FRAME_BUCKET, at most
     `limit`. Its last reward sits there, so text emitted later scores nothing, as evaluation stops
-    generating a tail past the source."""
+    generating a tail past the source. A stream ends at its last source or teacher target, so
+    after a late-starting target the tail runs from that target's end."""
     bucket = streams.FRAME_BUCKET
     return min(math.ceil((stream_frames + tail) / bucket) * bucket, limit)
 
@@ -166,7 +167,7 @@ def grpo_loss(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """The negated clipped objective summed over a micro-batch's kept tokens (Eq. 7-8), with the
     sums behind its ratio statistics. `advantages` is [B, T], `keep` [B, 1 + dep_q, T] (from
-    `before_eos`), `stream_weights` [1 + dep_q]."""
+    `kept_tokens`), `stream_weights` [1 + dep_q]."""
     logprobs, mask = token_logprobs(lm, codes, condition_tensors, temperature)
     mask = mask & keep
     ratio = torch.exp(logprobs - old_logprobs)
@@ -472,8 +473,9 @@ def validate_args(args: argparse.Namespace) -> None:
         )
     if args.gen_frames < args.group * args.frames:
         raise ValueError("--gen-frames must hold a group of the longest rollouts")
-    if round(args.stream_seconds[1] * streams.FRAME_RATE) >= args.frames:
-        raise ValueError("--frames must exceed the longest stream")
+    longest = round(args.stream_seconds[1] * streams.FRAME_RATE)
+    if longest + round(args.tail_seconds * streams.FRAME_RATE) > args.frames:
+        raise ValueError("--frames must hold the longest stream and the tail after it")
     if args.tail_seconds < 0:
         raise ValueError("--tail-seconds must not be negative")
     common.require_torch_compile()
