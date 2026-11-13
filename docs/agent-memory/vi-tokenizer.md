@@ -3,7 +3,7 @@
 Read when touching `training/vi_tokenizer/`, the text tokenizer, or two-way (EN→VI) text.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [How it builds](#how-it-builds) ·
 [Running](#running) · [Results](#results) · [Starting a checkpoint](#starting-a-checkpoint) ·
-[Still to change](#still-to-change)
+[Runtimes](#runtimes)
 
 ## Why
 
@@ -113,12 +113,21 @@ and the tool refuses an input on any tokenizer but the base.
 - Evaluation is not reproducible run to run on one seed (5 of 96 predictions equal), so compare
   the swap's effect over a set's chrF, not row by row.
 
-## Still to change
+## Runtimes
 
 The trainers check caches and weights against `--tokenizer`
-([two-way](two-way.md#tokenizer-checks)). The two-way runtimes
-([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)) still need:
+([two-way](two-way.md#tokenizer-checks)). The Apple Silicon runtimes run the swap as they run
+the base (2026-11-14):
 
-- The MLX and Swift bundles ship the new file.
-- The streaming decoders (`hibiki_mlx/pipeline.py`, `main.py`, Swift `Vocabulary.text()`)
-  print one piece at a time and must assemble UTF-8 from byte pieces.
+- A model directory ships the tokenizer its weights are on: `convert_mlx_bf16.py` copies the
+  file the checkpoint's `text_tokenizer` names, and both runtimes load the one `config.json`
+  names ([mlx-inference](mlx-inference.md#model-directories)). No q4 conversion of a checkpoint
+  exists yet: that is [plan stage 6](../vi_en_parity_plan.md#6-quantise-and-package).
+- Their streaming text decoders assemble UTF-8 from byte pieces split across frames
+  ([mlx-inference](mlx-inference.md#runtime), [swift-runtime](swift-runtime.md#layout)). The swap
+  still writes some characters as bytes: 11 Vietnamese letters where no longer piece covers them
+  (`Â Ã Í Ò Ó Ô Ù Ú Ă ă ị`, as in `Ô tô`), and anything outside Vietnamese and English (emoji, CJK).
+- Checked end to end on a tiny random-weight model (the 3B's weights were off the Mac): staged
+  from a checkpoint naming the swap, its directory held and loaded the swap in `main.py` and the
+  Swift CLI; with its text head pointed at four byte pieces, both printed the 2-byte characters
+  whole, the CLI the same text at `--chunk` 1 and 3.

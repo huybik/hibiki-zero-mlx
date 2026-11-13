@@ -49,7 +49,7 @@ public struct HibikiConfig: Decodable {
     public let weightDtype: String?
     public let moshiName: String?
     public let mimiName: String?
-    public let tokenizerName: String?
+    public let tokenizerName: String
     // Read only to refuse models this runtime would run wrongly.
     let gating: String?
     let norm: String?
@@ -125,7 +125,7 @@ public struct HibikiConfig: Decodable {
         weightDtype = try c.decodeIfPresent(String.self, forKey: .weightDtype)
         moshiName = try c.decodeIfPresent(String.self, forKey: .moshiName)
         mimiName = try c.decodeIfPresent(String.self, forKey: .mimiName)
-        tokenizerName = try c.decodeIfPresent(String.self, forKey: .tokenizerName)
+        tokenizerName = try c.decode(String.self, forKey: .tokenizerName)
         gating = try c.decodeIfPresent(String.self, forKey: .gating)
         norm = try c.decodeIfPresent(String.self, forKey: .norm)
         depformerMultiLinear = try c.decodeIfPresent(Bool.self, forKey: .depformerMultiLinear)

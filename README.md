@@ -72,7 +72,8 @@ live microphone start/stop, the English transcript, and the backend log. It runs
 The inference tools are:
 
 - `inference/tools/convert_mlx_q4.py`: convert the 3B PyTorch LM to MLX q4.
-- `inference/tools/convert_mlx_bf16.py`: stage an exact PyTorch checkpoint as MLX BF16.
+- `inference/tools/convert_mlx_bf16.py`: stage an exact PyTorch checkpoint as MLX BF16, with the
+  tokenizer it is on.
 - `inference/tools/verify_mlx_q4.py`: translate the gate clip as a quality check.
 - `inference/tools/bench.py`: stage timing and silence-input gate.
 - `inference/tools/check_swift_compat.py`: strict group-size-32 artifact validation.

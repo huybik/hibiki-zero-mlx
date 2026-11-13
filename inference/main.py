@@ -36,7 +36,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
 
     print("loading MLX weights ...")
     model, lm_config, text_tok, mimi_enc, mimi_dec = f.load(weights_dir)
-    special_text_tokens = f.text_special_ids(text_tok)
+    text = f.TextDecoder(text_tok)
     ct = None
     if model.condition_provider is not None:
         ct = model.condition_provider.condition_tensor("description", "very_good")
@@ -105,6 +105,7 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
     workers = [threading.Thread(target=guarded(fn), daemon=True) for fn in (encoder, decoder)]
     for worker in workers:
         worker.start()
+    ended = ""
     try:
         with sd.InputStream(samplerate=24000, channels=1, blocksize=FRAME,
                             dtype="float32", callback=on_input), \
@@ -118,21 +119,20 @@ def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
                 except queue.Empty:
                     continue
                 tt = gen.step(mx.array(codes), ct)
-                tok = tt[0].item()                                       # sync this frame
-                if tok not in special_text_tokens:
-                    sys.stdout.write(text_tok.id_to_piece(tok).replace("▁", " "))
-                    sys.stdout.flush()
+                sys.stdout.write(text(tt[0].item()))                    # sync this frame
+                sys.stdout.flush()
                 audio = gen.last_audio_tokens()
                 if audio is not None and gen_cb > 0:
                     dec_q.put_nowait(np.array(audio[:, :, None]).astype(np.uint32))
     except ValueError as e:                                             # reached max_steps
-        print(f"\n[reached cap: {e}]")
+        ended = f"\n[reached cap: {e}]"
     except KeyboardInterrupt:
-        print("\n[stopping]")
+        ended = "\n[stopping]"
     finally:
         stop.set()
         for worker in workers:
             worker.join()
+    print(text.flush() + ended)                         # the text's unfinished tail, then why
     if failed:
         raise failed[0]
 
