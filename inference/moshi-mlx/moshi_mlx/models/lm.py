@@ -147,7 +147,9 @@ class LmConfig:
 
     @property
     def audio_eos_token(self) -> int:
-        return self.audio_vocab_size - 2
+        # The source EOS is `card`, as training's caches and upstream's `add_input_eos` write
+        # it: the same value as the padding token.
+        return self.audio_vocab_size - 1
 
     @property
     def audio_padding_token(self) -> int:

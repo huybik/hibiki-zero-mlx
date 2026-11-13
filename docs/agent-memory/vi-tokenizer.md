@@ -119,10 +119,9 @@ The trainers check caches and weights against `--tokenizer`
 ([two-way](two-way.md#tokenizer-checks)). The Apple Silicon runtimes run the swap as they run
 the base (2026-11-14):
 
-- A model directory ships the tokenizer its weights are on: `convert_mlx_bf16.py` copies the
-  file the checkpoint's `text_tokenizer` names, and both runtimes load the one `config.json`
-  names ([mlx-inference](mlx-inference.md#model-directories)). No q4 conversion of a checkpoint
-  exists yet: that is [plan stage 6](../vi_en_parity_plan.md#6-quantise-and-package).
+- A model directory ships the tokenizer its weights are on: `convert_mlx.py` (q4 or BF16)
+  copies the file the checkpoint's `text_tokenizer` names, and both runtimes load the one
+  `config.json` names ([mlx-inference](mlx-inference.md#model-directories)).
 - Their streaming text decoders assemble UTF-8 from byte pieces split across frames
   ([mlx-inference](mlx-inference.md#runtime), [swift-runtime](swift-runtime.md#layout)). The swap
   still writes some characters as bytes where no longer piece covers them: 11 Vietnamese letters

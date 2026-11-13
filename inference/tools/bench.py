@@ -21,12 +21,12 @@ import sphn
 
 from hibiki_mlx import pipeline as pl
 from hibiki_mlx.level import Leveller
-from moshi_mlx import models, utils
+from moshi_mlx import models
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", default="3b", help="3b or a q4/bf16 Hibiki-Zero model directory")
+    p.add_argument("--model", default="3b", help="3b or a staged Hibiki-Zero model directory")
     p.add_argument("--frames", type=int, default=150, help="timed frames (default 150)")
     p.add_argument("--warmup", type=int, default=15, help="untimed warmup frames (default 15)")
     p.add_argument(
@@ -42,14 +42,14 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    mx.random.seed(299792458)
     weights_dir = pl.resolve_weights_dir(args.model)
-    model, lm_config, _tok, mimi_enc, mimi_dec = pl.load(weights_dir)
-    ct = None
-    if model.condition_provider is not None:
-        ct = model.condition_provider.condition_tensor("description", "very_good")
-    other_cb = lm_config.other_codebooks
-    n_slices = lm_config.generated_codebooks
+    loaded = pl.load(weights_dir)
+    mx.random.seed(299792458)
+    model = loaded.lm
+    mimi_enc, mimi_dec = loaded.mimi(), loaded.mimi()
+    ct = loaded.condition()
+    other_cb = loaded.config.other_codebooks
+    n_slices = loaded.config.generated_codebooks
 
     if args.silence:
         in_pcms = np.zeros((1, args.frames * 1920), dtype=np.float32)
@@ -62,8 +62,8 @@ def main() -> None:
     gen = models.LmGen(
         model=model,
         max_steps=total + 8,
-        text_sampler=utils.Sampler(top_k=25, temp=0.4),
-        audio_sampler=utils.Sampler(top_k=250, temp=0.8),
+        text_sampler=loaded.text_sampler,
+        audio_sampler=loaded.audio_sampler,
         cfg_coef=1.0,
         check=False,
     )
@@ -116,12 +116,15 @@ def main() -> None:
     main_t = step_t - head_t[0]
     lm_ms = 1000 * step_t / n
     cfg = json.loads((weights_dir / "config.json").read_text())
-    model_name = pl._model_name(cfg)
-    size_gb = (weights_dir / model_name).stat().st_size / 1e9
-    weight_dtype = cfg.get("weight_dtype", "q4")
+    size_gb = (weights_dir / cfg["moshi_name"]).stat().st_size / 1e9
+    quantization = cfg.get("quantization")
+    precision = "bf16" if quantization is None else (
+        f"q{quantization['bits']} g{quantization['group_size']}, "
+        f"{len(quantization) - 2} layers at their own bits"
+    )
 
     print(
-        f"\n=== {args.model} {weight_dtype} | {n} frames, wall {wall:.2f}s "
+        f"\n=== {args.model} {precision} | {n} frames, wall {wall:.2f}s "
         f"-> {n / wall:.1f} frames/s ({n / wall / 12.5:.2f}x RT sequential) ==="
     )
     print(f"{'stage':<26}{'ms/frame':>10}{'% of wall':>10}")

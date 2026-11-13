@@ -46,10 +46,13 @@ public struct HibikiConfig: Decodable {
     public let depformerWeightsPerStepSchedule: [Int]?
     /// Python: `depformer_output_layer_norm`, else whether `depformer_norm` is present.
     public let depformerOutputNorm: Bool
-    public let weightDtype: String?
-    public let moshiName: String?
+    /// The MLX weights file.
+    public let moshiName: String
     public let mimiName: String?
     public let tokenizerName: String
+    /// How quantized weights are quantized; nil for bf16 weights.
+    public let quantization: Quantization?
+    public let lmGenConfig: LmGenConfig
     // Read only to refuse models this runtime would run wrongly.
     let gating: String?
     let norm: String?
@@ -84,10 +87,11 @@ public struct HibikiConfig: Decodable {
         case demuxSecondStream = "demux_second_stream"
         case crossAttention = "cross_attention"
         case layerScale = "layer_scale"
-        case weightDtype = "weight_dtype"
         case moshiName = "moshi_name"
         case mimiName = "mimi_name"
         case tokenizerName = "tokenizer_name"
+        case quantization
+        case lmGenConfig = "lm_gen_config"
     }
 
     private struct Ignored: Decodable {
@@ -122,10 +126,11 @@ public struct HibikiConfig: Decodable {
         depformerOutputNorm =
             try c.decodeIfPresent(Bool.self, forKey: .depformerOutputLayerNorm)
             ?? c.contains(.depformerNorm)
-        weightDtype = try c.decodeIfPresent(String.self, forKey: .weightDtype)
-        moshiName = try c.decodeIfPresent(String.self, forKey: .moshiName)
+        moshiName = try c.decode(String.self, forKey: .moshiName)
         mimiName = try c.decodeIfPresent(String.self, forKey: .mimiName)
         tokenizerName = try c.decode(String.self, forKey: .tokenizerName)
+        quantization = try c.decodeIfPresent(Quantization.self, forKey: .quantization)
+        lmGenConfig = try c.decode(LmGenConfig.self, forKey: .lmGenConfig)
         gating = try c.decodeIfPresent(String.self, forKey: .gating)
         norm = try c.decodeIfPresent(String.self, forKey: .norm)
         depformerMultiLinear = try c.decodeIfPresent(Bool.self, forKey: .depformerMultiLinear)
@@ -182,6 +187,59 @@ public struct HibikiConfig: Decodable {
             gating: true, norm: .rmsNorm, context: depQ, maxPeriod: 8, kvRepeat: 1,
             dimFeedForward: depformerDimFeedforward
                 ?? Int((hiddenScale * Double(depformerDim)).rounded()))
+    }
+}
+
+/// `quantization` of a model's `config.json` (`convert_mlx.py --q4` writes it): the group size
+/// and bits of every Linear and Embedding, and an entry of its own for each layer quantized
+/// otherwise, by its module path in the checkpoint.
+public struct Quantization: Decodable {
+    public struct Spec: Decodable {
+        public let groupSize: Int
+        public let bits: Int
+
+        enum CodingKeys: String, CodingKey {
+            case groupSize = "group_size"
+            case bits
+        }
+    }
+
+    private struct Key: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    public let base: Spec
+    public let layers: [String: Spec]
+
+    public init(from decoder: Decoder) throws {
+        base = try Spec(from: decoder)
+        let c = try decoder.container(keyedBy: Key.self)
+        var layers: [String: Spec] = [:]
+        for key in c.allKeys where !["group_size", "bits"].contains(key.stringValue) {
+            layers[key.stringValue] = try c.decode(Spec.self, forKey: key)
+        }
+        self.layers = layers
+    }
+
+    func spec(_ path: String) -> Spec { layers[path] ?? base }
+}
+
+/// `lm_gen_config` of a model's `config.json`: how its text and audio tokens are sampled, as
+/// training's evaluation and upstream's own inference sample them.
+public struct LmGenConfig: Decodable {
+    public let temp: Float
+    public let tempText: Float
+    public let topK: Int
+    public let topKText: Int
+
+    enum CodingKeys: String, CodingKey {
+        case temp
+        case tempText = "temp_text"
+        case topK = "top_k"
+        case topKText = "top_k_text"
     }
 }
 
@@ -262,6 +320,18 @@ final class Depformer: Module {
         if schedule.firstIndex(of: core) != idx { return nil }
         return "depformer.cores.\(core).\(field)"
     }
+
+    /// The checkpoint's path of a module under `depformer`: a core's modules are saved under
+    /// the first slice that uses it, as `remap` reads them.
+    func checkpointPath(_ path: String) -> String {
+        let prefix = "depformer.cores."
+        guard path.hasPrefix(prefix) else { return path }
+        let rest = path.dropFirst(prefix.count)
+        guard let dot = rest.firstIndex(of: "."), let core = Int(rest[..<dot]),
+            let idx = schedule.firstIndex(of: core)
+        else { return path }
+        return "depformer.slices.\(idx)\(rest[dot...])"
+    }
 }
 
 final class HibikiLM: Module {
@@ -288,38 +358,25 @@ final class HibikiLM: Module {
         decoder = DecodeTransformer(_transformer.wrappedValue)
     }
 
-    /// Loads `config.json` and the q4 or BF16 weights of a staged model directory.
+    /// Loads `config.json` and the weights it names (`moshi_name`) of a staged model directory,
+    /// quantized as its `quantization` says (bf16 without one), strictly.
     static func load(directory: URL) throws -> HibikiLM {
         let cfg = try JSONDecoder().decode(
             HibikiConfig.self,
             from: Data(contentsOf: directory.appending(path: "config.json")))
         try cfg.validate()
-        // As pipeline.py `_model_name`: q4 unless weight_dtype is bfloat16.
-        let bf16 = cfg.weightDtype == "bfloat16"
-        let name: String
-        if bf16 {
-            guard let moshiName = cfg.moshiName, moshiName.hasSuffix(".bf16.safetensors") else {
-                throw HibikiError.unsupported(
-                    "bfloat16 without a moshi_name ending in .bf16.safetensors")
-            }
-            name = moshiName
-        } else {
-            name = cfg.moshiName.flatMap { $0.hasSuffix(".q4.safetensors") ? $0 : nil }
-                ?? "hibiki.q4.safetensors"
-        }
-        let url = directory.appending(path: name)
+        let url = directory.appending(path: cfg.moshiName)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw HibikiError.missingFile(url)
         }
         let model = HibikiLM(cfg)
-        if !bf16 {
-            // q4 group 32 on layers whose input width divides by 32, as pipeline.py.
-            quantize(model: model, groupSize: 32, bits: 4) { _, module in
-                switch module {
-                case let linear as Linear: linear.weight.dim(-1) % 32 == 0
-                case let embedding as Embedding: embedding.weight.dim(-1) % 32 == 0
-                default: false
-                }
+        if let quantization = cfg.quantization {
+            // Every Linear and Embedding, as pipeline.py `quantize`; the record's paths are the
+            // checkpoint's, which name a depformer core by the first slice using it.
+            quantize(model: model) { path, module in
+                guard module is Quantizable else { return nil }
+                let spec = quantization.spec(model.depformer.checkpointPath(path))
+                return (spec.groupSize, spec.bits, .affine)
             }
         }
         var weights: [String: MLXArray] = [:]

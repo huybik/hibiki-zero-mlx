@@ -1,6 +1,6 @@
-"""Pipelined MLX runtime for Hibiki q4 and BF16 speech translation."""
+"""Pipelined MLX runtime for Hibiki-Zero speech translation on staged model directories."""
 
-__all__ = ["W", "load", "make_mimi", "resolve_weights_dir", "run"]
+__all__ = ["UPSTREAM", "W", "Model", "load", "resolve_weights_dir", "run", "translate"]
 
 
 def __getattr__(name: str):
