@@ -51,9 +51,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 
 - `/Volumes/data` is the external data drive. `weights/` is a symlink to
   `/Volumes/data/models/hibiki/weights`. That folder holds `config.json`, the upstream PyTorch
-  LM `hibiki-pytorch-77f82164@110.safetensors`, `hibiki.q4.safetensors` (so `--model 3b`
-  works), the Mimi checkpoint, the tokenizer and the staged BF16 model
-  `vi-step135000-mlx-bf16/`.
+  LM `hibiki-pytorch-77f82164@110.safetensors`, the Mimi checkpoint, the tokenizer, the staged
+  BF16 model `vi-step135000-mlx-bf16/` and the old uniform `hibiki.q4.safetensors`, which no
+  longer loads: `--model 3b` runs `hibiki-zero-3b-q4/`, to be staged there with `convert_mlx.py
+  --bits 4` ([mlx-inference](mlx-inference.md#model-directories)).
 - `/Volumes/data/datasets/en_vi_speech/` is the EN-VI dataset holding the English corpus
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)), and `/Volumes/data/datasets/phomt-grounded-v2-5s/`
   the restored PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)). FLEURS,

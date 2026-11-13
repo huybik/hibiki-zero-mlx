@@ -55,7 +55,7 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 Image(systemName: "cpu")
                     .foregroundStyle(.secondary)
-                Text(controller.modelURL?.path ?? "Choose a staged q4 or bf16 model directory")
+                Text(controller.modelURL?.path ?? "Choose a staged model directory")
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)

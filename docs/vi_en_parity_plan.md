@@ -51,7 +51,7 @@ grows sentence by sentence.
 | Stay on Hibiki-Zero 3B; the phone model is the 3B or a smaller copy of it | One tokenizer, codec and runtime. Hibiki-M 1B shares Mimi and the tokenizer but only knows FR→EN |
 | A tenth of the streams hold one sentence (2026-11-04) | Trained on 30–120 s streams only, the first run never saw the source end after one sentence, and never ended a third of FLEURS dev's single sentences (EOS on 55 of 361 rows at step 9,000, against 124 of 128 for the earlier single-sentence run) |
 | Train on multi-sentence streams of 30–120 s, not single sentences (120 s from 2026-11-02) | Upstream's coarse stage trained on 30–75 s utterances and its RL stage on 120 s; upstream 3B degrades after ~1.6 min of input; a phone hears a continuous stream |
-| Gaps between sentences are silence codes on both sides, sometimes long | Teach "stay quiet while nobody speaks"; the MLX runtime already has to cut the model off in silence (`PAD_STOP`) |
+| Gaps between sentences are silence codes on both sides, sometimes long | Teach "stay quiet while nobody speaks"; earlier models kept talking into the silence after a file ended |
 | Source after its EOS is silence codes, not `-1` | Upstream inference (`add_input_eos`) feeds encoded silence there; `-1` is an empty input the model never sees at inference |
 | Keep the source EOS and text EOS at the end of each stream | Upstream models termination this way and forces the input EOS in offline use; a live stream simply never sends it |
 | Audio codebook 0 weighted ×100; every text PAD supervised at 0.5 | Kyutai's `moshi-finetune` defaults. Before, codebook 0 was 1/16 of the audio loss and PADs after the first word had no loss, so nothing taught when not to emit a word; the last run's length ratio grew 1.06 → 1.28 → 2.05 |
@@ -203,18 +203,32 @@ GRPO on a distilled student, come later if needed.
 
 ### 6. Quantise and package
 
-q4 group 32 on transformer linears; embeddings, text head and depformer input/output projections
-at 8 bits (q3 there made the 3B babble, [inference_matrix](vision/reports/inference_matrix.md)).
-Gate q4 against bf16 on the real-Vietnamese sets. q3 is out everywhere: teacher-forced on
-`leon.wav` it keeps 82% of bf16's text tokens and 71–78% of codebook 0, against q4's 93% and 88%
-([swift-runtime](agent-memory/swift-runtime.md#device-test)). Ship on MLX Swift: the LM on the
-GPU; beside it Mimi encodes on the CPU in fp32 and decodes on the Neural Engine
-(`export_mimi_coreml.py`; fp16 on the Neural Engine shifts the encoder's codes, codebook 0 on 6%
-of frames, so the encoder stays on the CPU, [mimi-npu](agent-memory/mimi-npu.md)). File mode
-should send the source EOS at the end of the input, as upstream does; live mode never sends it.
-Sample the Vietnamese model as the paper does: temperature 0.8, top-k 250 on every token. The MLX
-runtime's text sampling (0.4, top-k 25) suits upstream, but at 0.4 the fine-tuned model lags and
-seldom ends ([analysis](analysis/eos_and_lag.md)).
+6 bits, group size 64, on the transformer linears (4 bits lost ~4 chrF on VI→EN); embeddings,
+text head and depformer input/output projections at 8 bits, group size 32 (q3 there made the 3B
+babble, [inference_matrix](vision/reports/inference_matrix.md)).
+q3 is out everywhere: teacher-forced on `leon.wav` it keeps 82% of bf16's text tokens and 71–78%
+of codebook 0, against q4's 93% and 88% ([swift-runtime](agent-memory/swift-runtime.md#device-test)).
+Ship on MLX Swift: the LM on the GPU; beside it Mimi encodes on the CPU in fp32 and decodes on the
+Neural Engine (`export_mimi_coreml.py`; fp16 on the Neural Engine shifts the encoder's codes,
+codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-memory/mimi-npu.md)).
+
+1. Built (2026-11-14): `convert_mlx.py --bits {4,6}` stages any checkpoint with that recipe and
+   records it per layer in `config.json` (`quantization`), which both runtimes quantize by before
+   loading strictly; the two-way GRPO model is 3.28 GB at 6 bits and 2.65 GB at 4, against 7.7 GB
+   in bf16. Both runtimes' file mode feeds a file as training's evaluation does (the source EOS
+   after the clip, 20 s of silence, stopping at the first text EOS after it; live mode never
+   sends the EOS) and samples as the model's `lm_gen_config` says: temperature 0.8, top-k 250 on
+   every token, the paper's and training's; at the runtimes' old text 0.4, top-k 25 the
+   fine-tuned model lagged and seldom ended ([analysis](analysis/eos_and_lag.md)). `inference/tools/gate.py` scores a model
+   directory as training scores checkpoints ([mlx-inference](agent-memory/mlx-inference.md)).
+2. Gated (2026-11-14, GRPO update 600, every FLEURS dev row): 6 bits keeps bf16's chrF both
+   ways (VI→EN 42.15 against 42.57, EN→VI 37.50 against 37.21, both within the paired
+   bootstrap's interval); 4 bits loses 4.0 on VI→EN (38.56; 2.9 to 5.0). Teacher-forced, the
+   main transformer's 4-bit linears carry all of the text's loss
+   ([mlx-inference](agent-memory/mlx-inference.md#model-directories)). So the two-way model
+   ships at 6 bits. The student's recipe is its own gate's and the phone's call: 6 bits reads
+   ~30% more weight bytes a frame than 4.
+3. Next: stage the final GRPO model at 6 bits, then the shipping model on the phone.
 
 ### 7. Two-way speech
 

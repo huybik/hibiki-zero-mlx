@@ -3,7 +3,9 @@ import MLX
 
 /// Streaming translation: source audio in, in whole 80 ms frames, and per frame a text token
 /// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`. The source goes
-/// through the session's `Audio.Leveller` before Mimi.
+/// through the session's `Audio.Leveller` before Mimi. Tokens are sampled as the model's
+/// `config.json` says (`lm_gen_config`). A file's input ends with `endInput`; a live one never
+/// does.
 ///
 /// The LM runs on the GPU while Mimi encodes on the CPU and decodes on the Neural Engine
 /// (`NeuralDecoder`), as the Python runtime's codec threads overlap the LM. A step takes k
@@ -72,15 +74,9 @@ public final class Translator {
     private var leveller = Audio.Leveller()
     private var textDecoder: TextDecoder
 
-    /// Upstream sampling (`pipeline.py`): text at 0.4 with top-k 25, audio at 0.8 with top-k 250.
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
     /// app's memory limit.
-    public init(
-        directory: URL,
-        textSampler: Sampler = Sampler(temp: 0.4, topK: 25),
-        audioSampler: Sampler = Sampler(temp: 0.8, topK: 250),
-        cacheLimit: Int? = nil
-    ) throws {
+    public init(directory: URL, cacheLimit: Int? = nil) throws {
         // MLX closes a Metal command buffer every 20 ops or 40 MB on phones (40–50 on Macs)
         // and blocks `asyncEval` while more than 10 are in flight, so the LM step (hundreds of
         // ops over 0.6–2 GB of weights) would run almost entirely inside `asyncEval`, before
@@ -114,7 +110,10 @@ public final class Translator {
             throw HibikiError.unsupported(
                 "a \(decoder.codebooks)-codebook Mimi decoder for dep_q \(config.depQ)")
         }
-        generator = Generator(lm, textSampler: textSampler, audioSampler: audioSampler)
+        let sampling = config.lmGenConfig
+        generator = Generator(
+            lm, textSampler: Sampler(temp: sampling.tempText, topK: sampling.topKText),
+            audioSampler: Sampler(temp: sampling.temp, topK: sampling.topK))
         try warmup()
     }
 
@@ -142,6 +141,17 @@ public final class Translator {
     /// (`HibikiError.badAudio`) throws with the session as it was; after any other error the
     /// session is broken: `reset` before the next step.
     public func step(_ pcm: [Float]) throws -> Output {
+        try step(pcm, endingInput: false)
+    }
+
+    /// Ends a file's input as training's evaluation and upstream's offline inference do: one
+    /// frame whose source codes are all the source EOS (`card`), while Mimi codes a silent
+    /// frame there, as a whole-file encode codes the padding. Feed silence after it.
+    public func endInput() throws -> Output {
+        try step([Float](repeating: 0, count: Audio.frameSize), endingInput: true)
+    }
+
+    private func step(_ pcm: [Float], endingInput: Bool) throws -> Output {
         let frames = pcm.count / Audio.frameSize
         precondition(frames > 0 && pcm.count == frames * Audio.frameSize)
         var timing = Timing()
@@ -172,7 +182,9 @@ public final class Translator {
                 sources = encode(source)
                 timing.encode += lap()
             }
-            let out = generator.finish(pending, source: sources[i])
+            let codes = endingInput
+                ? Array(repeating: config.card, count: config.nQ - config.depQ) : sources[i]
+            let out = generator.finish(pending, source: codes)
             timing.lmWait += lap()
             tokens.append(out.text)
             if let target = out.target { targets.append(target) }

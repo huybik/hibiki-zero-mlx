@@ -69,9 +69,10 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   unseen: if short clips still go silent, widen `LATE_START_FRAMES`. Late starts change every
   stream plan, the teacher-forced validation streams included, so validation losses do not
   compare across them.
-- The MLX and Swift runtimes feed no source EOS after a file and stop once the input is consumed
-  and the model has emitted 12 frames of PAD (`PAD_STOP`), sooner than a start in the silence
-  after a short clip comes: a model trained with late starts may need a longer stop there.
+- The MLX and Swift runtimes end a file's input as the evaluation does (the source EOS, then up
+  to 20 s of silence, stopping at the text EOS), so a start in the silence after a short clip has
+  the same room there as in training's validation
+  ([mlx-inference](mlx-inference.md#runtime)).
 - The cache itself is never changed. The silence track is encoded on the CPU in float32, so every
   machine and resume gets the same codes but for a rare residual near-tie (1 of 1,876 frames
   between thread counts).

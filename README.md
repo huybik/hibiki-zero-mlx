@@ -2,8 +2,8 @@
 
 Hibiki-Zero speech translation with two maintained paths:
 
-- MLX inference on Apple Silicon (upstream q4 for FR/ES/PT/DE → English, or staged BF16
-  checkpoints);
+- MLX inference on Apple Silicon (upstream's 3B for FR/ES/PT/DE → English, or any staged
+  checkpoint, quantized or BF16);
 - full-model PyTorch SFT on one CUDA H100 for Vietnamese → English.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero) ·
@@ -16,7 +16,7 @@ inference/            Apple Silicon · MLX
   main.py             file and microphone translation CLI
   hibiki_mlx/         pipelined runtime (CPU Mimi codec overlapped with the GPU LM)
   moshi-mlx/          minimal vendored MLX model with the Hibiki-Zero deltas
-  tools/              q4/BF16 conversion, quality gate, benchmark, Swift check
+  tools/              quantized/BF16 staging, the quantization gate, benchmark, Core ML Mimi
   assets/leon.wav     French gate clip
   macos/              native SwiftUI file and microphone test app
 training/             CUDA · PyTorch
@@ -37,7 +37,9 @@ pip install -e ./inference/moshi-mlx
 pip install -e .
 ```
 
-Download and convert the 3B checkpoint:
+Download the 3B checkpoint and stage it as q4 into `weights/hibiki-zero-3b-q4`, the model
+`--model 3b` runs (a `weights/` staged before 2026-11-14, with `hibiki.q4.safetensors` beside
+upstream's files, no longer loads: stage it again):
 
 ```bash
 hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
@@ -46,8 +48,18 @@ hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
   "mimi-pytorch-e351c8d8@125.safetensors" \
   tokenizer_spm_48k_multi6_2.model \
   --local-dir weights
-python inference/tools/convert_mlx_q4.py
+python inference/tools/convert_mlx.py --bits 4 \
+  --checkpoint "weights/hibiki-pytorch-77f82164@110.safetensors" --config weights/config.json \
+  --mimi "weights/mimi-pytorch-e351c8d8@125.safetensors" --out-dir weights/hibiki-zero-3b-q4
 ```
+
+A fine-tuned checkpoint stages the same way into a directory of its own, quantized
+(`--bits 4` or `--bits 6`) or, without `--bits`, BF16. `--bits` is the transformer linears' bits
+(group size 32 at 4, 64 at 6); the embeddings, the text head and the depformer's input and output
+projections take 8 bits, group size 32. The two-way model ships at 6 bits: 3.28 GB, within noise
+of BF16's chrF on FLEURS dev both ways, where 4 bits (2.65 GB) loses ~4 on Vietnamese→English;
+BF16 is 7.7 GB. The model's `config.json` records the quantization per layer (`quantization`)
+and how to sample (`lm_gen_config`).
 
 Run file or microphone translation:
 
@@ -56,7 +68,10 @@ python inference/main.py inference/assets/leon.wav
 python inference/main.py --mic
 ```
 
-`--model` accepts `3b` or a staged q4/BF16 Hibiki-Zero model directory.
+`--model` accepts `3b` or a staged model directory. File mode feeds the source as training's
+evaluation does: the clip, the source EOS, then up to 20 s of silence, stopping at the model's
+text EOS once it has heard the source EOS (an EOS before that stops nothing, so a long file is
+translated to its end).
 
 Build and open the native macOS test app:
 
@@ -71,12 +86,13 @@ live microphone start/stop, the English transcript, and the backend log. It runs
 
 The inference tools are:
 
-- `inference/tools/convert_mlx_q4.py`: convert the 3B PyTorch LM to MLX q4.
-- `inference/tools/convert_mlx_bf16.py`: stage an exact PyTorch checkpoint as MLX BF16, with the
-  tokenizer it is on.
-- `inference/tools/verify_mlx_q4.py`: translate the gate clip as a quality check.
+- `inference/tools/convert_mlx.py`: stage an exact PyTorch checkpoint as an MLX model directory,
+  quantized (`--bits`) or BF16, with the tokenizer it is on.
+- `inference/tools/gate.py`: score a model directory on evaluation pairs through the runtime's
+  file mode, as training scores its checkpoints (`python -m inference.tools.gate`, from the repo
+  root).
+- `inference/tools/verify_mlx_q4.py`: translate the gate clip with `weights/hibiki-zero-3b-q4`.
 - `inference/tools/bench.py`: stage timing and silence-input gate.
-- `inference/tools/check_swift_compat.py`: strict group-size-32 artifact validation.
 
 ## Training
 

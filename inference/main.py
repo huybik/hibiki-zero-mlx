@@ -1,14 +1,16 @@
 #!/usr/bin/env python
-"""hibiki-zero MLX translation — realtime mic or a file, on q4 or bf16 weights.
+"""hibiki-zero MLX translation — realtime mic or a file, on quantized or bf16 weights.
 
   python inference/main.py path/to/audio.wav   # file -> translations/<stem>_translated.wav
   python inference/main.py --mic               # mic  -> speakers, live (Ctrl-C to stop)
 
-You get streamed EN text + 24 kHz EN audio. Both modes use hibiki_mlx.pipeline
-(load()/run()); --model accepts the 3B q4 default or a staged q4/bf16 Hibiki-Zero
-model directory. File mode is the 3-thread
-pipelined path; mic mode pipelines encode->LM->decode across threads so the live
-critical path is just the LM step (~22 ms on M4 for 3B, budget 80 ms).
+You get streamed text + 24 kHz audio. Both modes use hibiki_mlx.pipeline
+(load()/run()) and sample as the model directory's config.json says (lm_gen_config);
+--model accepts 3b (upstream, staged into weights/hibiki-zero-3b-q4) or any staged
+model directory. File mode is the 3-thread pipelined path and ends the input as
+training's evaluation does (the source EOS, then silence); mic mode never ends it,
+and pipelines encode->LM->decode across threads so the live critical path is just
+the LM step (~22 ms on the M4 Pro for the 3B at 4 bits, 25 at 6; budget 80 ms).
 
 Use headphones in mic mode: the input level stage raises quiet sound toward speech
 level, the speakers' echo of the translation included, which the model then hears.
@@ -24,32 +26,27 @@ import numpy as np
 
 from hibiki_mlx import pipeline as f
 from hibiki_mlx.level import Leveller
-from moshi_mlx import models, utils
+from moshi_mlx import models
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root (inference/ -> ..)
 
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 
 
-def run_mic(max_steps: int, weights_dir: Path = f.W, text_temp: float = 0.4):
+def run_mic(max_steps: int, model: f.Model):
     import sounddevice as sd
 
-    print("loading MLX weights ...")
-    model, lm_config, text_tok, mimi_enc, mimi_dec = f.load(weights_dir)
-    text = f.TextDecoder(text_tok)
-    ct = None
-    if model.condition_provider is not None:
-        ct = model.condition_provider.condition_tensor("description", "very_good")
-    other_cb = lm_config.other_codebooks
-    gen_cb = lm_config.generated_codebooks
+    mimi_enc, mimi_dec = model.mimi(), model.mimi()
+    text = f.TextDecoder(model.tokenizer)
+    ct = model.condition()
+    other_cb = model.config.other_codebooks
+    gen_cb = model.config.generated_codebooks
     gen = models.LmGen(
-        model=model, max_steps=max_steps,
-        text_sampler=utils.Sampler(top_k=25, temp=text_temp),
-        audio_sampler=utils.Sampler(top_k=250, temp=0.8),
+        model=model.lm, max_steps=max_steps,
+        text_sampler=model.text_sampler, audio_sampler=model.audio_sampler,
         cfg_coef=1.0, check=False,
     )
-    model.warmup(ct)
-    mx.eval(model.parameters())
+    model.lm.warmup(ct)
 
     in_q: queue.Queue = queue.Queue()
     enc_q: queue.Queue = queue.Queue()                # encoder -> LM
@@ -143,32 +140,22 @@ def main():
     p.add_argument("--mic", action="store_true", help="realtime mic -> speakers")
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
-    p.add_argument("--model", default="3b", help="3b or a q4/bf16 Hibiki-Zero model directory")
-    p.add_argument("--text-temp", type=float, default=0.4, help="text sampling temperature (default 0.4)")
+    p.add_argument("--model", default="3b", help="3b or a staged Hibiki-Zero model directory")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()
 
-    weights_dir = f.resolve_weights_dir(args.model)
+    mic = args.mic or args.input == "mic"
+    if not (mic or args.input):
+        p.error("give an audio file path, or --mic for realtime")
+    print("loading MLX weights ...")
+    model = f.load(f.resolve_weights_dir(args.model))
     mx.random.seed(299792458)
-    if args.mic or args.input == "mic":
-        run_mic(
-            max_steps=int(args.minutes * 60 * 12.5) + 8,
-            weights_dir=weights_dir,
-            text_temp=args.text_temp,
-        )
-    elif args.input:
+    if mic:
+        run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8, model=model)
+    else:
         infile = args.input
         out = args.out or str(ROOT / "translations" / f"{Path(infile).stem}_translated.wav")
-        Path(out).parent.mkdir(parents=True, exist_ok=True)
-        f.run(
-            infile,
-            out,
-            weights_dir=weights_dir,
-            text_outfile=args.text_out,
-            text_temp=args.text_temp,
-        )
-    else:
-        p.error("give an audio file path, or --mic for realtime")
+        f.run(infile, out, model, text_outfile=args.text_out)
 
 
 if __name__ == "__main__":

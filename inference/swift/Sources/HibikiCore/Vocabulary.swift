@@ -4,8 +4,7 @@ import Foundation
 /// field 1 holds the `SentencePiece` messages (piece = 1, score = 2, type = 3).
 public struct Vocabulary {
     public let pieces: [String]
-    /// `<unk>`, `</s>` and `<pad>`: never printed, and silence for the stop rule
-    /// (`text_special_ids` in pipeline.py).
+    /// `<unk>`, `</s>` and `<pad>`: never printed (`text_special_ids` in pipeline.py).
     public let special: Set<Int>
     public let eos: Int
     /// The byte each byte-fallback piece (type BYTE, `<0xE1>`) stands for.

@@ -31,10 +31,15 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   `pipeline.py` does, an invalid sequence as U+FFFD; `flush` returns the rest. Fed the same
   token streams (2026-11-14, scratch harness compiling `Vocabulary.swift`: 364 streams on both
   tokenizers, PADs between pieces), it returns Python's text call for call, and the same whole
-  text at 2, 3 and 5 tokens per call. `config.json` must name `tokenizer_name`
+  text at 2, 3 and 5 tokens per call. `config.json` must name `moshi_name`, `tokenizer_name` and
+  `lm_gen_config`, which sets `Translator`'s samplers, and may hold `quantization`
   ([mlx-inference](mlx-inference.md#model-directories)).
-- `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (8 s silence tail,
-  stop on text EOS or 12 frames of `<unk>`/`</s>`/`<pad>`, seed 299792458); `bench` runs
+- `Translator.endInput()` ends a file's input: one LM step whose 16 source codes are all the
+  source EOS (`card`) while Mimi codes a silent frame, as `pipeline.translate` does.
+- `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (the clip
+  zero-padded to whole frames, `endInput`, silence to 250 frames after the clip, stop at the end
+  of the first step after `endInput` with the text EOS, seed 299792458; `--model` defaults to
+  `weights/hibiki-zero-3b-q4`); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
   runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per
   step (default 1), as the iOS app does. `Audio.Writer` writes 16-bit WAV
@@ -64,11 +69,15 @@ with `LmConfig.from_config_dict`'s defaults and fails on any setting it does not
 | `rope_concat` = MLX RoPE `traditional: false` | `PositionalEmbedding.ropeConcat` |
 | Learned per-slice depformer LayerNorm | `DepformerSlice.norm` |
 
-- Depformer weights per step: the q4 file holds a full copy for each of the 16 codebook steps,
-  but steps 8–15 share one weight set (`depformer_weights_per_step_schedule`). `Depformer.remap`
-  loads each set once into `depformer.cores.N`: 1.96 GB of LM weights instead of 2.41 GB. MLX
-  loads safetensors lazily, so the dropped copies are never read.
-- q4 quantizes, as `pipeline.py`, only layers whose input width divides by 32.
+- Depformer weights per step: a staged weights file holds a full copy for each of the 16
+  codebook steps, but steps 8–15 share one weight set (`depformer_weights_per_step_schedule`).
+  `Depformer.remap` loads each set once into `depformer.cores.N`: of the 3B's 6-bit file
+  (3.28 GB), 2.69 GB of LM weights, and of its 4-bit file (2.65 GB), 2.19 GB (computed from
+  their headers; uniform q4, which the device numbers below ran, loaded 1.96 of 2.41 GB). MLX loads safetensors lazily, so the dropped copies are never
+  read.
+- Quantized weights load as `pipeline.py` loads them: every `Quantizable` (Linear, Embedding) at
+  the `quantization` record's default or its own entry, looked up by the checkpoint's path
+  (`Depformer.checkpointPath` names a core by its first slice), then a strict update.
 - mlx-swift 0.32 treats every `MLXArray` property of a module as a parameter unless its name
   starts with `_`, so Mimi's derived codebook arrays are `_embedding` and `_c2`.
   The Mimi checkpoint holds 32 codebooks; `Mimi.load` keeps the source stream's 16 and skips

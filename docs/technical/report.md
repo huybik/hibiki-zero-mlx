@@ -164,7 +164,7 @@ The benchmark matrix made the product split explicit:
 
 The 1B q4 model is smaller and faster, and on the n=30 French benchmark it scored better than the multilingual 3B because it is a dedicated FR->EN model. It is not yet a Vietnamese phone model.
 
-**Decision:** keep q4 group size 32. Stock `moshi-mlx` and `moshi-swift` use this contract for `.q4.safetensors`; a different group size saves little and breaks the downstream loader. [`inference/tools/check_swift_compat.py`](../../inference/tools/check_swift_compat.py) reproduces the strict loader path and reports 7/7 checks for the staged artifact. This proves format compatibility, not iPhone speed [R7].
+**Decision (superseded 2026-11-14):** keep q4 group size 32, the contract stock `moshi-mlx` and `moshi-swift` use for `.q4.safetensors`. Both runtimes now quantize by the model's per-layer `quantization` record, so any group size loads, and the two-way model ships with 6-bit, group-64 transformer linears (4 bits lost ~4 chrF on VI->EN; [mlx-inference](../agent-memory/mlx-inference.md#model-directories)). [`check_swift_compat.py` at `5ff5a4e`](https://github.com/huybik/hibiki-zero-mlx/blob/5ff5a4e/inference/tools/check_swift_compat.py) reproduced the strict loader path and reported 7/7 checks for the staged artifact (removed since: both runtimes now quantize by the model's per-layer `quantization` record and load strictly). This proves format compatibility, not iPhone speed [R7].
 
 ---
 
@@ -204,7 +204,7 @@ No single metric is allowed to stand in for the product:
 
 | Gate | What it catches | Current implementation |
 |---|---|---|
-| strict model reload | missing/wrong tensor names, shapes, q4 contract | `check_swift_compat.py` |
+| strict model reload | missing/wrong tensor names, shapes, quantization record | the runtimes' strict load (`pipeline.load`, `HibikiLM.load`) |
 | silence-in RMS/peak | babble, clipping, broken audio head | `bench.py --silence` |
 | coherent known clip | obvious text/audio regressions | `verify_mlx_q4.py` |
 | BLEU/chrF/WER | translation text | CoVoST2/FLEURS evaluation scripts |
@@ -761,7 +761,7 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 | model loading, quantization, pipeline | [`inference/hibiki_mlx/pipeline.py`](../../inference/hibiki_mlx/pipeline.py) |
 | model architecture deltas | [`inference/moshi-mlx/moshi_mlx/models`](../../inference/moshi-mlx/moshi_mlx/models/) |
 | benchmark and silence gate | [`inference/tools/bench.py`](../../inference/tools/bench.py) |
-| Swift artifact contract | [`inference/tools/check_swift_compat.py`](../../inference/tools/check_swift_compat.py) |
+| Swift artifact contract (removed) | [`check_swift_compat.py` at `5ff5a4e`](https://github.com/huybik/hibiki-zero-mlx/blob/5ff5a4e/inference/tools/check_swift_compat.py) |
 | translation benchmark data | [`training/prep/`](../../training/prep/) |
 | Vietnamese cache/train/eval | [`training/`](../../training/) |
 | student and parallel-head training (removed) | [`student/` at `6a48332`](https://github.com/huybik/hibiki-zero-mlx/tree/6a48332/student) |

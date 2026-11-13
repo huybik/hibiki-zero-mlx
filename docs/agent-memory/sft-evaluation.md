@@ -51,8 +51,10 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     near-ties, and sampled text diverges after one. Under ~1 chrF on a 180-row set, or ~0.6 on
     FLEURS dev, is noise; compare rounds on the test sets, in one call.
   - A row's text ends at its first EOS, as upstream's decode cuts it, even when the EOS comes
-    before the source ends (the MLX runtime ignores those). 8–12 of FLEURS dev's 361 rows end
-    that way at each of round 4's validations, worth at most 0.2–0.5 chrF there.
+    before the source ends (the MLX and Swift runtimes' file mode goes on past such an EOS,
+    [mlx-inference](mlx-inference.md)). 8–12 of
+    FLEURS dev's 361 rows end that way at each of round 4's validations, worth at most 0.2–0.5
+    chrF there.
   - 2–5% of the `en-vi-val` Common Voice rows (clips under ~6 s) get no word and no EOS at all,
     depending on the seed. The non-empty gate allowed 8 of 180 until 2026-11-10 and a
     two-update GRPO dry run failed it with nine, at its start and again two updates later; it
@@ -94,6 +96,9 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
       (`common.load_lm`), which the checkpoint overwrites: 3.4 s against 11.0 s on MPS, the same
       tensors (2026-11-04). `load_model` converts an fp32 checkpoint tensor by tensor, so its
       fp32 and bf16 copies are never whole at once (that held 18 GiB).
+- `inference/tools/gate.py` scores an MLX model directory (quantized or BF16) on pairs files
+  with this scoring (`common.score_sets`) and `translate_rows`' sampling and input, one row at a
+  time, on the Mac ([mlx-inference](mlx-inference.md#gates)).
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.
