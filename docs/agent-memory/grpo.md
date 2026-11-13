@@ -246,6 +246,29 @@ The CUDA profile and dry run are under [Running](#running).
   longer `--updates` is the same run up to 800. Its caches are real Vietnamese speech to
   English (the tranche) and English to Vietnamese from the tranche's voice-cloned English and
   `en_speech`'s real recordings.
+  - **Its evaluations** (`runs/grpo_twoway/val_log.jsonl`; "selecting" is the mean chrF of FLEURS
+    dev both ways, "of 8" the mean over all eight sets, "EOS" the share of the eight sets' 1,833
+    rows that emit the text EOS; every set passes its gates at every update):
+
+    | Update | Selecting | Of 8 | End offset VI→EN / EN→VI | EOS |
+    |---|---|---|---|---|
+    | 0 | 37.45 | 39.97 | 2.9 / 3.5 s | 0.83 |
+    | 200 | 38.00 | 41.04 | 1.6 / 2.1 s | 0.82 |
+    | 400 | 38.89 | 41.80 | 1.3 / 1.8 s | 0.82 |
+    | 600 | 39.52 | 42.68 | 1.1 / 1.6 s | 0.79 |
+    | 800 | 38.88 | 42.68 | 1.1 / 1.5 s | 0.78 |
+    | 1,000 | 39.86 | 43.17 | 1.0 / 1.3 s | 0.75 |
+    | 1,200 | 39.97 | 43.25 | 1.0 / 1.3 s | 0.72 |
+
+    800 looked like a plateau; the user had it go on to 1,000 ("maybe try one more 1k before we
+    stop it", 2026-11-13), which set a new best. It goes on toward 2,000 and stops after two
+    evaluations in a row without a new best: a set's chrF moves ~±0.7 between evaluations, so
+    the +0.1 at 1,200 is within noise.
+  - **Its EOS share falls** while the train log's `eos_rate` rises (0.93 at update 1 to 0.96):
+    no reward pays for an EOS, and one before a stream's last row loses the rest of its text
+    ([rewards](#design)), so on validation's single rows the policy holds it back more often,
+    while the last word comes sooner (the end offsets above). The live runtimes never stop at an
+    EOS, so for them a missing one costs nothing.
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-frames
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
@@ -255,9 +278,11 @@ The CUDA profile and dry run are under [Running](#running).
   - **Disk:** the preflight needs 130 GiB (93 with `--keep-checkpoints 1`), free plus what the
     run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
     on the Hub.
-  - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync (~5 min): it
-    uploads the newest pair, the best and the logs, which reach the Hub only then. A group kill
-    (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing restarts a crashed run.
+  - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
+    the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took
+    ~53 min: Xet uploaded ~4.8 GB of the model and ~4.5 GB of the trainer state as new data, at
+    ~12 MB/s. A group kill (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing
+    restarts a crashed run.
   - Relaunching a finished run loads the model and exits 0 (`train.py` exits before loading).
   - No commits or edits to tracked files in the run's worktree while it runs: a resume needs
     `run_id.json`'s commit at HEAD, and the preflight no tracked changes.
