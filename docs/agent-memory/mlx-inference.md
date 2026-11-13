@@ -57,8 +57,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     model translated on to the end and ended right after the source: chrF 31.4 → 50.3,
     43.2 → 47.3 and 40.8 → 51.2 on those runs, the other nine identical (2026-11-14). It is not
     free: past an EOS written a frame or two before the source ended, the model may add a few
-    junk words or run the whole tail, but on the gate's rows with an early EOS the net chrF rose
-    in all four runs (bf16 and 6 bits, both ways). So the gate differs from training's
+    junk words or run the whole tail, and past one mid-file it may go silent for a while (on
+    the 124 s file, 30 s in Python, dropping a sentence, and 16 s in Swift, which then caught up).
+    Still, on the gate's rows with an early EOS the net chrF rose in all four runs (bf16 and 6
+    bits, both ways). So the gate differs from training's
     evaluation only on rows whose EOS came early, and its `eos_found` counts only an EOS after
     the source EOS.
   - Step t hears source frames before t, as training's forward does; moshi's `LMGen` in the
@@ -106,13 +108,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   Quantized from bf16, so scales and biases are bf16. The 3B is 3.28 GB at 6 bits and 2.65 GB at
   4 (uniform q4 was 2.41 GB, BF16 7.7 GB); the 8-bit layers are ~0.48B of its 3.85B parameters
   (with its 16 depformer copies).
-- **The two-way model ships at 6 bits** (2026-11-14): on the gate (GRPO update 600, every FLEURS
-  dev row, `--seed 42`; bf16 minus the variant with a paired bootstrap's 95% interval), VI→EN
-  bf16 42.57 chrF, 6 bits 42.15 (0.41, −0.54 to 1.26), 4 bits 38.56 (4.01, 2.90 to 4.99); EN→VI
-  bf16 37.21, 6 bits 37.50 (−0.29, −1.07 to 0.54). Those ran with file mode stopping at any EOS,
-  as training's evaluation does; rerunning the rows with an early EOS under the current rule
-  gives VI→EN 42.76 / 42.22 and EN→VI 37.34 / 37.66 for bf16 / 6 bits. Upstream's 3B stays at 4 bits: the phone
-  timings are at 4, and 6 is unmeasured on its languages.
+- **The two-way model ships at 6 bits** (2026-11-14): on the gate (GRPO update 600, every FLEURS dev
+  row, `--seed 42`; bf16 minus the variant with a paired bootstrap's 95% interval), VI→EN bf16 42.57
+  chrF, 6 bits 42.15 (0.41, −0.54 to 1.26), 4 bits 38.56 (4.01, 2.90 to 4.99); EN→VI bf16 37.21, 6
+  bits 37.50 (−0.29, −1.07 to 0.54). Those ran with file mode stopping at any EOS, as training's
+  evaluation does; rerunning the rows with an early EOS under the current rule gives VI→EN 42.76 /
+  42.22 and EN→VI 37.34 / 37.66 for bf16 / 6 bits. Upstream's 3B stays at 4 bits: the phone timings
+  are at 4, and 6 is unmeasured on its languages.
 - **Where 4 bits loses:** teacher-forced on bf16's sampled tokens (12 FLEURS dev clips both
   ways, 1,788 frames; scratch script), the mean KL from bf16's sampling distribution (logits /
   0.8), text / codebooks: the 4-bit recipe 0.057 / 0.17; 8 bits g64 on the main transformer and
@@ -127,14 +129,15 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `inference/tools/convert_mlx.py --checkpoint --config --mimi [--tokenizer] [--bits {4,6}]
   --out-dir` stages an exact PyTorch checkpoint (upstream's, or an SFT or GRPO
   `*_step*.safetensors`, fp32 or bf16) into a new directory, quantized or BF16, and refuses to
-  overwrite. It ships the tokenizer the checkpoint is on: its safetensors metadata `text_tokenizer` (else the base, as in
-  training), from `weights/` or `--tokenizer`, whose file name must match; the directory's
-  `config.json` names it. A two-way checkpoint stages with the swap and no flag. The 12.5 GB fp32
-  GRPO checkpoint staged at 4 bits in under a minute with a 6.3 GB peak footprint (2026-11-14).
-- Upstream's 3B stages into `weights/hibiki-zero-3b-q4` with `--bits 4` (README). A `weights/`
-  from before 2026-11-14 holds `hibiki.q4.safetensors` (uniform q4) beside upstream's PyTorch `config.json`,
-  which names no MLX weights or quantization, so it no longer loads: stage it again, then delete
-  that file.
+  overwrite. It ships the tokenizer the checkpoint is on: its safetensors metadata `text_tokenizer`
+  (else the base, as in training), from `weights/` or `--tokenizer`, whose file name must match; the
+  directory's `config.json` names it. A two-way checkpoint stages with the swap and no flag. The
+  12.5 GB fp32 GRPO checkpoint stages in under a minute, with a peak footprint of 6.3–6.6 GB at 4
+  bits, 7.5 at 6 and 10.7 in BF16 (2026-11-14).
+- Upstream's 3B stages into `weights/hibiki-zero-3b-q4` with `--bits 4` (README). A `weights/` from
+  before 2026-11-14 holds `hibiki.q4.safetensors` (uniform q4) beside upstream's PyTorch
+  `config.json`, which names no MLX weights or quantization, so it no longer loads: stage it again,
+  then delete that file.
 
 ## Vendored moshi-mlx
 
@@ -149,16 +152,16 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 
 ## Gates
 
-- `inference/tools/gate.py` (`python -m inference.tools.gate --model DIR --pairs …
-  [--limit N] [--seed S] --out-dir DIR`, from the repo root, since it imports `training`) scores
-  a model directory as training's free-running evaluation scores a checkpoint, to gate a
-  quantization against BF16 (plan stage 6). It translates each row alone in file mode, the MLX seed set to `--seed` + the
-  row's index, and scores each pairs file as its own set with training's `common.score_sets`
-  (corpus chrF and BLEU, length ratio, empty and ended rows, the health gates). It writes
-  `hypotheses.jsonl` (a row each, as it finishes) and `scores.json`. Its scores compare with the
-  box's in sampling and input, not in batching: training samples rows 64 at a time. The pairs are
-  `data/eval/` files ([sft-evaluation](sft-evaluation.md#evaluation-sets)), their audio paths
-  relative to the repo root.
+- `inference/tools/gate.py` (`python -m inference.tools.gate --model DIR --pairs … [--limit N]
+  [--seed S] --out-dir DIR`, from the repo root, since it imports `training`) scores a model
+  directory as training's free-running evaluation scores a checkpoint, to gate a quantization
+  against BF16 (plan stage 6). It translates each row alone in file mode, the MLX seed set to
+  `--seed` + the row's index, and scores each pairs file as its own set with training's
+  `common.score_sets` (corpus chrF and BLEU, length ratio, empty and ended rows, the health gates).
+  It writes `hypotheses.jsonl` (a row each, as it finishes) and `scores.json`. Its scores compare
+  with the box's in sampling and input, not in batching: training samples rows 64 at a time. The
+  pairs are `data/eval/` files ([sft-evaluation](sft-evaluation.md#evaluation-sets)), their audio
+  paths relative to the repo root.
 - `inference/tools/verify_mlx_q4.py` translates `inference/assets/leon.wav` (French) with
   `weights/hibiki-zero-3b-q4` into `translations/leon_mlx_q4.wav`.
 - `inference/tools/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,

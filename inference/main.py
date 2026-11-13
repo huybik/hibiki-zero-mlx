@@ -10,7 +10,7 @@ You get streamed text + 24 kHz audio. Both modes use hibiki_mlx.pipeline
 model directory. File mode is the 3-thread pipelined path and ends the input as
 training's evaluation does (the source EOS, then silence); mic mode never ends it,
 and pipelines encode->LM->decode across threads so the live critical path is just
-the LM step (~22 ms on M4 for 3B, budget 80 ms).
+the LM step (~22 ms on the M4 Pro for the 3B at 4 bits, 25 at 6; budget 80 ms).
 
 Use headphones in mic mode: the input level stage raises quiet sound toward speech
 level, the speakers' echo of the translation included, which the model then hears.
