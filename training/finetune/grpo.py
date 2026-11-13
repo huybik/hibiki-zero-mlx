@@ -2,8 +2,12 @@
 """GRPO for the full model (Hibiki-Zero, arXiv 2602.11072v2, §3.3; plan in docs/grpo_plan.md).
 
 Every --tau updates, π_old becomes the current policy:
-1. a bf16 copy of it samples --group rollouts of --frames frames for each stream of the window's
-   updates (the planned streams in a seeded order);
+1. a bf16 copy of it samples --group rollouts for each stream of the window's updates (the
+   planned streams in a seeded order), each as long as its stream plus --tail-seconds, the tail
+   evaluation generates past a source, and at most --frames. The window's streams are generated
+   longest first in batches of --gen-frames (rollouts times the batch's longest), so a batch
+   stops at its own longest rollout and shorter ones batch more rows. Meanwhile the fp32 policy
+   and AdamW's states wait on the CPU, leaving the GPU's memory to the batches;
 2. the rollouts get BLEU process rewards and group-normalized advantages (`rewards.py`) in CPU
    workers, while the GPU keeps generating;
 3. the policy itself scores them, giving π_old's logprobs. It runs the update's own forward on
@@ -11,14 +15,14 @@ Every --tau updates, π_old becomes the current policy:
    or another batch shape, picks other bf16 kernels.
    The first update's ratio is then exactly 1 (MPS: 1.000000 against a no-grad pass's 1.0012,
    with 6 tokens clipped).
-Each update then takes --streams streams' rollouts, in micro-batches. Its loss is the clipped
-ratio π_θ/π_old of every text and target-audio token times its frame's advantage, weighted
---text-weight for text against 1 for each audio codebook, summed over frames and averaged over
-rollouts.
+Each update then takes --streams streams' rollouts, in micro-batches, each forward as long as
+its last kept token needs. Its loss is the clipped ratio π_θ/π_old of every text and target-audio
+token times its frame's advantage, weighted --text-weight for text against 1 for each audio
+codebook, summed over frames and averaged over rollouts.
 
 Every --eval-every updates, and at the start, the run translates --eval-pairs free-running, as SFT
 validation does. The first set of each direction selects (`common.selecting_sets`: FLEURS dev
-by default): the run promotes the checkpoint with the best mean chrF over them among
+both ways by default): the run promotes the checkpoint with the best mean chrF over them among
 those that pass every set's health gates and end no more than LATENCY_SLACK_S later than the start
 on each (its median end offset); val_log.jsonl records each evaluation's verdict.
 
@@ -73,17 +77,20 @@ from training.paths import (
 # A resumed run must match these run_config.json entries.
 RESUME_KEYS = (
     "cache_dir", "config_path", "model_weight", "mimi_weight", "tokenizer", "max_frames",
-    "stream_seconds", "frames", "streams", "group", "updates", "tau", "lr", "adam_beta1",
+    "stream_seconds", "frames", "tail_seconds", "streams", "group", "updates", "tau", "lr", "adam_beta1",
     "adam_beta2", "weight_decay", "grad_clip", "epsilon", "alpha", "text_weight", "temperature",
     "top_k", "eval_pairs", "eval_batch_size", "eval_every", "save_every", "keep_checkpoints",
     "seed", "train_rows", "train_streams", "eval_rows",
 )
-EVAL_PAIRS = [
+EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both directions)
     Path("data/eval/fleurs-vi/dev.jsonl"),
+    Path("data/eval/fleurs-en/dev.jsonl"),
     Path("data/eval/en-vi-val/cv27.jsonl"),
     Path("data/eval/en-vi-val/libriheavy.jsonl"),
     Path("data/eval/en-vi-val-noisy/cv27.jsonl"),
     Path("data/eval/en-vi-val-noisy/libriheavy.jsonl"),
+    Path("data/eval/en-vi-val-en/cv27.jsonl"),
+    Path("data/eval/en-vi-val-en/libriheavy.jsonl"),
 ]
 LATENCY_SLACK_S = 0.2  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
 # The defaults the profiler measures with too.
@@ -97,6 +104,15 @@ def stream_order(count: int, seed: int) -> np.ndarray:
     """The order updates take the planned streams in (`plan_streams` keeps a document's rows in
     consecutive streams, so in plan order a long recording would fill several updates)."""
     return np.random.default_rng(seed).permutation(count)
+
+
+def rollout_frames(stream_frames: int, tail: int, limit: int) -> int:
+    """A rollout's length: its stream and `tail` frames more, up to a whole FRAME_BUCKET, at most
+    `limit`. Its last reward sits there, so text emitted later scores nothing, as evaluation stops
+    generating a tail past the source. A stream ends at its last source or teacher target, so
+    after a late-starting target the tail runs from that target's end."""
+    bucket = streams.FRAME_BUCKET
+    return min(math.ceil((stream_frames + tail) / bucket) * bucket, limit)
 
 
 def rollout(lm_gen: Any, sources: torch.Tensor, silence: torch.Tensor) -> torch.Tensor:
@@ -151,7 +167,7 @@ def grpo_loss(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """The negated clipped objective summed over a micro-batch's kept tokens (Eq. 7-8), with the
     sums behind its ratio statistics. `advantages` is [B, T], `keep` [B, 1 + dep_q, T] (from
-    `before_eos`), `stream_weights` [1 + dep_q]."""
+    `kept_tokens`), `stream_weights` [1 + dep_q]."""
     logprobs, mask = token_logprobs(lm, codes, condition_tensors, temperature)
     mask = mask & keep
     ratio = torch.exp(logprobs - old_logprobs)
@@ -239,26 +255,46 @@ def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
     return pool
 
 
+def generation_batches(lengths: torch.Tensor, gen_frames: int, group: int) -> list[torch.Tensor]:
+    """The rows of each generation batch of rollouts `lengths` [N] (groups of `group` adjacent
+    rows, equally long), longest first: whole groups while the batch's rows times its first,
+    longest rollout stay within `gen_frames`, the size of its KV caches. Shorter rollouts thus
+    batch more rows, and the last, partial batch runs the fewest steps. The sort is stable, so a
+    group stays adjacent and in one batch."""
+    order = torch.argsort(lengths, stable=True, descending=True)
+    batches = []
+    start = 0
+    while start < len(order):
+        rows = max(group, gen_frames // int(lengths[order[start]]) // group * group)
+        batches.append(order[start : start + rows])
+        start += rows
+    return batches
+
+
 def sample_window(
     generator: Any,
     info: Any,
     sources: torch.Tensor,
-    gen_batch: int,
+    lengths: torch.Tensor,
+    batches: list[torch.Tensor],
     silence_frame: torch.Tensor,
     seed_key: tuple[int, ...],
     temperature: float,
     top_k: int,
     on_batch: Any,
 ) -> torch.Tensor:
-    """Rollouts [N, 1 + dep_q, T] int32 on the CPU for `sources` [N, Q, T], in batches of
-    `gen_batch`, each seeded from (`seed_key`, its index) as a 32-bit seed (NumPy's limit);
-    `on_batch(start, end, rollouts)` after each."""
+    """Rollouts [N, 1 + dep_q, T] int32 on the CPU for `sources` [N, Q, T]: row i holds
+    `lengths[i]` sampled frames and -1 after them. Each of `batches` (row indices, from
+    `generation_batches`) runs to its longest row and is seeded from (`seed_key`, its index) as a
+    32-bit seed (NumPy's limit); `on_batch(rows, rollouts)` follows it with its rows' indices."""
     count, _, frames = sources.shape
-    outputs = torch.empty((count, 1 + generator.dep_q, frames), dtype=torch.int32)
-    steps = frames + max(generator.delays)
-    for index, start in enumerate(range(0, count, gen_batch)):
+    outputs = torch.full((count, 1 + generator.dep_q, frames), -1, dtype=torch.int32)
+    for index, batch_rows in enumerate(batches):
+        batch_lengths = lengths[batch_rows]
+        batch_frames = int(batch_lengths.max())
+        steps = batch_frames + max(generator.delays)
         common.seed_all(int(np.random.SeedSequence([*seed_key, index]).generate_state(1)[0]))
-        batch = sources[start : start + gen_batch].to(silence_frame.device)
+        batch = sources[batch_rows, :, :batch_frames].to(silence_frame.device)
         lm_gen = get_lmgen(
             generator, info, batch_size=len(batch), temp=temperature, temp_text=temperature,
             top_k=top_k, top_k_text=top_k,
@@ -268,25 +304,95 @@ def sample_window(
             sampled = rollout(lm_gen, batch, silence_frame)
         finally:
             common.set_attention_context(generator.transformer, generator.context)
-        outputs[start : start + len(batch)] = sampled.to(device="cpu", dtype=torch.int32)
-        on_batch(start, start + len(batch), outputs[start : start + len(batch)])
+        sampled = sampled.to(device="cpu", dtype=torch.int32)
+        past = torch.arange(batch_frames)[None] >= batch_lengths[:, None]
+        sampled.masked_fill_(past[:, None], -1)
+        outputs[batch_rows, :, :batch_frames] = sampled
+        on_batch(batch_rows, sampled)
         del lm_gen, sampled
         gc.collect()  # moshi's streaming state holds the KV cache in reference cycles
     return outputs
 
 
-def before_eos(rollouts: torch.Tensor, eos_id: int) -> torch.Tensor:
-    """Which tokens of rollouts [N, 1 + dep_q, T] the loss keeps: text through each one's first
-    EOS and audio before it, as SFT streams end. No reward reads the rest. The sampled tokens stay
-    in place as inputs: set to -1, they would change what the delayed codebooks of the two frames
-    before the EOS were sampled from."""
+class HostOffload:
+    """GPU storages parked in pinned host memory while a phase that never reads them runs. A
+    window generates on a bf16 copy, so the fp32 policy and AdamW's states (37.5 GB on the 3.1B
+    model) wait on the host and the generation batches get the GPU's memory (grpo.md#running).
+    `to_host` copies each storage out and shrinks it to nothing, so nothing may read those tensors
+    until `to_device` restores them exactly; the tensors, the optimizer's and the compiled
+    forward's alike, stay the same objects. The pinned buffers are allocated once per storage and
+    reused (AdamW's states appear at the first update)."""
+
+    def __init__(self) -> None:
+        self.host: dict[int, torch.Tensor] = {}
+        self.out: list[tuple[torch.UntypedStorage, torch.Tensor]] = []
+
+    def to_host(self, tensors: list[torch.Tensor]) -> None:
+        if self.out:
+            raise RuntimeError("HostOffload.to_host while storages are already out")
+        storages = {}
+        for tensor in tensors:
+            storage = tensor.untyped_storage()
+            if storage.nbytes():
+                storages.setdefault(storage._cdata, storage)  # its StorageImpl: shared views once
+        for key, storage in storages.items():
+            if key not in self.host:
+                self.host[key] = torch.empty(storage.nbytes(), dtype=torch.uint8, pin_memory=True)
+            self.host[key].untyped_storage().copy_(storage, non_blocking=True)
+            self.out.append((storage, self.host[key]))
+        torch.cuda.synchronize()  # every copy has landed before its storage goes
+        for storage, _ in self.out:
+            storage.resize_(0)
+        torch.cuda.empty_cache()  # whole segments for the generation batches
+
+    def to_device(self) -> None:
+        for storage, host in self.out:
+            storage.resize_(host.numel())
+            storage.copy_(host.untyped_storage(), non_blocking=True)
+        torch.cuda.synchronize()
+        self.out = []
+
+
+def trainer_tensors(lm: Any, optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
+    """The fp32 policy's parameters and AdamW's state tensors (none before its first step)."""
+    return [*lm.parameters(), *(value for state in optimizer.state.values()
+                                for value in state.values() if torch.is_tensor(value))]
+
+
+def kept_tokens(
+    rollouts: torch.Tensor, lengths: torch.Tensor, delays: torch.Tensor, eos_id: int
+) -> torch.Tensor:
+    """Which tokens of rollouts [N, 1 + dep_q, T] the loss keeps.
+    - Text through each rollout's first EOS and audio before it, as SFT streams end. No reward
+      reads the rest. The sampled tokens stay in place as inputs: set to -1, they would change
+      what the delayed codebooks of the two frames before the EOS were sampled from.
+    - Only what a forward of the rollout's own length scores (`lengths` [N], `delays` [1 + dep_q]
+      of the text and target codebooks): a codebook delayed d frames stops d frames early. So a
+      rollout's tokens do not depend on the longer rollouts it shares a micro-batch with."""
     frames = rollouts.shape[-1]
     is_eos = rollouts[:, 0] == eos_id
     first = torch.where(is_eos.any(dim=1), is_eos.int().argmax(dim=1), frames)
     index = torch.arange(frames, device=rollouts.device)
     text = index[None] <= first[:, None]
     audio = (index[None] < first[:, None])[:, None].expand(-1, rollouts.shape[1] - 1, -1)
-    return torch.cat([text[:, None], audio], dim=1)
+    scored = index[None, None] < (lengths[:, None] - delays[None])[:, :, None]
+    return torch.cat([text[:, None], audio], dim=1) & scored
+
+
+def forward_frames(keep: torch.Tensor, delays: torch.Tensor) -> torch.Tensor:
+    """How many frames a training forward needs to score each rollout's kept tokens ([N], from
+    `kept_tokens`' [N, 1 + dep_q, T]): a token of a codebook delayed d sits d positions after
+    its frame. The model is causal, so a shorter forward scores the same tokens the same way."""
+    index = torch.arange(1, keep.shape[-1] + 1, dtype=torch.int32, device=keep.device)
+    last = (keep * index).amax(dim=-1)  # 1 + each stream's last kept frame, 0 for none
+    return (last + delays[None] * (last > 0)).amax(dim=1).clamp(min=1)
+
+
+def micro_frames(spans: torch.Tensor, start: int, end: int, limit: int) -> int:
+    """The forward length of the micro-batch of rows `start`..`end`: its longest span
+    (`forward_frames`) up to a whole FRAME_BUCKET, as SFT pads its batches, at most `limit`."""
+    bucket = streams.FRAME_BUCKET
+    return min(math.ceil(int(spans[start:end].max()) / bucket) * bucket, limit)
 
 
 def micro_batches(
@@ -317,7 +423,11 @@ def parse_args() -> argparse.Namespace:
         "--stream-seconds", type=float, nargs=2, default=[30.0, 75.0], metavar=("MIN", "MAX"),
         help="The paper's RL inputs are 30-75 s utterances.",
     )
-    parser.add_argument("--frames", type=int, default=1200, help="Rollout length T.")
+    parser.add_argument("--frames", type=int, default=1200, help="The longest rollout.")
+    parser.add_argument(
+        "--tail-seconds", type=float, default=common.GenerationConfig.tail_s,
+        help="A rollout runs this long past its stream, as evaluation generates past a source.",
+    )
     parser.add_argument("--streams", type=int, default=32, help="Streams per update.")
     parser.add_argument("--group", type=int, default=4, help="Rollouts per stream (G).")
     parser.add_argument(
@@ -335,7 +445,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-weight", type=float, default=TEXT_WEIGHT, help="c_0 against 1 per codebook.")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE)
     parser.add_argument("--top-k", type=int, default=TOP_K)
-    parser.add_argument("--gen-batch", type=int, default=192, help="Rollouts generated at once (profiled: grpo.md).")
+    parser.add_argument(
+        "--gen-frames", type=int, default=230_400,
+        help="A generation batch's rollouts times its longest rollout's frames (profiled: grpo.md).",
+    )
     parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward; 3 runs out of memory at T 1,200.")
     parser.add_argument("--reward-workers", type=int, default=8)
     parser.add_argument("--eval-pairs", type=Path, nargs="+", default=EVAL_PAIRS)
@@ -348,7 +461,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    for name in ("frames", "streams", "group", "updates", "tau", "gen_batch", "micro_batch",
+    for name in ("frames", "streams", "group", "updates", "tau", "gen_frames", "micro_batch",
                  "reward_workers", "eval_batch_size", "eval_every", "save_every"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
@@ -358,10 +471,13 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "--save-every and --updates must be multiples of --tau, --eval-every of --save-every"
         )
-    if args.gen_batch % args.group:
-        raise ValueError("--gen-batch must hold whole groups")
-    if round(args.stream_seconds[1] * streams.FRAME_RATE) >= args.frames:
-        raise ValueError("--frames must exceed the longest stream")
+    if args.gen_frames < args.group * args.frames:
+        raise ValueError("--gen-frames must hold a group of the longest rollouts")
+    longest = round(args.stream_seconds[1] * streams.FRAME_RATE)
+    if longest + round(args.tail_seconds * streams.FRAME_RATE) > args.frames:
+        raise ValueError("--frames must hold the longest stream and the tail after it")
+    if args.tail_seconds < 0:
+        raise ValueError("--tail-seconds must not be negative")
     common.require_torch_compile()
 
 
@@ -417,6 +533,8 @@ def main() -> None:
     stream_weights = torch.ones(1 + lm.dep_q, device=device)
     stream_weights[0] = args.text_weight
     silence_frame = silence[:, -1].long().to(device)
+    tail = round(args.tail_seconds * streams.FRAME_RATE)
+    delays = torch.tensor(lm.delays[: 1 + lm.dep_q])  # the text and target codebooks'
 
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
@@ -426,6 +544,10 @@ def main() -> None:
     if step % args.tau:
         raise RuntimeError(f"Resumed step {step} is not on a --tau boundary")
     writer = CheckpointWriter(lm, optimizer, args, out_dir)
+    # The rows and streams (~4 million objects for the tranche) never become garbage: frozen, they
+    # stay out of the collection after every generation batch (0.6 s each otherwise).
+    gc.collect()
+    gc.freeze()
     # The start's end offset on each selecting set, which a promoted checkpoint may exceed by at
     # most LATENCY_SLACK_S. It is kept in run_config.json, which hf_sync uploads as it changes,
     # unlike the logs.
@@ -471,6 +593,7 @@ def main() -> None:
         evaluate(step)
 
     per_update = args.streams * args.group
+    offload = HostOffload()
     while step < args.updates:
         window = min(args.tau, args.updates - step)
         window_started = time.time()
@@ -478,43 +601,61 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         stream_ids = [int(order[index]) for update in range(step, step + window)
                       for index in range(update * args.streams, (update + 1) * args.streams)]
-        sources = torch.stack([stream_source(dataset, index, silence)
-                               for index in stream_ids for _ in range(args.group)])
+        sources = torch.stack([stream_source(dataset, index, silence) for index in stream_ids])
+        sources = sources.repeat_interleave(args.group, dim=0)
+        lengths = torch.tensor(
+            [rollout_frames(dataset.streams[index].frames, tail, args.frames)
+             for index in stream_ids]
+        ).repeat_interleave(args.group)
         jobs: dict[int, Future] = {}
 
-        def submit(start: int, end: int, rollouts: torch.Tensor) -> None:
-            for offset in range(0, end - start, args.group):
-                group = (start + offset) // args.group
+        def submit(batch_rows: torch.Tensor, rollouts: torch.Tensor) -> None:
+            for offset in range(0, len(batch_rows), args.group):
+                first_row = int(batch_rows[offset])
+                group = first_row // args.group
                 stream = dataset.streams[stream_ids[group]]
                 sentences = stream_sentences(stream, rows, tokenizer)
-                tokens = rollouts[offset : offset + args.group, 0].numpy().copy()
-                jobs[group] = pool.submit(_group_rewards, tokens, sentences, args.alpha)
+                tokens = rollouts[offset : offset + args.group, 0, : int(lengths[first_row])]
+                jobs[group] = pool.submit(_group_rewards, tokens.numpy().copy(), sentences,
+                                          args.alpha)
 
         generator = common.bf16_copy(info, lm, device)
-        rollouts = sample_window(generator, info, sources, args.gen_batch, silence_frame,
+        moving = time.time()
+        offload.to_host(trainer_tensors(lm, optimizer))
+        moved = time.time() - moving
+        batches = generation_batches(lengths, args.gen_frames, args.group)
+        rollouts = sample_window(generator, info, sources, lengths, batches, silence_frame,
                                  (args.seed, step), args.temperature, args.top_k, submit)
         del generator
         gc.collect()
         torch.cuda.empty_cache()
+        moving = time.time()
+        offload.to_device()
+        moved += time.time() - moving
         generated = time.time() - window_started
         results = [jobs[group].result() for group in range(len(stream_ids))]
-        advantages = torch.from_numpy(np.concatenate([result[2] for result in results])).float()
+        advantages = torch.zeros((len(rollouts), args.frames))
+        for group, result in enumerate(results):  # [G, the group's length]; 0 past it
+            rows_of = slice(group * args.group, (group + 1) * args.group)
+            advantages[rows_of, : result[2].shape[1]] = torch.from_numpy(result[2]).float()
         final_bleu = np.concatenate([result[1][:, -1] for result in results])
         eos_rate = (rollouts[:, 0] == tokenizer.eos_id()).any(dim=1).float()
-        keep = before_eos(rollouts, int(tokenizer.eos_id()))
+        keep = kept_tokens(rollouts, lengths, delays, int(tokenizer.eos_id()))
+        spans = forward_frames(keep, delays)
         codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
         rewarded = time.time() - window_started
 
         # 2. π_old's logprobs: the policy before this window's first update, through the update's
         # own forward (gradients enabled, never backpropagated).
         # Micro-batches cut as each update cuts them: the same rows in the same batch shapes.
-        old_logprobs = torch.empty((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
+        old_logprobs = torch.zeros((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
         with autocast:
             for start, end in micro_batches(window, per_update, args.micro_batch):
-                batch = codes[start:end].to(device=device, dtype=torch.long)
+                frames = micro_frames(spans, start, end, args.frames)
+                batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
                 condition = common.batch_condition_tensors(lm, info.model_type, end - start)
                 logprobs, _ = token_logprobs(lm, batch, condition, args.temperature)
-                old_logprobs[start:end] = logprobs.detach().cpu()
+                old_logprobs[start:end, :, :frames] = logprobs.detach().cpu()
                 del logprobs
         scored = time.time() - window_started
 
@@ -524,13 +665,17 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             first = update * per_update
             totals = {"loss": 0.0, "ratio_sum": 0, "clipped": 0, "tokens": 0, "max_deviation": 0}
+            forward_total = 0
             for start, end in micro_batches(window, per_update, args.micro_batch, update):
-                batch = codes[start:end].to(device=device, dtype=torch.long)
+                frames = micro_frames(spans, start, end, args.frames)
+                forward_total += frames * (end - start)
+                batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
                 condition = common.batch_condition_tensors(lm, info.model_type, end - start)
                 with autocast:
                     loss, stats = grpo_loss(
-                        lm, batch, condition, old_logprobs[start:end].to(device),
-                        advantages[start:end].to(device), keep[start:end].to(device),
+                        lm, batch, condition, old_logprobs[start:end, :, :frames].to(device),
+                        advantages[start:end, :frames].to(device),
+                        keep[start:end, :, :frames].to(device),
                         stream_weights, args.epsilon, args.temperature)
                 (loss / per_update).backward()
                 totals["loss"] += loss.detach()
@@ -553,9 +698,13 @@ def main() -> None:
                 "grad_norm": float(grad_norm),
                 "final_bleu": float(final_bleu[first : first + per_update].mean()),
                 "eos_rate": float(eos_rate[first : first + per_update].mean()),
+                "rollout_frames": float(lengths[first : first + per_update].float().mean()),
+                "forward_frames": forward_total / per_update,
                 "lr": args.lr,
                 "sec_per_update": time.time() - update_started,
                 "window_generate_s": generated,
+                "window_gen_batches": len(batches),
+                "window_move_s": moved,
                 "window_reward_wait_s": rewarded - generated,
                 "window_old_logprob_s": scored - rewarded,
             }
