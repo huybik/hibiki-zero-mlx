@@ -493,7 +493,8 @@ Vietnamese text cannot keep up with its speech.
 8. GRPO on the two-way model, both directions, optimized heavily on its box before the full run
    ([grpo](agent-memory/grpo.md#running),
    [plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)); stage 4 lists what
-   two directions add.
+   two directions add. Go-ahead (user, 2026-11-13): from the two-way SFT's final model, 800
+   updates, continued to 2,000 while it still improves.
 9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) cut from the two-way model,
    trained on both directions' streams directly, distilled only if it falls short; its EN→VI
    speech is checked at 8 and 16 codebooks (stage 5.3); measure a current phone (A17 Pro / A18)
@@ -501,6 +502,8 @@ Vietnamese text cannot keep up with its speech.
 10. Parallel codebook heads against that student, on the H100 (stage 5.4; user, 2026-11-10):
     a ~14-layer delay-pattern student on the same streams of both directions and the same
     steps, adopted only if it wins at real time.
+
+    Both after GRPO (user, 2026-11-13). Quantising (stage 6) runs on the Mac (user, 2026-11-13).
 
 ## Risks
 

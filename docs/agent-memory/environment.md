@@ -82,3 +82,6 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   credential.helper= -c credential.helper='!gh auth git-credential' push …`, and run `gh pr` the
   same way under `GH_TOKEN`.
 - Commit messages carry no AI attribution and no `Co-Authored-By` lines.
+- Merge a PR once its review loop and end-to-end check pass, without asking the user first
+  (user, 2026-11-13: "merge dont need my confirmation"). Then clean up its worktrees and
+  branches.

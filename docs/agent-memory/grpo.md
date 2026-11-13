@@ -126,39 +126,58 @@ The CUDA profile and dry run are under [Running](#running).
 ## Running
 
 - **Optimize it heavily before its full run, on the box it runs on** (user, 2026-11-10: "remember
-  to heavy optimize grpo when it phase start after sft"). `grpo_launch.sh`'s sizes (generation
-  batch 512, micro-batch 4) are the H200's and do not fit an 80 GB H100 (512 peaked at 107 GiB;
-  the H100's 2026-11-06 profile fit 192 and 2). The levers: rollouts as long as their stream plus
-  evaluation's tail and forwards cut to their last kept token ([A rollout's length](#design),
-  about a third of generation and update; the user approved moving the last reward there,
-  2026-11-10; not yet run on a GPU), the GPU idle between stages (71% busy on the H200),
-  generation bound by its step count (~13 ms a step at any batch). Compare each on the same
-  streams by updates per GPU-hour.
+  to heavy optimize grpo when it phase start after sft"). On the 80 GB H100 two levers nearly
+  halve an update (measured below):
+  - the fp32 policy and AdamW's states wait in pinned host memory while a window generates
+    (`HostOffload`: 35 → 5.8 GiB resident, so generation batches of 512 rows fit, not 256);
+  - rollouts are as long as their stream plus evaluation's tail, and forwards are cut to their
+    last kept token ([A rollout's length](#design)). The user approved moving the last reward
+    there (2026-11-10, again 2026-11-13).
+
+  Left: micro-batches by a frame budget (3 rows run out of memory at 1,200 frames, though
+  forwards average ~635; ~4% of an update), and the GPU idle between stages. Compare each on the
+  same streams by updates per GPU-hour. 8-bit AdamW states were measured and rejected
+  ([sft-speed](sft-speed.md#measurements)).
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --model-weight START --out-dir …`.
   - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
     old-logprob pass and the update at each `--micro-batch`.
-  - It holds the fp32 policy and AdamW's states resident throughout.
+  - It holds the fp32 policy and AdamW's states as a run does: in host memory while it
+    generates, on the GPU for the update stages.
   - It times each generation size on a second call, after compilation. Each batch's CUDA graph
     capture stays in the time, as in a run.
   - An out-of-memory size is recorded and skipped, and `profile.json` is rewritten after each
     stage.
-- **Profiled on the box** (2026-11-06, 700 W H100 SXM, from `tranche_epoch1b`'s final model, the
-  tranche caches, T 1,200, fp32 policy and AdamW states resident):
+- **Profiled on the box** (2026-11-13, the 700 W H100 SXM, from the two-way run's final model,
+  the caches `grpo_launch.sh` passes, T 1,200). Free-threaded Python 3.14 generates faster here
+  than CPython 3.12: 29.0 against 30.9 ms a step at 192 rows.
 
   | Stage | Measured |
   |---|---|
-  | Generation, batch 64 / 128 / 192 | 17.5 / 22.2 / 27.0 ms a step; 3.05 / 4.80 / 5.91 rollouts/s; peak 49 / 57 / 66 GiB |
-  | Rewards, 48 groups | 0.65 s serial, 0.14 s in 8 workers |
-  | π_old's logprobs, micro-batch 2 | 43,900 frames/s |
-  | Update, micro-batch 2 | 14,400 frames/s, peak 74 GiB; 3 and 4 run out of memory |
-  | First update's ratio | exactly 1 (max deviation 0) |
+  | Generation with the states on the GPU, 192 / 256 rows | 29.0 / 32.9 ms a step; 5.52 / 6.47 rollouts/s; peak 66 / 74 GiB; 320 runs out of memory |
+  | Generation with them on the host, 256 / 384 / 512 rows | 35.6 / 44.0 / 53.6 ms a step; 5.98 / 7.26 / 7.95 rollouts/s; peak 39 / 56 / 72 GiB |
+  | Rewards, 128 groups | 2.3 s serial, 0.47 s in 8 workers |
+  | π_old's logprobs, micro-batch 2 | 49,300 frames/s |
+  | Update, micro-batch 2 | 15,400 frames/s, peak 68 GiB; 3 runs out of memory |
+  | First update's ratio | exactly 1 |
 
-  So the defaults are `--gen-batch` 192 and `--micro-batch` 2: an update of 128 rollouts takes
-  ~22 s of generation, ~3.5 s of old logprobs and ~10.6 s of update, ~36 s (the plan estimated
-  ~50 s); 1,000 updates ~10 h plus ~30 min of evaluations. The rollouts' mean final BLEU from
-  that model was 26.2 (on the first streams in plan order, before the seeded order). The
-  profile's GPU sat idle 39% of its 5.3 min, between its stages.
+  The profiler's estimate for the first window at its own lengths (640 streams; rollouts average
+  819 frames and forwards 635 after the EOS cut; 90% of rollouts end) at `--gen-frames 614400`
+  (512 rows of 1,200): ~11.7 s of generation, ~1.6 s of old logprobs and ~5.3 s of update, so
+  ~18.6 s an update. That compares with ~33 s at full length with the states on the GPU (batch
+  256: ~19.8 + 3.1 + 10.0 s). So 800 updates take ~4.1 h and 2,000 ~10.3 h, plus the
+  evaluations. The rollouts' mean final BLEU was 33.5.
+- **The cut changes almost no reward** (2026-11-13). The same full-length rollouts were scored
+  over 1,200 frames and over their cut length: the final model, GRPO's first 128 streams in its
+  seeded order, 4 rollouts each.
+
+  | Direction | Groups | Final BLEU, full / cut | Words past the cut | Same best rollout | Rank correlation |
+  |---|---|---|---|---|---|
+  | EN→VI | 75 | 26.92 / 26.98 | 0.34% | 100% | 0.989 |
+  | VI→EN | 53 | 37.55 / 37.56 | 0.07% | 98% | 0.989 |
+
+  So what the cut drops is the rare late babble, and the groups' order, which the advantages
+  follow, holds.
 - **Profiled on the H200 box, alone on the GPU** (2026-11-10, 700 W H200 SXM, from round 4's
   final model, the tranche caches, T 1,200; the 2026-11-09 profile there ran beside the cache
   build and counted the leaked generator, so its micro-batch 4 "ran out of memory"):
@@ -171,17 +190,15 @@ The CUDA profile and dry run are under [Running](#running).
   | Update, micro-batch 2 / 3 / 4 / 6 | 16,200 / 18,600 / 19,300 / 20,400 frames/s; peak 68 / 96 / 111 / 134 GiB; 8 runs out of memory |
   | First update's ratio | exactly 1 at every size |
 
-  So on the H200 `--gen-batch 512 --micro-batch 4` (`grpo_launch.sh`): an update of 128
+  So on the H200 512 rows (`--gen-frames 614400`) and micro-batch 4: an update of 128
   rollouts takes ~13.3 s of generation, ~2.6 s of old logprobs and ~8.0 s of update, ~24 s
   against ~31 s at 192 and 3; 800 updates ~5.3 h plus the evaluations. 640 and 6 gain 6% each
   and leave 17 and 7 GiB of the card. A generation step costs ~13 ms whatever the batch, so
   generation, 55% of an update, is bound by steps: the streams average 599 frames (longest 929)
   and every rollout runs 1,202 steps, and every update forward spans 1,200 frames though the
-  loss keeps none after a rollout's EOS. Rollouts cut to their stream plus a tail, and forwards
-  cut to their last kept token, save about a third of both (built since, above; unmeasured).
-  The profile's GPU read 71%
-  busy on average, under 50% in 29% of its samples (between stages, and generation's short
-  kernels).
+  loss keeps none after a rollout's EOS (cut since: the H100 profile above). The profile's GPU
+  read 71% busy on average, under 50% in 29% of its samples (between stages, and generation's
+  short kernels).
 - **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
   is reset to PAD's ([sft-training](sft-training.md#trainer)); until 2026-11-10 GRPO kept the
   checkpoint's own row. Rollouts and scoring share the row, and the first ratio is still 1.
@@ -199,7 +216,14 @@ The CUDA profile and dry run are under [Running](#running).
   AdamW's step does not depend on the gradient's scale: after the clip a parameter's gradient is
   ~1/√3.1e9 ≈ 2e-5, far above eps 1e-8. So the scale changes nothing and the loss stays as the
   paper writes it (Σ_q c_q Σ_t).
-- **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-batch
+- **The two-way run** (user, 2026-11-13): `grpo_launch.sh weights/twoway_final.safetensors`,
+  the two-way SFT's final model (`runs/twoway_sft/model_step287558.safetensors`, hard-linked
+  into `weights/`), at the H100 profile's sizes, `--updates 2000`. It is judged at 800 from its
+  evaluations and goes on while the selecting chrF still rises. The rate is constant, so the
+  longer `--updates` is the same run up to 800. Its caches are real Vietnamese speech to
+  English (the tranche) and English to Vietnamese from the tranche's voice-cloned English and
+  `en_speech`'s real recordings.
+- **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-frames
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
   an SFT run's use `run`: either subcommand on the other's run fails at argument parsing.
