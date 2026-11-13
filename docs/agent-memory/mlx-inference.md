@@ -30,10 +30,20 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `run()` overlaps a CPU Mimi encoder thread and decoder thread with the GPU LM on the main
   thread. Queues carry NumPy arrays because lazy MLX graphs are bound to their creating thread.
 - One frame is 1920 samples at 24 kHz (80 ms, 12.5 Hz).
+- The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
+  Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
+  frames (timed in "level + mimi encode"). It raises quiet speech toward −20 dBFS; how and why
+  in [sft-evaluation](sft-evaluation.md#input-level). The evaluation (`training/finetune/
+  common.py`) imports it as `inference.hibiki_mlx.level`, so the module needs only NumPy.
+- `hibiki_mlx` is installed editable from the main checkout, so in a worktree run the tools
+  with `PYTHONPATH=<worktree>/inference`: otherwise they import main's package (`main.py` is
+  safe, its own folder comes first).
 - File mode appends 8 s of silence (`tail_s`) and, once the input is consumed, stops on text
   EOS or 12 consecutive special-token frames (`PAD_STOP`).
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
-  workers, which adds one frame of output latency.
+  workers, which adds one frame of output latency. A worker's error ends the session and is
+  raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the
+  translation toward speech level ([input level](sft-evaluation.md#input-level)).
 - rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
   start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
   such limit ([swift-runtime](swift-runtime.md)).

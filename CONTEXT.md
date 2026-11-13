@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-10
+Last verified: 2026-11-12
 
 ## Purpose
 
@@ -135,6 +135,11 @@ inference/ (Apple Silicon, MLX)
   [sft-data-caches](docs/agent-memory/sft-data-caches.md).
 - Resume only from the newest complete model and optimizer pair of the same run →
   [sft-recovery](docs/agent-memory/sft-recovery.md).
+- Source audio reaches Mimi only through the input level stage (`inference/hibiki_mlx/level.py`,
+  Swift's `Audio.Leveller`): in the MLX and Swift runtimes, `eval.py` and the trainers' validation
+  (`common.read_source`). Mimi codes quiet speech so differently that the model translated it
+  worse, and under −35 dBFS often not at all. The training caches are coded without it: their
+  sources are loud → [sft-evaluation](docs/agent-memory/sft-evaluation.md#input-level).
 - In MLX, give each thread its own `rustymimi.Tokenizer` and pass NumPy arrays, not MLX arrays,
   between threads → [mlx-inference](docs/agent-memory/mlx-inference.md).
 - `mx.compile` only functions that see a small, fixed set of input shapes; fed a new shape per call,
@@ -152,7 +157,7 @@ inference/ (Apple Silicon, MLX)
 | Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
 | SFT trainer: streams, defaults, precision, objective | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
 | SFT H100 launcher, checkpoints, resume, HF recovery sync | [sft-recovery](docs/agent-memory/sft-recovery.md) | `training/h100.sh`, `training/finetune/hf_sync.py`, `training/finetune/checkpoints.py` |
-| SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/` |
+| SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets, the input level stage | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/`, `inference/hibiki_mlx/level.py` |
 | GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy` | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py` |

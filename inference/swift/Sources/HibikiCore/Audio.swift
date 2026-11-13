@@ -50,6 +50,49 @@ public enum Audio {
         return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
     }
 
+    /// The input level stage, as `inference/hibiki_mlx/level.py` (which says why and how):
+    /// raises quiet source audio toward the level the model trained on before Mimi encodes it.
+    /// Each 80 ms frame takes one gain, `min(targetPeak / envelope, noiseCeiling / noiseFloor)`
+    /// and at least 1, from a peak envelope (rises at once, falls 6 dB a second) and a noise
+    /// floor (falls at once, rises 1.5 dB a second; digitally silent frames, under `silence`,
+    /// leave it as it is). Frames whose envelope is above `targetPeak`
+    /// pass unchanged and nothing clips. One per stream, fed its samples in order in whole frames.
+    public struct Leveller {
+        static let targetPeak = pow(10.0, -20.0 / 20)
+        static let maxGain = pow(10.0, 30.0 / 20)
+        static let noiseCeiling = pow(10.0, -40.0 / 20)
+        static let release = pow(10.0, -6.0 / 20 / 12.5)  // per frame
+        static let rise = pow(10.0, 1.5 / 20 / 12.5)  // per frame
+        static let silence = 1.0 / 32_768  // one 16-bit step, 2^-15
+        private var envelope = 0.0
+        private var noiseFloor = Double.infinity  // the first frame not digitally silent sets it
+
+        public init() {}
+
+        public mutating func callAsFunction(_ pcm: [Float]) throws -> [Float] {
+            var out = pcm
+            for start in stride(from: 0, to: pcm.count, by: frameSize) {
+                let frame = start..<min(start + frameSize, pcm.count)
+                guard pcm[frame].allSatisfy(\.isFinite) else {
+                    throw HibikiError.badAudio("non-finite sample in this call's samples \(frame)")
+                }
+                let peak = Double(pcm[frame].reduce(Float(0)) { max($0, abs($1)) })
+                envelope = max(peak, envelope * Self.release)
+                if peak >= Self.silence {
+                    noiseFloor = max(
+                        Self.noiseCeiling / Self.maxGain, min(peak, noiseFloor * Self.rise))
+                }
+                var gain = Self.noiseCeiling / noiseFloor
+                if envelope > 0 { gain = min(gain, Self.targetPeak / envelope) }
+                if gain > 1 {
+                    let scale = Float(gain)
+                    for i in frame { out[i] = pcm[i] * scale }
+                }
+            }
+            return out
+        }
+    }
+
     /// A 24 kHz mono 16-bit WAV file written as samples arrive (clipped to [-1, 1], as
     /// `sphn.write_wav`). The header's sizes are rewritten after every append, so the file
     /// stays valid if the process dies mid-run.

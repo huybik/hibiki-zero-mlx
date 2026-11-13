@@ -34,6 +34,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 
+from inference.hibiki_mlx.level import Leveller
 from training.finetune import lm_training
 from training.finetune.hibiki_helpers import (
     audio_read,
@@ -742,6 +743,17 @@ class GenerationConfig:
 TRAINER_GENERATION = GenerationConfig(text_only=True)
 
 
+def read_source(path: Path, sample_rate: int) -> torch.Tensor:
+    """A source clip at Mimi's rate (stereo averaged to mono, where the runtimes take the first
+    channel), through the runtimes' level stage (inference/hibiki_mlx/level.py) as a stream of
+    its own; [1, samples]."""
+    wav = audio_read(path, to_sample_rate=sample_rate, mono=True)[0]
+    try:
+        return torch.from_numpy(Leveller()(wav[0].numpy()))[None]
+    except ValueError as error:
+        raise ValueError(f"{path}: {error}") from error
+
+
 def generate_batch(
     rows: list[dict[str, str]],
     batch_start: int,
@@ -754,7 +766,7 @@ def generate_batch(
 ) -> list[dict[str, str]]:
     """Sampled autoregressive decode of a batch of source clips."""
     files = [resolve_repo_path(row[SOURCE]) for row in rows]
-    input_wavs = [audio_read(path, to_sample_rate=mimi.sample_rate, mono=True)[0] for path in files]
+    input_wavs = [read_source(path, mimi.sample_rate) for path in files]
     audio_durations = [wav.shape[-1] / mimi.sample_rate for wav in input_wavs]
     gen_duration = cfg.gen_duration if cfg.gen_duration else max(audio_durations) + cfg.tail_s
     if max(audio_durations) > gen_duration:

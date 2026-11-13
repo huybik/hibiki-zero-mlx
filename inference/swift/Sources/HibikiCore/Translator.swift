@@ -2,7 +2,8 @@ import Foundation
 import MLX
 
 /// Streaming translation: source audio in, in whole 80 ms frames, and per frame a text token
-/// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`.
+/// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`. The source goes
+/// through the session's `Audio.Leveller` before Mimi.
 ///
 /// The LM runs on the GPU while Mimi encodes on the CPU and decodes on the Neural Engine
 /// (`NeuralDecoder`), as the Python runtime's codec threads overlap the LM. A step takes k
@@ -44,7 +45,7 @@ public final class Translator {
         public var lmStart = 0.0
         /// Mimi decoding the finished LM steps' audio tokens on the Neural Engine.
         public var decode = 0.0
-        /// Mimi encoding the input frames on the CPU.
+        /// The level stage and Mimi encoding the input frames on the CPU.
         public var encode = 0.0
         /// Waiting for the LM after the CPU work.
         public var lmWait = 0.0
@@ -67,6 +68,7 @@ public final class Translator {
     let generator: Generator
     /// Complete target codes of finished LM steps, one frame each, not yet decoded.
     private var targets: [[Int]] = []
+    private var leveller = Audio.Leveller()
 
     /// Upstream sampling (`pipeline.py`): text at 0.4 with top-k 25, audio at 0.8 with top-k 250.
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
@@ -122,17 +124,19 @@ public final class Translator {
         Memory.clearCache()  // return load and warmup buffers instead of keeping them cached
     }
 
-    /// Starts a new session: clears the codec and the LM state, dropping audio not yet
-    /// returned (`flush` first to keep it).
+    /// Starts a new session: clears the level stage, the codec and the LM state, dropping audio
+    /// not yet returned (`flush` first to keep it).
     public func reset() {
         targets = []
+        leveller = Audio.Leveller()
         mimi.resetState()
         decoder.reset()
         generator.reset()
     }
 
     /// Translates k whole frames (k × 1920 samples): k LM steps, one Mimi encode of the k
-    /// frames, and the decoding of every LM step finished before the last. If it throws, the
+    /// frames, and the decoding of every LM step finished before the last. Bad audio
+    /// (`HibikiError.badAudio`) throws with the session as it was; after any other error the
     /// session is broken: `reset` before the next step.
     public func step(_ pcm: [Float]) throws -> Output {
         let frames = pcm.count / Audio.frameSize
@@ -144,6 +148,12 @@ public final class Translator {
             defer { clock = now }
             return seconds(clock, now)
         }
+        // Levelled before any state moves, on a copy kept only if it succeeds: bad audio
+        // throws with the session as it was.
+        var next = leveller
+        let source = try next(pcm)
+        leveller = next
+        timing.encode += lap()
 
         var sources: [[Int]] = []
         var audio: [Float] = []
@@ -156,7 +166,7 @@ public final class Translator {
                 timing.decode += lap()
             }
             if i == 0 {
-                sources = encode(pcm)
+                sources = encode(source)
                 timing.encode += lap()
             }
             let out = generator.finish(pending, source: sources[i])

@@ -25,6 +25,7 @@ import rustymimi
 import sentencepiece
 import sphn
 
+from hibiki_mlx.level import Leveller
 from moshi_mlx import models, utils
 
 ROOT = Path(__file__).resolve().parents[2]  # repo root (inference/hibiki_mlx/ -> ../..)
@@ -138,7 +139,8 @@ def run(
     gen_cb = lm_config.generated_codebooks
 
     in_pcms, _ = sphn.read(infile, sample_rate=24000)
-    steps = in_pcms.shape[-1] // 1920
+    source = Leveller()(in_pcms[0])  # the first channel
+    steps = source.shape[-1] // 1920
     # Hibiki translates simultaneously with a ~6 s lag, so when the input ends the
     # tail of the translation is still unspoken. Feed trailing silence to flush it
     # (mirroring the gen-duration padding of the PyTorch path); without this short
@@ -170,11 +172,11 @@ def run(
             codes = mimi_enc.encode_step(pcm_frame)  # CPU, GIL released
             enc_q.put(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
 
-        silence = np.zeros((1, 1, 1920), dtype=in_pcms.dtype)  # flush the lag tail
+        silence = np.zeros((1, 1, 1920), dtype=source.dtype)  # flush the lag tail
         for idx in range(steps):
             if stop.is_set():
                 break
-            emit(in_pcms[None, 0:1, idx * 1920 : (idx + 1) * 1920])
+            emit(source[None, None, idx * 1920 : (idx + 1) * 1920])
         for _ in range(tail):
             if stop.is_set():
                 break
