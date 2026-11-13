@@ -59,11 +59,11 @@ and wait for its final sync.
 GRPO: the `en-vi` caches and one two-way run on all of round 4e's rows, the pilot's test at its
 first validation ([two-way](two-way.md#two-way-run)); GRPO then runs once, on the two-way model.
 
-**GRPO: RUNNING, `grpo_twoway` (`grpo_launch.sh weights/twoway_final.safetensors`, commit
-`91e3c6f`)**, from the two-way SFT's final model, toward `--updates 2000`: ~20 s an update with its
-window's generation, ~6.7 s for the update itself, and ~3.6 min of validation every 200
-([grpo](grpo.md#running) has its evaluations and stop rule). Resumed at update 800 on
-2026-11-14 00:37 UTC+7. It runs from the box's checkout, `/workspace/hibiki-zero` on `main` (the
+**GRPO: DONE, `grpo_twoway` (`grpo_launch.sh weights/twoway_final.safetensors`, commit
+`91e3c6f`)**, from the two-way SFT's final model: ~20 s an update with its window's generation,
+~6.7 s for the update itself, and ~3.6 min of validation every 200. Resumed at update 800 on
+2026-11-14 00:37 UTC+7 and stopped at 1,800 by its stop rule (06:51 UTC+7); the best is update
+1,400 ([grpo](grpo.md#running) has its evaluations). It runs from the box's checkout, `/workspace/hibiki-zero` on `main` (the
 `wt-*` worktrees are only for edits while a run holds the checkout); log `/workspace/logs/grpo.log`,
 launcher pid in `grpo.pid`. `/workspace/auto_pipeline.sh`, `grpo_trigger.sh` and
 `monitor_voice_done.sh` are leftovers of a chained attempt and not in the repo.
