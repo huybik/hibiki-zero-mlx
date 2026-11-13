@@ -69,6 +69,21 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
     `grad_scale` (GradScaler's private hook) 13,584, +1.3%, not adopted;
   - `torch.compile(lm.transformer, dynamic=True)`: 14,390 (+7.3%, 1.5 GiB less), but two of its
     frames recompiled per batch shape up to the limit of 64 (warm-up 484 s, not 89).
+- 8-bit AdamW moments (bitsandbytes 0.50.2 `AdamW8bit`; PR #111, closed 2026-11-13) on the 700 W
+  H100 SXM, the two-way run's 8,192-frame batches from its start, steps 151–300: slower at every
+  setting that fits. Fused AdamW in 3,584-frame slices ran 14,634 frames/s; 8-bit ran 12,717
+  (−13%) in 3,584, 13,774 (−6%) in 4,608, and 15,031 (+3%) whole, with 0.8 GiB of the card left.
+  - Its kernel (`kOptimizerStatic8bit2StateBlockwise`, 403 calls) takes 89 ms of GPU time a step
+    against fused AdamW's 30.6 ms. That is ~0.56 TB/s, so it is not bandwidth-bound and the bytes
+    it saves don't count. bitsandbytes also syncs the GPU after every tensor (16–21 ms a step).
+  - Loss matched over 1,000 updates (the last 200's mean within 0.001). But one tensor broke:
+    `transformer.layers.2.gating.linear_out.weight`'s gradient blocks are so uneven (a block's
+    largest value up to ~50,000× its median) that ~2% of its weights store an 8-bit second moment
+    of 0. Those weights then step up to 388× the learning rate (fused AdamW: 1.05×), and over 300
+    updates the tensor drifted 2.6 times its own change from fused AdamW's.
+  - It freed 17.4 GiB (GRPO's update peak 74 → 50 GiB). GRPO needs that memory more than the
+    speed, and gets it instead by moving fused AdamW's states to host memory while it generates
+    (user, 2026-11-13).
 - The compiled main-transformer forward on the H200 NVL (2026-11-03, the same benchmark):
   14,682 frames/s against 13,838 (+6.1%), 73.1 GiB reserved against 75.1, the same loss.
   Dynamo compiles it twice (batches under 4,096 frames get their own graph, an inductor fusion

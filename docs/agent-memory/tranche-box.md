@@ -6,9 +6,16 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**H100 SXM Japan (Vast instance 60019118, 2026-11-10 12:05 – 2026-11-16 08:00 UTC+7 (the host extended it from 2026-11-14 13:00), $2.20/h)**:
-700 W, 350 GB disk, a 26.88-CPU quota; the checkout on `main`, brought up from the Hub as below
-(nothing else on it: no tranche parts, envs or TTS/ASR models).
+**H100 SXM Japan (Vast instance 60447659, 2026-11-13 – 2026-11-16 08:00 UTC+7, $2.00/h)**: 700 W,
+350 GB disk, a 28-CPU quota; the checkout on `main`, brought up from the Hub on 2026-11-13. It
+holds the two-way run's caches (packs only), evaluation sets, start weight and its best and final
+models (`runs/twoway_sft/`). Nothing else is on it: no tranche parts, envs or TTS/ASR models. It
+replaced 60019118 on the same host (destroyed 2026-11-13 at the user's request). Between those two
+boxes only the public ssh ports carried data, at 6–12 MB/s, so the new box fetched every cache's
+shards from the Hub (~50–150 MB/s with `HF_HUB_DISABLE_XET=1`, ~25 min), then packed and dropped
+them one directory at a time (`python -m training.finetune.streams --drop-shards DIR`; all at once
+would not fit). Only the files not on the Hub went box to box: the Vietnamese tokenizer swap's
+files, `fleurs-en`, `en-vi-val-en`, `giga-heldout`, run logs and `twoway_start_vi6k`.
 
 **The H200 Indonesia box (59864576) went offline on 2026-11-10** at step ~15,000 of round 4d:
 everything local was lost (round 4d's checkpoints, round 4b's test outputs `eval/cmp_step*`;
