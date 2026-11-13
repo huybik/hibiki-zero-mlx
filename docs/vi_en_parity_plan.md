@@ -203,32 +203,32 @@ GRPO on a distilled student, come later if needed.
 
 ### 6. Quantise and package
 
-q4 group 32 on transformer linears; embeddings, text head and depformer input/output projections
-at 8 bits (q3 there made the 3B babble, [inference_matrix](vision/reports/inference_matrix.md)).
+6 bits, group size 64, on the transformer linears (4 bits lost ~4 chrF on VI→EN); embeddings,
+text head and depformer input/output projections at 8 bits, group size 32 (q3 there made the 3B
+babble, [inference_matrix](vision/reports/inference_matrix.md)).
 q3 is out everywhere: teacher-forced on `leon.wav` it keeps 82% of bf16's text tokens and 71–78%
 of codebook 0, against q4's 93% and 88% ([swift-runtime](agent-memory/swift-runtime.md#device-test)).
 Ship on MLX Swift: the LM on the GPU; beside it Mimi encodes on the CPU in fp32 and decodes on the
 Neural Engine (`export_mimi_coreml.py`; fp16 on the Neural Engine shifts the encoder's codes,
 codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-memory/mimi-npu.md)).
 
-1. Built (2026-11-14): `convert_mlx.py --q4` stages any checkpoint with that recipe and records
-   it per layer in `config.json` (`quantization`), which both runtimes quantize by before loading
-   strictly; the two-way GRPO model is 2.65 GB at q4 against 7.7 GB in bf16. Both runtimes' file
-   mode feeds a file as training's evaluation does (the source EOS after the clip, 20 s of
-   silence, stopping at the first text EOS; live mode never sends the EOS) and samples as the
-   model's `lm_gen_config` says: temperature 0.8, top-k 250 on every token, the paper's and
+1. Built (2026-11-14): `convert_mlx.py --bits {4,6}` stages any checkpoint with that recipe and
+   records it per layer in `config.json` (`quantization`), which both runtimes quantize by before
+   loading strictly; the two-way GRPO model is 3.28 GB at 6 bits and 2.65 GB at 4, against 7.7 GB
+   in bf16. Both runtimes' file mode feeds a file as training's evaluation does (the source EOS
+   after the clip, 20 s of silence, stopping at the first text EOS after it; live mode never
+   sends the EOS) and samples as the model's `lm_gen_config` says: temperature 0.8, top-k 250 on every token, the paper's and
    training's; at the runtimes' old text 0.4, top-k 25 the fine-tuned model lagged and seldom
    ended ([analysis](analysis/eos_and_lag.md)). `inference/tools/gate.py` scores a model
    directory as training scores checkpoints ([mlx-inference](agent-memory/mlx-inference.md)).
-   Teacher-forced on bf16's sampled tokens (the two-way GRPO model, 6 FLEURS dev clips, 3 each
-   way, 927 frames), its argmax matches bf16's on 96.7% of text tokens (85.4% where bf16 writes a
-   word), 88.9% of codebook 0 and 72.2% of all codebooks; uniform q4 g32 95.6 / 82.8 / 85.5 /
-   66.5%; 4-bit linears with bf16 heads 96.5 / 86.1 / 89.0 / 72.1%. So 8 bits on the heads costs
-   nothing measurable, and what q4 still loses is in the 4-bit transformer linears
-   ([mlx-inference](agent-memory/mlx-inference.md#model-directories)).
-2. Next: the gate, q4 against bf16 of the shipping model on FLEURS dev both ways
-   (`fleurs-vi/dev`, `fleurs-en/dev`) under one `--seed`, then on the real-Vietnamese test sets
-   if they part; then the shipping model on the phone.
+2. Gated (2026-11-14, GRPO update 600, every FLEURS dev row): 6 bits keeps bf16's chrF both
+   ways (VI→EN 42.15 against 42.57, EN→VI 37.50 against 37.21, both within the paired
+   bootstrap's interval); 4 bits loses 4.0 on VI→EN (38.56; 2.9 to 5.0). Teacher-forced, the
+   main transformer's 4-bit linears carry all of the text's loss
+   ([mlx-inference](agent-memory/mlx-inference.md#model-directories)). So the two-way model
+   ships at 6 bits. The student's recipe is its own gate's and the phone's call: 6 bits reads
+   ~30% more weight bytes a frame than 4.
+3. Next: stage the final GRPO model at 6 bits, then the shipping model on the phone.
 
 ### 7. Two-way speech
 

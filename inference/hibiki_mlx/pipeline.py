@@ -10,7 +10,9 @@ sequential loop; we just stop letting the CPU and GPU idle on each other.
 
 File mode feeds the source as training's free-running evaluation does
 (`training/finetune/common.py` `generate_batch`): the levelled clip in whole frames, the source
-EOS on the frame after it, then silence, and it stops at the first text EOS.
+EOS on the frame after it, then silence. It stops at the first text EOS the model writes once it
+has heard the source EOS; an earlier one stops nothing, where training's evaluation would end
+there and drop the rest of a long file.
 
 Usage: python inference/tools/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
@@ -37,7 +39,7 @@ from moshi_mlx import models, utils
 ROOT = Path(__file__).resolve().parents[2]  # repo root (inference/hibiki_mlx/ -> ../..)
 
 W = ROOT / "weights"
-# Upstream's 3B, staged from weights/ by `convert_mlx.py --q4` (README).
+# Upstream's 3B, staged from weights/ by `convert_mlx.py --bits 4` (README).
 UPSTREAM = W / "hibiki-zero-3b-q4"
 SAMPLE = ROOT / "inference" / "assets" / "leon.wav"  # French gate clip
 SENTINEL = object()
@@ -168,7 +170,7 @@ def load(weights_dir: Path) -> Model:
 @dataclass(frozen=True)
 class Translation:
     text: str
-    ended: bool  # the model emitted the text EOS
+    ended: bool  # the model emitted the text EOS after hearing the source EOS
     frames: int  # LM steps run
     duration: float  # seconds of input audio
     last_word: int | None  # the step of the last content token (above PAD) before the EOS
@@ -178,7 +180,9 @@ class Translation:
 def translate(model: Model, infile: str | Path, audio: bool = True) -> Translation:
     """Translates a file as training's free-running evaluation does: the first channel through
     the input level stage, zero-padded to whole frames, then one frame whose source codes are all
-    the source EOS (`card`), then silence up to TAIL_S, stopping at the first text EOS.
+    the source EOS (`card`), then silence up to TAIL_S. It stops at the first text EOS of a step
+    that heard the source EOS; a text EOS before it is kept going past, so a long file is
+    translated to its end (training's evaluation stops at any EOS).
 
     Step t hears source frames before t, as training's forward does; moshi's LMGen in the
     evaluation hears one frame of silence more before the clip (80 ms later throughout)."""
@@ -257,7 +261,8 @@ def translate(model: Model, infile: str | Path, audio: bool = True) -> Translati
             break
         tt = gen.step(mx.array(oat), ct)[0].item()  # sync this frame's LM
         processed += 1
-        if tt == eos_token:
+        # The source EOS frame goes in at step `steps`, which step steps + 1 hears first.
+        if tt == eos_token and processed > steps + 1:
             ended = True
             break
         if tt > pad_token:

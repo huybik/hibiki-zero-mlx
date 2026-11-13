@@ -1,8 +1,10 @@
 // hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N] [--chunk K]
 //   Translates an audio file, as `python inference/main.py INPUT` and training's evaluation do:
 //   the input in whole frames (the last zero-padded), the source EOS (`Translator.endInput`),
-//   then silence for 20 s in all, stopping at the end of the step where the model emits the
-//   text EOS (with --chunk K > 1 the text keeps what that step wrote after the EOS).
+//   then silence for 20 s in all, stopping at the end of the first step after `endInput` where
+//   the model emits the text EOS (with --chunk K > 1 the text keeps what that step wrote after
+//   the EOS). An EOS before that, which the model wrote before hearing the source EOS, stops
+//   nothing, so a long file is translated to its end.
 //
 // hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE] [--chunk K]
 //   Loops INPUT for M minutes (default 10) through `Bench`, paced like a live microphone unless
@@ -12,7 +14,7 @@
 // call, for less CPU time per frame and more latency (its decoder runs one frame per call). The translation is the same,
 // but `translate` stops only at the end of a step, up to K - 1 frames after K = 1 would.
 //
-// --model defaults to weights/hibiki-zero-3b-q4, upstream's 3B staged by convert_mlx.py --q4.
+// --model defaults to weights/hibiki-zero-3b-q4, upstream's 3B staged by convert_mlx.py --bits 4.
 
 import Foundation
 import HibikiCore
@@ -62,7 +64,8 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
     var frames = 0
     var ended = false
     let start = Date()
-    /// Keeps a step's output; true once the model has emitted the text EOS.
+    /// Keeps a step's output; true if the model emitted the text EOS in it.
+    @discardableResult
     func take(_ out: Translator.Output) throws -> Bool {
         frames += out.textTokens.count
         timing += out.timing
@@ -76,9 +79,10 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
     run: do {
         for idx in stride(from: 0, to: steps, by: chunk) {
             let end = min(idx + chunk, steps)
-            if try take(translator.step(Array(source[(idx * fs)..<(end * fs)]))) { break run }
+            try take(translator.step(Array(source[(idx * fs)..<(end * fs)])))
         }
-        if try take(translator.endInput()) { break run }
+        // The step that takes the source EOS frame hears it only from the next step on.
+        try take(translator.endInput())
         for idx in stride(from: 1, to: tailFrames, by: chunk) {
             let count = min(chunk, tailFrames - idx)
             if try take(translator.step([Float](repeating: 0, count: count * fs))) { break run }

@@ -48,16 +48,18 @@ hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
   "mimi-pytorch-e351c8d8@125.safetensors" \
   tokenizer_spm_48k_multi6_2.model \
   --local-dir weights
-python inference/tools/convert_mlx.py --q4 \
+python inference/tools/convert_mlx.py --bits 4 \
   --checkpoint "weights/hibiki-pytorch-77f82164@110.safetensors" --config weights/config.json \
   --mimi "weights/mimi-pytorch-e351c8d8@125.safetensors" --out-dir weights/hibiki-zero-3b-q4
 ```
 
-A fine-tuned checkpoint stages the same way into a directory of its own, as q4 or (without
-`--q4`) BF16. q4 is 4 bits on the transformer linears and 8 bits on the embeddings, the text head and
-the depformer's input and output projections, group size 32 (2.65 GB for the 3B, against
-7.7 GB in BF16); the model's `config.json` records it per layer (`quantization`) and how to
-sample (`lm_gen_config`).
+A fine-tuned checkpoint stages the same way into a directory of its own, quantized
+(`--bits 4` or `--bits 6`) or, without `--bits`, BF16. `--bits` is the transformer linears' bits
+(group size 32 at 4, 64 at 6); the embeddings, the text head and the depformer's input and output
+projections take 8 bits, group size 32. The two-way model ships at 6 bits: 3.28 GB, within noise
+of BF16's chrF on FLEURS dev both ways, where 4 bits (2.65 GB) loses ~4 on Vietnamese→English;
+BF16 is 7.7 GB. The model's `config.json` records the quantization per layer (`quantization`)
+and how to sample (`lm_gen_config`).
 
 Run file or microphone translation:
 
@@ -68,7 +70,8 @@ python inference/main.py --mic
 
 `--model` accepts `3b` or a staged model directory. File mode feeds the source as training's
 evaluation does: the clip, the source EOS, then up to 20 s of silence, stopping at the model's
-text EOS.
+text EOS once it has heard the source EOS (an EOS before that stops nothing, so a long file is
+translated to its end).
 
 Build and open the native macOS test app:
 
@@ -84,7 +87,7 @@ live microphone start/stop, the English transcript, and the backend log. It runs
 The inference tools are:
 
 - `inference/tools/convert_mlx.py`: stage an exact PyTorch checkpoint as an MLX model directory,
-  q4 (`--q4`) or BF16, with the tokenizer it is on.
+  quantized (`--bits`) or BF16, with the tokenizer it is on.
 - `inference/tools/gate.py`: score a model directory on evaluation pairs through the runtime's
   file mode, as training scores its checkpoints (`python -m inference.tools.gate`, from the repo
   root).

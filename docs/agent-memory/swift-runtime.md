@@ -38,7 +38,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   source EOS (`card`) while Mimi codes a silent frame, as `pipeline.translate` does.
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (the clip
   zero-padded to whole frames, `endInput`, silence to 250 frames after the clip, stop at the end
-  of the step with the text EOS, seed 299792458; `--model` defaults to
+  of the first step after `endInput` with the text EOS, seed 299792458; `--model` defaults to
   `weights/hibiki-zero-3b-q4`); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
   runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per

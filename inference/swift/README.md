@@ -31,7 +31,7 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki bench inference/asset
 
 Both take `--model DIR` (default `weights/hibiki-zero-3b-q4`) and sample as its `config.json`
 says (`lm_gen_config`). `translate` feeds the file as `inference/main.py` does (the source EOS
-after the clip, then silence, stopping at the text EOS) and writes
+after the clip, then silence, stopping at the first text EOS after the source EOS) and writes
 `translations/<stem>_swift.{wav,txt}`. `bench` loops the clip for the given
 minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`. It writes
 `translations/<stem>_bench.{jsonl,wav}` as it runs and `.txt` (summary and text) at the end

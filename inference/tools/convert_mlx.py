@@ -1,14 +1,16 @@
 #!/usr/bin/env python
-"""Stage an exact Hibiki PyTorch checkpoint as an MLX model directory, bf16 or (--q4)
+"""Stage an exact Hibiki PyTorch checkpoint as an MLX model directory, bf16 or (--bits)
 quantized, with the text tokenizer the checkpoint is on.
 
   python inference/tools/convert_mlx.py --checkpoint CKPT.safetensors --config config.json \\
-      --mimi mimi-pytorch-e351c8d8@125.safetensors [--tokenizer TOK.model] [--q4] --out-dir DIR
+      --mimi mimi-pytorch-e351c8d8@125.safetensors [--tokenizer TOK.model] [--bits {4,6}] \\
+      --out-dir DIR
 
---q4 quantizes the transformer linears (main and depformer layers) to 4 bits and the
-embeddings, the text head and each depformer slice's input and output projection to 8 bits,
-group size 32, and records that per layer in config.json's `quantization`, which both runtimes
-quantize by before loading strictly.
+--bits quantizes the transformer linears (main and depformer layers) to that many bits (group
+size 32 at 4 bits, 64 at 6) and the embeddings, the text head and each depformer slice's input
+and output projection to 8 bits, group size 32, and records that per layer in config.json's
+`quantization`, which both runtimes quantize by before loading strictly. 6 bits keeps bf16's
+chrF on FLEURS dev; 4 bits loses ~4 on VI->EN (docs/agent-memory/mlx-inference.md).
 """
 
 from __future__ import annotations
@@ -32,10 +34,13 @@ from moshi_mlx import models
 # Upstream's tokenizer, which a checkpoint without `text_tokenizer` is on (training/paths.py
 # DEFAULT_TOKENIZER).
 BASE_TOKENIZER = "tokenizer_spm_48k_multi6_2.model"
-GROUP_SIZE = 32
-# The layers 4 bits hurt most, at 8: the embeddings, the text head and the depformer slices'
-# input and output projections (q3 there made the 3B babble; docs/vision/reports/
-# inference_matrix.md). Every other Linear, the transformer layers', takes 4 bits.
+# The transformer linears' group size at each --bits: 6 bits at 64 is 3.28 GB for the 3B
+# against 3.5 at 32, and passed the gate.
+GROUP_SIZE = {4: 32, 6: 64}
+# The layers fewer bits hurt most, at 8 bits, group size 32: the embeddings, the text head and
+# the depformer slices' input and output projections (q3 there made the 3B babble;
+# docs/vision/reports/inference_matrix.md). Every other Linear, the transformer layers', takes
+# --bits.
 EIGHT_BITS = re.compile(
     r"text_emb|text_linear|audio_embs\.\d+|depformer\.slices\.\d+\.(emb|linear_in|linear_out)"
 )
@@ -51,13 +56,13 @@ def checkpoint_tokenizer(checkpoint: Path) -> str:
     return header.get("__metadata__", {}).get("text_tokenizer", BASE_TOKENIZER)
 
 
-def q4_record(lm: nn.Module) -> dict:
-    """The `quantization` record of the q4 recipe: 4 bits, group size 32 by default, and an
-    entry of 8 bits for each EIGHT_BITS layer."""
-    record: dict = {"group_size": GROUP_SIZE, "bits": 4}
+def quantization_record(lm: nn.Module, bits: int) -> dict:
+    """The `quantization` record: `bits` at its GROUP_SIZE by default, and an entry of 8 bits,
+    group size 32, for each EIGHT_BITS layer."""
+    record: dict = {"group_size": GROUP_SIZE[bits], "bits": bits}
     for path, module in tree_flatten(lm.leaf_modules(), is_leaf=nn.Module.is_module):
         if hasattr(module, "to_quantized") and EIGHT_BITS.fullmatch(path):
-            record[path] = {"group_size": GROUP_SIZE, "bits": 8}
+            record[path] = {"group_size": 32, "bits": 8}
     return record
 
 
@@ -74,7 +79,7 @@ def convert(args: argparse.Namespace) -> None:
             f"missing {tokenizer}, the tokenizer {args.checkpoint} is on: "
             "copy it there or pass --tokenizer"
         )
-    model_name = "hibiki.q4.safetensors" if args.q4 else "hibiki.bf16.safetensors"
+    model_name = f"hibiki.q{args.bits}.safetensors" if args.bits else "hibiki.bf16.safetensors"
     # A staged model's config may come in: its own record and the keys older stagings wrote
     # describe other weights.
     for key in ("quantization", "weight_dtype", "artifact_format"):
@@ -92,8 +97,8 @@ def convert(args: argparse.Namespace) -> None:
         lm.load_pytorch_weights(str(args.checkpoint), lm_config, strict=True)
         # Quantized from bf16, so scales and biases are bf16 as the runtimes build them.
         lm.set_dtype(mx.bfloat16)
-        if args.q4:
-            cfg["quantization"] = q4_record(lm)
+        if args.bits:
+            cfg["quantization"] = quantization_record(lm, args.bits)
             quantize(lm, cfg["quantization"])
         mx.eval(lm.parameters())
         print(f"saving MLX weights to {model_name} ...", flush=True)
@@ -122,9 +127,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mimi", type=Path, required=True)
     parser.add_argument("--tokenizer", type=Path,
                         help="the tokenizer the checkpoint is on (default: that file in weights/)")
-    parser.add_argument("--q4", action="store_true",
-                        help="quantize: 4 bits on the transformer linears, 8 on the embeddings "
-                        "and heads, group size 32 (default: bf16)")
+    parser.add_argument("--bits", type=int, choices=sorted(GROUP_SIZE),
+                        help="quantize the transformer linears to this many bits, the "
+                        "embeddings and heads to 8 (default: bf16)")
     parser.add_argument("--out-dir", type=Path, required=True)
     return parser.parse_args()
 

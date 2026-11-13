@@ -190,7 +190,7 @@ public struct HibikiConfig: Decodable {
     }
 }
 
-/// `quantization` of a model's `config.json` (`convert_mlx.py --q4` writes it): the group size
+/// `quantization` of a model's `config.json` (`convert_mlx.py --bits` writes it): the group size
 /// and bits of every Linear and Embedding, and an entry of its own for each layer quantized
 /// otherwise, by its module path in the checkpoint.
 public struct Quantization: Decodable {

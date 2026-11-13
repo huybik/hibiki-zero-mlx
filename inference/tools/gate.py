@@ -8,7 +8,7 @@ checkpoint, to gate a quantized bundle against its bf16 one on the Mac. From the
 Each row's source clip (`vi_audio`, scored against `text_en`, or `en_audio`, against `text_vi`;
 the model picks the direction from what it hears) is translated alone in the runtime's file mode
 (`pipeline.translate`: the level stage, the source EOS, 20 s of silence, stopping at the first
-text EOS), sampled as the model's config.json says (`lm_gen_config`), with the MLX seed set to
+text EOS after the source EOS, where training's evaluation also stops at an earlier one), sampled as the model's config.json says (`lm_gen_config`), with the MLX seed set to
 --seed plus the row's index: give every model compared the same --pairs, --limit and --seed.
 Each pairs file is scored as its own set by training's `score_sets` (corpus chrF and BLEU,
 length ratio, empty rows, rows that ended and the health gates). Writes <out-dir>/hypotheses.jsonl,

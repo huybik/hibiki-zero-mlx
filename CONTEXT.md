@@ -7,7 +7,7 @@ Last verified: 2026-11-14
 This repo runs Hibiki-Zero simultaneous speech translation:
 
 - MLX inference on Apple Silicon (upstream's 3B for FR/ES/PT/DE→EN, or any staged checkpoint,
-  q4 or BF16);
+  quantized or BF16);
 - full-model Vietnamese→English voice-preserving SFT on one H100, on multi-sentence streams
   joined from the 5–22.4 s clips of the English read-speech corpus `en_speech` (~10.5k hours;
   the ~0.8k-hour PhoMT cache is a later ablation);
@@ -29,7 +29,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
-  checkpoints ─► tools/convert_mlx.py (q4 or bf16) ─► weights/… ─► main.py · hibiki_mlx/ · macos/
+  checkpoints ─► tools/convert_mlx.py (q6/q4/bf16) ─► weights/… ─► main.py · hibiki_mlx/ · macos/
                                                     │       └─► swift/ (MLX Swift: CLI, iOS bench app)
                                                     └─► tools/gate.py (scored as training scores)
   Mimi checkpoint ─► tools/export_mimi_coreml.py (from tools/mimi_step.py) ─► mimi-decoder.mlmodelc ─► swift/
@@ -152,17 +152,17 @@ inference/ (Apple Silicon, MLX)
   a compiled function grows memory without bound (61 GB on wav2vec2) →
   [mlx-inference](docs/agent-memory/mlx-inference.md#memory).
 - A model directory's `config.json` names its MLX weights (`moshi_name`), tokenizer and sampling
-  (`lm_gen_config`), and records any quantization per layer (`quantization`; q4 is 4 bits on the
-  transformer linears, 8 on the embeddings and heads, group size 32), which both runtimes load
-  by, strictly. File mode feeds a file as training's evaluation does (source EOS, 20 s of
-  silence, stop at the text EOS), so Mac scores compare with the box's →
+  (`lm_gen_config`), and records any quantization per layer (`quantization`; `--bits 6`, what
+  ships, is 6 bits on the transformer linears, 8 on the embeddings and heads), which both
+  runtimes load by, strictly. File mode feeds a file as training's evaluation does (source EOS,
+  20 s of silence, stop at the text EOS after it), so Mac scores compare with the box's →
   [mlx-inference](docs/agent-memory/mlx-inference.md#model-directories).
 
 ## Topic Index
 
 | Read when working on… | Note | Main paths |
 |---|---|---|
-| MLX inference, conversion and quantization, the q4 gate, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/`, `inference/tools/convert_mlx.py`, `inference/tools/gate.py` |
+| MLX inference, conversion and quantization, the quantization gate, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/`, `inference/tools/convert_mlx.py`, `inference/tools/gate.py` |
 | Swift runtime, iOS app, on-device tests | [swift-runtime](docs/agent-memory/swift-runtime.md) | `inference/swift/` |
 | Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
 | SFT trainer: streams, defaults, precision, objective | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
