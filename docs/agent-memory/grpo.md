@@ -18,7 +18,9 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   1. a bf16 copy of the policy samples `--group` (4) rollouts of `--frames` (T, 1,200) frames for
      each of the window's `--streams` (32) × 20 streams. Updates take the planned streams in a
      seeded order: planning keeps a document's rows together, so in plan order one long
-     recording (~75 streams) would fill 2–3 updates;
+     recording (~75 streams) would fill 2–3 updates. The plan is SFT's, late starts included: a
+     late teacher target, which GRPO never uses, still pushes the next source later (median gap
+     after a late row 4.8 s against 2.2 s in `vi-en`);
   2. CPU workers compute the rewards as each generation batch lands;
   3. the policy scores every rollout, giving π_old's logprobs.
 - **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on stay
