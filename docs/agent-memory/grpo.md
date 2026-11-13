@@ -259,11 +259,13 @@ The CUDA profile and dry run are under [Running](#running).
     | 800 | 38.88 | 42.68 | 1.1 / 1.5 s | 0.78 |
     | 1,000 | 39.86 | 43.17 | 1.0 / 1.3 s | 0.75 |
     | 1,200 | 39.97 | 43.25 | 1.0 / 1.3 s | 0.72 |
+    | 1,400 | 40.76 | 43.77 | 1.1 / 1.5 s | 0.68 |
 
     800 looked like a plateau; the user had it go on to 1,000 ("maybe try one more 1k before we
     stop it", 2026-11-13), which set a new best. It goes on toward 2,000 and stops after two
     evaluations in a row without a new best: a set's chrF moves ~±0.7 between evaluations, so
-    the +0.1 at 1,200 is within noise.
+    the +0.1 at 1,200 was within noise, and 1,400's +0.8 (both directions up) is not. 200
+    updates take ~70 min with their evaluation.
   - **Its EOS share falls** while the train log's `eos_rate` rises (0.93 at update 1 to 0.96):
     no reward pays for an EOS, and one before a stream's last row loses the rest of its text
     ([rewards](#design)), so on validation's single rows the policy holds it back more often,
