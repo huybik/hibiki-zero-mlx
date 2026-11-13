@@ -238,3 +238,18 @@ VieNeu TTS is digital silence; the tranche's GigaSpeech 2 runs louder, median �
 - Frames raised, over every clip: FLEURS-en 72%, FLEURS-vi 49%, Common Voice English 20%,
   `en-vi-val-noisy` 14-17%, MultiMed-ST 5%, Libriheavy 5%, the TTS 1%. The training caches were
   coded without the stage. leon.wav as it is (peak −3.8 dBFS) passes unchanged.
+
+On the model (2026-11-13, the two-way run's step 252,000, `eval.py` batch 64, seed 47 without
+and with the stage, seed 48 without for the noise between seeds):
+
+- FLEURS-en 23.15 → 33.39 chrF, empty rows 36 → 4 (its 191 clips under −40 dBFS: 35 → 4 empty,
+  18.0 → 34.1 on the non-empty rows); FLEURS-vi 36.21 → 39.35, empty rows 6 → 0. Seed 48 moved
+  them 0.8 each.
+- The loud sets hold: MultiMed-ST 37.37 both, `en-vi-val` 43.18/45.45 → 44.05/45.41,
+  `en-vi-val-en` 31.83/38.72 → 32.77/39.73 (seed 48 moved cv27 2.8). `en-vi-val-noisy`,
+  averaged over seeds 47 and 48: cv27 41.33 → 41.11, Libriheavy 42.62 → 43.07.
+- Noise only (white −66 and −45 dBFS, −45 after 2 s of zeros, pink −55 and −40; each fed as
+  either direction's source, seeds 47 and 48): text on 12 of 20 without the stage and 10 of 20
+  with it. The stage adds none, but the model is not silent on noise: training's gaps between
+  rows are digital silence ([sft-training](sft-training.md#trainer)) and its noisy clips carry
+  noise only around speech.
