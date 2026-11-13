@@ -499,7 +499,9 @@ Vietnamese text cannot keep up with its speech.
 9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) cut from the two-way model,
    trained on both directions' streams directly, distilled only if it falls short; its EN→VI
    speech is checked at 8 and 16 codebooks (stage 5.3); measure a current phone (A17 Pro / A18)
-   before settling it.
+   before settling it. Its profile measures frames/s at 4,608, 8,192 and 12,288 frames per
+   update first (user, 2026-11-13): a smaller model may fit larger batches whole and run them
+   faster ([phone-student](agent-memory/phone-student.md#next)).
 10. Parallel codebook heads against that student, on the H100 (stage 5.4; user, 2026-11-10):
     a ~14-layer delay-pattern student on the same streams of both directions and the same
     steps, adopted only if it wins at real time.
