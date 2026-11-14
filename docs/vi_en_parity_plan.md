@@ -159,8 +159,10 @@ GRPO on a distilled student, come later if needed.
    model and scored in both directions (user, 2026-11-10): drop depformer steps
    8–15 (8 codebooks per stream; the depformer's sequential steps halve) and main layers 28 →
    ~10–14 initialised from the 3B's own, and fine-tune it on the streams directly. Only if it
-   falls short of the 3B, distil from the teacher on its free-running outputs over the cached
-   Vietnamese codes and unlabeled real Vietnamese audio.
+   falls short of the 3B, distil from the teacher. It fell ~15 chrF short (2026-11-14), so it
+   distils token by token on the same teacher-forced streams (each token's KL from the teacher's
+   distribution, [phone-student](agent-memory/phone-student.md#distillation)): the teacher's
+   free-running outputs over every training row would take days to generate on one GPU.
    Timed on the A15 with untrained cuts and Mimi on the CPU beside the GPU LM
    ([swift-runtime](agent-memory/swift-runtime.md#device-test)): 10 layers run at 58 ms/frame
    cold and hold real time for ~3 minutes, then throttle to ~90 ms; 14 layers 64 → 98 ms; the
@@ -517,7 +519,7 @@ Vietnamese text cannot keep up with its speech.
    test 33.3 → 38.2), and its last word comes 1–2 s sooner; 1,800 is within noise of it
    ([grpo](agent-memory/grpo.md#running)).
 9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) cut from the two-way model,
-   trained on both directions' streams directly, distilled only if it falls short; its EN→VI
+   trained on both directions' streams directly, distilled once it fell short (token-level KL, 2026-11-14); its EN→VI
    speech is checked at 8 and 16 codebooks (stage 5.3); measure a current phone (A17 Pro / A18)
    before settling it. Its profile measures frames/s at 4,608, 8,192 and 12,288 frames per
    update first (user, 2026-11-13): a smaller model may fit larger batches whole and run them

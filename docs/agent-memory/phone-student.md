@@ -1,9 +1,9 @@
 # Phone student
 
 Read when touching `training/student/`, `streams.model_rows` or a `StreamDataset`'s `codebooks`, or
-when cutting, training or scoring a smaller model for the phone or its parallel codebook heads.
+when cutting, training, distilling or scoring a smaller model for the phone or its parallel heads.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Cut](#cut) · [Training a student](#training-a-student) ·
-[Parallel heads](#parallel-heads) · [Checks](#checks) · [Next](#next)
+[Parallel heads](#parallel-heads) · [Distillation](#distillation) · [Checks](#checks) · [Next](#next)
 
 The 3B misses real time on the A15, so the phone model is cut from the two-way model and scored in
 both directions ([plan](../vi_en_parity_plan.md#5-the-phone-model), stages 5.3 and 5.4; order steps
@@ -80,6 +80,56 @@ sampled before audio at each step, so this adds no latency and no parameters.
   (a heads model: built without weights, heads installed, then loaded, the EOS row copied from
   PAD's as moshi's own load does).
 
+## Distillation
+
+The plan distils only if the student falls short of the 3B
+([plan](../vi_en_parity_plan.md#5-the-phone-model), stage 5.3). Trained on the targets alone, the
+depformer student does, by ~14 chrF, and gains slowly: FLEURS dev VI→EN / EN→VI chrF 28.7 / 24.5
+at update 96,000, +1.6 / +0.7 over 64,000 ([Next](#next) has its validations), against the
+teacher's 42.7 / 38.8; the end offset 4–8 s against 1.1–1.5 s. Teacher-forced on the VI→EN
+validation cache, its word accuracy is 0.569 at 96,000 (0.544 at 64,000) against the two-way SFT
+model's 0.664.
+
+- `train.py --teacher-weight` ([sft-training](sft-training.md#objective)): each training token's
+  loss is `common.token_kl`, KL(teacher ‖ student) of its next-token distribution, in place of
+  its CE, under the same masks and weights (text PAD 0.5, codebook 0 100). The student learns
+  the teacher's whole distribution at every position, and with GRPO update 1,400 as the teacher
+  its timing too: where that model would write a word before the SFT target's, its distribution
+  says so.
+- The teacher (`--teacher-config`, default the 3B's) loads frozen in bf16 (`load_lm`, its own
+  EOS row) and runs the compiled training forward without a backward, its depformer cut to the
+  student's k steps (`dep_q`: the depformer is causal over steps, so the first k logits are the
+  same; ~11% of a step saved). It reads the whole stream: the dataset is assembled at the cache's
+  16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Its delays
+  on those rows must equal the student's (equal masks; a heads student's are not), and both must
+  be on the same tokenizer.
+- Validation is unchanged (the student's CE against the targets on validation's fixed streams,
+  free-running chrF), so a distilled run's teacher-forced validation compares with
+  `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
+  ~±0.7 a set moves between evaluations. Its train log's losses are KL values, not CE.
+- A resume needs the start model and the teacher in `weights/`, neither on the run's Hub prefix:
+  `student_dep10`'s pair at the stop (its `checkpoints/` on the Hub) and the recovery repo's
+  `grpo_twoway/best/best_step001400.safetensors`, besides the student dir ([Training a
+  student](#training-a-student)).
+- `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
+  `torch.nn.functional.kl_div` on the valid positions, is 0 elsewhere and gives them no gradient.
+- **End to end on the H100** (2026-11-14, the launcher's arguments, two FLEURS dev sets, from
+  `student_dep10`'s pair 100,000): 0.381 s a step (plain SFT 0.23), 59.3 GB peak in training,
+  generation 38 GB. In 300 updates the KL fell 0.45 → 0.37, the VI→EN cache's word accuracy rose
+  0.569 → 0.607 (more than `student_dep10` gained from 48,000 to 96,000), FLEURS chrF 28.7 →
+  30.6 VI→EN and 24.5 → 25.9 EN→VI, and the end offset fell from ~6 s to 1.8 / 2.3 s: the
+  teacher's timing comes with its distribution. A resume at 150 matched the uninterrupted run
+  within 1.2e-4 (two fresh runs differ by 8e-4); plain SFT matched the pre-PR trainer within
+  9e-5; the 3B distilled into itself gives a KL of 5e-4 (bf16 against fp32 masters).
+- **The run** (2026-11-14, user: "at this rate we never get 40+ chrf"): `restart.sh
+  student-distill`, `student_dep10_distill`, from `student_dep10`'s newest model (stopped for it),
+  on new streams of the same rows (seed 48), whole 12,288-frame batches at peak 3e-5 (where
+  `student_dep10`'s cosine had come down to), validation every 8,000, 184,000 updates (~1.9
+  epochs; 0.405 s an update with saves and validations, ~21 h, leaving the box ~14 h for a GRPO
+  run on it, its test sets and publishing). The heads student is
+  deferred: trained on the targets alone, it would test the parallel heads under the recipe that
+  falls short.
+
 ## Checks
 
 - End to end on the H100 (2026-11-14, both students cut from GRPO update 1,400, the two-way
@@ -116,16 +166,20 @@ sampled before audio at each step, so this adds no latency and no parameters.
 
 ## Next
 
-- **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
+- **Training** (2026-11-14): `restart.sh student`, then (deferred for [distillation](#distillation)) `restart.sh student-heads`
   ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
   2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h each), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
   it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
-  experiment, adopted only if they win. `student_dep10` is tied to commit 09ef157 (a resume
-  refuses another, so the box checkout stays there until it ends); stopped at ~9,200 for the
-  direction trial ([two-way](two-way.md#next)), it resumed 2026-11-14 07:22 UTC from its pair
-  8,000, restored from the Hub into `runs/student_dep10/`.
+  experiment, adopted only if they win. `student_dep10` ran at commit 09ef157; stopped at ~9,200
+  for the direction trial ([two-way](two-way.md#next)), it resumed 2026-11-14 07:22 UTC from its
+  pair 8,000, and stopped for good at ~100,150 (2026-11-14 20:28 UTC+7) for
+  [distillation](#distillation), which starts from its pair 100,000 (on the Hub under
+  `student_dep10/checkpoints/`; its best, 96,000, is the promoted one). Its validations (FLEURS
+  dev chrF VI→EN / EN→VI; end offset 4–8 s throughout): 20.7 / 15.0 at 16,000, 21.6 / 18.6 at
+  32,000, 24.5 / 18.6 at 48,000, 27.0 / 23.8 at 64,000, 26.2 / 23.2 at 80,000, 28.7 / 24.5 at
+  96,000.
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
   steps each, steps 151–300 by their real stream frames), each size one whole batch:
 
@@ -174,5 +228,14 @@ sampled before audio at each step, so this adds no latency and no parameters.
   - 1-frame steps again: 2-frame steps came in when the CPU also decoded Mimi; with decoding on
     the Neural Engine the CPU's encode (20–28 ms a frame) is under the GPU's step, so 1-frame
     steps may hold real time with up to 160 ms less latency. One phone run decides.
-- The MLX and Swift runtimes for the student's config (the Swift app already times untrained cuts)
-  and for the heads.
+- Both runtimes run the depformer student's config as it is (2026-11-14, the untrained cut at 6
+  bits, 1.24 GB): MLX file mode, and the Swift CLI with an 8-codebook `mimi-decoder.mlmodelc`
+  (`export_mimi_coreml.py --decoder-codebooks 8`), 107 frames in 2.0 s on the M4 Pro (Mimi's
+  encode 12.8 ms a frame, the LM 2.9, the decode 3.3). The heads need support in both runtimes,
+  built only if they win.
+- **6 bits holds on the student** (2026-11-14, `student_dep10` update 48,000 staged by
+  `convert_mlx.py`, the gate on every FLEURS dev row, `--seed 42`; bf16 minus 6 bits, paired
+  bootstrap 95%): VI→EN 24.81 / 24.43 (+0.38, −0.41 to +1.24), EN→VI 19.34 / 19.39 (−0.05, −0.82
+  to +0.72), as on the 3B. The MLX bf16 scores match the trainer's own validation at that update
+  (24.46 / 18.62, 48 empty EN→VI rows against MLX's 50), so the runtime reads the student
+  faithfully. 1.24 GB at 6 bits, 2.79 in bf16.

@@ -12,6 +12,11 @@ held-out Common Voice and Libriheavy rows of the training data's own domain. Of 
 whose every set passes the generation health gates, the one with the highest mean chrF over the
 first set of each direction (`common.selecting_sets`: the first set, for a run of one) is
 promoted to best_stepNNNNNN.safetensors.
+With --teacher-weight (a model reading the cache's codebooks, on the same tokenizer), each token's
+training loss is its KL from that frozen bf16 teacher's distribution on the same stream
+(`common.token_kl`) instead of its cross-entropy, under the same masks and weights: a phone
+student distils the model it was cut from ([phone-student](../../docs/agent-memory/phone-student.md)).
+The teacher reads every codebook of the stream, the model its own cut. Validation is unchanged.
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
@@ -59,6 +64,8 @@ RESUME_KEYS = (
     "val_cache_dir",
     "config_path",
     "model_weight",
+    "teacher_config",
+    "teacher_weight",
     "mimi_weight",
     "tokenizer",
     "epochs",
@@ -112,6 +119,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model-weight", type=Path, default=DEFAULT_MODEL_WEIGHT)
+    parser.add_argument(
+        "--teacher-weight", type=Path,
+        help="Distil this frozen model's per-token distributions instead of training on the targets alone.",
+    )
+    parser.add_argument("--teacher-config", type=Path, help="The teacher's config; default the 3B's.")
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
@@ -196,6 +208,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--stream-seconds needs 0 < MIN <= MAX")
     if not 0 <= args.warmup_fraction < 1:
         raise ValueError("--warmup-fraction must be in [0, 1)")
+    if args.teacher_config is not None and args.teacher_weight is None:
+        raise ValueError("--teacher-config needs --teacher-weight")
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
@@ -235,12 +249,38 @@ def main() -> None:
 
     checkpoint_info = common.load_checkpoint_info(args)
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
+    teacher_info = None
+    if args.teacher_weight is not None:
+        args.teacher_weight = require_file(args.teacher_weight, "teacher weight")
+        args.teacher_config = require_file(args.teacher_config or DEFAULT_CONFIG_PATH, "teacher config")
+        common.run_tokenizer(args.tokenizer, args.teacher_weight)  # refuses another tokenizer
+        teacher_info = common.load_checkpoint_info(
+            argparse.Namespace(
+                hf_repo=args.hf_repo,
+                model_weight=args.teacher_weight,
+                mimi_weight=args.mimi_weight,
+                tokenizer=args.tokenizer,
+                config_path=args.teacher_config,
+            )
+        )
     frames = streams.frame_range(args.stream_seconds)
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
     # near-tie in a residual code); at the cache's codebooks, which streams are assembled at.
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
-    dataset = streams.StreamDataset(rows, layout, silence, frames, args.seed, codebooks)
+    # A teacher reads the whole stream; the model's rows are cut from each batch on the GPU.
+    student_rows = None
+    if teacher_info is not None:
+        if int(teacher_info.lm_config["dep_q"]) != layout.dep_q:
+            raise ValueError(f"the teacher must read the cache's {layout.dep_q} codebooks a stream")
+        rows_kept = streams.model_rows(layout, codebooks)
+        # Equal delays give equal masks: a heads student's (codebook j by j) would not.
+        if [teacher_info.lm_config["delays"][row] for row in rows_kept] != list(checkpoint_info.lm_config["delays"]):
+            raise ValueError("the teacher's delays on the model's rows differ from the model's")
+        student_rows = torch.tensor(rows_kept, device=device)
+    dataset = streams.StreamDataset(
+        rows, layout, silence, frames, args.seed, layout.dep_q if teacher_info else codebooks
+    )
     batches = dataset.batches(args.batch_frames, args.seed)
     exposure = dataset.exposure()
     print(
@@ -323,6 +363,15 @@ def main() -> None:
         raise ValueError(f"--stream-seconds allows {longest} frames, over the context of {context}")
     params = list(lm.parameters())
     print(f"Trainable params: {sum(param.numel() for param in params):,}")
+    teacher = None
+    if teacher_info is not None:
+        print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
+        teacher = common.load_lm(teacher_info, args.teacher_weight, device, torch.bfloat16)
+        teacher.train()  # the compiled training forward (lm_training), run without a backward
+        teacher.requires_grad_(False)
+        # Its depformer runs only the model's codebooks: steps past them change no earlier
+        # codebook's logits (the depformer is causal over steps), and both forwards read dep_q.
+        teacher.dep_q = codebooks
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
@@ -360,6 +409,7 @@ def main() -> None:
 
     data_iter = training_batches(global_step)
     condition_cache: dict[int, Any | None] = {}
+    teacher_conditions: dict[int, Any | None] = {}
 
     def empty_log() -> dict[str, Any]:
         return {
@@ -453,8 +503,20 @@ def main() -> None:
             condition_cache[batch_size] = common.batch_condition_tensors(
                 lm, checkpoint_info.model_type, batch_size
             )
+        teacher_output = None
+        if teacher is not None:
+            if batch_size not in teacher_conditions:
+                teacher_conditions[batch_size] = common.batch_condition_tensors(
+                    teacher, teacher_info.model_type, batch_size
+                )
+            with torch.no_grad(), autocast:
+                teacher_output = teacher(codes, condition_tensors=teacher_conditions[batch_size])
+            codes = codes.index_select(1, student_rows)
         with autocast:
-            losses = common.compute_batch_losses(lm, codes, condition_cache[batch_size], weights)
+            losses = common.compute_batch_losses(
+                lm, codes, condition_cache[batch_size], weights, teacher=teacher_output
+            )
+        teacher_output = None  # the loss's graph keeps what its backward needs
         losses["loss"].backward()
         for key in LOG_LOSSES:
             log["losses"][key] += losses[key].detach()

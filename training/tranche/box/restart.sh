@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads|student-distill: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -99,7 +99,23 @@ case $job in
             --epochs 2 --seed 47 --save-every 4000 --val-every 16000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads" >&2; exit 1 ;;
+  # The depformer student distilled from its teacher, GRPO update 1,400 (phone-student.md#distillation): from
+  # student_dep10's newest model (hard-linked to weights/student_dep10_distill_start.safetensors when it stopped), the same
+  # rows on new streams (seed 48), each token's loss its KL from the teacher's distribution. --max-steps (from its profile)
+  # ends it with time left on the box for a GRPO run after it.
+  student-distill) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2 S=weights/student_dep10
+       cmd=(./training/h100.sh run student_dep10_distill
+            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --config-path $S/config.json --model-weight weights/student_dep10_distill_start.safetensors
+            --teacher-weight weights/grpo_twoway_best1400.safetensors
+            --batch-frames 12288 --lr 3e-5 --max-steps 184000 --eval-batch-size 64 --keep-checkpoints 1
+            --seed 48 --save-every 4000 --val-every 8000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads|student-distill" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &
