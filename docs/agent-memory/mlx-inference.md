@@ -130,6 +130,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     measurable. Over varied seeds the earlier primers cost up to 18 chrF on Vietnamese: the model
     takes the speech for the primer's continuation (reported speech after "…, ông cho biết."), so
     a new primer needs the same check.
+  - What chrF does not show (second review, 2026-11-14, mic mode on a fake sound device playing
+    clips in real time, and files): primed sessions start talking 1.2–3.2 s later than Auto (the
+    user's voice +2.6 s), and the English primer's news register carries over: 4 of 7 English mic
+    sessions and 4 of 10 English files opened with a stray `"` (Auto none), some with reported
+    speech ("Ông nói có…"), and one mic session (EV-0228) stalled for ~80 steps after five words,
+    the same on both runs. Vietnamese priming showed none of it on 8 clips.
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers, which adds one frame of output latency. A worker's error ends the session and is
   raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the
