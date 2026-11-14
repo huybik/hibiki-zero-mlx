@@ -30,7 +30,9 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki bench inference/asset
 ```
 
 Both take `--model DIR` (default `weights/hibiki-zero-3b-q4`) and sample as its `config.json`
-says (`lm_gen_config`). `translate` feeds the file as `inference/main.py` does (the source EOS
+says (`lm_gen_config`). A model with the direction condition (its `config.json` names the
+`direction` conditioner) also needs `--direction vi-en` (Vietnamese speech in, English out) or
+`--direction en-vi`; a model without it refuses the flag. `translate` feeds the file as `inference/main.py` does (the source EOS
 after the clip, then silence, stopping at the first text EOS after the source EOS) and writes
 `translations/<stem>_swift.{wav,txt}`. `bench` loops the clip for the given
 minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`. It writes
@@ -74,7 +76,8 @@ This copies upstream's q4 model; for another model directory, copy its files ins
 weights and tokenizer its `config.json` names (`moshi_name`, `tokenizer_name`).
 
 `--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models
-on the phone; `--chunk K` and `--unpaced` work as in `bench`. The phone must be unlocked, and a new developer certificate trusted once under
+on the phone; `--chunk K`, `--unpaced` and `--direction D` work as in `bench`. A model with the
+direction condition launched without `--direction` shows a direction picker and waits for Start. The phone must be unlocked, and a new developer certificate trusted once under
 Settings > General > VPN & Device Management. Keep the app in the foreground: iOS stops GPU
 work in the background. The app keeps the phone awake and writes
 `Documents/bench-<time>.{jsonl,wav}` as it runs and `.txt` at the end; copy them back with

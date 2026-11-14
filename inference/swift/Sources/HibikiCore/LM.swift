@@ -11,6 +11,7 @@ public enum HibikiError: Error, CustomStringConvertible {
     case missingFile(URL)
     case badTokenizer(String)
     case badAudio(String)
+    case badDirection(String)
 
     public var description: String {
         switch self {
@@ -18,8 +19,28 @@ public enum HibikiError: Error, CustomStringConvertible {
         case .missingFile(let url): "missing \(url.path)"
         case .badTokenizer(let what): "bad tokenizer: \(what)"
         case .badAudio(let what): "bad audio: \(what)"
+        case .badDirection(let what): "bad direction: \(what)"
         }
     }
+}
+
+/// The two-way model's condition (`training/finetune/direction.py`): moshi's `lut` conditioner
+/// `direction`, a table of one 16-wide entry per direction (`<source>-<target>`, such as `vi-en`)
+/// and its projection to the model's width, summed by the fuser into every frame's input.
+public struct DirectionTable: Decodable {
+    public let nBins: Int
+    public let dim: Int
+    public let tokenizer: String
+    /// The directions, in the table's row order.
+    public let possibleValues: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case dim, tokenizer
+        case nBins = "n_bins"
+        case possibleValues = "possible_values"
+    }
+
+    static let name = "direction"
 }
 
 /// The subset of a Hibiki-Zero `config.json` this runtime reads, with the defaults of
@@ -53,6 +74,10 @@ public struct HibikiConfig: Decodable {
     /// How quantized weights are quantized; nil for bf16 weights.
     public let quantization: Quantization?
     public let lmGenConfig: LmGenConfig
+    /// The direction condition's table; nil for a model without it, which hears the direction.
+    public let directionTable: DirectionTable?
+    /// The directions the model is conditioned on; empty without the condition.
+    public var directions: [String] { directionTable?.possibleValues ?? [] }
     // Read only to refuse models this runtime would run wrongly.
     let gating: String?
     let norm: String?
@@ -61,10 +86,23 @@ public struct HibikiConfig: Decodable {
     let demuxSecondStream: Bool
     let crossAttention: Bool
     let layerScale: Double?
-    let conditioners: Int
+    let conditioners: [String: Conditioner]
+    let fuser: Fuser?
+
+    struct Conditioner: Decodable {
+        let type: String
+        let lut: DirectionTable?
+    }
+
+    /// Where the fuser puts each condition: summed into the input, prepended, or cross-attended.
+    struct Fuser: Decodable {
+        let sum: [String]
+        let prepend: [String]?
+        let cross: [String]?
+    }
 
     enum CodingKeys: String, CodingKey {
-        case card, dim, context, norm, gating, delays, conditioners
+        case card, dim, context, norm, gating, delays, conditioners, fuser
         case nQ = "n_q"
         case depQ = "dep_q"
         case textCard = "text_card"
@@ -92,10 +130,6 @@ public struct HibikiConfig: Decodable {
         case tokenizerName = "tokenizer_name"
         case quantization
         case lmGenConfig = "lm_gen_config"
-    }
-
-    private struct Ignored: Decodable {
-        init(from decoder: Decoder) throws {}
     }
 
     public init(from decoder: Decoder) throws {
@@ -138,8 +172,20 @@ public struct HibikiConfig: Decodable {
         demuxSecondStream = try c.decodeIfPresent(Bool.self, forKey: .demuxSecondStream) ?? false
         crossAttention = try c.decodeIfPresent(Bool.self, forKey: .crossAttention) ?? false
         layerScale = try c.decodeIfPresent(Double.self, forKey: .layerScale)
-        conditioners =
-            try c.decodeIfPresent([String: Ignored].self, forKey: .conditioners)?.count ?? 0
+        conditioners = try c.decodeIfPresent([String: Conditioner].self, forKey: .conditioners) ?? [:]
+        fuser = try c.decodeIfPresent(Fuser.self, forKey: .fuser)
+        directionTable = conditioners[DirectionTable.name]?.lut
+    }
+
+    /// The `config.json` of a staged model directory, checked by `validate`.
+    public static func load(directory: URL) throws -> HibikiConfig {
+        let url = directory.appending(path: "config.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw HibikiError.missingFile(url)  // stage the model with convert_mlx.py
+        }
+        let cfg = try JSONDecoder().decode(HibikiConfig.self, from: Data(contentsOf: url))
+        try cfg.validate()
+        return cfg
     }
 
     /// Fails on any setting this runtime does not implement, instead of running a wrong model.
@@ -158,7 +204,20 @@ public struct HibikiConfig: Decodable {
         if demuxSecondStream { throw HibikiError.unsupported("demux_second_stream") }
         if crossAttention { throw HibikiError.unsupported("cross_attention") }
         if layerScale != nil { throw HibikiError.unsupported("layer_scale") }
-        if conditioners > 0 { throw HibikiError.unsupported("conditioners") }
+        // The only condition this runtime runs is the direction table, summed into the input.
+        if !conditioners.isEmpty {
+            let name = DirectionTable.name
+            guard Set(conditioners.keys) == [name], conditioners[name]?.type == "lut",
+                let table = directionTable, table.tokenizer == "noop",
+                table.nBins >= table.possibleValues.count, let fuser, fuser.sum == [name],
+                (fuser.prepend ?? []).isEmpty, (fuser.cross ?? []).isEmpty
+            else {
+                throw HibikiError.unsupported(
+                    "conditioners \(conditioners.keys.sorted()) summed \(fuser?.sum ?? []), "
+                        + "prepended \(fuser?.prepend ?? []), cross-attended "
+                        + "\(fuser?.cross ?? []): only the \(name) table summed into the input runs")
+            }
+        }
         if delays.count != nQ + 1 { throw HibikiError.unsupported("\(delays.count) delays") }
         if let schedule = depformerWeightsPerStepSchedule, schedule.count != depQ {
             throw HibikiError.unsupported("a weights-per-step schedule of \(schedule.count)")
@@ -192,7 +251,8 @@ public struct HibikiConfig: Decodable {
 
 /// `quantization` of a model's `config.json` (`convert_mlx.py --bits` writes it): the group size
 /// and bits of every Linear and Embedding, and an entry of its own for each layer quantized
-/// otherwise, by its module path in the checkpoint.
+/// otherwise (its group size and bits, or `false` to keep it unquantized), by its module path in
+/// the checkpoint.
 public struct Quantization: Decodable {
     public struct Spec: Decodable {
         public let groupSize: Int
@@ -213,18 +273,31 @@ public struct Quantization: Decodable {
 
     public let base: Spec
     public let layers: [String: Spec]
+    /// Layers kept unquantized (`false`), such as the direction table's.
+    public let unquantized: Set<String>
 
     public init(from decoder: Decoder) throws {
         base = try Spec(from: decoder)
         let c = try decoder.container(keyedBy: Key.self)
         var layers: [String: Spec] = [:]
+        var unquantized: Set<String> = []
         for key in c.allKeys where !["group_size", "bits"].contains(key.stringValue) {
-            layers[key.stringValue] = try c.decode(Spec.self, forKey: key)
+            if let quantized = try? c.decode(Bool.self, forKey: key) {
+                guard !quantized else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: key, in: c, debugDescription: "a layer's entry is a spec or false")
+                }
+                unquantized.insert(key.stringValue)
+            } else {
+                layers[key.stringValue] = try c.decode(Spec.self, forKey: key)
+            }
         }
         self.layers = layers
+        self.unquantized = unquantized
     }
 
-    func spec(_ path: String) -> Spec { layers[path] ?? base }
+    /// How the layer at `path` is quantized; nil to keep it unquantized.
+    func spec(_ path: String) -> Spec? { unquantized.contains(path) ? nil : layers[path] ?? base }
 }
 
 /// `lm_gen_config` of a model's `config.json`: how its text and audio tokens are sampled, as
@@ -343,6 +416,9 @@ final class HibikiLM: Module {
     @ModuleInfo(key: "out_norm") var outNorm: RMSNorm
     @ModuleInfo(key: "text_linear") var textLinear: Linear
     @ModuleInfo(key: "audio_embs") var audioEmbs: [Embedding]
+    /// What each direction adds to every frame's input, [1, 1, dim] (`directionConditions`);
+    /// empty for a model without the direction condition. Not a parameter (the underscore).
+    private var _conditions: [String: MLXArray] = [:]
 
     init(_ cfg: HibikiConfig) {
         self.cfg = cfg
@@ -361,12 +437,7 @@ final class HibikiLM: Module {
     /// Loads `config.json` and the weights it names (`moshi_name`) of a staged model directory,
     /// quantized as its `quantization` says (bf16 without one), strictly.
     static func load(directory: URL) throws -> HibikiLM {
-        let configURL = directory.appending(path: "config.json")
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            throw HibikiError.missingFile(configURL)  // stage the model with convert_mlx.py
-        }
-        let cfg = try JSONDecoder().decode(HibikiConfig.self, from: Data(contentsOf: configURL))
-        try cfg.validate()
+        let cfg = try HibikiConfig.load(directory: directory)
         let url = directory.appending(path: cfg.moshiName)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw HibikiError.missingFile(url)
@@ -376,8 +447,9 @@ final class HibikiLM: Module {
             // Every Linear and Embedding, as pipeline.py `quantize`; the record's paths are the
             // checkpoint's, which name a depformer core by the first slice using it.
             quantize(model: model) { path, module in
-                guard module is Quantizable else { return nil }
-                let spec = quantization.spec(model.depformer.checkpointPath(path))
+                guard module is Quantizable,
+                    let spec = quantization.spec(model.depformer.checkpointPath(path))
+                else { return nil }
                 return (spec.groupSize, spec.bits, .affine)
             }
         }
@@ -385,24 +457,77 @@ final class HibikiLM: Module {
         for (key, value) in try loadArrays(url: url) {
             if let key = model.depformer.remap(key) { weights[key] = value }
         }
+        model._conditions = try directionConditions(cfg, from: &weights)
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
         eval(model)
+        eval(Array(model._conditions.values))
         return model
+    }
+
+    /// What each direction adds to every frame's input, computed once from the direction
+    /// table's weights as moshi's LUT conditioner computes it: the projection of the
+    /// direction's entry, `output_proj · embed[i]`. Takes the table's tensors out of `weights`,
+    /// as no module holds them; its padding row and vector (`learnt_padding`), used only for a
+    /// row without a direction, are never read.
+    private static func directionConditions(
+        _ cfg: HibikiConfig, from weights: inout [String: MLXArray]
+    ) throws -> [String: MLXArray] {
+        guard let table = cfg.directionTable else { return [:] }
+        let prefix = "condition_provider.conditioners.\(DirectionTable.name)."
+        func take(_ name: String, shape: [Int]) throws -> MLXArray {
+            guard let array = weights.removeValue(forKey: prefix + name), array.shape == shape
+            else {
+                throw HibikiError.unsupported("weights without \(prefix + name) of shape \(shape)")
+            }
+            return array
+        }
+        let embed = try take("embed.weight", shape: [table.nBins + 1, table.dim])
+        let projection = try take("output_proj.weight", shape: [cfg.dim, table.dim])
+        _ = try take("learnt_padding", shape: [1, 1, cfg.dim])
+        var conditions: [String: MLXArray] = [:]
+        for (row, direction) in table.possibleValues.enumerated() {
+            conditions[direction] = matmul(embed[row ..< row + 1], projection.T)
+                .reshaped(1, 1, cfg.dim)
+        }
+        return conditions
+    }
+
+    /// What translating in `direction` adds to every frame's input. A model with the direction
+    /// condition requires one of its directions; a model without it refuses any.
+    func condition(_ direction: String?) throws -> MLXArray? {
+        guard !_conditions.isEmpty else {
+            if let direction {
+                throw HibikiError.badDirection(
+                    "this model has no direction condition (it hears the direction): "
+                        + "drop the direction \(direction)")
+            }
+            return nil
+        }
+        guard let direction, let condition = _conditions[direction] else {
+            throw HibikiError.badDirection(
+                "this model is conditioned on the direction: give one of "
+                    + cfg.directions.joined(separator: ", ")
+                    + (direction.map { ", not \($0)" } ?? ""))
+        }
+        return condition
     }
 
     func resetCache() {
         decoder.reset()
     }
 
-    /// One frame: the main transformer over the previous text token and the 32 delayed audio
-    /// tokens, then the text token and the 16 target codebooks.
+    /// One frame: the main transformer over the previous text token, the 32 delayed audio
+    /// tokens and the direction's `condition` (`condition(_:)`), then the text token and the 16
+    /// target codebooks.
     func step(
-        text: Int, audio: [Int], textSampler: Sampler, audioSampler: Sampler
+        text: Int, audio: [Int], condition: MLXArray?, textSampler: Sampler,
+        audioSampler: Sampler
     ) -> (text: MLXArray, audio: MLXArray) {
         var xs = textEmb(MLXArray([Int32(text)]).reshaped(1, 1))
         for (token, emb) in zip(audio, audioEmbs) {
             xs = xs + emb(MLXArray([Int32(token)]).reshaped(1, 1))
         }
+        if let condition { xs = xs + condition }
         let mainOut = outNorm(decoder(xs))
         let textToken = textSampler(textLinear(mainOut[0..., -1, 0...])).reshaped(1, 1)
         let audioTokens = depformer.sample(mainOut, textToken: textToken, sampler: audioSampler)

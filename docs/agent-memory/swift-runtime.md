@@ -33,7 +33,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   tokenizers, PADs between pieces), it returns Python's text call for call, and the same whole
   text at 2, 3 and 5 tokens per call. `config.json` must name `moshi_name`, `tokenizer_name` and
   `lm_gen_config`, which sets `Translator`'s samplers, and may hold `quantization`
-  ([mlx-inference](mlx-inference.md#model-directories)).
+  ([mlx-inference](mlx-inference.md#model-directories)) and the direction table
+  ([below](#hibiki-zero-deltas)).
 - `Translator.endInput()` ends a file's input: one LM step whose 16 source codes are all the
   source EOS (`card`) while Mimi codes a silent frame, as `pipeline.translate` does.
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (the clip
@@ -41,7 +42,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   of the first step after `endInput` with the text EOS, seed 299792458; it has no quiet stop,
   so it runs the whole tail where main.py stops after 5 s without a word once the source has
   ended ([mlx-inference](mlx-inference.md#runtime)); `--model` defaults to
-  `weights/hibiki-zero-3b-q4`); `bench` runs
+  `weights/hibiki-zero-3b-q4`; `--direction`, in both commands, as main.py's); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
   runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per
   step (default 1), as the iOS app does. `Audio.Writer` writes 16-bit WAV
@@ -49,7 +50,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   frame 153 left 153 samples and a valid 12.08 s WAV.
 - `HibikiBench/` is the iOS app: a hand-written Xcode project (synchronized folder `App/`) that
   depends on the local package, with the increased-memory-limit entitlement. `--model NAME` reads
-  `Documents/NAME/`, so several models can stay on the phone. The team ID is
+  `Documents/NAME/`, so several models can stay on the phone. For a model with the direction
+  table it runs in `--direction D`, else shows a direction picker and a Start button and waits;
+  a model without the table starts at once, as before. The team ID is
   passed on the command line (`DEVELOPMENT_TEAM=`), not stored in the project. It caps MLX's
   buffer cache at 256 MB through `Translator(cacheLimit:)` (freed buffers count toward the
   app's memory limit) and runs the bench on a user-interactive thread. iOS refuses GPU work
@@ -60,9 +63,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
 
 ## Hibiki-Zero deltas
 
-Stock moshi-swift runs none of the four; this runtime implements them. It reads `config.json`
-with `LmConfig.from_config_dict`'s defaults and fails on any setting it does not implement
-(cross-attention, conditioners, layer scale, other norms or gating):
+Stock moshi-swift runs none of the four; this runtime implements them, and the direction
+condition below. It reads `config.json` with `LmConfig.from_config_dict`'s defaults and fails on
+any setting it does not implement (cross-attention, conditioners other than the direction table
+summed into the input, layer scale, other norms or gating):
 
 | Delta | Where |
 |---|---|
@@ -71,6 +75,20 @@ with `LmConfig.from_config_dict`'s defaults and fails on any setting it does not
 | `rope_concat` = MLX RoPE `traditional: false` | `PositionalEmbedding.ropeConcat` |
 | Learned per-slice depformer LayerNorm | `DepformerSlice.norm` |
 
+- The direction condition ([two-way](two-way.md#direction),
+  [mlx-inference](mlx-inference.md#direction)): `HibikiConfig.directionTable` and `directions`
+  come from `conditioners.direction` (a `lut`, noop tokenizer) with `fuser.sum` `["direction"]`.
+  `HibikiLM.load` takes the table's three tensors out of the weights (no module holds them) and
+  computes each direction's vector once, `output_proj · embed[i]` ([1, 1, 2048], bf16);
+  `learnt_padding` is checked and dropped. `Translator(directory:direction:)` picks one
+  (`HibikiLM.condition`: required by a model with the table, refused by one without,
+  `HibikiError.badDirection`), and `Generator` adds it to every step's summed embeddings, after
+  the audio ones, as Python's `_sample`. `Quantization` reads `false` entries (`unquantized`).
+  Checked (2026-11-14): with a zero projection, `translate` gives the unconditioned bundle's WAV
+  and text byte for byte in both directions, as does the converted zero-table model; a random one
+  gives different outputs per direction; the unconditioned bundle's outputs equal the base
+  commit's binary's. `bench` p50 over 30 s, A/B/A/B: 28.6 / 28.7 / 32.3 / 33.5 ms a frame (the
+  machine warming), so the add costs nothing measurable.
 - Depformer weights per step: a staged weights file holds a full copy for each of the 16
   codebook steps, but steps 8–15 share one weight set (`depformer_weights_per_step_schedule`).
   `Depformer.remap` loads each set once into `depformer.cores.N`: of the 3B's 6-bit file

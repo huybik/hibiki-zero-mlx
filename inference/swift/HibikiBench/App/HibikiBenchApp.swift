@@ -5,7 +5,8 @@
 // frames per step (default 1), paced like a live microphone unless `--unpaced`, and writes
 // Documents/bench-<time>.{jsonl,wav,txt} as it goes. Progress and the summary also go to stdout, which `xcrun devicectl device process launch
 // --console` shows. Keep the app in the foreground: iOS refuses GPU work from the background, so
-// locking the phone ends the run.
+// locking the phone ends the run. A model with the direction condition translates in
+// `--direction D` (vi-en or en-vi); without the flag, a picker asks for it before the run starts.
 
 import HibikiCore
 import SwiftUI
@@ -16,14 +17,41 @@ struct HibikiBenchApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ScrollView {
-                Text(run.lines.joined(separator: "\n"))
-                    .font(.system(.footnote, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+            VStack(alignment: .leading, spacing: 12) {
+                if !run.directions.isEmpty && !run.started {
+                    directionPicker
+                }
+                ScrollView {
+                    Text(run.lines.joined(separator: "\n"))
+                        .font(.system(.footnote, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            .onAppear { run.start() }
+            .padding()
+            .onAppear { run.prepare() }
         }
+    }
+
+    /// A model with the direction condition is told which way to translate before the run.
+    private var directionPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Direction", selection: $run.direction) {
+                ForEach(run.directions, id: \.self) { direction in
+                    Text(Self.label(direction)).tag(Optional(direction))
+                }
+            }
+            .pickerStyle(.segmented)
+            Button("Start", action: run.start)
+                .buttonStyle(.borderedProminent)
+                .disabled(run.direction == nil)
+        }
+    }
+
+    /// "vi-en" as "Vietnamese → English".
+    private static func label(_ direction: String) -> String {
+        direction.split(separator: "-").map {
+            Locale.current.localizedString(forLanguageCode: String($0)) ?? String($0)
+        }.joined(separator: " → ")
     }
 }
 
@@ -32,22 +60,50 @@ final class BenchRun: ObservableObject {
     /// The newest lines only: a text view that grows by a line every 10 s grew the app's
     /// footprint by ~1.6 MB a minute.
     @Published private(set) var lines: [String] = []
-    private var started = false
+    /// The model's directions (its config.json's direction table); empty for a model without the
+    /// direction condition, which hears the direction.
+    @Published private(set) var directions: [String] = []
+    /// The direction the run translates in: `--direction D`, else the picker's.
+    @Published var direction: String?
+    @Published private(set) var started = false
+    private var prepared = false
+    private let args = ProcessInfo.processInfo.arguments
+    private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+
+    private func option(_ name: String) -> String? {
+        args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+    }
+
+    private var model: String { option("--model") ?? "model" }
+
+    /// Reads the model's directions, then starts at once unless the model needs a direction
+    /// and the launch gave none: then the picker waits for one.
+    func prepare() {
+        guard !prepared else { return }
+        prepared = true
+        do {
+            directions = try HibikiConfig.load(directory: docs.appending(path: model)).directions
+        } catch {
+            show("error: \(error)")
+            return
+        }
+        direction = option("--direction")
+        if directions.isEmpty || direction != nil { start() }
+    }
 
     func start() {
         guard !started else { return }
         started = true
         UIApplication.shared.isIdleTimerDisabled = true
-        let args = ProcessInfo.processInfo.arguments
-        let minutes = args.firstIndex(of: "--minutes")
-            .flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil } ?? 10
-        let chunk = args.firstIndex(of: "--chunk")
-            .flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? 1
+        let minutes = option("--minutes").flatMap(Double.init) ?? 10
+        let chunk = option("--chunk").flatMap(Int.init) ?? 1
         let paced = !args.contains("--unpaced")
-        let model = args.firstIndex(of: "--model")
-            .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "model"
+        let (docs, model, direction) = (docs, model, direction)
         let thread = Thread { [weak self] in
-            Self.bench(model: model, minutes: minutes, chunk: chunk, paced: paced) { line in
+            Self.bench(
+                docs: docs, model: model, direction: direction, minutes: minutes, chunk: chunk,
+                paced: paced
+            ) { line in
                 print(line)
                 fflush(stdout)
                 Task { @MainActor in self?.show(line) }
@@ -64,15 +120,15 @@ final class BenchRun: ObservableObject {
     }
 
     nonisolated private static func bench(
-        model: String, minutes: Double, chunk: Int, paced: Bool,
+        docs: URL, model: String, direction: String?, minutes: Double, chunk: Int, paced: Bool,
         say: @escaping (String) -> Void
     ) {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         do {
-            say("loading \(docs.appending(path: model).path)")
+            say("loading \(docs.appending(path: model).path)" + (direction.map { ", \($0)" } ?? ""))
             // Freed MLX buffers count toward the app's memory limit; keep few of them.
             let translator = try Translator(
-                directory: docs.appending(path: model), cacheLimit: 256 << 20)
+                directory: docs.appending(path: model), direction: direction,
+                cacheLimit: 256 << 20)
             let clip = try Audio.read(docs.appending(path: "clip.wav"))
             say(String(format: "loaded; footprint %.0f MB", Bench.footprintMB()))
             say(

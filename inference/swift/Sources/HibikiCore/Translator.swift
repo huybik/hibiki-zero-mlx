@@ -4,8 +4,9 @@ import MLX
 /// Streaming translation: source audio in, in whole 80 ms frames, and per frame a text token
 /// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`. The source goes
 /// through the session's `Audio.Leveller` before Mimi. Tokens are sampled as the model's
-/// `config.json` says (`lm_gen_config`). A file's input ends with `endInput`; a live one never
-/// does.
+/// `config.json` says (`lm_gen_config`). A model with the direction condition translates in the
+/// direction the translator is made with (`vi-en`: Vietnamese speech in, English out); a model
+/// without it hears the direction. A file's input ends with `endInput`; a live one never does.
 ///
 /// The LM runs on the GPU while Mimi encodes on the CPU and decodes on the Neural Engine
 /// (`NeuralDecoder`), as the Python runtime's codec threads overlap the LM. A step takes k
@@ -74,9 +75,11 @@ public final class Translator {
     private var leveller = Audio.Leveller()
     private var textDecoder: TextDecoder
 
+    /// `direction` (`<source>-<target>`, one of `config.directions`) is required by a model with
+    /// the direction condition and refused by one without (`HibikiError.badDirection`).
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
     /// app's memory limit.
-    public init(directory: URL, cacheLimit: Int? = nil) throws {
+    public init(directory: URL, direction: String? = nil, cacheLimit: Int? = nil) throws {
         // MLX closes a Metal command buffer every 20 ops or 40 MB on phones (40–50 on Macs)
         // and blocks `asyncEval` while more than 10 are in flight, so the LM step (hundreds of
         // ops over 0.6–2 GB of weights) would run almost entirely inside `asyncEval`, before
@@ -88,6 +91,7 @@ public final class Translator {
         setenv("MLX_MAX_MB_PER_BUFFER", "1000000", 0)
         if let cacheLimit { Memory.cacheLimit = cacheLimit }
         let lm = try HibikiLM.load(directory: directory)
+        let condition = try lm.condition(direction)
         config = lm.cfg
         let file = { (name: String) throws -> URL in
             let url = directory.appending(path: name)
@@ -112,7 +116,8 @@ public final class Translator {
         }
         let sampling = config.lmGenConfig
         generator = Generator(
-            lm, textSampler: Sampler(temp: sampling.tempText, topK: sampling.topKText),
+            lm, condition: condition,
+            textSampler: Sampler(temp: sampling.tempText, topK: sampling.topKText),
             audioSampler: Sampler(temp: sampling.temp, topK: sampling.topK))
         try warmup()
     }

@@ -6,11 +6,13 @@ import MLX
 /// Frame t feeds the model the previous text token and, for each of the 32 audio codebooks,
 /// the token of frame t - 1 - delay. Source codes enter at their own frame; generated target
 /// codes are stored at frame t - delay. Only the last `maxDelay + 2` frames are ever read or
-/// written, so they live in a ring and a session can run indefinitely.
+/// written, so they live in a ring and a session can run indefinitely. Every frame's input also
+/// gets the direction's `condition`, for a model with the direction condition.
 final class Generator {
     private static let ungenerated = -2
 
     let lm: HibikiLM
+    let condition: MLXArray?
     let textSampler: Sampler
     let audioSampler: Sampler
     private let delays: [Int]
@@ -18,8 +20,9 @@ final class Generator {
     private var ring: [[Int]]
     private(set) var frame = 0
 
-    init(_ lm: HibikiLM, textSampler: Sampler, audioSampler: Sampler) {
+    init(_ lm: HibikiLM, condition: MLXArray?, textSampler: Sampler, audioSampler: Sampler) {
         self.lm = lm
+        self.condition = condition
         self.textSampler = textSampler
         self.audioSampler = audioSampler
         delays = lm.cfg.audioDelays
@@ -62,7 +65,8 @@ final class Generator {
             t - 1 - delay >= 0 ? read(t - 1 - delay, 1 + cb) : cfg.audioPaddingToken
         }
         let (text, audio) = lm.step(
-            text: textIn, audio: audioIn, textSampler: textSampler, audioSampler: audioSampler)
+            text: textIn, audio: audioIn, condition: condition, textSampler: textSampler,
+            audioSampler: audioSampler)
         asyncEval(text, audio)
         return Pending(frame: t, text: text, audio: audio)
     }

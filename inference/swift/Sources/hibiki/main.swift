@@ -1,4 +1,4 @@
-// hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N] [--chunk K]
+// hibiki translate INPUT [--model DIR] [--direction D] [--out OUT.wav] [--seed N] [--chunk K]
 //   Translates an audio file, as `python inference/main.py INPUT` and training's evaluation do:
 //   the input in whole frames (the last zero-padded), the source EOS (`Translator.endInput`),
 //   then silence for 20 s in all, stopping at the end of the first step after `endInput` where
@@ -6,7 +6,7 @@
 //   the EOS). An EOS before that, which the model wrote before hearing the source EOS, stops
 //   nothing, so a long file is translated to its end.
 //
-// hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE] [--chunk K]
+// hibiki bench INPUT [--model DIR] [--direction D] [--minutes M] [--unpaced] [--out BASE] [--chunk K]
 //   Loops INPUT for M minutes (default 10) through `Bench`, paced like a live microphone unless
 //   --unpaced, writes BASE.{jsonl,wav,txt} and prints a per-minute summary.
 //
@@ -15,14 +15,19 @@
 // but `translate` stops only at the end of a step, up to K - 1 frames after K = 1 would.
 //
 // --model defaults to weights/hibiki-zero-3b-q4, upstream's 3B staged by convert_mlx.py --bits 4.
+//
+// --direction D (<source>-<target>: vi-en is Vietnamese speech in, English out) tells a model with
+// the direction condition which way to translate; such a model requires it, and a model without
+// the condition, which hears the direction, refuses it.
 
 import Foundation
 import HibikiCore
 import MLXRandom
 
 let usage = """
-    usage: hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N] [--chunk K]
-           hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE] [--chunk K]
+    usage: hibiki translate INPUT [--model DIR] [--direction D] [--out OUT.wav] [--seed N] [--chunk K]
+           hibiki bench INPUT [--model DIR] [--direction D] [--minutes M] [--unpaced] [--out BASE]
+                        [--chunk K]
 
     """
 // Frames after the input, the source EOS frame included: training's evaluation generates its
@@ -130,7 +135,8 @@ do {
     // Translator first: it configures MLX before MLX creates its Metal device, which seeding
     // would do.
     let translator = try Translator(
-        directory: URL(fileURLWithPath: option("--model") ?? "weights/hibiki-zero-3b-q4"))
+        directory: URL(fileURLWithPath: option("--model") ?? "weights/hibiki-zero-3b-q4"),
+        direction: option("--direction"))
     MLXRandom.seed(seed)
     let pcm = try Audio.read(input)
     try args[0] == "translate" ? translate(translator, pcm) : bench(translator, pcm)

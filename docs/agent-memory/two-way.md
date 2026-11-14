@@ -274,6 +274,10 @@ text mask. So the direction is a condition the model is trained on and the runti
   and GRPO's updates; an evaluation row's (`common.DIRECTION`, from its audio column) through
   `get_lmgen` in free-running evaluation and GRPO's rollouts. A model without conditioners (the
   upstream model, older checkpoints) gets none.
+- The runtimes take it from the user: `inference/main.py --direction` (file and mic), the Swift
+  CLI's `--direction`, the macOS and iOS apps' pickers, and each gate row's own; a model with the
+  table requires one, a model without refuses it. `convert_mlx.py` stages the table in bf16
+  ([mlx-inference](mlx-inference.md#direction), [swift-runtime](swift-runtime.md#hibiki-zero-deltas)).
 - `train.py --condition-lr` (1e-4) is the table's peak rate on the same warmup and cosine: at a
   fine-tune's rate it would barely move. `eval.py --direction` conditions every row on one
   direction: the obedience test (flipped, the output language should follow it).
