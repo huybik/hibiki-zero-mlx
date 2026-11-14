@@ -232,6 +232,7 @@ def translate(
     audio: bool = True,
     quiet_s: float | None = None,
     speaking: str | None = None,
+    voice_gate: bool = False,
 ) -> Translation:
     """Translates a file as training's free-running evaluation does: the first channel through
     the input level stage, zero-padded to whole frames, then one frame whose source codes are all
@@ -240,7 +241,8 @@ def translate(
     translated to its end (training's evaluation stops at any EOS). With `quiet_s` it also stops
     once no word has come for that long since the later of the source EOS and the last word.
     With `speaking` (a PRIMERS key) the stream starts with that language's primer (`prime`), whose
-    steps `frames` leaves out.
+    steps `frames` leaves out. With `voice_gate` the levelled source goes through the voice gate
+    (`voice.VoiceGate`): silence wherever no speech is near.
 
     Step t hears source frames before t, as training's forward does; moshi's LMGen in the
     evaluation hears one frame of silence more before the clip (80 ms later throughout)."""
@@ -256,6 +258,12 @@ def translate(
     duration = source.shape[-1] / 24000
     steps = -(-source.shape[-1] // FRAME)
     source = np.pad(source, (0, steps * FRAME - source.shape[-1]))
+    if voice_gate and steps:
+        from hibiki_mlx.voice import VoiceGate  # torch and Silero load only where a gate runs
+
+        gate = VoiceGate()
+        gated = [gate(frame) for frame in source.reshape(-1, FRAME)]
+        source = np.concatenate([frame for frame in gated if frame is not None] + gate.flush())
     tail = round(TAIL_S * 12.5)
     quiet = None if quiet_s is None else round(quiet_s * 12.5)
 
@@ -368,10 +376,11 @@ def run(
     text_outfile: str | None = None,
     speaking: str | None = None,
 ):
-    """Translates a file into `outfile` (24 kHz WAV) and its text, and prints both; stops after
-    QUIET_S without a word once the source has ended. `speaking` primes it (`translate`)."""
+    """Translates a file into `outfile` (24 kHz WAV) and its text, and prints both; the model
+    hears the source through the voice gate and stops after QUIET_S without a word once the
+    source has ended. `speaking` primes it (`translate`)."""
     t0 = time.perf_counter()
-    out = translate(model, infile, quiet_s=QUIET_S, speaking=speaking)
+    out = translate(model, infile, quiet_s=QUIET_S, speaking=speaking, voice_gate=True)
     wall = time.perf_counter() - t0
 
     Path(outfile).parent.mkdir(parents=True, exist_ok=True)

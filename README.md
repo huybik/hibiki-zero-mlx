@@ -72,6 +72,8 @@ python inference/main.py --mic
 evaluation does: the clip, the source EOS, then up to 20 s of silence, stopping at the model's
 text EOS once it has heard the source EOS (an EOS before that stops nothing, so a long file is
 translated to its end), or once the model has said nothing for 5 s after the source ended.
+Both modes pass the source through a voice gate (Silero VAD): the model hears silence until
+someone speaks and wherever no one does, so noise alone is never translated.
 `--speaking vi|en` (both modes) says which language is spoken: the two-way model guesses the
 direction from the voice and gets some voices wrong, so the stream then starts with a short
 unheard primer in that language, which sets the direction (no accuracy cost measured where the
