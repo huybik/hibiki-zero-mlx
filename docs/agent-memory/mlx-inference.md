@@ -127,6 +127,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   1,400 as `model.safetensors` (fp32), a `config.json` naming its files, the vi6k tokenizer, Mimi
   and a model card (results, MLX and moshi loading, porting notes, the licence's research-only use).
   It is the one public place the vi6k tokenizer is; the folder alone stages or loads the model.
+  Beside it, `release/twoway_grpo1400_mlx_q6/` is the 6-bit bundle as staged and checked on the Mac
+  (with `mimi-decoder.mlmodelc` for Swift and a short card): `inference/main.py --model <it>` runs
+  it, nothing to stage.
 - **Where 4 bits loses:** teacher-forced on bf16's sampled tokens (12 FLEURS dev clips both
   ways, 1,788 frames; scratch script), the mean KL from bf16's sampling distribution (logits /
   0.8), text / codebooks: the 4-bit recipe 0.057 / 0.17; 8 bits g64 on the main transformer and
