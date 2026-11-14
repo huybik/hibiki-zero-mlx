@@ -137,6 +137,8 @@ the two-way caches and run before GRPO):
 | envi-cache | `restart.sh envi-cache`: every `en-vi` cache and the English evaluation sets ([two-way](two-way.md#two-way-run)) | "en_speech en-vi done", then the tranche builder's "done:" line, logged once its last push is in (a rerun with nothing left logs "0 shards to build", then pushes any leftovers before it exits) |
 | two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft_4608`, [two-way](two-way.md#two-way-run); `twoway_sft` ran before at 8,192 frames) | its best checkpoint, then the test sets both ways |
 | grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)), on the two-way model | its updates; stop with TERM to the launcher alone |
+| student | `restart.sh student` (`student_dep10`, cut from GRPO update 1,400 if missing; [phone-student](phone-student.md#next)) | its 190,126 updates (~12 h), then the test sets both ways; stop with TERM to the launcher alone |
+| student-heads | `restart.sh student-heads` (`student_heads14`) after `student`, once the GRPO run's last pair (on the Hub) is off the disk: its preflight needs 39 GiB | the same steps, then the test sets both ways |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with
