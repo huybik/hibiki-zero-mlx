@@ -290,7 +290,20 @@ text mask. So the direction is a condition the model is trained on and the runti
   full disk, [sft-recovery](sft-recovery.md#launcher)); its pair 6,000 resumes it.
 - `twoway_direction_table` (`restart.sh direction-table`): the same with `--lr 0`, which freezes the
   model (no gradients or AdamW states for it) and trains the table alone, so GRPO's weights stay
-  exactly.
+  exactly (0.17 s an update; validation 6,000 and 12,000 tied, 40.15 and 40.08). Against update
+  1,400 (2026-11-14, `eval.py` seed 43; the box's `/workspace/evals/`):
+  - the 11 test sets: mean chrF 45.48 → 44.62 (VI→EN sets within ±0.7, EN→VI −1.2 to −2.9),
+    VI→EN ending 1-2 s later (FLEURS-vi median end offset 0.9 → 2.2 s): the table's shared part
+    pulls toward the SFT rows' timing;
+  - OneVoice's 100 EN→VI clips written in English: 22 → 6; VI→EN 0 → 0; the user's `vi2` written
+    in Vietnamese on 4 → 3 of 5 samples, `vi1` 3 → 2;
+  - told the other direction, clear speech still follows the audio (Vietnamese told `en-vi`: 1%
+    Vietnamese; English told `vi-en`: 1% English on FLEURS, 17% on OneVoice).
+  The table tips an ambiguous voice and never overrides a clear one: in every training row the
+  direction agrees with the audio, so nothing teaches the model to trust it over what it hears.
+- Guidance at decoding (moshi's `cfg_coef`, the other direction as the negative) does not help:
+  at 2 the user's `vi2` came out English on 3 of 5, but OneVoice EN→VI wrote English on 17 (4: 21),
+  and flipped clear speech still followed the audio (at 4, invented Vietnamese).
 - The before/after test, on the box: OneVoice's 200 clips (`data/eval/onevoice-{en,vi}/test.jsonl`)
   and `data/eval/user/test.jsonl` (`vi1`, `vi2`: the user's voice on the MacBook mic; `clean3`,
   `loop3`: OneVoice VI clips played through the laptop's speakers into it).
