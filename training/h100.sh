@@ -397,7 +397,7 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   flock -n "$lock_fd" || die "$run_name is already running"
   # The kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
   # uploads after it is pruned. A pair is 3x the start weight's fp32 size (its parameters, AdamW's
-  # two states), the model 1x, plus ~5 of margin: on the 3B 37.5 a pair and 12.5 the model (131 at
+  # two states), the model 1x, plus 5.5 of margin: on the 3B 37.5 a pair and 12.5 the model (131 at
   # 2, 94 at 1), on the 1.4B phone student 16.7 and 5.6 (45 at 1). 0 keeps every pair, which no
   # check can bound: it gets the default's room.
   local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors
