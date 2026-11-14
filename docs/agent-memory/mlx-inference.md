@@ -29,8 +29,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   UTF-8 used to be dropped whole; Python writes each streamed character in one small write, which
   a pipe does not split, so only a long write such as a traceback can be cut mid-character) and
   reads what is left at exit.
-  `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by System Events (buttons
-  by index: `button 2 of group 2 of group 1` is Translate, then Stop), once the terminal has
+  Its "Spoken language" picker (Auto, Vietnamese, English) passes `--speaking` to both modes
+  ([priming](#runtime)). `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by
+  System Events (by index under `group 1 of window "Hibiki Test"`: `group 1` the model, `radio
+  button 1-3 of radio group 1 of group 2` the language, `button 1 of group 3` Choose audio and
+  `button 2` Translate, then Stop, `button 1 of group 4` the mic, `scroll area 1 of group 5` the
+  translation, `static text 2 of group 1 of window` the status), once the terminal has
   Accessibility; type a path into the file panel's Go-to field a segment at a time, since its
   completion swallows a `/` typed right after a folder name.
 
@@ -104,6 +108,20 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   U+FFFD where SentencePiece writes one per byte. Without byte pieces its text equals the old
   piece-by-piece output. `<s>` is printed as before. Mic mode prints the flushed tail before
   `[stopping]`.
+- `--speaking vi|en` (`translate(speaking=)`, `run_mic`) primes the direction, a stopgap until it
+  is a trained input ([two-way](two-way.md#next)): `prime` steps a short sentence in that language
+  (`PRIMERS`: `inference/assets/primer_{vi,en}.wav`, FLEURS dev, CC BY 4.0) and then silence until
+  the model has written no word for `PRIMER_SETTLE_S` (1.5 s, at most `PRIMER_MAX_GAP_S`, 4 s)
+  through the stream's own Mimi and LM, and drops their output; the stream keeps that direction,
+  as training streams never switch. The gate never primes. Measured 2026-11-14 on OneVoice (each
+  row's gate seed; 25 rows move chrF by several points between runs), Auto → primed: the user's
+  own Vietnamese (laptop mic) came out English on 3 of 3 seeds against Vietnamese on 5 of 5; the 18
+  English rows that came out English, 3 → 17 in Vietnamese, chrF 12.4 → 25.8; 25 other English
+  rows 31.6 → 28.8; 25 Vietnamese rows 55.4 → 46.1. The cost is the primer's context: the model
+  takes the speech for its continuation (reported speech after a "he said" primer, chrF 36.7;
+  words of the primer's translation at the start). A fixed gap was worse (2 s: the primer's last
+  words leaked in; 3.5–5 s: invented words), and the Vietnamese primer (FLEURS "Nước tràn qua đê
+  kéo rộng đến 100 feet.") beat FLEURS's "…, ông cho biết." sentence (46.1 against 35.6).
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers, which adds one frame of output latency. A worker's error ends the session and is
   raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the

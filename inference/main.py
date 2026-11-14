@@ -16,6 +16,10 @@ budget 80 ms).
 
 Use headphones in mic mode: the input level stage raises quiet sound toward speech
 level, the speakers' echo of the translation included, which the model then hears.
+
+--speaking vi|en says which language is spoken: both modes then start the stream with a
+short primer in that language, unheard, so the two-way model keeps that direction instead
+of guessing it from the voice (pipeline.PRIMERS).
 """
 import argparse
 import queue
@@ -35,7 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent  # repo root (inference/ -> ..)
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 
 
-def run_mic(max_steps: int, model: f.Model):
+def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     import sounddevice as sd
 
     mimi_enc, mimi_dec = model.mimi(), model.mimi()
@@ -44,11 +48,13 @@ def run_mic(max_steps: int, model: f.Model):
     other_cb = model.config.other_codebooks
     gen_cb = model.config.generated_codebooks
     gen = models.LmGen(
-        model=model.lm, max_steps=max_steps,
+        model=model.lm, max_steps=max_steps + f.primer_steps(speaking),
         text_sampler=model.text_sampler, audio_sampler=model.audio_sampler,
         cfg_coef=1.0, check=False,
     )
     model.lm.warmup(ct)
+    if speaking:                                      # the primer, unheard, before the mic opens
+        f.prime(model, gen, mimi_enc, ct, speaking)
 
     in_q: queue.Queue = queue.Queue()
     enc_q: queue.Queue = queue.Queue()                # encoder -> LM
@@ -144,6 +150,8 @@ def main():
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
     p.add_argument("--model", default="3b", help="3b or a staged Hibiki-Zero model directory")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
+    p.add_argument("--speaking", choices=sorted(f.PRIMERS),
+                   help="the language spoken; primes the direction (default: the model guesses)")
     args = p.parse_args()
 
     mic = args.mic or args.input == "mic"
@@ -153,11 +161,11 @@ def main():
     model = f.load(f.resolve_weights_dir(args.model))
     mx.random.seed(299792458)
     if mic:
-        run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8, model=model)
+        run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8, model=model, speaking=args.speaking)
     else:
         infile = args.input
         out = args.out or str(ROOT / "translations" / f"{Path(infile).stem}_translated.wav")
-        f.run(infile, out, model, text_outfile=args.text_out)
+        f.run(infile, out, model, text_outfile=args.text_out, speaking=args.speaking)
 
 
 if __name__ == "__main__":
