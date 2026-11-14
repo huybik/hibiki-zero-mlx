@@ -170,12 +170,11 @@ final class InferenceController: ObservableObject {
         case microphone
     }
 
-    /// The model the app last ran, kept across launches.
+    /// The model last chosen, kept across launches (a choice is saved only when made, so a model
+    /// on an unmounted drive is found again once it is back).
     private static let modelDefaultsKey = "modelPath"
 
-    @Published var modelURL: URL? {
-        didSet { UserDefaults.standard.set(modelURL?.path, forKey: Self.modelDefaultsKey) }
-    }
+    @Published var modelURL: URL?
     @Published var audioURL: URL?
     @Published var outputAudioURL: URL?
     @Published var transcript = ""
@@ -198,7 +197,6 @@ final class InferenceController: ObservableObject {
     private var microphoneHeader = ""
     private var microphoneReady = false
     private var audioPlayer: AVAudioPlayer?
-    private var terminationObserver: NSObjectProtocol?
 
     var canTranslateFile: Bool {
         !isRunning && modelURL != nil && audioURL != nil && repositoryRoot != nil
@@ -211,7 +209,8 @@ final class InferenceController: ObservableObject {
     init() {
         repositoryRoot = Self.findRepositoryRoot()
         // Quitting the app ends its backend, which would otherwise keep the GPU and microphone.
-        terminationObserver = NotificationCenter.default.addObserver(
+        // The controller lives as long as the app, so the observer is never removed.
+        _ = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { [weak self] _ in
             self?.process?.terminate()
@@ -220,24 +219,17 @@ final class InferenceController: ObservableObject {
             status = "Repository not found"
             return
         }
-        // The last model run, else the shipping two-way bundle where the notes stage it.
+        // The model last chosen, else the shipping two-way bundle where the README downloads it.
         let candidates = [
             UserDefaults.standard.string(forKey: Self.modelDefaultsKey).map {
                 URL(fileURLWithPath: $0, isDirectory: true)
             },
-            repositoryRoot.appendingPathComponent("weights/twoway_grpo1400_mlx_q6", isDirectory: true),
+            repositoryRoot.appendingPathComponent(
+                "weights/release/twoway_grpo1400_mlx_q6", isDirectory: true
+            ),
         ]
         modelURL = candidates.compactMap { $0 }.first {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path)
-        }
-    }
-
-    deinit {
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-        }
-        if process?.isRunning == true {
-            process?.terminate()
         }
     }
 
@@ -247,8 +239,9 @@ final class InferenceController: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK {
-            modelURL = panel.url
+        if panel.runModal() == .OK, let url = panel.url {
+            modelURL = url
+            UserDefaults.standard.set(url.path, forKey: Self.modelDefaultsKey)
         }
     }
 
@@ -398,10 +391,7 @@ final class InferenceController: ObservableObject {
     private func consume(_ data: Data) {
         let text = output.text(data)
         guard !text.isEmpty else { return }
-        log.append(text)
-        if log.count > 40_000 {
-            log.removeFirst(log.count - 40_000)
-        }
+        appendLog(text)
         guard runMode == .microphone else { return }
         if microphoneReady {
             transcript.append(text)
@@ -424,7 +414,7 @@ final class InferenceController: ObservableObject {
             consume(handle.readDataToEndOfFile())
         }
         let tail = output.flush()
-        log.append(tail)
+        appendLog(tail)
         if microphoneReady {
             transcript.append(tail)
         }
@@ -435,9 +425,7 @@ final class InferenceController: ObservableObject {
         isRunning = false
         isMicrophoneRunning = false
 
-        if stopRequested, completedMode == .file {
-            status = "Stopped"
-        } else if completedMode == .file, exitCode == 0, let textOutputURL {
+        if completedMode == .file, exitCode == 0, let textOutputURL {
             do {
                 transcript = try String(contentsOf: textOutputURL, encoding: .utf8)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -446,14 +434,24 @@ final class InferenceController: ObservableObject {
             } catch {
                 fail("Translation finished but its transcript could not be read")
             }
-        } else if completedMode == .microphone, exitCode == 0 {
+        } else if completedMode == .microphone, exitCode == 0 || stopRequested {
+            // Stopped while the model loads, Python ends on the signal instead of exiting 0.
             transcript = transcript.replacingOccurrences(of: "\n[stopping]", with: "")
             status = "Microphone stopped"
+        } else if stopRequested {
+            status = "Stopped"
         } else {
             status = "Inference failed (exit \(exitCode))"
         }
         self.textOutputURL = nil
         pendingOutputAudioURL = nil
+    }
+
+    private func appendLog(_ text: String) {
+        log.append(text)
+        if log.count > 40_000 {
+            log.removeFirst(log.count - 40_000)
+        }
     }
 
     private func fail(_ message: String) {

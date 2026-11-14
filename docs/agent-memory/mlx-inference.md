@@ -19,8 +19,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   walking up from its bundle to a directory holding `inference/main.py` and `inference/hibiki_mlx/`,
   and sets `PYTHONPATH` to that checkout's `inference` and `inference/moshi-mlx`: the editable
   installs point at the main checkout, so an app built in a worktree would otherwise run the
-  worktree's `hibiki_mlx` on main's `moshi_mlx`. It opens on the model it last ran (user defaults
-  `com.huybik.hibiki-test` `modelPath`), else `weights/twoway_grpo1400_mlx_q6`, and quitting it
+  worktree's `hibiki_mlx` on main's `moshi_mlx`. It opens on the model last chosen (user defaults
+  `com.huybik.hibiki-test` `modelPath`, written only by a choice, so a model on an unmounted drive
+  is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download), and quitting it
   ends its backend. It decodes the backend's output across pipe reads (a read can end inside a
   Vietnamese character, which dropped the whole read before) and reads what is left at exit.
   `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by System Events (buttons
@@ -76,9 +77,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     once the source has ended (`translate(quiet_s=)`; the gate passes none). The shipping model
     seldom writes the EOS on short clips, so file mode ran the 20 s tail on silence: on OneVoice's
     200 clips the stop cuts 27% of the frames (32,756 → 23,814), chrF −0.07 EN→VI and +0.03
-    VI→EN. 2 rows lose words: on short clips the model sometimes waits 9 s or more after the
-    source before speaking (EV-0523 waited 9 s and lost its whole text). 10–11 s lost nothing
-    there and cuts only 11–18%.
+    VI→EN. 3 rows lose words: on short clips the model sometimes waits long after the source
+    before speaking (EV-0523 waited 9 s and lost its whole text). 10 s lost one row, 11 s none,
+    and those cut only 11–18%.
   - Step t hears source frames before t, as training's forward does; moshi's `LMGen` in the
     evaluation hears one silent frame more first, so its outputs come 80 ms later throughout,
     and the gate adds that frame to each End Offset. Mic mode never sends the EOS.

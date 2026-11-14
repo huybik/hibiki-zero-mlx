@@ -83,8 +83,12 @@ open "inference/macos/HibikiTestApp/build/Hibiki Test.app"
 The SwiftUI app provides model and audio pickers, file translation (with stop) and playback,
 live microphone start/stop, the translated text, and the backend log. It runs its own checkout's
 `inference/main.py` with the conda Python at `/opt/homebrew/Caskroom/miniconda/base/bin/python`,
-and opens on the model it last ran, else `weights/twoway_grpo1400_mlx_q6`, the shipping two-way
-bundle (`hf download huybik/hibiki-zero-vi-full-sft --include "release/twoway_grpo1400_mlx_q6/*"`).
+and opens on the model last chosen, else the shipping two-way bundle where this puts it,
+`weights/release/twoway_grpo1400_mlx_q6`:
+
+```bash
+hf download huybik/hibiki-zero-vi-full-sft --include "release/twoway_grpo1400_mlx_q6/*" --local-dir weights
+```
 
 The inference tools are:
 
