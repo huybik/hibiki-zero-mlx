@@ -835,11 +835,14 @@ def generate_batch(
     text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer)
     # How far the last generated word's text token lands after the source audio ends: the
     # paper's End Offset, measured to the end of the audio instead of its last word. Output
-    # index i is the token sampled at step i, which is where the saved audio places it; the
-    # model chose it having heard (i - 1) frames of source.
+    # index i is the token sampled at step i, which is where the saved audio places it; after
+    # max_delay warm-up frames the model chose it having heard (i - max_delay + 1) frames of
+    # source. The offset counts it at index i for the 3B's max_delay of 2; a parallel-heads
+    # student's larger one (codebooks - 1) delays its speech, not its text, so it is taken off.
+    extra_delay = lm_gen.max_delay - 2
     for row, t, duration in zip(rows, text_outputs, audio_durations, strict=True):
         frame = t["last_word_frame"]
-        t["end_offset_s"] = "" if frame is None else round(frame / mimi.frame_rate - duration, 2)
+        t["end_offset_s"] = "" if frame is None else round((frame - extra_delay) / mimi.frame_rate - duration, 2)
         if not t["eos_found"]:
             print(f"warning: no output EOS for {row[cfg.id_column]}; keeping all generated text.")
     if cfg.text_only:

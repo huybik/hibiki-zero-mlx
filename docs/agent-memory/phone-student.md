@@ -67,7 +67,9 @@ sampled before audio at each step, so this adds no latency and no parameters.
   same frame in the step's input, as in MusicGen. moshi's own delay handling then carries it
   through training (logits undelayed, masks) and generation (`LMGen` withholds the first k-1
   steps: 7 at 8 codebooks, 15 at 16). The trunk also relearns its input timing: the parent delays
-  target codebooks 1–15 by 2 frames, the heads student codebook j by j.
+  target codebooks 1–15 by 2 frames, the heads student codebook j by j. Its larger `max_delay`
+  delays its speech, not its text, so evaluation's `end_offset_s` takes the extra frames off and
+  the two students' text latency compares directly.
 - In the `depformer` slot because generation samples audio only when a depformer exists:
   `heads.py` replaces `LMGen.depformer_step` (all codebooks sampled at once from the heads; any
   other model runs moshi's steps) and, per model, `forward_depformer_training`. The depformer's

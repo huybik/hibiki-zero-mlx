@@ -131,17 +131,17 @@ def cut_state(parent: dict[str, Any], child_keys: dict[str, tuple[int, ...]], la
 
 
 def student_shapes(config_path: Path, weight: Path, tokenizer: Path = DEFAULT_TOKENIZER) -> dict[str, tuple[int, ...]]:
-    """The names and shapes of the model the trainer builds from `config_path`, on the meta device."""
-    from moshi.models import loaders
+    """The names and shapes of the model the trainer builds from `config_path` (`common.build_lm`),
+    on the meta device."""
+    import torch
+
+    from training.finetune import common
 
     # Mimi and the tokenizer are never read here; named so nothing is fetched from the Hub.
-    info = loaders.CheckpointInfo.from_hf_repo(
-        "kyutai/hibiki-zero-3b-pytorch-bf16", moshi_weights=weight, mimi_weights=DEFAULT_MIMI_WEIGHT,
-        tokenizer=tokenizer, config_path=config_path)
-    parallel_heads = info.lm_config.pop(heads.CONFIG_KEY, None) == heads.KIND
-    lm = info.get_moshi(device="meta", load_weight=False)
-    if parallel_heads:
-        heads.install(lm)
+    info = common.load_checkpoint_info(argparse.Namespace(
+        hf_repo="kyutai/hibiki-zero-3b-pytorch-bf16", model_weight=weight, mimi_weight=DEFAULT_MIMI_WEIGHT,
+        tokenizer=tokenizer, config_path=config_path))
+    lm = common.build_lm(info, "meta", torch.bfloat16, load_weight=False)
     return {key: tuple(value.shape) for key, value in lm.state_dict().items()}
 
 
