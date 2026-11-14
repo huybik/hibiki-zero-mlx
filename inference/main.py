@@ -15,7 +15,8 @@ critical path is just the LM step (~22 ms on the M4 Pro for the 3B at 4 bits, 25
 budget 80 ms).
 
 Mic mode cancels the speakers' echo (hibiki_mlx.echo) before the input level stage, so the
-model does not hear and translate its own translation: headphones are not needed.
+model does not hear and translate its own translation. It reaches echoes up to ~450 ms late:
+the Mac's own speakers, not every Bluetooth or AirPlay speaker.
 
 Both modes pass the source through the voice gate (hibiki_mlx.voice): the model hears
 silence until speech starts and wherever no one speaks, never noise alone, 160 ms late.
@@ -34,7 +35,6 @@ import mlx.core as mx
 import numpy as np
 
 from hibiki_mlx import pipeline as f
-from hibiki_mlx.echo import EchoCanceller
 from hibiki_mlx.level import Leveller
 from hibiki_mlx.voice import VoiceGate
 from moshi_mlx import models
@@ -42,10 +42,13 @@ from moshi_mlx import models
 ROOT = Path(__file__).resolve().parent.parent  # repo root (inference/ -> ..)
 
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
+BLOCK = 480   # samples per sound-device callback (20 ms): small, so the echo comes back soon
 
 
 def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     import sounddevice as sd
+
+    from hibiki_mlx.echo import EchoCanceller
 
     mimi_enc, mimi_dec = model.mimi(), model.mimi()
     text = f.TextDecoder(model.tokenizer)
@@ -61,18 +64,25 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     if speaking:                                      # the primer, unheard, before the mic opens
         f.prime(model, gen, mimi_enc, ct, speaking)
 
-    in_q: queue.Queue = queue.Queue()                 # (heard, played) frame pairs
+    in_q: queue.Queue = queue.Queue()                 # (heard, played) block pairs
     enc_q: queue.Queue = queue.Queue()                # encoder -> LM
     dec_q: queue.Queue = queue.Queue()                # LM -> decoder
     out_q: queue.Queue = queue.Queue()
     stop = threading.Event()
     failed: list[BaseException] = []                  # a worker's error, raised at the end
 
+    playing = [np.zeros(0, np.float32)]               # decoded translation not yet played
+
     def on_audio(indata, outdata, frames, t, status):
-        try:
-            played = out_q.get_nowait()                # (1920,) float32 translation
-        except queue.Empty:
-            played = np.zeros(FRAME, np.float32)       # not ready yet -> silence
+        while playing[0].size < frames:
+            try:
+                playing[0] = np.concatenate([playing[0], out_q.get_nowait()])
+            except queue.Empty:
+                break                                  # not ready yet -> silence
+        played = np.zeros(frames, np.float32)
+        ready = playing[0][:frames]
+        played[: ready.size] = ready
+        playing[0] = playing[0][ready.size :]
         outdata[:, 0] = played
         in_q.put_nowait((indata[:, 0].copy(), played))  # what the mic heard while it played
 
@@ -87,12 +97,17 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
         # Queue numpy (not mx) arrays: lazy mx graphs are bound to the creating
         # thread's stream and can't be evaluated from the LM thread.
         leveller = Leveller()                                           # the session's level
+        blocks = []                                                     # cancelled, toward a frame
         while not stop.is_set():
             try:
                 heard, played = in_q.get(timeout=0.1)
             except queue.Empty:
                 continue
-            frame = gate(leveller(echo(heard, played)))                 # silence unless speech
+            blocks.append(echo(heard, played))
+            if len(blocks) < FRAME // BLOCK:
+                continue
+            frame = gate(leveller(np.concatenate(blocks)))              # silence unless speech
+            blocks = []
             if frame is None:                                           # its first LOOKAHEAD
                 continue
             codes = mimi_enc.encode_step(frame[None, None, :])          # CPU, GIL free
@@ -123,9 +138,10 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     ended = ""
     live = 0                                          # steps run on the mic
     try:
-        # One duplex stream, so each frame played and the frame heard beside it stay a fixed
-        # time apart, the echo's delay the canceller finds.
-        with sd.Stream(samplerate=24000, channels=1, blocksize=FRAME,
+        # One duplex stream, so each block played and the block heard beside it stay a fixed
+        # time apart, the echo's delay the canceller finds; its small blocks keep that delay
+        # (132 ms on the MacBook Pro, 282 at 80 ms blocks) well inside the canceller's reach (~450 ms).
+        with sd.Stream(samplerate=24000, channels=1, blocksize=BLOCK,
                        dtype="float32", callback=on_audio):
             print(f"listening — the translation plays back. Ctrl-C to stop "
                   f"(cap {max_steps / 12.5 / 60:.0f} min)\n")

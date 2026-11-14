@@ -262,8 +262,8 @@ Vietnamese recorded from the MacBook Pro microphone at −21 to −28 dBFS peaks
 mode): Vietnamese came out on all 5 seeds, the content heard right ("… bờ hồ … bình minh … tiếng
 sóng … quanh bờ đá"), so the model took the voice for English. Not the mic or the room: three
 OneVoice VI clips played on the laptop's speakers and recorded by the same mic still came out
-English on 3 of 3 seeds. Not echo either: the file runs played nothing (in the app, speakers do
-add echo, which the model translates back). Restricting the text to ASCII pieces (7,036 of 48,000
+English on 3 of 3 seeds. Not echo either: the file runs played nothing (mic mode now cancels the speakers' echo:
+[mlx-inference](mlx-inference.md#runtime)). Restricting the text to ASCII pieces (7,036 of 48,000
 banned, byte pieces included) as an "English target" hint gave English on 1 of 3 seeds; the others
 wrote unaccented Vietnamese or switched mid-way, so the model's guess of the source wins over a
 text mask. Priming the stream with a short sentence in the spoken language does set it (the
