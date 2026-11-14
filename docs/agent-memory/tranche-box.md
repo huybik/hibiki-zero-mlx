@@ -139,7 +139,7 @@ the two-way caches and run before GRPO):
 | grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)), on the two-way model | its updates; stop with TERM to the launcher alone |
 | student | `restart.sh student` (`student_dep10`, cut from GRPO update 1,400 if missing; [phone-student](phone-student.md#next)) | its 190,126 updates (~12 h), then the test sets both ways; stop with TERM to the launcher alone |
 | student-distill | `restart.sh student-distill` (`student_dep10_distill`, from `student_dep10`'s newest model, the teacher GRPO update 1,400; [phone-student](phone-student.md#distillation)) | its `--max-steps`, then the test sets both ways; stop with TERM to the launcher alone |
-| student-heads | `restart.sh student-heads` (`student_heads14`, distilled from GRPO update 1,400 from the start; [phone-student](phone-student.md#next)) after `student-distill`: its preflight needs 39 GiB | the same steps, then the test sets both ways |
+| student-heads | `restart.sh student-heads` (`student_heads14`, distilled from GRPO update 1,400 from the start; [phone-student](phone-student.md#next)): the next box's first job, ~21 h; its preflight needs 39 GiB | the same steps, then the test sets both ways |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with

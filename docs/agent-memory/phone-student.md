@@ -92,7 +92,7 @@ model's 0.664.
 
 - `train.py --teacher-weight` ([sft-training](sft-training.md#objective)): each training token's
   loss is `common.token_kl`, KL(teacher ‖ student) of its next-token distribution, in place of
-  its CE, under the same masks and weights (text PAD 0.5, codebook 0 100). The student learns
+  its CE, with the same weights (text PAD 0.5, codebook 0 100) where both models' masks hold. The student learns
   the teacher's whole distribution at every position, and with GRPO update 1,400 as the teacher
   its timing too: where that model would write a word before the SFT target's, its distribution
   says so.
@@ -103,10 +103,12 @@ model's 0.664.
   16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Both must
   be on the same tokenizer. A token is scored where both models' masks hold: moshi returns each
   model's logits on the stream's frames, so a heads student (codebook j delayed j frames, the
-  teacher's 2) loses only the last frames one of the two cannot score. Text and codebook 0 read
-  the same frames in both; for codebooks 1–2 the teacher has read up to 2 frames more of the
-  stream, for 4 and up the student has, so there it learns a blurrier distribution than it
-  could (weight 1 each, against codebook 0's 100).
+  teacher's 2) loses only the last frames one of the two cannot score. Its text and codebook 0
+  (the weight and the chrF) read the same text, codebook-0 and source frames as the teacher's;
+  only how far back the other target codebooks reach differs. For codebooks 1–2 the teacher has
+  read more of the stream; from 3 up the student has read more text, lower codebooks and source,
+  and the KL teaches it to ignore that lookahead (the teacher's distribution averages over it),
+  at weight 1 each. If speech decides the heads comparison, CE on those codebooks is the lever.
 - Validation is unchanged (the student's CE against the targets on validation's fixed streams,
   free-running chrF), so a distilled run's teacher-forced validation compares with
   `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
@@ -189,10 +191,11 @@ model's 0.664.
   96,000.
 - **The heads student distils from the start** (user, 2026-11-14: "why we not do distillation
   from the start?"): plain SFT left the depformer student ~14 chrF short after 100,000 updates,
-  and 300 distilled updates gained more than its last 32,000. It runs on this box only if
-  `student_dep10_distill` plateaus early enough to leave ~14 h for it and ~6 h for the test sets,
-  publishing and margin before the box ends (2026-11-16 08:00 UTC+7); otherwise it is the next
-  box's first job. Profile it first: a 14-layer student and the teacher at 12,288 frames.
+  and 300 distilled updates gained more than its last 32,000. It is the next box's first job:
+  its ~21 h (extrapolated from the depformer student; profile it first, a 14-layer student and
+  the teacher at 12,288 frames) does not fit beside `student_dep10_distill` before this box ends
+  (2026-11-16 08:00 UTC+7). The comparison is of finished students, not of the heads alone: the
+  depformer student had 100,000 plain updates, then 184,000 distilled at 3e-5 on new streams.
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
   steps each, steps 151–300 by their real stream frames), each size one whole batch:
 
