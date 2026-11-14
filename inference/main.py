@@ -117,7 +117,7 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
                             dtype="float32", callback=on_input), \
              sd.OutputStream(samplerate=24000, channels=1, blocksize=FRAME,
                              dtype="float32", callback=on_output):
-            print(f"listening — translated EN plays back. Ctrl-C to stop "
+            print(f"listening — the translation plays back. Ctrl-C to stop "
                   f"(cap {max_steps / 12.5 / 60:.0f} min)\n")
             while not stop.is_set():
                 try:
