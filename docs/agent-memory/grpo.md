@@ -23,6 +23,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
      2.2 s in `vi-en`);
   2. CPU workers compute the rewards as each generation batch lands;
   3. the policy scores every rollout, giving π_old's logprobs.
+- **A phone student** (`--config-path` its cut's config) gets streams cut to its codebooks, as the
+  SFT trainer's are: built at the cache's 16, its rollouts heard at its own `dep_q`.
 - **A rollout's length** is its stream's plus `--tail-seconds` (20 s, the tail evaluation
   generates past a source), up to a whole 16-frame bucket and at most `--frames` (1,200, the
   longest stream plus that tail): `grpo.rollout_frames`. Its last reward sits there, so text a
@@ -31,7 +33,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   - A window's streams are generated longest first (`sample_window`), each batch to its own
     longest rollout; a row's frames past its own length are -1.
   - The loss keeps what a forward of the rollout's own length scores (`kept_tokens`): a
-    codebook delayed 2 frames stops 2 frames early. So a rollout's kept tokens do not depend on
+    codebook delayed d frames stops d frames early. So a rollout's kept tokens do not depend on
     the rollouts it shares a batch or a micro-batch with.
 - **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on stay
   out of the loss (`kept_tokens`), as SFT streams end. No reward reads them, so training them
@@ -48,8 +50,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
 - **Rollout layout:** rollouts replay the stream's cached Vietnamese through `LMGen` with
   `stop_on_eos` off, and are stored in the cache's training layout (`grpo.rollout`).
   - `LMGen` reads the input given at step s as source frame s − 1 (step 0's input is never read).
-    It samples text frame s at step s, and audio codebook k's frame s − delay_k; the delays are
-    0 for text and codebook 0, 2 for the rest.
+    It samples text frame s at step s, and audio codebook k's frame s − delay_k, at the config's
+    delays: 0 for text and codebook 0, 2 for the rest in the 3B; j for a heads student's codebook j.
   - The text and audio hooks capture every sampled token, including those `step()` never returns.
     The hooks copy each token, because CUDA graphs reuse their output buffers.
 - **π_old's logprobs** come from the update's own forward: training mode, gradients enabled, the
@@ -58,8 +60,9 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   - Logprobs are taken at the sampling temperature 0.8; top-k is ignored. They are SFT's loss
     kernel negated (`common.token_ce`, dense over the full logits), so the two trainers share
     one kernel ([sft-training](sft-training.md#objective)).
-  - Text is weighted `--text-weight` 100 against 1 for each audio codebook. Masked positions are
-    the training forward's own.
+  - Text is weighted `--text-weight` 100 against 1 for each audio codebook. A k-codebook student
+    so weighs text 100:k; an 8-codebook one passes 50 to keep the 3B's 100:16 (the paper's c_0),
+    which the shipped run trained with. Masked positions are the training forward's own.
 - **Rewards** (`rewards.py`, the paper's Eq. 3–6):
   - Rewards sit at frame boundaries. A reward at b scores the text of the frames before b, and
     R_t sums the boundaries after t, so a reward credits exactly the tokens it counted.
@@ -221,20 +224,19 @@ The CUDA profile and dry run are under [Running](#running).
   non-empty gate allows a tenth of a set's rows since 2026-11-10: at 8 of 180 a two-update dry
   run failed both its evaluations on round 4's silent Common Voice rows alone
   ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
-- **Dry run** (2026-11-06, 4 updates): ratio mean 1.000–1.001, the loss finite, the gradient
-  norm before clipping 0.42–0.95 million against SFT's ~8–15.
-- **The gradient norm's scale:** the loss sums over every kept token of the update's 128 rollouts
+- **The gradient norm's scale** (0.42–0.95 million before clipping in a 2026-11-06 dry run,
+  against SFT's ~8–15): the loss sums over every kept token of the update's 128 rollouts
   (Σ_q c_q Σ_t, as the paper writes it), so its norm runs ~10⁵ times SFT's mean loss. Clip 1.0
   rescales it, AdamW's step ignores scale, and a clipped parameter gradient (~2e-5) stays far
   above eps 1e-8, so it changes nothing.
-- **The two-way run** (user, 2026-11-13): `grpo_launch.sh weights/twoway_final.safetensors`,
-  the two-way SFT's final model (`runs/twoway_sft/model_step287558.safetensors`, hard-linked
-  into `weights/`), at the H100 profile's sizes, `--updates 2000`. It is judged at 800 from its
-  evaluations (every 200, against update 0 too, since promotion only compares checkpoints), and
-  goes on while the selecting chrF still rises beyond that noise. The rate is constant, so the
-  longer `--updates` is the same run up to 800. Its caches are real Vietnamese speech to
-  English (the tranche) and English to Vietnamese from the tranche's voice-cloned English and
-  `en_speech`'s real recordings.
+- **The two-way run** (user, 2026-11-13): `grpo_launch.sh grpo_twoway
+  weights/twoway_final.safetensors`, the two-way SFT's final model
+  (`runs/twoway_sft/model_step287558.safetensors`, hard-linked into `weights/`), `--updates
+  2000`, judged at 800 from its evaluations (every 200, against update 0 too, since promotion
+  only compares checkpoints), going on while the selecting chrF still rises beyond that noise.
+  The rate is constant, so the longer `--updates` is the same run up to 800. Its caches: the
+  tranche's real Vietnamese speech to English, English to Vietnamese from its voice-cloned
+  English and `en_speech`'s real recordings.
   - **Its evaluations** (`runs/grpo_twoway/val_log.jsonl`; "selecting" is the mean chrF of FLEURS
     dev both ways, "of 8" the mean over all eight sets, "EOS" the share of the eight sets' 1,833
     rows that emit the text EOS; every set passes its gates at every update):
@@ -272,14 +274,15 @@ The CUDA profile and dry run are under [Running](#running).
     (−0.06 to +0.68), EN→VI −0.06, FLEURS test −0.15 both ways. **Update 1,400 ships** (and
     is the students' teacher): validation chose it before the test sets were read, and they
     cannot tell the two apart. Outputs in `/workspace/evals/test_{start,grpo1400,grpo1800}/`.
-- **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-frames
-  … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
-  ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
-  an SFT run's use `run`: either subcommand on the other's run fails at argument parsing.
+- **The run:** `training/tranche/box/grpo_launch.sh RUN START [ARGS…]` runs `./training/h100.sh
+  grpo RUN` on those caches at the 3B's sizes, ARGS after them winning (a phone student adds its
+  `--config-path`, `--text-weight 50` and its profile's sizes). `h100.sh` claims, locks,
+  preflights and syncs as `run` does ([sft-recovery](sft-recovery.md#launcher)); its boot-hook
+  line and a restore use `grpo` where an SFT run's use `run`, and fail on the other's run.
   - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
-  - **Disk:** the preflight needs 130 GiB (93 with `--keep-checkpoints 1`), free plus what the
-    run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
+  - **Disk:** the preflight needs 131 GiB on the 3B (94 with `--keep-checkpoints 1`), ~62 (45)
+    on a 1.4B student, free plus what the run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
     on the Hub.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
     the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took

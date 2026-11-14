@@ -59,7 +59,7 @@ and wait for its final sync.
 GRPO: the `en-vi` caches and one two-way run on all of round 4e's rows, the pilot's test at its
 first validation ([two-way](two-way.md#two-way-run)); GRPO then runs once, on the two-way model.
 
-**GRPO: DONE, `grpo_twoway` (`grpo_launch.sh weights/twoway_final.safetensors`, commit
+**GRPO: DONE, `grpo_twoway` (`grpo_launch.sh` from `weights/twoway_final.safetensors`, commit
 `91e3c6f`)**, from the two-way SFT's final model: ~20 s an update with its window's generation,
 ~6.7 s for the update itself, and ~3.6 min of validation every 200. Resumed at update 800 on
 2026-11-14 00:37 UTC+7 and stopped at 1,800 by its stop rule (06:51 UTC+7); the best, update
@@ -136,7 +136,7 @@ the two-way caches and run before GRPO):
 | sft | `restart.sh sft` (round 4, `full_epoch4b`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
 | envi-cache | `restart.sh envi-cache`: every `en-vi` cache and the English evaluation sets ([two-way](two-way.md#two-way-run)) | "en_speech en-vi done", then the tranche builder's "done:" line, logged once its last push is in (a rerun with nothing left logs "0 shards to build", then pushes any leftovers before it exits) |
 | two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft_4608`, [two-way](two-way.md#two-way-run); `twoway_sft` ran before at 8,192 frames) | its best checkpoint, then the test sets both ways |
-| grpo | `grpo_launch.sh <weight>` (from the checkout, [grpo](grpo.md#running)), on the two-way model | its updates; stop with TERM to the launcher alone |
+| grpo | `grpo_launch.sh RUN <weight> [ARGS]` (from the checkout, [grpo](grpo.md#running)), on the two-way model or a phone student | its updates; stop with TERM to the launcher alone |
 | student | `restart.sh student` (`student_dep10`, cut from GRPO update 1,400 if missing; [phone-student](phone-student.md#next)) | its 190,126 updates (~12 h), then the test sets both ways; stop with TERM to the launcher alone |
 | student-distill | `restart.sh student-distill` (`student_dep10_distill`, from `student_dep10`'s newest model, the teacher GRPO update 1,400; [phone-student](phone-student.md#distillation)) | its `--max-steps`, then the test sets both ways; stop with TERM to the launcher alone |
 | student-heads | (deferred) `restart.sh student-heads` (`student_heads14`) after `student`, once the GRPO run's last pair (on the Hub) is off the disk: its preflight needs 39 GiB | the same steps, then the test sets both ways |

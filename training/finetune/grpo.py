@@ -205,10 +205,14 @@ def stream_sentences(
 def stream_source(
     dataset: streams.StreamDataset, index: int, silence: torch.Tensor
 ) -> torch.Tensor:
-    """A stream's Vietnamese codes [Q, T], silence past its end."""
+    """A stream's Vietnamese codes [Q, T] at the model's Q codebooks (`silence`'s, [Q, frames]),
+    silence past its end. The dataset's items hold text, then Q target and Q source codebooks."""
     codes = dataset[index]["codes"]
+    count = silence.shape[0]
+    if codes.shape[0] != 1 + 2 * count:
+        raise ValueError(f"A stream of {codes.shape[0]} rows is not text and twice {count} codebooks")
     source = silence.long().clone()
-    source[:, : codes.shape[1]] = codes[1 + dataset.layout.dep_q :]
+    source[:, : codes.shape[1]] = codes[1 + count :]
     return source
 
 
@@ -500,11 +504,15 @@ def main() -> None:
 
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
-    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames)
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
+    codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
+    # Streams are assembled at the cache's codebooks and cut to the model's first `codebooks`,
+    # as the SFT trainer's are; a model's sources and their padding are that silence's first rows.
+    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
     dataset = streams.StreamDataset(
-        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed
+        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks
     )
+    silence = silence[:codebooks]
     if len(dataset) < args.updates * args.streams:
         raise ValueError(f"{len(dataset)} streams, fewer than {args.updates} updates need")
     print(f"Planned {len(dataset)} streams from {len(rows)} rows; {args.updates} updates use "
