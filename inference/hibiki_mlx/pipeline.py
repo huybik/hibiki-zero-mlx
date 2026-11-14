@@ -12,7 +12,8 @@ File mode feeds the source as training's free-running evaluation does
 (`training/finetune/common.py` `generate_batch`): the levelled clip in whole frames, the source
 EOS on the frame after it, then silence. It stops at the first text EOS the model writes once it
 has heard the source EOS; an earlier one stops nothing, where training's evaluation would end
-there and drop the rest of a long file.
+there and drop the rest of a long file. `run` (main.py's file mode) also stops after QUIET_S
+without a word once the source has ended; the gate does not.
 
 Usage: python inference/tools/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
@@ -48,6 +49,9 @@ FRAME = 1920  # samples at 24 kHz: one 12.5 Hz codec frame (80 ms)
 # longest clip plus 20 s (GenerationConfig.tail_s), since the text EOS came up to 14 s after a
 # FLEURS row ended and 8 s cut a third of them.
 TAIL_S = 20.0
+# File mode's stop once the model has written no word for this long after hearing the source EOS:
+# the two-way model seldom writes the text EOS, so it would run the whole tail on silence.
+QUIET_S = 5.0
 
 
 def _require_file(path: Path, hint: str) -> None:
@@ -177,12 +181,15 @@ class Translation:
     pcm: np.ndarray | None  # translated audio at 24 kHz, unless audio=False
 
 
-def translate(model: Model, infile: str | Path, audio: bool = True) -> Translation:
+def translate(
+    model: Model, infile: str | Path, audio: bool = True, quiet_s: float | None = None
+) -> Translation:
     """Translates a file as training's free-running evaluation does: the first channel through
     the input level stage, zero-padded to whole frames, then one frame whose source codes are all
     the source EOS (`card`), then silence up to TAIL_S. It stops at the first text EOS of a step
     that heard the source EOS; a text EOS before it is kept going past, so a long file is
-    translated to its end (training's evaluation stops at any EOS).
+    translated to its end (training's evaluation stops at any EOS). With `quiet_s` it also stops
+    once no word has come for that long since the later of the source EOS and the last word.
 
     Step t hears source frames before t, as training's forward does; moshi's LMGen in the
     evaluation hears one frame of silence more before the clip (80 ms later throughout)."""
@@ -199,6 +206,7 @@ def translate(model: Model, infile: str | Path, audio: bool = True) -> Translati
     steps = -(-source.shape[-1] // FRAME)
     source = np.pad(source, (0, steps * FRAME - source.shape[-1]))
     tail = round(TAIL_S * 12.5)
+    quiet = None if quiet_s is None else round(quiet_s * 12.5)
 
     gen = models.LmGen(
         model=lm,
@@ -271,6 +279,9 @@ def translate(model: Model, infile: str | Path, audio: bool = True) -> Translati
         audio_tokens = gen.last_audio_tokens()
         if audio and audio_tokens is not None and gen_cb > 0:
             dec_q.put(np.array(audio_tokens[:, :, None]).astype(np.uint32))
+        # The source EOS went in at step `steps`; step processed - 1 has just run.
+        if quiet is not None and processed - 1 - max(steps, last_word or 0) >= quiet:
+            break
     stop.set()
     # Drain the queue so the encoder isn't parked on a full put(), then shut down.
     while True:
@@ -296,9 +307,10 @@ def translate(model: Model, infile: str | Path, audio: bool = True) -> Translati
 
 
 def run(infile: str, outfile: str, model: Model, text_outfile: str | None = None):
-    """Translates a file into `outfile` (24 kHz WAV) and its text, and prints both."""
+    """Translates a file into `outfile` (24 kHz WAV) and its text, and prints both; stops after
+    QUIET_S without a word once the source has ended."""
     t0 = time.perf_counter()
-    out = translate(model, infile)
+    out = translate(model, infile, quiet_s=QUIET_S)
     wall = time.perf_counter() - t0
 
     Path(outfile).parent.mkdir(parents=True, exist_ok=True)

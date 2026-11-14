@@ -37,7 +37,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Hibiki Test")
                     .font(.largeTitle.bold())
-                Text("Vietnamese speech → English speech and text")
+                Text("Vietnamese ↔ English speech and text (the model hears which)")
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -82,11 +82,19 @@ struct ContentView: View {
                         .disabled(controller.isRunning)
                 }
                 HStack {
-                    Button(action: controller.translateFile) {
-                        Label("Translate file", systemImage: "character.bubble")
+                    if controller.isFileRunning {
+                        Button(action: controller.stop) {
+                            Label("Stop", systemImage: "stop.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                    } else {
+                        Button(action: controller.translateFile) {
+                            Label("Translate file", systemImage: "character.bubble")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!controller.canTranslateFile)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!controller.canTranslateFile)
 
                     Button(action: controller.playOutput) {
                         Label("Play output", systemImage: "play.fill")
@@ -129,7 +137,7 @@ struct ContentView: View {
     }
 
     private var transcript: some View {
-        GroupBox("English transcript") {
+        GroupBox("Translation") {
             ScrollView {
                 Text(controller.transcript.isEmpty ? "Translation will appear here." : controller.transcript)
                     .foregroundStyle(controller.transcript.isEmpty ? .secondary : .primary)
@@ -162,7 +170,12 @@ final class InferenceController: ObservableObject {
         case microphone
     }
 
-    @Published var modelURL: URL?
+    /// The model the app last ran, kept across launches.
+    private static let modelDefaultsKey = "modelPath"
+
+    @Published var modelURL: URL? {
+        didSet { UserDefaults.standard.set(modelURL?.path, forKey: Self.modelDefaultsKey) }
+    }
     @Published var audioURL: URL?
     @Published var outputAudioURL: URL?
     @Published var transcript = ""
@@ -177,31 +190,52 @@ final class InferenceController: ObservableObject {
     private let repositoryRoot: URL?
     private var process: Process?
     private var pipe: Pipe?
+    private var output = UTF8Chunks()
     private var runMode: RunMode?
+    private var stopRequested = false
     private var textOutputURL: URL?
     private var pendingOutputAudioURL: URL?
     private var microphoneHeader = ""
     private var microphoneReady = false
     private var audioPlayer: AVAudioPlayer?
+    private var terminationObserver: NSObjectProtocol?
 
     var canTranslateFile: Bool {
         !isRunning && modelURL != nil && audioURL != nil && repositoryRoot != nil
     }
 
+    var isFileRunning: Bool {
+        isRunning && !isMicrophoneRunning
+    }
+
     init() {
         repositoryRoot = Self.findRepositoryRoot()
+        // Quitting the app ends its backend, which would otherwise keep the GPU and microphone.
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.process?.terminate()
+        }
         guard let repositoryRoot else {
             status = "Repository not found"
             return
         }
-        let preferredModel = repositoryRoot
-            .appendingPathComponent("weights/vi-step135000-mlx-bf16")
-        if FileManager.default.fileExists(atPath: preferredModel.path) {
-            modelURL = preferredModel
+        // The last model run, else the shipping two-way bundle where the notes stage it.
+        let candidates = [
+            UserDefaults.standard.string(forKey: Self.modelDefaultsKey).map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            },
+            repositoryRoot.appendingPathComponent("weights/twoway_grpo1400_mlx_q6", isDirectory: true),
+        ]
+        modelURL = candidates.compactMap { $0 }.first {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path)
         }
     }
 
     deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
         if process?.isRunning == true {
             process?.terminate()
         }
@@ -220,7 +254,7 @@ final class InferenceController: ObservableObject {
 
     func chooseAudio() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Vietnamese audio"
+        panel.title = "Choose Vietnamese or English speech"
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
@@ -276,6 +310,7 @@ final class InferenceController: ObservableObject {
     func stop() {
         guard let process, process.isRunning else { return }
         status = "Stopping…"
+        stopRequested = true
         process.interrupt()
     }
 
@@ -310,10 +345,12 @@ final class InferenceController: ObservableObject {
 
         transcript = ""
         log = ""
-        status = mode == .file ? "Loading model…" : "Starting microphone…"
+        status = mode == .file ? "Translating…" : "Starting microphone…"
         isRunning = true
         isMicrophoneRunning = mode == .microphone
         runMode = mode
+        stopRequested = false
+        output = UTF8Chunks()
         pendingOutputAudioURL = outputAudio
         textOutputURL = textOutput
         microphoneHeader = ""
@@ -328,13 +365,18 @@ final class InferenceController: ObservableObject {
         process.standardError = pipe
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONUNBUFFERED"] = "1"
+        // This checkout's runtime: main.py finds its own hibiki_mlx, but moshi_mlx would come
+        // from whichever checkout the editable install points at.
+        environment["PYTHONPATH"] = ["inference", "inference/moshi-mlx"]
+            .map { repositoryRoot.appendingPathComponent($0).path }
+            .joined(separator: ":")
         process.environment = environment
 
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else { return }
             DispatchQueue.main.async {
-                self?.consume(text)
+                self?.consume(data)
             }
         }
         process.terminationHandler = { [weak self] completed in
@@ -353,7 +395,9 @@ final class InferenceController: ObservableObject {
         }
     }
 
-    private func consume(_ text: String) {
+    private func consume(_ data: Data) {
+        let text = output.text(data)
+        guard !text.isEmpty else { return }
         log.append(text)
         if log.count > 40_000 {
             log.removeFirst(log.count - 40_000)
@@ -374,7 +418,16 @@ final class InferenceController: ObservableObject {
     }
 
     private func finish(exitCode: Int32) {
-        pipe?.fileHandleForReading.readabilityHandler = nil
+        // The process has exited, so the pipe ends: read what the handler had not yet.
+        if let handle = pipe?.fileHandleForReading {
+            handle.readabilityHandler = nil
+            consume(handle.readDataToEndOfFile())
+        }
+        let tail = output.flush()
+        log.append(tail)
+        if microphoneReady {
+            transcript.append(tail)
+        }
         let completedMode = runMode
         process = nil
         pipe = nil
@@ -382,7 +435,9 @@ final class InferenceController: ObservableObject {
         isRunning = false
         isMicrophoneRunning = false
 
-        if completedMode == .file, exitCode == 0, let textOutputURL {
+        if stopRequested, completedMode == .file {
+            status = "Stopped"
+        } else if completedMode == .file, exitCode == 0, let textOutputURL {
             do {
                 transcript = try String(contentsOf: textOutputURL, encoding: .utf8)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -434,5 +489,37 @@ final class InferenceController: ObservableObject {
             }
         }
         return nil
+    }
+}
+
+/// Text from a byte stream read in arbitrary chunks: a chunk can end inside a UTF-8 character
+/// (the Vietnamese text is mostly multi-byte), so the unfinished bytes wait for the next chunk.
+struct UTF8Chunks {
+    private var pending: [UInt8] = []
+
+    mutating func text(_ data: Data) -> String {
+        pending.append(contentsOf: data)
+        let complete = pending.count - Self.unfinishedTail(pending)
+        let text = String(decoding: pending[..<complete], as: UTF8.self)
+        pending.removeFirst(complete)
+        return text
+    }
+
+    /// What is left once the stream has ended.
+    mutating func flush() -> String {
+        defer { pending.removeAll() }
+        return String(decoding: pending, as: UTF8.self)
+    }
+
+    /// The bytes of a last character whose sequence is not complete yet.
+    private static func unfinishedTail(_ bytes: [UInt8]) -> Int {
+        guard !bytes.isEmpty else { return 0 }
+        for back in 1...min(3, bytes.count) {
+            let byte = bytes[bytes.count - back]
+            if byte & 0xC0 == 0x80 { continue }  // a continuation byte
+            let length = byte >= 0xF0 ? 4 : byte >= 0xE0 ? 3 : byte >= 0xC0 ? 2 : 1
+            return length > back ? back : 0
+        }
+        return 0
     }
 }

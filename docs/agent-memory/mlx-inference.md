@@ -14,10 +14,19 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   --bits 4` from the files in `weights/`, the symlink to `/Volumes/data/models/hibiki/weights`) or
   any staged model directory. Sampling is the model's `config.json` `lm_gen_config`; the seed,
   299792458, is set after loading, so a file samples as the gate's row of that seed does.
-- `inference/macos/HibikiTestApp/` is a SwiftUI wrapper that runs `inference/main.py` with the
-  conda Python path hard-coded. It finds the repo root by walking up to a directory holding
-  `inference/main.py` and `inference/hibiki_mlx/`, and defaults to the model
-  `weights/vi-step135000-mlx-bf16` when it exists. `build.sh` produces `build/Hibiki Test.app`.
+- `inference/macos/HibikiTestApp/` is a SwiftUI wrapper that runs `inference/main.py` (file mode,
+  which it can stop, or the mic) with the conda Python path hard-coded. It finds the repo root by
+  walking up from its bundle to a directory holding `inference/main.py` and `inference/hibiki_mlx/`,
+  and sets `PYTHONPATH` to that checkout's `inference` and `inference/moshi-mlx`: the editable
+  installs point at the main checkout, so an app built in a worktree would otherwise run the
+  worktree's `hibiki_mlx` on main's `moshi_mlx`. It opens on the model it last ran (user defaults
+  `com.huybik.hibiki-test` `modelPath`), else `weights/twoway_grpo1400_mlx_q6`, and quitting it
+  ends its backend. It decodes the backend's output across pipe reads (a read can end inside a
+  Vietnamese character, which dropped the whole read before) and reads what is left at exit.
+  `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by System Events (buttons
+  by index: `button 2 of group 2 of group 1` is Translate, then Stop), once the terminal has
+  Accessibility; type a path into the file panel's Go-to field a segment at a time, since its
+  completion swallows a `/` typed right after a folder name.
 
 ## Runtime
 
@@ -63,6 +72,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     bits, both ways). So the gate differs from training's
     evaluation only on rows whose EOS came early, and its `eos_found` counts only an EOS after
     the source EOS.
+  - `run` (main.py's file mode, so the macOS app) also stops after `QUIET_S` (5 s) without a word
+    once the source has ended (`translate(quiet_s=)`; the gate passes none). The shipping model
+    seldom writes the EOS on short clips, so file mode ran the 20 s tail on silence: on OneVoice's
+    200 clips the stop cuts 27% of the frames (32,756 → 23,814), chrF −0.07 EN→VI and +0.03
+    VI→EN. 2 rows lose words: on short clips the model sometimes waits 9 s or more after the
+    source before speaking (EV-0523 waited 9 s and lost its whole text). 10–11 s lost nothing
+    there and cuts only 11–18%.
   - Step t hears source frames before t, as training's forward does; moshi's `LMGen` in the
     evaluation hears one silent frame more first, so its outputs come 80 ms later throughout,
     and the gate adds that frame to each End Offset. Mic mode never sends the EOS.
@@ -122,6 +138,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   source's: VI→EN mean chrF 52.6 against update 600's 48.7, EN→VI 46.9 against 45.8. It ends with
   an EOS less often (3 of 12 runs, none on the EN→VI files, against update 600's 9 of 12, as GRPO's
   EOS share fell), so file mode more often runs the whole 20 s tail.
+  The recovery repo's `release/twoway_grpo1400_mlx_q6/` holds this bundle ready to run (3.3 GB with
+  Mimi and `mimi-decoder.mlmodelc`). On OneVoice (2026-11-14; 100 VI→EN and 100 EN→VI short
+  conversational clips, 2–13 s at 16 kHz, from a Google Drive folder the user shared; the gate,
+  `--seed 42`): VI→EN chrF 46.3, BLEU 23.6, 72 rows ended; EN→VI chrF 32.2, BLEU 11.7, 79 ended,
+  18 rows in English ([two-way](two-way.md#next)), the other 81 at chrF 37.9. 26–28 ms a frame on the
+  M4 Pro (~3x real time).
 - **The release** (user, 2026-11-14: "upload the full f32 bundle, so he can run it and use it to
   optimize for qualcomm device"): the recovery repo's `release/twoway_grpo1400/` holds update
   1,400 as `model.safetensors` (fp32), a `config.json` naming its files, the vi6k tokenizer, Mimi

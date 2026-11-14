@@ -25,6 +25,6 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Hibiki Test uses the microphone for live Vietnamese-to-English translation.</string>
+    <string>Hibiki Test uses the microphone for live Vietnamese and English speech translation.</string>
 </dict>
 </plist>
