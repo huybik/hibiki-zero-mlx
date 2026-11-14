@@ -116,16 +116,39 @@ sampled before audio at each step, so this adds no latency and no parameters.
 
 ## Next
 
-- Train both students on the GPU once GRPO frees it: the end-to-end check of the cut, the heads
-  and the codebook cut.
-- Profile each student before its run (user, 2026-11-13): frames/s and peak memory at 4,608,
-  8,192 and 12,288 frames per update (`--batch-frames`), each a 300-step run timed over steps
-  151–300, as [sft-speed](sft-speed.md#measurements) measured the 3B. A ~10-layer student should
-  fit 8,192 or more at once on 80 GB, so the slicing that cost the 3B 6.5% there does not apply;
-  on the H200 the 3B ran 11% faster per frame at 8,192 and 17% at 12,288 than at 4,608. The
-  trainer's peak, 2.25e-6, is set for 4,608 (Adam's square-root rule,
-  [sft-training](sft-training.md#trainer)): another batch scales it by sqrt(frames / 4,608), and
-  a cut model may need a higher one anyway.
+- **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
+  ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
+  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h each), the same streams
+  (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
+  updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
+  it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
+  experiment, adopted only if they win.
+- **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
+  steps each, steps 151–300 by their real stream frames), each size one whole batch:
+
+  | Frames an update | s a step | Frames/s |
+  |---|---|---|
+  | 4,608 | 0.106 | 38,700 |
+  | 8,192 | 0.160 | 47,800 (+23%) |
+  | 12,288 | 0.230 | 51,000 (+32%) |
+
+  The 3B ran 15,300 at 4,608. The heads student steps ~5% faster at 4,608 (0.101 s).
+- **Peak rate** (2026-11-14, 1,500 updates a rate at 12,288 frames, 5% warmup then cosine,
+  validation on both directions' caches; `/workspace/students/lr/` on the box). Teacher-forced
+  validation loss, VI→EN / EN→VI:
+
+  | Peak | Depformer student | Heads student |
+  |---|---|---|
+  | 3.7e-6 (the trainer's default scaled to the batch) | 4.65 / 4.45 | |
+  | 1e-5 | 4.30 / 4.09 | |
+  | 3e-5 | 4.06 / 3.84 | 4.55 / 4.23 |
+  | 1e-4 | 4.03 / 3.76 | 4.48 / 4.20 |
+  | 3e-4 | 4.50 / 4.11 | 5.10 / 4.65 |
+
+  Both peak near 1e-4 at this length, with 3e-5 close and 3e-4 already worse. A run 127x longer
+  wants less than the short run's best and sits 3x from where it breaks down, so both train at
+  5e-5, the same for the comparison. Free-running chrF at 1,500 updates (10–17, most sets failing
+  the empty-row gate) is too early to rank them; the heads student leaves fewer rows empty.
 - Speech evaluation in both directions: each target language's ASR transcript against the
   reference and speaker similarity to the source (evaluation is text-only today).
 - Architecture changes wait for the trained student's scores (2026-11-13). The untrained cut

@@ -29,9 +29,11 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
     when lower than `/proc/meminfo`, which shows the host on Vast) and 130 GiB of disk: free
     space plus, for `run`, what the run dir already holds (each hard-linked inode once). `run`
-    and `grpo` size it by the run's `--keep-checkpoints`: the kept pairs, the promoted model and
-    a pair the sync still uploads, 130 GiB at the default 2 and 93 at 1 (0 keeps every pair, so
-    it gets the default's);
+    and `grpo` size it by the run's `--keep-checkpoints` and its start weight's parameters
+    (`--model-weight`, read from its safetensors header): the kept pairs, the promoted model and
+    a pair the sync still uploads, a pair 3x the fp32 model and 5.5 of margin. The 3B needs 131
+    GiB at the default 2 and 94 at 1, the 1.4B phone student 45 at 1 (0 keeps every pair, so it
+    gets the default's);
   - the SHA-256 of the four upstream files in `weights/`.
 - `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
   It holds `flock` on `runs/.RUN_NAME.lock` (inherited by the trainer and the sync), so a
