@@ -100,19 +100,19 @@ case $job in
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # The depformer student distilled from its teacher, GRPO update 1,400 (phone-student.md#distillation): from
-  # student_dep10's newest model (hard-linked to weights/student_dep10_distill_start.safetensors when it stopped), the same
-  # rows on new streams (seed 48), each token's loss its KL from the teacher's distribution. --max-steps (from its profile)
-  # ends it with time left on the box for a GRPO run after it.
+  # student_dep10_distill's model 32,000 (hard-linked to weights/student_dep10_anneal_start.safetensors when that run
+  # stopped: its KL stalled at peak 3e-5), the same rows on new streams (seed 49), each token's loss its KL from the
+  # teacher's distribution, at peak 1e-5. --max-steps ends it with time left on the box for a GRPO run after it.
   student-distill) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2 S=weights/student_dep10
-       cmd=(./training/h100.sh run student_dep10_distill
+       cmd=(./training/h100.sh run student_dep10_anneal
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --config-path $S/config.json --model-weight weights/student_dep10_distill_start.safetensors
+            --config-path $S/config.json --model-weight weights/student_dep10_anneal_start.safetensors
             --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --batch-frames 12288 --lr 3e-5 --max-steps 184000 --eval-batch-size 64 --keep-checkpoints 1
-            --seed 48 --save-every 4000 --val-every 8000
+            --batch-frames 12288 --lr 1e-5 --warmup-fraction 0.02 --max-steps 110000 --eval-batch-size 64
+            --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads|student-distill" >&2; exit 1 ;;
