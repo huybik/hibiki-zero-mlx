@@ -5,8 +5,8 @@ removes from what the mic hears what the speakers were given, before the level s
 main.py's mic mode uses it; file mode plays nothing while it listens.
 
 The canceller finds the echo's delay itself, so it takes no hint, but only up to ~450 ms: the
-MacBook Pro's speakers reach its mic 132 ms late in main.py's duplex stream (~45 ms of it the
-stream's); a Bluetooth or AirPlay speaker can add enough to put its echo out of reach.
+MacBook Pro's speakers reach its mic 132 ms late in main.py's duplex stream; a Bluetooth or AirPlay
+speaker can add enough to put its echo out of reach.
 """
 
 from __future__ import annotations

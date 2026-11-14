@@ -26,6 +26,7 @@ short primer in that language, unheard, so the two-way model keeps that directio
 of guessing it from the voice (pipeline.PRIMERS).
 """
 import argparse
+import gc
 import queue
 import sys
 import threading
@@ -63,6 +64,9 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     model.lm.warmup(ct)
     if speaking:                                      # the primer, unheard, before the mic opens
         f.prime(model, gen, mimi_enc, ct, speaking)
+    # A full collection over the loaded objects holds the GIL ~40 ms, enough to delay the 20 ms
+    # sound callback, which shifts the echo's delay for good on the Mac's separate devices.
+    gc.freeze()
 
     in_q: queue.Queue = queue.Queue()                 # (heard, played) block pairs
     enc_q: queue.Queue = queue.Queue()                # encoder -> LM
