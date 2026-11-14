@@ -196,7 +196,7 @@ def main() -> None:
     tokenizer = info.get_text_tokenizer()
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    dataset = grpo.stream_dataset(args, info, rows, layout, codebooks, device)
+    dataset = grpo.stream_dataset(args, info, rows, layout, codebooks, info.get_mimi(device=device))
     count = max(args.gen_batch)
     stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
     sources = torch.stack([grpo.stream_source(dataset, index, codebooks)

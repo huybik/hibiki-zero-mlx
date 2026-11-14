@@ -75,14 +75,23 @@ the data so that grpo also penalise translating when user silent?").
   - GRPO's BLEU already teaches quiet after a source (the teacher's FLEURS dev rows ending more
     than 4 s after it: 136 → 27 VI→EN, 165 → 33 EN→VI), but in digital silence only.
 - **Drawn** by `augment.room_tracks`: a background noise looped from a drawn offset, peaking at
-  U[−65, −35] dBFS, a foreground event every 15 s on average peaking at U[−45, −25], then the
-  level stage from the track's start, as on a new stream. After it, frame peaks sit at a median
-  −36 to −39 dBFS, events up to −20. `streams.room_codes` encodes 256 of them, each `--frames`
-  long, from a fresh state on the run's GPU at its start; `StreamDataset` draws one for a stream
-  from (seed, index), and `assemble` puts it in the source's lead, gaps and the stretch after the
-  EOS; the target keeps silence. Mimi codes codebook 0 as silence on ~45% of such frames.
+  U[−65, −35] dBFS, and events starting every 15 s on average, each an excerpt of at most 3 s of
+  a foreground file (they run up to 8 min) peaking at U[−45, −25], its cut edges ramped over
+  10 ms; then the level stage from the track's start. After it, frame peaks sit at a median
+  −38.4 dBFS (p90 −32.6, 8% of frames over −30, events up to −20). Codebook 0 takes one of the
+  steady silence's values on ~71% of room frames (35–97% per room; 24 rooms, seed 44).
+- **Encoded** by `streams.room_codes`: 256 rooms, each `--frames` long, from a fresh state on the
+  run's GPU at its start (TF32 on, so their residual codes may differ by GPU, unlike the CPU
+  silence track). `StreamDataset` draws one for a stream from (seed, index), the same on a
+  resume, and `assemble` puts it in the source's lead, gaps and the stretch after the EOS; the
+  target keeps silence. `grpo_launch.sh` fetches the bank into `data/rirs_noises` first; the run
+  only requires it.
+- **The level stage runs on the room alone**, so a gap right after speech is lifted at once,
+  where live the envelope still falls 6 dB a second after speech and the room stays near its raw
+  level for a few seconds: training's gaps are louder than live ones, erring toward quiet.
 - **Held out:** every fifth file of each kind (26 backgrounds, 162 events; `quiet_noises(bank,
-  held_out=True)`), for re-running the check on a model after its GRPO.
+  held_out=True)`), from GRPO's rooms only: the noisy caches (`Bank`) mix every file under speech.
+  Re-run the check on held-out rooms after a model's GRPO.
 
 ## Noisy cache
 

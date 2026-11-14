@@ -421,10 +421,10 @@ def _plan_direction(
 
 def assemble(
     stream: Stream, rows: list[Row], silence: torch.Tensor, layout: Layout,
-    room: torch.Tensor | None = None,
+    source_quiet: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """The stream's int32 codes [33, frames]; `silence` is the `silence_track`. With `room` (a
-    `room_codes` track) the source holds it instead of silence wherever nobody speaks; the target
+    """The stream's int32 codes [33, frames]; `silence` is the `silence_track`. The source holds
+    `source_quiet` (a `room_codes` track; default the silence) wherever nobody speaks; the target
     stays silent."""
     q = layout.dep_q
     frames = stream.frames
@@ -439,7 +439,7 @@ def assemble(
     codes[0, :text_eos] = layout.pad_id
     codes[0, text_eos] = int(last.codes[0, last.target_frames])
     codes[1 : 1 + q, :text_eos] = quiet[:, :text_eos]
-    codes[1 + q :] = quiet if room is None else room[:, :frames]
+    codes[1 + q :] = quiet if source_quiet is None else source_quiet[:, :frames]
     codes[1 + q :, source_eos] = layout.card
     for piece in stream.pieces:
         row = rows[piece.row]
@@ -571,9 +571,7 @@ class StreamDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         stream = self.streams[index]
-        quiet = self.source_quiet(index)
-        room = None if quiet is self.silence else quiet
-        codes = assemble(stream, self.rows, self.silence, self.layout, room)
+        codes = assemble(stream, self.rows, self.silence, self.layout, self.source_quiet(index))
         return {
             "codes": codes if self.keep is None else codes[self.keep],
             "frames": stream.frames,
