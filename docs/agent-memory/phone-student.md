@@ -100,9 +100,13 @@ model's 0.664.
   EOS row) and runs the compiled training forward without a backward, its depformer cut to the
   student's k steps (`dep_q`: the depformer is causal over steps, so the first k logits are the
   same; ~11% of a step saved). It reads the whole stream: the dataset is assembled at the cache's
-  16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Its delays
-  on those rows must equal the student's (equal masks; a heads student's are not), and both must
-  be on the same tokenizer.
+  16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Both must
+  be on the same tokenizer. A token is scored where both models' masks hold: moshi returns each
+  model's logits on the stream's frames, so a heads student (codebook j delayed j frames, the
+  teacher's 2) loses only the last frames one of the two cannot score. Text and codebook 0 read
+  the same frames in both; for codebooks 1–2 the teacher has read up to 2 frames more of the
+  stream, for 4 and up the student has, so there it learns a blurrier distribution than it
+  could (weight 1 each, against codebook 0's 100).
 - Validation is unchanged (the student's CE against the targets on validation's fixed streams,
   free-running chrF), so a distilled run's teacher-forced validation compares with
   `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
@@ -113,6 +117,10 @@ model's 0.664.
   student](#training-a-student)).
 - `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
   `torch.nn.functional.kl_div` on the valid positions, is 0 elsewhere and gives them no gradient.
+  Tiny models on the CPU (4 of 6 codebooks): a heads student under its depformer parent is
+  scored on exactly the positions both masks hold, its audio loss equals `kl_div`'s weighted
+  mean there, and every parameter gets a finite gradient; a depformer student's positions and
+  loss are as before.
 - **End to end on the H100** (2026-11-14, the launcher's arguments, two FLEURS dev sets, from
   `student_dep10`'s pair 100,000): 0.381 s a step (plain SFT 0.23), 59.3 GB peak in training,
   generation 38 GB. In 300 updates the KL fell 0.45 → 0.37, the VI→EN cache's word accuracy rose
@@ -126,9 +134,8 @@ model's 0.664.
   on new streams of the same rows (seed 48), whole 12,288-frame batches at peak 3e-5 (where
   `student_dep10`'s cosine had come down to), validation every 8,000, 184,000 updates (~1.9
   epochs; 0.405 s an update with saves and validations, ~21 h, leaving the box ~14 h for a GRPO
-  run on it, its test sets and publishing). The heads student is
-  deferred: trained on the targets alone, it would test the parallel heads under the recipe that
-  falls short.
+  run on it, its test sets and publishing). The heads student distils from the start
+  ([Next](#next)).
 
 ## Checks
 
@@ -166,9 +173,9 @@ model's 0.664.
 
 ## Next
 
-- **Training** (2026-11-14): `restart.sh student`, then (deferred for [distillation](#distillation)) `restart.sh student-heads`
+- **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
   ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
-  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h each), the same streams
+  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h plain, ~21 h distilled), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
   it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
@@ -180,6 +187,12 @@ model's 0.664.
   dev chrF VI→EN / EN→VI; end offset 4–8 s throughout): 20.7 / 15.0 at 16,000, 21.6 / 18.6 at
   32,000, 24.5 / 18.6 at 48,000, 27.0 / 23.8 at 64,000, 26.2 / 23.2 at 80,000, 28.7 / 24.5 at
   96,000.
+- **The heads student distils from the start** (user, 2026-11-14: "why we not do distillation
+  from the start?"): plain SFT left the depformer student ~14 chrF short after 100,000 updates,
+  and 300 distilled updates gained more than its last 32,000. It runs on this box only if
+  `student_dep10_distill` plateaus early enough to leave ~14 h for it and ~6 h for the test sets,
+  publishing and margin before the box ends (2026-11-16 08:00 UTC+7); otherwise it is the next
+  box's first job. Profile it first: a 14-layer student and the teacher at 12,288 frames.
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
   steps each, steps 151–300 by their real stream frames), each size one whole batch:
 

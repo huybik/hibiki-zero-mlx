@@ -81,12 +81,14 @@ case $job in
   # The phone students (phone-student.md#training-a-student), each cut from the shipping model, GRPO update 1,400
   # (weights/grpo_twoway_best1400.safetensors: the recovery repo's grpo_twoway/best/best_step001400.safetensors) when
   # its directory is missing: `student` the depformer student (10 layers, a 3-layer depformer, 8 codebooks),
-  # `student-heads` the parallel heads (14 layers). Both train on the two-way run's rows both ways, the same streams
-  # (seed 47) for the same steps, in whole 12,288-frame batches (51,000 frames/s on the depformer student, +32% over
-  # 4,608) at peak 5e-5 (the probe, phone-student.md#next).
+  # `student-heads` the parallel heads (14 layers), distilled from that model from the start (--teacher-weight,
+  # phone-student.md#distillation). Both train on the two-way run's rows both ways, the same streams (seed 47) for the
+  # same steps, in whole 12,288-frame batches (51,000 frames/s on the depformer student, +32% over 4,608) at peak 5e-5
+  # (the probe, phone-student.md#next).
   student|student-heads) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       if [[ $job == student ]]; then name=student_dep10 cut=(); else name=student_heads14 cut=(--heads --num-layers 14); fi
+       if [[ $job == student ]]; then name=student_dep10 cut=() teach=()
+       else name=student_heads14 cut=(--heads --num-layers 14) teach=(--teacher-weight weights/grpo_twoway_best1400.safetensors); fi
        S=weights/$name
        [[ -f $S/config.json ]] || .venv/bin/python -m training.student.cut \
          --weight weights/grpo_twoway_best1400.safetensors "${cut[@]}" --out-dir $S
@@ -94,7 +96,7 @@ case $job in
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --config-path $S/config.json --model-weight $S/model.safetensors
+            --config-path $S/config.json --model-weight $S/model.safetensors "${teach[@]}"
             --batch-frames 12288 --lr 5e-5 --eval-batch-size 64 --keep-checkpoints 1
             --epochs 2 --seed 47 --save-every 4000 --val-every 16000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
