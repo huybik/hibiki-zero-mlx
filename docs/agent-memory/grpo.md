@@ -25,11 +25,13 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   3. the policy scores every rollout, giving π_old's logprobs.
 - **A phone student** (`--config-path` its cut's config) gets streams cut to its codebooks, as the
   SFT trainer's are: built at the cache's 16, its rollouts heard at its own `dep_q`.
+- **Rooms** (`--room-share` 0.5, `--bank-dir`): half the streams hold a room's noise in their
+  source wherever nobody speaks (lead, gaps, after the source EOS), the rest digital silence. Text
+  written there costs BLEU like any extra word. Why, and how rooms are drawn: [noisy-source](noisy-source.md#rooms).
 - **A rollout's length** is its stream's plus `--tail-seconds` (20 s, the tail evaluation
   generates past a source), up to a whole 16-frame bucket and at most `--frames` (1,200, the
   longest stream plus that tail): `grpo.rollout_frames`. Its last reward sits there, so text a
-  rollout emits later scores nothing, as evaluation would not hear it. Until 2026-11-10 every
-  rollout ran `--frames`, 21 s past the longest stream and up to 66 s past the shortest.
+  rollout emits later scores nothing, as evaluation would not hear it.
   - A window's streams are generated longest first (`sample_window`), each batch to its own
     longest rollout; a row's frames past its own length are -1.
   - The loss keeps what a forward of the rollout's own length scores (`kept_tokens`): a
@@ -218,12 +220,10 @@ The CUDA profile and dry run are under [Running](#running).
   read 71% busy on average, under 50% in 29% of its samples (between stages, and generation's
   short kernels).
 - **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
-  is reset to PAD's ([sft-training](sft-training.md#trainer)); until 2026-11-10 GRPO kept the
-  checkpoint's own row. Rollouts and scoring share the row, and the first ratio is still 1.
-- **A failed evaluation promotes nothing**, though its pair still reaches the Hub. The
-  non-empty gate allows a tenth of a set's rows since 2026-11-10: at 8 of 180 a two-update dry
-  run failed both its evaluations on round 4's silent Common Voice rows alone
-  ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
+  is reset to PAD's ([sft-training](sft-training.md#trainer)). Rollouts and scoring share the
+  row, and the first ratio is still 1.
+- **A failed evaluation promotes nothing**, though its pair still reaches the Hub. The non-empty
+  gate allows a tenth of a set's rows ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
 - **The gradient norm's scale** (0.42–0.95 million before clipping in a 2026-11-06 dry run,
   against SFT's ~8–15): the loss sums over every kept token of the update's 128 rollouts
   (Σ_q c_q Σ_t, as the paper writes it), so its norm runs ~10⁵ times SFT's mean loss. Clip 1.0

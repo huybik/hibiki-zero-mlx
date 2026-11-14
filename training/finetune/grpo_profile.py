@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gen-batch", type=int, nargs="+", default=[192, 384, 512])
     parser.add_argument("--micro-batch", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--reward-workers", type=int, default=8)
+    grpo.add_room_args(parser)
     return parser.parse_args()
 
 
@@ -195,14 +196,10 @@ def main() -> None:
     tokenizer = info.get_text_tokenizer()
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
-    dataset = streams.StreamDataset(
-        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks
-    )
-    silence = silence[:codebooks]  # the model's sources and their padding (grpo.main)
+    dataset = grpo.stream_dataset(args, info, rows, layout, codebooks, device)
     count = max(args.gen_batch)
     stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
-    sources = torch.stack([grpo.stream_source(dataset, index, silence)
+    sources = torch.stack([grpo.stream_source(dataset, index, codebooks)
                            for index in stream_ids for _ in range(args.group)])
     report: dict = {"frames": args.frames, "group": args.group,
                     "stream_frames": [dataset.streams[i].frames for i in stream_ids]}
@@ -217,7 +214,7 @@ def main() -> None:
                                   "exp_avg": torch.zeros_like(param),
                                   "exp_avg_sq": torch.zeros_like(param)}
     report["resident_gib"] = torch.cuda.memory_allocated() / 2**30
-    silence_frame = silence[:, -1].long().to(device)
+    silence_frame = dataset.silence[:codebooks, -1].long().to(device)
 
     # Phase 1: generation.
     rollouts = profile_generation(args, info, lm, optimizer, sources, silence_frame, report, write)

@@ -1,9 +1,9 @@
 # Noisy Vietnamese source
 
 Read when touching `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py`, the
-`en-vi-val-noisy` evaluation set or a `*-noisy` cache.
+`en-vi-val-noisy` evaluation set, a `*-noisy` cache or GRPO's rooms (`streams.room_codes`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Conditions](#conditions) ·
-[Noisy cache](#noisy-cache) · [Speed](#speed) · [Checks](#checks) ·
+[Rooms](#rooms) · [Noisy cache](#noisy-cache) · [Speed](#speed) · [Checks](#checks) ·
 [Evaluation](#evaluation)
 
 ## Why
@@ -52,8 +52,37 @@ clip ─► reverb p 0.5 ─► + noise p 0.8, SNR U[5, 30] dB ─► band ─�
   - speed changes: the cached delays and text timing assume the clip's own timing, and a slowed
     source would move Vietnamese words past the English that translates them;
   - low-bitrate codecs.
-- Known gap: stream gaps hold the encoded digital-silence track, so a noisy row sits between
-  silent gaps where a real recording stays noisy.
+- Known gap: SFT stream gaps hold the encoded digital-silence track, so a noisy row sits between
+  silent gaps where a real recording stays noisy. GRPO's gaps hold rooms ([Rooms](#rooms)).
+
+## Rooms
+
+GRPO's streams hold a room's noise in their source wherever nobody speaks, in a `--room-share`
+(0.5) of streams; the rest keep digital silence, what a voice gate passes
+([grpo](grpo.md#design)). The user asked for it (2026-11-14: "can we add artifical silence into
+the data so that grpo also penalise translating when user silent?").
+
+- **Why:** a live-like check on the Mac (2026-11-14, MLX, main.py's seed, a primed stream with no
+  source EOS and no voice gate) counted the words written in 30 s of quiet after a FLEURS dev
+  sentence or after the primer alone: rooms at −55 and −40 dBFS peaks, white −45, pink −40,
+  door-and-cough events at −30, all through the level stage.
+  - The teacher (GRPO update 1,400, 6 bits) wrote nothing on noise alone (20 runs); after a
+    sentence, once the late end of its own translation.
+  - The distilled student (update 8,000, bf16) wrote on noise alone in EN→VI 10 of 10 times
+    ("Tổng thống Mỹ…", the English primer's topic, even after a 4 s settle; 55 tokens once on
+    events), VI→EN 0 of 10. It stayed quiet through the settle's digital silence and wrote
+    once noise came. The plain-SFT student (update 48,000) wrote on noise alone VI→EN 10 of 10.
+  - GRPO's BLEU already teaches quiet after a source (the teacher's FLEURS dev rows ending more
+    than 4 s after it: 136 → 27 VI→EN, 165 → 33 EN→VI), but in digital silence only.
+- **Drawn** by `augment.room_tracks`: a background noise looped from a drawn offset, peaking at
+  U[−65, −35] dBFS, a foreground event every 15 s on average peaking at U[−45, −25], then the
+  level stage from the track's start, as on a new stream. After it, frame peaks sit at a median
+  −36 to −39 dBFS, events up to −20. `streams.room_codes` encodes 256 of them, each `--frames`
+  long, from a fresh state on the run's GPU at its start; `StreamDataset` draws one for a stream
+  from (seed, index), and `assemble` puts it in the source's lead, gaps and the stretch after the
+  EOS; the target keeps silence. Mimi codes codebook 0 as silence on ~45% of such frames.
+- **Held out:** every fifth file of each kind (26 backgrounds, 162 events; `quiet_noises(bank,
+  held_out=True)`), for re-running the check on a model after its GRPO.
 
 ## Noisy cache
 

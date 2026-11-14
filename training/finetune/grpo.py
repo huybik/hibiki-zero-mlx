@@ -26,6 +26,11 @@ both ways by default): the run promotes the checkpoint with the best mean chrF o
 those that pass every set's health gates and end no more than LATENCY_SLACK_S later than the start
 on each (its median end offset); val_log.jsonl records each evaluation's verdict.
 
+A --room-share of streams hold a room's noise in their source wherever nobody speaks, instead of
+digital silence (`streams.room_codes`, from the noise bank in --bank-dir): text written there
+costs BLEU like any other extra word, so the policy learns to stay quiet in a room, as a phone's
+microphone hears one between sentences.
+
 Rollouts replay a cached stream's Vietnamese through `LMGen` and keep every sampled text and
 audio token in the training frame layout, so the training forward scores them in exactly the
 contexts they were sampled in. In that layout, `LMGen` reads the input given at step s as source
@@ -52,6 +57,7 @@ import numpy as np
 import torch
 
 from training.finetune import common, rewards, streams
+from training.prep import augment
 from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
@@ -80,7 +86,7 @@ RESUME_KEYS = (
     "stream_seconds", "frames", "tail_seconds", "streams", "group", "updates", "tau", "lr", "adam_beta1",
     "adam_beta2", "weight_decay", "grad_clip", "epsilon", "alpha", "text_weight", "temperature",
     "top_k", "eval_pairs", "eval_batch_size", "eval_every", "save_every", "keep_checkpoints",
-    "seed", "train_rows", "train_streams", "eval_rows",
+    "seed", "train_rows", "train_streams", "eval_rows", "room_share",
 )
 EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both directions)
     Path("data/eval/fleurs-vi/dev.jsonl"),
@@ -98,6 +104,10 @@ TEMPERATURE = 0.8  # rollouts sample, and logprobs are taken, at evaluation's te
 TOP_K = 250
 EPSILON = 0.2  # the ratio clip
 TEXT_WEIGHT = 100.0  # c_0: the text stream against 1 for each audio codebook
+# Rooms where nobody speaks, drawn once (a window's 640 streams draw from them). Half the streams
+# hold one: the other half keep digital silence, what a voice gate passes between sentences.
+ROOMS = 256
+ROOM_SHARE = 0.5
 
 
 def stream_order(count: int, seed: int) -> np.ndarray:
@@ -202,17 +212,33 @@ def stream_sentences(
     return sentences
 
 
-def stream_source(
-    dataset: streams.StreamDataset, index: int, silence: torch.Tensor
-) -> torch.Tensor:
-    """A stream's Vietnamese codes [Q, T] at the model's Q codebooks (`silence`'s, [Q, frames]),
-    silence past its end. The dataset's items hold text, then Q target and Q source codebooks."""
+def stream_dataset(
+    args: argparse.Namespace, info: Any, rows: list[streams.Row], layout: streams.Layout,
+    codebooks: int, device: torch.device,
+) -> streams.StreamDataset:
+    """The run's streams, planned from `rows` with --seed: assembled at the cache's codebooks and
+    cut to the model's first `codebooks`, as the SFT trainer's are, each as long as --frames at
+    most; a --room-share of them hold a room in their source where nobody speaks."""
+    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
+    rooms = None
+    if args.room_share > 0:
+        bank = augment.fetch_bank(args.bank_dir)
+        rooms = streams.room_codes(info.get_mimi(device=device), bank, ROOMS, args.frames, layout.dep_q, args.seed)
+    return streams.StreamDataset(
+        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks,
+        rooms, args.room_share,
+    )
+
+
+def stream_source(dataset: streams.StreamDataset, index: int, codebooks: int) -> torch.Tensor:
+    """A stream's source codes [Q, T] at the model's Q `codebooks`, T the dataset's silence
+    frames: the stream, then what its source holds wherever nobody speaks (a room or silence,
+    `source_quiet`). The dataset's items hold text, then Q target and Q source codebooks."""
     codes = dataset[index]["codes"]
-    count = silence.shape[0]
-    if codes.shape[0] != 1 + 2 * count:
-        raise ValueError(f"A stream of {codes.shape[0]} rows is not text and twice {count} codebooks")
-    source = silence.long().clone()
-    source[:, : codes.shape[1]] = codes[1 + count :]
+    if codes.shape[0] != 1 + 2 * codebooks:
+        raise ValueError(f"A stream of {codes.shape[0]} rows is not text and twice {codebooks} codebooks")
+    source = dataset.source_quiet(index)[:codebooks].long().clone()
+    source[:, : codes.shape[1]] = codes[1 + codebooks :]
     return source
 
 
@@ -460,8 +486,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=200)
     parser.add_argument("--save-every", type=int, default=20)
     parser.add_argument("--keep-checkpoints", type=int, default=2)
+    add_room_args(parser)
     parser.add_argument("--seed", type=int, default=44)
     return parser.parse_args()
+
+
+def add_room_args(parser: argparse.ArgumentParser) -> None:
+    """The rooms' options, the profiler's too."""
+    parser.add_argument(
+        "--room-share", type=float, default=ROOM_SHARE,
+        help="The share of streams whose source holds a room's noise where nobody speaks; 0 keeps digital silence.",
+    )
+    parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="Where the noise bank is, fetched there once.")
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -482,6 +518,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--frames must hold the longest stream and the tail after it")
     if args.tail_seconds < 0:
         raise ValueError("--tail-seconds must not be negative")
+    if not 0.0 <= args.room_share <= 1.0:
+        raise ValueError("--room-share must be in [0, 1]")
     common.require_torch_compile()
 
 
@@ -506,13 +544,7 @@ def main() -> None:
     tokenizer = info.get_text_tokenizer()
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    # Streams are assembled at the cache's codebooks and cut to the model's first `codebooks`,
-    # as the SFT trainer's are; a model's sources and their padding are that silence's first rows.
-    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
-    dataset = streams.StreamDataset(
-        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks
-    )
-    silence = silence[:codebooks]
+    dataset = stream_dataset(args, info, rows, layout, codebooks, device)
     if len(dataset) < args.updates * args.streams:
         raise ValueError(f"{len(dataset)} streams, fewer than {args.updates} updates need")
     print(f"Planned {len(dataset)} streams from {len(rows)} rows; {args.updates} updates use "
@@ -540,7 +572,7 @@ def main() -> None:
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     stream_weights = torch.ones(1 + lm.dep_q, device=device)
     stream_weights[0] = args.text_weight
-    silence_frame = silence[:, -1].long().to(device)
+    silence_frame = dataset.silence[:codebooks, -1].long().to(device)
     tail = round(args.tail_seconds * streams.FRAME_RATE)
     delays = torch.tensor(lm.delays[: 1 + lm.dep_q])  # the text and target codebooks'
 
@@ -609,7 +641,7 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         stream_ids = [int(order[index]) for update in range(step, step + window)
                       for index in range(update * args.streams, (update + 1) * args.streams)]
-        sources = torch.stack([stream_source(dataset, index, silence) for index in stream_ids])
+        sources = torch.stack([stream_source(dataset, index, codebooks) for index in stream_ids])
         sources = sources.repeat_interleave(args.group, dim=0)
         lengths = torch.tensor(
             [rollout_frames(dataset.streams[index].frames, tail, args.frames)
