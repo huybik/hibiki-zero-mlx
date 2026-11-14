@@ -42,7 +42,20 @@ ROOT = Path(__file__).resolve().parents[2]  # repo root (inference/hibiki_mlx/ -
 W = ROOT / "weights"
 # Upstream's 3B, staged from weights/ by `convert_mlx.py --bits 4` (README).
 UPSTREAM = W / "hibiki-zero-3b-q4"
-SAMPLE = ROOT / "inference" / "assets" / "leon.wav"  # French gate clip
+ASSETS = ROOT / "inference" / "assets"
+SAMPLE = ASSETS / "leon.wav"  # French gate clip
+# One short sentence in each source language (FLEURS dev, CC BY 4.0), fed first and unheard when
+# the user says which language they speak: the two-way model guesses the direction from the voice
+# and gets some voices wrong, but a training stream never switches direction, so it keeps the one
+# the primer sets (docs/agent-memory/two-way.md#next). A stopgap until the direction is a trained
+# input. main.py seeds the sampler before every run, so priming comes out the same each time: each
+# primer was chosen to settle at that seed with its translation complete. One that does not, or
+# ends in "he said", runs into every clip's translation.
+PRIMERS = {"vi": ASSETS / "primer_vi.wav", "en": ASSETS / "primer_en.wav"}
+# After the primer, silence until the model has finished translating it: this long without a new
+# word, at most PRIMER_MAX_GAP_S. A fixed 2 s left primer words in the speech's translation.
+PRIMER_SETTLE_S = 1.5
+PRIMER_MAX_GAP_S = 4.0
 SENTINEL = object()
 FRAME = 1920  # samples at 24 kHz: one 12.5 Hz codec frame (80 ms)
 # Silence after the source, the source EOS frame included: training's evaluation generates its
@@ -172,6 +185,37 @@ def load(weights_dir: Path) -> Model:
     )
 
 
+def prime(model: Model, gen: models.LmGen, mimi_enc: rustymimi.Tokenizer, ct, language: str) -> None:
+    """Steps the primer of `language` (a PRIMERS key) through `gen` and `mimi_enc` at the start of
+    a stream, then silence until the model has written no word for PRIMER_SETTLE_S (at most
+    PRIMER_MAX_GAP_S). Their output is dropped."""
+    pcm, _ = sphn.read(str(PRIMERS[language]), sample_rate=24000)
+    pcm = Leveller()(pcm[0])
+    pcm = np.pad(pcm, (0, -pcm.shape[-1] % FRAME))
+    pad_token = model.tokenizer.pad_id()
+
+    def step(frame: np.ndarray) -> int:
+        codes = mimi_enc.encode_step(frame[None, None, :])
+        oat = np.transpose(codes, (0, 2, 1))[0, :, : model.config.other_codebooks]
+        return gen.step(mx.array(oat), ct)[0].item()
+
+    for frame in pcm.reshape(-1, FRAME):
+        step(frame)
+    silence = np.zeros(FRAME, np.float32)
+    settle, gap, quiet = round(PRIMER_SETTLE_S * 12.5), 0, 0
+    while quiet < settle and gap < round(PRIMER_MAX_GAP_S * 12.5):
+        quiet = quiet + 1 if step(silence) <= pad_token else 0
+        gap += 1
+
+
+def primer_steps(language: str | None) -> int:
+    """The most steps `prime` can run for `language`, none without one."""
+    if language is None:
+        return 0
+    pcm, _ = sphn.read(str(PRIMERS[language]), sample_rate=24000)
+    return -(-pcm.shape[-1] // FRAME) + round(PRIMER_MAX_GAP_S * 12.5)
+
+
 @dataclass(frozen=True)
 class Translation:
     text: str
@@ -183,7 +227,11 @@ class Translation:
 
 
 def translate(
-    model: Model, infile: str | Path, audio: bool = True, quiet_s: float | None = None
+    model: Model,
+    infile: str | Path,
+    audio: bool = True,
+    quiet_s: float | None = None,
+    speaking: str | None = None,
 ) -> Translation:
     """Translates a file as training's free-running evaluation does: the first channel through
     the input level stage, zero-padded to whole frames, then one frame whose source codes are all
@@ -191,6 +239,8 @@ def translate(
     that heard the source EOS; a text EOS before it is kept going past, so a long file is
     translated to its end (training's evaluation stops at any EOS). With `quiet_s` it also stops
     once no word has come for that long since the later of the source EOS and the last word.
+    With `speaking` (a PRIMERS key) the stream starts with that language's primer (`prime`), whose
+    steps `frames` leaves out.
 
     Step t hears source frames before t, as training's forward does; moshi's LMGen in the
     evaluation hears one frame of silence more before the clip (80 ms later throughout)."""
@@ -211,13 +261,15 @@ def translate(
 
     gen = models.LmGen(
         model=lm,
-        max_steps=steps + tail + 8,
+        max_steps=primer_steps(speaking) + steps + tail + 8,
         text_sampler=model.text_sampler,
         audio_sampler=model.audio_sampler,
         cfg_coef=1.0,
         check=False,
     )
     lm.warmup(ct)
+    if speaking:
+        prime(model, gen, mimi_enc, ct, speaking)  # before the encoder thread takes mimi_enc
     enc_q: queue.Queue = queue.Queue(maxsize=64)  # encoder -> main
     dec_q: queue.Queue = queue.Queue(maxsize=64)  # main -> decoder
     out_pcm: list = []
@@ -278,7 +330,9 @@ def translate(
             last_word = processed - 1
         pieces.append(text(tt))
         audio_tokens = gen.last_audio_tokens()
-        if audio and audio_tokens is not None and gen_cb > 0:
+        # Audio lags text by max_delay steps, so the first steps' audio is from before the clip:
+        # none at a stream's start, the primer's after `prime`.
+        if audio and processed > gen.max_delay and audio_tokens is not None and gen_cb > 0:
             dec_q.put(np.array(audio_tokens[:, :, None]).astype(np.uint32))
         # The source EOS went in at step `steps`; step processed - 1 has just run.
         if quiet is not None and processed - 1 - max(steps, last_word or 0) >= quiet:
@@ -307,11 +361,17 @@ def translate(
     )
 
 
-def run(infile: str, outfile: str, model: Model, text_outfile: str | None = None):
+def run(
+    infile: str,
+    outfile: str,
+    model: Model,
+    text_outfile: str | None = None,
+    speaking: str | None = None,
+):
     """Translates a file into `outfile` (24 kHz WAV) and its text, and prints both; stops after
-    QUIET_S without a word once the source has ended."""
+    QUIET_S without a word once the source has ended. `speaking` primes it (`translate`)."""
     t0 = time.perf_counter()
-    out = translate(model, infile, quiet_s=QUIET_S)
+    out = translate(model, infile, quiet_s=QUIET_S, speaking=speaking)
     wall = time.perf_counter() - t0
 
     Path(outfile).parent.mkdir(parents=True, exist_ok=True)

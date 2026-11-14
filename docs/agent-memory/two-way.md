@@ -282,6 +282,8 @@ English on 3 of 3 seeds. Not echo either: the file runs played nothing (in the a
 add echo, which the model translates back). Restricting the text to ASCII pieces (7,036 of 48,000
 banned, byte pieces included) as an "English target" hint gave English on 1 of 3 seeds; the others
 wrote unaccented Vietnamese or switched mid-way, so the model's guess of the source wins over a
-text mask. The direction needs to be a signal the model is trained on (a per-direction condition
+text mask. Priming the stream with a short sentence in the spoken language does set it (the
+runtimes' `--speaking`, [mlx-inference](mlx-inference.md#runtime)), at a cost where the guess was
+right. The direction needs to be a signal the model is trained on (a per-direction condition
 the runtimes set, beside the `description` one), or training sources that cover such voices
 (more real Vietnamese speakers and laptop-mic English), or a reward for the target language.

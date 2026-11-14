@@ -29,8 +29,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   UTF-8 used to be dropped whole; Python writes each streamed character in one small write, which
   a pipe does not split, so only a long write such as a traceback can be cut mid-character) and
   reads what is left at exit.
-  `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by System Events (buttons
-  by index: `button 2 of group 2 of group 1` is Translate, then Stop), once the terminal has
+  Its "Spoken language" picker (Auto, Vietnamese, English) passes `--speaking` to both modes
+  ([priming](#runtime)). `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by
+  System Events (by index under `group 1 of window "Hibiki Test"`: `group 1` the model, `radio
+  button 1-3 of radio group 1 of group 2` the language, `button 1 of group 3` Choose audio and
+  `button 2` Translate, then Stop, `button 1 of group 4` the mic, `scroll area 1 of group 5` the
+  translation, `static text 2 of group 1 of window` the status), once the terminal has
   Accessibility; type a path into the file panel's Go-to field a segment at a time, since its
   completion swallows a `/` typed right after a folder name.
 
@@ -104,6 +108,34 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   U+FFFD where SentencePiece writes one per byte. Without byte pieces its text equals the old
   piece-by-piece output. `<s>` is printed as before. Mic mode prints the flushed tail before
   `[stopping]`.
+- `--speaking vi|en` (`translate(speaking=)`, `run_mic`) primes the direction, a stopgap until it
+  is a trained input ([two-way](two-way.md#next)): `prime` steps a short sentence in that language
+  (`PRIMERS`: `inference/assets/primer_{vi,en}.wav`, FLEURS dev, CC BY 4.0: "Nửa giờ để đi dạo đến
+  ngôi làng thú vị này thật xứng đáng." and "U.S. President George W. Bush welcomed the
+  announcement.") and then silence until the model has written no word for `PRIMER_SETTLE_S`
+  (1.5 s, at most `PRIMER_MAX_GAP_S`, 4 s) through the stream's own Mimi and LM, and drops their
+  output, the audio of the first `max_delay` steps after it included; the stream keeps that
+  direction, as training streams never switch. The gate never primes; priming takes ~70–90 of
+  rustymimi's ~2,920-frame session limit.
+  - main.py seeds before every run, so priming is the same each time: pick a primer by what it
+    does at that seed (299792458). It must settle before the cap with its translation complete:
+    of 8 English and 4 Vietnamese FLEURS sentences screened (2026-11-14), the ones that hit the cap
+    ran their unfinished translation into every clip ("…care of the fish."), and the first English
+    primer ("He built a WiFi door bell, he said.") began a quote every English clip continued. The
+    chosen two settle after 35 and 32 steps of silence.
+  - Measured at that seed (2026-11-14, OneVoice, 6-bit two-way), Auto → primed: the user's own
+    Vietnamese (laptop mic) English; the 18 English rows that came out English, 2 → 17 in
+    Vietnamese, chrF 10.6 → 30.1; 25 other English rows 32.9 → 36.0; 25 Vietnamese rows 41.9 →
+    43.5. 25 rows move chrF by a few points, so picking the spoken language costs nothing
+    measurable. Over varied seeds the earlier primers cost up to 18 chrF on Vietnamese: the model
+    takes the speech for the primer's continuation (reported speech after "…, ông cho biết."), so
+    a new primer needs the same check.
+  - What chrF does not show (second review, 2026-11-14, mic mode on a fake sound device playing
+    clips in real time, and files): primed sessions start talking 1.2–3.2 s later than Auto (the
+    user's voice +2.6 s), and the English primer's news register carries over: 4 of 7 English mic
+    sessions and 4 of 10 English files opened with a stray `"` (Auto none), some with reported
+    speech ("Ông nói có…"), and one mic session (EV-0228) stalled for ~80 steps after five words,
+    the same on both runs. Vietnamese priming showed none of it on 8 clips.
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers, which adds one frame of output latency. A worker's error ends the session and is
   raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the

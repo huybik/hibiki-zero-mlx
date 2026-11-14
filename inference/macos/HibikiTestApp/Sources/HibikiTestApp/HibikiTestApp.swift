@@ -32,6 +32,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             header
             modelPicker
+            languagePicker
             fileControls
             microphoneControls
             transcript
@@ -71,6 +72,27 @@ struct ContentView: View {
                     .textSelection(.enabled)
                 Button("Choose…", action: controller.chooseModel)
                     .disabled(controller.isRunning)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var languagePicker: some View {
+        GroupBox("Spoken language") {
+            HStack(spacing: 12) {
+                Picker("Spoken language", selection: $controller.speaking) {
+                    Text("Auto").tag(String?.none)
+                    Text("Vietnamese").tag(String?.some("vi"))
+                    Text("English").tag(String?.some("en"))
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(controller.isRunning)
+                Text("Auto lets the model guess. If it answers in the language you speak, pick that language.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
             }
             .padding(.vertical, 4)
         }
@@ -184,6 +206,8 @@ final class InferenceController: ObservableObject {
     private static let modelDefaultsKey = "modelPath"
 
     @Published var modelURL: URL?
+    /// The language spoken, nil to let the model guess; main.py's --speaking primes the direction.
+    @Published var speaking: String?
     @Published var audioURL: URL?
     @Published var outputAudioURL: URL?
     @Published var transcript = ""
@@ -289,7 +313,7 @@ final class InferenceController: ObservableObject {
                 "--model", modelURL.path,
                 "--out", output.path,
                 "--text-out", textOutput.path,
-            ],
+            ] + speakingArguments,
             mode: .file,
             outputAudio: output,
             textOutput: textOutput
@@ -303,9 +327,13 @@ final class InferenceController: ObservableObject {
                 repositoryRoot.appendingPathComponent("inference/main.py").path,
                 "--mic",
                 "--model", modelURL.path,
-            ],
+            ] + speakingArguments,
             mode: .microphone
         )
+    }
+
+    private var speakingArguments: [String] {
+        speaking.map { ["--speaking", $0] } ?? []
     }
 
     func stop() {
