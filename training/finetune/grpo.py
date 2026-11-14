@@ -131,7 +131,8 @@ def rollout(lm_gen: Any, sources: torch.Tensor, silence: torch.Tensor) -> torch.
     batch, _, frames = sources.shape
     audio_delays = lm.delays[1 : 1 + lm.dep_q]
     steps = frames + max(audio_delays)
-    # Step s reads source frame s - 1 (step 0's input is never read); past the stream, silence.
+    # Step s reads source frame s - 1 (step 0's input is never read); past `sources` (the batch's
+    # longest rollout), silence, which no kept token reads.
     tail = silence[None, :, None].expand(batch, -1, steps - frames - 1)
     inputs = torch.cat([sources[:, :, :1], sources, tail], dim=-1)
     texts: list[torch.Tensor] = []
