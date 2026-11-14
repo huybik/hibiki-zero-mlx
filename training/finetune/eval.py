@@ -128,6 +128,8 @@ def main() -> None:
         **{field.name: getattr(args, field.name) for field in fields}
     )
     checkpoint_info = common.load_checkpoint_info(args)
+    if args.direction and not checkpoint_info.lm_config.get("conditioners"):
+        raise ValueError(f"--direction needs a direction-conditioned model; {args.config_path} has no conditioners")
 
     print(f"Loading Mimi on {device} from {repo_display_path(args.mimi_weight)}")
     mimi = checkpoint_info.get_mimi(device=device)

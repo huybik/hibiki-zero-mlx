@@ -275,8 +275,10 @@ text mask. So the direction is a condition the model is trained on and the runti
   `get_lmgen` in free-running evaluation and GRPO's rollouts. A model without conditioners (the
   upstream model, older checkpoints) gets none.
 - `train.py --condition-lr` (1e-4) is the table's peak rate on the same warmup and cosine: at a
-  fine-tune's rate it would barely move. `eval.py --direction` conditions every row on one
-  direction: the obedience test (flipped, the output language should follow it).
+  fine-tune's rate it would barely move. GRPO keeps one group, so there the table moves at GRPO's
+  rate, in effect frozen. `eval.py --direction` conditions every row on one direction (a model
+  without the condition refuses it): the obedience test (flipped, the output language should
+  follow it). `cut.py` refuses a config that would drop the parent's table.
 - The run, `twoway_direction` (`restart.sh direction`, started 2026-11-14 04:59 UTC): update 1,400
   with the table, both directions' rows, 4,608-frame batches, the model at peak 1e-6 to keep GRPO's
   gains, 12,000 updates validated every 4,000.

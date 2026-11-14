@@ -201,6 +201,10 @@ def main() -> None:
         needed = {source_key(key, layers, args.codebooks, depformer_layers, int(parent_config["dep_q"]))
                   for key in shapes}
         parent = {key: f.get_tensor(key) for key in needed & names}
+    # A config without the parent's conditioner would cut a student that silently drops the table.
+    if dropped := sorted(name for name in names - needed if name.startswith("condition_provider.")):
+        raise ValueError(f"{args.config_path} has no conditioner for the parent's {', '.join(dropped)}: "
+                         "pass the parent's own config")
     fresh = fresh_heads(config, parent["text_linear.weight"].dtype, args.seed) if args.heads else None
     state = cut_state(parent, shapes, layers, args.codebooks, depformer_layers, int(parent_config["dep_q"]), fresh)
     metadata["student_of"] = repo_display_path(weight)
