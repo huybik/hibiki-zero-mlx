@@ -60,10 +60,13 @@ BANDS = {
 TRANSITION = 0.1  # raised-cosine edge, as a fraction of the cutoff
 # A room where nobody speaks, before the level stage raises it: a background peaking from a quiet
 # room to a loud one (the user's room peaked at -54 dBFS; the stage lifts a floor under -40 dBFS
-# to -40), with a foreground event (a door, a cough) every 15 s on average.
+# to -40), with an event (a door, a cough) starting every 15 s on average: an excerpt of a
+# foreground file (they run up to 8 min, median 11 s) of at most QUIET_EVENT_MAX_S.
 QUIET_PEAK_DB = (-65.0, -35.0)
 QUIET_EVENT_PEAK_DB = (-45.0, -25.0)
 QUIET_EVENTS_PER_S = 1 / 15
+QUIET_EVENT_MAX_S = 3.0
+QUIET_EVENT_FADE_S = 0.01  # an excerpt's cut edges ramp in and out, so they add no click
 QUIET_HELD_OUT = 5  # every fifth file of each kind of noise, kept out of room_tracks for testing
 
 
@@ -139,31 +142,43 @@ def quiet_noises(bank: Path, held_out: bool = False) -> dict[str, list[Path]]:
 
 def room_tracks(bank: Path, count: int, samples: int, seed: int) -> Iterator[np.ndarray]:
     """`count` tracks of `samples` of a room where nobody speaks, at 24 kHz, as the runtimes hand
-    them to Mimi: a background noise looped from a drawn offset and peaking in QUIET_PEAK_DB, a
-    foreground event peaking in QUIET_EVENT_PEAK_DB at QUIET_EVENTS_PER_S on average, then the
-    input level stage, run from the track's start as on a new stream. Drawn from `seed` and the
-    files `quiet_noises` keeps."""
+    them to Mimi: a background noise looped from a drawn offset and peaking in QUIET_PEAK_DB, and
+    events starting at QUIET_EVENTS_PER_S on average, each an excerpt of at most
+    QUIET_EVENT_MAX_S of a foreground file peaking in QUIET_EVENT_PEAK_DB; then the input level
+    stage, run from the track's start as on a new stream. Drawn from `seed` and the files
+    `quiet_noises` keeps."""
     noises = quiet_noises(bank)
     rng = random.Random(seed)
     read: dict[Path, np.ndarray] = {}
 
-    def noise(path: Path, peak_db: float) -> np.ndarray:
+    def file(path: Path) -> np.ndarray:
         if path not in read:
             read[path] = _read(path)
-        wav = read[path]
+        return read[path]
+
+    def at_peak(wav: np.ndarray, peak_db: float) -> np.ndarray:
         return wav * (10 ** (peak_db / 20) / max(float(np.abs(wav).max()), 1e-6))
 
+    longest = round(QUIET_EVENT_MAX_S * SAMPLE_RATE)
+    fade = round(QUIET_EVENT_FADE_S * SAMPLE_RATE)
     for _ in range(count):
-        background = noise(rng.choice(noises["background"]), rng.uniform(*QUIET_PEAK_DB))
+        background = file(rng.choice(noises["background"]))
         start = rng.randrange(len(background))
-        track = np.resize(np.roll(background, -start), samples).astype(np.float32)
+        track = at_peak(np.resize(np.roll(background, -start), samples), rng.uniform(*QUIET_PEAK_DB))
+        track = track.astype(np.float32)
         at = rng.expovariate(QUIET_EVENTS_PER_S) * SAMPLE_RATE
         while at < samples:
-            event = noise(rng.choice(noises["foreground"]), rng.uniform(*QUIET_EVENT_PEAK_DB))
+            source = file(rng.choice(noises["foreground"]))
+            offset = rng.randrange(max(1, len(source) - longest + 1))
+            event = source[offset : offset + longest].copy()
+            ramp = np.linspace(0.0, 1.0, min(fade, len(event) // 2), dtype=np.float32)
+            if len(ramp):
+                event[: len(ramp)] *= ramp
+                event[len(event) - len(ramp) :] *= ramp[::-1]
             begin = int(at)
             end = min(samples, begin + len(event))
-            track[begin:end] += event[: end - begin]
-            at = end + rng.expovariate(QUIET_EVENTS_PER_S) * SAMPLE_RATE
+            track[begin:end] += at_peak(event, rng.uniform(*QUIET_EVENT_PEAK_DB))[: end - begin]
+            at += rng.expovariate(QUIET_EVENTS_PER_S) * SAMPLE_RATE
         yield Leveller()(np.clip(track, -1.0, 1.0))
 
 

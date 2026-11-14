@@ -57,7 +57,6 @@ import numpy as np
 import torch
 
 from training.finetune import common, rewards, streams
-from training.prep import augment
 from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
@@ -214,16 +213,17 @@ def stream_sentences(
 
 def stream_dataset(
     args: argparse.Namespace, info: Any, rows: list[streams.Row], layout: streams.Layout,
-    codebooks: int, device: torch.device,
+    codebooks: int, mimi: Any,
 ) -> streams.StreamDataset:
     """The run's streams, planned from `rows` with --seed: assembled at the cache's codebooks and
     cut to the model's first `codebooks`, as the SFT trainer's are, each as long as --frames at
-    most; a --room-share of them hold a room in their source where nobody speaks."""
+    most; a --room-share of them hold a room in their source where nobody speaks, encoded by
+    `mimi` (the run's, on its GPU)."""
     silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
     rooms = None
     if args.room_share > 0:
-        bank = augment.fetch_bank(args.bank_dir)
-        rooms = streams.room_codes(info.get_mimi(device=device), bank, ROOMS, args.frames, layout.dep_q, args.seed)
+        bank = require_dir(args.bank_dir / "RIRS_NOISES", "noise bank (grpo_launch.sh fetches it)")
+        rooms = streams.room_codes(mimi, bank, ROOMS, args.frames, layout.dep_q, args.seed)
     return streams.StreamDataset(
         rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks,
         rooms, args.room_share,
@@ -497,7 +497,7 @@ def add_room_args(parser: argparse.ArgumentParser) -> None:
         "--room-share", type=float, default=ROOM_SHARE,
         help="The share of streams whose source holds a room's noise where nobody speaks; 0 keeps digital silence.",
     )
-    parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="Where the noise bank is, fetched there once.")
+    parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="The noise bank's parent (augment.fetch_bank's root).")
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -518,8 +518,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--frames must hold the longest stream and the tail after it")
     if args.tail_seconds < 0:
         raise ValueError("--tail-seconds must not be negative")
-    if not 0.0 <= args.room_share <= 1.0:
-        raise ValueError("--room-share must be in [0, 1]")
     common.require_torch_compile()
 
 
@@ -544,7 +542,8 @@ def main() -> None:
     tokenizer = info.get_text_tokenizer()
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    dataset = stream_dataset(args, info, rows, layout, codebooks, device)
+    mimi = info.get_mimi(device=device)
+    dataset = stream_dataset(args, info, rows, layout, codebooks, mimi)
     if len(dataset) < args.updates * args.streams:
         raise ValueError(f"{len(dataset)} streams, fewer than {args.updates} updates need")
     print(f"Planned {len(dataset)} streams from {len(rows)} rows; {args.updates} updates use "
@@ -567,7 +566,6 @@ def main() -> None:
 
     lm = common.load_policy(info, device)
     params = list(lm.parameters())
-    mimi = info.get_mimi(device=device)
     optimizer = common.fused_adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     stream_weights = torch.ones(1 + lm.dep_q, device=device)
