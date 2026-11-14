@@ -180,27 +180,11 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   resumes `twoway_sft`: it starts `twoway_sft_4608`, at two epochs until its length is decided
   with the user (the next run ends sooner, [sft-training](sft-training.md#trainer)).
 - The run (started 2026-11-11 04:32 UTC, 0.52 s an update, a validation ~7 min; on free-threaded
-  Python from step 8,000, [environment](environment.md#python)): at step 12,000 EN→VI rose
-  (FLEURS-en 6.37 → 13.45, `en-vi-val-en` 7.8/8.5 → 14.5/20.8, Vietnamese but not yet faithful)
-  while VI→EN FLEURS dev fell 38.54 → 36.73, 0.8 under the pilot's floor (MultiMed 37.26 → 36.09,
-  `en-vi-val` flat). The user kept it running to recheck at 24,000, then extended it to two epochs
-  (287,558 updates, ~41 h more; sft-recovery.md: extending a run). At 24,000 EN→VI kept rising
-  (FLEURS-en 16.98, `en-vi-val-en` 20.4/28.0) and VI→EN kept falling (FLEURS dev 35.64, MultiMed
-  35.67, `en-vi-val` cv27 40.49): the user chose two epochs selecting on both directions' FLEURS
-  dev (the mean), applied from step 32,000: the restated `best.json` promotes step 24,000 (mean
-  26.31 against 12,000's 25.09, both healthy). At 36,000 VI→EN fell again (FLEURS dev 33.75,
-  MultiMed 35.43), EN→VI gained little (FLEURS-en 17.87; `en-vi-val-en` 23.1/29.9), the mean fell
-  to 25.81 and FLEURS-en failed the health gate (344 of 392 rows non-empty against 353): no
-  promotion. Empty rows (no text token, no EOS, within the 20 s tail) are short clips (median
-  ~7 s against 9-11 s) and grow in both directions (FLEURS-vi 3 → 6 → 16, FLEURS-en 27 → 35 →
-  48). The user kept it running to 48,000, to stop there if VI→EN fell again and the mean did
-  not beat 26.31. At 48,000 VI→EN recovered (FLEURS dev 35.52, empty rows 16 → 5, MultiMed 35.40
-  with 13), EN→VI rose (FLEURS-en 18.35, `en-vi-val-en` 24.0/30.9) and the mean, 26.93, promoted
-  step 48,000: the run goes on. At 60,000 the mean, 27.11, promoted (EN→VI FLEURS-en 19.66,
-  `en-vi-val-en` 25.9/33.2; VI→EN FLEURS dev 34.57, MultiMed 35.19, `en-vi-val` cv27 42.88). At
-  72,000 FLEURS-en failed the health gate (66 empty rows; chrF 18.59, 21.39 on its non-empty rows
-  against 21.27 at 60,000): no promotion, while every other set rose or held (VI→EN FLEURS dev
-  34.89, MultiMed 36.07, `en-vi-val-en` 26.4/33.6).
+  Python from step 8,000, [environment](environment.md#python)): early on EN→VI rose fast while
+  VI→EN fell (FLEURS dev 38.54 → 33.75 by 36,000) and climbed back later. The user extended it to
+  two epochs (287,558 updates; sft-recovery.md: extending a run), selecting on the mean of both
+  directions' FLEURS dev from step 32,000. Empty rows (no text token, no EOS, within the 20 s tail)
+  are short clips (median ~7 s against 9-11 s); FLEURS-en's failed the health gate at times.
 - The run ended 2026-11-13 02:39 UTC after 287,558 updates (every validation is in its
   `val_log.jsonl`). chrF, FLEURS-en's empty rows in brackets, against the start (`eval.py`,
   seed 47):
@@ -284,6 +268,27 @@ banned, byte pieces included) as an "English target" hint gave English on 1 of 3
 wrote unaccented Vietnamese or switched mid-way, so the model's guess of the source wins over a
 text mask. Priming the stream with a short sentence in the spoken language does set it (the
 runtimes' `--speaking`, [mlx-inference](mlx-inference.md#runtime)), at a cost where the guess was
-right. The direction needs to be a signal the model is trained on (a per-direction condition
-the runtimes set, beside the `description` one), or training sources that cover such voices
-(more real Vietnamese speakers and laptop-mic English), or a reward for the target language.
+right.
+
+A trained direction condition was tried and dropped (user, 2026-11-14: update 1,400 stays; the code
+is in closed PRs #125 and #126). Moshi's `lut` conditioner, one entry a direction, was summed into
+every frame and started at zero on update 1,400:
+- Trained with the model (peak 1e-6, 4,608-frame batches), it lost GRPO's gains by update 4,000:
+  FLEURS dev VI→EN 38.8 against 42.7, EN→VI 32.3 against 38.8, VI→EN end offset 4.5 s against 1.1.
+- Trained alone with the model frozen (12,000 updates), it cut OneVoice EN→VI written in English
+  from 22 to 6 (PyTorch, seed 43) and cost 0.9 chrF on the 11 test sets, VI→EN ending 1-2 s later.
+  That gain came from the table's part common to both directions (a vector of norm 0.81 against
+  0.24 for their difference). With it removed, 26 of 100 came out English. Told the other
+  direction, clear speech still followed the audio (1%).
+- Guidance at decoding (moshi's `cfg_coef` 2-4, the other direction as the negative) wrote more
+  OneVoice English, 17-21.
+
+Why: in every training row the direction agrees with the audio, so nothing teaches the model to
+trust the condition over what it hears. Control would need rows where the audio cannot give it
+away, such as "repeat" rows built from the caches: an `en-vi` row with its English source swapped
+for its own Vietnamese target (Vietnamese in, Vietnamese out under `en-vi`), and the reverse for
+English, so the condition alone decides the output language. Priming (`--speaking`) works where
+the table did not: it puts real speech in the spoken language into the stream. The test clips are
+on the box: `data/eval/onevoice-{en,vi}/test.jsonl` and `data/eval/user/test.jsonl` (the user's
+`vi1` and `vi2` on the MacBook mic; `clean3` and `loop3`, OneVoice VI played through its speakers),
+with `user5/` holding each five times for five samples in one batch.

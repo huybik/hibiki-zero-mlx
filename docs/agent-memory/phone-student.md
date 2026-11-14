@@ -122,7 +122,10 @@ sampled before audio at each step, so this adds no latency and no parameters.
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
   it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
-  experiment, adopted only if they win.
+  experiment, adopted only if they win. `student_dep10` is tied to commit 09ef157 (a resume
+  refuses another, so the box checkout stays there until it ends); stopped at ~9,200 for the
+  direction trial ([two-way](two-way.md#next)), it resumed 2026-11-14 07:22 UTC from its pair
+  8,000, restored from the Hub into `runs/student_dep10/`.
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
   steps each, steps 151–300 by their real stream frames), each size one whole batch:
 
