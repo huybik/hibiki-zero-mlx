@@ -108,7 +108,8 @@ model's 0.664.
   `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
   ~±0.7 a set moves between evaluations. Its train log's losses are KL values, not CE.
 - A resume needs the start model and the teacher in `weights/`, neither on the run's Hub prefix:
-  `student_dep10`'s pair at the stop (its `checkpoints/` on the Hub) and the recovery repo's
+  the run's start (`student_dep10_distill/checkpoints/model_step032000.safetensors` on the Hub
+  for `student_dep10_anneal`) and the recovery repo's
   `grpo_twoway/best/best_step001400.safetensors`, besides the student dir ([Training a
   student](#training-a-student)).
 - `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
@@ -121,12 +122,17 @@ model's 0.664.
   teacher's timing comes with its distribution. A resume at 150 matched the uninterrupted run
   within 1.2e-4 (two fresh runs differ by 8e-4); plain SFT matched the pre-PR trainer within
   9e-5; the 3B distilled into itself gives a KL of 5e-4 (bf16 against fp32 masters).
-- **The run** (2026-11-14, user: "at this rate we never get 40+ chrf"): `restart.sh
-  student-distill`, `student_dep10_distill`, from `student_dep10`'s newest model (stopped for it),
-  on new streams of the same rows (seed 48), whole 12,288-frame batches at peak 3e-5 (where
-  `student_dep10`'s cosine had come down to), validation every 8,000, 184,000 updates (~1.9
-  epochs; 0.405 s an update with saves and validations, ~21 h, leaving the box ~14 h for a GRPO
-  run on it, its test sets and publishing). The heads student is
+- **The first run** (2026-11-14, user: "at this rate we never get 40+ chrf"):
+  `student_dep10_distill`, from `student_dep10`'s newest model, seed 48, whole 12,288-frame
+  batches at peak 3e-5 (where `student_dep10`'s cosine had come down to). Its KL fell 0.374 →
+  0.329 in 4,000 updates while the warmup's rate was near 1e-5, rose to 0.345 as the rate reached
+  3e-5 (update 9,200), and was back to only 0.329 at 30,000. FLEURS dev chrF VI→EN / EN→VI:
+  30.1 / 28.3 at 8,000 (its best, from 28.7 / 24.5), then 29.1 / 25.7, 27.2 / 26.4 and
+  30.0 / 23.8 at 16,000 to 32,000; VI→EN ran ever longer (length ratio 1.51 → 1.67). The rate was
+  too high for the KL, so it was stopped at 32,000 (2026-11-15).
+- **The run** `student_dep10_anneal` (`restart.sh student-distill`): from the first run's model
+  32,000, new streams (seed 49), peak 1e-5 after a 2% warmup, 110,000 updates (~12.4 h at 0.405 s,
+  leaving the box ~13 h for a GRPO run on it, its test sets and publishing). The heads student is
   deferred: trained on the targets alone, it would test the parallel heads under the recipe that
   falls short.
 
