@@ -15,7 +15,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
 ## Design
 
 - **A window** is `--tau` (20) updates. Each window:
-  1. a bf16 copy of the policy samples `--group` (4) rollouts for each of the window's
+  1. a bf16 copy of the policy samples `--group` (4) rollouts (each conditioned on its stream's
+     direction, as the updates are: [two-way](two-way.md#direction)) for each of the window's
      `--streams` (32) × 20 streams. Updates take the planned streams in a seeded order: planning
      keeps a document's rows together, so in plan order one long recording (~75 streams) would
      fill 2–3 updates. The plan is SFT's, late starts included: a late teacher target, which GRPO
