@@ -316,9 +316,15 @@ def compute_batch_losses(
     -1 are outside the masks. `accuracy` adds the counts of text tokens the argmax gets right
     (`content_correct`, `pad_correct`). With `teacher` (a teacher's output on the same frames,
     for the same codebooks), each token's loss is its KL from the teacher's distribution
-    (`token_kl`) instead of its cross-entropy, under the same masks and weights."""
+    (`token_kl`) instead of its cross-entropy, with the same weights, at the positions both score:
+    moshi returns each model's logits on the stream's frames, and a model with other delays (a
+    heads student's) has other last frames to score."""
     output = lm(codes, condition_tensors=condition_tensors)
     audio_valid = output.mask  # [B, dep_q, T]
+    text_valid = output.text_mask  # [B, 1, T]
+    if teacher is not None:
+        audio_valid = audio_valid & teacher.mask
+        text_valid = text_valid & teacher.text_mask
     audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
     if teacher is None:
         audio_token_loss = token_ce(output.logits, audio_targets, audio_valid)
@@ -328,7 +334,6 @@ def compute_batch_losses(
     semantic[:, 0] = audio_valid[:, 0]
     acoustic = audio_valid & ~semantic
     audio_weight = torch.where(semantic, weights.first_codebook, 1.0) * audio_valid
-    text_valid = output.text_mask  # [B, 1, T]
     text_targets = codes[:, :1]
     if teacher is None:
         text_token_loss = token_ce(output.text_logits, text_targets, text_valid)
