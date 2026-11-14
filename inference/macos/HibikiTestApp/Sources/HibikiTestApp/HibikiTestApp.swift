@@ -189,7 +189,6 @@ final class InferenceController: ObservableObject {
     private let repositoryRoot: URL?
     private var process: Process?
     private var pipe: Pipe?
-    private var output = UTF8Chunks()
     private var runMode: RunMode?
     private var stopRequested = false
     private var textOutputURL: URL?
@@ -343,7 +342,6 @@ final class InferenceController: ObservableObject {
         isMicrophoneRunning = mode == .microphone
         runMode = mode
         stopRequested = false
-        output = UTF8Chunks()
         pendingOutputAudioURL = outputAudio
         textOutputURL = textOutput
         microphoneHeader = ""
@@ -389,7 +387,9 @@ final class InferenceController: ObservableObject {
     }
 
     private func consume(_ data: Data) {
-        let text = output.text(data)
+        // Python writes each streamed character whole in one small write, which a pipe never
+        // splits, so only a long write (a traceback) can end mid-character, shown as U+FFFD.
+        let text = String(decoding: data, as: UTF8.self)
         guard !text.isEmpty else { return }
         appendLog(text)
         guard runMode == .microphone else { return }
@@ -412,11 +412,6 @@ final class InferenceController: ObservableObject {
         if let handle = pipe?.fileHandleForReading {
             handle.readabilityHandler = nil
             consume(handle.readDataToEndOfFile())
-        }
-        let tail = output.flush()
-        appendLog(tail)
-        if microphoneReady {
-            transcript.append(tail)
         }
         let completedMode = runMode
         process = nil
@@ -487,37 +482,5 @@ final class InferenceController: ObservableObject {
             }
         }
         return nil
-    }
-}
-
-/// Text from a byte stream read in arbitrary chunks: a chunk can end inside a UTF-8 character
-/// (the Vietnamese text is mostly multi-byte), so the unfinished bytes wait for the next chunk.
-struct UTF8Chunks {
-    private var pending: [UInt8] = []
-
-    mutating func text(_ data: Data) -> String {
-        pending.append(contentsOf: data)
-        let complete = pending.count - Self.unfinishedTail(pending)
-        let text = String(decoding: pending[..<complete], as: UTF8.self)
-        pending.removeFirst(complete)
-        return text
-    }
-
-    /// What is left once the stream has ended.
-    mutating func flush() -> String {
-        defer { pending.removeAll() }
-        return String(decoding: pending, as: UTF8.self)
-    }
-
-    /// The bytes of a last character whose sequence is not complete yet.
-    private static func unfinishedTail(_ bytes: [UInt8]) -> Int {
-        guard !bytes.isEmpty else { return 0 }
-        for back in 1...min(3, bytes.count) {
-            let byte = bytes[bytes.count - back]
-            if byte & 0xC0 == 0x80 { continue }  // a continuation byte
-            let length = byte >= 0xF0 ? 4 : byte >= 0xE0 ? 3 : byte >= 0xC0 ? 2 : 1
-            return length > back ? back : 0
-        }
-        return 0
     }
 }

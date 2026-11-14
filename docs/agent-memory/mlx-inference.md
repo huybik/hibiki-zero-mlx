@@ -13,17 +13,21 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `--model` takes `3b` (`weights/hibiki-zero-3b-q4`, upstream's 3B staged by `convert_mlx.py
   --bits 4` from the files in `weights/`, the symlink to `/Volumes/data/models/hibiki/weights`) or
   any staged model directory. Sampling is the model's `config.json` `lm_gen_config`; the seed,
-  299792458, is set after loading, so a file samples as the gate's row of that seed does.
+  299792458, is set after loading, so a file samples as the gate's row of that seed does, up to
+  the quiet stop.
 - `inference/macos/HibikiTestApp/` is a SwiftUI wrapper that runs `inference/main.py` (file mode,
   which it can stop, or the mic) with the conda Python path hard-coded. It finds the repo root by
-  walking up from its bundle to a directory holding `inference/main.py` and `inference/hibiki_mlx/`,
+  walking up from the current directory, then from its bundle, to a directory holding
+  `inference/main.py` and `inference/hibiki_mlx/`,
   and sets `PYTHONPATH` to that checkout's `inference` and `inference/moshi-mlx`: the editable
   installs point at the main checkout, so an app built in a worktree would otherwise run the
   worktree's `hibiki_mlx` on main's `moshi_mlx`. It opens on the model last chosen (user defaults
   `com.huybik.hibiki-test` `modelPath`, written only by a choice, so a model on an unmounted drive
   is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download), and quitting it
-  ends its backend. It decodes the backend's output across pipe reads (a read can end inside a
-  Vietnamese character, which dropped the whole read before) and reads what is left at exit.
+  ends its backend. It decodes each pipe read as UTF-8 with replacement (a read that was not valid
+  UTF-8 used to be dropped whole; Python writes each streamed character in one small write, which
+  a pipe does not split, so only a long write such as a traceback can be cut mid-character) and
+  reads what is left at exit.
   `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by System Events (buttons
   by index: `button 2 of group 2 of group 1` is Translate, then Stop), once the terminal has
   Accessibility; type a path into the file panel's Go-to field a segment at a time, since its
@@ -74,12 +78,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     evaluation only on rows whose EOS came early, and its `eos_found` counts only an EOS after
     the source EOS.
   - `run` (main.py's file mode, so the macOS app) also stops after `QUIET_S` (5 s) without a word
-    once the source has ended (`translate(quiet_s=)`; the gate passes none). The shipping model
-    seldom writes the EOS on short clips, so file mode ran the 20 s tail on silence: on OneVoice's
-    200 clips the stop cuts 27% of the frames (32,756 → 23,814), chrF −0.07 EN→VI and +0.03
-    VI→EN. 3 rows lose words: on short clips the model sometimes waits long after the source
-    before speaking (EV-0523 waited 9 s and lost its whole text). 10 s lost one row, 11 s none,
-    and those cut only 11–18%.
+    once the source has ended (`translate(quiet_s=)`; the gate passes none). On OneVoice's 200
+    short clips the shipping model wrote no EOS on 49, which ran the 20 s tail on silence: the
+    stop cuts 27% of the frames (32,756 → 23,939; 85% of it on those 49), chrF −0.07 EN→VI and
+    +0.03 VI→EN. 3 rows lose words: EV-0523 waited 9 s after the source before speaking and lost
+    its whole text; the other two lost a last sentence repeating what came before. 10 s lost one
+    row, 11 s none, and those cut 14% and 12%. Measured on the two-way model only, though upstream's
+    3B (`--model 3b`, `verify_mlx_q4.py`) stops the same way.
   - Step t hears source frames before t, as training's forward does; moshi's `LMGen` in the
     evaluation hears one silent frame more first, so its outputs come 80 ms later throughout,
     and the gate adds that frame to each End Offset. Mic mode never sends the EOS.

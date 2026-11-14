@@ -50,7 +50,8 @@ FRAME = 1920  # samples at 24 kHz: one 12.5 Hz codec frame (80 ms)
 # FLEURS row ended and 8 s cut a third of them.
 TAIL_S = 20.0
 # File mode's stop once the model has written no word for this long after hearing the source EOS:
-# the two-way model seldom writes the text EOS, so it would run the whole tail on silence.
+# the two-way model often writes no text EOS (49 of OneVoice's 200 short clips), and such a file
+# would run the whole tail on silence.
 QUIET_S = 5.0
 
 
