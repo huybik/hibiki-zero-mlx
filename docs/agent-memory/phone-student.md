@@ -44,8 +44,8 @@ parent (28 layers, 16+16 codebooks, depformer 6 layers x 9 step slices)
 `training.finetune.train` with `--config-path <dir>/config.json --model-weight
 <dir>/model.safetensors`: `get_mimi` follows the config (k codebooks), and each stream is
 assembled at the cache's layout (`[33, T]`, silence encoded at the cache's 16 codebooks), then cut
-to the model's rows (`streams.model_rows`: text, target 0..k-1, source 0..k-1). `validate.py` does
-the same; GRPO's datasets keep the 3B's full width.
+to the model's rows (`streams.model_rows`: text, target 0..k-1, source 0..k-1). `validate.py` and
+GRPO (`grpo.py`, `grpo_profile.py`) do the same.
 
 A student run reads `<dir>/config.json` at every load (eval, validate, resume) and its start
 weight on every resume, and neither syncs to the run's Hub prefix: keep the student dir with the

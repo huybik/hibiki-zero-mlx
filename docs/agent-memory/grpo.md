@@ -33,7 +33,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   - A window's streams are generated longest first (`sample_window`), each batch to its own
     longest rollout; a row's frames past its own length are -1.
   - The loss keeps what a forward of the rollout's own length scores (`kept_tokens`): a
-    codebook delayed 2 frames stops 2 frames early. So a rollout's kept tokens do not depend on
+    codebook delayed d frames stops d frames early. So a rollout's kept tokens do not depend on
     the rollouts it shares a batch or a micro-batch with.
 - **After a rollout's first text EOS**, its text tokens and its audio from the EOS frame on stay
   out of the loss (`kept_tokens`), as SFT streams end. No reward reads them, so training them
@@ -50,8 +50,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
 - **Rollout layout:** rollouts replay the stream's cached Vietnamese through `LMGen` with
   `stop_on_eos` off, and are stored in the cache's training layout (`grpo.rollout`).
   - `LMGen` reads the input given at step s as source frame s − 1 (step 0's input is never read).
-    It samples text frame s at step s, and audio codebook k's frame s − delay_k; the delays are
-    0 for text and codebook 0, 2 for the rest.
+    It samples text frame s at step s, and audio codebook k's frame s − delay_k, at the config's
+    delays: 0 for text and codebook 0, 2 for the rest in the 3B; j for a heads student's codebook j.
   - The text and audio hooks capture every sampled token, including those `step()` never returns.
     The hooks copy each token, because CUDA graphs reuse their output buffers.
 - **π_old's logprobs** come from the update's own forward: training mode, gradients enabled, the
@@ -60,8 +60,9 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   - Logprobs are taken at the sampling temperature 0.8; top-k is ignored. They are SFT's loss
     kernel negated (`common.token_ce`, dense over the full logits), so the two trainers share
     one kernel ([sft-training](sft-training.md#objective)).
-  - Text is weighted `--text-weight` 100 against 1 for each audio codebook. Masked positions are
-    the training forward's own.
+  - Text is weighted `--text-weight` 100 against 1 for each audio codebook. A k-codebook student
+    so weighs text 100:k; an 8-codebook one passes 50 to keep the 3B's 100:16, which the shipped
+    run was tuned on. Masked positions are the training forward's own.
 - **Rewards** (`rewards.py`, the paper's Eq. 3–6):
   - Rewards sit at frame boundaries. A reward at b scores the text of the frames before b, and
     R_t sums the boundaries after t, so a reward credits exactly the tokens it counted.
