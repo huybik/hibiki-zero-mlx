@@ -193,11 +193,13 @@ def main() -> None:
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
-    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames)
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
+    codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
+    silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
     dataset = streams.StreamDataset(
-        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed
+        rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks
     )
+    silence = silence[:codebooks]  # the model's sources and their padding (grpo.main)
     count = max(args.gen_batch)
     stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
     sources = torch.stack([grpo.stream_source(dataset, index, silence)
