@@ -33,9 +33,11 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
     (`--model-weight`, read from its safetensors header): the kept pairs, the promoted model and
     a pair the sync still uploads, a pair 3x the fp32 model and 5.5 of margin. The 3B needs 131
     GiB at the default 2 and 94 at 1, the 1.4B phone student 45 at 1 (0 keeps every pair, so it
-    gets the default's). The sync holds a pair until the Hub has it, at ~12 MB/s (~50 min for the
-    3B's 37.5 GB), so save less often than that: a 3B run saving every 2,000 updates (9 min)
-    filled the disk at its fourth save;
+    gets the default's). The sync uploads the pair of each validation step (its cadence,
+    `--val-every`), the newest only, and holds its hard links until the Hub has it, at ~12 MB/s
+    (~50 min for the 3B's 37.5 GB, ~23 min for the depformer student's 16.7 GB). Validate less
+    often than an upload takes, or saves land while it still holds an older pair: a 3B run
+    validating every 4,000 updates (18 min) filled the disk at its 8,000 save;
   - the SHA-256 of the four upstream files in `weights/`.
 - `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
   It holds `flock` on `runs/.RUN_NAME.lock` (inherited by the trainer and the sync), so a
