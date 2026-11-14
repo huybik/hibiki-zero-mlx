@@ -153,17 +153,17 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers (one frame more latency). A worker's error ends the session and is raised after it.
 - The echo canceller (`hibiki_mlx/echo.py`; `run_mic` only) removes the speakers' echo, which the
-  level stage would raise and the gate pass, so the model translated its own voice without end.
-  WebRTC's AEC3 (livekit) takes each 20 ms block heard with the block played in the same duplex
-  `sd.Stream` callback and finds the delay itself, up to ~450 ms only: the MacBook Pro's echo is 132
-  ms at 480-sample blocks, 282 at 1920, so a Bluetooth or AirPlay speaker may be out of reach. A
-  callback ≥12 ms late shifts it for good (up to ~125 ms; AEC3 re-finds it in 1–3 s; hence
-  `gc.freeze()`). Measured 2026-11-14 (6-bit, `--speaking vi`; 1920 blocks, volume 31 unless said):
-  nobody speaking over 34 s of the room playing translations, 49 words → the 3 pure silence gives;
-  at 480 and volume 100, gate-open frames 91 → 29 of 204. Live, a clip from the speakers as the
-  speaker (75; 100 at 480): 5 min of self-translation → one sentence at most after the clip, then
-  none in 30 s. 25 OneVoice VI rows, chrF (two seeds): clean 40.4/39.3, speakers silent 36.4/38.3,
-  headphones 32.9/37.1, over the echo 34.1 (37.0 uncancelled), null (9 ms delay) 36.9.
+  level stage would raise and the gate pass: the model translated itself without end. WebRTC's AEC3
+  (livekit) takes each 20 ms block heard with the block played in the same duplex `sd.Stream`
+  callback and finds the delay itself, up to ~450 ms only: the MacBook Pro's echo is 132 ms at
+  480-sample blocks, 282 at 1920, so a Bluetooth or AirPlay speaker may be out of reach. A callback
+  ≥12 ms late shifts it for good (up to ~125 ms; AEC3 re-finds it in 1–3 s). Measured 2026-11-14
+  (6-bit, `--speaking vi`; 1920 blocks, volume 31 unless said): nobody speaking over 34 s of the
+  room playing translations, 49 words → the 3 pure silence gives; at 480 and volume 100, gate-open
+  frames 91 → 29 of 204. Live (a clip from the speakers as the speaker; 75, and 100 at 480): 5 min
+  of self-translation → none 20 s after the clip, 9 runs. 25 OneVoice VI rows, chrF, 2 seeds: clean
+  40.4/39.3, speakers silent 36.4/38.3, headphones 32.9/37.1, over the echo 34.1, null (9 ms delay)
+  36.9. Over the translation, a voice as loud as its echo loses >3 dB in 70% of 0.5 s chunks.
 - rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
   start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
   such limit ([swift-runtime](swift-runtime.md)).
