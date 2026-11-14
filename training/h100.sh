@@ -396,16 +396,30 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
   flock -n "$lock_fd" || die "$run_name is already running"
   # The kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
-  # uploads after it is pruned: 37.5 GB a pair, 12.5 the model, ~5 of margin (130 at 2, 93 at 1).
-  # 0 keeps every pair, which no check can bound: it gets the default's room.
-  local keep=2 given="$*"
+  # uploads after it is pruned. A pair is 3x the start weight's fp32 size (its parameters, AdamW's
+  # two states), the model 1x, plus ~5 of margin: on the 3B 37.5 a pair and 12.5 the model (131 at
+  # 2, 94 at 1), on the 1.4B phone student 16.7 and 5.6 (45 at 1). 0 keeps every pair, which no
+  # check can bound: it gets the default's room.
+  local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors
   [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
   [[ "$given" =~ --keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
+  [[ "$given" =~ --model-weight[=[:space:]]+([^[:space:]]+) ]] && weight="${BASH_REMATCH[1]}"
   (( keep >= 1 )) || keep=2
+  [[ -f "$weight" ]] || die "start weight $weight is missing"
+  local disk
+  disk="$("$PYTHON" - "$weight" "$keep" <<'PY'
+import json, math, struct, sys
+
+with open(sys.argv[1], "rb") as handle:  # the safetensors header alone
+    header = json.loads(handle.read(struct.unpack("<Q", handle.read(8))[0]))
+model = sum(math.prod(entry["shape"]) for key, entry in header.items() if key != "__metadata__") * 4 / 1e9
+print(math.ceil((int(sys.argv[2]) + 1) * 3 * model + model + 5.5))
+PY
+)"
   local ram=80
   # GRPO pins a second copy (grpo.HostOffload): 77 GiB pinned and ~17 GiB more it cannot give back.
   [[ "$module" == training.finetune.grpo ]] && ram=128
-  preflight $(( (keep + 1) * 75 / 2 + 18 )) "$run_dir" "$ram"
+  preflight "$disk" "$run_dir" "$ram"
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
     local -a saved
