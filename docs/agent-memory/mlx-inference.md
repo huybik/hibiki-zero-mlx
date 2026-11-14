@@ -3,8 +3,8 @@
 Read when touching anything under `inference/` except `inference/swift/`
 ([swift-runtime](swift-runtime.md)).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runtime](#runtime) ·
-[Model directories](#model-directories) · [Vendored moshi-mlx](#vendored-moshi-mlx) · [Gates](#gates) ·
-[Memory](#memory)
+[Model directories](#model-directories) · [Direction](#direction) · [Vendored moshi-mlx](#vendored-moshi-mlx) ·
+[Gates](#gates) · [Memory](#memory)
 
 ## Entry points
 
@@ -14,7 +14,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   --bits 4` from the files in `weights/`, the symlink to `/Volumes/data/models/hibiki/weights`) or
   any staged model directory. Sampling is the model's `config.json` `lm_gen_config`; the seed,
   299792458, is set after loading, so a file samples as the gate's row of that seed does, up to
-  the quiet stop.
+  the quiet stop. `--direction vi-en|en-vi` (both modes) tells a model with the direction
+  condition which way to translate ([below](#direction)).
 - `inference/macos/HibikiTestApp/` is a SwiftUI wrapper that runs `inference/main.py` (file mode,
   which it can stop, or the mic) with the conda Python path hard-coded. It finds the repo root by
   walking up from the current directory, then from its bundle, to a directory holding
@@ -23,7 +24,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   installs point at the main checkout, so an app built in a worktree would otherwise run the
   worktree's `hibiki_mlx` on main's `moshi_mlx`. It opens on the model last chosen (user defaults
   `com.huybik.hibiki-test` `modelPath`, written only by a choice, so a model on an unmounted drive
-  is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download). Closing its window
+  is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download). For a model
+  whose `config.json` has the direction table it shows a direction picker (the table's entries,
+  named by `Locale`), passes `--direction`, and enables Translate and the mic only once one is
+  picked; the last pick (user defaults `direction`, written only by a pick) is picked again for
+  such a model. A model without the table gets no picker. Closing its window
   quits it, and quitting ends its backend. The mic transcript starts after the blank line that
   follows main.py's `listening` line (a traceback during load has blank lines of its own). It decodes each pipe read as UTF-8 with replacement (a read that was not valid
   UTF-8 used to be dropped whole; Python writes each streamed character in one small write, which
@@ -120,8 +125,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   otherwise, keyed by its module path (mlx-lm's layout). Both runtimes quantize the bf16 model
   by it (`pipeline.quantize`, MLX's per-layer `class_predicate`; Swift `quantize(model:filter:)`
   with a per-layer tuple, mapping its depformer cores to the checkpoint's slice paths), then load
-  strictly, shapes included: a record that disagrees with the weights fails to load. Without
-  `quantization` the weights are bf16. Older keys (`weight_dtype`, `artifact_format`) are ignored.
+  strictly, shapes included: a record that disagrees with the weights fails to load. An entry
+  `false` keeps its layer unquantized (mlx-lm's layout too; the direction table's two layers).
+  Without `quantization` the weights are bf16. Older keys (`weight_dtype`, `artifact_format`) are
+  ignored. `conditioners` and `fuser` may name the direction table ([below](#direction)); any
+  other conditioner or fusion is refused at load.
 - The recipes (`convert_mlx.py --bits {4,6}`, plan stage 6): that many bits on every
   transformer linear (main and depformer layers), group size 32 at 4 bits and 64 at 6; 8 bits,
   group size 32, on the 34 embeddings, the text head (`text_linear`) and each depformer slice's
@@ -177,11 +185,42 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   (else the base, as in training), from `weights/` or `--tokenizer`, whose file name must match; the
   directory's `config.json` names it. A two-way checkpoint stages with the swap and no flag. The
   12.5 GB fp32 GRPO checkpoint stages in under a minute, with a peak footprint of 6.3–6.6 GB at 4
-  bits, 7.5 at 6 and 10.7 in BF16 (2026-11-14).
+  bits, 7.5 at 6 and 10.7 in BF16 (2026-11-14). A direction-conditioned model directory, as
+  `training.finetune.direction` writes it (config.json and model.safetensors, no tokenizer):
+  `--checkpoint DIR/model.safetensors --config DIR/config.json --tokenizer <the vi6k .model>`
+  (it is not in `weights/`) ([below](#direction)).
 - Upstream's 3B stages into `weights/hibiki-zero-3b-q4` with `--bits 4` (README). A `weights/` from
   before 2026-11-14 holds `hibiki.q4.safetensors` (uniform q4) beside upstream's PyTorch
   `config.json`, which names no MLX weights or quantization, so it no longer loads: stage it again,
   then delete that file.
+
+## Direction
+
+A model with the direction condition ([two-way](two-way.md#direction)) is told which way to
+translate: its `config.json` has `conditioners.direction` (moshi's `lut`, entries `vi-en` and
+`en-vi`, 16 wide) and `fuser.sum` `["direction"]`, and its weights the table under moshi's names
+(`condition_provider.conditioners.direction.{embed.weight,output_proj.weight,learnt_padding}`,
+which `load_pytorch_weights` copies as they are).
+
+- `pipeline.model_directions` reads the entries into `Model.directions` (empty without the
+  table) and refuses any other conditioner or fusion, since moshi-mlx sums every condition into the
+  input. `Model.condition(direction)` computes the entry's projection once
+  (`LutConditioner.condition`); `LmGen.step` adds it to every frame's summed embeddings, as moshi's
+  `forward_text` adds `sum_condition`. A model with the table requires a direction, one without
+  refuses any (`ValueError`); `translate`, `run`, `main.py --direction`, mic mode and
+  `bench.py --direction` all go through it, and `gate.py` gives each row its own (`common.DIRECTION`).
+- `convert_mlx.py` carries the table through: `conditioners` and `fuser` stay in the config, the
+  tensors are bf16 and `quantization` records the table's `embed` and `output_proj` as `false`
+  (`UNQUANTIZED`): 16 wide, they fit no group size.
+- Checked (2026-11-14, scratch scripts; OneVoice clips VE-0037 and EV-0250, seed 299792458): the
+  shipping bundle with the table added (zero projection, `false` entries) gives the unconditioned
+  bundle's WAV and text byte for byte in both directions, here and in Swift; a random projection
+  (N(0, 0.05)) gives different outputs for `vi-en` and `en-vi` (garbage, as the trained model's
+  losses at that scale say). `training.finetune.direction` on the release fp32 (12.5 GB, 46 s, 11
+  GB peak RSS), then `convert_mlx.py --bits 6` (15 s, 7.5 GB peak footprint): all 2,015 tensors of
+  the shipping 6-bit bundle equal, the table's three the fp32 ones in bf16, and both runtimes'
+  outputs on both clips equal the shipping bundle's. The condition costs no measurable time
+  (`bench.py` LM 30.6 → 30.9 ms a frame, inside run-to-run noise).
 
 ## Vendored moshi-mlx
 
@@ -205,12 +244,14 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   It writes `hypotheses.jsonl` (a row each, as it finishes) and `scores.json`. Its scores compare
   with the box's in sampling and input, not in batching: training samples rows 64 at a time. The
   pairs are `data/eval/` files ([sft-evaluation](sft-evaluation.md#evaluation-sets)), their audio
-  paths relative to the repo root.
+  paths relative to the repo root. A model with the direction condition translates each row in
+  the row's direction (its audio column: `vi_audio` is `vi-en`), as training's evaluation does.
 - `inference/tools/verify_mlx_q4.py` translates `inference/assets/leon.wav` (French) with
   `weights/hibiki-zero-3b-q4` into `translations/leon_mlx_q4.wav`.
 - `inference/tools/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
   Mimi decode) and a projected iPhone frame time from an assumed `--scale` (0.5). The
-  projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1.
+  projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1. A model with the
+  direction condition needs `--direction`.
 
 ## Memory
 

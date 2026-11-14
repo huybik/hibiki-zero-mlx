@@ -15,6 +15,10 @@ has heard the source EOS; an earlier one stops nothing, where training's evaluat
 there and drop the rest of a long file. `run` (main.py's file mode) also stops after QUIET_S
 without a word once the source has ended; the gate does not.
 
+A model with the direction condition (`training/finetune/direction.py`) is told which way to
+translate: `translate`, `run` and main.py take the direction (`vi-en`: Vietnamese speech in,
+English out), which it requires and a model without the condition refuses.
+
 Usage: python inference/tools/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
 
@@ -36,6 +40,7 @@ import sphn
 
 from hibiki_mlx.level import Leveller
 from moshi_mlx import models, utils
+from moshi_mlx.modules.conditioner import ConditionTensor
 
 ROOT = Path(__file__).resolve().parents[2]  # repo root (inference/hibiki_mlx/ -> ../..)
 
@@ -53,6 +58,10 @@ TAIL_S = 20.0
 # the two-way model often writes no text EOS (49 of OneVoice's 200 short clips), and such a file
 # would run the whole tail on silence.
 QUIET_S = 5.0
+# The two-way model's condition (training/finetune/direction.py): a lookup table, one entry per
+# direction (<source>-<target>), projected to the model's width and summed into every frame's
+# input, as moshi's fuser sums it.
+DIRECTION = "direction"
 
 
 def _require_file(path: Path, hint: str) -> None:
@@ -67,10 +76,13 @@ def resolve_weights_dir(model: str | Path = "3b") -> Path:
 def quantize(lm: nn.Module, record: dict) -> None:
     """Quantizes `lm` as a config.json `quantization` record says (convert_mlx.py writes it):
     every Linear and Embedding at its `group_size` and `bits`, unless its module path has an
-    entry of its own."""
+    entry of its own: its own `group_size` and `bits`, or `false` to keep it unquantized."""
 
     def spec(path: str, module: nn.Module) -> bool | dict:
-        return hasattr(module, "to_quantized") and (dict(record[path]) if path in record else True)
+        if not hasattr(module, "to_quantized"):
+            return False
+        entry = record.get(path, True)
+        return dict(entry) if isinstance(entry, dict) else entry
 
     nn.quantize(lm, record["group_size"], record["bits"], class_predicate=spec)
 
@@ -115,6 +127,9 @@ class Model:
     text_sampler: utils.Sampler
     audio_sampler: utils.Sampler
     mimi_path: Path
+    # The directions the model is conditioned on (its direction table's entries); empty for a
+    # model without the condition, which picks the direction from what it hears.
+    directions: tuple[str, ...]
 
     def mimi(self) -> rustymimi.Tokenizer:
         """A fresh Mimi codec. Each thread needs its own (one instance cannot be borrowed by two
@@ -123,10 +138,47 @@ class Model:
         nq = max(self.config.other_codebooks, self.config.generated_codebooks)
         return rustymimi.Tokenizer(str(self.mimi_path), num_codebooks=nq)
 
-    def condition(self):
-        if self.lm.condition_provider is None:
+    def condition(self, direction: str | None) -> ConditionTensor | None:
+        """What translating in `direction` adds to every frame's input: the direction table's
+        entry, projected to the model's width and computed once. A model with the condition
+        requires one of its `directions`; a model without it refuses any."""
+        if not self.directions:
+            if direction is not None:
+                raise ValueError(
+                    f"this model has no direction condition (it hears the direction): "
+                    f"drop the direction {direction}"
+                )
             return None
-        return self.lm.condition_provider.condition_tensor("description", "very_good")
+        if direction not in self.directions:
+            raise ValueError(
+                f"this model is conditioned on the direction: give one of "
+                f"{', '.join(self.directions)}" + (f", not {direction}" if direction else "")
+            )
+        ct = self.lm.condition_provider.condition_tensor(DIRECTION, direction)
+        mx.eval(ct.tensor)
+        return ct
+
+
+def model_directions(cfg: dict) -> tuple[str, ...]:
+    """The directions a config.json conditions its model on: its direction table's entries,
+    summed into every frame's input. Any other conditioner or fusion is refused: this runtime
+    sums the conditions into the input, and would run it wrongly."""
+    conditioners = cfg.get("conditioners") or {}
+    if not conditioners:
+        return ()
+    fuser = cfg["fuser"]
+    if (
+        set(conditioners) != {DIRECTION}
+        or conditioners[DIRECTION]["type"] != "lut"
+        or fuser["sum"] != [DIRECTION]
+        or fuser.get("prepend")
+        or fuser.get("cross")
+    ):
+        raise ValueError(
+            f"unsupported conditioners {json.dumps(conditioners)} fused as {json.dumps(fuser)}: "
+            f"this runtime runs only the {DIRECTION} table summed into the input"
+        )
+    return tuple(conditioners[DIRECTION]["lut"]["possible_values"])
 
 
 def load(weights_dir: Path) -> Model:
@@ -149,6 +201,7 @@ def load(weights_dir: Path) -> Model:
         "A model directory holds the tokenizer its config.json names "
         "(convert_mlx.py copies it in).",
     )
+    directions = model_directions(cfg)
     lm_config = models.LmConfig.from_config_dict(cfg)
     lm = models.Lm(lm_config)
     lm.set_dtype(mx.bfloat16)
@@ -169,6 +222,7 @@ def load(weights_dir: Path) -> Model:
         text_sampler=utils.Sampler(top_k=sampling["top_k_text"], temp=sampling["temp_text"]),
         audio_sampler=utils.Sampler(top_k=sampling["top_k"], temp=sampling["temp"]),
         mimi_path=mimi_path,
+        directions=directions,
     )
 
 
@@ -183,21 +237,27 @@ class Translation:
 
 
 def translate(
-    model: Model, infile: str | Path, audio: bool = True, quiet_s: float | None = None
+    model: Model,
+    infile: str | Path,
+    direction: str | None = None,
+    audio: bool = True,
+    quiet_s: float | None = None,
 ) -> Translation:
     """Translates a file as training's free-running evaluation does: the first channel through
     the input level stage, zero-padded to whole frames, then one frame whose source codes are all
-    the source EOS (`card`), then silence up to TAIL_S. It stops at the first text EOS of a step
-    that heard the source EOS; a text EOS before it is kept going past, so a long file is
-    translated to its end (training's evaluation stops at any EOS). With `quiet_s` it also stops
-    once no word has come for that long since the later of the source EOS and the last word.
+    the source EOS (`card`), then silence up to TAIL_S, every frame conditioned on `direction`
+    (<source>-<target>) for a model with the direction condition (`Model.condition`). It stops
+    at the first text EOS of a step that heard the source EOS; a text EOS before it is kept going
+    past, so a long file is translated to its end (training's evaluation stops at any EOS). With
+    `quiet_s` it also stops once no word has come for that long since the later of the source EOS
+    and the last word.
 
     Step t hears source frames before t, as training's forward does; moshi's LMGen in the
     evaluation hears one frame of silence more before the clip (80 ms later throughout)."""
     lm, cfg = model.lm, model.config
+    ct = model.condition(direction)
     mimi_enc = model.mimi()
     mimi_dec = model.mimi() if audio else None
-    ct = model.condition()
     other_cb = cfg.other_codebooks
     gen_cb = cfg.generated_codebooks
 
@@ -307,11 +367,17 @@ def translate(
     )
 
 
-def run(infile: str, outfile: str, model: Model, text_outfile: str | None = None):
-    """Translates a file into `outfile` (24 kHz WAV) and its text, and prints both; stops after
-    QUIET_S without a word once the source has ended."""
+def run(
+    infile: str,
+    outfile: str,
+    model: Model,
+    direction: str | None = None,
+    text_outfile: str | None = None,
+):
+    """Translates a file in `direction` (as `translate`) into `outfile` (24 kHz WAV) and its
+    text, and prints both; stops after QUIET_S without a word once the source has ended."""
     t0 = time.perf_counter()
-    out = translate(model, infile, quiet_s=QUIET_S)
+    out = translate(model, infile, direction, quiet_s=QUIET_S)
     wall = time.perf_counter() - t0
 
     Path(outfile).parent.mkdir(parents=True, exist_ok=True)

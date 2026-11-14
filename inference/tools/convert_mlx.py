@@ -11,6 +11,11 @@ size 32 at 4 bits, 64 at 6) and the embeddings, the text head and each depformer
 and output projection to 8 bits, group size 32, and records that per layer in config.json's
 `quantization`, which both runtimes quantize by before loading strictly. 6 bits keeps bf16's
 chrF on FLEURS dev; 4 bits loses ~4 on VI->EN (docs/agent-memory/mlx-inference.md).
+
+A checkpoint with the direction condition (training/finetune/direction.py writes one as a model
+directory: --checkpoint DIR/model.safetensors --config DIR/config.json) carries its table through:
+the config's `conditioners` and `fuser`, and the table's tensors in bf16, recorded unquantized
+(`false`) at any --bits.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ import mlx.nn as nn
 from mlx.utils import tree_flatten
 
 from hibiki_mlx.pipeline import W as WEIGHTS
-from hibiki_mlx.pipeline import quantize
+from hibiki_mlx.pipeline import model_directions, quantize
 from moshi_mlx import models
 
 # Upstream's tokenizer, which a checkpoint without `text_tokenizer` is on (training/paths.py
@@ -44,6 +49,9 @@ GROUP_SIZE = {4: 32, 6: 64}
 EIGHT_BITS = re.compile(
     r"text_emb|text_linear|audio_embs\.\d+|depformer\.slices\.\d+\.(emb|linear_in|linear_out)"
 )
+# The direction table (its entries and projection), kept in bf16: 16 wide, narrower than any
+# group size, and 35k parameters.
+UNQUANTIZED = re.compile(r"condition_provider\..*")
 
 
 def checkpoint_tokenizer(checkpoint: Path) -> str:
@@ -57,12 +65,16 @@ def checkpoint_tokenizer(checkpoint: Path) -> str:
 
 
 def quantization_record(lm: nn.Module, bits: int) -> dict:
-    """The `quantization` record: `bits` at its GROUP_SIZE by default, and an entry of 8 bits,
-    group size 32, for each EIGHT_BITS layer."""
+    """The `quantization` record: `bits` at its GROUP_SIZE by default, an entry of 8 bits,
+    group size 32, for each EIGHT_BITS layer, and `false` for each UNQUANTIZED one."""
     record: dict = {"group_size": GROUP_SIZE[bits], "bits": bits}
     for path, module in tree_flatten(lm.leaf_modules(), is_leaf=nn.Module.is_module):
-        if hasattr(module, "to_quantized") and EIGHT_BITS.fullmatch(path):
+        if not hasattr(module, "to_quantized"):
+            continue
+        if EIGHT_BITS.fullmatch(path):
             record[path] = {"group_size": 32, "bits": 8}
+        elif UNQUANTIZED.fullmatch(path):
+            record[path] = False
     return record
 
 
@@ -70,6 +82,7 @@ def convert(args: argparse.Namespace) -> None:
     if args.out_dir.exists():
         raise FileExistsError(f"Refusing to overwrite model directory: {args.out_dir}")
     cfg = json.loads(args.config.read_text())
+    model_directions(cfg)  # refuses conditioners the runtimes cannot run
     on = checkpoint_tokenizer(args.checkpoint)
     tokenizer = args.tokenizer or WEIGHTS / on
     if tokenizer.name != on:

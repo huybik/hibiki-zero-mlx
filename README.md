@@ -72,6 +72,9 @@ python inference/main.py --mic
 evaluation does: the clip, the source EOS, then up to 20 s of silence, stopping at the model's
 text EOS once it has heard the source EOS (an EOS before that stops nothing, so a long file is
 translated to its end), or once the model has said nothing for 5 s after the source ended.
+A model trained with the direction condition (its `config.json` names the `direction`
+conditioner) needs `--direction vi-en` (Vietnamese speech in, English out) or
+`--direction en-vi`; a model without it hears the direction and refuses the flag.
 
 Build and open the native macOS test app:
 
@@ -80,8 +83,9 @@ Build and open the native macOS test app:
 open "inference/macos/HibikiTestApp/build/Hibiki Test.app"
 ```
 
-The SwiftUI app provides model and audio pickers, file translation (with stop) and playback,
-live microphone start/stop, the translated text, and the backend log. It runs its own checkout's
+The SwiftUI app provides model and audio pickers (and a direction picker for a model with the
+direction condition), file translation (with stop) and playback, live microphone start/stop, the
+translated text, and the backend log. It runs its own checkout's
 `inference/main.py` with the conda Python at `/opt/homebrew/Caskroom/miniconda/base/bin/python`,
 and opens on the model last chosen, else the shipping two-way bundle where this puts it,
 `weights/release/twoway_grpo1400_mlx_q6`:

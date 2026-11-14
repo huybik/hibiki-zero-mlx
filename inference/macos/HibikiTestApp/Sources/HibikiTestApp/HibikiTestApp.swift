@@ -46,7 +46,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Hibiki Test")
                     .font(.largeTitle.bold())
-                Text("Vietnamese ↔ English speech and text (the model hears which)")
+                Text("Vietnamese ↔ English speech and text")
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -61,19 +61,50 @@ struct ContentView: View {
 
     private var modelPicker: some View {
         GroupBox("MLX model") {
-            HStack(spacing: 12) {
-                Image(systemName: "cpu")
-                    .foregroundStyle(.secondary)
-                Text(controller.modelURL?.path ?? "Choose a staged model directory")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                Button("Choose…", action: controller.chooseModel)
-                    .disabled(controller.isRunning)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    Image(systemName: "cpu")
+                        .foregroundStyle(.secondary)
+                    Text(controller.modelURL?.path ?? "Choose a staged model directory")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                    Button("Choose…", action: controller.chooseModel)
+                        .disabled(controller.isRunning)
+                }
+                directionPicker
             }
             .padding(.vertical, 4)
         }
+    }
+
+    /// The direction a model with the direction condition translates in; a model without it
+    /// hears the direction, so it gets no picker.
+    @ViewBuilder
+    private var directionPicker: some View {
+        if controller.directions.isEmpty {
+            Text("This model hears which language is spoken.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            Picker("Direction", selection: Binding(
+                get: { controller.direction }, set: controller.chooseDirection
+            )) {
+                ForEach(controller.directions, id: \.self) { direction in
+                    Text(Self.label(direction)).tag(Optional(direction))
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(controller.isRunning)
+        }
+    }
+
+    /// "vi-en" as "Vietnamese → English".
+    private static func label(_ direction: String) -> String {
+        direction.split(separator: "-").map {
+            Locale.current.localizedString(forLanguageCode: String($0)) ?? String($0)
+        }.joined(separator: " → ")
     }
 
     private var fileControls: some View {
@@ -134,7 +165,7 @@ struct ContentView: View {
                         Label("Start microphone", systemImage: "mic.fill")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(controller.isRunning || controller.modelURL == nil)
+                    .disabled(!controller.canStartMicrophone)
                 }
                 Text("Uses the current macOS input and output devices.")
                     .font(.callout)
@@ -182,8 +213,15 @@ final class InferenceController: ObservableObject {
     /// The model last chosen, kept across launches (a choice is saved only when made, so a model
     /// on an unmounted drive is found again once it is back).
     private static let modelDefaultsKey = "modelPath"
+    /// The direction last chosen, picked again for a model with the direction condition.
+    private static let directionDefaultsKey = "direction"
 
     @Published var modelURL: URL?
+    /// The model's directions (its config.json's direction table); empty for a model without the
+    /// direction condition, which hears the direction.
+    @Published var directions: [String] = []
+    /// The direction main.py is told (`--direction`); a model with the condition needs one.
+    @Published private(set) var direction: String?
     @Published var audioURL: URL?
     @Published var outputAudioURL: URL?
     @Published var transcript = ""
@@ -207,7 +245,12 @@ final class InferenceController: ObservableObject {
     private var audioPlayer: AVAudioPlayer?
 
     var canTranslateFile: Bool {
-        !isRunning && modelURL != nil && audioURL != nil && repositoryRoot != nil
+        canStartMicrophone && audioURL != nil
+    }
+
+    var canStartMicrophone: Bool {
+        !isRunning && modelURL != nil && repositoryRoot != nil
+            && (directions.isEmpty || direction != nil)
     }
 
     var isFileRunning: Bool {
@@ -239,6 +282,30 @@ final class InferenceController: ObservableObject {
         modelURL = candidates.compactMap { $0 }.first {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path)
         }
+        readDirections()
+    }
+
+    /// The chosen model's directions, and the direction last chosen if the model has it.
+    private func readDirections() {
+        directions = []
+        direction = nil
+        guard let modelURL else { return }
+        let config = modelURL.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: config),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            status = "Could not read \(config.path)"
+            return
+        }
+        let table = (json["conditioners"] as? [String: Any])?["direction"] as? [String: Any]
+        directions = (table?["lut"] as? [String: Any])?["possible_values"] as? [String] ?? []
+        let saved = UserDefaults.standard.string(forKey: Self.directionDefaultsKey)
+        direction = directions.first { $0 == saved }
+    }
+
+    func chooseDirection(_ direction: String?) {
+        self.direction = direction
+        UserDefaults.standard.set(direction, forKey: Self.directionDefaultsKey)
     }
 
     func chooseModel() {
@@ -250,6 +317,7 @@ final class InferenceController: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url {
             modelURL = url
             UserDefaults.standard.set(url.path, forKey: Self.modelDefaultsKey)
+            readDirections()
         }
     }
 
@@ -289,7 +357,7 @@ final class InferenceController: ObservableObject {
                 "--model", modelURL.path,
                 "--out", output.path,
                 "--text-out", textOutput.path,
-            ],
+            ] + directionArguments,
             mode: .file,
             outputAudio: output,
             textOutput: textOutput
@@ -303,9 +371,13 @@ final class InferenceController: ObservableObject {
                 repositoryRoot.appendingPathComponent("inference/main.py").path,
                 "--mic",
                 "--model", modelURL.path,
-            ],
+            ] + directionArguments,
             mode: .microphone
         )
+    }
+
+    private var directionArguments: [String] {
+        direction.map { ["--direction", $0] } ?? []
     }
 
     func stop() {

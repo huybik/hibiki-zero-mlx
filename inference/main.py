@@ -3,6 +3,7 @@
 
   python inference/main.py path/to/audio.wav   # file -> translations/<stem>_translated.wav
   python inference/main.py --mic               # mic  -> speakers, live (Ctrl-C to stop)
+  python inference/main.py --model DIR --direction vi-en audio.wav   # a direction-conditioned model
 
 You get streamed text + 24 kHz audio. Both modes use hibiki_mlx.pipeline
 (load()/run()) and sample as the model directory's config.json says (lm_gen_config);
@@ -13,6 +14,11 @@ once the model has said nothing for 5 s after the source ended (pipeline.QUIET_S
 mode never ends it, and pipelines encode->LM->decode across threads so the live
 critical path is just the LM step (~22 ms on the M4 Pro for the 3B at 4 bits, 25 at 6;
 budget 80 ms).
+
+--direction (<source>-<target>: vi-en is Vietnamese speech in, English out) tells a model
+with the direction condition which way to translate; such a model requires it, and a model
+without the condition (upstream's 3B, the two-way model before it), which hears the
+direction, refuses it.
 
 Use headphones in mic mode: the input level stage raises quiet sound toward speech
 level, the speakers' echo of the translation included, which the model then hears.
@@ -35,12 +41,12 @@ ROOT = Path(__file__).resolve().parent.parent  # repo root (inference/ -> ..)
 FRAME = 1920  # samples @ 24 kHz = one 12.5 Hz codec frame (80 ms)
 
 
-def run_mic(max_steps: int, model: f.Model):
+def run_mic(max_steps: int, model: f.Model, direction: str | None):
     import sounddevice as sd
 
+    ct = model.condition(direction)
     mimi_enc, mimi_dec = model.mimi(), model.mimi()
     text = f.TextDecoder(model.tokenizer)
-    ct = model.condition()
     other_cb = model.config.other_codebooks
     gen_cb = model.config.generated_codebooks
     gen = models.LmGen(
@@ -143,6 +149,8 @@ def main():
     p.add_argument("-o", "--out", help="output wav (file mode); default translations/<stem>_translated.wav")
     p.add_argument("--text-out", help="output text transcript (file mode); default matches output wav with .txt")
     p.add_argument("--model", default="3b", help="3b or a staged Hibiki-Zero model directory")
+    p.add_argument("--direction", help="vi-en or en-vi (<source>-<target>): required by a model "
+                   "with the direction condition, refused by one without")
     p.add_argument("--minutes", type=float, default=30.0, help="mic session cap (default 30)")
     args = p.parse_args()
 
@@ -153,11 +161,11 @@ def main():
     model = f.load(f.resolve_weights_dir(args.model))
     mx.random.seed(299792458)
     if mic:
-        run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8, model=model)
+        run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8, model=model, direction=args.direction)
     else:
         infile = args.input
         out = args.out or str(ROOT / "translations" / f"{Path(infile).stem}_translated.wav")
-        f.run(infile, out, model, text_outfile=args.text_out)
+        f.run(infile, out, model, args.direction, text_outfile=args.text_out)
 
 
 if __name__ == "__main__":

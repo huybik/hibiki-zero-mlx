@@ -40,6 +40,11 @@ def main() -> None:
         action="store_true",
         help="feed zeros instead of speech and gate rms<0.10, peak<1.1",
     )
+    p.add_argument(
+        "--direction",
+        help="vi-en or en-vi: required by a model with the direction condition, refused by one "
+        "without",
+    )
     args = p.parse_args()
 
     weights_dir = pl.resolve_weights_dir(args.model)
@@ -47,7 +52,7 @@ def main() -> None:
     mx.random.seed(299792458)
     model = loaded.lm
     mimi_enc, mimi_dec = loaded.mimi(), loaded.mimi()
-    ct = loaded.condition()
+    ct = loaded.condition(args.direction)
     other_cb = loaded.config.other_codebooks
     n_slices = loaded.config.generated_codebooks
 

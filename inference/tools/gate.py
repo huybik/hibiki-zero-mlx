@@ -6,11 +6,12 @@ checkpoint, to gate a quantized bundle against its bf16 one on the Mac. From the
       data/eval/fleurs-en/dev.jsonl [--limit N] [--seed S] --out-dir DIR
 
 Each row's source clip (`vi_audio`, scored against `text_en`, or `en_audio`, against `text_vi`;
-the model picks the direction from what it hears) is translated alone in the runtime's file mode
-(`pipeline.translate`: the level stage, the source EOS, 20 s of silence, stopping at the first
-text EOS after the source EOS), sampled as the model's config.json says (`lm_gen_config`), with
-the MLX seed set to --seed plus the row's index: give every model compared the same --pairs,
---limit and --seed.
+a model with the direction condition is given the row's direction, `vi-en` or `en-vi`, as
+training's evaluation gives it; a model without it picks the direction from what it hears) is
+translated alone in the runtime's file mode (`pipeline.translate`: the level stage, the source
+EOS, 20 s of silence, stopping at the first text EOS after the source EOS), sampled as the
+model's config.json says (`lm_gen_config`), with the MLX seed set to --seed plus the row's
+index: give every model compared the same --pairs, --limit and --seed.
 Each pairs file is scored as its own set by training's `score_sets` (corpus chrF and BLEU,
 length ratio, empty rows, rows that ended and the health gates). Training's evaluation also stops
 at an EOS written before the source EOS and keeps the text to it, so a row with one scores
@@ -72,7 +73,8 @@ def main() -> None:
         for index, (row, source) in enumerate(zip(rows, sources, strict=True)):
             mx.random.seed(args.seed + index)
             start = time.perf_counter()
-            out = pipeline.translate(model, source, audio=False)
+            direction = row[common.DIRECTION] if model.directions else None
+            out = pipeline.translate(model, source, direction, audio=False)
             seconds = time.perf_counter() - start
             # Training's End Offset: its step i heard i - 1 frames of the clip (moshi's LMGen
             # hears a frame of silence first), where the runtime's step t heard t, so the
