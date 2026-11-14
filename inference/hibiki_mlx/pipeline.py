@@ -141,22 +141,29 @@ class Model:
     def condition(self, direction: str | None) -> ConditionTensor | None:
         """What translating in `direction` adds to every frame's input: the direction table's
         entry, projected to the model's width and computed once. A model with the condition
-        requires one of its `directions`; a model without it refuses any."""
-        if not self.directions:
-            if direction is not None:
-                raise ValueError(
-                    f"this model has no direction condition (it hears the direction): "
-                    f"drop the direction {direction}"
-                )
+        requires one of its `directions`; a model without it refuses any (`require_direction`)."""
+        require_direction(self.directions, direction)
+        if direction is None:
             return None
-        if direction not in self.directions:
-            raise ValueError(
-                f"this model is conditioned on the direction: give one of "
-                f"{', '.join(self.directions)}" + (f", not {direction}" if direction else "")
-            )
         ct = self.lm.condition_provider.condition_tensor(DIRECTION, direction)
         mx.eval(ct.tensor)
         return ct
+
+
+def require_direction(directions: tuple[str, ...], direction: str | None) -> None:
+    """Refuses `direction` for a model conditioned on `directions` (`model_directions`): a model
+    with the condition requires one of them, a model without it (no `directions`) refuses any."""
+    if not directions:
+        if direction is not None:
+            raise ValueError(
+                f"this model has no direction condition (it hears the direction): "
+                f"drop the direction {direction}"
+            )
+    elif direction not in directions:
+        raise ValueError(
+            f"this model is conditioned on the direction: give one of {', '.join(directions)}"
+            + (f", not {direction}" if direction else "")
+        )
 
 
 def model_directions(cfg: dict) -> tuple[str, ...]:
@@ -181,10 +188,10 @@ def model_directions(cfg: dict) -> tuple[str, ...]:
     return tuple(conditioners[DIRECTION]["lut"]["possible_values"])
 
 
-def load(weights_dir: Path) -> Model:
-    """A staged model directory: config.json names the MLX weights (`moshi_name`), the tokenizer
-    they are on (`tokenizer_name`), the sampling (`lm_gen_config`) and, for quantized weights,
-    their quantization (`quantization`); the weights load strictly."""
+def read_config(weights_dir: Path) -> dict:
+    """A staged model directory's config.json: it names the MLX weights (`moshi_name`), the
+    tokenizer they are on (`tokenizer_name`), the sampling (`lm_gen_config`) and, for quantized
+    weights, their quantization (`quantization`)."""
     cfg_path = weights_dir / "config.json"
     _require_file(
         cfg_path,
@@ -195,6 +202,12 @@ def load(weights_dir: Path) -> Model:
     for key in ("moshi_name", "tokenizer_name", "lm_gen_config"):
         if key not in cfg:
             raise ValueError(f"{cfg_path} has no {key}: stage the model with convert_mlx.py")
+    return cfg
+
+
+def load(weights_dir: Path) -> Model:
+    """A staged model directory (`read_config`); the weights load strictly."""
+    cfg = read_config(weights_dir)
     _require_file(weights_dir / cfg["moshi_name"], "The weights config.json names (moshi_name).")
     _require_file(
         weights_dir / cfg["tokenizer_name"],

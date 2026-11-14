@@ -77,12 +77,14 @@ summed into the input, layer scale, other norms or gating):
 
 - The direction condition ([two-way](two-way.md#direction),
   [mlx-inference](mlx-inference.md#direction)): `HibikiConfig.directionTable` and `directions`
-  come from `conditioners.direction` (a `lut`, noop tokenizer) with `fuser.sum` `["direction"]`.
+  come from `conditioners.direction` (a `lut`, noop tokenizer) with `fuser.sum` `["direction"]`;
+  a config without conditioners may have any `fuser` or none, as in Python.
   `HibikiLM.load` takes the table's three tensors out of the weights (no module holds them) and
   computes each direction's vector once, `output_proj · embed[i]` ([1, 1, 2048], bf16);
   `learnt_padding` is checked and dropped. `Translator(directory:direction:)` picks one
-  (`HibikiLM.condition`: required by a model with the table, refused by one without,
-  `HibikiError.badDirection`), and `Generator` adds it to every step's summed embeddings, after
+  (`HibikiConfig.requireDirection`, on the config before the weights load: required by a model
+  with the table, refused by one without, `HibikiError.badDirection`; the iOS app reads the
+  config first too), and `Generator` adds it to every step's summed embeddings, after
   the audio ones, as Python's `_sample`. `Quantization` reads `false` entries (`unquantized`).
   Checked (2026-11-14): with a zero projection, `translate` gives the unconditioned bundle's WAV
   and text byte for byte in both directions, as does the converted zero-table model; a random one

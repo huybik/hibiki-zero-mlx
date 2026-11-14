@@ -95,8 +95,9 @@ public struct HibikiConfig: Decodable {
     }
 
     /// Where the fuser puts each condition: summed into the input, prepended, or cross-attended.
+    /// Read only for a model with conditioners.
     struct Fuser: Decodable {
-        let sum: [String]
+        let sum: [String]?
         let prepend: [String]?
         let cross: [String]?
     }
@@ -221,6 +222,24 @@ public struct HibikiConfig: Decodable {
         if delays.count != nQ + 1 { throw HibikiError.unsupported("\(delays.count) delays") }
         if let schedule = depformerWeightsPerStepSchedule, schedule.count != depQ {
             throw HibikiError.unsupported("a weights-per-step schedule of \(schedule.count)")
+        }
+    }
+
+    /// Refuses `direction` for this model: a model with the direction condition requires one of
+    /// its `directions`, a model without it refuses any. Checks the config alone, so a wrong or
+    /// missing direction fails before the weights load.
+    public func requireDirection(_ direction: String?) throws {
+        if directions.isEmpty {
+            if let direction {
+                throw HibikiError.badDirection(
+                    "this model has no direction condition (it hears the direction): "
+                        + "drop the direction \(direction)")
+            }
+        } else if !directions.contains(where: { $0 == direction }) {
+            throw HibikiError.badDirection(
+                "this model is conditioned on the direction: give one of "
+                    + directions.joined(separator: ", ")
+                    + (direction.map { ", not \($0)" } ?? ""))
         }
     }
 
@@ -434,10 +453,9 @@ final class HibikiLM: Module {
         decoder = DecodeTransformer(_transformer.wrappedValue)
     }
 
-    /// Loads `config.json` and the weights it names (`moshi_name`) of a staged model directory,
-    /// quantized as its `quantization` says (bf16 without one), strictly.
-    static func load(directory: URL) throws -> HibikiLM {
-        let cfg = try HibikiConfig.load(directory: directory)
+    /// Loads the weights `cfg` (the directory's `HibikiConfig.load`) names (`moshi_name`) of a
+    /// staged model directory, quantized as its `quantization` says (bf16 without one), strictly.
+    static func load(directory: URL, config cfg: HibikiConfig) throws -> HibikiLM {
         let url = directory.appending(path: cfg.moshiName)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw HibikiError.missingFile(url)
@@ -492,24 +510,10 @@ final class HibikiLM: Module {
         return conditions
     }
 
-    /// What translating in `direction` adds to every frame's input. A model with the direction
-    /// condition requires one of its directions; a model without it refuses any.
+    /// What translating in `direction` adds to every frame's input (`requireDirection`).
     func condition(_ direction: String?) throws -> MLXArray? {
-        guard !_conditions.isEmpty else {
-            if let direction {
-                throw HibikiError.badDirection(
-                    "this model has no direction condition (it hears the direction): "
-                        + "drop the direction \(direction)")
-            }
-            return nil
-        }
-        guard let direction, let condition = _conditions[direction] else {
-            throw HibikiError.badDirection(
-                "this model is conditioned on the direction: give one of "
-                    + cfg.directions.joined(separator: ", ")
-                    + (direction.map { ", not \($0)" } ?? ""))
-        }
-        return condition
+        try cfg.requireDirection(direction)
+        return direction.flatMap { _conditions[$0] }
     }
 
     func resetCache() {

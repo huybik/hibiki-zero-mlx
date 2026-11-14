@@ -90,9 +90,11 @@ public final class Translator {
         setenv("MLX_MAX_OPS_PER_BUFFER", "400", 0)
         setenv("MLX_MAX_MB_PER_BUFFER", "1000000", 0)
         if let cacheLimit { Memory.cacheLimit = cacheLimit }
-        let lm = try HibikiLM.load(directory: directory)
+        let cfg = try HibikiConfig.load(directory: directory)
+        try cfg.requireDirection(direction)  // before the weights load
+        let lm = try HibikiLM.load(directory: directory, config: cfg)
         let condition = try lm.condition(direction)
-        config = lm.cfg
+        config = cfg
         let file = { (name: String) throws -> URL in
             let url = directory.appending(path: name)
             guard FileManager.default.fileExists(atPath: url.path) else {

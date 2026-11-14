@@ -157,8 +157,11 @@ def main():
     mic = args.mic or args.input == "mic"
     if not (mic or args.input):
         p.error("give an audio file path, or --mic for realtime")
+    weights_dir = f.resolve_weights_dir(args.model)
+    # A missing or wrong direction fails on config.json, before the weights load.
+    f.require_direction(f.model_directions(f.read_config(weights_dir)), args.direction)
     print("loading MLX weights ...")
-    model = f.load(f.resolve_weights_dir(args.model))
+    model = f.load(weights_dir)
     mx.random.seed(299792458)
     if mic:
         run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8, model=model, direction=args.direction)

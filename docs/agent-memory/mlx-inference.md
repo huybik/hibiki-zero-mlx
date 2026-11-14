@@ -207,8 +207,10 @@ which `load_pytorch_weights` copies as they are).
   input. `Model.condition(direction)` computes the entry's projection once
   (`LutConditioner.condition`); `LmGen.step` adds it to every frame's summed embeddings, as moshi's
   `forward_text` adds `sum_condition`. A model with the table requires a direction, one without
-  refuses any (`ValueError`); `translate`, `run`, `main.py --direction`, mic mode and
-  `bench.py --direction` all go through it, and `gate.py` gives each row its own (`common.DIRECTION`).
+  refuses any (`require_direction`, `ValueError`); `translate`, `run`, `main.py --direction`, mic
+  mode and `bench.py --direction` all go through it, and `gate.py` gives each row its own
+  (`common.DIRECTION`). `main.py` checks it on `config.json` (`read_config`) before the weights
+  load, so a wrong one fails at once.
 - `convert_mlx.py` carries the table through: `conditioners` and `fuser` stay in the config, the
   tensors are bf16 and `quantization` records the table's `embed` and `output_proj` as `false`
   (`UNQUANTIZED`): 16 wide, they fit no group size.
