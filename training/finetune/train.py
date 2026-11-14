@@ -136,7 +136,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lr", type=float, default=2.25e-6,
         help="Peak learning rate. 2.25e-6 is round 4's 3e-6 at 8,192-frame batches times "
-        "sqrt(4,608 / 8,192), Adam's square-root rule for the smaller batch.",
+        "sqrt(4,608 / 8,192), Adam's square-root rule for the smaller batch. 0 freezes the model "
+        "and trains its direction table alone (--condition-lr).",
     )
     parser.add_argument(
         "--condition-lr", type=float, default=1e-4,
@@ -327,15 +328,22 @@ def main() -> None:
     longest = math.ceil(frames[1] / streams.FRAME_BUCKET) * streams.FRAME_BUCKET
     if context is not None and longest > context:
         raise ValueError(f"--stream-seconds allows {longest} frames, over the context of {context}")
-    params = list(lm.parameters())
-    print(f"Trainable params: {sum(param.numel() for param in params):,}")
     # The direction table (`training.finetune.direction`) starts at zero in a model already
-    # trained: at the model's rate it would barely move in a short run.
+    # trained: at the model's rate it would barely move in a short run. --lr 0 trains the table
+    # alone: the model's own weights stay the start's exactly, with no gradients or AdamW states.
     table = [param for name, param in lm.named_parameters() if name.startswith("condition_provider.")]
     in_table = {id(param) for param in table}
-    groups = [{"params": [param for param in params if id(param) not in in_table], "peak_lr": args.lr}]
-    if table:
-        groups.append({"params": table, "peak_lr": args.condition_lr})
+    model_params = [param for param in lm.parameters() if id(param) not in in_table]
+    groups = [{"params": table, "peak_lr": args.condition_lr}] if table else []
+    if args.lr > 0:
+        groups.insert(0, {"params": model_params, "peak_lr": args.lr})
+    else:
+        for param in model_params:
+            param.requires_grad_(False)
+    if not groups:
+        raise ValueError("--lr 0 leaves nothing to train: the model has no direction table")
+    params = [param for group in groups for param in group["params"]]
+    print(f"Trainable params: {sum(param.numel() for param in params):,}")
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 

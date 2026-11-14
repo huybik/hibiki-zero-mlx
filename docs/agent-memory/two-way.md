@@ -281,7 +281,16 @@ text mask. So the direction is a condition the model is trained on and the runti
   follow it). `cut.py` refuses a config that would drop the parent's table.
 - The run, `twoway_direction` (`restart.sh direction`, started 2026-11-14 04:59 UTC): update 1,400
   with the table, both directions' rows, 4,608-frame batches, the model at peak 1e-6 to keep GRPO's
-  gains, 12,000 updates validated every 4,000.
+  gains, 12,000 updates validated every 4,000. At 4,000 it was under both GRPO's start and update
+  1,400 on every set (FLEURS dev VI→EN 38.78 against 40.74 and 42.74, EN→VI 32.34 against 34.16 and
+  38.79; median end offset VI→EN 4.5 s against 2.9 and 1.1; 7-51 empty rows a set against 0-3):
+  the SFT rows pull back what GRPO gained. On the CPU (one seed) it turned the user's `vi2` to
+  English and, told `en-vi`, to Vietnamese, while clear English told `vi-en` stayed Vietnamese: the
+  table tips an ambiguous voice, the audio wins a clear one. The run stopped at its 8,000 save (a
+  full disk, [sft-recovery](sft-recovery.md#launcher)); its pair 6,000 resumes it.
+- `twoway_direction_table` (`restart.sh direction-table`): the same with `--lr 0`, which freezes the
+  model (no gradients or AdamW states for it) and trains the table alone, so GRPO's weights stay
+  exactly.
 - The before/after test, on the box: OneVoice's 200 clips (`data/eval/onevoice-{en,vi}/test.jsonl`)
   and `data/eval/user/test.jsonl` (`vi1`, `vi2`: the user's voice on the MacBook mic; `clean3`,
   `loop3`: OneVoice VI clips played through the laptop's speakers into it).

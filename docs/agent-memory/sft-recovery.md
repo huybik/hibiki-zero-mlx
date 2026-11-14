@@ -33,7 +33,9 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
     (`--model-weight`, read from its safetensors header): the kept pairs, the promoted model and
     a pair the sync still uploads, a pair 3x the fp32 model and 5.5 of margin. The 3B needs 131
     GiB at the default 2 and 94 at 1, the 1.4B phone student 45 at 1 (0 keeps every pair, so it
-    gets the default's);
+    gets the default's). The sync holds one pair: save less often than the Hub takes a pair
+    (~12 MB/s, ~50 min for the 3B's 37.5 GB). `twoway_direction`, saving every 2,000 updates
+    (9 min), filled the disk at its fourth save as the sync's links kept older pairs;
   - the SHA-256 of the four upstream files in `weights/`.
 - `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
   It holds `flock` on `runs/.RUN_NAME.lock` (inherited by the trainer and the sync), so a
