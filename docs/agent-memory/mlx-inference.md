@@ -115,6 +115,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   evaluation does; rerunning the rows with an early EOS under the current rule gives VI→EN 42.76 /
   42.22 and EN→VI 37.34 / 37.66 for bf16 / 6 bits. Upstream's 3B stays at 4 bits: the phone timings
   are at 4, and 6 is unmeasured on its languages.
+- **The shipping bundle** is GRPO update 1,400 at 6 bits ([grpo](grpo.md#running)), staged from the
+  recovery repo's `grpo_twoway/best/best_step001400.safetensors` with `convert_mlx.py --bits 6` and
+  the vi6k tokenizer (3.28 GB; add `mimi-decoder.mlmodelc` for Swift). On the six long files, two
+  seeds each (2026-11-14), every run translated to the end, its last word within ~4 s of the
+  source's: VI→EN mean chrF 52.6 against update 600's 48.7, EN→VI 46.9 against 45.8. It ends with
+  an EOS less often (3 of 12 runs, none on the EN→VI files, against update 600's 9 of 12, as GRPO's
+  EOS share fell), so file mode more often runs the whole 20 s tail.
 - **Where 4 bits loses:** teacher-forced on bf16's sampled tokens (12 FLEURS dev clips both
   ways, 1,788 frames; scratch script), the mean KL from bf16's sampling distribution (logits /
   0.8), text / codebooks: the 4-bit recipe 0.057 / 0.17; 8 bits g64 on the main transformer and
