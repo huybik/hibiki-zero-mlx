@@ -192,8 +192,9 @@ GRPO on a distilled student, come later if needed.
      Swift runtime each need the heads. Heads without delays would sample the codebooks
      independently, which MusicGen found worse; they are not tested.
    - The test, on the H100: a ~14-layer delay-pattern student against the trained 10-layer
-     depformer student, both cut from the two-way model, on the same streams of both
-     directions for the same steps. Compare chrF in each direction (the real-Vietnamese sets,
+     depformer student, both cut from the two-way model and distilled from GRPO update 1,400
+     (the depformer student after 100,000 plain-SFT updates, the heads student from its cut),
+     on the same streams of both directions. Compare chrF in each direction (the real-Vietnamese sets,
      `fleurs-en` and `en-vi-val-en`), the generated speech (each target language's ASR
      transcript scored against the reference, and speaker similarity to the source; evaluation
      is text-only today) and ms a frame on the phone. Adopt the heads only if they win at real
@@ -525,8 +526,8 @@ Vietnamese text cannot keep up with its speech.
    update first (user, 2026-11-13): a smaller model may fit larger batches whole and run them
    faster.
 10. Parallel codebook heads against that student, on the H100 (stage 5.4; user, 2026-11-10):
-    a ~14-layer delay-pattern student on the same streams of both directions and the same
-    steps, adopted only if it wins at real time.
+    a ~14-layer delay-pattern student on the same streams of both directions, distilled from
+    the teacher from the start (2026-11-14), adopted only if it wins at real time.
 
     Both after GRPO (user, 2026-11-13). Quantising (stage 6) runs on the Mac (user, 2026-11-13).
 
