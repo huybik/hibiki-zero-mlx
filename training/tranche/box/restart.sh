@@ -101,8 +101,8 @@ case $job in
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # The depformer student distilled from its teacher, GRPO update 1,400 (phone-student.md#distillation): from
   # student_dep10's newest model (hard-linked to weights/student_dep10_distill_start.safetensors when it stopped), the same
-  # rows on new streams (seed 48), each token's loss its KL from the teacher's distribution. --max-steps ends it by the box's
-  # end with GRPO's time left.
+  # rows on new streams (seed 48), each token's loss its KL from the teacher's distribution. --max-steps (from its profile)
+  # ends it with time left on the box for a GRPO run after it.
   student-distill) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2 S=weights/student_dep10
        cmd=(./training/h100.sh run student_dep10_distill

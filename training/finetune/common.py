@@ -315,7 +315,7 @@ def compute_batch_losses(
     component's sum and count beside them so evaluation can aggregate exactly. Positions holding
     -1 are outside the masks. `accuracy` adds the counts of text tokens the argmax gets right
     (`content_correct`, `pad_correct`). With `teacher` (a teacher's output on the same frames,
-    audio codebooks from the first), each token's loss is its KL from the teacher's distribution
+    for the same codebooks), each token's loss is its KL from the teacher's distribution
     (`token_kl`) instead of its cross-entropy, under the same masks and weights."""
     output = lm(codes, condition_tensors=condition_tensors)
     audio_valid = output.mask  # [B, dep_q, T]
@@ -323,7 +323,7 @@ def compute_batch_losses(
     if teacher is None:
         audio_token_loss = token_ce(output.logits, audio_targets, audio_valid)
     else:
-        audio_token_loss = token_kl(output.logits, teacher.logits[:, : lm.dep_q], audio_valid)
+        audio_token_loss = token_kl(output.logits, teacher.logits, audio_valid)
     semantic = torch.zeros_like(audio_valid)
     semantic[:, 0] = audio_valid[:, 0]
     acoustic = audio_valid & ~semantic

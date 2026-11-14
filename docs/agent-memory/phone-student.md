@@ -96,12 +96,20 @@ validation cache, its word accuracy is 0.56 at 80,000 against the two-way SFT mo
   its timing too: where that model would write a word before the SFT target's, its distribution
   says so.
 - The teacher (`--teacher-config`, default the 3B's) loads frozen in bf16 (`load_lm`, its own
-  EOS row) and runs the compiled training forward without a backward. It reads the whole stream:
-  the dataset is assembled at the cache's 16 codebooks and each batch is cut to the student's rows
-  (`model_rows`) on the GPU; its audio logits are the student's codebooks, its first k (equal
-  delays, so equal masks). Both must be on the same tokenizer.
-- Validation is unchanged (the student's CE against the targets, free-running chrF), so a
-  distilled run's validations compare with `student_dep10`'s.
+  EOS row) and runs the compiled training forward without a backward, its depformer cut to the
+  student's k steps (`dep_q`: the depformer is causal over steps, so the first k logits are the
+  same; ~11% of a step saved). It reads the whole stream: the dataset is assembled at the cache's
+  16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Its delays
+  on those rows must equal the student's (equal masks; a heads student's are not), and both must
+  be on the same tokenizer.
+- Validation is unchanged (the student's CE against the targets on validation's fixed streams,
+  free-running chrF), so a distilled run's teacher-forced validation compares with
+  `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
+  ~±0.7 a set moves between evaluations. Its train log's losses are KL values, not CE.
+- A resume needs the start model and the teacher in `weights/`, neither on the run's Hub prefix:
+  `student_dep10`'s pair at the stop (its `checkpoints/` on the Hub) and the recovery repo's
+  `grpo_twoway/best/best_step001400.safetensors`, besides the student dir ([Training a
+  student](#training-a-student)).
 - `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
   `torch.nn.functional.kl_div` on the valid positions, is 0 elsewhere and gives them no gradient.
 - **The run** (2026-11-14, user: "at this rate we never get 40+ chrf"): `restart.sh

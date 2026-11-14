@@ -123,7 +123,7 @@ def parse_args() -> argparse.Namespace:
         "--teacher-weight", type=Path,
         help="Distil this frozen model's per-token distributions instead of training on the targets alone.",
     )
-    parser.add_argument("--teacher-config", type=Path, default=DEFAULT_CONFIG_PATH, help="The teacher's config.")
+    parser.add_argument("--teacher-config", type=Path, help="The teacher's config; default the 3B's.")
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
@@ -208,6 +208,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--stream-seconds needs 0 < MIN <= MAX")
     if not 0 <= args.warmup_fraction < 1:
         raise ValueError("--warmup-fraction must be in [0, 1)")
+    if args.teacher_config is not None and args.teacher_weight is None:
+        raise ValueError("--teacher-config needs --teacher-weight")
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
@@ -250,7 +252,7 @@ def main() -> None:
     teacher_info = None
     if args.teacher_weight is not None:
         args.teacher_weight = require_file(args.teacher_weight, "teacher weight")
-        args.teacher_config = require_file(args.teacher_config, "teacher config")
+        args.teacher_config = require_file(args.teacher_config or DEFAULT_CONFIG_PATH, "teacher config")
         common.run_tokenizer(args.tokenizer, args.teacher_weight)  # refuses another tokenizer
         teacher_info = common.load_checkpoint_info(
             argparse.Namespace(
@@ -271,7 +273,11 @@ def main() -> None:
     if teacher_info is not None:
         if int(teacher_info.lm_config["dep_q"]) != layout.dep_q:
             raise ValueError(f"the teacher must read the cache's {layout.dep_q} codebooks a stream")
-        student_rows = torch.tensor(streams.model_rows(layout, codebooks), device=device)
+        rows_kept = streams.model_rows(layout, codebooks)
+        # Equal delays give equal masks: a heads student's (codebook j by j) would not.
+        if [teacher_info.lm_config["delays"][row] for row in rows_kept] != list(checkpoint_info.lm_config["delays"]):
+            raise ValueError("the teacher's delays on the model's rows differ from the model's")
+        student_rows = torch.tensor(rows_kept, device=device)
     dataset = streams.StreamDataset(
         rows, layout, silence, frames, args.seed, layout.dep_q if teacher_info else codebooks
     )
@@ -363,6 +369,9 @@ def main() -> None:
         teacher = common.load_lm(teacher_info, args.teacher_weight, device, torch.bfloat16)
         teacher.train()  # the compiled training forward (lm_training), run without a backward
         teacher.requires_grad_(False)
+        # Its depformer runs only the model's codebooks: steps past them change no earlier
+        # codebook's logits (the depformer is causal over steps), and both forwards read dep_q.
+        teacher.dep_q = codebooks
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
