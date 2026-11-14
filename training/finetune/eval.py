@@ -56,6 +56,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ids", default="", help="Comma-separated ids; bypasses --limit.")
     parser.add_argument("--ids-file", type=Path, help="Text file of ids, one per line; bypasses --limit.")
     parser.add_argument(
+        "--direction",
+        choices=("vi-en", "en-vi"),
+        help="Condition every row on this direction instead of its pairs file's (a direction-conditioned "
+        "model's obedience test: the output language should follow it).",
+    )
+    parser.add_argument(
         "--gen-duration",
         type=float,
         default=defaults.gen_duration,
@@ -106,6 +112,8 @@ def main() -> None:
         rows = common.select_eval_rows(rows, ids, args.id_column)
     else:
         rows = [row for set_rows in sets.values() for row in set_rows[: args.limit]]
+    if args.direction:
+        rows = [{**row, common.DIRECTION: args.direction} for row in rows]
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
     args.config_path = require_file(args.config_path, "config")
     if checkpoint is None:  # a checkpoint replaces the base weights, which are never read

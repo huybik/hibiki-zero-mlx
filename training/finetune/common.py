@@ -29,7 +29,6 @@ import sphn
 import torch
 from moshi.models import loaders
 from moshi.modules.transformer import set_attention_context
-from moshi.run_inference import get_condition_tensors
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
@@ -40,6 +39,7 @@ from training.student import heads
 from training.finetune.hibiki_helpers import (
     audio_read,
     decode_wavs,
+    direction_conditions,
     encode_inputs,
     get_lmgen,
     stack_and_pad_audio,
@@ -242,12 +242,6 @@ class LossWeights:
 LOSS_SUMS = ("audio", "semantic", "acoustic", "text", "content", "pad")
 
 
-def batch_condition_tensors(lm: Any, model_type: str, batch_size: int) -> Any | None:
-    if lm.fuser is None:
-        return None
-    return get_condition_tensors(model_type, lm, batch_size=batch_size, cfg_coef=1.0)
-
-
 def loss_means(sums: dict[str, Any], weights: LossWeights) -> dict[str, Any]:
     """Losses from `<name>_sum` / `<name>_n`, as tensors in training or floats in evaluation."""
 
@@ -342,7 +336,6 @@ def evaluate_teacher_forced(
     lm: Any,
     dataloader: DataLoader,
     device: torch.device,
-    model_type: str,
     weights: LossWeights,
     max_batches: int = 0,
 ) -> dict[str, float | int]:
@@ -350,7 +343,6 @@ def evaluate_teacher_forced(
     autocast that training computes its losses in (1.7x faster than fp32 weights without it)."""
     was_training = bool(lm.training)
     lm.eval()
-    condition_cache: dict[int, Any | None] = {}
     keys = [f"{name}_{part}" for name in LOSS_SUMS for part in ("sum", "n")]
     keys += ["content_correct", "pad_correct"]
     totals = dict.fromkeys(keys, 0.0)
@@ -361,11 +353,8 @@ def evaluate_teacher_forced(
                 break
             codes = batch["codes"].to(device=device, dtype=torch.long)
             batch_size = int(codes.shape[0])
-            if batch_size not in condition_cache:
-                condition_cache[batch_size] = batch_condition_tensors(lm, model_type, batch_size)
-            result = compute_batch_losses(
-                lm, codes, condition_cache[batch_size], weights, accuracy=True
-            )
+            conditions = direction_conditions(lm, batch["directions"])
+            result = compute_batch_losses(lm, codes, conditions, weights, accuracy=True)
             for key in keys:
                 totals[key] += float(result[key])
             batches += 1
@@ -394,10 +383,10 @@ def evaluate_teacher_forced(
 # Eval row IO + selection
 # --------------------------------------------------------------------------- #
 EVAL_SET = "eval_set"  # the column read_eval_sets adds: the set a row belongs to
-# The columns it adds for a row's direction: the clip heard and the text its translation is
-# scored against. A pairs file holds the audio of one language (the key) and is translated into
-# the other's text.
-SOURCE, REFERENCE = "source_audio", "reference_text"
+# The columns it adds for a row's direction: the clip heard, the text its translation is scored
+# against and the direction (<source>-<target>, the model's condition). A pairs file holds the
+# audio of one language (the key) and is translated into the other's text.
+SOURCE, REFERENCE, DIRECTION = "source_audio", "reference_text", "direction"
 EVAL_DIRECTIONS = {"vi_audio": "text_en", "en_audio": "text_vi"}
 
 
@@ -423,7 +412,7 @@ def read_eval_rows(path: Path) -> list[dict[str, str]]:
 
 def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
     """Each pairs file's rows by set name, in the order given, each row tagged under EVAL_SET and
-    holding its clip and reference under SOURCE and REFERENCE. A set is named by its file's folder
+    holding its clip, reference and direction under SOURCE, REFERENCE and DIRECTION. A set is named by its file's folder
     and stem, such as fleurs-vi/dev, and must have rows."""
     sets: dict[str, list[dict[str, str]]] = {}
     for path in paths:
@@ -438,7 +427,7 @@ def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
         if len(audio) != 1:
             raise ValueError(f"{path} must hold one of the columns {', '.join(EVAL_DIRECTIONS)}, has {audio}")
         for index, row in enumerate(rows):
-            if taken := {EVAL_SET, SOURCE, REFERENCE} & set(row):
+            if taken := {EVAL_SET, SOURCE, REFERENCE, DIRECTION} & set(row):
                 raise ValueError(f"{path} has columns {sorted(taken)} of its own")
             if [column for column in EVAL_DIRECTIONS if column in row] != audio:
                 raise ValueError(f"{path} row {index} is heard in other audio than its first row's {audio[0]}")
@@ -446,6 +435,7 @@ def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
                 raise ValueError(f"{path} row {index} is missing columns: {', '.join(sorted(missing))}")
             row[EVAL_SET] = name
             row[SOURCE], row[REFERENCE] = row[audio[0]], row[EVAL_DIRECTIONS[audio[0]]]
+            row[DIRECTION] = f"{audio[0][:2]}-{EVAL_DIRECTIONS[audio[0]][-2:]}"
         sets[name] = rows
     return sets
 
@@ -790,7 +780,7 @@ def generate_batch(
     lm_gen = get_lmgen(
         lm,
         checkpoint_info,
-        batch_size=batch_wavs.shape[0],
+        [row[DIRECTION] for row in rows],
         temp=cfg.audio_temp,
         temp_text=cfg.text_temp,
         top_k=cfg.top_k,

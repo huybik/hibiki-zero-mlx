@@ -67,6 +67,7 @@ RESUME_KEYS = (
     "stream_seconds",
     "max_frames",
     "lr",
+    "condition_lr",
     "warmup_fraction",
     "adam_beta1",
     "adam_beta2",
@@ -136,6 +137,11 @@ def parse_args() -> argparse.Namespace:
         "--lr", type=float, default=2.25e-6,
         help="Peak learning rate. 2.25e-6 is round 4's 3e-6 at 8,192-frame batches times "
         "sqrt(4,608 / 8,192), Adam's square-root rule for the smaller batch.",
+    )
+    parser.add_argument(
+        "--condition-lr", type=float, default=1e-4,
+        help="Peak learning rate of the direction table (the model's conditioner), on the same "
+        "warmup and cosine as --lr.",
     )
     parser.add_argument(
         "--warmup-fraction", type=float, default=0.05, help="Share of steps warming up linearly."
@@ -323,10 +329,17 @@ def main() -> None:
         raise ValueError(f"--stream-seconds allows {longest} frames, over the context of {context}")
     params = list(lm.parameters())
     print(f"Trainable params: {sum(param.numel() for param in params):,}")
+    # The direction table (`training.finetune.direction`) starts at zero in a model already
+    # trained: at the model's rate it would barely move in a short run.
+    table = [param for name, param in lm.named_parameters() if name.startswith("condition_provider.")]
+    in_table = {id(param) for param in table}
+    groups = [{"params": [param for param in params if id(param) not in in_table], "peak_lr": args.lr}]
+    if table:
+        groups.append({"params": table, "peak_lr": args.condition_lr})
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
-    optimizer = common.fused_adamw(params, args)
+    optimizer = common.fused_adamw(groups, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
 
     val_log_path = out_dir / "val_log.jsonl"
@@ -359,7 +372,6 @@ def main() -> None:
             offset = 0
 
     data_iter = training_batches(global_step)
-    condition_cache: dict[int, Any | None] = {}
 
     def empty_log() -> dict[str, Any]:
         return {
@@ -396,7 +408,7 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         teacher_forced = {
             name: common.evaluate_teacher_forced(
-                lm, loader, device, checkpoint_info.model_type, weights, args.val_batches
+                lm, loader, device, weights, args.val_batches
             )
             for name, loader in val_loaders.items()
         }
@@ -442,19 +454,16 @@ def main() -> None:
     while global_step < total_steps:
         lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
         for group in optimizer.param_groups:
-            group["lr"] = lr_value
+            group["lr"] = learning_rate(global_step, group["peak_lr"], warmup_steps, total_steps)
         optimizer.zero_grad(set_to_none=True)
         fetch_started = time.time()
         batch = next(data_iter)
         log["data_seconds"] += time.time() - fetch_started  # the wait for the stream workers
         codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size, frames_padded = int(codes.shape[0]), int(codes.shape[-1])
-        if batch_size not in condition_cache:
-            condition_cache[batch_size] = common.batch_condition_tensors(
-                lm, checkpoint_info.model_type, batch_size
-            )
         with autocast:
-            losses = common.compute_batch_losses(lm, codes, condition_cache[batch_size], weights)
+            conditions = common.direction_conditions(lm, batch["directions"])
+            losses = common.compute_batch_losses(lm, codes, conditions, weights)
         losses["loss"].backward()
         for key in LOG_LOSSES:
             log["losses"][key] += losses[key].detach()

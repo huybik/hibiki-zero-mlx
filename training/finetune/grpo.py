@@ -275,6 +275,7 @@ def sample_window(
     generator: Any,
     info: Any,
     sources: torch.Tensor,
+    directions: list[str],
     lengths: torch.Tensor,
     batches: list[torch.Tensor],
     silence_frame: torch.Tensor,
@@ -283,8 +284,8 @@ def sample_window(
     top_k: int,
     on_batch: Any,
 ) -> torch.Tensor:
-    """Rollouts [N, 1 + dep_q, T] int32 on the CPU for `sources` [N, Q, T]: row i holds
-    `lengths[i]` sampled frames and -1 after them. Each of `batches` (row indices, from
+    """Rollouts [N, 1 + dep_q, T] int32 on the CPU for `sources` [N, Q, T], each translated in
+    its `directions` entry: row i holds `lengths[i]` sampled frames and -1 after them. Each of `batches` (row indices, from
     `generation_batches`) runs to its longest row and is seeded from (`seed_key`, its index) as a
     32-bit seed (NumPy's limit); `on_batch(rows, rollouts)` follows it with its rows' indices."""
     count, _, frames = sources.shape
@@ -296,8 +297,8 @@ def sample_window(
         common.seed_all(int(np.random.SeedSequence([*seed_key, index]).generate_state(1)[0]))
         batch = sources[batch_rows, :, :batch_frames].to(silence_frame.device)
         lm_gen = get_lmgen(
-            generator, info, batch_size=len(batch), temp=temperature, temp_text=temperature,
-            top_k=top_k, top_k_text=top_k,
+            generator, info, [directions[row] for row in batch_rows.tolist()], temp=temperature,
+            temp_text=temperature, top_k=top_k, top_k_text=top_k,
         )
         common.set_attention_context(generator.transformer, min(steps, generator.context))
         try:
@@ -603,6 +604,7 @@ def main() -> None:
                       for index in range(update * args.streams, (update + 1) * args.streams)]
         sources = torch.stack([stream_source(dataset, index, silence) for index in stream_ids])
         sources = sources.repeat_interleave(args.group, dim=0)
+        directions = [dataset.streams[index].direction for index in stream_ids for _ in range(args.group)]
         lengths = torch.tensor(
             [rollout_frames(dataset.streams[index].frames, tail, args.frames)
              for index in stream_ids]
@@ -624,7 +626,7 @@ def main() -> None:
         offload.to_host(trainer_tensors(lm, optimizer))
         moved = time.time() - moving
         batches = generation_batches(lengths, args.gen_frames, args.group)
-        rollouts = sample_window(generator, info, sources, lengths, batches, silence_frame,
+        rollouts = sample_window(generator, info, sources, directions, lengths, batches, silence_frame,
                                  (args.seed, step), args.temperature, args.top_k, submit)
         del generator
         gc.collect()
@@ -653,7 +655,7 @@ def main() -> None:
             for start, end in micro_batches(window, per_update, args.micro_batch):
                 frames = micro_frames(spans, start, end, args.frames)
                 batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
-                condition = common.batch_condition_tensors(lm, info.model_type, end - start)
+                condition = common.direction_conditions(lm, directions[start:end])
                 logprobs, _ = token_logprobs(lm, batch, condition, args.temperature)
                 old_logprobs[start:end, :, :frames] = logprobs.detach().cpu()
                 del logprobs
@@ -670,8 +672,8 @@ def main() -> None:
                 frames = micro_frames(spans, start, end, args.frames)
                 forward_total += frames * (end - start)
                 batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
-                condition = common.batch_condition_tensors(lm, info.model_type, end - start)
                 with autocast:
+                    condition = common.direction_conditions(lm, directions[start:end])
                     loss, stats = grpo_loss(
                         lm, batch, condition, old_logprobs[start:end, :, :frames].to(device),
                         advantages[start:end, :frames].to(device),

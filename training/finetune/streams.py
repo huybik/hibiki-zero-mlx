@@ -126,6 +126,7 @@ class Piece:
 class Stream:
     pieces: tuple[Piece, ...]
     frames: int
+    direction: str  # its rows', <source>-<target>
 
 
 PACK_VERSION = 5  # 3: docs.json; 4: the shard's direction, the index by source and target; 5: tokenizer, text.bin
@@ -378,7 +379,7 @@ def _plan_direction(
     single = False
 
     def close() -> None:
-        streams.append(Stream(tuple(pieces), frames))
+        streams.append(Stream(tuple(pieces), frames, direction))
 
     for index in (index for unit in units for index in unit):
         row = rows[index]
@@ -531,6 +532,7 @@ class StreamDataset(Dataset):
             "codes": codes if self.keep is None else codes[self.keep],
             "frames": stream.frames,
             "source_frames": sum(self.rows[piece.row].source_frames for piece in stream.pieces),
+            "direction": stream.direction,
         }
 
     def batches(self, batch_frames: int, shuffle_seed: int | None) -> list[list[int]]:
@@ -564,7 +566,8 @@ class StreamDataset(Dataset):
 
 
 def collate(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """Right-pad a batch with -1 to a multiple of FRAME_BUCKET frames."""
+    """Right-pad a batch with -1 to a multiple of FRAME_BUCKET frames; `directions` lists each
+    stream's, which a model's direction condition is given."""
     frames = max(int(sample["codes"].shape[1]) for sample in samples)
     frames = math.ceil(frames / FRAME_BUCKET) * FRAME_BUCKET
     batch = torch.full(
@@ -576,6 +579,7 @@ def collate(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "codes": batch,
         "frames": torch.tensor([sample["frames"] for sample in samples]),
         "source_frames": torch.tensor([sample["source_frames"] for sample in samples]),
+        "directions": [sample["direction"] for sample in samples],
     }
 
 

@@ -74,7 +74,7 @@ def timed(function, repeats: int = 1) -> float:
 
 
 def profile_generation(
-    args, info, lm, optimizer, sources, silence_frame, report: dict, write
+    args, info, lm, optimizer, sources, directions, silence_frame, report: dict, write
 ) -> torch.Tensor:
     """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, the policy and its
     optimizer states in host memory as a run parks them, and return the rollouts of every source
@@ -88,7 +88,7 @@ def profile_generation(
         lengths = torch.full((count,), args.frames)
         batches = grpo.generation_batches(lengths, gen_batch * args.frames, args.group)
         return grpo.sample_window(
-            generator, info, sources[:count], lengths, batches, silence_frame, (args.seed,),
+            generator, info, sources[:count], directions[:count], lengths, batches, silence_frame, (args.seed,),
             grpo.TEMPERATURE, grpo.TOP_K, lambda *_: None)
 
     fitting = []
@@ -202,6 +202,7 @@ def main() -> None:
     stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
     sources = torch.stack([grpo.stream_source(dataset, index, silence)
                            for index in stream_ids for _ in range(args.group)])
+    directions = [dataset.streams[index].direction for index in stream_ids for _ in range(args.group)]
     report: dict = {"frames": args.frames, "group": args.group,
                     "stream_frames": [dataset.streams[i].frames for i in stream_ids]}
 
@@ -218,7 +219,7 @@ def main() -> None:
     silence_frame = silence[:, -1].long().to(device)
 
     # Phase 1: generation.
-    rollouts = profile_generation(args, info, lm, optimizer, sources, silence_frame, report, write)
+    rollouts = profile_generation(args, info, lm, optimizer, sources, directions, silence_frame, report, write)
 
     # Phase 1: rewards.
     eos_id, pad_id = int(tokenizer.eos_id()), int(tokenizer.pad_id())
@@ -250,18 +251,19 @@ def main() -> None:
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
-        condition = common.batch_condition_tensors(lm, info.model_type, micro)
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
         def score():
             with autocast:  # the update's forward, gradients enabled, as grpo.py scores π_old
+                condition = common.direction_conditions(lm, directions[:micro])
                 logprobs, mask = grpo.token_logprobs(lm, batch, condition, grpo.TEMPERATURE)
             return logprobs.detach(), mask
 
         def update():
-            with autocast:
+            with autocast:  # each backward through its own condition: a graph is freed by one
+                condition = common.direction_conditions(lm, directions[:micro])
                 loss, _ = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
                                          keep[:micro].to(device), weights, grpo.EPSILON,
                                          grpo.TEMPERATURE)
@@ -281,6 +283,7 @@ def main() -> None:
         lm.zero_grad(set_to_none=True)
         frames = micro * args.frames
         with autocast:
+            condition = common.direction_conditions(lm, directions[:micro])
             _, stats = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
                                       keep[:micro].to(device), weights, grpo.EPSILON,
                                       grpo.TEMPERATURE)

@@ -4,8 +4,12 @@ from pathlib import Path
 
 import sphn
 import torch
+from moshi.conditioners import ConditionAttributes
 from moshi.models import LMGen, LMModel, MimiModel, loaders
-from moshi.run_inference import get_condition_tensors
+
+# The two-way model's condition: a lookup table summed into every frame's input, one entry a
+# direction (`training.finetune.direction` adds it), so the runtimes say which way to translate.
+DIRECTION = "direction"
 
 
 def audio_read(
@@ -48,24 +52,28 @@ def stack_and_pad_audio(wavs: list[torch.Tensor], max_len: int | None = None) ->
     return out
 
 
+def direction_conditions(lm: LMModel, directions: list[str]) -> dict | None:
+    """The condition tensors for rows translated in `directions` (<source>-<target>, one a row):
+    a conditioned model's direction entries, nothing for a model without conditioners (the
+    upstream model, the two-way checkpoints before the condition). Computed in the model's graph,
+    so training reaches the table through them."""
+    provider = lm.condition_provider
+    if provider is None or not provider.conditioners:
+        return None if lm.fuser is None else {}
+    if set(provider.conditioners) != {DIRECTION}:
+        raise ValueError(f"unsupported conditioners {sorted(provider.conditioners)}")
+    attributes = [ConditionAttributes(text={DIRECTION: direction}, tensor={}) for direction in directions]
+    return provider.prepare_and_provide(attributes)
+
+
 def get_lmgen(
-    lm: LMModel,
-    checkpoint_info: loaders.CheckpointInfo,
-    batch_size: int,
-    cfg_coef: int = 1.0,
-    **sampling: float,
+    lm: LMModel, checkpoint_info: loaders.CheckpointInfo, directions: list[str], **sampling: float
 ) -> LMGen:
-    """An LMGen with the checkpoint's generation config, `sampling` (temp, top_k, ...) over it."""
-    condition_tensors = get_condition_tensors(
-        checkpoint_info.model_type, lm, batch_size=batch_size, cfg_coef=cfg_coef
-    )
-    lm_gen = LMGen(
-        lm,
-        cfg_coef=cfg_coef,
-        condition_tensors=condition_tensors,
-        **{**checkpoint_info.lm_gen_config, **sampling},
-    )
-    return lm_gen
+    """An LMGen for a batch of rows translated in `directions`, with the checkpoint's generation
+    config, `sampling` (temp, top_k, ...) over it."""
+    with torch.no_grad():
+        conditions = direction_conditions(lm, directions)
+    return LMGen(lm, condition_tensors=conditions, **{**checkpoint_info.lm_gen_config, **sampling})
 
 
 def add_input_eos(

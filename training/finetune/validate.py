@@ -100,7 +100,7 @@ def main() -> None:
         text_pad=args.text_pad_weight,
     )
     metrics = common.evaluate_teacher_forced(
-        lm, dataloader, device, checkpoint_info.model_type, weights, args.max_batches
+        lm, dataloader, device, weights, args.max_batches
     )
     result = {
         "cache_dir": repo_display_path(cache_dir),

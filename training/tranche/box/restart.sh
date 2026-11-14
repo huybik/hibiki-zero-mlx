@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|sft|envi-cache|two-way|direction|student|student-heads: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -78,6 +78,23 @@ case $job in
             --epochs 2 --seed 47 --save-every 4000 --val-every 20000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  # The direction condition (two-way.md#direction): the shipping model, GRPO update 1,400, given the direction table
+  # (training.finetune.direction writes weights/twoway_direction when it is missing), trained on the two-way run's rows
+  # both ways in the trainer's whole 4,608-frame batches, the model at peak 1e-6 (GRPO's gains are kept by moving it
+  # little) and the table at --condition-lr's 1e-4, for 12,000 updates validated every 4,000.
+  direction) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2 S=weights/twoway_direction
+       [[ -f $S/config.json ]] || .venv/bin/python -m training.finetune.direction \
+         --weight weights/grpo_twoway_best1400.safetensors --out-dir $S
+       cmd=(./training/h100.sh run twoway_direction
+            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --config-path $S/config.json --model-weight $S/model.safetensors
+            --lr 1e-6 --eval-batch-size 64 --keep-checkpoints 1
+            --max-steps 12000 --seed 47 --save-every 2000 --val-every 4000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # The phone students (phone-student.md#training-a-student), each cut from the shipping model, GRPO update 1,400
   # (weights/grpo_twoway_best1400.safetensors: the recovery repo's grpo_twoway/best/best_step001400.safetensors) when
   # its directory is missing: `student` the depformer student (10 layers, a 3-layer depformer, 8 codebooks),
@@ -99,7 +116,7 @@ case $job in
             --epochs 2 --seed 47 --save-every 4000 --val-every 16000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads" >&2; exit 1 ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way|direction|student|student-heads" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &
