@@ -107,19 +107,12 @@ On the Mac (MPS, bf16 upstream model, 2026-11-04):
 - **Reward math:** on a hand-built stream, an on-time correct rollout beats the same words late,
   which beats one wrong word, which beats silence. Advantages are suffix sums of the normalized
   rewards.
-- **Rollout alignment:**
-
-  | Text logits, `LMGen` against the training forward | Same frame | ±1 frame |
-  |---|---:|---:|
-  | Argmax agreement | 100% | 55% |
-  | Max difference | 0.20 | 29 |
-
-  99.87% of sampled audio tokens sit inside the teacher-forced top 250; the rest are bf16
-  near-ties.
-- **The loss** against its own grad-enabled old logprobs:
-  - ratio 1.000000, nothing clipped, and the loss equals −Σ c·A;
-  - a no-grad old pass gave a ratio of 1.0012 and clipped 6 tokens;
-  - one step along the gradient raised Σ c·A·logp.
+- **Rollout alignment:** `LMGen`'s text logits against the training forward agree on argmax 100%
+  at the same frame (max difference 0.20) and 55% at ±1 frame (29); 99.87% of sampled audio
+  tokens sit inside the teacher-forced top 250, the rest bf16 near-ties.
+- **The loss** against its own grad-enabled old logprobs: ratio 1.000000, nothing clipped, the
+  loss −Σ c·A, and a step along the gradient raised Σ c·A·logp (a no-grad old pass: ratio
+  1.0012, 6 tokens clipped).
 
 The CUDA profile and dry run are under [Running](#running).
 
@@ -228,16 +221,12 @@ The CUDA profile and dry run are under [Running](#running).
   non-empty gate allows a tenth of a set's rows since 2026-11-10: at 8 of 180 a two-update dry
   run failed both its evaluations on round 4's silent Common Voice rows alone
   ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
-- **Dry run** (2026-11-06, `h100.sh grpo grpo_dryrun`, τ 2, 4 updates of 4 streams × 4, stopped
-  before its checkpoint sync when GRPO was deferred): every update's ratio mean 1.000–1.001, the
-  loss finite (−925 to 368), but the gradient norm before clipping 0.42–0.95 million against SFT's
-  ~8–15. The resume and the Hub's pair were not reached.
-- **The gradient norm's scale** (checked 2026-11-07): the loss sums the weighted objective over
-  every kept token of the update's 128 rollouts (no mean), so its norm runs ~10⁵ times SFT's
-  (a mean loss). Grad clip 1.0 rescales it to 1 every update, as it already does SFT's ~10, and
-  AdamW's step does not depend on the gradient's scale: after the clip a parameter's gradient is
-  ~1/√3.1e9 ≈ 2e-5, far above eps 1e-8. So the scale changes nothing and the loss stays as the
-  paper writes it (Σ_q c_q Σ_t).
+- **Dry run** (2026-11-06, 4 updates): ratio mean 1.000–1.001, the loss finite, the gradient
+  norm before clipping 0.42–0.95 million against SFT's ~8–15.
+- **The gradient norm's scale:** the loss sums over every kept token of the update's 128 rollouts
+  (Σ_q c_q Σ_t, as the paper writes it), so its norm runs ~10⁵ times SFT's mean loss. Clip 1.0
+  rescales it, AdamW's step ignores scale, and a clipped parameter gradient (~2e-5) stays far
+  above eps 1e-8, so it changes nothing.
 - **The two-way run** (user, 2026-11-13): `grpo_launch.sh weights/twoway_final.safetensors`,
   the two-way SFT's final model (`runs/twoway_sft/model_step287558.safetensors`, hard-linked
   into `weights/`), at the H100 profile's sizes, `--updates 2000`. It is judged at 800 from its
@@ -275,6 +264,14 @@ The CUDA profile and dry run are under [Running](#running).
     ([rewards](#design)), so on validation's single rows the policy holds it back more often,
     while the last word comes sooner (the end offsets above). The live runtimes never stop at an
     EOS, so for them a missing one costs nothing.
+  - **Its test sets** (2026-11-14, `eval.py` seed 43 on the 11 two-way test sets, 7,015 rows):
+    the mean chrF goes 41.12 (update 0) → 45.48 (1,400) → 45.68 (1,800). 1,400 beats update 0
+    on every set (+2.6 FLEURS-vi test, +4.9 FLEURS-en test, up to +5.9), ends sooner (FLEURS
+    end offset 2.7 → 0.9 s VI→EN, 3.5 → 1.4 s EN→VI) and leaves 2 rows empty against 18. 1,800
+    against 1,400, paired bootstrap: +0.20 on the mean (95% CI −0.09 to +0.53), VI→EN +0.30
+    (−0.06 to +0.68), EN→VI −0.06, FLEURS test −0.15 both ways. **Update 1,400 ships** (and
+    is the students' teacher): validation chose it before the test sets were read, and they
+    cannot tell the two apart. Outputs in `/workspace/evals/test_{start,grpo1400,grpo1800}/`.
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-frames
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where

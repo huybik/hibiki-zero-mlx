@@ -228,7 +228,7 @@ codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-me
    ([mlx-inference](agent-memory/mlx-inference.md#model-directories)). So the two-way model
    ships at 6 bits. The student's recipe is its own gate's and the phone's call: 6 bits reads
    ~30% more weight bytes a frame than 4.
-3. Next: stage the final GRPO model at 6 bits, then the shipping model on the phone.
+3. Next: stage GRPO update 1,400 (the shipping model) at 6 bits, then run it on the phone.
 
 ### 7. Two-way speech
 
@@ -509,7 +509,11 @@ Vietnamese text cannot keep up with its speech.
    ([grpo](agent-memory/grpo.md#running),
    [plan](grpo_plan.md#5-phases-each-profiled-on-the-box-before-the-next)); stage 4 lists what
    two directions add. Go-ahead (user, 2026-11-13): from the two-way SFT's final model, 800
-   updates, continued to 2,000 while it still improves.
+   updates, continued to 2,000 while it still improves. Done 2026-11-14: stopped at 1,800 by its
+   stop rule; update 1,400, validation's best, ships. On the 11 test sets its mean chrF is 45.48
+   against the start's 41.12, up on every set both ways (FLEURS-vi test 38.5 → 41.1, FLEURS-en
+   test 33.3 → 38.2), and its last word comes 1–2 s sooner; 1,800 is within noise of it
+   ([grpo](agent-memory/grpo.md#running)).
 9. The phone student (8 codebooks, ~10 layers, a 3-layer depformer) cut from the two-way model,
    trained on both directions' streams directly, distilled only if it falls short; its EN→VI
    speech is checked at 8 and 16 codebooks (stage 5.3); measure a current phone (A17 Pro / A18)
