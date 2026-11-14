@@ -1,9 +1,9 @@
 # Phone student
 
 Read when touching `training/student/`, `streams.model_rows` or a `StreamDataset`'s `codebooks`, or
-when cutting, training or scoring a smaller model for the phone or its parallel codebook heads.
+when cutting, training, distilling or scoring a smaller model for the phone or its parallel heads.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Cut](#cut) · [Training a student](#training-a-student) ·
-[Parallel heads](#parallel-heads) · [Checks](#checks) · [Next](#next)
+[Parallel heads](#parallel-heads) · [Distillation](#distillation) · [Checks](#checks) · [Next](#next)
 
 The 3B misses real time on the A15, so the phone model is cut from the two-way model and scored in
 both directions ([plan](../vi_en_parity_plan.md#5-the-phone-model), stages 5.3 and 5.4; order steps
@@ -80,6 +80,37 @@ sampled before audio at each step, so this adds no latency and no parameters.
   (a heads model: built without weights, heads installed, then loaded, the EOS row copied from
   PAD's as moshi's own load does).
 
+## Distillation
+
+The plan distils only if the student falls short of the 3B
+([plan](../vi_en_parity_plan.md#5-the-phone-model), stage 5.3). Trained on the targets alone, the
+depformer student does, by ~15 chrF, and flattens: FLEURS dev VI→EN / EN→VI chrF 20.7 / 15.0 at
+update 16,000, 24.5 / 18.6 at 48,000, 27.0 / 23.8 at 64,000, 26.2 / 23.2 at 80,000, against
+the teacher's 42.7 / 38.8; the end offset 4–8 s against 1.1–1.5 s. Teacher-forced on the VI→EN
+validation cache, its word accuracy is 0.56 at 80,000 against the two-way SFT model's 0.66.
+
+- `train.py --teacher-weight` ([sft-training](sft-training.md#objective)): each training token's
+  loss is `common.token_kl`, KL(teacher ‖ student) of its next-token distribution, in place of
+  its CE, under the same masks and weights (text PAD 0.5, codebook 0 100). The student learns
+  the teacher's whole distribution at every position, and with GRPO update 1,400 as the teacher
+  its timing too: where that model would write a word before the SFT target's, its distribution
+  says so.
+- The teacher (`--teacher-config`, default the 3B's) loads frozen in bf16 (`load_lm`, its own
+  EOS row) and runs the compiled training forward without a backward. It reads the whole stream:
+  the dataset is assembled at the cache's 16 codebooks and each batch is cut to the student's rows
+  (`model_rows`) on the GPU; its audio logits are the student's codebooks, its first k (equal
+  delays, so equal masks). Both must be on the same tokenizer.
+- Validation is unchanged (the student's CE against the targets, free-running chrF), so a
+  distilled run's validations compare with `student_dep10`'s.
+- `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
+  `torch.nn.functional.kl_div` on the valid positions, is 0 elsewhere and gives them no gradient.
+- **The run** (2026-11-14, user: "at this rate we never get 40+ chrf"): `restart.sh
+  student-distill`, `student_dep10_distill`, from `student_dep10`'s newest model (stopped for it),
+  on new streams of the same rows (seed 48), whole 12,288-frame batches at peak 3e-5 (where
+  `student_dep10`'s cosine had come down to), validation every 8,000. The heads student is
+  deferred: trained on the targets alone, it would test the parallel heads under the recipe that
+  falls short.
+
 ## Checks
 
 - End to end on the H100 (2026-11-14, both students cut from GRPO update 1,400, the two-way
@@ -116,7 +147,7 @@ sampled before audio at each step, so this adds no latency and no parameters.
 
 ## Next
 
-- **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
+- **Training** (2026-11-14): `restart.sh student`, then (deferred for [distillation](#distillation)) `restart.sh student-heads`
   ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
   2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h each), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
@@ -179,3 +210,9 @@ sampled before audio at each step, so this adds no latency and no parameters.
   (`export_mimi_coreml.py --decoder-codebooks 8`), 107 frames in 2.0 s on the M4 Pro (Mimi's
   encode 12.8 ms a frame, the LM 2.9, the decode 3.3). The heads need support in both runtimes,
   built only if they win.
+- **6 bits holds on the student** (2026-11-14, `student_dep10` update 48,000 staged by
+  `convert_mlx.py`, the gate on every FLEURS dev row, `--seed 42`; bf16 minus 6 bits, paired
+  bootstrap 95%): VI→EN 24.81 / 24.43 (+0.38, −0.41 to +1.24), EN→VI 19.34 / 19.39 (−0.05, −0.82
+  to +0.72), as on the 3B. The MLX bf16 scores match the trainer's own validation at that update
+  (24.46 / 18.62, 48 empty EN→VI rows against MLX's 50), so the runtime reads the student
+  faithfully. 1.24 GB at 6 bits, 2.79 in bf16.

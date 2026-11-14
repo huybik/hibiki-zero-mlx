@@ -180,3 +180,7 @@ sampling temperature) all run it, so a change to it needs all three checked
   CE and the word and PAD CE and accuracy unweighted.
 - The upstream model on two 96-frame streams: loss 8.61, word CE 13.3, PAD accuracy 0.64. The
   previous objective is in [docs/analysis/loss_function.md](../analysis/loss_function.md).
+- **Distillation** (`--teacher-weight`, [phone-student](phone-student.md#distillation)): each
+  training token's CE becomes `common.token_kl`, its KL from a frozen bf16 teacher's
+  distribution on the same stream, under the same masks and weights; the teacher reads the
+  whole stream and the model its cut. Validation still reports CE against the targets.

@@ -290,44 +290,65 @@ def token_ce(logits: Any, targets: Any, valid: Any, temperature: float = 1.0) ->
     return torch.where(valid, ce, 0.0)
 
 
+@torch.compile(dynamic=True)
+def token_kl(logits: Any, teacher_logits: Any, valid: Any) -> Any:
+    """KL(teacher || model) of each valid position's next-token distribution, float32 in the
+    shape of `valid`, and 0 elsewhere: distillation's per-token loss in place of `token_ce`'s.
+    Both logits are read only where `valid` (moshi's NaN fill elsewhere), so no NaN reaches the
+    loss or the gradient; the teacher's carry none."""
+    keep = valid.unsqueeze(-1)
+    teacher_log = torch.log_softmax(torch.where(keep, teacher_logits.float(), 0.0), dim=-1)
+    log = torch.log_softmax(torch.where(keep, logits.float(), 0.0), dim=-1)
+    kl = (teacher_log.exp() * (teacher_log - log)).sum(-1)
+    return torch.where(valid, kl, 0.0)
+
+
 def compute_batch_losses(
     lm: Any,
     codes: Any,
     condition_tensors: Any | None,
     weights: LossWeights,
     accuracy: bool = False,
+    teacher: Any | None = None,
 ) -> dict[str, Any]:
     """Teacher-forced losses of one batch, as tensors on the GPU (no host sync), with every
     component's sum and count beside them so evaluation can aggregate exactly. Positions holding
     -1 are outside the masks. `accuracy` adds the counts of text tokens the argmax gets right
-    (`content_correct`, `pad_correct`)."""
+    (`content_correct`, `pad_correct`). With `teacher` (a teacher's output on the same frames,
+    audio codebooks from the first), each token's loss is its KL from the teacher's distribution
+    (`token_kl`) instead of its cross-entropy, under the same masks and weights."""
     output = lm(codes, condition_tensors=condition_tensors)
     audio_valid = output.mask  # [B, dep_q, T]
-    audio_ce = token_ce(
-        output.logits, codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q], audio_valid
-    )
+    audio_targets = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
+    if teacher is None:
+        audio_token_loss = token_ce(output.logits, audio_targets, audio_valid)
+    else:
+        audio_token_loss = token_kl(output.logits, teacher.logits[:, : lm.dep_q], audio_valid)
     semantic = torch.zeros_like(audio_valid)
     semantic[:, 0] = audio_valid[:, 0]
     acoustic = audio_valid & ~semantic
     audio_weight = torch.where(semantic, weights.first_codebook, 1.0) * audio_valid
     text_valid = output.text_mask  # [B, 1, T]
     text_targets = codes[:, :1]
-    text_ce = token_ce(output.text_logits, text_targets, text_valid)
+    if teacher is None:
+        text_token_loss = token_ce(output.text_logits, text_targets, text_valid)
+    else:
+        text_token_loss = token_kl(output.text_logits, teacher.text_logits, text_valid)
     pad = (text_targets == lm.text_padding_token_id) & text_valid
     content = text_valid & ~pad
     text_weight = torch.where(pad, weights.text_pad, 1.0) * text_valid
     sums = {
-        "audio_sum": (audio_ce * audio_weight).sum(),
+        "audio_sum": (audio_token_loss * audio_weight).sum(),
         "audio_n": audio_weight.sum(),
-        "semantic_sum": (audio_ce * semantic).sum(),
+        "semantic_sum": (audio_token_loss * semantic).sum(),
         "semantic_n": semantic.sum(),
-        "acoustic_sum": (audio_ce * acoustic).sum(),
+        "acoustic_sum": (audio_token_loss * acoustic).sum(),
         "acoustic_n": acoustic.sum(),
-        "text_sum": (text_ce * text_weight).sum(),
+        "text_sum": (text_token_loss * text_weight).sum(),
         "text_n": text_weight.sum(),
-        "content_sum": (text_ce * content).sum(),
+        "content_sum": (text_token_loss * content).sum(),
         "content_n": content.sum(),
-        "pad_sum": (text_ce * pad).sum(),
+        "pad_sum": (text_token_loss * pad).sum(),
         "pad_n": pad.sum(),
     }
     result = {**sums, **loss_means(sums, weights)}
