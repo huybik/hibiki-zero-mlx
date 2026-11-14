@@ -14,8 +14,8 @@ mode never ends it, and pipelines encode->LM->decode across threads so the live
 critical path is just the LM step (~22 ms on the M4 Pro for the 3B at 4 bits, 25 at 6;
 budget 80 ms).
 
-Use headphones in mic mode: the input level stage raises quiet sound toward speech
-level, the speakers' echo of the translation included, which the model then hears.
+Mic mode cancels the speakers' echo (hibiki_mlx.echo) before the input level stage, so the
+model does not hear and translate its own translation: headphones are not needed.
 
 Both modes pass the source through the voice gate (hibiki_mlx.voice): the model hears
 silence until speech starts and wherever no one speaks, never noise alone, 160 ms late.
@@ -34,6 +34,7 @@ import mlx.core as mx
 import numpy as np
 
 from hibiki_mlx import pipeline as f
+from hibiki_mlx.echo import EchoCanceller
 from hibiki_mlx.level import Leveller
 from hibiki_mlx.voice import VoiceGate
 from moshi_mlx import models
@@ -60,27 +61,27 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     if speaking:                                      # the primer, unheard, before the mic opens
         f.prime(model, gen, mimi_enc, ct, speaking)
 
-    in_q: queue.Queue = queue.Queue()
+    in_q: queue.Queue = queue.Queue()                 # (heard, played) frame pairs
     enc_q: queue.Queue = queue.Queue()                # encoder -> LM
     dec_q: queue.Queue = queue.Queue()                # LM -> decoder
     out_q: queue.Queue = queue.Queue()
     stop = threading.Event()
     failed: list[BaseException] = []                  # a worker's error, raised at the end
 
-    def on_input(indata, frames, t, status):
-        in_q.put_nowait(indata[:, 0].copy())          # (1920,) float32 mic frame
-
-    def on_output(outdata, frames, t, status):
+    def on_audio(indata, outdata, frames, t, status):
         try:
-            outdata[:, 0] = out_q.get_nowait()         # translated EN PCM
+            played = out_q.get_nowait()                # (1920,) float32 translation
         except queue.Empty:
-            outdata.fill(0)                            # not ready yet -> silence
+            played = np.zeros(FRAME, np.float32)       # not ready yet -> silence
+        outdata[:, 0] = played
+        in_q.put_nowait((indata[:, 0].copy(), played))  # what the mic heard while it played
 
     # Pipeline the codec off the main LM thread (same trick as the file path): encode
     # and decode are CPU (GIL-free) and independent of the LM recurrence, so the
     # live critical path collapses from encode+LM+decode (~58 ms) to just the LM
     # step (~24 ms on M4). Costs one frame (80 ms) of extra output latency.
-    gate = VoiceGate()                                # the session's voice gate
+    echo = EchoCanceller()                            # the session's echo canceller
+    gate = VoiceGate()                                # and voice gate
 
     def encoder():
         # Queue numpy (not mx) arrays: lazy mx graphs are bound to the creating
@@ -88,10 +89,10 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
         leveller = Leveller()                                           # the session's level
         while not stop.is_set():
             try:
-                pcm = in_q.get(timeout=0.1)
+                heard, played = in_q.get(timeout=0.1)
             except queue.Empty:
                 continue
-            frame = gate(leveller(pcm))                                 # silence unless speech
+            frame = gate(leveller(echo(heard, played)))                 # silence unless speech
             if frame is None:                                           # its first LOOKAHEAD
                 continue
             codes = mimi_enc.encode_step(frame[None, None, :])          # CPU, GIL free
@@ -122,10 +123,10 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     ended = ""
     live = 0                                          # steps run on the mic
     try:
-        with sd.InputStream(samplerate=24000, channels=1, blocksize=FRAME,
-                            dtype="float32", callback=on_input), \
-             sd.OutputStream(samplerate=24000, channels=1, blocksize=FRAME,
-                             dtype="float32", callback=on_output):
+        # One duplex stream, so each frame played and the frame heard beside it stay a fixed
+        # time apart, the echo's delay the canceller finds.
+        with sd.Stream(samplerate=24000, channels=1, blocksize=FRAME,
+                       dtype="float32", callback=on_audio):
             print(f"listening — the translation plays back. Ctrl-C to stop "
                   f"(cap {max_steps / 12.5 / 60:.0f} min)\n")
             while not stop.is_set():

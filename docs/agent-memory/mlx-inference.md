@@ -152,8 +152,19 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     the same on both runs. Vietnamese priming showed none of it on 8 clips.
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers, which adds one frame of output latency. A worker's error ends the session and is
-  raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the
-  translation toward speech level ([input level](sft-evaluation.md#input-level)).
+  raised once it has stopped.
+- The echo canceller (`hibiki_mlx/echo.py`; `run_mic` only) removes the speakers' echo before the
+  level stage, which would raise it toward speech level once the user stops; the gate passes it
+  (it is speech) and the model translates its own voice without end. WebRTC's AEC3 (livekit's
+  `AudioProcessingModule`, Apache-2.0) at 24 kHz takes each frame heard with the frame played in
+  the same callback of one duplex `sd.Stream`; it finds the delay itself (~282 ms on the MacBook
+  Pro; hints 0–280 ms did the same), adds 9 ms and keeps the level. Measured 2026-11-14 (6-bit,
+  `--speaking vi`): 34 s of the room playing translations, nobody speaking, gave 49 words (its own
+  translation back in Vietnamese), cancelled the 3 that pure silence gives; live at volume 75,
+  without it the model talked for 5 min after the speaker stopped, with it nothing within 30 s.
+  On 25 OneVoice Vietnamese rows (chrF, two seeds) clean 40.4/39.3, speakers silent 36.4/38.3,
+  headphones 32.9/37.1, inside the noise (a 9 ms delay alone: 40.4 → 36.9). AEC3 damps the voice
+  (gain ~0.6) while the far end plays without echo: long headphone sessions are unmeasured.
 - rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
   start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
   such limit ([swift-runtime](swift-runtime.md)).

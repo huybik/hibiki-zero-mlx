@@ -13,8 +13,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   ([sft-evaluation](sft-evaluation.md#side-tools)), with moshi 0.2.13 as on the pod.
 - Inference needs MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, silero-vad with its `onnx-cpu` extra (the
   voice gate: torch and onnxruntime, which the conda env has; 6.2.3 installed 2026-11-14; without
-  onnxruntime the gate fails as it starts), and sounddevice for the
-  microphone. Install with `pip install -e ./inference/moshi-mlx` then `pip install -e .`; both
+  onnxruntime the gate fails as it starts), and, for the microphone, sounddevice and livekit (mic
+  mode's echo canceller; 1.1.2 in the conda env). Install with `pip install -e ./inference/moshi-mlx` then `pip install -e .`; both
   are editable installs, so moving either directory requires reinstalling them.
 - CUDA training uses only the environment that `./training/h100.sh setup` builds; see
   [sft-recovery](sft-recovery.md).

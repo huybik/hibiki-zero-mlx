@@ -6,6 +6,7 @@ requires-python = ">= 3.10,<3.14"
 readme = "README.md"
 dependencies = [
     # moshi_mlx comes from the vendored fork: pip install -e ./inference/moshi-mlx
+    "livekit>=1.1",  # mic mode's echo canceller (WebRTC AEC3, its audio processing module)
     "mlx>=0.31",
     "numpy",
     "rustymimi>=0.4.1",
