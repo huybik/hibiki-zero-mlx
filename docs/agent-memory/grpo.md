@@ -224,20 +224,19 @@ The CUDA profile and dry run are under [Running](#running).
   non-empty gate allows a tenth of a set's rows since 2026-11-10: at 8 of 180 a two-update dry
   run failed both its evaluations on round 4's silent Common Voice rows alone
   ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
-- **Dry run** (2026-11-06, 4 updates): ratio mean 1.000–1.001, the loss finite, the gradient
-  norm before clipping 0.42–0.95 million against SFT's ~8–15.
-- **The gradient norm's scale:** the loss sums over every kept token of the update's 128 rollouts
+- **The gradient norm's scale** (0.42–0.95 million before clipping in a 2026-11-06 dry run,
+  against SFT's ~8–15): the loss sums over every kept token of the update's 128 rollouts
   (Σ_q c_q Σ_t, as the paper writes it), so its norm runs ~10⁵ times SFT's mean loss. Clip 1.0
   rescales it, AdamW's step ignores scale, and a clipped parameter gradient (~2e-5) stays far
   above eps 1e-8, so it changes nothing.
-- **The two-way run** (user, 2026-11-13): `grpo_launch.sh weights/twoway_final.safetensors`,
-  the two-way SFT's final model (`runs/twoway_sft/model_step287558.safetensors`, hard-linked
-  into `weights/`), at the H100 profile's sizes, `--updates 2000`. It is judged at 800 from its
-  evaluations (every 200, against update 0 too, since promotion only compares checkpoints), and
-  goes on while the selecting chrF still rises beyond that noise. The rate is constant, so the
-  longer `--updates` is the same run up to 800. Its caches are real Vietnamese speech to
-  English (the tranche) and English to Vietnamese from the tranche's voice-cloned English and
-  `en_speech`'s real recordings.
+- **The two-way run** (user, 2026-11-13): `grpo_launch.sh grpo_twoway
+  weights/twoway_final.safetensors`, the two-way SFT's final model
+  (`runs/twoway_sft/model_step287558.safetensors`, hard-linked into `weights/`), `--updates
+  2000`, judged at 800 from its evaluations (every 200, against update 0 too, since promotion
+  only compares checkpoints), going on while the selecting chrF still rises beyond that noise.
+  The rate is constant, so the longer `--updates` is the same run up to 800. Its caches: the
+  tranche's real Vietnamese speech to English, English to Vietnamese from its voice-cloned
+  English and `en_speech`'s real recordings.
   - **Its evaluations** (`runs/grpo_twoway/val_log.jsonl`; "selecting" is the mean chrF of FLEURS
     dev both ways, "of 8" the mean over all eight sets, "EOS" the share of the eight sets' 1,833
     rows that emit the text EOS; every set passes its gates at every update):
@@ -275,10 +274,11 @@ The CUDA profile and dry run are under [Running](#running).
     (−0.06 to +0.68), EN→VI −0.06, FLEURS test −0.15 both ways. **Update 1,400 ships** (and
     is the students' teacher): validation chose it before the test sets were read, and they
     cannot tell the two apart. Outputs in `/workspace/evals/test_{start,grpo1400,grpo1800}/`.
-- **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-frames
-  … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
-  ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
-  an SFT run's use `run`: either subcommand on the other's run fails at argument parsing.
+- **The run:** `training/tranche/box/grpo_launch.sh RUN START [ARGS…]` runs `./training/h100.sh
+  grpo RUN` on those caches at the 3B's sizes, ARGS after them winning (a phone student adds its
+  `--config-path`, `--text-weight 50` and its profile's sizes). `h100.sh` claims, locks,
+  preflights and syncs as `run` does ([sft-recovery](sft-recovery.md#launcher)); its boot-hook
+  line and a restore use `grpo` where an SFT run's use `run`, and fail on the other's run.
   - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
   - **Disk:** the preflight needs 130 GiB (93 with `--keep-checkpoints 1`), free plus what the
