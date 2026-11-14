@@ -73,7 +73,10 @@ evaluation does: the clip, the source EOS, then up to 20 s of silence, stopping 
 text EOS once it has heard the source EOS (an EOS before that stops nothing, so a long file is
 translated to its end), or once the model has said nothing for 5 s after the source ended.
 Both modes pass the source through a voice gate (Silero VAD): the model hears silence until
-someone speaks and wherever no one does, so noise alone is never translated.
+someone speaks and wherever no one does, so noise alone is never translated. Mic mode also
+cancels the speakers' echo (WebRTC's echo canceller), so the model does not hear its own
+translation and translate it again: the Mac's own speakers need no headphones, but a Bluetooth or
+AirPlay speaker may delay its echo past the canceller's ~450 ms reach.
 `--speaking vi|en` (both modes) says which language is spoken: the two-way model guesses the
 direction from the voice and gets some voices wrong, so the stream then starts with a short
 unheard primer in that language, which sets the direction (no accuracy cost measured where the

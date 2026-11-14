@@ -241,7 +241,8 @@ VieNeu TTS is digital silence; the tranche's GigaSpeech 2 runs louder, median �
   quiet FLEURS clips' agreement 0.74 → 0.59, because their own floor is under −70 (FLEURS-en
   median −83, 2-3 16-bit steps).
 - Mic mode on speakers: the stage raises the echo of the translation like any quiet sound, up
-  to speech level a few seconds after the user stops talking, so use headphones.
+  to speech level a few seconds after the user stops talking, so mic mode cancels the echo
+  before the stage ([mlx-inference](mlx-inference.md#runtime)).
 - Frames raised, over every clip: FLEURS-en 72%, FLEURS-vi 49%, Common Voice English 20%,
   `en-vi-val-noisy` 14-17%, MultiMed-ST 5%, Libriheavy 5%, the TTS 1%. The training caches were
   coded without the stage. leon.wav as it is (peak −3.8 dBFS) passes unchanged.
