@@ -23,8 +23,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   installs point at the main checkout, so an app built in a worktree would otherwise run the
   worktree's `hibiki_mlx` on main's `moshi_mlx`. It opens on the model last chosen (user defaults
   `com.huybik.hibiki-test` `modelPath`, written only by a choice, so a model on an unmounted drive
-  is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download), and quitting it
-  ends its backend. It decodes each pipe read as UTF-8 with replacement (a read that was not valid
+  is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download). Closing its window
+  quits it, and quitting ends its backend. The mic transcript starts after the blank line that
+  follows main.py's `listening` line (a traceback during load has blank lines of its own). It decodes each pipe read as UTF-8 with replacement (a read that was not valid
   UTF-8 used to be dropped whole; Python writes each streamed character in one small write, which
   a pipe does not split, so only a long write such as a traceback can be cut mid-character) and
   reads what is left at exit.

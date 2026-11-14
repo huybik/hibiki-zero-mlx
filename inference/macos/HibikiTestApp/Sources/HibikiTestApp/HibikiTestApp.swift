@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 @main
 struct HibikiTestApp: App {
+    @NSApplicationDelegateAdaptor private var delegate: AppDelegate
     @StateObject private var controller = InferenceController()
 
     var body: some Scene {
@@ -13,6 +14,14 @@ struct HibikiTestApp: App {
                 .environmentObject(controller)
         }
         .defaultSize(width: 780, height: 680)
+    }
+}
+
+/// One window: closing it quits, which ends the backend, rather than leaving a mic session running
+/// with no window to stop it.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
     }
 }
 
@@ -398,10 +407,13 @@ final class InferenceController: ObservableObject {
             return
         }
         microphoneHeader.append(text)
-        if microphoneHeader.contains("listening ") {
-            status = "Listening"
-        }
-        guard let separator = microphoneHeader.range(of: "\n\n") else { return }
+        // The transcript starts after the blank line that ends main.py's "listening" line; a
+        // traceback printed while the model loads has blank lines of its own.
+        guard let listening = microphoneHeader.range(of: "listening ") else { return }
+        status = "Listening"
+        guard let separator = microphoneHeader.range(
+            of: "\n\n", range: listening.upperBound..<microphoneHeader.endIndex
+        ) else { return }
         microphoneReady = true
         transcript.append(String(microphoneHeader[separator.upperBound...]))
         microphoneHeader = ""
