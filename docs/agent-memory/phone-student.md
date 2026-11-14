@@ -174,5 +174,8 @@ sampled before audio at each step, so this adds no latency and no parameters.
   - 1-frame steps again: 2-frame steps came in when the CPU also decoded Mimi; with decoding on
     the Neural Engine the CPU's encode (20–28 ms a frame) is under the GPU's step, so 1-frame
     steps may hold real time with up to 160 ms less latency. One phone run decides.
-- The MLX and Swift runtimes for the student's config (the Swift app already times untrained cuts)
-  and for the heads.
+- Both runtimes run the depformer student's config as it is (2026-11-14, the untrained cut at 6
+  bits, 1.24 GB): MLX file mode, and the Swift CLI with an 8-codebook `mimi-decoder.mlmodelc`
+  (`export_mimi_coreml.py --decoder-codebooks 8`), 107 frames in 2.0 s on the M4 Pro (Mimi's
+  encode 12.8 ms a frame, the LM 2.9, the decode 3.3). The heads need support in both runtimes,
+  built only if they win.
