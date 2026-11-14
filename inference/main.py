@@ -17,6 +17,9 @@ budget 80 ms).
 Use headphones in mic mode: the input level stage raises quiet sound toward speech
 level, the speakers' echo of the translation included, which the model then hears.
 
+Both modes pass the source through the voice gate (hibiki_mlx.voice): the model hears
+silence until speech starts and wherever no one speaks, never noise alone, 160 ms late.
+
 --speaking vi|en says which language is spoken: both modes then start the stream with a
 short primer in that language, unheard, so the two-way model keeps that direction instead
 of guessing it from the voice (pipeline.PRIMERS).
@@ -32,6 +35,7 @@ import numpy as np
 
 from hibiki_mlx import pipeline as f
 from hibiki_mlx.level import Leveller
+from hibiki_mlx.voice import VoiceGate
 from moshi_mlx import models
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root (inference/ -> ..)
@@ -76,6 +80,8 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     # and decode are CPU (GIL-free) and independent of the LM recurrence, so the
     # live critical path collapses from encode+LM+decode (~58 ms) to just the LM
     # step (~24 ms on M4). Costs one frame (80 ms) of extra output latency.
+    gate = VoiceGate()                                # the session's voice gate
+
     def encoder():
         # Queue numpy (not mx) arrays: lazy mx graphs are bound to the creating
         # thread's stream and can't be evaluated from the LM thread.
@@ -85,7 +91,10 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
                 pcm = in_q.get(timeout=0.1)
             except queue.Empty:
                 continue
-            codes = mimi_enc.encode_step(leveller(pcm)[None, None, :])   # CPU, GIL free
+            frame = gate(leveller(pcm))                                 # silence unless speech
+            if frame is None:                                           # its first LOOKAHEAD
+                continue
+            codes = mimi_enc.encode_step(frame[None, None, :])          # CPU, GIL free
             enc_q.put_nowait(np.transpose(codes, (0, 2, 1))[0, :, :other_cb])
 
     def decoder():
