@@ -117,7 +117,11 @@ sampled before audio at each step, so this adds no latency and no parameters.
 ## Next
 
 - **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
-  ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
+  ([tranche-box](tranche-box.md)), each cut from the direction run's chosen checkpoint
+  (`weights/twoway_direction_best.safetensors`, [two-way](two-way.md#direction); the students
+  inherit its direction table) when its directory is missing (`student_dep10_direction`,
+  `student_heads14_direction`; `student_dep10`, cut from GRPO update 1,400, was stopped at update
+  ~9,200 for the direction condition):
   2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h each), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:

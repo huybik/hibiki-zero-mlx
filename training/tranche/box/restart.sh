@@ -95,18 +95,18 @@ case $job in
             --max-steps 12000 --seed 47 --save-every 2000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The phone students (phone-student.md#training-a-student), each cut from the shipping model, GRPO update 1,400
-  # (weights/grpo_twoway_best1400.safetensors: the recovery repo's grpo_twoway/best/best_step001400.safetensors) when
-  # its directory is missing: `student` the depformer student (10 layers, a 3-layer depformer, 8 codebooks),
+  # The phone students (phone-student.md#training-a-student), each cut from the shipping model, the direction run's
+  # chosen checkpoint (weights/twoway_direction_best.safetensors, a link to it; its config weights/twoway_direction's)
+  # when its directory is missing: `student` the depformer student (10 layers, a 3-layer depformer, 8 codebooks),
   # `student-heads` the parallel heads (14 layers). Both train on the two-way run's rows both ways, the same streams
   # (seed 47) for the same steps, in whole 12,288-frame batches (51,000 frames/s on the depformer student, +32% over
   # 4,608) at peak 5e-5 (the probe, phone-student.md#next).
   student|student-heads) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       if [[ $job == student ]]; then name=student_dep10 cut=(); else name=student_heads14 cut=(--heads --num-layers 14); fi
+       if [[ $job == student ]]; then name=student_dep10_direction cut=(); else name=student_heads14_direction cut=(--heads --num-layers 14); fi
        S=weights/$name
-       [[ -f $S/config.json ]] || .venv/bin/python -m training.student.cut \
-         --weight weights/grpo_twoway_best1400.safetensors "${cut[@]}" --out-dir $S
+       [[ -f $S/config.json ]] || .venv/bin/python -m training.student.cut --weight weights/twoway_direction_best.safetensors \
+         --config-path weights/twoway_direction/config.json "${cut[@]}" --out-dir $S
        cmd=(./training/h100.sh run $name
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
