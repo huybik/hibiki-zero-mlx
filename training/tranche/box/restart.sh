@@ -111,7 +111,7 @@ case $job in
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
             --config-path $S/config.json --model-weight weights/student_dep10_distill_start.safetensors
             --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --batch-frames 12288 --lr 3e-5 --max-steps 120000 --eval-batch-size 64 --keep-checkpoints 1
+            --batch-frames 12288 --lr 3e-5 --max-steps 184000 --eval-batch-size 64 --keep-checkpoints 1
             --seed 48 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;

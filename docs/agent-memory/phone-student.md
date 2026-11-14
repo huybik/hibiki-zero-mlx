@@ -84,10 +84,11 @@ sampled before audio at each step, so this adds no latency and no parameters.
 
 The plan distils only if the student falls short of the 3B
 ([plan](../vi_en_parity_plan.md#5-the-phone-model), stage 5.3). Trained on the targets alone, the
-depformer student does, by ~15 chrF, and flattens: FLEURS dev VI→EN / EN→VI chrF 20.7 / 15.0 at
-update 16,000, 24.5 / 18.6 at 48,000, 27.0 / 23.8 at 64,000, 26.2 / 23.2 at 80,000, against
-the teacher's 42.7 / 38.8; the end offset 4–8 s against 1.1–1.5 s. Teacher-forced on the VI→EN
-validation cache, its word accuracy is 0.56 at 80,000 against the two-way SFT model's 0.66.
+depformer student does, by ~14 chrF, and gains slowly: FLEURS dev VI→EN / EN→VI chrF 28.7 / 24.5
+at update 96,000, +1.6 / +0.7 over 64,000 ([Next](#next) has its validations), against the
+teacher's 42.7 / 38.8; the end offset 4–8 s against 1.1–1.5 s. Teacher-forced on the VI→EN
+validation cache, its word accuracy is 0.569 at 96,000 (0.544 at 64,000) against the two-way SFT
+model's 0.664.
 
 - `train.py --teacher-weight` ([sft-training](sft-training.md#objective)): each training token's
   loss is `common.token_kl`, KL(teacher ‖ student) of its next-token distribution, in place of
@@ -112,10 +113,20 @@ validation cache, its word accuracy is 0.56 at 80,000 against the two-way SFT mo
   student](#training-a-student)).
 - `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
   `torch.nn.functional.kl_div` on the valid positions, is 0 elsewhere and gives them no gradient.
+- **End to end on the H100** (2026-11-14, the launcher's arguments, two FLEURS dev sets, from
+  `student_dep10`'s pair 100,000): 0.381 s a step (plain SFT 0.23), 59.3 GB peak in training,
+  generation 38 GB. In 300 updates the KL fell 0.45 → 0.37, the VI→EN cache's word accuracy rose
+  0.569 → 0.607 (more than `student_dep10` gained from 48,000 to 96,000), FLEURS chrF 28.7 →
+  30.6 VI→EN and 24.5 → 25.9 EN→VI, and the end offset fell from ~6 s to 1.8 / 2.3 s: the
+  teacher's timing comes with its distribution. A resume at 150 matched the uninterrupted run
+  within 1.2e-4 (two fresh runs differ by 8e-4); plain SFT matched the pre-PR trainer within
+  9e-5; the 3B distilled into itself gives a KL of 5e-4 (bf16 against fp32 masters).
 - **The run** (2026-11-14, user: "at this rate we never get 40+ chrf"): `restart.sh
   student-distill`, `student_dep10_distill`, from `student_dep10`'s newest model (stopped for it),
   on new streams of the same rows (seed 48), whole 12,288-frame batches at peak 3e-5 (where
-  `student_dep10`'s cosine had come down to), validation every 8,000. The heads student is
+  `student_dep10`'s cosine had come down to), validation every 8,000, 184,000 updates (~1.9
+  epochs; 0.405 s an update with saves and validations, ~21 h, leaving the box ~14 h for a GRPO
+  run on it, its test sets and publishing). The heads student is
   deferred: trained on the targets alone, it would test the parallel heads under the recipe that
   falls short.
 
@@ -161,10 +172,14 @@ validation cache, its word accuracy is 0.56 at 80,000 against the two-way SFT mo
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
   it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
-  experiment, adopted only if they win. `student_dep10` is tied to commit 09ef157 (a resume
-  refuses another, so the box checkout stays there until it ends); stopped at ~9,200 for the
-  direction trial ([two-way](two-way.md#next)), it resumed 2026-11-14 07:22 UTC from its pair
-  8,000, restored from the Hub into `runs/student_dep10/`.
+  experiment, adopted only if they win. `student_dep10` ran at commit 09ef157; stopped at ~9,200
+  for the direction trial ([two-way](two-way.md#next)), it resumed 2026-11-14 07:22 UTC from its
+  pair 8,000, and stopped for good at ~100,150 (2026-11-14 20:28 UTC+7) for
+  [distillation](#distillation), which starts from its pair 100,000 (on the Hub under
+  `student_dep10/checkpoints/`; its best, 96,000, is the promoted one). Its validations (FLEURS
+  dev chrF VI→EN / EN→VI; end offset 4–8 s throughout): 20.7 / 15.0 at 16,000, 21.6 / 18.6 at
+  32,000, 24.5 / 18.6 at 48,000, 27.0 / 23.8 at 64,000, 26.2 / 23.2 at 80,000, 28.7 / 24.5 at
+  96,000.
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
   steps each, steps 151–300 by their real stream frames), each size one whole batch:
 
