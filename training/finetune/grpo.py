@@ -309,8 +309,9 @@ def sample_window(
         sampled.masked_fill_(past[:, None], -1)
         outputs[batch_rows, :, :batch_frames] = sampled
         on_batch(batch_rows, sampled)
+        # Leaving streaming freed the batch's KV caches and CUDA graphs; the dropped LMGen's own
+        # cycle holds a few MB, collected with the generator at the window's end (grpo.md#running).
         del lm_gen, sampled
-        gc.collect()  # moshi's streaming state holds the KV cache in reference cycles
     return outputs
 
 

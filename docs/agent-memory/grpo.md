@@ -128,9 +128,22 @@ The CUDA profile and dry run are under [Running](#running).
     there (2026-11-10, again 2026-11-13).
 
   Left: micro-batches by a frame budget (3 rows run out of memory at 1,200 frames, though
-  forwards average ~635; ~4% of an update), and the GPU idle between stages. Compare each on the
-  same streams by updates per GPU-hour. 8-bit AdamW states were measured and rejected
-  ([sft-speed](sft-speed.md#measurements)).
+  forwards average ~635; ~4% of an update). Compare on the same streams by updates per GPU-hour.
+  8-bit AdamW states were measured and rejected ([sft-speed](sft-speed.md#measurements)).
+- **The GPU's idle between stages** (2026-11-14, 40 updates at the launcher's sizes from the
+  two-way model, each host step timed by a wrapper, `/workspace/idle_prof/` on the box): a steady
+  window (20 updates, 406 s) idled ~14 s. ~8 s was a `gc.collect()` after each generation batch
+  (1.9 s each: the heap grows past the setup's `gc.freeze()`), ~1 s the one after the window's
+  generator is dropped, 1.9 s moving the states (10.8 s only in the second window, pinning AdamW's
+  new buffers), ~2 s each batch's warm-up and graph capture, 0.4 s `empty_cache`. A batch's
+  collection freed ~2 MB: leaving streaming already frees its KV caches and graphs, and only the
+  dropped `LMGen`'s own small cycle is left, so the per-batch collection is gone; the generator's
+  (~5.8 GiB, `common.bf16_copy`) stays. Re-measured once (40 updates, the same streams):
+  generation's gaps fell 8.4 → 0.7 s a window, but the window's end collection rose 1.1 → 5.2 s
+  (each window leaves ~2.6M objects of garbage, which a batch's collection took before), and its
+  updates spiked to 8–12 s four times where main's held 6.5–7.1 (automatic collections, now
+  that nothing collects during generation?). Net ~4 s a window (1%) at best, inside one run's
+  noise: it waits for an A/B of 80+ updates each before it merges.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --model-weight START --out-dir …`.
   - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
@@ -193,27 +206,11 @@ The CUDA profile and dry run are under [Running](#running).
     isn't bit-reproducible across processes.
   - Evaluation itself moves ~±0.7 chrF between runs of the same weights, so judge a trend over
     several evaluations, not one.
-- **Profiled on the H200 box, alone on the GPU** (2026-11-10, 700 W H200 SXM, from round 4's
-  final model, the tranche caches, T 1,200; the 2026-11-09 profile there ran beside the cache
-  build and counted the leaked generator, so its micro-batch 4 "ran out of memory"):
-
-  | Stage | Measured |
-  |---|---|
-  | Generation, batch 192 / 384 / 512 / 640 | 25.1 / 36.6 / 44.4 / 52.3 ms a step; 6.36 / 8.74 / 9.60 / 10.17 rollouts/s; peak 66 / 91 / 107 / 124 GiB |
-  | Rewards, 160 groups | 2.9 s serial, 0.43 s in 8 workers |
-  | π_old's logprobs, micro-batch 2 / 3 / 4 / 6 | 53,100 / 57,900 / 58,900 / 62,300 frames/s |
-  | Update, micro-batch 2 / 3 / 4 / 6 | 16,200 / 18,600 / 19,300 / 20,400 frames/s; peak 68 / 96 / 111 / 134 GiB; 8 runs out of memory |
-  | First update's ratio | exactly 1 at every size |
-
-  So on the H200 512 rows (`--gen-frames 614400`) and micro-batch 4: an update of 128
-  rollouts takes ~13.3 s of generation, ~2.6 s of old logprobs and ~8.0 s of update, ~24 s
-  against ~31 s at 192 and 3; 800 updates ~5.3 h plus the evaluations. 640 and 6 gain 6% each
-  and leave 17 and 7 GiB of the card. A generation step costs ~13 ms whatever the batch, so
-  generation, 55% of an update, is bound by steps: the streams average 599 frames (longest 929)
-  and every rollout runs 1,202 steps, and every update forward spans 1,200 frames though the
-  loss keeps none after a rollout's EOS (cut since: the H100 profile above). The profile's GPU
-  read 71% busy on average, under 50% in 29% of its samples (between stages, and generation's
-  short kernels).
+- **Profiled on the H200 box** (2026-11-10, alone on the GPU, round 4's final model): generation
+  at 192 / 512 / 640 rows 25.1 / 44.4 / 52.3 ms a step (6.36 / 9.60 / 10.17 rollouts/s, peak
+  66 / 107 / 124 GiB); π_old's logprobs 53,100–62,300 and the update 16,200–20,400 frames/s at
+  micro-batch 2–6. Then every rollout ran 1,202 steps and every forward 1,200 frames; the H100
+  profile above has the cut rollouts and forwards.
 - **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
   is reset to PAD's ([sft-training](sft-training.md#trainer)); until 2026-11-10 GRPO kept the
   checkpoint's own row. Rollouts and scoring share the row, and the first ratio is still 1.
