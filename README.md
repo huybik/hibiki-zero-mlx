@@ -74,8 +74,8 @@ text EOS once it has heard the source EOS (an EOS before that stops nothing, so 
 translated to its end), or once the model has said nothing for 5 s after the source ended.
 `--speaking vi|en` (both modes) says which language is spoken: the two-way model guesses the
 direction from the voice and gets some voices wrong, so the stream then starts with a short
-unheard primer in that language, which sets the direction. It costs some accuracy where the
-guess was right, so leave it off unless the model answers in the language spoken.
+unheard primer in that language, which sets the direction (no accuracy cost measured where the
+guess was right).
 
 Build and open the native macOS test app:
 

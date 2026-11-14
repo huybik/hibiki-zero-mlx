@@ -111,6 +111,7 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
     for worker in workers:
         worker.start()
     ended = ""
+    live = 0                                          # steps run on the mic
     try:
         with sd.InputStream(samplerate=24000, channels=1, blocksize=FRAME,
                             dtype="float32", callback=on_input), \
@@ -124,10 +125,12 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
                 except queue.Empty:
                     continue
                 tt = gen.step(mx.array(codes), ct)
+                live += 1
                 sys.stdout.write(text(tt[0].item()))                    # sync this frame
                 sys.stdout.flush()
                 audio = gen.last_audio_tokens()
-                if audio is not None and gen_cb > 0:
+                # Audio lags by max_delay steps: the first ones' is the primer's, if any.
+                if live > gen.max_delay and audio is not None and gen_cb > 0:
                     dec_q.put_nowait(np.array(audio[:, :, None]).astype(np.uint32))
     except ValueError as e:                                             # reached max_steps
         ended = f"\n[reached cap: {e}]"

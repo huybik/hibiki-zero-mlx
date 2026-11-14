@@ -48,11 +48,12 @@ SAMPLE = ASSETS / "leon.wav"  # French gate clip
 # the user says which language they speak: the two-way model guesses the direction from the voice
 # and gets some voices wrong, but a training stream never switches direction, so it keeps the one
 # the primer sets (docs/agent-memory/two-way.md#next). A stopgap until the direction is a trained
-# input.
+# input. main.py seeds the sampler before every run, so priming comes out the same each time: each
+# primer was chosen to settle at that seed with its translation complete. One that does not, or
+# ends in "he said", runs into every clip's translation.
 PRIMERS = {"vi": ASSETS / "primer_vi.wav", "en": ASSETS / "primer_en.wav"}
 # After the primer, silence until the model has finished translating it: this long without a new
-# word, at most PRIMER_MAX_GAP_S. A fixed 2 s left primer words in the speech's translation, and
-# 3.5-5 s of silence made the model invent words on short clips.
+# word, at most PRIMER_MAX_GAP_S. A fixed 2 s left primer words in the speech's translation.
 PRIMER_SETTLE_S = 1.5
 PRIMER_MAX_GAP_S = 4.0
 SENTINEL = object()
@@ -329,7 +330,9 @@ def translate(
             last_word = processed - 1
         pieces.append(text(tt))
         audio_tokens = gen.last_audio_tokens()
-        if audio and audio_tokens is not None and gen_cb > 0:
+        # Audio lags text by max_delay steps, so the first steps' audio is from before the clip:
+        # none at a stream's start, the primer's after `prime`.
+        if audio and processed > gen.max_delay and audio_tokens is not None and gen_cb > 0:
             dec_q.put(np.array(audio_tokens[:, :, None]).astype(np.uint32))
         # The source EOS went in at step `steps`; step processed - 1 has just run.
         if quiet is not None and processed - 1 - max(steps, last_word or 0) >= quiet:

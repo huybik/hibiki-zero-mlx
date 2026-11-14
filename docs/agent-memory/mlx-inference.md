@@ -110,18 +110,26 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   `[stopping]`.
 - `--speaking vi|en` (`translate(speaking=)`, `run_mic`) primes the direction, a stopgap until it
   is a trained input ([two-way](two-way.md#next)): `prime` steps a short sentence in that language
-  (`PRIMERS`: `inference/assets/primer_{vi,en}.wav`, FLEURS dev, CC BY 4.0) and then silence until
-  the model has written no word for `PRIMER_SETTLE_S` (1.5 s, at most `PRIMER_MAX_GAP_S`, 4 s)
-  through the stream's own Mimi and LM, and drops their output; the stream keeps that direction,
-  as training streams never switch. The gate never primes. Measured 2026-11-14 on OneVoice (each
-  row's gate seed; 25 rows move chrF by several points between runs), Auto → primed: the user's
-  own Vietnamese (laptop mic) came out English on 3 of 3 seeds against Vietnamese on 5 of 5; the 18
-  English rows that came out English, 3 → 17 in Vietnamese, chrF 12.4 → 25.8; 25 other English
-  rows 31.6 → 28.8; 25 Vietnamese rows 55.4 → 46.1. The cost is the primer's context: the model
-  takes the speech for its continuation (reported speech after a "he said" primer, chrF 36.7;
-  words of the primer's translation at the start). A fixed gap was worse (2 s: the primer's last
-  words leaked in; 3.5–5 s: invented words), and the Vietnamese primer (FLEURS "Nước tràn qua đê
-  kéo rộng đến 100 feet.") beat FLEURS's "…, ông cho biết." sentence (46.1 against 35.6).
+  (`PRIMERS`: `inference/assets/primer_{vi,en}.wav`, FLEURS dev, CC BY 4.0: "Nửa giờ để đi dạo đến
+  ngôi làng thú vị này thật xứng đáng." and "U.S. President George W. Bush welcomed the
+  announcement.") and then silence until the model has written no word for `PRIMER_SETTLE_S`
+  (1.5 s, at most `PRIMER_MAX_GAP_S`, 4 s) through the stream's own Mimi and LM, and drops their
+  output, the audio of the first `max_delay` steps after it included; the stream keeps that
+  direction, as training streams never switch. The gate never primes; priming takes ~70–90 of
+  rustymimi's ~2,920-frame session limit.
+  - main.py seeds before every run, so priming is the same each time: pick a primer by what it
+    does at that seed (299792458). It must settle before the cap with its translation complete:
+    of 8 English and 4 Vietnamese FLEURS sentences screened (2026-11-14), the ones that hit the cap
+    ran their unfinished translation into every clip ("…care of the fish."), and the first English
+    primer ("He built a WiFi door bell, he said.") began a quote every English clip continued. The
+    chosen two settle after 35 and 32 steps of silence.
+  - Measured at that seed (2026-11-14, OneVoice, 6-bit two-way), Auto → primed: the user's own
+    Vietnamese (laptop mic) English; the 18 English rows that came out English, 2 → 17 in
+    Vietnamese, chrF 10.6 → 30.1; 25 other English rows 32.9 → 36.0; 25 Vietnamese rows 41.9 →
+    43.5. 25 rows move chrF by a few points, so picking the spoken language costs nothing
+    measurable. Over varied seeds the earlier primers cost up to 18 chrF on Vietnamese: the model
+    takes the speech for the primer's continuation (reported speech after "…, ông cho biết."), so
+    a new primer needs the same check.
 - Mic mode keeps the LM and generator on the main thread; only Mimi encode/decode run in
   workers, which adds one frame of output latency. A worker's error ends the session and is
   raised once it has stopped. Use headphones: the level stage raises the speakers' echo of the
