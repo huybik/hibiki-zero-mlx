@@ -402,8 +402,9 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   # check can bound: it gets the default's room.
   local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors
   [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
-  [[ "$given" =~ --keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
-  [[ "$given" =~ --model-weight[=[:space:]]+([^[:space:]]+) ]] && weight="${BASH_REMATCH[1]}"
+  # The last of each, as argparse keeps (grpo_launch.sh's ARGS follow its defaults).
+  [[ "$given" =~ .*--keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
+  [[ "$given" =~ .*--model-weight[=[:space:]]+([^[:space:]]+) ]] && weight="${BASH_REMATCH[1]}"
   (( keep >= 1 )) || keep=2
   [[ -f "$weight" ]] || die "start weight $weight is missing"
   local disk

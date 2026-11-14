@@ -13,6 +13,11 @@ set -euo pipefail
 run=$1
 shift
 cd /workspace/hibiki-zero
+# grpo.pid is how a run is stopped: never overwrite a live launcher's.
+if [[ -f /workspace/logs/grpo.pid ]] && kill -0 "$(cat /workspace/logs/grpo.pid)" 2>/dev/null; then
+  echo "a GRPO launcher is running (pid $(cat /workspace/logs/grpo.pid))" >&2
+  exit 1
+fi
 read -r q per < /sys/fs/cgroup/cpu.max; if [[ $q == max ]]; then N=$(nproc); else N=$(( q / per )); fi  # the container's quota
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
 T=/workspace/tranche/repo/cache

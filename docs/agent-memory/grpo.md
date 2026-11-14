@@ -61,8 +61,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
     kernel negated (`common.token_ce`, dense over the full logits), so the two trainers share
     one kernel ([sft-training](sft-training.md#objective)).
   - Text is weighted `--text-weight` 100 against 1 for each audio codebook. A k-codebook student
-    so weighs text 100:k; an 8-codebook one passes 50 to keep the 3B's 100:16, which the shipped
-    run was tuned on. Masked positions are the training forward's own.
+    so weighs text 100:k; an 8-codebook one passes 50 to keep the 3B's 100:16 (the paper's c_0),
+    which the shipped run trained with. Masked positions are the training forward's own.
 - **Rewards** (`rewards.py`, the paper's Eq. 3–6):
   - Rewards sit at frame boundaries. A reward at b scores the text of the frames before b, and
     R_t sums the boundaries after t, so a reward credits exactly the tokens it counted.
@@ -281,8 +281,8 @@ The CUDA profile and dry run are under [Running](#running).
   line and a restore use `grpo` where an SFT run's use `run`, and fail on the other's run.
   - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
-  - **Disk:** the preflight needs 130 GiB (93 with `--keep-checkpoints 1`), free plus what the
-    run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
+  - **Disk:** the preflight needs 131 GiB on the 3B (94 with `--keep-checkpoints 1`), ~62 (45)
+    on a 1.4B student, free plus what the run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
     on the Hub.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
     the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took
