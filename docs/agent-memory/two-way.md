@@ -271,5 +271,17 @@ thank you" → "But Datta Niddedtowwess previously was well related to Heave.").
 EN→VI clips ([mlx-inference](mlx-inference.md#model-directories), 6 bits) 18 came out English; rerun
 with three more seeds, 12 of those 18 were English every time, so the clip decides more than the
 sampling. Those 18 average −26 dBFS against the rest's −21 (before the level stage) and are
-conversational or voice-assistant English; VI→EN wrote Vietnamese on 1 of 100. Training data with
-quieter, conversational English sources, or a reward for the target language, would address it.
+conversational or voice-assistant English; VI→EN wrote Vietnamese on 1 of 100.
+
+It happens the other way on the user's own voice (2026-11-14, the macOS app's mic, then 15 s of
+Vietnamese recorded from the MacBook Pro microphone at −21 to −28 dBFS peaks and translated in file
+mode): Vietnamese came out on all 5 seeds, the content heard right ("… bờ hồ … bình minh … tiếng
+sóng … quanh bờ đá"), so the model took the voice for English. Not the mic or the room: three
+OneVoice VI clips played on the laptop's speakers and recorded by the same mic still came out
+English on 3 of 3 seeds. Not echo either: the file runs played nothing (in the app, speakers do
+add echo, which the model translates back). Restricting the text to ASCII pieces (7,036 of 48,000
+banned, byte pieces included) as an "English target" hint gave English on 1 of 3 seeds; the others
+wrote unaccented Vietnamese or switched mid-way, so the model's guess of the source wins over a
+text mask. The direction needs to be a signal the model is trained on (a per-direction condition
+the runtimes set, beside the `description` one), or training sources that cover such voices
+(more real Vietnamese speakers and laptop-mic English), or a reward for the target language.
