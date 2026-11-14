@@ -185,6 +185,8 @@ def main() -> None:
     depformer_layers = indices(args.depformer_layers, args.num_depformer_layers or 3,
                                int(parent_config["depformer_num_layers"]), "--depformer-layers")
     config, record = student_config(parent_config, layers, args.codebooks, depformer_layers, args.heads)
+    if args.heads:
+        record["heads_seed"] = args.seed  # with the parent, the record recuts the student exactly
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     config_path, out_weight = args.out_dir / "config.json", args.out_dir / "model.safetensors"

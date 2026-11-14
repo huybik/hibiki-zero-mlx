@@ -47,9 +47,10 @@ assembled at the cache's layout (`[33, T]`, silence encoded at the cache's 16 co
 to the model's rows (`streams.model_rows`: text, target 0..k-1, source 0..k-1). `validate.py` does
 the same; GRPO's datasets keep the 3B's full width.
 
-A student run reads `<dir>/config.json` and its start weight at every load (eval, validate,
-resume), and neither syncs to the run's Hub prefix: keep the student dir with the run, or recut it
-on a new box (the cut is deterministic from the parent and the weight's `student` record).
+A student run reads `<dir>/config.json` at every load (eval, validate, resume) and its start
+weight on every resume, and neither syncs to the run's Hub prefix: keep the student dir with the
+run, or recut it on a new box (the cut is deterministic from the parent and the weight's `student`
+record, a heads student's seed among it).
 
 ## Parallel heads
 
@@ -81,6 +82,15 @@ sampled before audio at each step, so this adds no latency and no parameters.
 
 ## Checks
 
+- End to end on the H100 (2026-11-14, both students cut from GRPO update 1,400, the two-way
+  caches, 4,608-frame batches, 200 steps each): dep10 trains 11.0 → 6.3 at 0.107 s a step (30.9 GB
+  peak), heads14 11.3 → 8.4 at 100 steps, 0.101 s (27.1 GB); both save, validate (`validate.py`
+  equals the trainer's own to 1e-3) and resume exactly (losses equal to the 4th decimal); `eval.py`
+  scores them and decodes their speech at 8 codebooks; a recut reproduces every tensor. The heads
+  student's text at output index i is the token sampled at step i for all 1,852 words, so the
+  end offset's `max_delay − 2` correction holds. On the 3B the branch's teacher-forced losses
+  equal main's bit for bit, and SFT and GRPO run. At 2.25e-6 a student barely learns in 200
+  steps (dep10's text argmax is always PAD), so its rate is probed first ([Next](#next)).
 - The cut's mapping (2026-11-11, box CPU, the two-way start weight, a 120-frame validation
   stream): an 8-codebook student keeping all 28 layers and all 6 depformer layers against the
   parent with its codebooks 8–15's input embeddings zeroed. Text logits equal exactly, the first 8
