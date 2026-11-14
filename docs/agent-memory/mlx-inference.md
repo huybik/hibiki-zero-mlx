@@ -122,6 +122,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   source's: VI→EN mean chrF 52.6 against update 600's 48.7, EN→VI 46.9 against 45.8. It ends with
   an EOS less often (3 of 12 runs, none on the EN→VI files, against update 600's 9 of 12, as GRPO's
   EOS share fell), so file mode more often runs the whole 20 s tail.
+- **The release** (user, 2026-11-14: "upload the full f32 bundle, so he can run it and use it to
+  optimize for qualcomm device"): the recovery repo's `release/twoway_grpo1400/` holds update
+  1,400 as `model.safetensors` (fp32), a `config.json` naming its files, the vi6k tokenizer, Mimi
+  and a model card (results, MLX and moshi loading, porting notes, the licence's research-only use).
+  It is the one public place the vi6k tokenizer is; the folder alone stages or loads the model.
 - **Where 4 bits loses:** teacher-forced on bf16's sampled tokens (12 FLEURS dev clips both
   ways, 1,788 frames; scratch script), the mean KL from bf16's sampling distribution (logits /
   0.8), text / codebooks: the 4-bit recipe 0.057 / 0.17; 8 bits g64 on the main transformer and
