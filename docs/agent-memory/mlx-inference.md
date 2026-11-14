@@ -108,8 +108,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   U+FFFD where SentencePiece writes one per byte. Without byte pieces its text equals the old
   piece-by-piece output. `<s>` is printed as before. Mic mode prints the flushed tail before
   `[stopping]`.
-- `--speaking vi|en` (`translate(speaking=)`, `run_mic`) primes the direction, a stopgap until it
-  is a trained input ([two-way](two-way.md#next)): `prime` steps a short sentence in that language
+- `--speaking vi|en` (`translate(speaking=)`, `run_mic`) primes the direction (a trained direction
+  input was tried and does not control it: [two-way](two-way.md#next)): `prime` steps a short sentence in that language
   (`PRIMERS`: `inference/assets/primer_{vi,en}.wav`, FLEURS dev, CC BY 4.0: "Nửa giờ để đi dạo đến
   ngôi làng thú vị này thật xứng đáng." and "U.S. President George W. Bush welcomed the
   announcement.") and then silence until the model has written no word for `PRIMER_SETTLE_S`
