@@ -264,3 +264,12 @@ then the [two-way run](#two-way-run) (done 2026-11-13), then one GRPO on both di
 the final model (`runs/twoway_sft/model_step287558.safetensors`; the promoted `best_step252000`
 tied it under the input level stage). GRPO is done: its update 1,400 ships
 ([grpo](grpo.md#running)).
+
+The open problem the shipping model shows on outside speech: it hears some English as Vietnamese
+and writes English, fluent-looking but unrelated to the source ("no that's all I needed help with,
+thank you" → "But Datta Niddedtowwess previously was well related to Heave."). On OneVoice's 100
+EN→VI clips ([mlx-inference](mlx-inference.md#model-directories), 6 bits) 18 came out English; rerun
+with three more seeds, 12 of those 18 were English every time, so the clip decides more than the
+sampling. Those 18 average −26 dBFS against the rest's −21 (before the level stage) and are
+conversational or voice-assistant English; VI→EN wrote Vietnamese on 1 of 100. Training data with
+quieter, conversational English sources, or a reward for the target language, would address it.

@@ -154,9 +154,10 @@ inference/ (Apple Silicon, MLX)
 - A model directory's `config.json` names its MLX weights (`moshi_name`), tokenizer and sampling
   (`lm_gen_config`), and records any quantization per layer (`quantization`; `--bits 6`, what
   ships, is 6 bits on the transformer linears, 8 on the embeddings and heads), which both
-  runtimes load by, strictly. File mode feeds a file as training's evaluation does (source EOS,
+  runtimes load by, strictly. The gate feeds a file as training's evaluation does (source EOS,
   20 s of silence, stop at the text EOS after it), so Mac scores compare with the box's (rows
-  whose EOS comes before the source ends aside) →
+  whose EOS comes before the source ends aside); main.py's file mode also stops after 5 s
+  without a word →
   [mlx-inference](docs/agent-memory/mlx-inference.md#model-directories).
 
 ## Topic Index

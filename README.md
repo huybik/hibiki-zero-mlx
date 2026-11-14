@@ -71,7 +71,7 @@ python inference/main.py --mic
 `--model` accepts `3b` or a staged model directory. File mode feeds the source as training's
 evaluation does: the clip, the source EOS, then up to 20 s of silence, stopping at the model's
 text EOS once it has heard the source EOS (an EOS before that stops nothing, so a long file is
-translated to its end).
+translated to its end), or once the model has said nothing for 5 s after the source ended.
 
 Build and open the native macOS test app:
 
@@ -80,9 +80,15 @@ Build and open the native macOS test app:
 open "inference/macos/HibikiTestApp/build/Hibiki Test.app"
 ```
 
-The SwiftUI app provides model and audio pickers, file translation and playback,
-live microphone start/stop, the English transcript, and the backend log. It runs
-`inference/main.py` with the conda Python at `/opt/homebrew/Caskroom/miniconda/base/bin/python`.
+The SwiftUI app provides model and audio pickers, file translation (with stop) and playback,
+live microphone start/stop, the translated text, and the backend log. It runs its own checkout's
+`inference/main.py` with the conda Python at `/opt/homebrew/Caskroom/miniconda/base/bin/python`,
+and opens on the model last chosen, else the shipping two-way bundle where this puts it,
+`weights/release/twoway_grpo1400_mlx_q6`:
+
+```bash
+hf download huybik/hibiki-zero-vi-full-sft --include "release/twoway_grpo1400_mlx_q6/*" --local-dir weights
+```
 
 The inference tools are:
 
