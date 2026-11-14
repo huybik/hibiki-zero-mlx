@@ -32,7 +32,8 @@ parent (28 layers, 16+16 codebooks, depformer 6 layers x 9 step slices)
   steps' weight slices must be the parent's 0..m without gaps (Hibiki-Zero's steps 8–15 share
   slice 8, which a cut past 9 keeps shared); the schedule is written only if the parent has one.
 - The config is the parent's with `num_layers`, `n_q` (2k), `dep_q` (k), `delays` (text, then each
-  stream's first k) and the step schedule cut alike. moshi hands every config key to the model, so
+  stream's first k) and the step schedule cut alike, naming the student's own weight
+  (`moshi_name`) and the tokenizer it is on (`tokenizer_name`). moshi hands every config key to the model, so
   the cut's record goes only into the weight's metadata (`student`, `student_of`), beside the
   parent's own (its `text_tokenizer`, which `run_tokenizer` follows).
 - The cut builds the student on the meta device from its config and requires every tensor's name

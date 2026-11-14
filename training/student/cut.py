@@ -8,9 +8,10 @@ streams directly (`training.finetune.train --config-path <out>/config.json --mod
                 (the input embeddings `emb`, the depformer's steps, its norms and output `linears`)
   depformer     6 layers -> --depformer-layers, each keeping its first k step slices
 
-The student's config.json is the parent's with the cut's sizes and its `delays` and step schedule
-truncated alike (moshi hands every key to the model, so nothing else goes there); the weight keeps
-the parent's metadata (its tokenizer among it) and adds `student_of` and `student`, the cut.
+The student's config.json is the parent's with the cut's sizes, its `delays` and step schedule
+truncated alike, and its own weight and that weight's tokenizer named (`moshi_name`, `tokenizer_name`);
+moshi hands every key to the model, so the cut's record goes into the weight's metadata, which keeps
+the parent's (its tokenizer among it) and adds `student_of` and `student`.
 
   python -m training.student.cut --weight weights/twoway_sft_final.safetensors --out-dir weights/student_10l
 """
@@ -131,7 +132,7 @@ def student_shapes(config_path: Path, weight: Path, tokenizer: Path = DEFAULT_TO
 def main() -> None:
     from safetensors import safe_open
 
-    from training.finetune.common import save_state
+    from training.finetune.common import save_state, weight_tokenizer
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--weight", type=Path, required=True, help="the parent checkpoint (safetensors)")
@@ -155,6 +156,7 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     config_path, out_weight = args.out_dir / "config.json", args.out_dir / "model.safetensors"
+    config.update(moshi_name=out_weight.name, tokenizer_name=weight_tokenizer(weight))  # not the parent's
     staged = args.out_dir / ".config.json.tmp"  # config.json only once the weight is in
     staged.write_text(json.dumps(config, indent=2) + "\n")
     shapes = student_shapes(staged, weight)
