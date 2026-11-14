@@ -228,7 +228,9 @@ codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-me
    ([mlx-inference](agent-memory/mlx-inference.md#model-directories)). So the two-way model
    ships at 6 bits. The student's recipe is its own gate's and the phone's call: 6 bits reads
    ~30% more weight bytes a frame than 4.
-3. Next: stage GRPO update 1,400 (the shipping model) at 6 bits, then run it on the phone.
+3. Staged (2026-11-14): GRPO update 1,400, the shipping model, at 6 bits; on six 66–124 s files
+   it translates to the end both ways, above update 600 ([mlx-inference](agent-memory/mlx-inference.md#model-directories)).
+   Next: run it on the phone.
 
 ### 7. Two-way speech
 
