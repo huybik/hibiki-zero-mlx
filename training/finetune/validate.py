@@ -77,9 +77,10 @@ def main() -> None:
 
     checkpoint_info = common.load_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
-    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1])
     rows, layout = streams.load_rows([cache_dir], args.max_frames, args.tokenizer)
-    dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED)
+    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
+    dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED,
+                                    int(checkpoint_info.lm_config["dep_q"]))
     dataloader = DataLoader(
         dataset,
         batch_sampler=dataset.batches(args.batch_frames, streams.VALIDATION_SEED),

@@ -462,26 +462,45 @@ def assemble(
     return codes
 
 
-def silence_track(mimi: Any, frames: int) -> torch.Tensor:
+def silence_track(mimi: Any, frames: int, codebooks: int | None = None) -> torch.Tensor:
     """Mimi codes of `frames` frames of digital silence encoded from a fresh state,
-    [codebooks, frames] int32 on the CPU.
+    [codebooks, frames] int32 on the CPU: `codebooks` of them (the cache's, which a student's
+    Mimi has fewer of), or as many as `mimi` is set to.
 
     It is the silence a stream holds wherever nobody speaks: start-up codes in the first
     SILENCE_WARMUP frames (frames 0-14 differ, codebook 0 settles at frame 11; they equal a cached
     row's delay frames), then steady silence, a few repeating patterns rather than one frame
     (codebook 0 is 1316 on ~99% of frames).
     """
+    active = mimi.num_codebooks
+    if codebooks is not None:
+        mimi.set_num_codebooks(codebooks)
     samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
     device = next(mimi.parameters()).device
-    with torch.no_grad():
-        codes = mimi.encode(torch.zeros(1, 1, samples, device=device))[0]
+    try:
+        with torch.no_grad():
+            codes = mimi.encode(torch.zeros(1, 1, samples, device=device))[0]
+    finally:
+        mimi.set_num_codebooks(active)  # the caller's Mimi keeps its own count
     if codes.shape[-1] != frames:
         raise RuntimeError(f"Mimi encoded {codes.shape[-1]} silence frames, expected {frames}")
     return codes.to(device="cpu", dtype=torch.int32)
 
 
+def model_rows(layout: Layout, codebooks: int) -> list[int]:
+    """The rows of a stream a model with `codebooks` a stream reads: text, the target's first
+    `codebooks` and the source's first (Mimi's codebooks are residual: a model with fewer reads the
+    cache's first ones, [phone-student](../../docs/agent-memory/phone-student.md))."""
+    if not 1 <= codebooks <= layout.dep_q:
+        raise ValueError(f"a model with {codebooks} codebooks a stream cannot read a cache of {layout.dep_q}")
+    q = layout.dep_q
+    return [0, *range(1, 1 + codebooks), *range(1 + q, 1 + q + codebooks)]
+
+
 class StreamDataset(Dataset):
-    """Streams planned once from `rows` with `seed`; each item is assembled on demand."""
+    """Streams planned once from `rows` with `seed`; each item is assembled on demand, at the
+    cache's layout, then cut to `codebooks` a stream (`model_rows`; None keeps them all). `layout`
+    stays the cache's: a cut item's rows are `model_rows`, not `layout`'s."""
 
     def __init__(
         self,
@@ -490,6 +509,7 @@ class StreamDataset(Dataset):
         silence: torch.Tensor,
         stream_frames: tuple[int, int],
         seed: int,
+        codebooks: int | None = None,
     ):
         if silence.shape[0] != layout.dep_q:
             raise ValueError(f"Silence has {silence.shape[0]} codebooks, need {layout.dep_q}")
@@ -498,6 +518,7 @@ class StreamDataset(Dataset):
         self.rows = rows
         self.layout = layout
         self.silence = silence
+        self.keep = None if codebooks is None or codebooks == layout.dep_q else model_rows(layout, codebooks)
         self.streams = plan_streams(rows, *stream_frames, seed)
 
     def __len__(self) -> int:
@@ -505,8 +526,9 @@ class StreamDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         stream = self.streams[index]
+        codes = assemble(stream, self.rows, self.silence, self.layout)
         return {
-            "codes": assemble(stream, self.rows, self.silence, self.layout),
+            "codes": codes if self.keep is None else codes[self.keep],
             "frames": stream.frames,
             "source_frames": sum(self.rows[piece.row].source_frames for piece in stream.pieces),
         }
