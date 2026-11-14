@@ -135,7 +135,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     (0.9, 0.95)) and is untested on this model.
   - Linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0. A model with the
     direction condition trains its table at `--condition-lr` (1e-4) on the same shape, each batch
-    conditioned on its streams' directions ([two-way](two-way.md#direction)).
+    conditioned on its streams' directions ([direction](direction.md)).
     The next run ends sooner, since the two-way run's last 12% of updates, the rate under 4% of
     its peak, gained nothing (user, 2026-11-13; [two-way](two-way.md#two-way-run)); `--max-steps`
     shortens the whole cosine, not only its tail. A floor held at the end instead would keep the

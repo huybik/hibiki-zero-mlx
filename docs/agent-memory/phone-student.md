@@ -118,7 +118,7 @@ sampled before audio at each step, so this adds no latency and no parameters.
 
 - **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
   ([tranche-box](tranche-box.md)), each cut from the direction run's chosen checkpoint
-  (`weights/twoway_direction_best.safetensors`, [two-way](two-way.md#direction); the students
+  (`weights/twoway_direction_best.safetensors`, [direction](direction.md); the students
   inherit its direction table) when its directory is missing (`student_dep10_direction`,
   `student_heads14_direction`; `student_dep10`, cut from GRPO update 1,400, was stopped at update
   ~9,200 for the direction condition):

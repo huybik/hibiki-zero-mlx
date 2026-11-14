@@ -1,4 +1,4 @@
-"""Give a two-way checkpoint the direction condition ([two-way](../../docs/agent-memory/two-way.md#direction)):
+"""Give a two-way checkpoint the direction condition ([direction](../../docs/agent-memory/direction.md)):
 a lookup table moshi sums into every frame's input (its `lut` conditioner, fused by `sum`), one entry
 a direction, so the runtimes say which way to translate instead of the model guessing it from the
 voice (it took the user's Vietnamese for English, and quiet English for Vietnamese).

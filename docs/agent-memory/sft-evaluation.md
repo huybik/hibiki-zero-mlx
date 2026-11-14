@@ -68,7 +68,7 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   the reference text, `duration_s`): a file's audio column picks its direction
   (`common.EVAL_DIRECTIONS`: `vi_audio` scores against `text_en`, `en_audio` against `text_vi`;
   [two-way](two-way.md)), and files of both directions share batches, each row conditioned on its
-  direction (`--direction` conditions every row on one: [two-way](two-way.md#direction)). Its defaults are
+  direction (`--direction` conditions every row on one: [direction](direction.md)). Its defaults are
   `common.GenerationConfig`'s, which training's checkpoint selection uses too.
   - `translate_rows` samples every token at temperature 0.8, top-k 250, as the paper does
     (Sec. 4.5).

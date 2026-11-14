@@ -78,7 +78,7 @@ case $job in
             --epochs 2 --seed 47 --save-every 4000 --val-every 20000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The direction condition (two-way.md#direction): the shipping model, GRPO update 1,400, given the direction table
+  # The direction condition (direction.md): the shipping model, GRPO update 1,400, given the direction table
   # (training.finetune.direction writes weights/twoway_direction when it is missing), trained on the two-way run's rows
   # both ways in the trainer's whole 4,608-frame batches, the model at peak 1e-6 (GRPO's gains are kept by moving it
   # little) and the table at --condition-lr's 1e-4, for 12,000 updates validated every 4,000.
@@ -95,7 +95,7 @@ case $job in
             --max-steps 12000 --seed 47 --save-every 2000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The direction table alone (two-way.md#direction): the same start, rows and batches, the model frozen (--lr 0), so
+  # The direction table alone (direction.md): the same start, rows and batches, the model frozen (--lr 0), so
   # GRPO update 1,400's weights stay exactly; the table at --condition-lr's 1e-4 for 12,000 updates, saved and
   # validated every 6,000 (a pair is the model alone, ~12.5 GB; the Hub takes ~17 min for it).
   direction-table) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
