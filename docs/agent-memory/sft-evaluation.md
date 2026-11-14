@@ -74,7 +74,9 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   - It generates until every row has emitted the text EOS, or 20 s past the batch's longest
     source.
   - Each prediction records `end_offset_s`, the time from the end of the source audio to the
-    last generated word; the metrics report their median.
+    last generated word; the metrics report their median. It times the text as the 3B's
+    `max_delay` of 2 places it, so a parallel-heads student's larger one (its codebooks − 1,
+    which delays only its speech) is taken off ([phone-student](phone-student.md#parallel-heads)).
   - Decided 2026-11-03. At text temperature 0.4 the step-18,000 model fell behind, stalled and
     ended 11 of 48 FLEURS rows, against 27 at 0.8 with the same 8 s tail and 33 with a longer
     one. Its EOS came up to 14 s after a row ended, and the 8 s tail cut a third of them

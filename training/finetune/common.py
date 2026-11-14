@@ -36,6 +36,7 @@ from torch.utils.data import DataLoader
 
 from inference.hibiki_mlx.level import Leveller
 from training.finetune import lm_training
+from training.student import heads
 from training.finetune.hibiki_helpers import (
     audio_read,
     decode_wavs,
@@ -159,12 +160,27 @@ def run_tokenizer(tokenizer: Path | None, weight: Path) -> Path:
     return path
 
 
+def build_lm(checkpoint_info: Any, device: Any, dtype: torch.dtype, load_weight: bool = True, **kwargs: Any) -> Any:
+    """moshi's model for the checkpoint info, with its weight (`load_weight`) or without. A
+    parallel-heads student (the config's `audio_heads`, which `load_checkpoint_info` took out) is
+    built without it, given its heads, then loaded, with the text EOS row copied from PAD's as
+    moshi's own load of a Hibiki weight does."""
+    if checkpoint_info.audio_heads is None:
+        return checkpoint_info.get_moshi(device=device, dtype=dtype, load_weight=load_weight, **kwargs)
+    lm = heads.install(checkpoint_info.get_moshi(device=device, dtype=dtype, load_weight=False, **kwargs))
+    if load_weight:
+        load_model(lm, Path(checkpoint_info.moshi_weights), dtype)
+        if checkpoint_info.model_type == "hibiki":
+            lm.text_emb.weight.data[2] = lm.text_emb.weight.data[3]
+    return lm
+
+
 def bf16_copy(checkpoint_info: Any, lm: Any, device: Any) -> Any:
     """A policy's weights in a bf16 generation model, as `eval.py` loads a checkpoint: 1.8x faster
     than generating on the fp32 masters. Built without reading the base weights, which the copy
     overwrites. moshi's streaming state holds it in reference cycles: after `del`, only
     `gc.collect()` frees its 5.8 GiB."""
-    generator = checkpoint_info.get_moshi(device=device, dtype=torch.bfloat16, load_weight=False)
+    generator = build_lm(checkpoint_info, device, torch.bfloat16, load_weight=False)
     generator.load_state_dict(lm.state_dict())
     generator.eval()
     return generator
@@ -174,13 +190,11 @@ def load_policy(checkpoint_info: Any, device: Any) -> Any:
     """The model a trainer updates (SFT's and GRPO's), from the checkpoint info's weight
     (--model-weight): fp32 masters, every parameter trainable, in training mode.
 
-    Loading a Hibiki weight, moshi's `get_moshi` copies the text PAD's input embedding over the
-    text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
+    Loading a Hibiki weight, `build_lm` (moshi's `get_moshi`, or its own load for a heads student)
+    copies the text PAD's input embedding over the text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
     trains from there (cosine 0.88 to PAD's after round 4), and a resumed pair restores its own.
     `load_lm` and `bf16_copy` keep a checkpoint's own row."""
-    lm = checkpoint_info.get_moshi(
-        device=device, dtype=torch.float32, lm_kwargs_overrides={"gradient_checkpointing": False}
-    )
+    lm = build_lm(checkpoint_info, device, torch.float32, lm_kwargs_overrides={"gradient_checkpointing": False})
     lm.train()
     for param in lm.parameters():
         param.requires_grad_(True)
@@ -203,8 +217,8 @@ def load_lm(checkpoint_info: Any, checkpoint: Path | None, device: Any, dtype: t
     a full checkpoint overwrites anyway (12.5 GB of fp32 for a fine-tuned base)."""
     if checkpoint is None:
         print(f"Loading the base LM on {device} from {repo_display_path(checkpoint_info.moshi_weights)}")
-        return checkpoint_info.get_moshi(device=device, dtype=dtype)
-    lm = checkpoint_info.get_moshi(device=device, dtype=dtype, load_weight=False)
+        return build_lm(checkpoint_info, device, dtype)
+    lm = build_lm(checkpoint_info, device, dtype, load_weight=False)
     load_model(lm, checkpoint, dtype)
     return lm
 
@@ -821,11 +835,14 @@ def generate_batch(
     text_outputs = decode_text_batch(batch_text_tokens, text_tokenizer)
     # How far the last generated word's text token lands after the source audio ends: the
     # paper's End Offset, measured to the end of the audio instead of its last word. Output
-    # index i is the token sampled at step i, which is where the saved audio places it; the
-    # model chose it having heard (i - 1) frames of source.
+    # index i is the token sampled at step i, which is where the saved audio places it; after
+    # max_delay warm-up frames the model chose it having heard (i - max_delay + 1) frames of
+    # source. The offset counts it at index i for the 3B's max_delay of 2; a parallel-heads
+    # student's larger one (codebooks - 1) delays its speech, not its text, so it is taken off.
+    extra_delay = lm_gen.max_delay - 2
     for row, t, duration in zip(rows, text_outputs, audio_durations, strict=True):
         frame = t["last_word_frame"]
-        t["end_offset_s"] = "" if frame is None else round(frame / mimi.frame_rate - duration, 2)
+        t["end_offset_s"] = "" if frame is None else round((frame - extra_delay) / mimi.frame_rate - duration, 2)
         if not t["eos_found"]:
             print(f"warning: no output EOS for {row[cfg.id_column]}; keeping all generated text.")
     if cfg.text_only:
@@ -967,10 +984,16 @@ def validate_free_running(
 # Model loading (shared by every script)
 # --------------------------------------------------------------------------- #
 def load_checkpoint_info(args: argparse.Namespace) -> Any:
-    return loaders.CheckpointInfo.from_hf_repo(
+    """moshi's checkpoint info, its `audio_heads` (None, or a phone student's parallel heads,
+    `heads.KIND`) taken out of the LM config, which moshi hands whole to the model."""
+    info = loaders.CheckpointInfo.from_hf_repo(
         args.hf_repo,
         moshi_weights=args.model_weight,
         mimi_weights=args.mimi_weight,
         tokenizer=args.tokenizer,
         config_path=args.config_path,
     )
+    info.audio_heads = info.lm_config.pop(heads.CONFIG_KEY, None)
+    if info.audio_heads not in (None, heads.KIND):
+        raise ValueError(f"unknown {heads.CONFIG_KEY} {info.audio_heads!r} in {args.config_path}")
+    return info
