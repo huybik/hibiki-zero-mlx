@@ -163,8 +163,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   self-translation → one sentence at most after the clip, then none in 30 s; a loud echo (−26 dBFS)
   leaks ~1 s bursts. 25 OneVoice VI rows, chrF (two seeds): clean 40.4/39.3, speakers silent
   36.4/38.3, headphones 32.9/37.1, over the echo 34.1 (37.0 uncancelled), null (9 ms delay) 36.9.
-  Over echo, 15–30% of 0.5 s voice chunks lose >3 dB; headphones cut some early (3 of 21 >6 dB at 4
-  s).
+  Over echo, 15–30% of 0.5 s voice chunks lose >3 dB; headphones cut some early.
 - rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
   start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
   such limit ([swift-runtime](swift-runtime.md)).
