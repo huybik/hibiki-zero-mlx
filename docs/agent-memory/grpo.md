@@ -25,9 +25,9 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   3. the policy scores every rollout, giving π_old's logprobs.
 - **A phone student** (`--config-path` its cut's config) gets streams cut to its codebooks, as the
   SFT trainer's are: built at the cache's 16, its rollouts heard at its own `dep_q`.
-- **Rooms** (`--room-share` 0.5, `--bank-dir`, which `grpo_launch.sh` fills): half the streams hold a room's noise in their
-  source wherever nobody speaks (lead, gaps, after the source EOS), the rest digital silence. Text
-  written there costs BLEU like any extra word. Why, and how rooms are drawn: [noisy-source](noisy-source.md#rooms).
+- **Rooms** (`--room-share` 0.5, `--bank-dir`, which `grpo_launch.sh` fills): half the streams
+  hold a room's noise in their source wherever nobody speaks, the rest digital silence. Text
+  written there costs BLEU like any extra word, up to the rollout's own EOS: [noisy-source](noisy-source.md#rooms).
 - **A rollout's length** is its stream's plus `--tail-seconds` (20 s, the tail evaluation
   generates past a source), up to a whole 16-frame bucket and at most `--frames` (1,200, the
   longest stream plus that tail): `grpo.rollout_frames`. Its last reward sits there, so text a

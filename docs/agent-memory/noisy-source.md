@@ -60,7 +60,12 @@ clip ─► reverb p 0.5 ─► + noise p 0.8, SNR U[5, 30] dB ─► band ─�
 GRPO's streams hold a room's noise in their source wherever nobody speaks, in a `--room-share`
 (0.5) of streams; the rest keep digital silence, what a voice gate passes
 ([grpo](grpo.md#design)). The user asked for it (2026-11-14: "can we add artifical silence into
-the data so that grpo also penalise translating when user silent?").
+the data so that grpo also penalise translating when user silent?"). Text after a rollout's
+first EOS is neither rewarded nor trained, and 92–96% of rollouts write one after the source
+EOS, so the room is taught mainly in the lead (0–2 s) and the gaps, a tenth of them 3–10 s long:
+the live failure below, a room after speech with no source EOS. Watch `en-vi-val-noisy` in the
+run's evaluations: a room ends at every clip, whose own edges are digital silence, a cue a real
+room does not give.
 
 - **Why:** a live-like check on the Mac (2026-11-14, MLX, main.py's seed, a primed stream with no
   source EOS and no voice gate) counted the words written in 30 s of quiet after a FLEURS dev
