@@ -107,19 +107,12 @@ On the Mac (MPS, bf16 upstream model, 2026-11-04):
 - **Reward math:** on a hand-built stream, an on-time correct rollout beats the same words late,
   which beats one wrong word, which beats silence. Advantages are suffix sums of the normalized
   rewards.
-- **Rollout alignment:**
-
-  | Text logits, `LMGen` against the training forward | Same frame | ±1 frame |
-  |---|---:|---:|
-  | Argmax agreement | 100% | 55% |
-  | Max difference | 0.20 | 29 |
-
-  99.87% of sampled audio tokens sit inside the teacher-forced top 250; the rest are bf16
-  near-ties.
-- **The loss** against its own grad-enabled old logprobs:
-  - ratio 1.000000, nothing clipped, and the loss equals −Σ c·A;
-  - a no-grad old pass gave a ratio of 1.0012 and clipped 6 tokens;
-  - one step along the gradient raised Σ c·A·logp.
+- **Rollout alignment:** `LMGen`'s text logits against the training forward agree on argmax 100%
+  at the same frame (max difference 0.20) and 55% at ±1 frame (29); 99.87% of sampled audio
+  tokens sit inside the teacher-forced top 250, the rest bf16 near-ties.
+- **The loss** against its own grad-enabled old logprobs: ratio 1.000000, nothing clipped, the
+  loss −Σ c·A, and a step along the gradient raised Σ c·A·logp (a no-grad old pass: ratio
+  1.0012, 6 tokens clipped).
 
 The CUDA profile and dry run are under [Running](#running).
 
@@ -228,16 +221,12 @@ The CUDA profile and dry run are under [Running](#running).
   non-empty gate allows a tenth of a set's rows since 2026-11-10: at 8 of 180 a two-update dry
   run failed both its evaluations on round 4's silent Common Voice rows alone
   ([sft-evaluation](sft-evaluation.md#checkpoint-selection)).
-- **Dry run** (2026-11-06, `h100.sh grpo grpo_dryrun`, τ 2, 4 updates of 4 streams × 4, stopped
-  before its checkpoint sync when GRPO was deferred): every update's ratio mean 1.000–1.001, the
-  loss finite (−925 to 368), but the gradient norm before clipping 0.42–0.95 million against SFT's
-  ~8–15. The resume and the Hub's pair were not reached.
-- **The gradient norm's scale** (checked 2026-11-07): the loss sums the weighted objective over
-  every kept token of the update's 128 rollouts (no mean), so its norm runs ~10⁵ times SFT's
-  (a mean loss). Grad clip 1.0 rescales it to 1 every update, as it already does SFT's ~10, and
-  AdamW's step does not depend on the gradient's scale: after the clip a parameter's gradient is
-  ~1/√3.1e9 ≈ 2e-5, far above eps 1e-8. So the scale changes nothing and the loss stays as the
-  paper writes it (Σ_q c_q Σ_t).
+- **Dry run** (2026-11-06, 4 updates): ratio mean 1.000–1.001, the loss finite, the gradient
+  norm before clipping 0.42–0.95 million against SFT's ~8–15.
+- **The gradient norm's scale:** the loss sums over every kept token of the update's 128 rollouts
+  (Σ_q c_q Σ_t, as the paper writes it), so its norm runs ~10⁵ times SFT's mean loss. Clip 1.0
+  rescales it, AdamW's step ignores scale, and a clipped parameter gradient (~2e-5) stays far
+  above eps 1e-8, so it changes nothing.
 - **The two-way run** (user, 2026-11-13): `grpo_launch.sh weights/twoway_final.safetensors`,
   the two-way SFT's final model (`runs/twoway_sft/model_step287558.safetensors`, hard-linked
   into `weights/`), at the H100 profile's sizes, `--updates 2000`. It is judged at 800 from its
@@ -246,6 +235,43 @@ The CUDA profile and dry run are under [Running](#running).
   longer `--updates` is the same run up to 800. Its caches are real Vietnamese speech to
   English (the tranche) and English to Vietnamese from the tranche's voice-cloned English and
   `en_speech`'s real recordings.
+  - **Its evaluations** (`runs/grpo_twoway/val_log.jsonl`; "selecting" is the mean chrF of FLEURS
+    dev both ways, "of 8" the mean over all eight sets, "EOS" the share of the eight sets' 1,833
+    rows that emit the text EOS; every set passes its gates at every update):
+
+    | Update | Selecting | Of 8 | End offset VI→EN / EN→VI | EOS |
+    |---|---|---|---|---|
+    | 0 | 37.45 | 39.97 | 2.9 / 3.5 s | 0.83 |
+    | 200 | 38.00 | 41.04 | 1.6 / 2.1 s | 0.82 |
+    | 400 | 38.89 | 41.80 | 1.3 / 1.8 s | 0.82 |
+    | 600 | 39.52 | 42.68 | 1.1 / 1.6 s | 0.79 |
+    | 800 | 38.88 | 42.68 | 1.1 / 1.5 s | 0.78 |
+    | 1,000 | 39.86 | 43.17 | 1.0 / 1.3 s | 0.75 |
+    | 1,200 | 39.97 | 43.25 | 1.0 / 1.3 s | 0.72 |
+    | 1,400 | 40.76 | 43.77 | 1.1 / 1.5 s | 0.68 |
+    | 1,600 | 40.24 | 44.17 | 0.9 / 1.3 s | 0.70 |
+    | 1,800 | 40.14 | 43.80 | 0.8 / 1.2 s | 0.71 |
+
+    800 looked like a plateau; the user had it go on to 1,000 ("maybe try one more 1k before we
+    stop it", 2026-11-13), which set a new best. It went on toward 2,000, to stop after two
+    evaluations in a row without a new best while the mean of 8 stopped rising too (1,600 was no
+    best, but its mean of 8 rose): a set's chrF moves ~±0.7 between evaluations, so
+    the +0.1 at 1,200 was within noise, and 1,400's +0.8 (both directions up) is not. 200
+    updates take ~70 min with their evaluation. 1,800 met the rule, so the run was stopped there
+    (TERM to the launcher, 2026-11-14 06:51 UTC+7); its best is update 1,400.
+  - **Its EOS share falls** while the train log's `eos_rate` rises (0.93 at update 1 to 0.96):
+    no reward pays for an EOS, and one before a stream's last row loses the rest of its text
+    ([rewards](#design)), so on validation's single rows the policy holds it back more often,
+    while the last word comes sooner (the end offsets above). The live runtimes never stop at an
+    EOS, so for them a missing one costs nothing.
+  - **Its test sets** (2026-11-14, `eval.py` seed 43 on the 11 two-way test sets, 7,015 rows):
+    the mean chrF goes 41.12 (update 0) → 45.48 (1,400) → 45.68 (1,800). 1,400 beats update 0
+    on every set (+2.6 FLEURS-vi test, +4.9 FLEURS-en test, up to +5.9), ends sooner (FLEURS
+    end offset 2.7 → 0.9 s VI→EN, 3.5 → 1.4 s EN→VI) and leaves 2 rows empty against 18. 1,800
+    against 1,400, paired bootstrap: +0.20 on the mean (95% CI −0.09 to +0.53), VI→EN +0.30
+    (−0.06 to +0.68), EN→VI −0.06, FLEURS test −0.15 both ways. **Update 1,400 ships** (and
+    is the students' teacher): validation chose it before the test sets were read, and they
+    cannot tell the two apart. Outputs in `/workspace/evals/test_{start,grpo1400,grpo1800}/`.
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-frames
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
@@ -255,9 +281,11 @@ The CUDA profile and dry run are under [Running](#running).
   - **Disk:** the preflight needs 130 GiB (93 with `--keep-checkpoints 1`), free plus what the
     run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
     on the Hub.
-  - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync (~5 min): it
-    uploads the newest pair, the best and the logs, which reach the Hub only then. A group kill
-    (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing restarts a crashed run.
+  - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
+    the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took
+    ~53 min: Xet uploaded ~4.8 GB of the model and ~4.5 GB of the trainer state as new data, at
+    ~12 MB/s. A group kill (`kill -- -PGID`, `restart.sh`) kills `hf_sync` too. Nothing
+    restarts a crashed run.
   - Relaunching a finished run loads the model and exits 0 (`train.py` exits before loading).
   - No commits or edits to tracked files in the run's worktree while it runs: a resume needs
     `run_id.json`'s commit at HEAD, and the preflight no tracked changes.

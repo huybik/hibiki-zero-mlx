@@ -59,15 +59,14 @@ and wait for its final sync.
 GRPO: the `en-vi` caches and one two-way run on all of round 4e's rows, the pilot's test at its
 first validation ([two-way](two-way.md#two-way-run)); GRPO then runs once, on the two-way model.
 
-**GRPO: PROFILED AND OPTIMIZED ON THE H100, NOT STARTED.** At `grpo_launch.sh`'s sizes
-(`--gen-frames 614400 --micro-batch 2`, rollouts cut to their stream plus the tail, the policy
-and AdamW's states in host memory while generating): ~20.5 s an update, 800 updates ~4.9 h
-([grpo](grpo.md#running)). The user's go-ahead (2026-11-13): from the two-way SFT's final model,
-judged at update 800 and continued to 2,000 while it still improves. It runs from
-the box's checkout, `/workspace/hibiki-zero` on `main` (GRPO is merged; the `wt-*` worktrees are
-only for edits while a run holds the checkout). Start it by hand when the user says so
-(2026-11-09: no chained jobs; `/workspace/auto_pipeline.sh`, `grpo_trigger.sh` and
-`monitor_voice_done.sh` are leftovers of the chained attempt and not in the repo).
+**GRPO: DONE, `grpo_twoway` (`grpo_launch.sh weights/twoway_final.safetensors`, commit
+`91e3c6f`)**, from the two-way SFT's final model: ~20 s an update with its window's generation,
+~6.7 s for the update itself, and ~3.6 min of validation every 200. Resumed at update 800 on
+2026-11-14 00:37 UTC+7 and stopped at 1,800 by its stop rule (06:51 UTC+7); the best, update
+1,400, ships ([grpo](grpo.md#running) has its evaluations and test sets). It runs from the box's checkout, `/workspace/hibiki-zero` on `main` (the
+`wt-*` worktrees are only for edits while a run holds the checkout); log `/workspace/logs/grpo.log`,
+launcher pid in `grpo.pid`. `/workspace/auto_pipeline.sh`, `grpo_trigger.sh` and
+`monitor_voice_done.sh` are leftovers of a chained attempt and not in the repo.
 
 At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
 complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
@@ -87,6 +86,10 @@ The user's standing decisions for this work (the box's own agent memory does not
 - Quality may change for speed if it stays good (2026-11-07), measured on the quality test
   ([tranche-tts](tranche-tts.md)).
 - The agent merges its own PRs once the review loop and the end-to-end check pass (2026-11-06).
+- Go step by step: start a job by hand, check its result, then decide the next one; no chained
+  jobs or automatic pipelines, and background waiters only notify (2026-11-09; 2026-11-13: "go
+  step by step, check the result of each step to decide what to do next, dont build automatic
+  pipeline").
 - Optimize every job heavily before its full run, each in its own way (2026-11-08; voicing,
   optimized mid-run, cost more; [CONTEXT](../../CONTEXT.md#essential-invariants)).
 

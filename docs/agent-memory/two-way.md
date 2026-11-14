@@ -260,6 +260,7 @@ alignment, most "CTC emission is too short" (fast speech).
 
 Two-way comes before GRPO (user, 2026-11-10, replacing that morning's "one way first"): round
 4's final model is the VI→EN start (round 4e's test sets, [plan](../vi_en_parity_plan.md#order)),
-then the [two-way run](#two-way-run) (done 2026-11-13), then one GRPO on both directions. Its
-start is not chosen yet: the final model (`runs/twoway_sft/model_step287558.safetensors`) and
-the promoted `best_step252000` tie under the input level stage; both are on the recovery repo.
+then the [two-way run](#two-way-run) (done 2026-11-13), then one GRPO on both directions, from
+the final model (`runs/twoway_sft/model_step287558.safetensors`; the promoted `best_step252000`
+tied it under the input level stage). GRPO is done: its update 1,400 ships
+([grpo](grpo.md#running)).
