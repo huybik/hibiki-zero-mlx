@@ -262,6 +262,21 @@ model's 0.664.
      the phone first.
   2. The parallel heads ([Parallel heads](#parallel-heads)): no depformer passes, ~4 more main
      layers for the same time, +400 ms of heard speech lag; adopted only if they win.
+     - **Option: 16 codebooks with a capped delay** (2026-11-15, open; user: "should we keep 16
+       codebook, since it's parallel?"). Parallel heads make codebooks cheap but not instant:
+       - The 8 extra heads are ~34M parameters, under one main layer's reads (~63M), and the extra
+         input codebooks are lookups.
+       - The lag comes from the delay pattern, where codebook j waits j frames. A frame's audio
+         completes 2 frames in for the depformer student, 7 for the 8-codebook heads, and 15
+         (1.2 s) for 16 with the full pattern, ~1 s more heard lag: rejected.
+       - Capped, codebooks 0–7 keep delays 0–7 and codebooks 8–15 all come out at delay 8,
+         each seeing 0–7 of its own frame. That completes at 8 frames, +80 ms over 8 codebooks.
+       - It would bring 16-codebook speech (through Mimi, Vietnamese WER 27.8% at 16 against
+         42.0% at 8; English 6.3% against 8.9%) and 16 source codebooks to hear (gain unmeasured).
+       - Untested: codebooks 8–15 are sampled without seeing each other (MusicGen found fully
+         parallel codebooks worse).
+       - The comparison would then mix two changes, heads + 16 against depformer + 8.
+       - It needs `heads.delays` capped, then a review and a GPU test.
   3. A grouped depformer (2 codebooks a step) if 16 codebooks are too slow and the heads lose.
   Two levers that change no layer:
   - Trim the text vocabulary to the pieces English and Vietnamese use: the text head reads all
