@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Write text sidecars and predictions.csv only; skip generated wav decode/write.",
     )
+    parser.add_argument(
+        "--laal",
+        action="store_true",
+        help="Also record each row's text LAAL (laal_s) and report each set's mean_laal_s, as the "
+        "Hibiki-Zero paper computes it.",
+    )
     parser.add_argument("--metrics-json", type=Path, help="Metrics JSON path; default <out-dir>/metrics.json.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tag", default="sft")
