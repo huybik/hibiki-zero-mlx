@@ -114,11 +114,9 @@ model's 0.664.
   free-running chrF), so a distilled run's teacher-forced validation compares with
   `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
   ~±0.7 a set moves between evaluations. Its train log's losses are KL values, not CE.
-- A resume needs the start model and the teacher in `weights/`, neither on the run's Hub prefix:
-  the run's start (`student_dep10_distill/checkpoints/model_step032000.safetensors` on the Hub
-  for `student_dep10_anneal`) and the recovery repo's
-  `grpo_twoway/best/best_step001400.safetensors`, besides the student dir ([Training a
-  student](#training-a-student)).
+- A resume needs the start model and the teacher in `weights/`, neither on the run's Hub prefix
+  (for `student_dep10_anneal`: the Hub's `student_dep10_distill/checkpoints/model_step032000` and
+  `grpo_twoway/best/best_step001400`), besides the student dir ([Training a student](#training-a-student)).
 - `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
   `torch.nn.functional.kl_div` on the valid positions, is 0 elsewhere and gives them no gradient.
   Tiny models on the CPU (4 of 6 codebooks): a heads student under its depformer parent is
@@ -133,14 +131,11 @@ model's 0.664.
   teacher's timing comes with its distribution. A resume at 150 matched the uninterrupted run
   within 1.2e-4 (two fresh runs differ by 8e-4); plain SFT matched the pre-PR trainer within
   9e-5; the 3B distilled into itself gives a KL of 5e-4 (bf16 against fp32 masters).
-- **The first run** (2026-11-14, user: "at this rate we never get 40+ chrf"):
-  `student_dep10_distill`, from `student_dep10`'s newest model, seed 48, whole 12,288-frame
-  batches at peak 3e-5 (where `student_dep10`'s cosine had come down to). Its KL fell 0.374 →
-  0.329 in 4,000 updates while the warmup's rate was near 1e-5, rose to 0.345 as the rate reached
-  3e-5 (update 9,200), and was back to only 0.329 at 30,000. FLEURS dev chrF VI→EN / EN→VI:
-  30.1 / 28.3 at 8,000 (its best, from 28.7 / 24.5), then 29.1 / 25.7, 27.2 / 26.4 and
-  30.0 / 23.8 at 16,000 to 32,000; VI→EN ran ever longer (length ratio 1.51 → 1.67). The rate was
-  too high for the KL, so it was stopped at 32,000 (2026-11-15).
+- **The first run** `student_dep10_distill` (2026-11-14, user: "at this rate we never get 40+
+  chrf"): from `student_dep10`'s newest model, seed 48, 12,288-frame batches at peak 3e-5. Its KL
+  fell 0.374 → 0.329 by 4,000 while the warmup's rate was near 1e-5, then stalled at 3e-5 (0.329
+  at 30,000); FLEURS dev chrF peaked at 30.1 / 28.3 at 8,000 and VI→EN ran ever longer (length
+  ratio 1.51 → 1.67). The rate was too high for the KL: stopped at 32,000 (2026-11-15).
 - **The run** `student_dep10_anneal` (`restart.sh student-distill`): from the first run's model
   32,000, new streams (seed 49), peak 1e-5 after a 2% warmup, 110,000 updates planned. Its KL fell
   at once (0.293 → 0.269 by 4,000, on other streams than the first run's). FLEURS dev chrF VI→EN /
@@ -218,24 +213,21 @@ update 2,000 are in [student-grpo](student-grpo.md).
 
 - **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
   ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
-  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h plain, ~21 h distilled; the heads student ~18 h distilled), the same streams
+  2 epochs of the two-way run's rows both ways (190,126 updates; ~12 h plain, ~21 h distilled, the heads student ~18 h), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
   it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
-  experiment, adopted only if they win. `student_dep10` ran at commit 09ef157; stopped at ~9,200
-  for the direction trial ([two-way](two-way.md#next)), it resumed 2026-11-14 07:22 UTC from its
-  pair 8,000, and stopped for good at ~100,150 (2026-11-14 20:28 UTC+7) for
-  [distillation](#distillation), which starts from its pair 100,000 (on the Hub under
-  `student_dep10/checkpoints/`; its best, 96,000, is the promoted one). Its validations (FLEURS
-  dev chrF VI→EN / EN→VI; end offset 4–8 s throughout): 20.7 / 15.0 at 16,000, 21.6 / 18.6 at
-  32,000, 24.5 / 18.6 at 48,000, 27.0 / 23.8 at 64,000, 26.2 / 23.2 at 80,000, 28.7 / 24.5 at
-  96,000.
+  experiment, adopted only if they win. `student_dep10` (plain SFT, commit 09ef157) stopped at
+  ~100,150 for [distillation](#distillation), which starts from its pair 100,000 (Hub
+  `student_dep10/checkpoints/`). FLEURS dev chrF VI→EN / EN→VI went from 20.7 / 15.0 at 16,000 to
+  28.7 / 24.5 at 96,000, end offset 4–8 s throughout; every validation is in the box copy's
+  `all_metrics.csv` ([student-grpo](student-grpo.md#raw-outputs)).
 - **The heads student distils from the start** (user, 2026-11-14: "why we not do distillation
   from the start?"): plain SFT left the depformer student ~14 chrF short after 100,000 updates,
-  and 300 distilled updates gained more than its last 32,000. It is the next box's first job:
-  its ~18 h (0.336 s a step measured end to end, [Checks](#checks), plus validations) does not fit beside `student_dep10_distill` before this box ends
-  (2026-11-16 08:00 UTC+7). The comparison is of finished students, not of the heads alone: the
-  depformer student had 100,000 plain updates, then 184,000 distilled at 3e-5 on new streams.
+  and 300 distilled updates gained more than its last 32,000. It is the next box's first job,
+  ~18 h (0.336 s a step measured end to end, [Checks](#checks), plus validations). The comparison
+  is of finished students, not of the heads alone: the depformer student had 100,000 plain
+  updates, 32,000 distilled at 3e-5, 64,000 at 1e-5, then GRPO to 2,000 ([student-grpo](student-grpo.md)).
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
   steps each, steps 151–300 by their real stream frames), each size one whole batch:
 
@@ -276,20 +268,14 @@ update 2,000 are in [student-grpo](student-grpo.md).
   2. The parallel heads ([Parallel heads](#parallel-heads)): no depformer passes, ~4 more main
      layers for the same time, +400 ms of heard speech lag; adopted only if they win.
      - **Option: 16 codebooks with a capped delay** (2026-11-15, open; user: "should we keep 16
-       codebook, since it's parallel?"). Parallel heads make codebooks cheap but not instant:
-       - The 8 extra heads are ~34M parameters, under one main layer's reads (~63M), and the extra
-         input codebooks are lookups.
-       - The lag comes from the delay pattern, where codebook j waits j frames. A frame's audio
-         completes 2 frames in for the depformer student, 7 for the 8-codebook heads, and 15
-         (1.2 s) for 16 with the full pattern, ~1 s more heard lag: rejected.
-       - Capped, codebooks 0–7 keep delays 0–7 and codebooks 8–15 all come out at delay 8,
-         each seeing 0–7 of its own frame. That completes at 8 frames, +80 ms over 8 codebooks.
-       - It would bring 16-codebook speech (through Mimi, Vietnamese WER 27.8% at 16 against
-         42.0% at 8; English 6.3% against 8.9%) and 16 source codebooks to hear (gain unmeasured).
-       - Untested: codebooks 8–15 are sampled without seeing each other (MusicGen found fully
-         parallel codebooks worse).
-       - The comparison would then mix two changes, heads + 16 against depformer + 8.
-       - It needs `heads.delays` capped, then a review and a GPU test.
+       codebook, since it's parallel?"). 8 more heads (~34M parameters, under one main layer's
+       ~63M) cost little; the lag is the delay pattern's. A frame's audio completes 2 frames in
+       for the depformer student, 7 for 8-codebook heads, 15 (1.2 s) for 16 fully delayed
+       (rejected). Capped, codebooks 8–15 all come out at delay 8, each seeing 0–7 of its frame:
+       8 frames, +80 ms over 8 codebooks, for 16-codebook speech (Vietnamese WER through Mimi
+       27.8% against 42.0% at 8) and 16 source codebooks to hear (gain unmeasured). Untested:
+       8–15 are sampled without seeing each other (MusicGen found fully parallel worse), and the
+       comparison would mix two changes. Needs `heads.delays` capped, a review and a GPU test.
   3. A grouped depformer (2 codebooks a step) if 16 codebooks are too slow and the heads lose.
   Two levers that change no layer:
   - Trim the text vocabulary to the pieces English and Vietnamese use: the text head reads all

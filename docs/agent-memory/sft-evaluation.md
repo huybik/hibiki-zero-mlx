@@ -121,8 +121,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 ## Recording results
 
 - Record every validation and test in full, for later reports (user, 2026-11-15). That means each
-  set's chrF, BLEU, End Offset, LAAL, length ratio, empty rows and health, not only the
-  selecting score. Record what produced them too: the model and update, seed, batch, sampling,
+  set's chrF, BLEU, End Offset, length ratio, empty rows and health, and LAAL when the run
+  computed it (`eval.py --laal`), not only the selecting score. Record what produced them too: the model and update, seed, batch, sampling,
   date and output directory. A rounded "~2.3 s" or one set's number is not a record.
 - The owning note holds a full per-set table for each model that matters (the selected and the
   shipped ones), and points to the raw outputs for the rest.

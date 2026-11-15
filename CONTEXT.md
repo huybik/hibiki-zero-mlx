@@ -119,8 +119,8 @@ inference/ (Apple Silicon, MLX)
   `training/prep/cache_build.py` → [cache-build](docs/agent-memory/cache-build.md). Before adding
   a device, model or speed lever, search where that model already runs (`MimiEncoder`,
   `get_mimi`, `Wav2Vec2`) and extend that code.
-- Record every validation and test in full: each set's chrF, BLEU, End Offset, LAAL, length
-  ratio and health, with the model, update, seed and date. Copy their raw outputs off a box before
+- Record every validation and test in full: each set's chrF, BLEU, End Offset, length ratio and
+  health (and LAAL when it ran with `--laal`), with the model, update, seed and date. Copy their raw outputs off a box before
   it ends, to `/Volumes/data/hibiki-zero-evals/` (user, 2026-11-15) →
   [sft-evaluation](docs/agent-memory/sft-evaluation.md#recording-results).
 - Never print, log or commit `.env` values (`HF_TOKEN`, `HF_TOKEN_AN`, `MDC_API_KEY`, the Gemini
