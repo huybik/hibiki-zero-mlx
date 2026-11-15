@@ -25,6 +25,9 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   3. the policy scores every rollout, giving π_old's logprobs.
 - **A phone student** (`--config-path` its cut's config) gets streams cut to its codebooks, as the
   SFT trainer's are: built at the cache's 16, its rollouts heard at its own `dep_q`.
+- **Rooms** (`--room-share` 0.5, `--bank-dir`, which `grpo_launch.sh` fills): half the streams
+  hold a room's noise in their source wherever nobody speaks, the rest digital silence. Text
+  written there costs BLEU like any extra word, up to the rollout's own EOS: [noisy-source](noisy-source.md#rooms).
 - **A rollout's length** is its stream's plus `--tail-seconds` (20 s, the tail evaluation
   generates past a source), up to a whole 16-frame bucket and at most `--frames` (1,200, the
   longest stream plus that tail): `grpo.rollout_frames`. Its last reward sits there, so text a
@@ -196,8 +199,7 @@ The CUDA profile and dry run are under [Running](#running).
   - Evaluation itself moves ~±0.7 chrF between runs of the same weights, so judge a trend over
     several evaluations, not one.
 - **Profiled on the H200 box, alone on the GPU** (2026-11-10, 700 W H200 SXM, from round 4's
-  final model, the tranche caches, T 1,200; the 2026-11-09 profile there ran beside the cache
-  build and counted the leaked generator, so its micro-batch 4 "ran out of memory"):
+  final model, the tranche caches, T 1,200):
 
   | Stage | Measured |
   |---|---|
@@ -211,11 +213,9 @@ The CUDA profile and dry run are under [Running](#running).
   rollouts takes ~13.3 s of generation, ~2.6 s of old logprobs and ~8.0 s of update, ~24 s
   against ~31 s at 192 and 3; 800 updates ~5.3 h plus the evaluations. 640 and 6 gain 6% each
   and leave 17 and 7 GiB of the card. A generation step costs ~13 ms whatever the batch, so
-  generation, 55% of an update, is bound by steps: the streams average 599 frames (longest 929)
-  and every rollout runs 1,202 steps, and every update forward spans 1,200 frames though the
-  loss keeps none after a rollout's EOS (cut since: the H100 profile above). The profile's GPU
-  read 71% busy on average, under 50% in 29% of its samples (between stages, and generation's
-  short kernels).
+  generation, 55% of an update, was bound by steps: every rollout ran 1,202 steps over streams
+  averaging 599 frames (cut since: the H100 profile above). Its GPU read 71% busy on average,
+  under 50% in 29% of its samples (between stages, and generation's short kernels).
 - **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
   is reset to PAD's ([sft-training](sft-training.md#trainer)). Rollouts and scoring share the
   row, and the first ratio is still 1.

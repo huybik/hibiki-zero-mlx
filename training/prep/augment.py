@@ -9,6 +9,10 @@ The impulse responses and noises are OpenSLR 28 (RIRS_NOISES, Apache 2.0): real 
 small and medium room responses, and point-source and diffuse noises, all 16 kHz, resampled to
 24 kHz with soxr as the cache builder resamples. Every draw is seeded by the row id, so a clip gets
 the same conditions on every machine and rerun. Runs on any torch device.
+
+`room_tracks` draws the room a stream holds where nobody speaks (GRPO's quiet stretches): a
+background noise with foreground events, through the input level stage as a phone hears it.
+Every QUIET_HELD_OUT-th noise file of each kind is left out of it, for testing.
 """
 
 from __future__ import annotations
@@ -20,12 +24,15 @@ import tempfile
 import urllib.request
 import wave
 import zipfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import soxr
 import torch
+
+from inference.hibiki_mlx.level import Leveller
 
 SAMPLE_RATE = 24_000
 BANK_URL = "https://www.openslr.org/resources/28/rirs_noises.zip"
@@ -51,6 +58,16 @@ BANDS = {
     "phone": (0.10, 300.0, 3_400.0),
 }
 TRANSITION = 0.1  # raised-cosine edge, as a fraction of the cutoff
+# A room where nobody speaks, before the level stage raises it: a background peaking from a quiet
+# room to a loud one (the user's room peaked at -54 dBFS; the stage lifts a floor under -40 dBFS
+# to -40), with an event (a door, a cough) starting every 15 s on average: an excerpt of a
+# foreground file (they run up to 8 min, median 11 s) of at most QUIET_EVENT_MAX_S.
+QUIET_PEAK_DB = (-65.0, -35.0)
+QUIET_EVENT_PEAK_DB = (-45.0, -25.0)
+QUIET_EVENTS_PER_S = 1 / 15
+QUIET_EVENT_MAX_S = 3.0
+QUIET_EVENT_FADE_S = 0.01  # an excerpt's cut edges ramp in and out, so they add no click
+QUIET_HELD_OUT = 5  # every fifth file of each kind of noise, kept out of room_tracks for testing
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,67 @@ def _read(path: Path) -> np.ndarray:
     return soxr.resample(first, BANK_RATE, SAMPLE_RATE).astype(np.float32)
 
 
+def noise_files(bank: Path) -> dict[str, list[Path]]:
+    """The bank's background noises (the point-source files marked background, the rooms' diffuse
+    noises) and foreground events, each sorted."""
+    return {
+        "background": _listed(bank, "pointsource_noises", "noise", "--bg-fg-type background")
+        + _listed(bank, "real_rirs_isotropic_noises", "noise"),
+        "foreground": _listed(bank, "pointsource_noises", "noise", "--bg-fg-type foreground"),
+    }
+
+
+def quiet_noises(bank: Path, held_out: bool = False) -> dict[str, list[Path]]:
+    """The noise files `room_tracks` draws from, or with `held_out` the ones it leaves for testing
+    (every QUIET_HELD_OUT-th of each kind)."""
+    return {
+        kind: [path for index, path in enumerate(paths) if (index % QUIET_HELD_OUT == 0) == held_out]
+        for kind, paths in noise_files(bank).items()
+    }
+
+
+def room_tracks(bank: Path, count: int, samples: int, seed: int) -> Iterator[np.ndarray]:
+    """`count` tracks of `samples` of a room where nobody speaks, at 24 kHz, as the runtimes hand
+    them to Mimi: a background noise looped from a drawn offset and peaking in QUIET_PEAK_DB, and
+    events starting at QUIET_EVENTS_PER_S on average, each an excerpt of at most
+    QUIET_EVENT_MAX_S of a foreground file peaking in QUIET_EVENT_PEAK_DB; then the input level
+    stage, run from the track's start as on a new stream. Drawn from `seed` and the files
+    `quiet_noises` keeps."""
+    noises = quiet_noises(bank)
+    rng = random.Random(seed)
+    read: dict[Path, np.ndarray] = {}
+
+    def file(path: Path) -> np.ndarray:
+        if path not in read:
+            read[path] = _read(path)
+        return read[path]
+
+    def at_peak(wav: np.ndarray, peak_db: float) -> np.ndarray:
+        return wav * (10 ** (peak_db / 20) / max(float(np.abs(wav).max()), 1e-6))
+
+    longest = round(QUIET_EVENT_MAX_S * SAMPLE_RATE)
+    fade = round(QUIET_EVENT_FADE_S * SAMPLE_RATE)
+    for _ in range(count):
+        background = file(rng.choice(noises["background"]))
+        start = rng.randrange(len(background))
+        track = at_peak(np.resize(np.roll(background, -start), samples), rng.uniform(*QUIET_PEAK_DB))
+        track = track.astype(np.float32)
+        at = rng.expovariate(QUIET_EVENTS_PER_S) * SAMPLE_RATE
+        while at < samples:
+            source = file(rng.choice(noises["foreground"]))
+            offset = rng.randrange(max(1, len(source) - longest + 1))
+            event = source[offset : offset + longest].copy()
+            ramp = np.linspace(0.0, 1.0, min(fade, len(event) // 2), dtype=np.float32)
+            if len(ramp):
+                event[: len(ramp)] *= ramp
+                event[len(event) - len(ramp) :] *= ramp[::-1]
+            begin = int(at)
+            end = min(samples, begin + len(event))
+            track[begin:end] += at_peak(event, rng.uniform(*QUIET_EVENT_PEAK_DB))[: end - begin]
+            at += rng.expovariate(QUIET_EVENTS_PER_S) * SAMPLE_RATE
+        yield Leveller()(np.clip(track, -1.0, 1.0))
+
+
 def _listed(bank: Path, folder: str, kind: str, match: str = "") -> list[Path]:
     """The files a bank folder's `rir_list` or `noise_list` names on lines holding `match`
     (Kaldi's lists: the path is the last field, relative to the bank's parent), sorted."""
@@ -121,11 +199,7 @@ class Bank:
         for room in SIMULATED_ROOMS:
             pool = sorted((bank / "simulated_rirs" / room).glob("Room*/*.wav"))
             rirs += sorted(random.Random(room).sample(pool, SIMULATED_PER_ROOM))
-        noises = {
-            "background": _listed(bank, "pointsource_noises", "noise", "--bg-fg-type background")
-            + _listed(bank, "real_rirs_isotropic_noises", "noise"),
-            "foreground": _listed(bank, "pointsource_noises", "noise", "--bg-fg-type foreground"),
-        }
+        noises = noise_files(bank)
         self.rir_names = [str(path.relative_to(bank)) for path in rirs]
         self.noise_names = {
             kind: [str(p.relative_to(bank)) for p in paths] for kind, paths in noises.items()

@@ -15,6 +15,9 @@ next Vietnamese by at most MAX_OVERHANG.
 Wherever nobody speaks, both audio streams hold encoded silence and the text holds PAD, all
 supervised. The last row keeps the source EOS and the text EOS; the source after its EOS stays
 silence (as upstream inference feeds it), while the target and text after the text EOS are -1.
+With rooms (`room_codes`; GRPO's) a share of streams hold a room's noise in the source instead
+of silence, its lead, gaps and the stretch after its EOS alike, as a phone's microphone hears a
+room between sentences.
 
 Mimi codes depend on the encoder's state. Inference encodes one continuous stream from a fresh
 state, so a stream opens with the encoder's start-up codes and is steady silence elsewhere. Every
@@ -57,6 +60,7 @@ import torch
 from torch.utils.data import Dataset
 
 from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, swap_slots
+from training.prep import augment
 
 FRAME_RATE = 12.5
 # Stream lengths, seconds. Upstream's coarse stage trained on 30-75 s utterances and its RL stage
@@ -416,9 +420,12 @@ def _plan_direction(
 
 
 def assemble(
-    stream: Stream, rows: list[Row], silence: torch.Tensor, layout: Layout
+    stream: Stream, rows: list[Row], silence: torch.Tensor, layout: Layout,
+    source_quiet: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """The stream's int32 codes [33, frames]; `silence` is the `silence_track`."""
+    """The stream's int32 codes [33, frames]; `silence` is the `silence_track`. The source holds
+    `source_quiet` (a `room_codes` track; default the silence) wherever nobody speaks; the target
+    stays silent."""
     q = layout.dep_q
     frames = stream.frames
     # Silence encoded from a fresh state, as inference encodes a stream: start-up codes, then
@@ -432,7 +439,7 @@ def assemble(
     codes[0, :text_eos] = layout.pad_id
     codes[0, text_eos] = int(last.codes[0, last.target_frames])
     codes[1 : 1 + q, :text_eos] = quiet[:, :text_eos]
-    codes[1 + q :] = quiet
+    codes[1 + q :] = quiet if source_quiet is None else source_quiet[:, :frames]
     codes[1 + q :, source_eos] = layout.card
     for piece in stream.pieces:
         row = rows[piece.row]
@@ -472,19 +479,37 @@ def silence_track(mimi: Any, frames: int, codebooks: int | None = None) -> torch
     row's delay frames), then steady silence, a few repeating patterns rather than one frame
     (codebook 0 is 1316 on ~99% of frames).
     """
+    samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
+    return encode_track(mimi, torch.zeros(samples), codebooks)
+
+
+def encode_track(mimi: Any, pcm: torch.Tensor, codebooks: int | None = None) -> torch.Tensor:
+    """Mimi codes of `pcm` (1-D, Mimi's sample rate, whole frames) encoded from a fresh state, as
+    inference encodes a stream, [codebooks, frames] int32 on the CPU: `codebooks` of them, or as
+    many as `mimi` is set to."""
+    frame = int(round(mimi.sample_rate / mimi.frame_rate))
+    if pcm.ndim != 1 or len(pcm) % frame:
+        raise ValueError(f"Mimi encodes whole {frame}-sample frames of one channel, not {tuple(pcm.shape)}")
     active = mimi.num_codebooks
     if codebooks is not None:
         mimi.set_num_codebooks(codebooks)
-    samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
     device = next(mimi.parameters()).device
     try:
         with torch.no_grad():
-            codes = mimi.encode(torch.zeros(1, 1, samples, device=device))[0]
+            codes = mimi.encode(pcm.to(device=device, dtype=torch.float32)[None, None])[0]
     finally:
         mimi.set_num_codebooks(active)  # the caller's Mimi keeps its own count
-    if codes.shape[-1] != frames:
-        raise RuntimeError(f"Mimi encoded {codes.shape[-1]} silence frames, expected {frames}")
+    if codes.shape[-1] != len(pcm) // frame:
+        raise RuntimeError(f"Mimi encoded {codes.shape[-1]} frames, expected {len(pcm) // frame}")
     return codes.to(device="cpu", dtype=torch.int32)
+
+
+def room_codes(mimi: Any, bank: Any, count: int, frames: int, codebooks: int, seed: int) -> torch.Tensor:
+    """Mimi codes of `count` rooms where nobody speaks (`augment.room_tracks` from the noise bank
+    `bank`), each `frames` long from a fresh state: [count, codebooks, frames] int32 on the CPU."""
+    samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
+    tracks = augment.room_tracks(bank, count, samples, seed)
+    return torch.stack([encode_track(mimi, torch.from_numpy(track), codebooks) for track in tracks])
 
 
 def model_rows(layout: Layout, codebooks: int) -> list[int]:
@@ -510,23 +535,43 @@ class StreamDataset(Dataset):
         stream_frames: tuple[int, int],
         seed: int,
         codebooks: int | None = None,
+        rooms: torch.Tensor | None = None,
+        room_share: float = 0.0,
     ):
         if silence.shape[0] != layout.dep_q:
             raise ValueError(f"Silence has {silence.shape[0]} codebooks, need {layout.dep_q}")
         if silence.shape[1] < stream_frames[1]:
             raise ValueError("The silence track must cover the longest stream")
+        if rooms is not None and rooms.shape[1:] != silence.shape:
+            raise ValueError(f"Rooms of shape {tuple(rooms.shape[1:])} differ from the silence's {tuple(silence.shape)}")
+        if not 0.0 <= room_share <= 1.0 or (room_share > 0) != (rooms is not None):
+            raise ValueError(f"A room share of {room_share} needs rooms exactly when it is above 0")
         self.rows = rows
         self.layout = layout
         self.silence = silence
+        self.rooms = rooms
+        self.room_share = room_share
+        self.seed = seed
         self.keep = None if codebooks is None or codebooks == layout.dep_q else model_rows(layout, codebooks)
         self.streams = plan_streams(rows, *stream_frames, seed)
 
     def __len__(self) -> int:
         return len(self.streams)
 
+    def source_quiet(self, index: int) -> torch.Tensor:
+        """What stream `index`'s source holds wherever nobody speaks, [dep_q, silence frames] at
+        the cache's codebooks: a room drawn for it (with probability `room_share`, from the seed
+        and the index, so the same on a resume), or the silence."""
+        if self.rooms is None:
+            return self.silence
+        rng = np.random.default_rng([self.seed, index])
+        if rng.random() >= self.room_share:
+            return self.silence
+        return self.rooms[int(rng.integers(len(self.rooms)))]
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         stream = self.streams[index]
-        codes = assemble(stream, self.rows, self.silence, self.layout)
+        codes = assemble(stream, self.rows, self.silence, self.layout, self.source_quiet(index))
         return {
             "codes": codes if self.keep is None else codes[self.keep],
             "frames": stream.frames,
