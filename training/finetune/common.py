@@ -727,6 +727,17 @@ def laal(word_times: list[float], source_s: float, reference_words: int) -> floa
     return float(np.mean(lags))
 
 
+def latency(word_times: list[float], source_s: float, reference: str) -> dict[str, float | str]:
+    """A row's End Offset (its last word's time less the source's length) and LAAL, from its
+    words' times in seconds from the start of the source; both "" for a row with no word."""
+    if not word_times:
+        return {"end_offset_s": "", "laal_s": ""}
+    return {
+        "end_offset_s": round(word_times[-1] - source_s, 2),
+        "laal_s": round(laal(word_times, source_s, len(reference.split())), 2),
+    }
+
+
 def output_paths(out_dir: Path, index: int, source_path: Path, tag: str | None) -> dict[str, Path]:
     suffix = "" if tag is None else f"_{tag}"
     stem = f"{index:04d}_{source_path.stem}{suffix}"
@@ -896,8 +907,7 @@ def generate_batch(
     extra_delay = lm_gen.max_delay - 2
     for row, t, duration in zip(rows, text_outputs, audio_durations, strict=True):
         times = [(frame - extra_delay) / mimi.frame_rate for frame in t["word_frames"]]
-        t["end_offset_s"] = round(times[-1] - duration, 2) if times else ""
-        t["laal_s"] = round(laal(times, duration, len(row[REFERENCE].split())), 2) if times else ""
+        t.update(latency(times, duration, row[REFERENCE]))
         if not t["eos_found"]:
             print(f"warning: no output EOS for {row[cfg.id_column]}; keeping all generated text.")
     if cfg.text_only:

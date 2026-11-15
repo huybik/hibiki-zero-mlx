@@ -77,8 +77,8 @@ def main() -> None:
             # Training's End Offset and LAAL: its step i heard i - 1 frames of the clip (moshi's
             # LMGen hears a frame of silence first), where the runtime's step t heard t, so the
             # runtime's step t is training's t + 1.
-            times = [(t + 1) / FRAME_RATE for t in common.word_frames(out.text_tokens, model.tokenizer)]
-            reference_words = len(row[common.REFERENCE].split())
+            steps = common.word_frames(out.text_tokens, model.tokenizer)
+            times = [(t + 1) / FRAME_RATE for t in steps]
             record = {
                 "id": row["id"],
                 common.EVAL_SET: row[common.EVAL_SET],
@@ -86,8 +86,7 @@ def main() -> None:
                 common.REFERENCE: row[common.REFERENCE],
                 "prediction_text": out.text,
                 "eos_found": out.ended,
-                "end_offset_s": round(times[-1] - out.duration, 2) if times else "",
-                "laal_s": round(common.laal(times, out.duration, reference_words), 2) if times else "",
+                **common.latency(times, out.duration, row[common.REFERENCE]),
                 "frames": out.frames,
                 "seconds": round(seconds, 2),
             }
