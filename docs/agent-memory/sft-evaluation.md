@@ -81,7 +81,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     each word's time less where an even pace over the source puts it, γ = source duration ÷
     max(generated, reference words), averaged up to the first word at or after the source's end;
     the metrics report their mean (`mean_laal_s`) over the rows with a word, so a model that
-    leaves hard rows empty looks faster. A word is timed at its last piece (`common.word_frames`),
+    leaves hard rows empty looks faster; so does one that cuts rows short (an early EOS or
+    silence leaves late words' even-pace times above their real ones, down to negative LAAL). A word is timed at its last piece (`common.word_frames`),
     one frame after the source its token heard, as the end offset is (`common.latency` computes
     both, for eval.py, the trainers and the MLX gate). This is the paper's text LAAL (its RL
     plots, no table); its Table 1 times Whisper words in the generated speech, which lags the text
