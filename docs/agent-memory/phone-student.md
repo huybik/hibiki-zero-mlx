@@ -147,6 +147,28 @@ model's 0.664.
 
 ## Checks
 
+- **The heads distillation end to end** (2026-11-15, head 8076090, on the H100):
+  - Setup: `restart.sh student-heads`'s arguments on its own cut, 300 steps, FLEURS dev both
+    ways. Outputs are in `/Volumes/data/hibiki-zero-evals/box-60447659/e2e_heads/`.
+  - Training: the KL fell from 12.35 (steps 1–10) to 5.06 at 300. The gradient norm before
+    clipping went from 520 early to 1.87, finite on every logged step.
+  - Speed and memory: 0.336 s a step and a 47.2 GB peak. The depformer student takes 0.381 s and
+    59.3 GB.
+  - Validation at 300 passes every gate. VI→EN / EN→VI:
+
+    | chrF | BLEU | End Offset (s) | LAAL (s) | Length ratio | Empty rows | Teacher-forced loss |
+    |---|---|---|---|---|---|---|
+    | 15.11 / 7.33 | 0.10 / 0.04 | 5.36 / 4.98 | 3.27 / 4.42 | 1.26 / 0.55 | 0 / 1 | 7.50 / 6.76 |
+
+  - Resume: from 150 it reran steps 151–170 equal to 4 decimals (6.3428 at step 160).
+  - Two fresh runs drift apart from step 30, by up to 0.38. The likely cause is GPU
+    non-determinism, amplified by the fresh heads' large gradients. The trained depformer
+    student varies by only 8e-4.
+  - Regressions:
+    - The depformer student's distillation (20 steps from `student_dep10_distilled`, 7 sets):
+      KL 0.247 → 0.236, 0.383 s a step, FLEURS dev chrF 30.80 / 28.45.
+    - Plain SFT on the heads cut (20 steps, no teacher): CE 12.52 → 9.38, apart from a spike
+      to 50.5 at step 3, caused by the one-step warmup.
 - End to end on the H100 (2026-11-14, both students cut from GRPO update 1,400, the two-way
   caches, 4,608-frame batches, 200 steps each): dep10 trains 11.0 → 6.3 at 0.107 s a step (30.9 GB
   peak), heads14 11.3 → 8.4 at 100 steps, 0.101 s (27.1 GB); both save, validate (`validate.py`
@@ -183,7 +205,7 @@ model's 0.664.
 
 - **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
   ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
-  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h plain, ~21 h distilled), the same streams
+  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h plain, ~21 h distilled; the heads student ~18 h distilled), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
   it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
@@ -198,8 +220,7 @@ model's 0.664.
 - **The heads student distils from the start** (user, 2026-11-14: "why we not do distillation
   from the start?"): plain SFT left the depformer student ~14 chrF short after 100,000 updates,
   and 300 distilled updates gained more than its last 32,000. It is the next box's first job:
-  its ~21 h (extrapolated from the depformer student; profile it first, a 14-layer student and
-  the teacher at 12,288 frames) does not fit beside `student_dep10_distill` before this box ends
+  its ~18 h (0.336 s a step measured end to end, [Checks](#checks), plus validations) does not fit beside `student_dep10_distill` before this box ends
   (2026-11-16 08:00 UTC+7). The comparison is of finished students, not of the heads alone: the
   depformer student had 100,000 plain updates, then 184,000 distilled at 3e-5 on new streams.
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
