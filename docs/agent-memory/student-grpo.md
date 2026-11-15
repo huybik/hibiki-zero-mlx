@@ -114,6 +114,25 @@ The student is 3.7–9.4 chrF below its teacher, with about the same lag.
   - The distilled student before GRPO (64,000) wrote words in 7 of 20: VI→EN 2/10 (22 tokens,
     pink), EN→VI 5/10 (71 tokens: room −55, white, pink).
   - The rooms in GRPO's streams taught it to stay quiet.
+- **6-bit gate** (2026-11-15, the Mac): `inference/tools/gate.py --seed 42` on every FLEURS dev
+  row, `g2000_bf16` against `g2000_q6`. Health passes for both models in both directions, with no
+  empty rows. "Ended" counts rows that wrote an EOS after the source EOS.
+
+  | Set | Model | chrF | BLEU | WER | EO (s) | Length | Ended | 4-gram repeats |
+  |---|---|---|---|---|---|---|---|---|
+  | fleurs-vi/dev | bf16 | 37.92 | 8.31 | 0.942 | 0.93 | 1.23 | 147/361 | 0 |
+  | fleurs-vi/dev | 6 bits | 38.68 | 8.65 | 0.940 | 0.91 | 1.24 | 161/361 | 0 |
+  | fleurs-en/dev | bf16 | 33.85 | 13.73 | 0.791 | 1.13 | 1.03 | 106/392 | 1 |
+  | fleurs-en/dev | 6 bits | 33.89 | 13.93 | 0.778 | 1.23 | 1.02 | 101/392 | 0 |
+
+  - **6 bits minus bf16,** with a paired bootstrap's 95% interval over rows (1,000 resamples):
+    - VI→EN: chrF +0.76 (+0.12 to +1.50), BLEU +0.34 (−0.39 to +1.14).
+    - EN→VI: chrF +0.04 (−0.68 to +0.73), BLEU +0.20 (−0.65 to +1.02).
+  - **6 bits loses nothing.** Each model samples its own text, and only 1 of the 753 rows came
+    out the same in both. The bootstrap resamples rows, not samples, so the VI→EN gain is
+    sampling.
+  - The box's validation at 2,000 gave 36.51 / 34.49. It ran another seed and training's
+    evaluation, which stops at an EOS written before the source EOS.
 
 ## Raw outputs
 
@@ -125,3 +144,6 @@ The student is 3.7–9.4 chrF below its teacher, with about the same lag.
   - It is built by `/Volumes/data/hibiki-zero-evals/all_metrics.py FOLDER`.
 - **The noise tests** (JSONL per run, and their scripts) are in
   `/Volumes/data/hibiki-zero-evals/mac/noise/`.
+- **The 6-bit gate** is in `/Volumes/data/hibiki-zero-evals/mac/gate/`: each model's
+  `hypotheses.jsonl`, `scores.json` and log, with `paired_gate.py` (the bootstrap) and its output,
+  `paired_gate.txt`.
