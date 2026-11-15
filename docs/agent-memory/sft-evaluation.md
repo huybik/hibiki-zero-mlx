@@ -4,7 +4,8 @@ Read when touching `training/finetune/eval.py`, `training/finetune/validate.py`,
 `training/prep/eval_sets.py`, `data/eval/`, the validation and promotion in
 `training/finetune/train.py`, or the input level stage (`inference/hibiki_mlx/level.py`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Checkpoint selection](#checkpoint-selection) ·
-[Side tools](#side-tools) · [Evaluation sets](#evaluation-sets) · [Input level](#input-level)
+[Side tools](#side-tools) · [Recording results](#recording-results) ·
+[Evaluation sets](#evaluation-sets) · [Input level](#input-level)
 
 The trainer itself is in [sft-training](sft-training.md); checkpoint files, resume and their sync
 in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
@@ -116,6 +117,25 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   cache, planned as `train.py` plans them.
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.
 - `train.py` and `eval.py` take a required `--out-dir`.
+
+## Recording results
+
+- Record every validation and test in full, for later reports (user, 2026-11-15). That means each
+  set's chrF, BLEU, End Offset, length ratio, empty rows and health, and LAAL when the run
+  computed it (`eval.py --laal`), not only the selecting score. Record what produced them too: the model and update, seed, batch, sampling,
+  date and output directory. A rounded "~2.3 s" or one set's number is not a record.
+- The owning note holds a full per-set table for each model that matters (the selected and the
+  shipped ones), and points to the raw outputs for the rest.
+- Raw outputs must outlive the box. The Hub gets a run's logs only on its final sync, and
+  `/workspace/evals/` never.
+  - Before a box ends, copy every run directory to the Mac, leaving out weights, optimizer
+    states and WAVs. That covers `val_log.jsonl`, `best.json`, `train_args.json` and `eval/`.
+    Copy `/workspace/evals/` too: every test's `metrics.json` and `predictions.csv`.
+  - The destination is `/Volumes/data/hibiki-zero-evals/box-<id>/`. Box 60447659's was copied
+    2026-11-15. `/Volumes/data/hibiki-zero-evals/all_metrics.py FOLDER` flattens every value in a
+    copied box into `FOLDER/all_metrics.csv`, one row per run, step, mode and set.
+  - Mac runs (the gate, noise tests) write their outputs under `/Volumes/data/hibiki-zero-evals/mac/`,
+    never only to a session's scratch directory.
 
 ## Evaluation sets
 
