@@ -273,6 +273,20 @@ Vietnamese text cannot keep up with its speech.
    how much of the real-speech gap any data closes. The 8-codebook phone student loses more.
    Still to check on the box: 32 codebooks, and a control degradation of similar strength on
    both languages, to tell Mimi's loss from Whisper's weaker Vietnamese robustness.
+   Options (2026-11-15; user: "should we use some other encoder that better than mimi, or train
+   mimi it self on vietnames?"):
+   - A different codec, or retraining Mimi's encoder or quantizer, changes the codes. Every cache
+     would be re-encoded, and the model would relearn its audio, starting from a 3B pretrained on
+     Mimi's codes: a new model in effect. Not taken.
+   - Fine-tuning Mimi's decoder alone on Vietnamese speech keeps every code. The caches, the LM
+     and both runtimes are untouched, apart from the decoder's weights and its Core ML export.
+     - It can only improve the output voice: EN→VI's Vietnamese speech, possibly with a decoder
+       of its own for the student's 8 codebooks.
+     - It can only recover what the codes still hold, and does nothing for VI→EN's hearing.
+     - Its losses (multi-resolution spectrogram, adversarial with feature matching) would need
+       writing.
+     - First the control check above, so we know the loss is Mimi's. Then a Vietnamese speech
+       evaluation, which doesn't exist yet: evaluation is text-only.
 2. Give Vietnamese syllables their own tokens by replacing pieces English never uses, so the text
    embedding, the head and every runtime keep `text_card` 48,000 and only the tokenizer file
    changes. Built 2026-11-04 by `training/vi_tokenizer`
