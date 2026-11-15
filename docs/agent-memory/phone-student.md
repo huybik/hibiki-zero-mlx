@@ -3,7 +3,8 @@
 Read when touching `training/student/`, `streams.model_rows` or a `StreamDataset`'s `codebooks`, or
 when cutting, training, distilling or scoring a smaller model for the phone or its parallel heads.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Cut](#cut) · [Training a student](#training-a-student) ·
-[Parallel heads](#parallel-heads) · [Distillation](#distillation) · [Checks](#checks) · [Next](#next)
+[Parallel heads](#parallel-heads) · [Distillation](#distillation) · [GRPO](#grpo) · [Checks](#checks) ·
+[Next](#next)
 
 The 3B misses real time on the A15, so the phone model is cut from the two-way model and scored in
 both directions ([plan](../vi_en_parity_plan.md#5-the-phone-model), stages 5.3 and 5.4; order steps
@@ -141,9 +142,42 @@ model's 0.664.
   30.0 / 23.8 at 16,000 to 32,000; VI→EN ran ever longer (length ratio 1.51 → 1.67). The rate was
   too high for the KL, so it was stopped at 32,000 (2026-11-15).
 - **The run** `student_dep10_anneal` (`restart.sh student-distill`): from the first run's model
-  32,000, new streams (seed 49), peak 1e-5 after a 2% warmup, 110,000 updates (~12.4 h at 0.405 s,
-  leaving the box ~13 h for a GRPO run on it, its test sets and publishing). The heads student
-  distils from the start ([Next](#next)).
+  32,000, new streams (seed 49), peak 1e-5 after a 2% warmup, 110,000 updates planned. Its KL fell
+  at once (0.293 → 0.269 by 4,000, on other streams than the first run's). FLEURS dev chrF VI→EN /
+  EN→VI, with the mean of the seven sets: 31.0 / 27.8 (32.98) at 8,000, 31.6 / 28.1 (34.02) at
+  32,000, 32.3 / 28.6 (33.69) at 40,000, 31.9 / 28.0 (34.28) at 56,000, 31.7 / 29.3 (34.34) at
+  64,000, 31.9 / 28.8 (34.18) at 72,000, 31.3 / 29.0 (34.32) at 80,000. Stopped at 80,000
+  (2026-11-15) by the user's rule, two validations in a row with no new best on either the
+  selecting mean or the mean of all sets ("let's stop distil when 2 rounds of validation not
+  improving"). Its best, 64,000 (Hub `student_dep10_anneal/best/`), is
+  `weights/student_dep10_distilled.safetensors` on the box, [GRPO](#grpo)'s start. The heads
+  student distils from the start ([Next](#next)).
+
+## GRPO
+
+`grpo_student` (2026-11-15, commit 01a0d13): `grpo_launch.sh grpo_student
+weights/student_dep10_distilled.safetensors --config-path weights/student_dep10/config.json
+--text-weight 50 --gen-frames 1228800 --micro-batch 4 --lr 1e-6 --updates 4000`, rooms on
+([noisy-source](noisy-source.md#rooms)), stopped by the teacher run's rule ([grpo](grpo.md#running)).
+
+- **Rate 1e-6**, 5× the 3B's: at 2e-7 the end-to-end test's student clipped ~0.01% of its tokens
+  an update (largest ratio deviation 0.77) where the 3B clipped 0.5%; at 1e-6 it clips 0.1–0.3%,
+  the largest deviation mostly under 5.
+- **Sizes** (`grpo_profile`, the H100): generation is flat above 512 rows (a step costs 4.6 ms plus
+  0.027 ms a row), micro-batch 4 is the fastest; ~7.1 s an update with saves, the rooms built in
+  15–17 s before the policy loads.
+- **Its evaluations** (selecting = FLEURS dev both ways; the mean of all 8 sets; FLEURS end
+  offset VI→EN / EN→VI):
+
+  | Update | FLEURS VI→EN / EN→VI | Selecting | Of 8 | End offset |
+  |---|---|---|---|---|
+  | 0 | 32.1 / 29.2 | 30.63 | 34.69 | 2.3 / 1.9 s |
+  | 200 | 31.8 / 31.8 | 31.83 | 35.05 | 2.0 / 1.4 s |
+  | 400 | 32.8 / 32.2 | 32.49 | 35.92 | 1.6 / 1.4 s |
+  | 600 | 32.6 / 33.4 | 32.98 | 36.12 | 1.2 / 1.1 s |
+  | 800 | 32.8 / 33.8 | 33.31 | 36.57 | 0.9 / 1.0 s |
+  | 1,000 | 34.3 / 33.5 | 33.91 | 37.01 | 0.9 / 1.2 s |
+
 
 ## Checks
 
