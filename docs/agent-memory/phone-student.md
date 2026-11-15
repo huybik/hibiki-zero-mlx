@@ -155,29 +155,8 @@ model's 0.664.
 
 ## GRPO
 
-`grpo_student` (2026-11-15, commit 01a0d13): `grpo_launch.sh grpo_student
-weights/student_dep10_distilled.safetensors --config-path weights/student_dep10/config.json
---text-weight 50 --gen-frames 1228800 --micro-batch 4 --lr 1e-6 --updates 4000`, rooms on
-([noisy-source](noisy-source.md#rooms)), stopped by the teacher run's rule ([grpo](grpo.md#running)).
-
-- **Rate 1e-6**, 5× the 3B's: at 2e-7 the end-to-end test's student clipped ~0.01% of its tokens
-  an update (largest ratio deviation 0.77) where the 3B clipped 0.5%; at 1e-6 it clips 0.1–0.3%,
-  the largest deviation mostly under 5.
-- **Sizes** (`grpo_profile`, the H100): generation is flat above 512 rows (a step costs 4.6 ms plus
-  0.027 ms a row), micro-batch 4 is the fastest; ~7.1 s an update with saves, the rooms built in
-  15–17 s before the policy loads.
-- **Its evaluations** (selecting = FLEURS dev both ways; the mean of all 8 sets; FLEURS end
-  offset VI→EN / EN→VI):
-
-  | Update | FLEURS VI→EN / EN→VI | Selecting | Of 8 | End offset |
-  |---|---|---|---|---|
-  | 0 | 32.1 / 29.2 | 30.63 | 34.69 | 2.3 / 1.9 s |
-  | 200 | 31.8 / 31.8 | 31.83 | 35.05 | 2.0 / 1.4 s |
-  | 400 | 32.8 / 32.2 | 32.49 | 35.92 | 1.6 / 1.4 s |
-  | 600 | 32.6 / 33.4 | 32.98 | 36.12 | 1.2 / 1.1 s |
-  | 800 | 32.8 / 33.8 | 33.31 | 36.57 | 0.9 / 1.0 s |
-  | 1,000 | 34.3 / 33.5 | 33.91 | 37.01 | 0.9 / 1.2 s |
-
+The student's GRPO run (`grpo_student`, 2026-11-15), its evaluations, tests and the shipped
+update 2,000 are in [student-grpo](student-grpo.md).
 
 ## Checks
 
