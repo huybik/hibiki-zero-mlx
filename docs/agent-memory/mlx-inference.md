@@ -92,8 +92,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     3B (`--model 3b`, `verify_mlx_q4.py`) stops the same way.
   - Step t hears source frames before t, as training's forward does; moshi's `LMGen` in the
     evaluation hears one silent frame more first, so its outputs come 80 ms later throughout,
-    and the gate adds that frame to each word's time (End Offset, LAAL). Mic mode never sends
-    the EOS.
+    and the gate adds that frame to each End Offset. Mic mode never sends the EOS.
 - Sampling is `lm_gen_config`: every training checkpoint's config and upstream's own say
   temperature 0.8, top-k 250 for text and audio, which training's evaluation and upstream's
   inference (`run.py`, `**lm_gen_config`) use. Until 2026-11-14 the runtimes sampled text at 0.4,
