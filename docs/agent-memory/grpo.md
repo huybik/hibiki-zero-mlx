@@ -272,6 +272,9 @@ The CUDA profile and dry run are under [Running](#running).
     (−0.06 to +0.68), EN→VI −0.06, FLEURS test −0.15 both ways. **Update 1,400 ships** (and
     is the students' teacher): validation chose it before the test sets were read, and they
     cannot tell the two apart. Outputs in `/workspace/evals/test_{start,grpo1400,grpo1800}/`.
+  - **Its LAAL** (2026-11-15, FLEURS test, seed 43, batch 16): text LAAL 4.06 → 2.18 s VI→EN and
+    5.04 → 2.52 s EN→VI from update 0 to 1,400 (medians 3.80 → 2.11, 4.80 → 2.38). The paper's
+    short-form Table 1, on spoken words (later than text): LAAL 2.8–3.1 s, End Offset 1.9–2.4 s.
 - **The run:** `./training/h100.sh grpo RUN_NAME --cache-dir … --model-weight START [--gen-frames
   … --micro-batch …]` claims, locks, preflights and syncs exactly as `run` does
   ([sft-recovery](sft-recovery.md#launcher)). Its boot-hook line, and a restore, use `grpo` where
