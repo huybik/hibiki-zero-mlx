@@ -222,7 +222,7 @@ class Translation:
     ended: bool  # the model emitted the text EOS after hearing the source EOS
     frames: int  # LM steps run
     duration: float  # seconds of input audio
-    last_word: int | None  # the step of the last content token (above PAD) before the EOS
+    text_tokens: list[int]  # each step's text token, up to the EOS that ended it
     pcm: np.ndarray | None  # translated audio at 24 kHz, unless audio=False
 
 
@@ -324,6 +324,7 @@ def translate(
     processed = 0
     ended = False
     last_word = None
+    text_tokens: list[int] = []
     while True:
         oat = enc_q.get()
         if oat is SENTINEL:
@@ -334,6 +335,7 @@ def translate(
         if tt == eos_token and processed > steps + 1:
             ended = True
             break
+        text_tokens.append(tt)
         if tt > pad_token:
             last_word = processed - 1
         pieces.append(text(tt))
@@ -364,7 +366,7 @@ def translate(
         ended=ended,
         frames=processed,
         duration=duration,
-        last_word=last_word,
+        text_tokens=text_tokens,
         pcm=pcm,
     )
 

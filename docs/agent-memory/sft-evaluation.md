@@ -77,6 +77,16 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     last generated word; the metrics report their median. It times the text as the 3B's
     `max_delay` of 2 places it, so a parallel-heads student's larger one (its codebooks − 1,
     which delays only its speech) is taken off ([phone-student](phone-student.md#parallel-heads)).
+  - It also records `laal_s`, text LAAL as the Hibiki-Zero paper computes it (Papi et al. 2022):
+    each word's time less where an even pace over the source puts it, γ = source duration ÷
+    max(generated, reference words), averaged up to the first word at or after the source's end;
+    the metrics report their mean (`mean_laal_s`) over the rows with a word, so a model that
+    leaves hard rows empty looks faster; so does one that cuts rows short (an early EOS or
+    silence leaves late words' even-pace times above their real ones, down to negative LAAL). A word is timed at its last piece (`common.word_frames`),
+    one frame after the source its token heard, as the end offset is (`common.latency` computes
+    both, for eval.py, the trainers and the MLX gate). This is the paper's text LAAL (its RL
+    plots, no table); its Table 1 times Whisper words in the generated speech, which lags the text
+    by `max_delay` frames and each word's length, so its speech LAAL should run above ours.
   - Decided 2026-11-03. At text temperature 0.4 the step-18,000 model fell behind, stalled and
     ended 11 of 48 FLEURS rows, against 27 at 0.8 with the same 8 s tail and 33 with a longer
     one. Its EOS came up to 14 s after a row ended, and the 8 s tail cut a third of them

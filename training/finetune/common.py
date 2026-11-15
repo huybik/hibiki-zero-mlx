@@ -654,6 +654,8 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     metrics.update(length_repetition_metrics(references, hypotheses))
     offsets = [float(record["end_offset_s"]) for record in records if record["end_offset_s"] != ""]
     metrics["median_end_offset_s"] = float(np.median(offsets)) if offsets else float("nan")
+    laals = [float(record["laal_s"]) for record in records if record["laal_s"] != ""]
+    metrics["mean_laal_s"] = float(np.mean(laals)) if laals else float("nan")
     metrics["bleu"] = sacrebleu.corpus_bleu(hypotheses, [references]).score
     metrics["chrf"] = sacrebleu.corpus_chrf(hypotheses, [references]).score
     if nonempty_pairs:
@@ -682,18 +684,58 @@ def decode_text_batch(batch_text_tokens: Any, text_tokenizer: Any) -> list[dict[
         eos_found = eos_id in text_tokens
         # The output ends at the EOS; without one it runs to the end of generation.
         eos_idx = text_tokens.index(eos_id) if eos_found else len(text_tokens)
-        words = [index for index, token in enumerate(text_tokens[:eos_idx]) if token > pad_id]
-        content_tokens = [text_tokens[index] for index in words]
+        content_tokens = [token for token in text_tokens[:eos_idx] if token > pad_id]
         decoded.append(
             {
                 "text": text_tokenizer.decode(content_tokens),
                 "eos_found": eos_found,
                 "generated_text_tokens": len(content_tokens),
-                "last_word_frame": words[-1] if words else None,
+                "word_frames": word_frames(text_tokens[:eos_idx], text_tokenizer),
                 "end_frame": eos_idx,
             }
         )
     return decoded
+
+
+def word_frames(text_tokens: list[int], text_tokenizer: Any) -> list[int]:
+    """The frame each word of a text stream is complete at: its last piece's. The tokens above PAD
+    are the words' pieces, and a piece that opens with "▁" starts a word, as decoding puts a space
+    before it."""
+    pad_id = int(text_tokenizer.pad_id())
+    frames: list[int] = []
+    for frame, token in enumerate(text_tokens):
+        if token <= pad_id:
+            continue
+        if text_tokenizer.id_to_piece(token).startswith("▁") or not frames:
+            frames.append(frame)
+        else:
+            frames[-1] = frame
+    return frames
+
+
+def laal(word_times: list[float], source_s: float, reference_words: int) -> float:
+    """Length-Adaptive Average Lagging (Papi et al. 2022) in seconds, as the Hibiki-Zero paper
+    computes it: word i's time from the start of the source less (i - 1) * gamma, where an even
+    pace over the source would put it, with gamma = source_s / max(generated words, reference
+    words); averaged over the words up to the first that comes at or after the source's end."""
+    gamma = source_s / max(len(word_times), reference_words)
+    lags: list[float] = []
+    for index, time_s in enumerate(word_times):
+        lags.append(time_s - index * gamma)
+        if time_s >= source_s:
+            break
+    return float(np.mean(lags))
+
+
+def latency(word_times: list[float], source_s: float, reference: str) -> dict[str, float | str]:
+    """A row's End Offset (its last word's time less the source's length) and LAAL, from its
+    words' times in seconds from the start of the source; both "" for a row with no word."""
+    if not word_times:
+        return {"end_offset_s": "", "laal_s": ""}
+    return {
+        "end_offset_s": round(word_times[-1] - source_s, 2),
+        "laal_s": round(laal(word_times, source_s, len(reference.split())), 2),
+    }
 
 
 def output_paths(out_dir: Path, index: int, source_path: Path, tag: str | None) -> dict[str, Path]:
@@ -744,6 +786,7 @@ def save_batch_outputs(
                 "eos_found": bool(output["eos_found"]),
                 "generated_text_tokens": int(output["generated_text_tokens"]),
                 "end_offset_s": output["end_offset_s"],
+                "laal_s": output["laal_s"],
                 "mono_wav": mono_wav,
                 "stereo_wav": stereo_wav,
                 "text_file": repo_display_path(paths["text"]),
@@ -860,10 +903,11 @@ def generate_batch(
     # max_delay warm-up frames the model chose it having heard (i - max_delay + 1) frames of
     # source. The offset counts it at index i for the 3B's max_delay of 2; a parallel-heads
     # student's larger one (codebooks - 1) delays its speech, not its text, so it is taken off.
+    # LAAL times every word the same way.
     extra_delay = lm_gen.max_delay - 2
     for row, t, duration in zip(rows, text_outputs, audio_durations, strict=True):
-        frame = t["last_word_frame"]
-        t["end_offset_s"] = "" if frame is None else round((frame - extra_delay) / mimi.frame_rate - duration, 2)
+        times = [(frame - extra_delay) / mimi.frame_rate for frame in t["word_frames"]]
+        t.update(latency(times, duration, row[REFERENCE]))
         if not t["eos_found"]:
             print(f"warning: no output EOS for {row[cfg.id_column]}; keeping all generated text.")
     if cfg.text_only:
@@ -954,7 +998,7 @@ def score_summary(metrics: dict[str, Any]) -> str:
         f"chrf={metrics['chrf']:.2f} bleu={metrics['bleu']:.2f} "
         f"length_ratio={metrics['mean_length_ratio']:.2f} eos={metrics['eos_found']}/{count} "
         f"empty={metrics['empty_predictions']} repeat4={metrics['repeated_4gram_predictions']} "
-        f"end_offset={metrics['median_end_offset_s']:.1f}s "
+        f"end_offset={metrics['median_end_offset_s']:.1f}s laal={metrics['mean_laal_s']:.1f}s "
         f"health={'pass' if metrics['health_eligible'] else 'fail'}"
     )
 
@@ -965,7 +1009,7 @@ def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
             handle,
             fieldnames=[
                 "id", EVAL_SET, "source_audio", "reference_text", "prediction_text", "eos_found",
-                "generated_text_tokens", "end_offset_s", "mono_wav", "stereo_wav", "text_file",
+                "generated_text_tokens", "end_offset_s", "laal_s", "mono_wav", "stereo_wav", "text_file",
             ],
         )
         writer.writeheader()
