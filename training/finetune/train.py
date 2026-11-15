@@ -14,9 +14,10 @@ first set of each direction (`common.selecting_sets`: the first set, for a run o
 promoted to best_stepNNNNNN.safetensors.
 With --teacher-weight (a model reading the cache's codebooks, on the same tokenizer), each token's
 training loss is its KL from that frozen bf16 teacher's distribution on the same stream
-(`common.token_kl`) instead of its cross-entropy, under the same masks and weights: a phone
-student distils the model it was cut from ([phone-student](../../docs/agent-memory/phone-student.md)).
-The teacher reads every codebook of the stream, the model its own cut. Validation is unchanged.
+(`common.token_kl`) instead of its cross-entropy, with the same weights, where both models score
+(their delays may differ, as a heads student's do): a phone student distils the model it was cut
+from ([phone-student](../../docs/agent-memory/phone-student.md)). The teacher reads every codebook
+of the stream, the model its own cut. Validation is unchanged.
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
@@ -273,11 +274,7 @@ def main() -> None:
     if teacher_info is not None:
         if int(teacher_info.lm_config["dep_q"]) != layout.dep_q:
             raise ValueError(f"the teacher must read the cache's {layout.dep_q} codebooks a stream")
-        rows_kept = streams.model_rows(layout, codebooks)
-        # Equal delays give equal masks: a heads student's (codebook j by j) would not.
-        if [teacher_info.lm_config["delays"][row] for row in rows_kept] != list(checkpoint_info.lm_config["delays"]):
-            raise ValueError("the teacher's delays on the model's rows differ from the model's")
-        student_rows = torch.tensor(rows_kept, device=device)
+        student_rows = torch.tensor(streams.model_rows(layout, codebooks), device=device)
     dataset = streams.StreamDataset(
         rows, layout, silence, frames, args.seed, layout.dep_q if teacher_info else codebooks
     )

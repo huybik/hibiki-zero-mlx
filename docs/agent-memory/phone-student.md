@@ -92,7 +92,7 @@ model's 0.664.
 
 - `train.py --teacher-weight` ([sft-training](sft-training.md#objective)): each training token's
   loss is `common.token_kl`, KL(teacher ‖ student) of its next-token distribution, in place of
-  its CE, under the same masks and weights (text PAD 0.5, codebook 0 100). The student learns
+  its CE, with the same weights (text PAD 0.5, codebook 0 100) where both models' masks hold. The student learns
   the teacher's whole distribution at every position, and with GRPO update 1,400 as the teacher
   its timing too: where that model would write a word before the SFT target's, its distribution
   says so.
@@ -100,9 +100,15 @@ model's 0.664.
   EOS row) and runs the compiled training forward without a backward, its depformer cut to the
   student's k steps (`dep_q`: the depformer is causal over steps, so the first k logits are the
   same; ~11% of a step saved). It reads the whole stream: the dataset is assembled at the cache's
-  16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Its delays
-  on those rows must equal the student's (equal masks; a heads student's are not), and both must
-  be on the same tokenizer.
+  16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Both must
+  be on the same tokenizer. A token is scored where both models' masks hold: moshi returns each
+  model's logits on the stream's frames, so a heads student (codebook j delayed j frames, the
+  teacher's 2) loses only the last frames one of the two cannot score. Its text and codebook 0
+  (the weight and the chrF) read the same text, codebook-0 and source frames as the teacher's;
+  only how far back the other target codebooks reach differs. For codebooks 1–2 the teacher has
+  read more of the stream; from 3 up the student has read more text, lower codebooks and source,
+  and the KL teaches it to ignore that lookahead (the teacher's distribution averages over it),
+  at weight 1 each. If speech decides the heads comparison, CE on those codebooks is the lever.
 - Validation is unchanged (the student's CE against the targets on validation's fixed streams,
   free-running chrF), so a distilled run's teacher-forced validation compares with
   `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
@@ -114,6 +120,10 @@ model's 0.664.
   student](#training-a-student)).
 - `token_kl` (eager, bf16 logits with masked positions NaN-filled as moshi fills them) equals
   `torch.nn.functional.kl_div` on the valid positions, is 0 elsewhere and gives them no gradient.
+  Tiny models on the CPU (4 of 6 codebooks): a heads student under its depformer parent is
+  scored on exactly the positions both masks hold, its audio loss equals `kl_div`'s weighted
+  mean there, and every parameter gets a finite gradient; a depformer student's positions and
+  loss are as before.
 - **End to end on the H100** (2026-11-14, the launcher's arguments, two FLEURS dev sets, from
   `student_dep10`'s pair 100,000): 0.381 s a step (plain SFT 0.23), 59.3 GB peak in training,
   generation 38 GB. In 300 updates the KL fell 0.45 → 0.37, the VI→EN cache's word accuracy rose
@@ -132,12 +142,33 @@ model's 0.664.
   too high for the KL, so it was stopped at 32,000 (2026-11-15).
 - **The run** `student_dep10_anneal` (`restart.sh student-distill`): from the first run's model
   32,000, new streams (seed 49), peak 1e-5 after a 2% warmup, 110,000 updates (~12.4 h at 0.405 s,
-  leaving the box ~13 h for a GRPO run on it, its test sets and publishing). The heads student is
-  deferred: trained on the targets alone, it would test the parallel heads under the recipe that
-  falls short.
+  leaving the box ~13 h for a GRPO run on it, its test sets and publishing). The heads student
+  distils from the start ([Next](#next)).
 
 ## Checks
 
+- **The heads distillation end to end** (2026-11-15, head 8076090, on the H100):
+  - Setup: `restart.sh student-heads`'s arguments on its own cut, 300 steps, FLEURS dev both
+    ways. Outputs are in `/Volumes/data/hibiki-zero-evals/box-60447659/e2e_heads/`.
+  - Training: the KL fell from 12.35 (steps 1–10) to 5.06 at 300. The gradient norm before
+    clipping went from 520 early to 1.87, finite on every logged step.
+  - Speed and memory: 0.336 s a step and a 47.2 GB peak. The depformer student takes 0.381 s and
+    59.3 GB.
+  - Validation at 300 passes every gate. VI→EN / EN→VI:
+
+    | chrF | BLEU | End Offset (s) | LAAL (s) | Length ratio | Empty rows | Teacher-forced loss |
+    |---|---|---|---|---|---|---|
+    | 15.11 / 7.33 | 0.10 / 0.04 | 5.36 / 4.98 | 3.27 / 4.42 | 1.26 / 0.55 | 0 / 1 | 7.50 / 6.76 |
+
+  - Resume: from 150 it reran steps 151–170 equal to 4 decimals (6.3428 at step 160).
+  - Two fresh runs drift apart from step 30, by up to 0.38. The likely cause is GPU
+    non-determinism, amplified by the fresh heads' large gradients. The trained depformer
+    student varies by only 8e-4.
+  - Regressions:
+    - The depformer student's distillation (20 steps from `student_dep10_distilled`, 7 sets):
+      KL 0.247 → 0.236, 0.383 s a step, FLEURS dev chrF 30.80 / 28.45.
+    - Plain SFT on the heads cut (20 steps, no teacher): CE 12.52 → 9.38, apart from a spike
+      to 50.5 at step 3, caused by the one-step warmup.
 - End to end on the H100 (2026-11-14, both students cut from GRPO update 1,400, the two-way
   caches, 4,608-frame batches, 200 steps each): dep10 trains 11.0 → 6.3 at 0.107 s a step (30.9 GB
   peak), heads14 11.3 → 8.4 at 100 steps, 0.101 s (27.1 GB); both save, validate (`validate.py`
@@ -172,9 +203,9 @@ model's 0.664.
 
 ## Next
 
-- **Training** (2026-11-14): `restart.sh student`, then (deferred for [distillation](#distillation)) `restart.sh student-heads`
+- **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
   ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
-  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h each), the same streams
+  2 epochs of the two-way run's rows both ways (190,126 updates, ~12 h plain, ~21 h distilled; the heads student ~18 h distilled), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:
   it starts from the 3B's own depformer, both runtimes already run it, and the heads are the
@@ -186,6 +217,12 @@ model's 0.664.
   dev chrF VI→EN / EN→VI; end offset 4–8 s throughout): 20.7 / 15.0 at 16,000, 21.6 / 18.6 at
   32,000, 24.5 / 18.6 at 48,000, 27.0 / 23.8 at 64,000, 26.2 / 23.2 at 80,000, 28.7 / 24.5 at
   96,000.
+- **The heads student distils from the start** (user, 2026-11-14: "why we not do distillation
+  from the start?"): plain SFT left the depformer student ~14 chrF short after 100,000 updates,
+  and 300 distilled updates gained more than its last 32,000. It is the next box's first job:
+  its ~18 h (0.336 s a step measured end to end, [Checks](#checks), plus validations) does not fit beside `student_dep10_distill` before this box ends
+  (2026-11-16 08:00 UTC+7). The comparison is of finished students, not of the heads alone: the
+  depformer student had 100,000 plain updates, then 184,000 distilled at 3e-5 on new streams.
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
   steps each, steps 151–300 by their real stream frames), each size one whole batch:
 
@@ -225,6 +262,21 @@ model's 0.664.
      the phone first.
   2. The parallel heads ([Parallel heads](#parallel-heads)): no depformer passes, ~4 more main
      layers for the same time, +400 ms of heard speech lag; adopted only if they win.
+     - **Option: 16 codebooks with a capped delay** (2026-11-15, open; user: "should we keep 16
+       codebook, since it's parallel?"). Parallel heads make codebooks cheap but not instant:
+       - The 8 extra heads are ~34M parameters, under one main layer's reads (~63M), and the extra
+         input codebooks are lookups.
+       - The lag comes from the delay pattern, where codebook j waits j frames. A frame's audio
+         completes 2 frames in for the depformer student, 7 for the 8-codebook heads, and 15
+         (1.2 s) for 16 with the full pattern, ~1 s more heard lag: rejected.
+       - Capped, codebooks 0–7 keep delays 0–7 and codebooks 8–15 all come out at delay 8,
+         each seeing 0–7 of its own frame. That completes at 8 frames, +80 ms over 8 codebooks.
+       - It would bring 16-codebook speech (through Mimi, Vietnamese WER 27.8% at 16 against
+         42.0% at 8; English 6.3% against 8.9%) and 16 source codebooks to hear (gain unmeasured).
+       - Untested: codebooks 8–15 are sampled without seeing each other (MusicGen found fully
+         parallel codebooks worse).
+       - The comparison would then mix two changes, heads + 16 against depformer + 8.
+       - It needs `heads.delays` capped, then a review and a GPU test.
   3. A grouped depformer (2 codebooks a step) if 16 codebooks are too slow and the heads lose.
   Two levers that change no layer:
   - Trim the text vocabulary to the pieces English and Vietnamese use: the text head reads all
