@@ -116,8 +116,8 @@ The student is 3.7–9.4 chrF below its teacher, with about the same lag.
 - **Box 60447659:** every run directory and every test is in
   `/Volumes/data/hibiki-zero-evals/box-60447659/`, as on the box (weights, optimizer states and
   WAVs left out).
-  - `all_metrics.csv` is every validation and test value flattened into one table: 734 rows, one
-    per run, step, mode and set.
+  - `all_metrics.csv` is every validation and test value flattened into one table, one row per
+    run, step, mode and set.
   - It is built by `/Volumes/data/hibiki-zero-evals/all_metrics.py FOLDER`.
 - **The noise tests** (JSONL per run, and their scripts) are in
   `/Volumes/data/hibiki-zero-evals/mac/noise/`.
