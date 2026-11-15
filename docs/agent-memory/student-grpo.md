@@ -27,6 +27,10 @@ weights/student_dep10_distilled.safetensors --config-path weights/student_dep10/
     `weights/student_grpo2000.safetensors`.
   - On the Mac it is `weights/student_dep10/g2000_bf16` and `g2000_q6` (6 bits, 1.24 GB, with the
     8-codebook `mimi-decoder.mlmodelc`).
+  - `g2000_q6` with a short card is the Hub's `release/student_grpo2000_mlx_q6/` (1.72 GB; user,
+    2026-11-15: "yep go ahead"), the model the iOS app downloads. On the iPhone 13 Pro Max it ran
+    `vi2.wav` at 61 ms an 80 ms frame (p90 63–64 ms, two runs), footprint 1.8 GB, against the 3B's
+    148 ms and 3.5 GB ([swift-runtime](swift-runtime.md#device-test)).
 
 ## Evaluations
 
