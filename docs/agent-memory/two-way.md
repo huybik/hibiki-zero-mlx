@@ -30,7 +30,8 @@ Decided 2026-11-10, for two-way training:
 - A stream holds one direction: `plan_streams` plans each direction apart (directions in name
   order, one RNG), so a mixed run's streams never switch language mid-stream. Switching within
   a stream comes later, if at all.
-- Evaluation scores the text in both directions. Vietnamese ASR on the output audio is deferred.
+- Evaluation scores the text in both directions. EN→VI's speech was checked once by Vietnamese ASR
+  against its own text, on the Mac: as clear as real Vietnamese through Mimi ([plan](../vi_en_parity_plan.md#7-two-way-speech)).
 
 ## Where a direction lives
 
