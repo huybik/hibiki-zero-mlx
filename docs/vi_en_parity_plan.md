@@ -174,9 +174,9 @@ GRPO on a distilled student, come later if needed.
    GPU-bound at 41 → 44.5 ms for all 10 minutes (an earlier, warmer run throttled at ~9). So
    the student is 8 codebooks, ~10 main layers and a 3-layer depformer; measure a current
    phone (A17 Pro / A18) before settling it. Two-way puts the codebook count back in question:
-   through Mimi, Whisper's Vietnamese WER is 27.8% at 16 codebooks and 42.0% at 8, against
-   English's 6.3% and 8.9% (stage 7.1), so the student's EN→VI speech is scored by a Vietnamese
-   ASR (deferred so far) at 8 and at 16 codebooks before 8 is settled.
+   through Mimi, Qwen3-ASR's Vietnamese WER is 8.9% at 16 codebooks and 15.7% at 8, against
+   English's 4.9% and 6.1% (stage 7.1), so the student's EN→VI speech is scored by a Vietnamese
+   ASR (run once, on the 16-codebook model, stage 7.1) at 8 and at 16 codebooks before 8 is settled.
 4. Parallel codebook heads, tested once the student is trained (user, 2026-11-10). The
    student's depformer still runs its 8 codebook steps of 3 layers one after another every
    frame: 24 small passes and ~0.26 GB of the ~0.75 GB of q4 weights a frame reads (estimated:
@@ -258,35 +258,51 @@ word. Spoken at FLEURS pace, Vietnamese text needs 10.3 tokens/s on average, 13.
 at most. The text stream carries one token per 12.5 Hz frame and needs room for PAD, so
 Vietnamese text cannot keep up with its speech.
 
-1. Mimi on Vietnamese (measured 2026-11-04, Whisper large-v3-turbo, 80 FLEURS dev clips against
-   their Vietnamese transcripts and 80 real English dataset clips against theirs):
+1. Mimi on Vietnamese: no reason to replace or retrain Mimi (2026-11-17; user, 2026-11-15:
+   "should we use some other encoder that better than mimi, or train mimi it self on
+   vietnames?"). Measured 2026-11-17 on the Mac (scratch scripts): the same 80 FLEURS dev
+   sentences in both languages and 80 `giga-heldout` clips, each through the input level stage,
+   then a rustymimi round trip or Opus (FFmpeg's libopus, `voip`), transcribed by Qwen3-ASR-1.7B
+   (MLX, 8 bits) told the language; WER over words (Vietnamese syllables), lower-cased, without
+   punctuation:
 
-   | Audio | English WER | Vietnamese WER (CER) |
-   |---|---:|---:|
-   | Original | 6.8% | 14.3% (10.5%) |
-   | Mimi, 16 codebooks | 6.3% | 27.8% (20.4%) |
-   | Mimi, 8 codebooks | 8.9% | 42.0% (32.2%) |
+   | Audio | FLEURS vi | giga-heldout | FLEURS en |
+   |---|---:|---:|---:|
+   | Original | 4.6% | 2.9% | 3.5% |
+   | Mimi, 32 codebooks | 7.4% | 4.0% | 4.4% |
+   | Mimi, 16 codebooks | 8.9% | 5.9% | 4.9% |
+   | Mimi, 8 codebooks | 15.7% | 9.1% | 6.1% |
+   | Opus 12 kbps | 6.7% | 3.0% | 3.8% |
+   | Opus 6 kbps | 10.6% | 5.0% | 5.4% |
 
-   Mimi leaves English intact but doubles the Vietnamese errors, and stripping the diacritics
-   barely lowers them, so the loss is not only tones. It matters for both directions: EN→VI
-   speaks through Mimi, and VI→EN hears Vietnamese only through its 16 codebooks, which may cap
-   how much of the real-speech gap any data closes. The 8-codebook phone student loses more.
-   Still to check on the box: 32 codebooks, and a control degradation of similar strength on
-   both languages, to tell Mimi's loss from Whisper's weaker Vietnamese robustness.
-   Options (2026-11-15; user: "should we use some other encoder that better than mimi, or train
-   mimi it self on vietnames?"):
+   - Vietnamese loses about three times English's WER points under every codec, Opus included
+     (16 codebooks +4.4 against +1.5, Opus 6 kbps +6.0 against +1.9): Vietnamese ASR is the more
+     fragile, not Mimi worse at Vietnamese. 16 codebooks sit between Opus 12 and 6 kbps in both
+     languages.
+   - Tones survive: without the tone marks 16 codebooks read 8.7%, against 8.9% with them.
+   - Whisper large-v3-turbo on the same clips: FLEURS vi 8.0% → 13.8% (16) → 23.7% (8), English
+     5.1% → 6.8%, and under 16 codebooks it loops on one `giga-heldout` clip (102 errors on 19
+     words). The first measurement (2026-11-04: Whisper alone, other English clips) read
+     Vietnamese 14.3% → 27.8% → 42.0% and English 6.8% → 6.3%, which raised the question.
+   - EN→VI speech: the shipping 6-bit model translated the 80 FLEURS English clips (unprimed,
+     file mode's voice gate and quiet stop, seed 42 + row): all 80 in Vietnamese, 59 ended.
+     Qwen3-ASR on its speech against its own text: 14.0% WER (95% CI 10.4–18.0; Whisper 17.9%),
+     against 8.9% for real Vietnamese of the same sentences through 16 codebooks. Most of the
+     difference is the text's form: numbers written out ("bốn mươi một", which the ASR writes
+     41) and invented transliterations of foreign names. On the 16 sentences with neither: 4.0%,
+     against 6.8% for real Vietnamese through 16 codebooks and 1.7% for the original. Words
+     missing from the speech's last fifth: 0.9%, so it is not cut short.
+   - 8 codebooks, the phone student's for both source and target, triple the Vietnamese errors.
+     Where the student's Vietnamese is the weak point, that is its codebook count, not Mimi.
+
+   Options, and why neither is taken:
    - A different codec, or retraining Mimi's encoder or quantizer, changes the codes. Every cache
      would be re-encoded, and the model would relearn its audio, starting from a 3B pretrained on
-     Mimi's codes: a new model in effect. Not taken.
-   - Fine-tuning Mimi's decoder alone on Vietnamese speech keeps every code. The caches, the LM
-     and both runtimes are untouched, apart from the decoder's weights and its Core ML export.
-     - It can only improve the output voice: EN→VI's Vietnamese speech, possibly with a decoder
-       of its own for the student's 8 codebooks.
-     - It can only recover what the codes still hold, and does nothing for VI→EN's hearing.
-     - Its losses (multi-resolution spectrogram, adversarial with feature matching) would need
-       writing.
-     - First the control check above, so we know the loss is Mimi's. Then a Vietnamese speech
-       evaluation, which doesn't exist yet: evaluation is text-only.
+     Mimi's codes: a new model in effect, against a loss no larger than a general codec's.
+   - Fine-tuning Mimi's decoder alone on Vietnamese speech keeps every code, but can only make
+     EN→VI's speech clearer, which on plain sentences it already is, and does nothing for VI→EN's
+     hearing. Its losses (multi-resolution spectrogram, adversarial with feature matching) would
+     need writing.
 2. Give Vietnamese syllables their own tokens by replacing pieces English never uses, so the text
    embedding, the head and every runtime keep `text_card` 48,000 and only the tokenizer file
    changes. Built 2026-11-04 by `training/vi_tokenizer`
@@ -306,8 +322,8 @@ Vietnamese text cannot keep up with its speech.
    direction.
 4. Evaluation (built 2026-11-10): `fleurs-en` (FLEURS `en_us` speech with the `vi_vn`
    sentences, paired by sentence id) and `en-vi-val-en` (the held-out Common Voice dev and
-   Libriheavy dev rows with their English recordings); `eval.py` takes either direction. A
-   Vietnamese ASR on the output audio is deferred.
+   Libriheavy dev rows with their English recordings); `eval.py` takes either direction and
+   scores the text only. A Vietnamese ASR on EN→VI's speech ran once, on the Mac (step 1).
 5. A pilot of ~10k steps from the VI→EN model, both directions mixed (the trainer already mixes
    caches), with the new tokenizer. It passes if EN→VI chrF rises with healthy outputs and VI→EN
    FLEURS dev stays within 1 chrF. Then the final SFT trains both directions on `en_speech` and

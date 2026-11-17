@@ -164,9 +164,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   of self-translation → none 20 s after the clip, 9 runs. 25 OneVoice VI rows, chrF, 2 seeds: clean
   40.4/39.3, speakers silent 36.4/38.3, headphones 32.9/37.1, over the echo 34.1, null (9 ms delay)
   36.9. Over the translation, a voice as loud as its echo loses >3 dB in 70% of 0.5 s chunks.
-- rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
-  start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
-  such limit ([swift-runtime](swift-runtime.md)).
+- rustymimi stops at 8,192 positions (`narrow invalid args start + len > dim_len: [8192, 32]`):
+  frame 2,920 (3.9 min) of a 6-minute file, 4,096 (5.46 min) of noise through one tokenizer, and
+  `reset()` keeps the count, so reuse across clips fails too. Swift has no such limit ([swift-runtime](swift-runtime.md)).
 
 ## Model directories
 
