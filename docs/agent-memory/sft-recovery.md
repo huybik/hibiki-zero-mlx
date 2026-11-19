@@ -15,7 +15,7 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
 `python -m training.<package>.<module>`.
 
 - `setup` needs Linux, driver 580+ (CUDA 13), exactly one H100 or H200 (Hopper, compute
-  capability 9.0: the kernels and measurements are sm_90's), uv, a C compiler, cmake, network for
+  capability 9.0) or RTX PRO 6000 Blackwell (12.0, 96 GB), uv, a C compiler, cmake, network for
   rustup, and no existing `.venv`. It builds a relocatable `.venv` on free-threaded Python 3.14
   ([environment](environment.md#python); Rust for the safetensors and sphn source builds; built
   aside and moved into place, so a failure leaves none) with Torch `2.15.0+cu134` (CUDA 13.4,
@@ -25,7 +25,7 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
 - `preflight` checks:
   - a clean tracked tree;
   - free-threaded Python 3.14, exact Torch and Moshi versions; one H100 or H200 with compute
-    capability 9.0;
+    capability 9.0, or an RTX PRO 6000 Blackwell with 12.0;
   - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
     when lower than `/proc/meminfo`, which shows the host on Vast) and 130 GiB of disk: free
     space plus, for `run`, what the run dir already holds (each hard-linked inode once). `run`
