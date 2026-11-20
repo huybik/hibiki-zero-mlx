@@ -2,7 +2,9 @@
 plan stage 5.4): k linear heads on the main transformer's output sample a step's k codebooks in one
 pass, where the depformer runs k sequential steps. Codebook j is delayed j frames (MusicGen's
 pattern, carried by moshi's own `delays`), so a head predicting codebook j at a step has read codebook
-j-1 of the same frame in the step's input. The heads also read the step's text token, as the
+j-1 of the same frame in the step's input; from codebook DELAY_CAP on, all share delay DELAY_CAP and
+read codebooks 0..DELAY_CAP-1 of their frame, so 16 codebooks finish a frame 8 frames in, not 15.
+The heads also read the step's text token, as the
 depformer's first step does: the model's own text embedding of it, added to the main transformer's
 output (text is sampled before audio at each step, so this costs no latency and no parameters).
 The heads sit in the model's `depformer` slot, so moshi's
@@ -28,9 +30,14 @@ KIND = "parallel"
 DEPFORMER_PARTS = ("depformer_in", "depformer_emb", "depformer_text_emb", "depformer_norms", "linears")
 
 
+# The finest codebooks come out together at this delay: each frame of speech is complete
+# DELAY_CAP frames (80 ms each) after its first codebook whatever the codebook count.
+DELAY_CAP = 8
+
+
 def delays(codebooks: int) -> list[int]:
-    """A heads model's target delays: codebook j delayed j frames."""
-    return list(range(codebooks))
+    """A heads model's target delays: codebook j delayed min(j, DELAY_CAP) frames."""
+    return [min(j, DELAY_CAP) for j in range(codebooks)]
 
 
 class ParallelHeads(torch.nn.Module):
