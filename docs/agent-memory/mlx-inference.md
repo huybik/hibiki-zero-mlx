@@ -266,7 +266,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `inference/tools/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
   Mimi decode) and a projected iPhone frame time from an assumed `--scale` (0.5). The
   projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1. Its GPU idles
-  on Mimi between steps and clocks down, as live steps do ([student-heads](student-heads.md#speed)).
+  on Mimi between steps and clocks down, as live steps do ([student-heads](student-heads.md#inference)).
 
 ## Memory
 
