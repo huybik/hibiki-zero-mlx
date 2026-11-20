@@ -79,8 +79,9 @@ runtime does not yet, so there is no phone timing. On the M4 Pro (2026-11-20; up
 - The 16 heads in one pass cost a sixth of the depformer's 8 sequential steps, which pays for 4
   more main layers and 16 more codebooks. The two-way 3B at 6 bits: 19.56 ms back to back.
 - Spaced as live frames arrive, the GPU clocks down between steps and each takes ~2x as long; the
-  order holds. `bench.py` (Mimi on the CPU between steps) gives LM totals of 9.8 and 11.5 ms; Mimi's
-  encode (~18.5 ms) and decode (~17 ms) on the CPU are now the larger costs.
+  order holds. `bench.py` (Mimi on the CPU between steps) gives LM totals of 9.2–9.8 ms (heads) and
+  10.1–11.5 (depformer) over runs; Mimi's encode (~18.5 ms) and decode (~17 ms) on the CPU are now
+  the larger costs.
 - The same update on the gate (6 bits, the first 20 FLEURS dev rows each way, `--seed 42`;
   `/Volumes/data/hibiki-zero-evals/mac/gate/heads_cb16_s16k_vs_dep10_g2000_q6_20rows/`): chrF / BLEU /
   length ratio / end offset / EOS, health pass on both:

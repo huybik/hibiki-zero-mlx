@@ -77,7 +77,9 @@ def main() -> None:
     original_sample = audio_head.sample
 
     def timed_head(*a, **k):
-        mx.eval(a[0])  # barrier: main transformer out is ready
+        # barrier: the main transformer's output and, for the depformer, the sampled text token
+        # (the heads' input already holds it), so text sampling is timed with the main part.
+        mx.eval(*(x for x in a if isinstance(x, mx.array)))
         t0 = time.perf_counter()
         r = original_sample(*a, **k)
         mx.eval(r)  # barrier: all codebooks sampled

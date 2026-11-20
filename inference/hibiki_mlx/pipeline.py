@@ -245,7 +245,8 @@ def translate(
     (`voice.VoiceGate`): silence wherever no speech is near.
 
     Step t hears source frames before t, as training's forward does; moshi's LMGen in the
-    evaluation hears one frame of silence more before the clip (80 ms later throughout)."""
+    evaluation hears max_delay - 1 frames of silence first (one on the 3B), so its steps come
+    later."""
     lm, cfg = model.lm, model.config
     mimi_enc = model.mimi()
     mimi_dec = model.mimi() if audio else None
@@ -324,24 +325,39 @@ def translate(
     processed = 0
     ended = False
     last_word = None
+
+    def put_audio() -> None:
+        # The frame whose last codebook the step just sampled. Audio lags text by max_delay
+        # steps, so the first steps' audio is from before the clip: none at a stream's start, the
+        # primer's after `prime`.
+        audio_tokens = gen.last_audio_tokens()
+        if audio and processed > gen.max_delay and audio_tokens is not None and gen_cb > 0:
+            dec_q.put(np.array(audio_tokens[:, :, None]).astype(np.uint32))
+
     while True:
         oat = enc_q.get()
         if oat is SENTINEL:
             break
         tt = gen.step(mx.array(oat), ct)[0].item()  # sync this frame's LM
         processed += 1
+        put_audio()
         # The source EOS frame goes in at step `steps`, which step steps + 1 hears first.
         if tt == eos_token and processed > steps + 1:
             ended = True
+            # Training's evaluation keeps the speech of every frame before the EOS step; the last
+            # max_delay - 1 of them are complete only that many steps on (8 frames, 640 ms, on a
+            # heads student), so step on through the encoder's silence for their audio alone.
+            for _ in range(gen.max_delay - 1 if audio else 0):
+                oat = enc_q.get()
+                if oat is SENTINEL:  # the tail ended first, where training's generation ends too
+                    break
+                gen.step(mx.array(oat), ct)
+                processed += 1
+                put_audio()
             break
         if tt > pad_token:
             last_word = processed - 1
         pieces.append(text(tt))
-        audio_tokens = gen.last_audio_tokens()
-        # Audio lags text by max_delay steps, so the first steps' audio is from before the clip:
-        # none at a stream's start, the primer's after `prime`.
-        if audio and processed > gen.max_delay and audio_tokens is not None and gen_cb > 0:
-            dec_q.put(np.array(audio_tokens[:, :, None]).astype(np.uint32))
         # The source EOS went in at step `steps`; step processed - 1 has just run.
         if quiet is not None and processed - 1 - max(steps, last_word or 0) >= quiet:
             break

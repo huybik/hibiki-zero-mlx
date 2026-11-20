@@ -44,15 +44,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 (`weights/`), `UPSTREAM` (`weights/hibiki-zero-3b-q4`) and `SAMPLE` (`inference/assets/leon.wav`).
 `pip install -e .` installs `hibiki_mlx` from `inference/`.
 
-- `load()` returns a `Model`: the LM, its config, the SentencePiece tokenizer and the text and
-  audio samplers `lm_gen_config` sets. `Model.mimi()` makes a fresh `rustymimi.Tokenizer`: one
-  instance cannot be borrowed by two threads, and each stream needs a fresh one, since
-  rustymimi's `reset()` leaves state behind (2026-11-14: after `reset()`, the next clip's first
-  frame came out different in 14 of 16 codebooks from a fresh instance's).
-- `translate()` overlaps a CPU Mimi encoder thread and decoder thread with the GPU LM on the main
-  thread. Queues carry NumPy arrays because lazy MLX graphs are bound to their creating thread.
-  `audio=False` skips the decoder (the gate scores text only); `run()` writes its WAV and text.
-- One frame is 1920 samples at 24 kHz (80 ms, 12.5 Hz).
+- `load()` returns a `Model`: the LM, its config, tokenizer and the samplers `lm_gen_config` sets.
+  `Model.mimi()` makes a fresh `rustymimi.Tokenizer`: one cannot serve two threads, and each stream
+  needs a fresh one (after `reset()`, a clip's first frame differed in 14 of 16 codebooks).
+- `translate()` overlaps CPU Mimi encoder and decoder threads with the GPU LM on the main thread;
+  queues carry NumPy arrays (lazy MLX graphs are bound to their thread). `audio=False` skips the
+  decoder (the gate scores text only); `run()` writes its WAV and text. A frame is 1920 samples
+  at 24 kHz (80 ms, 12.5 Hz).
 - The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
   Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
   frames (timed in "level + mimi encode"). It raises quiet speech toward −20 dBFS; how and why
@@ -91,8 +89,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     row, 11 s none, and those cut 14% and 12%. Measured on the two-way model only, though upstream's
     3B (`--model 3b`, `verify_mlx_q4.py`) stops the same way.
   - Step t hears source frames before t, as training's forward does; moshi's `LMGen` in the
-    evaluation hears one silent frame more first, so its outputs come 80 ms later throughout,
-    and the gate adds that frame to each End Offset. Mic mode never sends the EOS.
+    evaluation hears `max_delay` − 1 silent frames first (one on the 3B, seven on the heads
+    student), and the gate counts each End Offset as training does, at frames heard plus one.
+    Mic mode never sends the EOS.
+  - At the stopping EOS file mode steps `max_delay` − 1 more times on silence (not with
+    `audio=False`) for the speech of the frames before it, which training keeps (640 ms, heads).
 - Sampling is `lm_gen_config`: every training checkpoint's config and upstream's own say
   temperature 0.8, top-k 250 for text and audio, which training's evaluation and upstream's
   inference (`run.py`, `**lm_gen_config`) use. Until 2026-11-14 the runtimes sampled text at 0.4,
