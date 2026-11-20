@@ -76,8 +76,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     source.
   - Each prediction records `end_offset_s`, the time from the end of the source audio to the
     last generated word; the metrics report their median. It times the text as the 3B's
-    `max_delay` of 2 places it, so a parallel-heads student's larger one (its codebooks − 1,
-    which delays only its speech) is taken off ([phone-student](phone-student.md#parallel-heads)).
+    `max_delay` of 2 places it, so a parallel-heads student's larger one (up to 8,
+    which delays only its speech) is taken off ([student-heads](student-heads.md#design)).
   - With `--laal` (off by default, for a one-time comparison with the paper; the trainers'
     validation never computes it) it also records `laal_s`, text LAAL as the Hibiki-Zero paper
     computes it (Papi et al. 2022): each word's time less where an even pace over the source puts

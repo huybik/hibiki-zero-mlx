@@ -1,7 +1,8 @@
 # Phone student
 
 Read when touching `training/student/`, `streams.model_rows` or a `StreamDataset`'s `codebooks`, or
-when cutting, training, distilling or scoring a smaller model for the phone or its parallel heads.
+when cutting, training, distilling or scoring a smaller model for the phone; the parallel heads
+student is in [student-heads](student-heads.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Cut](#cut) · [Training a student](#training-a-student) ·
 [Parallel heads](#parallel-heads) · [Distillation](#distillation) · [GRPO](#grpo) · [Checks](#checks) ·
 [Next](#next)
@@ -55,31 +56,7 @@ record, a heads student's seed among it).
 
 ## Parallel heads
 
-`--heads` cuts the delay-pattern student (stage 5.4; the plan's is ~14 layers: `--num-layers 14`):
-the same main layers and codebooks, no depformer, and `training/student/heads.py`'s
-`ParallelHeads` (one linear head a codebook, initialized afresh with `--seed`) in the model's
-`depformer` slot. The heads read the main transformer's normed output plus the model's own text
-embedding of the step's text token (teacher-forced in training, the just-sampled token in
-generation), as the depformer's first step reads that token: speech then follows the inner
-monologue, and the comparison with the depformer student isolates the parallel heads. Text is
-sampled before audio at each step, so this adds no latency and no parameters.
-
-- Codebook j is delayed j frames (`heads.delays`, written into the config's target delays; the
-  source's keep the parent's): a head predicting codebook j at a step has read codebook j-1 of the
-  same frame in the step's input, as in MusicGen. moshi's own delay handling then carries it
-  through training (logits undelayed, masks) and generation (`LMGen` withholds the first k-1
-  steps: 7 at 8 codebooks, 15 at 16). The trunk also relearns its input timing: the parent delays
-  target codebooks 1–15 by 2 frames, the heads student codebook j by j. Its larger `max_delay`
-  delays its speech, not its text, so evaluation's `end_offset_s` takes the extra frames off and
-  the two students' text latency compares directly.
-- In the `depformer` slot because generation samples audio only when a depformer exists:
-  `heads.py` replaces `LMGen.depformer_step` (all codebooks sampled at once from the heads; any
-  other model runs moshi's steps) and, per model, `forward_depformer_training`. The depformer's
-  tensors are dropped; the config's `depformer_num_layers` is 1, the throwaway moshi builds first.
-- The config marks it with `"audio_heads": "parallel"`; `common.load_checkpoint_info` takes the
-  key out before moshi reads the config, and every model is built through `common.build_lm`
-  (a heads model: built without weights, heads installed, then loaded, the EOS row copied from
-  PAD's as moshi's own load does).
+The heads student, its 16 codebooks, speed and runs: [student-heads](student-heads.md).
 
 ## Distillation
 
@@ -103,13 +80,14 @@ model's 0.664.
   same; ~11% of a step saved). It reads the whole stream: the dataset is assembled at the cache's
   16 codebooks and each batch is cut to the student's rows (`model_rows`) on the GPU. Both must
   be on the same tokenizer. A token is scored where both models' masks hold: moshi returns each
-  model's logits on the stream's frames, so a heads student (codebook j delayed j frames, the
-  teacher's 2) loses only the last frames one of the two cannot score. Its text and codebook 0
+  model's logits on the stream's frames, so a heads student (codebook j delayed min(j, 8) frames,
+  the teacher's 2) loses only the last frames one of the two cannot score. Its text and codebook 0
   (the weight and the chrF) read the same text, codebook-0 and source frames as the teacher's;
   only how far back the other target codebooks reach differs. For codebooks 1–2 the teacher has
   read more of the stream; from 3 up the student has read more text, lower codebooks and source,
   and the KL teaches it to ignore that lookahead (the teacher's distribution averages over it),
-  at weight 1 each. If speech decides the heads comparison, CE on those codebooks is the lever.
+  at weight 1 each. Codebooks 9–15 of a 16-codebook student haven't read 8..j-1 of their frame,
+  which the teacher's depformer has ([student-heads](student-heads.md#codebooks)). If speech decides the heads comparison, CE on those codebooks is the lever.
 - Validation is unchanged (the student's CE against the targets on validation's fixed streams,
   free-running chrF), so a distilled run's teacher-forced validation compares with
   `student_dep10`'s exactly; its chrF is sampled at its own `--seed` (48 against 47), within the
@@ -224,9 +202,9 @@ update 2,000 are in [student-grpo](student-grpo.md).
   `all_metrics.csv` ([student-grpo](student-grpo.md#raw-outputs)).
 - **The heads student distils from the start** (user, 2026-11-14: "why we not do distillation
   from the start?"): plain SFT left the depformer student ~14 chrF short after 100,000 updates,
-  and 300 distilled updates gained more than its last 32,000. `student_heads14` runs on the RTX
-  PRO 6000 box since 2026-11-20 ([tranche-box](tranche-box.md#state)), with the bf16 teacher:
-  0.553 s a step, ~29 h plus validations ([sft-speed](sft-speed.md#by-gpu)). The comparison
+  and 300 distilled updates gained more than its last 32,000. `student_heads14_cb16` (16
+  codebooks) runs on the RTX PRO 6000 box since 2026-11-20 with the bf16 teacher
+  ([student-heads](student-heads.md#runs)). The comparison
   is of finished students, not of the heads alone: the depformer student had 100,000 plain
   updates, 32,000 distilled at 3e-5, 64,000 at 1e-5, then GRPO to 2,000 ([student-grpo](student-grpo.md)).
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
@@ -266,17 +244,9 @@ update 2,000 are in [student-grpo](student-grpo.md).
      depformer (`--codebooks 16`). Its steps 8–15 share one weight slice, so a frame reads ~4%
      more weights, but runs 24 more sequential passes (estimated +12 ms on the A15): time it on
      the phone first.
-  2. The parallel heads ([Parallel heads](#parallel-heads)): no depformer passes, ~4 more main
+  2. The parallel heads ([student-heads](student-heads.md)): no depformer passes, ~4 more main
      layers for the same time, +400 ms of heard speech lag; adopted only if they win.
-     - **Option: 16 codebooks with a capped delay** (2026-11-15, open; user: "should we keep 16
-       codebook, since it's parallel?"). 8 more heads (~34M parameters, under one main layer's
-       ~63M) cost little; the lag is the delay pattern's. A frame's audio completes 2 frames in
-       for the depformer student, 7 for 8-codebook heads, 15 (1.2 s) for 16 fully delayed
-       (rejected). Capped, codebooks 8–15 all come out at delay 8, each seeing 0–7 of its frame:
-       8 frames, +80 ms over 8 codebooks, for 16-codebook speech (Vietnamese WER through Mimi
-       27.8% against 42.0% at 8) and 16 source codebooks to hear (gain unmeasured). Untested:
-       8–15 are sampled without seeing each other (MusicGen found fully parallel worse), and the
-       comparison would mix two changes. Needs `heads.delays` capped, a review and a GPU test.
+     - 16 codebooks, 8–15 at one delay: taken 2026-11-20 ([student-heads](student-heads.md#codebooks)).
   3. A grouped depformer (2 codebooks a step) if 16 codebooks are too slow and the heads lose.
   Two levers that change no layer:
   - Trim the text vocabulary to the pieces English and Vietnamese use: the text head reads all
