@@ -85,12 +85,12 @@ class LmGen:
                 audio_token = mx.full(
                     (self.batch_size, 1), self.audio_padding_token, dtype=mx.int32
                 )
-            if (audio_token == self.ungenerated_token).any():  # type: ignore
+            if self.check and (audio_token == self.ungenerated_token).any():  # type: ignore
                 raise ValueError(
                     f"ungenerated value in audio tokens cb: {cb_idx} step: {self.step_idx}"
                 )
             audio_tokens.append(audio_token)
-        if (text_tokens == self.ungenerated_token).any():  # type: ignore
+        if self.check and (text_tokens == self.ungenerated_token).any():  # type: ignore
             raise ValueError(f"ungenerated value in text tokens {self.step_idx}")
         text_tokens, audio_tokens, transformer_out = self.model._sample(
             text_tokens,

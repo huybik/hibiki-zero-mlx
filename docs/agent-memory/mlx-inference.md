@@ -164,9 +164,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   of self-translation → none 20 s after the clip, 9 runs. 25 OneVoice VI rows, chrF, 2 seeds: clean
   40.4/39.3, speakers silent 36.4/38.3, headphones 32.9/37.1, over the echo 34.1, null (9 ms delay)
   36.9. Over the translation, a voice as loud as its echo loses >3 dB in 70% of 0.5 s chunks.
-- rustymimi fails on long sessions: encoding a 6-minute file raised `narrow invalid args
-  start + len > dim_len: [8192, 32]` at frame 2,920 (3.9 min). The Swift runtime's Mimi has no
-  such limit ([swift-runtime](swift-runtime.md)).
+- rustymimi fails on long sessions: a 6-minute file raised `narrow invalid args start + len >
+  dim_len: [8192, 32]` at frame 2,920 (3.9 min); Swift's Mimi has no such limit.
 
 ## Model directories
 
@@ -234,21 +233,22 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   directory's `config.json` names it. A two-way checkpoint stages with the swap and no flag. The
   12.5 GB fp32 GRPO checkpoint stages in under a minute, with a peak footprint of 6.3–6.6 GB at 4
   bits, 7.5 at 6 and 10.7 in BF16 (2026-11-14).
-- Upstream's 3B stages into `weights/hibiki-zero-3b-q4` with `--bits 4` (README). A `weights/` from
-  before 2026-11-14 holds `hibiki.q4.safetensors` (uniform q4) beside upstream's PyTorch
-  `config.json`, which names no MLX weights or quantization, so it no longer loads: stage it again,
-  then delete that file.
+- Upstream's 3B stages into `weights/hibiki-zero-3b-q4` with `--bits 4` (README). An older
+  `weights/hibiki.q4.safetensors` (uniform q4, beside upstream's `config.json`, which names no MLX
+  weights) no longer loads: stage again, then delete it.
 
 ## Vendored moshi-mlx
 
-- `inference/moshi-mlx/` is a minimal LM, generator, transformer, KV cache and sampler subset,
-  installed with `pip install -e ./inference/moshi-mlx`. It and the root `pyproject.toml` both
-  require `mlx>=0.31`.
+- `inference/moshi-mlx/` is a minimal LM, generator, transformer, KV cache and sampler subset
+  (`pip install -e ./inference/moshi-mlx`); it and the root `pyproject.toml` need `mlx>=0.31`.
 - Hibiki-Zero deltas: grouped-query attention via `kv_repeat`, FFN width `hidden_scale * dim`,
   `rope_concat` as non-traditional RoPE, and a learned per-slice depformer output LayerNorm.
-- The depformer is the only audio head. `load_pytorch_weights` accepts both the upstream fused
-  `in_proj_weight` layout and moshi 0.2.13's per-slice `in_projs.N` layout written by SFT
-  checkpoints.
+- The audio head is the depformer or a heads student's `ParallelHeads` (`"audio_heads":
+  "parallel"`, [student-heads](student-heads.md#design)): its `depformer.heads.{j}` stacked into one
+  Linear, `depformer.linear` (8 bits under `--bits`), on the normed main output plus the sampled
+  text token's `text_emb`, all codebooks at once. `load_pytorch_weights` reads upstream's fused
+  `in_proj_weight` and moshi 0.2.13's per-slice `in_projs.N`. `LmGen` checks for ungenerated tokens
+  only with `check=True` (callers pass False): a GPU sync a codebook, 3–4.5 ms of a student's step.
 
 ## Gates
 
@@ -262,11 +262,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   with the box's in sampling and input, not in batching: training samples rows 64 at a time. The
   pairs are `data/eval/` files ([sft-evaluation](sft-evaluation.md#evaluation-sets)), their audio
   paths relative to the repo root.
-- `inference/tools/verify_mlx_q4.py` translates `inference/assets/leon.wav` (French) with
-  `weights/hibiki-zero-3b-q4` into `translations/leon_mlx_q4.wav`.
+- `inference/tools/verify_mlx_q4.py` translates `inference/assets/leon.wav` (French) with the q4 3B.
 - `inference/tools/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
   Mimi decode) and a projected iPhone frame time from an assumed `--scale` (0.5). The
-  projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1.
+  projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1. Its GPU idles
+  on Mimi between steps and clocks down, as live steps do ([student-heads](student-heads.md#speed)).
 
 ## Memory
 

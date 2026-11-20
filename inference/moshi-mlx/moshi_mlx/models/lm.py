@@ -39,6 +39,9 @@ class LmConfig:
     demux_second_stream: bool = False
     extra_heads_num_heads: int = 0
     extra_heads_dim: int = 6
+    # Hibiki-Zero phone student: parallel codebook heads in place of the depformer (the
+    # config's "audio_heads": "parallel", training/student/heads.py).
+    parallel_heads: bool = False
 
     @property
     def generated_codebooks(self):
@@ -131,6 +134,9 @@ class LmConfig:
                 else:
                     raise ValueError(f"unsupported conditioner type {_cfg['type']}")
                 conditioners[_name] = _cfg
+        audio_heads = data.get("audio_heads")
+        if audio_heads not in (None, "parallel"):
+            raise ValueError(f"unsupported audio_heads {audio_heads!r}")
         return LmConfig(
             transformer=transformer,
             depformer=depformer,
@@ -143,6 +149,7 @@ class LmConfig:
             conditioners=conditioners,
             extra_heads_dim=data.get("extra_heads_dim", 6),
             extra_heads_num_heads=data.get("extra_heads_num_heads", 0),
+            parallel_heads=audio_heads == "parallel",
         )
 
     @property
@@ -333,13 +340,40 @@ class DepFormer(nn.Module):
         return tokens
 
 
+class ParallelHeads(nn.Module):
+    """Hibiki-Zero phone student's audio heads (training/student/heads.py): one linear head a
+    codebook, stacked into one Linear, reading the main transformer's normed output plus the
+    step's text token's embedding (`Lm._sample` adds it). All codebooks sample in one pass; the
+    delays (codebook j by min(j, 8)) are the config's, which `LmGen` applies."""
+
+    def __init__(self, dim: int, card: int, num_slices: int):
+        super().__init__()
+        self.num_slices = num_slices
+        # Rows j * card ... (j + 1) * card - 1 are head j (PyTorch's `depformer.heads.{j}`).
+        self.linear = nn.Linear(dim, num_slices * card, bias=False)
+
+    def __call__(self, _: mx.array) -> mx.array:
+        raise ValueError("not implemented")
+
+    def sample(self, context: mx.array, sampler: sampling.Sampler) -> mx.array:
+        """[B, T, dim] -> tokens [B, num_slices, T], as `DepFormer.sample` returns them."""
+        b, t, _ = context.shape
+        logits = self.linear(context).reshape(b, t, self.num_slices, -1).transpose(0, 2, 1, 3)
+        tokens, _ = sampler(logits)
+        return tokens
+
+
 class Lm(nn.Module):
     def __init__(self, cfg: LmConfig):
         super().__init__()
 
         dim = cfg.transformer.d_model
         self.transformer: Transformer = Transformer(cfg.transformer)
-        self.depformer = DepFormer(cfg)
+        self.depformer = (
+            ParallelHeads(dim, cfg.audio_vocab_size - 1, cfg.depformer.num_slices)
+            if cfg.parallel_heads
+            else DepFormer(cfg)
+        )
         self.text_emb = ScaledEmbedding(
             cfg.text_in_vocab_size, dim, demux_second_stream=cfg.demux_second_stream
         )
@@ -362,7 +396,7 @@ class Lm(nn.Module):
         ]
         self.transformer_cache: list[LayerCache] = self.transformer.make_rot_cache()
 
-        if len(self.depformer.slices) > 0:
+        if not cfg.parallel_heads and len(self.depformer.slices) > 0:
             self.depformer_cache: list[LayerCache] = self.depformer.slices[
                 0
             ].transformer.make_cache()
@@ -406,6 +440,11 @@ class Lm(nn.Module):
             if k.startswith("condition_provider.") or k.startswith("extra_heads."):
                 mlx_t[k] = v
 
+        if lm_config.parallel_heads:
+            mlx_t["depformer.linear.weight"] = mx.concatenate(
+                [pth_t[f"depformer.heads.{j}.weight"] for j in range(lm_config.depformer.num_slices)]
+            )
+            return self.load_weights(list(mlx_t.items()), strict=strict)
         depformer_chunks = lm_config.depformer.num_slices
         if lm_config.depformer.weights_per_step_schedule is not None:
             depformer_chunks = max(lm_config.depformer.weights_per_step_schedule) + 1
@@ -538,13 +577,20 @@ class Lm(nn.Module):
         text_token, _ = text_sampler(text_logits)
         if on_text_hook is not None:
             on_text_hook(text_token)
-        audio_tokens = self.depformer.sample(
-            transformer_out,
-            audio_sampler,
-            text_token,
-            self.depformer_cache,
-            cfg_coef=cfg_coef,
-        )
+        if self.cfg.parallel_heads:
+            if cfg_coef != 1:
+                raise NotImplementedError("classifier-free guidance with parallel heads")
+            audio_tokens = self.depformer.sample(
+                transformer_out + self.text_emb(text_token), audio_sampler
+            )
+        else:
+            audio_tokens = self.depformer.sample(
+                transformer_out,
+                audio_sampler,
+                text_token,
+                self.depformer_cache,
+                cfg_coef=cfg_coef,
+            )
         if on_audio_hook is not None:
             on_audio_hook(audio_tokens)
         return text_token, audio_tokens, transformer_out
