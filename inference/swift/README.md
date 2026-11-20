@@ -66,7 +66,9 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki translate CLIP.wav \
 
 `--encoder cpu|gpu` (CLI and app) places Mimi's encoder: the CPU by default. With a Core ML LM
 the GPU is free, and Mimi can encode there with the same codes
-([swift-runtime](../../docs/agent-memory/swift-runtime.md#mimi-on-the-gpu)).
+([swift-runtime](../../docs/agent-memory/swift-runtime.md#mimi-on-the-gpu)). Its timing then
+shows `encode` as building and submitting the GPU's work and `encode wait` (`encodeWaitMs` in
+bench's `.jsonl`) as waiting for its codes after the decode.
 
 ## iPhone
 
