@@ -189,12 +189,13 @@ the CPU's on every frame (760 frames, all 16 codebooks), and translations are by
   from the first call (zeros, masked), and RoPE's offset and the mask are inputs. On the A15 it
   cut the driving thread's build and submit 11.8 → 9.0 ms a frame and MLX's buffer cache 256 →
   68 MB.
-- Every op of the encode, its input array included, is built in the encoder's device scope
-  (`Mimi.encodeStep` takes the samples): one op on the other device's stream waits behind that
-  device's work. A reshape left on the GPU stream held the CPU encode behind the MLX LM's step
+- Every op of the encode, its input array and the codes' int32 cast included, is built in the
+  encoder's device scope (`Mimi.encodeStep` takes the samples): one op on the other device's
+  stream waits behind that device's work. A reshape left on the GPU stream held the CPU encode behind the MLX LM's step
   (the Mac: 12 → 17 ms a frame).
-- `Translator.step` submits the encode (`asyncEval`), waits on the decoder meanwhile, then
-  collects the codes (`Timing.encodeWait`). The CPU encode cannot overlap this way (`asyncEval`
+- At 1-frame steps `Translator.step` submits the encode (`asyncEval`), waits on the decoder
+  meanwhile, then collects the codes (`Timing.encodeWait`); at k ≥ 2 the chunk's first LM step
+  needs the codes before the decode comes, so it waits for the encode first. The CPU encode cannot overlap this way (`asyncEval`
   of a CPU graph waits for most of it).
 - fp16 weights would read half the bytes (Mac encode 9.4 → 6.9 ms) but change the codes:
   equal to fp32's on 99.2% of frames in codebook 0, 94.8% in 1–7 and 84.8% in 8–15 (bf16 94.6,

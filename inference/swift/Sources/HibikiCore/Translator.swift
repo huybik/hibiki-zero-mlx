@@ -24,8 +24,9 @@ import MLX
 ///
 /// ("decode" is the driving thread waiting on the Neural Engine.) The encode comes first: a Core
 /// ML LM holds the Neural Engine at the start of its step, and the decoder would queue behind it
-/// while the CPU sat idle. On the GPU the encode runs while the driving thread waits on the
-/// decoder, and its codes are collected after (`encodeWait`). A frame is a few rows per op,
+/// while the CPU sat idle. On the GPU, at k = 1, the encode runs while the driving thread waits
+/// on the decoder, and its codes are collected after (`encodeWait`); at k ≥ 2 the chunk's first
+/// LM step needs them before the decode comes. A frame is a few rows per op,
 /// so the encoder's cost per call grows much slower than its length: k = 2 cuts its time per
 /// frame by about a third, for up to (2k - 2) × 80 ms more latency (the chunk's first frame
 /// waits for the rest, and the step may take k × 80 ms).
@@ -60,7 +61,8 @@ public final class Translator {
         /// The level stage and Mimi encoding the input frames: on the CPU all of it, on the GPU
         /// building and submitting its work.
         public var encode = 0.0
-        /// Waiting for the GPU's encode after the decode (zero on the CPU).
+        /// Waiting for the GPU's encode after the decode (near zero on the CPU, whose encode
+        /// runs in `encode`).
         public var encodeWait = 0.0
         /// Waiting for the LM after the CPU work.
         public var lmWait = 0.0
@@ -258,7 +260,7 @@ public final class Translator {
         let sourceQ = config.nQ - config.depQ
         // On the encoder's device too, not behind the other device's work.
         let perFrame = Device.withDefaultDevice(mimi.device) {
-            codes[0, 0..<sourceQ].transposed()
+            codes[0, 0..<sourceQ].transposed().asType(.int32)
         }
         if mimi.device.deviceType == .cpu { eval(perFrame) } else { asyncEval(perFrame) }
         return perFrame
