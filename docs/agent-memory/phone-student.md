@@ -224,8 +224,9 @@ update 2,000 are in [student-grpo](student-grpo.md).
   `all_metrics.csv` ([student-grpo](student-grpo.md#raw-outputs)).
 - **The heads student distils from the start** (user, 2026-11-14: "why we not do distillation
   from the start?"): plain SFT left the depformer student ~14 chrF short after 100,000 updates,
-  and 300 distilled updates gained more than its last 32,000. It is the next box's first job,
-  ~18 h (0.336 s a step measured end to end, [Checks](#checks), plus validations). The comparison
+  and 300 distilled updates gained more than its last 32,000. `student_heads14` runs on the RTX
+  PRO 6000 box since 2026-11-20 ([tranche-box](tranche-box.md#state)), with the bf16 teacher:
+  0.553 s a step, ~29 h plus validations ([sft-speed](sft-speed.md#by-gpu)). The comparison
   is of finished students, not of the heads alone: the depformer student had 100,000 plain
   updates, 32,000 distilled at 3e-5, 64,000 at 1e-5, then GRPO to 2,000 ([student-grpo](student-grpo.md)).
 - **Profiled** (2026-11-14, the 700 W H100 SXM, the depformer student, the two-way caches, 300
