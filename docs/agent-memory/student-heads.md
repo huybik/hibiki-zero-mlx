@@ -100,4 +100,13 @@ free-running at seed 47, batches of 64.
 
   FLEURS dev chrF 26.75 / 23.18 against the plain depformer student's 20.7 / 15.0 at 16,000.
 - `student_heads14_cb16` (16 codebooks, `ce80c0b`, from 2026-11-20 05:19 UTC, Hub
-  `student_heads14_cb16/`): running, ~37 h plus 12 validations.
+  `student_heads14_cb16/`): running, ~37 h plus 12 validations. Validations (teacher-forced loss on
+  the VI→EN / EN→VI caches, not comparable with the 8-codebook run's; chrF / BLEU / length ratio /
+  end offset in s, every set's health pass unless marked):
+
+  | Update (date) | TF loss | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+  |---|---|---|---|---|---|---|---|---|---|
+  | 16,000 (11-20) | 3.701 / 3.494 | 25.28 | 28.40 / 2.77 / 1.59 / 3.0 | 22.15 / 5.08 / 1.05 / 3.1 | 28.49 / 4.31 / 1.50 / 3.8 | 28.49 / 5.64 / 1.43 / 3.1 | 33.17 / 6.96 / 1.19 / 3.5 | 23.29 / 6.91 / 1.20 / 1.4 | 31.29 / 10.20 / 1.06 / 2.4 |
+
+  At 16,000 against 8 codebooks: VI→EN +1.2 to +2.4 chrF on every set, EN→VI −1.0 (FLEURS) to +1.3,
+  end offsets 0.1–0.7 s later; generation and scoring at 16 codebooks work on the GPU.
