@@ -1,4 +1,4 @@
-// hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N] [--chunk K]
+// hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N] [--chunk K] [--lm-units U]
 //   Translates an audio file, as `python inference/main.py INPUT` and training's evaluation do:
 //   the input in whole frames (the last zero-padded), the source EOS (`Translator.endInput`),
 //   then silence for 20 s in all, stopping at the end of the first step after `endInput` where
@@ -7,7 +7,7 @@
 //   nothing, so a long file is translated to its end. Its speech ends max_delay - 1 frames before
 //   main.py's, which steps on past the EOS for the speech of the frames before it.
 //
-// hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE] [--chunk K]
+// hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE] [--chunk K] [--lm-units U]
 //   Loops INPUT for M minutes (default 10) through `Bench`, paced like a live microphone unless
 //   --unpaced, writes BASE.{jsonl,wav,txt} and prints a per-minute summary.
 //
@@ -16,14 +16,17 @@
 // but `translate` stops only at the end of a step, up to K - 1 frames after K = 1 would.
 //
 // --model defaults to weights/hibiki-zero-3b-q4, upstream's 3B staged by convert_mlx.py --bits 4.
+// --lm-units ane|gpu|cpu|all: where a Core ML LM runs (export_lm_coreml.py; default ane, the
+// Neural Engine); an MLX LM always runs on the GPU.
 
+import CoreML
 import Foundation
 import HibikiCore
-import MLXRandom
 
 let usage = """
-    usage: hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N] [--chunk K]
+    usage: hibiki translate INPUT [--model DIR] [--out OUT.wav] [--seed N] [--chunk K] [--lm-units U]
            hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE] [--chunk K]
+                        [--lm-units U]
 
     """
 // Frames after the input, the source EOS frame included: training's evaluation generates its
@@ -51,6 +54,10 @@ let seed = number("--seed", default: UInt64(299_792_458))
 let minutes = number("--minutes", default: 10.0)
 let chunk = number("--chunk", default: 1)
 guard chunk > 0 else { fail() }
+let units: [String: MLComputeUnits] = [
+    "ane": .cpuAndNeuralEngine, "gpu": .cpuAndGPU, "cpu": .cpuOnly, "all": .all,
+]
+guard let lmUnits = units[option("--lm-units") ?? "ane"] else { fail() }
 
 func translate(_ translator: Translator, _ pcm: [Float]) throws {
     let output = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_swift.wav")
@@ -100,8 +107,12 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
     let ms = { (s: Double) in String(format: "%.1f", 1000 * s / Double(frames)) }
     let seconds = Double(pcm.count) / Double(Audio.sampleRate)
     let speed = String(format: "%.2f s -> %.2fx RT", wall, seconds / wall)
-    let stages = "LM start \(ms(timing.lmStart)), decode \(ms(timing.decode)), "
+    var stages = "LM start \(ms(timing.lmStart)), decode \(ms(timing.decode)), "
         + "encode \(ms(timing.encode)), LM wait \(ms(timing.lmWait))"
+    if timing.lmTrunk > 0 {
+        stages += "; Core ML LM: trunk \(ms(timing.lmTrunk)), heads \(ms(timing.lmHeads)), "
+            + "host \(ms(timing.lmHost))"
+    }
     print(
         "[\(frames) frames for \(String(format: "%.2f", seconds)) s of audio "
             + "(\(ended ? "ended" : "no EOS")) in \(speed); ms/frame: \(stages)]")
@@ -131,8 +142,9 @@ do {
     // Translator first: it configures MLX before MLX creates its Metal device, which seeding
     // would do.
     let translator = try Translator(
-        directory: URL(fileURLWithPath: option("--model") ?? "weights/hibiki-zero-3b-q4"))
-    MLXRandom.seed(seed)
+        directory: URL(fileURLWithPath: option("--model") ?? "weights/hibiki-zero-3b-q4"),
+        lmComputeUnits: lmUnits)
+    translator.seed(seed)
     let pcm = try Audio.read(input)
     try args[0] == "translate" ? translate(translator, pcm) : bench(translator, pcm)
 } catch {

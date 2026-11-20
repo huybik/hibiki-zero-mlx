@@ -41,7 +41,12 @@ def _export(module: torch.nn.Module, inputs: dict[str, tuple[tuple[int, ...], ty
         compute_units=ct.ComputeUnit.CPU_AND_NE,
         minimum_deployment_target=ct.target.iOS18,
     )
-    # Compiled here, so the app loads it without compiling a copy into its temporary folder.
+    save_compiled(model, path)
+
+
+def save_compiled(model: ct.models.MLModel, path: Path) -> None:
+    """Compiles `model` to `path` (an .mlmodelc), replacing what is there only once it compiled.
+    Compiled here, so the app loads it without compiling a copy into its temporary folder."""
     with tempfile.TemporaryDirectory() as tmp:
         package = Path(tmp) / path.with_suffix(".mlpackage").name
         model.save(str(package))

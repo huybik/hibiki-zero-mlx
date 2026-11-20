@@ -5,6 +5,7 @@
 import Foundation
 import MLX
 import MLXNN
+import MLXRandom
 
 public enum HibikiError: Error, CustomStringConvertible {
     case unsupported(String)
@@ -46,13 +47,19 @@ public struct HibikiConfig: Decodable {
     public let depformerWeightsPerStepSchedule: [Int]?
     /// Python: `depformer_output_layer_norm`, else whether `depformer_norm` is present.
     public let depformerOutputNorm: Bool
-    /// The MLX weights file.
-    public let moshiName: String
+    /// The MLX weights file; nil in a directory whose LM is Core ML (`lmCoreML`).
+    public let moshiName: String?
     public let mimiName: String?
     public let tokenizerName: String
     /// How quantized weights are quantized; nil for bf16 weights.
     public let quantization: Quantization?
     public let lmGenConfig: LmGenConfig
+    /// "parallel" for the parallel-heads student, whose 16 codebooks come from linear heads in
+    /// the depformer's place; nil for a depformer model.
+    public let audioHeads: String?
+    /// Whether `export_lm_coreml.py` wrote this directory (`lm_coreml`): the LM is the Core ML
+    /// models beside this file (`NeuralLM`).
+    public let lmCoreML: Bool
     // Read only to refuse models this runtime would run wrongly.
     let gating: String?
     let norm: String?
@@ -92,6 +99,8 @@ public struct HibikiConfig: Decodable {
         case tokenizerName = "tokenizer_name"
         case quantization
         case lmGenConfig = "lm_gen_config"
+        case audioHeads = "audio_heads"
+        case lmCoreML = "lm_coreml"
     }
 
     private struct Ignored: Decodable {
@@ -126,11 +135,13 @@ public struct HibikiConfig: Decodable {
         depformerOutputNorm =
             try c.decodeIfPresent(Bool.self, forKey: .depformerOutputLayerNorm)
             ?? c.contains(.depformerNorm)
-        moshiName = try c.decode(String.self, forKey: .moshiName)
+        moshiName = try c.decodeIfPresent(String.self, forKey: .moshiName)
         mimiName = try c.decodeIfPresent(String.self, forKey: .mimiName)
         tokenizerName = try c.decode(String.self, forKey: .tokenizerName)
         quantization = try c.decodeIfPresent(Quantization.self, forKey: .quantization)
         lmGenConfig = try c.decode(LmGenConfig.self, forKey: .lmGenConfig)
+        audioHeads = try c.decodeIfPresent(String.self, forKey: .audioHeads)
+        lmCoreML = c.contains(.lmCoreML)
         gating = try c.decodeIfPresent(String.self, forKey: .gating)
         norm = try c.decodeIfPresent(String.self, forKey: .norm)
         depformerMultiLinear = try c.decodeIfPresent(Bool.self, forKey: .depformerMultiLinear)
@@ -142,8 +153,29 @@ public struct HibikiConfig: Decodable {
             try c.decodeIfPresent([String: Ignored].self, forKey: .conditioners)?.count ?? 0
     }
 
+    /// A model directory's `config.json`, checked by `validate`.
+    static func load(directory: URL) throws -> HibikiConfig {
+        let url = directory.appending(path: "config.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw HibikiError.missingFile(url)  // stage the model with convert_mlx.py
+        }
+        let cfg = try JSONDecoder().decode(HibikiConfig.self, from: Data(contentsOf: url))
+        try cfg.validate()
+        return cfg
+    }
+
     /// Fails on any setting this runtime does not implement, instead of running a wrong model.
     func validate() throws {
+        if let audioHeads, audioHeads != "parallel" {
+            throw HibikiError.unsupported("audio_heads \(audioHeads)")
+        }
+        // The MLX LM has a depformer only; the heads run as Core ML (export_lm_coreml.py).
+        if (audioHeads != nil) != lmCoreML {
+            throw HibikiError.unsupported(
+                audioHeads != nil
+                    ? "parallel heads in MLX: export the LM with export_lm_coreml.py"
+                    : "a Core ML LM without parallel heads")
+        }
         if let gating, gating != "silu" { throw HibikiError.unsupported("gating \(gating)") }
         if let norm, !norm.hasPrefix("rms_norm") { throw HibikiError.unsupported("norm \(norm)") }
         if !["rope", "rope_concat"].contains(positionalEmbedding) {
@@ -334,8 +366,10 @@ final class Depformer: Module {
     }
 }
 
-final class HibikiLM: Module {
+final class HibikiLM: Module, FrameLM {
     let cfg: HibikiConfig
+    private let textSampler: Sampler
+    private let audioSampler: Sampler
     private let decoder: DecodeTransformer
     @ModuleInfo(key: "transformer") var transformer: Transformer
     @ModuleInfo(key: "depformer") var depformer: Depformer
@@ -356,18 +390,18 @@ final class HibikiLM: Module {
             Embedding(embeddingCount: cfg.card + 1, dimensions: cfg.dim)
         }
         decoder = DecodeTransformer(_transformer.wrappedValue)
+        let sampling = cfg.lmGenConfig
+        textSampler = Sampler(temp: sampling.tempText, topK: sampling.topKText)
+        audioSampler = Sampler(temp: sampling.temp, topK: sampling.topK)
     }
 
-    /// Loads `config.json` and the weights it names (`moshi_name`) of a staged model directory,
-    /// quantized as its `quantization` says (bf16 without one), strictly.
-    static func load(directory: URL) throws -> HibikiLM {
-        let configURL = directory.appending(path: "config.json")
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            throw HibikiError.missingFile(configURL)  // stage the model with convert_mlx.py
+    /// Loads the weights `cfg` names (`moshi_name`) from a staged model directory, quantized as
+    /// its `quantization` says (bf16 without one), strictly.
+    static func load(directory: URL, cfg: HibikiConfig) throws -> HibikiLM {
+        guard let name = cfg.moshiName else {
+            throw HibikiError.unsupported("no moshi_name: stage the model with convert_mlx.py")
         }
-        let cfg = try JSONDecoder().decode(HibikiConfig.self, from: Data(contentsOf: configURL))
-        try cfg.validate()
-        let url = directory.appending(path: cfg.moshiName)
+        let url = directory.appending(path: name)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw HibikiError.missingFile(url)
         }
@@ -390,15 +424,24 @@ final class HibikiLM: Module {
         return model
     }
 
-    func resetCache() {
+    func reset() {
         decoder.reset()
     }
 
+    func seed(_ value: UInt64) {
+        MLXRandom.seed(value)
+    }
+
+    /// Builds the step and starts it on the GPU; the closure waits for its tokens.
+    func start(text: Int, audio: [Int]) -> () throws -> LMStep {
+        let (text, audio) = step(text: text, audio: audio)
+        asyncEval(text, audio)
+        return { LMStep(text: Int(text.item(Int32.self)), audio: audio.asArray(Int32.self).map(Int.init)) }
+    }
+
     /// One frame: the main transformer over the previous text token and the 32 delayed audio
-    /// tokens, then the text token and the 16 target codebooks.
-    func step(
-        text: Int, audio: [Int], textSampler: Sampler, audioSampler: Sampler
-    ) -> (text: MLXArray, audio: MLXArray) {
+    /// tokens, then the text token and the 16 target codebooks, sampled as `lm_gen_config` says.
+    func step(text: Int, audio: [Int]) -> (text: MLXArray, audio: MLXArray) {
         var xs = textEmb(MLXArray([Int32(text)]).reshaped(1, 1))
         for (token, emb) in zip(audio, audioEmbs) {
             xs = xs + emb(MLXArray([Int32(token)]).reshaped(1, 1))

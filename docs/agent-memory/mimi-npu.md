@@ -1,8 +1,9 @@
 # Mimi on neural accelerators
 
 Read when touching `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py` or
-`inference/swift/Sources/HibikiCore/NeuralDecoder.swift`, or when moving Mimi (or later the LM)
-onto an NPU: the Apple Neural Engine now, Qualcomm's later.
+`inference/swift/Sources/HibikiCore/NeuralDecoder.swift`, or when moving Mimi onto an NPU: the
+Apple Neural Engine now, Qualcomm's later. The heads student's LM on the Neural Engine is
+[lm-npu](lm-npu.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Step module](#step-module) · [Core ML](#core-ml) ·
 [Precision](#precision) · [Qualcomm](#qualcomm)
 

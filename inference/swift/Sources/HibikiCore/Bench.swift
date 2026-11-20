@@ -24,6 +24,10 @@ public enum Bench {
         public let decodeMs: Double
         public let encodeMs: Double
         public let lmWaitMs: Double
+        /// A Core ML LM's own time (`Translator.Timing.lmTrunk` and the rest; 0 for MLX).
+        public let lmTrunkMs: Double
+        public let lmHeadsMs: Double
+        public let lmHostMs: Double
         /// `ProcessInfo.ThermalState`: 0 nominal, 1 fair, 2 serious, 3 critical.
         public let thermal: Int
         public let footprintMB: Double
@@ -77,6 +81,8 @@ public enum Bench {
                 frame: idx, frames: framesPerStep, wall: wall, lag: paced ? wall - arrival : 0,
                 lmStartMs: 1000 * out.timing.lmStart, decodeMs: 1000 * out.timing.decode,
                 encodeMs: 1000 * out.timing.encode, lmWaitMs: 1000 * out.timing.lmWait,
+                lmTrunkMs: 1000 * out.timing.lmTrunk, lmHeadsMs: 1000 * out.timing.lmHeads,
+                lmHostMs: 1000 * out.timing.lmHost,
                 thermal: ProcessInfo.processInfo.thermalState.rawValue,
                 footprintMB: footprintMB(), mlxActiveMB: Double(Memory.activeMemory) / 1_048_576,
                 mlxCacheMB: Double(Memory.cacheMemory) / 1_048_576, availableMB: availableMB())
@@ -93,25 +99,29 @@ public enum Bench {
     }
 
     /// One line per minute of audio: percentiles of the time per frame and of the LM wait per
-    /// frame over its steps, worst lag, thermal state and memory. A step counts toward the
+    /// frame over its steps, a Core ML LM's own time per frame, worst lag, thermal state and
+    /// memory. A step counts toward the
     /// minute of its first frame, so with k not dividing 750 the rows hold a few frames more or
     /// less.
     public static func summary(_ samples: [Sample]) -> String {
         var lines = [
-            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50  max lag s  thermal"
-                + "  footprint MB  MLX active MB"
+            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50  Core ML LM p50  max lag s"
+                + "  thermal  footprint MB  MLX active MB"
         ]
         let minutes = Dictionary(grouping: samples) { $0.frame / 750 }
         for minute in minutes.keys.sorted() {
             let chunk = minutes[minute]!
             let total = chunk.map(\.msPerFrame).sorted()
             let wait = chunk.map { $0.lmWaitMs / Double($0.frames) }.sorted()
+            let lm = chunk.map { ($0.lmTrunkMs + $0.lmHeadsMs + $0.lmHostMs) / Double($0.frames) }
+                .sorted()
             let q = { (xs: [Double], p: Double) in xs[min(xs.count - 1, Int(p * Double(xs.count)))] }
             lines.append(
                 String(
-                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f  %9.2f  %7d  %12.0f  %13.0f",
+                    format:
+                        "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f  %14.1f  %9.2f  %7d  %12.0f  %13.0f",
                     minute + 1, chunk.map(\.frames).reduce(0, +), q(total, 0.5), q(total, 0.9),
-                    q(total, 0.99), q(wait, 0.5), chunk.map(\.lag).max() ?? 0,
+                    q(total, 0.99), q(wait, 0.5), q(lm, 0.5), chunk.map(\.lag).max() ?? 0,
                     chunk.map(\.thermal).max() ?? 0, chunk.map(\.footprintMB).max() ?? 0,
                     chunk.map(\.mlxActiveMB).max() ?? 0))
         }
