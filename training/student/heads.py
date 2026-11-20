@@ -30,8 +30,8 @@ KIND = "parallel"
 DEPFORMER_PARTS = ("depformer_in", "depformer_emb", "depformer_text_emb", "depformer_norms", "linears")
 
 
-# The finest codebooks come out together at this delay: each frame of speech is complete
-# DELAY_CAP frames (80 ms each) after its first codebook whatever the codebook count.
+# The finest codebooks come out together at this delay: each frame of speech is complete at most
+# DELAY_CAP frames (80 ms each) after its first codebook, whatever the codebook count.
 DELAY_CAP = 8
 
 

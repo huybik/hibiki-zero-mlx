@@ -8,7 +8,7 @@ streams directly (`training.finetune.train --config-path <out>/config.json --mod
                 (the input embeddings `emb`, the depformer's steps, its norms and output `linears`)
   depformer     6 layers -> --depformer-layers, each keeping its first k step slices; or, with
                 --heads, none: k parallel heads in its slot (`heads.py`), initialized afresh
-                (--seed), each codebook j delayed j frames
+                (--seed), codebook j delayed min(j, 8) frames (`heads.delays`)
 
 The student's config.json is the parent's with the cut's sizes, its `delays` and step schedule
 truncated alike, and its own weight and that weight's tokenizer named (`moshi_name`, `tokenizer_name`);
