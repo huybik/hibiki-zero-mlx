@@ -15,7 +15,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 
 - Full-model SFT from `kyutai/hibiki-zero-3b-pytorch-bf16`; every parameter is trainable.
   `common.load_policy` builds the model for SFT and GRPO alike, through `common.build_lm` (moshi's
-  `get_moshi`, or for a parallel-heads student its own load, [phone-student](phone-student.md#parallel-heads)),
+  `get_moshi`, or for a parallel-heads student its own load, [student-heads](student-heads.md#design)),
   which, loading a Hibiki weight, copies the text PAD's input embedding over the text EOS's (its
   way to make a sampled early EOS read on as PAD). So every run starts with that row reset, and
   it trains from there: cosine 0.945 to PAD's after round 3, 0.88 after round 4. `eval.py`, the

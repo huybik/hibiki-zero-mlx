@@ -158,6 +158,8 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
       comparison with the depformer student clean.
   - Two fresh heads runs on the same batches differ by up to ~0.2 in loss by step 300, as on the
     H100 ([phone-student](phone-student.md#checks)).
+  - The heads student at 16 codebooks: 0.694 s a step (+23%; 16,900 frames/s) and a 50.9 GiB peak,
+    the teacher's depformer now running all 16 steps ([student-heads](student-heads.md#speed)).
 - **H200 batch_frames lever (2026-11-09, estimate before the measurement above)**: default 4608; H200 has 141 GB VRAM vs H100's 80 GB.
   Increasing batch_frames amortizes fixed per-step costs (AdamW 8%, grad norm 4%, copies 5.5% ≈ 17.5%
   of step time) over more frames. At 8192 (1.78×): peak ≈ 93 GiB (48 GiB param+opt + 45 GiB

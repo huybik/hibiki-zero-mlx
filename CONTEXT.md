@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-15
+Last verified: 2026-11-20
 
 ## Purpose
 
@@ -184,7 +184,8 @@ inference/ (Apple Silicon, MLX)
 | The tranche's jobs on a rented box: bring-up, job order, the restart/watchdog/pause scripts, round 4's inputs | [tranche-box](docs/agent-memory/tranche-box.md) | `training/tranche/box/` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
 | Vietnamese tokenizer swap for two-way text: build, English check, embedding init map, the runtimes on it | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
-| The phone student cut from the two-way model and its parallel codebook heads: the cut, training and distilling a student, checks | [phone-student](docs/agent-memory/phone-student.md) | `training/student/`, `training/finetune/streams.py` (`model_rows`) |
+| The phone student cut from the two-way model: the cut, training and distilling a student, checks | [phone-student](docs/agent-memory/phone-student.md) | `training/student/`, `training/finetune/streams.py` (`model_rows`) |
+| The parallel-heads student: its delays, 16 codebooks with 8–15 at one delay, speed, runs and validations | [student-heads](docs/agent-memory/student-heads.md) | `training/student/heads.py`, `restart.sh student-heads` |
 | The phone student's GRPO run, its evaluations and tests, the shipped update 2,000 | [student-grpo](docs/agent-memory/student-grpo.md) | `runs/grpo_student`, `/Volumes/data/hibiki-zero-evals/` |
 | Two-way speech: directions in caches, streams and evaluation, the run's tokenizer checks, the Vietnamese aligner, the two-way run and its box jobs | [two-way](docs/agent-memory/two-way.md) | `--direction`, `--tokenizer`, `common.run_tokenizer`, `text_timing.ALIGNERS`, `training/prep/cache_rows.py`, `training/finetune/streams.py` |
 | Every grounded cache build: rows, gates, Mimi and wav2vec2 on MLX or CUDA, each device's speed; Mimi or wav2vec2 run anywhere | [cache-build](docs/agent-memory/cache-build.md) | `training/prep/cache_build.py`, `training/prep/cache_rows.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/prep/audio.py` |

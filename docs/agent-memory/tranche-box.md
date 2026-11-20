@@ -10,9 +10,10 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 Beijing, $1.217/h; 96 GB, 600 W, driver 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of
 disk; `ssh -p 21639 root@205.185.115.44`). Its network sits behind a slow proxy
 ([Bring-up](#a-box-behind-a-slow-proxy)).
-- It runs `student_heads14` (`restart.sh student-heads`, from `d37109e`, started 2026-11-20 01:22
-  UTC): 0.553 s an update, ~29 h for 190,126 updates plus 12 validations
-  ([sft-speed](sft-speed.md#by-gpu)).
+- It runs `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
+  started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
+  ([student-heads](student-heads.md#runs)). `student_heads14` (8 codebooks) stopped for it at
+  ~22,600; its 16,000 pair and best are on the Hub.
 - The user (2026-11-20): run it to the end and score its test sets both ways, without asking.
   Then upload everything and destroy the box.
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
@@ -183,7 +184,7 @@ the two-way caches and run before GRPO):
 | grpo | `grpo_launch.sh RUN <weight> [ARGS]` (from the checkout, [grpo](grpo.md#running)), on the two-way model or a phone student | its updates; stop with TERM to the launcher alone |
 | student | `restart.sh student` (`student_dep10`, cut from GRPO update 1,400 if missing; [phone-student](phone-student.md#next)) | its 190,126 updates (~12 h), then the test sets both ways; stop with TERM to the launcher alone |
 | student-distill | `restart.sh student-distill` (`student_dep10_anneal`, from `student_dep10_distill`'s model 32,000, the teacher GRPO update 1,400; [phone-student](phone-student.md#distillation)) | its `--max-steps`, then the test sets both ways; stop with TERM to the launcher alone |
-| student-heads | `restart.sh student-heads` (`student_heads14`, distilled from GRPO update 1,400 from the start; [phone-student](phone-student.md#next)): running on the RTX PRO 6000 ([State](#state)), ~29 h there, ~18 h on the H100; its preflight needs 39 GiB | the same steps, then the test sets both ways |
+| student-heads | `restart.sh student-heads` (`student_heads14_cb16`, 16 codebooks, distilled from GRPO update 1,400 from the start; [student-heads](student-heads.md#runs)): running on the RTX PRO 6000 ([State](#state)), ~37 h there (0.694 s an update, 50.9 GiB peak) | the same steps, then the test sets both ways |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with

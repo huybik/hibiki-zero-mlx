@@ -1,4 +1,4 @@
-"""Parallel codebook heads for a phone student ([phone-student](../../docs/agent-memory/phone-student.md#parallel-heads),
+"""Parallel codebook heads for a phone student ([student-heads](../../docs/agent-memory/student-heads.md#design),
 plan stage 5.4): k linear heads on the main transformer's output sample a step's k codebooks in one
 pass, where the depformer runs k sequential steps. Codebook j is delayed j frames (MusicGen's
 pattern, carried by moshi's own `delays`), so a head predicting codebook j at a step has read codebook
