@@ -345,8 +345,8 @@ def translate(
         if tt == eos_token and processed > steps + 1:
             ended = True
             # Training's evaluation keeps the speech of every frame before the EOS step; the last
-            # max_delay - 1 of them are complete only that many steps on (8 frames, 640 ms, on a
-            # heads student), so step on through the encoder's silence for their audio alone.
+            # max_delay - 1 of them are complete only that many steps on (7 frames on a heads
+            # student), so step on through the encoder's silence for their audio alone.
             for _ in range(gen.max_delay - 1 if audio else 0):
                 oat = enc_q.get()
                 if oat is SENTINEL:  # the tail ended first, where training's generation ends too
