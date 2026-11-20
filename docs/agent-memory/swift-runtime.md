@@ -4,7 +4,8 @@ Read when touching `inference/swift/` (the MLX Swift runtime, the `hibiki` CLI, 
 iOS app) or when measuring on a phone. The parallel-heads student's LM runs here as Core ML
 (`NeuralLM`): [lm-npu](lm-npu.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero deltas](#hibiki-zero-deltas) ·
-[Parity](#parity) · [Mimi on the CPU](#mimi-on-the-cpu) · [Speed and memory](#speed-and-memory) ·
+[Parity](#parity) · [Mimi on the CPU](#mimi-on-the-cpu) · [Mimi on the GPU](#mimi-on-the-gpu) ·
+[Speed and memory](#speed-and-memory) ·
 [Device test](#device-test)
 
 ## Layout
@@ -23,7 +24,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams over a `FrameLM`: `HibikiLM` in MLX on the GPU, or
     `NeuralLM.swift`, the heads student in Core ML, [lm-npu](lm-npu.md)), `Translator.swift` (k 80 ms frames per step: the LM on
-    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
+    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU (or the GPU, [below](#mimi-on-the-gpu)) and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
     the SentencePiece `.model` protobuf directly, and `TextDecoder`) and `Audio.swift` (file reading, the WAV
     writer, and `Leveller`, the input level stage `Translator.step` runs before Mimi: Python's
     `hibiki_mlx/level.py`, equal sample for sample; `reset` starts its stream again;
@@ -133,15 +134,17 @@ left when the input ends (the CLI's `translate` and `Bench` call it). A step can
   start was 14–16 ms at 400, 1,000 and 3,000 ops per buffer. The CPU side cannot be split the
   same way: `asyncEval` of a ~300-op Mimi graph waits for most of it.
 - MLX's CPU backend needed three changes to Mimi's encoder (busy M4 Pro: its transformer 23 →
-  14 ms a frame):
-  - `ComposedLayerNorm`: MLXFast.layerNorm's CPU fallback is ~8x slower. Only Mimi's
-    transformers use `Norm.layerNorm`; the LM's depformer slice norms keep MLXFast.
-  - Mimi's transformer linears are stored column-major, so `Linear`'s x · wᵀ hands sgemm a
-    row-major operand: ~7x faster at two rows.
-  - ELU and the tanh GELU are written out: MLXNN's activations are compiled functions, and iOS
-    cannot compile CPU kernels (`[Compiled::eval_cpu] CPU compilation not supported on the
-    platform`). Never `compile`, or call a compiled MLXNN activation, in code that runs on the
-    CPU.
+  14 ms a frame). The ops pick their kernels by the default device in scope (`onCPU()`), which
+  `Mimi.encodeStep` sets to the encoder's device:
+  - `MimiLayerNorm` composes the norm from mean and variance on the CPU: MLXFast.layerNorm's CPU
+    fallback is ~8x slower. Only Mimi's transformers use `Norm.layerNorm`; the LM's depformer
+    slice norms keep MLXFast.
+  - Loaded for the CPU, Mimi's transformer linears are stored column-major, so `Linear`'s x · wᵀ
+    hands sgemm a row-major operand: ~7x faster at two rows.
+  - ELU and the tanh GELU are written out on the CPU: MLXNN's activations are compiled
+    functions, and iOS cannot compile CPU kernels (`[Compiled::eval_cpu] CPU compilation not
+    supported on the platform`). Never `compile`, or call a compiled MLXNN activation, in code
+    that runs on the CPU.
 - On the A15's CPU, Mimi takes 20 ms to encode a frame alone, 28 beside the GPU LM and 35–45
   once the phone is hot; 17–19 at 2 frames per call.
 - Tried and dropped: rustymimi is no faster (59 / 53 ms per frame on the same busy Mac);
@@ -162,13 +165,41 @@ and the step may take k × 80 ms.
 
 - Busy M4 Pro CPU, Mimi encode per frame: k = 1 26 ms, 2 19, 4 16, 8 11.
 - `WindowKVCache` keeps the last `context − 1` (249) steps and masks each query to the 250 steps
-  ending at itself, as Mimi was trained and `mimi_mlx.py` encodes. moshi-swift's ring of 250
+  ending at itself, as Mimi was trained and `mimi_mlx.py` encodes; steps not yet written are
+  zeros, masked. moshi-swift's ring of 250
   steps let a k-step call overwrite keys its first queries still needed: once the ring was full
   (frame 125), 2-frame calls changed 16% of frames' codes. With the window cache, codes for
   k = 1, 2 and 4 are identical over 800 frames of `leon.wav`.
 - `translate` at `--chunk` 1, 2 and 3 gives the same text word for word up to where k = 1 stops
   (a run stops only at the end of a step, so k ≥ 2 can add up to k − 1 frames: one more word on
   `leon.wav`); so did a review's mixed chunk sizes (3, 1, 2, 5, …).
+
+## Mimi on the GPU
+
+`--encoder gpu` (CLI, app; `Translator(encoderDevice:)`) runs Mimi's encoder on the GPU, for a
+Core ML LM, which leaves the GPU idle ([lm-npu](lm-npu.md#speed) for the phone). Its codes equal
+the CPU's on every frame (760 frames, all 16 codebooks), and translations are byte-identical at
+1- and 2-frame steps (the Mac, seed 7, 2026-11-20).
+
+- GPU kernels: MLXFast's fused layer norm, MLXNN's compiled GELU and ELU, and the transformer
+  linears as the checkpoint stores them (the GPU's gemv wants them so).
+- `Mimi.encodeStep` compiles the GPU encode over the stream's state (`streamState`: each conv's
+  held input and each layer's keys and values) after a session's first call, which pads and runs
+  eagerly; one trace per chunk size. So `WindowKVCache` holds its 249 steps in fixed buffers
+  from the first call (zeros, masked), and RoPE's offset and the mask are inputs. On the A15 it
+  cut the driving thread's build and submit 11.8 → 9.5–10.6 ms a frame and the footprint 725 →
+  541 MB (MLX's buffer cache 256 → 68 MB).
+- Every op of the encode, its input array and the codes' int32 cast included, is built in the
+  encoder's device scope (`Mimi.encodeStep` takes the samples): one op on the other device's
+  stream waits behind that device's work. A reshape left on the GPU stream held the CPU encode behind the MLX LM's step
+  (the Mac: 12 → 17 ms a frame).
+- At 1-frame steps `Translator.step` submits the encode (`asyncEval`), waits on the decoder
+  meanwhile, then collects the codes (`Timing.encodeWait`); at k ≥ 2 the chunk's first LM step
+  needs the codes before the decode comes, so it waits for the encode first. The CPU encode cannot overlap this way (`asyncEval`
+  of a CPU graph waits for most of it).
+- fp16 weights would read half the bytes (Mac encode 9.4 → 6.9 ms) but change the codes:
+  equal to fp32's on 99.2% of frames in codebook 0, 94.8% in 1–7 and 84.8% in 8–15 (bf16 94.6,
+  63.3, 25.7%); not used without a gate.
 
 ## Speed and memory
 

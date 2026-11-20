@@ -66,10 +66,11 @@ private class MlpNoGating: Module, UnaryLayer {
         self._linear2.wrappedValue = Linear(cfg.dimFeedForward, cfg.dModel, bias: cfg.biasFF)
     }
 
-    /// The tanh GELU written out: MLXNN's `geluApproximate` is a compiled function, and iOS
-    /// cannot compile CPU kernels.
+    /// The tanh GELU: written out on the CPU, where MLXNN's compiled `geluApproximate` cannot
+    /// run on iOS; compiled into one kernel on the GPU.
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         let h = linear1(x)
+        guard onCPU() else { return linear2(geluApproximate(h)) }
         let inner = (2 / Float.pi).squareRoot() * (h + 0.044715 * h * h * h)
         return linear2(0.5 * h * (1 + tanh(inner)))
     }
@@ -121,11 +122,15 @@ final class Attention: Module {
         outProj(attn.transposed(0, 2, 1, 3).reshaped(attn.dim(0), attn.dim(2), cfg.dModel))
     }
 
-    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: WindowKVCache) -> MLXArray {
+    /// Attention over `cache` and `x`, whose first step is at position `offset` (an array, so a
+    /// compiled caller can pass it in).
+    func callAsFunction(
+        _ x: MLXArray, offset: MLXArray, mask: MLXArray, cache: WindowKVCache
+    ) -> MLXArray {
         var (q, k, v) = projections(x)
         if let rope {
-            q = rope(q, offset: cache.offset)
-            k = rope(k, offset: cache.offset)
+            q = rope(q, offset: offset)
+            k = rope(k, offset: offset)
         }
         (k, v) = cache.update(keys: k, values: v)
         return output(
@@ -134,10 +139,19 @@ final class Attention: Module {
     }
 }
 
-/// LayerNorm composed from mean and variance, for Mimi on the CPU, where MLXFast.layerNorm's
-/// fallback takes ~8x as long. Only Mimi's transformers use `Norm.layerNorm`.
-final class ComposedLayerNorm: LayerNorm {
+/// Whether the ops being built run on the CPU (the default device in scope). Mimi's encoder
+/// picks its kernels by it: MLX's CPU backend cannot compile kernels on iOS and its fused layer
+/// norm is slow, while the GPU wants the fewest, fused kernels.
+func onCPU() -> Bool {
+    Device.defaultDevice().deviceType == .cpu
+}
+
+/// Mimi's LayerNorm: MLXFast's fused kernel on the GPU; composed from mean and variance on the
+/// CPU, where MLXFast.layerNorm's fallback takes ~8x as long. Only Mimi's transformers use
+/// `Norm.layerNorm`.
+final class MimiLayerNorm: LayerNorm {
     override func callAsFunction(_ x: MLXArray) -> MLXArray {
+        guard onCPU() else { return super.callAsFunction(x) }
         let centered = x - x.mean(axis: -1, keepDims: true)
         var y = centered * rsqrt((centered * centered).mean(axis: -1, keepDims: true) + eps)
         if let weight { y = y * weight }
@@ -170,12 +184,12 @@ final class TransformerLayer: Module {
         self._gating.wrappedValue = cfg.gating ? MlpGating(cfg) : MlpNoGating(cfg)
         self._norm1.wrappedValue =
             switch cfg.norm {
-            case .layerNorm: ComposedLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
+            case .layerNorm: MimiLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
             case .rmsNorm: RMSNorm(dimensions: cfg.dModel, eps: 1e-8)
             }
         self._norm2.wrappedValue =
             switch cfg.norm {
-            case .layerNorm: ComposedLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
+            case .layerNorm: MimiLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
             case .rmsNorm: RMSNorm(dimensions: cfg.dModel, eps: 1e-8)
             }
         self._selfAttn.wrappedValue = Attention(cfg)
@@ -189,8 +203,11 @@ final class TransformerLayer: Module {
         }
     }
 
-    func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: WindowKVCache) -> MLXArray {
-        residualFeedForward(x, attended: selfAttn(norm1(x), mask: mask, cache: cache))
+    func callAsFunction(
+        _ x: MLXArray, offset: MLXArray, mask: MLXArray, cache: WindowKVCache
+    ) -> MLXArray {
+        residualFeedForward(
+            x, attended: selfAttn(norm1(x), offset: offset, mask: mask, cache: cache))
     }
 
     /// Adds the projected attention output to the residual, then the feed-forward block.
@@ -211,11 +228,14 @@ class Transformer: Module {
         self.layers = (0..<cfg.numLayers).map { _ in TransformerLayer(cfg) }
     }
 
-    func callAsFunction(_ x: MLXArray, cache: [WindowKVCache]) -> MLXArray {
+    /// The layers over `x` `[B, t, dModel]`, whose first step is at position `offset`, with the
+    /// caches' `mask` for t steps.
+    func callAsFunction(
+        _ x: MLXArray, offset: MLXArray, mask: MLXArray, cache: [WindowKVCache]
+    ) -> MLXArray {
         var x = x
-        let mask = cache.first?.mask(steps: x.dim(1), dtype: x.dtype)
         for (layer, c) in zip(self.layers, cache) {
-            x = layer(x, mask: mask, cache: c)
+            x = layer(x, offset: offset, mask: mask, cache: c)
         }
         return x
     }
@@ -233,8 +253,11 @@ final class ProjectedTransformer: Module {
         self._transformer.wrappedValue = Transformer(cfg)
     }
 
-    func callAsFunction(_ x: MLXArray, cache: [WindowKVCache]) -> MLXArray {
-        self.transformer(x.swappedAxes(1, 2), cache: cache).swappedAxes(1, 2)
+    func callAsFunction(
+        _ x: MLXArray, offset: MLXArray, mask: MLXArray, cache: [WindowKVCache]
+    ) -> MLXArray {
+        self.transformer(x.swappedAxes(1, 2), offset: offset, mask: mask, cache: cache)
+            .swappedAxes(1, 2)
     }
 
     func makeCache() -> [WindowKVCache] {
