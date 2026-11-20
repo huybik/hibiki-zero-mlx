@@ -33,6 +33,7 @@ inference/ (Apple Silicon, MLX)
                                                     │       └─► swift/ (MLX Swift: CLI, iOS bench app)
                                                     └─► tools/gate.py (scored as training scores)
   Mimi checkpoint ─► tools/export_mimi_coreml.py (from tools/mimi_step.py) ─► mimi-decoder.mlmodelc ─► swift/
+  heads student (bf16) ─► tools/export_lm_coreml.py (from tools/lm_step.py) ─► lm-trunk/lm-heads.mlmodelc ─► swift/
 ```
 
 - `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
@@ -158,7 +159,9 @@ inference/ (Apple Silicon, MLX)
 - A model directory's `config.json` names its MLX weights (`moshi_name`), tokenizer and sampling
   (`lm_gen_config`), and records any quantization per layer (`quantization`; `--bits 6`, what
   ships, is 6 bits on the transformer linears, 8 on the embeddings and heads), which both
-  runtimes load by, strictly. The gate feeds a file as training's evaluation does (source EOS,
+  runtimes load by, strictly. A Core ML LM's directory (`lm_coreml`, the heads student) names no
+  MLX weights, and only the Swift runtime runs it →
+  [lm-npu](docs/agent-memory/lm-npu.md#export). The gate feeds a file as training's evaluation does (source EOS,
   20 s of silence, stop at the text EOS after it), so Mac scores compare with the box's (rows
   whose EOS comes before the source ends aside); main.py's file mode also stops after 5 s
   without a word →
@@ -171,6 +174,7 @@ inference/ (Apple Silicon, MLX)
 | MLX inference, conversion and quantization, the quantization gate, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/`, `inference/tools/convert_mlx.py`, `inference/tools/gate.py` |
 | Swift runtime, iOS app, on-device tests | [swift-runtime](docs/agent-memory/swift-runtime.md) | `inference/swift/` |
 | Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
+| The heads student's LM on the Neural Engine: export, runtime, precision, phone speed | [lm-npu](docs/agent-memory/lm-npu.md) | `inference/tools/lm_step.py`, `inference/tools/export_lm_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralLM.swift` |
 | SFT trainer: streams, defaults, precision, objective | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
 | SFT H100 launcher, checkpoints, resume, HF recovery sync | [sft-recovery](docs/agent-memory/sft-recovery.md) | `training/h100.sh`, `training/finetune/hf_sync.py`, `training/finetune/checkpoints.py` |
 | SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets, the input level stage | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/`, `inference/hibiki_mlx/level.py` |

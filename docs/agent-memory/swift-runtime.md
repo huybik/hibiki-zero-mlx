@@ -1,7 +1,8 @@
 # Swift runtime
 
 Read when touching `inference/swift/` (the MLX Swift runtime, the `hibiki` CLI, the HibikiBench
-iOS app) or when measuring on a phone.
+iOS app) or when measuring on a phone. The parallel-heads student's LM runs here as Core ML
+(`NeuralLM`): [lm-npu](lm-npu.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero deltas](#hibiki-zero-deltas) ·
 [Parity](#parity) · [Mimi on the CPU](#mimi-on-the-cpu) · [Speed and memory](#speed-and-memory) ·
 [Device test](#device-test)
@@ -20,8 +21,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
     compiled Core ML model `mimi-decoder.mlmodelc` in the model directory
     ([mimi-npu](mimi-npu.md)).
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
-    `Generator.swift` (delayed streams), `Translator.swift` (k 80 ms frames per step: the LM on
-    the GPU, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
+    `Generator.swift` (delayed streams over a `FrameLM`: `HibikiLM` in MLX on the GPU, or
+    `NeuralLM.swift`, the heads student in Core ML, [lm-npu](lm-npu.md)), `Translator.swift` (k 80 ms frames per step: the LM on
+    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
     the SentencePiece `.model` protobuf directly, and `TextDecoder`) and `Audio.swift` (file reading, the WAV
     writer, and `Leveller`, the input level stage `Translator.step` runs before Mimi: Python's
     `hibiki_mlx/level.py`, equal sample for sample; `reset` starts its stream again;
@@ -31,8 +33,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   `pipeline.py` does, an invalid sequence as U+FFFD; `flush` returns the rest. Fed the same
   token streams (2026-11-14, scratch harness compiling `Vocabulary.swift`: 364 streams on both
   tokenizers, PADs between pieces), it returns Python's text call for call, and the same whole
-  text at 2, 3 and 5 tokens per call. `config.json` must name `moshi_name`, `tokenizer_name` and
-  `lm_gen_config`, which sets `Translator`'s samplers, and may hold `quantization`
+  text at 2, 3 and 5 tokens per call. `config.json` must name `tokenizer_name` and
+  `lm_gen_config`, which sets the LM's samplers, and `moshi_name` (the MLX weights) unless it marks a
+  Core ML LM (`lm_coreml`, [lm-npu](lm-npu.md)); it may hold `quantization`
   ([mlx-inference](mlx-inference.md#model-directories)).
 - `Translator.endInput()` ends a file's input: one LM step whose 16 source codes are all the
   source EOS (`card`) while Mimi codes a silent frame, as `pipeline.translate` does.
@@ -50,7 +53,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   frame 153 left 153 samples and a valid 12.08 s WAV.
 - `HibikiBench/` is the iOS app: a hand-written Xcode project (synchronized folder `App/`) that
   depends on the local package, with the increased-memory-limit entitlement. `--model NAME` reads
-  `Documents/NAME/`, so several models can stay on the phone. The team ID is
+  `Documents/NAME/`, so several models can stay on the phone; `--clip NAME` reads Documents/NAME
+  instead of `clip.wav`, and `--lm-units` places a Core ML LM, as the CLI's does. The team ID is
   passed on the command line (`DEVELOPMENT_TEAM=`), not stored in the project. It caps MLX's
   buffer cache at 256 MB through `Translator(cacheLimit:)` (freed buffers count toward the
   app's memory limit) and runs the bench on a user-interactive thread. iOS refuses GPU work
@@ -106,9 +110,12 @@ kept):
 
 ## Mimi on the CPU
 
-`Translator.step` starts LM step t on the GPU with `asyncEval`, meanwhile decodes the audio of
-step t − 1 on the Neural Engine ([mimi-npu](mimi-npu.md)) and encodes frame t on the CPU, then
-waits for the LM, as `pipeline.py` overlaps rustymimi threads with the LM. An LM step's audio is
+`Translator.step` starts LM step t on the GPU with `asyncEval` (a Core ML LM on its own thread),
+meanwhile encodes frame t on the CPU and decodes the audio of step t − 1 on the Neural Engine
+([mimi-npu](mimi-npu.md)), then waits for the LM, as `pipeline.py` overlaps rustymimi threads
+with the LM. The encode goes first: a Core ML LM holds the Neural Engine, and a decode queued
+behind it left the CPU idle (the Mac's frame 26 → 18.5 ms, [lm-npu](lm-npu.md#runtime)); with
+the MLX LM the order changes nothing (text and audio identical to the old order's). An LM step's audio is
 decoded during a later one, so it comes out after its text; `flush` returns the audio and text
 left when the input ends (the CLI's `translate` and `Bench` call it). A step can take k frames
 ([chunks](#chunks)).
