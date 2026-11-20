@@ -259,8 +259,8 @@ update 2,000 are in [student-grpo](student-grpo.md).
 - Both runtimes run the depformer student's config as it is (2026-11-14, the untrained cut at 6
   bits, 1.24 GB): MLX file mode, and the Swift CLI with an 8-codebook `mimi-decoder.mlmodelc`
   (`export_mimi_coreml.py --decoder-codebooks 8`), 107 frames in 2.0 s on the M4 Pro (Mimi's
-  encode 12.8 ms a frame, the LM 2.9, the decode 3.3). The heads need support in both runtimes,
-  built only if they win.
+  encode 12.8 ms a frame, the LM 2.9, the decode 3.3). The MLX runtime runs the heads
+  (2026-11-20, [student-heads](student-heads.md#inference)); the Swift runtime does not yet.
 - **6 bits holds on the student** (2026-11-14, `student_dep10` update 48,000 staged by
   `convert_mlx.py`, the gate on every FLEURS dev row, `--seed 42`; bf16 minus 6 bits, paired
   bootstrap 95%): VI→EN 24.81 / 24.43 (+0.38, −0.41 to +1.24), EN→VI 19.34 / 19.39 (−0.05, −0.82

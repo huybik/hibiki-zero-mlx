@@ -40,7 +40,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   zero-padded to whole frames, `endInput`, silence to 250 frames after the clip, stop at the end
   of the first step after `endInput` with the text EOS, seed 299792458; it has no quiet stop,
   so it runs the whole tail where main.py stops after 5 s without a word once the source has
-  ended ([mlx-inference](mlx-inference.md#runtime)); `--model` defaults to
+  ended, and its speech ends `max_delay` − 1 frames before main.py's, which steps on past the EOS
+  for the frames before it ([mlx-inference](mlx-inference.md#runtime)); `--model` defaults to
   `weights/hibiki-zero-3b-q4`); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
   runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per

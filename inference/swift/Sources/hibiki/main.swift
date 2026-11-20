@@ -4,7 +4,8 @@
 //   then silence for 20 s in all, stopping at the end of the first step after `endInput` where
 //   the model emits the text EOS (with --chunk K > 1 the text keeps what that step wrote after
 //   the EOS). An EOS before that, which the model wrote before hearing the source EOS, stops
-//   nothing, so a long file is translated to its end.
+//   nothing, so a long file is translated to its end. Its speech ends max_delay - 1 frames before
+//   main.py's, which steps on past the EOS for the speech of the frames before it.
 //
 // hibiki bench INPUT [--model DIR] [--minutes M] [--unpaced] [--out BASE] [--chunk K]
 //   Loops INPUT for M minutes (default 10) through `Bench`, paced like a live microphone unless

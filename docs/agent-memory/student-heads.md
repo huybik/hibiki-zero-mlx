@@ -2,7 +2,8 @@
 
 Read when touching `training/student/heads.py` or `restart.sh student-heads`, or training, scoring or
 deciding on the phone student with parallel codebook heads. Back to [CONTEXT.md](../../CONTEXT.md) ·
-[Design](#design) · [Codebooks](#codebooks) · [Speed](#speed) · [Runs](#runs). The cut, training and
+[Design](#design) · [Codebooks](#codebooks) · [Speed](#speed) ([inference](#inference),
+[training](#training)) · [Runs](#runs). The cut, training and
 distillation it shares with the depformer student are in [phone-student](phone-student.md).
 
 ## Design
@@ -62,6 +63,38 @@ not increase latency so much"). `restart.sh student-heads` cuts `student_heads14
   count.
 
 ## Speed
+
+### Inference
+
+The MLX runtime runs the heads ([mlx-inference](mlx-inference.md#vendored-moshi-mlx)); the Swift
+runtime does not yet, so there is no phone timing. On the M4 Pro (2026-11-20; update 16,000 of
+`student_heads14_cb16` against the shipped depformer student, GRPO update 2,000, both staged by
+`convert_mlx.py`), the LM step alone (text and audio sampled, medians of 300 steps; scratch script):
+
+| Model | Size at 6 bits | 6 bits, back to back | 6 bits, every 80 ms | bf16, back to back |
+|---|---|---|---|---|
+| Depformer student | 1.24 GB | 6.54 ms (main 3.56 + depformer 3.17) | 15.83 ms | 12.12 ms |
+| Heads student, 16 codebooks | 1.16 GB | 5.20 ms (main 4.89 + heads 0.56) | 12.88 ms | 10.30 ms |
+
+- The 16 heads in one pass cost a sixth of the depformer's 8 sequential steps, which pays for 4
+  more main layers and 16 more codebooks. The two-way 3B at 6 bits: 19.56 ms back to back.
+- Spaced as live frames arrive, the GPU clocks down between steps and each takes ~2x as long; the
+  order holds. `bench.py` (Mimi on the CPU between steps) gives LM totals of 9.2–9.8 ms (heads) and
+  10.1–11.5 (depformer) over runs; Mimi's encode (~18.5 ms) and decode (~17 ms) on the CPU are now
+  the larger costs.
+- The same update on the gate (6 bits, the first 20 FLEURS dev rows each way, `--seed 42`;
+  `/Volumes/data/hibiki-zero-evals/mac/gate/heads_cb16_s16k_vs_dep10_g2000_q6_20rows/`): chrF / BLEU /
+  length ratio / end offset / EOS, health pass on both:
+
+  | Set | Heads, update 16,000 | Depformer student, GRPO 2,000 |
+  |---|---|---|
+  | fleurs-vi/dev (20) | 30.40 / 2.04 / 1.72 / 3.6 s / 15 of 20 | 43.67 / 7.95 / 1.14 / 1.2 s / 11 of 20 |
+  | fleurs-en/dev (20) | 25.79 / 6.95 / 1.02 / 2.3 s / 17 of 20 | 35.09 / 15.04 / 1.02 / 1.6 s / 8 of 20 |
+
+  Near the box's validation at that update on the whole dev sets (28.40 / 22.15), so MLX reads the
+  heads student as training does; the gap is training (16,000 of 190,126 updates, no GRPO).
+
+### Training
 
 The RTX PRO 6000 (`bench.sh` on the box, the run's arguments, steps 151–300;
 [sft-speed](sft-speed.md#by-gpu)):

@@ -7,8 +7,9 @@ quantized, with the text tokenizer the checkpoint is on.
       --out-dir DIR
 
 --bits quantizes the transformer linears (main and depformer layers) to that many bits (group
-size 32 at 4 bits, 64 at 6) and the embeddings, the text head and each depformer slice's input
-and output projection to 8 bits, group size 32, and records that per layer in config.json's
+size 32 at 4 bits, 64 at 6) and the embeddings, the text head, each depformer slice's input
+and output projection and a heads student's parallel heads to 8 bits, group size 32, and records
+that per layer in config.json's
 `quantization`, which both runtimes quantize by before loading strictly. 6 bits keeps bf16's
 chrF on FLEURS dev; 4 bits loses ~4 on VI->EN (docs/agent-memory/mlx-inference.md).
 """
@@ -39,10 +40,11 @@ BASE_TOKENIZER = "tokenizer_spm_48k_multi6_2.model"
 GROUP_SIZE = {4: 32, 6: 64}
 # The layers fewer bits hurt most, at 8 bits, group size 32: the embeddings, the text head and
 # the depformer slices' input and output projections (q3 there made the 3B babble;
-# docs/vision/reports/inference_matrix.md). Every other Linear, the transformer layers', takes
-# --bits.
+# docs/vision/reports/inference_matrix.md), and the audio heads a heads student has in their
+# place (`depformer.linear`). Every other Linear, the transformer layers', takes --bits.
 EIGHT_BITS = re.compile(
-    r"text_emb|text_linear|audio_embs\.\d+|depformer\.slices\.\d+\.(emb|linear_in|linear_out)"
+    r"text_emb|text_linear|audio_embs\.\d+"
+    r"|depformer\.(linear|slices\.\d+\.(emb|linear_in|linear_out))"
 )
 
 
