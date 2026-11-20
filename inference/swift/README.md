@@ -64,6 +64,10 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki translate CLIP.wav \
 `translate` prints its own time per frame (main transformer, heads, host) beside the step's;
 `bench` prints their sum per minute and logs each in its `.jsonl`.
 
+`--encoder cpu|gpu` (CLI and app) places Mimi's encoder: the CPU by default. With a Core ML LM
+the GPU is free, and Mimi can encode there with the same codes
+([swift-runtime](../../docs/agent-memory/swift-runtime.md#mimi-on-the-gpu)).
+
 ## iPhone
 
 Build and install with your own team, then copy the model and a clip into the app's Documents
@@ -96,7 +100,7 @@ read).
 
 `--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models
 on the phone, and `--clip NAME` reads `Documents/NAME` instead of `clip.wav`; `--chunk K`,
-`--unpaced` and `--lm-units` work as in `bench`. The phone must be unlocked, and a new developer certificate trusted once under
+`--unpaced`, `--lm-units` and `--encoder` work as in `bench`. The phone must be unlocked, and a new developer certificate trusted once under
 Settings > General > VPN & Device Management. Keep the app in the foreground: iOS stops GPU
 work in the background. The app keeps the phone awake and writes
 `Documents/bench-<time>.{jsonl,wav}` as it runs and `.txt` at the end; copy them back with

@@ -23,6 +23,7 @@ public enum Bench {
         public let lmStartMs: Double
         public let decodeMs: Double
         public let encodeMs: Double
+        public let encodeWaitMs: Double
         public let lmWaitMs: Double
         /// A Core ML LM's own time (`Translator.Timing.lmTrunk` and the rest; 0 for MLX).
         public let lmTrunkMs: Double
@@ -37,7 +38,7 @@ public enum Bench {
         /// Memory the process may still allocate before the system kills it (iOS only).
         public let availableMB: Double?
 
-        public var totalMs: Double { lmStartMs + decodeMs + encodeMs + lmWaitMs }
+        public var totalMs: Double { lmStartMs + decodeMs + encodeMs + encodeWaitMs + lmWaitMs }
         /// The step's time per frame; real time needs it under 80 ms.
         public var msPerFrame: Double { totalMs / Double(frames) }
         /// Whether this step completes a multiple of `every` frames, for progress lines.
@@ -80,7 +81,8 @@ public enum Bench {
             let sample = Sample(
                 frame: idx, frames: framesPerStep, wall: wall, lag: paced ? wall - arrival : 0,
                 lmStartMs: 1000 * out.timing.lmStart, decodeMs: 1000 * out.timing.decode,
-                encodeMs: 1000 * out.timing.encode, lmWaitMs: 1000 * out.timing.lmWait,
+                encodeMs: 1000 * out.timing.encode, encodeWaitMs: 1000 * out.timing.encodeWait,
+                lmWaitMs: 1000 * out.timing.lmWait,
                 lmTrunkMs: 1000 * out.timing.lmTrunk, lmHeadsMs: 1000 * out.timing.lmHeads,
                 lmHostMs: 1000 * out.timing.lmHost,
                 thermal: ProcessInfo.processInfo.thermalState.rawValue,

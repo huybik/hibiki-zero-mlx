@@ -132,6 +132,13 @@ class SeanetEncoder: Module, StreamingLayer {
         }
     }
 
+    /// Every streaming conv, in a fixed order.
+    var convs: [StreamableConv1d] {
+        [initConv1d]
+            + layers.flatMap { $0.residuals.flatMap(\.block) + [$0.downsample] }
+            + [finalConv1d]
+    }
+
     func step(_ x: StreamArray) -> StreamArray {
         var x = self.initConv1d.step(x)
         for layer in self.layers {

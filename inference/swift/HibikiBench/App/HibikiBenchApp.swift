@@ -3,13 +3,15 @@
 // Reads Documents/model/ (Documents/NAME/ with `--model NAME`: config.json, weights, Mimi,
 // tokenizer) and Documents/clip.wav (Documents/NAME with `--clip NAME`), runs `Bench` for `--minutes M` (default 10), `--chunk K`
 // frames per step (default 1), paced like a live microphone unless `--unpaced`, a Core ML LM on
-// `--lm-units ane|gpu|cpu|all` (default ane, the Neural Engine), and writes
+// `--lm-units ane|gpu|cpu|all` (default ane, the Neural Engine), Mimi encoding on
+// `--encoder cpu|gpu` (default cpu), and writes
 // Documents/bench-<time>.{jsonl,wav,txt} as it goes. Progress and the summary also go to stdout, which `xcrun devicectl device process launch
 // --console` shows. Keep the app in the foreground: iOS refuses GPU work from the background, so
 // locking the phone ends the run.
 
 import CoreML
 import HibikiCore
+import MLX
 import SwiftUI
 
 @main
@@ -50,15 +52,28 @@ final class BenchRun: ObservableObject {
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "model"
         let clip = args.firstIndex(of: "--clip")
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "clip.wav"
+        // A bad option stops the app before the run, on the console as well as the screen.
+        let fail = { (message: String) in
+            print(message)
+            fflush(stdout)
+            self.show(message)
+        }
         let unitsName = args.firstIndex(of: "--lm-units")
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "ane"
         guard let units = Translator.lmComputeUnitNames[unitsName] else {
-            show("error: --lm-units \(unitsName): one of ane, gpu, cpu, all")
+            fail("error: --lm-units \(unitsName): one of ane, gpu, cpu, all")
+            return
+        }
+        let encoderName = args.firstIndex(of: "--encoder")
+            .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "cpu"
+        guard let encoder = DeviceType(rawValue: encoderName) else {
+            fail("error: --encoder \(encoderName): cpu or gpu")
             return
         }
         let thread = Thread { [weak self] in
             Self.bench(
-                model: model, clip: clip, minutes: minutes, chunk: chunk, paced: paced, units: units
+                model: model, clip: clip, minutes: minutes, chunk: chunk, paced: paced, units: units,
+                encoder: encoder
             ) { line in
                 print(line)
                 fflush(stdout)
@@ -77,7 +92,7 @@ final class BenchRun: ObservableObject {
 
     nonisolated private static func bench(
         model: String, clip: String, minutes: Double, chunk: Int, paced: Bool,
-        units: MLComputeUnits,
+        units: MLComputeUnits, encoder: DeviceType,
         say: @escaping (String) -> Void
     ) {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -86,12 +101,13 @@ final class BenchRun: ObservableObject {
             // Freed MLX buffers count toward the app's memory limit; keep few of them.
             let translator = try Translator(
                 directory: docs.appending(path: model), cacheLimit: 256 << 20,
-                lmComputeUnits: units)
+                lmComputeUnits: units, encoderDevice: encoder)
             let clip = try Audio.read(docs.appending(path: clip))
             say(String(format: "loaded; footprint %.0f MB", Bench.footprintMB()))
             say(
                 "running \(minutes) min, \(chunk) frames per step, "
-                    + (paced ? "paced at 12.5 frames/s" : "unpaced"))
+                    + (paced ? "paced at 12.5 frames/s" : "unpaced")
+                    + ", Mimi encoding on the \(encoder.rawValue)")
             let stamp = ISO8601DateFormatter().string(from: Date())
                 .replacingOccurrences(of: ":", with: "-")
             let base = docs.appending(path: "bench-\(stamp)")
