@@ -100,14 +100,16 @@ final class BenchRun: ObservableObject {
                 output: base
             ) { sample in
                 if sample.ends(every: 125) {
+                    // A Core ML LM's own time per frame; the MLX LM has none of its own.
+                    let lm = (sample.lmTrunkMs + sample.lmHeadsMs + sample.lmHostMs)
+                        / Double(sample.frames)
                     say(
-                        String(
-                            format: "%5.0f s  %5.1f ms/frame  LM %.1f  lag %.2f s  thermal %d"
-                                + "  %.0f MB (MLX %.0f)",
-                            sample.wall, sample.msPerFrame,
-                            (sample.lmTrunkMs + sample.lmHeadsMs + sample.lmHostMs)
-                                / Double(sample.frames),
-                            sample.lag, sample.thermal, sample.footprintMB, sample.mlxActiveMB))
+                        String(format: "%5.0f s  %5.1f ms/frame", sample.wall, sample.msPerFrame)
+                            + (lm > 0 ? String(format: "  LM %.1f", lm) : "")
+                            + String(
+                                format: "  lag %.2f s  thermal %d  %.0f MB (MLX %.0f)",
+                                sample.lag, sample.thermal, sample.footprintMB,
+                                sample.mlxActiveMB))
                 }
             }
             say(Bench.summary(samples))

@@ -36,7 +36,7 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   the tables, the tokenizer and Mimi checkpoint, and the config with `lm_coreml: {bits}` in place
   of `moshi_name`. Mimi's decoder comes from `export_mimi_coreml.py`
   ([README](../../inference/swift/README.md#core-ml-lm)). `--bits` palettizes weights over 1M
-  elements by k-means, one 64-entry table per 16 output channels: trunk 1,958 → 738 MB, heads 134
+  elements by k-means, one table of 2^N entries per 16 output channels: trunk 1,958 → 738 MB, heads 134
   → 51 MB. It takes ~15 min on one core. Compute plan of the 6-bit models: all 892 trunk ops and
   all 18 head ops on the Neural Engine.
 
@@ -76,6 +76,14 @@ argmaxes equal to the MLX bf16 run's, given the same inputs and sampled text:
 | Core ML 6 bits (palettized), M4 Pro Neural Engine | 98.7% | 95.4% | 90.8% | 92.8% | 92.1% |
 
 - The Neural Engine's fp16 costs about what MLX's 6 bits do; palettizing costs as much again.
+- **Agreement drifts over long contexts.** On a 4.5-minute clip (FLEURS dev VI rows joined, 3,412
+  frames, the same replay), codebook 0 agreed 96–97% over frames 0–1,500, then fell to 92%, 84–85%
+  and 79–80% by frames 3,000–3,412, in fp16 and at 6 bits alike. MLX 6 bits held 95–97% throughout.
+  There is no step at the ring's wrap (frame 3,000), so this is the Neural Engine's fp16 summing
+  over thousands of keys, as with Mimi's encoder ([mimi-npu](mimi-npu.md#precision)), not
+  palettizing or the ring. The short-clip numbers and the gate do not see it. The model
+  itself degenerates on long input anyway ([swift-runtime](swift-runtime.md#device-test)); the
+  reference's text stopped after frame 2,250.
   Range is no issue: the student's activations peak at 50.5, 1,300x under fp16's limit (measured
   on the depformer student, 2026-11-16).
 - The gate's first 20 FLEURS dev rows each way through the Swift CLI (`hibiki translate`, seed 42
@@ -129,6 +137,8 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
 ## Next
 
 - A full-set gate of the Core ML LM against MLX 6 bits, in one runtime.
+- Long sessions: the fp16 drift past ~2 minutes of context. Untried: attention over the cache in
+  chunks with their partial sums combined (more fp16 headroom per sum), or a shorter context.
 - Mimi's CPU encode is now the phone's bottleneck. Its fp16 Neural Engine codes drift
   ([mimi-npu](mimi-npu.md#precision)), so it stays on the CPU. Fewer bytes on the Neural Engine
   may free bandwidth for it: 4-bit palettization (~490 MB), after a quality gate.

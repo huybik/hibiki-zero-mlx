@@ -17,7 +17,8 @@ final class NeuralLM: FrameLM {
     let cfg: HibikiConfig
     private let trunk: MLModel
     private let heads: MLModel
-    private var state: MLState
+    /// The KV cache; nil only while `reset` replaces it, so two never coexist (172 MB each).
+    private var state: MLState?
     /// The input tables, memory-mapped: text_emb [text_card + 1, dim], then each audio_embs
     /// [card + 1, dim].
     private let tables: Data
@@ -54,16 +55,22 @@ final class NeuralLM: FrameLM {
             throw HibikiError.unsupported("lm-embeddings.bin of \(tables.count) bytes")
         }
         let half = cfg.dim / cfg.numHeads / 2
-        let expected: [(MLModel, String, [Int])] = [
+        let inputs: [(MLModel, String, [Int])] = [
             (trunk, "x", [1, cfg.dim]), (trunk, "cos", [1, half]), (trunk, "sin", [1, half]),
             (trunk, "mask", [1, cfg.context]), (trunk, "slot", [1]),
             (heads, "hidden", [1, cfg.dim]), (heads, "text", [1, cfg.dim]),
         ]
-        for (model, name, shape) in expected {
-            let actual = model.modelDescription.inputDescriptionsByName[name]?
-                .multiArrayConstraint?.shape.map(\.intValue)
+        let outputs: [(MLModel, String, [Int])] = [
+            (trunk, "hidden", [1, cfg.dim]), (trunk, "text_logits", [1, cfg.textCard]),
+            (heads, "audio_logits", [cfg.depQ, cfg.card]),
+        ]
+        for (model, name, shape) in inputs + outputs {
+            let description = model.modelDescription
+            let feature = description.inputDescriptionsByName[name]
+                ?? description.outputDescriptionsByName[name]
+            let actual = feature?.multiArrayConstraint?.shape.map(\.intValue)
             guard actual == shape else {
-                throw HibikiError.unsupported("Core ML LM input \(name) \(actual ?? []) for \(shape)")
+                throw HibikiError.unsupported("Core ML LM \(name) \(actual ?? []) for \(shape)")
             }
         }
         let array = { (shape: [Int], type: MLMultiArrayDataType) in
@@ -84,6 +91,7 @@ final class NeuralLM: FrameLM {
     func reset() {
         queue.sync {
             frame = 0
+            state = nil
             state = trunk.makeState()
             closeMask()
         }
@@ -127,7 +135,7 @@ final class NeuralLM: FrameLM {
         let out = try trunk.prediction(
             from: MLDictionaryFeatureProvider(dictionary: [
                 "x": x, "cos": cos, "sin": sin, "mask": mask, "slot": slot,
-            ]), using: state)
+            ]), using: state!)
         busy.trunk += lap()
         let hidden = out.featureValue(for: "hidden")!.multiArrayValue!
         let textToken = textSampler(rows(out.featureValue(for: "text_logits")!.multiArrayValue!)[0], using: &rng)

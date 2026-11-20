@@ -23,7 +23,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams over a `FrameLM`: `HibikiLM` in MLX on the GPU, or
     `NeuralLM.swift`, the heads student in Core ML, [lm-npu](lm-npu.md)), `Translator.swift` (k 80 ms frames per step: the LM on
-    the GPU, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
+    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
     the SentencePiece `.model` protobuf directly, and `TextDecoder`) and `Audio.swift` (file reading, the WAV
     writer, and `Leveller`, the input level stage `Translator.step` runs before Mimi: Python's
     `hibiki_mlx/level.py`, equal sample for sample; `reset` starts its stream again;

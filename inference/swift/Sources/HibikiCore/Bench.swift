@@ -99,14 +99,16 @@ public enum Bench {
     }
 
     /// One line per minute of audio: percentiles of the time per frame and of the LM wait per
-    /// frame over its steps, a Core ML LM's own time per frame, worst lag, thermal state and
-    /// memory. A step counts toward the
+    /// frame over its steps, a Core ML LM's own time per frame (when it ran one), worst lag,
+    /// thermal state and memory. A step counts toward the
     /// minute of its first frame, so with k not dividing 750 the rows hold a few frames more or
     /// less.
     public static func summary(_ samples: [Sample]) -> String {
+        let coreML = samples.contains { $0.lmTrunkMs > 0 }
         var lines = [
-            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50  Core ML LM p50  max lag s"
-                + "  thermal  footprint MB  MLX active MB"
+            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50"
+                + (coreML ? "  Core ML LM p50" : "")
+                + "  max lag s  thermal  footprint MB  MLX active MB"
         ]
         let minutes = Dictionary(grouping: samples) { $0.frame / 750 }
         for minute in minutes.keys.sorted() {
@@ -118,10 +120,12 @@ public enum Bench {
             let q = { (xs: [Double], p: Double) in xs[min(xs.count - 1, Int(p * Double(xs.count)))] }
             lines.append(
                 String(
-                    format:
-                        "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f  %14.1f  %9.2f  %7d  %12.0f  %13.0f",
+                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f",
                     minute + 1, chunk.map(\.frames).reduce(0, +), q(total, 0.5), q(total, 0.9),
-                    q(total, 0.99), q(wait, 0.5), q(lm, 0.5), chunk.map(\.lag).max() ?? 0,
+                    q(total, 0.99), q(wait, 0.5))
+                    + (coreML ? String(format: "  %14.1f", q(lm, 0.5)) : "")
+                    + String(
+                        format: "  %9.2f  %7d  %12.0f  %13.0f", chunk.map(\.lag).max() ?? 0,
                     chunk.map(\.thermal).max() ?? 0, chunk.map(\.footprintMB).max() ?? 0,
                     chunk.map(\.mlxActiveMB).max() ?? 0))
         }
