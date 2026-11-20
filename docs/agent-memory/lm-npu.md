@@ -108,30 +108,32 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
 |---|---|---|
 | M4 Pro, back to back (Python, `coremltools`) | 11.2 / 0.9 / – ms | |
 | M4 Pro, `hibiki bench` | 13.1 / 0.9 / 1.2 ms | 18.5–19.0 ms |
-| A15, the app, minutes 1–2 | 42.3 / 3.8 / 1.1–2.0 ms | 47.7–48.3 ms |
-| A15, minutes 3–10 | 42.9–43.1 / 3.6 / 1.8–2.7 ms | 73.7–84.6 ms |
+| A15 from cool, minutes 1–7 | 41.9–42.3 / 3.6–4.6 / 1.1–2.0 ms | 47.2–48.6 ms |
+| A15 from cool, minutes 8–10 | 39.9–41.2 / 3.1–3.5 / 1.8–2.3 ms | 51.9, 55.3, 74.6 ms |
+| A15 starting hot, minutes 3–10 | 42.9–43.1 / 3.6 / 1.8–2.7 ms | 73.7–84.6 ms |
 
-- On the A15 (iPhone 13 Pro Max, wired, `clip-vi.wav` a FLEURS dev clip looped, thermal state
-  "serious" from the start), the LM held 48–49 ms a frame for all 10 minutes, with no throttle step.
-  On the GPU in MLX, a 14-layer depformer cut of the 3B (4 bits, 8 codebooks) had run 64 ms a
-  frame in minute 1 and 94–98 from minute 3, GPU-bound
-  ([swift-runtime](swift-runtime.md#device-test)). The footprint was 652 MB, flat.
-- The frame is the larger of the LM and the driving thread's Mimi encode (CPU) plus decode
-  (Neural Engine). Encode / decode went 36.8 / 11.4 ms in minute 1; at minute 3 the CPU throttled
-  and the encode jumped to 63.5 ms, 73.7 by minute 10. The frame passed 80 ms in minute 6, and the
-  lag reached 17.6 s at minute 10. The LM fits real time; Mimi's CPU encode at 1-frame steps does
-  not, once hot.
-- 2-frame steps (`--chunk 2`) did worse: 45 ms a frame in minute 1, then 78–96 ms and 14–20 s of
-  lag. Per frame, the encode went 25 → 49–64 ms, and the decode rose to 30 ms: a step's two
-  decodes queue behind the LM on the Neural Engine. The LM itself held 49 ms.
-- Every A15 run here began "serious" from the one before; the CPU encode at 1-frame steps took
-  37 ms cold, against 20–28 beside the MLX LM on the GPU ([swift-runtime](swift-runtime.md#mimi-on-the-cpu)).
-  The Neural Engine streams 738 MB of weights a frame (~17.5 GB/s), which likely slows the CPU's
-  memory-bound encode.
+- **From cool it holds real time for 10 minutes** (the A15, iPhone 13 Pro Max, wired; a FLEURS dev
+  clip looped, `--model heads6 --clip clip-vi.wav`; thermal state "fair", "serious" from 41 s):
+  the lag never passed 0.36 s. The LM held 45–48 ms a frame throughout, with no throttle step; on
+  the GPU in MLX, a 14-layer depformer cut of the 3B (4 bits, 8 codebooks) had run 64 ms a frame
+  in minute 1 and 94–98 from minute 3, GPU-bound ([swift-runtime](swift-runtime.md#device-test)).
+  The footprint was 653 MB, flat.
+- **Mimi's CPU encode sets the margin.** The frame is the larger of the LM and the driving
+  thread's encode (CPU) plus decode (Neural Engine). From cool the encode went 36.7 ms (minute 1)
+  → 45 (8) → 64.4 (10), so minute 10 ran at 74.6 ms, near the 80 ms budget. Started hot (after
+  earlier runs), it reached 63.5 ms at minute 3 and 73.7 by minute 10: the frame passed 80 ms in
+  minute 6 and the lag reached 17.6 s.
+- The encode took 37 ms cold, against 20–28 beside the MLX LM on the GPU
+  ([swift-runtime](swift-runtime.md#mimi-on-the-cpu)). The Neural Engine streams 738 MB of weights
+  a frame (~17.5 GB/s), which likely slows the CPU's memory-bound encode.
+- 2-frame steps (`--chunk 2`, started hot) did worse: 45 ms a frame in minute 1, then 78–96 ms and
+  14–20 s of lag. Per frame, the encode went 25 → 49–64 ms, and the decode rose to 30 ms: a step's
+  two decodes queue behind the LM on the Neural Engine. The LM itself held 49 ms.
 - fp16 weights: the trunk took 61.7 ms a frame on the M4 Pro's Neural Engine against 11.2 at 6
   bits. It streams its weights every frame, so their size sets its speed.
-- Raw results: `/Volumes/data/hibiki-zero-evals/iphone/ane/` (`heads6_ane_vi_{1,10}min`,
-  `heads6_ane_gpuenc_vi_10min`, `heads6_ane_chunk2_vi_10min`), each `.jsonl` (a sample a step), `.txt` (summary and text) and
+- Raw results: `/Volumes/data/hibiki-zero-evals/iphone/ane/` (`heads6_ane_cool_vi_10min`, the
+  headline; started hot: `heads6_ane_vi_{1,10}min`, `heads6_ane_gpuenc_vi_10min`,
+  `heads6_ane_chunk2_vi_10min`), each `.jsonl` (a sample a step), `.txt` (summary and text) and
   `.wav`.
 
 ## Next

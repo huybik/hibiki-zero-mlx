@@ -67,8 +67,9 @@ not increase latency so much"). `restart.sh student-heads` cuts `student_heads14
 ### Inference
 
 The MLX runtime runs the heads ([mlx-inference](mlx-inference.md#vendored-moshi-mlx)); the Swift
-runtime runs them as Core ML on the Neural Engine: on the A15, the LM takes 48–49 ms a frame for
-10 minutes, and Mimi's CPU encode, not the LM, breaks real time once hot ([lm-npu](lm-npu.md#speed)).
+runtime runs them as Core ML on the Neural Engine: on the A15 the LM takes 45–48 ms a frame, and
+from cool the phone holds real time for 10 minutes; Mimi's CPU encode, not the LM, sets the margin
+([lm-npu](lm-npu.md#speed)).
 On the M4 Pro (2026-11-20; update 16,000 of
 `student_heads14_cb16` against the shipped depformer student, GRPO update 2,000, both staged by
 `convert_mlx.py`), the LM step alone (text and audio sampled, medians of 300 steps; scratch script):
