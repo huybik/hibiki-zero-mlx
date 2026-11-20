@@ -153,7 +153,8 @@ class Heads(nn.Module):
 
 @dataclass
 class Inputs:
-    """The host's per-frame inputs to `Trunk` at frame t (from 0)."""
+    """The host's per-frame inputs to `Trunk` at frame t (from 0), fp16 as the model takes them and
+    rounded as `NeuralLM` rounds them (Double to fp16)."""
 
     cos: np.ndarray
     sin: np.ndarray
@@ -164,12 +165,12 @@ class Inputs:
     def at(cfg: Config, t: int) -> Inputs:
         half = cfg.head_dim // 2
         angle = t * np.exp(-np.log(cfg.max_period) * np.arange(half, dtype=np.float64) / half)
-        mask = np.zeros((1, cfg.context), np.float32)
+        mask = np.zeros((1, cfg.context), np.float16)
         if t < cfg.context - 1:
             mask[0, t + 1 :] = -1e4  # slots not written yet
         return Inputs(
-            cos=np.cos(angle)[None].astype(np.float32),
-            sin=np.sin(angle)[None].astype(np.float32),
+            cos=np.cos(angle)[None].astype(np.float16),
+            sin=np.sin(angle)[None].astype(np.float16),
             mask=mask,
             slot=np.array([t % cfg.context], np.int32),
         )

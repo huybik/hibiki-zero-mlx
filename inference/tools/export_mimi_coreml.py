@@ -27,21 +27,25 @@ import torch
 import mimi_step as ms
 
 
-def _export(module: torch.nn.Module, inputs: dict[str, tuple[tuple[int, ...], type]],
-            outputs: list[str], path: Path) -> None:
+def convert(module: torch.nn.Module, inputs: dict[str, tuple[tuple[int, ...], type]],
+            outputs: list[str], states: dict[str, tuple[int, ...]] | None = None) -> ct.models.MLModel:
+    """`module` traced on zero inputs of the given shapes and dtypes (np.float16 inputs trace in
+    float32) and converted to an fp16 ML program for the CPU and Neural Engine (iOS 18); each of
+    `states` is an fp16 buffer of the module's, kept by Core ML between calls."""
     examples = []
     for shape, dtype in inputs.values():
         examples.append(torch.zeros(shape, dtype=torch.int32 if dtype is np.int32 else torch.float32))
     traced = torch.jit.trace(module.eval(), tuple(examples))
-    model = ct.convert(
+    return ct.convert(
         traced,
         inputs=[ct.TensorType(name=n, shape=s, dtype=d) for n, (s, d) in inputs.items()],
         outputs=[ct.TensorType(name=n) for n in outputs],
+        states=[ct.StateType(wrapped_type=ct.TensorType(shape=s, dtype=np.float16), name=n)
+                for n, s in (states or {}).items()],
         compute_precision=ct.precision.FLOAT16,
         compute_units=ct.ComputeUnit.CPU_AND_NE,
         minimum_deployment_target=ct.target.iOS18,
     )
-    save_compiled(model, path)
 
 
 def save_compiled(model: ct.models.MLModel, path: Path) -> None:
@@ -86,7 +90,7 @@ def main() -> None:
 
     if k := args.encoder_frames:
         encoder = ms.EncoderStep(w, k)
-        _export(
+        model = convert(
             encoder,
             {
                 "pcm": ((1, 1, k * ms.FRAME), np.float16),
@@ -95,10 +99,10 @@ def main() -> None:
                 "first": ((1,), np.float16),
             },
             ["codes", *state_out],
-            args.out_dir / "mimi-encoder.mlmodelc",
         )
+        save_compiled(model, args.out_dir / "mimi-encoder.mlmodelc")
     decoder = ms.DecoderStep(w, 1, args.decoder_codebooks)
-    _export(
+    model = convert(
         decoder,
         {
             "codes": ((1, args.decoder_codebooks, 1), np.int32),
@@ -106,8 +110,8 @@ def main() -> None:
             **_per_call(1),
         },
         ["pcm", *state_out],
-        args.out_dir / "mimi-decoder.mlmodelc",
     )
+    save_compiled(model, args.out_dir / "mimi-decoder.mlmodelc")
 
 
 if __name__ == "__main__":

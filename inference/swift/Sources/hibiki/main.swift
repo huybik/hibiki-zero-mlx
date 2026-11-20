@@ -19,7 +19,6 @@
 // --lm-units ane|gpu|cpu|all: where a Core ML LM runs (export_lm_coreml.py; default ane, the
 // Neural Engine); an MLX LM always runs on the GPU.
 
-import CoreML
 import Foundation
 import HibikiCore
 
@@ -54,10 +53,7 @@ let seed = number("--seed", default: UInt64(299_792_458))
 let minutes = number("--minutes", default: 10.0)
 let chunk = number("--chunk", default: 1)
 guard chunk > 0 else { fail() }
-let units: [String: MLComputeUnits] = [
-    "ane": .cpuAndNeuralEngine, "gpu": .cpuAndGPU, "cpu": .cpuOnly, "all": .all,
-]
-guard let lmUnits = units[option("--lm-units") ?? "ane"] else { fail() }
+guard let lmUnits = Translator.lmComputeUnitNames[option("--lm-units") ?? "ane"] else { fail() }
 
 func translate(_ translator: Translator, _ pcm: [Float]) throws {
     let output = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_swift.wav")

@@ -22,21 +22,22 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   `lm_coreml`.
 - `lm_step.py` reads the bf16 staging (MLX weight names) and holds the step as fixed-shape PyTorch,
   one frame per call. `Trunk`: x [1, 2048] → hidden, text logits. Its KV cache is Core ML state
-  (iOS 18), a ring of `context` (3,000) slots per layer, fp16, 172 MB. Frame t writes slot t mod
+  (iOS 18), a ring of `context` (3,000) slots per layer, fp16, 172 MB (sizes here in 10^6 bytes). Frame t writes slot t mod
   3,000 and attends to the frames t − 2,999 .. t, as moshi trains. The host computes the RoPE
-  tables (angles in Double), the slot and the mask (`Inputs.at`), so positions never enter fp16.
+  tables (angles in Double, rounded straight to fp16), the slot and the mask (`Inputs.at`, as
+  `NeuralLM` does), so positions never enter fp16 arithmetic.
   `Heads`: hidden + `text_emb[sampled text]` → [16, 2048] logits, the text sampled on the host
   between the two calls, as `moshi_mlx`'s `ParallelHeads`.
 - The heads are 16 separate matmuls: one [2048 → 32,768] matmul ran on the CPU (compute plan), the
-  16 run on the Neural Engine. The embedding gathers stay on the host (444 MB fp16, memory-mapped,
+  16 run on the Neural Engine. The embedding gathers stay on the host (465 MB fp16, memory-mapped,
   one row from each of 33 tables a frame), since gathers are CPU ops in Core ML.
 - Fed the MLX runtime's own inputs, `lm_step` in fp32 matches MLX bf16's argmaxes ([Precision](#precision)).
 - `export_lm_coreml.py MODEL_DIR OUT_DIR --bits 6` writes a model directory: both models compiled,
   the tables, the tokenizer and Mimi checkpoint, and the config with `lm_coreml: {bits}` in place
   of `moshi_name`. Mimi's decoder comes from `export_mimi_coreml.py`
   ([README](../../inference/swift/README.md#core-ml-lm)). `--bits` palettizes weights over 1M
-  elements by k-means, one 64-entry table per 16 output channels: trunk 1.8 GB → 704 MB, heads 128
-  → 48 MB. It takes ~15 min on one core. Compute plan of the 6-bit models: all 892 trunk ops and
+  elements by k-means, one 64-entry table per 16 output channels: trunk 1,958 → 738 MB, heads 134
+  → 51 MB. It takes ~15 min on one core. Compute plan of the 6-bit models: all 892 trunk ops and
   all 18 head ops on the Neural Engine.
 
 ## Runtime
@@ -46,7 +47,8 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
 - `NeuralLM.start` runs the frame on a serial queue and returns a wait, so the driving thread
   encodes and decodes Mimi meanwhile, as with the MLX LM on the GPU. The host part of a frame:
   - the 33 embedding rows summed in fp32 with Accelerate (scalar loops took 1.2 ms on the M4 Pro);
-  - the text sampled on the CPU (`Sampler` on `[Float]`: top-k by quickselect, `SplitMix64`);
+  - the text sampled on the CPU (`Sampler` on `[Float]`: exactly k kept, by quickselect, the first
+    of any tied with the k-th, as MLX's argpartition keeps k; `SplitMix64`);
   - its `text_emb` row copied to the heads;
   - the 16 codebooks sampled.
   The same seed does not reproduce MLX's tokens: the generators differ.
@@ -116,7 +118,7 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
   decodes queue behind the LM on the Neural Engine. The LM itself held 49 ms.
 - Every A15 run here began "serious" from the one before; the CPU encode at 1-frame steps took
   37 ms cold, against 20–28 beside the MLX LM on the GPU ([swift-runtime](swift-runtime.md#mimi-on-the-cpu)).
-  The Neural Engine streams 704 MB of weights a frame (~17 GB/s), which likely slows the CPU's
+  The Neural Engine streams 738 MB of weights a frame (~17.5 GB/s), which likely slows the CPU's
   memory-bound encode.
 - fp16 weights: the trunk took 61.7 ms a frame on the M4 Pro's Neural Engine against 11.2 at 6
   bits. It streams its weights every frame, so their size sets its speed.
@@ -129,4 +131,4 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
 - A full-set gate of the Core ML LM against MLX 6 bits, in one runtime.
 - Mimi's CPU encode is now the phone's bottleneck. Its fp16 Neural Engine codes drift
   ([mimi-npu](mimi-npu.md#precision)), so it stays on the CPU. Fewer bytes on the Neural Engine
-  may free bandwidth for it: 4-bit palettization (~470 MB), after a quality gate.
+  may free bandwidth for it: 4-bit palettization (~490 MB), after a quality gate.

@@ -50,12 +50,9 @@ final class BenchRun: ObservableObject {
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "model"
         let clip = args.firstIndex(of: "--clip")
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "clip.wav"
-        let unitNames: [String: MLComputeUnits] = [
-            "ane": .cpuAndNeuralEngine, "gpu": .cpuAndGPU, "cpu": .cpuOnly, "all": .all,
-        ]
         let unitsName = args.firstIndex(of: "--lm-units")
             .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "ane"
-        guard let units = unitNames[unitsName] else {
+        guard let units = Translator.lmComputeUnitNames[unitsName] else {
             show("error: --lm-units \(unitsName): one of ane, gpu, cpu, all")
             return
         }

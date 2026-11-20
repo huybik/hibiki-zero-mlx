@@ -61,8 +61,8 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki translate CLIP.wav \
 ```
 
 `--lm-units ane|gpu|cpu|all` (CLI and app) places the Core ML LM: the Neural Engine by default.
-`translate` and `bench` print its own time per frame (main transformer, heads, host) beside the
-step's.
+`translate` prints its own time per frame (main transformer, heads, host) beside the step's;
+`bench` prints their sum per minute and logs each in its `.jsonl`.
 
 ## iPhone
 
@@ -91,7 +91,8 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
 ```
 
 This copies every file of upstream's q4 model directory; set `MODEL` for another (only its
-`config.json`, the files it names and the `.mlmodelc` directories are read).
+`config.json`, the files it names, `lm-embeddings.bin` and the `.mlmodelc` directories are
+read).
 
 `--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models
 on the phone, and `--clip NAME` reads `Documents/NAME` instead of `clip.wav`; `--chunk K`,

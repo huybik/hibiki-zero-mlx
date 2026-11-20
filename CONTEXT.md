@@ -159,7 +159,9 @@ inference/ (Apple Silicon, MLX)
 - A model directory's `config.json` names its MLX weights (`moshi_name`), tokenizer and sampling
   (`lm_gen_config`), and records any quantization per layer (`quantization`; `--bits 6`, what
   ships, is 6 bits on the transformer linears, 8 on the embeddings and heads), which both
-  runtimes load by, strictly. The gate feeds a file as training's evaluation does (source EOS,
+  runtimes load by, strictly. A Core ML LM's directory (`lm_coreml`, the heads student) names no
+  MLX weights, and only the Swift runtime runs it →
+  [lm-npu](docs/agent-memory/lm-npu.md#export). The gate feeds a file as training's evaluation does (source EOS,
   20 s of silence, stop at the text EOS after it), so Mac scores compare with the box's (rows
   whose EOS comes before the source ends aside); main.py's file mode also stops after 5 s
   without a word →

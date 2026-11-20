@@ -31,21 +31,29 @@ public struct Sampler {
 
 extension Sampler {
     /// The same sampling on the CPU, for logits already in host memory (the Core ML LM's):
-    /// the `topK` largest at the temperature, the rest dropped.
+    /// exactly the `topK` largest at the temperature (of logits tied with the k-th, the first),
+    /// the rest dropped.
     func callAsFunction(_ logits: [Float], using rng: inout some RandomNumberGenerator) -> Int {
         var best = 0
         for i in logits.indices where logits[i] > logits[best] { best = i }
         if temp == 0 { return best }
         var threshold = -Float.infinity
+        // Logits equal to the threshold that may still be kept: ties with the k-th largest.
+        var ties = Int.max
         if topK < logits.count {
             var scratch = logits
             threshold = Self.largest(topK, of: &scratch)
+            ties = topK - logits.lazy.filter { $0 > threshold }.count
         }
         let top = logits[best]
         var kept: [(index: Int, weight: Float)] = []
         kept.reserveCapacity(topK)
         var total: Float = 0
         for i in logits.indices where logits[i] >= threshold {
+            if logits[i] == threshold {
+                if ties == 0 { continue }
+                ties -= 1
+            }
             let weight = Foundation.exp((logits[i] - top) / temp)
             kept.append((i, weight))
             total += weight

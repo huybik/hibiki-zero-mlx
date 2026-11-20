@@ -46,10 +46,11 @@ public final class Translator {
     }
 
     /// Seconds the driving thread spent in each part of one step, summed over its LM steps;
-    /// they add up to the step's time. The LM runs on the GPU from each `lmStart` to the end of
-    /// the `lmWait` after it.
+    /// they add up to the step's time. The LM runs (the MLX LM on the GPU, a Core ML LM on its
+    /// own thread) from each `lmStart` to the end of the `lmWait` after it.
     public struct Timing {
-        /// Building the LM graphs and handing them to the GPU.
+        /// Starting the LM: building its graphs and handing them to the GPU, or queueing a
+        /// Core ML LM's frame.
         public var lmStart = 0.0
         /// Mimi decoding the finished LM steps' audio tokens on the Neural Engine.
         public var decode = 0.0
@@ -86,6 +87,11 @@ public final class Translator {
     private var targets: [[Int]] = []
     private var leveller = Audio.Leveller()
     private var textDecoder: TextDecoder
+
+    /// Where a Core ML LM may run, by the names the CLI's and the app's `--lm-units` take.
+    public static let lmComputeUnitNames: [String: MLComputeUnits] = [
+        "ane": .cpuAndNeuralEngine, "gpu": .cpuAndGPU, "cpu": .cpuOnly, "all": .all,
+    ]
 
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
     /// app's memory limit; `lmComputeUnits` is where a Core ML LM runs.

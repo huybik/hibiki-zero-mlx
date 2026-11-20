@@ -33,8 +33,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   `pipeline.py` does, an invalid sequence as U+FFFD; `flush` returns the rest. Fed the same
   token streams (2026-11-14, scratch harness compiling `Vocabulary.swift`: 364 streams on both
   tokenizers, PADs between pieces), it returns Python's text call for call, and the same whole
-  text at 2, 3 and 5 tokens per call. `config.json` must name `moshi_name`, `tokenizer_name` and
-  `lm_gen_config`, which sets `Translator`'s samplers, and may hold `quantization`
+  text at 2, 3 and 5 tokens per call. `config.json` must name `tokenizer_name` and
+  `lm_gen_config`, which sets the LM's samplers, and `moshi_name` (the MLX weights) unless it marks a
+  Core ML LM (`lm_coreml`, [lm-npu](lm-npu.md)); it may hold `quantization`
   ([mlx-inference](mlx-inference.md#model-directories)).
 - `Translator.endInput()` ends a file's input: one LM step whose 16 source codes are all the
   source EOS (`card`) while Mimi codes a silent frame, as `pipeline.translate` does.

@@ -441,7 +441,7 @@ final class HibikiLM: Module, FrameLM {
 
     /// One frame: the main transformer over the previous text token and the 32 delayed audio
     /// tokens, then the text token and the 16 target codebooks, sampled as `lm_gen_config` says.
-    func step(text: Int, audio: [Int]) -> (text: MLXArray, audio: MLXArray) {
+    private func step(text: Int, audio: [Int]) -> (text: MLXArray, audio: MLXArray) {
         var xs = textEmb(MLXArray([Int32(text)]).reshaped(1, 1))
         for (token, emb) in zip(audio, audioEmbs) {
             xs = xs + emb(MLXArray([Int32(token)]).reshaped(1, 1))

@@ -78,16 +78,21 @@ final class NeuralLM: FrameLM {
         let sampling = cfg.lmGenConfig
         textSampler = Sampler(temp: sampling.tempText, topK: sampling.topKText)
         audioSampler = Sampler(temp: sampling.temp, topK: sampling.topK)
-        reset()
+        closeMask()
     }
 
     func reset() {
         queue.sync {
             frame = 0
             state = trunk.makeState()
-            let m = mask.dataPointer.bindMemory(to: Float16.self, capacity: mask.count)
-            for j in 0..<mask.count { m[j] = -1e4 }
+            closeMask()
         }
+    }
+
+    /// Masks every cache slot: a new session has written none.
+    private func closeMask() {
+        let m = mask.dataPointer.bindMemory(to: Float16.self, capacity: mask.count)
+        for j in 0..<mask.count { m[j] = -1e4 }
     }
 
     func seed(_ value: UInt64) {
@@ -117,7 +122,7 @@ final class NeuralLM: FrameLM {
             defer { clock = now }
             return seconds(clock, now)
         }
-        try fillTrunkInputs(text: textIn, audio: audioIn)
+        fillTrunkInputs(text: textIn, audio: audioIn)
         busy.host += lap()
         let out = try trunk.prediction(
             from: MLDictionaryFeatureProvider(dictionary: [
@@ -141,7 +146,7 @@ final class NeuralLM: FrameLM {
 
     /// The summed input embeddings, the RoPE tables of this frame's position, its cache slot,
     /// and the slot it writes unmasked while the ring fills.
-    private func fillTrunkInputs(text textIn: Int, audio: [Int]) throws {
+    private func fillTrunkInputs(text textIn: Int, audio: [Int]) {
         let dim = cfg.dim
         precondition(textIn >= 0 && textIn <= cfg.textCard, "text token \(textIn)")
         var rowsIn = [textIn]
@@ -163,7 +168,9 @@ final class NeuralLM: FrameLM {
                         rowBytes: dim * 4)
                     vImageConvert_Planar16FtoPlanarF(&src, &out, 0)
                 }
-                vDSP.add(sum, row, result: &sum)
+                sum.withUnsafeMutableBufferPointer { s in
+                    vDSP_vadd(s.baseAddress!, 1, row, 1, s.baseAddress!, 1, vDSP_Length(dim))
+                }
             }
         }
         sum.withUnsafeMutableBytes { src in

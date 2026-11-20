@@ -25,26 +25,7 @@ import numpy as np
 import torch
 
 import lm_step as ls
-from export_mimi_coreml import save_compiled
-
-
-def _convert(module: torch.nn.Module, inputs: dict[str, tuple[tuple[int, ...], type]],
-             outputs: list[str], states: dict[str, tuple[int, ...]]) -> ct.models.MLModel:
-    examples = [
-        torch.zeros(shape, dtype=torch.int32 if dtype is np.int32 else torch.float32)
-        for shape, dtype in inputs.values()
-    ]
-    traced = torch.jit.trace(module.eval(), tuple(examples))
-    return ct.convert(
-        traced,
-        inputs=[ct.TensorType(name=n, shape=s, dtype=d) for n, (s, d) in inputs.items()],
-        outputs=[ct.TensorType(name=n, dtype=np.float16) for n in outputs],
-        states=[ct.StateType(wrapped_type=ct.TensorType(shape=s, dtype=np.float16), name=n)
-                for n, s in states.items()],
-        compute_precision=ct.precision.FLOAT16,
-        compute_units=ct.ComputeUnit.CPU_AND_NE,
-        minimum_deployment_target=ct.target.iOS18,
-    )
+from export_mimi_coreml import convert, save_compiled
 
 
 def _palettize(model: ct.models.MLModel, bits: int) -> ct.models.MLModel:
@@ -72,7 +53,7 @@ def main() -> None:
 
     half = cfg.head_dim // 2
     cache = (cfg.layers, cfg.kv_heads, cfg.context, cfg.head_dim)
-    trunk = _convert(
+    trunk = convert(
         ls.Trunk(cfg, w),
         {
             "x": ((1, cfg.dim), np.float16),
@@ -84,11 +65,10 @@ def main() -> None:
         ["hidden", "text_logits"],
         {"keys": cache, "values": cache},
     )
-    heads = _convert(
+    heads = convert(
         ls.Heads(cfg, w),
         {"hidden": ((1, cfg.dim), np.float16), "text": ((1, cfg.dim), np.float16)},
         ["audio_logits"],
-        {},
     )
     if args.bits:
         trunk, heads = _palettize(trunk, args.bits), _palettize(heads, args.bits)
