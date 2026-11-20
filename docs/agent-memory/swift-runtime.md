@@ -187,8 +187,8 @@ the CPU's on every frame (760 frames, all 16 codebooks), and translations are by
   held input and each layer's keys and values) after a session's first call, which pads and runs
   eagerly; one trace per chunk size. So `WindowKVCache` holds its 249 steps in fixed buffers
   from the first call (zeros, masked), and RoPE's offset and the mask are inputs. On the A15 it
-  cut the driving thread's build and submit 11.8 → 9.0 ms a frame and MLX's buffer cache 256 →
-  68 MB.
+  cut the driving thread's build and submit 11.8 → 9.5–10.6 ms a frame and the footprint 725 →
+  541 MB (MLX's buffer cache 256 → 68 MB).
 - Every op of the encode, its input array and the codes' int32 cast included, is built in the
   encoder's device scope (`Mimi.encodeStep` takes the samples): one op on the other device's
   stream waits behind that device's work. A reshape left on the GPU stream held the CPU encode behind the MLX LM's step

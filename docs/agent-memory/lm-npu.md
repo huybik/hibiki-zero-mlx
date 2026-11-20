@@ -110,7 +110,7 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
 | A15 from cool, minutes 1–7 | 41.9–42.3 / 3.6–4.6 / 1.1–2.0 ms | 47.2–48.6 ms |
 | A15 from cool, minutes 8–10 | 39.9–41.2 / 3.1–3.5 / 1.8–2.3 ms | 51.9, 55.3, 74.6 ms |
 | A15 starting hot, minutes 3–10 | 42.9–43.1 / 3.6 / 1.8–2.7 ms | 73.7–84.6 ms |
-| A15 from cool, Mimi encoding on the GPU, minutes 1–10 | 42.6–43.2 / 3.2–3.3 / 5.0–6.8 ms | 54.2–55.5 ms |
+| A15 from cool, Mimi encoding on the GPU, minutes 1–10 | 42.6–44.3 / 3.2–3.5 / 2.2–5.9 ms | 52.2–53.9 ms |
 
 - **From cool it holds real time for 10 minutes** (the A15, iPhone 13 Pro Max, wired; a FLEURS dev
   clip looped, `--model heads6 --clip clip-vi.wav`; thermal state "fair", "serious" from 41 s):
@@ -127,13 +127,14 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
   ([swift-runtime](swift-runtime.md#mimi-on-the-cpu)). The Neural Engine streams 738 MB of weights
   a frame (~17.5 GB/s), which likely slows the CPU's memory-bound encode.
 - **Mimi on the GPU holds the frame flat** (`--encoder gpu`, from cool, 10 paced minutes,
-  2026-11-20): 54.2–55.5 ms a frame every minute, p90 ≤ 56 after minute 1, lag ≤ 0.10 s, thermal
-  "serious" from 71 s (41 s on the CPU). The CPU encode's run is 6–7 ms faster for 7 minutes and 20
-  ms slower by minute 10. The encode is off the frame's critical path: the driving thread builds and
-  submits it (11.8 ms; 9.0 compiled), waits on the decoder while the GPU encodes (41.5 ms: the LM,
-  then the decode, on the Neural Engine) and collects the codes 1.1 ms later. The frame is the LM
-  plus the decode, and the GPU costs the LM 4–5 ms: its host part 1.2–2.0 → 5.0–6.8 ms (the CPU sits
-  idle while the GPU works; likely its clock drops) and the trunk 42.3 → 43.1. 2-frame steps would
+  2026-11-21): 52.2–53.9 ms a frame every minute, p90 ≤ 55.3 after minute 1, lag ≤ 0.08 s, thermal
+  "serious" from 324 s (41 s on the CPU), footprint 541 MB (653 on the CPU). The CPU encode's run is
+  4–6 ms faster for 7 minutes and 21 ms slower by minute 10. The encode is off the frame's critical
+  path: the driving thread builds and submits it compiled (9.5–10.6 ms; 11.8 uncompiled), waits on
+  the decoder while the GPU encodes (42.7–45.6 ms: the LM, then the decode, on the Neural Engine)
+  and finds the codes ready (encode wait 0.0). The frame is the LM plus the decode, and the GPU
+  costs the LM 3–5 ms: its host part 1.2–2.0 → 5.0–5.9 ms (2.2–2.8 in minutes 5–6; the CPU sits
+  idle while the GPU works, likely its clock drops) and the trunk 42.3 → 43.0. 2-frame steps would
   shrink only the encode, so they were not run on the GPU.
 - Run with the CPU's kernels and waited on before the decode, the GPU encode had taken 42 ms
   a frame and the frame 55–59 ms, then 70–74 from minute 7 (started hot); the fused kernels
@@ -144,7 +145,8 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
 - fp16 weights: the trunk took 61.7 ms a frame on the M4 Pro's Neural Engine against 11.2 at 6
   bits. It streams its weights every frame, so their size sets its speed.
 - Raw results: `/Volumes/data/hibiki-zero-evals/iphone/ane/` (`heads6_ane_cool_vi_10min`, the
-  headline; `heads6_ane_gpuenc_fused_cool_vi_10min`, Mimi on the GPU from cool; started hot:
+  headline; `heads6_ane_gpuenc_compiled_cool_vi_10min`, Mimi on the GPU from cool, and
+  `heads6_ane_gpuenc_fused_cool_vi_10min`, the same uncompiled; started hot:
   `heads6_ane_vi_{1,10}min`, `heads6_ane_gpuenc_vi_10min` (the GPU with the CPU's kernels),
   `heads6_ane_chunk2_vi_10min`), each `.jsonl` (a sample a step), `.txt` (summary and text) and
   `.wav`.
@@ -155,10 +157,10 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
 - Long sessions: the fp16 drift past ~2 minutes of context. Untried: attention over the cache in
   chunks with their partial sums combined (more fp16 headroom per sum), or a shorter context.
 - Which device encodes by default beside the Core ML LM (user): the CPU is faster for the first
-  ~7 minutes from cool, the GPU holds ~55 ms flat for 10 minutes. Mimi stays in MLX fp32 either
+  ~7 minutes from cool, the GPU holds ~53 ms flat for 10 minutes. Mimi stays in MLX fp32 either
   way: its fp16 codes drift on the Neural Engine ([mimi-npu](mimi-npu.md#precision)) and on the
   GPU ([swift-runtime](swift-runtime.md#mimi-on-the-gpu)).
-- With Mimi on the GPU, the LM's host part (5–7 ms there) is the next lever: about 1 ms of
+- With Mimi on the GPU, the LM's host part (5–6 ms there) is the next lever: about 1 ms of
   scalar work at full clock (logit conversion and sampling over 48k + 16 × 2,048 values,
   allocated per frame) that vDSP and reused buffers could shrink.
 - Fewer bytes on the Neural Engine may free bandwidth for the encode and the LM: 4-bit
