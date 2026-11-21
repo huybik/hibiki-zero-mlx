@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Mimi on CUDA for the grounded caches: re-encode the source of a cache split, Vietnamese or English.
+"""Mimi on CUDA for the grounded caches: re-encode the source of a cache split (either language).
 
 Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the same rows in the
 same order. A seeded --fraction of the rows get new source codes: their clip (the cache's source
@@ -12,9 +12,9 @@ epoch is --seed 0, --fraction 0.6; another epoch's conditions take another --see
 
 Two steps, so the download runs while the GPU still trains:
 
-    fetch  (network, CPU) HF parquet, or --dataset-dir's copy ─► <out-dir>/.sources/<name>.parquet:
-                          id and the source clip's bytes of the selected rows only (30% of a
-                          parquet's bytes is Vietnamese audio; 60% of that is kept)
+    fetch  (network, CPU) HF parquet or --dataset-dir's copy ─► .sources/<name>.parquet:
+                          id and the source clip's bytes of the selected rows only (26-33% of a
+                          parquet's bytes is Vietnamese audio, 67-74% English; 60% of that is kept)
     encode (CUDA)         .sources + clean shard ─► workers: PyAV decode, soxr to 24 kHz
                           ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted.
                           The next shard's clips decode while the GPU encodes this one.
@@ -62,7 +62,7 @@ from training.paths import (
     require_file,
 )
 from training.prep import audio, augment, cache_build
-from training.prep.cache_rows import FRAME_SAMPLES
+from training.prep.cache_rows import FRAME_SAMPLES, Settings
 from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION
 
 SOURCES = ".sources"
@@ -129,17 +129,17 @@ def todo(cache_dir: Path, out_dir: Path) -> list[Path]:
     ]
 
 
-def source_language(direction: str) -> str:
-    """The language heard in a cache of `direction` (<source>-<target>)."""
-    return direction.split("-")[0]
-
-
 def cache_direction(cache_dir: Path) -> str:
     """The direction of a clean cache split, read from its first shard."""
     first = next(iter(sorted(cache_dir.glob("shard_*.pt"))), None)
     if first is None:
         raise RuntimeError(f"{cache_dir} holds no shard_*.pt")
     return torch.load(first, map_location="cpu", mmap=True).get("direction", DEFAULT_DIRECTION)
+
+
+def source_column(direction: str) -> str:
+    """The dataset column of the clip heard in a cache of `direction`: `vi_audio` or `en_audio`."""
+    return f"{Settings(direction=direction).source}_audio"
 
 
 def dataset(args: argparse.Namespace) -> str:
@@ -190,7 +190,9 @@ def held(lock: Path) -> bool:
 # --------------------------------------------------------------------------- fetch
 
 
-def fetch_one(args: argparse.Namespace, settings: dict[str, Any], split: str, shard_path: Path) -> str:
+def fetch_one(
+    args: argparse.Namespace, settings: dict[str, Any], split: str, shard_path: Path
+) -> str:
     """Write the selected rows' source audio of one shard's parquet to .sources."""
     name = shard_name(shard_path)
     target = args.out_dir / SOURCES / f"{name}.parquet"
@@ -201,7 +203,7 @@ def fetch_one(args: argparse.Namespace, settings: dict[str, Any], split: str, sh
         while shutil.disk_usage(args.out_dir).free < args.min_free_gb * 1e9:
             time.sleep(WAIT_S)
     source = f"data/{split}/{name}.parquet"
-    column = f"{source_language(settings['direction'])}_audio"
+    column = source_column(settings["direction"])
     with tempfile.TemporaryDirectory(dir=args.out_dir / SOURCES, prefix=".download-") as tmp:
         if args.dataset_dir is not None:
             path = require_file(args.dataset_dir / source, "dataset parquet")
@@ -221,7 +223,9 @@ def fetch_one(args: argparse.Namespace, settings: dict[str, Any], split: str, sh
                 except Exception as exc:  # network and Hub errors alike; the last one raises
                     if attempt == DOWNLOAD_ATTEMPTS:
                         raise
-                    print(f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True)
+                    print(
+                        f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True
+                    )
                     time.sleep(60 * attempt)
         table = pq.read_table(path, columns=["id", column])
         ids = table.column("id").to_pylist()
@@ -230,8 +234,9 @@ def fetch_one(args: argparse.Namespace, settings: dict[str, Any], split: str, sh
         slim = pa.table(
             {
                 "id": table.column("id"),
-                # Null for the rows that stay clean.
-                "source_audio": pc.if_else(keep, clips, pa.scalar(None, clips.type)),
+                # Named as in the dataset, so encode reads only its own direction's clips; null for
+                # the rows that stay clean.
+                column: pc.if_else(keep, clips, pa.scalar(None, clips.type)),
             }
         )
         meta = {"file": source, "bytes": path.stat().st_size}
@@ -246,7 +251,8 @@ def fetch_one(args: argparse.Namespace, settings: dict[str, Any], split: str, sh
 def fetch(args: argparse.Namespace) -> None:
     cache_dir = require_dir(args.cache_dir, "clean cache split")
     if args.dataset_dir is not None:
-        args.dataset_dir = require_dir(args.dataset_dir, "dataset copy")
+        # Resolved, so the manifest names the copy one way however it is typed.
+        args.dataset_dir = require_dir(args.dataset_dir, "dataset copy").resolve()
     (args.out_dir / SOURCES).mkdir(parents=True, exist_ok=True)
     shards = todo(cache_dir, args.out_dir)
     print(f"{len(shards)} shards to fetch for {args.out_dir}", flush=True)
@@ -396,17 +402,23 @@ def load(
     payload = torch.load(shard_path, map_location="cpu")
     if payload.get("format") != CACHE_FORMAT:
         raise RuntimeError(f"{shard_path} is not a {CACHE_FORMAT} shard")
-    if payload.get("direction", DEFAULT_DIRECTION) != settings["direction"]:
-        raise RuntimeError(f"{shard_path} is {payload.get('direction', DEFAULT_DIRECTION)}, the fetch {settings['direction']}")
+    direction = payload.get("direction", DEFAULT_DIRECTION)
+    if direction != settings["direction"]:
+        raise RuntimeError(f"{shard_path} is {direction}, the fetch {settings['direction']}")
+    column = source_column(direction)
+    if column not in table.column_names:
+        raise RuntimeError(
+            f"{source_path} holds {table.column_names}, not {column}: fetch it again"
+        )
     if (
         payload["source"] != source
         or source["file"] != f"data/{split}/{shard_name(shard_path)}.parquet"
     ):
         raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {source}")
     ids = table.column("id").to_pylist()
-    audio_bytes = table.column("source_audio").to_pylist()
+    audio_bytes = table.column(column).to_pylist()
     samples = payload["samples"]
-    frames = f"{source_language(settings['direction'])}_frames"
+    frames = f"{Settings(direction=direction).source}_frames"
     clip_rows: dict[int, bytes] = {}
     for index, sample in enumerate(samples):
         file, row = sample["source_row"].split("#r")

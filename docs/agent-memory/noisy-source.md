@@ -21,7 +21,9 @@ English to Vietnamese had no noisy source (2026-11-21): the tranche's English is
 audiobooks, and the shipped model wrote English for 18 of OneVoice's 100 outside English clips,
 the quieter and conversational ones ([two-way](two-way.md#next)). The same re-encode and conditions
 now take an `en-vi` cache's English source, and `en-vi-val-en-noisy` measures it (user, 2026-11-21:
-"also how about noisy input?").
+"also how about noisy input?"). The `en-vi` copies take `--seed 1`: the selection and the draw key
+on the seed and the row id, which both directions share, so the same seed would put the same
+conditions on the same rows both ways.
 
 ## Conditions
 
@@ -121,10 +123,13 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   through the same `audio.decode`).
 - `fetch` downloads each parquet from `anquachdev/common-vi-en` at `eval_sets.EN_VI_REVISION`,
   16 at a time, each tried 4 times, or reads it from `--dataset-dir`, a local copy of the dataset
-  the cache was built from (the box's `en-vi` build feeds it the parquets it just built from). It
+  the cache was built from (the box's 2026-11-21 `en-vi` build of the remaining `en_speech` shards
+  uses it to copy each batch before deleting its sources, [tranche-box](tranche-box.md#state)). It
   keeps the id and the source clip's bytes of the selected rows
   (`random.Random(f"{seed}:select:{id}").random() < --fraction`, 0.6), null for the others, in
-  `.sources/`, about a fifth of the parquet's bytes, and deletes the download. It pauses while the disk has
+  `.sources/` under the dataset's column name, and deletes the download: about a fifth of the
+  parquet's bytes for a Vietnamese source (its audio is 26–33% of a parquet), ~40–45% for an
+  English one (67–74%), so an `en-vi` split's sources take ~2.5 times the room. It pauses while the disk has
   less than `--min-free-gb` (50) free: a trainer on the same disk needs a checkpoint pair
   (37.5 GB) beyond its steady state while the sync still uploads the pair it pruned. Its first run
   writes `manifest.json` (seed, fraction, the cache's direction, the dataset, bank SHA-256); a
@@ -189,8 +194,9 @@ came out identical to the first encode's.
   `--workers` defaults to the CPU budget less one (6 here): the CPUs the process may run on,
   capped by the cgroup v2 or v1 quota. It keeps the throttle off (2 s summed over all threads in
   a run of six shards, against 21 s with 7 workers). Lower it when another CPU-bound job shares
-  the container (two encodes split the budget: 3 workers each here); a fetch is network-bound
-  and needs no share. It reads the quota at the cgroup namespace's root, which a container has
+  the container (two encodes split the budget: 3 workers each here); a fetch from the Hub is
+  network-bound and needs no share, but one from `--dataset-dir` reads and slims 16 parquets at
+  a time (37 s for an `en_speech` shard on the box). It reads the quota at the cgroup namespace's root, which a container has
   as its own; under `--cgroupns=host` or a parent cgroup's quota it misses the limit, so check
   the printed worker count.
 - `--batch-seconds` stays 640: 1280 was no faster and changed some codes (the kernels depend on
@@ -241,8 +247,9 @@ the conditions alone. (Every evaluation set reaches Mimi through `sphn.resample`
 soxr: a residual-codebook difference that predates this set.) Scored against the clean set on the
 same checkpoint it shows what the channel costs. It is not in the trainer's default
 `--eval-pairs`; the second epoch passes it. `--sets en-vi-val-en-noisy` does the same from the
-built `en-vi-val-en` (its English clips, `en_audio`; ids `en-vi-val-en-noisy/...`, so their
-conditions differ from the Vietnamese set's), for English to Vietnamese.
+built `en-vi-val-en` (its English clips, `en_audio`; ids `en-vi-val-en-noisy/...`), for English to
+Vietnamese. Its conditions differ from the Vietnamese set's because the draw keys on the clean row's
+id (`0:en-vi-val-en/<id>` against `0:en-vi-val/<id>`).
 
 Measured on the Mac (`eval.py`, MPS, batch 16), the first run at step 63,000 and at its final
 step 131,553, 2026-11-04 (chrF; "Both" is corpus chrF over the 360 rows):

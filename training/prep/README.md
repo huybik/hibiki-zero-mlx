@@ -146,6 +146,10 @@ written.
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
 nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
 ./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O   # once the GPU is free
+# English to Vietnamese, from a local copy of the dataset the cache was built from; another seed
+C=data/cache/en-vi/en-vi-grounded-v2/train O=data/cache/en-vi/en-vi-grounded-v2-noisy/train
+./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O --seed 1 --dataset-dir DATASET
+./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O
 ```
 
 ## Vietnamese translations of `en_speech`

@@ -45,7 +45,7 @@ Decided 2026-11-10, for two-way training:
 | streams | `PACK_VERSION` 5 stores each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
-`mimi_cache_cuda` (the noisy re-encode) is `vi-en` only.
+`mimi_cache_cuda` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)).
 
 ## Tokenizer checks
 

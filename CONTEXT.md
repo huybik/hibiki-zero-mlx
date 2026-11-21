@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-20
+Last verified: 2026-11-21
 
 ## Purpose
 
@@ -25,7 +25,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► prep/cache_codes (on prep/cache_build, MLX or CUDA; Mac top down, a second machine bottom up)
          ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
-    ─► prep/mimi_cache_cuda (CUDA, the pod: Vietnamese source re-encoded under prep/augment) ─► *-noisy
+    ─► prep/mimi_cache_cuda (CUDA, the pod: the source, either language, re-encoded under prep/augment) ─► *-noisy
     ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
