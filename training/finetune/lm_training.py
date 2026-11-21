@@ -37,7 +37,8 @@ import math
 
 import torch
 import torch.nn.functional as F
-from moshi.models.lm import LMModel
+from moshi.models.lm import LMModel, LMOutput
+from moshi.models.lm_utils import _delay_sequence, _undelay_sequence
 from moshi.modules import transformer as moshi_transformer
 from moshi.modules.gating import ActivationGating
 from moshi.modules.transformer import RMSNorm, StreamingTransformer
@@ -189,6 +190,39 @@ def forward_depformer_training(
         self.linears[cb](self.depformer_norms[cb](out[cb])).view(B, T, -1) for cb in range(steps)
     ]
     return torch.stack(logits, 1)
+
+
+def forward_history(
+    lm: LMModel, history: torch.Tensor, codes: torch.Tensor, condition_tensors: Any = None
+) -> LMOutput:
+    """moshi's `LMModel.forward` with two inputs, for scheduled sampling: the main transformer
+    reads `history` (the steps before each one) and the depformer, or a heads student's text input,
+    reads `codes` (each step's own tokens, teacher-forced), which also give the masks; `history`
+    holds -1 where `codes` do. Within a step the codebooks form Mimi's residual chain: after a
+    sampled codebook k - 1, the dataset's codebook k encodes another residual than the sample
+    leaves, so only the history mixes in the model's samples."""
+    B = codes.shape[0]
+    initial = lm._get_initial_token().expand(B, -1, -1)
+
+    def delayed(x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([initial, _delay_sequence(lm.delays, x, initial)], dim=2)
+
+    sum_condition = cross_attention_src = None
+    if condition_tensors is not None:
+        sum_condition = lm.fuser.get_sum(condition_tensors)
+        cross_attention_src = lm.fuser.get_cross(condition_tensors)
+    elif lm.fuser is not None:
+        raise ValueError("this model needs its condition tensors")
+    transformer_out, text_logits = lm.forward_text(
+        delayed(history)[:, :, :-1], sum_condition, cross_attention_src
+    )
+    logits = lm.forward_depformer_training(delayed(codes)[:, :, 1:], transformer_out)
+    audio = slice(lm.audio_offset, lm.audio_offset + lm.dep_q)
+    logits, mask = _undelay_sequence(lm.delays[audio], logits, fill_value=float("NaN"))
+    mask &= codes[:, audio] != lm.zero_token_id
+    text_logits, text_mask = _undelay_sequence(lm.delays[:1], text_logits, fill_value=float("NaN"))
+    text_mask &= codes[:, :1] != lm.zero_token_id
+    return LMOutput(logits, mask, text_logits, text_mask)
 
 
 def _rms_norm(norm: RMSNorm, x: torch.Tensor) -> torch.Tensor:

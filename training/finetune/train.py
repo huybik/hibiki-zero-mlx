@@ -30,12 +30,12 @@ the export.
 
 With --sampled-inputs P (parallel scheduled sampling, against exposure bias), each step first runs
 the model teacher-forced without gradients and samples its every scored token as generation
-samples it (temperature 0.8, top-k 250); each of the model's own input tokens (text and target
-codebooks) then becomes its sample with probability P, and the loss reads that mixed stream as
-context against the dataset's tokens as targets. Generation conditions on the model's own
-samples, teacher forcing never does: this shows the model its own tokens in training at the cost
-of one more forward a step. The source rows stay the dataset's, and validation is unchanged
-([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
+samples it (temperature 0.8, top-k 250); each of the model's own tokens (text and target
+codebooks) then becomes its sample with probability P in the history the main transformer reads,
+while each step's own tokens (the depformer's inputs) and the targets stay the dataset's.
+Generation conditions on the model's own samples, teacher forcing never does: this shows the
+model its own tokens in training at the cost of one more forward a step. The source rows stay the
+dataset's, and validation is unchanged ([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
@@ -283,14 +283,15 @@ def validate_args(args: argparse.Namespace) -> None:
 def sample_inputs(
     lm: Any, codes: torch.Tensor, condition_tensors: Any, rate: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Parallel scheduled sampling (Duckworth et al. 2019, arXiv 1906.04331): `codes` with each
-    token of the model's own rows (text, then its target codebooks) that its teacher-forced
-    forward scores replaced, with probability `rate`, by a token sampled from that forward's
-    distribution as validation samples (`common.TRAINER_GENERATION`), and how many replaced
-    tokens differ from the dataset's. The forward runs without gradients, under the caller's
-    autocast. A replaced token is its position's own target no longer, only the context of the
-    tokens after it, as the delays place them; positions no forward scores (-1, a delay's first
-    frames) and the source rows stay."""
+    """Parallel scheduled sampling (Duckworth et al. 2019, arXiv 1906.04331): a history for
+    `common.compute_batch_losses`, `codes` with each token of the model's own rows (text, then its
+    target codebooks) that its teacher-forced forward scores replaced, with probability `rate`,
+    by a token sampled from that forward's distribution as validation samples
+    (`common.TRAINER_GENERATION`), and how many replaced tokens differ from the dataset's. The
+    forward runs without gradients, under the caller's autocast. The main transformer reads a
+    replaced token as context for the steps after it, as the delays place them; its own
+    position's target stays the dataset's token. Positions no forward scores (-1, and a delayed
+    row's last frames, which no step reads) and the source rows stay."""
     cfg = common.TRAINER_GENERATION
     own = codes[:, : 1 + lm.dep_q]
     with torch.no_grad():
@@ -610,17 +611,17 @@ def main() -> None:
             codes = codes.index_select(1, student_rows)
         with palettized():  # the straight-through estimator: gradients at the palettized weights
             with autocast:
-                inputs = None
+                history = None
                 if args.sampled_inputs:
-                    inputs, changed = sample_inputs(
+                    history, changed = sample_inputs(
                         lm, codes, condition_cache[batch_size], args.sampled_inputs
                     )
                     log["inputs_changed"] += changed
                 losses = common.compute_batch_losses(
                     lm, codes, condition_cache[batch_size], weights,
-                    teacher=teacher_output, inputs=inputs,
+                    teacher=teacher_output, history=history,
                 )
-            inputs = teacher_output = None  # the loss's graph keeps what its backward needs
+            history = teacher_output = None  # the loss's graph keeps what its backward needs
             losses["loss"].backward()
         for key in LOG_LOSSES:
             log["losses"][key] += losses[key].detach()

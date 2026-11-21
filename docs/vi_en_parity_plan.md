@@ -135,8 +135,9 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
    chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
 4. Against exposure bias (built 2026-11-21): `--sampled-inputs P`, parallel scheduled sampling.
    A forward without gradients samples every token as generation does, each of the model's own
-   input tokens becomes its sample with probability P, and the loss scores the dataset's tokens
-   on that mixed context ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
+   tokens becomes its sample with probability P in the history the main transformer reads, and
+   the loss scores the dataset's tokens on that mixed context, the depformer's same-step inputs
+   staying the dataset's ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
    Tested against 0 before any run adopts it, and after a short GRPO, which fixes the same gap
    ([experiments](agent-memory/exposure-bias.md#experiments)).
 

@@ -65,15 +65,22 @@ batch at once (14–15k frames/s on the H100), where generation is one frame at 
 arXiv 1906.04331; for transformers, Mihaylova and Martins 2019):
 
 ```text
-pass 1, no grad:  model(codes)  ─► sample every scored token (0.8, top-k 250)
-mix:              each of the model's own tokens ← its sample, with probability P
-pass 2, grad:     model(mixed)  ─► loss against codes (the dataset's tokens)
+pass 1, no grad:  model(codes) ─► sample every scored token (0.8, top-k 250)
+mix:              history = codes, each of the model's own tokens ← its sample with probability P
+pass 2, grad:     main transformer reads history (earlier steps) ┐
+                  depformer reads codes (this step's own tokens) ┴► loss against codes
 ```
 
 - **Which tokens**: the model's own rows (text, then its target codebooks), where pass 1 scores
-  them (its masks: not -1, not a delay's first frames). The source rows stay the dataset's. A
-  replaced token stops being only an input, never its own target, so each position is still
-  predicted from tokens before it, as the delays place them.
+  them (its masks: not -1, and not a delayed row's last frames, which no step reads). The source
+  rows stay the dataset's. A replaced token becomes only an input, never its own target.
+- **Only the history mixes** (`lm_training.forward_history`): the main transformer reads the
+  mixed codes, the steps before each one, where exposure bias compounds; the depformer (a heads
+  student's text input) reads each step's own tokens from the dataset. Within a step the codebooks
+  form Mimi's residual chain: after a sampled codebook k − 1, the dataset's codebook k encodes
+  another residual than the sample leaves, a conditional no audio has (PR #151's review). Across
+  steps a sampled frame followed by the dataset's next one is scheduled sampling's intended
+  recovery.
 - **Sampler**: validation's (`common.TRAINER_GENERATION`), the runtimes' and GRPO's: temperature
   0.8 and top-k 250 for text and audio.
 - **One rate** for text and audio. The audio errors are the sampler's own noise at every frame;
@@ -100,12 +107,16 @@ published (DeepSeekMath used β = 0.04), built for the student's on-policy disti
 ([on-policy-distillation](on-policy-distillation.md#design)), here with the 3B as its own teacher.
 
 - Same model, same delays and codebooks: none of that note's leak (`grpo_profile.py` reports no
-  `teacher_leak`), and the term is 0 at update 0.
+  `teacher_leak`). The term starts near 0, not at it: the policy's load copies the text PAD's
+  input row over EOS's ([sft-training](sft-training.md#trainer), `common.load_policy`) and the
+  teacher keeps the file's, so the few kept tokens that read an EOS (codebooks 1–15 of the frame
+  before it) differ (KL 0.01–0.06 on a tiny model), and fp32 masters differ from a bf16 copy a
+  little everywhere. Read the profile's starting `kl_text` and `kl_audio` as that floor.
 - The motive: the shipped run's selecting mean stopped rising after update 1,400 while its EOS
   share fell 0.83 → 0.68, a drift no reward checks (no reward pays for an EOS, the audio is
   scored only through its text) ([grpo](grpo.md#running)). The anchor holds the policy near the
   SFT model wherever the rewards say nothing, and may let a run improve longer.
-- Memory: the start's bf16 copy (~7.7 GB) waits in pinned host memory while a window generates and
+- Memory: the start's bf16 copy (5.8 GiB) waits in pinned host memory while a window generates and
   joins the update's micro-batches on the GPU; the shipped run's update peaked at 68 GiB at
   micro-batch 2 on an 80 GB H100. Profile with it first (`grpo_profile.py` takes the same flags).
 
@@ -120,7 +131,11 @@ Every validation and test is recorded in full ([sft-evaluation](sft-evaluation.m
    `--sampled-inputs 0` against `0.1`. Judged at the end on FLEURS dev both ways and `en-vi-val`
    (chrF, length ratio, end offset, rows ended). GRPO fixes the same gap, so a win counts only if
    it survives GRPO: 400 updates from each arm's final model at the shipped run's settings,
-   compared on validation's selecting mean. If 0.1 wins both, try 0.25.
+   compared on validation's selecting mean. Validation scores text only, and the mix reaches the
+   audio too, so before adopting the winner its generated speech is compared with the control's
+   (`eval.py` without `--text-only` writes it): an ASR transcript of each arm's English on FLEURS
+   dev scored against the reference, as stage 7.1 measured Mimi, and a listen; that script is
+   written with the experiment. If 0.1 wins all three, try 0.25.
 2. **Anchored GRPO.** From the shipped run's start, the two-way SFT's final model, on its streams
    and seed: first a probe of 200 updates each at β 0.02 and 0.1, judged by the KL's size against
    the GRPO term and the evaluation at 200; then the run, against the shipped run's evaluations
@@ -142,11 +157,18 @@ the next data will be trained with.
     the model's own rows differ (0.485), never a source row, a -1 or an unscored position; its
     count equals the tokens that differ; near 1, 0.965 of them; a text head that favours one token
     by far samples only that token; a heads student runs through it.
-  - `compute_batch_losses(..., inputs=mixed)` equals the CE of `model(mixed)`'s logits against the
-    dataset's tokens, not against the samples; `inputs=codes` equals no `inputs`; gradients are
-    finite.
+  - `compute_batch_losses(..., history=mixed)` equals the CE of `forward_history(mixed, codes)`'s
+    logits against the dataset's tokens, not against the samples; `history=codes` equals no
+    history; gradients are finite.
+  - `forward_history(codes, codes)` equals moshi's forward, on the 3B shape and the heads student.
+    A token changed in the history alone (codebook 3 of frame 10) moves no prediction of its own
+    step (codebook 4 of frame 10, which moves when the depformer reads it too) and nothing
+    before it, and moves the next step's; a changed text token leaves its frame's codebook 0.
+  - The review (PR #151, its own scripts): perturbing each own input in turn, on the 3B shape and
+    a heads student, moves only predictions generation samples later; pass 1 on palettized
+    weights restores the full-precision ones with finite gradients everywhere.
   - `validate_args` refuses a rate outside [0, 1) and a rate with `--teacher-weight`.
 - Not yet run on CUDA: the compiled training forward without gradients (one more compile per
-  shape), the step's time and memory. The validation before the student's GRPO
+  shape) and `forward_history`'s, the step's time and memory. The validation before the student's GRPO
   ([on-policy-distillation](on-policy-distillation.md#experiments), item 0) adds a short
   `--sampled-inputs 0.1` run through a validation, a kill and a resume.
