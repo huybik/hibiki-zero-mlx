@@ -163,7 +163,7 @@ free-running at seed 47, batches of 64.
   At 112,000 (promoted, +1.8 selecting, VI→EN +2.7 to +5.9 on every set) it passed the depformer
   student after distillation on FLEURS (33.52 / 33.03 against 31.74 / 29.31) and `en-vi-val-en`
   cv27 (30.12 against 28.76), and was 0.3–2.4 behind on the other four.
-  At 128,000 (promoted, +2.0 selecting; up on every set but `en-vi-val-en` cv27, +0.5 to +3.6) the mean of
+  At 128,000 (promoted, +2.0 selecting; up on every set, +0.5 to +3.6) the mean of
   the seven sets was 36.99, against 34.34 for the depformer student after distillation (its
   best, 64,000 of `student_dep10_anneal`), and the selecting mean 35.29 against 35.50 for that
   student after GRPO.
