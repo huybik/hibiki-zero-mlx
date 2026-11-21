@@ -9,7 +9,13 @@ checkpoint:
   as in a run);
 - the rewards of the rollouts, serially and in --reward-workers worker processes;
 - π_old's logprob pass (the update's forward, gradients on) and the update's forward and backward
-  at each --micro-batch, and the first update's largest ratio deviation, which should be 0.
+  at each --micro-batch, and the first update's largest ratio deviation, which should be 0. With
+  --teacher-weight the update includes the teacher's forward and the distillation term (the
+  teacher parked on the host while generating, as in a run); with --reward-coef 0 a run skips
+  the logprob pass, so `window` counts none;
+- with a teacher, `teacher_leak`: an upper bound on how much the teacher's distributions follow
+  what the policy sampled after the scored token, for text and each codebook, against the start's
+  `kl_text` and `kl_audio`.
 A size that runs out of memory is recorded and skipped. Every stage runs at --frames, a run's
 longest rollout and so its peak memory; `window` then gives what a run's first window costs at
 its own lengths (`grpo.rollout_frames`, `grpo.micro_frames`) for each --gen-batch's
@@ -61,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gen-batch", type=int, nargs="+", default=[192, 384, 512])
     parser.add_argument("--micro-batch", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--reward-workers", type=int, default=8)
+    grpo.add_objective_args(parser)
     grpo.add_room_args(parser)
     return parser.parse_args()
 
@@ -75,14 +82,14 @@ def timed(function, repeats: int = 1) -> float:
 
 
 def profile_generation(
-    args, info, lm, optimizer, sources, silence_frame, report: dict, write
+    args, info, lm, optimizer, parked, sources, silence_frame, report: dict, write
 ) -> torch.Tensor:
-    """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, the policy and its
-    optimizer states in host memory as a run parks them, and return the rollouts of every source
-    at the largest size that fits, with them back on the GPU."""
+    """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, the policy, its
+    optimizer states and `parked` (a teacher's parameters) in host memory as a run parks them, and
+    return the rollouts of every source at the largest size that fits, with them back on the GPU."""
     generator = common.bf16_copy(info, lm, lm.device)
     offload = grpo.HostOffload()
-    offload.to_host(grpo.trainer_tensors(lm, optimizer))
+    offload.to_host(grpo.trainer_tensors(lm, optimizer) + parked)
     report["resident_while_generating_gib"] = torch.cuda.memory_allocated() / 2**30
 
     def generate(count: int, gen_batch: int) -> torch.Tensor:
@@ -130,7 +137,7 @@ def profile_generation(
     return rollouts
 
 
-def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report: dict) -> dict:
+def window_estimate(args, dataset, rollouts, stream_ids, delays, extra, eos_id, report: dict) -> dict:
     """What a run's first window (--tau updates of --streams streams) costs at its own lengths.
     Generation: its rollouts in `grpo.generation_batches` of each --gen-batch's --gen-frames, each
     as many steps as its longest rollout, a step's time a line in its rows fitted to the measured
@@ -144,7 +151,6 @@ def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report:
     order = grpo.stream_order(len(dataset), args.seed)[: args.tau * args.streams]
     window = torch.tensor([length(int(index)) for index in order]).repeat_interleave(args.group)
     estimate: dict = {"streams": len(order), "rollout_frames_mean": float(window.float().mean())}
-    extra = max(delays.tolist())
     measured = {gen_batch: report[f"generate_batch_{gen_batch}"]["ms_per_step"]
                 for gen_batch in args.gen_batch
                 if isinstance(report.get(f"generate_batch_{gen_batch}"), dict)}
@@ -175,15 +181,53 @@ def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report:
         per_update = per_rollout * args.streams * args.group
         estimate[f"micro_batch_{micro}"] = {
             "forward_frames_mean": per_rollout,
-            "logprob_seconds_per_update": per_update / measured["logprob_frames_per_s"],
+            "logprob_seconds_per_update": (per_update / measured["logprob_frames_per_s"]
+                                           if args.reward_coef else 0.0),
             "update_seconds_per_update": per_update / measured["update_frames_per_s"]}
     estimate["rollouts"] = len(window)
     print(json.dumps({"window": estimate}, indent=2), flush=True)
     return estimate
 
 
+def teacher_leak(teacher, teach, codes, keep, shifts: dict[int, int], device, rows: int = 8) -> dict:
+    """An upper bound on how much the teacher's distributions follow what the policy sampled after
+    the token they score. Where the teacher delays codebook j less than the policy, at a token it
+    reads frames of j the policy sampled later, conditioned on that token. Shifting each such
+    codebook `shifts[j]` (the policy's delay minus the teacher's) frames later in the teacher's
+    input leaves it only frames the policy had sampled by then. Over the first `rows` rollouts, the
+    teacher's mean logprob of the policy's kept tokens with the rollout as sampled, minus with the
+    shifted one, is that bias plus what the misaligned codebooks cost the teacher (taken as never
+    negative): an upper bound, for text and each codebook. Not covered: the 3B's depformer scores
+    codebook 1 of frame f after the text and codebook 0 of frame f + 2, which a heads student
+    samples later."""
+    own = codes[:rows]
+    shifted = own.clone()
+    for j, shift in shifts.items():
+        shifted[:, 1 + j, shift:] = own[:, 1 + j, :-shift]
+        shifted[:, 1 + j, :shift] = own[:, 1 + j, :1]  # the stream's first frame stands in before it
+    codebooks = codes.shape[1] // 2
+    means = []
+    for batch in (own, shifted):
+        sums, counts = torch.zeros(1 + codebooks), torch.zeros(1 + codebooks)
+        for start in range(0, len(batch), 2):  # two rollouts a forward, as the smallest micro-batch
+            part = batch[start : start + 2].to(device=device, dtype=torch.long)
+            kept = keep[start : start + 2].to(device)
+            output = grpo.teacher_forward(teacher, teach, part)
+            text_valid = output.text_mask & kept[:, :1]
+            audio_valid = output.mask & kept[:, 1:]
+            text = common.token_ce(output.text_logits, part[:, :1], text_valid)
+            audio = common.token_ce(output.logits, part[:, 1 : 1 + codebooks], audio_valid)
+            sums -= torch.cat([text, audio], dim=1).sum(dim=(0, 2)).cpu()
+            counts += torch.cat([text_valid, audio_valid], dim=1).sum(dim=(0, 2)).cpu()
+        means.append(sums / counts.clamp(min=1))
+    bound = (means[0] - means[1]).tolist()
+    return {"rollouts": len(own), "shifted_codebooks": shifts, "text_bound_nats": bound[0],
+            "audio_bound_nats": bound[1:]}
+
+
 def main() -> None:
     args = parse_args()
+    grpo.validate_objective_args(args)
     args.model_weight = require_file(args.model_weight, "start checkpoint")
     args.tokenizer = common.run_tokenizer(args.tokenizer, args.model_weight)
     pool = grpo.reward_pool(args.reward_workers, args.tokenizer)
@@ -196,6 +240,7 @@ def main() -> None:
     tokenizer = info.get_text_tokenizer()
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
+    teach = grpo.teacher_info(args, codebooks)
     dataset = grpo.stream_dataset(args, info, rows, layout, codebooks, info.get_mimi(device=device))
     count = max(args.gen_batch)
     stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
@@ -213,11 +258,16 @@ def main() -> None:
         optimizer.state[param] = {"step": torch.zeros((), device=device),
                                   "exp_avg": torch.zeros_like(param),
                                   "exp_avg_sq": torch.zeros_like(param)}
+    teacher = None
+    if teach is not None:
+        teacher = common.load_teacher(teach, args.teacher_weight, device, codebooks)
     report["resident_gib"] = torch.cuda.memory_allocated() / 2**30
     silence_frame = dataset.silence[:codebooks, -1].long().to(device)
 
     # Phase 1: generation.
-    rollouts = profile_generation(args, info, lm, optimizer, sources, silence_frame, report, write)
+    parked = [] if teacher is None else list(teacher.parameters())
+    rollouts = profile_generation(args, info, lm, optimizer, parked, sources, silence_frame,
+                                  report, write)
 
     # Phase 1: rewards.
     eos_id, pad_id = int(tokenizer.eos_id()), int(tokenizer.pad_id())
@@ -227,12 +277,15 @@ def main() -> None:
         tokens = rollouts[group * args.group : (group + 1) * args.group, 0].numpy().copy()
         jobs.append((tokens, sentences))
     start = time.time()
-    results = [rewards.group_advantages(tokens, sentences, eos_id, pad_id, tokenizer.decode)
+    scale = args.advantage == "zscore"
+    results = [rewards.group_advantages(tokens, sentences, eos_id, pad_id, tokenizer.decode,
+                                        scale=scale)
                for tokens, sentences in jobs]
     serial = time.time() - start
     start = time.time()
     [future.result() for future in [pool.submit(grpo._group_rewards, tokens, sentences,
-                                                rewards.ALPHA) for tokens, sentences in jobs]]
+                                                rewards.ALPHA, scale)
+                                    for tokens, sentences in jobs]]
     parallel = time.time() - start
     report["rewards"] = {"groups": len(jobs), "serial_s": serial, "parallel_s": parallel}
     print(f"rewards of {len(jobs)} groups: {serial:.1f} s serial, {parallel:.1f} s in "
@@ -241,11 +294,13 @@ def main() -> None:
 
     # Phase 2: π_old's logprob pass and the update's forward and backward.
     codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
-    delays = torch.tensor(lm.delays[: 1 + lm.dep_q])
+    delays = grpo.scored_delays(lm, teacher)
     keep = grpo.kept_tokens(rollouts, torch.full((len(rollouts),), args.frames), delays, eos_id)
     advantages = torch.from_numpy(np.concatenate([r[2] for r in results])).float()
     weights = torch.ones(1 + lm.dep_q, device=device)
     weights[0] = grpo.TEXT_WEIGHT
+    objective = grpo.Objective(weights, grpo.EPSILON, grpo.TEMPERATURE, args.reward_coef,
+                               args.kl_coef or 0.0)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
@@ -259,11 +314,14 @@ def main() -> None:
                 logprobs, mask = grpo.token_logprobs(lm, batch, condition, grpo.TEMPERATURE)
             return logprobs.detach(), mask
 
-        def update():
+        def update_loss():  # as an update of grpo.py runs it, the teacher's forward included
+            teacher_output = None if teacher is None else grpo.teacher_forward(teacher, teach, batch)
             with autocast:
-                loss, _ = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
-                                         keep[:micro].to(device), weights, grpo.EPSILON,
-                                         grpo.TEMPERATURE)
+                return grpo.update_loss(lm, batch, condition, keep[:micro].to(device), objective,
+                                        old, advantages[:micro].to(device), teacher_output)
+
+        def update():
+            loss, _ = update_loss()
             loss.backward()
 
         try:
@@ -279,21 +337,33 @@ def main() -> None:
         peak = torch.cuda.max_memory_allocated() / 2**30
         lm.zero_grad(set_to_none=True)
         frames = micro * args.frames
-        with autocast:
-            _, stats = grpo.grpo_loss(lm, batch, condition, old, advantages[:micro].to(device),
-                                      keep[:micro].to(device), weights, grpo.EPSILON,
-                                      grpo.TEMPERATURE)
+        _, stats = update_loss()
         lm.zero_grad(set_to_none=True)
         report[f"micro_batch_{micro}"] = {
-            "first_update_ratio_max_deviation": float(stats["max_deviation"]),
             "logprob_frames_per_s": frames / score_s,
             "update_frames_per_s": frames / update_s, "peak_gib": peak,
             "sampled_logprob_mean": float(old[mask].mean())}
+        if "max_deviation" in stats:
+            report[f"micro_batch_{micro}"]["first_update_ratio_max_deviation"] = float(stats["max_deviation"])
+        if teacher is not None:  # the start's mean KL a token, unweighted
+            for part in ("text", "audio"):
+                report[f"micro_batch_{micro}"][f"kl_{part}"] = float(
+                    stats[f"kl_{part}_sum"] / stats[f"kl_{part}_tokens"].clamp(min=1))
         print(f"micro batch {micro}: logprobs {frames / score_s:,.0f} frames/s, update "
               f"{frames / update_s:,.0f} frames/s, peak {peak:.1f} GiB", flush=True)
         write(report)
 
-    report["window"] = window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report)
+    if teacher is not None:
+        policy, teaching = lm.delays[1 : 1 + lm.dep_q], teacher.delays[1 : 1 + lm.dep_q]
+        shifts = {j: policy[j] - teaching[j] for j in range(lm.dep_q) if policy[j] > teaching[j]}
+        if shifts:
+            report["teacher_leak"] = teacher_leak(teacher, teach, codes, keep, shifts, device)
+            print(f"teacher leak: {json.dumps(report['teacher_leak'])}", flush=True)
+            write(report)
+
+    generation_extra = max(lm.delays[: 1 + lm.dep_q])  # what generation steps past a rollout
+    report["window"] = window_estimate(args, dataset, rollouts, stream_ids, delays,
+                                       generation_extra, eos_id, report)
     write(report)
 
     report["samples"] = []
