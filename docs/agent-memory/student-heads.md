@@ -145,6 +145,7 @@ free-running at seed 47, batches of 64.
   | 64,000 (11-20) | 3.320 / 3.082 | 30.05 | 29.92 / 4.42 / 1.50 / 2.6 (1 empty) | 30.18 / 10.51 / 1.08 / 2.2 (1 empty) | 30.22 / 5.63 / 1.63 / 5.1 (2 empty) | 27.47 / 5.77 / 1.63 / 3.8 (2 empty) | 32.17 / 9.21 / 1.16 / 3.8 | 26.54 / 9.78 / 1.18 / 0.9 (4 empty) | 36.17 / 14.68 / 1.09 / 2.1 |
   | 80,000 (11-20) | 3.272 / 3.033 | 30.47 | 30.14 / 3.78 / 1.63 / 2.8 | 30.79 / 10.11 / 1.20 / 2.2 | 30.40 / 5.50 / 1.66 / 4.7 | 33.69 / 7.69 / 1.71 / 3.5 | 35.90 / 10.44 / 1.28 / 4.1 | 27.85 / 9.19 / 1.35 / 1.4 | 36.71 / 14.97 / 1.13 / 2.5 |
   | 96,000 (11-21) | 3.223 / 2.988 | 31.43 | 30.32 / 5.56 / 1.42 / 2.3 | 32.53 / 12.45 / 1.10 / 1.5 (1 empty) | 29.17 / 5.50 / 1.62 / 5.0 (1 empty) | 31.47 / 8.04 / 1.50 / 2.9 (1 empty) | 35.73 / 11.07 / 1.16 / 3.4 | 28.94 / 10.19 / 1.27 / 0.9 | 38.60 / 16.40 / 1.08 / 2.1 |
+  | 112,000 (11-21) | 3.182 / 2.950 | 33.27 | 33.52 / 6.24 / 1.39 / 2.0 | 33.03 / 13.24 / 1.05 / 1.6 | 32.61 / 6.93 / 1.52 / 4.1 | 37.34 / 10.79 / 1.33 / 2.6 | 38.46 / 12.85 / 1.12 / 2.6 | 30.12 / 13.02 / 1.16 / 1.0 (1 empty) | 38.39 / 17.47 / 1.04 / 2.0 |
 
   At 16,000 against 8 codebooks: VI→EN +1.2 to +2.4 chrF on every set, EN→VI −1.0 (FLEURS) to +1.3,
   end offsets 0.1–0.7 s later; generation and scoring at 16 codebooks work on the GPU.
@@ -158,3 +159,6 @@ free-running at seed 47, batches of 64.
   chrF on 6 of the 7 sets, −3.3 on `en-vi-val` cv27; FLEURS selecting 30.05 against 25.41, and
   30.53 for the depformer student after distillation (~196,000 updates), 35.50 after GRPO.
   At 96,000: FLEURS 30.32 / 32.53 (31.43) against `student_dep10`'s 28.67 / 24.53 (26.60).
+  At 112,000 (promoted, +1.8 selecting, VI→EN +2.7 to +5.9 on every set) it passed the depformer
+  student after distillation on FLEURS (33.52 / 33.03 against 31.74 / 29.31) and `en-vi-val-en`
+  cv27 (30.12 / 28.76); within 0.3–2.4 on the other four.
