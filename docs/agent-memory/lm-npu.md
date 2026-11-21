@@ -144,7 +144,8 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
 - fp16 weights: the trunk took 61.7 ms a frame on the M4 Pro's Neural Engine against 11.2 at 6
   bits. It streams its weights every frame, so their size sets its speed.
 - Raw results: `/Volumes/data/hibiki-zero-evals/iphone/ane/` (`heads6_ane_gpuenc_compiled_cool_vi_10min`,
-  the headline, Mimi on the GPU from cool; `heads6_ane_gpuenc_fused_cool_vi_10min`, the same
+  the headline, Mimi on the GPU from cool; `heads6_ane_default_vi_1min`, the same with no
+  `--encoder`, minute 1 alike (53.3 ms p50); `heads6_ane_gpuenc_fused_cool_vi_10min`, the same
   uncompiled; `heads6_ane_cool_vi_10min`, Mimi on the CPU from cool; started hot:
   `heads6_ane_vi_{1,10}min`, `heads6_ane_gpuenc_vi_10min` (the GPU with the CPU's kernels),
   `heads6_ane_chunk2_vi_10min`), each `.jsonl` (a sample a step), `.txt` (summary and text) and
