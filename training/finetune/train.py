@@ -28,14 +28,14 @@ to their k-means tables, the optimizer updates the full-precision ones, and vali
 palettized model; saved checkpoints hold the full-precision weights, which `palettize` snaps for
 the export.
 
-With --sampled-inputs P (parallel scheduled sampling, against exposure bias), each step first runs
-the model teacher-forced without gradients and samples its every scored token as generation
-samples it (temperature 0.8, top-k 250); each of the model's own tokens (text and target
-codebooks) then becomes its sample with probability P in the history the main transformer reads,
-while each step's own tokens (the depformer's inputs) and the targets stay the dataset's.
-Generation conditions on the model's own samples, teacher forcing never does: this shows the
-model its own tokens in training at the cost of one more forward a step. The source rows stay the
-dataset's, and validation is unchanged ([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
+With --sampled-text P (parallel scheduled sampling of the text, against exposure bias), each step
+first runs the main transformer teacher-forced without gradients and samples its every scored
+text token as generation samples it (temperature 0.8, top-k 250); each text token then becomes its
+sample with probability P in the history the main transformer reads, while each step's own tokens
+(the depformer's inputs), the audio and the targets stay the dataset's. Generation conditions on
+the model's own text, teacher forcing never does: this shows the model its own words and timing
+in training at the cost of one more main-transformer forward a step. Validation is unchanged
+([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
@@ -56,7 +56,7 @@ import torch
 from moshi.utils.sampling import sample_token
 from torch.utils.data import DataLoader
 
-from training.finetune import common, streams
+from training.finetune import common, lm_training, streams
 from training.student import heads, palettize
 from training.finetune.checkpoints import (
     BEST_METRIC,
@@ -92,7 +92,7 @@ RESUME_KEYS = (
     "optimizer_state",
     "palettize_bits",
     "palettize_refit",
-    "sampled_inputs",
+    "sampled_text",
     "mimi_weight",
     "tokenizer",
     "epochs",
@@ -162,8 +162,8 @@ def parse_args() -> argparse.Namespace:
         help="Refit the palettization tables every this many steps; must divide --save-every.",
     )
     parser.add_argument(
-        "--sampled-inputs", type=float, default=0.0,
-        help="Share of the model's own input tokens replaced by its own samples from a "
+        "--sampled-text", type=float, default=0.0,
+        help="Share of the text the main transformer reads that is the model's own samples from a "
         "teacher-forced pass (scheduled sampling); the targets stay the dataset's.",
     )
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
@@ -262,10 +262,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--warmup-fraction must be in [0, 1)")
     if args.teacher_config is not None and args.teacher_weight is None:
         raise ValueError("--teacher-config needs --teacher-weight")
-    if not 0 <= args.sampled_inputs < 1:
-        raise ValueError("--sampled-inputs must be in [0, 1)")
-    if args.sampled_inputs and args.teacher_weight is not None:
-        raise ValueError("--sampled-inputs trains on the dataset's targets; a student learns from "
+    if not 0 <= args.sampled_text < 1:
+        raise ValueError("--sampled-text must be in [0, 1)")
+    if args.sampled_text and args.teacher_weight is not None:
+        raise ValueError("--sampled-text trains on the dataset's targets; a student learns from "
                          "its own samples on-policy, with grpo.py --teacher-weight")
     if args.schedule == "decay" and (args.optimizer_state is None or args.warmup_fraction):
         raise ValueError("--schedule decay continues a constant run's pair: it needs "
@@ -280,32 +280,27 @@ def validate_args(args: argparse.Namespace) -> None:
     common.require_torch_compile()
 
 
-def sample_inputs(
+def sample_text(
     lm: Any, codes: torch.Tensor, condition_tensors: Any, rate: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Parallel scheduled sampling (Duckworth et al. 2019, arXiv 1906.04331): a history for
-    `common.compute_batch_losses`, `codes` with each token of the model's own rows (text, then its
-    target codebooks) that its teacher-forced forward scores replaced, with probability `rate`,
-    by a token sampled from that forward's distribution as validation samples
-    (`common.TRAINER_GENERATION`), and how many replaced tokens differ from the dataset's. The
-    forward runs without gradients, under the caller's autocast. The main transformer reads a
-    replaced token as context for the steps after it, as the delays place them; its own
-    position's target stays the dataset's token. Positions no forward scores (-1, and a delayed
-    row's last frames, which no step reads) and the source rows stay."""
+    """Parallel scheduled sampling of the text (Duckworth et al. 2019, arXiv 1906.04331): a history
+    for `common.compute_batch_losses`, `codes` with each scored text token replaced, with
+    probability `rate`, by a token sampled from the main transformer's teacher-forced
+    distribution as validation samples text (`common.TRAINER_GENERATION`), and how many replaced
+    tokens differ from the dataset's. Runs without gradients, under the caller's autocast. The
+    audio stays the dataset's: generation draws a frame's codebooks one after another, so tokens
+    sampled each on its own would pair a sampled codebook with the dataset's next, a frame no
+    audio has."""
     cfg = common.TRAINER_GENERATION
-    own = codes[:, : 1 + lm.dep_q]
     with torch.no_grad():
-        output = lm(codes, condition_tensors=condition_tensors)
+        logits, scored = lm_training.text_logits(lm, codes, condition_tensors)
         # Unscored positions hold NaN logits; they are never replaced.
-        text_logits = output.text_logits.float().nan_to_num()
-        text = sample_token(text_logits, True, cfg.text_temp, cfg.top_k_text)
-        audio = sample_token(output.logits.float().nan_to_num(), True, cfg.audio_temp, cfg.top_k)
-    sampled = torch.cat([text, audio], dim=1).to(codes.dtype)
-    scored = torch.cat([output.text_mask, output.mask], dim=1)
+        sampled = sample_token(logits.float().nan_to_num(), True, cfg.text_temp, cfg.top_k_text)
+    sampled = sampled.to(codes.dtype)
     replace = scored & (torch.rand(scored.shape, device=codes.device) < rate)
-    mixed = codes.clone()
-    mixed[:, : 1 + lm.dep_q] = torch.where(replace, sampled, own)
-    return mixed, (replace & (sampled != own)).sum()
+    history = codes.clone()
+    history[:, :1] = torch.where(replace, sampled, codes[:, :1])
+    return history, (replace & (sampled != codes[:, :1])).sum()
 
 
 def learning_rate(
@@ -522,7 +517,7 @@ def main() -> None:
             "grad_norm": 0.0,
             "max_grad_norm": None,
             "data_seconds": 0.0,
-            "inputs_changed": 0,
+            "text_changed": 0,
         }
 
     def check_gradients(step: int) -> None:
@@ -612,11 +607,11 @@ def main() -> None:
         with palettized():  # the straight-through estimator: gradients at the palettized weights
             with autocast:
                 history = None
-                if args.sampled_inputs:
-                    history, changed = sample_inputs(
-                        lm, codes, condition_cache[batch_size], args.sampled_inputs
+                if args.sampled_text:
+                    history, changed = sample_text(
+                        lm, codes, condition_cache[batch_size], args.sampled_text
                     )
-                    log["inputs_changed"] += changed
+                    log["text_changed"] += changed
                 losses = common.compute_batch_losses(
                     lm, codes, condition_cache[batch_size], weights,
                     teacher=teacher_output, history=history,
@@ -685,9 +680,8 @@ def main() -> None:
                 "grad_norm": float(log["grad_norm"]) / steps,
                 "max_grad_norm": float(log["max_grad_norm"]),
             }
-            if args.sampled_inputs:  # the share of the model's own scored inputs it sampled otherwise
-                scored = int(log["audio_tokens"] + log["text_tokens"])
-                item["inputs_changed"] = float(log["inputs_changed"]) / max(1, scored)
+            if args.sampled_text:  # the share of the scored text it read as its own other samples
+                item["text_changed"] = float(log["text_changed"]) / max(1, int(log["text_tokens"]))
             append_log(log_path, item)
             print(
                 f"step={global_step} loss={item['loss']:.4f} "

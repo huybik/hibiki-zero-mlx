@@ -139,7 +139,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     its peak, gained nothing (user, 2026-11-13; [two-way](two-way.md#two-way-run)); `--max-steps`
     shortens the whole cosine, not only its tail. A floor held at the end instead would keep the
     model moving, as the constant 1e-6 before the cosine did
-    ([plan](../vi_en_parity_plan.md#decisions-2026-11-01)). Fused AdamW with betas (0.9, 0.95)
+    ([plan](../vi_en_parity_plan.md#decisions-2026-11-01-later-dates-marked)). Fused AdamW with betas (0.9, 0.95)
     and weight decay 0.1; grad clip 1.0. Each train-log line holds its steps' mean and max gradient norm before clipping (`grad_norm`, `max_grad_norm`),
     summed on the GPU without a sync per step. A non-finite norm raises at the next log step and
     before any save: the losses cannot show the last step's update, and a NaN pair saved would be
@@ -194,7 +194,7 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 ## Objective
 
 `common.compute_batch_losses`, Kyutai's `moshi-finetune` weighting (decided 2026-11-01,
-[plan](../vi_en_parity_plan.md#decisions-2026-11-01)), as weighted sums of one kernel,
+[plan](../vi_en_parity_plan.md#decisions-2026-11-01-later-dates-marked)), as weighted sums of one kernel,
 `common.token_ce`: each target token's cross-entropy over the full logits, 0 where the forward's
 mask is off. Training, teacher-forced validation and GRPO's token logprobs (its negative at the
 sampling temperature) all run it, so a change to it needs all three checked
@@ -216,9 +216,8 @@ sampling temperature) all run it, so a change to it needs all three checked
 - **Palettization** (`--palettize-bits`, a heads student): the step runs on the weights snapped
   to the Core ML export's k-means tables, the straight-through estimator
   ([student-heads](student-heads.md#palettization)).
-- **Scheduled sampling** (`--sampled-inputs P`, not with a teacher): a forward without gradients
-  samples every token, a share P of the model's own tokens become those samples in the history
-  the main transformer reads, and the loss scores the dataset's tokens, each step's own inputs
-  to the depformer staying the dataset's (`compute_batch_losses(..., history=)`,
-  `lm_training.forward_history`); the train log adds `inputs_changed`
-  ([exposure-bias](exposure-bias.md#scheduled-sampling)).
+- **Scheduled sampling** (`--sampled-text P`, not with a teacher): the main transformer samples
+  every text token without gradients, a share P of the text it reads become those samples, and
+  the loss scores the dataset's tokens, each step's own inputs to the depformer and the audio
+  staying the dataset's (`compute_batch_losses(..., history=)`, `lm_training.forward_history`);
+  the train log adds `text_changed` ([exposure-bias](exposure-bias.md#scheduled-sampling)).

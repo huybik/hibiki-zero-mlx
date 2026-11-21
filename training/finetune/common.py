@@ -354,9 +354,9 @@ def compute_batch_losses(
     for the same codebooks), each token's loss is its KL from the teacher's distribution
     (`token_kl`) instead of its cross-entropy, with the same weights, at the positions both score:
     moshi returns each model's logits on the stream's frames, and a model with other delays (a
-    heads student's) has other last frames to score. With `history` (scheduled sampling's mixed
-    codes) the main transformer reads it in place of `codes`, which stay each step's own input
-    and the targets (`lm_training.forward_history`)."""
+    heads student's) has other last frames to score. With `history` (scheduled sampling's codes,
+    their text partly the model's samples) the main transformer reads it in place of `codes`,
+    which stay each step's own input and the targets (`lm_training.forward_history`)."""
     if history is None:
         output = lm(codes, condition_tensors=condition_tensors)
     else:

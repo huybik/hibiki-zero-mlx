@@ -133,11 +133,11 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
    repeated 4-grams, length ratio; EOS is reported, not gated, since 2026-11-04) with the highest
    FLEURS dev chrF, and keeps it beside the newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
    chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
-4. Against exposure bias (built 2026-11-21): `--sampled-inputs P`, parallel scheduled sampling.
-   A forward without gradients samples every token as generation does, each of the model's own
-   tokens becomes its sample with probability P in the history the main transformer reads, and
-   the loss scores the dataset's tokens on that mixed context, the depformer's same-step inputs
-   staying the dataset's ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
+4. Against exposure bias (built 2026-11-21): `--sampled-text P`, parallel scheduled sampling of
+   the text. The main transformer samples every text token without gradients as generation does,
+   each text token it reads becomes its sample with probability P, and the loss scores the
+   dataset's tokens on that context; each step's own inputs to the depformer and the audio stay
+   the dataset's ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
    Tested against 0 before any run adopts it, and after a short GRPO, which fixes the same gap
    ([experiments](agent-memory/exposure-bias.md#experiments)).
 
