@@ -125,7 +125,9 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    the profile with the teacher (memory, the update's speed, `teacher_leak`); a short
    `--reward-coef 0` run through an evaluation, a kill and a resume; the same with both terms and
    `--advantage centered`; plain GRPO's first updates against main's log; a `train.py --schedule
-   constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints.
+   constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints; a
+   short `train.py --sampled-text 0.1` run through a validation, a kill and a resume
+   ([exposure-bias](exposure-bias.md#checks)).
 1. **On-policy distillation of the heads student**, distillation alone (`--reward-coef 0`), from
    the heads run's promoted checkpoint when it stops, teacher GRPO update 1,400. First the profile
    and its `teacher_leak` bound ([Design](#design)'s caveat), then a rate probe: 200 updates each at 1e-6 (the student GRPO's rate), 3e-6 and 1e-5 (the off-policy
