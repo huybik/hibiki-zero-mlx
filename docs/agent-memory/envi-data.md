@@ -38,9 +38,20 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 
 - The `en_speech` shard names are the VI→EN cache's (`shard_cv27-*`, `shard_libriheavy-*`); the 7
   `cv-anquach` parquets of the dataset are their own cache and not in these folders.
+- Give a run a tranche folder or its `-noisy` copy, never both: streams group a tranche's rows by
+  `doc` alone, and a copy keeps its row's `doc` and `seq`, so both copies of a sentence would sit
+  side by side (1,859 such pairs on viVoice in the validation). `en_speech` rows have no `doc`, so
+  its clean and noisy copies land in different streams. A noisy copy keeps 40% of rows clean.
+- The trainer takes whatever a folder holds: train on a noisy folder only once the Hub lists all of
+  its shards (the run's last line is "done: the Hub holds every shard").
 - A shard built on the Mac and one built on a box differ only by near-ties
   ([cache-build](cache-build.md#across-devices)); a noisy shard records its seed, fraction,
   direction and dataset in `source_augment` and each row's conditions in `source_conditions`.
+- Validated end to end (2026-11-21, viVoice noisy shards, `cv27-00035` clean and noisy): the
+  trainer's packing, tokenizer check, stream plan and assembly take them as box-built shards; a
+  Mac-built clean shard has the box's fields and statistics; noisy copies change only the source
+  codebooks of the selected rows (59–62%), and re-applying a row's recorded conditions reproduces
+  its codes on the CPU.
 - The evaluation set `en-vi-val-en-noisy` (2 × 180 rows) is built on the training box in
   `/workspace/hibiki-zero/data/eval/` (2026-11-21). `eval_sets` run from another checkout whose
   `data/` is a symlink writes the clips' absolute paths (`repo_display_path` resolves the link);
@@ -73,8 +84,9 @@ it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `
   leftover step. Its Hub client has a 300 s timeout (`huggingface_hub`'s own waits forever).
 - GigaSpeech 2's noisy copies hold ~10 GB more memory than the others: the next shard's clips
   (~5 GB decoded) are queued before the current one encodes.
-- The noisy fetch reads the batch's local copy (`--dataset-dir`), so each batch's `manifest.json`
-  names its `work/` folder; the shards carry the settings that matter.
+- The noisy fetch reads the batch's local copy (`--dataset-dir`), so each shard's
+  `source_augment.dataset` names a `work/` folder rather than the Hub's dataset (the same files, at
+  `EN_VI_REVISION` or the tranche repo's main); its seed, fraction and direction are as recorded.
 - `huggingface_hub`'s downloads drop on this Mac every 10–40 MB ("peer closed connection") and
   crawl through their resumes; curl with `-C -` reads the same files at ~30–40 MB/s. Its Xet
   uploads stalled, so the driver sets `HF_HUB_DISABLE_XET=1` before importing it.
