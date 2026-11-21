@@ -6,8 +6,8 @@ A row is
 [33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
 fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. With
 --direction en-vi the languages trade places: Vietnamese text and target, English source, for
-two-way training; that build runs on --device cuda (MLX has no Vietnamese aligner), tokenizes
-with the Vietnamese swap (the direction's default --tokenizer) and takes its own --out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
+two-way training; that build tokenizes with the Vietnamese swap (the direction's default --tokenizer)
+and takes its own --out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
 rejected and listed with their reason. The build itself (decode, gates, the target language's
 CTC aligner and Mimi on --device, the Viterbi) is `cache_build`'s, shared with the tranche's
 builder.

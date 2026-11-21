@@ -108,13 +108,17 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   (~16% faster CTC; `--half-ctc` flag). One clip per forward, then the numpy Viterbi
   (`text_timing.CTCWordAligner`) in a worker. The port pads each clip to a multiple of 1.28 s and
   masks the padding (first GroupNorm statistics, positional convolution input, attention keys), so
-  it computes the clip alone and compiles over ~18 shapes. It builds the same rows as mlx-audio
-  0.6.1's eager wav2vec2 but for float near-ties (2 of ~3,200 rows had a word 1–2 frames apart),
-  and that model on 252 rows rejects the same rows as PyTorch CPU float32 and gives the same spans
-  on 6,180 of 6,181 words. Float16 GroupNorm statistics must be computed in float32 (not cast to
-  hs.dtype): `first_frames` can exceed 65504 for clips > 20.47 s, and sum-of-squares overflows
-  for clips > ~8 s; keeping stats in float32 fixes both while retaining ~81% of the float16
-  speed gain (355× vs 367× on a 13.6 s clip; float32 baseline 305×).
+  it computes the clip alone and compiles over ~18 shapes. It reads the layout from the snapshot's
+  `config.json`, so it runs both aligners: wav2vec2-base (GroupNorm on the first convolution,
+  post-norm layers) and omniASR-CTC-300M-v2 (a LayerNorm per convolution, pre-norm layers). On 12
+  VieNeu clips omniASR's Viterbi columns kept every argmax of transformers' CPU float32 (2,356
+  frames, log-probabilities within 2.5e-3), and the base layout the old port's exact output
+  (2026-11-21); omniASR's speed and float16: [Speed on the Mac](#speed-on-the-mac). It builds the
+  same rows as mlx-audio 0.6.1's eager wav2vec2 but for float near-ties (2 of ~3,200 rows had a
+  word 1–2 frames apart), and that model on 252 rows rejects the same rows as PyTorch CPU float32
+  and gives the same spans on 6,180 of 6,181 words. In float16 the base layout's GroupNorm
+  statistics stay in float32 (`first_frames` passes 65504 past 20.47 s, the sum of squares
+  overflows past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×).
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (they align while
   the GPU encodes Mimi), and returns lazy Mimi codes. The *next* window's CTC is queued in
@@ -150,8 +154,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards differ by 3.1e-3); Mimi's
   batched codes equal the clip-alone ones on all 16 codebooks.
 - omniASR (Vietnamese) normalizes each frame in its feature extractor, so only the attention
-  mask keeps the padding out; batched against alone it gives the same word spans (MLX does not
-  run it: build `en-vi` caches on CUDA).
+  mask keeps the padding out; batched against alone it gives the same word spans.
 - transformers reports `wav2vec2.masked_spec_embed` as missing from the checkpoint: it only masks
   in training, so the CTC is unaffected.
 - `DEVICE` is the torch device. Set to `"cpu"`, the CUDA path no longer runs since its pinned
@@ -168,6 +171,10 @@ Checked on 2026-11-09, after both builders moved onto this build:
   rows as the box's CUDA build on the Hub, every text row, delay and field equal (alignment scores
   within 0.005) and 0.047% of audio frames different (float near-ties). The CUDA path run on the
   CPU over the first 80 rows differed on 0.019%.
+- `en-vi` (2026-11-21), `cv27-00000` built on MLX against the Hub's CUDA (TF32) shard: the same
+  rows but one at the score floor (0.498 against 0.5004), 5 of 2,936 text rows a token frame
+  apart, 94.8% of audio codes equal (first codebooks 99.8%). That gap is TF32's: on 40 rows MLX
+  matched moshi's CPU float32 on 99.99% of codes (first codebooks all), the Hub's shard 94.7%.
 - So a cache may be built on either device, or partly on each: rows differ only by near-ties.
 - `cache_codes` now lists an English clip shorter than one CTC frame as `Rejected`; it used to stop
   the run with wav2vec2_mlx's ValueError.
@@ -180,16 +187,15 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
 - It swings ±20% with the Mac's other load (busy browser tabs, other sessions' builds), so compare
   variants interleaved on the same rows, never one run after another, and check that no other job
   holds the GPU (`ioreg -r -d 1 -c IOAccelerator` "Device Utilization %").
-- Heat costs more: at macOS's thermal state "fair" the build ran 120–200x instead of ~240x, with
-  the builder alone on the GPU (2026-11-02). Read the state with `osascript -l JavaScript -e
-  'ObjC.import("Foundation"); $.NSProcessInfo.processInfo.thermalState'` (0 nominal, 1 fair,
-  2 serious, 3 critical); `pmset -g therm` reports nothing at "fair".
+- Heat: at thermal state "fair" the build ran 120–200x, not ~240x (2026-11-02). Read it with
+  `osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSProcessInfo.processInfo.thermalState'`
+  (0 nominal, 1 fair, 2 serious, 3 critical); `pmset -g therm` is silent at "fair".
 - Each lever counts (interleaved on the same rows, 2026-10-28: `cv27` 101x → 153x, `libriheavy`
   164x → 225x): the 16 GB MLX cache (4 GB 195x, 8 GB 209x; Mimi alone over real clips 275x at
   1 GB, 399x at 8 GB, ~500x on one repeated shape), wav2vec2 over buckets (raw lengths filled any
   cache with buffers never reused), and the Viterbi running while Mimi encodes (+5–11%). The
   footprint grows to ~19 GB.
-- Whole shard: `libriheavy-dev-00001` (1,738 rows, 13.2 h) built at 189x.
+- Whole shard: `libriheavy-dev-00001` (1,738 rows, 13.2 h): 189x; this build 258–263x.
 - Alone: Mimi ~500x on one shape (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length
   buckets: per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 240–290x (PyTorch CPU 86x, MPS
   193x), its 12 layers at ~3.9 TFLOP/s in float32. One clip per forward already fills the GPU.
@@ -198,7 +204,16 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   to −10%); grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
   GPU busy, four CPU processes running wav2vec2 fell from 123x to 20x in total and Mimi slowed
   ~45%: the CPU and GPU share this laptop's power.
-- Neural Engine (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
+- `en-vi` build (omniASR CTC on the Vietnamese clip; 2026-11-21, 500 `libriheavy-large` and 1,000
+  `cv27` rows, interleaved, GPU 98–99% busy): 133–148×. Alone on 250 rows: CTC 27 s fp32, 20.5 s
+  fp16; Mimi 12.8 s; so CTC is ~68% of the GPU. `half_ctc` built 155–169×, moving text tokens on
+  13 of 1,485 rows (audio codes equal).
+- omniASR's transformer on the Neural Engine (2026-11-21, coremltools 9; front end on the GPU):
+  fp16 mlprogram, ~10 s compile a shape, 639 of 641 ops on the NE, 141× beside a GPU encode. Needs
+  LayerNorm inputs ×1/64 (fp16 sum of squares overflowed) and a 95-column head with a hand-written
+  log-sum-exp (Core ML's was ~15 nats off). Argmax agrees with fp32 on 98.85% of frames (MLX fp16
+  99.90%); word timings, a whole build and a 19-shape model (>10 min compiling) are untested.
+- Neural Engine for wav2vec2-base (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
   rules out Mimi and moves 0.7% of wav2vec2's word spans; compiling one fixed 10 s wav2vec2 shape
   ran over 27 min in `ANECompilerService` without finishing.
 - Headroom (2026-10-29, at 240x): the GPU is 96–98% busy, and a row takes as long as its two
@@ -212,15 +227,8 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   busy and MLX's peak 2.2 GB; the tranche's MLX path it replaced, with its streaming fix, 219–223x.
   That path before the fix decoded whole shards and ran 130–136x in swap. At ~220x the 131
   GigaSpeech 2 archives left take ~30 h of the Mac (~14 min an archive).
-- PR #87 (closed 2026-11-09) batched a window's clips by padded length into one Mimi and one CTC
-  forward. Measured interleaved against main: long rows (vi 11.5 s, en 13.6 s) went 268–277× →
-  183–194× (−30%); GigaSpeech 2 short rows (4.3 s) 230–239× → 217–225× (−6%). Root causes:
-  (1) the batched `encode` waited for all lazy arrays before submitting any alignment, eliminating
-  the CTC/Mimi overlap (+5–11%); (2) `log_probs_batch` re-normalized already-normalized clips
-  (breaking CUDA parity and consistency with built shards); (3) peak Mimi memory at 16 clips /
-  22 s bucket was 15.3 GB, not the claimed < 4 GB. Closed; serial path stays.
-- After the move onto this build (2026-11-09, 400 `libriheavy-dev` rows, the Mac otherwise in
-  light use): 258–263x against the former builder's 265–270x, within the noise above.
+- Batching a window's clips into one Mimi and one CTC forward (PR #87, closed) was slower (long
+  rows 268–277× → 183–194×), lost the CTC/Mimi overlap and peaked at 15.3 GB: the serial path stays.
 
 ## Speed on CUDA
 
@@ -240,7 +248,7 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
   its accept/reject; Mimi's first codebook 99.92% equal, residual ones 96–99%. These are near-ties:
   the fp32 decode of TF32 codes is as close to the source as that of fp32 codes (SNR 9.043 against
   9.040 dB on 256 clips). Shards before 2026-11-09 16:40 UTC are fp32, the rest TF32; both are
-  valid encodings. The noisy re-encode (`mimi_cache_cuda`) keeps `cuda_mimi`'s fp32 default.
+  valid encodings. The noisy re-encode (`noisy_cache`) keeps `cuda_mimi`'s fp32 default.
 - Rejected: bf16 Mimi (half the residual codes rewritten, ~10% faster than TF32); bf16 CTC (slower
   than TF32, 0.43% of token frames moved; for omniASR too, the `en-vi` aligner: 82 s against 65 s
   on GigaSpeech 2 shards 0–1, the H100 SXM, 2026-11-10); `cudnn.benchmark` (no change); `torch.compile` on Mimi:
@@ -280,17 +288,10 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
 
 ## Changing it
 
-- N+1 GPU pipelining (tried 2026-11-09, PR #88): `_encode_start(N)` queues CTC_N, hands each
-  result to workers, queues Mimi_N (lazy) and returns before Mimi_N is done; the main thread
-  then calls `_encode_finish(N-1)` (collects N-1's already-done Mimi codes + Viterbi results)
-  and plans window N+1 rows, all while Mimi_N runs; then `_encode_start(N+1)` queues CTC_N+1.
-  On MLX: GigaSpeech 2 short rows went 210–226× → measured 204× end-to-end (a single shard with
-  a Hub push; the within-build rate was not interleaved against main on the same rows, so the
-  true delta is within the ±20% swing noise). On CUDA: the read-ahead thread overlaps Hub
-  downloads with the current shard's encoding; H200 bfloat16 benchmark (voice paused, GPU to
-  itself) showed shard 1 at 855× and shard 2 at ~1,862× (cumulative 1,102×, 2026-11-09).
-  Production float32 with voice+ASR sharing the GPU: shard 1 at 545× (Triton warmup + Hub
-  downloads), shard 2 alone at ~877× (download overlapped by pipeline, 2026-11-09).
+- N+1 GPU pipelining (PR #88, 2026-11-09): window N's CTC and lazy Mimi are queued, then N-1 is
+  collected and N+1 planned while Mimi_N runs. On MLX its gain sat within the ±20% swing (204×
+  against 210–226× on GigaSpeech 2, not interleaved); on CUDA the read-ahead thread hides Hub
+  downloads behind a shard's encoding.
 - A speed lever, a device or a model goes here, for every builder at once; read both Speed
   sections first, since each device's levers were measured there and do not carry over (MLX runs
   one clip per forward, CUDA large padded batches).

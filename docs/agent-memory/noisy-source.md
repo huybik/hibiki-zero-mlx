@@ -1,6 +1,6 @@
 # Noisy source
 
-Read when touching `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py`, the
+Read when touching `training/prep/augment.py`, `training/prep/noisy_cache.py`, the
 `en-vi-val-noisy` or `en-vi-val-en-noisy` evaluation set, a `*-noisy` cache or GRPO's rooms
 (`streams.room_codes`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Conditions](#conditions) ·
@@ -110,20 +110,23 @@ room does not give.
 
 ## Noisy cache
 
-`training.prep.mimi_cache_cuda` writes, for each `shard_<name>.pt` of a clean cache split, a shard
+`training.prep.noisy_cache` writes, for each `shard_<name>.pt` of a clean cache split, a shard
 with the same rows in the same order, in two steps that share `--out-dir`:
 
 ```text
 fetch  (network, CPU; runs beside training)  HF parquet ─► .sources/<name>.parquet
-encode (CUDA, after training)                .sources + clean shard ─► shard_<name>.pt
+encode (--device cuda or mlx)                .sources + clean shard ─► shard_<name>.pt
 ```
 
 - The source is the cache's (`direction`): `vi_audio` and `vi_frames` in a `vi-en` cache,
   `en_audio` and `en_frames` in an `en-vi` one (Common Voice's MP3 and Libriheavy's Opus decode
   through the same `audio.decode`).
-- `fetch` downloads each parquet from `anquachdev/common-vi-en` at `eval_sets.EN_VI_REVISION`,
-  16 at a time, each tried 4 times, or reads it from `--dataset-dir`, a local copy of the dataset
-  the cache was built from (the box's 2026-11-21 `en-vi` build of the remaining `en_speech` shards
+- `fetch` reads the clips from the file each clean shard names as its `source` (`clip_file`): a
+  `cache_codes` shard's EN-VI parquet, or a tranche `en-vi` shard's `<source>/en_audio/` part
+  beside the segments it was built from (`anquachdev/en-vi-speech-20k`, rows in the segments'
+  order; a tranche `vi-en` source is real speech and has no noisy copy). It downloads each file,
+  the EN-VI parquets at `eval_sets.EN_VI_REVISION`, 16 at a time, each tried 4 times, or reads it
+  from `--dataset-dir`, a local copy of the dataset the cache was built from (the box's 2026-11-21 `en-vi` build of the remaining `en_speech` shards
   uses it to copy each batch before deleting its sources, [tranche-box](tranche-box.md#state)). It
   keeps the id and the source clip's bytes of the selected rows
   (`random.Random(f"{seed}:select:{id}").random() < --fraction`, 0.6), null for the others, in
@@ -140,9 +143,11 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
     wrong here ([Checks](#checks));
   - the clip goes under `Bank.draw(f"{seed}:{id}")`, stored as `source_conditions` (None for a
     clean row);
-  - Mimi (moshi's, float32, TF32 off: the cache build's `cuda_mimi` and `mimi_batch`,
-    [cache-build](cache-build.md#cuda)) encodes the clips shortest first, in right-padded batches
-    of up to `--batch-seconds` (640) of padded audio;
+  - Mimi in float32 encodes the clips shortest first, in batches of up to `--batch-seconds` (640)
+    of padded audio: on CUDA moshi's (TF32 off: the cache build's `cuda_mimi` and `mimi_batch`,
+    [cache-build](cache-build.md#cuda)), right-padded, the conditions on the GPU; on MLX
+    `mimi_mlx` one clip per forward, the conditions on the CPU while the GPU encodes the batch
+    before;
   - the codes replace rows 17–32 (the source codebooks, either direction) up to the source's
     frame count.
 
@@ -150,7 +155,8 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   run. Text, target codes, frames, delays and both EOS positions are untouched.
 - The shard gains `source_augment` (clean shard plus the manifest). The format string stays
   `hibiki_vn_grounded_cache_v2`, so the trainer reads the split as any cache.
-- `encode` checks each source against its shard's `source` (file and byte size) and its rows' ids.
+- `encode` checks each source against its shard's `source` (the file, and its byte size or row
+  count) and its rows' ids.
   It waits for a source a running fetch has not written, and skips a shard whose source is
   missing when no fetch runs, then exits non-zero naming them (run `fetch`, then `encode`
   again). It deletes each source once its shard is written and prints `every shard written` at
@@ -180,16 +186,9 @@ came out identical to the first encode's.
   the GPU's path (~0.5 s, ~2%): a loader thread hid it, but needed more care to fail cleanly. An
   encode that overtakes a running fetch still waits for the next source before encoding the
   current shard, so a failure there shows only once the fetch has written it.
-- Seconds per shard after the first (which adds ~10 s of start-up):
-
-  | Loop | Workers | s/shard | Real time |
-  |---|---:|---:|---:|
-  | serial (the first encode) | 24 | ~14 | ~1,450x |
-  | pipelined | 24 | ~10 | ~1,900x |
-  | pipelined | 7 | ~8 | ~2,450x |
-  | pipelined | 6 | ~8 | ~2,450x |
-  | pipelined | 5 | ~8.5 | ~2,350x |
-  | pipelined, no loader thread (current) | 6 (default) | ~8 | ~2,400x |
+- Seconds per shard after the first (which adds ~10 s of start-up): serial with 24 workers ~14
+  (~1,450x); pipelined ~10 with 24 workers, ~8 with 5–7 (~2,400x; the current loop, without a
+  loader thread, at the default 6).
 
   `--workers` defaults to the CPU budget less one (6 here): the CPUs the process may run on,
   capped by the cgroup v2 or v1 quota. It keeps the throttle off (2 s summed over all threads in
@@ -249,6 +248,10 @@ came out identical to the first encode's.
     selection and conditions, codebook 0 on 100% and all 16 on 99.97–99.99%.
   - The default `--batch-seconds` 640 ran out of memory under a 15% memory cap of the 96 GB card
     (14.25 GiB); 320 fits.
+- On MLX (the Mac, 2026-11-21): `vi-en` `cv27-00000` at seed 0 against the published CUDA shard,
+  the same conditions on all 2,961 rows, 99.996% of source codes and every first codebook equal;
+  the tranche's viVoice `en-vi` shard 0 at seed 1 from the Hub, text, target and EOS untouched and
+  443 of 713 rows re-encoded. ~330–400× real time on the re-encoded audio with 2 workers.
 
 ## Evaluation
 
