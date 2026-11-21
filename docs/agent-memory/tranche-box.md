@@ -8,7 +8,8 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 **The box since 2026-11-19: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
 Beijing, $1.217/h; 96 GB, 600 W, driver 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of
-disk; `ssh -p 21639 root@205.185.115.44`). Its network sits behind a slow proxy
+disk; `ssh -p 21639 root@205.185.115.44`, or Vast's proxy `ssh -p 30253 root@ssh3.vast.ai` when
+that port refuses, as it did for a minute on 2026-11-21). Its network sits behind a slow proxy
 ([Bring-up](#a-box-behind-a-slow-proxy)).
 - It runs `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
   started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
@@ -20,6 +21,16 @@ disk; `ssh -p 21639 root@205.185.115.44`). Its network sits behind a slow proxy
   ran: [student-grpo](student-grpo.md#run)), and the test sets score GRPO's best. GRPO loads,
   samples and scores through the same `common.build_lm`, `get_lmgen` and forward as the heads
   student's training and validation. The rooms' noise bank was fetched ahead of time.
+- One session runs the box's jobs from 2026-11-21 (user: "you in control of the training on the box
+  now"). After the heads run, in order, one GPU job at a time:
+  1. its test sets on its best (`test_heads.sh`);
+  2. the box validation of PRs #149–#151 (user: "after the heads run and before grpo"): short runs
+     with no Hub sync, under `runs/val_*`, logs in `/workspace/logs/val/`;
+  3. the student's experiments (on-policy distillation; GRPO with and without the teacher's term,
+     the latter the GRPO after distillation; centered advantages), then the 3B's (scheduled
+     sampling, anchored GRPO). The 3B's start, the two-way SFT's final model, is
+     `weights/twoway_final.safetensors` (fetched 2026-11-21).
+  The box stays for these; it is destroyed only after them and their uploads.
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
