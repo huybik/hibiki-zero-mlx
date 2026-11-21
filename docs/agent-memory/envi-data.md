@@ -68,7 +68,8 @@ it. Started 2026-11-21 17:23 UTC+7.
 - The noisy fetch reads the batch's local copy (`--dataset-dir`), so each batch's `manifest.json`
   names its `work/` folder; the shards carry the settings that matter.
 - `huggingface_hub`'s downloads drop on this Mac every 10–40 MB ("peer closed connection") and
-  crawl through their resumes; curl with `-C -` reads the same files at ~30–40 MB/s.
+  crawl through their resumes; curl with `-C -` reads the same files at ~30–40 MB/s. Its Xet
+  uploads stalled, so the driver sets `HF_HUB_DISABLE_XET=1` before importing it.
 
 ## Speed
 
@@ -80,7 +81,7 @@ GPU encodes):
 | `en-vi` build (`cache_codes --device mlx`) | 167–170× | Mimi audio of both clips; `cv27` shards (10.5 and 21 h); omniASR's CTC alone runs 110× |
 | noisy copy (`noisy_cache encode --device mlx`) | 330–400× | the re-encoded English; 2 decode workers, the conditions on the CPU |
 | download (curl, 4 at a time) | ~30–40 MB/s | |
-| upload (Xet) | 2 shards in 9–19 s | |
+| upload (plain LFS, `HF_HUB_DISABLE_XET=1`) | ~20 MB/s | through Xet a 255 MB batch crawled at ~25 KB/s and stalled |
 
 So, with the Mac to itself: the tranche's copies ~15 h (~5,200 h re-encoded), the 527 `en_speech`
 copies ~5 h, the 1,305 builds ~97 h with their copies (~14,000 h of Mimi audio at ~167×, then
