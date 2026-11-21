@@ -22,6 +22,12 @@ training loss is its KL from that frozen bf16 teacher's distribution on the same
 from ([phone-student](../../docs/agent-memory/phone-student.md)). The teacher reads every codebook
 of the stream, the model its own cut. Validation is unchanged.
 
+With --palettize-bits (a parallel-heads student), each step trains against the Core ML export's
+palettization (`training.student.palettize`): the forward and backward run on the weights snapped
+to their k-means tables, the optimizer updates the full-precision ones, and validation scores the
+palettized model; saved checkpoints hold the full-precision weights, which `palettize` snaps for
+the export.
+
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
 GPU. A start in an --out-dir that holds complete pairs resumes the newest one, so a preempted run
@@ -30,6 +36,7 @@ continues by running the same command again.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import math
 import os
 import time
@@ -40,6 +47,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from training.finetune import common, streams
+from training.student import heads, palettize
 from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
@@ -72,6 +80,8 @@ RESUME_KEYS = (
     "teacher_config",
     "teacher_weight",
     "optimizer_state",
+    "palettize_bits",
+    "palettize_refit",
     "mimi_weight",
     "tokenizer",
     "epochs",
@@ -132,6 +142,14 @@ def parse_args() -> argparse.Namespace:
         help="Distil this frozen model's per-token distributions instead of training on the targets alone.",
     )
     parser.add_argument("--teacher-config", type=Path, help="The teacher's config; default the 3B's.")
+    parser.add_argument(
+        "--palettize-bits", type=int, choices=(4, 6, 8),
+        help="Train against the Core ML export's palettization at this many bits (a heads student).",
+    )
+    parser.add_argument(
+        "--palettize-refit", type=int, default=100,
+        help="Refit the palettization tables every this many steps; must divide --save-every.",
+    )
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
@@ -231,6 +249,10 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.schedule == "decay" and (args.optimizer_state is None or args.warmup_fraction):
         raise ValueError("--schedule decay continues a constant run's pair: it needs "
                          "--optimizer-state and --warmup-fraction 0")
+    # A resumed pair must sit on a refit step, so it gets the tables its run had.
+    if args.palettize_bits and (args.palettize_refit <= 0 or not args.save_every
+                                or args.save_every % args.palettize_refit):
+        raise ValueError("--palettize-refit must be positive and divide a positive --save-every")
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
@@ -280,6 +302,8 @@ def main() -> None:
                                 else require_file(args.optimizer_state, "optimizer state"))
 
     checkpoint_info = common.load_checkpoint_info(args)
+    if args.palettize_bits and checkpoint_info.audio_heads != heads.KIND:
+        raise ValueError("--palettize-bits trains for the Core ML export, which runs only a parallel-heads student")
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
     teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
@@ -394,6 +418,15 @@ def main() -> None:
     if not global_step and args.optimizer_state is not None:
         branched = load_optimizer_state(optimizer, args.optimizer_state, args.model_weight, device)
         print(f"AdamW continues from step {branched} of {repo_display_path(args.optimizer_state)}")
+    palettizer = None
+    if args.palettize_bits:
+        palettizer = palettize.Palettizer(lm, args.palettize_bits)
+        palettizer.refit()
+        print(f"Palettizing {len(palettizer.params)} weights at {args.palettize_bits} bits")
+
+    def palettized():
+        """The palettized weights in place for a forward and its backward, or a validation."""
+        return palettizer.applied() if palettizer is not None else contextlib.nullcontext()
     # Steps already validated. A pair is saved before its validation, so a run cut short there
     # validates on resume; a replacement pod without val_log validates again.
     validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
@@ -457,17 +490,18 @@ def main() -> None:
         started = time.time()
         # The next step zeroes the gradients anyway; freed now, they leave room for generation.
         optimizer.zero_grad(set_to_none=True)
-        teacher_forced = {
-            name: common.evaluate_teacher_forced(
-                lm, loader, device, checkpoint_info.model_type, weights, args.val_batches
+        with palettized():  # a palettizing run scores the model it would export
+            teacher_forced = {
+                name: common.evaluate_teacher_forced(
+                    lm, loader, device, checkpoint_info.model_type, weights, args.val_batches
+                )
+                for name, loader in val_loaders.items()
+            }
+            # On a bf16 copy of the model, in the room the gradients freed above.
+            free_running = common.validate_free_running(
+                lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
+                args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
             )
-            for name, loader in val_loaders.items()
-        }
-        # On a bf16 copy of the model, in the room the gradients freed above.
-        free_running = common.validate_free_running(
-            lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
-            args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
-        )
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, losses in teacher_forced.items():
             print(
@@ -525,12 +559,13 @@ def main() -> None:
             with torch.no_grad(), autocast:
                 teacher_output = teacher(codes, condition_tensors=teacher_conditions[batch_size])
             codes = codes.index_select(1, student_rows)
-        with autocast:
-            losses = common.compute_batch_losses(
-                lm, codes, condition_cache[batch_size], weights, teacher=teacher_output
-            )
-        teacher_output = None  # the loss's graph keeps what its backward needs
-        losses["loss"].backward()
+        with palettized():  # the straight-through estimator: gradients at the palettized weights
+            with autocast:
+                losses = common.compute_batch_losses(
+                    lm, codes, condition_cache[batch_size], weights, teacher=teacher_output
+                )
+            teacher_output = None  # the loss's graph keeps what its backward needs
+            losses["loss"].backward()
         for key in LOG_LOSSES:
             log["losses"][key] += losses[key].detach()
         log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
@@ -543,6 +578,8 @@ def main() -> None:
             )
         optimizer.step()
         global_step += 1
+        if palettizer is not None and global_step % args.palettize_refit == 0:
+            palettizer.refit()
 
         # Summed on the GPU, as the losses are: checked and logged without a sync per step.
         grad_norm = grad_norm.detach()

@@ -213,3 +213,6 @@ sampling temperature) all run it, so a change to it needs all three checked
   distribution on the same stream, with the same weights, where both models' masks hold (a
   heads student's delays differ from its teacher's); the teacher reads the whole stream and the
   model its cut. Validation still reports CE against the targets.
+- **Palettization** (`--palettize-bits`, a heads student): the step runs on the weights snapped
+  to the Core ML export's k-means tables, the straight-through estimator
+  ([student-heads](student-heads.md#palettization)).
