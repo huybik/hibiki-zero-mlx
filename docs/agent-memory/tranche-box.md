@@ -46,7 +46,13 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
   `en-vi/en-vi-grounded-v2/train/`, is checked against its listing and deleted here. While
   `logs/envi_rest.pause` exists no new build starts (for profiles). Profiled on 2 shards: 21.3 h
   of audio built in 122 s, 98.7% of rows kept; the heads run went 0.69 → ~1.4 s an update while it
-  built.
+  built. The first batch of 25 (512 h of Mimi audio, both clips) took 1,903 s at ~970× real time on
+  the shared GPU, 719 s of download (~8 MB/s) and 180 s of upload: the whole build would hold half
+  the GPU ~14 h and the noisy copies ~3 h more, moving the heads run's end ~10 h. So its GPU steps
+  wait (`logs/envi_rest.pause`, 2026-11-21 08:48 UTC) until the phone student's stage is done: the
+  data is for the 3B's next SFT. Since 08:49 the job also makes each shard's noisy copy (PR #153's
+  `mimi_cache_cuda`, from `/workspace/wt-noisy`, `--seed 1`) into `en-vi/en-vi-grounded-v2-noisy/`,
+  uploads a batch while the next builds, and backfills the noisy copies of the 527 built before.
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
