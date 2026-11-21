@@ -206,7 +206,22 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   to −10%); grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
   GPU busy, four CPU processes running wav2vec2 fell from 123x to 20x in total and Mimi slowed
   ~45%: the CPU and GPU share this laptop's power.
-- Neural Engine (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
+- The `en-vi` build (omniASR-CTC-300M on the Vietnamese clip, 2026-11-21, interleaved on 500
+  `libriheavy-large` and 1,000 `cv27` rows, the GPU 98–99% busy, thermal state "fair"): 133–148×.
+  Alone on 250 of those rows, omniASR's CTC took 27 s in float32 (89–93×) and 20.5 s in float16
+  (~120×), Mimi 12.8 s (399×): CTC is ~68% of the GPU's time. With `half_ctc` the build ran 155–169×
+  (+12–15%); against float32, 5 of 496 and 8 of 989 rows moved text tokens (10 and 16 positions),
+  one more row kept, every audio code equal.
+- omniASR on the Neural Engine (2026-11-21, coremltools 9): its transformer (positional
+  convolution to the CTC head; the convolutional front end stays on the GPU) as a float16
+  mlprogram on `CPU_AND_NE` compiles in ~10 s a shape, 639 of 641 ops on the Neural Engine, and
+  ran 141× on the Vietnamese clips beside a GPU encode. It needs LayerNorm inputs scaled by 1/64
+  (activations reach 224; the sum of squares overflowed float16: 82% argmax agreement), and the
+  head split into the aligner's 95 columns plus a hand-written log-sum-exp (Core ML's was ~15 nats
+  off; a gather over the 10,288-token vocab ran on the CPU). Its argmax then agrees with float32 on
+  98.85% of frames (MLX float16: 99.90%). Not yet measured: its word timings and a whole build; a
+  19-shape `EnumeratedShapes` model was still compiling after ~10 minutes.
+- Neural Engine for wav2vec2-base (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
   rules out Mimi and moves 0.7% of wav2vec2's word spans; compiling one fixed 10 s wav2vec2 shape
   ran over 27 min in `ANECompilerService` without finishing.
 - Headroom (2026-10-29, at 240x): the GPU is 96–98% busy, and a row takes as long as its two

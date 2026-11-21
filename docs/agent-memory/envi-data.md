@@ -62,7 +62,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 `/Volumes/data/datasets/envi_mac/envi_mac.py` (outside the repo, as the box's `envi_rest.py` was),
 run from this branch's worktree with the conda Python, under `caffeinate -is`, by `run.sh` beside
 it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `run.log`. Started
-2026-11-21 17:23 UTC+7.
+2026-11-21 17:23 UTC+7; stopped 20:43 for the user's game, with the viVoice and PhoAudiobook copies
+on the Hub (354, 224) and GigaSpeech 2's first batch lost. Start it again with the `nohup` line in
+`run.sh`; first decide on the build's CTC ([Speed](#speed)).
 
 - Jobs in order, in batches of 20 shards: `tranche` (each tranche `en-vi` shard's noisy copy),
   `noisy` (the 527 `en_speech` `en-vi` shards the boxes built), `build` (the other 1,305:
@@ -108,3 +110,9 @@ copies ~5 h, the 1,305 builds ~97 h with their copies (~14,000 h of Mimi audio a
 ~4,500 h re-encoded): ~5 days, estimated from the first shards (the English hours from the parts'
 sizes). The RTX PRO 6000 beside the heads run built at ~970×: ~14 h for the build, ~3 h for the
 copies ([tranche-box](tranche-box.md#state)).
+
+The build was not profiled before the run started; profiled 2026-11-21
+([cache-build](cache-build.md#speed-on-the-mac)): omniASR's CTC takes ~68% of the GPU, so the build
+runs at its speed. Open before the `build` job starts: float16 CTC (+12–15%, near-ties only), or
+omniASR's transformer on the Neural Engine beside Mimi on the GPU (up to ~2×, its word timings not
+yet checked). The profiling scripts are in `/Volumes/data/datasets/envi_mac/ane/`.
