@@ -117,6 +117,9 @@ class MLXModels:
         if ane_ctc:
             from training.prep.wav2vec2_coreml import Wav2Vec2ANE
 
+            if half_ctc:  # its stream would come in float16: unmeasured
+                raise ValueError("ane_ctc takes the float32 CTC's stream: not with half_ctc")
+
             self.ane = Wav2Vec2ANE(aligner, files)
 
     def _split(self, rows: list[Row]) -> tuple[list[int], list[int]]:
@@ -138,23 +141,22 @@ class MLXModels:
         return order, gpu
 
     def encode(self, rows: list[Row], align: AlignJob) -> list[tuple[Aligned, Any, Any]]:
-        """Queue CTC and Mimi on the GPU; block until CTC is done and workers are submitted (a job a
+        """Queue CTC and Mimi on the GPU (with the Neural Engine, its rows' streams first, handed to
+        it while the GPU runs the rest); block until CTC is done and workers are submitted (a job a
         row, for the Mac's two workers); return lazy Mimi codes so the caller can overlap planning
         the next window with Mimi."""
         import mlx.core as mx
 
         ane, gpu = self._split(rows)
-        if ane:  # the streams first in the GPU's queue, to the Neural Engine while the GPU runs the rest
-            streams = [self.ctc.stream(rows[index].target16) for index in ane]
-            mx.async_eval([hs for hs, _ in streams])
-            on_ane = self.ane.submit([(np.array(hs), frames) for hs, frames in streams])
+        streams = [self.ctc.stream(rows[index].target16) for index in ane]
+        mx.async_eval([hs for hs, _ in streams])
+        on_ane = self.ane.submit([(np.array(hs), frames) for hs, frames in streams]) if ane else None
         log_probs = {index: mx.take(self.ctc.log_probs(rows[index].target16), self.columns, axis=1) for index in gpu}
         mx.async_eval(list(log_probs.values()))
         codes = [(self.mimi.encode(row.source24), self.mimi.encode(row.target24)) for row in rows]
         mx.async_eval(codes)
-        aligned = {}
-        if ane:
-            aligned = {index: (align([rows[index]], [lp]), 0) for index, lp in zip(ane, on_ane.result(), strict=True)}
+        aligned = {index: (align([rows[index]], [lp]), 0)
+                   for index, lp in zip(ane, on_ane.result() if ane else [], strict=True)}
         # np.array(lp) blocks until CTC is done; Mimi is queued and runs asynchronously after it
         aligned |= {index: (align([rows[index]], [np.array(lp)]), 0) for index, lp in log_probs.items()}
         return [(aligned[index], source, target) for index, (source, target) in enumerate(codes)]
@@ -426,9 +428,9 @@ class Builder:
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
         if ane_ctc and device != "mlx":
             raise ValueError("the Neural Engine CTC (ane_ctc) runs beside MLX: device mlx only")
+        mlx_only = {"ane_ctc": True} if ane_ctc else {}
         self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, settings.aligner,
-                                     aligner_files(settings.aligner), half_ctc=half_ctc,
-                                     **({"ane_ctc": True} if ane_ctc else {}))
+                                     aligner_files(settings.aligner), half_ctc=half_ctc, **mlx_only)
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 

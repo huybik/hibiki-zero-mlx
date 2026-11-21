@@ -8,8 +8,9 @@ Four things keep float16 on the Neural Engine near float32 (against MLX float32 
 of Common Voice rows, 99.81% of argmaxes equal; MLX float16 99.90%):
 - the positional convolution stays on the GPU: its 8,192-term sums put a 3.5% error on every
   frame in float16, 60% after the 24 layers;
-- each LayerNorm's input is scaled by 1/64 (LayerNorm is scale-invariant), or its sum of squares
-  overflows float16;
+- each LayerNorm's input is scaled by 1/64, or its sum of squares overflows float16 (LayerNorm is
+  scale-invariant but for its epsilon, which float16 rounds up to 2^-24: 2.4e-4 at the model's
+  scale against its 1e-5);
 - the log-softmax is written out (max, exp, sum, log): Core ML's `reduce_log_sum_exp` is ~15 nats
   off on the Neural Engine;
 - the head's columns are a 95-column linear layer, which the Neural Engine runs; a gather of
@@ -17,14 +18,16 @@ of Common Voice rows, 99.81% of argmaxes equal; MLX float16 99.90%):
 
 The program takes one shape per length bucket up to MAX_BUCKETS (enumerated shapes); a window's
 clips go in bucket order, since switching shapes costs the Neural Engine ~40% of its speed. It is
-converted once per aligner revision into weights/coreml/, and the Neural Engine compiles it on its
-first load (~1.5–3 min), which macOS keeps for later loads of the same file. It runs in a process
-of its own: Core ML's predict holds the GIL, which stalled the MLX calls that queue Mimi (the
-build ran 207x in a thread, 293x in a process).
+converted once into weights/coreml/, under a name keyed by the aligner's revision, its columns,
+the shapes, LN_SCALE and VERSION (bumped when the program changes), and the Neural Engine compiles
+it on its first load (~1.5–3 min), which macOS keeps for later loads of the same file. It runs in
+a process of its own: Core ML's predict holds the GIL, which stalled the MLX calls that queue Mimi
+(the build ran 207x in a thread, 293x in a process).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from concurrent.futures import Future, ProcessPoolExecutor
@@ -35,13 +38,13 @@ from typing import Any
 import numpy as np
 
 from training.paths import REPO_ROOT
-from training.prep.text_timing import Aligner, vocab_columns
-from training.prep.wav2vec2_mlx import BUCKET_SAMPLES, _frames
+from training.prep.text_timing import Aligner, ctc_frames, vocab_columns
+from training.prep.wav2vec2_mlx import BUCKET_SAMPLES
 
 MAX_BUCKETS = 19  # 24.3 s; the GPU runs longer clips' CTC
-SHAPES = [_frames(buckets * BUCKET_SAMPLES)[1] for buckets in range(1, MAX_BUCKETS + 1)]
+SHAPES = [ctc_frames(buckets * BUCKET_SAMPLES) for buckets in range(1, MAX_BUCKETS + 1)]
 LN_SCALE = 1 / 64
-VERSION = 1  # in the file name: bump it when the program changes
+VERSION = 1  # bump it when the program changes: it keys the file name
 MODEL_DIR = REPO_ROOT / "weights" / "coreml"
 
 
@@ -131,7 +134,10 @@ def _predict(streams: list[tuple[np.ndarray, int]]) -> list[np.ndarray]:
     out = []
     for hs, frames in streams:
         valid = (np.arange(hs.shape[1]) < frames).astype(np.float32)[None]
-        out.append(_model.predict({"hs": hs.astype(np.float32, copy=False), "valid": valid})["lp"][0, :frames])
+        log_probs = _model.predict({"hs": hs, "valid": valid})["lp"][0, :frames]
+        if not np.isfinite(log_probs).all():  # float16 overflow: a NaN score would pass the Viterbi's floor
+            raise FloatingPointError(f"the Neural Engine gave non-finite log-probabilities on a {hs.shape[1]}-frame clip")
+        out.append(log_probs)
     return out
 
 
@@ -143,7 +149,9 @@ class Wav2Vec2ANE:
     def __init__(self, aligner: Aligner, files: Path):
         if not json.loads((files / "config.json").read_text())["do_stable_layer_norm"]:
             raise ValueError(f"{aligner.repo}: only the pre-norm (stable) layout runs on the Neural Engine")
-        path = MODEL_DIR / f"{aligner.name}-{aligner.revision[:8]}-v{VERSION}.mlmodelc"
+        program = json.dumps([vocab_columns(aligner, files), SHAPES, LN_SCALE, VERSION])
+        key = hashlib.sha256(program.encode()).hexdigest()[:8]
+        path = MODEL_DIR / f"{aligner.name}-{aligner.revision[:8]}-{key}.mlmodelc"
         if not path.exists():
             convert(aligner, files, path)
         self.pool = ProcessPoolExecutor(1, mp_context=get_context("spawn"), initializer=_load, initargs=(str(path),))

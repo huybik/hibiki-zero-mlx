@@ -149,8 +149,9 @@ class Wav2Vec2CTC:
         return hs
 
     def _stream(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> tuple[mx.array, mx.array]:
-        """The transformer's input [1, frames, dim]: the projected features plus the positional
-        convolution; and the mask of the clip's own frames."""
+        """The projected features plus the positional convolution [1, frames, dim] (the stable
+        layout's transformer input; the base layout's encoder LayerNorm comes next), and the mask
+        of the clip's own frames."""
         hs = self._features(pcm, first_frames)
         hs = mx.fast.layer_norm(hs, *self.projection_norm, self.eps) @ self.projection[0]
         hs = hs + self.projection[1]
@@ -215,8 +216,7 @@ class Wav2Vec2CTC:
         return self._forward_compiled(*inputs)[0, :frames]  # float32: _forward casts before logsumexp
 
     def stream(self, pcm: np.ndarray) -> tuple[mx.array, int]:
-        """Lazy transformer input [1, bucket frames, dim] of one clip (as `log_probs` takes it),
-        zero-padded before the positional convolution, and the clip's frames: what
-        `wav2vec2_coreml` runs the transformer on."""
+        """Lazy `_stream` [1, bucket frames, dim] of one clip (prepared as `log_probs` takes it)
+        and the clip's frames: what `wav2vec2_coreml` runs the transformer on."""
         inputs, frames = self._inputs(pcm)
         return self._stream_compiled(*inputs), frames
