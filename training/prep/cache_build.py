@@ -1,6 +1,6 @@
 """The build of grounded caches, on MLX (Apple Silicon) or CUDA: Mimi and the target language's
 CTC aligner (`text_timing.ALIGNERS`) on each device, and the stream of source shards through
-them, in either direction (`Settings.direction`; MLX runs only the English aligner). Every
+them, in either direction (`Settings.direction`). Every
 builder runs on it (`cache_codes`, the EN-VI dataset; `training.tranche.cache`, the
 real-Vietnamese tranche); a builder only reads and gates its own source rows and decides where
 the shards go ([cache-build](../../docs/agent-memory/cache-build.md)).
@@ -87,7 +87,7 @@ def default_workers(device: str) -> int:
 
 
 class MLXModels:
-    """Mimi (`mimi_mlx`) and wav2vec2 (`wav2vec2_mlx`) on Apple Silicon: one clip per forward
+    """Mimi (`mimi_mlx`) and the aligner's wav2vec2 CTC (`wav2vec2_mlx`) on Apple Silicon: one clip per forward
     (batching clips gained nothing in MLX), padded to length buckets, so each compiled forward
     sees few shapes. Mimi runs in float32; wav2vec2 runs in float32 by default or float16 when
     `half_ctc=True` (log-probs cast back to float32 before the Viterbi)."""
@@ -100,11 +100,9 @@ class MLXModels:
         from training.prep.mimi_mlx import MimiEncoder
         from training.prep.wav2vec2_mlx import Wav2Vec2CTC
 
-        if aligner.repo != "facebook/wav2vec2-base-960h":
-            raise SystemExit(f"wav2vec2_mlx runs only wav2vec2-base-960h, not {aligner.repo}: build on --device cuda")
         mx.set_cache_limit(MLX_CACHE_BYTES)
         self.mimi = MimiEncoder(mimi_weight, num_codebooks)
-        self.ctc = Wav2Vec2CTC(files / "model.safetensors", half=half_ctc)
+        self.ctc = Wav2Vec2CTC(files, half=half_ctc)
         self.columns = mx.array(vocab_columns(aligner, files))
         self.cardinality = self.mimi.cardinality
 
