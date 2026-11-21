@@ -588,7 +588,7 @@ def add_objective_args(parser: argparse.ArgumentParser) -> None:
         help="Also distil this frozen model on the policy's rollouts (reverse KL); it must read the policy's codebooks.",
     )
     parser.add_argument("--teacher-config", type=Path, help="The teacher's config; default the 3B's.")
-    parser.add_argument("--kl-coef", type=float, default=1.0, help="The distillation term's weight.")
+    parser.add_argument("--kl-coef", type=float, help="The distillation term's weight; default 1 with a teacher.")
     parser.add_argument(
         "--reward-coef", type=float, default=1.0,
         help="The GRPO term's weight; 0, with a teacher, is on-policy distillation alone.",
@@ -605,11 +605,17 @@ def add_room_args(parser: argparse.ArgumentParser) -> None:
 
 
 def validate_objective_args(args: argparse.Namespace) -> None:
-    """The loss terms' options (`add_objective_args`), the profiler's too."""
-    if args.reward_coef < 0 or args.kl_coef < 0:
-        raise ValueError("--reward-coef and --kl-coef must not be negative")
-    if args.teacher_weight is None and (args.teacher_config is not None or not args.reward_coef):
-        raise ValueError("--teacher-config and --reward-coef 0 need --teacher-weight")
+    """The loss terms' options (`add_objective_args`), the profiler's too; --kl-coef becomes 1
+    with a teacher when not given."""
+    if args.teacher_weight is None:
+        if args.teacher_config is not None or args.kl_coef is not None or not args.reward_coef:
+            raise ValueError("--teacher-config, --kl-coef and --reward-coef 0 need --teacher-weight")
+    elif args.kl_coef is None:
+        args.kl_coef = 1.0
+    for name in ("reward_coef", "kl_coef"):
+        value = getattr(args, name)
+        if value is not None and not (math.isfinite(value) and value >= 0):
+            raise ValueError(f"--{name.replace('_', '-')} must be finite and not negative")
     if args.teacher_weight is not None and not args.kl_coef:
         raise ValueError("--teacher-weight needs a positive --kl-coef")
 
@@ -719,7 +725,7 @@ def main() -> None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
         teacher = common.load_teacher(teach, args.teacher_weight, device, codebooks)
     objective = Objective(stream_weights, args.epsilon, args.temperature, args.reward_coef,
-                          args.kl_coef)
+                          args.kl_coef or 0.0)
     # Parked on the host beside the policy while a window generates.
     teacher_params = [] if teacher is None else list(teacher.parameters())
     silence_frame = dataset.silence[:codebooks, -1].long().to(device)

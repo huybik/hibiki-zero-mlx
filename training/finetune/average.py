@@ -67,7 +67,8 @@ def main() -> None:
     paths = [require_file(path, "checkpoint") for path in args.weights]
     if len(paths) < 2:
         raise ValueError("Averaging needs at least two checkpoints")
-    if len({path.resolve() for path in paths}) != len(paths):
+    files = {(stat.st_dev, stat.st_ino) for stat in (path.stat() for path in paths)}
+    if len(files) != len(paths):  # a best_stepN is a hard link of its model_stepN
         raise ValueError("A checkpoint is named twice")
     state, metadata = average(paths)
     out = resolve_repo_path(args.out)

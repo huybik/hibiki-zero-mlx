@@ -63,13 +63,19 @@ update micro-batch: teacher forward (no grad) ─┐
   2): a token is kept only where both forwards score it (`scored_delays`: each codebook's larger
   delay, for `kept_tokens` and the forward lengths alike).
 - **The caveat**: unlike SFT's distillation, whose context is the dataset's, the teacher here reads
-  the policy's samples, and where it delays a codebook less than the policy, at text frame t it
-  reads frames of that codebook the policy sampled after t, conditioned on its text at t (the heads
-  student's codebooks 3–15: frames t − min(j, 8) … t − 3). Its text distribution can then lean
-  towards the policy's own choice, so the KL reads low and partly rewards the policy's samples
-  (the review of PR #149, on tiny random models: codebook 8 at frame 17 moved the teacher's text
-  logits at frame 20 by up to 0.26). How much the real teacher reads text from the fine codebooks
-  is unmeasured; `grpo_profile.py` bounds it (`teacher_leak`, [Running](#running)).
+  the policy's samples, some of them sampled after the token it scores and conditioned on it. Its
+  distribution can then lean towards the policy's own choice, so the KL reads low and partly
+  rewards the policy's samples. With the heads student under the 3B (PR #149's reviews, on tiny
+  random models):
+  - Through the main transformer: the 3B reads codebooks 3–15 at delay 2, the student samples them
+    at min(j, 8), so at text frame t the 3B reads frames t − min(j, 8) … t − 3 of them, sampled from
+    step t on (codebook 8 at frame 17 moved its text logits at frame 20 by up to 0.26); at an audio
+    token likewise (codebook 8 at frame f − 1, sampled at step f + 7, moved its codebook-2 logits at
+    frame f by 0.08).
+  - Through the 3B's depformer: it scores codebook 1 of frame f after the text and codebook 0 of
+    frame f + 2, which the student samples a step after that codebook (0.16).
+  How much the real teacher leans this way is unmeasured; `grpo_profile.py` bounds all but the
+  depformer's part (`teacher_leak`, [Running](#running)).
 - The train log adds `kl_text` and `kl_audio`, the mean unweighted KL a token; the ratio
   statistics appear only with the GRPO term.
 - **`--advantage centered`** (Dr. GRPO, arXiv 2503.20783): each reward frame's advantage is
@@ -83,11 +89,15 @@ update micro-batch: teacher forward (no grad) ─┐
 Profile first ([CONTEXT](../../CONTEXT.md#essential-invariants)): `grpo_profile.py` takes the same
 `--teacher-weight`, `--reward-coef`, `--kl-coef` and `--advantage` and times the update with the
 teacher's forward, the teacher parked while generating. With a teacher it also reports
-`teacher_leak`: in up to 8 groups, the teacher's mean logprob of rollout 0's text tokens with its
-own leaky codebooks minus with rollout 1's (same source). That includes the cost of mixing two
-rollouts' codebooks, so it bounds the caveat's bias from above: well under the start's `kl_text`
-(the micro-batch entries), go ahead; near it, look closer before the run. Sizes then go to
-`grpo_launch.sh`'s ARGS, after the 3B's:
+`teacher_leak`. Each codebook the teacher delays less than the policy is shifted later in the
+teacher's input by the difference (the heads student's codebook j by min(j, 8) − 2), so at every
+token the teacher reads only frames the policy had sampled by then. The teacher's mean logprob of
+the policy's kept tokens as sampled, minus shifted, is the caveat's bias plus what the misaligned
+codebooks cost the teacher (taken as never negative): an upper bound, for text and each codebook
+(`text_bound_nats`, `audio_bound_nats`), on the first 8 rollouts. Codebook 1's depformer part is
+not in it. Against the start's `kl_text` and `kl_audio` (the micro-batch entries): well under
+them, go ahead; near them, look closer before the run, where the shifted input is a leak-free
+teacher at the misalignment's price. Sizes then go to `grpo_launch.sh`'s ARGS, after the 3B's:
 
 ```bash
 .venv/bin/python -m training.finetune.grpo_profile --out-dir runs/opd_profile \
@@ -118,9 +128,11 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    mean chrF beats the off-policy run's continuation, with the length ratio falling and no later
    end offset.
 2. **The student's GRPO with the teacher's term** (`--kl-coef` > 0) against without, from the
-   same start: `grpo_student` collapsed between updates 2,200 and 2,400 (length ratio 3.0,
-   [student-grpo](student-grpo.md#evaluations)); the teacher's term should hold it. Judged by
-   the best selecting mean and whether it still degrades past 2,000.
+   same start, both on the heads student (the depformer student cannot take the 3B as teacher).
+   The motive is `grpo_student`, the depformer student, which collapsed between updates 2,200 and
+   2,400 (length ratio 3.0, [student-grpo](student-grpo.md#evaluations)); the heads student's
+   plain GRPO has not run yet, so whether it collapses too is part of the test. Judged by the best
+   selecting mean and whether either degrades past 2,000.
 3. **Centered advantages** against z-scored ones: two GRPO runs from one start and seed, 800
    updates each; the selecting mean and the length ratio decide.
 

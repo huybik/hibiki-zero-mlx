@@ -13,8 +13,9 @@ checkpoint:
   --teacher-weight the update includes the teacher's forward and the distillation term (the
   teacher parked on the host while generating, as in a run); with --reward-coef 0 a run skips
   the logprob pass, so `window` counts none;
-- with a teacher, `teacher_leak`: how much the teacher's text distribution follows codebooks the
-  policy sampled after the text token (`teacher_leak` below), against the start's `kl_text`.
+- with a teacher, `teacher_leak`: an upper bound on how much the teacher's distributions follow
+  what the policy sampled after the scored token, for text and each codebook, against the start's
+  `kl_text` and `kl_audio`.
 A size that runs out of memory is recorded and skipped. Every stage runs at --frames, a run's
 longest rollout and so its peak memory; `window` then gives what a run's first window costs at
 its own lengths (`grpo.rollout_frames`, `grpo.micro_frames`) for each --gen-batch's
@@ -136,7 +137,7 @@ def profile_generation(
     return rollouts
 
 
-def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report: dict) -> dict:
+def window_estimate(args, dataset, rollouts, stream_ids, delays, extra, eos_id, report: dict) -> dict:
     """What a run's first window (--tau updates of --streams streams) costs at its own lengths.
     Generation: its rollouts in `grpo.generation_batches` of each --gen-batch's --gen-frames, each
     as many steps as its longest rollout, a step's time a line in its rows fitted to the measured
@@ -150,7 +151,6 @@ def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report:
     order = grpo.stream_order(len(dataset), args.seed)[: args.tau * args.streams]
     window = torch.tensor([length(int(index)) for index in order]).repeat_interleave(args.group)
     estimate: dict = {"streams": len(order), "rollout_frames_mean": float(window.float().mean())}
-    extra = max(delays.tolist())
     measured = {gen_batch: report[f"generate_batch_{gen_batch}"]["ms_per_step"]
                 for gen_batch in args.gen_batch
                 if isinstance(report.get(f"generate_batch_{gen_batch}"), dict)}
@@ -189,33 +189,40 @@ def window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report:
     return estimate
 
 
-def teacher_leak(teacher, teach, codes, keep, group: int, leaky: list[int], device) -> dict:
-    """An upper bound on how much the teacher's text distribution follows the `leaky` codebooks
-    (those the policy delays more than the teacher: at a text token the teacher reads frames of
-    them the policy sampled after it, conditioned on it). In up to 8 groups, the teacher's mean
-    logprob of rollout 0's kept text tokens with its own leaky codebooks, minus with rollout 1's
-    (the same source, other samples). The swap also costs the mismatch between those codebooks
-    and rollout 0's others, so a value well under the start's `kl_text` bounds the bias as small;
-    one near it calls for a closer look before a run."""
-    pairs = min(8, len(codes) // group)
-    first = torch.arange(pairs) * group
-    own = codes[first].clone()
-    swapped = own.clone()
-    rows = [1 + j for j in leaky]
-    swapped[:, rows] = codes[first + 1][:, rows]
-    text_keep = keep[first, :1].to(device)
+def teacher_leak(teacher, teach, codes, keep, shifts: dict[int, int], device, rows: int = 8) -> dict:
+    """An upper bound on how much the teacher's distributions follow what the policy sampled after
+    the token they score. Where the teacher delays codebook j less than the policy, at a token it
+    reads frames of j the policy sampled later, conditioned on that token. Shifting each such
+    codebook `shifts[j]` (the policy's delay minus the teacher's) frames later in the teacher's
+    input leaves it only frames the policy had sampled by then. Over the first `rows` rollouts, the
+    teacher's mean logprob of the policy's kept tokens with the rollout as sampled, minus with the
+    shifted one, is that bias plus what the misaligned codebooks cost the teacher (taken as never
+    negative): an upper bound, for text and each codebook. Not covered: the 3B's depformer scores
+    codebook 1 of frame f after the text and codebook 0 of frame f + 2, which a heads student
+    samples later."""
+    own = codes[:rows]
+    shifted = own.clone()
+    for j, shift in shifts.items():
+        shifted[:, 1 + j, shift:] = own[:, 1 + j, :-shift]
+        shifted[:, 1 + j, :shift] = own[:, 1 + j, :1]  # the stream's first frame stands in before it
+    codebooks = codes.shape[1] // 2
     means = []
-    for batch in (own, swapped):
-        total, count = 0.0, 0
-        for start in range(0, pairs, 2):  # two rollouts a forward, as the smallest micro-batch
+    for batch in (own, shifted):
+        sums, counts = torch.zeros(1 + codebooks), torch.zeros(1 + codebooks)
+        for start in range(0, len(batch), 2):  # two rollouts a forward, as the smallest micro-batch
             part = batch[start : start + 2].to(device=device, dtype=torch.long)
+            kept = keep[start : start + 2].to(device)
             output = grpo.teacher_forward(teacher, teach, part)
-            valid = output.text_mask & text_keep[start : start + 2]
-            total += float(common.token_ce(output.text_logits, part[:, :1], valid).sum())
-            count += int(valid.sum())
-        means.append(-total / max(1, count))
-    return {"pairs": pairs, "leaky_codebooks": leaky, "text_logprob_own": means[0],
-            "text_logprob_swapped": means[1], "bound_nats": means[0] - means[1]}
+            text_valid = output.text_mask & kept[:, :1]
+            audio_valid = output.mask & kept[:, 1:]
+            text = common.token_ce(output.text_logits, part[:, :1], text_valid)
+            audio = common.token_ce(output.logits, part[:, 1 : 1 + codebooks], audio_valid)
+            sums -= torch.cat([text, audio], dim=1).sum(dim=(0, 2)).cpu()
+            counts += torch.cat([text_valid, audio_valid], dim=1).sum(dim=(0, 2)).cpu()
+        means.append(sums / counts.clamp(min=1))
+    bound = (means[0] - means[1]).tolist()
+    return {"rollouts": len(own), "shifted_codebooks": shifts, "text_bound_nats": bound[0],
+            "audio_bound_nats": bound[1:]}
 
 
 def main() -> None:
@@ -293,7 +300,7 @@ def main() -> None:
     weights = torch.ones(1 + lm.dep_q, device=device)
     weights[0] = grpo.TEXT_WEIGHT
     objective = grpo.Objective(weights, grpo.EPSILON, grpo.TEMPERATURE, args.reward_coef,
-                               args.kl_coef)
+                               args.kl_coef or 0.0)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
@@ -348,13 +355,15 @@ def main() -> None:
 
     if teacher is not None:
         policy, teaching = lm.delays[1 : 1 + lm.dep_q], teacher.delays[1 : 1 + lm.dep_q]
-        leaky = [j for j in range(lm.dep_q) if policy[j] > teaching[j]]
-        if leaky:
-            report["teacher_leak"] = teacher_leak(teacher, teach, codes, keep, args.group, leaky, device)
+        shifts = {j: policy[j] - teaching[j] for j in range(lm.dep_q) if policy[j] > teaching[j]}
+        if shifts:
+            report["teacher_leak"] = teacher_leak(teacher, teach, codes, keep, shifts, device)
             print(f"teacher leak: {json.dumps(report['teacher_leak'])}", flush=True)
             write(report)
 
-    report["window"] = window_estimate(args, dataset, rollouts, stream_ids, delays, eos_id, report)
+    generation_extra = max(lm.delays[: 1 + lm.dep_q])  # what generation steps past a rollout
+    report["window"] = window_estimate(args, dataset, rollouts, stream_ids, delays,
+                                       generation_extra, eos_id, report)
     write(report)
 
     report["samples"] = []

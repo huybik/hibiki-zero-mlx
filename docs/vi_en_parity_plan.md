@@ -212,8 +212,8 @@ GRPO on a distilled student, come later if needed.
    - On-policy distillation after the off-policy one: the student generates, the teacher scores
      the same rollouts, reverse KL (`grpo.py --teacher-weight --reward-coef 0`), against the
      off-policy run's continuation per GPU-hour.
-   - The student's GRPO with the teacher's KL as an anchor (`--kl-coef`), against plain GRPO,
-     which collapsed past update 2,200 on the depformer student.
+   - The heads student's GRPO with the teacher's KL as an anchor (`--kl-coef`), against plain
+     GRPO, which collapsed past update 2,200 on the depformer student.
    - Centered advantages (`--advantage centered`, Dr. GRPO) against the paper's z-scored ones.
    - For the next SFT or distillation run: warmup-stable-decay (`train.py --schedule constant`,
      then `decay` from a chosen pair with `--optimizer-state`), and checkpoint averaging
