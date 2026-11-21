@@ -113,7 +113,9 @@ class Wav2Vec2CTC:
         if half:
             from mlx.utils import tree_map
 
-            for k, v in tree_map(lambda x: x.astype(mx.float16), self._weights()).items():
+            # The base layout's convolutions have no bias: None stays None.
+            half16 = tree_map(lambda x: None if x is None else x.astype(mx.float16), self._weights())
+            for k, v in half16.items():
                 setattr(self, k, v)
             mx.eval(self._weights())
         self._forward_compiled = mx.compile(self._forward)

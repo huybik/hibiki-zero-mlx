@@ -60,6 +60,8 @@ it. Started 2026-11-21 17:23 UTC+7.
   before it runs on the GPU; its outputs move to `stage/<batch>/`, upload while the next batch runs,
   are checked against the Hub's listing by name and size, then deleted. A restart uploads what is
   staged, drops `work/` and plans again from the Hub's listings.
+- It plans again from the Hub after each pass and ends ("done: the Hub holds every shard") only when
+  a plan comes out empty, so a shard another machine published clean but not noisy gets its copy.
 - Before each batch's GPU steps it lists the Hub again and skips the shards published meanwhile, so
   a box can take shards from the other end: run it bottom up, since the Mac goes top down in name
   order (the box's `envi_rest.py` also goes top down; reverse its lists first).

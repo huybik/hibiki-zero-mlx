@@ -280,7 +280,7 @@ def fetch(args: argparse.Namespace) -> None:
     (args.out_dir / SOURCES).mkdir(parents=True, exist_ok=True)
     shards = todo(cache_dir, args.out_dir)
     print(f"{len(shards)} shards to fetch for {args.out_dir}", flush=True)
-    busy = f"another mimi_cache_cuda fetch uses {args.out_dir}"
+    busy = f"another noisy_cache fetch uses {args.out_dir}"
     with (
         exclusive(args.out_dir / FETCH_LOCK, busy),
         ThreadPoolExecutor(args.jobs) as pool,
@@ -416,7 +416,7 @@ def wait_for_source(out_dir: Path, name: str) -> Path | None:
 def encode(args: argparse.Namespace) -> None:
     cache_dir = require_dir(args.cache_dir, "clean cache split")
     split = cache_dir.name
-    busy = f"another mimi_cache_cuda encode uses {args.out_dir}"
+    busy = f"another noisy_cache encode uses {args.out_dir}"
     with exclusive(args.out_dir / ENCODE_LOCK, busy):
         settings = manifest(args, cache_dir)
         # Sources of shards already written: a stop between the shard's rename and the unlink.
