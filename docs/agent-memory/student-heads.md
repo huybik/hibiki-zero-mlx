@@ -149,9 +149,18 @@ palettized LM agrees with bf16's argmax on 92.1% of tokens against fp16's 94.6%
   (`constexpr_lut_to_dense`: `lut[row // 16, 0, index, 0]`), equals the fp16 weight it replaced bit
   for bit, 64 values in every 16 rows: the trunk's 57 (each layer's four projections and
   `text_linear`) and the 16 heads. So a snapped student exports without loss.
-- **Validated on the box** with the rest of the new code, after the heads run and before any GRPO
-  ([on-policy-distillation](on-policy-distillation.md#experiments), item 0): a short
-  `--palettize-bits 6` run through a validation, a kill and a resume, then the snap tool on CUDA.
+- **Validated on the box** (2026-11-21, with the rest of the new code, after the heads run and
+  before any GRPO, [on-policy-distillation](on-policy-distillation.md#experiments) item 0): from
+  the best at 176,000, distilled from GRPO update 1,400, 1e-5 constant, `--palettize-refit 50`:
+  - 73 weights palettized at 6 bits, the export's count; 0.70 s a step against the unpalettized
+    run's 0.69.
+  - SIGKILLed after the update-100 pair (the run had reached step 130 while the pair was written);
+    the resumed run's step 130 logged the same loss to four decimals (0.4054), so the model, AdamW
+    and the tables came back as they were. FLEURS dev 38.18 / 34.92 at 150, promoted.
+  - The snap tool on CUDA: all 73 weights at most 64 values in every 16 rows, every other tensor
+    unchanged, the `palettized` metadata written. At seed 47 (`eval.py`) the snapped model scored
+    38.06 / 35.23 and the full-precision weights it came from 39.00 / 34.45: means 36.65 and
+    36.73, within noise.
 - **The run** (planned): from the final student, distilled from its own bf16 weights
   (`--teacher-weight` the same checkpoint, `--teacher-config` its config), `--schedule decay` from
   a low peak over a few thousand updates, at 6 and at 4 bits. Judged by the Precision table's
