@@ -15,7 +15,11 @@ disk; `ssh -p 21639 root@205.185.115.44`). Its network sits behind a slow proxy
   ([student-heads](student-heads.md#runs)). `student_heads14` (8 codebooks) stopped for it at
   ~22,600; its 16,000 pair and best are on the Hub.
 - The user (2026-11-20): run it to the end and score its test sets both ways, without asking.
-  Then upload everything and destroy the box.
+  Then upload everything and destroy the box. The user (2026-11-21): "should run grpo after
+  distil". So the distilled best goes through GRPO first (`grpo_launch.sh`, as `grpo_student`
+  ran: [student-grpo](student-grpo.md#run)), and the test sets score GRPO's best. GRPO loads,
+  samples and scores through the same `common.build_lm`, `get_lmgen` and forward as the heads
+  student's training and validation. The rooms' noise bank was fetched ahead of time.
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
