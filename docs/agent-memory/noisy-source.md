@@ -1,7 +1,8 @@
-# Noisy Vietnamese source
+# Noisy source
 
 Read when touching `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py`, the
-`en-vi-val-noisy` evaluation set, a `*-noisy` cache or GRPO's rooms (`streams.room_codes`).
+`en-vi-val-noisy` or `en-vi-val-en-noisy` evaluation set, a `*-noisy` cache or GRPO's rooms
+(`streams.room_codes`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Conditions](#conditions) ·
 [Rooms](#rooms) · [Noisy cache](#noisy-cache) · [Speed](#speed) · [Checks](#checks) ·
 [Evaluation](#evaluation)
@@ -14,6 +15,13 @@ held-out TTS rows: step 63k of the first run had chrF 23.5 on FLEURS against 39.
 Voice and 42.2 on Libriheavy `en-vi-val`. Stage 1.2 of the
 [plan](../vi_en_parity_plan.md#1-data) re-encodes the source under simulated recording
 conditions; `en-vi-val-noisy` measures what the channel alone costs.
+
+English to Vietnamese had no noisy source (2026-11-21): the tranche's English is voice-cloned TTS
+(~6,000 h, studio-clean), `en_speech`'s is Common Voice's home recordings and Libriheavy's
+audiobooks, and the shipped model wrote English for 18 of OneVoice's 100 outside English clips,
+the quieter and conversational ones ([two-way](two-way.md#next)). The same re-encode and conditions
+now take an `en-vi` cache's English source, and `en-vi-val-en-noisy` measures it (user, 2026-11-21:
+"also how about noisy input?").
 
 ## Conditions
 
@@ -108,14 +116,19 @@ fetch  (network, CPU; runs beside training)  HF parquet ─► .sources/<name>.p
 encode (CUDA, after training)                .sources + clean shard ─► shard_<name>.pt
 ```
 
+- The source is the cache's (`direction`): `vi_audio` and `vi_frames` in a `vi-en` cache,
+  `en_audio` and `en_frames` in an `en-vi` one (Common Voice's MP3 and Libriheavy's Opus decode
+  through the same `audio.decode`).
 - `fetch` downloads each parquet from `anquachdev/common-vi-en` at `eval_sets.EN_VI_REVISION`,
-  16 at a time, each tried 4 times. It keeps the id and the Opus bytes of the selected rows
+  16 at a time, each tried 4 times, or reads it from `--dataset-dir`, a local copy of the dataset
+  the cache was built from (the box's `en-vi` build feeds it the parquets it just built from). It
+  keeps the id and the source clip's bytes of the selected rows
   (`random.Random(f"{seed}:select:{id}").random() < --fraction`, 0.6), null for the others, in
   `.sources/`, about a fifth of the parquet's bytes, and deletes the download. It pauses while the disk has
   less than `--min-free-gb` (50) free: a trainer on the same disk needs a checkpoint pair
   (37.5 GB) beyond its steady state while the sync still uploads the pair it pruned. Its first run
-  writes `manifest.json` (seed, fraction, dataset revision, bank SHA-256); a later fetch with
-  other values stops.
+  writes `manifest.json` (seed, fraction, the cache's direction, the dataset, bank SHA-256); a
+  later fetch with other values stops, and `encode` refuses a shard of another direction.
 - `encode` re-encodes the rows whose source holds audio:
   - the clip is decoded by the builder's own code, `audio.decode` (PyAV), and resampled with
     soxr, so it has the samples and frame count the cache was built from. Any other decoder is
@@ -125,10 +138,11 @@ encode (CUDA, after training)                .sources + clean shard ─► shard
   - Mimi (moshi's, float32, TF32 off: the cache build's `cuda_mimi` and `mimi_batch`,
     [cache-build](cache-build.md#cuda)) encodes the clips shortest first, in right-padded batches
     of up to `--batch-seconds` (640) of padded audio;
-  - the codes replace rows 17–32 up to `vi_frames`.
+  - the codes replace rows 17–32 (the source codebooks, either direction) up to the source's
+    frame count.
 
   A clip whose frame count differs from the cache's, or a row without its codec EOS, stops the
-  run. Text, English codes, frames, delays and both EOS positions are untouched.
+  run. Text, target codes, frames, delays and both EOS positions are untouched.
 - The shard gains `source_augment` (clean shard plus the manifest). The format string stays
   `hibiki_vn_grounded_cache_v2`, so the trainer reads the split as any cache.
 - `encode` checks each source against its shard's `source` (file and byte size) and its rows' ids.
@@ -226,7 +240,9 @@ training's 60%), as 24 kHz WAV, with the drawn `conditions` in the row. It resam
 the conditions alone. (Every evaluation set reaches Mimi through `sphn.resample`, training through
 soxr: a residual-codebook difference that predates this set.) Scored against the clean set on the
 same checkpoint it shows what the channel costs. It is not in the trainer's default
-`--eval-pairs`; the second epoch passes it.
+`--eval-pairs`; the second epoch passes it. `--sets en-vi-val-en-noisy` does the same from the
+built `en-vi-val-en` (its English clips, `en_audio`; ids `en-vi-val-en-noisy/...`, so their
+conditions differ from the Vietnamese set's), for English to Vietnamese.
 
 Measured on the Mac (`eval.py`, MPS, batch 16), the first run at step 63,000 and at its final
 step 131,553, 2026-11-04 (chrF; "Both" is corpus chrF over the 360 rows):

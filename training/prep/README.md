@@ -118,24 +118,27 @@ training data's own domain (`en-vi-val`). It needs huggingface_hub, pyarrow, sph
 so it runs on the Mac or the pod; rerunning rebuilds them. They are for evaluation only
 ([sft-evaluation](../../docs/agent-memory/sft-evaluation.md#evaluation-sets)). `en-vi-val-noisy`, built
 on request from the built `en-vi-val`, holds the same rows under simulated recording conditions
-([noisy-source](../../docs/agent-memory/noisy-source.md#evaluation)); the first build downloads
-the noise bank (1.3 GB) into `--bank-dir`. `giga-heldout`, also on request, samples the
+([noisy-source](../../docs/agent-memory/noisy-source.md#evaluation)), and `en-vi-val-en-noisy`, from
+the built `en-vi-val-en`, its English clips; the first build downloads the noise bank (1.3 GB)
+into `--bank-dir`. `giga-heldout`, also on request, samples the
 real-Vietnamese tranche's held-out GigaSpeech 2 archives from the gated tranche repo: it needs an
 `HF_TOKEN` granted access, PyAV and num2words, and its audio never goes to a public repo.
 
 ```bash
 python -m training.prep.eval_sets  # fleurs-vi/{dev,test}, multimed-vi/{select,final}, en-vi-val/{cv27,libriheavy}
 python -m training.prep.eval_sets --sets en-vi-val-noisy  # en-vi-val-noisy/{cv27,libriheavy}
+python -m training.prep.eval_sets --sets en-vi-val-en en-vi-val-en-noisy  # English to Vietnamese, clean and noisy
 python -m training.prep.eval_sets --sets giga-heldout  # giga-heldout/test (gated: HF_TOKEN with access)
 ```
 
 ## Noisy source cache
 
 Runs on the pod. `training.prep.mimi_cache_cuda` copies a clean cache split shard by shard,
-re-encoding the Vietnamese source of a seeded 60% of the rows under drawn room reverb, noise,
-band and level ([noisy-source](../../docs/agent-memory/noisy-source.md)). `fetch` downloads
-each shard's parquet from `anquachdev/common-vi-en`, keeps only the selected rows' Vietnamese
-audio and can run while the GPU trains; `encode` needs the GPU, waits for what a running fetch
+re-encoding the source (Vietnamese in a `vi-en` cache, English in an `en-vi` one) of a seeded 60%
+of the rows under drawn room reverb, noise, band and level
+([noisy-source](../../docs/agent-memory/noisy-source.md)). `fetch` downloads each shard's parquet
+from `anquachdev/common-vi-en` (or reads a local copy of the dataset, `--dataset-dir`), keeps only
+the selected rows' source audio and can run while the GPU trains; `encode` needs the GPU, waits for what a running fetch
 has not written yet, and ends with `every shard written`. A rerun of either skips the shards
 written.
 
