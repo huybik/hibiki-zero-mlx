@@ -157,7 +157,7 @@ Every validation and test is recorded in full ([sft-evaluation](sft-evaluation.m
    mean, or the same with a higher EOS share and no later end offset; the test sets decide
    between the two runs' best checkpoints.
 3. **Centered advantages on the 3B**, only if they win on the student
-   ([on-policy-distillation](on-policy-distillation.md#experiments), experiment 3).
+   ([on-policy-distillation](on-policy-distillation.md#experiments): the centered probe beside the z-scored one).
 
 The data stays the larger lever: the tranche's first 1,760 h moved every real-speech set by
 9–10 chrF ([plan](../vi_en_parity_plan.md#order) item 6). These experiments tune the recipe that
