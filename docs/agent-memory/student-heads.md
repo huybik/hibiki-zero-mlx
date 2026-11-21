@@ -142,6 +142,11 @@ palettized LM agrees with bf16's argmax on 92.1% of tokens against fp16's 94.6%
 - **Export**: `python -m training.student.palettize --weight CKPT --bits N --out SNAPPED` snaps a
   checkpoint onto its tables; then `convert_mlx.py` (bf16) and `export_lm_coreml.py --bits N` as
   before.
+- **Validated first** with the rest of the new code, after the heads run and before any GRPO
+  ([on-policy-distillation](on-policy-distillation.md#experiments), item 0): a short
+  `--palettize-bits 6` run through a validation, a kill and a resume, then the snap tool,
+  `convert_mlx.py` and `export_lm_coreml.py --bits 6`, the export's tables read back against the
+  snapped weights.
 - **The run** (planned): from the final student, distilled from its own bf16 weights
   (`--teacher-weight` the same checkpoint, `--teacher-config` its config), `--schedule decay` from
   a low peak over a few thousand updates, at 6 and at 4 bits. Judged by the Precision table's
