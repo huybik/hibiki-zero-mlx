@@ -37,7 +37,8 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
   4e's test (500 shards against 150: FLEURS −1.3) also changed the batch and the updates, and
   spoke only for VI→EN, whose `en_speech` source is TTS; for EN→VI `en_speech` holds the only real
   English speech (2,481 of 8,456 h). The `vi-en` caches of all 1,832 train shards, noisy and
-  clean, are on the Hub (78 GB each): a run fetches them. `en-vi` had round 4e's 500:
+  clean, are on the Hub (78 GB each): a run fetches them, so `vi-en` needs no data work; using all
+  of them is the next run's shard list (round 4e listed 500). `en-vi` had round 4e's 500:
   `/workspace/envi_rest.py` (box-only) builds the other 1,332 beside the heads run (started
   2026-11-21 08:00 UTC; log `logs/envi_rest.log`). Sources by aria2c 25 at a time (321 GB,
   ~16 MB/s), `cache_codes --direction en-vi` in `/workspace/envs/cache` (the `.venv` copied, with
@@ -53,7 +54,9 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
   training, i will do the data preparation on a separate session"). On the Hub then: 527 of the
   1,832 `en-vi` shards, no noisy `en-vi` copy. Left on the box for it: `/workspace/envi_rest.py`
   (resumes from the Hub's listings: builds the missing clean shards, makes every shard's noisy
-  copy with PR #153's `mimi_cache_cuda` from `/workspace/wt-noisy` at `--seed 1` into
+  copy with `mimi_cache_cuda` (PR #153, merged as `7090cc6`; validated on this box both ways,
+  [noisy-source](noisy-source.md#checks)) from `/workspace/wt-noisy` (main at `7090cc6`,
+  detached) at `--seed 1` into
   `en-vi/en-vi-grounded-v2-noisy/`, uploads a batch while the next builds; holds its GPU steps while
   `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac's MLX builder runs only the
   English aligner, so it cannot build `en-vi` rows (their Vietnamese text needs `omniASR-CTC-300M-v2`).
