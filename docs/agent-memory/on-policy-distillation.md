@@ -126,21 +126,22 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    `--reward-coef 0` run through an evaluation, a kill and a resume; the same with both terms and
    `--advantage centered`; plain GRPO's first updates against main's log; a `train.py --schedule
    constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints.
-1. **On-policy distillation of the heads student**, distillation alone (`--reward-coef 0`), from
-   the heads run's promoted checkpoint when it stops, teacher GRPO update 1,400. First the profile
-   and its `teacher_leak` bound ([Design](#design)'s caveat), then a rate probe: 200 updates each at 1e-6 (the student GRPO's rate), 3e-6 and 1e-5 (the off-policy
-   anneal's peak), judged by the KL's fall and the evaluation at 200. Then the run, stopped by
-   the user's rule (two validations without a new best). It wins if, per GPU-hour, its selecting
-   mean chrF beats the off-policy run's continuation, with the length ratio falling and no later
-   end offset.
-2. **The student's GRPO with the teacher's term** (`--kl-coef` > 0) against without, from the
-   same start, both on the heads student (the depformer student cannot take the 3B as teacher).
-   The motive is `grpo_student`, the depformer student, which collapsed between updates 2,200 and
-   2,400 (length ratio 3.0, [student-grpo](student-grpo.md#evaluations)); the heads student's
-   plain GRPO has not run yet, so whether it collapses too is part of the test. Judged by the best
-   selecting mean and whether either degrades past 2,000.
-3. **Centered advantages** against z-scored ones: two GRPO runs from one start and seed, 800
-   updates each; the selecting mean and the length ratio decide.
+1. **The heads student's on-policy stage, aimed at the best phone model** (user, 2026-11-21: "i'm
+   not asking for plain grpo, i'm asking for best outcome"): arms run only as probes, and only the
+   winner runs long. From the heads run's promoted checkpoint, teacher GRPO update 1,400, one seed:
+   - **Probes**, 200 updates each, judged by the evaluation at 200 (the selecting mean, the length
+     ratio, the end offset) and the KL's fall. Distillation alone (`--reward-coef 0`) at 1e-6 (the
+     student GRPO's rate), 3e-6 and 1e-5 (the off-policy anneal's peak). Then both terms
+     (`--kl-coef` 1) at the best of those rates, z-scored and `--advantage centered`. Plain GRPO at
+     1e-6 is only the control that says whether the teacher's term helps; it gets no run of its own.
+   - **The run**: the probes' winner, stopped by the user's rule (two validations without a new
+     best). When both terms and distillation alone are close at 200, both terms run, since they
+     also climb the reward evaluation measures. A collapse (the depformer student's plain GRPO
+     reached length ratio 3.0 between updates 2,200 and 2,400,
+     [student-grpo](student-grpo.md#evaluations)) or a later end offset disqualifies a checkpoint.
+   - **Then the phone's finish**: the run's best trained against the 6-bit palettization
+     (`train.py --palettize-bits 6`, plan stage 6.4), exported, and scored on the test sets
+     against the shipped student.
 
 Warmup-stable-decay and checkpoint averaging for SFT runs are in
 [sft-training](sft-training.md#schedules-and-averaging); training against the phone's
