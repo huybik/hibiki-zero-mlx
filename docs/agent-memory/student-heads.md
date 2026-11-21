@@ -150,6 +150,7 @@ free-running at seed 47, batches of 64.
   | 112,000 (11-21) | 3.182 / 2.950 | 33.27 | 33.52 / 6.24 / 1.39 / 2.0 | 33.03 / 13.24 / 1.05 / 1.6 | 32.61 / 6.93 / 1.52 / 4.1 | 37.34 / 10.79 / 1.33 / 2.6 | 38.46 / 12.85 / 1.12 / 2.6 | 30.12 / 13.02 / 1.16 / 1.0 (1 empty) | 38.39 / 17.47 / 1.04 / 2.0 |
   | 128,000 (11-21) | 3.143 / 2.922 | 35.29 | 37.08 / 8.14 / 1.33 / 1.9 | 33.51 / 13.47 / 1.06 / 1.6 (1 empty) | 34.44 / 7.75 / 1.53 / 4.2 | 40.04 / 13.34 / 1.25 / 2.5 | 41.95 / 14.81 / 1.16 / 3.1 | 31.10 / 12.72 / 1.18 / 0.8 | 40.84 / 19.11 / 1.09 / 2.1 |
   | 144,000 (11-21) | 3.113 / 2.899 | 36.00 | 37.94 / 8.08 / 1.35 / 1.8 | 34.07 / 14.24 / 1.03 / 1.6 | 35.10 / 7.67 / 1.58 / 4.7 | 39.49 / 13.41 / 1.30 / 2.4 (1 empty) | 41.53 / 15.43 / 1.15 / 3.0 | 32.92 / 14.20 / 1.18 / 0.8 | 40.06 / 19.63 / 1.04 / 2.2 |
+  | 160,000 (11-21) | 3.094 / 2.889 | 36.59 | 38.29 / 8.48 / 1.35 / 1.9 | 34.90 / 14.84 / 1.05 / 1.7 | 34.97 / 8.31 / 1.55 / 4.4 | 38.45 / 11.75 / 1.32 / 2.6 | 41.75 / 15.47 / 1.13 / 2.7 | 32.77 / 14.36 / 1.17 / 0.8 | 40.71 / 19.98 / 1.04 / 1.9 |
 
   At 16,000 against 8 codebooks: VI→EN +1.2 to +2.4 chrF on every set, EN→VI −1.0 (FLEURS) to +1.3,
   end offsets 0.1–0.7 s later; generation and scoring at 16 codebooks work on the GPU.
@@ -173,3 +174,5 @@ free-running at seed 47, batches of 64.
   At 144,000 (promoted, +0.7 selecting) FLEURS both ways, MultiMed-ST and `en-vi-val-en` cv27
   rose (+0.6 to +1.8), and `en-vi-val` and `en-vi-val-en` libriheavy fell 0.4–0.8. The seven-set
   mean was 37.30, and the selecting mean 36.00 passed the depformer student after GRPO (35.50).
+  At 160,000 (promoted, +0.6 selecting: FLEURS +0.4 VI→EN, +0.8 EN→VI) the other five sets moved
+  −1.0 (`en-vi-val` cv27) to +0.7; the seven-set mean was 37.41.
