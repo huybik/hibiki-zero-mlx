@@ -142,11 +142,16 @@ palettized LM agrees with bf16's argmax on 92.1% of tokens against fp16's 94.6%
 - **Export**: `python -m training.student.palettize --weight CKPT --bits N --out SNAPPED` snaps a
   checkpoint onto its tables; then `convert_mlx.py` (bf16) and `export_lm_coreml.py --bits N` as
   before.
-- **Validated first** with the rest of the new code, after the heads run and before any GRPO
+- **The export round trip** (2026-11-21, the Mac, `student_heads14_cb16`'s best at 112,000): the
+  snap tool on the CPU (66 s, one thread), `convert_mlx.py` (bf16; the heads need a worktree's
+  `PYTHONPATH`, [mlx-inference](mlx-inference.md)) and `export_lm_coreml.py --bits 6` (compiled
+  both models). Every palettized weight, read back from the palettized programs before compiling
+  (`constexpr_lut_to_dense`: `lut[row // 16, 0, index, 0]`), equals the fp16 weight it replaced bit
+  for bit, 64 values in every 16 rows: the trunk's 57 (each layer's four projections and
+  `text_linear`) and the 16 heads. So a snapped student exports without loss.
+- **Validated on the box** with the rest of the new code, after the heads run and before any GRPO
   ([on-policy-distillation](on-policy-distillation.md#experiments), item 0): a short
-  `--palettize-bits 6` run through a validation, a kill and a resume, then the snap tool,
-  `convert_mlx.py` and `export_lm_coreml.py --bits 6`, the export's tables read back against the
-  snapped weights.
+  `--palettize-bits 6` run through a validation, a kill and a resume, then the snap tool on CUDA.
 - **The run** (planned): from the final student, distilled from its own bf16 weights
   (`--teacher-weight` the same checkpoint, `--teacher-config` its config), `--schedule decay` from
   a low peak over a few thousand updates, at 6 and at 4 bits. Judged by the Precision table's
