@@ -44,6 +44,10 @@ if sys.platform == "darwin":  # before the builders' readers import pyarrow, who
 # libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
 MLX_CACHE_BYTES = 16 << 30
 MLX_WORKERS = 2  # 2, 4 and 8 ran alike; the Mac's CPU and GPU share one power budget
+# With --ane-ctc, the share of a window's audio whose CTC stays on the GPU (MLXModels). On 500
+# libriheavy and 1,000 cv27 rows: 0 ran 261x and 316x (the GPU waiting on the Neural Engine on long
+# rows), 0.1 278x and 301x, 0.2 293x and 309x (the GPU 97-99% busy), 0.35 slower.
+ANE_GPU_SHARE = 0.2
 # Padded audio per batch, Mimi and CTC. On a 4,094-row GigaSpeech 2 window (H200, TF32): CTC + Mimi took
 # 13.0, 11.0, 10.7, 10.7 and 11.3 s at 80, 160, 320, 640 and 1,280 s (peak 2.4 to 27 GiB): bigger
 # batches pad more. 1,280 s also overflows int32 indexing under torch.compile (64 channels x 30.7M).
@@ -90,11 +94,15 @@ class MLXModels:
     """Mimi (`mimi_mlx`) and the aligner's wav2vec2 CTC (`wav2vec2_mlx`) on Apple Silicon: one clip per forward
     (batching clips gained nothing in MLX), padded to length buckets, so each compiled forward
     sees few shapes. Mimi runs in float32; wav2vec2 runs in float32 by default or float16 when
-    `half_ctc=True` (log-probs cast back to float32 before the Viterbi)."""
+    `half_ctc=True` (log-probs cast back to float32 before the Viterbi). With `ane_ctc=True` the
+    aligner's transformer runs on the Neural Engine (`wav2vec2_coreml`, its own process) beside
+    Mimi on the GPU, for all of a window's rows but the longest, which hold ANE_GPU_SHARE of its
+    audio and keep the whole CTC on the GPU so that both finish together."""
 
     window = 64  # rows queued on the GPU at once
 
-    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False):
+    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False,
+                 ane_ctc: bool = False):
         import mlx.core as mx
 
         from training.prep.mimi_mlx import MimiEncoder
@@ -105,6 +113,29 @@ class MLXModels:
         self.ctc = Wav2Vec2CTC(files, half=half_ctc)
         self.columns = mx.array(vocab_columns(aligner, files))
         self.cardinality = self.mimi.cardinality
+        self.ane = None
+        if ane_ctc:
+            from training.prep.wav2vec2_coreml import Wav2Vec2ANE
+
+            self.ane = Wav2Vec2ANE(aligner, files)
+
+    def _split(self, rows: list[Row]) -> tuple[list[int], list[int]]:
+        """The rows whose transformer runs on the Neural Engine, shortest first (a shape switch
+        costs it ~40%), and the rows whose CTC runs on the GPU: the longest, holding ANE_GPU_SHARE
+        of the window's audio, and any longer than the Neural Engine's shapes; all without it."""
+        if self.ane is None:
+            return [], list(range(len(rows)))
+        order = sorted(range(len(rows)), key=lambda index: len(rows[index].target16))
+        budget = ANE_GPU_SHARE * sum(len(row.target16) for row in rows)
+        gpu: list[int] = []
+        while order:
+            samples = len(rows[order[-1]].target16)
+            if samples <= budget or samples > self.ane.max_samples:
+                budget -= samples
+                gpu.append(order.pop())
+            else:
+                break
+        return order, gpu
 
     def encode(self, rows: list[Row], align: AlignJob) -> list[tuple[Aligned, Any, Any]]:
         """Queue CTC and Mimi on the GPU; block until CTC is done and workers are submitted (a job a
@@ -112,13 +143,21 @@ class MLXModels:
         the next window with Mimi."""
         import mlx.core as mx
 
-        log_probs = [mx.take(self.ctc.log_probs(row.target16), self.columns, axis=1) for row in rows]
+        ane, gpu = self._split(rows)
+        if ane:  # the streams first in the GPU's queue, to the Neural Engine while the GPU runs the rest
+            streams = [self.ctc.stream(rows[index].target16) for index in ane]
+            mx.async_eval([hs for hs, _ in streams])
+            on_ane = self.ane.submit([(np.array(hs), frames) for hs, frames in streams])
+        log_probs = {index: mx.take(self.ctc.log_probs(rows[index].target16), self.columns, axis=1) for index in gpu}
+        mx.async_eval(list(log_probs.values()))
         codes = [(self.mimi.encode(row.source24), self.mimi.encode(row.target24)) for row in rows]
-        mx.async_eval(log_probs)
         mx.async_eval(codes)
+        aligned = {}
+        if ane:
+            aligned = {index: (align([rows[index]], [lp]), 0) for index, lp in zip(ane, on_ane.result(), strict=True)}
         # np.array(lp) blocks until CTC is done; Mimi is queued and runs asynchronously after it
-        aligned = [(align([row], [np.array(lp)]), 0) for row, lp in zip(rows, log_probs, strict=True)]
-        return [(a, source, target) for a, (source, target) in zip(aligned, codes, strict=True)]
+        aligned |= {index: (align([rows[index]], [np.array(lp)]), 0) for index, lp in log_probs.items()}
+        return [(aligned[index], source, target) for index, (source, target) in enumerate(codes)]
 
 
 # --------------------------------------------------------------------------- CUDA
@@ -376,7 +415,7 @@ class Builder:
     """A cache build on one device; `run` turns a builder's source shards into cache shards."""
 
     def __init__(self, device: str, settings: Settings, config_path: Path, mimi_weight: Path, tokenizer: Path,
-                 half_ctc: bool = False):
+                 half_ctc: bool = False, ane_ctc: bool = False):
         import sentencepiece
 
         self.settings = settings
@@ -385,8 +424,11 @@ class Builder:
         self.tokenizer = sentencepiece.SentencePieceProcessor(str(self.tokenizer_path))
         self.eos_id = int(self.tokenizer.eos_id())
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
+        if ane_ctc and device != "mlx":
+            raise ValueError("the Neural Engine CTC (ane_ctc) runs beside MLX: device mlx only")
         self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, settings.aligner,
-                                     aligner_files(settings.aligner), half_ctc=half_ctc)
+                                     aligner_files(settings.aligner), half_ctc=half_ctc,
+                                     **({"ane_ctc": True} if ane_ctc else {}))
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 

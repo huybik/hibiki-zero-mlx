@@ -1,12 +1,12 @@
 # Cache build
 
 Read when touching `training/prep/cache_build.py`, `training/prep/cache_rows.py`,
-`training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py` or
-`training/prep/audio.py`, and before running Mimi or a CTC aligner anywhere else, on MLX or CUDA: how
-every grounded cache is built on either device, and what each device's speed depends on. The
-builders on top are in [sft-data-caches](sft-data-caches.md) (`cache_codes`, the EN-VI dataset) and
-[tranche-cache](tranche-cache.md) (`training.tranche.cache`, the tranche); the row layout is in
-[sft-data-caches](sft-data-caches.md#row-layout).
+`training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/wav2vec2_coreml.py`,
+`training/prep/text_timing.py` or `training/prep/audio.py`, and before running Mimi or a CTC
+aligner anywhere else, on MLX or CUDA: how every grounded cache is built on either device, and
+what each device's speed depends on. The builders on top are in [sft-data-caches](sft-data-caches.md)
+(`cache_codes`, the EN-VI dataset) and [tranche-cache](tranche-cache.md) (`training.tranche.cache`,
+the tranche); the row layout is in [sft-data-caches](sft-data-caches.md#row-layout).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Shape](#shape) · [Rows](#rows) · [MLX](#mlx) ·
 [CUDA](#cuda) · [Across devices](#across-devices) · [Speed on the Mac](#speed-on-the-mac) ·
 [Speed on CUDA](#speed-on-cuda) · [Changing it](#changing-it)
@@ -119,6 +119,9 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   and gives the same spans on 6,180 of 6,181 words. In float16 the base layout's GroupNorm
   statistics stay in float32 (`first_frames` passes 65504 past 20.47 s, the sum of squares
   overflows past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×).
+- `ane_ctc` (`cache_codes --ane-ctc`, omniASR only): the transformer on the Neural Engine in its own
+  process (`wav2vec2_coreml`; its docstring has the float16 fixes), on `Wav2Vec2CTC.stream` from the
+  GPU in float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)).
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (they align while
   the GPU encodes Mimi), and returns lazy Mimi codes. The *next* window's CTC is queued in
@@ -130,9 +133,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   tanh GELU, 30% of codes equal on whole clips); rustymimi 0.4.1 (an attention window of 251
   frames, not 250, so codes differ past 10 s); streaming or chunked encoding (differs past 250
   encoder frames); float16 / bfloat16 Mimi (89% / 45% of frames equal); padded wav2vec2 without
-  a mask (changes the emissions); MLX float16 CTC (2026-10-30 on old code: 99.3% of word spans;
-  not revalidated after the GroupNorm fix, so unvalidated on current code — `--half-ctc` does not
-  build production caches).
+  a mask (changes the emissions).
 - Upstream (checked 2026-10-27): moshi 0.2.13, rustymimi 0.4.1 and moshi_mlx 0.3.0 are the
   newest; the Mimi stack of moshi 0.2.13 equals kyutai's main, and the local Mimi checkpoint is
   the file upstream Hibiki-Zero loads (sha256 `09b782f0…`). MLX 0.32.4 (checked 2026-10-30): none
@@ -205,14 +206,13 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   GPU busy, four CPU processes running wav2vec2 fell from 123x to 20x in total and Mimi slowed
   ~45%: the CPU and GPU share this laptop's power.
 - `en-vi` build (omniASR CTC on the Vietnamese clip; 2026-11-21, 500 `libriheavy-large` and 1,000
-  `cv27` rows, interleaved, GPU 98–99% busy): 133–148×. Alone on 250 rows: CTC 27 s fp32, 20.5 s
-  fp16; Mimi 12.8 s; so CTC is ~68% of the GPU. `half_ctc` built 155–169×, moving text tokens on
-  13 of 1,485 rows (audio codes equal).
-- omniASR's transformer on the Neural Engine (2026-11-21, coremltools 9; front end on the GPU):
-  fp16 mlprogram, ~10 s compile a shape, 639 of 641 ops on the NE, 141× beside a GPU encode. Needs
-  LayerNorm inputs ×1/64 (fp16 sum of squares overflowed) and a 95-column head with a hand-written
-  log-sum-exp (Core ML's was ~15 nats off). Argmax agrees with fp32 on 98.85% of frames (MLX fp16
-  99.90%); word timings, a whole build and a 19-shape model (>10 min compiling) are untested.
+  `cv27` rows, interleaved, thermal state "fair"): fp32 150–161× (CTC ~68% of the GPU), `half_ctc`
+  175–186×, `ane_ctc` 293–309× with the GPU 97–99% busy (`ANE_GPU_SHARE` 0.2; 0 and 0.1 left it
+  waiting on long rows). Against fp32, `ane_ctc` moved 21 of 43,092 text tokens by one frame (fp16
+  17), kept one row at the score floor (0.515 vs 0.498, as fp16 did); audio codes equal. In a
+  thread it ran 207×: Core ML's predict holds the GIL, stalling `mx.async_eval`, which blocks
+  for half the build. Its first load compiles it for the Neural Engine (~1.5–3 min), which macOS
+  caches by file: `MLModel`'s temporary copies compile on every load.
 - Neural Engine for wav2vec2-base (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
   rules out Mimi and moves 0.7% of wav2vec2's word spans; compiling one fixed 10 s wav2vec2 shape
   ran over 27 min in `ANECompilerService` without finishing.
