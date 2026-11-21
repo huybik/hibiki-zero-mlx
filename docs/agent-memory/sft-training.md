@@ -183,8 +183,15 @@ at the same compute, Hägele et al. 2024, arXiv 2405.18392):
 - **Averaging** (`python -m training.finetune.average --out OUT WEIGHT...`): the mean of a run's
   checkpoints (the same tensors and tokenizer; floats averaged in fp32), with the first one's
   metadata and `averaged_from`. Score it as any checkpoint: `eval.py` with the run's
-  `--eval-pairs` and `--seed` on the box, or `gate.py` after `convert_mlx.py` on the Mac. Untried
-  here; free-running chrF moves ~±0.7 between evaluations, so compare on the same rows and seed.
+  `--eval-pairs` and `--seed` on the box, or `gate.py` after `convert_mlx.py` on the Mac.
+  Free-running chrF moves ~±0.7 between evaluations, so compare on the same rows and seed.
+- **Validated on the box** (2026-11-21, the heads student's best at 176,000, distilled from GRPO
+  update 1,400, 12,288-frame batches): a constant run at 1e-5 held the rate for 200 steps (FLEURS
+  dev 38.03 / 32.55 at 200, from 38.34 / 35.64: ten times the rate its run ended on); a decay
+  branch from its 200 pair (hard-linked) fell as 1 − sqrt (7.0e-6 at step 10, 3.0e-6 at 50,
+  5e-8 at 100) to 38.40 / 34.35; the average of its 100 and 200 models is their exact mean on all
+  135 tensors, keeps the metadata with `averaged_from`, and scored 38.59 / 34.43 (`eval.py`,
+  seed 47).
 
 ## Speed
 
