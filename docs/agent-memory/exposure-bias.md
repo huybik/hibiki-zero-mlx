@@ -18,7 +18,7 @@ predicts the next. Generation reads its own samples instead, at temperature 0.8 
 so in training it never sees its own mistakes or timing (user, 2026-11-21: "should we change
 teacher enforce"). The gap shows in every run here:
 
-- Teacher-forced loss falls while free-running chrF stalls: the PhoMT run
+- Teacher-forced loss falls while free-running translation stays poor: the PhoMT run
   ([CONTEXT](../../CONTEXT.md#where-things-stand)), run 1's validation loss 2.73 → 2.67 with
   content accuracy flat at 0.63 and FLEURS dev chrF 24.9 at its end
   ([plan](../vi_en_parity_plan.md#order)).
@@ -35,7 +35,7 @@ how the plan recipe should change"): **fine-tune**, as the plan does
 - A random start must learn speech and Mimi's codes before translating. The family's speech
   comes from pretraining on audio far past our ~8,500 h a direction (Moshi, its base,
   pretrained on ~7M hours), and the text side from a pretrained text LM. Our evidence: a student
-  cut from the 3B's own layers fell ~15 chrF short before distillation
+  cut from the 3B's own layers fell ~14 chrF short before distillation
   ([phone-student](phone-student.md)); a random start keeps not even those layers. The same
   holds for a phone-sized model: cut it from the 3B and distil.
 - The only "from scratch" worth costing is a restart from upstream's 3B (through the tokenizer
@@ -62,41 +62,52 @@ batch at once (14–15k frames/s on the H100), where generation is one frame at 
 ## Scheduled sampling
 
 `train.py --sampled-text P` (parallel scheduled sampling, Duckworth et al. 2019,
-arXiv 1906.04331; for transformers, Mihaylova and Martins 2019), of the text stream:
+arXiv 1906.04331; for transformers, Mihaylova and Martins 2019), of the words:
 
 ```text
 pass 1, no grad:  main transformer(codes) ─► sample every scored text token (0.8, top-k 250)
-mix:              history = codes, each text token ← its sample with probability P
+mix:              history = codes; each word piece ← the sampled word piece, with probability P
+                  (PADs, the EOS and a word sampled as PAD stay the dataset's)
 pass 2, grad:     main transformer reads history (earlier steps) ┐
                   depformer reads codes (this step's own tokens) ┴► loss against codes
 ```
 
-- **The text only.** This model's exposure bias shows in its text: drift from the source, length,
-  the EOS, timing (a word early or late). The audio stays teacher-forced: generation draws a
-  frame's codebooks one after another, each after its own previous sample, so codebooks sampled
-  each on its own (as one parallel pass gives them) would pair a sampled codebook with the
-  dataset's next, a frame no audio has (codebooks 1–15 are Mimi's residual chain; PR #151's
-  reviews). Sampling audio would mean drawing each frame's codebooks in turn, as `LMGen` does:
-  not built.
-- **Which text**: where pass 1 scores it (not -1). pass 1 is the main transformer alone
-  (`lm_training.text_logits`), no depformer. A replaced token becomes only an input, never its
-  own target.
+- **Words, not timing.** The targets stay the dataset's, and 76–79% of text frames are PAD
+  (`twoway_sft`'s last validation), where a sampled token that differs is mostly a word a frame
+  early or late. A word sampled early would teach the model to write it again a frame later (the
+  target there is still that word); one sampled late (PAD), to drop it, or to start after its
+  first piece (PR #151's third review). So only a word piece the model samples as another word
+  piece is replaced: the model sees its own word choices, where drift from the source starts,
+  and the timing stays the dataset's. Timing, the EOS and length are GRPO's, on-policy.
+- **The text only.** The audio stays teacher-forced: generation draws a frame's codebooks one
+  after another, each after its own previous sample, so codebooks sampled each on its own (as
+  one parallel pass gives them) would pair a sampled codebook with the dataset's next, a frame no
+  audio has (codebooks 1–15 are Mimi's residual chain; the second review). Sampling audio would
+  mean drawing each frame's codebooks in turn, as `LMGen` does: not built.
+- **Pass 1** is the main transformer alone (`lm_training.text_logits`), no depformer. A replaced
+  token becomes only an input, never its own target.
 - **Only the history mixes** (`lm_training.forward_history`): the main transformer reads the
-  steps before each one with their sampled text; the depformer (a heads student's text input)
+  steps before each one with their sampled words; the depformer (a heads student's text input)
   reads each step's own text from the dataset, so the step's audio is predicted after the text
-  its targets were spoken with. Across steps a sampled word followed by the dataset's next is
-  scheduled sampling's intended recovery: the model learns to come back to the reference after
-  its own deviation. On a paraphrase that teaches an abrupt join, so the rate starts low.
+  its targets were spoken with. A sampled word followed by the dataset's next is the intended
+  recovery: the model learns to come back to the reference after its own word. On a paraphrase
+  that teaches an abrupt join, so the rate starts low.
+- **What stays inconsistent**: the step that first reads a sampled word at frame f also reads the
+  dataset's audio drawn at step f (codebook 0 of frame f, the onset of the dataset's word, and the
+  acoustic codebooks of frame f − 2), which generation would have drawn after the model's word. So
+  the model can recover the dataset's word from the dataset's speech, a cue generation never
+  gives, which weakens the lesson; and its audio learns to go on with the dataset's speech beside
+  its own word. Inherent to sampling the text alone in one parallel pass; the speech check in
+  experiment 1 covers the second.
 - **Sampler**: validation's (`common.TRAINER_GENERATION`), the runtimes' and GRPO's: temperature
   0.8 and top-k 250.
 - **Logs**: the train log's losses read the mixed history and run above a plain run's; compare
   runs by validation, which is unchanged (reference inputs, then free-running). `text_changed` is
-  the share of the scored text the model read as its own sample where that differs from the
-  dataset's.
+  the share of the content tokens (words and the EOS) the model read as another word piece.
 - **Cost**: one main-transformer forward without gradients a step, under a third of the step
-  (unprofiled). Its text logits are sampled in float32: ~1.8 GB of logits and probabilities at
-  4,608 frames (48,000 entries), freed before pass 2. Profile both arms before the runs
-  ([CONTEXT](../../CONTEXT.md#essential-invariants)).
+  (unprofiled). Its text logits are sampled in float32, ~3 GB at its peak at 4,608 frames (the
+  bf16 logits and three float32 copies of 48,000 entries a frame), freed before pass 2. Profile
+  both arms before the runs ([CONTEXT](../../CONTEXT.md#essential-invariants)).
 - **Not with a teacher** (refused): distillation's targets are the teacher's distributions on the
   dataset's stream; a student learns from its own samples on-policy in `grpo.py`
   ([on-policy-distillation](on-policy-distillation.md)). With `--palettize-bits` pass 1 runs on
@@ -156,10 +167,12 @@ the next data will be trained with.
 
 - Tiny models on the CPU (2026-11-21; dim 64, a 3B-shaped model with delays 0, 0 and 2, and a
   16-codebook heads student, the training forward eager; scratch script):
-  - `sample_text` at rate 0 returns the codes unchanged; at 0.5 about half the scored text
-    differs (0.527), never an audio row, a -1 or an unscored position; its count equals the tokens
-    that differ; near 1, 0.982; a text head that favours one token by far samples only that
-    token; a heads student runs through it. `text_logits` equals moshi's forward's text logits.
+  - `sample_text` at rate 0 returns the codes unchanged; at 0.5, over 30 draws, 0.452 of the
+    scored words differ (half of those the model samples as another word); only the dataset's
+    word pieces change, into word pieces; PADs, the EOS, the audio rows and -1 stay; its count
+    equals the tokens that differ; a head that samples PAD changes nothing (the timing stays); a
+    head that favours one word samples only that word; a heads student runs through it.
+    `text_logits` equals moshi's forward's text logits.
   - `compute_batch_losses(..., history=mixed)` equals the CE of `forward_history(mixed, codes)`'s
     logits against the dataset's tokens, not against the samples; `history=codes` equals no
     history; gradients are finite.
@@ -171,7 +184,7 @@ the next data will be trained with.
     a heads student, moves only predictions generation samples later; pass 1 on palettized
     weights restores the full-precision ones with finite gradients everywhere.
   - `validate_args` refuses a rate outside [0, 1) and a rate with `--teacher-weight`.
-- Not yet run on CUDA: the compiled training forward without gradients (one more compile per
-  shape) and `forward_history`'s, the step's time and memory. The validation before the student's GRPO
+- Not yet run on CUDA: the compiled training forward without gradients (no-grad variants of its
+  dynamic-shape graphs) and `forward_history`'s, the step's time and memory. The validation before the student's GRPO
   ([on-policy-distillation](on-policy-distillation.md#experiments), item 0) adds a short
   `--sampled-text 0.1` run through a validation, a kill and a resume.

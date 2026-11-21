@@ -28,13 +28,14 @@ to their k-means tables, the optimizer updates the full-precision ones, and vali
 palettized model; saved checkpoints hold the full-precision weights, which `palettize` snaps for
 the export.
 
-With --sampled-text P (parallel scheduled sampling of the text, against exposure bias), each step
-first runs the main transformer teacher-forced without gradients and samples its every scored
-text token as generation samples it (temperature 0.8, top-k 250); each text token then becomes its
-sample with probability P in the history the main transformer reads, while each step's own tokens
-(the depformer's inputs), the audio and the targets stay the dataset's. Generation conditions on
-the model's own text, teacher forcing never does: this shows the model its own words and timing
-in training at the cost of one more main-transformer forward a step. Validation is unchanged
+With --sampled-text P (parallel scheduled sampling of the words, against exposure bias), each
+step first runs the main transformer teacher-forced without gradients and samples every text
+token as generation samples it (temperature 0.8, top-k 250); each word piece of the text then
+becomes the sampled word piece there with probability P in the history the main transformer
+reads, while the PADs (the timing), each step's own tokens (the depformer's inputs), the audio
+and the targets stay the dataset's. Generation conditions on the model's own words, teacher
+forcing never does: this shows the model its own word choices in training at the cost of one more
+main-transformer forward a step. Validation is unchanged
 ([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
 
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
@@ -163,8 +164,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sampled-text", type=float, default=0.0,
-        help="Share of the text the main transformer reads that is the model's own samples from a "
-        "teacher-forced pass (scheduled sampling); the targets stay the dataset's.",
+        help="Probability that a word piece the main transformer reads is the model's own sampled "
+        "word piece there (scheduled sampling of the words); the timing and the targets stay "
+        "the dataset's.",
     )
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
@@ -283,24 +285,28 @@ def validate_args(args: argparse.Namespace) -> None:
 def sample_text(
     lm: Any, codes: torch.Tensor, condition_tensors: Any, rate: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Parallel scheduled sampling of the text (Duckworth et al. 2019, arXiv 1906.04331): a history
-    for `common.compute_batch_losses`, `codes` with each scored text token replaced, with
-    probability `rate`, by a token sampled from the main transformer's teacher-forced
-    distribution as validation samples text (`common.TRAINER_GENERATION`), and how many replaced
-    tokens differ from the dataset's. Runs without gradients, under the caller's autocast. The
-    audio stays the dataset's: generation draws a frame's codebooks one after another, so tokens
-    sampled each on its own would pair a sampled codebook with the dataset's next, a frame no
-    audio has."""
+    """Parallel scheduled sampling of the words (Duckworth et al. 2019, arXiv 1906.04331): a history
+    for `common.compute_batch_losses`, `codes` with each word piece of the text replaced, with
+    probability `rate`, by the word piece the main transformer's teacher-forced distribution
+    samples there as validation samples text (`common.TRAINER_GENERATION`), and how many replaced
+    pieces differ from the dataset's. Runs without gradients, under the caller's autocast.
+    Only a word piece the sample keeps a word piece is replaced: the targets stay the dataset's,
+    so a word sampled a frame early (where the dataset has PAD) would teach the model to write it
+    again a frame later, and one sampled late (PAD) to drop it; the timing stays the dataset's.
+    The audio stays the dataset's too: generation draws a frame's codebooks one after another,
+    and tokens sampled each on its own would pair a sampled codebook with the dataset's next."""
     cfg = common.TRAINER_GENERATION
     with torch.no_grad():
         logits, scored = lm_training.text_logits(lm, codes, condition_tensors)
         # Unscored positions hold NaN logits; they are never replaced.
         sampled = sample_token(logits.float().nan_to_num(), True, cfg.text_temp, cfg.top_k_text)
-    sampled = sampled.to(codes.dtype)
-    replace = scored & (torch.rand(scored.shape, device=codes.device) < rate)
+    text, sampled = codes[:, :1], sampled.to(codes.dtype)
+    pad = lm.text_padding_token_id  # the special tokens (PAD, EOS) sit at or below it
+    words = (text > pad) & (sampled > pad)
+    replace = scored & words & (torch.rand(scored.shape, device=codes.device) < rate)
     history = codes.clone()
-    history[:, :1] = torch.where(replace, sampled, codes[:, :1])
-    return history, (replace & (sampled != codes[:, :1])).sum()
+    history[:, :1] = torch.where(replace, sampled, text)
+    return history, (replace & (sampled != text)).sum()
 
 
 def learning_rate(
@@ -518,6 +524,7 @@ def main() -> None:
             "max_grad_norm": None,
             "data_seconds": 0.0,
             "text_changed": 0,
+            "word_tokens": 0,
         }
 
     def check_gradients(step: int) -> None:
@@ -622,6 +629,7 @@ def main() -> None:
             log["losses"][key] += losses[key].detach()
         log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
         log["text_tokens"] += losses["content_n"] + losses["pad_n"]
+        log["word_tokens"] += losses["content_n"]
         if args.grad_clip > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
         else:
@@ -680,8 +688,8 @@ def main() -> None:
                 "grad_norm": float(log["grad_norm"]) / steps,
                 "max_grad_norm": float(log["max_grad_norm"]),
             }
-            if args.sampled_text:  # the share of the scored text it read as its own other samples
-                item["text_changed"] = float(log["text_changed"]) / max(1, int(log["text_tokens"]))
+            if args.sampled_text:  # the share of the content tokens (words, EOS) it read as other words
+                item["text_changed"] = float(log["text_changed"]) / max(1, int(log["word_tokens"]))
             append_log(log_path, item)
             print(
                 f"step={global_step} loss={item['loss']:.4f} "

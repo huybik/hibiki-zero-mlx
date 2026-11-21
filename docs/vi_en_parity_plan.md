@@ -63,7 +63,7 @@ grows sentence by sentence.
 | Two-way speech in one model whose output language follows the input language, prepared now beside the tranche (user, 2026-11-04) | A conversation needs both directions with no language-ID step; Hibiki-Zero has no conditioning input; two 3B models do not fit a 6 GB phone ([stage 7](#7-two-way-speech)) |
 | Two-way before GRPO: after round 4e, the pilot and the two-way SFT, then one GRPO on both directions; the phone student and the parallel-heads test are cut from the two-way model and scored both ways (user, 2026-11-10, replacing that morning's "one way first") | GRPO and the student each run once, on the model that ships; GRPO on a VI→EN-only model would be undone by the two-way SFT after it |
 | Test parallel codebook heads against the depformer student once the student is trained, and adopt them only if they win (user, 2026-11-10) | The student's depformer is about a third of what a frame reads; heads that sample every codebook at once could pay for ~14–16 main layers at the 10-layer cost. But they train from scratch, add ~400 ms of heard speech lag and change three runtimes ([stage 5.4](#5-the-phone-model)) |
-| Fine-tune the 3B, never train from scratch; SFT stays teacher-forced, with on-policy training on top (2026-11-21; user: "if we train vi - en and en-vi from scratch or finetune from the 3b, how the plan recipe should change") | A random start must first learn speech and Mimi's codes, which the family learned from pretraining far past our ~8,500 h a direction; a student cut from the 3B's own layers already fell ~15 chrF short. Teacher forcing is the only objective that covers ~17k h (every frame at once), but GRPO's 1,400 on-policy updates moved the test sets +4.4 chrF after two SFT epochs: scheduled sampling in SFT and a KL anchor in GRPO are tested ([exposure-bias](agent-memory/exposure-bias.md)) |
+| Fine-tune the 3B, never train from scratch; SFT stays teacher-forced, with on-policy training on top (2026-11-21; user: "if we train vi - en and en-vi from scratch or finetune from the 3b, how the plan recipe should change") | A random start must first learn speech and Mimi's codes, which the family learned from pretraining far past our ~8,500 h a direction; a student cut from the 3B's own layers already fell ~14 chrF short. Teacher forcing is the only objective that covers ~17k h (every frame at once), but GRPO's 1,400 on-policy updates moved the test sets +4.4 chrF after two SFT epochs: scheduled sampling in SFT and a KL anchor in GRPO are tested ([exposure-bias](agent-memory/exposure-bias.md)) |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
@@ -134,10 +134,11 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
    FLEURS dev chrF, and keeps it beside the newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
    chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
 4. Against exposure bias (built 2026-11-21): `--sampled-text P`, parallel scheduled sampling of
-   the text. The main transformer samples every text token without gradients as generation does,
-   each text token it reads becomes its sample with probability P, and the loss scores the
-   dataset's tokens on that context; each step's own inputs to the depformer and the audio stay
-   the dataset's ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
+   the words. The main transformer samples every text token without gradients as generation
+   does, each word piece it reads becomes the sampled word piece there with probability P, and
+   the loss scores the dataset's tokens on that context; the timing (PADs), each step's own
+   inputs to the depformer and the audio stay the dataset's
+   ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
    Tested against 0 before any run adopts it, and after a short GRPO, which fixes the same gap
    ([experiments](agent-memory/exposure-bias.md#experiments)).
 

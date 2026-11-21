@@ -217,7 +217,8 @@ sampling temperature) all run it, so a change to it needs all three checked
   to the Core ML export's k-means tables, the straight-through estimator
   ([student-heads](student-heads.md#palettization)).
 - **Scheduled sampling** (`--sampled-text P`, not with a teacher): the main transformer samples
-  every text token without gradients, a share P of the text it reads become those samples, and
-  the loss scores the dataset's tokens, each step's own inputs to the depformer and the audio
-  staying the dataset's (`compute_batch_losses(..., history=)`, `lm_training.forward_history`);
-  the train log adds `text_changed` ([exposure-bias](exposure-bias.md#scheduled-sampling)).
+  every scored text token without gradients, each word piece it reads becomes the sampled word
+  piece there with probability P, and the loss scores the dataset's tokens; the PADs (timing),
+  each step's own inputs to the depformer and the audio stay the dataset's
+  (`compute_batch_losses(..., history=)`, `lm_training.forward_history`); the train log adds
+  `text_changed` ([exposure-bias](exposure-bias.md#scheduled-sampling)).
