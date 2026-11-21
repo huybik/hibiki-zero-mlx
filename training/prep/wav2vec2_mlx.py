@@ -119,7 +119,7 @@ class Wav2Vec2CTC:
                 setattr(self, k, v)
             mx.eval(self._weights())
         self._forward_compiled = mx.compile(self._forward)
-        self._stream_compiled = mx.compile(lambda *args: self._stream(*args)[0])
+        self._transformer_input_compiled = mx.compile(lambda *args: self._transformer_input(*args)[0])
 
     def _weights(self) -> dict:
         names = ("convs", "conv_norms", "projection_norm", "projection", "pos_conv", "encoder_norm", "layers", "head")
@@ -148,7 +148,7 @@ class Wav2Vec2CTC:
             hs = nn.gelu(hs)
         return hs
 
-    def _stream(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> tuple[mx.array, mx.array]:
+    def _transformer_input(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> tuple[mx.array, mx.array]:
         """The projected features plus the positional convolution [1, frames, dim] (the stable
         layout's transformer input; the base layout's encoder LayerNorm comes next), and the mask
         of the clip's own frames."""
@@ -164,7 +164,7 @@ class Wav2Vec2CTC:
         return hs + nn.gelu(pos + self.pos_conv[1]), valid
 
     def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
-        hs, valid = self._stream(pcm, first_frames, frames)
+        hs, valid = self._transformer_input(pcm, first_frames, frames)
         if not self.stable:
             hs = mx.fast.layer_norm(hs, *self.encoder_norm, self.eps)
         batch, steps, dim = hs.shape
@@ -215,8 +215,8 @@ class Wav2Vec2CTC:
         inputs, frames = self._inputs(pcm)
         return self._forward_compiled(*inputs)[0, :frames]  # float32: _forward casts before logsumexp
 
-    def stream(self, pcm: np.ndarray) -> tuple[mx.array, int]:
-        """Lazy `_stream` [1, bucket frames, dim] of one clip (prepared as `log_probs` takes it)
-        and the clip's frames: what `wav2vec2_coreml` runs the transformer on."""
+    def transformer_input(self, pcm: np.ndarray) -> tuple[mx.array, int]:
+        """Lazy `_transformer_input` [1, bucket frames, dim] of one clip (prepared as `log_probs`
+        takes it) and the clip's frames: what `wav2vec2_coreml` runs the transformer on."""
         inputs, frames = self._inputs(pcm)
-        return self._stream_compiled(*inputs), frames
+        return self._transformer_input_compiled(*inputs), frames

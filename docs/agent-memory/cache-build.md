@@ -119,12 +119,13 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   float32 and gives the same spans on 6,180 of 6,181 words. In float16 the base layout's GroupNorm
   statistics stay in float32 (`first_frames` passes 65504 past 20.47 s, the sum of squares overflows
   past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×).
-- `ane_ctc` (`cache_codes --ane-ctc`, omniASR only): the transformer on the Neural Engine in its own
-  process (`wav2vec2_coreml`; its docstring has the float16 fixes), on `Wav2Vec2CTC.stream` from the
-  GPU in float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)).
+- `ane_ctc` (`cache_codes --ane-ctc`, omniASR only): the transformer on the Neural Engine in its
+  own process (`wav2vec2_coreml`, with the float16 fixes), on `Wav2Vec2CTC.transformer_input` from
+  the GPU in float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)).
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
-  encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (they align while
-  the GPU encodes Mimi), and returns lazy Mimi codes. The *next* window's CTC is queued in
+  encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (with `ane_ctc`, the
+  Neural Engine's rows together, then the GPU's; they align while the GPU encodes Mimi), and
+  returns lazy Mimi codes. The *next* window's CTC is queued in
   `_encode_start` before the previous window's Mimi codes are collected in `_encode_finish`, so
   the GPU runs CTC_N+1 and collects Mimi_N in an interleaved pipeline.
   `mx.set_cache_limit(16 GB)` keeps freed buffers for the ~36 bucketed shapes
@@ -207,12 +208,11 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   ~45%: the CPU and GPU share this laptop's power.
 - `en-vi` build (omniASR CTC on the Vietnamese clip; 2026-11-21, 500 `libriheavy-large` and 1,000
   `cv27` rows, interleaved, thermal state "fair"): fp32 150–161× (CTC ~68% of the GPU), `half_ctc`
-  175–186×, `ane_ctc` 293–309× with the GPU 97–99% busy (`ANE_GPU_SHARE` 0.2; 0 and 0.1 left it
-  waiting on long rows). Against fp32, `ane_ctc` moved 21 of 43,092 text tokens by one frame (fp16
-  17) and kept one row fp32 rejects (0.515 against 0.498, floor 0.5; fp16 kept it too); audio
-  codes equal. In a thread it ran 207×: Core ML's predict holds the GIL, and the main thread's
-  `mx.async_eval` (blocked about half the build on the GPU's queue) waited on it. macOS caches the
-  first load's compile (~1.5–3 min) by file; `MLModel`'s temporary copies compile on every load.
+  175–186×, `ane_ctc` 293–309×, the GPU 97–99% busy (`ANE_GPU_SHARE` 0.2; at 0 the GPU waited on
+  long rows, 261×; 0.1 ran 278–301×). Against fp32, `ane_ctc` moved 21 of 43,092 text tokens a
+  frame (fp16 17), kept one row fp32 rejects (0.515 vs 0.498, floor 0.5; fp16 too), audio codes
+  equal. In a thread it ran 207×: Core ML's predict holds the GIL, which `mx.async_eval` (blocked
+  half the build on the GPU's queue) needs. macOS caches the first load's compile (~1.5–3 min).
 - Neural Engine for Mimi and wav2vec2-base (Core ML 9, 2026-10-27): float16 only rules out Mimi and
   moved 0.7% of the base's word spans; one fixed 10 s shape compiled over 27 min without finishing.
 - Headroom (2026-10-29, at 240x): the GPU is 96–98% busy, and a row takes as long as its two

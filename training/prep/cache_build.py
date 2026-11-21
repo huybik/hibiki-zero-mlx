@@ -117,8 +117,8 @@ class MLXModels:
         if ane_ctc:
             from training.prep.wav2vec2_coreml import Wav2Vec2ANE
 
-            if half_ctc:  # its stream would come in float16: unmeasured
-                raise ValueError("ane_ctc takes the float32 CTC's stream: not with half_ctc")
+            if half_ctc:  # its transformer input would come in float16: unmeasured
+                raise ValueError("ane_ctc takes the float32 CTC's transformer input: not with half_ctc")
 
             self.ane = Wav2Vec2ANE(aligner, files)
 
@@ -141,16 +141,17 @@ class MLXModels:
         return order, gpu
 
     def encode(self, rows: list[Row], align: AlignJob) -> list[tuple[Aligned, Any, Any]]:
-        """Queue CTC and Mimi on the GPU (with the Neural Engine, its rows' streams first, handed to
-        it while the GPU runs the rest); block until CTC is done and workers are submitted (a job a
-        row, for the Mac's two workers); return lazy Mimi codes so the caller can overlap planning
-        the next window with Mimi."""
+        """Queue CTC and Mimi on the GPU (with the Neural Engine, its rows' transformer inputs first,
+        handed to it while the GPU runs the rest); block until CTC is done and workers are submitted
+        (a job a row, for the Mac's two workers); return lazy Mimi codes so the caller can overlap
+        planning the next window with Mimi."""
         import mlx.core as mx
 
         ane, gpu = self._split(rows)
-        streams = [self.ctc.stream(rows[index].target16) for index in ane]
-        mx.async_eval([hs for hs, _ in streams])
-        on_ane = self.ane.submit([(np.array(hs), frames) for hs, frames in streams]) if ane else None
+        inputs = [self.ctc.transformer_input(rows[index].target16) for index in ane]
+        mx.async_eval([hs for hs, _ in inputs])
+        on_ane = self.ane.submit([(rows[index].data["id"], np.array(hs), frames)
+                                  for index, (hs, frames) in zip(ane, inputs, strict=True)]) if ane else None
         log_probs = {index: mx.take(self.ctc.log_probs(rows[index].target16), self.columns, axis=1) for index in gpu}
         mx.async_eval(list(log_probs.values()))
         codes = [(self.mimi.encode(row.source24), self.mimi.encode(row.target24)) for row in rows]

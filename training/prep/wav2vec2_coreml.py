@@ -1,7 +1,7 @@
 """omniASR's transformer on the Neural Engine, beside Mimi on the GPU, for the MLX cache build
 (`cache_build.MLXModels`, `cache_codes --ane-ctc`): the `stable` layout's 24 layers, final norm,
 CTC head and log-softmax as a float16 Core ML program, run on the transformer input that
-`wav2vec2_mlx` computes on the GPU in float32 (`Wav2Vec2CTC.stream`). Only the columns the Viterbi
+`wav2vec2_mlx` computes on the GPU in float32 (`Wav2Vec2CTC.transformer_input`). Only the columns the Viterbi
 reads come back (`text_timing.vocab_columns`).
 
 Four things keep float16 on the Neural Engine near float32 (against MLX float32 on 68,128 frames
@@ -19,19 +19,24 @@ of Common Voice rows, 99.81% of argmaxes equal; MLX float16 99.90%):
 The program takes one shape per length bucket up to MAX_BUCKETS (enumerated shapes); a window's
 clips go in bucket order, since switching shapes costs the Neural Engine ~40% of its speed. It is
 converted once into weights/coreml/, under a name keyed by the aligner's revision, its columns,
-the shapes, LN_SCALE and VERSION (bumped when the program changes), and the Neural Engine compiles
-it on its first load (~1.5–3 min), which macOS keeps for later loads of the same file. It runs in
-a process of its own: Core ML's predict holds the GIL, which stalled the MLX calls that queue Mimi
-(the build ran 207x in a thread, 293x in a process).
+the shapes, `convert`'s source and the coremltools version, and the Neural Engine compiles it on
+its first load (~1.5–3 min), which macOS keeps for later loads of the same file. It runs in a
+process of its own, which exits with the build: Core ML's predict holds the GIL, which stalled the
+MLX calls that queue Mimi (the build ran 207x in a thread, 293x in a process).
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import multiprocessing
+import os
 import tempfile
+import threading
 from concurrent.futures import Future, ProcessPoolExecutor
-from multiprocessing import get_context
+from importlib.metadata import version
+from multiprocessing.connection import wait
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +49,6 @@ from training.prep.wav2vec2_mlx import BUCKET_SAMPLES
 MAX_BUCKETS = 19  # 24.3 s; the GPU runs longer clips' CTC
 SHAPES = [ctc_frames(buckets * BUCKET_SAMPLES) for buckets in range(1, MAX_BUCKETS + 1)]
 LN_SCALE = 1 / 64
-VERSION = 1  # bump it when the program changes: it keys the file name
 MODEL_DIR = REPO_ROOT / "weights" / "coreml"
 
 
@@ -128,15 +132,18 @@ def _load(path: str) -> None:
 
     global _model
     _model = ct.models.CompiledMLModel(path, compute_units=ct.ComputeUnit.CPU_AND_NE)
+    # A killed build leaves its spawned workers running; this one holds ~1 GB.
+    parent = multiprocessing.parent_process().sentinel
+    threading.Thread(target=lambda: (wait([parent]), os._exit(1)), daemon=True).start()
 
 
-def _predict(streams: list[tuple[np.ndarray, int]]) -> list[np.ndarray]:
+def _predict(clips: list[tuple[str, np.ndarray, int]]) -> list[np.ndarray]:
     out = []
-    for hs, frames in streams:
+    for name, hs, frames in clips:
         valid = (np.arange(hs.shape[1]) < frames).astype(np.float32)[None]
         log_probs = _model.predict({"hs": hs, "valid": valid})["lp"][0, :frames]
         if not np.isfinite(log_probs).all():  # float16 overflow: a NaN score would pass the Viterbi's floor
-            raise FloatingPointError(f"the Neural Engine gave non-finite log-probabilities on a {hs.shape[1]}-frame clip")
+            raise FloatingPointError(f"{name}: the Neural Engine gave non-finite log-probabilities")
         out.append(log_probs)
     return out
 
@@ -149,15 +156,17 @@ class Wav2Vec2ANE:
     def __init__(self, aligner: Aligner, files: Path):
         if not json.loads((files / "config.json").read_text())["do_stable_layer_norm"]:
             raise ValueError(f"{aligner.repo}: only the pre-norm (stable) layout runs on the Neural Engine")
-        program = json.dumps([vocab_columns(aligner, files), SHAPES, LN_SCALE, VERSION])
+        program = json.dumps([vocab_columns(aligner, files), SHAPES, LN_SCALE, inspect.getsource(convert),
+                              version("coremltools")])
         key = hashlib.sha256(program.encode()).hexdigest()[:8]
         path = MODEL_DIR / f"{aligner.name}-{aligner.revision[:8]}-{key}.mlmodelc"
         if not path.exists():
             convert(aligner, files, path)
-        self.pool = ProcessPoolExecutor(1, mp_context=get_context("spawn"), initializer=_load, initargs=(str(path),))
+        self.pool = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"), initializer=_load,
+                                        initargs=(str(path),))
         self.pool.submit(_predict, []).result()  # loaded (and compiled, the first time) before the build starts
 
-    def submit(self, streams: list[tuple[np.ndarray, int]]) -> Future:
-        """The [frames, columns] float32 log-probabilities of each clip's `Wav2Vec2CTC.stream`
-        [1, T, dim] and frames, in order."""
-        return self.pool.submit(_predict, streams)
+    def submit(self, clips: list[tuple[str, np.ndarray, int]]) -> Future:
+        """The [frames, columns] float32 log-probabilities of each clip, given as its name (for
+        errors), `Wav2Vec2CTC.transformer_input` [1, T, dim] and frames, in order."""
+        return self.pool.submit(_predict, clips)
