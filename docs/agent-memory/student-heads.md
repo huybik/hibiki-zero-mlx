@@ -135,7 +135,7 @@ free-running at seed 47, batches of 64.
 
   FLEURS dev chrF 26.75 / 23.18 against the plain depformer student's 20.7 / 15.0 at 16,000.
 - `student_heads14_cb16` (16 codebooks, `ce80c0b`, from 2026-11-20 05:19 UTC, Hub
-  `student_heads14_cb16/`): running, ~37 h plus 12 validations. Validations (teacher-forced loss on
+  `student_heads14_cb16/`): done 2026-11-21 18:42 UTC, 37.4 h with 12 validations. Validations (teacher-forced loss on
   the VI→EN / EN→VI caches, not comparable with the 8-codebook run's; chrF / BLEU / length ratio /
   end offset in s, every set's health pass unless marked):
 
@@ -152,6 +152,7 @@ free-running at seed 47, batches of 64.
   | 144,000 (11-21) | 3.113 / 2.899 | 36.00 | 37.94 / 8.08 / 1.35 / 1.8 | 34.07 / 14.24 / 1.03 / 1.6 | 35.10 / 7.67 / 1.58 / 4.7 | 39.49 / 13.41 / 1.30 / 2.4 (1 empty) | 41.53 / 15.43 / 1.15 / 3.0 | 32.92 / 14.20 / 1.18 / 0.8 | 40.06 / 19.63 / 1.04 / 2.2 |
   | 160,000 (11-21) | 3.094 / 2.889 | 36.59 | 38.29 / 8.48 / 1.35 / 1.9 | 34.90 / 14.84 / 1.05 / 1.7 | 34.97 / 8.31 / 1.55 / 4.4 | 38.45 / 11.75 / 1.32 / 2.6 | 41.75 / 15.47 / 1.13 / 2.7 | 32.77 / 14.36 / 1.17 / 0.8 | 40.71 / 19.98 / 1.04 / 1.9 |
   | 176,000 (11-21) | 3.087 / 2.881 | 36.99 | 38.34 / 8.64 / 1.33 / 1.7 | 35.64 / 15.57 / 1.05 / 1.6 | 35.10 / 8.16 / 1.58 / 4.6 (2 empty) | 39.60 / 12.99 / 1.31 / 2.6 | 41.23 / 16.20 / 1.10 / 2.8 | 31.01 / 12.62 / 1.15 / 0.8 | 40.94 / 20.01 / 1.06 / 2.1 |
+  | 190,126, final (11-21) | 3.086 / 2.880 | 36.92 | 38.78 / 8.96 / 1.30 / 1.7 | 35.06 / 15.08 / 1.05 / 1.6 | 35.41 / 8.27 / 1.56 / 4.6 | 39.17 / 13.04 / 1.24 / 2.6 | 41.78 / 16.02 / 1.13 / 3.0 | 33.02 / 14.42 / 1.17 / 0.9 (1 empty) | 40.85 / 19.59 / 1.06 / 2.1 |
 
   At 16,000 against 8 codebooks: VI→EN +1.2 to +2.4 chrF on every set, EN→VI −1.0 (FLEURS) to +1.3,
   end offsets 0.1–0.7 s later; generation and scoring at 16 codebooks work on the GPU.
@@ -179,3 +180,6 @@ free-running at seed 47, batches of 64.
   −1.0 (`en-vi-val` cv27) to +0.7; the seven-set mean was 37.41.
   At 176,000 (promoted, +0.4 selecting, nearly all of it FLEURS EN→VI +0.7) the seven-set mean
   held at 37.41: `en-vi-val` cv27 +1.2, `en-vi-val-en` cv27 −1.8, the rest within ±0.5.
+  The final update (190,126, 2026-11-21 18:42 UTC) scored 36.92 selecting, so the run's best stays
+  176,000 (`best_step176000`, hard-linked on the box as `weights/student_heads14_cb16_best.safetensors`,
+  the on-policy stage's start); its seven-set mean was 37.72 (`en-vi-val-en` cv27 +2.0).
