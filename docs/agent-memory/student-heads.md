@@ -144,6 +144,7 @@ free-running at seed 47, batches of 64.
   | 48,000 (11-20) | 3.395 / 3.157 | 28.84 | 27.69 / 3.64 / 1.55 / 3.2 | 29.99 / 9.90 / 1.10 / 2.0 (1 empty) | 29.31 / 4.80 / 1.59 / 4.6 | 32.77 / 8.17 / 1.42 / 2.9 | 35.98 / 9.27 / 1.22 / 3.3 | 26.33 / 8.72 / 1.25 / 1.2 | 35.38 / 13.79 / 1.10 / 2.3 |
   | 64,000 (11-20) | 3.320 / 3.082 | 30.05 | 29.92 / 4.42 / 1.50 / 2.6 (1 empty) | 30.18 / 10.51 / 1.08 / 2.2 (1 empty) | 30.22 / 5.63 / 1.63 / 5.1 (2 empty) | 27.47 / 5.77 / 1.63 / 3.8 (2 empty) | 32.17 / 9.21 / 1.16 / 3.8 | 26.54 / 9.78 / 1.18 / 0.9 (4 empty) | 36.17 / 14.68 / 1.09 / 2.1 |
   | 80,000 (11-20) | 3.272 / 3.033 | 30.47 | 30.14 / 3.78 / 1.63 / 2.8 | 30.79 / 10.11 / 1.20 / 2.2 | 30.40 / 5.50 / 1.66 / 4.7 | 33.69 / 7.69 / 1.71 / 3.5 | 35.90 / 10.44 / 1.28 / 4.1 | 27.85 / 9.19 / 1.35 / 1.4 | 36.71 / 14.97 / 1.13 / 2.5 |
+  | 96,000 (11-21) | 3.223 / 2.988 | 31.43 | 30.32 / 5.56 / 1.42 / 2.3 | 32.53 / 12.45 / 1.10 / 1.5 (1 empty) | 29.17 / 5.50 / 1.62 / 5.0 (1 empty) | 31.47 / 8.04 / 1.50 / 2.9 (1 empty) | 35.73 / 11.07 / 1.16 / 3.4 | 28.94 / 10.19 / 1.27 / 0.9 | 38.60 / 16.40 / 1.08 / 2.1 |
 
   At 16,000 against 8 codebooks: VI→EN +1.2 to +2.4 chrF on every set, EN→VI −1.0 (FLEURS) to +1.3,
   end offsets 0.1–0.7 s later; generation and scoring at 16 codebooks work on the GPU.
@@ -151,7 +152,9 @@ free-running at seed 47, batches of 64.
   (VI→EN) fell against 48,000: cv27 32.77 → 27.47 (length ratio 1.42 → 1.63), libriheavy 35.98 →
   32.17. Empty outputs: 10 over the sets, against 0–1 at the earlier validations.
   At 80,000 (promoted) `en-vi-val` recovered (cv27 33.69, libriheavy 35.90) with no empty outputs,
-  but outputs grew longer on every set (length ratio 1.20–1.71).
+  but outputs grew longer on every set (length ratio 1.20–1.71). At 96,000 (promoted) they came
+  back (1.08–1.62; VI→EN cv27 1.71 → 1.50), and EN→VI rose on all three sets.
   At 64,000 against the depformer student's own 64,000 (plain SFT, `student_dep10`): +2.9 to +8.2
   chrF on 6 of the 7 sets, −3.3 on `en-vi-val` cv27; FLEURS selecting 30.05 against 25.41, and
   30.53 for the depformer student after distillation (~196,000 updates), 35.50 after GRPO.
+  At 96,000: FLEURS 30.32 / 32.53 (31.43) against `student_dep10`'s 28.67 / 24.53 (26.60).
