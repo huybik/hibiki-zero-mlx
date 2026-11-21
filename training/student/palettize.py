@@ -13,9 +13,10 @@ palettized weights become their nearest table entry; the backward's gradients at
 update the full-precision ones (the straight-through estimator), which come back before the
 optimizer steps. The tables are refit (`fit`: entries spread as the density's cube root, the
 optimal spacing of a fine scalar quantizer, then Lloyd iterations) on the
-full-precision weights at the start and after every `refit` steps, so a resumed pair, saved on a
-refit step, gets the tables its run had, and `python -m training.student.palettize` snaps a saved
-checkpoint with the tables its next step would use.
+full-precision weights at the start, after every `refit` steps and after the last, so a resumed
+pair, saved on a refit step, gets the tables its run had, and `python -m training.student.palettize`
+snaps a saved checkpoint with the tables its next step would use (a fit is deterministic on a
+device; the CLI fits on CUDA where there is one, as training does).
 
     python -m training.student.palettize --weight runs/RUN/best_stepNNNNNN.safetensors \\
         --bits 6 --out weights/NAME_pal6.safetensors
@@ -64,18 +65,18 @@ def _nearest(groups: torch.Tensor, tables: torch.Tensor) -> torch.Tensor:
     return torch.searchsorted(bounds.contiguous(), groups.contiguous())
 
 
-def _start(groups: torch.Tensor, entries: int) -> torch.Tensor:
-    """First tables: each group's entries at the (i + 0.5) / entries quantiles of its density
-    raised to 1/3 (Panter and Dite's spacing for a fine scalar quantizer), from BINS bins of equal
-    count, so the bulk is resolved however far the outliers reach; interpolated within a bin.
-    Equal-count quantiles themselves would crowd the bulk and leave the tails coarse."""
-    ordered = groups.sort(dim=1).values
-    edges = ordered[:, torch.linspace(0, ordered.shape[1] - 1, BINS + 1, device=groups.device).long()]
+def _start(ordered: torch.Tensor, entries: int) -> torch.Tensor:
+    """First tables for groups of sorted values: each group's entries at the (i + 0.5) / entries
+    quantiles of its density raised to 1/3 (Panter and Dite's spacing for a fine scalar
+    quantizer), from BINS bins of equal count, so the bulk is resolved however far the outliers
+    reach; interpolated within a bin. Equal-count quantiles themselves would crowd the bulk and
+    leave the tails coarse."""
+    edges = ordered[:, torch.linspace(0, ordered.shape[1] - 1, BINS + 1, device=ordered.device).long()]
     width = edges[:, 1:] - edges[:, :-1]
     # A bin of equal count has density ∝ 1 / width, so its share of ∫ density^(1/3) ∝ width^(2/3).
     cdf = width.pow(2 / 3).cumsum(dim=1)
     cdf = cdf / cdf[:, -1:].clamp(min=1e-30)
-    targets = ((torch.arange(entries, device=groups.device) + 0.5) / entries).expand(len(groups), -1)
+    targets = ((torch.arange(entries, device=ordered.device) + 0.5) / entries).expand(len(ordered), -1)
     at = torch.searchsorted(cdf, targets.contiguous()).clamp(max=BINS - 1)
     below = torch.where(at > 0, cdf.gather(1, (at - 1).clamp(min=0)), torch.zeros_like(targets))
     inside = ((targets - below) / (cdf.gather(1, at) - below).clamp(min=1e-30)).clamp(0, 1)
@@ -85,21 +86,31 @@ def _start(groups: torch.Tensor, entries: int) -> torch.Tensor:
 @torch.no_grad()
 def fit(weight: torch.Tensor, bits: int, iterations: int = LLOYD_ITERATIONS) -> torch.Tensor:
     """Sorted tables [rows / GROUP_ROWS, 2^bits] for `weight` [rows, columns]: `_start`, then Lloyd
-    iterations. An entry no value picks (a start entry between far outliers) moves to one of its
-    group's worst-fit values, the n-th empty entry to the n-th worst."""
-    groups = _groups(weight)
-    entries = 1 << bits
-    tables = _start(groups, entries)
+    iterations on each group's sorted values, where an entry's values are one contiguous range
+    (found by searching its bounds, ties going to the lower entry as in `snap`) and their mean
+    comes from float64 prefix sums: no atomics, so a fit is the same on every run on a device.
+    An entry no value picks (a start entry between far outliers) moves to the worst-fit value of
+    another entry's range, the n-th empty entry to the n-th worst range, so no two land on one
+    value."""
+    ordered = _groups(weight).sort(dim=1).values
+    count = ordered.shape[1]
+    prefix = torch.nn.functional.pad(ordered.double().cumsum(dim=1), (1, 0))
+    tables = _start(ordered, 1 << bits)
     for _ in range(iterations):
-        index = _nearest(groups, tables)
-        sums = torch.zeros_like(tables).scatter_add_(1, index, groups)
-        counts = torch.zeros_like(tables).scatter_add_(1, index, torch.ones_like(groups))
-        empty = counts == 0
-        error = (groups - tables.gather(1, index)).abs()
-        worst = groups.gather(1, error.topk(entries, dim=1).indices)
+        bounds = (tables[:, 1:] + tables[:, :-1]) / 2
+        edges = torch.searchsorted(ordered, bounds.contiguous(), right=True)
+        starts = torch.nn.functional.pad(edges, (1, 0))
+        ends = torch.nn.functional.pad(edges, (0, 1), value=count)
+        sizes = ends - starts
+        means = ((prefix.gather(1, ends) - prefix.gather(1, starts)) / sizes.clamp(min=1)).float()
+        empty = sizes == 0
+        low = ordered.gather(1, starts.clamp(max=count - 1))
+        high = ordered.gather(1, (ends - 1).clamp(min=0))
+        far = torch.where(means - low > high - means, low, high)  # each range's worst-fit value
+        error = torch.where(empty, -1.0, torch.maximum(means - low, high - means))
+        candidates = far.gather(1, error.argsort(dim=1, descending=True))
         rank = (empty.long().cumsum(dim=1) - 1).clamp(min=0)
-        tables = torch.where(empty, worst.gather(1, rank), sums / counts.clamp(min=1))
-        tables = tables.sort(dim=1).values
+        tables = torch.where(empty, candidates.gather(1, rank), means).sort(dim=1).values
     return tables
 
 

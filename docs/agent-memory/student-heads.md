@@ -126,15 +126,19 @@ palettized LM agrees with bf16's argmax on 92.1% of tokens against fp16's 94.6%
   hold at most 2^N values comes back exact: the export's k-means (scikit-learn here, kmeans1d where
   installed) finds them.
 - **`fit`**: entries spread as the density's cube root over 1,024 equal-count bins, then 10 Lloyd
-  iterations, an empty entry moved to its group's worst-fit value. On 4 random groups each of
-  the update-16,000 student's `in_proj`, `linear_out`, `text_linear` and heads, its error is 0.94–1.02
-  times the export's own k-means at 6 bits and 0.94–0.97 at 4: snapping alone exports no worse.
+  iterations on each group's sorted values (an entry's values one contiguous range, means from
+  float64 prefix sums: deterministic on a device), an empty entry moved to the worst-fit value of
+  another entry's range. On 8 random groups each of the update-16,000 student's `in_proj`,
+  `linear_out`, `text_linear` and heads, its error is 0.94–1.07 times the export's own k-means at
+  6 bits and 0.93–0.97 at 4: snapping alone exports within ~7% of the plain export's error.
 - **Training** (`--palettize-bits N`, `--palettize-refit` 100): the forward and backward run on
   the weights snapped to their tables; the gradients there update the full-precision weights
   (straight-through), restored before AdamW steps. Validation scores the palettized model. The
-  tables are refit on the full-precision weights at the start and every `--palettize-refit` steps,
-  which must divide `--save-every`, so a resume and the snap tool get the tables the run had.
-  Saved checkpoints hold the full-precision weights.
+  tables are refit on the full-precision weights at the start, every `--palettize-refit` steps
+  (which must divide `--save-every`) and after the last step, so a resume and the snap tool (on
+  CUDA, as training fits) get the tables the run had. Saved checkpoints hold the full-precision
+  weights. The swap copies each palettized weight twice a step (~50 GB of memory traffic on the
+  student, an estimated 6–9% of a step) and keeps a 4.2 GB full-precision copy.
 - **Export**: `python -m training.student.palettize --weight CKPT --bits N --out SNAPPED` snaps a
   checkpoint onto its tables; then `convert_mlx.py` (bf16) and `export_lm_coreml.py --bits N` as
   before.

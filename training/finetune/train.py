@@ -578,7 +578,9 @@ def main() -> None:
             )
         optimizer.step()
         global_step += 1
-        if palettizer is not None and global_step % args.palettize_refit == 0:
+        # On the last step too: its validation and the snapped export then share one fit.
+        if palettizer is not None and (global_step % args.palettize_refit == 0
+                                       or global_step == total_steps):
             palettizer.refit()
 
         # Summed on the GPU, as the losses are: checked and logged without a sync per step.
