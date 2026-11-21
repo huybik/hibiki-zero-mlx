@@ -163,10 +163,10 @@ def parse_args() -> argparse.Namespace:
         help="Refit the palettization tables every this many steps; must divide --save-every.",
     )
     parser.add_argument(
-        "--sampled-text", type=float, default=0.0,
-        help="Probability that a word piece the main transformer reads is the model's own sampled "
-        "word piece there (scheduled sampling of the words); the timing and the targets stay "
-        "the dataset's.",
+        "--sampled-text", type=float, default=0.0, metavar="P",
+        help="Probability that a word piece the main transformer reads is the word piece the model "
+        "sampled there, where it sampled one (scheduled sampling of the words); the timing and "
+        "the targets stay the dataset's.",
     )
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
