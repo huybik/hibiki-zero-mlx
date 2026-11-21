@@ -50,7 +50,9 @@ update micro-batch: teacher forward (no grad) ─┐
 - **One forward of the policy** serves both terms (`update_loss`). `--reward-coef 0` is
   distillation alone: no π_old pass and no ratio statistics; the rewards still run in the workers,
   for the log's `final_bleu`. Both terms on (the defaults, `--kl-coef 1`) keep a GRPO run near its
-  teacher.
+  teacher; a teacher needs a positive `--kl-coef`. With both, `--kl-coef` sets their balance, and
+  centered advantages (in BLEU points) weigh the GRPO term differently from z-scored ones, so the
+  coefficient does not carry over between the two.
 - **The teacher must read the policy's codebooks**: it scores the rollout, which holds only the
   policy's. The 16-codebook heads student fits the 3B; the 8-codebook depformer student does not
   (the 3B reads 16 a stream).
@@ -58,7 +60,16 @@ update micro-batch: teacher forward (no grad) ─┐
   policy's and AdamW's (`HostOffload`): generation gets the GPU memory a GRPO run gives it. Each
   update micro-batch then runs the teacher's compiled training forward without a backward.
 - Its delays may differ from the policy's (a heads student's codebook j at min(j, 8), the 3B's at
-  2): only tokens both score count, as in SFT's distillation.
+  2): a token is kept only where both forwards score it (`scored_delays`: each codebook's larger
+  delay, for `kept_tokens` and the forward lengths alike).
+- **The caveat**: unlike SFT's distillation, whose context is the dataset's, the teacher here reads
+  the policy's samples, and where it delays a codebook less than the policy, at text frame t it
+  reads frames of that codebook the policy sampled after t, conditioned on its text at t (the heads
+  student's codebooks 3–15: frames t − min(j, 8) … t − 3). Its text distribution can then lean
+  towards the policy's own choice, so the KL reads low and partly rewards the policy's samples
+  (the review of PR #149, on tiny random models: codebook 8 at frame 17 moved the teacher's text
+  logits at frame 20 by up to 0.26). How much the real teacher reads text from the fine codebooks
+  is unmeasured; `grpo_profile.py` bounds it (`teacher_leak`, [Running](#running)).
 - The train log adds `kl_text` and `kl_audio`, the mean unweighted KL a token; the ratio
   statistics appear only with the GRPO term.
 - **`--advantage centered`** (Dr. GRPO, arXiv 2503.20783): each reward frame's advantage is
@@ -70,8 +81,13 @@ update micro-batch: teacher forward (no grad) ─┐
 ## Running
 
 Profile first ([CONTEXT](../../CONTEXT.md#essential-invariants)): `grpo_profile.py` takes the same
-`--teacher-weight`, `--reward-coef` and `--kl-coef` and times the update with the teacher's forward,
-the teacher parked while generating. Sizes then go to `grpo_launch.sh`'s ARGS, after the 3B's:
+`--teacher-weight`, `--reward-coef`, `--kl-coef` and `--advantage` and times the update with the
+teacher's forward, the teacher parked while generating. With a teacher it also reports
+`teacher_leak`: in up to 8 groups, the teacher's mean logprob of rollout 0's text tokens with its
+own leaky codebooks minus with rollout 1's (same source). That includes the cost of mixing two
+rollouts' codebooks, so it bounds the caveat's bias from above: well under the start's `kl_text`
+(the micro-batch entries), go ahead; near it, look closer before the run. Sizes then go to
+`grpo_launch.sh`'s ARGS, after the 3B's:
 
 ```bash
 .venv/bin/python -m training.finetune.grpo_profile --out-dir runs/opd_profile \
@@ -95,8 +111,8 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
 ([sft-evaluation](sft-evaluation.md#recording-results)).
 
 1. **On-policy distillation of the heads student**, distillation alone (`--reward-coef 0`), from
-   the heads run's promoted checkpoint when it stops, teacher GRPO update 1,400. First a rate
-   probe: 200 updates each at 1e-6 (the student GRPO's rate), 3e-6 and 1e-5 (the off-policy
+   the heads run's promoted checkpoint when it stops, teacher GRPO update 1,400. First the profile
+   and its `teacher_leak` bound ([Design](#design)'s caveat), then a rate probe: 200 updates each at 1e-6 (the student GRPO's rate), 3e-6 and 1e-5 (the off-policy
    anneal's peak), judged by the KL's fall and the evaluation at 200. Then the run, stopped by
    the user's rule (two validations without a new best). It wins if, per GPU-hour, its selecting
    mean chrF beats the off-policy run's continuation, with the length ratio falling and no later
@@ -123,6 +139,10 @@ palettization is stage 6 of the plan.
     reach only the policy.
   - `update_loss` with the GRPO term alone equals main's `grpo_loss` bit for bit; with both terms
     it is their weighted sum; `--reward-coef 0` needs no π_old.
+  - The review (2026-11-21, its own tiny models): plain GRPO's loss, gradients and log lines are
+    main's; no NaN reaches the loss or the gradient through either argument of `token_kl`, in eval
+    mode and in the training forward run eagerly; `HostOffload` dedupes the teacher's storages
+    and moshi's LM has no buffers to move.
   - `rewards.normalize` z-scored equals main's; centered is r − mean; an even frame gets 0.
 - Not yet run on CUDA: the teacher's compiled forward in the update loop, its memory, and the
   offload with a teacher. The profile above is the first CUDA run.

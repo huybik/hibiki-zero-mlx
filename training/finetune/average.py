@@ -7,9 +7,9 @@
 Every input must hold the same tensors in the same shapes and dtypes, on the same tokenizer (its
 `text_tokenizer` metadata). Floating tensors are averaged in float32 and written in the inputs'
 dtype; any other tensor must be equal in all of them. The output keeps the first input's metadata
-and names its inputs (`averaged_from`). Score it as any checkpoint: `validate.py` on the box, or
-`gate.py` after `convert_mlx.py` on the Mac. Tensors are read one at a time, so memory holds the
-output and one input tensor.
+and names its inputs (`averaged_from`). Score it as any checkpoint: `eval.py` with the run's
+--eval-pairs and --seed on the box, or `gate.py` after `convert_mlx.py` on the Mac. Tensors are
+read one at a time, so memory holds the output and one input tensor.
 """
 from __future__ import annotations
 

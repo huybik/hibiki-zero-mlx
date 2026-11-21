@@ -167,8 +167,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--optimizer-state", type=Path,
-        help="A pair's trainer_stepNNNNNN.pt whose model is --model-weight: a new run continues "
-        "its AdamW moments, as a decay branched from a constant run does.",
+        help="A pair's trainer_stepNNNNNN.pt whose model is --model-weight, beside it under its "
+        "own name: a new run continues its AdamW moments, as a decay branched from a constant run does.",
     )
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.95)
@@ -228,8 +228,9 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--warmup-fraction must be in [0, 1)")
     if args.teacher_config is not None and args.teacher_weight is None:
         raise ValueError("--teacher-config needs --teacher-weight")
-    if args.optimizer_state is not None:
-        args.optimizer_state = require_file(args.optimizer_state, "optimizer state")
+    if args.schedule == "decay" and (args.optimizer_state is None or args.warmup_fraction):
+        raise ValueError("--schedule decay continues a constant run's pair: it needs "
+                         "--optimizer-state and --warmup-fraction 0")
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
@@ -274,6 +275,9 @@ def main() -> None:
 
     out_dir = resolve_repo_path(args.out_dir)
     resuming, best_state = open_run(out_dir)
+    if args.optimizer_state is not None:  # read only at the start: a resume has its own pairs
+        args.optimizer_state = (resolve_repo_path(args.optimizer_state) if resuming
+                                else require_file(args.optimizer_state, "optimizer state"))
 
     checkpoint_info = common.load_checkpoint_info(args)
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student

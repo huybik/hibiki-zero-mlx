@@ -169,13 +169,17 @@ at the same compute, Hägele et al. 2024, arXiv 2405.18392):
 
 - `--schedule constant`: the warmup, then the peak until the run stops (by `--epochs` or
   `--max-steps`, or stopped by hand when validation stops improving).
-- `--schedule decay` with `--optimizer-state`: a new run from one of the constant run's pairs, its
-  model as `--model-weight` and its `trainer_stepNNNNNN.pt` as `--optimizer-state`
-  (`checkpoints.load_optimizer_state`: the pair's model must be that file, a hard link counts;
-  AdamW's moments continue, the run's own betas and weight decay apply). The rate falls from the
-  peak to 0 as 1 − sqrt of the progress over the run's `--max-steps`; pass `--warmup-fraction 0`,
-  since the moments need none. Give it a new `--seed` for fresh streams, as `student_dep10_anneal`
-  had. Several decays can branch from different pairs of one constant run.
+- `--schedule decay`: a new run from one of the constant run's pairs, its model as
+  `--model-weight` and its `trainer_stepNNNNNN.pt` as `--optimizer-state`
+  (`checkpoints.load_optimizer_state`: the trainer file names its model, which must sit beside it
+  under that name and be `--model-weight`, a hard link counting; AdamW's moments continue, the
+  run's own betas and weight decay apply). It requires `--optimizer-state` and
+  `--warmup-fraction 0`, since the moments need no warmup. The rate falls from the peak to 0 as
+  1 − sqrt of the progress over the run's `--max-steps`. The pair is read only at the start, but a
+  running constant run prunes it (`--keep-checkpoints`): hard-link both files, under their own
+  names, into a directory of their own (`weights/<run>_stepNNNNNN/`) and branch from there. Give the
+  decay a new `--seed` for fresh streams, as `student_dep10_anneal` had. Several decays can branch
+  from different pairs of one constant run.
 - **Averaging** (`python -m training.finetune.average --out OUT WEIGHT...`): the mean of a run's
   checkpoints (the same tensors and tokenizer; floats averaged in fp32), with the first one's
   metadata and `averaged_from`. Score it as any checkpoint: `eval.py` with the run's

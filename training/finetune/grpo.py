@@ -30,7 +30,10 @@ With --teacher-weight, the update also distils a frozen teacher on-policy: the r
 KL(policy || teacher) of every kept token's next-token distribution on the policy's own rollouts
 (the teacher scores the same rollout), weighted as the GRPO term is, times --kl-coef. That term
 alone (--reward-coef 0) is on-policy distillation (Agarwal et al. 2024, arXiv 2306.13649): no π_old
-pass, the rewards only logged. Both together keep a GRPO run near its teacher. --advantage
+pass, the rewards only logged. Both together keep a GRPO run near its teacher. A teacher that
+delays a codebook less than the policy reads, at a text token, frames of it the policy sampled after
+that token (a heads student's codebooks 3-15), so its distribution may lean towards the policy's
+own choice; grpo_profile.py bounds that. --advantage
 centered drops the group normalization's division by the std (Dr. GRPO, arXiv 2503.20783), so a
 frame where the rollouts barely differ gets a small advantage, not ±1.
 
@@ -345,11 +348,10 @@ def _start_reward_worker(tokenizer_path: str, trainer: int) -> None:
 
 
 def _group_rewards(
-    tokens: np.ndarray, sentences: list[rewards.Sentence], alpha: float, advantage: str
+    tokens: np.ndarray, sentences: list[rewards.Sentence], alpha: float, scale: bool
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return rewards.group_advantages(tokens, sentences, int(_TOKENIZER.eos_id()),
-                                    int(_TOKENIZER.pad_id()), _TOKENIZER.decode, alpha,
-                                    scale=advantage == "zscore")
+                                    int(_TOKENIZER.pad_id()), _TOKENIZER.decode, alpha, scale=scale)
 
 
 def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
@@ -554,12 +556,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--epsilon", type=float, default=EPSILON, help="Ratio clip.")
     parser.add_argument("--alpha", type=float, default=rewards.ALPHA, help="Final BLEU's share.")
-    parser.add_argument(
-        "--advantage", choices=ADVANTAGES, default="zscore",
-        help="zscore: each reward frame's (r - mean) / std over the group (the paper's); centered: "
-        "r - mean, in BLEU points (Dr. GRPO).",
-    )
-    add_teacher_args(parser)
+    add_objective_args(parser)
     parser.add_argument("--text-weight", type=float, default=TEXT_WEIGHT, help="c_0 against 1 per codebook.")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE)
     parser.add_argument("--top-k", type=int, default=TOP_K)
@@ -579,8 +576,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def add_teacher_args(parser: argparse.ArgumentParser) -> None:
-    """On-policy distillation's options, the profiler's too."""
+def add_objective_args(parser: argparse.ArgumentParser) -> None:
+    """The loss terms' options, the profiler's too."""
+    parser.add_argument(
+        "--advantage", choices=ADVANTAGES, default="zscore",
+        help="zscore: each reward frame's (r - mean) / std over the group (the paper's); centered: "
+        "r - mean, in BLEU points (Dr. GRPO).",
+    )
     parser.add_argument(
         "--teacher-weight", type=Path,
         help="Also distil this frozen model on the policy's rollouts (reverse KL); it must read the policy's codebooks.",
@@ -602,14 +604,42 @@ def add_room_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="The noise bank's parent (augment.fetch_bank's root).")
 
 
-def validate_teacher_args(args: argparse.Namespace) -> None:
-    """The loss terms' options (`add_teacher_args`), the profiler's too."""
+def validate_objective_args(args: argparse.Namespace) -> None:
+    """The loss terms' options (`add_objective_args`), the profiler's too."""
     if args.reward_coef < 0 or args.kl_coef < 0:
         raise ValueError("--reward-coef and --kl-coef must not be negative")
     if args.teacher_weight is None and (args.teacher_config is not None or not args.reward_coef):
         raise ValueError("--teacher-config and --reward-coef 0 need --teacher-weight")
-    if not args.reward_coef and not args.kl_coef:
-        raise ValueError("--reward-coef and --kl-coef are both 0: nothing to train")
+    if args.teacher_weight is not None and not args.kl_coef:
+        raise ValueError("--teacher-weight needs a positive --kl-coef")
+
+
+def teacher_info(args: argparse.Namespace, codebooks: int) -> Any | None:
+    """The checkpoint info of --teacher-weight, or None. The teacher scores the policy's own
+    rollouts, which hold only the policy's `codebooks`, so it must read as many."""
+    if args.teacher_weight is None:
+        return None
+    info = common.teacher_checkpoint_info(args)
+    if int(info.lm_config["dep_q"]) != codebooks:
+        raise ValueError(f"the teacher must read the policy's {codebooks} codebooks a stream")
+    return info
+
+
+def teacher_forward(teacher: Any, info: Any, codes: torch.Tensor) -> Any:
+    """The teacher's training forward on a micro-batch's rollouts, without gradients."""
+    condition = common.batch_condition_tensors(teacher, info.model_type, len(codes))
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        return teacher(codes, condition_tensors=condition)
+
+
+def scored_delays(lm: Any, teacher: Any | None) -> torch.Tensor:
+    """The text and target codebooks' delays `kept_tokens` and `forward_frames` count by: the
+    policy's, or with a teacher each the larger of the two, so a token is kept only where both
+    score it and a micro-batch's longer rollouts change no kept token of either forward."""
+    delays = torch.tensor(lm.delays[: 1 + lm.dep_q])
+    if teacher is not None:
+        delays = torch.maximum(delays, torch.tensor(teacher.delays[: 1 + lm.dep_q]))
+    return delays
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -619,7 +649,7 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     if args.group < 2:
         raise ValueError("--group needs at least 2 rollouts to normalize")
-    validate_teacher_args(args)
+    validate_objective_args(args)
     if args.save_every % args.tau or args.eval_every % args.save_every or args.updates % args.tau:
         raise ValueError(
             "--save-every and --updates must be multiples of --tau, --eval-every of --save-every"
@@ -648,16 +678,13 @@ def main() -> None:
     args.config_path = require_file(args.config_path, "config")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
-    teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
     out_dir = resolve_repo_path(args.out_dir)
     resuming, best_state = open_run(out_dir)
 
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    # The teacher scores the policy's own rollouts, which hold only the policy's codebooks.
-    if teacher_info is not None and int(teacher_info.lm_config["dep_q"]) != codebooks:
-        raise ValueError(f"the teacher must read the policy's {codebooks} codebooks a stream")
+    teach = teacher_info(args, codebooks)
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     mimi = info.get_mimi(device=device)
     dataset = stream_dataset(args, info, rows, layout, codebooks, mimi)
@@ -688,16 +715,16 @@ def main() -> None:
     stream_weights = torch.ones(1 + lm.dep_q, device=device)
     stream_weights[0] = args.text_weight
     teacher = None
-    if teacher_info is not None:
+    if teach is not None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
-        teacher = common.load_teacher(teacher_info, args.teacher_weight, device, codebooks)
+        teacher = common.load_teacher(teach, args.teacher_weight, device, codebooks)
     objective = Objective(stream_weights, args.epsilon, args.temperature, args.reward_coef,
-                          args.kl_coef if teacher is not None else 0.0)
+                          args.kl_coef)
     # Parked on the host beside the policy while a window generates.
     teacher_params = [] if teacher is None else list(teacher.parameters())
     silence_frame = dataset.silence[:codebooks, -1].long().to(device)
     tail = round(args.tail_seconds * streams.FRAME_RATE)
-    delays = torch.tensor(lm.delays[: 1 + lm.dep_q])  # the text and target codebooks'
+    delays = scored_delays(lm, teacher)
 
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
@@ -780,7 +807,7 @@ def main() -> None:
                 sentences = stream_sentences(stream, rows, tokenizer)
                 tokens = rollouts[offset : offset + args.group, 0, : int(lengths[first_row])]
                 jobs[group] = pool.submit(_group_rewards, tokens.numpy().copy(), sentences,
-                                          args.alpha, args.advantage)
+                                          args.alpha, args.advantage == "zscore")
 
         generator = common.bf16_copy(info, lm, device)
         moving = time.time()
@@ -837,12 +864,7 @@ def main() -> None:
                 forward_total += frames * (end - start)
                 batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
                 condition = common.batch_condition_tensors(lm, info.model_type, end - start)
-                teacher_output = None
-                if teacher is not None:
-                    teacher_condition = common.batch_condition_tensors(
-                        teacher, teacher_info.model_type, end - start)
-                    with torch.no_grad(), autocast:
-                        teacher_output = teacher(batch, condition_tensors=teacher_condition)
+                teacher_output = None if teacher is None else teacher_forward(teacher, teach, batch)
                 with autocast:
                     loss, stats = update_loss(
                         lm, batch, condition, keep[start:end, :, :frames].to(device), objective,
