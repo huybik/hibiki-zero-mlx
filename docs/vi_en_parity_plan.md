@@ -567,10 +567,11 @@ Vietnamese text cannot keep up with its speech.
     from the start (2026-11-14), adopted only if it wins at real time.
 
     Both after GRPO (user, 2026-11-13). Quantising (stage 6) runs on the Mac (user, 2026-11-13).
-11. The student's newer recipes (stage 5.5, 2026-11-21), each after the run before it: on-policy
-    distillation of the heads student once its run stops, then its GRPO with and without the
-    teacher's term, centered advantages as an ablation; training against the phone's
-    palettization (stage 6.4) last
+11. The student's newer recipes (stage 5.5, 2026-11-21), each after the run before it. First the
+    new code is validated end to end on the box, after the heads run and before any GRPO (user,
+    2026-11-21: "after the heads run and before grpo"); then on-policy distillation of the heads
+    student, then its GRPO with and without the teacher's term, centered advantages as an
+    ablation; training against the phone's palettization (stage 6.4) last
     ([on-policy-distillation](agent-memory/on-policy-distillation.md#experiments)).
 
 ## Risks
