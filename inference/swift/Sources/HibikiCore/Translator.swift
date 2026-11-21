@@ -31,7 +31,9 @@ import MLX
 /// frame by about a third, for up to (2k - 2) × 80 ms more latency (the chunk's first frame
 /// waits for the rest, and the step may take k × 80 ms).
 ///
-/// Mimi may encode on the GPU instead (`encoderDevice`), when the GPU is free: with a Core ML LM.
+/// Beside a Core ML LM on the Neural Engine, which leaves the GPU idle, Mimi encodes on the GPU
+/// instead (`encoderDevice`): on the A15 the frame then holds ~53 ms for 10 minutes, where the
+/// CPU's encode slows the frame past 70 ms.
 ///
 /// One thread drives both devices: mlx-swift holds a global lock while a thread evaluates, so
 /// MLX work on two threads would take turns.
@@ -89,6 +91,8 @@ public final class Translator {
 
     public let config: HibikiConfig
     public let vocabulary: Vocabulary
+    /// Where Mimi encodes.
+    public let encoderDevice: DeviceType
     let mimi: Mimi
     let decoder: NeuralDecoder
     let generator: Generator
@@ -104,10 +108,11 @@ public final class Translator {
 
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
     /// app's memory limit; `lmComputeUnits` is where a Core ML LM runs, `encoderDevice` where
-    /// Mimi encodes.
+    /// Mimi encodes: by default the GPU beside a Core ML LM on the Neural Engine, the CPU beside
+    /// any other LM.
     public init(
         directory: URL, cacheLimit: Int? = nil,
-        lmComputeUnits: MLComputeUnits = .cpuAndNeuralEngine, encoderDevice: DeviceType = .cpu
+        lmComputeUnits: MLComputeUnits = .cpuAndNeuralEngine, encoderDevice: DeviceType? = nil
     ) throws {
         // MLX closes a Metal command buffer every 20 ops or 40 MB on phones (40–50 on Macs)
         // and blocks `asyncEval` while more than 10 are in flight, so the LM step (hundreds of
@@ -136,9 +141,12 @@ public final class Translator {
                 "\(vocabulary.pieces.count) pieces for text_card \(config.textCard)")
         }
         textDecoder = TextDecoder(vocabulary)
+        self.encoderDevice =
+            encoderDevice
+            ?? (config.lmCoreML && lmComputeUnits == .cpuAndNeuralEngine ? .gpu : .cpu)
         mimi = try Mimi.load(
             url: file(config.mimiName ?? "mimi-pytorch-e351c8d8@125.safetensors"),
-            numCodebooks: config.nQ - config.depQ, device: Device(encoderDevice))
+            numCodebooks: config.nQ - config.depQ, device: Device(self.encoderDevice))
         decoder = try NeuralDecoder(url: file("mimi-decoder.mlmodelc"))
         if decoder.codebooks != config.depQ {
             throw HibikiError.unsupported(
