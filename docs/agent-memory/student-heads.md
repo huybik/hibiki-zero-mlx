@@ -1,9 +1,9 @@
 # Heads student
 
-Read when touching `training/student/heads.py` or `restart.sh student-heads`, or training, scoring or
+Read when touching `training/student/heads.py`, `training/student/palettize.py` or `restart.sh student-heads`, or training, scoring or
 deciding on the phone student with parallel codebook heads. Back to [CONTEXT.md](../../CONTEXT.md) ·
 [Design](#design) · [Codebooks](#codebooks) · [Speed](#speed) ([inference](#inference),
-[training](#training)) · [Runs](#runs). The cut, training and
+[training](#training)) · [Palettization](#palettization) · [Runs](#runs). The cut, training and
 distillation it shares with the depformer student are in [phone-student](phone-student.md).
 
 ## Design
@@ -111,6 +111,55 @@ Profiled over 10 updates, 705 ms against 570: matmuls +71 ms, mostly the teacher
 now runs all 16 steps (cut to the student's 8 before, [distillation](phone-student.md#distillation));
 elementwise and copies +33 ms spread over many kernels (bf16 adds +17). The card stays 99% busy at
 its 600 W cap; the one lever left is the FP8 teacher, declined ([sft-speed](sft-speed.md#by-gpu)).
+
+## Palettization
+
+Training against the Core ML export's palettization (plan stage 6.4, 2026-11-21;
+`training/student/palettize.py`, `train.py --palettize-bits`): on the Neural Engine the 6-bit
+palettized LM agrees with bf16's argmax on 92.1% of tokens against fp16's 94.6%
+([lm-npu](lm-npu.md#precision)), and 4 bits (~490 MB) would free bandwidth.
+
+- **What the export does** (measured 2026-11-21 on a layer used as `lm_step` uses it, `x @ W.T`):
+  every trunk and head weight over 2^20 elements gets one k-means table of 2^N entries per 16 output
+  channels, rows of the torch weight (tables [rows / 16, 1, 2^N, 1]); `convert_mlx.py` keeps the
+  rows in order (the heads are concatenated, 2,048 rows each). A weight whose every 16 rows already
+  hold at most 2^N values comes back exact: the export's k-means (scikit-learn here, kmeans1d where
+  installed) finds them.
+- **`fit`**: entries spread as the density's cube root over 1,024 equal-count bins, then 10 Lloyd
+  iterations on each group's sorted values (an entry's values one contiguous range, means from
+  float64 prefix sums: deterministic on a device), an empty entry moved to the worst-fit value of
+  another entry's range. On 8 random groups each of the update-16,000 student's `in_proj`,
+  `linear_out`, `text_linear` and heads, its error is 0.94–1.07 times the export's own k-means at
+  6 bits and 0.93–0.97 at 4: snapping alone exports within ~7% of the plain export's error.
+- **Training** (`--palettize-bits N`, `--palettize-refit` 100): the forward and backward run on
+  the weights snapped to their tables; the gradients there update the full-precision weights
+  (straight-through), restored before AdamW steps. Validation scores the palettized model. The
+  tables are refit on the full-precision weights at the start, every `--palettize-refit` steps
+  (which must divide `--save-every`) and after the last step, so a resume and the snap tool (on
+  CUDA, as training fits) get the tables the run had. Saved checkpoints hold the full-precision
+  weights. The swap copies each palettized weight twice a step (~50 GB of memory traffic on the
+  student, an estimated 6–9% of a step) and keeps a 4.2 GB full-precision copy.
+- **Export**: `python -m training.student.palettize --weight CKPT --bits N --out SNAPPED` snaps a
+  checkpoint onto its tables; then `convert_mlx.py` (bf16) and `export_lm_coreml.py --bits N` as
+  before.
+- **The export round trip** (2026-11-21, the Mac, `student_heads14_cb16`'s best at 112,000): the
+  snap tool on the CPU (66 s, one thread), `convert_mlx.py` (bf16; the heads need a worktree's
+  `PYTHONPATH`, [mlx-inference](mlx-inference.md)) and `export_lm_coreml.py --bits 6` (compiled
+  both models). Every palettized weight, read back from the palettized programs before compiling
+  (`constexpr_lut_to_dense`: `lut[row // 16, 0, index, 0]`), equals the fp16 weight it replaced bit
+  for bit, 64 values in every 16 rows: the trunk's 57 (each layer's four projections and
+  `text_linear`) and the 16 heads. So a snapped student exports without loss.
+- **Validated on the box** with the rest of the new code, after the heads run and before any GRPO
+  ([on-policy-distillation](on-policy-distillation.md#experiments), item 0): a short
+  `--palettize-bits 6` run through a validation, a kill and a resume, then the snap tool on CUDA.
+- **The run** (planned): from the final student, distilled from its own bf16 weights
+  (`--teacher-weight` the same checkpoint, `--teacher-config` its config), `--schedule decay` from
+  a low peak over a few thousand updates, at 6 and at 4 bits. Judged by the Precision table's
+  agreement on the Neural Engine and the full-set chrF against the plain export and against
+  snapping without training.
+- Checked on the CPU (tiny modules, scratch script): at most 2^N values a group, snapping
+  idempotent, the full-precision weights restored exactly after a step, the gradient equal to that
+  of a model holding the snapped weights.
 
 ## Runs
 

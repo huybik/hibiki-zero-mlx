@@ -38,7 +38,8 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   ([README](../../inference/swift/README.md#core-ml-lm)). `--bits` palettizes weights over 1M
   elements by k-means, one table of 2^N entries per 16 output channels: trunk 1,958 → 738 MB, heads 134
   → 51 MB. It takes ~15 min on one core. Compute plan of the 6-bit models: all 892 trunk ops and
-  all 18 head ops on the Neural Engine.
+  all 18 head ops on the Neural Engine. A student trained against these tables is snapped onto
+  them first ([student-heads](student-heads.md#palettization)).
 
 ## Runtime
 
@@ -164,4 +165,5 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
   scalar work at full clock (logit conversion and sampling over 48k + 16 × 2,048 values,
   allocated per frame) that vDSP and reused buffers could shrink.
 - Fewer bytes on the Neural Engine may free bandwidth for the encode and the LM: 4-bit
-  palettization (~490 MB), after a quality gate.
+  palettization (~490 MB), after a quality gate; training against the tables is built
+  ([student-heads](student-heads.md#palettization)).
