@@ -167,10 +167,10 @@ def manifest(args: argparse.Namespace, cache_dir: Path) -> dict[str, Any]:
             durable(partial)
             partial.replace(path)
     found = read_json(path)
-    if any(found.get(key) != value for key, value in needed.items()):
-        raise RuntimeError(f"{path} holds {found}, this run needs {needed}")
     if missing := {"seed", "fraction", "direction", "dataset"} - found.keys():
         raise RuntimeError(f"{path} lacks {sorted(missing)}: fetch into a new --out-dir")
+    if any(found.get(key) != value for key, value in needed.items()):
+        raise RuntimeError(f"{path} holds {found}, this run needs {needed}")
     return found
 
 
@@ -251,8 +251,10 @@ def fetch_one(
 def fetch(args: argparse.Namespace) -> None:
     cache_dir = require_dir(args.cache_dir, "clean cache split")
     if args.dataset_dir is not None:
-        # Resolved, so the manifest names the copy one way however it is typed.
+        # Resolved, so the manifest names the copy one way however it is typed; its split is
+        # checked before the first fetch writes the manifest.
         args.dataset_dir = require_dir(args.dataset_dir, "dataset copy").resolve()
+        require_dir(args.dataset_dir / "data" / cache_dir.name, "dataset copy's split")
     (args.out_dir / SOURCES).mkdir(parents=True, exist_ok=True)
     shards = todo(cache_dir, args.out_dir)
     print(f"{len(shards)} shards to fetch for {args.out_dir}", flush=True)
@@ -408,7 +410,7 @@ def load(
     column = source_column(direction)
     if column not in table.column_names:
         raise RuntimeError(
-            f"{source_path} holds {table.column_names}, not {column}: fetch it again"
+            f"{source_path} holds {table.column_names}, not {column}: delete it, then fetch again"
         )
     if (
         payload["source"] != source

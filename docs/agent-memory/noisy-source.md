@@ -236,6 +236,19 @@ came out identical to the first encode's.
   0.45 in amplitude. The 36 `cv27` shards written before the switch (`cv27-00000`–`00035`) stay:
   over every selected row of them (Mac, av 15.1.0 and soxr 1.1.0, PR #52's review), the old
   decode has PyAV's sample count and, after soxr, lies under 1e-6 from it.
+- Either direction (the RTX PRO 6000 box, 2026-11-21, PR #153's validation):
+  - `en-vi`, `cv27-00016` from `--dataset-dir` at seed 1 and two Libriheavy shards: the clean
+    rows came out byte-identical; only rows 17–32 before `en_frames` changed; the selection and
+    the conditions match the seeded draws on every row.
+  - 48 rows a shard re-encoded with no conditions match the cached codes on codebook 0 for
+    99.68–99.95% of frames, and on all 16 for 84–96% (the TF32 near-ties of the
+    [cache build](cache-build.md#cuda)).
+  - Seeds 1 and 0 selected 2,745 of the same 7,412 rows (37%; independent draws give ~36%),
+    none of them under the same conditions.
+  - `vi-en` from the Hub, against the published noisy shards made before the change: the same
+    selection and conditions, codebook 0 on 100% and all 16 on 99.97–99.99%.
+  - The default `--batch-seconds` 640 ran out of memory under a 15% memory cap of the 96 GB card
+    (14.25 GiB); 320 fits.
 
 ## Evaluation
 
