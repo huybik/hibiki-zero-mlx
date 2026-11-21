@@ -26,10 +26,12 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
   1. its test sets on its best (`test_heads.sh`);
   2. the box validation of PRs #149–#151 (user: "after the heads run and before grpo"): short runs
      with no Hub sync, under `runs/val_*`, logs in `/workspace/logs/val/`;
-  3. the student's experiments (on-policy distillation; GRPO with and without the teacher's term,
-     the latter the GRPO after distillation; centered advantages), then the 3B's (scheduled
-     sampling, anchored GRPO). The 3B's start, the two-way SFT's final model, is
-     `weights/twoway_final.safetensors` (fetched 2026-11-21).
+  3. the student's on-policy stage, aimed at the best phone model (user, 2026-11-21: "i'm not
+     asking for plain grpo, i'm asking for best outcome"): 200-update probes from the distilled
+     best (distillation alone at three rates; both terms, z-scored and centered; plain GRPO as the
+     control only), one run of the winner, then the 6-bit palettization finish; then the 3B's
+     experiments (scheduled sampling, anchored GRPO). The 3B's start, the two-way SFT's final
+     model, is `weights/twoway_final.safetensors` (fetched 2026-11-21, sha256 checked).
   The box stays for these; it is destroyed only after them and their uploads.
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
