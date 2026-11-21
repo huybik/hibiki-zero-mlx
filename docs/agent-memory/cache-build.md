@@ -294,6 +294,6 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
 - A speed lever, a device or a model goes here, for every builder at once; read both Speed
   sections first, since each device's levers were measured there and do not carry over (MLX runs
   one clip per forward, CUDA large padded batches).
-- Check a change against rows already built: the old build's shards (`cache_codes`' on
-  `/Volumes/data/datasets/en-vi-grounded-v2`, the tranche's on the Hub) must come out equal, or
+- Check a change against rows already built: the old build's shards (`cache_codes`'
+  `en-vi-grounded-v2/` and the tranche's, both on the Hub) must come out equal, or
   equal but for near-ties on another device. Compare speeds interleaved on the same rows.
