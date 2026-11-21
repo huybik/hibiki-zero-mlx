@@ -49,8 +49,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 ## The Mac run
 
 `/Volumes/data/datasets/envi_mac/envi_mac.py` (outside the repo, as the box's `envi_rest.py` was),
-run from this branch's worktree with the conda Python, under `caffeinate -is`; log `run.log` beside
-it. Started 2026-11-21 17:23 UTC+7.
+run from this branch's worktree with the conda Python, under `caffeinate -is`, by `run.sh` beside
+it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `run.log`. Started
+2026-11-21 17:23 UTC+7.
 
 - Jobs in order, in batches of 20 shards: `tranche` (each tranche `en-vi` shard's noisy copy),
   `noisy` (the 527 `en_speech` `en-vi` shards the boxes built), `build` (the other 1,305:
@@ -67,6 +68,11 @@ it. Started 2026-11-21 17:23 UTC+7.
   order (the box's `envi_rest.py` also goes top down; reverse its lists first).
 - `touch /Volumes/data/datasets/envi_mac/pause` holds new batches off the GPU (downloads go on);
   delete it to go on. A batch already on the GPU finishes first.
+- To stop it, kill `run.sh`, then `envi_mac.py`, then its GPU step, which outlives its parent
+  (`pkill -f 'training.prep.(noisy_cache|cache_codes)'`): a restart reuses `work/` and would race a
+  leftover step. Its Hub client has a 300 s timeout (`huggingface_hub`'s own waits forever).
+- GigaSpeech 2's noisy copies hold ~10 GB more memory than the others: the next shard's clips
+  (~5 GB decoded) are queued before the current one encodes.
 - The noisy fetch reads the batch's local copy (`--dataset-dir`), so each batch's `manifest.json`
   names its `work/` folder; the shards carry the settings that matter.
 - `huggingface_hub`'s downloads drop on this Mac every 10–40 MB ("peer closed connection") and

@@ -113,7 +113,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   post-norm layers) and omniASR-CTC-300M-v2 (a LayerNorm per convolution, pre-norm layers). On 12
   VieNeu clips omniASR's Viterbi columns kept every argmax of transformers' CPU float32 (2,356
   frames, log-probabilities within 2.5e-3), and the base layout the old port's exact output
-  (2026-11-21). omniASR runs ~110× alone, the base model ~270×. It builds the same rows as mlx-audio
+  (2026-11-21); `--half-ctc` is unchecked on omniASR. omniASR runs ~110× alone, the base ~270×. It builds the same rows as mlx-audio
   0.6.1's eager wav2vec2 but for float near-ties (2 of ~3,200 rows had a word 1–2 frames apart),
   and that model on 252 rows rejects the same rows as PyTorch CPU float32 and gives the same spans
   on 6,180 of 6,181 words. Float16 GroupNorm statistics must be computed in float32 (not cast to
