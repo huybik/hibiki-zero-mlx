@@ -216,3 +216,7 @@ sampling temperature) all run it, so a change to it needs all three checked
 - **Palettization** (`--palettize-bits`, a heads student): the step runs on the weights snapped
   to the Core ML export's k-means tables, the straight-through estimator
   ([student-heads](student-heads.md#palettization)).
+- **Scheduled sampling** (`--sampled-inputs P`, not with a teacher): a forward without gradients
+  samples every token, a share P of the model's own input tokens become those samples, and the
+  loss scores the dataset's tokens on that mixed context (`compute_batch_losses(..., inputs=)`);
+  the train log adds `inputs_changed` ([exposure-bias](exposure-bias.md#scheduled-sampling)).

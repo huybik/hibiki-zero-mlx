@@ -78,7 +78,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
     the same gets 0; `--advantage centered` keeps only r − mean (Dr. GRPO,
     [on-policy-distillation](on-policy-distillation.md#design)).
 - **A teacher** (`--teacher-weight`) adds the reverse KL to it on the rollouts, or alone with
-  `--reward-coef 0`: [on-policy-distillation](on-policy-distillation.md).
+  `--reward-coef 0`: [on-policy-distillation](on-policy-distillation.md); the 3B's own start as
+  a KL anchor: [exposure-bias](exposure-bias.md#anchored-grpo).
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
   free-running pass on `EVAL_PAIRS`' eight sets, both directions of the two-way model GRPO runs
   on (user, 2026-11-10): FLEURS dev both ways, `en-vi-val` clean and noisy, `en-vi-val-en`. The
