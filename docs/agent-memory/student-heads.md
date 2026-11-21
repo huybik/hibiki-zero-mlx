@@ -3,7 +3,7 @@
 Read when touching `training/student/heads.py` or `restart.sh student-heads`, or training, scoring or
 deciding on the phone student with parallel codebook heads. Back to [CONTEXT.md](../../CONTEXT.md) ·
 [Design](#design) · [Codebooks](#codebooks) · [Speed](#speed) ([inference](#inference),
-[training](#training)) · [Runs](#runs). The cut, training and
+[training](#training)) · [Runs](#runs) · [Tests](#tests). The cut, training and
 distillation it shares with the depformer student are in [phone-student](phone-student.md).
 
 ## Design
@@ -183,3 +183,32 @@ free-running at seed 47, batches of 64.
   The final update (190,126, 2026-11-21 18:42 UTC) scored 36.92 selecting, so the run's best stays
   176,000 (`best_step176000`, hard-linked on the box as `weights/student_heads14_cb16_best.safetensors`,
   the on-policy stage's start); its seven-set mean was 37.72 (`en-vi-val-en` cv27 +2.0).
+
+## Tests
+
+`student_heads14_cb16`'s best (176,000, before any on-policy stage) on the test sets, as the
+depformer student's shipped update 2,000 (after GRPO) was scored
+([student-grpo](student-grpo.md#tests)): `/workspace/test_heads.sh`, seed 43, batch 64, text only,
+LAAL (the box, 2026-11-21, 6 min; outputs in `runs/student_heads14_cb16/test_best176000/`).
+OneVoice's clips aren't on the box: 11 sets. Every set passes health.
+
+| Set | chrF | BLEU | EO (s) | LAAL (s) | Length | Empty | Update 2,000 chrF | EO (s) | LAAL (s) | Length |
+|---|---|---|---|---|---|---|---|---|---|---|
+| fleurs-vi/test | 36.78 | 8.21 | 1.7 | 2.8 | 1.32 | 0/857 | 35.65 | 0.88 | 2.32 | 1.25 |
+| fleurs-en/test | 34.75 | 14.41 | 1.5 | 2.5 | 1.06 | 0/641 | 34.53 | 1.18 | 2.12 | 1.07 |
+| multimed-vi/select | 34.99 | 8.17 | 4.6 | 3.2 | 1.56 | 0/1718 | 34.91 | 2.22 | 2.40 | 1.25 |
+| multimed-vi/final | 34.94 | 8.31 | 4.6 | 3.2 | 1.55 | 1/1719 | 35.18 | 2.24 | 2.43 | 1.25 |
+| giga-heldout/test | 61.64 | 28.82 | 3.9 | 2.4 | 1.84 | 0/1000 | 62.45 | 1.91 | 1.84 | 1.09 |
+| en-vi-val/cv27 | 38.78 | 12.79 | 2.6 | 2.6 | 1.34 | 0/180 | 38.72 | 1.75 | 2.26 | 1.18 |
+| en-vi-val/libriheavy | 42.32 | 16.06 | 3.1 | 3.1 | 1.16 | 0/180 | 42.91 | 1.91 | 2.59 | 1.04 |
+| en-vi-val-noisy/cv27 | 39.37 | 11.92 | 2.7 | 2.6 | 1.33 | 0/180 | 36.21 | 1.98 | 2.42 | 1.20 |
+| en-vi-val-noisy/libriheavy | 41.22 | 14.19 | 3.6 | 3.0 | 1.17 | 0/180 | 39.92 | 1.83 | 2.56 | 1.06 |
+| en-vi-val-en/cv27 | 32.51 | 14.18 | 0.8 | 1.8 | 1.16 | 1/180 | 32.28 | 0.64 | 1.80 | 1.15 |
+| en-vi-val-en/libriheavy | 41.27 | 20.29 | 2.0 | 2.4 | 1.05 | 0/180 | 41.50 | 1.61 | 2.20 | 1.06 |
+
+- chrF: mean 39.87 over the 11 sets against update 2,000's 39.48; the noisy sets +1.3 and +3.2,
+  `giga-heldout` −0.8, the rest within ±0.6.
+- Latency and length: later on every VI→EN set (End Offset +0.8 to +2.4 s, LAAL +0.3 to +0.8 s)
+  and longer (`giga-heldout` 1.84 against 1.09, BLEU 28.8 against 36.5; MultiMed-ST 1.56 against
+  1.25). EN→VI is close. GRPO taught the depformer student to stop; the on-policy stage has the
+  same job here.
