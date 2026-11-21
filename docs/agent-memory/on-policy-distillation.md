@@ -125,14 +125,9 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    the profile with the teacher (memory, the update's speed, `teacher_leak`); a short
    `--reward-coef 0` run through an evaluation, a kill and a resume; the same with both terms and
    `--advantage centered`; plain GRPO's first updates against main's log; a `train.py --schedule
-<<<<<<< HEAD
    constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints; a
-   short `train.py --sampled-text 0.1` run through a validation, a kill and a resume
-   ([exposure-bias](exposure-bias.md#checks)).
-=======
-   constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints. Done
-   2026-11-21, all passed ([Checks](#checks)).
->>>>>>> origin/train/palettize-qad
+   short `train.py --sampled-text 0.1` run through a validation, a kill and a resume. Done
+   2026-11-21, all passed ([Checks](#checks), [exposure-bias](exposure-bias.md#checks)).
 1. **The heads student's on-policy stage, aimed at the best phone model** (user, 2026-11-21: "i'm
    not asking for plain grpo, i'm asking for best outcome"): arms run only as probes, and only the
    winner runs long. From the heads run's promoted checkpoint, teacher GRPO update 1,400, one seed:
