@@ -125,9 +125,14 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    the profile with the teacher (memory, the update's speed, `teacher_leak`); a short
    `--reward-coef 0` run through an evaluation, a kill and a resume; the same with both terms and
    `--advantage centered`; plain GRPO's first updates against main's log; a `train.py --schedule
+<<<<<<< HEAD
    constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints; a
    short `train.py --sampled-text 0.1` run through a validation, a kill and a resume
    ([exposure-bias](exposure-bias.md#checks)).
+=======
+   constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints. Done
+   2026-11-21, all passed ([Checks](#checks)).
+>>>>>>> origin/train/palettize-qad
 1. **The heads student's on-policy stage, aimed at the best phone model** (user, 2026-11-21: "i'm
    not asking for plain grpo, i'm asking for best outcome"): arms run only as probes, and only the
    winner runs long. From the heads run's promoted checkpoint, teacher GRPO update 1,400, one seed:
@@ -165,5 +170,28 @@ palettization is stage 6 of the plan.
     mode and in the training forward run eagerly; `HostOffload` dedupes the teacher's storages
     and moshi's LM has no buffers to move.
   - `rewards.normalize` z-scored equals main's; centered is r − mean; an even frame gets 0.
-- Not yet run on CUDA: the teacher's compiled forward in the update loop, its memory, and the
-  offload with a teacher. The profile above is the first CUDA run.
+- **The box validation** (RTX PRO 6000, 2026-11-21, item 0; the heads student's best at 176,000
+  under GRPO update 1,400; `/workspace/val_stack.sh`, logs in `/workspace/logs/val/`). All passed:
+  - **Profile with the teacher** (`--reward-coef 0`): generating 512 rows of 1,200 frames 47.2 ms a
+    step (36.0 GiB peak), 1,024 rows 91.1 ms (69.6 GiB), so a first window's update takes 10.7 s
+    and 11.2 s; the update at micro-batch 2, 4 and 8 5.2, 5.0 and 5.8 s (31.0, 40.8 and 52.9 GiB).
+    The sizes: `--gen-frames 614400 --micro-batch 4`, ~16 s an update with generation. Plain
+    GRPO's profile picks the same (~14 s an update); its first update's ratio deviation is 0.
+  - **`teacher_leak`**: text 0.006 nats against `kl_text` 0.08, codebooks 0–2 at most 0.11; 3–15
+    1.1–2.2 against `kl_audio` 1.25–1.36. There the shift (up to 6 frames) misaligns each codebook
+    with the lower ones of its own frame, which costs the teacher more than any leak could, so
+    the bound says nothing for them. Text, which chrF and the gate score, is clean.
+  - **Plain GRPO, main against this branch** (6 updates, `--tau 2`, the same start and seed): the
+    same evaluation at 0, update 1's loss −10114.0 in both, grad norms 155,786 and 155,773; the
+    rollouts part from update 3 (the backward is not bit-exact); FLEURS dev 37.69 / 36.03 and
+    37.72 / 35.98 after 6.
+  - **Distillation alone** (1e-6, 40 updates, `--tau 10`): SIGKILLed right after the update-20
+    pair, mid-evaluation; the restart resumed at 20, evaluated 20 again and ran to 40, each update
+    logged once. `kl_audio` 2.10 → ~1.4 and `kl_text` 0.098 → ~0.08. FLEURS dev 38.12 / 36.10 →
+    39.31 / 36.50 (20) → 39.74 / 36.56 (40), VI→EN length ratio 1.31 → 1.23, but EN→VI's end
+    offset 1.4 → 1.9–2.0 s and its rows ending with EOS 193 → 88 of 392: the latency gate held both
+    checkpoints.
+  - **Both terms, `--advantage centered`** (20 updates, killed after the update-10 pair): resumed
+    and promoted at 10 and 20, FLEURS dev 38.62 / 36.39 at 20 with the start's end offsets. The
+    GRPO term's gradient (norm ~7e5) dwarfs distillation's (~3e4): `kl_audio` stayed 1.7–2.7.
+  - A student pair is 15 GB (model 5.1, AdamW's 10.2): short runs on this 300 GB disk keep one.

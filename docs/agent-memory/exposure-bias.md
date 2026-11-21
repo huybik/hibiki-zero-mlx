@@ -184,7 +184,15 @@ the next data will be trained with.
     a heads student, moves only predictions generation samples later; pass 1 on palettized
     weights restores the full-precision ones with finite gradients everywhere.
   - `validate_args` refuses a rate outside [0, 1) and a rate with `--teacher-weight`.
-- Not yet run on CUDA: the compiled training forward without gradients (no-grad variants of its
-  dynamic-shape graphs) and `forward_history`'s, the step's time and memory. The validation before the student's GRPO
-  ([on-policy-distillation](on-policy-distillation.md#experiments), item 0) adds a short
-  `--sampled-text 0.1` run through a validation, a kill and a resume.
+- On the box (RTX PRO 6000, 2026-11-21, [on-policy-distillation](on-policy-distillation.md#experiments)
+  item 0; the 3B's two-way final, 1e-6, seed 53, the same streams): the compiled forward without
+  gradients and `forward_history` run on CUDA.
+
+  | `--sampled-text` | s a step | Peak GPU memory | Text loss at 60 |
+  |---|---|---|---|
+  | 0 (60 steps) | 0.43 | 74.8 GB | 0.50 |
+  | 0.1 (120 steps) | 0.49 | 75.3 GB | 0.54 |
+
+  The 0.1 run was SIGKILLed during its validation at 60, right after the pair (a 3B pair is
+  37.5 GB); the restart resumed at 60, validated 60 again and ran to 120 (FLEURS dev 40.71 /
+  32.79), each step logged once.
