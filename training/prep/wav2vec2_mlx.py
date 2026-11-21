@@ -119,6 +119,7 @@ class Wav2Vec2CTC:
                 setattr(self, k, v)
             mx.eval(self._weights())
         self._forward_compiled = mx.compile(self._forward)
+        self._stream_compiled = mx.compile(lambda *args: self._stream(*args)[0])
 
     def _weights(self) -> dict:
         names = ("convs", "conv_norms", "projection_norm", "projection", "pos_conv", "encoder_norm", "layers", "head")
@@ -147,7 +148,10 @@ class Wav2Vec2CTC:
             hs = nn.gelu(hs)
         return hs
 
-    def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
+    def _stream(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> tuple[mx.array, mx.array]:
+        """The projected features plus the positional convolution [1, frames, dim] (the stable
+        layout's transformer input; the base layout's encoder LayerNorm comes next), and the mask
+        of the clip's own frames."""
         hs = self._features(pcm, first_frames)
         hs = mx.fast.layer_norm(hs, *self.projection_norm, self.eps) @ self.projection[0]
         hs = hs + self.projection[1]
@@ -157,7 +161,10 @@ class Wav2Vec2CTC:
         pos = mx.conv1d(hs, self.pos_conv[0], padding=self.pos_kernel // 2, groups=self.pos_groups)
         if self.pos_kernel % 2 == 0:  # an even kernel's padding gives one frame too many
             pos = pos[:, :-1]
-        hs = hs + nn.gelu(pos + self.pos_conv[1])
+        return hs + nn.gelu(pos + self.pos_conv[1]), valid
+
+    def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
+        hs, valid = self._stream(pcm, first_frames, frames)
         if not self.stable:
             hs = mx.fast.layer_norm(hs, *self.encoder_norm, self.eps)
         batch, steps, dim = hs.shape
@@ -189,10 +196,8 @@ class Wav2Vec2CTC:
         logits = (hs @ self.head[0] + self.head[1]).astype(mx.float32)
         return logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
-    def log_probs(self, pcm: np.ndarray) -> mx.array:
-        """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz float32 clip, normalized
-        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`).
-        Always returns float32, even when the model runs in float16."""
+    def _inputs(self, pcm: np.ndarray) -> tuple[tuple[mx.array, mx.array, mx.array], int]:
+        """A clip padded to its bucket as the compiled functions take it, and its frames."""
         if pcm.ndim != 1:
             raise ValueError(f"wav2vec2 needs a mono clip, got shape {pcm.shape}")
         first_frames, frames = _frames(len(pcm))
@@ -201,7 +206,17 @@ class Wav2Vec2CTC:
         padded = np.zeros(math.ceil(len(pcm) / BUCKET_SAMPLES) * BUCKET_SAMPLES, np.float32)
         padded[: len(pcm)] = pcm
         dtype = mx.float16 if self._half else mx.float32
-        out = self._forward_compiled(
-            mx.array(padded[None], dtype=dtype), mx.array(first_frames), mx.array(frames)
-        )
-        return out[0, :frames]  # always float32: _forward casts logits before logsumexp
+        return (mx.array(padded[None], dtype=dtype), mx.array(first_frames), mx.array(frames)), frames
+
+    def log_probs(self, pcm: np.ndarray) -> mx.array:
+        """Lazy CTC log-probabilities [frames, vocab] of one mono 16 kHz float32 clip, normalized
+        to zero mean and unit variance as the feature extractor does (`cache_rows.prepare`).
+        Always returns float32, even when the model runs in float16."""
+        inputs, frames = self._inputs(pcm)
+        return self._forward_compiled(*inputs)[0, :frames]  # float32: _forward casts before logsumexp
+
+    def stream(self, pcm: np.ndarray) -> tuple[mx.array, int]:
+        """Lazy `_stream` [1, bucket frames, dim] of one clip (prepared as `log_probs` takes it)
+        and the clip's frames: what `wav2vec2_coreml` runs the transformer on."""
+        inputs, frames = self._inputs(pcm)
+        return self._stream_compiled(*inputs), frames
