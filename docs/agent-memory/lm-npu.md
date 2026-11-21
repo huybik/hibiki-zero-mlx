@@ -57,9 +57,10 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   18.5 ms).
 - `--lm-units ane|gpu|cpu|all` (CLI, app) places the Core ML LM; `ane` by default. `bench` and
   the app log its time per frame (`lmTrunkMs`, `lmHeadsMs`, `lmHostMs`).
-- `--encoder cpu|gpu` (CLI, app) places Mimi's encoder; `cpu` by default. Beside the Core ML LM
-  the GPU is idle, so it can encode there ([swift-runtime](swift-runtime.md#mimi-on-the-gpu) for
-  its kernels, [Speed](#speed) for the phone).
+- Beside the Core ML LM on the Neural Engine, Mimi encodes on the GPU by default, which the LM
+  leaves idle: the frame holds flat where the CPU's encode slows it ([Speed](#speed); user,
+  2026-11-21). Beside any other LM it encodes on the CPU; `--encoder cpu|gpu` (CLI, app) chooses
+  ([swift-runtime](swift-runtime.md#mimi-on-the-gpu) for its kernels).
 
 ## Precision
 
@@ -156,10 +157,6 @@ own time per frame (trunk / heads / host) and the whole frame, medians:
 - A full-set gate of the Core ML LM against MLX 6 bits, in one runtime.
 - Long sessions: the fp16 drift past ~2 minutes of context. Untried: attention over the cache in
   chunks with their partial sums combined (more fp16 headroom per sum), or a shorter context.
-- Which device encodes by default beside the Core ML LM (user): the CPU is faster for the first
-  ~7 minutes from cool, the GPU holds ~53 ms flat for 10 minutes. Mimi stays in MLX fp32 either
-  way: its fp16 codes drift on the Neural Engine ([mimi-npu](mimi-npu.md#precision)) and on the
-  GPU ([swift-runtime](swift-runtime.md#mimi-on-the-gpu)).
 - With Mimi on the GPU, the LM's host part (5–6 ms there) is the next lever: about 1 ms of
   scalar work at full clock (logit conversion and sampling over 48k + 16 × 2,048 values,
   allocated per frame) that vDSP and reused buffers could shrink.

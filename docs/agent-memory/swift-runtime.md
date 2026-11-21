@@ -24,7 +24,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams over a `FrameLM`: `HibikiLM` in MLX on the GPU, or
     `NeuralLM.swift`, the heads student in Core ML, [lm-npu](lm-npu.md)), `Translator.swift` (k 80 ms frames per step: the LM on
-    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU (or the GPU, [below](#mimi-on-the-gpu)) and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
+    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU (the GPU beside a Core ML LM on the Neural Engine, [below](#mimi-on-the-gpu)) and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
     the SentencePiece `.model` protobuf directly, and `TextDecoder`) and `Audio.swift` (file reading, the WAV
     writer, and `Leveller`, the input level stage `Translator.step` runs before Mimi: Python's
     `hibiki_mlx/level.py`, equal sample for sample; `reset` starts its stream again;
@@ -176,8 +176,9 @@ and the step may take k × 80 ms.
 
 ## Mimi on the GPU
 
-`--encoder gpu` (CLI, app; `Translator(encoderDevice:)`) runs Mimi's encoder on the GPU, for a
-Core ML LM, which leaves the GPU idle ([lm-npu](lm-npu.md#speed) for the phone). Its codes equal
+Beside a Core ML LM on the Neural Engine, which leaves the GPU idle, Mimi encodes on the GPU by
+default; beside any other LM on the CPU (`--encoder cpu|gpu` in the CLI and app,
+`Translator(encoderDevice:)`, to choose; [lm-npu](lm-npu.md#speed) for the phone). Its codes equal
 the CPU's on every frame (760 frames, all 16 codebooks), and translations are byte-identical at
 1- and 2-frame steps (the Mac, seed 7, 2026-11-20).
 

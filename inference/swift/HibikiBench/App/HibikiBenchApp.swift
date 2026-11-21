@@ -4,7 +4,8 @@
 // tokenizer) and Documents/clip.wav (Documents/NAME with `--clip NAME`), runs `Bench` for `--minutes M` (default 10), `--chunk K`
 // frames per step (default 1), paced like a live microphone unless `--unpaced`, a Core ML LM on
 // `--lm-units ane|gpu|cpu|all` (default ane, the Neural Engine), Mimi encoding on
-// `--encoder cpu|gpu` (default cpu), and writes
+// `--encoder cpu|gpu` (default: the GPU beside a Core ML LM on the Neural Engine, else the CPU),
+// and writes
 // Documents/bench-<time>.{jsonl,wav,txt} as it goes. Progress and the summary also go to stdout, which `xcrun devicectl device process launch
 // --console` shows. Keep the app in the foreground: iOS refuses GPU work from the background, so
 // locking the phone ends the run.
@@ -65,8 +66,9 @@ final class BenchRun: ObservableObject {
             return
         }
         let encoderName = args.firstIndex(of: "--encoder")
-            .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "cpu"
-        guard let encoder = DeviceType(rawValue: encoderName) else {
+            .flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+        let encoder = encoderName.flatMap(DeviceType.init(rawValue:))
+        if let encoderName, encoder == nil {
             fail("error: --encoder \(encoderName): cpu or gpu")
             return
         }
@@ -92,7 +94,7 @@ final class BenchRun: ObservableObject {
 
     nonisolated private static func bench(
         model: String, clip: String, minutes: Double, chunk: Int, paced: Bool,
-        units: MLComputeUnits, encoder: DeviceType,
+        units: MLComputeUnits, encoder: DeviceType?,
         say: @escaping (String) -> Void
     ) {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -107,7 +109,7 @@ final class BenchRun: ObservableObject {
             say(
                 "running \(minutes) min, \(chunk) frames per step, "
                     + (paced ? "paced at 12.5 frames/s" : "unpaced")
-                    + ", Mimi encoding on the \(encoder.rawValue)")
+                    + ", Mimi encoding on the \(translator.encoderDevice.rawValue)")
             let stamp = ISO8601DateFormatter().string(from: Date())
                 .replacingOccurrences(of: ":", with: "-")
             let base = docs.appending(path: "bench-\(stamp)")

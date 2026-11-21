@@ -2,7 +2,7 @@
 
 Hibiki-Zero in MLX Swift, for macOS and iOS: the LM runs on the GPU, beside it Mimi encodes on
 the CPU and decodes on the Neural Engine. The parallel-heads student's LM runs as Core ML
-instead, on the Neural Engine by default ([below](#core-ml-lm)). It runs the same staged model directories as the
+instead, on the Neural Engine by default, with Mimi encoding on the GPU ([below](#core-ml-lm)). It runs the same staged model directories as the
 Python runtime (`convert_mlx.py` outputs, quantized as their `config.json` records, such as
 upstream's `weights/hibiki-zero-3b-q4`), plus Mimi's decoder as a compiled Core ML model
 (`mimi-decoder.mlmodelc`, made once per model directory, below). Fed the same tokens, it picks the same text token as the
@@ -64,11 +64,14 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki translate CLIP.wav \
 `translate` prints its own time per frame (main transformer, heads, host) beside the step's;
 `bench` prints their sum per minute and logs each in its `.jsonl`.
 
-`--encoder cpu|gpu` (CLI and app) places Mimi's encoder: the CPU by default. With a Core ML LM
-the GPU is free, and Mimi can encode there with the same codes
-([swift-runtime](../../docs/agent-memory/swift-runtime.md#mimi-on-the-gpu)). Its timing then
-shows `encode` as building and submitting the GPU's work and `encode wait` (`encodeWaitMs` in
-bench's `.jsonl`) as waiting for its codes after the decode.
+`--encoder cpu|gpu` (CLI and app) places Mimi's encoder. By default it encodes on the GPU beside
+a Core ML LM on the Neural Engine, which leaves the GPU free: the codes are the CPU's, and on an
+A15 the frame holds ~53 ms for 10 minutes where the CPU's encode slows it past 70
+([lm-npu](../../docs/agent-memory/lm-npu.md#speed),
+[swift-runtime](../../docs/agent-memory/swift-runtime.md#mimi-on-the-gpu)). Beside any other LM
+it encodes on the CPU. On the GPU its timing shows `encode` as building and submitting the GPU's
+work and `encode wait` (`encodeWaitMs` in bench's `.jsonl`) as waiting for its codes after the
+decode.
 
 ## iPhone
 
