@@ -161,4 +161,4 @@ free-running at seed 47, batches of 64.
   At 96,000: FLEURS 30.32 / 32.53 (31.43) against `student_dep10`'s 28.67 / 24.53 (26.60).
   At 112,000 (promoted, +1.8 selecting, VI→EN +2.7 to +5.9 on every set) it passed the depformer
   student after distillation on FLEURS (33.52 / 33.03 against 31.74 / 29.31) and `en-vi-val-en`
-  cv27 (30.12 / 28.76); within 0.3–2.4 on the other four.
+  cv27 (30.12 against 28.76), and was 0.3–2.4 behind on the other four.
