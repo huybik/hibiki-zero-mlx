@@ -48,7 +48,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   for the frames before it ([mlx-inference](mlx-inference.md#runtime)); `--model` defaults to
   `weights/hibiki-zero-3b-q4`); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
-  runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per
+  runs and writes `<base>.txt` (encoder device, summary, text) at the end. Both take `--chunk K` frames per
   step (default 1), as the iOS app does. `Audio.Writer` writes 16-bit WAV
   clipped like `sphn.write_wav` and rewrites the header after every step: a run killed at
   frame 153 left 153 samples and a valid 12.08 s WAV.

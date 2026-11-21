@@ -35,7 +35,7 @@ says (`lm_gen_config`). `translate` feeds the file as `inference/main.py` does (
 after the clip, then silence, stopping at the first text EOS after the source EOS) and writes
 `translations/<stem>_swift.{wav,txt}`. `bench` loops the clip for the given
 minutes, paced at 12.5 frames/s like a microphone unless `--unpaced`. It writes
-`translations/<stem>_bench.{jsonl,wav}` as it runs and `.txt` (summary and text) at the end
+`translations/<stem>_bench.{jsonl,wav}` as it runs and `.txt` (encoder device, summary and text) at the end
 (`--out BASE` to change), and prints frame times, lag, thermal state and memory per minute.
 
 Both take `--chunk K` (default 1): K frames per step, so Mimi encodes K frames per call. That

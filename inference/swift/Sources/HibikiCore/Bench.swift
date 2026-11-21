@@ -7,7 +7,7 @@ import os
 /// once its last frame is) or back to back, and records every step's stage times, lag, thermal
 /// state and memory. Results go to disk as they are made, so a run the system kills still
 /// leaves its data: `<base>.jsonl` (one sample per step), `<base>.wav` (the translation) and,
-/// at the end, `<base>.txt` (summary and text).
+/// at the end, `<base>.txt` (Mimi's encoder device, the summary and the text).
 public enum Bench {
     public struct Sample: Codable {
         /// The step's first frame, and its number of frames.
@@ -95,7 +95,8 @@ public enum Bench {
         let tail = try translator.flush()
         try wav.append(tail.pcm)
         text += tail.text
-        try (summary(samples) + "\n\n" + text + "\n").write(
+        let device = "Mimi encoding on the \(translator.encoderDevice.rawValue)"
+        try (device + "\n" + summary(samples) + "\n\n" + text + "\n").write(
             to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
         return samples
     }
