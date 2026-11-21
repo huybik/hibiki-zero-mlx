@@ -55,8 +55,9 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
   (resumes from the Hub's listings: builds the missing clean shards, makes every shard's noisy
   copy with PR #153's `mimi_cache_cuda` from `/workspace/wt-noisy` at `--seed 1` into
   `en-vi/en-vi-grounded-v2-noisy/`, uploads a batch while the next builds; holds its GPU steps while
-  `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac's MLX builder runs only the
-  English aligner, so it cannot build `en-vi` rows (their Vietnamese text needs `omniASR-CTC-300M-v2`).
+  `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac builds them instead, top down
+  ([envi-data](envi-data.md)): run `envi_rest.py` only bottom up beside it. `en-vi-val-en-noisy` is
+  built in `/workspace/hibiki-zero/data/eval/` (2026-11-21).
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
