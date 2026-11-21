@@ -33,6 +33,20 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
      experiments (scheduled sampling, anchored GRPO). The 3B's start, the two-way SFT's final
      model, is `weights/twoway_final.safetensors` (fetched 2026-11-21, sha256 checked).
   The box stays for these; it is destroyed only after them and their uploads.
+- **All of `en_speech`, both ways** (user, 2026-11-21: "let's build both vi - en and en - vi"). Round
+  4e's test (500 shards against 150: FLEURS −1.3) also changed the batch and the updates, and
+  spoke only for VI→EN, whose `en_speech` source is TTS; for EN→VI `en_speech` holds the only real
+  English speech (2,481 of 8,456 h). The `vi-en` caches of all 1,832 train shards, noisy and
+  clean, are on the Hub (78 GB each): a run fetches them. `en-vi` had round 4e's 500:
+  `/workspace/envi_rest.py` (box-only) builds the other 1,332 beside the heads run (started
+  2026-11-21 08:00 UTC; log `logs/envi_rest.log`). Sources by aria2c 25 at a time (321 GB,
+  ~16 MB/s), `cache_codes --direction en-vi` in `/workspace/envs/cache` (the `.venv` copied, with
+  free-threaded av 19.0.2) capped at 30% of the card, into `/workspace/en_vi_rest_out` (outside
+  the training caches, which runs started meanwhile read); each batch goes to the Hub's
+  `en-vi/en-vi-grounded-v2/train/`, is checked against its listing and deleted here. While
+  `logs/envi_rest.pause` exists no new build starts (for profiles). Profiled on 2 shards: 21.3 h
+  of audio built in 122 s, 98.7% of rows kept; the heads run went 0.69 → ~1.4 s an update while it
+  built.
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
