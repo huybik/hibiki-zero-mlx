@@ -212,8 +212,9 @@ GRPO on a distilled student, come later if needed.
    - On-policy distillation after the off-policy one: the student generates, the teacher scores
      the same rollouts, reverse KL (`grpo.py --teacher-weight --reward-coef 0`), against the
      off-policy run's continuation per GPU-hour.
-   - The heads student's GRPO with the teacher's KL as an anchor (`--kl-coef`), against plain
-     GRPO, which collapsed past update 2,200 on the depformer student.
+   - The heads student's GRPO with the teacher's KL as an anchor (`--kl-coef`): plain GRPO
+     collapsed past update 2,200 on the depformer student. Each arm is a short probe; only the
+     winner runs (user, 2026-11-21: "i'm asking for best outcome").
    - Centered advantages (`--advantage centered`, Dr. GRPO) against the paper's z-scored ones.
    - For the next SFT or distillation run: warmup-stable-decay (`train.py --schedule constant`,
      then `decay` from a chosen pair with `--optimizer-state`), and checkpoint averaging
@@ -570,9 +571,10 @@ Vietnamese text cannot keep up with its speech.
     Both after GRPO (user, 2026-11-13). Quantising (stage 6) runs on the Mac (user, 2026-11-13).
 11. The student's newer recipes (stage 5.5, 2026-11-21), each after the run before it. First the
     new code is validated end to end on the box, after the heads run and before any GRPO (user,
-    2026-11-21: "after the heads run and before grpo"); then on-policy distillation of the heads
-    student, then its GRPO with and without the teacher's term, centered advantages as an
-    ablation; training against the phone's palettization (stage 6.4) last
+    2026-11-21: "after the heads run and before grpo"); then 200-update probes from the heads
+    student's best (distillation alone at three rates, both terms z-scored and centered, plain
+    GRPO as the control), one run of the winner, and training against the phone's palettization
+    (stage 6.4) last
     ([on-policy-distillation](agent-memory/on-policy-distillation.md#experiments)).
 
 ## Risks
