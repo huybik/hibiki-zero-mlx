@@ -206,21 +206,15 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   to −10%); grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
   GPU busy, four CPU processes running wav2vec2 fell from 123x to 20x in total and Mimi slowed
   ~45%: the CPU and GPU share this laptop's power.
-- The `en-vi` build (omniASR-CTC-300M on the Vietnamese clip, 2026-11-21, interleaved on 500
-  `libriheavy-large` and 1,000 `cv27` rows, the GPU 98–99% busy, thermal state "fair"): 133–148×.
-  Alone on 250 of those rows, omniASR's CTC took 27 s in float32 (89–93×) and 20.5 s in float16
-  (~120×), Mimi 12.8 s (399×): CTC is ~68% of the GPU's time. With `half_ctc` the build ran 155–169×
-  (+12–15%); against float32, 5 of 496 and 8 of 989 rows moved text tokens (10 and 16 positions),
-  one more row kept, every audio code equal.
-- omniASR on the Neural Engine (2026-11-21, coremltools 9): its transformer (positional
-  convolution to the CTC head; the convolutional front end stays on the GPU) as a float16
-  mlprogram on `CPU_AND_NE` compiles in ~10 s a shape, 639 of 641 ops on the Neural Engine, and
-  ran 141× on the Vietnamese clips beside a GPU encode. It needs LayerNorm inputs scaled by 1/64
-  (activations reach 224; the sum of squares overflowed float16: 82% argmax agreement), and the
-  head split into the aligner's 95 columns plus a hand-written log-sum-exp (Core ML's was ~15 nats
-  off; a gather over the 10,288-token vocab ran on the CPU). Its argmax then agrees with float32 on
-  98.85% of frames (MLX float16: 99.90%). Not yet measured: its word timings and a whole build; a
-  19-shape `EnumeratedShapes` model was still compiling after ~10 minutes.
+- `en-vi` build (omniASR CTC on the Vietnamese clip; 2026-11-21, 500 `libriheavy-large` and 1,000
+  `cv27` rows, interleaved, GPU 98–99% busy): 133–148×. Alone on 250 rows: CTC 27 s fp32, 20.5 s
+  fp16; Mimi 12.8 s; so CTC is ~68% of the GPU. `half_ctc` built 155–169×, moving text tokens on
+  13 of 1,485 rows (audio codes equal).
+- omniASR's transformer on the Neural Engine (2026-11-21, coremltools 9; front end on the GPU):
+  fp16 mlprogram, ~10 s compile a shape, 639 of 641 ops on the NE, 141× beside a GPU encode. Needs
+  LayerNorm inputs ×1/64 (fp16 sum of squares overflowed) and a 95-column head with a hand-written
+  log-sum-exp (Core ML's was ~15 nats off). Argmax agrees with fp32 on 98.85% of frames (MLX fp16
+  99.90%); word timings, a whole build and a 19-shape model (>10 min compiling) are untested.
 - Neural Engine for wav2vec2-base (Core ML 9, checked 2026-10-27): not used. It computes in float16 only, which
   rules out Mimi and moves 0.7% of wav2vec2's word spans; compiling one fixed 10 s wav2vec2 shape
   ran over 27 min in `ANECompilerService` without finishing.
@@ -235,10 +229,8 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   busy and MLX's peak 2.2 GB; the tranche's MLX path it replaced, with its streaming fix, 219–223x.
   That path before the fix decoded whole shards and ran 130–136x in swap. At ~220x the 131
   GigaSpeech 2 archives left take ~30 h of the Mac (~14 min an archive).
-- PR #87 (closed 2026-11-09) batched a window's clips by padded length into one Mimi and one CTC
-  forward: interleaved against main, long rows 268–277× → 183–194×, GigaSpeech 2's short rows
-  230–239× → 217–225×. It waited for every lazy array before any alignment (losing the CTC/Mimi
-  overlap), re-normalized normalized clips, and peaked at 15.3 GB. The serial path stays.
+- Batching a window's clips into one Mimi and one CTC forward (PR #87, closed) was slower (long
+  rows 268–277× → 183–194×), lost the CTC/Mimi overlap and peaked at 15.3 GB: the serial path stays.
 - After the move onto this build (2026-11-09, 400 `libriheavy-dev` rows, the Mac otherwise in
   light use): 258–263x against the former builder's 265–270x, within the noise above.
 
