@@ -113,13 +113,12 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   post-norm layers) and omniASR-CTC-300M-v2 (a LayerNorm per convolution, pre-norm layers). On 12
   VieNeu clips omniASR's Viterbi columns kept every argmax of transformers' CPU float32 (2,356
   frames, log-probabilities within 2.5e-3), and the base layout the old port's exact output
-  (2026-11-21); `--half-ctc` is unchecked on omniASR. omniASR runs ~110× alone, the base ~270×. It builds the same rows as mlx-audio
-  0.6.1's eager wav2vec2 but for float near-ties (2 of ~3,200 rows had a word 1–2 frames apart),
-  and that model on 252 rows rejects the same rows as PyTorch CPU float32 and gives the same spans
-  on 6,180 of 6,181 words. Float16 GroupNorm statistics must be computed in float32 (not cast to
-  hs.dtype): `first_frames` can exceed 65504 for clips > 20.47 s, and sum-of-squares overflows
-  for clips > ~8 s; keeping stats in float32 fixes both while retaining ~81% of the float16
-  speed gain (355× vs 367× on a 13.6 s clip; float32 baseline 305×).
+  (2026-11-21); omniASR's speed and float16: [Speed on the Mac](#speed-on-the-mac). It builds the
+  same rows as mlx-audio 0.6.1's eager wav2vec2 but for float near-ties (2 of ~3,200 rows had a
+  word 1–2 frames apart), and that model on 252 rows rejects the same rows as PyTorch CPU float32
+  and gives the same spans on 6,180 of 6,181 words. In float16 the base layout's GroupNorm
+  statistics stay in float32 (`first_frames` passes 65504 past 20.47 s, the sum of squares
+  overflows past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×).
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (they align while
   the GPU encodes Mimi), and returns lazy Mimi codes. The *next* window's CTC is queued in
@@ -188,16 +187,15 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
 - It swings ±20% with the Mac's other load (busy browser tabs, other sessions' builds), so compare
   variants interleaved on the same rows, never one run after another, and check that no other job
   holds the GPU (`ioreg -r -d 1 -c IOAccelerator` "Device Utilization %").
-- Heat costs more: at macOS's thermal state "fair" the build ran 120–200x instead of ~240x, with
-  the builder alone on the GPU (2026-11-02). Read the state with `osascript -l JavaScript -e
-  'ObjC.import("Foundation"); $.NSProcessInfo.processInfo.thermalState'` (0 nominal, 1 fair,
-  2 serious, 3 critical); `pmset -g therm` reports nothing at "fair".
+- Heat: at thermal state "fair" the build ran 120–200x, not ~240x (2026-11-02). Read it with
+  `osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSProcessInfo.processInfo.thermalState'`
+  (0 nominal, 1 fair, 2 serious, 3 critical); `pmset -g therm` is silent at "fair".
 - Each lever counts (interleaved on the same rows, 2026-10-28: `cv27` 101x → 153x, `libriheavy`
   164x → 225x): the 16 GB MLX cache (4 GB 195x, 8 GB 209x; Mimi alone over real clips 275x at
   1 GB, 399x at 8 GB, ~500x on one repeated shape), wav2vec2 over buckets (raw lengths filled any
   cache with buffers never reused), and the Viterbi running while Mimi encodes (+5–11%). The
   footprint grows to ~19 GB.
-- Whole shard: `libriheavy-dev-00001` (1,738 rows, 13.2 h) built at 189x.
+- Whole shard: `libriheavy-dev-00001` (1,738 rows, 13.2 h): 189x; this build 258–263x.
 - Alone: Mimi ~500x on one shape (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length
   buckets: per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 240–290x (PyTorch CPU 86x, MPS
   193x), its 12 layers at ~3.9 TFLOP/s in float32. One clip per forward already fills the GPU.
@@ -231,8 +229,6 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   GigaSpeech 2 archives left take ~30 h of the Mac (~14 min an archive).
 - Batching a window's clips into one Mimi and one CTC forward (PR #87, closed) was slower (long
   rows 268–277× → 183–194×), lost the CTC/Mimi overlap and peaked at 15.3 GB: the serial path stays.
-- After the move onto this build (2026-11-09, 400 `libriheavy-dev` rows, the Mac otherwise in
-  light use): 258–263x against the former builder's 265–270x, within the noise above.
 
 ## Speed on CUDA
 
