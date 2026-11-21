@@ -41,6 +41,10 @@ folder table), file for file with `data/` at `2ce8777`, every sha256 equal (2026
         └─► upload step (4 GB commits; --follow every 10 min) ─► anquachdev/common-vi-en
 ```
 
+- On the Mac that folder holds only `README.md` and the step logs: its `data/` matched the Hub
+  file for file and was deleted (2026-11-21). Download it back there before running a step that
+  reads it ([environment](environment.md#storage)).
+
 - Columns: `id`, `en_audio`, `text_en`, `text_vi`, `speaker`, `en_duration_s`, `vi_audio`,
   `vi_duration_s`, `cross_lingual_timbre_matched`; pair rows use the same names.
 - The `cv27` and `libriheavy` rows are the `en_speech` corpus
