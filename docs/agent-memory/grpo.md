@@ -75,7 +75,10 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   - A boundary follows every 31 frames (2.5 s) of Vietnamese speech, plus one at T, because the
     cache has no Vietnamese words.
   - Normalization uses the group's unbiased std plus 1e-4, so a frame where every rollout scores
-    the same gets 0.
+    the same gets 0; `--advantage centered` keeps only r − mean (Dr. GRPO,
+    [on-policy-distillation](on-policy-distillation.md#design)).
+- **A teacher** (`--teacher-weight`) adds the reverse KL to it on the rollouts, or alone with
+  `--reward-coef 0`: [on-policy-distillation](on-policy-distillation.md).
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
   free-running pass on `EVAL_PAIRS`' eight sets, both directions of the two-way model GRPO runs
   on (user, 2026-11-10): FLEURS dev both ways, `en-vi-val` clean and noisy, `en-vi-val-en`. The

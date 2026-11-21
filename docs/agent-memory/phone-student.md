@@ -125,6 +125,10 @@ model's 0.664.
   improving"). Its best, 64,000 (Hub `student_dep10_anneal/best/`), is
   `weights/student_dep10_distilled.safetensors` on the box, [GRPO](#grpo)'s start. The heads
   student distils from the start ([Next](#next)).
+- **On-policy** (2026-11-21): after this off-policy distillation, the student can distil on its
+  own rollouts, the teacher scoring them, in the GRPO trainer
+  ([on-policy-distillation](on-policy-distillation.md)); the 16-codebook heads student only, since
+  the teacher reads the rollout's codebooks.
 
 ## GRPO
 

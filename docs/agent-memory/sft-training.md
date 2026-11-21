@@ -1,8 +1,8 @@
 # Full-model SFT training
 
 Read when touching `training/finetune/`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) · [Speed](#speed) ·
-[Objective](#objective)
+Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) ·
+[Schedules and averaging](#schedules-and-averaging) · [Speed](#speed) · [Objective](#objective)
 
 The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered in
 [sft-data-caches](sft-data-caches.md). The launcher, checkpoints and recovery are in
@@ -133,7 +133,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     dominates; at 2.25e-6 the movement per hour of data is 1.33 times round 4's (weight decay's
     too). It is applied in part (the full rule also scales 1 − β1, 1 − β2 and ε; the betas stay
     (0.9, 0.95)) and is untested on this model.
-  - Linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0.
+  - Linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0 (`--schedule`
+    cosine; the others are in [Schedules and averaging](#schedules-and-averaging)).
     The next run ends sooner, since the two-way run's last 12% of updates, the rate under 4% of
     its peak, gained nothing (user, 2026-11-13; [two-way](two-way.md#two-way-run)); `--max-steps`
     shortens the whole cosine, not only its tail. A floor held at the end instead would keep the
@@ -157,6 +158,29 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only
   (`train.py` has no device flag); the `training.prep` steps, the cache build included
   ([sft-data-caches](sft-data-caches.md)), run on the Mac.
+
+## Schedules and averaging
+
+Runs keep stopping before their cosine ends (`student_dep10` at ~100,000 of 190,126 updates; its
+first distillation at 32,000 with the rate still high, which then needed a separate anneal at
+1e-5 to lower its KL, [phone-student](phone-student.md#distillation)). Warmup-stable-decay (WSD)
+decides where to decay when the run is judged, not when it starts (2026-11-21; it matches cosine
+at the same compute, Hägele et al. 2024, arXiv 2405.18392):
+
+- `--schedule constant`: the warmup, then the peak until the run stops (by `--epochs` or
+  `--max-steps`, or stopped by hand when validation stops improving).
+- `--schedule decay` with `--optimizer-state`: a new run from one of the constant run's pairs, its
+  model as `--model-weight` and its `trainer_stepNNNNNN.pt` as `--optimizer-state`
+  (`checkpoints.load_optimizer_state`: the pair's model must be that file, a hard link counts;
+  AdamW's moments continue, the run's own betas and weight decay apply). The rate falls from the
+  peak to 0 as 1 − sqrt of the progress over the run's `--max-steps`; pass `--warmup-fraction 0`,
+  since the moments need none. Give it a new `--seed` for fresh streams, as `student_dep10_anneal`
+  had. Several decays can branch from different pairs of one constant run.
+- **Averaging** (`python -m training.finetune.average --out OUT WEIGHT...`): the mean of a run's
+  checkpoints (the same tensors and tokenizer; floats averaged in fp32), with the first one's
+  metadata and `averaged_from`. Score it as any checkpoint: `eval.py` with the run's
+  `--eval-pairs` and `--seed` on the box, or `gate.py` after `convert_mlx.py` on the Mac. Untried
+  here; free-running chrF moves ~±0.7 between evaluations, so compare on the same rows and seed.
 
 ## Speed
 
