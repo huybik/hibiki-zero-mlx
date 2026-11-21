@@ -208,6 +208,8 @@ OneVoice's clips aren't on the box: 11 sets. Every set passes health.
 
 - chrF: mean 39.87 over the 11 sets against update 2,000's 39.48; the noisy sets +1.3 and +3.2,
   `giga-heldout` −0.8, the rest within ±0.6.
+- The final update (190,126, `test_final190126`) scored a mean 39.81: within ±0.9 of the best on
+  every set but the noisy cv27 (−1.7), with the same lengths and latency. The best stays the start.
 - Latency and length: later on every VI→EN set (End Offset +0.8 to +2.4 s, LAAL +0.3 to +0.8 s)
   and longer (`giga-heldout` 1.84 against 1.09, BLEU 28.8 against 36.5; MultiMed-ST 1.56 against
   1.25). EN→VI is close. GRPO taught the depformer student to stop; the on-policy stage has the
