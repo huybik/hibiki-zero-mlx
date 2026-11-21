@@ -99,18 +99,18 @@ GPU encodes):
 
 | Step | Speed | Note |
 |---|---:|---|
-| `en-vi` build (`cache_codes --device mlx --ane-ctc`) | 293–309× | Mimi audio of both clips; omniASR's transformer on the Neural Engine; 150–161× all on the GPU |
+| `en-vi` build (`cache_codes --device mlx --ane-ctc`) | 259–309× | Mimi audio of both clips; omniASR's transformer on the Neural Engine; 150–161× all on the GPU |
 | noisy copy (`noisy_cache encode --device mlx`) | 330–400× | the re-encoded English; 2 decode workers, the conditions on the CPU |
 | download (curl, 4 at a time) | ~30–40 MB/s | |
 | upload (plain LFS, `HF_HUB_DISABLE_XET=1`) | ~20 MB/s | through Xet a 255 MB batch crawled at ~25 KB/s and stalled |
 
 So, with the Mac to itself: the tranche's copies ~15 h (~5,200 h re-encoded), the 527 `en_speech`
-copies ~5 h, the 1,305 builds ~60 h with their copies (~14,000 h of Mimi audio at ~300×, then
+copies ~5 h, the 1,305 builds ~65 h with their copies (~14,000 h of Mimi audio at ~260×, then
 ~4,500 h re-encoded): ~3.5 days, estimated from the first shards (the English hours from the parts'
 sizes). The RTX PRO 6000 beside the heads run built at ~970×: ~14 h for the build, ~3 h for the
 copies ([tranche-box](tranche-box.md#state)).
 
 The build was profiled after the run started (2026-11-21): omniASR's CTC took ~68% of the GPU.
-Its transformer now runs on the Neural Engine beside Mimi (`--ane-ctc`, ~1.9× fp32, text tokens a
+Its transformer now runs on the Neural Engine beside Mimi (`--ane-ctc`, 1.7–1.9× fp32, text tokens a
 frame apart as often as in float16; [cache-build](cache-build.md#speed-on-the-mac)). The profiling
 scripts are in `/Volumes/data/datasets/envi_mac/ane/`.

@@ -128,8 +128,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   returns lazy Mimi codes. The *next* window's CTC is queued in
   `_encode_start` before the previous window's Mimi codes are collected in `_encode_finish`, so
   the GPU runs CTC_N+1 and collects Mimi_N in an interleaved pipeline.
-  `mx.set_cache_limit(16 GB)` keeps freed buffers for the ~36 bucketed shapes
-  ([Speed on the Mac](#speed-on-the-mac)).
+  `mx.set_cache_limit(16 GB)` keeps freed buffers for the ~36 bucketed shapes ([speed](#speed-on-the-mac)).
 - Rejected after measurement (2026-10-27): upstream moshi_mlx 0.3.0 Mimi (no attention mask and
   tanh GELU, 30% of codes equal on whole clips); rustymimi 0.4.1 (an attention window of 251
   frames, not 250, so codes differ past 10 s); streaming or chunked encoding (differs past 250
@@ -211,8 +210,9 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   175–186×, `ane_ctc` 293–309×, the GPU 97–99% busy (`ANE_GPU_SHARE` 0.2; at 0 the GPU waited on
   long rows, 261×; 0.1 ran 278–301×). Against fp32, `ane_ctc` moved 21 of 43,092 text tokens a
   frame (fp16 17), kept one row fp32 rejects (0.515 vs 0.498, floor 0.5; fp16 too), audio codes
-  equal. In a thread it ran 207×: Core ML's predict holds the GIL, which `mx.async_eval` (blocked
-  half the build on the GPU's queue) needs. macOS caches the first load's compile (~1.5–3 min).
+  equal; on a whole `libriheavy-large` shard, 259× vs 154×, 12 of 63,507 tokens a frame apart. In a
+  thread it ran 207×: Core ML's predict holds the GIL, which `mx.async_eval` (blocked half the build
+  on the GPU's queue) needs. macOS caches the first load's compile (~1.5–3 min).
 - Neural Engine for Mimi and wav2vec2-base (Core ML 9, 2026-10-27): float16 only rules out Mimi and
   moved 0.7% of the base's word spans; one fixed 10 s shape compiled over 27 min without finishing.
 - Headroom (2026-10-29, at 240x): the GPU is 96–98% busy, and a row takes as long as its two
