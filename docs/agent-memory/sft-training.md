@@ -194,10 +194,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   (`text_timing.CAPACITY_REASONS`: more characters than CTC frames, more tokens than 80 ms
   frames) is fast or dense speech and sound: it trains at its cached delay, its source untimed
   (2.8% of GigaSpeech 2's `vi-en` rows, 2.0% of PhoAudiobook's; each pack lists them as
-  `capacity`). They miss by a hair (needed over available frames: median 1.05, 76% within 10%;
-  clips 2.3 s median), so the user kept them (2026-11-22: "yes keep them"); most of the CTC ones
-  came from a length check stricter than the CTC path, fixed in the build
-  ([cache-build](cache-build.md#rows)). Also left out: a row whose pair's target clip
+  `capacity`). The user kept them (2026-11-22: "yes keep them"). The CTC ones came from a length
+  check stricter than the CTC path, fixed in the build ([cache-build](cache-build.md#rows)):
+  re-aligned under it, 232 of 239 GigaSpeech 2 rows it had rejected align (median score 0.93, none
+  over the tail limit), 3 fail the score gate, 4 token timing. Untimed, a kept row can start
+  ahead of its source: by words spread evenly over the clip, 39% of the kept `vi-en` rows and 56%
+  of the `en-vi` ones (the English aligner's rejects) do, by ~0.3 s median, ~0.4% of all rows.
+  Also left out: a row whose pair's target clip
   is not its source's length within a frame (the delay's rounding), whose id then names another
   recording (none locally; a shard where every pair is so raises). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies

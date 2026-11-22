@@ -146,8 +146,12 @@ class AlignmentError(ValueError):
 
 # The rejections for the frame grids, not for speech and text disagreeing: more characters than
 # CTC frames, or more tokens than 80 ms frames (fast or dense speech). The other direction's row
-# of the same clips still trains (`streams.load_rows`); shards record each as its message.
-CAPACITY_REASONS = ("CTC emission is too short", "Aligned text needs")
+# of the same clips still trains (`streams.load_rows`). Shards record a rejection as its message,
+# and packs match these prefixes when they are built: rewording one needs a new PACK_VERSION and
+# keeps the old wording matched for the shards already built.
+EMISSION_TOO_SHORT = "CTC emission is too short"
+TEXT_OVER_FRAMES = "Aligned text needs"
+CAPACITY_REASONS = (EMISSION_TOO_SHORT, TEXT_OVER_FRAMES)
 
 
 @dataclass(frozen=True)
@@ -172,7 +176,7 @@ def _ctc_token_frames(
     # repeating the one before it a blank frame between them.
     needed = len(targets) + sum(a == b for a, b in zip(targets, targets[1:]))
     if time_steps < needed:
-        raise AlignmentError(f"CTC emission is too short: {time_steps} < {needed}")
+        raise AlignmentError(f"{EMISSION_TOO_SHORT}: {time_steps} < {needed}")
 
     symbols = np.full(states, blank_id, dtype=np.int64)
     symbols[1::2] = targets
@@ -316,7 +320,7 @@ def timed_sentencepiece_tokens(
     eos_frame = delay_frames + raw_target_frames
     if previous >= eos_frame:
         raise AlignmentError(
-            f"Aligned text needs {previous - delay_frames + 1} frames but target has "
+            f"{TEXT_OVER_FRAMES} {previous - delay_frames + 1} frames but target has "
             f"{raw_target_frames}"
         )
     tokens.append(int(eos_id))

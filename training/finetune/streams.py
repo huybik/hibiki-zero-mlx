@@ -44,7 +44,7 @@ later where a target token would otherwise come before the source it translates 
 The source's word times are the text track of the same row in the other direction's cache (its
 pair), so a run reads both directions' caches. A row whose pair is missing (the other build
 rejected it) is left out, unless it was rejected for fast speech: that row trains at its cached
-delay. So is a row whose Vietnamese runs on past its last word (`Aligner.max_tail_s`):
+delay. A row whose Vietnamese runs on past its last word (`Aligner.max_tail_s`) is left out too:
 
     EN   [I can't bear to go away from you]
     VI     [em không chịu nổi phải xa anh]        cached delay: ahead of the English
@@ -347,7 +347,6 @@ class _Pack:
     path: Path
     direction: str
     ids: list[str]
-    capacity: list[str]  # the rows its build rejected for the aligner's frame grids
     index: np.ndarray
     tokens: Tokens
     readable: np.ndarray  # rows whose text reads the same on the run's tokenizer
@@ -382,6 +381,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
     layout: Layout | None = None
     swapped: dict[str, np.ndarray] = {}  # by a shard's tokenizer: the slots the run's reassigned
     packs: list[_Pack] = []
+    untimed: dict[str, set[str]] = defaultdict(set)  # by direction: the ids its build could not time
     for shard_path in shard_paths + [path for path in pack(list(pair_dirs)) if path not in trained]:
         directory = _pack_dir(shard_path)
         meta = json.loads((directory / "pack.json").read_text())
@@ -404,18 +404,17 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
                 starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
                 readable = ~np.logical_or.reduceat(np.isin(text, swapped[on], kind="table"), starts)
         ids = json.loads((directory / "ids.json").read_text())
-        packs.append(_Pack(shard_path, meta["direction"], ids, meta["capacity"], index, tokens, readable))
+        packs.append(_Pack(shard_path, meta["direction"], ids, index, tokens, readable))
+        untimed[meta["direction"]].update(meta["capacity"])
     if layout is None:
         raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
     # By direction, each row id's first pack and row, as pack << 32 | row: a clean cache and its
     # noisy copy hold the same rows and text.
     found: dict[str, dict[str, int]] = defaultdict(dict)
-    untimed: dict[str, set[str]] = defaultdict(set)  # by direction: the ids its build could not time
     for number, shard in enumerate(packs):
         place = found[shard.direction]
         for row, row_id in enumerate(shard.ids):
             place.setdefault(row_id, number << 32 | row)
-        untimed[shard.direction].update(shard.capacity)
 
     rows: list[Row] = []
     dropped: dict[str, int] = defaultdict(int)
@@ -425,7 +424,10 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
         count = len(shard.index)
         source, target = shard.direction.split("-")
         place = found.get(f"{target}-{source}", {})
-        where = np.array([place.get(row_id, -1) for row_id in shard.ids], dtype=np.int64)
+        # The pair's pack << 32 | row; -1 none, -3 none as the other build could not time the row,
+        # -2 (below) a pair of another clip.
+        fast = untimed.get(f"{target}-{source}", set())
+        where = np.array([place.get(row_id, -3 if row_id in fast else -1) for row_id in shard.ids], dtype=np.int64)
         found_any = bool((where >= 0).any())
         floor = np.zeros(count, dtype=np.int64)
         source_tail = np.zeros(count, dtype=np.int64)
@@ -453,15 +455,11 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
             )
         # A row the other direction's aligner could not fit in its frame grids (fast or dense
         # speech) is sound: it trains at its cached delay, its source untimed.
-        fast = np.zeros(count, dtype=bool)
-        missing = np.nonzero(where == -1)[0]
-        other = untimed.get(f"{target}-{source}", set())
-        fast[missing] = [shard.ids[row] in other for row in missing.tolist()]
         keep = shard.readable.copy()
         dropped["reassigned"] += int((~keep).sum())
-        dropped["unpaired"] += int((keep & (where == -1) & ~fast).sum())
+        dropped["unpaired"] += int((keep & (where == -1)).sum())
         dropped["other clip"] += int((keep & (where == -2)).sum())
-        keep &= (where >= 0) | fast
+        keep &= (where >= 0) | (where == -3)
         target_tail = tails(shard.tokens.frames, np.diff(shard.tokens.offsets), shard.tokens.spans)
         for language, tail in ((target, target_tail), (source, source_tail)):
             limit = ALIGNERS[language].max_tail_s
@@ -477,7 +475,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
         dropped["long"] += int(over.sum())
         keep &= ~over
         later.append((start - delay)[keep & (start > delay)])
-        unfloored += int((keep & fast).sum())
+        unfloored += int((keep & (where == -3)).sum())
         if not keep.any():
             continue
         # A private mapping that keeps no file descriptor open (numpy's memmap holds one per

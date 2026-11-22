@@ -208,7 +208,9 @@ answers in 198.18.0.0/15.
   a time. The CDN links are signed for ~1 h, so they were resolved in ~6 GB batches.
   `hf download` got ~2 MB/s a file and stalled.
 - Disk: shards and packs of every training cache (~150 GB each) don't fit together on 300 GB.
-  Pack each cache with `streams --drop-shards` as soon as its download completes.
+  Pack each cache with `streams --drop-shards` as soon as its download completes. A new
+  `PACK_VERSION` (6 since 2026-11-22) refuses dropped packs of the old one: fetch and drop their
+  shards again, a folder at a time, as the disk holds a folder's shards beside the packs.
   - A fetch that checks only the files would fetch the dropped shards again, and a trainer
     starting meanwhile packs half-written ones. A shard whose `pack.json` is marked `dropped`
     counts as fetched.
