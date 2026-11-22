@@ -162,7 +162,9 @@ class Stream:
 # Libriheavy's text is its books' text, and some books were scanned badly: the reader says
 # "yesterday" where the text reads "ye^erday" or "suppHed". That text is a wrong target for
 # Vietnamese to English and was a wrong source for the Vietnamese translation, so `load_rows` leaves
-# such rows out of both directions (en-speech-corpus.md#quality-filters).
+# such rows out of both directions (en-speech-corpus.md#quality-filters). Packs record the rows it
+# matches when they are built: changing it needs a new PACK_VERSION, which on a box that dropped its
+# shards (`--drop-shards`) means fetching them all again.
 OCR_MARK = re.compile(
     r"[\^{}|\\<>~•¬©®¥■«»]"  # a glyph no reader says: ye^erday, dumb¬ founded, {348} (a page number)
     r"|(?<!\d)(?<!\d )[£¢](?!\s?\d)"  # a currency sign without an amount: o£ hie (not 12£, £5)

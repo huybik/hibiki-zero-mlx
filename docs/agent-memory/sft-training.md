@@ -207,7 +207,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%; the build now rejects these,
   [cache-build](cache-build.md#rows)); and a Libriheavy row whose English is OCR-damaged
   (`ocr_damaged`, 1.7%, [en-speech-corpus](en-speech-corpus.md#quality-filters); validation losses
-  do not compare across that drop, 2026-11-22). Its log line counts each reason.
+  do not compare across that drop, 2026-11-22). Its log line counts each and the later starts.
 - The Vietnamese tail gate: VieNeu sometimes keeps speaking past its text, which the alignment
   score does not see. On Common Voice shard 22's `en-vi` rows (8,019), 109 (1.4%) are loud over
   0.6 s from 1 s past the last token; a tail over 1.5 s flags 2.4% of rows and catches all 109,
