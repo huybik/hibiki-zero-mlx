@@ -17,7 +17,7 @@ bigger card.
 destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver
 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of disk). Its network sat behind a slow proxy
 ([Bring-up](#a-box-behind-a-slow-proxy)).
-- It runs `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
+- It ran `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
   started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
   ([student-heads](student-heads.md#runs)). `student_heads14` (8 codebooks) stopped for it at
   ~22,600; its 16,000 pair and best are on the Hub.
