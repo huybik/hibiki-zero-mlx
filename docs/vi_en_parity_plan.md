@@ -335,9 +335,10 @@ Vietnamese text cannot keep up with its speech.
    ([two-way](agent-memory/two-way.md#tokenizer-checks)); the Apple Silicon runtimes ship it with
    the model and assemble UTF-8 from byte pieces ([vi-tokenizer](agent-memory/vi-tokenizer.md#runtimes)).
 3. EN→VI caches (the build since 2026-11-10, one shard checked; [two-way](agent-memory/two-way.md)): `--direction en-vi`
-   on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2
-   (Apache-2.0, chosen over two CC-BY-NC Vietnamese CTCs; its 0.5 minimum rejects 98–99% of
-   wrong-text pairs and at most 0.5% of the right ones), the random delay on the Vietnamese
+   on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2 (Apache-2.0)
+   until 2026-11-22, then by wav2vec2-base-vietnamese-250h (non-commercial, for the Mac's speed;
+   its 0.55 minimum rejects ~99% of wrong-text pairs and none of the right ones on TTS rows;
+   [two-way](agent-memory/two-way.md#vietnamese-aligner)), the random delay on the Vietnamese
    target, target and source codebooks in the same `[33, T]` places. A stream holds one
    direction.
 4. Evaluation (built 2026-11-10): `fleurs-en` (FLEURS `en_us` speech with the `vi_vn`

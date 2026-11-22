@@ -1,28 +1,29 @@
-"""omniASR's transformer on the Neural Engine, beside Mimi on the GPU, for the MLX cache build
-(`cache_build.MLXModels`, `cache_codes --ane-ctc`): the `stable` layout's 24 layers, final norm,
-CTC head and log-softmax as a float16 Core ML program, run on the transformer input that
-`wav2vec2_mlx` computes on the GPU in float32 (`Wav2Vec2CTC.transformer_input`). Only the columns the Viterbi
-reads come back (`text_timing.vocab_columns`).
+"""The aligner's transformer on the Neural Engine, beside Mimi on the GPU, for the MLX cache build
+(`cache_build.MLXModels`, `cache_codes --ane-ctc`): the base layout's encoder LayerNorm, 12
+post-norm layers, CTC head and log-softmax as a float16 Core ML program, run on the transformer
+input that `wav2vec2_mlx` computes on the GPU in float32 (`Wav2Vec2CTC.transformer_input`). Only
+the columns the Viterbi reads come back (`text_timing.vocab_columns`).
 
-Four things keep float16 on the Neural Engine near float32 (against MLX float32 on 68,128 frames
-of Common Voice rows, 99.81% of argmaxes equal; MLX float16 99.90%):
-- the positional convolution stays on the GPU: its 8,192-term sums put a 3.5% error on every
-  frame in float16, 60% after the 24 layers;
+Four things keep float16 on the Neural Engine near float32 (the Vietnamese aligner against MLX
+float32 on 600 `en_speech` rows, 2026-11-22: 99.90-99.93% of argmaxes equal, 6 of 15,983 word
+starts a 12.5 Hz frame apart, scores within 0.009):
+- the positional convolution stays on the GPU: in float16 the 8,192-term sums of omniASR's (the
+  former aligner) put a 3.5% error on every frame, 60% after its 24 layers;
 - each LayerNorm's input is scaled by 1/64, or its sum of squares overflows float16 (LayerNorm is
   scale-invariant but for its epsilon, which float16 rounds up to 2^-24: 2.4e-4 at the model's
   scale against its 1e-5);
 - the log-softmax is written out (max, exp, sum, log): Core ML's `reduce_log_sum_exp` is ~15 nats
   off on the Neural Engine;
-- the head's columns are a 95-column linear layer, which the Neural Engine runs; a gather of
-  them would go to the CPU.
+- the head's columns are a linear layer of their own (95 for Vietnamese), which the Neural Engine
+  runs; a gather of them would go to the CPU.
 
 The program takes one shape per length bucket up to MAX_BUCKETS (enumerated shapes); a window's
 clips go in bucket order, since switching shapes costs the Neural Engine ~40% of its speed. It is
 converted once into weights/coreml/, under a name keyed by the aligner's revision, its columns,
 the shapes, `convert`'s source and the coremltools version, and the Neural Engine compiles it on
-its first load (~1.5–3 min), which macOS keeps for later loads of the same file. It runs in a
+its first load (~1.5 min), which macOS keeps for later loads of the same file. It runs in a
 process of its own, which exits with the build: Core ML's predict holds the GIL, which stalled the
-MLX calls that queue Mimi (the build ran 207x in a thread, 293x in a process).
+MLX calls that queue Mimi (with omniASR the build ran 207x in a thread, 293x in a process).
 """
 
 from __future__ import annotations
@@ -66,12 +67,12 @@ def convert(aligner: Aligner, files: Path, out: Path) -> None:
         )
 
     class Body(torch.nn.Module):
-        """HF Wav2Vec2ForCTC's pre-norm layers, final norm and head."""
+        """HF Wav2Vec2ForCTC's encoder LayerNorm, post-norm layers and head (the base layout)."""
 
         def __init__(self, model: torch.nn.Module, columns: list[int]):
             super().__init__()
             encoder = model.wav2vec2.encoder
-            self.layers, self.norm, self.head = encoder.layers, encoder.layer_norm, model.lm_head
+            self.norm, self.layers, self.head = encoder.layer_norm, encoder.layers, model.lm_head
             self.heads = model.config.num_attention_heads
             self.columns = torch.nn.Linear(self.head.in_features, len(columns))
             with torch.no_grad():
@@ -86,19 +87,19 @@ def convert(aligner: Aligner, files: Path, out: Path) -> None:
             def split(x: torch.Tensor) -> torch.Tensor:
                 return x.reshape(batch, steps, self.heads, head).transpose(1, 2)
 
+            hs = layer_norm(self.norm, hs)
             for layer in self.layers:
                 attention, ff = layer.attention, layer.feed_forward
-                x = layer_norm(layer.layer_norm, hs)
-                q, k, v = (split(attention.q_proj(x)) * head**-0.5, split(attention.k_proj(x)),
-                           split(attention.v_proj(x)))
+                q, k, v = (split(attention.q_proj(hs)) * head**-0.5, split(attention.k_proj(hs)),
+                           split(attention.v_proj(hs)))
                 weights = torch.softmax(q @ k.transpose(-1, -2) + bias, dim=-1)
-                hs = hs + attention.out_proj((weights @ v).transpose(1, 2).reshape(batch, steps, dim))
-                x = layer_norm(layer.final_layer_norm, hs)
-                hs = hs + ff.output_dense(torch.nn.functional.gelu(ff.intermediate_dense(x)))
-            x = layer_norm(self.norm, hs)
-            logits = self.head(x)
+                hs = layer_norm(layer.layer_norm,
+                                hs + attention.out_proj((weights @ v).transpose(1, 2).reshape(batch, steps, dim)))
+                hs = layer_norm(layer.final_layer_norm,
+                                hs + ff.output_dense(torch.nn.functional.gelu(ff.intermediate_dense(hs))))
+            logits = self.head(hs)
             top = logits.max(dim=-1, keepdim=True).values
-            return self.columns(x) - (top + torch.log(torch.exp(logits - top).sum(dim=-1, keepdim=True)))
+            return self.columns(hs) - (top + torch.log(torch.exp(logits - top).sum(dim=-1, keepdim=True)))
 
     model = Wav2Vec2ForCTC.from_pretrained(files, dtype=torch.float32).eval()
     body = Body(model, vocab_columns(aligner, files)).eval()
@@ -154,8 +155,8 @@ class Wav2Vec2ANE:
     max_samples = MAX_BUCKETS * BUCKET_SAMPLES  # the longest clip it takes
 
     def __init__(self, aligner: Aligner, files: Path):
-        if not json.loads((files / "config.json").read_text())["do_stable_layer_norm"]:
-            raise ValueError(f"{aligner.repo}: only the pre-norm (stable) layout runs on the Neural Engine")
+        if json.loads((files / "config.json").read_text())["do_stable_layer_norm"]:
+            raise ValueError(f"{aligner.repo}: only the base (post-norm) layout runs on the Neural Engine")
         program = json.dumps([vocab_columns(aligner, files), SHAPES, LN_SCALE, inspect.getsource(convert),
                               version("coremltools")])
         key = hashlib.sha256(program.encode()).hexdigest()[:8]

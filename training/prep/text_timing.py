@@ -42,8 +42,8 @@ def _spoken_english(text: str) -> str:
 
 
 def _spoken_vietnamese(text: str) -> str:
-    """One SentencePiece word group as omniASR spells it: lowercase NFC letters, numbers in
-    Vietnamese words. A letter its vocabulary lacks rejects the row at alignment."""
+    """One SentencePiece word group as the Vietnamese aligner spells it: lowercase NFC letters,
+    numbers in Vietnamese words. A letter outside `_VIETNAMESE` rejects the row at alignment."""
     from num2words import num2words
 
     text = re.sub(r"\d+", lambda match: f" {num2words(int(match.group(0)), lang='vi')} ", text)
@@ -73,8 +73,8 @@ class Aligner:
     # The letters `spoken` may write: the Viterbi reads only their columns, the blank's and the
     # delimiter's (`vocab_columns`), and a row with any other letter is rejected.
     alphabet: str
-    # The lowest mean posterior of the aligned characters a row may have. The scores are each
-    # model's own: omniASR spreads its mass over 10,288 characters of every script.
+    # The lowest mean posterior of the aligned characters a row may have, calibrated per model:
+    # each model's scores are its own (docs/agent-memory/two-way.md#vietnamese-aligner).
     min_score: float
 
 
@@ -82,17 +82,20 @@ ALIGNERS = {  # by the language of the text
     "en": Aligner("wav2vec2_ctc_word_v1", "facebook/wav2vec2-base-960h",
                   "22aad52d435eb6dbaf354bdad9b0da84ce7d6156", "<pad>", "|", _spoken_english,
                   "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5),
-    # A stock-transformers conversion of Meta's omniASR-CTC-300M-v2 (Apache-2.0).
-    "vi": Aligner("omniasr_ctc_word_v1", "aadel4/omniASR-CTC-300M-v2",
-                  "f2b3c39a62c061c27623c3f2d803294fbb954324", "<s>", " ", _spoken_vietnamese,
-                  _VIETNAMESE, 0.5),
+    # wav2vec2-base fine-tuned on 250 h of Vietnamese (non-commercial: its card says CC-BY-NC-4.0, the
+    # repo also ships a CC-BY-NC-SA-4.0 text), at the Hub bot's safetensors
+    # conversion (refs/pr/2), tensor for tensor its main branch's pytorch_model.bin. It replaced
+    # omniASR-CTC-300M-v2 (Apache-2.0; 325M parameters against 95M) for the Mac's build speed
+    # (user, 2026-11-22).
+    "vi": Aligner("wav2vec2_vi250h_ctc_word_v1", "nguyenvulebinh/wav2vec2-base-vietnamese-250h",
+                  "bb07d01e57ce84fa73c3e4dd423b663ec6b36753", "<pad>", "|", _spoken_vietnamese,
+                  _VIETNAMESE, 0.55),
 }
 
 
 def vocab_columns(aligner: Aligner, files: Path) -> list[int]:
     """The vocabulary ids of the blank, the delimiter and the alphabet, in that order: the columns
-    of the log-probabilities a device hands to `CTCWordAligner`. omniASR's other 10,193 would
-    make each clip's matrix 100 times larger on its way to the alignment workers."""
+    of the log-probabilities a device hands to `CTCWordAligner`, which reads no others."""
     import json
 
     vocab = json.loads((files / "vocab.json").read_text())

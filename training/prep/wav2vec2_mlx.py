@@ -1,20 +1,16 @@
-"""wav2vec2 CTC in MLX over length buckets, for word timing on Apple Silicon: either layout a
-`text_timing.ALIGNERS` model has, read from its config.json.
+"""wav2vec2 CTC in MLX over length buckets, for word timing on Apple Silicon: the base layout every
+`text_timing.ALIGNERS` model has (wav2vec2-base-960h, English; wav2vec2-base-vietnamese-250h):
+bias-free convolutions, GroupNorm on the first only, the encoder's layer norm before its post-norm
+layers.
 
-    base   (wav2vec2-base-960h, English): bias-free convolutions, GroupNorm on the first only, the
-           encoder's layer norm before its post-norm layers
-    stable (omniASR-CTC-300M-v2, Vietnamese): a LayerNorm after every convolution, pre-norm layers,
-           the encoder's layer norm after them
-
-Neither may see padding: the base model normalizes its first convolution over the whole input, and
-both mix frames in the positional convolution and the attention. This port pads each clip to a
+It may not see padding: the model normalizes its first convolution over the whole input, and
+mixes frames in the positional convolution and the attention. This port pads each clip to a
 multiple of BUCKET_SAMPLES and masks the padding instead: the first GroupNorm's statistics, the
 positional convolution's input and the attention keys see only the clip's own frames, and the
-unpadded convolutions and per-frame LayerNorms never reach it. A padded clip therefore gives the
-log-probabilities of the clip alone, up to float rounding, and the compiled forward sees at most
-~18 shapes (docs/agent-memory/mlx-inference.md#memory). Against mlx-audio 0.6.1's eager model the
-base layout builds the same cache rows but for float near-ties at CTC: on 2 of ~3,200 rows a word
-sits 1-2 frames apart.
+unpadded convolutions never reach it. A padded clip therefore gives the log-probabilities of the
+clip alone, up to float rounding, and the compiled forward sees at most ~18 shapes
+(docs/agent-memory/mlx-inference.md#memory). Against mlx-audio 0.6.1's eager model it builds the
+same cache rows but for float near-ties at CTC: on 2 of ~3,200 rows a word sits 1-2 frames apart.
 """
 
 from __future__ import annotations
@@ -57,8 +53,8 @@ class Wav2Vec2CTC:
             raise ValueError(f"{files}: its convolutions are not text_timing.CTC_CONVS")
         if cfg.get("add_adapter") or cfg.get("position_embeddings_type") not in (None, "conv"):
             raise ValueError(f"{files}: an adapter or non-convolutional positions are not ported")
-        self.stable = bool(cfg["do_stable_layer_norm"])
-        self.layer_norm_convs = cfg["feat_extract_norm"] == "layer"  # else GroupNorm on the first
+        if cfg["do_stable_layer_norm"] or cfg["feat_extract_norm"] != "group":
+            raise ValueError(f"{files}: only the base layout is ported (GroupNorm, post-norm layers)")
         self.heads = int(cfg["num_attention_heads"])
         self.pos_kernel = int(cfg["num_conv_pos_embeddings"])
         self.pos_groups = int(cfg["num_conv_pos_embedding_groups"])
@@ -69,8 +65,7 @@ class Wav2Vec2CTC:
             (_conv(w[f"{conv}.{i}.conv.weight"]), w.get(f"{conv}.{i}.conv.bias"))
             for i in range(len(KERNELS))
         ]
-        norms = range(len(KERNELS)) if self.layer_norm_convs else range(1)
-        self.conv_norms = [(w[f"{conv}.{i}.layer_norm.weight"], w[f"{conv}.{i}.layer_norm.bias"]) for i in norms]
+        self.group_norm = w[f"{conv}.0.layer_norm.weight"], w[f"{conv}.0.layer_norm.bias"]
         self.projection_norm = (
             w["feature_projection.layer_norm.weight"],
             w["feature_projection.layer_norm.bias"],
@@ -122,7 +117,7 @@ class Wav2Vec2CTC:
         self._transformer_input_compiled = mx.compile(lambda *args: self._transformer_input(*args)[0])
 
     def _weights(self) -> dict:
-        names = ("convs", "conv_norms", "projection_norm", "projection", "pos_conv", "encoder_norm", "layers", "head")
+        names = ("convs", "group_norm", "projection_norm", "projection", "pos_conv", "encoder_norm", "layers", "head")
         return {name: getattr(self, name) for name in names}
 
     def _features(self, pcm: mx.array, first_frames: mx.array) -> mx.array:
@@ -132,9 +127,7 @@ class Wav2Vec2CTC:
             hs = mx.conv1d(hs, weight, stride=stride)
             if bias is not None:
                 hs = hs + bias
-            if self.layer_norm_convs:  # each frame normalized alone
-                hs = mx.fast.layer_norm(hs, *self.conv_norms[i], self.eps)
-            elif i == 0:
+            if i == 0:
                 # GroupNorm with one group per channel, over the clip's own frames only.
                 own = (mx.arange(hs.shape[1]) < first_frames)[None, :, None]
                 # Statistics in float32: first_frames can exceed float16 max (65504) for clips
@@ -144,14 +137,13 @@ class Wav2Vec2CTC:
                 mean = mx.where(own, h_fp, 0).sum(axis=1, keepdims=True) / count
                 var = mx.where(own, mx.square(h_fp - mean), 0).sum(axis=1, keepdims=True) / count
                 scale = mx.rsqrt(var + self.eps).astype(hs.dtype)
-                hs = (hs - mean.astype(hs.dtype)) * scale * self.conv_norms[0][0] + self.conv_norms[0][1]
+                hs = (hs - mean.astype(hs.dtype)) * scale * self.group_norm[0] + self.group_norm[1]
             hs = nn.gelu(hs)
         return hs
 
     def _transformer_input(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> tuple[mx.array, mx.array]:
-        """The projected features plus the positional convolution [1, frames, dim] (the stable
-        layout's transformer input; the base layout's encoder LayerNorm comes next), and the mask
-        of the clip's own frames."""
+        """The projected features plus the positional convolution [1, frames, dim] (the encoder's
+        LayerNorm comes next), and the mask of the clip's own frames."""
         hs = self._features(pcm, first_frames)
         hs = mx.fast.layer_norm(hs, *self.projection_norm, self.eps) @ self.projection[0]
         hs = hs + self.projection[1]
@@ -165,14 +157,12 @@ class Wav2Vec2CTC:
 
     def _forward(self, pcm: mx.array, first_frames: mx.array, frames: mx.array) -> mx.array:
         hs, valid = self._transformer_input(pcm, first_frames, frames)
-        if not self.stable:
-            hs = mx.fast.layer_norm(hs, *self.encoder_norm, self.eps)
+        hs = mx.fast.layer_norm(hs, *self.encoder_norm, self.eps)
         batch, steps, dim = hs.shape
         head = dim // self.heads
         mask = valid[None, None, None, :]
         for p in self.layers:
-            x = mx.fast.layer_norm(hs, *p["norm"], self.eps) if self.stable else hs
-            qkv = x @ p["qkv"] + p["qkv_bias"]
+            qkv = hs @ p["qkv"] + p["qkv_bias"]
             q, k, v = (
                 part.reshape(batch, steps, self.heads, head).transpose(0, 2, 1, 3)
                 for part in (
@@ -183,16 +173,9 @@ class Wav2Vec2CTC:
             )
             attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0, mask=mask)
             attn = attn.transpose(0, 2, 1, 3).reshape(batch, steps, dim) @ p["out"][0] + p["out"][1]
-            if self.stable:
-                hs = hs + attn
-                x = mx.fast.layer_norm(hs, *p["final_norm"], self.eps)
-                hs = hs + nn.gelu(x @ p["ff1"][0] + p["ff1"][1]) @ p["ff2"][0] + p["ff2"][1]
-            else:
-                hs = mx.fast.layer_norm(hs + attn, *p["norm"], self.eps)
-                ff = nn.gelu(hs @ p["ff1"][0] + p["ff1"][1]) @ p["ff2"][0] + p["ff2"][1]
-                hs = mx.fast.layer_norm(hs + ff, *p["final_norm"], self.eps)
-        if self.stable:
-            hs = mx.fast.layer_norm(hs, *self.encoder_norm, self.eps)
+            hs = mx.fast.layer_norm(hs + attn, *p["norm"], self.eps)
+            ff = nn.gelu(hs @ p["ff1"][0] + p["ff1"][1]) @ p["ff2"][0] + p["ff2"][1]
+            hs = mx.fast.layer_norm(hs + ff, *p["final_norm"], self.eps)
         logits = (hs @ self.head[0] + self.head[1]).astype(mx.float32)
         return logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 

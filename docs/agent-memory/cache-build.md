@@ -60,12 +60,12 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   clip without error, only shorter); more frames than `max_frames` (280, the trainer's cap),
   counted from the decoded lengths as max(target frames, source frames) + 1 before the delay;
   a target clip shorter than one CTC frame; the text grouping; CTC alignment (score below the
-  aligner's `min_score`, 0.5); token timing. Mimi is queued with the CTC forward, so the ~0.5% of
+  aligner's `min_score`: 0.5 English, 0.55 Vietnamese); token timing. Mimi is queued with the CTC forward, so the ~0.5% of
   rows rejected at alignment or token timing are encoded and dropped.
 - The direction (`Settings.direction`, `vi-en` by default, `en-vi` for two-way) says which clip
   is the source and times the target's text against the target clip with that language's CTC
-  model (`text_timing.ALIGNERS`: wav2vec2-base-960h for English, omniASR for Vietnamese,
-  [two-way](two-way.md#vietnamese-aligner)). The CTC hands the host only the columns its Viterbi
+  model (`text_timing.ALIGNERS`: wav2vec2-base-960h for English, wav2vec2-base-vietnamese-250h
+  for Vietnamese, [two-way](two-way.md#vietnamese-aligner)). The CTC hands the host only the columns its Viterbi
   reads (`vocab_columns`).
 - The delay is drawn from U[0, min(0.5 × source duration, room)], seeded by
   `<seed>:<split>:<id>`, the duration rounded to the 0.01 s it stores; `room` is what the target
@@ -105,23 +105,26 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   are equal on all 16 codebooks and every first codebook (65,237 frames of 504 clips); the rest
   are near-ties in the residual codebooks.
 - CTC: `wav2vec2_mlx.Wav2Vec2CTC` in float32 by default; `half=True` (`tranche.cache --half-ctc`)
-  for float16 weights, measured on omniASR only, the base layout unvalidated. One clip per forward,
-  then the numpy Viterbi (`text_timing.CTCWordAligner`) in a worker. The port pads each clip to a
-  multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional convolution
-  input, attention keys), so it computes the clip alone and compiles over ~18 shapes. It reads the
-  layout from the snapshot's `config.json`, so it runs both aligners: wav2vec2-base (GroupNorm on
-  the first convolution, post-norm layers) and omniASR-CTC-300M-v2 (a LayerNorm per convolution,
-  pre-norm layers). On 12 VieNeu clips omniASR's Viterbi columns kept every argmax of transformers'
-  CPU float32 (2,356 frames, log-probabilities within 2.5e-3), and the base layout the old port's
-  exact output (2026-11-21); omniASR's speed and float16: [Speed on the Mac](#speed-on-the-mac). It
-  builds the same rows as mlx-audio 0.6.1's eager wav2vec2 but for float near-ties (2 of ~3,200 rows
-  had a word 1–2 frames apart), and that model on 252 rows rejects the same rows as PyTorch CPU
-  float32 and gives the same spans on 6,180 of 6,181 words. In float16 the base layout's GroupNorm
-  statistics stay in float32 (`first_frames` passes 65504 past 20.47 s, the sum of squares overflows
-  past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×).
-- `ane_ctc` (`cache_codes --ane-ctc`, omniASR only): the transformer on the Neural Engine in its
-  own process (`wav2vec2_coreml`, with the float16 fixes), on `Wav2Vec2CTC.transformer_input` from
-  the GPU in float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)).
+  for float16 weights, measured on omniASR (the former Vietnamese aligner) only. One clip per
+  forward, then the numpy Viterbi (`text_timing.CTCWordAligner`) in a worker. The port pads each
+  clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional
+  convolution input, attention keys), so it computes the clip alone and compiles over ~18 shapes.
+  It ports the base layout both aligners have (GroupNorm on the first convolution, post-norm
+  layers) and refuses another. On 30 `en_speech` clips the Vietnamese aligner's Viterbi columns kept
+  every argmax of transformers' CPU float32 (13,143 frames, log-probabilities within 2.3e-3,
+  2026-11-22). It builds the same rows as mlx-audio 0.6.1's eager wav2vec2 but for float near-ties
+  (2 of ~3,200 rows had a word 1–2 frames apart), and that model on 252 rows rejects the same rows
+  as PyTorch CPU float32 and gives the same spans on 6,180 of 6,181 words. In float16 the
+  GroupNorm statistics stay in float32 (`first_frames` passes 65504 past 20.47 s, the sum of squares
+  overflows past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×).
+  Against transformers' CPU float32 (40 clips each, 2026-11-22), `half=True` on Metal moved 0.035% of
+  the Vietnamese aligner's argmaxes and 0.14% of the English one's (worst clip 0.76%); float32 moved
+  none. On MLX's CPU backend English moved 1.4–1.6%.
+- `ane_ctc` (`cache_codes --ane-ctc`): the transformer on the Neural Engine in its own process
+  (`wav2vec2_coreml`, with the float16 fixes), on `Wav2Vec2CTC.transformer_input` from the GPU in
+  float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)). `en-vi`
+  only (`Builder` refuses another direction): the English aligner there kept 99.35% of MLX float32's
+  argmaxes (worst clip 98.39%), the Vietnamese 99.94%.
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (with `ane_ctc`, the
   Neural Engine's rows together, then the GPU's; they align while the GPU encodes Mimi), and
@@ -154,8 +157,6 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 - On CPU, 8 clips of a shard batched against each alone kept every argmax, log-probabilities within
   2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards differ by 3.1e-3); Mimi's
   batched codes equal the clip-alone ones on all 16 codebooks.
-- omniASR (Vietnamese) normalizes each frame in its feature extractor, so only the attention
-  mask keeps the padding out; batched against alone it gives the same word spans.
 - transformers reports `wav2vec2.masked_spec_embed` as missing from the checkpoint: it only masks
   in training, so the CTC is unaffected.
 - `DEVICE` is the torch device. Set to `"cpu"`, the CUDA path no longer runs since its pinned
@@ -213,6 +214,17 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   equal; on a whole `libriheavy-large` shard, 259× vs 154×, 12 of 63,507 tokens a frame apart. In a
   thread it ran 207×: Core ML's predict holds the GIL, which `mx.async_eval` (blocked half the build
   on the GPU's queue) needs. macOS caches the first load's compile (~1.5–3 min).
+- `en-vi` build with wav2vec2-base-vietnamese-250h, the Vietnamese aligner since 2026-11-22
+  (`ane_ctc`; 1,000 `cv27-00058` and 500 `libriheavy-large-00012-00103` rows, each pair interleaved,
+  thermal state "fair"): 323× and 275× against omniASR's 286× and 251×, then 237× and 163× against
+  215× and 157× as the Mac heated: 4–13% faster, Mimi now the most of the GPU's work.
+  `ANE_GPU_SHARE` 0.1, 0.2 and 0.3 ran alike (256–299×, interleaved twice), 0 ran 187–225×. The
+  Neural Engine alone runs its transformer at 285–434× of Vietnamese audio, against MLX float32
+  99.90–99.93% of argmaxes equal. The same rows built with each aligner: audio codes equal; 82–84%
+  of text tokens in the same frame, 99.7–99.8% within one; a token over 5 frames apart in 1.5% of
+  the Common Voice rows (mostly in a clip's last three tokens, the last word or its punctuation
+  over a long tail; at most 160 frames) and 0.8% of the Libriheavy ones; alignment rejected 1 of
+  the 1,000 Common Voice rows (omniASR 13).
 - Neural Engine for Mimi and wav2vec2-base (Core ML 9, 2026-10-27): float16 only rules out Mimi and
   moved 0.7% of the base's word spans; one fixed 10 s shape compiled over 27 min without finishing.
 - Headroom (2026-10-29, at 240x): the GPU is 96–98% busy, and a row takes as long as its two

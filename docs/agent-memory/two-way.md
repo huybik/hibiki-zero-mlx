@@ -38,7 +38,7 @@ Decided 2026-11-10, for two-way training:
 |---|---|
 | cache rows | `Settings(direction=…)`: `.source`, `.target`, `.aligner` (the target language's); a builder's rows carry `text_en` and `text_vi` |
 | shards | payload `direction` and `tokenizer` (its file name); samples keep `vi_frames` and `en_frames` (the target's counts its delay), both texts as the source wrote them, `text_timing` (the aligner's name); Vietnamese text is NFC'd before it is tokenized and timed |
-| `cache_codes` | `--direction en-vi` on either device (MLX runs omniASR too, [cache-build](cache-build.md#mlx)); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
+| `cache_codes` | `--direction en-vi` on either device (`--ane-ctc` puts the Vietnamese aligner on the Mac's Neural Engine, [cache-build](cache-build.md#mlx)); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
 | checkpoints | metadata `text_tokenizer`: the run's `--tokenizer` file name (none before 2026-11-10: the base) |
 | trainers | `--tokenizer` defaults to the start weight's; each shard checked against it ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache, scored apart |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
@@ -79,40 +79,57 @@ Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against 
 
 ## Vietnamese aligner
 
-`aadel4/omniASR-CTC-300M-v2` at `f2b3c39a…`: a stock-transformers conversion of Meta's
-omniASR-CTC-300M-v2 (Apache-2.0), 325M parameters, a layer-norm feature extractor, a 10,288-letter
-vocabulary of every script, blank `<s>`, words split by `" "`.
+`nguyenvulebinh/wav2vec2-base-vietnamese-250h` at `bb07d01e…` (`text_timing` name
+`wav2vec2_vi250h_ctc_word_v1`): wav2vec2-base, the English aligner's layout and size (95M
+parameters), fine-tuned on 250 h of Vietnamese; non-commercial (its card says CC-BY-NC-4.0, while
+the repo also ships a `CC-BY-NC-SA-4.0.txt`: if ShareAlike holds, it binds published caches whose
+text it timed). The pinned revision is the
+Hub bot's safetensors conversion (`refs/pr/2`), tensor for tensor the main branch's
+`pytorch_model.bin`, with the same `config.json` and `vocab.json` (checked 2026-11-22). Its
+110-entry vocabulary holds the 93 letters precomposed, digits, three combining marks, a Cyrillic
+"у", `<unk>`, blank `<pad>` (its `pad_token_id`) and the delimiter `|`; the Viterbi reads 95 of them.
 
-- Bake-off (2026-11-10, H200, 150 rows each of VieNeu TTS, PhoAudiobook and GigaSpeech 2):
-  `nguyenvulebinh/wav2vec2-base-vietnamese-250h` (CC-BY-NC) and
-  `MahmoudAshraf/mms-300m-1130-forced-aligner` (CC-BY-NC) against omniASR; every pair agreed on
-  98.6–99.7% of word starts within 80 ms. omniASR is the one whose licence fits and the newest.
+- Chosen for the Mac's build speed (user, 2026-11-22: "let's use wav2vec2-base-vietnamese-250h on
+  the neural engine", told that the licence is non-commercial and the gain on the Mac modest).
+  It replaced `aadel4/omniASR-CTC-300M-v2` at `f2b3c39a…` (`omniasr_ctc_word_v1`; Meta's
+  omniASR-CTC-300M-v2 in stock transformers, Apache-2.0, 325M parameters), first chosen for its
+  licence. omniASR timed every `en-vi` shard built before the switch: the tranche's
+  `en-vi/{giga,pho,vivoice}` and the first 528 `en_speech` shards
+  ([envi-data](envi-data.md#on-the-hub)). Runs mix the two; the trainer reads no `text_timing`.
+- Against omniASR on the same 800 `en_speech` rows (2026-11-22): 99.7% of word starts within
+  80 ms (86% in the same 12.5 Hz frame, p99 40 ms). The bake-off (2026-11-10, H200, 150 rows each
+  of VieNeu TTS, PhoAudiobook and GigaSpeech 2) had it, omniASR and
+  `MahmoudAshraf/mms-300m-1130-forced-aligner` (CC-BY-NC) agree on 98.6–99.7%.
   Qwen3-ForcedAligner has no Vietnamese; `nguyenvulebinh/wav2vec2-base-vi-vlsp2020` needs a
   custom head.
 - Its text (`_spoken_vietnamese`): NFC, lower case, numbers in Vietnamese words (`num2words`),
   every non-letter a word break. The alphabet is Vietnamese's 93 letters (12 vowels in 6 tones,
   the consonants, f j w z); a row with any other letter is rejected: 1 of 1,738 rows of a
   Libriheavy validation shard ("Teufelsbürst").
-- Minimum score 0.5, calibrated on 400 rows a set (2026-11-10, H100): each clip aligned to its
-  own text, to the text of the clip nearest in length, and to its own text with 30% of the words
-  swapped for other rows' words. Share of each below 0.5:
+- Minimum score 0.55, calibrated on 400 rows each of `cv27-00058` and
+  `libriheavy-large-00012-00103` (VieNeu TTS, 2026-11-22): each clip aligned to its own text, to the
+  text of the clip nearest in length, and to its own text with 30% of the words swapped for other
+  rows' words. Share of each below the floor:
 
-  | Set | Own text | Another's text | 30% swapped |
-  |---|---:|---:|---:|
-  | VieNeu TTS (`en_speech` Libriheavy) | 0 | 98.2% | 0 |
-  | PhoAudiobook | 0 | 98.8% | 0 |
-  | viVoice | 0.3% | 99.2% | 0.7% |
-  | GigaSpeech 2 | 0.5% | 99.2% | 2.5% |
+  | Set | Floor | Own text | Another's text | 30% swapped |
+  |---|---:|---:|---:|---:|
+  | VieNeu TTS, Common Voice | 0.55 | 0 | 99.5% | 2.2% |
+  | VieNeu TTS, Libriheavy | 0.55 | 0 | 99.2% | 0 |
+  | VieNeu TTS, Common Voice | 0.5 | 0 | 98.0% | 0 |
+  | VieNeu TTS, Libriheavy | 0.5 | 0 | 91.8% | 0 |
 
-  Own-text medians are 0.87–0.92; the wrong text's 95th percentile 0.44–0.47. English's
-  wav2vec2-base-960h at the same 0.5 rejects 72.5% of another's text on Libriheavy (median 0.47
-  against its own 0.96): the English gate is the looser one.
+  Own-text medians 0.91–0.94 (5th percentile 0.73–0.88), the wrong text's 95th percentile
+  0.48–0.51: it scores wrong text higher than omniASR did, whose 0.5 rejected 98.2–99.8% of it and
+  0–2.5% of own text (on the same Common Voice rows 2.5%; on the tranche's real speech, 2026-11-10,
+  viVoice 0.3% and GigaSpeech 2 0.5%). Not yet calibrated on real recordings: do so before a build
+  of one. English's wav2vec2-base-960h at 0.5 rejects 72.5% of another's text on Libriheavy
+  (median 0.47 against its own 0.96): the English gate is the loosest.
 - Speed: the device hands the host only the Viterbi's columns (`vocab_columns`: blank,
-  delimiter, alphabet). With all 10,288 a 13.5 h shard's log-probabilities came to ~100 GB copied
-  and pickled to the workers: an `en-vi` Libriheavy validation shard built at 342× real time,
-  1,638× with the columns (its `vi-en` build: 1,586–1,818×), every row equal.
-- Batched against each clip alone (120 GigaSpeech 2 clips, TF32): the same word spans on all 118
-  aligned rows, scores within 0.004.
+  delimiter, alphabet; 95 of 110). For omniASR's 10,288 this was the difference between 342× and
+  1,638× real time on an `en-vi` Libriheavy validation shard (~100 GB of log-probabilities copied
+  and pickled to the workers). On the Mac: [cache-build](cache-build.md#speed-on-the-mac).
+- Batched against each clip alone (omniASR, 120 GigaSpeech 2 clips, TF32): the same word spans on
+  all 118 aligned rows, scores within 0.004.
 - The Viterbi needs 2 × letters + 1 CTC frames (50 Hz). Vietnamese spends more of them than
   English (TTS validation rows: p99 0.86 of the frames, max 1.00, against English's 0.60–0.78),
   so fast real speech may lose rows as "CTC emission is too short": 3 of 400 GigaSpeech 2 rows
