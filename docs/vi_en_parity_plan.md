@@ -63,6 +63,7 @@ grows sentence by sentence.
 | Two-way speech in one model whose output language follows the input language, prepared now beside the tranche (user, 2026-11-04) | A conversation needs both directions with no language-ID step; Hibiki-Zero has no conditioning input; two 3B models do not fit a 6 GB phone ([stage 7](#7-two-way-speech)) |
 | Two-way before GRPO: after round 4e, the pilot and the two-way SFT, then one GRPO on both directions; the phone student and the parallel-heads test are cut from the two-way model and scored both ways (user, 2026-11-10, replacing that morning's "one way first") | GRPO and the student each run once, on the model that ships; GRPO on a VI→EN-only model would be undone by the two-way SFT after it |
 | Test parallel codebook heads against the depformer student once the student is trained, and adopt them only if they win (user, 2026-11-10) | The student's depformer is about a third of what a frame reads; heads that sample every codebook at once could pay for ~14–16 main layers at the 10-layer cost. But they train from scratch, add ~400 ms of heard speech lag and change three runtimes ([stage 5.4](#5-the-phone-model)) |
+| Fine-tune the 3B, never train from scratch; SFT stays teacher-forced, with on-policy training on top (2026-11-21; user: "if we train vi - en and en-vi from scratch or finetune from the 3b, how the plan recipe should change") | A random start must first learn speech and Mimi's codes, which the family learned from pretraining far past our ~8,500 h a direction; a student cut from the 3B's own layers already fell ~14 chrF short. Teacher forcing is the only objective that covers ~17k h (every frame at once), but GRPO's 1,400 on-policy updates moved the test sets +4.4 chrF after two SFT epochs: scheduled sampling in SFT and a KL anchor in GRPO are tested ([exposure-bias](agent-memory/exposure-bias.md)) |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
@@ -73,7 +74,7 @@ grows sentence by sentence.
    ([sft-data-caches](agent-memory/sft-data-caches.md#builds)). The trainer builds streams from its
    rows; nothing needs re-encoding.
 2. Noisy Vietnamese re-encode (built 2026-11-04, the second epoch's data):
-   `training.prep.mimi_cache_cuda` copies the cache with the Vietnamese source of a seeded 60% of
+   `training.prep.noisy_cache` copies the cache with the Vietnamese source of a seeded 60% of
    the rows re-encoded under room reverb, background noise, a narrowed band (16 kHz as FLEURS,
    8 kHz as MultiMed, a phone band) and a level change, reusing each row's English codes and
    text timing; it runs on the pod's GPU after a run, where the Mac would take days
@@ -132,6 +133,14 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
    repeated 4-grams, length ratio; EOS is reported, not gated, since 2026-11-04) with the highest
    FLEURS dev chrF, and keeps it beside the newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
    chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
+4. Against exposure bias (built 2026-11-21): `--sampled-text P`, parallel scheduled sampling of
+   the words. The main transformer samples every text token without gradients as generation
+   does, each word piece it reads becomes the sampled word piece there with probability P, and
+   the loss scores the dataset's tokens on that context; the timing (PADs), each step's own
+   inputs to the depformer and the audio stay the dataset's
+   ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
+   Tested against 0 before any run adopts it, and after a short GRPO, which fixes the same gap
+   ([experiments](agent-memory/exposure-bias.md#experiments)).
 
 ### 4. GRPO
 
@@ -143,7 +152,9 @@ direction's first evaluation set, their mean chrF and a latency gate on each, as
 directions it adds both directions' evaluation sets and rewards decoded with the run's Vietnamese
 tokenizer, both on the branch `grpo/stream-length`.
 RL the teacher before any distillation. A penalty on speech while the source is silent, and a short
-GRPO on a distilled student, come later if needed.
+GRPO on a distilled student, come later if needed. The shipped run stopped improving after update
+1,400 while its EOS share fell; the next 3B GRPO tests a KL anchor to its start
+(`--teacher-weight <start> --kl-coef β`, [exposure-bias](agent-memory/exposure-bias.md#anchored-grpo)).
 
 ### 5. The phone model
 
@@ -203,6 +214,23 @@ GRPO on a distilled student, come later if needed.
      codebooks sharing delays (two a frame) halve that.
    - If the depformer must shrink further and the heads lose: a grouped depformer, 2 codebooks a
      step (4 steps, not 8), initialised from the slices, with no added lag.
+5. Newer recipes for the student (user, 2026-11-21: "update the current training code with new
+   plan and experiments"). The 3B's recipe (SFT, then the paper's GRPO) is still the current one
+   for this model family; the gap is the student's (the heads student at update 96,000: FLEURS
+   dev chrF 30.3 / 32.5 against the teacher's 42.7 / 38.8, widest where it writes too much,
+   VI→EN length ratio 1.42). Built in the trainers; the runs and their decision rules are in
+   [on-policy-distillation](agent-memory/on-policy-distillation.md#experiments):
+   - On-policy distillation after the off-policy one: the student generates, the teacher scores
+     the same rollouts, reverse KL (`grpo.py --teacher-weight --reward-coef 0`), against the
+     off-policy run's continuation per GPU-hour.
+   - The heads student's GRPO with the teacher's KL as an anchor (`--kl-coef`): plain GRPO
+     collapsed past update 2,200 on the depformer student. Each arm is a short probe; only the
+     winner runs (user, 2026-11-21: "i'm asking for best outcome").
+   - Centered advantages (`--advantage centered`, Dr. GRPO) against the paper's z-scored ones.
+   - For the next SFT or distillation run: warmup-stable-decay (`train.py --schedule constant`,
+     then `decay` from a chosen pair with `--optimizer-state`), and checkpoint averaging
+     (`training.finetune.average`) scored before promoting
+     ([sft-training](agent-memory/sft-training.md#schedules-and-averaging)).
 
 ### 6. Quantise and package
 
@@ -234,6 +262,14 @@ codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-me
 3. Staged (2026-11-14): GRPO update 1,400, the shipping model, at 6 bits; on six 66–124 s files
    it translates to the end both ways, above update 600 ([mlx-inference](agent-memory/mlx-inference.md#model-directories)).
    Next: run it on the phone.
+4. Next for the student (2026-11-21): train against the quantizer the phone runs. On the
+   Neural Engine the heads student's 6-bit palettized LM agrees with bf16's argmax on 92.1% of
+   tokens against fp16's 94.6% ([lm-npu](agent-memory/lm-npu.md#precision)): a short last stage
+   with the deployment palettization (k-means, one table per 16 output channels) in the forward,
+   distilled from the bf16 student, recovers most of a post-training quantizer's loss in 2026
+   reports (4-bit quantization-aware distillation at ~97% of bf16), and could let 4 bits ship.
+   Built (`train.py --palettize-bits`, `training/student/palettize.py`; its run and how it is
+   judged: [student-heads](agent-memory/student-heads.md#palettization)).
 
 ### 7. Two-way speech
 
@@ -315,9 +351,10 @@ Vietnamese text cannot keep up with its speech.
    ([two-way](agent-memory/two-way.md#tokenizer-checks)); the Apple Silicon runtimes ship it with
    the model and assemble UTF-8 from byte pieces ([vi-tokenizer](agent-memory/vi-tokenizer.md#runtimes)).
 3. EN→VI caches (the build since 2026-11-10, one shard checked; [two-way](agent-memory/two-way.md)): `--direction en-vi`
-   on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2
-   (Apache-2.0, chosen over two CC-BY-NC Vietnamese CTCs; its 0.5 minimum rejects 98–99% of
-   wrong-text pairs and at most 0.5% of the right ones), the random delay on the Vietnamese
+   on both builders, from audio, the Vietnamese text word-timed by omniASR-CTC-300M-v2 (Apache-2.0)
+   until 2026-11-22, then by wav2vec2-base-vietnamese-250h (non-commercial, for the Mac's speed;
+   its 0.55 minimum rejects ~99% of wrong-text pairs and none of the right ones on TTS rows;
+   [two-way](agent-memory/two-way.md#vietnamese-aligner)), the random delay on the Vietnamese
    target, target and source codebooks in the same `[33, T]` places. A stream holds one
    direction.
 4. Evaluation (built 2026-11-10): `fleurs-en` (FLEURS `en_us` speech with the `vi_vn`
@@ -560,6 +597,18 @@ Vietnamese text cannot keep up with its speech.
     from the start (2026-11-14), adopted only if it wins at real time.
 
     Both after GRPO (user, 2026-11-13). Quantising (stage 6) runs on the Mac (user, 2026-11-13).
+11. The student's newer recipes (stage 5.5, 2026-11-21), each after the run before it. First the
+    new code is validated end to end on the box, after the heads run and before any GRPO (user,
+    2026-11-21: "after the heads run and before grpo"); then 200-update probes from the heads
+    student's best (distillation alone at three rates, both terms z-scored and centered, plain
+    GRPO as the control), one run of the winner, and training against the phone's palettization
+    (stage 6.4) last
+    ([on-policy-distillation](agent-memory/on-policy-distillation.md#experiments)).
+12. The 3B's recipe (2026-11-21), after the student's: scheduled sampling in SFT against plain
+    SFT, then each through a short GRPO; then GRPO anchored to its start against the shipped run;
+    centered advantages on the 3B only if they win on the student
+    ([exposure-bias](agent-memory/exposure-bias.md#experiments)). Its next SFT, when the tranche
+    grows, uses what wins.
 
 ## Risks
 

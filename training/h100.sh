@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Hopper (H100/H200) setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery.
+# Setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery, on one H100, H200 or
+# RTX PRO 6000 Blackwell.
 #
 #   setup             a pinned .venv (free-threaded Python 3.14, Torch 2.15 on CUDA 13.4), then cpus
 #   cpus              the container's CPU quota into /etc/environment for every later shell; rerun
@@ -38,12 +39,12 @@ require_cuda_driver() {
     || die "NVIDIA driver 580 or newer required, got $driver_version"
 }
 
-require_hopper_gpu() {
+require_gpu() {
   local gpu_names
   gpu_names="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
   [[ -n "$gpu_names" && "$gpu_names" != *$'\n'* ]] || die "exactly one GPU is required"
-  [[ "${gpu_names^^}" == *H100* || "${gpu_names^^}" == *H200* ]] \
-    || die "an H100 or H200 is required, got $gpu_names"
+  [[ "${gpu_names^^}" == *H100* || "${gpu_names^^}" == *H200* || "${gpu_names^^}" == *"RTX PRO 6000"* ]] \
+    || die "an H100, H200 or RTX PRO 6000 is required, got $gpu_names"
 }
 
 require_empty_dir() {
@@ -58,7 +59,7 @@ setup() {
   [[ "$(uname -s)" == Linux ]] || die "setup must run on the Linux GPU pod"
   command -v uv >/dev/null || die "uv is required"
   require_cuda_driver
-  require_hopper_gpu
+  require_gpu
   [[ ! -e "$VENV" ]] || die "refusing to reuse existing environment: $VENV"
   command -v cc >/dev/null && command -v cmake >/dev/null || die "a C compiler and cmake are required (source builds)"
   # Free-threaded Python 3.14, as every box env that can run it (environment.md). torch.compile loads Triton, which
@@ -120,7 +121,7 @@ preflight() {
   local minimum_gib="$1" run_dir="${2:-}" minimum_ram_gib="${3:-80}"
   require_python
   require_cuda_driver
-  require_hopper_gpu
+  require_gpu
   git diff --quiet || die "tracked worktree changes must be committed before training"
   git diff --cached --quiet || die "staged changes must be committed before training"
 
@@ -151,10 +152,11 @@ if version("moshi") != "0.2.13":
 if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
     raise RuntimeError("exactly one CUDA GPU is required")
 name = torch.cuda.get_device_name(0)
-# Hopper only: the kernels and the speed measurements are sm_90's.
-hopper = any(gpu in name.upper() for gpu in ("H100", "H200"))
-if not hopper or torch.cuda.get_device_capability(0) != (9, 0):
-    raise RuntimeError(f"an H100 or H200 (compute capability 9.0) is required, got {name}")
+# The GPUs the trainer was checked on: Hopper (sm_90) and the RTX PRO 6000 Blackwell (sm_120).
+supported = {"H100": (9, 0), "H200": (9, 0), "RTX PRO 6000": (12, 0)}
+if not any(gpu in name.upper() and torch.cuda.get_device_capability(0) == capability
+           for gpu, capability in supported.items()):
+    raise RuntimeError(f"an H100 or H200 (compute capability 9.0) or an RTX PRO 6000 Blackwell (12.0) is required, got {name}")
 if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30

@@ -37,7 +37,8 @@ import math
 
 import torch
 import torch.nn.functional as F
-from moshi.models.lm import LMModel
+from moshi.models.lm import LMModel, LMOutput
+from moshi.models.lm_utils import _delay_sequence, _undelay_sequence
 from moshi.modules import transformer as moshi_transformer
 from moshi.modules.gating import ActivationGating
 from moshi.modules.transformer import RMSNorm, StreamingTransformer
@@ -189,6 +190,59 @@ def forward_depformer_training(
         self.linears[cb](self.depformer_norms[cb](out[cb])).view(B, T, -1) for cb in range(steps)
     ]
     return torch.stack(logits, 1)
+
+
+def _delayed(lm: LMModel, codes: torch.Tensor) -> torch.Tensor:
+    """moshi's delayed sequence of `codes`: the initial token, then each row at its delay."""
+    initial = lm._get_initial_token().expand(codes.shape[0], -1, -1)
+    return torch.cat([initial, _delay_sequence(lm.delays, codes, initial)], dim=2)
+
+
+def _main_transformer(
+    lm: LMModel, codes: torch.Tensor, condition_tensors: Any
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`lm.forward_text` as moshi's forward calls it: each step's output and text logits, read
+    from the steps before it."""
+    sum_condition = cross_attention_src = None
+    if condition_tensors is not None:
+        sum_condition = lm.fuser.get_sum(condition_tensors)
+        cross_attention_src = lm.fuser.get_cross(condition_tensors)
+    elif lm.fuser is not None:
+        raise ValueError("this model needs its condition tensors")
+    return lm.forward_text(_delayed(lm, codes)[:, :, :-1], sum_condition, cross_attention_src)
+
+
+def _text_output(
+    lm: LMModel, text_logits: torch.Tensor, codes: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    text_logits, text_mask = _undelay_sequence(lm.delays[:1], text_logits, fill_value=float("NaN"))
+    return text_logits, text_mask & (codes[:, :1] != lm.zero_token_id)
+
+
+def text_logits(
+    lm: LMModel, codes: torch.Tensor, condition_tensors: Any = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The text logits [B, 1, T, card] and their mask, as moshi's forward gives them, from the main
+    transformer alone: no depformer."""
+    _, logits = _main_transformer(lm, codes, condition_tensors)
+    return _text_output(lm, logits, codes)
+
+
+def forward_history(
+    lm: LMModel, history: torch.Tensor, codes: torch.Tensor, condition_tensors: Any = None
+) -> LMOutput:
+    """moshi's `LMModel.forward` with two inputs, for scheduled sampling of the text: the main
+    transformer reads `history` (the steps before each one, their text partly the model's own
+    samples) and the depformer, or a heads student's text input, reads `codes` (each step's own
+    tokens, the dataset's), which also give the masks; `history` holds -1 where `codes` do. So a
+    step's audio is predicted after the text the dataset has at that frame, as its targets are."""
+    transformer_out, text = _main_transformer(lm, history, condition_tensors)
+    logits = lm.forward_depformer_training(_delayed(lm, codes)[:, :, 1:], transformer_out)
+    audio = slice(lm.audio_offset, lm.audio_offset + lm.dep_q)
+    logits, mask = _undelay_sequence(lm.delays[audio], logits, fill_value=float("NaN"))
+    mask &= codes[:, audio] != lm.zero_token_id
+    text_logits, text_mask = _text_output(lm, text, codes)
+    return LMOutput(logits, mask, text_logits, text_mask)
 
 
 def _rms_norm(norm: RMSNorm, x: torch.Tensor) -> torch.Tensor:

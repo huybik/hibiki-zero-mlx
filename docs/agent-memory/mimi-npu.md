@@ -1,8 +1,9 @@
 # Mimi on neural accelerators
 
 Read when touching `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py` or
-`inference/swift/Sources/HibikiCore/NeuralDecoder.swift`, or when moving Mimi (or later the LM)
-onto an NPU: the Apple Neural Engine now, Qualcomm's later.
+`inference/swift/Sources/HibikiCore/NeuralDecoder.swift`, or when moving Mimi onto an NPU: the
+Apple Neural Engine now, Qualcomm's later. The heads student's LM on the Neural Engine is
+[lm-npu](lm-npu.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Step module](#step-module) · [Core ML](#core-ml) ·
 [Precision](#precision) · [Qualcomm](#qualcomm)
 
@@ -68,7 +69,7 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
   Swift's at a few positions, so Python validators drift to ~51 dB from the Swift output.)
 - Encoder in fp16 on the Neural Engine: codes equal fp32 on 94% of frames in codebook 0, 59% in
   1–7 and 17% in 8–15. MLX in fp16 (fp32 accumulation) keeps 99.8, 98 and 95%, so the encoder
-  stays on the CPU in fp32. The error enters inside SEANet (1.7% at its output, 4.4% at the
+  stays in MLX fp32 (on the CPU, or the GPU beside a Core ML LM). The error enters inside SEANet (1.7% at its output, 4.4% at the
   latent): at convolutions whose output is a small difference of large terms (the first
   residual convolution sums ~20x its output's magnitude and comes out 6% off; block 3 too).
 - Tried and dropped: centering each convolution's input on calibrated per-channel means (bias

@@ -1,6 +1,6 @@
 """The build of grounded caches, on MLX (Apple Silicon) or CUDA: Mimi and the target language's
 CTC aligner (`text_timing.ALIGNERS`) on each device, and the stream of source shards through
-them, in either direction (`Settings.direction`; MLX runs only the English aligner). Every
+them, in either direction (`Settings.direction`). Every
 builder runs on it (`cache_codes`, the EN-VI dataset; `training.tranche.cache`, the
 real-Vietnamese tranche); a builder only reads and gates its own source rows and decides where
 the shards go ([cache-build](../../docs/agent-memory/cache-build.md)).
@@ -44,10 +44,16 @@ if sys.platform == "darwin":  # before the builders' readers import pyarrow, who
 # libriheavy rows 4, 8 and 16 GB ran 195x, 209x and 225x.
 MLX_CACHE_BYTES = 16 << 30
 MLX_WORKERS = 2  # 2, 4 and 8 ran alike; the Mac's CPU and GPU share one power budget
+# With --ane-ctc, the share of a window's audio whose CTC stays on the GPU (MLXModels). On 500
+# libriheavy and 1,000 cv27 rows with omniASR: 0 ran 261x and 316x (the GPU waiting on the Neural
+# Engine on long rows), 0.1 278x and 301x, 0.2 293x and 309x (the GPU 97-99% busy), 0.35 slower. With
+# wav2vec2-base-vietnamese-250h (2026-11-22, interleaved twice): 0.1, 0.2 and 0.3 alike (256-299x), 0
+# 187-225x.
+ANE_GPU_SHARE = 0.2
 # Padded audio per batch, Mimi and CTC. On a 4,094-row GigaSpeech 2 window (H200, TF32): CTC + Mimi took
 # 13.0, 11.0, 10.7, 10.7 and 11.3 s at 80, 160, 320, 640 and 1,280 s (peak 2.4 to 27 GiB): bigger
 # batches pad more. 1,280 s also overflows int32 indexing under torch.compile (64 channels x 30.7M).
-CUDA_BATCH_S = 320.0  # omniASR's CTC alone ran alike at 1,280 s (2026-11-11, the en-vi build)
+CUDA_BATCH_S = 320.0  # omniASR's CTC (the former Vietnamese aligner) alone ran alike at 1,280 s (2026-11-11)
 # Rows per decode job (`cache_rows.prepare_rows`); a CTC batch's rows are one alignment job. One job a
 # row cost the main process each row's pool round trip under its one GIL, beside the GPU thread.
 DECODE_JOB_ROWS = 32
@@ -87,40 +93,76 @@ def default_workers(device: str) -> int:
 
 
 class MLXModels:
-    """Mimi (`mimi_mlx`) and wav2vec2 (`wav2vec2_mlx`) on Apple Silicon: one clip per forward
+    """Mimi (`mimi_mlx`) and the aligner's wav2vec2 CTC (`wav2vec2_mlx`) on Apple Silicon: one clip per forward
     (batching clips gained nothing in MLX), padded to length buckets, so each compiled forward
     sees few shapes. Mimi runs in float32; wav2vec2 runs in float32 by default or float16 when
-    `half_ctc=True` (log-probs cast back to float32 before the Viterbi)."""
+    `half_ctc=True` (log-probs cast back to float32 before the Viterbi). With `ane_ctc=True` the
+    aligner's transformer runs on the Neural Engine (`wav2vec2_coreml`, its own process) beside
+    Mimi on the GPU, for all of a window's rows but the longest, which hold ANE_GPU_SHARE of its
+    audio and keep the whole CTC on the GPU so that both finish together."""
 
     window = 64  # rows queued on the GPU at once
 
-    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False):
+    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False,
+                 ane_ctc: bool = False):
         import mlx.core as mx
 
         from training.prep.mimi_mlx import MimiEncoder
         from training.prep.wav2vec2_mlx import Wav2Vec2CTC
 
-        if aligner.repo != "facebook/wav2vec2-base-960h":
-            raise SystemExit(f"wav2vec2_mlx runs only wav2vec2-base-960h, not {aligner.repo}: build on --device cuda")
         mx.set_cache_limit(MLX_CACHE_BYTES)
         self.mimi = MimiEncoder(mimi_weight, num_codebooks)
-        self.ctc = Wav2Vec2CTC(files / "model.safetensors", half=half_ctc)
+        self.ctc = Wav2Vec2CTC(files, half=half_ctc)
         self.columns = mx.array(vocab_columns(aligner, files))
         self.cardinality = self.mimi.cardinality
+        self.ane = None
+        if ane_ctc:
+            from training.prep.wav2vec2_coreml import Wav2Vec2ANE
+
+            if half_ctc:  # its transformer input would come in float16: unmeasured
+                raise ValueError("ane_ctc takes the float32 CTC's transformer input: not with half_ctc")
+
+            self.ane = Wav2Vec2ANE(aligner, files)
+
+    def _split(self, rows: list[Row]) -> tuple[list[int], list[int]]:
+        """The rows whose transformer runs on the Neural Engine, shortest first (a shape switch
+        costs it ~40%), and the rows whose CTC runs on the GPU: the longest, holding ANE_GPU_SHARE
+        of the window's audio, and any longer than the Neural Engine's shapes; all without it."""
+        if self.ane is None:
+            return [], list(range(len(rows)))
+        order = sorted(range(len(rows)), key=lambda index: len(rows[index].target16))
+        budget = ANE_GPU_SHARE * sum(len(row.target16) for row in rows)
+        gpu: list[int] = []
+        while order:
+            samples = len(rows[order[-1]].target16)
+            if samples <= budget or samples > self.ane.max_samples:
+                budget -= samples
+                gpu.append(order.pop())
+            else:
+                break
+        return order, gpu
 
     def encode(self, rows: list[Row], align: AlignJob) -> list[tuple[Aligned, Any, Any]]:
-        """Queue CTC and Mimi on the GPU; block until CTC is done and workers are submitted (a job a
-        row, for the Mac's two workers); return lazy Mimi codes so the caller can overlap planning
-        the next window with Mimi."""
+        """Queue CTC and Mimi on the GPU (with the Neural Engine, its rows' transformer inputs first,
+        handed to it while the GPU runs the rest); block until CTC is done and workers are submitted
+        (a job a row, for the Mac's two workers); return lazy Mimi codes so the caller can overlap
+        planning the next window with Mimi."""
         import mlx.core as mx
 
-        log_probs = [mx.take(self.ctc.log_probs(row.target16), self.columns, axis=1) for row in rows]
+        ane, gpu = self._split(rows)
+        inputs = [self.ctc.transformer_input(rows[index].target16) for index in ane]
+        mx.async_eval([hs for hs, _ in inputs])
+        on_ane = self.ane.submit([(rows[index].data["id"], np.array(hs), frames)
+                                  for index, (hs, frames) in zip(ane, inputs, strict=True)]) if ane else None
+        log_probs = {index: mx.take(self.ctc.log_probs(rows[index].target16), self.columns, axis=1) for index in gpu}
+        mx.async_eval(list(log_probs.values()))
         codes = [(self.mimi.encode(row.source24), self.mimi.encode(row.target24)) for row in rows]
-        mx.async_eval(log_probs)
         mx.async_eval(codes)
+        aligned = {index: (align([rows[index]], [lp]), 0)
+                   for index, lp in zip(ane, on_ane.result() if ane else [], strict=True)}
         # np.array(lp) blocks until CTC is done; Mimi is queued and runs asynchronously after it
-        aligned = [(align([row], [np.array(lp)]), 0) for row, lp in zip(rows, log_probs, strict=True)]
-        return [(a, source, target) for a, (source, target) in zip(aligned, codes, strict=True)]
+        aligned |= {index: (align([rows[index]], [np.array(lp)]), 0) for index, lp in log_probs.items()}
+        return [(aligned[index], source, target) for index, (source, target) in enumerate(codes)]
 
 
 # --------------------------------------------------------------------------- CUDA
@@ -182,9 +224,11 @@ class CUDAModels:
         self.cardinality = self.mimi.cardinality
         # cuda_mimi's TF32 switch covers the CTC too (CUDA_TF32).
         self.ctc = Wav2Vec2ForCTC.from_pretrained(files, dtype=torch.float32).to(DEVICE).eval()
-        # A base model (wav2vec2-base-960h) normalizes its first convolution over the whole input
-        # and takes no attention mask; a large one (omniASR) normalizes each frame and takes one.
-        self._group_norm = self.ctc.config.feat_extract_norm == "group"
+        # The base layout every aligner has: its first convolution's GroupNorm normalizes over the
+        # whole input (ctc_log_probs masks the padding out of it), post-norm layers.
+        config = self.ctc.config
+        if config.do_stable_layer_norm or config.feat_extract_norm != "group":
+            raise ValueError(f"{aligner.repo}: ctc_log_probs runs only the base layout")
         if self.ctc.wav2vec2.adapter is not None:  # ctc_log_probs runs the encoder without it
             raise ValueError(f"{aligner.repo} has an adapter, which ctc_log_probs does not apply")
         self._half_ctc = half_ctc
@@ -289,8 +333,8 @@ class CUDAModels:
         return torch.arange(width, device=DEVICE)[None, :] < lengths[:, None]
 
     def _encoder(self, hs: Any, mask: Any) -> Any:
-        """The wav2vec2 encoder's forward (transformers 5.22.1's `Wav2Vec2Encoder` and
-        `Wav2Vec2EncoderStableLayerNorm`, to check again on an upgrade), without its two waits on the GPU: the padding's frames
+        """The wav2vec2 encoder's forward (transformers 5.22.1's `Wav2Vec2Encoder`, to check again
+        on an upgrade), without its two waits on the GPU: the padding's frames
         zeroed by `where` rather than a boolean-mask write, and the attention mask always built
         rather than first checked for padding. Each emptied the GPU's queue every CTC batch, so the
         encoder's launches, slowed by the GIL the main process's other threads hold, idled the GPU
@@ -302,21 +346,18 @@ class CUDAModels:
         hs = torch.where(mask[..., None], hs, 0.0)
         attention = create_bidirectional_mask(config=encoder.config, inputs_embeds=hs, attention_mask=mask,
                                               allow_is_bidirectional_skip=False)
-        hs = hs + encoder.pos_conv_embed(hs)
-        stable = self.ctc.config.do_stable_layer_norm  # the layer norm after the layers, not before
-        if not stable:
-            hs = encoder.layer_norm(hs)
+        hs = encoder.layer_norm(hs + encoder.pos_conv_embed(hs))
         hs = encoder.dropout(hs)
         for layer in encoder.layers:
             hs = layer(hs, attention_mask=attention)
-        return encoder.layer_norm(hs) if stable else hs
+        return hs
 
     def ctc_log_probs(self, clips: list[np.ndarray],
                       landed: Callable[[list[int], list[np.ndarray]], None] | None = None) -> list[np.ndarray]:
         """Each normalized 16 kHz clip's CTC log-probabilities [frames, `vocab_columns`], as
-        computed alone: the padding is masked out of the positional convolution's input and the
-        attention keys, and, for a base model, out of the statistics of its first convolution's
-        GroupNorm, which normalizes over the whole input (as wav2vec2_mlx does). `landed(indices,
+        computed alone: the padding is masked out of the positional convolution's input, the
+        attention keys and the statistics of the first convolution's GroupNorm, which normalizes
+        over the whole input (as wav2vec2_mlx does). `landed(indices,
         log_probs)` hears of each batch's clips as it reaches the host."""
         import torch
 
@@ -328,22 +369,18 @@ class CUDAModels:
             lengths = torch.tensor([len(clips[i]) for i in group])
             batch = self._stage(clips, group, int(lengths.max()))
             with torch.no_grad():
-                if self._group_norm:
-                    hs = first.conv(batch)
-                    valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
-                    own = self._within(valid, hs.shape[-1])[:, None, :].float()
-                    count = own.sum(-1, keepdim=True)
-                    mean = (hs * own).sum(-1, keepdim=True) / count
-                    var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
-                    norm = first.layer_norm
-                    hs = (hs - mean) / torch.sqrt(var + norm.eps) * norm.weight[:, None] + norm.bias[:, None]
-                    hs = first.activation(hs)
-                    for layer in rest:
-                        hs = layer(hs)
-                    hs = hs.transpose(1, 2)
-                else:  # each frame normalized alone: the padding's frames never reach a clip's own
-                    hs = w2v.feature_extractor(batch[:, 0]).transpose(1, 2)
-                hs, _ = w2v.feature_projection(hs)
+                hs = first.conv(batch)
+                valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
+                own = self._within(valid, hs.shape[-1])[:, None, :].float()
+                count = own.sum(-1, keepdim=True)
+                mean = (hs * own).sum(-1, keepdim=True) / count
+                var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
+                norm = first.layer_norm
+                hs = (hs - mean) / torch.sqrt(var + norm.eps) * norm.weight[:, None] + norm.bias[:, None]
+                hs = first.activation(hs)
+                for layer in rest:
+                    hs = layer(hs)
+                hs, _ = w2v.feature_projection(hs.transpose(1, 2))
                 frames = self.ctc._get_feat_extract_output_lengths(lengths)
                 mask = self._within(frames, hs.shape[1])
                 if self._half_ctc:
@@ -378,7 +415,7 @@ class Builder:
     """A cache build on one device; `run` turns a builder's source shards into cache shards."""
 
     def __init__(self, device: str, settings: Settings, config_path: Path, mimi_weight: Path, tokenizer: Path,
-                 half_ctc: bool = False):
+                 half_ctc: bool = False, ane_ctc: bool = False):
         import sentencepiece
 
         self.settings = settings
@@ -387,8 +424,14 @@ class Builder:
         self.tokenizer = sentencepiece.SentencePieceProcessor(str(self.tokenizer_path))
         self.eos_id = int(self.tokenizer.eos_id())
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
+        if ane_ctc and device != "mlx":
+            raise ValueError("the Neural Engine CTC (ane_ctc) runs beside MLX: device mlx only")
+        if ane_ctc and settings.target != "vi":
+            # The English aligner there kept 99.35% of MLX float32's argmaxes (the Vietnamese 99.94%).
+            raise ValueError("the Neural Engine CTC (ane_ctc) times Vietnamese text only: direction en-vi")
+        mlx_only = {"ane_ctc": True} if ane_ctc else {}
         self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, settings.aligner,
-                                     aligner_files(settings.aligner), half_ctc=half_ctc)
+                                     aligner_files(settings.aligner), half_ctc=half_ctc, **mlx_only)
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 

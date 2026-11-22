@@ -76,8 +76,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     source.
   - Each prediction records `end_offset_s`, the time from the end of the source audio to the
     last generated word; the metrics report their median. It times the text as the 3B's
-    `max_delay` of 2 places it, so a parallel-heads student's larger one (its codebooks − 1,
-    which delays only its speech) is taken off ([phone-student](phone-student.md#parallel-heads)).
+    `max_delay` of 2 places it, so a parallel-heads student's larger one (up to 8,
+    which delays only its speech) is taken off ([student-heads](student-heads.md#design)).
   - With `--laal` (off by default, for a one-time comparison with the paper; the trainers'
     validation never computes it) it also records `laal_s`, text LAAL as the Hibiki-Zero paper
     computes it (Papi et al. 2022): each word's time less where an even pace over the source puts
@@ -158,6 +158,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 | `giga-heldout/test.jsonl` | 1,000 | 1.07 | the real-Vietnamese tranche's own distribution, held out; not in `eval/` (below) |
 | `fleurs-en/{dev,test}.jsonl` | 392, 641 | 1.04, 1.76 | English to Vietnamese: FLEURS `en_us` audio against the `vi_vn` text of its sentence (8 rows without one skipped); dev selects the English-to-Vietnamese side; not in `eval/` yet |
 | `en-vi-val-en/{cv27,libriheavy}.jsonl` | 360 | 1.04 | English to Vietnamese: `en-vi-val`'s rows with their English recordings; not in `eval/` yet |
+| `en-vi-val-en-noisy/{cv27,libriheavy}.jsonl` | 360 | 1.04 | `en-vi-val-en`'s clips under simulated recording conditions, for English to Vietnamese ([noisy-source](noisy-source.md#evaluation)); not in `eval/` yet |
 
 - FLEURS is quiet, `fleurs-en` most: its clips peak at a median −39.6 dBFS (191 of 392 under −40),
   `fleurs-vi`'s at −14.5 (135 of 361 under −20), against −2 to −7 for `en-vi-val`, `en-vi-val-en`

@@ -6,18 +6,71 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**No box since 2026-11-15 17:00 UTC+7.** The last one, H100 SXM Japan (Vast instance 60447659,
-$2.00/h), was destroyed at the user's request once its work was done.
-- Its results, every run directory, test, end-to-end test and log, are on the Mac in
-  `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
-  ([sft-evaluation](sft-evaluation.md#recording-results)).
-- Its weights were checked on the Hub by size: the students' runs, `grpo_twoway/best/` and
-  `release/`.
-- A new box brings everything up from the Hub, at ~50–150 MB/s with `HF_HUB_DISABLE_XET=1`.
-  Box-to-box copies over the public ssh ports ran only 6–12 MB/s.
-- The Vietnamese tokenizer swap's files, which aren't on the Hub, are kept with that copy under
-  `weights-small/`. The tokenizer model is also in the Mac's `weights/`.
-- A new box's first job is `restart.sh student-heads` ([Jobs](#jobs)).
+**The box since 2026-11-19: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
+Beijing, $1.217/h; 96 GB, 600 W, driver 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of
+disk; `ssh -p 21639 root@205.185.115.44`, or Vast's proxy `ssh -p 30253 root@ssh3.vast.ai` when
+that port refuses, as it did for a minute on 2026-11-21). Its network sits behind a slow proxy
+([Bring-up](#a-box-behind-a-slow-proxy)).
+- It runs `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
+  started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
+  ([student-heads](student-heads.md#runs)). `student_heads14` (8 codebooks) stopped for it at
+  ~22,600; its 16,000 pair and best are on the Hub.
+- The user (2026-11-20): run it to the end and score its test sets both ways, without asking.
+  Then upload everything and destroy the box. The user (2026-11-21): "should run grpo after
+  distil". So the distilled best goes through GRPO first (`grpo_launch.sh`, as `grpo_student`
+  ran: [student-grpo](student-grpo.md#run)), and the test sets score GRPO's best. GRPO loads,
+  samples and scores through the same `common.build_lm`, `get_lmgen` and forward as the heads
+  student's training and validation. The rooms' noise bank was fetched ahead of time.
+- One session runs the box's jobs from 2026-11-21 (user: "you in control of the training on the box
+  now"). After the heads run, in order, one GPU job at a time:
+  1. its test sets on its best (`test_heads.sh`);
+  2. the box validation of PRs #149–#151 (user: "after the heads run and before grpo"): short runs
+     with no Hub sync, under `runs/val_*`, logs in `/workspace/logs/val/`;
+  3. the student's on-policy stage, aimed at the best phone model (user, 2026-11-21: "i'm not
+     asking for plain grpo, i'm asking for best outcome"): 200-update probes from the distilled
+     best (distillation alone at three rates; both terms, z-scored and centered; plain GRPO as the
+     control only), one run of the winner, then the 6-bit palettization finish; then the 3B's
+     experiments (scheduled sampling, anchored GRPO). The 3B's start, the two-way SFT's final
+     model, is `weights/twoway_final.safetensors` (fetched 2026-11-21, sha256 checked).
+  The box stays for these; it is destroyed only after them and their uploads.
+- **All of `en_speech`, both ways** (user, 2026-11-21: "let's build both vi - en and en - vi"). Round
+  4e's test (500 shards against 150: FLEURS −1.3) also changed the batch and the updates, and
+  spoke only for VI→EN, whose `en_speech` source is TTS; for EN→VI `en_speech` holds the only real
+  English speech (2,481 of 8,456 h). The `vi-en` caches of all 1,832 train shards, noisy and
+  clean, are on the Hub (78 GB each): a run fetches them, so `vi-en` needs no data work; using all
+  of them is the next run's shard list (round 4e listed 500). `en-vi` had round 4e's 500:
+  `/workspace/envi_rest.py` (box-only) builds the other 1,332 beside the heads run (started
+  2026-11-21 08:00 UTC; log `logs/envi_rest.log`). Sources by aria2c 25 at a time (321 GB,
+  ~16 MB/s), `cache_codes --direction en-vi` in `/workspace/envs/cache` (the `.venv` copied, with
+  free-threaded av 19.0.2) capped at 30% of the card, into `/workspace/en_vi_rest_out` (outside
+  the training caches, which runs started meanwhile read); each batch goes to the Hub's
+  `en-vi/en-vi-grounded-v2/train/`, is checked against its listing and deleted here. While
+  `logs/envi_rest.pause` exists no new build starts (for profiles). Profiled on 2 shards: 21.3 h
+  of audio built in 122 s, 98.7% of rows kept; the heads run went 0.69 → ~1.4 s an update while it
+  built. The first batch of 25 (512 h of Mimi audio, both clips) took 1,903 s at ~970× real time on
+  the shared GPU, 719 s of download (~8 MB/s) and 180 s of upload: the whole build would hold half
+  the GPU ~14 h and the noisy copies ~3 h more, moving the heads run's end ~10 h. Stopped
+  2026-11-21 ~08:55 UTC: the user does the data preparation in a separate session ("continue with
+  training, i will do the data preparation on a separate session"). On the Hub then: 527 of the
+  1,832 `en-vi` shards, no noisy `en-vi` copy. Left on the box for it: `/workspace/envi_rest.py`
+  (resumes from the Hub's listings: builds the missing clean shards, makes every shard's noisy
+  copy with `mimi_cache_cuda` (PR #153, merged as `7090cc6`; validated on this box both ways,
+  [noisy-source](noisy-source.md#checks)) from `/workspace/wt-noisy` (main at `7090cc6`,
+  detached) at `--seed 1` into
+  `en-vi/en-vi-grounded-v2-noisy/`, uploads a batch while the next builds; holds its GPU steps while
+  `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac builds them instead, top down
+  ([envi-data](envi-data.md)): run `envi_rest.py` only bottom up beside it. `en-vi-val-en-noisy` is
+  built in `/workspace/hibiki-zero/data/eval/` (2026-11-21).
+- The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
+  on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
+  ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
+- A box brings everything up from the Hub: ~50–150 MB/s with `HF_HUB_DISABLE_XET=1` on a direct
+  link. Box-to-box copies over the public ssh ports ran only 6–12 MB/s.
+- The swap's init map (`tokenizer_spm_48k_multi6_2_vi6k_init.json`) isn't on the Hub. The
+  trainers need it beside the swap to read any base-tokenizer cache (`paths.swap_slots`).
+  - This box rebuilt it with `training.vi_tokenizer.build run`. The build is deterministic, and
+    its tokenizer model came out byte-identical to `release/twoway_grpo1400/`'s.
+  - A copy is also kept on the Mac with the last box's results, under `weights-small/`.
 
 **The H200 Indonesia box (59864576) went offline on 2026-11-10** at step ~15,000 of round 4d:
 everything local was lost (round 4d's checkpoints, round 4b's test outputs `eval/cmp_step*`;
@@ -111,6 +164,41 @@ one expires; everything a job writes goes to the Hub as it runs, so a new box re
 4. The jobs read the tranche repos' parts locally under `/workspace/tranche/repo/<source>/<part>/`
    and fall back to the Hub (`ingest.part_file`), so voice and filters need no download first.
 
+### A box behind a slow proxy
+
+The Beijing host (61345966) routes all international traffic through a transparent proxy: its DNS
+answers in 198.18.0.0/15.
+- Throughput: ~1.5–2.5 MB/s a connection and 10–43 MB/s in all, and single connections drop.
+  Domestic mirrors give 10–15 MB/s a connection.
+- The env: `h100.sh setup` stalled 70 min on four CUDA wheels. The image's
+  `UV_HTTP_TIMEOUT=500` waits 8 min on each stalled connection. The same pins from the mirrors
+  installed in 4 min:
+  - the torch wheel from `mirrors.aliyun.com/pytorch-wheels/cu134/`, its sha256 checked against
+    PyTorch's index;
+  - everything else from Tsinghua's PyPI (`pypi.tuna.tsinghua.edu.cn/simple`);
+  - the Rust builds' crates from Tsinghua's crates.io index, set as a source replacement in
+    `~/.cargo/config.toml`.
+- The Hub: 8,007 files (173 GB) took ~3.7 h with `aria2c`, 8 connections a file and 8 files at
+  a time. The CDN links are signed for ~1 h, so they were resolved in ~6 GB batches.
+  `hf download` got ~2 MB/s a file and stalled.
+- Disk: shards and packs of every training cache (~150 GB each) don't fit together on 300 GB.
+  Pack each cache with `streams --drop-shards` as soon as its download completes.
+  - A fetch that checks only the files would fetch the dropped shards again, and a trainer
+    starting meanwhile packs half-written ones. A shard whose `pack.json` is marked `dropped`
+    counts as fetched.
+- `fleurs-en` and `en-vi-val-en` aren't on the Hub. They are built on the box with
+  `training.prep.eval_sets --sets fleurs-en en-vi-val-en`.
+- The image (`vastai/vllm-omni`) starts vLLM-Omni serving Qwen-Image, a model UI and Ray.
+  - Stop them with `supervisorctl stop vllm-omni model-ui ray`, and drop their entries from
+    `/etc/portal.yaml` so they skip on a restart.
+  - vLLM's DiffusionWorker survives the stop as an orphan. It held 55 GB of the GPU and pulled
+    54 GB of Qwen-Image into `$HF_HOME/hub/blobs`. Kill it by the PID that `nvidia-smi` lists, and
+    delete the download.
+  - The image exports `UV_OVERRIDE` (an NCCL pin) and `UV_INDEX_STRATEGY=unsafe-best-match`.
+    Unset both for `setup`, or the env differs from the pinned one.
+- Don't `pkill -f` a pattern that also appears in the ssh command running it: it kills its own
+  shell.
+
 Round 4 SFT's inputs, all on the Hub (`restart.sh sft` reads them locally):
 - the tranche caches: `anquachdev/mimi-en-vi-speech-20k` (dataset, `<source>/shard_*.pt`) into
   `/workspace/tranche/repo/cache/<source>/`;
@@ -141,7 +229,7 @@ the two-way caches and run before GRPO):
 | grpo | `grpo_launch.sh RUN <weight> [ARGS]` (from the checkout, [grpo](grpo.md#running)), on the two-way model or a phone student | its updates; stop with TERM to the launcher alone |
 | student | `restart.sh student` (`student_dep10`, cut from GRPO update 1,400 if missing; [phone-student](phone-student.md#next)) | its 190,126 updates (~12 h), then the test sets both ways; stop with TERM to the launcher alone |
 | student-distill | `restart.sh student-distill` (`student_dep10_anneal`, from `student_dep10_distill`'s model 32,000, the teacher GRPO update 1,400; [phone-student](phone-student.md#distillation)) | its `--max-steps`, then the test sets both ways; stop with TERM to the launcher alone |
-| student-heads | `restart.sh student-heads` (`student_heads14`, distilled from GRPO update 1,400 from the start; [phone-student](phone-student.md#next)): the next box's first job, ~18 h; its preflight needs 39 GiB | the same steps, then the test sets both ways |
+| student-heads | `restart.sh student-heads` (`student_heads14_cb16`, 16 codebooks, distilled from GRPO update 1,400 from the start; [student-heads](student-heads.md#runs)): running on the RTX PRO 6000 ([State](#state)), ~37 h there (0.694 s an update, 50.9 GiB peak) | the same steps, then the test sets both ways |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with

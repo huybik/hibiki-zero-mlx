@@ -26,6 +26,17 @@ both ways by default): the run promotes the checkpoint with the best mean chrF o
 those that pass every set's health gates and end no more than LATENCY_SLACK_S later than the start
 on each (its median end offset); val_log.jsonl records each evaluation's verdict.
 
+With --teacher-weight, the update also distils a frozen teacher on-policy: the reverse
+KL(policy || teacher) of every kept token's next-token distribution on the policy's own rollouts
+(the teacher scores the same rollout), weighted as the GRPO term is, times --kl-coef. That term
+alone (--reward-coef 0) is on-policy distillation (Agarwal et al. 2024, arXiv 2306.13649): no π_old
+pass, the rewards only logged. Both together keep a GRPO run near its teacher. A teacher that
+delays a codebook less than the policy reads, at a text token, frames of it the policy sampled after
+that token (a heads student's codebooks 3-15), so its distribution may lean towards the policy's
+own choice; grpo_profile.py bounds that. --advantage
+centered drops the group normalization's division by the std (Dr. GRPO, arXiv 2503.20783), so a
+frame where the rollouts barely differ gets a small advantage, not ±1.
+
 A --room-share of streams hold a room's noise in their source wherever nobody speaks, instead of
 digital silence (`streams.room_codes`, from the noise bank in --bank-dir): text written there
 costs BLEU like any other extra word, so the policy learns to stay quiet in a room, as a phone's
@@ -50,6 +61,7 @@ import os
 import sys
 import time
 from concurrent.futures import Future, ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +97,8 @@ RESUME_KEYS = (
     "stream_seconds", "frames", "tail_seconds", "streams", "group", "updates", "tau", "lr", "adam_beta1",
     "adam_beta2", "weight_decay", "grad_clip", "epsilon", "alpha", "text_weight", "temperature",
     "top_k", "eval_pairs", "eval_batch_size", "eval_every", "save_every", "keep_checkpoints",
-    "seed", "train_rows", "train_streams", "eval_rows", "room_share",
+    "seed", "train_rows", "train_streams", "eval_rows", "room_share", "teacher_weight",
+    "teacher_config", "reward_coef", "kl_coef", "advantage",
 )
 EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both directions)
     Path("data/eval/fleurs-vi/dev.jsonl"),
@@ -97,12 +110,13 @@ EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both direc
     Path("data/eval/en-vi-val-en/cv27.jsonl"),
     Path("data/eval/en-vi-val-en/libriheavy.jsonl"),
 ]
-LATENCY_SLACK_S = 0.2  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
+LATENCY_SLACK_S = 0.5  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
 # The defaults the profiler measures with too.
 TEMPERATURE = 0.8  # rollouts sample, and logprobs are taken, at evaluation's temperature
 TOP_K = 250
 EPSILON = 0.2  # the ratio clip
 TEXT_WEIGHT = 100.0  # c_0: the text stream against 1 for each audio codebook
+ADVANTAGES = ("zscore", "centered")  # rewards.normalize with and without the std
 # Rooms where nobody speaks, drawn once (a window's 640 streams draw from them). Half the streams
 # hold one: the other half keep digital silence, what a voice gate passes between sentences.
 ROOMS = 256
@@ -154,10 +168,17 @@ def rollout(lm_gen: Any, sources: torch.Tensor, silence: torch.Tensor) -> torch.
 def token_logprobs(
     lm: Any, codes: torch.Tensor, condition_tensors: Any | None, temperature: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """`output_logprobs` of a forward of `lm` on `codes`."""
+    return output_logprobs(lm, lm(codes, condition_tensors=condition_tensors), codes, temperature)
+
+
+def output_logprobs(
+    lm: Any, output: Any, codes: torch.Tensor, temperature: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Logprobs at `temperature` of the text and target audio tokens of `codes` (the cache
-    layout [B, 1 + 2 * dep_q, T]), [B, 1 + dep_q, T] float32 (0 where undefined), and where they
-    are defined. They are SFT's loss kernel negated (`common.token_ce`)."""
-    output = lm(codes, condition_tensors=condition_tensors)
+    layout [B, 1 + 2 * dep_q, T]) under `output`, `lm`'s forward on them: [B, 1 + dep_q, T]
+    float32 (0 where undefined), and where they are defined. They are SFT's loss kernel negated
+    (`common.token_ce`)."""
     audio = codes[:, lm.audio_offset : lm.audio_offset + lm.dep_q]
     text_ce = common.token_ce(output.text_logits, codes[:, :1], output.text_mask, temperature)
     audio_ce = common.token_ce(output.logits, audio, output.mask, temperature)
@@ -166,8 +187,8 @@ def token_logprobs(
 
 def grpo_loss(
     lm: Any,
+    output: Any,
     codes: torch.Tensor,
-    condition_tensors: Any | None,
     old_logprobs: torch.Tensor,
     advantages: torch.Tensor,
     keep: torch.Tensor,
@@ -176,9 +197,9 @@ def grpo_loss(
     temperature: float,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """The negated clipped objective summed over a micro-batch's kept tokens (Eq. 7-8), with the
-    sums behind its ratio statistics. `advantages` is [B, T], `keep` [B, 1 + dep_q, T] (from
-    `kept_tokens`), `stream_weights` [1 + dep_q]."""
-    logprobs, mask = token_logprobs(lm, codes, condition_tensors, temperature)
+    sums behind its ratio statistics. `output` is `lm`'s forward on `codes`, `advantages`
+    [B, T], `keep` [B, 1 + dep_q, T] (from `kept_tokens`), `stream_weights` [1 + dep_q]."""
+    logprobs, mask = output_logprobs(lm, output, codes, temperature)
     mask = mask & keep
     ratio = torch.exp(logprobs - old_logprobs)
     advantage = advantages[:, None, :]
@@ -193,6 +214,68 @@ def grpo_loss(
         "max_deviation": deviation.max(),
     }
     return -objective, stats
+
+
+def distill_loss(
+    output: Any, teacher: Any, keep: torch.Tensor, stream_weights: torch.Tensor
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """The reverse KL(policy || teacher) of each kept token's next-token distribution (at
+    temperature 1, as SFT's distillation), weighted by `stream_weights` [1 + dep_q] and summed
+    over a micro-batch, where both forwards (`output` the policy's, `teacher` the teacher's on the
+    same rollouts) score the token: their delays may differ, as a heads student's do. On the
+    policy's own samples it is mode-seeking: the policy is pulled off whatever the teacher would
+    not say, where SFT's KL(teacher || policy) spreads it over all the teacher might."""
+    text_valid = output.text_mask & teacher.text_mask & keep[:, :1]
+    audio_valid = output.mask & teacher.mask & keep[:, 1:]
+    text_kl = common.token_kl(teacher.text_logits, output.text_logits, text_valid)
+    audio_kl = common.token_kl(teacher.logits, output.logits, audio_valid)
+    kl = torch.cat([text_kl, audio_kl], dim=1) * stream_weights[None, :, None]
+    stats = {
+        "kl_text_sum": text_kl.sum(),
+        "kl_text_tokens": text_valid.sum(),
+        "kl_audio_sum": audio_kl.sum(),
+        "kl_audio_tokens": audio_valid.sum(),
+    }
+    return kl.sum(), stats
+
+
+@dataclass(frozen=True)
+class Objective:
+    """An update's loss terms: GRPO's clipped objective times `reward_coef` and, with a teacher,
+    the reverse KL to it times `kl_coef`, each token weighted by `stream_weights`."""
+
+    stream_weights: torch.Tensor
+    epsilon: float
+    temperature: float
+    reward_coef: float
+    kl_coef: float
+
+
+def update_loss(
+    lm: Any,
+    codes: torch.Tensor,
+    condition_tensors: Any | None,
+    keep: torch.Tensor,
+    objective: Objective,
+    old_logprobs: torch.Tensor | None,
+    advantages: torch.Tensor,
+    teacher_output: Any | None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """A micro-batch's loss and statistics: one forward of the policy serves both terms. The
+    GRPO term needs π_old's logprobs (`old_logprobs`) when `objective.reward_coef` is set, the
+    distillation term the teacher's forward on the same `codes` (`teacher_output`)."""
+    output = lm(codes, condition_tensors=condition_tensors)
+    loss = torch.zeros((), device=codes.device)
+    stats: dict[str, torch.Tensor] = {}
+    if objective.reward_coef:
+        policy, stats = grpo_loss(lm, output, codes, old_logprobs, advantages, keep,
+                                  objective.stream_weights, objective.epsilon, objective.temperature)
+        loss = loss + objective.reward_coef * policy
+    if teacher_output is not None:
+        kl, kl_stats = distill_loss(output, teacher_output, keep, objective.stream_weights)
+        loss = loss + objective.kl_coef * kl
+        stats.update(kl_stats)
+    return loss, stats
 
 
 def stream_sentences(
@@ -265,10 +348,10 @@ def _start_reward_worker(tokenizer_path: str, trainer: int) -> None:
 
 
 def _group_rewards(
-    tokens: np.ndarray, sentences: list[rewards.Sentence], alpha: float
+    tokens: np.ndarray, sentences: list[rewards.Sentence], alpha: float, scale: bool
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return rewards.group_advantages(tokens, sentences, int(_TOKENIZER.eos_id()),
-                                    int(_TOKENIZER.pad_id()), _TOKENIZER.decode, alpha)
+                                    int(_TOKENIZER.pad_id()), _TOKENIZER.decode, alpha, scale=scale)
 
 
 def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
@@ -473,6 +556,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--epsilon", type=float, default=EPSILON, help="Ratio clip.")
     parser.add_argument("--alpha", type=float, default=rewards.ALPHA, help="Final BLEU's share.")
+    add_objective_args(parser)
     parser.add_argument("--text-weight", type=float, default=TEXT_WEIGHT, help="c_0 against 1 per codebook.")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE)
     parser.add_argument("--top-k", type=int, default=TOP_K)
@@ -492,6 +576,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def add_objective_args(parser: argparse.ArgumentParser) -> None:
+    """The loss terms' options, the profiler's too."""
+    parser.add_argument(
+        "--advantage", choices=ADVANTAGES, default="zscore",
+        help="zscore: each reward frame's (r - mean) / std over the group (the paper's); centered: "
+        "r - mean, in BLEU points (Dr. GRPO).",
+    )
+    parser.add_argument(
+        "--teacher-weight", type=Path,
+        help="Also distil this frozen model on the policy's rollouts (reverse KL); it must read the policy's codebooks.",
+    )
+    parser.add_argument("--teacher-config", type=Path, help="The teacher's config; default the 3B's.")
+    parser.add_argument("--kl-coef", type=float, help="The distillation term's weight; default 1 with a teacher.")
+    parser.add_argument(
+        "--reward-coef", type=float, default=1.0,
+        help="The GRPO term's weight; 0, with a teacher, is on-policy distillation alone.",
+    )
+
+
 def add_room_args(parser: argparse.ArgumentParser) -> None:
     """The rooms' options, the profiler's too."""
     parser.add_argument(
@@ -501,6 +604,50 @@ def add_room_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="The noise bank's parent (augment.fetch_bank's root).")
 
 
+def validate_objective_args(args: argparse.Namespace) -> None:
+    """The loss terms' options (`add_objective_args`), the profiler's too; --kl-coef becomes 1
+    with a teacher when not given."""
+    if args.teacher_weight is None:
+        if args.teacher_config is not None or args.kl_coef is not None or not args.reward_coef:
+            raise ValueError("--teacher-config, --kl-coef and --reward-coef 0 need --teacher-weight")
+    elif args.kl_coef is None:
+        args.kl_coef = 1.0
+    for name in ("reward_coef", "kl_coef"):
+        value = getattr(args, name)
+        if value is not None and not (math.isfinite(value) and value >= 0):
+            raise ValueError(f"--{name.replace('_', '-')} must be finite and not negative")
+    if args.teacher_weight is not None and not args.kl_coef:
+        raise ValueError("--teacher-weight needs a positive --kl-coef")
+
+
+def teacher_info(args: argparse.Namespace, codebooks: int) -> Any | None:
+    """The checkpoint info of --teacher-weight, or None. The teacher scores the policy's own
+    rollouts, which hold only the policy's `codebooks`, so it must read as many."""
+    if args.teacher_weight is None:
+        return None
+    info = common.teacher_checkpoint_info(args)
+    if int(info.lm_config["dep_q"]) != codebooks:
+        raise ValueError(f"the teacher must read the policy's {codebooks} codebooks a stream")
+    return info
+
+
+def teacher_forward(teacher: Any, info: Any, codes: torch.Tensor) -> Any:
+    """The teacher's training forward on a micro-batch's rollouts, without gradients."""
+    condition = common.batch_condition_tensors(teacher, info.model_type, len(codes))
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        return teacher(codes, condition_tensors=condition)
+
+
+def scored_delays(lm: Any, teacher: Any | None) -> torch.Tensor:
+    """The text and target codebooks' delays `kept_tokens` and `forward_frames` count by: the
+    policy's, or with a teacher each the larger of the two, so a token is kept only where both
+    score it and a micro-batch's longer rollouts change no kept token of either forward."""
+    delays = torch.tensor(lm.delays[: 1 + lm.dep_q])
+    if teacher is not None:
+        delays = torch.maximum(delays, torch.tensor(teacher.delays[: 1 + lm.dep_q]))
+    return delays
+
+
 def validate_args(args: argparse.Namespace) -> None:
     for name in ("frames", "streams", "group", "updates", "tau", "gen_frames", "micro_batch",
                  "reward_workers", "eval_batch_size", "eval_every", "save_every"):
@@ -508,6 +655,7 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     if args.group < 2:
         raise ValueError("--group needs at least 2 rollouts to normalize")
+    validate_objective_args(args)
     if args.save_every % args.tau or args.eval_every % args.save_every or args.updates % args.tau:
         raise ValueError(
             "--save-every and --updates must be multiples of --tau, --eval-every of --save-every"
@@ -541,8 +689,9 @@ def main() -> None:
 
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
+    teach = teacher_info(args, codebooks)
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     mimi = info.get_mimi(device=device)
     dataset = stream_dataset(args, info, rows, layout, codebooks, mimi)
     if len(dataset) < args.updates * args.streams:
@@ -571,9 +720,17 @@ def main() -> None:
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     stream_weights = torch.ones(1 + lm.dep_q, device=device)
     stream_weights[0] = args.text_weight
+    teacher = None
+    if teach is not None:
+        print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
+        teacher = common.load_teacher(teach, args.teacher_weight, device, codebooks)
+    objective = Objective(stream_weights, args.epsilon, args.temperature, args.reward_coef,
+                          args.kl_coef or 0.0)
+    # Parked on the host beside the policy while a window generates.
+    teacher_params = [] if teacher is None else list(teacher.parameters())
     silence_frame = dataset.silence[:codebooks, -1].long().to(device)
     tail = round(args.tail_seconds * streams.FRAME_RATE)
-    delays = torch.tensor(lm.delays[: 1 + lm.dep_q])  # the text and target codebooks'
+    delays = scored_delays(lm, teacher)
 
     log_path = out_dir / "train_log.jsonl"
     val_log_path = out_dir / "val_log.jsonl"
@@ -612,8 +769,9 @@ def main() -> None:
             stored = json.loads(config_path.read_text(encoding="utf-8"))
             stored["start_end_offset_s"] = start_offset
             atomic_write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", config_path)
-        # The gate allows LATENCY_SLACK_S: two updates at 2e-7 (in effect the start) measured
-        # 0.1 s later than the start, and a blocked checkpoint is not kept.
+        # The gate allows LATENCY_SLACK_S: quality comes first, so some later output is accepted for
+        # it (two updates at 2e-7, in effect the start, already measured 0.1 s later), and a blocked
+        # checkpoint is not kept.
         on_time = all(free_running[name]["median_end_offset_s"] <= start_offset[name] + LATENCY_SLACK_S
                       for name in selecting)
         if at > 0 and healthy and on_time:
@@ -656,11 +814,11 @@ def main() -> None:
                 sentences = stream_sentences(stream, rows, tokenizer)
                 tokens = rollouts[offset : offset + args.group, 0, : int(lengths[first_row])]
                 jobs[group] = pool.submit(_group_rewards, tokens.numpy().copy(), sentences,
-                                          args.alpha)
+                                          args.alpha, args.advantage == "zscore")
 
         generator = common.bf16_copy(info, lm, device)
         moving = time.time()
-        offload.to_host(trainer_tensors(lm, optimizer))
+        offload.to_host(trainer_tensors(lm, optimizer) + teacher_params)
         moved = time.time() - moving
         batches = generation_batches(lengths, args.gen_frames, args.group)
         rollouts = sample_window(generator, info, sources, lengths, batches, silence_frame,
@@ -684,18 +842,21 @@ def main() -> None:
         codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
         rewarded = time.time() - window_started
 
-        # 2. π_old's logprobs: the policy before this window's first update, through the update's
-        # own forward (gradients enabled, never backpropagated).
-        # Micro-batches cut as each update cuts them: the same rows in the same batch shapes.
-        old_logprobs = torch.zeros((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
-        with autocast:
-            for start, end in micro_batches(window, per_update, args.micro_batch):
-                frames = micro_frames(spans, start, end, args.frames)
-                batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
-                condition = common.batch_condition_tensors(lm, info.model_type, end - start)
-                logprobs, _ = token_logprobs(lm, batch, condition, args.temperature)
-                old_logprobs[start:end, :, :frames] = logprobs.detach().cpu()
-                del logprobs
+        # 2. π_old's logprobs, which only the GRPO term reads: the policy before this window's
+        # first update, through the update's own forward (gradients enabled, never
+        # backpropagated). Micro-batches cut as each update cuts them: the same rows in the same
+        # batch shapes.
+        old_logprobs = None
+        if objective.reward_coef:
+            old_logprobs = torch.zeros((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
+            with autocast:
+                for start, end in micro_batches(window, per_update, args.micro_batch):
+                    frames = micro_frames(spans, start, end, args.frames)
+                    batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
+                    condition = common.batch_condition_tensors(lm, info.model_type, end - start)
+                    logprobs, _ = token_logprobs(lm, batch, condition, args.temperature)
+                    old_logprobs[start:end, :, :frames] = logprobs.detach().cpu()
+                    del logprobs
         scored = time.time() - window_started
 
         # 3. The window's updates.
@@ -703,37 +864,35 @@ def main() -> None:
             update_started = time.time()
             optimizer.zero_grad(set_to_none=True)
             first = update * per_update
-            totals = {"loss": 0.0, "ratio_sum": 0, "clipped": 0, "tokens": 0, "max_deviation": 0}
+            totals: dict[str, Any] = {"loss": 0.0}
             forward_total = 0
             for start, end in micro_batches(window, per_update, args.micro_batch, update):
                 frames = micro_frames(spans, start, end, args.frames)
                 forward_total += frames * (end - start)
                 batch = codes[start:end, :, :frames].to(device=device, dtype=torch.long)
                 condition = common.batch_condition_tensors(lm, info.model_type, end - start)
+                teacher_output = None if teacher is None else teacher_forward(teacher, teach, batch)
                 with autocast:
-                    loss, stats = grpo_loss(
-                        lm, batch, condition, old_logprobs[start:end, :, :frames].to(device),
-                        advantages[start:end, :frames].to(device),
-                        keep[start:end, :, :frames].to(device),
-                        stream_weights, args.epsilon, args.temperature)
+                    loss, stats = update_loss(
+                        lm, batch, condition, keep[start:end, :, :frames].to(device), objective,
+                        None if old_logprobs is None else old_logprobs[start:end, :, :frames].to(device),
+                        advantages[start:end, :frames].to(device), teacher_output)
+                teacher_output = None  # the loss's graph keeps what its backward needs
                 (loss / per_update).backward()
                 totals["loss"] += loss.detach()
-                totals["max_deviation"] = torch.maximum(
-                    torch.as_tensor(totals["max_deviation"], device=device), stats.pop("max_deviation"))
                 for key, value in stats.items():
-                    totals[key] += value
+                    if key == "max_deviation":
+                        totals[key] = value if key not in totals else torch.maximum(totals[key], value)
+                    else:
+                        totals[key] = totals.get(key, 0) + value
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip or math.inf)
             if not math.isfinite(float(grad_norm)):
                 raise RuntimeError(f"Non-finite gradient norm at update {step + 1}")
             optimizer.step()
             step += 1
-            tokens = float(totals["tokens"])
             item = {
                 "step": step,
                 "loss": float(totals["loss"]) / per_update,
-                "ratio_mean": float(totals["ratio_sum"]) / tokens,
-                "clip_fraction": float(totals["clipped"]) / tokens,
-                "ratio_max_deviation": float(totals["max_deviation"]),
                 "grad_norm": float(grad_norm),
                 "final_bleu": float(final_bleu[first : first + per_update].mean()),
                 "eos_rate": float(eos_rate[first : first + per_update].mean()),
@@ -747,10 +906,21 @@ def main() -> None:
                 "window_reward_wait_s": rewarded - generated,
                 "window_old_logprob_s": scored - rewarded,
             }
+            terms = []
+            if old_logprobs is not None:
+                tokens = float(totals["tokens"])
+                item["ratio_mean"] = float(totals["ratio_sum"]) / tokens
+                item["clip_fraction"] = float(totals["clipped"]) / tokens
+                item["ratio_max_deviation"] = float(totals["max_deviation"])
+                terms.append(f"ratio={item['ratio_mean']:.4f} clip={item['clip_fraction']:.4f}")
+            if teacher is not None:  # mean KL a token, unweighted
+                item["kl_text"] = float(totals["kl_text_sum"]) / max(1.0, float(totals["kl_text_tokens"]))
+                item["kl_audio"] = float(totals["kl_audio_sum"]) / max(1.0, float(totals["kl_audio_tokens"]))
+                terms.append(f"kl_text={item['kl_text']:.4f} kl_audio={item['kl_audio']:.4f}")
             append_log(log_path, item)
             print(f"update={step} loss={item['loss']:.1f} bleu={item['final_bleu']:.1f} "
-                  f"ratio={item['ratio_mean']:.4f} clip={item['clip_fraction']:.4f} "
-                  f"grad_norm={item['grad_norm']:.2f} s={item['sec_per_update']:.1f}", flush=True)
+                  f"{' '.join(terms)} grad_norm={item['grad_norm']:.2f} "
+                  f"s={item['sec_per_update']:.1f}", flush=True)
             if step % args.save_every == 0:
                 writer.save(step)
             if step % args.eval_every == 0:

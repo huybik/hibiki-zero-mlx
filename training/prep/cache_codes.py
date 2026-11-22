@@ -6,8 +6,8 @@ A row is
 [33, T]: CTC-timed English text, 16 English target Mimi codebooks (delayed by a seeded draw that
 fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS. With
 --direction en-vi the languages trade places: Vietnamese text and target, English source, for
-two-way training; that build runs on --device cuda (MLX has no Vietnamese aligner), tokenizes
-with the Vietnamese swap (the direction's default --tokenizer) and takes its own --out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
+two-way training; that build tokenizes with the Vietnamese swap (the direction's default --tokenizer)
+and takes its own --out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
 rejected and listed with their reason. The build itself (decode, gates, the target language's
 CTC aligner and Mimi on --device, the Viterbi) is `cache_build`'s, shared with the tranche's
 builder.
@@ -67,6 +67,9 @@ def parse_args() -> argparse.Namespace:
         help="Build the source shards in reverse path order, as the second machine does.",
     )
     parser.add_argument("--device", choices=list(MODELS), default="mlx")
+    parser.add_argument("--ane-ctc", action="store_true",
+                        help="MLX, en-vi: the Vietnamese aligner's transformer on the Neural Engine beside Mimi on "
+                             "the GPU (wav2vec2_coreml; text timings move by near-ties).")
     parser.add_argument("--direction", choices=DIRECTIONS, default=DEFAULT_DIRECTION,
                         help="<source>-<target>: the language heard, then the one spoken and written.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -157,7 +160,7 @@ def main() -> None:
     settings = Settings(args.max_frames, args.min_alignment_score, args.direction, args.target_delay_ratio, args.seed)
     with exclusive(args.out_dir / ".cache_codes.lock", f"another cache_codes run is using {args.out_dir}"):
         builder = Builder(args.device, settings, args.config_path, args.mimi_weight,
-                          args.tokenizer or DIRECTION_TOKENIZERS[args.direction])
+                          args.tokenizer or DIRECTION_TOKENIZERS[args.direction], ane_ctc=args.ane_ctc)
         began, hours = time.perf_counter(), 0.0
         workers = args.workers or default_workers(args.device)
         for shard in builder.run(todo(args, sources), read, workers):

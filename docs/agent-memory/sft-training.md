@@ -1,8 +1,8 @@
 # Full-model SFT training
 
 Read when touching `training/finetune/`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) · [Speed](#speed) ·
-[Objective](#objective)
+Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) ·
+[Schedules and averaging](#schedules-and-averaging) · [Speed](#speed) · [Objective](#objective)
 
 The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered in
 [sft-data-caches](sft-data-caches.md). The launcher, checkpoints and recovery are in
@@ -15,7 +15,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 
 - Full-model SFT from `kyutai/hibiki-zero-3b-pytorch-bf16`; every parameter is trainable.
   `common.load_policy` builds the model for SFT and GRPO alike, through `common.build_lm` (moshi's
-  `get_moshi`, or for a parallel-heads student its own load, [phone-student](phone-student.md#parallel-heads)),
+  `get_moshi`, or for a parallel-heads student its own load, [student-heads](student-heads.md#design)),
   which, loading a Hibiki weight, copies the text PAD's input embedding over the text EOS's (its
   way to make a sampled early EOS read on as PAD). So every run starts with that row reset, and
   it trains from there: cosine 0.945 to PAD's after round 3, 0.88 after round 4. `eval.py`, the
@@ -133,12 +133,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     dominates; at 2.25e-6 the movement per hour of data is 1.33 times round 4's (weight decay's
     too). It is applied in part (the full rule also scales 1 − β1, 1 − β2 and ε; the betas stay
     (0.9, 0.95)) and is untested on this model.
-  - Linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0.
+  - Linear warmup over 5% of the steps (`--warmup-fraction`), cosine decay to 0 (`--schedule`
+    cosine; the others are in [Schedules and averaging](#schedules-and-averaging)).
     The next run ends sooner, since the two-way run's last 12% of updates, the rate under 4% of
     its peak, gained nothing (user, 2026-11-13; [two-way](two-way.md#two-way-run)); `--max-steps`
     shortens the whole cosine, not only its tail. A floor held at the end instead would keep the
     model moving, as the constant 1e-6 before the cosine did
-    ([plan](../vi_en_parity_plan.md#decisions-2026-11-01)). Fused AdamW with betas (0.9, 0.95)
+    ([plan](../vi_en_parity_plan.md#decisions-2026-11-01-later-dates-marked)). Fused AdamW with betas (0.9, 0.95)
     and weight decay 0.1; grad clip 1.0. Each train-log line holds its steps' mean and max gradient norm before clipping (`grad_norm`, `max_grad_norm`),
     summed on the GPU without a sync per step. A non-finite norm raises at the next log step and
     before any save: the losses cannot show the last step's update, and a NaN pair saved would be
@@ -158,6 +159,40 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   (`train.py` has no device flag); the `training.prep` steps, the cache build included
   ([sft-data-caches](sft-data-caches.md)), run on the Mac.
 
+## Schedules and averaging
+
+Runs keep stopping before their cosine ends (`student_dep10` at ~100,000 of 190,126 updates; its
+first distillation at 32,000 with the rate still high, which then needed a separate anneal at
+1e-5 to lower its KL, [phone-student](phone-student.md#distillation)). Warmup-stable-decay (WSD)
+decides where to decay when the run is judged, not when it starts (2026-11-21; it matches cosine
+at the same compute, Hägele et al. 2024, arXiv 2405.18392):
+
+- `--schedule constant`: the warmup, then the peak until the run stops (by `--epochs` or
+  `--max-steps`, or stopped by hand when validation stops improving).
+- `--schedule decay`: a new run from one of the constant run's pairs, its model as
+  `--model-weight` and its `trainer_stepNNNNNN.pt` as `--optimizer-state`
+  (`checkpoints.load_optimizer_state`: the trainer file names its model, which must sit beside it
+  under that name and be `--model-weight`, a hard link counting; AdamW's moments continue, the
+  run's own betas and weight decay apply). It requires `--optimizer-state` and
+  `--warmup-fraction 0`, since the moments need no warmup. The rate falls from the peak to 0 as
+  1 − sqrt of the progress over the run's `--max-steps`. The pair is read only at the start, but a
+  running constant run prunes it (`--keep-checkpoints`): hard-link both files, under their own
+  names, into a directory of their own (`weights/<run>_stepNNNNNN/`) and branch from there. Give the
+  decay a new `--seed` for fresh streams, as `student_dep10_anneal` had. Several decays can branch
+  from different pairs of one constant run.
+- **Averaging** (`python -m training.finetune.average --out OUT WEIGHT...`): the mean of a run's
+  checkpoints (the same tensors and tokenizer; floats averaged in fp32), with the first one's
+  metadata and `averaged_from`. Score it as any checkpoint: `eval.py` with the run's
+  `--eval-pairs` and `--seed` on the box, or `gate.py` after `convert_mlx.py` on the Mac.
+  Free-running chrF moves ~±0.7 between evaluations, so compare on the same rows and seed.
+- **Validated on the box** (2026-11-21, the heads student's best at 176,000, distilled from GRPO
+  update 1,400, 12,288-frame batches): a constant run at 1e-5 held the rate for 200 steps (FLEURS
+  dev 38.03 / 32.55 at 200, from 38.34 / 35.64: ten times the rate its run ended on); a decay
+  branch from its 200 pair (hard-linked) fell as 1 − sqrt (7.0e-6 at step 10, 3.0e-6 at 50,
+  5e-8 at 100) to 38.40 / 34.35; the average of its 100 and 200 models is their exact mean on all
+  135 tensors, keeps the metadata with `averaged_from`, and scored 38.59 / 34.43 (`eval.py`,
+  seed 47).
+
 ## Speed
 
 The fast path (`lm_training`), its measurements and the speed by GPU are in
@@ -166,7 +201,7 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 ## Objective
 
 `common.compute_batch_losses`, Kyutai's `moshi-finetune` weighting (decided 2026-11-01,
-[plan](../vi_en_parity_plan.md#decisions-2026-11-01)), as weighted sums of one kernel,
+[plan](../vi_en_parity_plan.md#decisions-2026-11-01-later-dates-marked)), as weighted sums of one kernel,
 `common.token_ce`: each target token's cross-entropy over the full logits, 0 where the forward's
 mask is off. Training, teacher-forced validation and GRPO's token logprobs (its negative at the
 sampling temperature) all run it, so a change to it needs all three checked
@@ -185,3 +220,12 @@ sampling temperature) all run it, so a change to it needs all three checked
   distribution on the same stream, with the same weights, where both models' masks hold (a
   heads student's delays differ from its teacher's); the teacher reads the whole stream and the
   model its cut. Validation still reports CE against the targets.
+- **Palettization** (`--palettize-bits`, a heads student): the step runs on the weights snapped
+  to the Core ML export's k-means tables, the straight-through estimator
+  ([student-heads](student-heads.md#palettization)).
+- **Scheduled sampling** (`--sampled-text P`, not with a teacher): the main transformer samples
+  every scored text token without gradients, each word piece it reads becomes the sampled word
+  piece there with probability P, and the loss scores the dataset's tokens; the PADs (timing),
+  each step's own inputs to the depformer and the audio stay the dataset's
+  (`compute_batch_losses(..., history=)`, `lm_training.forward_history`); the train log adds
+  `text_changed` ([exposure-bias](exposure-bias.md#scheduled-sampling)).

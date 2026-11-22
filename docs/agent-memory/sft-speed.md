@@ -135,6 +135,31 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   `--batch-frames` (dense loss): 4,608 ~16,600 frames/s at 72.7 GiB; 8,192 18,420 at 97 GiB;
   12,288 19,360 at 124.7 GiB. Round 4 runs 8,192 (12,288's +5% leaves ~16 GiB for validation).
   Power-bound: only less work per frame helps from here.
+- **RTX PRO 6000 Blackwell Workstation Edition** (600 W, 96 GB, sm_120; 2026-11-19, Vast
+  61345966). It runs the trainer unchanged; `h100.sh` accepts it.
+  - The card: bf16 GEMMs at the model's shapes reach 380–444 TFLOP/s, FP8 (`torch._scaled_mm`,
+    rowwise) 650–735. Causal GQA attention forward and backward (8 streams of 1,536 frames,
+    16/8 heads of 128): flash 1.53 ms, cuDNN 1.62, memory-efficient 4.41.
+  - The heads student's distillation (`restart.sh student-heads`' arguments, 12,288-frame
+    batches, steps 151–300 on the `en-vi` `en_speech` cache) takes 0.564 s a step (0.563 and
+    0.565 repeated; 20,700 frames/s), against the H100's 0.336. It sits 99% busy at ~595 W of its
+    600 W cap and peaks at 44 GiB.
+  - Kernel time a step: matmuls 73% (~340 TFLOP/s), compiled kernels 14%, fused AdamW and the
+    clip 6%, copies and elementwise 5%, the teacher depformer's attention 2.5%. By FLOPs the
+    teacher's forward is ~47% of the matmuls.
+  - Flash for the teacher's forward-only depformer attention: 0.566 (no gain). An outlier first
+    baseline (0.583, the box still busy with other jobs) had suggested −3%.
+  - FP8 teacher (e4m3, weights scaled per output row, activations per token; a bench patch,
+    not in the repo): the main transformer's 112 linears 0.514 s (−9%), all 354 0.492 (−13%).
+    - It moves the targets: KL(bf16 ‖ fp8) per token is 0.010 on audio and 0.0037 on text for
+      the main transformer only (0.023 and 0.005 for all), and the text argmax flips at ~1.5% of
+      positions. bf16 rounding alone gives 5e-4.
+    - Not taken (user, 2026-11-19). The saving is ~3–4 h (~$4), and the bf16 teacher keeps the
+      comparison with the depformer student clean.
+  - Two fresh heads runs on the same batches differ by up to ~0.2 in loss by step 300, as on the
+    H100 ([phone-student](phone-student.md#checks)).
+  - The heads student at 16 codebooks: 0.694 s a step (+23%; 16,900 frames/s) and a 50.9 GiB peak,
+    the teacher's depformer now running all 16 steps ([student-heads](student-heads.md#speed)).
 - **H200 batch_frames lever (2026-11-09, estimate before the measurement above)**: default 4608; H200 has 141 GB VRAM vs H100's 80 GB.
   Increasing batch_frames amortizes fixed per-step costs (AdamW 8%, grad norm 4%, copies 5.5% ≈ 17.5%
   of step time) over more frames. At 8192 (1.78×): peak ≈ 93 GiB (48 GiB param+opt + 45 GiB

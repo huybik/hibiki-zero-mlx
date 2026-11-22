@@ -75,18 +75,23 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   - A boundary follows every 31 frames (2.5 s) of Vietnamese speech, plus one at T, because the
     cache has no Vietnamese words.
   - Normalization uses the group's unbiased std plus 1e-4, so a frame where every rollout scores
-    the same gets 0.
+    the same gets 0; `--advantage centered` keeps only r − mean (Dr. GRPO,
+    [on-policy-distillation](on-policy-distillation.md#design)).
+- **A teacher** (`--teacher-weight`) adds the reverse KL to it on the rollouts, or alone with
+  `--reward-coef 0`: [on-policy-distillation](on-policy-distillation.md); the 3B's own start as
+  a KL anchor: [exposure-bias](exposure-bias.md#anchored-grpo).
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
   free-running pass on `EVAL_PAIRS`' eight sets, both directions of the two-way model GRPO runs
   on (user, 2026-11-10): FLEURS dev both ways, `en-vi-val` clean and noisy, `en-vi-val-en`. The
   first set of each direction selects (`common.selecting_sets`, by the audio a set is heard in):
   promotion goes to the best mean chrF over them among checkpoints that pass every set's gates
-  and whose median end offset on each is at most `LATENCY_SLACK_S` (0.2 s) past update 0's.
+  and whose median end offset on each is at most `LATENCY_SLACK_S` (0.5 s) past update 0's.
   The rewards need nothing per direction: a row's reference is its own text track decoded with
   the run's tokenizer (the start weight's, the Vietnamese swap), Vietnamese for an `en-vi` row.
-  - The slack: in the dry run, update 2 (two updates at 2e-7, in effect the start) had the
-    better chrF (39.90 against 39.29) but measured 4.6 s against 4.5 s. Without slack it was
-    blocked, and a blocked checkpoint is not kept (2 pairs).
+  - The slack: quality comes first and may cost some latency (user, 2026-11-22: "quality is what
+    we after, latency can be bit more relax"), so 0.5 s. The noise alone needs some: in the dry
+    run, update 2 (two updates at 2e-7, in effect the start) had the better chrF (39.90 against
+    39.29) but measured 4.6 s against 4.5 s. A blocked checkpoint is not kept (2 pairs).
   - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted` (this step is
     now the best).
   - That baseline is stored as `start_end_offset_s` (by selecting set) in `run_config.json`, which

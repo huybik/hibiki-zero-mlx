@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-15
+Last verified: 2026-11-21
 
 ## Purpose
 
@@ -25,7 +25,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► prep/cache_codes (on prep/cache_build, MLX or CUDA; Mac top down, a second machine bottom up)
          ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
-    ─► prep/mimi_cache_cuda (CUDA, the pod: Vietnamese source re-encoded under prep/augment) ─► *-noisy
+    ─► prep/noisy_cache (CUDA or MLX: the source, either language, re-encoded under prep/augment) ─► *-noisy
     ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
@@ -33,6 +33,7 @@ inference/ (Apple Silicon, MLX)
                                                     │       └─► swift/ (MLX Swift: CLI, iOS bench app)
                                                     └─► tools/gate.py (scored as training scores)
   Mimi checkpoint ─► tools/export_mimi_coreml.py (from tools/mimi_step.py) ─► mimi-decoder.mlmodelc ─► swift/
+  heads student (bf16) ─► tools/export_lm_coreml.py (from tools/lm_step.py) ─► lm-trunk/lm-heads.mlmodelc ─► swift/
 ```
 
 - `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
@@ -134,7 +135,9 @@ inference/ (Apple Silicon, MLX)
   of a box job when that shortens it, such as MLX translation or TTS of some shards, or the
   downloads; size each night job to finish by morning (user, 2026-11-04). The Mac keeps the MLX
   inference work; the existing MLX TTS and cache builder produced the current data →
-  [sft-training](docs/agent-memory/sft-training.md).
+  [sft-training](docs/agent-memory/sft-training.md). The EN→VI data of the next two-way run is
+  the exception: the user put it on the Mac and its external drive (2026-11-21) →
+  [envi-data](docs/agent-memory/envi-data.md).
 - Pick the newest version of any third-party model (ASR, TTS, LLM, aligner) the pipeline uses,
   for its efficiency and accuracy (user, 2026-11-04).
 - Production runs go only through `training/h100.sh run`, which ties a run to its commit and
@@ -158,7 +161,9 @@ inference/ (Apple Silicon, MLX)
 - A model directory's `config.json` names its MLX weights (`moshi_name`), tokenizer and sampling
   (`lm_gen_config`), and records any quantization per layer (`quantization`; `--bits 6`, what
   ships, is 6 bits on the transformer linears, 8 on the embeddings and heads), which both
-  runtimes load by, strictly. The gate feeds a file as training's evaluation does (source EOS,
+  runtimes load by, strictly. A Core ML LM's directory (`lm_coreml`, the heads student) names no
+  MLX weights, and only the Swift runtime runs it →
+  [lm-npu](docs/agent-memory/lm-npu.md#export). The gate feeds a file as training's evaluation does (source EOS,
   20 s of silence, stop at the text EOS after it), so Mac scores compare with the box's (rows
   whose EOS comes before the source ends aside); main.py's file mode also stops after 5 s
   without a word →
@@ -171,12 +176,13 @@ inference/ (Apple Silicon, MLX)
 | MLX inference, conversion and quantization, the quantization gate, benchmarks, macOS app | [mlx-inference](docs/agent-memory/mlx-inference.md) | `inference/`, `inference/tools/convert_mlx.py`, `inference/tools/gate.py` |
 | Swift runtime, iOS app, on-device tests | [swift-runtime](docs/agent-memory/swift-runtime.md) | `inference/swift/` |
 | Mimi on neural accelerators (Neural Engine now, Qualcomm later) | [mimi-npu](docs/agent-memory/mimi-npu.md) | `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralDecoder.swift` |
-| SFT trainer: streams, defaults, precision, objective | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
+| The heads student's LM on the Neural Engine: export, runtime, precision, phone speed | [lm-npu](docs/agent-memory/lm-npu.md) | `inference/tools/lm_step.py`, `inference/tools/export_lm_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralLM.swift` |
+| SFT trainer: streams, defaults, precision, objective, schedules, checkpoint averaging | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
 | SFT H100 launcher, checkpoints, resume, HF recovery sync | [sft-recovery](docs/agent-memory/sft-recovery.md) | `training/h100.sh`, `training/finetune/hf_sync.py`, `training/finetune/checkpoints.py` |
 | SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets, the input level stage | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/`, `inference/hibiki_mlx/level.py` |
 | GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
-| Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy`, GRPO's rooms where nobody speaks | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py`, `streams.room_codes` |
+| Noisy source (Vietnamese and English): simulated rooms, noise and bands, the noisy caches, `en-vi-val-noisy` and `en-vi-val-en-noisy`, GRPO's rooms where nobody speaks | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/noisy_cache.py`, `streams.room_codes` |
 | The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off, the translation and the cache |
 | The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
 | The tranche's caches: its row gates and their thresholds, running the build on the box or the Mac | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
@@ -184,10 +190,14 @@ inference/ (Apple Silicon, MLX)
 | The tranche's jobs on a rented box: bring-up, job order, the restart/watchdog/pause scripts, round 4's inputs | [tranche-box](docs/agent-memory/tranche-box.md) | `training/tranche/box/` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
 | Vietnamese tokenizer swap for two-way text: build, English check, embedding init map, the runtimes on it | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
-| The phone student cut from the two-way model and its parallel codebook heads: the cut, training and distilling a student, checks | [phone-student](docs/agent-memory/phone-student.md) | `training/student/`, `training/finetune/streams.py` (`model_rows`) |
+| The phone student cut from the two-way model: the cut, training and distilling a student, checks | [phone-student](docs/agent-memory/phone-student.md) | `training/student/`, `training/finetune/streams.py` (`model_rows`) |
+| The parallel-heads student: its delays, 16 codebooks with 8–15 at one delay, speed, training against the Core ML palettization, runs and validations | [student-heads](docs/agent-memory/student-heads.md) | `training/student/heads.py`, `training/student/palettize.py`, `restart.sh student-heads` |
 | The phone student's GRPO run, its evaluations and tests, the shipped update 2,000 | [student-grpo](docs/agent-memory/student-grpo.md) | `runs/grpo_student`, `/Volumes/data/hibiki-zero-evals/` |
+| On-policy distillation and centered advantages in GRPO; the student's recipe experiments | [on-policy-distillation](docs/agent-memory/on-policy-distillation.md) | `training/finetune/grpo.py`, `training/finetune/rewards.py` |
+| Exposure bias and the 3B's recipe: scratch or fine-tune, scheduled sampling in SFT, GRPO anchored to its start, their experiments | [exposure-bias](docs/agent-memory/exposure-bias.md) | `train.py --sampled-text`, `grpo.py --teacher-weight` |
 | Two-way speech: directions in caches, streams and evaluation, the run's tokenizer checks, the Vietnamese aligner, the two-way run and its box jobs | [two-way](docs/agent-memory/two-way.md) | `--direction`, `--tokenizer`, `common.run_tokenizer`, `text_timing.ALIGNERS`, `training/prep/cache_rows.py`, `training/finetune/streams.py` |
-| Every grounded cache build: rows, gates, Mimi and wav2vec2 on MLX or CUDA, each device's speed; Mimi or wav2vec2 run anywhere | [cache-build](docs/agent-memory/cache-build.md) | `training/prep/cache_build.py`, `training/prep/cache_rows.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/text_timing.py`, `training/prep/audio.py` |
+| The next two-way run's EN→VI data: `en_speech` both ways, the noisy copies of every English source, where each is on the Hub, the Mac run that builds them | [envi-data](docs/agent-memory/envi-data.md) | `/Volumes/data/datasets/envi_mac/envi_mac.py`, `en-vi/*-noisy` on the Hub |
+| Every grounded cache build: rows, gates, Mimi and wav2vec2 on MLX or CUDA, each device's speed; Mimi or wav2vec2 run anywhere | [cache-build](docs/agent-memory/cache-build.md) | `training/prep/cache_build.py`, `training/prep/cache_rows.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/wav2vec2_coreml.py`, `training/prep/text_timing.py`, `training/prep/audio.py` |
 | The EN-VI dataset's caches, their builds and publishing, the PhoMT cache, the row layout | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |

@@ -23,6 +23,6 @@ Modules, run from the repository root as `python -m training.finetune.<module>`:
 - `common`: what the scripts share: the model and optimizer, the loss kernel and losses,
   free-running translation, metrics and the health gates.
 - `checkpoints`: a run directory: checkpoint pairs, resume and its contract, promotion, logs.
-- `hf_sync`: two-pair recovery plus promoted-best upload under the run's HF prefix.
+- `hf_sync`: two-pair recovery plus promoted-best upload under the run's HF prefix, freeing what it prunes.
 
 See the [pod guide](../../docs/finetune.md).

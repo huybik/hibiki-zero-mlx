@@ -74,9 +74,9 @@ def main() -> None:
             start = time.perf_counter()
             out = pipeline.translate(model, source, audio=False)
             seconds = time.perf_counter() - start
-            # Training's End Offset: its step i heard i - 1 frames of the clip (moshi's LMGen
-            # hears a frame of silence first), where the runtime's step t heard t, so the
-            # runtime's step t is training's t + 1.
+            # Training's End Offset counts a word at the frames of the clip its step heard, plus
+            # one: its output i heard i - max_delay + 1 (moshi's LMGen hears max_delay - 1 silent
+            # frames first) and it takes max_delay - 2 off. The runtime's step t heard t.
             offset = "" if out.last_word is None else round(
                 (out.last_word + 1) / FRAME_RATE - out.duration, 2
             )

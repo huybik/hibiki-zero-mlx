@@ -7,7 +7,7 @@ import os
 /// once its last frame is) or back to back, and records every step's stage times, lag, thermal
 /// state and memory. Results go to disk as they are made, so a run the system kills still
 /// leaves its data: `<base>.jsonl` (one sample per step), `<base>.wav` (the translation) and,
-/// at the end, `<base>.txt` (summary and text).
+/// at the end, `<base>.txt` (Mimi's encoder device, the summary and the text).
 public enum Bench {
     public struct Sample: Codable {
         /// The step's first frame, and its number of frames.
@@ -23,7 +23,12 @@ public enum Bench {
         public let lmStartMs: Double
         public let decodeMs: Double
         public let encodeMs: Double
+        public let encodeWaitMs: Double
         public let lmWaitMs: Double
+        /// A Core ML LM's own time (`Translator.Timing.lmTrunk` and the rest; 0 for MLX).
+        public let lmTrunkMs: Double
+        public let lmHeadsMs: Double
+        public let lmHostMs: Double
         /// `ProcessInfo.ThermalState`: 0 nominal, 1 fair, 2 serious, 3 critical.
         public let thermal: Int
         public let footprintMB: Double
@@ -33,7 +38,7 @@ public enum Bench {
         /// Memory the process may still allocate before the system kills it (iOS only).
         public let availableMB: Double?
 
-        public var totalMs: Double { lmStartMs + decodeMs + encodeMs + lmWaitMs }
+        public var totalMs: Double { lmStartMs + decodeMs + encodeMs + encodeWaitMs + lmWaitMs }
         /// The step's time per frame; real time needs it under 80 ms.
         public var msPerFrame: Double { totalMs / Double(frames) }
         /// Whether this step completes a multiple of `every` frames, for progress lines.
@@ -76,7 +81,10 @@ public enum Bench {
             let sample = Sample(
                 frame: idx, frames: framesPerStep, wall: wall, lag: paced ? wall - arrival : 0,
                 lmStartMs: 1000 * out.timing.lmStart, decodeMs: 1000 * out.timing.decode,
-                encodeMs: 1000 * out.timing.encode, lmWaitMs: 1000 * out.timing.lmWait,
+                encodeMs: 1000 * out.timing.encode, encodeWaitMs: 1000 * out.timing.encodeWait,
+                lmWaitMs: 1000 * out.timing.lmWait,
+                lmTrunkMs: 1000 * out.timing.lmTrunk, lmHeadsMs: 1000 * out.timing.lmHeads,
+                lmHostMs: 1000 * out.timing.lmHost,
                 thermal: ProcessInfo.processInfo.thermalState.rawValue,
                 footprintMB: footprintMB(), mlxActiveMB: Double(Memory.activeMemory) / 1_048_576,
                 mlxCacheMB: Double(Memory.cacheMemory) / 1_048_576, availableMB: availableMB())
@@ -87,31 +95,40 @@ public enum Bench {
         let tail = try translator.flush()
         try wav.append(tail.pcm)
         text += tail.text
-        try (summary(samples) + "\n\n" + text + "\n").write(
+        let device = "Mimi encoding on the \(translator.encoderDevice.rawValue)"
+        try (device + "\n" + summary(samples) + "\n\n" + text + "\n").write(
             to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
         return samples
     }
 
     /// One line per minute of audio: percentiles of the time per frame and of the LM wait per
-    /// frame over its steps, worst lag, thermal state and memory. A step counts toward the
+    /// frame over its steps, a Core ML LM's own time per frame (when it ran one), worst lag,
+    /// thermal state and memory. A step counts toward the
     /// minute of its first frame, so with k not dividing 750 the rows hold a few frames more or
     /// less.
     public static func summary(_ samples: [Sample]) -> String {
+        let coreML = samples.contains { $0.lmTrunkMs > 0 }
         var lines = [
-            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50  max lag s  thermal"
-                + "  footprint MB  MLX active MB"
+            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50"
+                + (coreML ? "  Core ML LM p50" : "")
+                + "  max lag s  thermal  footprint MB  MLX active MB"
         ]
         let minutes = Dictionary(grouping: samples) { $0.frame / 750 }
         for minute in minutes.keys.sorted() {
             let chunk = minutes[minute]!
             let total = chunk.map(\.msPerFrame).sorted()
             let wait = chunk.map { $0.lmWaitMs / Double($0.frames) }.sorted()
+            let lm = chunk.map { ($0.lmTrunkMs + $0.lmHeadsMs + $0.lmHostMs) / Double($0.frames) }
+                .sorted()
             let q = { (xs: [Double], p: Double) in xs[min(xs.count - 1, Int(p * Double(xs.count)))] }
             lines.append(
                 String(
-                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f  %9.2f  %7d  %12.0f  %13.0f",
+                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f",
                     minute + 1, chunk.map(\.frames).reduce(0, +), q(total, 0.5), q(total, 0.9),
-                    q(total, 0.99), q(wait, 0.5), chunk.map(\.lag).max() ?? 0,
+                    q(total, 0.99), q(wait, 0.5))
+                    + (coreML ? String(format: "  %14.1f", q(lm, 0.5)) : "")
+                    + String(
+                        format: "  %9.2f  %7d  %12.0f  %13.0f", chunk.map(\.lag).max() ?? 0,
                     chunk.map(\.thermal).max() ?? 0, chunk.map(\.footprintMB).max() ?? 0,
                     chunk.map(\.mlxActiveMB).max() ?? 0))
         }

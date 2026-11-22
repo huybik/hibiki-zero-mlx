@@ -140,7 +140,8 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   and on the Hub. It stops when the out-dir is gone (a dropped drive), rather than download onto
   the internal disk.
 - Each direction's aligner is pinned (`text_timing.ALIGNERS`: `facebook/wav2vec2-base-960h` at
-  `22aad52` for English text, omniASR for Vietnamese, [two-way](two-way.md#vietnamese-aligner)),
+  `22aad52` for English text, `nguyenvulebinh/wav2vec2-base-vietnamese-250h` at `bb07d01` for
+  Vietnamese, [two-way](two-way.md#vietnamese-aligner)),
   its weights, `config.json` and `vocab.json` only, so every machine times with the same model. The builder no longer sets `HF_HUB_OFFLINE`, so a
   machine's first run can download them; offline it uses the cached copy (0.4 s on a refused
   connection, ~75 s on a hanging one).
@@ -155,8 +156,7 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   ([en-speech-corpus](en-speech-corpus.md#rules)).
 - It is the HF dataset `huybik/hibiki-zero-vi-full-sft` prefix `phomt-grounded-v2-5s/`: 1,377
   `shard_*.pt` (6.5 GB) holding 361,968 `train` rows, restored as in
-  [docs/finetune.md](../finetune.md). The Mac copy is
-  `/Volumes/data/datasets/phomt-grounded-v2-5s/`.
+  [docs/finetune.md](../finetune.md). The Mac keeps no copy ([environment](environment.md#storage)).
 - It follows `en_speech`'s clip rule (user's choice, 2026-10-23): the rows of the full
   `grounded-v2/` cache in the same repo (690,067 rows, `cache_chunk_{0..7}.tar.zst` with
   `pairs_w*.jsonl` and `manifest.json`) whose English clip lasts at least 5 s

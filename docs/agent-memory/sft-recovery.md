@@ -15,7 +15,7 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
 `python -m training.<package>.<module>`.
 
 - `setup` needs Linux, driver 580+ (CUDA 13), exactly one H100 or H200 (Hopper, compute
-  capability 9.0: the kernels and measurements are sm_90's), uv, a C compiler, cmake, network for
+  capability 9.0) or RTX PRO 6000 Blackwell (12.0, 96 GB), uv, a C compiler, cmake, network for
   rustup, and no existing `.venv`. It builds a relocatable `.venv` on free-threaded Python 3.14
   ([environment](environment.md#python); Rust for the safetensors and sphn source builds; built
   aside and moved into place, so a failure leaves none) with Torch `2.15.0+cu134` (CUDA 13.4,
@@ -25,7 +25,7 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
 - `preflight` checks:
   - a clean tracked tree;
   - free-threaded Python 3.14, exact Torch and Moshi versions; one H100 or H200 with compute
-    capability 9.0;
+    capability 9.0, or an RTX PRO 6000 Blackwell with 12.0;
   - ≥78 GiB VRAM (an 80 GB card shows 79.2), ≥80 GiB of RAM (the container's cgroup limit
     when lower than `/proc/meminfo`, which shows the host on Vast) and 130 GiB of disk: free
     space plus, for `run`, what the run dir already holds (each hard-linked inode once). `run`
@@ -116,6 +116,27 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - logs, on the final sync only.
   It requires a public repo and a remote `run.json` byte-equal to the local `run_id.json`. It
   polls every 60 s and aborts after three failures.
+- Deleting a file from the Hub leaves its LFS object in the repo, and every object counts against
+  the account's storage: pruned pairs had grown the recovery repo to 5.5 TB for 1.7 TB of files
+  when the Hub refused every upload ("You have exceeded your public storage space", 2026-11-22;
+  `list_lfs_files` and `permanently_delete_lfs_files` freed the 3.9 TB, down to 1.6 TB). So after
+  each prune, and on the final sync, `hf_sync` frees the objects first pushed under its prefix
+  that no file on main still holds (`purge_pruned`; a promoted best is its pair's model byte for
+  byte), without rewriting history (`rewrite_history=False` frees the storage too: 15.3 GB
+  checked). `HfApi().repo_info(repo).used_storage` gives what the repo counts.
+  - So the Hub's history is no backup: an old revision of a file deleted or replaced under a
+    run's prefix no longer downloads, unless another file on main holds the same bytes. That
+    covers a pair being downloaded while its run prunes it, and the logs a resumed run's final
+    sync replaces (a resume that did not restore `artifacts/` keeps only the resumed part). Copy
+    a pair elsewhere (e.g. `release/`) before its run prunes it.
+  - The final sync purges after uploading the logs, so a failed purge never keeps them off the
+    Hub. A failed purge is a failed sync: during training the next poll prunes nothing and
+    succeeds; on the final sync three failures fail `hf_sync`, and a box's boot loop relaunches
+    the finished run every 5 minutes until the purge goes through.
+  - Only runs on a commit with `purge_pruned` (from PR #160) free their prunes; a run continued on
+    an older commit leaks as before, so after it ends purge its prefix from a newer checkout:
+    `HIBIKI_HF_PREFIX=<run> python -c "from training.finetune.hf_sync import purge_pruned;
+    purge_pruned('huybik/hibiki-zero-vi-full-sft')"`.
 - The sync and the launcher list the run's remote files with `list_repo_tree` under the prefix,
   which pages through any repo. `model_info(files_metadata=True).siblings` stops at 10,000
   files: once the recovery repo held 16,210 (2026-11-06), the first tranche run (`tranche_epoch1`)

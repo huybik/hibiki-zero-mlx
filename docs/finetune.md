@@ -129,13 +129,13 @@ it with `--include "en-vi-grounded-v2-noisy/train/*"` and packs it rather than r
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
 V=data/cache/en-vi-grounded-v2/validation
 # From a second worktree of the PR's commit: a preempted first run resumes only on its own commit.
-nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
 # After the first run's final save and sync (its final pair is in PREVIOUS_RUN/checkpoints/ on the Hub):
 ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.safetensors
 rm runs/PREVIOUS_RUN/trainer_step*.pt runs/PREVIOUS_RUN/model_stepOTHER.safetensors
 rm -r $C/.packed                                            # 70 GB
 ./.venv/bin/python -m training.prep.eval_sets --sets en-vi-val-noisy
-./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O   # ends with "every shard written"
+./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O   # ends with "every shard written"
 rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean shards stay on the Hub
 ./.venv/bin/python -m training.finetune.streams $O $V       # pack before run checks the free disk
 ./training/h100.sh run RUN_NAME --cache-dir $O --val-cache-dir $V \
@@ -245,7 +245,8 @@ Continuing is interruption recovery for the same run only:
   checkpoint (`RUN_NAME/best/`), its local `best.json` may not be older;
 - a validation the interruption cut short runs again before training continues, and so does
   the resumed step's validation if the run's logs were not restored (the final sync then
-  replaces the remote logs with the resumed run's only);
+  replaces the remote logs with the resumed run's only, and frees the old logs' storage, so
+  restore `artifacts/` first);
 - it cannot start a different run, nor extend the stop step (extending is done by hand at a
   checkpoint: [sft-recovery](agent-memory/sft-recovery.md#checkpoints-and-recovery)).
 

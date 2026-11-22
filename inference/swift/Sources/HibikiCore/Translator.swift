@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import MLX
 
@@ -8,21 +9,31 @@ import MLX
 /// does.
 ///
 /// The LM runs on the GPU while Mimi encodes on the CPU and decodes on the Neural Engine
-/// (`NeuralDecoder`), as the Python runtime's codec threads overlap the LM. A step takes k
+/// (`NeuralDecoder`), as the Python runtime's codec threads overlap the LM; a directory whose LM
+/// was exported to Core ML (`lm_coreml`, the parallel-heads student) runs it on its own thread,
+/// on the Neural Engine unless told otherwise (`NeuralLM`). A step takes k
 /// frames: the LM runs k steps one after another, Mimi encodes the k frames in one call, and the
 /// decoder turns each finished LM step's audio tokens into audio. LM step t reads source frames
 /// before t, so the chunk is encoded beside the chunk's first LM step and the audio decoded
 /// beside its last:
 ///
-///     k = 1   GPU:  [LM t ·································]
-///             CPU:  [decode t-1] [encode t] [wait]              → text t, audio t-1
-///     k = 2   GPU:  [LM t ···················] [LM t+1 ··················]
+///     k = 1   LM:   [LM t ·································]
+///             CPU:  [encode t] [decode t-1] [wait]              → text t, audio t-1
+///     k = 2   LM:   [LM t ···················] [LM t+1 ··················]
 ///             CPU:  [encode t, t+1]   [wait]   [decode t-1, t]   [wait]   → text t, t+1; audio t-1, t
 ///
-/// ("decode" is the driving thread waiting on the Neural Engine.) A frame is a few rows per op,
+/// ("decode" is the driving thread waiting on the Neural Engine.) The encode comes first: a Core
+/// ML LM holds the Neural Engine at the start of its step, and the decoder would queue behind it
+/// while the CPU sat idle. On the GPU, at k = 1, the encode runs while the driving thread waits
+/// on the decoder, and its codes are collected after (`encodeWait`); at k ≥ 2 the chunk's first
+/// LM step needs them before the decode comes. A frame is a few rows per op,
 /// so the encoder's cost per call grows much slower than its length: k = 2 cuts its time per
 /// frame by about a third, for up to (2k - 2) × 80 ms more latency (the chunk's first frame
 /// waits for the rest, and the step may take k × 80 ms).
+///
+/// Beside a Core ML LM on the Neural Engine, which leaves the GPU idle, Mimi encodes on the GPU
+/// instead (`encoderDevice`): on the A15 the frame then holds ~53 ms for 10 minutes, where the
+/// CPU's encode slows the frame past 70 ms.
 ///
 /// One thread drives both devices: mlx-swift holds a global lock while a thread evaluates, so
 /// MLX work on two threads would take turns.
@@ -41,18 +52,28 @@ public final class Translator {
     }
 
     /// Seconds the driving thread spent in each part of one step, summed over its LM steps;
-    /// they add up to the step's time. The LM runs on the GPU from each `lmStart` to the end of
-    /// the `lmWait` after it.
+    /// they add up to the step's time. The LM runs (the MLX LM on the GPU, a Core ML LM on its
+    /// own thread) from each `lmStart` to the end of the `lmWait` after it.
     public struct Timing {
-        /// Building the LM graphs and handing them to the GPU.
+        /// Starting the LM: building its graphs and handing them to the GPU, or queueing a
+        /// Core ML LM's frame.
         public var lmStart = 0.0
         /// Mimi decoding the finished LM steps' audio tokens on the Neural Engine.
         public var decode = 0.0
-        /// The level stage and Mimi encoding the input frames on the CPU.
+        /// The level stage and Mimi encoding the input frames: on the CPU all of it, on the GPU
+        /// building and submitting its work.
         public var encode = 0.0
+        /// Waiting for the GPU's encode after the decode (near zero on the CPU, whose encode
+        /// runs in `encode`).
+        public var encodeWait = 0.0
         /// Waiting for the LM after the CPU work.
         public var lmWait = 0.0
-        public var total: Double { lmStart + decode + encode + lmWait }
+        public var total: Double { lmStart + decode + encode + encodeWait + lmWait }
+        /// A Core ML LM's own time on its thread, overlapping the parts above (zero for the
+        /// MLX LM): its main transformer, its heads, and the host's embedding sums and sampling.
+        public var lmTrunk = 0.0
+        public var lmHeads = 0.0
+        public var lmHost = 0.0
 
         public init() {}
 
@@ -60,12 +81,18 @@ public final class Translator {
             lhs.lmStart += rhs.lmStart
             lhs.decode += rhs.decode
             lhs.encode += rhs.encode
+            lhs.encodeWait += rhs.encodeWait
             lhs.lmWait += rhs.lmWait
+            lhs.lmTrunk += rhs.lmTrunk
+            lhs.lmHeads += rhs.lmHeads
+            lhs.lmHost += rhs.lmHost
         }
     }
 
     public let config: HibikiConfig
     public let vocabulary: Vocabulary
+    /// Where Mimi encodes.
+    public let encoderDevice: DeviceType
     let mimi: Mimi
     let decoder: NeuralDecoder
     let generator: Generator
@@ -74,9 +101,19 @@ public final class Translator {
     private var leveller = Audio.Leveller()
     private var textDecoder: TextDecoder
 
+    /// Where a Core ML LM may run, by the names the CLI's and the app's `--lm-units` take.
+    public static let lmComputeUnitNames: [String: MLComputeUnits] = [
+        "ane": .cpuAndNeuralEngine, "gpu": .cpuAndGPU, "cpu": .cpuOnly, "all": .all,
+    ]
+
     /// `cacheLimit` caps MLX's process-wide cache of freed buffers, which counts toward an iOS
-    /// app's memory limit.
-    public init(directory: URL, cacheLimit: Int? = nil) throws {
+    /// app's memory limit; `lmComputeUnits` is where a Core ML LM runs, `encoderDevice` where
+    /// Mimi encodes: by default the GPU beside a Core ML LM on the Neural Engine, the CPU beside
+    /// any other LM.
+    public init(
+        directory: URL, cacheLimit: Int? = nil,
+        lmComputeUnits: MLComputeUnits = .cpuAndNeuralEngine, encoderDevice: DeviceType? = nil
+    ) throws {
         // MLX closes a Metal command buffer every 20 ops or 40 MB on phones (40–50 on Macs)
         // and blocks `asyncEval` while more than 10 are in flight, so the LM step (hundreds of
         // ops over 0.6–2 GB of weights) would run almost entirely inside `asyncEval`, before
@@ -87,8 +124,10 @@ public final class Translator {
         setenv("MLX_MAX_OPS_PER_BUFFER", "400", 0)
         setenv("MLX_MAX_MB_PER_BUFFER", "1000000", 0)
         if let cacheLimit { Memory.cacheLimit = cacheLimit }
-        let lm = try HibikiLM.load(directory: directory)
-        config = lm.cfg
+        config = try HibikiConfig.load(directory: directory)
+        let lm: FrameLM = config.lmCoreML
+            ? try NeuralLM(directory: directory, cfg: config, computeUnits: lmComputeUnits)
+            : try HibikiLM.load(directory: directory, cfg: config)
         let file = { (name: String) throws -> URL in
             let url = directory.appending(path: name)
             guard FileManager.default.fileExists(atPath: url.path) else {
@@ -102,18 +141,18 @@ public final class Translator {
                 "\(vocabulary.pieces.count) pieces for text_card \(config.textCard)")
         }
         textDecoder = TextDecoder(vocabulary)
+        self.encoderDevice =
+            encoderDevice
+            ?? (config.lmCoreML && lmComputeUnits == .cpuAndNeuralEngine ? .gpu : .cpu)
         mimi = try Mimi.load(
             url: file(config.mimiName ?? "mimi-pytorch-e351c8d8@125.safetensors"),
-            numCodebooks: config.nQ - config.depQ)
+            numCodebooks: config.nQ - config.depQ, device: Device(self.encoderDevice))
         decoder = try NeuralDecoder(url: file("mimi-decoder.mlmodelc"))
         if decoder.codebooks != config.depQ {
             throw HibikiError.unsupported(
                 "a \(decoder.codebooks)-codebook Mimi decoder for dep_q \(config.depQ)")
         }
-        let sampling = config.lmGenConfig
-        generator = Generator(
-            lm, textSampler: Sampler(temp: sampling.tempText, topK: sampling.topKText),
-            audioSampler: Sampler(temp: sampling.temp, topK: sampling.topK))
+        generator = Generator(lm)
         try warmup()
     }
 
@@ -123,6 +162,11 @@ public final class Translator {
         while try step([Float](repeating: 0, count: Audio.frameSize)).pcm.isEmpty {}
         reset()
         Memory.clearCache()  // return load and warmup buffers instead of keeping them cached
+    }
+
+    /// Seeds the LM's sampling (MLX's random state, or the Core ML LM's own generator).
+    public func seed(_ value: UInt64) {
+        generator.lm.seed(value)
     }
 
     /// Starts a new session: clears the level stage, the codec, the LM state and the text,
@@ -174,18 +218,26 @@ public final class Translator {
         for i in 0..<frames {
             let pending = generator.start()
             timing.lmStart += lap()
+            var encoding: MLXArray?
+            if i == 0 {
+                encoding = startEncode(source)
+                timing.encode += lap()
+            }
             if i == frames - 1 {
                 audio = try decodeTargets()
                 timing.decode += lap()
             }
-            if i == 0 {
-                sources = encode(source)
-                timing.encode += lap()
+            if let encoding {
+                sources = sourceCodes(encoding, frames: frames)
+                timing.encodeWait += lap()
             }
             let codes = endingInput
                 ? Array(repeating: config.card, count: config.nQ - config.depQ) : sources[i]
-            let out = generator.finish(pending, source: codes)
+            let out = try generator.finish(pending, source: codes)
             timing.lmWait += lap()
+            timing.lmTrunk += out.busy.trunk
+            timing.lmHeads += out.busy.heads
+            timing.lmHost += out.busy.host
             tokens.append(out.text)
             if let target = out.target { targets.append(target) }
         }
@@ -209,17 +261,26 @@ public final class Translator {
         return pcm
     }
 
-    /// Source codes of each frame, encoded on the CPU in one call.
-    private func encode(_ pcm: [Float]) -> [[Int]] {
-        let frames = pcm.count / Audio.frameSize
-        return Device.withDefaultDevice(.cpu) {
-            let codes = mimi.encodeStep(StreamArray(MLXArray(pcm).reshaped(1, 1, pcm.count)))
-            guard let codes = codes.asArray(), codes.dim(2) == frames else {
-                fatalError("Mimi produced \(codes.shape ?? []) codes for \(frames) frames")
-            }
-            let sourceQ = config.nQ - config.depQ
-            let flat = codes[0, 0..<sourceQ].transposed().asArray(Int32.self).map(Int.init)
-            return (0..<frames).map { Array(flat[($0 * sourceQ)..<(($0 + 1) * sourceQ)]) }
+    /// Starts encoding the chunk's frames in one call: on the CPU it runs here, on the driving
+    /// thread; on the GPU it is submitted and runs while the driving thread goes on.
+    private func startEncode(_ pcm: [Float]) -> MLXArray {
+        let codes = mimi.encodeStep(pcm)
+        let sourceQ = config.nQ - config.depQ
+        // On the encoder's device too, not behind the other device's work.
+        let perFrame = Device.withDefaultDevice(mimi.device) {
+            codes[0, 0..<sourceQ].transposed().asType(.int32)
         }
+        if mimi.device.deviceType == .cpu { eval(perFrame) } else { asyncEval(perFrame) }
+        return perFrame
+    }
+
+    /// The source codes of each frame, once `startEncode`'s work is done.
+    private func sourceCodes(_ encoding: MLXArray, frames: Int) -> [[Int]] {
+        guard encoding.dim(0) == frames else {
+            fatalError("Mimi produced \(encoding.shape) codes for \(frames) frames")
+        }
+        let flat = encoding.asArray(Int32.self).map(Int.init)
+        let sourceQ = encoding.dim(1)
+        return (0..<frames).map { Array(flat[($0 * sourceQ)..<(($0 + 1) * sourceQ)]) }
     }
 }
