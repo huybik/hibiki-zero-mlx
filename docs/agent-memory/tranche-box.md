@@ -10,8 +10,9 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 new 5090 machine"): Vast 61906288, South Korea, $0.558/h with 350 GB of disk, rented until
 2026-12-14 15:00 UTC; driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 GB of RAM, 15 GB of `/dev/shm`.
 `ssh -p 36687 root@180.189.55.43`, or Vast's proxy `ssh -p 30337 root@ssh1.vast.ai` (30336, the
-API's `ssh_port`, is the portal). It first builds the rest of the EN→VI data from the bottom up
-(user, 2026-11-22: "Cache build first"; [envi-data](envi-data.md#the-box-run)), then runs
+API's `ssh_port`, is the portal). It first builds the rest of the EN→VI data, from the bottom up and,
+since the Mac stopped at 2026-11-22 17:05 UTC+7, alone (user, 2026-11-22: "Cache build first";
+[envi-data](envi-data.md#the-box-run)), then runs
 `both_heads_z`, restored from the Hub ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box),
 which says what fits in 32 GB); then the palettization finish and the 3B's experiments, which need
 a bigger card. Set up so far: the checkout, `/workspace/.env` and `$HF_HOME/token`, the cache env
@@ -83,8 +84,8 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
   [noisy-source](noisy-source.md#checks)) from `/workspace/wt-noisy` (main at `7090cc6`,
   detached) at `--seed 1` into
   `en-vi/en-vi-grounded-v2-noisy/`, uploads a batch while the next builds; holds its GPU steps while
-  `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac builds them instead, top down
-  ([envi-data](envi-data.md)): run `envi_rest.py` only bottom up beside it. `en-vi-val-en-noisy` is
+  `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac and then the RTX 5090 box built them
+  instead ([envi-data](envi-data.md)). `en-vi-val-en-noisy` is
   built in `/workspace/hibiki-zero/data/eval/` (2026-11-21).
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
