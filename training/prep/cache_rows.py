@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, durable
+from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, durable, exit_with_parent
 from training.prep.audio import Rejected
 from training.prep.text_timing import (
     ALIGNERS,
@@ -193,6 +193,7 @@ def init_worker(settings: Settings, tokenizer: Path, pcm_dir: Path | None) -> No
     the reply)."""
     import sentencepiece
 
+    exit_with_parent()
     global _aligner, _tokenizer, _settings, _pcm_dir
     _aligner = CTCWordAligner(settings.aligner, settings.min_score)
     _tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer))
@@ -217,7 +218,8 @@ class Planned:
 
     def clips(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """The three clips; a file is read and unlinked at once. Read, not mapped: numpy's memmap
-        keeps a descriptor open per file, and a window's 4,096 rows passed the box's limit of 1,024."""
+        keeps a descriptor open per file, and a window of 4,096 rows (the CUDA window until 2026-11-22) passed
+        the box's limit of 1,024."""
         if self.pcm is not None:
             return self.pcm
         data = np.fromfile(self.file, np.float32)

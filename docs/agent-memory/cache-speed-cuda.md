@@ -26,10 +26,16 @@ the build works is in [cache-build](cache-build.md#cuda). Back to [CONTEXT.md](.
 - Profile a build on several shards, never one: a shard under one window's rows never holds a
   second window, so it hides the memory a long build needs (one 3,218-row shard ran at 4,096 rows,
   then 40 shards were killed).
-- A build killed outright (SIGKILL, the out-of-memory killer) cannot remove its `/dev/shm` clips,
-  which hold RAM until deleted: four killed builds left ~11 GB. Each build now removes those of
-  builds no longer running (`pcm_dir`, its directory named with its PID). Read a memory profile
-  with `/dev/shm` empty of `cache_build_pcm_*` from dead builds.
+- A build killed outright (SIGKILL, the out-of-memory killer) cannot clean up after itself. Its
+  `/dev/shm` clips hold RAM until deleted (four killed builds left ~11 GB), and its spawned
+  workers lived on, blocked on a job queue whose write end they hold (14 idle workers, ~1.4 GB, on
+  the RTX 5090). Now each build's directory holds a lock its build keeps (`pcm_dir`), and a build
+  first removes every directory whose lock it can take; the workers of the build and of the noisy
+  copy exit once their parent is gone (`paths.exit_with_parent`). Read a memory profile with no
+  `cache_build_pcm_*` in `/dev/shm` and no `spawn_main` process left from a dead build.
+- 512 rows has not run on an H100 or H200, whose builds ran at 4,096: there a window passes in
+  ~1.5 s, and the GPU's queue empties twice a window (CTC to Mimi, then to the next window's CTC),
+  so measure 512 against a larger window there before a full run.
 - The GPU: `nvidia-smi` showed 16 GB for one shard and 25–30 GB over four or a batch of 40
   (PyTorch's cache keeps what it freed); the 32 GB card ran them all.
 - `noisy_cache encode` at `--batch-seconds` 320 and 640 (RTX 5090, interleaved twice): 2,128–2,131×

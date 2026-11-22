@@ -5,6 +5,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,7 @@ DEFAULT_TOKENIZER = REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 
 # The EN-VI speech dataset at the revision every `en_speech` cache was built from: its evaluation
 # rows (eval_sets) and the sources of its noisy copies (noisy_cache). Here rather than in eval_sets,
-# whose sphn would turn the GIL back on in the cache env's free-threaded Python (cache-build.md).
+# whose sphn would turn the GIL back on in the cache env's free-threaded Python (cache-speed-cuda.md).
 EN_VI_REPO = "anquachdev/common-vi-en"
 EN_VI_REVISION = "2ce8777d122123609722814f776f0505ea966ca5"
 
@@ -89,6 +91,20 @@ def durable(path: Path) -> None:
             os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def exit_with_parent() -> None:
+    """Called in a pool worker (its initializer): exit once the process that started it is gone. A
+    worker outlives a parent killed outright (SIGKILL, the out-of-memory killer), blocked on a job
+    queue whose write end it holds itself, and keeps its memory until the box restarts (2026-11-22)."""
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(2)
+        os._exit(1)
+
+    threading.Thread(target=watch, name="exit-with-parent", daemon=True).start()
 
 
 def exclusive(path: Path, busy: str):

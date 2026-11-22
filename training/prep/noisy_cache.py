@@ -61,6 +61,7 @@ from training.paths import (
     EN_VI_REPO,
     EN_VI_REVISION,
     durable,
+    exit_with_parent,
     exclusive,
     read_json,
     require_dir,
@@ -513,7 +514,7 @@ def encode_shards(
     print(f"{workers} decode workers", flush=True)
     spawn = multiprocessing.get_context("spawn")
     missing: list[str] = []
-    with ProcessPoolExecutor(workers, mp_context=spawn) as pool:
+    with ProcessPoolExecutor(workers, mp_context=spawn, initializer=exit_with_parent) as pool:
         try:
             ahead = load(args, settings, encoder.bank, pool, shards[0])
             last = time.perf_counter()

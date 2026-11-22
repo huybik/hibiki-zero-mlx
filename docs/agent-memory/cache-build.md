@@ -36,10 +36,11 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   `cache_codes` missed its measured MLX levers and decoded whole shards into memory).
 - `cache_build` imports MLX, moshi, torch and transformers lazily, and `cache_rows` only torch (a
   sample's codes, the write), so the box runs without MLX and the Mac without CUDA.
-- Windows (each models class's `window`): 64 rows on MLX, 4,096 on CUDA. Decodes run one window
+- Windows (each models class's `window`): 64 rows on MLX, 512 on CUDA. Decodes run one window
   ahead (the pool runs jobs in order, so more would only queue a window's alignments behind more
-  decodes), so about two windows of PCM are held: ~0.3 GB on MLX; on CUDA ~10 GB of GigaSpeech 2's
-  short rows, ~27 GB of PhoAudiobook's long ones (3.3 MB a row), unmeasured on the box. On top, the
+  decodes), so the PCM of several windows is held: ~0.3 GB on MLX; on CUDA the window sets the
+  build's RAM, ~5 GB plus ~10 MB a window row on Libriheavy
+  ([cache-speed-cuda](cache-speed-cuda.md#memory), where 4,096 rows ran a 31 GB box out of memory). On top, the
   builder's reads hold two shards' compressed audio (1–2.5 GB a GigaSpeech 2 shard). Decoding a
   whole shard at once held ~23 GB for a GigaSpeech 2 shard, and swapped the 48 GB Mac. A window
   spans shard ends, so the device does not wait on a shard's tail or the next one's first decodes;

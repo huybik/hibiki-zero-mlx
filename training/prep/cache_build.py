@@ -15,6 +15,7 @@ the shards go ([cache-build](../../docs/agent-memory/cache-build.md)).
 
 from __future__ import annotations
 
+import fcntl
 import math
 import os
 import re
@@ -69,37 +70,49 @@ Aligned = tuple[Future, int]
 AlignJob = Callable[[list[Row], list[np.ndarray]], Future]  # Builder._encode_start's: submits one
 
 
+PCM_PREFIX = "cache_build_pcm_"  # each build's directory of clips in /dev/shm
+PCM_LOCK = ".owner"  # in it, locked (flock) by its build while it runs
+
+
 @contextmanager
 def pcm_dir() -> Iterator[Path | None]:
     """Where the workers leave decoded clips for the main process to map (`cache_rows.Planned`): a
-    fresh directory in /dev/shm named after this process, removed with whatever a failed run left;
-    None where there is none (macOS), and the clips come back in the replies. A build killed outright
-    (SIGKILL, the out-of-memory killer) cannot remove its own, and /dev/shm holds RAM until deleted
-    (~11 GB after four killed builds on a 31 GB box, 2026-11-22), so each build first removes the
-    directories of builds no longer running."""
+    fresh directory in /dev/shm, removed with whatever a failed run left; None where there is none
+    (macOS), and the clips come back in the replies. A build killed outright (SIGKILL, the
+    out-of-memory killer) cannot remove its own, and /dev/shm holds RAM until deleted (~11 GB after
+    four killed builds on a 31 GB box, 2026-11-22). So each build holds a lock in its directory,
+    which the kernel drops however the build dies, and first removes every directory whose lock it
+    can take. A directory is locked before it takes its name, so no build finds one unlocked while
+    in use; one from before the lock has none and is left alone."""
     shm = Path("/dev/shm")
     if not shm.is_dir():
         yield None
         return
-    for stale in shm.glob("cache_build_pcm_*"):
-        owner = stale.name.removeprefix("cache_build_pcm_").split("_", 1)[0]
-        if owner.isdigit() and not _running(int(owner)):
-            shutil.rmtree(stale, ignore_errors=True)
-    path = Path(tempfile.mkdtemp(prefix=f"cache_build_pcm_{os.getpid()}_", dir=shm))
+    for stale in shm.glob(f"{PCM_PREFIX}*"):
+        try:
+            fd = os.open(stale / PCM_LOCK, os.O_RDWR)
+        except FileNotFoundError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:  # its build is running
+            continue
+        else:
+            try:
+                shutil.rmtree(stale)
+            except FileNotFoundError:  # another build removed it first
+                pass
+        finally:
+            os.close(fd)
+    staging = Path(tempfile.mkdtemp(prefix=f".{PCM_PREFIX}", dir=shm))  # outside the glob until locked
+    lock = os.open(staging / PCM_LOCK, os.O_CREAT | os.O_RDWR, 0o600)  # not inherited by the workers
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    path = staging.rename(shm / staging.name.removeprefix("."))
     try:
         yield path
     finally:
         shutil.rmtree(path, ignore_errors=True)
-
-
-def _running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # another user's process
-        return True
-    return True
+        os.close(lock)
 
 
 def default_workers(device: str) -> int:
