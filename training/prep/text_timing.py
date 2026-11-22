@@ -146,8 +146,8 @@ class AlignmentError(ValueError):
 
 # The rejections for the frame grids, not for speech and text disagreeing: more characters than
 # CTC frames, or more tokens than 80 ms frames (fast or dense speech). The other direction's row
-# of the same clips still trains (`streams.load_rows`). Shards record a rejection as its message,
-# and packs match these prefixes when they are built: rewording one needs a new PACK_VERSION and
+# of the same clips still trains (`streams.load_rows`). Shards record a rejection with its message
+# ("AlignmentError: <message>"), and packs look for these in it when they are built: rewording one needs a new PACK_VERSION and
 # keeps the old wording matched for the shards already built.
 EMISSION_TOO_SHORT = "CTC emission is too short"
 TEXT_OVER_FRAMES = "Aligned text needs"

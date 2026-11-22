@@ -200,7 +200,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   over the tail limit), 3 fail the score gate, 4 token timing. Untimed, a kept row can start
   ahead of its source: by words spread evenly over the clip, 39% of the kept `vi-en` rows and 56%
   of the `en-vi` ones (the English aligner's rejects) do, by ~0.3 s median, ~0.4% of all rows.
-  Also left out: a row whose pair's target clip
+  The source tail gate can't see a kept row either; it had too little audio for its text, so it
+  is unlikely to babble. Also left out: a row whose pair's target clip
   is not its source's length within a frame (the delay's rounding), whose id then names another
   recording (none locally; a shard where every pair is so raises). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies
