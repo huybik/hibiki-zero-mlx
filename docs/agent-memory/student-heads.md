@@ -45,8 +45,9 @@ not increase latency so much"). `restart.sh student-heads` cuts `student_heads14
 - A frame's speech completes 8 frames (640 ms) after its first codebook: 80 ms over the 8-codebook
   heads, 6 frames over the depformer student's 2. Fully delayed, 16 codebooks take 15 frames (1.2 s;
   rejected).
-- For: 16-codebook speech (Whisper's Vietnamese WER through Mimi 27.8% against 42.0% at 8, English's
-  6.3% against 8.9%) and 16 source codebooks to hear (gain unmeasured).
+- For: 16-codebook speech (Qwen3-ASR's Vietnamese WER through Mimi 8.9% against 15.7% at 8,
+  English's 4.9% against 6.1%; [plan](../vi_en_parity_plan.md), stage 7.1) and 16 source codebooks
+  to hear (gain unmeasured).
 - Cost on the phone: 8 more heads (~34M parameters, under one main layer's ~63M) and 16 more
   embedding tables (~67M, one row read from each a frame): 1.279B parameters against 1.178B. The
   heads still sample in one pass.
