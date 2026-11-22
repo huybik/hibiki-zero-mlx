@@ -32,6 +32,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   build now rejects such rows too (`Aligner.max_tail_s`, recorded in each shard). The Mac and box
   runs check their uploads by name and size, so their shards from before and after it mix
   freely; only `publish_caches` compares settings, and refuses a pull across the change.
+- The run also drops the Libriheavy rows whose English text is OCR-damaged, both ways (1.7%,
+  [en-speech-corpus](en-speech-corpus.md#quality-filters)); no shard changes.
 - Every noisy `en-vi` copy uses `--seed 1` (the `vi-en` copies took seed 0; the draws key on the
   seed and the row id, which both directions share) and `--fraction` 0.6.
 
