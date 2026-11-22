@@ -60,8 +60,10 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   a decoded clip more than 0.02 s off its stored duration (PyAV decodes a truncated or damaged
   clip without error, only shorter); more frames than `max_frames` (280, the trainer's cap),
   counted from the decoded lengths as max(target frames, source frames) + 1 before the delay;
-  a target clip shorter than one CTC frame; the text grouping; CTC alignment (score below the
-  aligner's `min_score`: 0.5 English, 0.55 Vietnamese); token timing; a target running on past
+  a target clip shorter than one CTC frame; the text grouping; CTC alignment (fewer CTC frames
+  than the transcript's characters plus its doubled ones, the least a CTC path takes, 2N + 1
+  before 2026-11-22, which rejected 2.8% of GigaSpeech 2's rows as fast speech; or a score below
+  the aligner's `min_score`: 0.5 English, 0.55 Vietnamese); token timing; a target running on past
   its last text token longer than the aligner's `max_tail_s` (1.5 s Vietnamese, for VieNeu
   speaking past its text; none English, whose recordings end on silence:
   [sft-training](sft-training.md#target-timing), which applies it again to caches built before it). Mimi is queued with the CTC forward, so the

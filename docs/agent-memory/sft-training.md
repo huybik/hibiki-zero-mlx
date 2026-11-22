@@ -114,8 +114,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   teacher-forced validation losses do not compare across that change (2026-11-04).
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
   index and each row's doc and seq, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's
-  size or mtime changes or `PACK_VERSION` does: 5 since each pack records its shard's direction
-  and tokenizer and the rows' text tracks in `text.bin`, 2026-11-10; [two-way](two-way.md)),
+  size or mtime changes or `PACK_VERSION` does: 6 since each pack lists the rows its build
+  rejected for the frame grids, 2026-11-22, [Target timing](#target-timing); 5 recorded its shard's
+  direction and tokenizer and the rows' text tracks in `text.bin`, [two-way](two-way.md)),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
   a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling
@@ -187,13 +188,16 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   | viVoice | 60% | 1.36, 2.88 s | 2.00 → 2.96 s | 17% | 0.48, 1.36 s | 1.76 → 1.76 s |
 
   No more than 0.04% of targets start after their source ends, as before.
-- `load_rows` leaves out a row whose pair is missing: the other direction's build rejected it
-  (2.2% of those rows). Most were a low alignment score, where speech and text disagree; the
-  rest the Vietnamese aligner's capacity, fast or dense speech whose row is sound: of GigaSpeech
-  2's `vi-en` rows 2.4% go for score and 2.8% for capacity (CTC emission too short, or more text
-  than frames), PhoAudiobook's 2.0% for capacity. Both go (user, 2026-11-22, shown the split:
-  "drop them"): keeping the capacity rejects would need each pack to carry the other build's
-  rejection reasons and those rows to start at their cached delay. Also left out: a row whose pair's target clip
+- `load_rows` leaves out a row whose pair is missing because the other direction's build
+  rejected it for a low alignment score: speech and text disagree (1.2% of those rows; 2.4% of
+  GigaSpeech 2's `vi-en` rows). A row the other build rejected for its frame grids
+  (`text_timing.CAPACITY_REASONS`: more characters than CTC frames, more tokens than 80 ms
+  frames) is fast or dense speech and sound: it trains at its cached delay, its source untimed
+  (2.8% of GigaSpeech 2's `vi-en` rows, 2.0% of PhoAudiobook's; each pack lists them as
+  `capacity`). They miss by a hair (needed over available frames: median 1.05, 76% within 10%;
+  clips 2.3 s median), so the user kept them (2026-11-22: "yes keep them"); most of the CTC ones
+  came from a length check stricter than the CTC path, fixed in the build
+  ([cache-build](cache-build.md#rows)). Also left out: a row whose pair's target clip
   is not its source's length within a frame (the delay's rounding), whose id then names another
   recording (none locally; a shard where every pair is so raises). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies

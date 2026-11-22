@@ -144,6 +144,12 @@ class AlignmentError(ValueError):
     """The text cannot be timed against its audio: a data fault that rejects the row."""
 
 
+# The rejections for the frame grids, not for speech and text disagreeing: more characters than
+# CTC frames, or more tokens than 80 ms frames (fast or dense speech). The other direction's row
+# of the same clips still trains (`streams.load_rows`); shards record each as its message.
+CAPACITY_REASONS = ("CTC emission is too short", "Aligned text needs")
+
+
 @dataclass(frozen=True)
 class Alignment:
     spans: list[tuple[float, float]]
@@ -162,8 +168,11 @@ def _ctc_token_frames(
         raise AlignmentError("CTC target is empty")
     time_steps = int(log_probs.shape[0])
     states = 2 * len(targets) + 1
-    if time_steps < states:
-        raise AlignmentError(f"CTC emission is too short: {time_steps} < {states}")
+    # A path skips the blank between two different tokens: each token needs a frame, and a token
+    # repeating the one before it a blank frame between them.
+    needed = len(targets) + sum(a == b for a, b in zip(targets, targets[1:]))
+    if time_steps < needed:
+        raise AlignmentError(f"CTC emission is too short: {time_steps} < {needed}")
 
     symbols = np.full(states, blank_id, dtype=np.int64)
     symbols[1::2] = targets
