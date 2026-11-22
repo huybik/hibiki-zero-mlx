@@ -24,7 +24,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   - `LM.swift` (config, weights, LM, depformer), `Decode.swift` (compiled one-token paths),
     `Generator.swift` (delayed streams over a `FrameLM`: `HibikiLM` in MLX on the GPU, or
     `NeuralLM.swift`, the heads student in Core ML, [lm-npu](lm-npu.md)), `Translator.swift` (k 80 ms frames per step: the LM on
-    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU (or the GPU, [below](#mimi-on-the-gpu)) and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
+    the GPU or a Core ML LM on its own thread, beside it Mimi encoding on the CPU (the GPU beside a Core ML LM on the Neural Engine, [below](#mimi-on-the-gpu)) and decoding on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads
     the SentencePiece `.model` protobuf directly, and `TextDecoder`) and `Audio.swift` (file reading, the WAV
     writer, and `Leveller`, the input level stage `Translator.step` runs before Mimi: Python's
     `hibiki_mlx/level.py`, equal sample for sample; `reset` starts its stream again;
@@ -48,7 +48,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   for the frames before it ([mlx-inference](mlx-inference.md#runtime)); `--model` defaults to
   `weights/hibiki-zero-3b-q4`); `bench` runs
   `Bench`, which streams `<base>.jsonl` (one sample per step) and `<base>.wav` to disk as it
-  runs and writes `<base>.txt` (summary, text) at the end. Both take `--chunk K` frames per
+  runs and writes `<base>.txt` (encoder device, summary, text) at the end. Both take `--chunk K` frames per
   step (default 1), as the iOS app does. `Audio.Writer` writes 16-bit WAV
   clipped like `sphn.write_wav` and rewrites the header after every step: a run killed at
   frame 153 left 153 samples and a valid 12.08 s WAV.
@@ -63,6 +63,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
 - The public API is `Translator`, `Bench`, `Audio`, `Sampler`, `Vocabulary`, `HibikiConfig` and
   `HibikiError`; the vendored and LM types are internal (`@testable import` reaches them).
 - Hibiki Edge (An Quách's 1B Swift app) has no licence file, so none of its code is used here.
+- Speech Live, the iPhone app in [onevoice-ai-challenge](https://github.com/anthoai97/onevoice-ai-challenge)
+  (`apps/ios/`), carries its own adapted copy of `HibikiCore` from 2026-11-16: the MLX LM only,
+  Mimi on the CPU. Changes here reach it only when copied over. It ships the depformer student
+  (`release/student_grpo2000_mlx_q6`) in MLX on the GPU, where Mimi stays on the CPU anyway, so
+  [Mimi on the GPU](#mimi-on-the-gpu) does not apply to it. The Neural Engine LM would need the
+  heads student, 10–13 chrF below that student at update 16,000
+  ([student-heads](student-heads.md#speed)).
 
 ## Hibiki-Zero deltas
 
@@ -176,8 +183,9 @@ and the step may take k × 80 ms.
 
 ## Mimi on the GPU
 
-`--encoder gpu` (CLI, app; `Translator(encoderDevice:)`) runs Mimi's encoder on the GPU, for a
-Core ML LM, which leaves the GPU idle ([lm-npu](lm-npu.md#speed) for the phone). Its codes equal
+Beside a Core ML LM on the Neural Engine, which leaves the GPU idle, Mimi encodes on the GPU by
+default; beside any other LM on the CPU (`--encoder cpu|gpu` in the CLI and app,
+`Translator(encoderDevice:)`, to choose; [lm-npu](lm-npu.md#speed) for the phone). Its codes equal
 the CPU's on every frame (760 frames, all 16 codebooks), and translations are byte-identical at
 1- and 2-frame steps (the Mac, seed 7, 2026-11-20).
 

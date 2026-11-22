@@ -19,6 +19,8 @@ Writes, under --out-dir (default data/eval):
                                    simulated recording conditions (24 kHz WAV, resampled as eval.py
                                    resamples the clean clips), against which the clean set shows
                                    what the channel alone costs.
+  en-vi-val-en-noisy/{cv27,libriheavy}.jsonl  en-vi-val-en's English clips under the same
+                                   conditions, for English to Vietnamese.
   giga-heldout/test.jsonl          a seeded sample of the real-Vietnamese tranche's own rows
                                    from the GigaSpeech 2 archives held out of training
                                    (`ingest.SOURCES["giga"].heldout`): real speech, the corpus
@@ -81,14 +83,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sets",
         nargs="+",
-        choices=("fleurs", "fleurs-en", "multimed", "en-vi-val", "en-vi-val-en", "en-vi-val-noisy", "giga-heldout"),
+        choices=(
+            "fleurs", "fleurs-en", "multimed", "en-vi-val", "en-vi-val-en", "en-vi-val-noisy",
+            "en-vi-val-en-noisy", "giga-heldout",
+        ),
         default=["fleurs", "multimed", "en-vi-val"],
     )
     parser.add_argument(
         "--bank-dir",
         type=Path,
         default=Path("data/rirs_noises"),
-        help="Where `augment` keeps OpenSLR 28 (downloaded on first use); for en-vi-val-noisy.",
+        help="Where `augment` keeps OpenSLR 28 (downloaded on first use); for the noisy sets.",
     )
     return parser.parse_args()
 
@@ -270,29 +275,33 @@ def build_en_vi_val(out_dir: Path, heard: str) -> None:
         write_rows(out_dir / name / f"{source}.jsonl", rows)
 
 
-def build_en_vi_val_noisy(out_dir: Path, bank_dir: Path) -> None:
-    bank = augment.Bank(augment.fetch_bank(bank_dir), "cpu")
+def build_en_vi_val_noisy(out_dir: Path, bank: augment.Bank, heard: str) -> None:
+    """A built clean en-vi-val set (en-vi-val heard in Vietnamese, en-vi-val-en in English) with
+    every clip under `augment`'s conditions, drawn from the clean row's id."""
+    clean_name = "en-vi-val" if heard == "vi" else f"en-vi-val-{heard}"
+    name = f"{clean_name}-noisy"
+    column = f"{heard}_audio"
     for source in EN_VI_SOURCES:
-        audio_dir = out_dir / "en-vi-val-noisy" / "audio" / source
+        audio_dir = out_dir / name / "audio" / source
         audio_dir.mkdir(parents=True, exist_ok=True)
         rows = []
-        clean = (out_dir / "en-vi-val" / f"{source}.jsonl").read_text().splitlines()
+        clean = (out_dir / clean_name / f"{source}.jsonl").read_text().splitlines()
         for row in map(json.loads, clean):
             # Resampled as eval.py resamples the clean clip (hibiki_helpers.audio_read), so the
             # two sets differ by the conditions alone.
-            wav, rate = sphn.read(resolve_repo_path(Path(row["vi_audio"])))
+            wav, rate = sphn.read(resolve_repo_path(Path(row[column])))
             clip = torch.from_numpy(sphn.resample(wav, rate, augment.SAMPLE_RATE)[0])
             conditions = bank.draw(f"{NOISY_SEED}:{row['id']}")
             noisy = bank.apply(clip, conditions)
-            path = audio_dir / Path(row["vi_audio"]).name
+            path = audio_dir / Path(row[column]).name
             sphn.write_wav(path, noisy.numpy()[None], augment.SAMPLE_RATE)
-            name = row["id"].removeprefix("en-vi-val/")
+            row_name = row["id"].removeprefix(f"{clean_name}/")
             rows.append(
                 row
-                | {"id": f"en-vi-val-noisy/{name}", "vi_audio": repo_display_path(path)}
+                | {"id": f"{name}/{row_name}", column: repo_display_path(path)}
                 | {"conditions": dataclasses.asdict(conditions)}
             )
-        write_rows(out_dir / "en-vi-val-noisy" / f"{source}.jsonl", rows)
+        write_rows(out_dir / name / f"{source}.jsonl", rows)
 
 
 def build_giga_heldout(out_dir: Path) -> None:
@@ -373,8 +382,13 @@ def main() -> None:
         build_en_vi_val(out_dir, "vi")
     if "en-vi-val-en" in args.sets:
         build_en_vi_val(out_dir, "en")
-    if "en-vi-val-noisy" in args.sets:
-        build_en_vi_val_noisy(out_dir, resolve_repo_path(args.bank_dir))
+    noisy = [
+        heard for heard, name in (("vi", "en-vi-val-noisy"), ("en", "en-vi-val-en-noisy")) if name in args.sets
+    ]
+    if noisy:
+        bank = augment.Bank(augment.fetch_bank(resolve_repo_path(args.bank_dir)), "cpu")
+        for heard in noisy:
+            build_en_vi_val_noisy(out_dir, bank, heard)
     if "giga-heldout" in args.sets:
         build_giga_heldout(out_dir)
 

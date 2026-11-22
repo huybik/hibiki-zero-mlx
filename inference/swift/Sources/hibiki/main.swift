@@ -20,7 +20,8 @@
 // --model defaults to weights/hibiki-zero-3b-q4, upstream's 3B staged by convert_mlx.py --bits 4.
 // --lm-units ane|gpu|cpu|all: where a Core ML LM runs (export_lm_coreml.py; default ane, the
 // Neural Engine); an MLX LM always runs on the GPU.
-// --encoder cpu|gpu: where Mimi encodes (default cpu).
+// --encoder cpu|gpu: where Mimi encodes (default: the GPU beside a Core ML LM on the Neural
+// Engine, the CPU beside any other LM).
 
 import Foundation
 import HibikiCore
@@ -59,7 +60,10 @@ let minutes = number("--minutes", default: 10.0)
 let chunk = number("--chunk", default: 1)
 guard chunk > 0 else { fail() }
 guard let lmUnits = Translator.lmComputeUnitNames[option("--lm-units") ?? "ane"] else { fail() }
-guard let encoder = DeviceType(rawValue: option("--encoder") ?? "cpu") else { fail() }
+let encoder = option("--encoder").map { name -> DeviceType in
+    guard let device = DeviceType(rawValue: name) else { fail() }
+    return device
+}
 
 func translate(_ translator: Translator, _ pcm: [Float]) throws {
     let output = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_swift.wav")
@@ -110,7 +114,8 @@ func translate(_ translator: Translator, _ pcm: [Float]) throws {
     let seconds = Double(pcm.count) / Double(Audio.sampleRate)
     let speed = String(format: "%.2f s -> %.2fx RT", wall, seconds / wall)
     var stages = "LM start \(ms(timing.lmStart)), decode \(ms(timing.decode)), "
-        + "encode \(ms(timing.encode)), encode wait \(ms(timing.encodeWait)), "
+        + "encode on the \(translator.encoderDevice.rawValue) \(ms(timing.encode)), "
+        + "encode wait \(ms(timing.encodeWait)), "
         + "LM wait \(ms(timing.lmWait))"
     if timing.lmTrunk > 0 {
         stages += "; Core ML LM: trunk \(ms(timing.lmTrunk)), heads \(ms(timing.lmHeads)), "
@@ -126,6 +131,7 @@ func bench(_ translator: Translator, _ pcm: [Float]) throws {
     let base = URL(fileURLWithPath: option("--out") ?? "translations/\(stem)_bench")
     try FileManager.default.createDirectory(
         at: base.deletingLastPathComponent(), withIntermediateDirectories: true)
+    print("Mimi encoding on the \(translator.encoderDevice.rawValue)")
     let samples = try Bench.run(
         translator, clip: pcm, minutes: minutes, framesPerStep: chunk,
         paced: !args.contains("--unpaced"), output: base
