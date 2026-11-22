@@ -38,14 +38,14 @@ Decided 2026-11-10, for two-way training:
 |---|---|
 | cache rows | `Settings(direction=…)`: `.source`, `.target`, `.aligner` (the target language's); a builder's rows carry `text_en` and `text_vi` |
 | shards | payload `direction` and `tokenizer` (its file name); samples keep `vi_frames` and `en_frames` (the target's counts its delay), both texts as the source wrote them, `text_timing` (the aligner's name); Vietnamese text is NFC'd before it is tokenized and timed |
-| `cache_codes` | `--device cuda --direction en-vi` (MLX has no Vietnamese aligner); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
+| `cache_codes` | `--direction en-vi` on either device (MLX runs omniASR too, [cache-build](cache-build.md#mlx)); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
 | checkpoints | metadata `text_tokenizer`: the run's `--tokenizer` file name (none before 2026-11-10: the base) |
 | trainers | `--tokenizer` defaults to the start weight's; each shard checked against it ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache, scored apart |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
 | streams | `PACK_VERSION` 5 stores each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
-`mimi_cache_cuda` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)).
+`noisy_cache` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)); the next run's data is in [envi-data](envi-data.md).
 
 ## Tokenizer checks
 
