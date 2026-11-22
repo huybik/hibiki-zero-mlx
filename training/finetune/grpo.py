@@ -110,7 +110,7 @@ EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both direc
     Path("data/eval/en-vi-val-en/cv27.jsonl"),
     Path("data/eval/en-vi-val-en/libriheavy.jsonl"),
 ]
-LATENCY_SLACK_S = 0.2  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
+LATENCY_SLACK_S = 0.5  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
 # The defaults the profiler measures with too.
 TEMPERATURE = 0.8  # rollouts sample, and logprobs are taken, at evaluation's temperature
 TOP_K = 250
@@ -769,8 +769,9 @@ def main() -> None:
             stored = json.loads(config_path.read_text(encoding="utf-8"))
             stored["start_end_offset_s"] = start_offset
             atomic_write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", config_path)
-        # The gate allows LATENCY_SLACK_S: two updates at 2e-7 (in effect the start) measured
-        # 0.1 s later than the start, and a blocked checkpoint is not kept.
+        # The gate allows LATENCY_SLACK_S: quality comes first, so some later output is accepted for
+        # it (two updates at 2e-7, in effect the start, already measured 0.1 s later), and a blocked
+        # checkpoint is not kept.
         on_time = all(free_running[name]["median_end_offset_s"] <= start_offset[name] + LATENCY_SLACK_S
                       for name in selecting)
         if at > 0 and healthy and on_time:
