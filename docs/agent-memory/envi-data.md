@@ -70,7 +70,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 ## The Mac run
 
 `/Volumes/data/datasets/envi_mac/envi_mac.py` (outside the repo, as the box's `envi_rest.py` was),
-run from this branch's worktree with the conda Python, under `caffeinate -is`, by `run.sh` beside
+run from a checkout of main (`.claude/worktrees/envi-run`, from c1e778c on, so its builds use the
+current Vietnamese aligner) with the conda Python, under `caffeinate -is`, by `run.sh` beside
 it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `run.log`. Started
 2026-11-21 17:23 UTC+7 (viVoice and PhoAudiobook copies on the Hub, 354 and 224, that evening);
 running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
@@ -94,9 +95,19 @@ running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
   staged, drops `work/` and plans again from the Hub's listings.
 - It plans again from the Hub after each pass and ends ("done: the Hub holds every shard") only when
   a plan comes out empty, so a shard another machine published clean but not noisy gets its copy.
-- Before each batch's GPU steps it lists the Hub again and skips the shards published meanwhile, so
-  a box can take shards from the other end: run it bottom up, since the Mac goes top down in name
-  order (the box's `envi_rest.py` also goes top down; reverse its lists first).
+- Two ends (user, 2026-11-22): the Mac goes top down in name order, job by job (`tranche`, `noisy`,
+  `build`); another machine, run from its own session, goes bottom up, and the two meet through the
+  Hub. Before each batch's GPU steps the Mac lists the Hub again and skips the shards published
+  meanwhile; a batch already on the GPU may still make a shard the other machine has just
+  published, and the later upload replaces it (the same shard, near-ties apart). The other
+  machine:
+  - builds with main at c1e778c or later, so its shards are timed by the same aligner
+    (wav2vec2-base-vietnamese-250h, `min_score` 0.55; [two-way](two-way.md#vietnamese-aligner));
+    on CUDA that path is the English aligner's, checked on the CPU only;
+  - publishes clean shards to `en-vi/en-vi-grounded-v2/train/` and their noisy copies, `--seed 1`
+    and `--fraction` 0.6, to `en-vi/en-vi-grounded-v2-noisy/train/` (tranche copies to
+    `en-vi/<source>-noisy/` of the tranche cache repo);
+  - goes bottom up: the box's `envi_rest.py` goes top down, so reverse its lists first.
 - `touch /Volumes/data/datasets/envi_mac/pause` holds new batches off the GPU (downloads go on);
   delete it to go on. A batch already on the GPU finishes first.
 - To stop it, kill `run.sh`, then `envi_mac.py`, then its GPU step, which outlives its parent
