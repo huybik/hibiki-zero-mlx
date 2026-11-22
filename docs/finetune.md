@@ -52,10 +52,9 @@ and the SHA-256 of the four upstream artifacts, and requires a clean tracked wor
 
 Restore the training caches from the cache repo (built with
 [training/prep](../training/prep/README.md)): the `en_speech` cache with its validation split.
-The PhoMT cache (`--include "phomt-grounded-v2-5s/shard_*.pt"`) and `cv-anquach`
-(`--include "en-vi-grounded-v2-cv-anquach/train/shard_*.pt"`, 16 kHz English targets) train as
-more `--cache-dir`s in later ablations, each once its `en-vi` cache is built (none is yet): every
-row needs its pair in the other direction ([sft-training](agent-memory/sft-training.md#target-timing)).
+The PhoMT cache (`--include "phomt-grounded-v2-5s/shard_*.pt"`) trains as one more `--cache-dir`
+in a later ablation, once its `en-vi` cache is built (it is not yet): every row needs its pair in
+the other direction ([sft-training](agent-memory/sft-training.md#target-timing)).
 `--include` takes one pattern each; given two, `hf`
 reads the second as a file name and ignores the include. Anonymous downloads hit HF's rate
 limit (429) partway; logged in they do not, and `hf download` resumes where it stopped.
@@ -100,8 +99,8 @@ each row's source word times, which keep its target from starting ahead of them
 ([sft-training](agent-memory/sft-training.md#target-timing)). A two-way run trains both
 directions and needs none.
 
-The first stream run trained on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
-back later as more `--cache-dir` ablations, once their `en-vi` caches exist ([plan](vi_en_parity_plan.md#1-data)). Arguments after
+The first stream run trained on the `en_speech` cache alone; the PhoMT cache comes back later
+as a `--cache-dir` ablation, once its `en-vi` cache exists ([plan](vi_en_parity_plan.md#1-data)). Arguments after
 `RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–120 s
 streams in batches of at most 4,608 frames, one epoch (about 131,700 steps), peak LR `2.25e-6` with 5%
 warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW

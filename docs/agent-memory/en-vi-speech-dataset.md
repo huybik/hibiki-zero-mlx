@@ -4,7 +4,7 @@ Read when touching `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datas
 the HF datasets `huybik/en-vi-speech` and `anquachdev/common-vi-en` or the cache repo
 `huybik/hibiki-zero-vi-full-sft`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#contents) ·
-[cv-anquach rows](#cv-anquach-rows) · [Building and publishing](#building-and-publishing) ·
+[Building and publishing](#building-and-publishing) ·
 [Cache repo](#cache-repo)
 
 ## Purpose
@@ -16,7 +16,7 @@ step ([vi-tts](vi-tts.md)) filled the Vietnamese speech of its shards in place, 
 `upload --follow` published each as it was voiced; `cache_codes` then builds the training caches
 straight from its shards ([sft-data-caches](sft-data-caches.md)).
 
-It is published as `anquachdev/common-vi-en`, merged into that contributor's voiced Common Voice
+It is published as `anquachdev/common-vi-en`, in place of that contributor's voiced Common Voice
 set, and only that repository is used (user's plan, 2026-10-24); `upload` goes there by default,
 with his write token (`HF_TOKEN=$HF_TOKEN_AN`). It was voiced on `huybik/en-vi-speech`, kept but
 no longer used, where the Mac and anquachdev's machine, which voiced bottom up, both pushed. By
@@ -24,7 +24,9 @@ no longer used, where the Mac and anquachdev's machine, which voiced bottom up, 
 `vi_audio.path` set to `<clip>.opus` ([vi-tts](vi-tts.md#running)); that copy went to both
 repositories the same day (447 GB, 1,842 shards; 112 commits in 83 min to `common-vi-en`, as
 Xet had the bytes), and his old files were deleted there. On 2026-10-28 both held the 1,842
-shards at the Mac's byte sizes (`anquachdev/common-vi-en` revision `2ce8777`).
+shards at the Mac's byte sizes (`anquachdev/common-vi-en` revision `2ce8777`, which the code reads
+at `paths.EN_VI_REVISION`: never squash its history); 1,835 since `cv-anquach` was dropped
+([Contents](#contents)).
 
 A copy is `en_speech/` of the gated `anquachdev/en-vi-speech-20k` (config `en_speech`, its card's
 folder table), file for file with `data/` at `2ce8777`, every sha256 equal (2026-11-07; the user's
@@ -36,7 +38,6 @@ folder table), file for file with `data/` at `2ce8777`, every sha256 equal (2026
 /Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~316 GB + ~120 GB of VI)
   data/{train,validation}/cv27-*, libriheavy-*  ◄─ the corpus, moved in (en_speech step, retired)
                                               ◄─ tts_en_speech: vi_audio filled, shard by shard
-  data/train/cv-anquach-*                     ◄─ anquach step, voiced already
   README.md                                   ◄─ card step, and each upload pass
         └─► upload step (4 GB commits; --follow every 10 min) ─► anquachdev/common-vi-en
 ```
@@ -57,37 +58,21 @@ folder table), file for file with `data/` at `2ce8777`, every sha256 equal (2026
 - PhoMT is not in the dataset: the user dropped it on 2026-10-24, after 46 of its 1,377 shards
   were built, and none was uploaded. Its training cache stays in the [cache repo](#cache-repo).
   The removed `phomt` step is in git at `7e3b954`.
-
-## cv-anquach rows
-
-`anquachdev/common-vi-en` held, before the merge (revision `dba8e98`), 739,346 Common Voice
-English rows (the first ~1,000 h in clip-name order, no length filter), each with a Vietnamese
-translation and Vietnamese speech: `en`, `vi`, `audio_en`, `audio_vi`, `source_clip`, both
-audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them dataset rows
-(user's choices, 2026-10-24):
-
-- Kept: English 5–22.4 s, as in the corpus (321,028 rows); the Vietnamese length is free.
-- 170,820 of those clips (307 h) are `cv27` rows, all in shards already voiced here
-  (`cv27-00000`…`00032` and validation `cv27-00000`); ours stay whole and his copies are dropped.
-- Of the other 150,208, the 11,212 whose English sentence is a `cv27` validation sentence,
-  compared lower-cased with punctuation and spaces collapsed, are dropped, as `cv27` train drops
-  them (plain lower-casing let 126 through), and the 78 whose `vi` holds Chinese, Japanese or
-  Korean script (`Thùng啤酒`), spoken from that broken text. The rest go to `train` as
-  `cv-anquach-*` shards of 20,000 rows: 138,918 rows, 256.1 h English, 211.6 h Vietnamese
-  (2 rows over 22.4 s).
-- They are clips `cv27` lacks: dropped by its filters (such as the 10.5 kHz bandwidth floor) or
-  not among its validated clips; which, is not recorded. Their English is his 16 kHz re-encode,
-  so nothing above 8 kHz; Mimi codes up to 12 kHz. His Vietnamese speech comes from his own TTS,
-  not known to match the English voice. `speaker` is empty (his set has
-  none, and the Common Voice metadata is not kept), so speaker overlap with `cv27` validation is
-  unchecked. `id` is `cv-anquach/<clip>`, and both audio paths are `<clip>.opus`.
-- His old files (`data/train-heavy-*.parquet`, the empty `data/train-00000-of-00001.parquet`)
-  are deleted from `anquachdev/common-vi-en`; the step downloads them from the pinned revision,
-  so never squash the repository's history. Its download to `--src` is deleted too.
+- `cv-anquach` is not in it either: the user dropped it on 2026-11-22 ("remove it from the hub and
+  docs"), from `anquachdev/common-vi-en`, its `en_speech/` copy, `huybik/en-vi-speech` and both
+  cache repos (their history keeps it). Its 7 shards held 138,918 Common Voice clips the corpus lacks (256 h), with that
+  contributor's translations and TTS. Judged blind beside `cv27` (Opus 5.5, 120 rows each), 30%
+  of its translations had a clear meaning error ("untitled" as "no given name", bell hops as
+  bells), against none of `cv27`'s (mean 3.4 against 4.8 of 5). Its English is a 16 kHz
+  re-encode, its VI→EN build rejected twice the corpus's share of rows on the English alignment
+  score (2.2% against 1.1%), and it had no EN→VI cache, which a two-way run needs
+  ([sft-training](sft-training.md#target-timing)). Its Vietnamese speech was sound (150 rows):
+  speaker similarity to the English clip 0.51 (VieNeu's 0.50), ASR CER 0.087. The removed
+  `anquach` step is in git at `f1f502e`.
 
 ## Building and publishing
 
-- Steps `anquach`, `card` and `upload`; commands are in
+- Steps `card` and `upload`; commands are in
   [training/prep/README.md](../../training/prep/README.md). Each resumes when run again and holds
   a `.<step>.lock` in the dataset folder.
 - The `en_speech` step moved the corpus in, converting each shard and deleting its original;
@@ -154,8 +139,8 @@ audio columns 16 kHz mono Ogg Opus at ~16 kbps. The `anquach` step makes them da
 ## Cache repo
 
 `huybik/hibiki-zero-vi-full-sft` (a dataset) holds the training caches: `phomt-grounded-v2-5s/`
-with `grounded-v2/` (its source), and since 2026-10-28 the caches of this dataset,
-`en-vi-grounded-v2/` and `en-vi-grounded-v2-cv-anquach/`, committed shard by shard as they are
+with `grounded-v2/` (its source), and since 2026-10-28 the cache of this dataset,
+`en-vi-grounded-v2/`, committed shard by shard as they are
 built ([sft-data-caches](sft-data-caches.md#publishing)). On 2026-10-23 the obsolete v1 cache,
 the root FLEURS cache and pairs were deleted and the history squashed to one commit (user's
 choice), leaving 10.4 GB. The model repository of the same name holds training runs, not

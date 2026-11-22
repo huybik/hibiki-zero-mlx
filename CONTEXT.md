@@ -81,15 +81,13 @@ inference/ (Apple Silicon, MLX)
   ([en-vi-translation](docs/agent-memory/en-vi-translation.md)),
   2,000 h of Libriheavy on Gemini ([en-vi-gemini](docs/agent-memory/en-vi-gemini.md)) and the
   rest on Muse ([en-vi-muse](docs/agent-memory/en-vi-muse.md)). The corpus now lives, with its
-  translations and the already voiced Common Voice rows of `anquachdev/common-vi-en`
-  (`cv-anquach`), in the local EN-VI dataset, published as `anquachdev/common-vi-en`, the one
-  copy used ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voiced the
+  translations, in the EN-VI dataset, published as `anquachdev/common-vi-en`, the one copy used ([en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md)). VieNeu-TTS voiced the
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
   shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
-  1,842 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
+  1,835 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
   `cache_codes` builds the training caches from it in MLX;
-  the full build ran on the Mac from 2026-10-27 to 2026-11-02: 1,835 main shards (3.45M rows) and
-  7 `cv-anquach` shards, all on the Hub ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  the full build ran on the Mac from 2026-10-27 to 2026-11-02: 1,835 shards (3.45M rows), all on the
+  Hub ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).

@@ -94,8 +94,9 @@ grows sentence by sentence.
    Italian with 850 h, but from related languages; Vietnamese starts from TTS only, so the lift
    per 1,000 h on FLEURS and MultiMed decides the scale-up toward ~10k h (GigaSpeech 2, more
    YODAS). Its rows serve both directions ([stage 7](#7-two-way-speech)).
-4. First run pool: `en-vi-grounded-v2/train`. `cv-anquach` (16 kHz English targets) and the PhoMT
-   cache (half its rows not voice-matched) stay out of the first run and come back as ablations.
+4. First run pool: `en-vi-grounded-v2/train`. The PhoMT cache (half its rows not voice-matched)
+   stays out of the first run and comes back as an ablation. `cv-anquach` is dropped
+   ([en-vi-speech-dataset](agent-memory/en-vi-speech-dataset.md#contents)).
 
 ### 2. Evaluation sets
 
