@@ -231,10 +231,10 @@ class CUDAModels:
     `half_ctc=True` to run its transformer in bfloat16 (feature extractor and lm_head stay
     float32, so GroupNorm stats are safe and log-probs match float32 within CTC rounding)."""
 
-    # Rows per batched pass. ~3.5 windows of decoded clips are held at once (decoding, filling, queued, on the
-    # GPU), in /dev/shm and the main process: ~3.6 MB a row (both clips at 24 kHz, the CTC's at 16 kHz, float32),
-    # up to ~5.7 MB on 22.4 s clips. On four Libriheavy shards (RTX 5090, 31 GB RAM, 2026-11-22): 4,096 and
-    # 2,048 were killed out of memory, 1,024 ran 2,093x at 25.1 GB, 512 ran 2,134x at 19.9 GB.
+    # Rows per batched pass. The decoded clips of several windows are held at once (decoding, filling, queued, on
+    # the GPU), in /dev/shm and the main process: on Libriheavy the build took ~5 GB plus ~10 MB a window row. On
+    # four Libriheavy shards (RTX 5090, 31 GB RAM, 2026-11-22): 2,048 rows ran 2,018x at 26.0 GB, 1,024 2,106x at
+    # 15.6 GB, 512 2,133x at 10.4 GB; 4,096 was killed out of memory on a 40-shard batch.
     window = 512
     threaded = True  # encode runs in the build's GPU thread, a window ahead of the main thread
 

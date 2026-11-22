@@ -8,20 +8,30 @@ the build works is in [cache-build](cache-build.md#cuda). Back to [CONTEXT.md](.
 
 ## Memory
 
-- A build holds ~3.5 windows of decoded clips at once (being decoded, being filled, queued, on the
-  GPU), in `/dev/shm` and the main process: ~3.6 MB a row on Libriheavy (both clips at 24 kHz for
-  Mimi, the aligned side's at 16 kHz for the CTC, float32), up to ~5.7 MB on 22.4 s clips. So
-  `CUDAModels.window` sets the build's RAM: 512 rows since 2026-11-22 (was 4,096, sized on boxes
-  with 137 GB or more). On four Libriheavy shards on the RTX 5090 (31 GB): 4,096 and 2,048 rows were
-  killed out of memory, 1,024 ran 2,093× at 25.1 GB (anonymous + shared, page cache excluded),
-  512 ran 2,134× at 19.9 GB.
+- A build holds the decoded clips of several windows at once (being decoded, being filled, queued,
+  on the GPU), in `/dev/shm` and the main process (both clips at 24 kHz for Mimi, the aligned side's
+  at 16 kHz for the CTC, float32). So `CUDAModels.window` sets the build's RAM: on Libriheavy ~5 GB
+  plus ~10 MB a window row. 512 rows since 2026-11-22; it was 4,096, sized on boxes with 137 GB or
+  more. On four Libriheavy shards on the RTX 5090 (31 GB; anonymous + shared memory, page cache
+  excluded):
+
+  | Window | Build | Peak RAM |
+  |---:|---:|---:|
+  | 4,096 | killed out of memory (a 40-shard batch) | |
+  | 2,048 | 2,018× | 26.0 GB |
+  | 1,024 | 2,106× | 15.6 GB |
+  | 512 | 2,133× | 10.4 GB |
 - A Vast container's `/dev/shm` may be smaller than its RAM (15 GB of 31 on the RTX 5090): the
   clips in flight must fit there too.
 - Profile a build on several shards, never one: a shard under one window's rows never holds a
-  second window, so it hides the memory a long build needs (one 3,218-row shard peaked at 19.6 GB
-  at 4,096 rows, then 40 shards were killed).
-- The GPU: `nvidia-smi` showed 16 GB for one shard and 25–30 GB over four (PyTorch's cache keeps
-  what it freed); the 32 GB card ran them all.
+  second window, so it hides the memory a long build needs (one 3,218-row shard ran at 4,096 rows,
+  then 40 shards were killed).
+- A build killed outright (SIGKILL, the out-of-memory killer) cannot remove its `/dev/shm` clips,
+  which hold RAM until deleted: four killed builds left ~11 GB. Each build now removes those of
+  builds no longer running (`pcm_dir`, its directory named with its PID). Read a memory profile
+  with `/dev/shm` empty of `cache_build_pcm_*` from dead builds.
+- The GPU: `nvidia-smi` showed 16 GB for one shard and 25–30 GB over four or a batch of 40
+  (PyTorch's cache keeps what it freed); the 32 GB card ran them all.
 - `noisy_cache encode` at `--batch-seconds` 320 and 640 (RTX 5090, interleaved twice): 2,128–2,131×
   against 2,137–2,145×, 27.0 against 29.9 GB of the card, codes equal but for near-ties (29 of
   3,147 rows, 99.9989%). Its main process peaked at 4.7 GB of RAM on one shard.
@@ -34,7 +44,10 @@ Vast 61906288 (2026-11-22): 32 GB, driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 
 
 - One shard (`libriheavy-large-00012-00103`, 3,218 rows): 1,676× with the start (~14 s of loading and
   the first window's decodes, the GPU idle), ~2,200× after it, the GPU 99% busy, the CPU 6–15%.
-  Four Libriheavy shards at window 512: 2,134×, the GPU 97% busy while active.
+  Four Libriheavy shards at window 512: 2,133×, the GPU 98% busy while active.
+- A production batch of 40 shards (`envi_box.py`, [envi-data](envi-data.md#the-box-run)): the
+  build 933 s, the noisy copies 265 s, the upload of both 66 s; 13.2 GB of RAM at peak, the GPU
+  98% busy while active. ~30 s of GPU a shard: ~11 h for the 1,304 builds.
 - Against the Mac's `--ane-ctc` build of that shard (c1e778c): the same 3,147 rows kept and 71
   rejected for the same reasons, every non-code field equal, 22 rows with one word a 12.5 Hz frame
   apart, scores within 0.0105, audio codes 94.9% equal (first codebooks 99.8%): TF32's near-ties,
