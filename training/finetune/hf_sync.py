@@ -4,6 +4,7 @@
 The trainer saves a pair every --save-every steps, often enough to bound what a preemption loses;
 a pair is 37.5 GB, so while training runs only the pairs at its validation steps are uploaded.
 The final sync, once the training process has exited, uploads the newest pair whatever its step.
+Pruned files' storage is freed as they go (`purge_pruned`).
 """
 from __future__ import annotations
 
@@ -240,7 +241,7 @@ def upload_best(repo: str, stage: Path, step: int) -> None:
     print(f"Synced best checkpoint step {step}.", flush=True)
 
 
-def prune_remote_pairs(repo: str) -> None:
+def prune_remote_pairs(repo: str) -> bool:
     files = remote_files(repo)
     complete = remote_pairs(files)
     keep = set(complete[-REMOTE_KEEP:])
@@ -264,9 +265,10 @@ def prune_remote_pairs(repo: str) -> None:
             repo, [remote_path(path) for path in model_deletes],
             commit_message="Prune old recovery models",
         )
+    return bool(trainer_deletes or model_deletes)
 
 
-def prune_remote_best(repo: str) -> None:
+def prune_remote_best(repo: str) -> bool:
     files = remote_files(repo)
     complete = remote_best_steps(files)
     keep = complete[-1] if complete else None
@@ -291,6 +293,29 @@ def prune_remote_best(repo: str) -> None:
             [remote_path(path) for path in model_deletes],
             commit_message="Prune old best models",
         )
+    return bool(marker_deletes or model_deletes)
+
+
+def purge_pruned(repo: str) -> None:
+    """Free the storage of the run's deleted files. A deleted file's LFS object stays in the repo and
+    counts against the account's storage: pruned pairs had grown the recovery repo to 5.5 TB for
+    1.7 TB of files by 2026-11-22, when the Hub refused every upload. Only objects first pushed under
+    this run's prefix go, and only those no file on main still holds (a promoted best is its pair's
+    model byte for byte, and another run may hold the same bytes)."""
+    api = HfApi()
+    live = {
+        item.lfs.sha256
+        for item in api.list_repo_tree(repo, recursive=True)
+        if isinstance(item, RepoFile) and item.lfs is not None
+    }
+    dead = [
+        obj for obj in api.list_lfs_files(repo)
+        if obj.filename.startswith(f"{REMOTE_ROOT}/") and obj.file_oid not in live
+    ]
+    if dead:
+        # Old commits keep their pointers (no history rewrite under another run's concurrent commits).
+        api.permanently_delete_lfs_files(repo, dead, rewrite_history=False)
+        print(f"Freed {len(dead)} pruned objects, {sum(obj.size for obj in dead) / 1e9:.1f} GB.", flush=True)
 
 
 def sync_run_metadata(run_dir: Path, repo: str, files: dict[str, int]) -> None:
@@ -385,7 +410,7 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
             _, model, trainer = next(pair for pair in wanted if pair[0] == newest_pair)
             stage = stage_files(run_dir, "checkpoint", newest_pair, (model, trainer))
         upload_pair(repo, stage, newest_pair)
-    prune_remote_pairs(repo)
+    pruned = prune_remote_pairs(repo)
 
     files = remote_files(repo)
     uploaded_best = set(remote_best_steps(files))
@@ -419,7 +444,10 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
                 run_dir, "best", newest_best, (model, run_dir / "best.json")
             )
         upload_best(repo, stage, newest_best)
-    prune_remote_best(repo)
+    pruned = prune_remote_best(repo) or pruned
+    # The final sync also frees what an interrupted prune or a refused commit left behind.
+    if pruned or final:
+        purge_pruned(repo)
 
     if final:
         sync_run_artifacts(run_dir, repo)

@@ -116,6 +116,14 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - logs, on the final sync only.
   It requires a public repo and a remote `run.json` byte-equal to the local `run_id.json`. It
   polls every 60 s and aborts after three failures.
+- Deleting a file from the Hub leaves its LFS object in the repo, and every object counts against
+  the account's storage: pruned pairs had grown the recovery repo to 5.5 TB for 1.7 TB of files
+  when the Hub refused every upload ("You have exceeded your public storage space", 2026-11-22;
+  `list_lfs_files` and `permanently_delete_lfs_files` freed the 3.9 TB, down to 1.6 TB). So after
+  each prune, and on the final sync, `hf_sync` frees the objects first pushed under its prefix
+  that no file on main still holds (`purge_pruned`; a promoted best is its pair's model byte for
+  byte), without rewriting history (`rewrite_history=False` frees the storage too: 15.3 GB
+  checked). `HfApi().repo_info(repo).used_storage` gives what the repo counts.
 - The sync and the launcher list the run's remote files with `list_repo_tree` under the prefix,
   which pages through any repo. `model_info(files_metadata=True).siblings` stops at 10,000
   files: once the recovery repo held 16,210 (2026-11-06), the first tranche run (`tranche_epoch1`)
