@@ -242,7 +242,7 @@ update 2,000 are in [student-grpo](student-grpo.md).
 - Architecture changes wait for the trained student's scores (2026-11-13). The untrained cut
   already holds real time on the A15 (41 → 44.5 ms a frame, GPU-bound,
   [swift-runtime](swift-runtime.md#device-test)), so the budget has room; what costs quality is
-  8 codebooks (Whisper's Vietnamese WER through Mimi 42.0% at 8 against 27.8% at 16) and the 10
+  8 codebooks (Qwen3-ASR's Vietnamese WER through Mimi 15.7% at 8 against 8.9% at 16) and the 10
   layers. In order, each only if the scores call for it:
   1. Vietnamese speech poor at 8 codebooks: a 16-codebook student with the same 3-layer
      depformer (`--codebooks 16`). Its steps 8–15 share one weight slice, so a frame reads ~4%
