@@ -203,7 +203,7 @@ class MLXModels:
         mx.async_eval(codes)
         aligned = {index: (align([rows[index]], [lp]), 0)
                    for index, lp in zip(ane, on_ane.result() if ane else [], strict=True)}
-        # np.array(lp) blocks until CTC is done; Mimi is queued and runs asynchronously after it
+        # np.array(lp) blocks until CTC is done; Mimi runs on its own streams (mimi_mlx.STREAMS) beside it
         aligned |= {index: (align([rows[index]], [np.array(lp)]), 0) for index, lp in log_probs.items()}
         return [(aligned[index], source, target) for index, (source, target) in enumerate(codes)]
 
@@ -521,7 +521,8 @@ class Builder:
     def _stream(self, shards: Iterator[Shard], pool: ProcessPoolExecutor) -> Iterator[Shard]:
         """The shards filled, their rows planned and encoded in windows that run across shard ends.
         Each window's GPU work is queued before the previous window is collected, so the GPU runs
-        continuously: CTC_N → Mimi_N → CTC_N+1 → Mimi_N+1 → … On MLX `encode` returns lazy codes;
+        continuously: CTC_N → Mimi_N → CTC_N+1 → Mimi_N+1 → … (on MLX Mimi has its own streams, so
+        Mimi_N runs beside CTC_N+1). On MLX `encode` returns lazy codes;
         on CUDA (`threaded`) it blocks, so it runs in a GPU thread with the next window queued
         behind it while the main thread collects one window and plans the next."""
         started: deque[Shard] = deque()

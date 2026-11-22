@@ -147,13 +147,13 @@ Copies of both are kept in `/Volumes/data/datasets/envi_mac/box/`. The user had 
 
 ## Speed
 
-On the M4 Pro, 2026-11-21, the Mac otherwise lightly used (speed is real time on the audio the
-GPU encodes):
+On the M4 Pro, 2026-11-21/22 (`mimi_mlx` with its fused kernel), the Mac otherwise lightly used
+(speed is real time on the audio the GPU encodes):
 
 | Step | Speed | Note |
 |---|---:|---|
-| `en-vi` build (`cache_codes --device mlx --ane-ctc`) | 259–323× | Mimi audio of both clips; the aligner's transformer on the Neural Engine; wav2vec2-base-vietnamese-250h 4–13% faster than omniASR, interleaved (2026-11-22); omniASR 150–161× all on the GPU |
-| noisy copy (`noisy_cache encode --device mlx`) | 330–400× | the re-encoded English; 2 decode workers, the conditions on the CPU |
+| `en-vi` build (`cache_codes --device mlx --ane-ctc`) | 285–340× | Mimi audio of both clips; the aligner's transformer on the Neural Engine; how it got there: [cache-build](cache-build.md#speed-on-the-mac) |
+| noisy copy (`noisy_cache encode --device mlx`) | 391–447× | the re-encoded English; 2 decode workers, the conditions on the CPU |
 | download (curl, 4 at a time) | ~30–40 MB/s | |
 | upload (plain LFS, `HF_HUB_DISABLE_XET=1`) | ~20 MB/s | through Xet a 255 MB batch crawled at ~25 KB/s and stalled |
 

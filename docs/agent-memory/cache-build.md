@@ -101,10 +101,16 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 
 - Mimi: `mimi_mlx.MimiEncoder`, an encode-only MLX port that loads the PyTorch checkpoint. Each
   clip is encoded whole and alone, padded to a multiple of 16 frames (so the compiled encoder
-  sees at most 18 shapes; [mlx-inference](mlx-inference.md#memory)), then cut to
-  ceil(samples / 1920) frames. Against moshi 0.2.13 PyTorch on CPU in float32, 99.98% of frames
-  are equal on all 16 codebooks and every first codebook (65,237 frames of 504 clips); the rest
-  are near-ties in the residual codebooks.
+  sees at most 18 shapes, traced once a stream; [mlx-inference](mlx-inference.md#memory)), then
+  cut to ceil(samples / 1920) frames. Successive calls go to four GPU streams in turn, so several
+  clips run at once; those streams exist only on the thread that made the encoder (MLX 0.32.4), so
+  build and call it on one thread, as every builder does. The residual blocks of SEANet's 64-, 128-
+  and 256-channel stages run as one Metal kernel each (`_residual`, `mx.fast.metal_kernel`, the
+  hidden channels in registers). Against moshi 0.2.13 PyTorch on CPU in float32, 99.96% of frames
+  are equal on all 16 codebooks and every first codebook (101,277 frames of 800 `en_speech`
+  clips, 2026-11-22; the port before the kernel the same); on 230 PhoAudiobook clips one first
+  codebook frame was a near-tie (distances 7.6e-6 apart). The rest are near-ties in the residual
+  codebooks.
 - CTC: `wav2vec2_mlx.Wav2Vec2CTC` in float32 by default; `half=True` (`tranche.cache --half-ctc`)
   for float16 weights, measured on omniASR (the former Vietnamese aligner) only. One clip per
   forward, then the numpy Viterbi (`text_timing.CTCWordAligner`) in a worker. The port pads each
@@ -130,8 +136,8 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (with `ane_ctc`, the
   Neural Engine's rows together, then the GPU's; they align while the GPU encodes Mimi), and
   returns lazy Mimi codes. The *next* window's CTC is queued in
-  `_encode_start` before the previous window's Mimi codes are collected in `_encode_finish`, so
-  the GPU runs CTC_N+1 and collects Mimi_N in an interleaved pipeline.
+  `_encode_start` before the previous window's Mimi codes are collected in `_encode_finish`; Mimi
+  runs on its own four streams, so Mimi_N runs beside CTC_N+1 on the default stream.
   `mx.set_cache_limit(16 GB)` keeps freed buffers for the ~36 bucketed shapes ([speed](#speed-on-the-mac)).
 - Rejected after measurement (2026-10-27): upstream moshi_mlx 0.3.0 Mimi (no attention mask and
   tanh GELU, 30% of codes equal on whole clips); rustymimi 0.4.1 (an attention window of 251
@@ -201,7 +207,7 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
 - Whole shard: `libriheavy-dev-00001` (1,738 rows, 13.2 h): 189x; this build 258–263x.
 - Alone: Mimi ~500x on one shape (PyTorch CPU 80x; PyTorch MPS 300–350x, but only with length
   buckets: per-clip shapes grow MPS memory to 28–30 GB); wav2vec2 240–290x (PyTorch CPU 86x, MPS
-  193x), its 12 layers at ~3.9 TFLOP/s in float32. One clip per forward already fills the GPU.
+  193x), its 12 layers at ~3.9 TFLOP/s in float32. One clip per forward keeps the GPU ~95% busy.
 - PyAV decodes Opus at ~1,430x real time per core (soundfile 413x).
 - Tried without gain: batching Mimi or wav2vec2 clips (MLX: −40% to +25%, no pattern; MPS: none
   to −10%); grouping the GPU work by stage; wav2vec2 in CPU processes beside the GPU. With the
@@ -228,12 +234,25 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   the 1,000 Common Voice rows (omniASR 13).
 - Neural Engine for Mimi and wav2vec2-base (Core ML 9, 2026-10-27): float16 only rules out Mimi and
   moved 0.7% of the base's word spans; one fixed 10 s shape compiled over 27 min without finishing.
-- Headroom (2026-10-29, at 240x): the GPU is 96–98% busy, and a row takes as long as its two
-  models do alone, so only less GPU work per row would help. On a mean `libriheavy-large` row
-  (Vietnamese 11.5 s, English 13.6 s, delay 2.2 s) Mimi takes ~55% (SEANet 59%, transformer 24%,
-  quantizer 15%) and wav2vec2 ~45%. Bucket padding adds 4.5% to each; the delay's silence is 8% of
-  Mimi's frames and must be encoded. Convolutions rewritten as matmuls gain nothing. Untried: the
-  Mac kept idle, and High Power Mode (`powermode 0`, Automatic, so far).
+- Mimi (2026-11-22; 400 `cv27` and 400 `libriheavy-large` English clips, interleaved, thermal
+  state "fair"): the residual blocks of SEANet's 64-, 128- and 256-channel stages run as one Metal
+  kernel each (`mimi_mlx._residual`: 3.3×, 2.6× and 1.8× those blocks; the 512-channel one gained
+  nothing), the downsampling weights are concatenated once at load (the 512-channel stage's 33 MB
+  were concatenated every call), and four clips run at once on their own GPU streams (+2–7% on
+  Mimi alone): Mimi alone 395–457× → 590–704× (`cv27`) and 306–518× → 539–730× (`libriheavy`); a
+  whole `cv27` shard's noisy copy 288–326× → 391–447×, the GPU still 93–95% busy; the `en-vi`
+  build (`ane_ctc`, 1,000 `cv27-00058` and 500 `libriheavy-large-00012-00103` rows, three rounds)
+  254–271× → 330–340× and 225–263× → 285–319×, streams there neither helping nor hurting
+  (314–325× and 298–312× on one); the tranche's PhoAudiobook build 200–235× → 267–290×. Each
+  kept and rejected the same rows with the same text and fields, audio codes 99.97–99.99% equal.
+  A 10 s clip then spends 44% in the downsampling convolutions (their bare matmuls run 4.4–5.5
+  TFLOP/s, a large square one 6.5), 21% the transformer, 17% the residual kernels, 7% the
+  quantizer, 5% the first convolution. Without gain: the residual blocks as im2col or polyphase
+  matmuls, the downsampling as a Metal kernel or one matmul over an overlapping strided view (its
+  padding copy costs what it saves), the first convolution as a matmul.
+- Before that (2026-10-29, at 240x): the GPU 96–98% busy and a row as long as its two models
+  alone, so only less GPU work per row helps; the delay's silence is 8% of Mimi's frames and must
+  be encoded. Untried: High Power Mode (`powermode 0`, Automatic, so far).
 - On GigaSpeech 2's short rows (4.3 s), interleaved on 2,000 rows of archive 147 (1,550 kept,
   4.77 h of Mimi audio, 2026-11-09): this build 210–226x with 2, 4 or 8 workers alike, the GPU ~95%
   busy and MLX's peak 2.2 GB; the tranche's MLX path it replaced, with its streaming fix, 219–223x.
