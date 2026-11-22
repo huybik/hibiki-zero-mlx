@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads|student-distill: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|student|student-heads|student-distill: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -33,20 +33,6 @@ case $job in
   # Hub: 143 MB/s, where Xet throttles to ~4 MB/s.
   cache) export HF_HUB_DISABLE_XET=1 NO_TORCH_COMPILE=1
          cmd=(/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga) ;;
-  # Round 4 SFT again (2026-11-10, full_epoch4e): every tranche cache plus 500 seeded shards (~2,480 h, 29% of the hours;
-  # full_epoch4b had 150, 11%) of the noisy en_speech cache, from round 3's final model, in round 3's 4,608-frame batches:
-  # 131,659 steps. A pair every 4,000 steps: each save idles the GPU ~6 s (sft-speed.md). Validation batches of 64 rows fit
-  # an 80 GB card (round 4b's 128 ran on 141 GB). Rerun with the same args resumes it (h100.sh run). Round 3
-  # (tranche_epoch1b) ran from run 2's final model on the first tranche, --seed 45 --val-every 8000.
-  sft) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
-       T=/workspace/tranche/repo E=data/eval
-       cmd=(./training/h100.sh run full_epoch4e
-            --cache-dir $T/cache/pho $T/cache/vivoice $T/cache/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
-            --val-cache-dir data/cache/en-vi-grounded-v2/validation
-            --model-weight runs/tranche_epoch1b/model_step026176.safetensors --batch-frames 4608 --eval-batch-size 64 --keep-checkpoints 1
-            --lr 3e-6 --seed 46 --save-every 4000 --val-every 28000
-            --eval-pairs $E/fleurs-vi/dev.jsonl $E/multimed-vi/select.jsonl $E/en-vi-val/cv27.jsonl
-            $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-noisy/cv27.jsonl $E/en-vi-val-noisy/libriheavy.jsonl) ;;
   # The two-way run's English-to-Vietnamese inputs (two-way.md#two-way-run): the English evaluation sets, round 4e's 500
   # en_speech shards (envi_en_speech.sh, which pushes them at its end), then every tranche shard by the tranche builder
   # (pushed to its cache repo's en-vi/ as it goes; each shard's parts deleted once read). ~8 h on the H100 (2,490x real
@@ -117,7 +103,7 @@ case $job in
             --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|sft|envi-cache|two-way|student|student-heads|student-distill" >&2; exit 1 ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|student|student-heads|student-distill" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

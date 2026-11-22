@@ -54,28 +54,36 @@ Restore the training caches from the cache repo (built with
 [training/prep](../training/prep/README.md)): the `en_speech` cache with its validation split.
 The PhoMT cache (`--include "phomt-grounded-v2-5s/shard_*.pt"`) and `cv-anquach`
 (`--include "en-vi-grounded-v2-cv-anquach/train/shard_*.pt"`, 16 kHz English targets) train as
-more `--cache-dir`s in later ablations. `--include` takes one pattern each; given two, `hf`
+more `--cache-dir`s in later ablations, each once its `en-vi` cache is built (none is yet): every
+row needs its pair in the other direction ([sft-training](agent-memory/sft-training.md#target-timing)).
+`--include` takes one pattern each; given two, `hf`
 reads the second as a file name and ignores the include. Anonymous downloads hit HF's rate
 limit (429) partway; logged in they do not, and `hf download` resumes where it stopped.
 
 ```bash
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data/cache \
   --include "en-vi-grounded-v2/*/shard_*.pt"
+./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data/cache \
+  --include "en-vi/en-vi-grounded-v2/*/shard_*.pt"
 ./.venv/bin/python -m training.finetune.streams \
   data/cache/en-vi-grounded-v2/train data/cache/en-vi-grounded-v2/validation
+./.venv/bin/python -m training.finetune.streams --drop-shards \
+  data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data \
   --include "eval/*"
 ./.venv/bin/python -m training.prep.eval_sets --sets giga-heldout  # gated: HF_TOKEN with access
 ```
 
-The second command packs each shard into a flat memory-mapped array beside it
+The second downloads the other direction's caches, the pairs (78 GB). The third packs each shard
+into a flat memory-mapped array beside it
 (`<cache-dir>/.packed/`, 70 GB, ~30 s): every later start loads the 3.44M rows in ~9 s instead
 of unpickling them for 7.5 minutes, and keeps them out of RAM. Training builds missing packs
-itself, so this only moves that work before `run` checks the free disk. The third downloads the
+itself, so this only moves that work before `run` checks the free disk. The fourth packs the
+pairs and deletes their shards (~75 GB of packs stay: count them in the disk). The fifth downloads the
 evaluation sets into `data/eval/` (`training.prep.eval_sets` builds them anew); training translates FLEURS dev and the held-out `en-vi-val` rows at every
 validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
 without them
-([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)). The fourth builds the held-out
+([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)). The sixth builds the held-out
 real-Vietnamese set, which GigaSpeech 2's terms keep off that public repo; pass it to `eval` below.
 
 ## Run
@@ -83,11 +91,17 @@ real-Vietnamese set, which GigaSpeech 2's terms keep off that public repo; pass 
 ```bash
 ./training/h100.sh run RUN_NAME \
   --cache-dir data/cache/en-vi-grounded-v2/train \
-  --val-cache-dir data/cache/en-vi-grounded-v2/validation
+  --val-cache-dir data/cache/en-vi-grounded-v2/validation \
+  --pair-cache-dir data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation
 ```
 
-The first stream run trains on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
-back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
+`--pair-cache-dir` is the other direction's caches of the same rows, read only for their text:
+each row's source word times, which keep its target from starting ahead of them
+([sft-training](agent-memory/sft-training.md#target-timing)). A two-way run trains both
+directions and needs none.
+
+The first stream run trained on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
+back later as more `--cache-dir` ablations, once their `en-vi` caches exist ([plan](vi_en_parity_plan.md#1-data)). Arguments after
 `RUN_NAME` go to `training.finetune.train` (`--help` lists them). The defaults are 30–120 s
 streams in batches of at most 4,608 frames, one epoch (about 131,700 steps), peak LR `2.25e-6` with 5%
 warmup and cosine decay, audio codebook 0 weighted 100 and text PADs 0.5, fused AdamW
@@ -139,6 +153,7 @@ rm -r $C/.packed                                            # 70 GB
 rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean shards stay on the Hub
 ./.venv/bin/python -m training.finetune.streams $O $V       # pack before run checks the free disk
 ./training/h100.sh run RUN_NAME --cache-dir $O --val-cache-dir $V \
+  --pair-cache-dir data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation \
   --model-weight weights/PREVIOUS_RUN_stepFINAL.safetensors --seed 43 --val-every 18000 \
   --eval-pairs data/eval/fleurs-vi/dev.jsonl data/eval/en-vi-val/{cv27,libriheavy}.jsonl \
   data/eval/en-vi-val-noisy/{cv27,libriheavy}.jsonl
@@ -297,6 +312,7 @@ sets, such as MultiMed `select`, the non-regression gate
 ```bash
 ./.venv/bin/python -m training.finetune.validate \
   --cache-dir data/cache/en-vi-grounded-v2/validation \
+  --pair-cache-dir data/cache/en-vi/en-vi-grounded-v2/validation \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors
 ./.venv/bin/python -m training.finetune.eval \
   --pairs data/eval/multimed-vi/select.jsonl --limit 1718 \

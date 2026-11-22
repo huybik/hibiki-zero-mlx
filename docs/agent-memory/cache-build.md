@@ -60,8 +60,13 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   a decoded clip more than 0.02 s off its stored duration (PyAV decodes a truncated or damaged
   clip without error, only shorter); more frames than `max_frames` (280, the trainer's cap),
   counted from the decoded lengths as max(target frames, source frames) + 1 before the delay;
-  a target clip shorter than one CTC frame; the text grouping; CTC alignment (score below the
-  aligner's `min_score`: 0.5 English, 0.55 Vietnamese); token timing. Mimi is queued with the CTC forward, so the ~0.5% of
+  a target clip shorter than one CTC frame; the text grouping; CTC alignment (fewer CTC frames
+  than the transcript's characters plus its doubled ones, the least a CTC path takes, 2N + 1
+  before 2026-11-22, which rejected 2.8% of GigaSpeech 2's rows as fast speech; or a score below
+  the aligner's `min_score`: 0.5 English, 0.55 Vietnamese); token timing; a target running on past
+  its last text token longer than the aligner's `max_tail_s` (1.5 s Vietnamese, for VieNeu
+  speaking past its text; none English, whose recordings end on silence:
+  [sft-training](sft-training.md#target-timing), which applies it again to caches built before it). Mimi is queued with the CTC forward, so the
   rows rejected at alignment or token timing are encoded and dropped.
 - The direction (`Settings.direction`, `vi-en` by default, `en-vi` for two-way) says which clip
   is the source and times the target's text against the target clip with that language's CTC
@@ -85,7 +90,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   whose rows all fail on data is written, empty.
 - A sample holds the row fields, the builder's `fields` and `source_row` (`<file>#r<index>`); a
   shard holds `samples` in source order, `rejected` (`id`, `reason`: the builder's own gates
-  first, then the build's, in source order), `source`, `max_frames`, `alignment_min_score`,
+  first, then the build's, in source order), `source`, `max_frames`, `alignment_min_score`, `max_tail_s` (none before 2026-11-22),
   `direction` and `tokenizer`. Values are Python types and tensors only: the trainer's
   `torch.load` keeps the `weights_only` default, which refuses NumPy scalars.
 - A shard is written as a hidden `.tmp`, flushed with `paths.durable` (`F_FULLFSYNC` on macOS),

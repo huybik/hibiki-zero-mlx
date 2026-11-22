@@ -76,12 +76,16 @@ class Aligner:
     # The lowest mean posterior of the aligned characters a row may have, calibrated per model:
     # each model's scores are its own (docs/agent-memory/two-way.md#vietnamese-aligner).
     min_score: float
+    # The longest a clip may run on past its last text token, or None. VieNeu sometimes keeps
+    # speaking past its text, and the alignment score does not see it; English recordings end on
+    # silence that token times cannot tell from speech (docs/agent-memory/cache-build.md#rows).
+    max_tail_s: float | None
 
 
 ALIGNERS = {  # by the language of the text
     "en": Aligner("wav2vec2_ctc_word_v1", "facebook/wav2vec2-base-960h",
                   "22aad52d435eb6dbaf354bdad9b0da84ce7d6156", "<pad>", "|", _spoken_english,
-                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5),
+                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5, None),
     # wav2vec2-base fine-tuned on 250 h of Vietnamese (non-commercial: its card says CC-BY-NC-4.0, the
     # repo also ships a CC-BY-NC-SA-4.0 text), at the Hub bot's safetensors
     # conversion (refs/pr/2), tensor for tensor its main branch's pytorch_model.bin. It replaced
@@ -89,7 +93,7 @@ ALIGNERS = {  # by the language of the text
     # (user, 2026-11-22).
     "vi": Aligner("wav2vec2_vi250h_ctc_word_v1", "nguyenvulebinh/wav2vec2-base-vietnamese-250h",
                   "bb07d01e57ce84fa73c3e4dd423b663ec6b36753", "<pad>", "|", _spoken_vietnamese,
-                  _VIETNAMESE, 0.55),
+                  _VIETNAMESE, 0.55, 1.5),
 }
 
 
@@ -140,6 +144,16 @@ class AlignmentError(ValueError):
     """The text cannot be timed against its audio: a data fault that rejects the row."""
 
 
+# The rejections for the frame grids, not for speech and text disagreeing: more characters than
+# CTC frames, or more tokens than 80 ms frames (fast or dense speech). The other direction's row
+# of the same clips still trains (`streams.load_rows`). Shards record a rejection with its message
+# ("AlignmentError: <message>"), and packs look for these in it when they are built: rewording one needs a new PACK_VERSION and
+# keeps the old wording matched for the shards already built.
+EMISSION_TOO_SHORT = "CTC emission is too short"
+TEXT_OVER_FRAMES = "Aligned text needs"
+CAPACITY_REASONS = (EMISSION_TOO_SHORT, TEXT_OVER_FRAMES)
+
+
 @dataclass(frozen=True)
 class Alignment:
     spans: list[tuple[float, float]]
@@ -158,8 +172,11 @@ def _ctc_token_frames(
         raise AlignmentError("CTC target is empty")
     time_steps = int(log_probs.shape[0])
     states = 2 * len(targets) + 1
-    if time_steps < states:
-        raise AlignmentError(f"CTC emission is too short: {time_steps} < {states}")
+    # A path skips the blank between two different tokens: each token needs a frame, and a token
+    # repeating the one before it a blank frame between them.
+    needed = len(targets) + sum(a == b for a, b in zip(targets, targets[1:]))
+    if time_steps < needed:
+        raise AlignmentError(f"{EMISSION_TOO_SHORT}: {time_steps} < {needed}")
 
     symbols = np.full(states, blank_id, dtype=np.int64)
     symbols[1::2] = targets
@@ -303,7 +320,7 @@ def timed_sentencepiece_tokens(
     eos_frame = delay_frames + raw_target_frames
     if previous >= eos_frame:
         raise AlignmentError(
-            f"Aligned text needs {previous - delay_frames + 1} frames but target has "
+            f"{TEXT_OVER_FRAMES} {previous - delay_frames + 1} frames but target has "
             f"{raw_target_frames}"
         )
     tokens.append(int(eos_id))

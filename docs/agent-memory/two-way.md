@@ -43,7 +43,7 @@ Decided 2026-11-10, for two-way training:
 | checkpoints | metadata `text_tokenizer`: the run's `--tokenizer` file name (none before 2026-11-10: the base) |
 | trainers | `--tokenizer` defaults to the start weight's; each shard checked against it ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache, scored apart |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
-| streams | `PACK_VERSION` 5 stores each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
+| streams | Packs (`PACK_VERSION` 5 on) store each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
 `noisy_cache` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)); the next run's data is in [envi-data](envi-data.md).
@@ -70,7 +70,7 @@ Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against 
   names without diacritics, "Dak Lak", "Huynh Ngoc Tru"; 2–4 more pieces each), none of
   `en_speech`'s. VI→EN English then trains on the base's split of such a name and EN→VI on the
   swap's; both decode alike. Only a re-tokenized and re-timed `vi-en` cache would change it.
-- Packs (`PACK_VERSION` 5) keep the rows' text tracks in `text.bin` for that check, so it
+- Packs (`PACK_VERSION` 5 on) keep the rows' text tracks in `text.bin` for that check, so it
   reads ~3% of the codes. Old and new code repack each other's packs, so run one version on a
   cache folder at a time.
 - Each `--val-cache-dir` gets its own stream plan and its own entry in `val_log.jsonl`'s

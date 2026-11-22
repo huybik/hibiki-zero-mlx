@@ -114,7 +114,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   with this scoring (`common.score_sets`) and `translate_rows`' sampling and input, one row at a
   time, on the Mac ([mlx-inference](mlx-inference.md#gates)).
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
-  cache, planned as `train.py` plans them.
+  cache, planned as `train.py` plans them, so it takes the other direction's cache as
+  `--pair-cache-dir` ([sft-training](sft-training.md#target-timing)).
 - `common.py` is shared by `train.py`, `validate.py` and `eval.py`.
 - `train.py` and `eval.py` take a required `--out-dir`.
 

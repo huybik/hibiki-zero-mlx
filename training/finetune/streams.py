@@ -38,6 +38,17 @@ delays' cap) to 1 s past its end, so some start in the silence after it:
 
     VI   ... [row k]  gap  [row k+1] ...
     EN   ...        late [row k en]  [row k+1 en] ...
+
+A row's target never runs ahead of its source (`start_floor`): it starts at its cached delay, or
+later where a target token would otherwise come before the source it translates has been heard.
+The source's word times are the text track of the same row in the other direction's cache (its
+pair), so a run reads both directions' caches. A row whose pair is missing (the other build
+rejected it) is left out, unless it was rejected for fast speech: that row trains at its cached
+delay. A row whose Vietnamese runs on past its last word (`Aligner.max_tail_s`) is left out too:
+
+    EN   [I can't bear to go away from you]
+    VI     [em không chịu nổi phải xa anh]        cached delay: ahead of the English
+    VI              [em không chịu nổi phải xa anh] floored
 """
 
 from __future__ import annotations
@@ -61,6 +72,7 @@ from torch.utils.data import Dataset
 
 from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, swap_slots
 from training.prep import augment
+from training.prep.text_timing import ALIGNERS, CAPACITY_REASONS
 
 FRAME_RATE = 12.5
 # Stream lengths, seconds. Upstream's coarse stage trained on 30-75 s utterances and its RL stage
@@ -79,6 +91,13 @@ SINGLE_ROW_STREAMS = 0.1
 # cached delay.
 LATE_START = 0.05
 LATE_START_FRAMES = 12  # past the source's end: the source EOS or the gap's first frame is frame 0
+# A target text token starts at least START_MARGIN frames after its share of the source has been
+# heard (`start_floor`). The cached delay counts from the source clip's start: Vietnamese to
+# English runs behind anyway (its English is longer and opens on the recording's silence), but
+# English to Vietnamese put a Vietnamese word over 1 s ahead of its English in 20-30% of rows and
+# began before the English speaker in 4-23% (sft-training.md#target-timing).
+START_MARGIN = 4  # 0.32 s
+LAST_TOKEN = 5  # the source's last token is heard 0.4 s after it starts; any other by the next one's start
 # Batches pad to a multiple of this many frames, so the model sees few shapes.
 FRAME_BUCKET = 16
 MAX_LEAD = 25  # frames of silence before the first Vietnamese, drawn from [0, 2 s]
@@ -114,9 +133,15 @@ class Row:
     source_frames: int  # source length; the cached source EOS sits here
     target_frames: int  # target length including the delay; the cached text EOS sits here
     delay_frames: int
+    start_frames: int  # where a plan starts the target after the source: the delay or `start_floor`
     doc: str | None  # rows of one doc join streams together, in seq order
     seq: int
     direction: str  # its shard's, <source>-<target>
+
+    @property
+    def target_end(self) -> int:
+        """The target's end after the source's start, as a plan places it unless it waits."""
+        return self.start_frames + self.target_frames - self.delay_frames
 
 
 @dataclass(frozen=True)
@@ -132,7 +157,9 @@ class Stream:
     frames: int
 
 
-PACK_VERSION = 5  # 3: docs.json; 4: the shard's direction, the index by source and target; 5: tokenizer, text.bin
+# 3: docs.json; 4: the shard's direction, the index by source and target; 5: tokenizer, text.bin;
+# 6: the ids the shard's build rejected for the aligner's frame grids (`capacity`)
+PACK_VERSION = 6
 PACK_DIR = ".packed"  # beside the shards: <cache-dir>/.packed/<shard stem>/
 
 
@@ -211,7 +238,9 @@ def pack_shard(shard_path: Path) -> None:
     (temporary / "docs.json").write_text(json.dumps(docs))
     (temporary / "pack.json").write_text(
         json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout), "direction": direction,
-                    "tokenizer": payload.get("tokenizer", DEFAULT_TOKENIZER.name)})
+                    "tokenizer": payload.get("tokenizer", DEFAULT_TOKENIZER.name),
+                    "capacity": [str(item["id"]) for item in payload.get("rejected", [])
+                                 if any(reason in item["reason"] for reason in CAPACITY_REASONS)]})
     )
     shutil.rmtree(target, ignore_errors=True)
     temporary.rename(target)
@@ -250,24 +279,110 @@ def pack(cache_dirs: list[Path]) -> list[Path]:
     return shard_paths
 
 
-def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple[list[Row], Layout]:
-    """Every row of the grounded cache shards in `cache_dirs` that fits `max_frames` and whose
-    text reads the same on `tokenizer`, the run's.
+@dataclass(frozen=True)
+class Tokens:
+    """A pack's text tokens: each row's token frames from its target clip's start (the delay
+    removed, the text EOS left out), in row order, `frames[offsets[r] : offsets[r + 1]]`, and each
+    row's target clip in frames (`spans`, where its text EOS sits)."""
+
+    frames: np.ndarray  # int16
+    offsets: np.ndarray  # int64, one more than the rows
+    spans: np.ndarray  # int64
+
+    def rows(self, rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The token frames of `rows`, back to back, and each row's count."""
+        counts = self.offsets[rows + 1] - self.offsets[rows]
+        firsts = np.repeat(self.offsets[rows] - (np.cumsum(counts) - counts), counts)
+        return self.frames[firsts + np.arange(int(counts.sum()))], counts
+
+
+def read_tokens(directory: Path, index: np.ndarray, pad_id: int) -> tuple[np.ndarray, Tokens]:
+    """A pack's text track (`text.bin`, every row's frames back to back) and its `Tokens`."""
+    text = np.fromfile(directory / "text.bin", dtype=np.int32)
+    lengths = index[:, 1]
+    if len(text) != int(lengths.sum()):
+        raise RuntimeError(f"{directory}: text.bin holds {len(text)} frames, its index {int(lengths.sum())}")
+    row = np.repeat(np.arange(len(index)), lengths)
+    frame = np.arange(len(text)) - np.repeat(np.cumsum(lengths) - lengths, lengths) - index[row, 4]
+    spans = index[:, 3] - index[:, 4]
+    token = (text != pad_id) & (text >= 0) & (frame >= 0) & (frame < spans[row])
+    counts = np.bincount(row[token], minlength=len(index))
+    return text, Tokens(frame[token].astype(np.int16), np.concatenate([[0], np.cumsum(counts)]), spans)
+
+
+def start_floor(source: np.ndarray, source_counts: np.ndarray, target: np.ndarray,
+                target_counts: np.ndarray) -> np.ndarray:
+    """Each row's smallest delay at which no target token starts before its share of the source
+    has been heard: target token i of N waits START_MARGIN past source token ceil((i + 1) M / N) of
+    M, as a proportional aligner reads a translation in order, a source token heard by the next
+    one's start (the last LAST_TOKEN after its own). Token frames count from each clip's start,
+    each side's rows back to back (`Tokens.rows`); a row with no token on either side gets 0."""
+    floor = np.zeros(len(target_counts), dtype=np.int64)
+    rows = np.repeat(np.arange(len(target_counts)), target_counts)
+    n, m = target_counts[rows], source_counts[rows]
+    i = np.arange(len(target)) - np.repeat(np.cumsum(target_counts) - target_counts, target_counts)
+    first = np.repeat(np.cumsum(source_counts) - source_counts, target_counts)
+    keep = m > 0
+    rows, n, m, i, first = rows[keep], n[keep], m[keep], i[keep], first[keep]
+    after = ((i + 1) * m + n - 1) // n  # the source token after the one target token i needs: 1..m
+    source = source.astype(np.int64)
+    heard = np.where(after < m, source[first + np.minimum(after, m - 1)], source[first + m - 1] + LAST_TOKEN)
+    np.maximum.at(floor, rows, heard + START_MARGIN - target[keep])
+    return floor
+
+
+def tails(frames: np.ndarray, counts: np.ndarray, spans: np.ndarray) -> np.ndarray:
+    """Each row's frames from its last text token to its clip's end (the whole clip without one);
+    rows back to back, as `Tokens.rows` gives them."""
+    if not len(frames):
+        return spans.copy()
+    last = np.maximum(np.cumsum(counts) - 1, 0)
+    return np.where(counts > 0, spans - frames[last].astype(np.int64), spans)
+
+
+@dataclass
+class _Pack:
+    """A pack as `load_rows` reads it, its text track left behind once read."""
+
+    path: Path
+    direction: str
+    ids: list[str]
+    index: np.ndarray
+    tokens: Tokens
+    readable: np.ndarray  # rows whose text reads the same on the run's tokenizer
+
+
+def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
+              pair_dirs: list[Path] | tuple[Path, ...] = ()) -> tuple[list[Row], Layout]:
+    """Every row of the grounded cache shards in `cache_dirs` that fits `max_frames` once its target
+    starts where `start_floor` puts it, whose text reads the same on `tokenizer`, the run's, and
+    whose pair is found.
+
+    A row's pair is the row of the same id in the other direction's cache, among the shards of
+    `cache_dirs` and `pair_dirs` (read only for their text): the pair's text track times this
+    row's source, for `start_floor`. A row is left out when its pair is missing (the other
+    direction's build rejected it, as an alignment failure, so its speech does not match its text)
+    or is not of the same clip (its target is not this row's source's length within a frame; a
+    shard all of whose pairs are other clips raises), except that a row the other build rejected
+    for its aligner's frame grids (`CAPACITY_REASONS`: fast or dense speech, a sound row) trains at
+    its cached delay; and when its Vietnamese, its own or its pair's, runs on past its last text token longer than
+    the aligner allows (`Aligner.max_tail_s`: TTS that babbled past its text). A shard none of whose
+    rows has a pair raises: its other direction was not given.
 
     Rows load memory-mapped from each shard's pack (`pack_shard`), built in parallel the first
-    time a shard is seen or after it changes. Startup then reads only the indexes, and the codes
-    (69 GiB for the full `en_speech` cache) stay on disk until a stream needs them.
+    time a shard is seen or after it changes. Startup then reads the indexes and text tracks, and
+    the codes (69 GiB for the full `en_speech` cache) stay on disk until a stream needs them.
 
     A shard tokenized on another tokenizer loads only if the run's is a swap of it (`swap_slots`),
     and then without the rows whose text uses a slot the swap gave a new piece: machine English
     holds a few (two-way.md). Any other mismatch raises."""
     shard_paths = pack(cache_dirs)
-    rows: list[Row] = []
+    trained = set(shard_paths)
     layout: Layout | None = None
-    dropped = 0
     swapped: dict[str, np.ndarray] = {}  # by a shard's tokenizer: the slots the run's reassigned
-    reassigned = 0
-    for shard_path in shard_paths:
+    packs: list[_Pack] = []
+    untimed: dict[str, set[str]] = defaultdict(set)  # by direction: the ids its build could not time
+    for shard_path in shard_paths + [path for path in pack(list(pair_dirs)) if path not in trained]:
         directory = _pack_dir(shard_path)
         meta = json.loads((directory / "pack.json").read_text())
         shard_layout = Layout(**meta["layout"])
@@ -275,57 +390,131 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path) -> tuple
             layout = shard_layout
         elif shard_layout != layout:
             raise RuntimeError(f"{shard_path} has layout {shard_layout}, others {layout}")
-        # A private mapping that keeps no file descriptor open (numpy's memmap holds one per
-        # shard, past the usual limit of 1,024), writable for torch.from_numpy, never written.
-        path = directory / "codes.bin"
-        codes = torch.from_file(
-            str(path), shared=False, size=path.stat().st_size // 4, dtype=torch.int32
-        ).numpy()
-        ids = json.loads((directory / "ids.json").read_text())
-        docs = json.loads((directory / "docs.json").read_text())
         index = np.load(directory / "index.npy")
+        text, tokens = read_tokens(directory, index, layout.pad_id)
         readable = np.ones(len(index), dtype=bool)
         on = meta["tokenizer"]
-        if on != Path(tokenizer).name:
+        if shard_path in trained and on != Path(tokenizer).name:
             if on not in swapped:
                 try:
                     swapped[on] = np.array(swap_slots(tokenizer, on))
                 except RuntimeError as exc:
                     raise RuntimeError(f"{shard_path}: {exc}") from None
-            text = np.fromfile(directory / "text.bin", dtype=np.int32)
-            if len(text) != int(index[:, 1].sum()):
-                raise RuntimeError(f"{directory}: text.bin holds {len(text)} frames, its index {int(index[:, 1].sum())}")
             if len(index):
                 starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
                 readable = ~np.logical_or.reduceat(np.isin(text, swapped[on], kind="table"), starts)
-                reassigned += int((~readable).sum())
-        for row_id, doc, keep, (offset, frames, source_frames, target_frames, delay) in zip(
-            ids, docs, readable.tolist(), index.tolist(), strict=True
-        ):
-            if not keep:
-                continue
-            if frames > max_frames:
-                dropped += 1
-                continue
-            row_codes = codes[offset : offset + layout.rows * frames]
+        ids = json.loads((directory / "ids.json").read_text())
+        packs.append(_Pack(shard_path, meta["direction"], ids, index, tokens, readable))
+        untimed[meta["direction"]].update(meta["capacity"])
+    if layout is None:
+        raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
+    # By direction, each row id's first pack and row, as pack << 32 | row: a clean cache and its
+    # noisy copy hold the same rows and text.
+    found: dict[str, dict[str, int]] = defaultdict(dict)
+    for number, shard in enumerate(packs):
+        place = found[shard.direction]
+        for row, row_id in enumerate(shard.ids):
+            place.setdefault(row_id, number << 32 | row)
+
+    rows: list[Row] = []
+    dropped: dict[str, int] = defaultdict(int)
+    later: list[np.ndarray] = []  # frames past the cached delay, of each row the floor moved
+    unfloored = 0  # rows kept at their cached delay: the other direction could not time them
+    for shard in packs[: len(shard_paths)]:
+        count = len(shard.index)
+        source, target = shard.direction.split("-")
+        place = found.get(f"{target}-{source}", {})
+        # The pair's pack << 32 | row; -1 none, -3 none as the other build could not time the row,
+        # -2 (below) a pair of another clip.
+        fast = untimed.get(f"{target}-{source}", set())
+        where = np.array([place.get(row_id, -3 if row_id in fast else -1) for row_id in shard.ids], dtype=np.int64)
+        found_any = bool((where >= 0).any())
+        floor = np.zeros(count, dtype=np.int64)
+        source_tail = np.zeros(count, dtype=np.int64)
+        paired = np.nonzero(where >= 0)[0]
+        for number in np.unique(where[paired] >> 32).tolist():
+            rows_here = paired[(where[paired] >> 32) == number]
+            pair = packs[number].tokens
+            pair_rows = where[rows_here] & 0xFFFFFFFF
+            # The pair's target clip is this row's source: the same clip but for the delay's
+            # rounding, or the id names another recording and its times are not this source's.
+            other = np.abs(shard.index[rows_here, 2] - pair.spans[pair_rows]) > 1
+            where[rows_here[other]] = -2
+            rows_here, pair_rows = rows_here[~other], pair_rows[~other]
+            heard, heard_counts = pair.rows(pair_rows)
+            spoken, spoken_counts = shard.tokens.rows(rows_here)
+            floor[rows_here] = start_floor(heard, heard_counts, spoken, spoken_counts)
+            source_tail[rows_here] = tails(heard, heard_counts, pair.spans[pair_rows])
+        if count and (where < 0).all():
+            raise RuntimeError(
+                f"{shard.path}: none of its {count} rows is in a {target}-{source} cache, which times its source: "
+                f"pass that direction's cache with --cache-dir, or with --pair-cache-dir to read only its text"
+                if not found_any else
+                f"{shard.path}: every row's {target}-{source} pair found first is another clip (its target not this "
+                f"row's source's length): a wrong cache among the other direction's"
+            )
+        # A row the other direction's aligner could not fit in its frame grids (fast or dense
+        # speech) is sound: it trains at its cached delay, its source untimed.
+        keep = shard.readable.copy()
+        dropped["reassigned"] += int((~keep).sum())
+        dropped["unpaired"] += int((keep & (where == -1)).sum())
+        dropped["other clip"] += int((keep & (where == -2)).sum())
+        keep &= (where >= 0) | (where == -3)
+        target_tail = tails(shard.tokens.frames, np.diff(shard.tokens.offsets), shard.tokens.spans)
+        for language, tail in ((target, target_tail), (source, source_tail)):
+            limit = ALIGNERS[language].max_tail_s
+            if limit is not None:
+                over = keep & (tail > round(limit * FRAME_RATE))
+                dropped["tail"] += int(over.sum())
+                keep &= ~over
+        delay = shard.index[:, 4]
+        start = np.maximum(delay, floor)
+        # The stream's frames this row needs alone: its source and EOS, its target and text EOS.
+        needs = np.maximum(shard.index[:, 2], start + shard.tokens.spans) + 1
+        over = keep & (needs > max_frames)
+        dropped["long"] += int(over.sum())
+        keep &= ~over
+        later.append((start - delay)[keep & (start > delay)])
+        unfloored += int((keep & (where == -3)).sum())
+        if not keep.any():
+            continue
+        # A private mapping that keeps no file descriptor open (numpy's memmap holds one per
+        # shard, past the usual limit of 1,024), writable for torch.from_numpy, never written.
+        directory = _pack_dir(shard.path)
+        path = directory / "codes.bin"
+        codes = torch.from_file(
+            str(path), shared=False, size=path.stat().st_size // 4, dtype=torch.int32
+        ).numpy()
+        docs = json.loads((directory / "docs.json").read_text())
+        for row in np.nonzero(keep)[0].tolist():
+            offset, frames, source_frames, target_frames, delay_frames = shard.index[row].tolist()
+            doc = docs[row]
             rows.append(
                 Row(
-                    id=row_id,
-                    codes=row_codes.reshape(layout.rows, frames),
+                    id=shard.ids[row],
+                    codes=codes[offset : offset + layout.rows * frames].reshape(layout.rows, frames),
                     source_frames=source_frames,
                     target_frames=target_frames,
-                    delay_frames=delay,
+                    delay_frames=delay_frames,
+                    start_frames=int(start[row]),
                     doc=doc[0] if doc else None,
                     seq=doc[1] if doc else 0,
-                    direction=meta["direction"],
+                    direction=shard.direction,
                 )
             )
-    if layout is None or not rows:
+    if not rows:
         raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
-    if reassigned:
-        print(f"[streams] dropped {reassigned} rows whose text uses a slot {Path(tokenizer).name} reassigned")
-    if dropped:
-        print(f"[streams] dropped {dropped} rows over {max_frames} frames; kept {len(rows)}")
+    moved = np.concatenate(later)
+    print(
+        f"[streams] kept {len(rows)} rows; left out {dropped['reassigned']} whose text uses a slot "
+        f"{Path(tokenizer).name} reassigned, {dropped['unpaired']} the other direction's cache lacks, "
+        f"{dropped['other clip']} whose pair there is another clip, "
+        f"{dropped['tail']} whose Vietnamese runs on past its last word, {dropped['long']} over {max_frames} "
+        f"frames; {len(moved)} start after their cached delay"
+        + (f", by {np.median(moved) / FRAME_RATE:.2f} s median" if len(moved) else "")
+        + f"; {unfloored} at it, whose pair the other direction's aligner could not time (fast speech)",
+        flush=True,
+    )
     return rows, layout
 
 
@@ -344,7 +533,7 @@ def plan_streams(rows: list[Row], min_frames: int, max_frames: int, seed: int) -
     """Cut every row, once, into streams of min_frames..max_frames frames (the last of a direction
     may be shorter), but for a SINGLE_ROW_STREAMS share of streams that hold one row. A stream
     holds one direction's rows: the directions are planned one after the other, from one draw."""
-    longest = max(max(row.source_frames, row.target_frames) for row in rows)
+    longest = max(max(row.source_frames, row.target_end) for row in rows)
     if min_frames <= longest + MAX_LEAD + 1:
         raise ValueError(f"Streams of {min_frames} frames cannot hold a {longest}-frame row")
     # A stream still under min_frames (at most min_frames - 1) grows by at most a long gap and a
@@ -393,7 +582,7 @@ def _plan_direction(
                 budget = rng.randint(min_frames, max_frames)
                 single = rng.random() < SINGLE_ROW_STREAMS
                 source_start = rng.randint(0, MAX_LEAD)
-            target_start = max(source_start + row.delay_frames, target_end)
+            target_start = max(source_start + row.start_frames, target_end)
             if rng.random() < LATE_START:
                 late = source_start + rng.randint(row.source_frames // 2, row.source_frames + LATE_START_FRAMES)
                 late_end = max(source_start + row.source_frames, late + row.target_frames - row.delay_frames)
