@@ -6,19 +6,18 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**The next box: an RTX 5090** (32 GB; user, 2026-11-22: "let's upload everything, then we start on a
-new 5090 machine"): Vast 61906288, South Korea, $0.558/h with 350 GB of disk, rented until
-2026-12-14 15:00 UTC; driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 GB of RAM, 15 GB of `/dev/shm`.
-`ssh -p 36687 root@180.189.55.43`, or Vast's proxy `ssh -p 30337 root@ssh1.vast.ai` (30336, the
-API's `ssh_port`, is the portal). It first builds the rest of the EN→VI data, from the bottom up and,
-since the Mac stopped at 2026-11-22 17:05 UTC+7, alone (user, 2026-11-22: "Cache build first";
-[envi-data](envi-data.md#the-box-run)), then runs
-`both_heads_z`, restored from the Hub ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box),
-which says what fits in 32 GB); then the palettization finish and the 3B's experiments, which need
-a bigger card. Set up so far: the checkout, `/workspace/.env` and `$HF_HOME/token`, the cache env
-(`/workspace/cache_env.sh`, its part of `envs-min.sh`), the upstream weights and the swap
-tokenizer in `weights/`, the rooms' noise bank. `h100.sh setup` refuses the 5090 (`require_gpu`):
-the run needs the 5090 added there first.
+**No box now** (2026-11-22 21:55 UTC+7). Next on a box: `both_heads_z`, restored from the Hub
+([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box), which says what fits in
+32 GB), then the palettization finish and the 3B's experiments, which need a bigger card. On an RTX
+5090, `h100.sh setup` refuses the card (`require_gpu`): add it there first; the cache env alone
+(`/workspace/cache_env.sh`, its part of `envs-min.sh`) ran the EN→VI build without it.
+
+**The box 2026-11-22: an RTX 5090** (Vast 61906288, South Korea, $0.558/h with 350 GB of disk; 32 GB,
+capped at 500 W by the host, driver 580, a 15.4-CPU quota, 31 GB of RAM, 15 GB of `/dev/shm`;
+destroyed 2026-11-22 21:55 UTC+7 at the user's request, after its run). It built the rest of the
+EN→VI data, alone after the Mac stopped (user: "Cache build first"; [envi-data](envi-data.md#the-box-run)),
+and ran nothing else: `both_heads_z` waits for the next box. Its records and scripts are in
+`/Volumes/data/hibiki-zero-evals/box-61906288/`.
 
 **The box 2026-11-19 to 2026-11-22: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
 destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver

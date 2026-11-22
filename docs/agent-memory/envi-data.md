@@ -43,8 +43,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 |---|---|---:|---|
 | `en-vi-grounded-v2/train` (VI→EN clean) | `huybik/hibiki-zero-vi-full-sft` | 1,832 | the Mac, 2026-10/11 |
 | `en-vi-grounded-v2-noisy/train` (VI→EN noisy, seed 0) | same | 1,832 | the pod |
-| `en-vi/en-vi-grounded-v2/train` (EN→VI clean) | same | 1,832 when done (1,168 on 2026-11-22 17:05) | the boxes (CUDA, TF32); omniASR timed the first 528 |
-| `en-vi/en-vi-grounded-v2-noisy/train` (EN→VI noisy, seed 1) | same | 1,832 when done (821 then) | 180 the Mac, the rest the RTX 5090 box |
+| `en-vi/en-vi-grounded-v2/train` (EN→VI clean) | same | 1,832, done 2026-11-22 21:33 UTC+7 | the boxes (CUDA, TF32); omniASR timed the first 528 |
+| `en-vi/en-vi-grounded-v2-noisy/train` (EN→VI noisy, seed 1) | same | 1,832, done then | 180 the Mac, the rest the RTX 5090 box |
 | `en-vi/en-vi-grounded-v2/validation` | same | 3 | the box |
 | `en-vi/{giga,pho,vivoice}` (tranche EN→VI clean) | `anquachdev/mimi-en-vi-speech-20k` | 228, 224, 354 | the box |
 | `en-vi/{giga,pho,vivoice}-noisy` (tranche EN→VI noisy, seed 1) | same | 228, 224, 354 | the Mac |
@@ -139,16 +139,22 @@ under the `nohup` line in `run.sh`.
 
 ## The box run
 
-The other end since 2026-11-22, and alone since the Mac stopped at 17:05 UTC+7: the RTX 5090 box
-(Vast 61906288, [tranche-box](tranche-box.md#state)) runs `/workspace/envi_box/envi_box.py`,
+**Done 2026-11-22 21:33 UTC+7** ("done: the Hub holds every shard"; checked again before the box was
+destroyed: 1,832 clean and 1,832 noisy `en-vi` shards, every tranche copy). The box's `run.log`,
+scripts and profiles are in `/Volumes/data/hibiki-zero-evals/box-61906288/`.
+
+The other end from 2026-11-22, and alone after the Mac stopped at 17:05 UTC+7: the RTX 5090 box
+(Vast 61906288, [tranche-box](tranche-box.md#state)) ran `/workspace/envi_box/envi_box.py`,
 `envi_mac.py` on CUDA, by `/workspace/envi_box/run.sh` (the Mac's `run.sh` on the box: at most 20
-restarts, 5 minutes apart; log `run.log` beside it). Copies of both are kept in
+restarts, 5 minutes apart; log `run.log` beside it). Copies of both (and `watch.sh`) are kept in
 `/Volumes/data/datasets/envi_mac/box/`. The user had it build first and `both_heads_z`'s run wait
 ([on-policy-distillation](on-policy-distillation.md)).
 
 - Left for it at 17:05: 664 builds with their noisy copies, then the noisy copies of 347 shards
-  already built. It built and copied 40 shards every ~14 min (~165 an hour: build 590–840 s, noisy
-  170–300 s a batch), so the Hub should hold everything by ~22:00–23:00 UTC+7.
+  already built. It built and copied 40 shards every ~14 min (build 480–840 s, noisy 130–300 s a
+  batch; TF32 noisy copies from batch 13), then 9 noisy-only batches (8 of 40, one of 27) in 1.5–5 min each (noisy
+  89–311 s; downloads kept up). Batches 42–47 held only shards the Mac had done. 47
+  batches from 05:24 to 14:33 UTC, with no failure or restart.
 
 - The jobs and each job's shards in the reverse of the Mac's order: `build` from the last name down,
   then `noisy`, then `tranche`.
