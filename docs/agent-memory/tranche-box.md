@@ -7,14 +7,15 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 ## State
 
 **The next box: an RTX 5090** (32 GB; user, 2026-11-22: "let's upload everything, then we start on a
-new 5090 machine"). All that is left for it is `both_heads_z`'s run, restored from the Hub
-([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box), which says what fits
-in 32 GB); then the palettization finish and the 3B's experiments, which need a bigger card.
+new 5090 machine"): Vast 61906288, $0.558/h, rented until 2026-12-14 15:00 UTC, `ssh -p 30336
+root@ssh1.vast.ai`; not set up yet. All that is left for it is `both_heads_z`'s run, restored
+from the Hub ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box), which
+says what fits in 32 GB); then the palettization finish and the 3B's experiments, which need a
+bigger card.
 
 **The box 2026-11-19 to 2026-11-22: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
-Beijing, $1.217/h; 96 GB, 600 W, driver 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of
-disk; `ssh -p 21639 root@205.185.115.44`, or Vast's proxy `ssh -p 30253 root@ssh3.vast.ai` when
-that port refuses, as it did for a minute on 2026-11-21). Its network sits behind a slow proxy
+destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver
+580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of disk). Its network sat behind a slow proxy
 ([Bring-up](#a-box-behind-a-slow-proxy)).
 - It runs `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
   started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
@@ -49,8 +50,8 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
     built here (`fleurs-en`, `en-vi-val-en`, `en-vi-val-en-noisy`) under the dataset repo's `eval/`;
   - left off: the upstream Hibiki weights, `giga-heldout` (built where it runs), the caches' packs
     (built from the Hub's shards);
-  - the run records (no weights, optimizer states or WAVs) and `/workspace/logs` were copied to
-    `/Volumes/data/hibiki-zero-evals/box-61345966/`.
+  - the run records (no weights, optimizer states or WAVs), `/workspace/logs`, `bench/` and the
+    box-only scripts were copied to `/Volumes/data/hibiki-zero-evals/box-61345966/`.
 - **All of `en_speech`, both ways** (user, 2026-11-21: "let's build both vi - en and en - vi"). Round
   4e's test (500 shards against 150: FLEURS −1.3) also changed the batch and the updates, and
   spoke only for VI→EN, whose `en_speech` source is TTS; for EN→VI `en_speech` holds the only real
