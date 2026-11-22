@@ -4,7 +4,7 @@ Read when touching `grpo.py`'s teacher term (`--teacher-weight`, `--reward-coef`
 `distill_loss`, `update_loss`) or its `--advantage`, or when running, profiling or judging the
 phone student's on-policy runs and the recipe experiments of 2026-11-21.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Design](#design) · [Running](#running) ·
-[Experiments](#experiments) · [Checks](#checks)
+[Experiments](#experiments) · [Probe results](#probe-results) · [Checks](#checks)
 
 GRPO itself is in [grpo](grpo.md); the student's off-policy distillation in
 [phone-student](phone-student.md#distillation); the plan in
@@ -150,10 +150,91 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    - **Then the phone's finish**: the run's best trained against the 6-bit palettization
      (`train.py --palettize-bits 6`, plan stage 6.4), exported, and scored on the test sets
      against the shipped student.
+   - **Where it stands** (2026-11-22): the probes are done and `both_heads_z` (both terms,
+     z-scored) won ([Probe results](#probe-results)); its run continues on the next box.
 
 Warmup-stable-decay and checkpoint averaging for SFT runs are in
 [sft-training](sft-training.md#schedules-and-averaging); training against the phone's
 palettization is stage 6 of the plan.
+
+## Probe results
+
+On the RTX PRO 6000 (2026-11-21/22): `/workspace/probes.sh` (box-only) through `grpo_launch.sh`,
+200 updates each, `--gen-frames 614400 --micro-batch 4 --save-every 100 --keep-checkpoints 1`,
+seed 44, `--lr 1e-6` unless named, the teacher GRPO update 1,400. Validation at 0 and 200 on the
+eight sets (batch 64, temperature 0.8, top-k 250). An update took ~5.5–6 s with the teacher and
+~3.1 s without; a probe ~60 min plus its final upload. Raw outputs (`val_log.jsonl`, `eval/`,
+`run_config.json`) are in `/Volumes/data/hibiki-zero-evals/box-61345966/runs/<run>/`, and the
+pairs, bests and logs on the Hub under `<run>/`.
+
+"Selecting" is the mean of FLEURS dev VI→EN and EN→VI chrF; "of 8" the mean over all eight
+sets. End offsets are FLEURS dev's medians, VI→EN / EN→VI; the start's are in brackets. KL is the
+train log's `kl_text` / `kl_audio` at update 1 → 200.
+
+| Run | Start | Terms | Selecting 0 → 200 | Of 8 0 → 200 | End offset at 200 (start) | Health | Gate | KL |
+|---|---|---|---|---|---|---|---|---|
+| `opd_heads_lr1e6` | 176,000 | distillation | 36.78 → 38.61 | 37.24 → 38.82 | 2.21 / 2.25 s (1.95 / 1.45) | pass | blocked: EN→VI +0.80 s | 0.100 / 2.12 → 0.091 / 1.28 |
+| `opd_heads_lr3e6` | 176,000 | distillation, 3e-6 | 36.78 → 38.52 | 37.24 → 39.01 | 2.29 / 2.46 s (1.95 / 1.45) | pass | blocked: EN→VI +1.01 s | → 0.093 / 1.29 |
+| `opd_heads_lr1e5` | 176,000 | distillation, 1e-5 | stopped before its first pair: 3e-6 had gained nothing over 1e-6 | | | | | |
+| `grpo_heads_lr1e6` | 176,000 | GRPO (the control) | 36.78 → 29.82 | 37.24 → 27.92 | 2.02 / 1.07 s (1.95 / 1.45) | 4 sets fail | on time | — |
+| **`both_heads_z`** | 190,126 | both, z-scored | 37.33 → **38.92** | 37.88 → **39.44** | 1.71 / 1.63 s (2.00 / 1.42) | pass | on time, promoted | 0.102 / 2.18 → 0.087 / 1.34 |
+| `both_heads_centered` | 190,126 | both, centered | 37.33 → 38.34 | 37.88 → 38.63 | 1.47 / 1.39 s (2.00 / 1.42) | pass | on time, promoted | → 0.103 / 1.42 |
+
+- **Plain GRPO collapses the student**: in 200 updates at the 3B's rate its outputs ran long
+  (length ratio 1.39–3.09) and every set lost 3.6–13.5 chrF; the depformer student's took 2,400
+  ([student-grpo](student-grpo.md#evaluations)). The teacher's term is what holds the student.
+- **Distillation alone gains but ends later**: every set but `en-vi-val/cv27` up, length ratios
+  down (FLEURS VI→EN 1.40 → 1.25), but EN→VI ends 0.8 s later at 1e-6 and 1.0 s at 3e-6, and
+  text EOS falls (FLEURS EN→VI 191 → 89 of 392 rows): past the 0.5 s gate. The faster rate
+  bought nothing.
+- **The reward keeps the timing**: `both_heads_z` gained as much (+1.59 selecting, +1.56 of 8,
+  every set up), ending VI→EN 0.29 s sooner and EN→VI 0.21 s later. Centered ends sooner both
+  ways but gains less (+1.01, +0.75); its GRPO term in BLEU points outweighs the KL (grad norm
+  ~6e5 against z's ~1.5e5). z won: quality first (user, 2026-11-22: "quality is what we after,
+  latency can be bit more relax").
+- Why distillation alone ends later is unmeasured. Its KL prices no time (only the reward pays a
+  word for coming early), and reverse KL is mode-seeking: where the next word is uncertain the
+  teacher's mass is split over many words while waiting is one token, so the student may learn to
+  wait. It is not the teacher's own timing: the 3B ends EN→VI ~1.5 s after the source
+  ([grpo](grpo.md#running)), about where the student started.
+- Wave 1 started at 176,000, wave 2 at 190,126 (0.55 higher selecting at update 0): compare
+  probes by their change from their own update 0.
+
+`both_heads_z` per set (FLEURS and `en-vi-val` rows; EOS counts the rows ending with text EOS):
+
+| Set | chrF 0 → 200 | BLEU 0 → 200 | Length ratio | End offset (s) | Empty | EOS | Health |
+|---|---|---|---|---|---|---|---|
+| fleurs-vi/dev | 38.51 → 40.54 | 8.82 → 10.76 | 1.34 → 1.26 | 2.00 → 1.71 | 0 → 1 | 171 → 133 / 361 | pass |
+| en-vi-val/cv27 | 35.93 → 36.52 | 11.23 → 12.88 | 1.34 → 1.22 | 2.78 → 3.07 | 1 → 0 | 81 → 55 / 180 | pass |
+| en-vi-val/libriheavy | 39.87 → 41.29 | 14.50 → 16.78 | 1.16 → 1.08 | 3.11 → 2.79 | 0 → 0 | 88 → 52 / 180 | pass |
+| en-vi-val-noisy/cv27 | 37.65 → 39.45 | 11.27 → 13.82 | 1.22 → 1.16 | 2.79 → 2.79 | 0 → 2 | 89 → 54 / 180 | pass |
+| en-vi-val-noisy/libriheavy | 41.45 → 43.21 | 15.13 → 17.37 | 1.15 → 1.07 | 3.23 → 3.06 | 0 → 0 | 88 → 49 / 180 | pass |
+| fleurs-en/dev | 36.15 → 37.30 | 15.71 → 16.86 | 1.05 → 1.04 | 1.42 → 1.63 | 0 → 0 | 203 → 92 / 392 | pass |
+| en-vi-val-en/cv27 | 32.71 → 33.86 | 14.03 → 15.33 | 1.16 → 1.14 | 0.66 → 1.19 | 0 → 0 | 83 → 42 / 180 | pass |
+| en-vi-val-en/libriheavy | 40.78 → 43.32 | 19.86 → 21.99 | 1.05 → 1.06 | 1.94 → 2.00 | 0 → 0 | 55 → 36 / 180 | pass |
+
+### The run, on the next box
+
+The user stopped the box before the run (2026-11-22: "let's finish everything and stop before
+the long run"); it continues on an RTX 5090.
+
+- **It continues `both_heads_z`** from its 200 pair (on the Hub with its best; restore as in
+  [finetune](../finetune.md#recover-a-run-on-a-replacement-pod)), extended by hand as an SFT run is
+  ([sft-recovery](sft-recovery.md#checkpoints-and-recovery)): `updates` and `total_steps` 2000 in
+  `run_config.json`, the last `--updates` in `train_args.json` 2000. It stops by the user's rule,
+  two validations (every 200 updates) without a new best; the gate keeps the start's end offsets
+  (2.00 / 1.415 s).
+- Its commit, `9d9573e`, is kept as the branch `run/both_heads_z`. Main since then changes only
+  the cache build and docs, so the run may instead move to main's commit
+  ([finetune](../finetune.md#move-a-running-run-to-another-pod)); check the diff first.
+- `--micro-batch` and `--gen-frames` are not resume keys: set them in `train_args.json` from the
+  new GPU's profile. From the RTX PRO 6000's (Checks below): the teacher update holds 20.1 GiB
+  and would peak near 26 GiB at micro-batch 1 (31.0 at 2, 40.8 at 4), generation 2.4 GiB plus
+  ~0.066 GiB a row (36.0 GiB at 512 rows). On 32 GB that is micro-batch 1 and at most ~400 rows
+  (`--gen-frames` = rows × 1,200), to be profiled there; generation's throughput barely depends
+  on the batch (9.0 rollouts/s at 512 rows, 9.3 at 1,024).
+- Not on 32 GB: the 3B's full fine-tunes (a pair is 12.5 GB of weights and 25 GB of AdamW), and
+  the palettization finish at the heads run's batch (50.9 GiB, [tranche-box](tranche-box.md#jobs)).
 
 ## Checks
 
