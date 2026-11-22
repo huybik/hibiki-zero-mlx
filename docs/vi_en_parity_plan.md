@@ -203,6 +203,23 @@ GRPO on a distilled student, come later if needed.
      codebooks sharing delays (two a frame) halve that.
    - If the depformer must shrink further and the heads lose: a grouped depformer, 2 codebooks a
      step (4 steps, not 8), initialised from the slices, with no added lag.
+5. Newer recipes for the student (user, 2026-11-21: "update the current training code with new
+   plan and experiments"). The 3B's recipe (SFT, then the paper's GRPO) is still the current one
+   for this model family; the gap is the student's (the heads student at update 96,000: FLEURS
+   dev chrF 30.3 / 32.5 against the teacher's 42.7 / 38.8, widest where it writes too much,
+   VI→EN length ratio 1.42). Built in the trainers; the runs and their decision rules are in
+   [on-policy-distillation](agent-memory/on-policy-distillation.md#experiments):
+   - On-policy distillation after the off-policy one: the student generates, the teacher scores
+     the same rollouts, reverse KL (`grpo.py --teacher-weight --reward-coef 0`), against the
+     off-policy run's continuation per GPU-hour.
+   - The heads student's GRPO with the teacher's KL as an anchor (`--kl-coef`): plain GRPO
+     collapsed past update 2,200 on the depformer student. Each arm is a short probe; only the
+     winner runs (user, 2026-11-21: "i'm asking for best outcome").
+   - Centered advantages (`--advantage centered`, Dr. GRPO) against the paper's z-scored ones.
+   - For the next SFT or distillation run: warmup-stable-decay (`train.py --schedule constant`,
+     then `decay` from a chosen pair with `--optimizer-state`), and checkpoint averaging
+     (`training.finetune.average`) scored before promoting
+     ([sft-training](agent-memory/sft-training.md#schedules-and-averaging)).
 
 ### 6. Quantise and package
 
@@ -234,6 +251,13 @@ codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-me
 3. Staged (2026-11-14): GRPO update 1,400, the shipping model, at 6 bits; on six 66–124 s files
    it translates to the end both ways, above update 600 ([mlx-inference](agent-memory/mlx-inference.md#model-directories)).
    Next: run it on the phone.
+4. Next for the student (2026-11-21): train against the quantizer the phone runs. On the
+   Neural Engine the heads student's 6-bit palettized LM agrees with bf16's argmax on 92.1% of
+   tokens against fp16's 94.6% ([lm-npu](agent-memory/lm-npu.md#precision)): a short last stage
+   with the deployment palettization (k-means, one table per 16 output channels) in the forward,
+   distilled from the bf16 student, recovers most of a post-training quantizer's loss in 2026
+   reports (4-bit quantization-aware distillation at ~97% of bf16), and could let 4 bits ship.
+   Its own PR.
 
 ### 7. Two-way speech
 
@@ -544,6 +568,13 @@ Vietnamese text cannot keep up with its speech.
     from the start (2026-11-14), adopted only if it wins at real time.
 
     Both after GRPO (user, 2026-11-13). Quantising (stage 6) runs on the Mac (user, 2026-11-13).
+11. The student's newer recipes (stage 5.5, 2026-11-21), each after the run before it. First the
+    new code is validated end to end on the box, after the heads run and before any GRPO (user,
+    2026-11-21: "after the heads run and before grpo"); then 200-update probes from the heads
+    student's best (distillation alone at three rates, both terms z-scored and centered, plain
+    GRPO as the control), one run of the winner, and training against the phone's palettization
+    (stage 6.4) last
+    ([on-policy-distillation](agent-memory/on-policy-distillation.md#experiments)).
 
 ## Risks
 

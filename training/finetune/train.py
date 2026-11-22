@@ -2,7 +2,10 @@
 """Full-model Hibiki-Zero SFT on multi-sentence streams, of one direction or both.
 
 Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
-AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
+AdamW, under a linear warmup then --schedule: cosine decay to 0 by default; `constant` holds the
+peak, the stable phase of a warmup-stable-decay run, and `decay` falls from the peak to 0 as
+1 - sqrt of the progress, its decay, run as a new run from one of the constant run's pairs (its
+model as --model-weight, its AdamW moments as --optimizer-state). Streams are planned once from the grounded cache
 rows with --seed (`streams.py`) and batched up to --batch-frames padded frames, one update a batch;
 every epoch replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
 and batch order of each validation cache (so --val-batches takes a random subset of each) and translates
@@ -46,6 +49,7 @@ from training.finetune.checkpoints import (
     jsonable,
     keep_log_lines,
     load_newest_pair,
+    load_optimizer_state,
     open_run,
     promote_best,
 )
@@ -67,6 +71,7 @@ RESUME_KEYS = (
     "model_weight",
     "teacher_config",
     "teacher_weight",
+    "optimizer_state",
     "mimi_weight",
     "tokenizer",
     "epochs",
@@ -75,6 +80,7 @@ RESUME_KEYS = (
     "stream_seconds",
     "max_frames",
     "lr",
+    "schedule",
     "warmup_fraction",
     "adam_beta1",
     "adam_beta2",
@@ -107,6 +113,7 @@ LOG_LOSSES = (
     "content_text_loss",
     "pad_text_loss",
 )
+SCHEDULES = ("cosine", "constant", "decay")  # what follows the warmup (learning_rate)
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,6 +159,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--warmup-fraction", type=float, default=0.05, help="Share of steps warming up linearly."
+    )
+    parser.add_argument(
+        "--schedule", choices=SCHEDULES, default="cosine",
+        help="After the warmup: cosine to 0; constant at the peak (warmup-stable-decay's stable "
+        "phase); decay from the peak to 0 as 1 - sqrt(progress) (its decay, from a pair of the stable run).",
+    )
+    parser.add_argument(
+        "--optimizer-state", type=Path,
+        help="A pair's trainer_stepNNNNNN.pt whose model is --model-weight, beside it under its "
+        "own name: a new run continues its AdamW moments, as a decay branched from a constant run does.",
     )
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.95)
@@ -211,18 +228,29 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--warmup-fraction must be in [0, 1)")
     if args.teacher_config is not None and args.teacher_weight is None:
         raise ValueError("--teacher-config needs --teacher-weight")
+    if args.schedule == "decay" and (args.optimizer_state is None or args.warmup_fraction):
+        raise ValueError("--schedule decay continues a constant run's pair: it needs "
+                         "--optimizer-state and --warmup-fraction 0")
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
     common.require_torch_compile()
 
 
-def learning_rate(step: int, peak: float, warmup_steps: int, total_steps: int) -> float:
-    """Linear warmup to `peak`, then cosine decay towards 0 at `total_steps` (moshi-finetune's
-    OneCycle shape, without its momentum cycling). `step` counts updates from 0."""
+def learning_rate(
+    step: int, peak: float, warmup_steps: int, total_steps: int, schedule: str = "cosine"
+) -> float:
+    """Linear warmup to `peak`, then `schedule` towards `total_steps`: `cosine` decays to 0
+    (moshi-finetune's OneCycle shape, without its momentum cycling); `constant` holds the peak;
+    `decay` falls to 0 as 1 - sqrt(progress), the cooldown that matched cosine in Hägele et al.
+    2024 (arXiv 2405.18392). `step` counts updates from 0."""
     if step < warmup_steps:
         return peak * (step + 1) / warmup_steps
     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    if schedule == "constant":
+        return peak
+    if schedule == "decay":
+        return peak * (1 - math.sqrt(progress))
     return peak * 0.5 * (1 + math.cos(math.pi * progress))
 
 
@@ -247,23 +275,13 @@ def main() -> None:
 
     out_dir = resolve_repo_path(args.out_dir)
     resuming, best_state = open_run(out_dir)
+    if args.optimizer_state is not None:  # read only at the start: a resume has its own pairs
+        args.optimizer_state = (resolve_repo_path(args.optimizer_state) if resuming
+                                else require_file(args.optimizer_state, "optimizer state"))
 
     checkpoint_info = common.load_checkpoint_info(args)
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    teacher_info = None
-    if args.teacher_weight is not None:
-        args.teacher_weight = require_file(args.teacher_weight, "teacher weight")
-        args.teacher_config = require_file(args.teacher_config or DEFAULT_CONFIG_PATH, "teacher config")
-        common.run_tokenizer(args.tokenizer, args.teacher_weight)  # refuses another tokenizer
-        teacher_info = common.load_checkpoint_info(
-            argparse.Namespace(
-                hf_repo=args.hf_repo,
-                model_weight=args.teacher_weight,
-                mimi_weight=args.mimi_weight,
-                tokenizer=args.tokenizer,
-                config_path=args.teacher_config,
-            )
-        )
+    teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
@@ -363,12 +381,7 @@ def main() -> None:
     teacher = None
     if teacher_info is not None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
-        teacher = common.load_lm(teacher_info, args.teacher_weight, device, torch.bfloat16)
-        teacher.train()  # the compiled training forward (lm_training), run without a backward
-        teacher.requires_grad_(False)
-        # Its depformer runs only the model's codebooks: steps past them change no earlier
-        # codebook's logits (the depformer is causal over steps), and both forwards read dep_q.
-        teacher.dep_q = codebooks
+        teacher = common.load_teacher(teacher_info, args.teacher_weight, device, codebooks)
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
@@ -378,6 +391,9 @@ def main() -> None:
     val_log_path = out_dir / "val_log.jsonl"
     log_path = out_dir / "train_log.jsonl"
     global_step = load_newest_pair(lm, optimizer, out_dir, device) if resuming else 0
+    if not global_step and args.optimizer_state is not None:
+        branched = load_optimizer_state(optimizer, args.optimizer_state, args.model_weight, device)
+        print(f"AdamW continues from step {branched} of {repo_display_path(args.optimizer_state)}")
     # Steps already validated. A pair is saved before its validation, so a run cut short there
     # validates on resume; a replacement pod without val_log validates again.
     validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
@@ -487,7 +503,7 @@ def main() -> None:
         run_validation(global_step)
 
     while global_step < total_steps:
-        lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
+        lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps, args.schedule)
         for group in optimizer.param_groups:
             group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
