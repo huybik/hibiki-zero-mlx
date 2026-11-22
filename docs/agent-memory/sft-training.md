@@ -191,7 +191,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   (2.2% of those rows). Most were a low alignment score, where speech and text disagree; the
   rest the Vietnamese aligner's capacity, fast or dense speech whose row is sound: of GigaSpeech
   2's `vi-en` rows 2.4% go for score and 2.8% for capacity (CTC emission too short, or more text
-  than frames), PhoAudiobook's 2.0% for capacity. Also left out: a row whose pair's target clip
+  than frames), PhoAudiobook's 2.0% for capacity. Both go (user, 2026-11-22, shown the split:
+  "drop them"): keeping the capacity rejects would need each pack to carry the other build's
+  rejection reasons and those rows to start at their cached delay. Also left out: a row whose pair's target clip
   is not its source's length within a frame (the delay's rounding), whose id then names another
   recording (none locally; a shard where every pair is so raises). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies
