@@ -64,7 +64,11 @@ Vast 61906288 (2026-11-22): 32 GB, driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 
   apart, scores within 0.0105, audio codes 94.9% equal (first codebooks 99.8%): TF32's near-ties,
   as in [cache-build](cache-build.md#across-devices). The Vietnamese aligner's CUDA path, the
   English aligner's code, had been checked on the CPU only.
-- `noisy_cache encode`: ~2,100× (7.08 h of re-encoded English in 12 s). Importing `sphn` turns the
+- `noisy_cache encode`: ~2,100× (7.08 h of re-encoded English in 12 s) in fp32. TF32 (`CUDA_TF32`,
+  as the build), interleaved with fp32 on the GPU alone (two shards of batch 11, 3,135 rows, 10.8 h
+  re-encoded): 14 s against 17 s every run (+20%; 2,645 → 3,182× on the 7.45 h shard), 21–22 against
+  24–25 s with the start. Codebook 0 99.85% equal to fp32, all 16 95.3%, the build's TF32 near-ties;
+  each precision repeats its own codes exactly. Importing `sphn` turns the
   free-threaded interpreter's GIL back on; `noisy_cache` once did through `eval_sets`' constants, and
   with the GIL forced off it ran 2,202–2,209× against 2,118–2,135×. The constants are in `paths` now.
 - The noisy fetch reads a local shard's sources in ~1 s (2 s on a 25 h shard). Between batches the
@@ -88,7 +92,8 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
   its accept/reject; Mimi's first codebook 99.92% equal, residual ones 96–99%. These are near-ties:
   the fp32 decode of TF32 codes is as close to the source as that of fp32 codes (SNR 9.043 against
   9.040 dB on 256 clips). Shards before 2026-11-09 16:40 UTC are fp32, the rest TF32; both are
-  valid encodings. The noisy re-encode (`noisy_cache`) keeps `cuda_mimi`'s fp32 default.
+  valid encodings. The noisy re-encode (`noisy_cache`) took TF32 too on 2026-11-22 ([RTX 5090](#rtx-5090)):
+  the box run's noisy shards are TF32 from batch 13 on and fp32 before; its clean shards are all TF32.
 - Rejected: bf16 Mimi (half the residual codes rewritten, ~10% faster than TF32); bf16 CTC (slower
   than TF32, 0.43% of token frames moved; for omniASR too, the `en-vi` aligner: 82 s against 65 s
   on GigaSpeech 2 shards 0–1, the H100 SXM, 2026-11-10); `cudnn.benchmark` (no change); `torch.compile` on Mimi:

@@ -144,8 +144,10 @@ encode (--device cuda or mlx)                .sources + clean shard ─► shard
   - the clip goes under `Bank.draw(f"{seed}:{id}")`, stored as `source_conditions` (None for a
     clean row);
   - Mimi in float32 encodes the clips shortest first, in batches of up to `--batch-seconds` (640)
-    of padded audio: on CUDA moshi's (TF32 off: the cache build's `cuda_mimi` and `mimi_batch`,
-    [cache-build](cache-build.md#cuda)), right-padded, the conditions on the GPU; on MLX
+    of padded audio: on CUDA moshi's with TF32 matmuls and convolutions, as the clean build (the
+    cache build's `cuda_mimi`, `CUDA_TF32`, and `mimi_batch`, [cache-build](cache-build.md#cuda);
+    [cache-speed-cuda](cache-speed-cuda.md) has its speed and the codes it moves), right-padded, the
+    conditions on the GPU; on MLX
     `mimi_mlx` one clip per forward, the conditions on the CPU while the GPU encodes the batch
     before;
   - the codes replace rows 17–32 (the source codebooks, either direction) up to the source's

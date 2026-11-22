@@ -211,14 +211,15 @@ class MLXModels:
 # --------------------------------------------------------------------------- CUDA
 
 
-def cuda_mimi(mimi_weight: Path, num_codebooks: int, tf32: bool = False) -> Any:
-    """moshi's Mimi on CUDA in float32, with TF32 matmuls and convolutions only when `tf32` (a
-    process-wide switch; it moves ~3% of residual codes to near-ties, see CUDA_TF32)."""
+def cuda_mimi(mimi_weight: Path, num_codebooks: int) -> Any:
+    """moshi's Mimi on CUDA in float32, with TF32 matmuls and convolutions when CUDA_TF32 (a
+    process-wide switch; it moves ~3% of residual codes to near-ties): the clean build's and the
+    noisy re-encode's."""
     import torch
     from moshi.models import loaders
 
-    torch.backends.cuda.matmul.allow_tf32 = tf32
-    torch.backends.cudnn.allow_tf32 = tf32
+    torch.backends.cuda.matmul.allow_tf32 = CUDA_TF32
+    torch.backends.cudnn.allow_tf32 = CUDA_TF32
     return loaders.get_mimi(mimi_weight, device=torch.device(DEVICE), num_codebooks=num_codebooks).eval()
 
 
@@ -267,7 +268,7 @@ class CUDAModels:
         import torch
         from transformers import Wav2Vec2ForCTC
 
-        self.mimi = cuda_mimi(mimi_weight, num_codebooks, tf32=CUDA_TF32)
+        self.mimi = cuda_mimi(mimi_weight, num_codebooks)
         self.cardinality = self.mimi.cardinality
         # cuda_mimi's TF32 switch covers the CTC too (CUDA_TF32).
         self.ctc = Wav2Vec2ForCTC.from_pretrained(files, dtype=torch.float32).to(DEVICE).eval()
