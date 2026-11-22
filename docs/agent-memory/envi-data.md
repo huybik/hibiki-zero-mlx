@@ -67,7 +67,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 run from this branch's worktree with the conda Python, under `caffeinate -is`, by `run.sh` beside
 it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `run.log`. Started
 2026-11-21 17:23 UTC+7 (viVoice and PhoAudiobook copies on the Hub, 354 and 224, that evening);
-running since 2026-11-22 07:01 with the `nohup` line in `run.sh`.
+running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
 
 - `run.sh` clears the proxy variables first: a shell Claude Code starts routes HTTPS through
   TeamClaude (`127.0.0.1:3456`), and no download or upload goes through that proxy (user,
@@ -113,7 +113,7 @@ GPU encodes):
 
 | Step | Speed | Note |
 |---|---:|---|
-| `en-vi` build (`cache_codes --device mlx --ane-ctc`) | 259–309× | Mimi audio of both clips; omniASR's transformer on the Neural Engine; 150–161× all on the GPU |
+| `en-vi` build (`cache_codes --device mlx --ane-ctc`) | 259–323× | Mimi audio of both clips; the aligner's transformer on the Neural Engine; wav2vec2-base-vietnamese-250h 4–13% faster than omniASR, interleaved (2026-11-22); omniASR 150–161× all on the GPU |
 | noisy copy (`noisy_cache encode --device mlx`) | 330–400× | the re-encoded English; 2 decode workers, the conditions on the CPU |
 | download (curl, 4 at a time) | ~30–40 MB/s | |
 | upload (plain LFS, `HF_HUB_DISABLE_XET=1`) | ~20 MB/s | through Xet a 255 MB batch crawled at ~25 KB/s and stalled |
@@ -125,6 +125,8 @@ sizes). The RTX PRO 6000 beside the heads run built at ~970×: ~14 h for the bui
 copies ([tranche-box](tranche-box.md#state)).
 
 The build was profiled after the run started (2026-11-21): omniASR's CTC took ~68% of the GPU.
-Its transformer now runs on the Neural Engine beside Mimi (`--ane-ctc`, 1.7–1.9× fp32, text tokens a
+Its transformer then ran on the Neural Engine beside Mimi (`--ane-ctc`, 1.7–1.9× fp32, text tokens a
 frame apart as often as in float16; [cache-build](cache-build.md#speed-on-the-mac)). The profiling
-scripts are in `/Volumes/data/datasets/envi_mac/ane/`.
+scripts are in `/Volumes/data/datasets/envi_mac/ane/`. On 2026-11-22 the aligner became
+wav2vec2-base-vietnamese-250h (95M parameters against 325M), 4–13% faster again: Mimi, which every
+row needs, now holds most of the GPU, so the aligner has little left to give.

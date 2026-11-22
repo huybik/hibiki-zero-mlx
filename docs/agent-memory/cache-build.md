@@ -210,6 +210,17 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   equal; on a whole `libriheavy-large` shard, 259× vs 154×, 12 of 63,507 tokens a frame apart. In a
   thread it ran 207×: Core ML's predict holds the GIL, which `mx.async_eval` (blocked half the build
   on the GPU's queue) needs. macOS caches the first load's compile (~1.5–3 min).
+- `en-vi` build with wav2vec2-base-vietnamese-250h, the Vietnamese aligner since 2026-11-22
+  (`ane_ctc`; 1,000 `cv27-00058` and 500 `libriheavy-large-00012-00103` rows, each pair interleaved,
+  thermal state "fair"): 323× and 275× against omniASR's 286× and 251×, then 237× and 163× against
+  215× and 157× as the Mac heated: 4–13% faster, Mimi now the most of the GPU's work.
+  `ANE_GPU_SHARE` 0.1, 0.2 and 0.3 ran alike (256–299×, interleaved twice), 0 ran 187–225×. The
+  Neural Engine alone runs its transformer at 285–434× of Vietnamese audio, against MLX float32
+  99.90–99.93% of argmaxes equal. The same rows built with each aligner: audio codes equal; 82–84%
+  of text tokens in the same frame, 99.7–99.8% within one; a token over 5 frames apart in 1.5% of
+  the Common Voice rows (mostly in a clip's last three tokens, the last word or its punctuation
+  over a long tail; at most 160 frames) and 0.8% of the Libriheavy ones; alignment rejected 1 of
+  the 1,000 Common Voice rows (omniASR 13).
 - Neural Engine for Mimi and wav2vec2-base (Core ML 9, 2026-10-27): float16 only rules out Mimi and
   moved 0.7% of the base's word spans; one fixed 10 s shape compiled over 27 min without finishing.
 - Headroom (2026-10-29, at 240x): the GPU is 96–98% busy, and a row takes as long as its two

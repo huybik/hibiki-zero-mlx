@@ -45,8 +45,10 @@ if sys.platform == "darwin":  # before the builders' readers import pyarrow, who
 MLX_CACHE_BYTES = 16 << 30
 MLX_WORKERS = 2  # 2, 4 and 8 ran alike; the Mac's CPU and GPU share one power budget
 # With --ane-ctc, the share of a window's audio whose CTC stays on the GPU (MLXModels). On 500
-# libriheavy and 1,000 cv27 rows: 0 ran 261x and 316x (the GPU waiting on the Neural Engine on long
-# rows), 0.1 278x and 301x, 0.2 293x and 309x (the GPU 97-99% busy), 0.35 slower.
+# libriheavy and 1,000 cv27 rows with omniASR: 0 ran 261x and 316x (the GPU waiting on the Neural
+# Engine on long rows), 0.1 278x and 301x, 0.2 293x and 309x (the GPU 97-99% busy), 0.35 slower. With
+# wav2vec2-base-vietnamese-250h (2026-11-22, interleaved twice): 0.1, 0.2 and 0.3 alike (256-299x), 0
+# 187-225x.
 ANE_GPU_SHARE = 0.2
 # Padded audio per batch, Mimi and CTC. On a 4,094-row GigaSpeech 2 window (H200, TF32): CTC + Mimi took
 # 13.0, 11.0, 10.7, 10.7 and 11.3 s at 80, 160, 320, 640 and 1,280 s (peak 2.4 to 27 GiB): bigger
