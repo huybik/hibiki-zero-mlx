@@ -216,7 +216,8 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
 ### The run, on the next box
 
 The user stopped the box before the run (2026-11-22: "let's finish everything and stop before
-the long run"); it continues on an RTX 5090.
+the long run"); it continues on the next box. The RTX 5090 rented for it (61906288) built the
+EN→VI data instead and was destroyed on 2026-11-22 without running it ([tranche-box](tranche-box.md#state)).
 
 - **It continues `both_heads_z`** from its 200 pair (on the Hub with its best; restore as in
   [finetune](../finetune.md#recover-a-run-on-a-replacement-pod)), extended by hand as an SFT run is
