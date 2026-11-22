@@ -63,6 +63,7 @@ grows sentence by sentence.
 | Two-way speech in one model whose output language follows the input language, prepared now beside the tranche (user, 2026-11-04) | A conversation needs both directions with no language-ID step; Hibiki-Zero has no conditioning input; two 3B models do not fit a 6 GB phone ([stage 7](#7-two-way-speech)) |
 | Two-way before GRPO: after round 4e, the pilot and the two-way SFT, then one GRPO on both directions; the phone student and the parallel-heads test are cut from the two-way model and scored both ways (user, 2026-11-10, replacing that morning's "one way first") | GRPO and the student each run once, on the model that ships; GRPO on a VI→EN-only model would be undone by the two-way SFT after it |
 | Test parallel codebook heads against the depformer student once the student is trained, and adopt them only if they win (user, 2026-11-10) | The student's depformer is about a third of what a frame reads; heads that sample every codebook at once could pay for ~14–16 main layers at the 10-layer cost. But they train from scratch, add ~400 ms of heard speech lag and change three runtimes ([stage 5.4](#5-the-phone-model)) |
+| Fine-tune the 3B, never train from scratch; SFT stays teacher-forced, with on-policy training on top (2026-11-21; user: "if we train vi - en and en-vi from scratch or finetune from the 3b, how the plan recipe should change") | A random start must first learn speech and Mimi's codes, which the family learned from pretraining far past our ~8,500 h a direction; a student cut from the 3B's own layers already fell ~14 chrF short. Teacher forcing is the only objective that covers ~17k h (every frame at once), but GRPO's 1,400 on-policy updates moved the test sets +4.4 chrF after two SFT epochs: scheduled sampling in SFT and a KL anchor in GRPO are tested ([exposure-bias](agent-memory/exposure-bias.md)) |
 | Prepare the phone model for NPUs, Qualcomm's next (2026-11-02) | Phones with stronger NPUs are the later target. Android has no MLX, so each model piece is written once as a PyTorch step with explicit state and fixed shapes and exported per backend: Core ML now, ONNX/QNN later. Mimi is first ([mimi-npu](agent-memory/mimi-npu.md)) |
 
 ## Stages
@@ -132,6 +133,14 @@ BLEU, and compare against upstream Hibiki-Zero rather than in absolute terms.
    repeated 4-grams, length ratio; EOS is reported, not gated, since 2026-11-04) with the highest
    FLEURS dev chrF, and keeps it beside the newest two. `eval.py` then checks the promoted checkpoint on MultiMed `select`:
    chrF no more than 1 point below the previously promoted checkpoint's, and the same gates.
+4. Against exposure bias (built 2026-11-21): `--sampled-text P`, parallel scheduled sampling of
+   the words. The main transformer samples every text token without gradients as generation
+   does, each word piece it reads becomes the sampled word piece there with probability P, and
+   the loss scores the dataset's tokens on that context; the timing (PADs), each step's own
+   inputs to the depformer and the audio stay the dataset's
+   ([exposure-bias](agent-memory/exposure-bias.md#scheduled-sampling)).
+   Tested against 0 before any run adopts it, and after a short GRPO, which fixes the same gap
+   ([experiments](agent-memory/exposure-bias.md#experiments)).
 
 ### 4. GRPO
 
@@ -143,7 +152,9 @@ direction's first evaluation set, their mean chrF and a latency gate on each, as
 directions it adds both directions' evaluation sets and rewards decoded with the run's Vietnamese
 tokenizer, both on the branch `grpo/stream-length`.
 RL the teacher before any distillation. A penalty on speech while the source is silent, and a short
-GRPO on a distilled student, come later if needed.
+GRPO on a distilled student, come later if needed. The shipped run stopped improving after update
+1,400 while its EOS share fell; the next 3B GRPO tests a KL anchor to its start
+(`--teacher-weight <start> --kl-coef β`, [exposure-bias](agent-memory/exposure-bias.md#anchored-grpo)).
 
 ### 5. The phone model
 
@@ -576,6 +587,11 @@ Vietnamese text cannot keep up with its speech.
     GRPO as the control), one run of the winner, and training against the phone's palettization
     (stage 6.4) last
     ([on-policy-distillation](agent-memory/on-policy-distillation.md#experiments)).
+12. The 3B's recipe (2026-11-21), after the student's: scheduled sampling in SFT against plain
+    SFT, then each through a short GRPO; then GRPO anchored to its start against the shipped run;
+    centered advantages on the 3B only if they win on the student
+    ([exposure-bias](agent-memory/exposure-bias.md#experiments)). Its next SFT, when the tranche
+    grows, uses what wins.
 
 ## Risks
 

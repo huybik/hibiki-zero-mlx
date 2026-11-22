@@ -345,6 +345,7 @@ def compute_batch_losses(
     weights: LossWeights,
     accuracy: bool = False,
     teacher: Any | None = None,
+    history: Any | None = None,
 ) -> dict[str, Any]:
     """Teacher-forced losses of one batch, as tensors on the GPU (no host sync), with every
     component's sum and count beside them so evaluation can aggregate exactly. Positions holding
@@ -353,8 +354,13 @@ def compute_batch_losses(
     for the same codebooks), each token's loss is its KL from the teacher's distribution
     (`token_kl`) instead of its cross-entropy, with the same weights, at the positions both score:
     moshi returns each model's logits on the stream's frames, and a model with other delays (a
-    heads student's) has other last frames to score."""
-    output = lm(codes, condition_tensors=condition_tensors)
+    heads student's) has other last frames to score. With `history` (scheduled sampling's codes,
+    their text partly the model's samples) the main transformer reads it in place of `codes`,
+    which stay each step's own input and the targets (`lm_training.forward_history`)."""
+    if history is None:
+        output = lm(codes, condition_tensors=condition_tensors)
+    else:
+        output = lm_training.forward_history(lm, history, codes, condition_tensors)
     audio_valid = output.mask  # [B, dep_q, T]
     text_valid = output.text_mask  # [B, 1, T]
     if teacher is not None:
