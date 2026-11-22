@@ -51,7 +51,7 @@ ANE_GPU_SHARE = 0.2
 # Padded audio per batch, Mimi and CTC. On a 4,094-row GigaSpeech 2 window (H200, TF32): CTC + Mimi took
 # 13.0, 11.0, 10.7, 10.7 and 11.3 s at 80, 160, 320, 640 and 1,280 s (peak 2.4 to 27 GiB): bigger
 # batches pad more. 1,280 s also overflows int32 indexing under torch.compile (64 channels x 30.7M).
-CUDA_BATCH_S = 320.0  # omniASR's CTC alone ran alike at 1,280 s (2026-11-11, the en-vi build)
+CUDA_BATCH_S = 320.0  # omniASR's CTC (the former Vietnamese aligner) alone ran alike at 1,280 s (2026-11-11)
 # Rows per decode job (`cache_rows.prepare_rows`); a CTC batch's rows are one alignment job. One job a
 # row cost the main process each row's pool round trip under its one GIL, beside the GPU thread.
 DECODE_JOB_ROWS = 32
@@ -222,9 +222,11 @@ class CUDAModels:
         self.cardinality = self.mimi.cardinality
         # cuda_mimi's TF32 switch covers the CTC too (CUDA_TF32).
         self.ctc = Wav2Vec2ForCTC.from_pretrained(files, dtype=torch.float32).to(DEVICE).eval()
-        # A base model (wav2vec2-base-960h) normalizes its first convolution over the whole input
-        # and takes no attention mask; a large one (omniASR) normalizes each frame and takes one.
-        self._group_norm = self.ctc.config.feat_extract_norm == "group"
+        # The base layout every aligner has: its first convolution's GroupNorm normalizes over the
+        # whole input (ctc_log_probs masks the padding out of it), post-norm layers.
+        config = self.ctc.config
+        if config.do_stable_layer_norm or config.feat_extract_norm != "group":
+            raise ValueError(f"{aligner.repo}: ctc_log_probs runs only the base layout")
         if self.ctc.wav2vec2.adapter is not None:  # ctc_log_probs runs the encoder without it
             raise ValueError(f"{aligner.repo} has an adapter, which ctc_log_probs does not apply")
         self._half_ctc = half_ctc
@@ -329,8 +331,8 @@ class CUDAModels:
         return torch.arange(width, device=DEVICE)[None, :] < lengths[:, None]
 
     def _encoder(self, hs: Any, mask: Any) -> Any:
-        """The wav2vec2 encoder's forward (transformers 5.22.1's `Wav2Vec2Encoder` and
-        `Wav2Vec2EncoderStableLayerNorm`, to check again on an upgrade), without its two waits on the GPU: the padding's frames
+        """The wav2vec2 encoder's forward (transformers 5.22.1's `Wav2Vec2Encoder`, to check again
+        on an upgrade), without its two waits on the GPU: the padding's frames
         zeroed by `where` rather than a boolean-mask write, and the attention mask always built
         rather than first checked for padding. Each emptied the GPU's queue every CTC batch, so the
         encoder's launches, slowed by the GIL the main process's other threads hold, idled the GPU
@@ -342,21 +344,18 @@ class CUDAModels:
         hs = torch.where(mask[..., None], hs, 0.0)
         attention = create_bidirectional_mask(config=encoder.config, inputs_embeds=hs, attention_mask=mask,
                                               allow_is_bidirectional_skip=False)
-        hs = hs + encoder.pos_conv_embed(hs)
-        stable = self.ctc.config.do_stable_layer_norm  # the layer norm after the layers, not before
-        if not stable:
-            hs = encoder.layer_norm(hs)
+        hs = encoder.layer_norm(hs + encoder.pos_conv_embed(hs))
         hs = encoder.dropout(hs)
         for layer in encoder.layers:
             hs = layer(hs, attention_mask=attention)
-        return encoder.layer_norm(hs) if stable else hs
+        return hs
 
     def ctc_log_probs(self, clips: list[np.ndarray],
                       landed: Callable[[list[int], list[np.ndarray]], None] | None = None) -> list[np.ndarray]:
         """Each normalized 16 kHz clip's CTC log-probabilities [frames, `vocab_columns`], as
-        computed alone: the padding is masked out of the positional convolution's input and the
-        attention keys, and, for a base model, out of the statistics of its first convolution's
-        GroupNorm, which normalizes over the whole input (as wav2vec2_mlx does). `landed(indices,
+        computed alone: the padding is masked out of the positional convolution's input, the
+        attention keys and the statistics of the first convolution's GroupNorm, which normalizes
+        over the whole input (as wav2vec2_mlx does). `landed(indices,
         log_probs)` hears of each batch's clips as it reaches the host."""
         import torch
 
@@ -368,22 +367,18 @@ class CUDAModels:
             lengths = torch.tensor([len(clips[i]) for i in group])
             batch = self._stage(clips, group, int(lengths.max()))
             with torch.no_grad():
-                if self._group_norm:
-                    hs = first.conv(batch)
-                    valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
-                    own = self._within(valid, hs.shape[-1])[:, None, :].float()
-                    count = own.sum(-1, keepdim=True)
-                    mean = (hs * own).sum(-1, keepdim=True) / count
-                    var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
-                    norm = first.layer_norm
-                    hs = (hs - mean) / torch.sqrt(var + norm.eps) * norm.weight[:, None] + norm.bias[:, None]
-                    hs = first.activation(hs)
-                    for layer in rest:
-                        hs = layer(hs)
-                    hs = hs.transpose(1, 2)
-                else:  # each frame normalized alone: the padding's frames never reach a clip's own
-                    hs = w2v.feature_extractor(batch[:, 0]).transpose(1, 2)
-                hs, _ = w2v.feature_projection(hs)
+                hs = first.conv(batch)
+                valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
+                own = self._within(valid, hs.shape[-1])[:, None, :].float()
+                count = own.sum(-1, keepdim=True)
+                mean = (hs * own).sum(-1, keepdim=True) / count
+                var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
+                norm = first.layer_norm
+                hs = (hs - mean) / torch.sqrt(var + norm.eps) * norm.weight[:, None] + norm.bias[:, None]
+                hs = first.activation(hs)
+                for layer in rest:
+                    hs = layer(hs)
+                hs, _ = w2v.feature_projection(hs.transpose(1, 2))
                 frames = self.ctc._get_feat_extract_output_lengths(lengths)
                 mask = self._within(frames, hs.shape[1])
                 if self._half_ctc:

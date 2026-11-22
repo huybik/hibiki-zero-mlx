@@ -21,6 +21,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 - The work runs on the Mac and its external drive (user, 2026-11-21: "can use the mac and external
   drive"), not on the training box, where a build beside a run halves the run's speed
   ([tranche-box](tranche-box.md#state)).
+- The `en_speech` shards built from 2026-11-22 on time their Vietnamese text with
+  wav2vec2-base-vietnamese-250h (CC-BY-NC) on the Neural Engine, the first 528 and the tranche's
+  with omniASR (user, 2026-11-22: "let's use wav2vec2-base-vietnamese-250h on the neural engine";
+  [two-way](two-way.md#vietnamese-aligner)). Each sample records its aligner in `text_timing`.
 - Every noisy `en-vi` copy uses `--seed 1` (the `vi-en` copies took seed 0; the draws key on the
   seed and the row id, which both directions share) and `--fraction` 0.6.
 
@@ -30,7 +34,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 |---|---|---:|---|
 | `en-vi-grounded-v2/train` (VI→EN clean) | `huybik/hibiki-zero-vi-full-sft` | 1,832 | the Mac, 2026-10/11 |
 | `en-vi-grounded-v2-noisy/train` (VI→EN noisy, seed 0) | same | 1,832 | the pod |
-| `en-vi/en-vi-grounded-v2/train` (EN→VI clean) | same | 1,832 when done | 527 the boxes (CUDA, TF32), the rest the Mac |
+| `en-vi/en-vi-grounded-v2/train` (EN→VI clean) | same | 1,832 when done | 527 the boxes (CUDA, TF32), the rest the Mac; omniASR timed the first 528 |
 | `en-vi/en-vi-grounded-v2-noisy/train` (EN→VI noisy, seed 1) | same | 1,832 when done | the Mac |
 | `en-vi/en-vi-grounded-v2/validation` | same | 3 | the box |
 | `en-vi/{giga,pho,vivoice}` (tranche EN→VI clean) | `anquachdev/mimi-en-vi-speech-20k` | 228, 224, 354 | the box |
@@ -65,10 +69,14 @@ it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `
 2026-11-21 17:23 UTC+7 (viVoice and PhoAudiobook copies on the Hub, 354 and 224, that evening);
 running since 2026-11-22 07:01 with the `nohup` line in `run.sh`.
 
-- `run.sh` clears the proxy variables first. A shell Claude Code starts routes HTTPS through
-  TeamClaude (`127.0.0.1:3456`), and the run inherited it: an upload crawled there at ~10 kB/s for
-  2.5 h while the GPU waited (2026-11-22); direct, the same 20 shards went up in 1.5 minutes. No
-  download or upload goes through that proxy (user, 2026-11-22).
+- `run.sh` clears the proxy variables first: a shell Claude Code starts routes HTTPS through
+  TeamClaude (`127.0.0.1:3456`), and no download or upload goes through that proxy (user,
+  2026-11-22).
+- Each upload attempt runs in a process of its own, killed and tried again past a deadline of
+  120 s plus 5 MB/s of the batch (`UPLOAD_MIN_BYTES_S`). A Hub upload connection from this Mac can
+  crawl at ~10 kB/s for hours without a timeout, the link idle at 350 Mbit/s: twice on 2026-11-22
+  (04:38, through the proxy, which held the GPU 1.5 h once the next batch was done; 08:05,
+  direct), while fresh connections ran 13–20 MB/s.
 
 - Jobs in order, in batches of 20 shards: `tranche` (each tranche `en-vi` shard's noisy copy),
   `noisy` (the 527 `en_speech` `en-vi` shards the boxes built), `build` (the other 1,305:

@@ -68,8 +68,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", choices=list(MODELS), default="mlx")
     parser.add_argument("--ane-ctc", action="store_true",
-                        help="MLX: the Vietnamese aligner's transformer on the Neural Engine beside Mimi on the GPU "
-                             "(wav2vec2_coreml; text timings move by near-ties, as in float16).")
+                        help="MLX: the target language's aligner's transformer on the Neural Engine beside Mimi on "
+                             "the GPU (wav2vec2_coreml; measured on the Vietnamese aligner: text timings move by "
+                             "near-ties).")
     parser.add_argument("--direction", choices=DIRECTIONS, default=DEFAULT_DIRECTION,
                         help="<source>-<target>: the language heard, then the one spoken and written.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
