@@ -44,7 +44,13 @@ from training.finetune.hibiki_helpers import (
     get_lmgen,
     stack_and_pad_audio,
 )
-from training.paths import DEFAULT_TOKENIZER, repo_display_path, require_file, resolve_repo_path
+from training.paths import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_TOKENIZER,
+    repo_display_path,
+    require_file,
+    resolve_repo_path,
+)
 
 
 def ascii_text(text: str) -> str:
@@ -223,6 +229,34 @@ def load_lm(checkpoint_info: Any, checkpoint: Path | None, device: Any, dtype: t
     return lm
 
 
+def teacher_checkpoint_info(args: argparse.Namespace) -> Any:
+    """The checkpoint info of a run's distillation teacher: --teacher-weight, with
+    --teacher-config (by default the 3B's), on the run's tokenizer, which it must be on."""
+    args.teacher_weight = require_file(args.teacher_weight, "teacher weight")
+    args.teacher_config = require_file(args.teacher_config or DEFAULT_CONFIG_PATH, "teacher config")
+    run_tokenizer(args.tokenizer, args.teacher_weight)  # refuses another tokenizer
+    return load_checkpoint_info(
+        argparse.Namespace(
+            hf_repo=args.hf_repo,
+            model_weight=args.teacher_weight,
+            mimi_weight=args.mimi_weight,
+            tokenizer=args.tokenizer,
+            config_path=args.teacher_config,
+        )
+    )
+
+
+def load_teacher(info: Any, weight: Path, device: Any, dep_q: int) -> Any:
+    """A frozen bf16 teacher in the compiled training forward (`lm_training`), run without a
+    backward. Its depformer runs only the first `dep_q` codebooks: steps past them change no
+    earlier codebook's logits (the depformer is causal over steps)."""
+    teacher = load_lm(info, weight, device, torch.bfloat16)
+    teacher.train()
+    teacher.requires_grad_(False)
+    teacher.dep_q = dep_q
+    return teacher
+
+
 # --------------------------------------------------------------------------- #
 # Teacher-forced losses
 # --------------------------------------------------------------------------- #
@@ -295,7 +329,8 @@ def token_kl(logits: Any, teacher_logits: Any, valid: Any) -> Any:
     """KL(teacher || model) of each valid position's next-token distribution, float32 in the
     shape of `valid`, and 0 elsewhere: distillation's per-token loss in place of `token_ce`'s.
     Both logits are read only where `valid` (moshi's NaN fill elsewhere), so no NaN reaches the
-    loss or the gradient; the teacher's carry none."""
+    loss or the gradient through either. With the arguments swapped, `token_kl(teacher, model)`
+    is the reverse KL(model || teacher), on-policy distillation's (`grpo.distill_loss`)."""
     keep = valid.unsqueeze(-1)
     teacher_log = torch.log_softmax(torch.where(keep, teacher_logits.float(), 0.0), dim=-1)
     log = torch.log_softmax(torch.where(keep, logits.float(), 0.0), dim=-1)
@@ -310,6 +345,7 @@ def compute_batch_losses(
     weights: LossWeights,
     accuracy: bool = False,
     teacher: Any | None = None,
+    history: Any | None = None,
 ) -> dict[str, Any]:
     """Teacher-forced losses of one batch, as tensors on the GPU (no host sync), with every
     component's sum and count beside them so evaluation can aggregate exactly. Positions holding
@@ -318,8 +354,13 @@ def compute_batch_losses(
     for the same codebooks), each token's loss is its KL from the teacher's distribution
     (`token_kl`) instead of its cross-entropy, with the same weights, at the positions both score:
     moshi returns each model's logits on the stream's frames, and a model with other delays (a
-    heads student's) has other last frames to score."""
-    output = lm(codes, condition_tensors=condition_tensors)
+    heads student's) has other last frames to score. With `history` (scheduled sampling's codes,
+    their text partly the model's samples) the main transformer reads it in place of `codes`,
+    which stay each step's own input and the targets (`lm_training.forward_history`)."""
+    if history is None:
+        output = lm(codes, condition_tensors=condition_tensors)
+    else:
+        output = lm_training.forward_history(lm, history, codes, condition_tensors)
     audio_valid = output.mask  # [B, dep_q, T]
     text_valid = output.text_mask  # [B, 1, T]
     if teacher is not None:

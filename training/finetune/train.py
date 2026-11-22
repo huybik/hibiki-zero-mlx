@@ -2,7 +2,10 @@
 """Full-model Hibiki-Zero SFT on multi-sentence streams, of one direction or both.
 
 Trains every parameter from the upstream weight with fp32 masters, bf16 autocast and fused
-AdamW, under a linear warmup then cosine decay. Streams are planned once from the grounded cache
+AdamW, under a linear warmup then --schedule: cosine decay to 0 by default; `constant` holds the
+peak, the stable phase of a warmup-stable-decay run, and `decay` falls from the peak to 0 as
+1 - sqrt of the progress, its decay, run as a new run from one of the constant run's pairs (its
+model as --model-weight, its AdamW moments as --optimizer-state). Streams are planned once from the grounded cache
 rows with --seed (`streams.py`) and batched up to --batch-frames padded frames, one update a batch;
 every epoch replays that order. Each validation reports teacher-forced losses on a fixed, seeded stream plan
 and batch order of each validation cache (so --val-batches takes a random subset of each) and translates
@@ -19,6 +22,22 @@ training loss is its KL from that frozen bf16 teacher's distribution on the same
 from ([phone-student](../../docs/agent-memory/phone-student.md)). The teacher reads every codebook
 of the stream, the model its own cut. Validation is unchanged.
 
+With --palettize-bits (a parallel-heads student), each step trains against the Core ML export's
+palettization (`training.student.palettize`): the forward and backward run on the weights snapped
+to their k-means tables, the optimizer updates the full-precision ones, and validation scores the
+palettized model; saved checkpoints hold the full-precision weights, which `palettize` snaps for
+the export.
+
+With --sampled-text P (parallel scheduled sampling of the words, against exposure bias), each
+step first runs the main transformer teacher-forced without gradients and samples every text
+token as generation samples it (temperature 0.8, top-k 250); each word piece of the text then
+becomes the sampled word piece there with probability P in the history the main transformer
+reads, while the PADs (the timing), each step's own tokens (the depformer's inputs), the audio
+and the targets stay the dataset's. Generation conditions on the model's own words, teacher
+forcing never does: this shows the model its own word choices in training at the cost of one more
+main-transformer forward a step. Validation is unchanged
+([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
+
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
 GPU. A start in an --out-dir that holds complete pairs resumes the newest one, so a preempted run
@@ -27,6 +46,7 @@ continues by running the same command again.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import math
 import os
 import time
@@ -34,9 +54,11 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from moshi.utils.sampling import sample_token
 from torch.utils.data import DataLoader
 
-from training.finetune import common, streams
+from training.finetune import common, lm_training, streams
+from training.student import heads, palettize
 from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
@@ -46,6 +68,7 @@ from training.finetune.checkpoints import (
     jsonable,
     keep_log_lines,
     load_newest_pair,
+    load_optimizer_state,
     open_run,
     promote_best,
 )
@@ -67,6 +90,10 @@ RESUME_KEYS = (
     "model_weight",
     "teacher_config",
     "teacher_weight",
+    "optimizer_state",
+    "palettize_bits",
+    "palettize_refit",
+    "sampled_text",
     "mimi_weight",
     "tokenizer",
     "epochs",
@@ -75,6 +102,7 @@ RESUME_KEYS = (
     "stream_seconds",
     "max_frames",
     "lr",
+    "schedule",
     "warmup_fraction",
     "adam_beta1",
     "adam_beta2",
@@ -107,6 +135,7 @@ LOG_LOSSES = (
     "content_text_loss",
     "pad_text_loss",
 )
+SCHEDULES = ("cosine", "constant", "decay")  # what follows the warmup (learning_rate)
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,6 +154,20 @@ def parse_args() -> argparse.Namespace:
         help="Distil this frozen model's per-token distributions instead of training on the targets alone.",
     )
     parser.add_argument("--teacher-config", type=Path, help="The teacher's config; default the 3B's.")
+    parser.add_argument(
+        "--palettize-bits", type=int, choices=(4, 6, 8),
+        help="Train against the Core ML export's palettization at this many bits (a heads student).",
+    )
+    parser.add_argument(
+        "--palettize-refit", type=int, default=100,
+        help="Refit the palettization tables every this many steps; must divide --save-every.",
+    )
+    parser.add_argument(
+        "--sampled-text", type=float, default=0.0, metavar="P",
+        help="Probability that a word piece the main transformer reads is the word piece the model "
+        "sampled there, where it sampled one (scheduled sampling of the words); the timing and "
+        "the targets stay the dataset's.",
+    )
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
@@ -152,6 +195,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--warmup-fraction", type=float, default=0.05, help="Share of steps warming up linearly."
+    )
+    parser.add_argument(
+        "--schedule", choices=SCHEDULES, default="cosine",
+        help="After the warmup: cosine to 0; constant at the peak (warmup-stable-decay's stable "
+        "phase); decay from the peak to 0 as 1 - sqrt(progress) (its decay, from a pair of the stable run).",
+    )
+    parser.add_argument(
+        "--optimizer-state", type=Path,
+        help="A pair's trainer_stepNNNNNN.pt whose model is --model-weight, beside it under its "
+        "own name: a new run continues its AdamW moments, as a decay branched from a constant run does.",
     )
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.95)
@@ -211,18 +264,65 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--warmup-fraction must be in [0, 1)")
     if args.teacher_config is not None and args.teacher_weight is None:
         raise ValueError("--teacher-config needs --teacher-weight")
+    if not 0 <= args.sampled_text < 1:
+        raise ValueError("--sampled-text must be in [0, 1)")
+    if args.sampled_text and args.teacher_weight is not None:
+        raise ValueError("--sampled-text trains on the dataset's targets; a student learns from "
+                         "its own samples on-policy, with grpo.py --teacher-weight")
+    if args.schedule == "decay" and (args.optimizer_state is None or args.warmup_fraction):
+        raise ValueError("--schedule decay continues a constant run's pair: it needs "
+                         "--optimizer-state and --warmup-fraction 0")
+    # A resumed pair must sit on a refit step, so it gets the tables its run had.
+    if args.palettize_bits and (args.palettize_refit <= 0 or not args.save_every
+                                or args.save_every % args.palettize_refit):
+        raise ValueError("--palettize-refit must be positive and divide a positive --save-every")
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
     common.require_torch_compile()
 
 
-def learning_rate(step: int, peak: float, warmup_steps: int, total_steps: int) -> float:
-    """Linear warmup to `peak`, then cosine decay towards 0 at `total_steps` (moshi-finetune's
-    OneCycle shape, without its momentum cycling). `step` counts updates from 0."""
+def sample_text(
+    lm: Any, codes: torch.Tensor, condition_tensors: Any, rate: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Parallel scheduled sampling of the words (Duckworth et al. 2019, arXiv 1906.04331): a history
+    for `common.compute_batch_losses`, `codes` with each word piece of the text replaced, with
+    probability `rate`, by the word piece the main transformer's teacher-forced distribution
+    samples there as validation samples text (`common.TRAINER_GENERATION`), and how many replaced
+    pieces differ from the dataset's. Runs without gradients, under the caller's autocast.
+    Only a word piece the sample keeps a word piece is replaced: the targets stay the dataset's,
+    so a word sampled a frame early (where the dataset has PAD) would teach the model to write it
+    again a frame later, and one sampled late (PAD) to drop it; the timing stays the dataset's.
+    The audio stays the dataset's too: generation draws a frame's codebooks one after another,
+    and tokens sampled each on its own would pair a sampled codebook with the dataset's next."""
+    cfg = common.TRAINER_GENERATION
+    with torch.no_grad():
+        logits, scored = lm_training.text_logits(lm, codes, condition_tensors)
+        # Unscored positions hold NaN logits; they are never replaced.
+        sampled = sample_token(logits.float().nan_to_num(), True, cfg.text_temp, cfg.top_k_text)
+    text, sampled = codes[:, :1], sampled.to(codes.dtype)
+    pad = lm.text_padding_token_id  # the special tokens (PAD, EOS) sit at or below it
+    words = (text > pad) & (sampled > pad)
+    replace = scored & words & (torch.rand(scored.shape, device=codes.device) < rate)
+    history = codes.clone()
+    history[:, :1] = torch.where(replace, sampled, text)
+    return history, (replace & (sampled != text)).sum()
+
+
+def learning_rate(
+    step: int, peak: float, warmup_steps: int, total_steps: int, schedule: str = "cosine"
+) -> float:
+    """Linear warmup to `peak`, then `schedule` towards `total_steps`: `cosine` decays to 0
+    (moshi-finetune's OneCycle shape, without its momentum cycling); `constant` holds the peak;
+    `decay` falls to 0 as 1 - sqrt(progress), the cooldown that matched cosine in Hägele et al.
+    2024 (arXiv 2405.18392). `step` counts updates from 0."""
     if step < warmup_steps:
         return peak * (step + 1) / warmup_steps
     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    if schedule == "constant":
+        return peak
+    if schedule == "decay":
+        return peak * (1 - math.sqrt(progress))
     return peak * 0.5 * (1 + math.cos(math.pi * progress))
 
 
@@ -247,23 +347,15 @@ def main() -> None:
 
     out_dir = resolve_repo_path(args.out_dir)
     resuming, best_state = open_run(out_dir)
+    if args.optimizer_state is not None:  # read only at the start: a resume has its own pairs
+        args.optimizer_state = (resolve_repo_path(args.optimizer_state) if resuming
+                                else require_file(args.optimizer_state, "optimizer state"))
 
     checkpoint_info = common.load_checkpoint_info(args)
+    if args.palettize_bits and checkpoint_info.audio_heads != heads.KIND:
+        raise ValueError("--palettize-bits trains for the Core ML export, which runs only a parallel-heads student")
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    teacher_info = None
-    if args.teacher_weight is not None:
-        args.teacher_weight = require_file(args.teacher_weight, "teacher weight")
-        args.teacher_config = require_file(args.teacher_config or DEFAULT_CONFIG_PATH, "teacher config")
-        common.run_tokenizer(args.tokenizer, args.teacher_weight)  # refuses another tokenizer
-        teacher_info = common.load_checkpoint_info(
-            argparse.Namespace(
-                hf_repo=args.hf_repo,
-                model_weight=args.teacher_weight,
-                mimi_weight=args.mimi_weight,
-                tokenizer=args.tokenizer,
-                config_path=args.teacher_config,
-            )
-        )
+    teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
@@ -363,12 +455,7 @@ def main() -> None:
     teacher = None
     if teacher_info is not None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
-        teacher = common.load_lm(teacher_info, args.teacher_weight, device, torch.bfloat16)
-        teacher.train()  # the compiled training forward (lm_training), run without a backward
-        teacher.requires_grad_(False)
-        # Its depformer runs only the model's codebooks: steps past them change no earlier
-        # codebook's logits (the depformer is causal over steps), and both forwards read dep_q.
-        teacher.dep_q = codebooks
+        teacher = common.load_teacher(teacher_info, args.teacher_weight, device, codebooks)
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
@@ -378,6 +465,18 @@ def main() -> None:
     val_log_path = out_dir / "val_log.jsonl"
     log_path = out_dir / "train_log.jsonl"
     global_step = load_newest_pair(lm, optimizer, out_dir, device) if resuming else 0
+    if not global_step and args.optimizer_state is not None:
+        branched = load_optimizer_state(optimizer, args.optimizer_state, args.model_weight, device)
+        print(f"AdamW continues from step {branched} of {repo_display_path(args.optimizer_state)}")
+    palettizer = None
+    if args.palettize_bits:
+        palettizer = palettize.Palettizer(lm, args.palettize_bits)
+        palettizer.refit()
+        print(f"Palettizing {len(palettizer.params)} weights at {args.palettize_bits} bits")
+
+    def palettized():
+        """The palettized weights in place for a forward and its backward, or a validation."""
+        return palettizer.applied() if palettizer is not None else contextlib.nullcontext()
     # Steps already validated. A pair is saved before its validation, so a run cut short there
     # validates on resume; a replacement pod without val_log validates again.
     validated = {int(item["step"]) for item in keep_log_lines(val_log_path, global_step)}
@@ -424,6 +523,8 @@ def main() -> None:
             "grad_norm": 0.0,
             "max_grad_norm": None,
             "data_seconds": 0.0,
+            "text_changed": 0,
+            "word_tokens": 0,
         }
 
     def check_gradients(step: int) -> None:
@@ -441,17 +542,18 @@ def main() -> None:
         started = time.time()
         # The next step zeroes the gradients anyway; freed now, they leave room for generation.
         optimizer.zero_grad(set_to_none=True)
-        teacher_forced = {
-            name: common.evaluate_teacher_forced(
-                lm, loader, device, checkpoint_info.model_type, weights, args.val_batches
+        with palettized():  # a palettizing run scores the model it would export
+            teacher_forced = {
+                name: common.evaluate_teacher_forced(
+                    lm, loader, device, checkpoint_info.model_type, weights, args.val_batches
+                )
+                for name, loader in val_loaders.items()
+            }
+            # On a bf16 copy of the model, in the room the gradients freed above.
+            free_running = common.validate_free_running(
+                lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
+                args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
             )
-            for name, loader in val_loaders.items()
-        }
-        # On a bf16 copy of the model, in the room the gradients freed above.
-        free_running = common.validate_free_running(
-            lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
-            args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
-        )
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, losses in teacher_forced.items():
             print(
@@ -487,7 +589,7 @@ def main() -> None:
         run_validation(global_step)
 
     while global_step < total_steps:
-        lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps)
+        lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps, args.schedule)
         for group in optimizer.param_groups:
             group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
@@ -509,16 +611,25 @@ def main() -> None:
             with torch.no_grad(), autocast:
                 teacher_output = teacher(codes, condition_tensors=teacher_conditions[batch_size])
             codes = codes.index_select(1, student_rows)
-        with autocast:
-            losses = common.compute_batch_losses(
-                lm, codes, condition_cache[batch_size], weights, teacher=teacher_output
-            )
-        teacher_output = None  # the loss's graph keeps what its backward needs
-        losses["loss"].backward()
+        with palettized():  # the straight-through estimator: gradients at the palettized weights
+            with autocast:
+                history = None
+                if args.sampled_text:
+                    history, changed = sample_text(
+                        lm, codes, condition_cache[batch_size], args.sampled_text
+                    )
+                    log["text_changed"] += changed
+                losses = common.compute_batch_losses(
+                    lm, codes, condition_cache[batch_size], weights,
+                    teacher=teacher_output, history=history,
+                )
+            history = teacher_output = None  # the loss's graph keeps what its backward needs
+            losses["loss"].backward()
         for key in LOG_LOSSES:
             log["losses"][key] += losses[key].detach()
         log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
         log["text_tokens"] += losses["content_n"] + losses["pad_n"]
+        log["word_tokens"] += losses["content_n"]
         if args.grad_clip > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
         else:
@@ -527,6 +638,10 @@ def main() -> None:
             )
         optimizer.step()
         global_step += 1
+        # On the last step too: its validation and the snapped export then share one fit.
+        if palettizer is not None and (global_step % args.palettize_refit == 0
+                                       or global_step == total_steps):
+            palettizer.refit()
 
         # Summed on the GPU, as the losses are: checked and logged without a sync per step.
         grad_norm = grad_norm.detach()
@@ -573,6 +688,8 @@ def main() -> None:
                 "grad_norm": float(log["grad_norm"]) / steps,
                 "max_grad_norm": float(log["max_grad_norm"]),
             }
+            if args.sampled_text:  # the share of the content tokens (words, EOS) it read as other words
+                item["text_changed"] = float(log["text_changed"]) / max(1, int(log["word_tokens"]))
             append_log(log_path, item)
             print(
                 f"step={global_step} loss={item['loss']:.4f} "

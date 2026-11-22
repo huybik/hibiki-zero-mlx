@@ -294,12 +294,34 @@ def load_newest_pair(model: Any, optimizer: Any, out_dir: Path, device: torch.de
         raise RuntimeError(f"{trainer_path.name} does not match {model_path.name}")
     common.load_model(model, model_path, torch.float32)
     optimizer.load_state_dict(checkpoint["optimizer"])
+    _states_to(optimizer, device)
+    print(f"Resumed step {step} from {repo_display_path(trainer_path)}")
+    return step
+
+
+def load_optimizer_state(optimizer: Any, trainer_path: Path, model_weight: Path, device: torch.device) -> int:
+    """Start a new run's optimizer from another run's pair (`trainer_path`, whose model file must
+    be `model_weight`, under any name: a hard link counts) and return that pair's step. AdamW's
+    moments continue, so a run branched from a pair needs no warmup (a decay from a constant
+    run's pair, train.py --schedule decay). The run's own betas and weight decay replace the
+    pair's; its learning rate is set at every step."""
+    checkpoint = torch.load(trainer_path, map_location="cpu", weights_only=False)
+    model_path = trainer_path.parent / str(checkpoint["model"])
+    if not model_path.is_file() or not os.path.samefile(model_path, model_weight):
+        raise RuntimeError(f"{trainer_path.name} holds the moments of {checkpoint['model']}, not of {model_weight}")
+    kept = [{key: group[key] for key in ("betas", "weight_decay")} for group in optimizer.param_groups]
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    for group, values in zip(optimizer.param_groups, kept, strict=True):
+        group.update(values)
+    _states_to(optimizer, device)
+    return int(checkpoint["step"])
+
+
+def _states_to(optimizer: Any, device: torch.device) -> None:
     for state in optimizer.state.values():
         for key, value in list(state.items()):
             if torch.is_tensor(value):
                 state[key] = value.to(device=device)
-    print(f"Resumed step {step} from {repo_display_path(trainer_path)}")
-    return step
 
 
 def keep_log_lines(path: Path, last_step: int) -> list[dict[str, Any]]:

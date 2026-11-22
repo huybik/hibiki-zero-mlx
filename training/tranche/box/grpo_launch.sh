@@ -5,7 +5,8 @@
 #                                               resume reloads it)
 #   grpo_launch.sh RUN                          relaunch RUN, which resumes it
 # ARGS follow the 3B's sizes and win over them (argparse keeps an option's last value): a phone
-# student passes its --config-path, --text-weight 50 and its own profile's sizes (grpo.md).
+# student passes its --config-path, --text-weight 50 and its own profile's sizes (grpo.md); its
+# on-policy distillation also --teacher-weight and --reward-coef 0 (on-policy-distillation.md).
 # Stop: kill -TERM "$(cat /workspace/logs/grpo.pid)" ALONE and wait for the final sync; a group
 # kill (restart.sh style) kills hf_sync, and the newest pair and the logs never reach the Hub.
 set -euo pipefail
