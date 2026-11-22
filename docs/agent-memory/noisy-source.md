@@ -251,7 +251,7 @@ came out identical to the first encode's.
 - On MLX (the Mac, 2026-11-21): `vi-en` `cv27-00000` at seed 0 against the published CUDA shard,
   the same conditions on all 2,961 rows, 99.996% of source codes and every first codebook equal;
   the tranche's viVoice `en-vi` shard 0 at seed 1 from the Hub, text, target and EOS untouched and
-  443 of 713 rows re-encoded. ~330–400× real time on the re-encoded audio with 2 workers.
+  443 of 713 rows re-encoded. Its speed on the Mac (2 workers): [cache-build](cache-build.md#speed-on-the-mac).
 
 ## Evaluation
 
