@@ -26,10 +26,10 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 - The source is the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)), read
   straight from its parquet shards, the split taken from the folder. FLEURS is dropped.
 - `--shards` picks `.parquet` source shards by glob under `data/` (default: every train and
-  validation shard, `cv-anquach` included). Put `--out-dir` on `/Volumes/data`: the codes come to
+  validation shard). Put `--out-dir` on `/Volumes/data`: the codes come to
   ~70 GB and the internal disk is too small.
-- The full build (user's choice, 2026-10-27: every row that fits the trainer) goes to two
-  out-dirs, see [Builds](#builds).
+- The full build (user's choice, 2026-10-27: every row that fits the trainer) is in
+  [Builds](#builds).
 - Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `streams.load_rows`
   rejects anything else:
   - Mimi at 24 kHz / 12.5 Hz;
@@ -53,35 +53,29 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 ## Builds
 
 The full build, started 2026-10-27 and restarted on the faster builder on 2026-10-28 after the
-first 68 `cv27` shards, ran the two out-dirs one after the other, each under
-`caffeinate -i -s` with its log in `<out-dir>/build.log`, and finished on 2026-11-02 (main at
-19:05, `cv-anquach` at 21:42, both with status 0). Every shard is on the Hub. It holds ~22.1k h of
-Mimi audio (21,558 h main, 521 h `cv-anquach`) and ran 150–170x with the Mac in use (200–225x
+first 68 `cv27` shards, ran under `caffeinate -i -s` with its log in `<out-dir>/build.log` and
+finished on 2026-11-02 at 19:05 with status 0. Every shard is on the Hub. It holds 21,558 h of
+Mimi audio and ran 150–170x with the Mac in use (200–225x
 idle), ~5.5 days on the Mac alone.
 
 | Out-dir on `/Volumes/data/datasets/` | `--shards` | Source rows | Built |
 |---|---|---|---|
 | `en-vi-grounded-v2` | `train/cv27-*`, `train/libriheavy-*`, `validation/*` | 3.49M, 10,510 h English | 1,835 shards, 3.45M rows (1.1% rejected), 73 GB |
-| `en-vi-grounded-v2-cv-anquach` | `train/cv-anquach-*` | 139k, 256 h English | 7 shards, 136k rows (2.2% rejected), 1.8 GB |
 
 - `build.log` has no line for three main shards (`libriheavy-large-00001-00031`, `-00033`,
   `-00036`): the 2026-10-28 replug below lost them while the builder kept building. Their
   shards match their neighbours' layout and hold 2,783 rows.
-- To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status 143
-  and does not start `cv-anquach`, but only once the two orphaned decode workers
+- To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status 143,
+  but only once the two orphaned decode workers
   (`multiprocessing.spawn` and its `resource_tracker`, parent pid 1) are killed too, since they
   hold its log pipe open. Stop the publisher the same way (`training.prep.publish_caches`) after its
   log shows `0 left`; it logs only commits and retries, so a quiet log means nothing is waiting.
 - Nothing restarts it on its own, after a stop, a logout or a restart (a macOS update logs out).
-  Run from the repo root on `main` `nohup bash <main out-dir>/launch.sh >/dev/null 2>&1 &`, and
+  Run from the repo root on `main` `nohup bash <out-dir>/launch.sh >/dev/null 2>&1 &`, and
   the same for `publish.sh` if it stopped; the builder skips the built shards and rebuilds the
   unfinished one.
-- `cv-anquach` is kept apart because its English targets are 16 kHz
-  ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
-  more `--cache-dir` to use it, once its `en-vi` cache is built as its pair
-  ([sft-training](sft-training.md#target-timing)).
-- `publish.sh` beside `launch.sh` in the main out-dir runs `publish_caches --follow` on the two
-  out-dirs in the same order, logging to `<out-dir>/publish.log`.
+- `publish.sh` beside `launch.sh` in the out-dir runs `publish_caches --follow` on it, logging
+  to `<out-dir>/publish.log`.
 - Both scripts append each log line on its own: unplugging `/Volumes/data` kills a log a
   process holds open. On 2026-10-28 a replug lost the builder's lines while it kept building, and
   `publish_caches` died on its next one (exit 120: Python could not write its stdout). A process
@@ -110,10 +104,9 @@ train/cv27-00000 ... ─► Mac, cache_codes top down
 both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <out-dir name>/<split>/
 ```
 
-- The Hub prefix is the out-dir's name (`en-vi-grounded-v2/`, `en-vi-grounded-v2-cv-anquach/`),
-  so the second machine names its out-dir the same. Only the source shards matching `--shards`
-  count; the publisher requires the builder's `--shards`, since the default globs would put
-  `cv-anquach` shards under the main prefix, where the pod's restore takes them as main rows.
+- The Hub prefix is the out-dir's name (`en-vi-grounded-v2/`), so the second machine names its
+  out-dir the same. Only the source shards matching `--shards` count; the publisher requires the
+  builder's `--shards`.
 - A pass lists the Hub and commits the local shards it lacks, up to 4 GB a commit (~60 shards of
   ~65 MB), on top of the listed revision (`parent_commit`, as the dataset publisher): a commit
   landing in between fails with 409 or 412 and it lists again. The Hub is the record: a shard

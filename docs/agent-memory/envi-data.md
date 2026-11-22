@@ -47,8 +47,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 | `en-vi/{giga,pho,vivoice}` (tranche EN→VI clean) | `anquachdev/mimi-en-vi-speech-20k` | 228, 224, 354 | the box |
 | `en-vi/{giga,pho,vivoice}-noisy` (tranche EN→VI noisy, seed 1) | same | 228, 224, 354 when done | the Mac |
 
-- The `en_speech` shard names are the VI→EN cache's (`shard_cv27-*`, `shard_libriheavy-*`); the 7
-  `cv-anquach` parquets of the dataset are their own cache and not in these folders.
+- The `en_speech` shard names are the VI→EN cache's (`shard_cv27-*`, `shard_libriheavy-*`).
 - Give a run a tranche folder or its `-noisy` copy, never both: streams group a tranche's rows by
   `doc` alone, and a copy keeps its row's `doc` and `seq`, so both copies of a sentence would sit
   side by side (1,859 such pairs on viVoice in the validation). `en_speech` rows have no `doc`, so

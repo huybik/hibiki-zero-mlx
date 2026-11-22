@@ -157,11 +157,10 @@ whose `vi_duration_s` has no nulls.
 - A run holds `.tts.lock` in the dataset folder.
 
 Two machines share the work (user's plan, 2026-10-24): the Mac goes top down through the
-dataset's shard paths in sorted order (`data/train/cv-anquach-*`, which came voiced,
-`data/train/cv27-*`, `data/train/libriheavy-*`, then `data/validation/*`), and another person's
+dataset's shard paths in sorted order (`data/train/cv27-*`, `data/train/libriheavy-*`, then `data/validation/*`), and another person's
 own hardware goes bottom up. The Mac's first run
 (validation, then a shuffled train order) had voiced 88 shards before, scattered through the
-list. All 1,842 shards were voiced by 2026-10-27 07:10, 9,477 h of Vietnamese for 10,767 h of
+list. All 1,835 shards were voiced by 2026-10-27 07:10, 9,266 h of Vietnamese for 10,511 h of
 English, the machines meeting at `libriheavy-medium-00027`/`00028`. The Mac's last run voiced
 4,964 h in 47.5 h: 105x, 118–129x on quiet nights, ~70x beside a video call with the camera on.
 

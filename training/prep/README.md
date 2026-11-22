@@ -2,14 +2,12 @@
 
 Run from the repository root. Generated caches land under the gitignored `data/`.
 
-## EN-VI speech dataset (~10.8k hours)
+## EN-VI speech dataset (~10.5k hours)
 
 `/Volumes/data/datasets/en_vi_speech`, laid out as the Hugging Face dataset `anquachdev/common-vi-en`,
 holds the English read-speech corpus `en_speech`: Common Voice 27.0 English plus Libriheavy, ~10.5k
 hours of 5–22.4 s clips with cased text, speaker and the original mono MP3/Opus bytes, and their
-Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)). Its
-`cv-anquach` shards hold, already voiced, the Common Voice rows of `anquachdev/common-vi-en`'s
-earlier version that the corpus lacks ([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md)).
+Vietnamese translations ([en-speech-corpus](../../docs/agent-memory/en-speech-corpus.md)).
 It was voiced on `huybik/en-vi-speech` and moved, all voiced, to `anquachdev/common-vi-en`, the one
 copy used ([en-vi-speech-dataset](../../docs/agent-memory/en-vi-speech-dataset.md#purpose)).
 
@@ -20,7 +18,6 @@ and the publisher's `en_speech` step that moved the corpus in (commit `a236ad5`)
 ```bash
 set -a && . ./.env && set +a && export HF_TOKEN=$HF_TOKEN_AN   # anquachdev's write token
 R=/Volumes/data/datasets/en_vi_speech
-python -m training.prep.publish_en_vi_speech anquach    # data/train/cv-anquach-* from the earlier common-vi-en
 python -m training.prep.publish_en_vi_speech card       # README.md with statistics (each upload pass writes it too)
 nohup caffeinate -i python -m training.prep.publish_en_vi_speech upload --follow >> $R/upload.log 2>&1 &
 ```
@@ -68,8 +65,6 @@ A rerun skips the shards already built. Rules and speed are in
 ```bash
 caffeinate -i -s python -m training.prep.cache_codes --out-dir /Volumes/data/datasets/en-vi-grounded-v2 \
   --shards 'train/cv27-*.parquet' 'train/libriheavy-*.parquet' 'validation/*.parquet'
-caffeinate -i -s python -m training.prep.cache_codes \
-  --out-dir /Volumes/data/datasets/en-vi-grounded-v2-cv-anquach --shards 'train/cv-anquach-*.parquet'
 ```
 
 Beside each build, `publish_caches` with the same `--out-dir` and `--shards` commits the built
