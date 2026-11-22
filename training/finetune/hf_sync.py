@@ -306,11 +306,13 @@ def purge_pruned(repo: str) -> None:
     # Objects first, then the tree: a file committed in between is in the tree, its object kept.
     prefix = f"{REMOTE_ROOT}/"
     objects = [obj for obj in api.list_lfs_files(repo) if obj.filename.startswith(prefix)]
-    live = {
-        item.lfs.sha256
-        for item in api.list_repo_tree(repo, recursive=True)
-        if isinstance(item, RepoFile) and item.lfs is not None
-    }
+    tree = api.list_repo_tree(repo, recursive=True)
+    files = [item for item in tree if isinstance(item, RepoFile)]
+    # A stored file listed without its LFS hash would look dead: refuse rather than delete it.
+    unhashed = [item.path for item in files if item.xet_hash is not None and item.lfs is None]
+    if unhashed:
+        raise RuntimeError(f"{len(unhashed)} files list a Xet hash but no LFS hash: {unhashed[:3]}")
+    live = {item.lfs.sha256 for item in files if item.lfs is not None}
     dead = [obj for obj in objects if obj.file_oid not in live]
     if dead:
         # Old commits keep their pointers: no history rewrite under other runs' concurrent commits.
@@ -448,8 +450,8 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
     pruned = prune_remote_best(repo) or pruned
     if final:
         sync_run_artifacts(run_dir, repo)
-    # The final sync also frees what an interrupted prune, a refused commit or the logs it
-    # replaced left behind; after the logs' upload, so a failed purge never keeps them off the Hub.
+    # The final sync also frees what an interrupted prune or the logs it replaced left behind,
+    # after the logs' upload, so a failed purge never keeps them off the Hub.
     if pruned or final:
         purge_pruned(repo)
 
