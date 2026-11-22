@@ -62,8 +62,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 `/Volumes/data/datasets/envi_mac/envi_mac.py` (outside the repo, as the box's `envi_rest.py` was),
 run from this branch's worktree with the conda Python, under `caffeinate -is`, by `run.sh` beside
 it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `run.log`. Started
-2026-11-21 17:23 UTC+7, stopped 20:43 for the user's game (viVoice and PhoAudiobook copies on the
-Hub, 354 and 224), started again 21:44 with the `nohup` line in `run.sh`.
+2026-11-21 17:23 UTC+7 (viVoice and PhoAudiobook copies on the Hub, 354 and 224, that evening);
+running since 2026-11-22 07:01 with the `nohup` line in `run.sh`.
+
+- `run.sh` clears the proxy variables first. A shell Claude Code starts routes HTTPS through
+  TeamClaude (`127.0.0.1:3456`), and the run inherited it: an upload crawled there at ~10 kB/s for
+  2.5 h while the GPU waited (2026-11-22); direct, the same 20 shards went up in 1.5 minutes. No
+  download or upload goes through that proxy (user, 2026-11-22).
 
 - Jobs in order, in batches of 20 shards: `tranche` (each tranche `en-vi` shard's noisy copy),
   `noisy` (the 527 `en_speech` `en-vi` shards the boxes built), `build` (the other 1,305:
@@ -90,7 +95,8 @@ Hub, 354 and 224), started again 21:44 with the `nohup` line in `run.sh`.
   `EN_VI_REVISION` or the tranche repo's main); its seed, fraction and direction are as recorded.
 - `huggingface_hub`'s downloads drop on this Mac every 10–40 MB ("peer closed connection") and
   crawl through their resumes; curl with `-C -` reads the same files at ~30–40 MB/s. Its Xet
-  uploads stalled, so the driver sets `HF_HUB_DISABLE_XET=1` before importing it.
+  uploads stalled, so the driver sets `HF_HUB_DISABLE_XET=1` before importing it. Both were
+  measured through the proxy above; neither has been tried direct since.
 
 ## Speed
 
