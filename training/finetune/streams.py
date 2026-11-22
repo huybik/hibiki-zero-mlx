@@ -340,7 +340,7 @@ class _Pack:
     """A pack as `load_rows` reads it, its text track left behind once read."""
 
     path: Path
-    meta: dict[str, Any]
+    direction: str
     ids: list[str]
     index: np.ndarray
     tokens: Tokens
@@ -357,7 +357,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
     `cache_dirs` and `pair_dirs` (read only for their text): the pair's text track times this
     row's source, for `start_floor`. A row is left out when its pair is missing (the other
     direction's build rejected it, as an alignment failure, so its speech does not match its text)
-    or when its Vietnamese, its own or its pair's, runs on past its last text token longer than
+    or is not of the same clip (its target is not this row's source's length), or when its Vietnamese, its own or its pair's, runs on past its last text token longer than
     the aligner allows (`Aligner.max_tail_s`: TTS that babbled past its text). A shard none of whose
     rows has a pair raises: its other direction was not given.
 
@@ -395,14 +395,14 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
                 starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
                 readable = ~np.logical_or.reduceat(np.isin(text, swapped[on], kind="table"), starts)
         ids = json.loads((directory / "ids.json").read_text())
-        packs.append(_Pack(shard_path, meta, ids, index, tokens, readable))
+        packs.append(_Pack(shard_path, meta["direction"], ids, index, tokens, readable))
     if layout is None:
         raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
     # By direction, each row id's first pack and row, as pack << 32 | row: a clean cache and its
     # noisy copy hold the same rows and text.
     found: dict[str, dict[str, int]] = defaultdict(dict)
     for number, shard in enumerate(packs):
-        place = found[shard.meta["direction"]]
+        place = found[shard.direction]
         for row, row_id in enumerate(shard.ids):
             place.setdefault(row_id, number << 32 | row)
 
@@ -411,7 +411,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
     later: list[np.ndarray] = []  # frames past the cached delay, of each row the floor moved
     for shard in packs[: len(shard_paths)]:
         count = len(shard.index)
-        source, target = shard.meta["direction"].split("-")
+        source, target = shard.direction.split("-")
         place = found.get(f"{target}-{source}", {})
         where = np.array([place.get(row_id, -1) for row_id in shard.ids], dtype=np.int64)
         if count and (where < 0).all():
@@ -419,21 +419,26 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
                 f"{shard.path}: none of its {count} rows is in a {target}-{source} cache, which times its "
                 f"source: pass that direction's cache with --cache-dir, or with --pair-cache-dir to read only its text"
             )
-        keep = shard.readable.copy()
-        dropped["reassigned"] += int((~keep).sum())
-        dropped["unpaired"] += int((keep & (where < 0)).sum())
-        keep &= where >= 0
-        paired = np.nonzero(where >= 0)[0]
         floor = np.zeros(count, dtype=np.int64)
         source_tail = np.zeros(count, dtype=np.int64)
+        paired = np.nonzero(where >= 0)[0]
         for number in np.unique(where[paired] >> 32).tolist():
             rows_here = paired[(where[paired] >> 32) == number]
             pair = packs[number].tokens
             pair_rows = where[rows_here] & 0xFFFFFFFF
+            # The pair's target clip is this row's source: the same clip but for the delay's
+            # rounding, or the id names another recording and its times are not this source's.
+            other = np.abs(shard.index[rows_here, 2] - pair.spans[pair_rows]) > 1
+            where[rows_here[other]] = -1
+            rows_here, pair_rows = rows_here[~other], pair_rows[~other]
             heard, heard_counts = pair.rows(pair_rows)
             spoken, spoken_counts = shard.tokens.rows(rows_here)
             floor[rows_here] = start_floor(heard, heard_counts, spoken, spoken_counts)
             source_tail[rows_here] = tails(heard, heard_counts, pair.spans[pair_rows])
+        keep = shard.readable.copy()
+        dropped["reassigned"] += int((~keep).sum())
+        dropped["unpaired"] += int((keep & (where < 0)).sum())
+        keep &= where >= 0
         target_tail = tails(shard.tokens.frames, np.diff(shard.tokens.offsets), shard.tokens.spans)
         for language, tail in ((target, target_tail), (source, source_tail)):
             limit = ALIGNERS[language].max_tail_s
@@ -444,7 +449,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
         delay = shard.index[:, 4]
         start = np.maximum(delay, floor)
         # The stream's frames this row needs alone: its source and EOS, its target and text EOS.
-        needs = np.maximum(shard.index[:, 1], np.maximum(shard.index[:, 2], start + shard.tokens.spans) + 1)
+        needs = np.maximum(shard.index[:, 2], start + shard.tokens.spans) + 1
         over = keep & (needs > max_frames)
         dropped["long"] += int(over.sum())
         keep &= ~over
@@ -472,7 +477,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
                     start_frames=int(start[row]),
                     doc=doc[0] if doc else None,
                     seq=doc[1] if doc else 0,
-                    direction=shard.meta["direction"],
+                    direction=shard.direction,
                 )
             )
     if not rows:
@@ -480,7 +485,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
     moved = np.concatenate(later)
     print(
         f"[streams] kept {len(rows)} rows; left out {dropped['reassigned']} whose text uses a slot "
-        f"{Path(tokenizer).name} reassigned, {dropped['unpaired']} the other direction's cache lacks, "
+        f"{Path(tokenizer).name} reassigned, {dropped['unpaired']} the other direction's cache lacks (or holds "
+        f"for another clip), "
         f"{dropped['tail']} whose Vietnamese runs on past its last word, {dropped['long']} over {max_frames} "
         f"frames; {len(moved)} start after their cached delay"
         + (f", by {np.median(moved) / FRAME_RATE:.2f} s median" if len(moved) else ""),

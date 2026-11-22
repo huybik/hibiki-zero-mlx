@@ -83,8 +83,14 @@ real-Vietnamese set, which GigaSpeech 2's terms keep off that public repo; pass 
 ```bash
 ./training/h100.sh run RUN_NAME \
   --cache-dir data/cache/en-vi-grounded-v2/train \
-  --val-cache-dir data/cache/en-vi-grounded-v2/validation
+  --val-cache-dir data/cache/en-vi-grounded-v2/validation \
+  --pair-cache-dir data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation
 ```
+
+`--pair-cache-dir` is the other direction's caches of the same rows, read only for their text:
+each row's source word times, which keep its target from starting ahead of them
+([sft-training](agent-memory/sft-training.md#target-timing)). A two-way run trains both
+directions and needs none.
 
 The first stream run trains on the `en_speech` cache alone; the PhoMT cache and `cv-anquach` come
 back later as more `--cache-dir` ablations ([plan](vi_en_parity_plan.md#1-data)). Arguments after
@@ -139,6 +145,7 @@ rm -r $C/.packed                                            # 70 GB
 rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean shards stay on the Hub
 ./.venv/bin/python -m training.finetune.streams $O $V       # pack before run checks the free disk
 ./training/h100.sh run RUN_NAME --cache-dir $O --val-cache-dir $V \
+  --pair-cache-dir data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation \
   --model-weight weights/PREVIOUS_RUN_stepFINAL.safetensors --seed 43 --val-every 18000 \
   --eval-pairs data/eval/fleurs-vi/dev.jsonl data/eval/en-vi-val/{cv27,libriheavy}.jsonl \
   data/eval/en-vi-val-noisy/{cv27,libriheavy}.jsonl
@@ -297,6 +304,7 @@ sets, such as MultiMed `select`, the non-regression gate
 ```bash
 ./.venv/bin/python -m training.finetune.validate \
   --cache-dir data/cache/en-vi-grounded-v2/validation \
+  --pair-cache-dir data/cache/en-vi/en-vi-grounded-v2/validation \
   --checkpoint runs/RUN_NAME/best_stepNNNNNN.safetensors
 ./.venv/bin/python -m training.finetune.eval \
   --pairs data/eval/multimed-vi/select.jsonl --limit 1718 \

@@ -126,7 +126,7 @@ model is its best (`full_epoch4b/` of the model repo, with its pair and logs); r
 (`box/test_evals.sh`, copied to `/workspace/`, 11 min a model; outputs in each run's
 `eval/cmp_step*/`, local only).
 
-**SFT round 4 redo: `full_epoch4e` (`restart.sh sft`)**: round 4b's arguments with 500
+**SFT round 4 redo: `full_epoch4e`**: round 4b's arguments with 500
 `en_speech` shards for 150, `--batch-frames 4608 --eval-batch-size 64 --save-every 4000
 --val-every 28000`: 5.09M rows, 8,456 h, 131,659 steps, ~10.3 h at the H100's 0.283 s a step.
 The user (2026-11-10): redo round 4 if its test sets were not good; then, shown them, stop the
@@ -231,7 +231,7 @@ answers in 198.18.0.0/15.
 - Don't `pkill -f` a pattern that also appears in the ssh command running it: it kills its own
   shell.
 
-Round 4 SFT's inputs, all on the Hub (`restart.sh sft` reads them locally):
+Round 4 SFT's inputs, all on the Hub (read locally):
 - the tranche caches: `anquachdev/mimi-en-vi-speech-20k` (dataset, `<source>/shard_*.pt`) into
   `/workspace/tranche/repo/cache/<source>/`;
 - 500 shards of the noisy en_speech cache, listed in `box/en_speech_sub.txt` (of the 1,832 of
@@ -255,7 +255,6 @@ the two-way caches and run before GRPO):
 | filters | `restart.sh filters` (asr_vi for every ingested shard) | it logs "0 shards to hear" |
 | voice | `restart.sh voice` (en_audio for every shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
 | cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
-| sft | `restart.sh sft` (round 4, `full_epoch4b`; a rerun resumes, [sft-recovery](sft-recovery.md)) | its best checkpoint, then the test evals ([sft-evaluation](sft-evaluation.md)) |
 | envi-cache | `restart.sh envi-cache`: every `en-vi` cache and the English evaluation sets ([two-way](two-way.md#two-way-run)) | "en_speech en-vi done", then the tranche builder's "done:" line, logged once its last push is in (a rerun with nothing left logs "0 shards to build", then pushes any leftovers before it exits) |
 | two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft_4608`, [two-way](two-way.md#two-way-run); `twoway_sft` ran before at 8,192 frames) | its best checkpoint, then the test sets both ways |
 | grpo | `grpo_launch.sh RUN <weight> [ARGS]` (from the checkout, [grpo](grpo.md#running)), on the two-way model or a phone student | its updates; stop with TERM to the launcher alone |

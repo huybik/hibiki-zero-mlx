@@ -150,7 +150,7 @@ The CUDA profile and dry run are under [Running](#running).
   held 6.5–7.1. At best ~1%, inside one run's noise, so it was closed (2026-11-15) and the
   collection stays.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
-  `python -m training.finetune.grpo_profile --cache-dir … --model-weight START --out-dir …`.
+  `python -m training.finetune.grpo_profile --cache-dir … --pair-cache-dir … --model-weight START --out-dir …`.
   - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
     old-logprob pass and the update at each `--micro-batch`.
   - It holds the fp32 policy and AdamW's states as a run does: in host memory while it

@@ -189,7 +189,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   No more than 0.04% of targets start after their source ends, as before.
 - `load_rows` leaves out a row whose pair is missing: the other direction's build rejected it at
   alignment, so its speech and text disagree there (2.2% of those rows, most of them GigaSpeech 2's
-  `vi-en` rejects). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
+  `vi-en` rejects); and one whose pair's target clip is not its source's length within a frame
+  (the delay's rounding), whose id then names another recording (none locally). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies
   ([cache-build](cache-build.md#rows)), so caches built before it lose those rows too. Its log line
   counts each reason and how many rows start later.
@@ -201,10 +202,15 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   adds no babble row and hits real pauses (2.4% of PhoAudiobook rows have one over 2 s): not used.
   English is not gated: Common Voice clips end on recorded silence. Repeated words and names read
   letter by letter stay (CER over 0.25 on 12% of the 600; the alignment score tracks CER at
-  r = −0.67).
-- Every run reads both directions: `--cache-dir` for what it trains, `--pair-cache-dir` for the
-  other direction's text alone (GRPO's `en_speech` `en-vi` rows pair with the two-way run's noisy
-  `vi-en` copy, `grpo_launch.sh`); a shard none of whose rows has a pair raises. `validate.py`
+  r = −0.67). Calibrated on omniASR's timings; on two Libriheavy shards timed by wav2vec2-vi250h
+  (`ALIGNERS["vi"]` since 2026-11-22) the gate takes 0.75–1.0% of rows (0.2% over 2 s), against
+  0.05–0.22% on omniASR-timed ones: their texts read whole, so most are slow endings, a cheap loss
+  at `en_speech`'s size.
+- Every run reads both directions: `--cache-dir` and `--val-cache-dir` for what it trains and
+  scores, `--pair-cache-dir` for the other direction's text alone, training's and validation's
+  (GRPO's `en_speech` `en-vi` rows pair with the two-way run's noisy `vi-en` copy,
+  `grpo_launch.sh`); a pair cache must be on disk as shards or packs (500 `en_speech` shards are
+  ~50 GB to fetch for ~3% of text). A shard none of whose rows has a pair raises. `validate.py`
   requires `--pair-cache-dir`. The floor and the left-out rows change every plan, the validation
   streams' too, so validation losses do not compare across the change, and `pair_cache_dir` is a
   resume key, so no run from before it resumes on it.

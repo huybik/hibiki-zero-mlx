@@ -29,9 +29,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 - The run drops the `en-vi` rows whose Vietnamese runs on past its text (VieNeu babble, ~2.4% of
   Common Voice's) and their `vi-en` rows, and floors every target's start
   ([sft-training](sft-training.md#target-timing)); the shards built so far need no rebuild. The
-  build gate that rejects such rows (`Aligner.max_tail_s`) is recorded in each shard, and a pulled
-  shard must match the settings of one built here: keep the Mac and box runs on code from before
-  it until they finish, or move both at once.
+  build now rejects such rows too (`Aligner.max_tail_s`, recorded in each shard). The Mac and box
+  runs check their uploads by name and size, so their shards from before and after it mix
+  freely; only `publish_caches` compares settings, and refuses a pull across the change.
 - Every noisy `en-vi` copy uses `--seed 1` (the `vi-en` copies took seed 0; the draws key on the
   seed and the row id, which both directions share) and `--fraction` 0.6.
 

@@ -143,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     # No abbreviations: h100.sh must be able to reject --out-dir.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cache-dir", type=Path, nargs="+", action="extend", required=True)
-    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", action="extend", default=[], help="The other direction's caches of the same rows, read only for their text, which times each row's source (streams.load_rows); not needed for caches given with --cache-dir.")
+    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", action="extend", default=[], help="The other direction's caches of the training and validation rows, read only for their text, which times each row's source (streams.load_rows); not needed for caches given with --cache-dir or --val-cache-dir.")
     parser.add_argument(
         "--val-cache-dir", type=Path, nargs="+", action="extend", required=True,
         help="Teacher-forced validation caches, each direction's: each is the others' pair (streams.load_rows).",
@@ -381,15 +381,16 @@ def main() -> None:
         f"batches={len(batches)}"
     )
     # Each validation cache is planned and scored apart, as `validate.py` scores one: a direction's
-    # losses stay visible beside the other's, and a cache's streams do not change when another
-    # joins the run. In the main process: forking workers at a validation would fork the checkpoint
+    # losses stay visible beside the other's. Its rows' pairs are in the other validation caches or
+    # --pair-cache-dir (streams.load_rows). In the main process: forking workers at a validation would fork the checkpoint
     # writer's thread too, and 300 batches assemble in ~3 s.
     names = [str(path) for path in args.val_cache_dir]  # as given: h100.sh replays the arguments
     val_loaders: dict[str, DataLoader] = {}
     val_row_counts: dict[str, int] = {}
     val_stream_counts: dict[str, int] = {}
     for name, val_cache_dir in zip(names, val_cache_dirs, strict=True):
-        val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer, val_cache_dirs)
+        val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer,
+                                                 val_cache_dirs + pair_dirs)
         if val_layout != layout:
             raise RuntimeError(f"Validation layout {val_layout} of {name} differs from training {layout}")
         val_dataset = streams.StreamDataset(val_rows, layout, silence, frames, streams.VALIDATION_SEED, codebooks)

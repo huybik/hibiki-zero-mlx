@@ -101,7 +101,7 @@ teacher at the misalignment's price. Sizes then go to `grpo_launch.sh`'s ARGS, a
 
 ```bash
 .venv/bin/python -m training.finetune.grpo_profile --out-dir runs/opd_profile \
-  --cache-dir <grpo_launch.sh's caches> --model-weight weights/<student start>.safetensors \
+  --cache-dir <grpo_launch.sh's caches> --pair-cache-dir <its pair cache> --model-weight weights/<student start>.safetensors \
   --config-path weights/student_heads14_cb16/config.json \
   --teacher-weight weights/grpo_twoway_best1400.safetensors --reward-coef 0
 training/tranche/box/grpo_launch.sh opd_heads weights/<student start>.safetensors \
