@@ -187,10 +187,13 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   | viVoice | 60% | 1.36, 2.88 s | 2.00 → 2.96 s | 17% | 0.48, 1.36 s | 1.76 → 1.76 s |
 
   No more than 0.04% of targets start after their source ends, as before.
-- `load_rows` leaves out a row whose pair is missing: the other direction's build rejected it at
-  alignment, so its speech and text disagree there (2.2% of those rows, most of them GigaSpeech 2's
-  `vi-en` rejects); and one whose pair's target clip is not its source's length within a frame
-  (the delay's rounding), whose id then names another recording (none locally). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
+- `load_rows` leaves out a row whose pair is missing: the other direction's build rejected it
+  (2.2% of those rows). Most were a low alignment score, where speech and text disagree; the
+  rest the Vietnamese aligner's capacity, fast or dense speech whose row is sound: of GigaSpeech
+  2's `vi-en` rows 2.4% go for score and 2.8% for capacity (CTC emission too short, or more text
+  than frames), PhoAudiobook's 2.0% for capacity. Also left out: a row whose pair's target clip
+  is not its source's length within a frame (the delay's rounding), whose id then names another
+  recording (none locally; a shard where every pair is so raises). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies
   ([cache-build](cache-build.md#rows)), so caches built before it lose those rows too. Its log line
   counts each reason and how many rows start later.

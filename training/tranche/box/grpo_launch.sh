@@ -24,7 +24,9 @@ export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS
 T=/workspace/tranche/repo/cache
 # Real Vietnamese speech to English (the tranche), English to Vietnamese from the tranche's
 # voice-cloned English and from en_speech's real recordings, timed by the two-way run's vi-en
-# copy of the same rows (--pair-cache-dir, streams.load_rows). The 3B's H100 profile's sizes
+# copy of the same rows (--pair-cache-dir, streams.load_rows): round 4e's 500 shards, so the en-vi
+# folder must hold those 500 alone (an extra shard has no pair and raises; once both directions'
+# folders are whole, pair the full vi-en one). The 3B's H100 profile's sizes
 # (grpo.md); 2,000 updates, judged at 800 (user, 2026-11-13: 800, more while it still improves;
 # the rate is constant, so a longer --updates is the same run up to there).
 args=()

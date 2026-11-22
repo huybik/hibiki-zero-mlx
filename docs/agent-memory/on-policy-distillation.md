@@ -224,9 +224,9 @@ the long run"); it continues on an RTX 5090.
   `run_config.json`, the last `--updates` in `train_args.json` 2000. It stops by the user's rule,
   two validations (every 200 updates) without a new best; the gate keeps the start's end offsets
   (2.00 / 1.415 s).
-- Its commit, `9d9573e`, is kept as the branch `run/both_heads_z`. Main since then changes only
-  the cache build and docs, so the run may instead move to main's commit
-  ([finetune](../finetune.md#move-a-running-run-to-another-pod)); check the diff first.
+- Its commit, `9d9573e`, is kept as the branch `run/both_heads_z`, and the run stays on it: main's
+  streams need a pair cache for its `en_speech` `en-vi` rows, which its `train_args.json` lacks, and
+  `pair_cache_dir` is a resume key ([sft-training](sft-training.md#target-timing)).
 - `--micro-batch` and `--gen-frames` are not resume keys: set them in `train_args.json` from the
   new GPU's profile. From the RTX PRO 6000's (Checks below): the teacher update holds 20.1 GiB
   and would peak near 26 GiB at micro-batch 1 (31.0 at 2, 40.8 at 4), generation 2.4 GiB plus

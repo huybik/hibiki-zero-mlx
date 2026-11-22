@@ -357,7 +357,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
     `cache_dirs` and `pair_dirs` (read only for their text): the pair's text track times this
     row's source, for `start_floor`. A row is left out when its pair is missing (the other
     direction's build rejected it, as an alignment failure, so its speech does not match its text)
-    or is not of the same clip (its target is not this row's source's length), or when its Vietnamese, its own or its pair's, runs on past its last text token longer than
+    or is not of the same clip (its target is not this row's source's length within a frame; a
+    shard all of whose pairs are other clips raises), or when its Vietnamese, its own or its pair's, runs on past its last text token longer than
     the aligner allows (`Aligner.max_tail_s`: TTS that babbled past its text). A shard none of whose
     rows has a pair raises: its other direction was not given.
 
@@ -414,11 +415,7 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
         source, target = shard.direction.split("-")
         place = found.get(f"{target}-{source}", {})
         where = np.array([place.get(row_id, -1) for row_id in shard.ids], dtype=np.int64)
-        if count and (where < 0).all():
-            raise RuntimeError(
-                f"{shard.path}: none of its {count} rows is in a {target}-{source} cache, which times its "
-                f"source: pass that direction's cache with --cache-dir, or with --pair-cache-dir to read only its text"
-            )
+        found_any = bool((where >= 0).any())
         floor = np.zeros(count, dtype=np.int64)
         source_tail = np.zeros(count, dtype=np.int64)
         paired = np.nonzero(where >= 0)[0]
@@ -429,15 +426,24 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
             # The pair's target clip is this row's source: the same clip but for the delay's
             # rounding, or the id names another recording and its times are not this source's.
             other = np.abs(shard.index[rows_here, 2] - pair.spans[pair_rows]) > 1
-            where[rows_here[other]] = -1
+            where[rows_here[other]] = -2
             rows_here, pair_rows = rows_here[~other], pair_rows[~other]
             heard, heard_counts = pair.rows(pair_rows)
             spoken, spoken_counts = shard.tokens.rows(rows_here)
             floor[rows_here] = start_floor(heard, heard_counts, spoken, spoken_counts)
             source_tail[rows_here] = tails(heard, heard_counts, pair.spans[pair_rows])
+        if count and (where < 0).all():
+            raise RuntimeError(
+                f"{shard.path}: none of its {count} rows is in a {target}-{source} cache, which times its source: "
+                f"pass that direction's cache with --cache-dir, or with --pair-cache-dir to read only its text"
+                if not found_any else
+                f"{shard.path}: every row's {target}-{source} pair found first is another clip (its target not this "
+                f"row's source's length): a wrong cache among the other direction's"
+            )
         keep = shard.readable.copy()
         dropped["reassigned"] += int((~keep).sum())
-        dropped["unpaired"] += int((keep & (where < 0)).sum())
+        dropped["unpaired"] += int((keep & (where == -1)).sum())
+        dropped["other clip"] += int((keep & (where == -2)).sum())
         keep &= where >= 0
         target_tail = tails(shard.tokens.frames, np.diff(shard.tokens.offsets), shard.tokens.spans)
         for language, tail in ((target, target_tail), (source, source_tail)):
@@ -485,8 +491,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
     moved = np.concatenate(later)
     print(
         f"[streams] kept {len(rows)} rows; left out {dropped['reassigned']} whose text uses a slot "
-        f"{Path(tokenizer).name} reassigned, {dropped['unpaired']} the other direction's cache lacks (or holds "
-        f"for another clip), "
+        f"{Path(tokenizer).name} reassigned, {dropped['unpaired']} the other direction's cache lacks, "
+        f"{dropped['other clip']} whose pair there is another clip, "
         f"{dropped['tail']} whose Vietnamese runs on past its last word, {dropped['long']} over {max_frames} "
         f"frames; {len(moved)} start after their cached delay"
         + (f", by {np.median(moved) / FRAME_RATE:.2f} s median" if len(moved) else ""),

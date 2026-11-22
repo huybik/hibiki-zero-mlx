@@ -78,7 +78,8 @@ idle), ~5.5 days on the Mac alone.
   unfinished one.
 - `cv-anquach` is kept apart because its English targets are 16 kHz
   ([en-vi-speech-dataset](en-vi-speech-dataset.md#cv-anquach-rows)): pass its `train/` as one
-  more `--cache-dir` to use it.
+  more `--cache-dir` to use it, once its `en-vi` cache is built as its pair
+  ([sft-training](sft-training.md#target-timing)).
 - `publish.sh` beside `launch.sh` in the main out-dir runs `publish_caches --follow` on the two
   out-dirs in the same order, logging to `<out-dir>/publish.log`.
 - Both scripts append each log line on its own: unplugging `/Volumes/data` kills a log a
@@ -151,7 +152,8 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 
 ## PhoMT cache
 
-- Pooled with the `en_speech` caches by passing it as one more `--cache-dir`. It holds 804 hours
+- Pooled with the `en_speech` caches by passing it as one more `--cache-dir`, once its `en-vi`
+  cache is built as its pair ([sft-training](sft-training.md#target-timing)). It holds 804 hours
   of English speech (~770 h of them 5–15 s clips), on top of the corpus's 10,486 train hours
   ([en-speech-corpus](en-speech-corpus.md#rules)).
 - It is the HF dataset `huybik/hibiki-zero-vi-full-sft` prefix `phomt-grounded-v2-5s/`: 1,377
