@@ -6,12 +6,18 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**The box since 2026-11-19: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
-Beijing, $1.217/h; 96 GB, 600 W, driver 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of
-disk; `ssh -p 21639 root@205.185.115.44`, or Vast's proxy `ssh -p 30253 root@ssh3.vast.ai` when
-that port refuses, as it did for a minute on 2026-11-21). Its network sits behind a slow proxy
+**The next box: an RTX 5090** (32 GB; user, 2026-11-22: "let's upload everything, then we start on a
+new 5090 machine"): Vast 61906288, $0.558/h, rented until 2026-12-14 15:00 UTC, `ssh -p 30336
+root@ssh1.vast.ai`; not set up yet. All that is left for it is `both_heads_z`'s run, restored
+from the Hub ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box), which
+says what fits in 32 GB); then the palettization finish and the 3B's experiments, which need a
+bigger card.
+
+**The box 2026-11-19 to 2026-11-22: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
+destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver
+580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of disk). Its network sat behind a slow proxy
 ([Bring-up](#a-box-behind-a-slow-proxy)).
-- It runs `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
+- It ran `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
   started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
   ([student-heads](student-heads.md#runs)). `student_heads14` (8 codebooks) stopped for it at
   ~22,600; its 16,000 pair and best are on the Hub.
@@ -32,7 +38,20 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
      control only), one run of the winner, then the 6-bit palettization finish; then the 3B's
      experiments (scheduled sampling, anchored GRPO). The 3B's start, the two-way SFT's final
      model, is `weights/twoway_final.safetensors` (fetched 2026-11-21, sha256 checked).
-  The box stays for these; it is destroyed only after them and their uploads.
+  It stopped before the run (user, 2026-11-22: "let's finish everything and stop before the long
+  run"; "can destroy this pro 6000 box when everything done"), once 1, 2 and the probes of 3 were
+  done ([probe results](on-policy-distillation.md#probe-results)). Before it was destroyed:
+  - every run's pairs, bests and logs were on the Hub, with the probes' last uploads made without
+    Xet ([Bring-up](#a-box-behind-a-slow-proxy)); `audit_hub.py` (box-only) matched every weight
+    and run file over 10 MB by sha256 against the Hub's LFS objects;
+  - what the Hub lacked went up: the heads students' start weights and configs, the tokenizers,
+    the swap's init map and the base 3B's `config.json` under the model repo's `weights/` (the
+    box's paths), `student_heads14`'s 20,000 pair beside its 16,000 one, and the evaluation sets
+    built here (`fleurs-en`, `en-vi-val-en`, `en-vi-val-en-noisy`) under the dataset repo's `eval/`;
+  - left off: the upstream Hibiki weights, `giga-heldout` (built where it runs), the caches' packs
+    (built from the Hub's shards);
+  - the run records (no weights, optimizer states or WAVs), `/workspace/logs`, `bench/` and the
+    box-only scripts were copied to `/Volumes/data/hibiki-zero-evals/box-61345966/`.
 - **All of `en_speech`, both ways** (user, 2026-11-21: "let's build both vi - en and en - vi"). Round
   4e's test (500 shards against 150: FLEURS −1.3) also changed the batch and the updates, and
   spoke only for VI→EN, whose `en_speech` source is TTS; for EN→VI `en_speech` holds the only real
@@ -66,7 +85,8 @@ that port refuses, as it did for a minute on 2026-11-21). Its network sits behin
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
 - A box brings everything up from the Hub: ~50–150 MB/s with `HF_HUB_DISABLE_XET=1` on a direct
   link. Box-to-box copies over the public ssh ports ran only 6–12 MB/s.
-- The swap's init map (`tokenizer_spm_48k_multi6_2_vi6k_init.json`) isn't on the Hub. The
+- The swap's init map (`tokenizer_spm_48k_multi6_2_vi6k_init.json`) is on the Hub since 2026-11-22
+  (model repo, `weights/`). The
   trainers need it beside the swap to read any base-tokenizer cache (`paths.swap_slots`).
   - This box rebuilt it with `training.vi_tokenizer.build run`. The build is deterministic, and
     its tokenizer model came out byte-identical to `release/twoway_grpo1400/`'s.
@@ -186,8 +206,14 @@ answers in 198.18.0.0/15.
   - A fetch that checks only the files would fetch the dropped shards again, and a trainer
     starting meanwhile packs half-written ones. A shard whose `pack.json` is marked `dropped`
     counts as fetched.
-- `fleurs-en` and `en-vi-val-en` aren't on the Hub. They are built on the box with
-  `training.prep.eval_sets --sets fleurs-en en-vi-val-en`.
+- `fleurs-en`, `en-vi-val-en` and `en-vi-val-en-noisy` are in the dataset repo's `eval/` since
+  2026-11-22 (built on the box with `training.prep.eval_sets`).
+- Xet uploads stalled twice at the end of a probe's final sync (2026-11-22): ~250 KB/s at 99% of
+  the model. Plain LFS ran 20–35 MB/s. The stalled sync was stopped by its PID (its files stay
+  staged), and the run's one-shot final sync rerun with `HF_HUB_DISABLE_XET=1`
+  (`python -m training.finetune.hf_sync runs/RUN huybik/hibiki-zero-vi-full-sft`, with
+  `HF_HOME` and `HIBIKI_HF_PREFIX=RUN`). On such a box, export `HF_HUB_DISABLE_XET=1` before
+  `grpo_launch.sh`, so the run's own sync skips Xet.
 - The image (`vastai/vllm-omni`) starts vLLM-Omni serving Qwen-Image, a model UI and Ray.
   - Stop them with `supervisorctl stop vllm-omni model-ui ray`, and drop their entries from
     `/etc/portal.yaml` so they skip on a restart.
