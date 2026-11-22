@@ -112,7 +112,7 @@ training/tranche/box/grpo_launch.sh opd_heads weights/<student start>.safetensor
 
 The heads student keeps `--text-weight` 100 (16 codebooks: the 3B's 100:16). Evaluation and
 promotion are GRPO's ([grpo](grpo.md#design)): the latency gate holds a checkpoint to its start's
-end offset plus 0.2 s.
+end offset plus 0.5 s.
 
 ## Experiments
 
@@ -130,17 +130,23 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    2026-11-21, all passed ([Checks](#checks), [exposure-bias](exposure-bias.md#checks)).
 1. **The heads student's on-policy stage, aimed at the best phone model** (user, 2026-11-21: "i'm
    not asking for plain grpo, i'm asking for best outcome"): arms run only as probes, and only the
-   winner runs long. From the heads run's promoted checkpoint, teacher GRPO update 1,400, one seed:
-   - **Probes**, 200 updates each, judged by the evaluation at 200 (the selecting mean, the length
-     ratio, the end offset) and the KL's fall. Distillation alone (`--reward-coef 0`) at 1e-6 (the
-     student GRPO's rate), 3e-6 and 1e-5 (the off-policy anneal's peak). Then both terms
-     (`--kl-coef` 1) at the best of those rates, z-scored and `--advantage centered`. Plain GRPO at
-     1e-6 is only the control that says whether the teacher's term helps; it gets no run of its own.
+   winner runs long. Teacher GRPO update 1,400, one seed. The first probes (distillation alone and
+   plain GRPO) start from the heads run's promoted checkpoint (176,000); both terms and the run
+   from its final update (190,126, `weights/student_heads14_cb16_final.safetensors` on the box;
+   user, 2026-11-22: "we can use checkpoint 190,126 as the mean increased": validation's seven-set
+   mean 37.72 against 37.41, the test sets tie, 39.81 against 39.87):
+   - **Probes**, 200 updates each, judged against their own update 0 by the evaluation at 200 (the
+     selecting mean, the length ratio, the end offset) and the KL's fall. Distillation alone
+     (`--reward-coef 0`) at 1e-6 (the student GRPO's rate), 3e-6 and 1e-5 (the off-policy anneal's
+     peak). Then both terms (`--kl-coef` 1) at the best of those rates, z-scored and `--advantage
+     centered`. Plain GRPO at 1e-6 is only the control that says whether the teacher's term helps;
+     it gets no run of its own.
    - **The run**: the probes' winner, stopped by the user's rule (two validations without a new
      best). When both terms and distillation alone are close at 200, both terms run, since they
      also climb the reward evaluation measures. A collapse (the depformer student's plain GRPO
      reached length ratio 3.0 between updates 2,200 and 2,400,
-     [student-grpo](student-grpo.md#evaluations)) or a later end offset disqualifies a checkpoint.
+     [student-grpo](student-grpo.md#evaluations)) or an end offset past the gate disqualifies a
+     checkpoint.
    - **Then the phone's finish**: the run's best trained against the 6-bit palettization
      (`train.py --palettize-bits 6`, plan stage 6.4), exported, and scored on the test sets
      against the shipped student.

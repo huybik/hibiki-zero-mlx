@@ -238,9 +238,12 @@ free-running at seed 47, batches of 64.
   −1.0 (`en-vi-val` cv27) to +0.7; the seven-set mean was 37.41.
   At 176,000 (promoted, +0.4 selecting, nearly all of it FLEURS EN→VI +0.7) the seven-set mean
   held at 37.41: `en-vi-val` cv27 +1.2, `en-vi-val-en` cv27 −1.8, the rest within ±0.5.
-  The final update (190,126, 2026-11-21 18:42 UTC) scored 36.92 selecting, so the run's best stays
-  176,000 (`best_step176000`, hard-linked on the box as `weights/student_heads14_cb16_best.safetensors`,
-  the on-policy stage's start); its seven-set mean was 37.72 (`en-vi-val-en` cv27 +2.0).
+  The final update (190,126, 2026-11-21 18:42 UTC) scored 36.92 selecting, so the run's promoted
+  best stays 176,000 (`best_step176000`, hard-linked on the box as
+  `weights/student_heads14_cb16_best.safetensors`); its seven-set mean was 37.72 (`en-vi-val-en`
+  cv27 +2.0), so it starts the on-policy stage's run (user, 2026-11-22;
+  [on-policy-distillation](on-policy-distillation.md#experiments)), on the box as
+  `weights/student_heads14_cb16_final.safetensors`.
 
 ## Tests
 
@@ -267,7 +270,7 @@ OneVoice's clips aren't on the box: 11 sets. Every set passes health.
 - chrF: mean 39.87 over the 11 sets against update 2,000's 39.48; the noisy sets +1.3 and +3.2,
   `giga-heldout` −0.8, the rest within ±0.6.
 - The final update (190,126, `test_final190126`) scored a mean 39.81: within ±0.9 of the best on
-  every set but the noisy cv27 (−1.7), with the same lengths and latency. The best stays the start.
+  every set but the noisy cv27 (−1.7), with the same lengths and latency: a tie.
 - Latency and length: later on every VI→EN set (End Offset +0.8 to +2.4 s, LAAL +0.3 to +0.8 s)
   and longer (`giga-heldout` 1.84 against 1.09, BLEU 28.8 against 36.5; MultiMed-ST 1.56 against
   1.25). EN→VI is close. GRPO taught the depformer student to stop; the on-policy stage has the
