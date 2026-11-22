@@ -297,25 +297,26 @@ def prune_remote_best(repo: str) -> bool:
 
 
 def purge_pruned(repo: str) -> None:
-    """Free the storage of the run's deleted files. A deleted file's LFS object stays in the repo and
-    counts against the account's storage: pruned pairs had grown the recovery repo to 5.5 TB for
-    1.7 TB of files by 2026-11-22, when the Hub refused every upload. Only objects first pushed under
-    this run's prefix go, and only those no file on main still holds (a promoted best is its pair's
-    model byte for byte, and another run may hold the same bytes)."""
+    """Free the storage of the run's deleted files. A deleted file's LFS object stays in the repo
+    and counts against the account's storage: pruned pairs had grown the recovery repo to 5.5 TB
+    for 1.7 TB of files by 2026-11-22, when the Hub refused every upload. Only objects first pushed
+    under this run's prefix go, and only those no file on main still holds (a promoted best is its
+    pair's model byte for byte, and another run may hold the same bytes)."""
     api = HfApi()
+    # Objects first, then the tree: a file committed in between is in the tree, its object kept.
+    prefix = f"{REMOTE_ROOT}/"
+    objects = [obj for obj in api.list_lfs_files(repo) if obj.filename.startswith(prefix)]
     live = {
         item.lfs.sha256
         for item in api.list_repo_tree(repo, recursive=True)
         if isinstance(item, RepoFile) and item.lfs is not None
     }
-    dead = [
-        obj for obj in api.list_lfs_files(repo)
-        if obj.filename.startswith(f"{REMOTE_ROOT}/") and obj.file_oid not in live
-    ]
+    dead = [obj for obj in objects if obj.file_oid not in live]
     if dead:
-        # Old commits keep their pointers (no history rewrite under another run's concurrent commits).
+        # Old commits keep their pointers: no history rewrite under other runs' concurrent commits.
         api.permanently_delete_lfs_files(repo, dead, rewrite_history=False)
-        print(f"Freed {len(dead)} pruned objects, {sum(obj.size for obj in dead) / 1e9:.1f} GB.", flush=True)
+        freed_gb = sum(obj.size for obj in dead) / 1e9
+        print(f"Freed {len(dead)} pruned objects, {freed_gb:.1f} GB.", flush=True)
 
 
 def sync_run_metadata(run_dir: Path, repo: str, files: dict[str, int]) -> None:
@@ -445,12 +446,12 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
             )
         upload_best(repo, stage, newest_best)
     pruned = prune_remote_best(repo) or pruned
-    # The final sync also frees what an interrupted prune or a refused commit left behind.
-    if pruned or final:
-        purge_pruned(repo)
-
     if final:
         sync_run_artifacts(run_dir, repo)
+    # The final sync also frees what an interrupted prune, a refused commit or the logs it
+    # replaced left behind; after the logs' upload, so a failed purge never keeps them off the Hub.
+    if pruned or final:
+        purge_pruned(repo)
 
 
 def process_alive(pid: int) -> bool:

@@ -124,6 +124,10 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   that no file on main still holds (`purge_pruned`; a promoted best is its pair's model byte for
   byte), without rewriting history (`rewrite_history=False` frees the storage too: 15.3 GB
   checked). `HfApi().repo_info(repo).used_storage` gives what the repo counts.
+  - So the Hub's history is no backup: an old revision of any file deleted under a run's prefix
+    no longer downloads. Copy a pair elsewhere (e.g. `release/`) before its run prunes it.
+  - The final sync purges after uploading the logs, so a failed purge never keeps them off the
+    Hub; a failed purge during training counts as a failed sync (three in a row stop the run).
 - The sync and the launcher list the run's remote files with `list_repo_tree` under the prefix,
   which pages through any repo. `model_info(files_metadata=True).siblings` stops at 10,000
   files: once the recovery repo held 16,210 (2026-11-06), the first tranche run (`tranche_epoch1`)
