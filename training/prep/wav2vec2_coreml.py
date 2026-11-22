@@ -14,8 +14,8 @@ starts a 12.5 Hz frame apart, scores within 0.009):
   scale against its 1e-5);
 - the log-softmax is written out (max, exp, sum, log): Core ML's `reduce_log_sum_exp` is ~15 nats
   off on the Neural Engine;
-- the head's columns are a 95-column linear layer, which the Neural Engine runs; a gather of
-  them would go to the CPU.
+- the head's columns are a linear layer of their own (95 for Vietnamese), which the Neural Engine
+  runs; a gather of them would go to the CPU.
 
 The program takes one shape per length bucket up to MAX_BUCKETS (enumerated shapes); a window's
 clips go in bucket order, since switching shapes costs the Neural Engine ~40% of its speed. It is

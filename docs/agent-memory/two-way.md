@@ -81,11 +81,13 @@ Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against 
 
 `nguyenvulebinh/wav2vec2-base-vietnamese-250h` at `bb07d01e…` (`text_timing` name
 `wav2vec2_vi250h_ctc_word_v1`): wav2vec2-base, the English aligner's layout and size (95M
-parameters), fine-tuned on 250 h of Vietnamese; licence CC-BY-NC-4.0. The pinned revision is the
+parameters), fine-tuned on 250 h of Vietnamese; non-commercial (its card says CC-BY-NC-4.0, while
+the repo also ships a `CC-BY-NC-SA-4.0.txt`: if ShareAlike holds, it binds published caches whose
+text it timed). The pinned revision is the
 Hub bot's safetensors conversion (`refs/pr/2`), tensor for tensor the main branch's
 `pytorch_model.bin`, with the same `config.json` and `vocab.json` (checked 2026-11-22). Its
-110-entry vocabulary holds the 93 letters precomposed, digits, three combining marks, blank `<pad>`,
-words split by `|`.
+110-entry vocabulary holds the 93 letters precomposed, digits, three combining marks, a Cyrillic
+"у", `<unk>`, blank `<pad>` (its `pad_token_id`) and the delimiter `|`; the Viterbi reads 95 of them.
 
 - Chosen for the Mac's build speed (user, 2026-11-22: "let's use wav2vec2-base-vietnamese-250h on
   the neural engine", told that the licence is non-commercial and the gain on the Mac modest).

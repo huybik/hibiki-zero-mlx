@@ -22,7 +22,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   drive"), not on the training box, where a build beside a run halves the run's speed
   ([tranche-box](tranche-box.md#state)).
 - The `en_speech` shards built from 2026-11-22 on time their Vietnamese text with
-  wav2vec2-base-vietnamese-250h (CC-BY-NC) on the Neural Engine, the first 528 and the tranche's
+  wav2vec2-base-vietnamese-250h (non-commercial) on the Neural Engine, the first 528 and the tranche's
   with omniASR (user, 2026-11-22: "let's use wav2vec2-base-vietnamese-250h on the neural engine";
   [two-way](two-way.md#vietnamese-aligner)). Each sample records its aligner in `text_timing`.
 - Every noisy `en-vi` copy uses `--seed 1` (the `vi-en` copies took seed 0; the draws key on the

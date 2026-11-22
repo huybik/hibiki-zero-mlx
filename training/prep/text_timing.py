@@ -82,7 +82,8 @@ ALIGNERS = {  # by the language of the text
     "en": Aligner("wav2vec2_ctc_word_v1", "facebook/wav2vec2-base-960h",
                   "22aad52d435eb6dbaf354bdad9b0da84ce7d6156", "<pad>", "|", _spoken_english,
                   "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5),
-    # wav2vec2-base fine-tuned on 250 h of Vietnamese (CC-BY-NC-4.0), at the Hub bot's safetensors
+    # wav2vec2-base fine-tuned on 250 h of Vietnamese (non-commercial: its card says CC-BY-NC-4.0, the
+    # repo also ships a CC-BY-NC-SA-4.0 text), at the Hub bot's safetensors
     # conversion (refs/pr/2), tensor for tensor its main branch's pytorch_model.bin. It replaced
     # omniASR-CTC-300M-v2 (Apache-2.0; 325M parameters against 95M) for the Mac's build speed
     # (user, 2026-11-22).

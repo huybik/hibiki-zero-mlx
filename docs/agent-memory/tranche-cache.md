@@ -12,6 +12,9 @@ and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`, pushe
 of the cache repo (`ingest.CACHE_REPO`), one cache per source (see
 [Decision](real-vi-tranche.md#decision)); `--direction en-vi` (its tokenizer the Vietnamese swap, `paths.DIRECTION_TOKENIZERS`) builds
 the other way into `<root>/cache/en-vi/<source>/` and `en-vi/<source>/` ([two-way](two-way.md)).
+The tranche's `en-vi` caches were timed by omniASR; a rebuild now uses wav2vec2-base-vietnamese-250h,
+whose 0.55 floor is calibrated on TTS rows only: calibrate it on real speech first
+([two-way](two-way.md#vietnamese-aligner)).
 Its `read_shard` fetches a shard's four parts at once (the box's
 own copies first, `ingest.part_file`), joins them by id and applies the gates below
 (`--drop-inputs` then deletes the HF cache's copies, so a build of every shard holds a shard or
