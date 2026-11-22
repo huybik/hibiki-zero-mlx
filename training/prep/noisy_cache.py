@@ -6,7 +6,8 @@ Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the
 same order. A seeded --fraction of the rows get new source codes: their clip (the cache's source
 language), read from the dataset file the shard's own `source` names (`clip_file`), is decoded and
 resampled by the cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions and
-Mimi-encoded in float32. The file is an EN-VI dataset parquet (`data/<split>/<name>.parquet`,
+Mimi-encoded in float32 (on CUDA with TF32 matmuls and convolutions, as the cache build:
+`cache_build.CUDA_TF32`). The file is an EN-VI dataset parquet (`data/<split>/<name>.parquet`,
 `vi_audio` or `en_audio`) for `cache_codes`' caches, and for the tranche's a part of its repo
 (`<source>/en_audio/<name>.parquet` beside the segments an `en-vi` shard was built from). Text,
 target codes, frame counts and both EOS positions stay as they were. Each row records its
@@ -310,7 +311,7 @@ def decode(data: bytes) -> np.ndarray:
 
 
 class Encoder:
-    """Conditions, Mimi in float32 and the new source codes written into the rows. On CUDA moshi's
+    """Conditions, Mimi (float32; TF32 on CUDA) and the new source codes written into the rows. On CUDA moshi's
     Mimi encodes right-padded batches and the conditions run on the GPU; on MLX `mimi_mlx` encodes
     a batch's clips one per forward (as the cache build does) while the CPU conditions the next
     batch's."""
@@ -332,7 +333,7 @@ class Encoder:
             self.mimi = MimiEncoder(weight, self.source_q)
         else:
             self.device = torch.device(cache_build.DEVICE)
-            self.mimi = cache_build.cuda_mimi(weight, self.source_q)
+            self.mimi = cache_build.cuda_mimi(weight, self.source_q, tf32=cache_build.CUDA_TF32)
         if self.mimi.cardinality != self.card:
             raise RuntimeError(
                 f"config card {self.card} != Mimi cardinality {self.mimi.cardinality}"
