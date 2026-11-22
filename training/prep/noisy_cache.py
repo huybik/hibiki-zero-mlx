@@ -333,7 +333,7 @@ class Encoder:
             self.mimi = MimiEncoder(weight, self.source_q)
         else:
             self.device = torch.device(cache_build.DEVICE)
-            self.mimi = cache_build.cuda_mimi(weight, self.source_q, tf32=cache_build.CUDA_TF32)
+            self.mimi = cache_build.cuda_mimi(weight, self.source_q)
         if self.mimi.cardinality != self.card:
             raise RuntimeError(
                 f"config card {self.card} != Mimi cardinality {self.mimi.cardinality}"
