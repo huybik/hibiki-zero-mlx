@@ -8,14 +8,58 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 **The box since 2026-11-19: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
 Beijing, $1.217/h; 96 GB, 600 W, driver 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of
-disk; `ssh -p 21639 root@205.185.115.44`). Its network sits behind a slow proxy
+disk; `ssh -p 21639 root@205.185.115.44`, or Vast's proxy `ssh -p 30253 root@ssh3.vast.ai` when
+that port refuses, as it did for a minute on 2026-11-21). Its network sits behind a slow proxy
 ([Bring-up](#a-box-behind-a-slow-proxy)).
 - It runs `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
   started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
   ([student-heads](student-heads.md#runs)). `student_heads14` (8 codebooks) stopped for it at
   ~22,600; its 16,000 pair and best are on the Hub.
 - The user (2026-11-20): run it to the end and score its test sets both ways, without asking.
-  Then upload everything and destroy the box.
+  Then upload everything and destroy the box. The user (2026-11-21): "should run grpo after
+  distil". So the distilled best goes through GRPO first (`grpo_launch.sh`, as `grpo_student`
+  ran: [student-grpo](student-grpo.md#run)), and the test sets score GRPO's best. GRPO loads,
+  samples and scores through the same `common.build_lm`, `get_lmgen` and forward as the heads
+  student's training and validation. The rooms' noise bank was fetched ahead of time.
+- One session runs the box's jobs from 2026-11-21 (user: "you in control of the training on the box
+  now"). After the heads run, in order, one GPU job at a time:
+  1. its test sets on its best (`test_heads.sh`);
+  2. the box validation of PRs #149–#151 (user: "after the heads run and before grpo"): short runs
+     with no Hub sync, under `runs/val_*`, logs in `/workspace/logs/val/`;
+  3. the student's on-policy stage, aimed at the best phone model (user, 2026-11-21: "i'm not
+     asking for plain grpo, i'm asking for best outcome"): 200-update probes from the distilled
+     best (distillation alone at three rates; both terms, z-scored and centered; plain GRPO as the
+     control only), one run of the winner, then the 6-bit palettization finish; then the 3B's
+     experiments (scheduled sampling, anchored GRPO). The 3B's start, the two-way SFT's final
+     model, is `weights/twoway_final.safetensors` (fetched 2026-11-21, sha256 checked).
+  The box stays for these; it is destroyed only after them and their uploads.
+- **All of `en_speech`, both ways** (user, 2026-11-21: "let's build both vi - en and en - vi"). Round
+  4e's test (500 shards against 150: FLEURS −1.3) also changed the batch and the updates, and
+  spoke only for VI→EN, whose `en_speech` source is TTS; for EN→VI `en_speech` holds the only real
+  English speech (2,481 of 8,456 h). The `vi-en` caches of all 1,832 train shards, noisy and
+  clean, are on the Hub (78 GB each): a run fetches them, so `vi-en` needs no data work; using all
+  of them is the next run's shard list (round 4e listed 500). `en-vi` had round 4e's 500:
+  `/workspace/envi_rest.py` (box-only) builds the other 1,332 beside the heads run (started
+  2026-11-21 08:00 UTC; log `logs/envi_rest.log`). Sources by aria2c 25 at a time (321 GB,
+  ~16 MB/s), `cache_codes --direction en-vi` in `/workspace/envs/cache` (the `.venv` copied, with
+  free-threaded av 19.0.2) capped at 30% of the card, into `/workspace/en_vi_rest_out` (outside
+  the training caches, which runs started meanwhile read); each batch goes to the Hub's
+  `en-vi/en-vi-grounded-v2/train/`, is checked against its listing and deleted here. While
+  `logs/envi_rest.pause` exists no new build starts (for profiles). Profiled on 2 shards: 21.3 h
+  of audio built in 122 s, 98.7% of rows kept; the heads run went 0.69 → ~1.4 s an update while it
+  built. The first batch of 25 (512 h of Mimi audio, both clips) took 1,903 s at ~970× real time on
+  the shared GPU, 719 s of download (~8 MB/s) and 180 s of upload: the whole build would hold half
+  the GPU ~14 h and the noisy copies ~3 h more, moving the heads run's end ~10 h. Stopped
+  2026-11-21 ~08:55 UTC: the user does the data preparation in a separate session ("continue with
+  training, i will do the data preparation on a separate session"). On the Hub then: 527 of the
+  1,832 `en-vi` shards, no noisy `en-vi` copy. Left on the box for it: `/workspace/envi_rest.py`
+  (resumes from the Hub's listings: builds the missing clean shards, makes every shard's noisy
+  copy with `mimi_cache_cuda` (PR #153, merged as `7090cc6`; validated on this box both ways,
+  [noisy-source](noisy-source.md#checks)) from `/workspace/wt-noisy` (main at `7090cc6`,
+  detached) at `--seed 1` into
+  `en-vi/en-vi-grounded-v2-noisy/`, uploads a batch while the next builds; holds its GPU steps while
+  `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac's MLX builder runs only the
+  English aligner, so it cannot build `en-vi` rows (their Vietnamese text needs `omniASR-CTC-300M-v2`).
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.

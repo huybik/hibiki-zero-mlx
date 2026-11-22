@@ -53,14 +53,20 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 
 - `/Volumes/data` is the external data drive. `weights/` is a symlink to
   `/Volumes/data/models/hibiki/weights`. That folder holds `config.json`, the upstream PyTorch
-  LM `hibiki-pytorch-77f82164@110.safetensors`, the Mimi checkpoint, the tokenizer, the staged
-  BF16 model `vi-step135000-mlx-bf16/` and the old uniform `hibiki.q4.safetensors`, which no
-  longer loads: `--model 3b` runs `hibiki-zero-3b-q4/`, to be staged there with `convert_mlx.py
-  --bits 4` ([mlx-inference](mlx-inference.md#model-directories)).
-- `/Volumes/data/datasets/en_vi_speech/` is the EN-VI dataset holding the English corpus
-  ([en-vi-speech-dataset](en-vi-speech-dataset.md)), and `/Volumes/data/datasets/phomt-grounded-v2-5s/`
-  the restored PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)). FLEURS,
-  MultiMed-ST and `en-vi-val` are evaluation sets only, built into `data/eval/`
+  LM `hibiki-pytorch-77f82164@110.safetensors`, the Mimi checkpoint and `mimi-decoder.mlmodelc`,
+  the tokenizer, `release/twoway_grpo1400_mlx_q6/`, the shipped student
+  `student_dep10/g2000_{bf16,q6}` and `student_heads14_cb16/`. `--model 3b` runs
+  `hibiki-zero-3b-q4/`, to be staged there with `convert_mlx.py --bits 4`
+  ([mlx-inference](mlx-inference.md#model-directories)).
+- The Mac keeps no copy of the EN-VI dataset or its training caches (`en-vi-grounded-v2*`, the
+  PhoMT cache): `anquachdev/common-vi-en` and the dataset `huybik/hibiki-zero-vi-full-sft` are the
+  copies. The local ones matched them file for file and were deleted on 2026-11-21 to free the drive.
+  The prep scripts still default to `/Volumes/data/datasets/en_vi_speech`
+  ([en-vi-speech-dataset](en-vi-speech-dataset.md)), so download what a step reads back there
+  first (`hf download anquachdev/common-vi-en --repo-type dataset --local-dir …`), or pass another
+  `--root`/`--src`. `/Volumes/data/datasets/` still holds the translation work
+  (`en_speech_vi_text`), the noise bank `rirs_noises` and small samples. FLEURS, MultiMed-ST and
+  `en-vi-val` are evaluation sets only, built into `data/eval/`
   ([sft-evaluation](sft-evaluation.md#evaluation-sets)).
 - Hugging Face downloads (models, the VieNeu and MOSS weights) cache in `/Volumes/data/huggingface`
   (`HF_HOME`).

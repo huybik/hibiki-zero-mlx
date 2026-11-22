@@ -67,9 +67,8 @@ not increase latency so much"). `restart.sh student-heads` cuts `student_heads14
 ### Inference
 
 The MLX runtime runs the heads ([mlx-inference](mlx-inference.md#vendored-moshi-mlx)); the Swift
-runtime runs them as Core ML on the Neural Engine: on the A15 the LM takes 45–48 ms a frame, and
-from cool the phone holds real time for 10 minutes; Mimi's CPU encode, not the LM, sets the margin
-([lm-npu](lm-npu.md#speed)).
+runtime runs them as Core ML on the Neural Engine, with Mimi encoding on the GPU: on the A15 from
+cool the frame holds 52–54 ms for 10 minutes ([lm-npu](lm-npu.md#speed)).
 On the M4 Pro (2026-11-20; update 16,000 of
 `student_heads14_cb16` against the shipped depformer student, GRPO update 2,000, both staged by
 `convert_mlx.py`), the LM step alone (text and audio sampled, medians of 300 steps; scratch script):
@@ -201,6 +200,34 @@ free-running at seed 47, batches of 64.
   | Update (date) | TF loss | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
   |---|---|---|---|---|---|---|---|---|---|
   | 16,000 (11-20) | 3.701 / 3.494 | 25.28 | 28.40 / 2.77 / 1.59 / 3.0 | 22.15 / 5.08 / 1.05 / 3.1 | 28.49 / 4.31 / 1.50 / 3.8 | 28.49 / 5.64 / 1.43 / 3.1 | 33.17 / 6.96 / 1.19 / 3.5 | 23.29 / 6.91 / 1.20 / 1.4 | 31.29 / 10.20 / 1.06 / 2.4 |
+  | 32,000 (11-20) | 3.493 / 3.257 | 27.44 | 29.55 / 3.96 / 1.47 / 2.7 | 25.33 / 6.88 / 1.14 / 2.4 | 29.78 / 4.66 / 1.61 / 4.8 | 31.30 / 6.49 / 1.47 / 3.0 (1 empty) | 34.93 / 8.80 / 1.23 / 3.5 | 23.81 / 6.03 / 1.27 / 0.8 | 33.26 / 11.21 / 1.14 / 2.4 |
+  | 48,000 (11-20) | 3.395 / 3.157 | 28.84 | 27.69 / 3.64 / 1.55 / 3.2 | 29.99 / 9.90 / 1.10 / 2.0 (1 empty) | 29.31 / 4.80 / 1.59 / 4.6 | 32.77 / 8.17 / 1.42 / 2.9 | 35.98 / 9.27 / 1.22 / 3.3 | 26.33 / 8.72 / 1.25 / 1.2 | 35.38 / 13.79 / 1.10 / 2.3 |
+  | 64,000 (11-20) | 3.320 / 3.082 | 30.05 | 29.92 / 4.42 / 1.50 / 2.6 (1 empty) | 30.18 / 10.51 / 1.08 / 2.2 (1 empty) | 30.22 / 5.63 / 1.63 / 5.1 (2 empty) | 27.47 / 5.77 / 1.63 / 3.8 (2 empty) | 32.17 / 9.21 / 1.16 / 3.8 | 26.54 / 9.78 / 1.18 / 0.9 (4 empty) | 36.17 / 14.68 / 1.09 / 2.1 |
+  | 80,000 (11-20) | 3.272 / 3.033 | 30.47 | 30.14 / 3.78 / 1.63 / 2.8 | 30.79 / 10.11 / 1.20 / 2.2 | 30.40 / 5.50 / 1.66 / 4.7 | 33.69 / 7.69 / 1.71 / 3.5 | 35.90 / 10.44 / 1.28 / 4.1 | 27.85 / 9.19 / 1.35 / 1.4 | 36.71 / 14.97 / 1.13 / 2.5 |
+  | 96,000 (11-21) | 3.223 / 2.988 | 31.43 | 30.32 / 5.56 / 1.42 / 2.3 | 32.53 / 12.45 / 1.10 / 1.5 (1 empty) | 29.17 / 5.50 / 1.62 / 5.0 (1 empty) | 31.47 / 8.04 / 1.50 / 2.9 (1 empty) | 35.73 / 11.07 / 1.16 / 3.4 | 28.94 / 10.19 / 1.27 / 0.9 | 38.60 / 16.40 / 1.08 / 2.1 |
+  | 112,000 (11-21) | 3.182 / 2.950 | 33.27 | 33.52 / 6.24 / 1.39 / 2.0 | 33.03 / 13.24 / 1.05 / 1.6 | 32.61 / 6.93 / 1.52 / 4.1 | 37.34 / 10.79 / 1.33 / 2.6 | 38.46 / 12.85 / 1.12 / 2.6 | 30.12 / 13.02 / 1.16 / 1.0 (1 empty) | 38.39 / 17.47 / 1.04 / 2.0 |
+  | 128,000 (11-21) | 3.143 / 2.922 | 35.29 | 37.08 / 8.14 / 1.33 / 1.9 | 33.51 / 13.47 / 1.06 / 1.6 (1 empty) | 34.44 / 7.75 / 1.53 / 4.2 | 40.04 / 13.34 / 1.25 / 2.5 | 41.95 / 14.81 / 1.16 / 3.1 | 31.10 / 12.72 / 1.18 / 0.8 | 40.84 / 19.11 / 1.09 / 2.1 |
+  | 144,000 (11-21) | 3.113 / 2.899 | 36.00 | 37.94 / 8.08 / 1.35 / 1.8 | 34.07 / 14.24 / 1.03 / 1.6 | 35.10 / 7.67 / 1.58 / 4.7 | 39.49 / 13.41 / 1.30 / 2.4 (1 empty) | 41.53 / 15.43 / 1.15 / 3.0 | 32.92 / 14.20 / 1.18 / 0.8 | 40.06 / 19.63 / 1.04 / 2.2 |
 
   At 16,000 against 8 codebooks: VI→EN +1.2 to +2.4 chrF on every set, EN→VI −1.0 (FLEURS) to +1.3,
   end offsets 0.1–0.7 s later; generation and scoring at 16 codebooks work on the GPU.
+  At 64,000 (promoted): FLEURS dev rose both ways and `en-vi-val-en` (EN→VI) held, but `en-vi-val`
+  (VI→EN) fell against 48,000: cv27 32.77 → 27.47 (length ratio 1.42 → 1.63), libriheavy 35.98 →
+  32.17. Empty outputs: 10 over the sets, against 0–1 at the earlier validations.
+  At 80,000 (promoted) `en-vi-val` recovered (cv27 33.69, libriheavy 35.90) with no empty outputs,
+  but outputs grew longer on every set (length ratio 1.20–1.71). At 96,000 (promoted) they came
+  back (1.08–1.62; VI→EN cv27 1.71 → 1.50), and EN→VI rose on all three sets.
+  At 64,000 against the depformer student's own 64,000 (plain SFT, `student_dep10`): +2.9 to +8.2
+  chrF on 6 of the 7 sets, −3.3 on `en-vi-val` cv27; FLEURS selecting 30.05 against 25.41, and
+  30.53 for the depformer student after distillation (~196,000 updates), 35.50 after GRPO.
+  At 96,000: FLEURS 30.32 / 32.53 (31.43) against `student_dep10`'s 28.67 / 24.53 (26.60).
+  At 112,000 (promoted, +1.8 selecting, VI→EN +2.7 to +5.9 on every set) it passed the depformer
+  student after distillation on FLEURS (33.52 / 33.03 against 31.74 / 29.31) and `en-vi-val-en`
+  cv27 (30.12 against 28.76), and was 0.3–2.4 behind on the other four.
+  At 128,000 (promoted, +2.0 selecting; up on every set, +0.5 to +3.6) the mean of
+  the seven sets was 36.99, against 34.34 for the depformer student after distillation (its
+  best, 64,000 of `student_dep10_anneal`), and the selecting mean 35.29 against 35.50 for that
+  student after GRPO.
+  At 144,000 (promoted, +0.7 selecting) FLEURS both ways, MultiMed-ST and `en-vi-val-en` cv27
+  rose (+0.6 to +1.8), and `en-vi-val` and `en-vi-val-en` libriheavy fell 0.4–0.8. The seven-set
+  mean was 37.30, and the selecting mean 36.00 passed the depformer student after GRPO (35.50).

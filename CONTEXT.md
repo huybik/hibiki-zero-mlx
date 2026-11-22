@@ -25,7 +25,7 @@ training/  (CUDA, Linux H100; prep/ translates, voices, publishes and caches the
     ─► prep/cache_codes (on prep/cache_build, MLX or CUDA; Mac top down, a second machine bottom up)
          ─► <out-dir>/{train,validation}
     ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
-    ─► prep/mimi_cache_cuda (CUDA, the pod: Vietnamese source re-encoded under prep/augment) ─► *-noisy
+    ─► prep/mimi_cache_cuda (CUDA, the pod: the source, either language, re-encoded under prep/augment) ─► *-noisy
     ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
@@ -180,7 +180,7 @@ inference/ (Apple Silicon, MLX)
 | SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets, the input level stage | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/`, `inference/hibiki_mlx/level.py` |
 | GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
-| Noisy Vietnamese source: simulated rooms, noise and bands, the noisy cache, `en-vi-val-noisy`, GRPO's rooms where nobody speaks | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py`, `streams.room_codes` |
+| Noisy source (Vietnamese and English): simulated rooms, noise and bands, the noisy caches, `en-vi-val-noisy` and `en-vi-val-en-noisy`, GRPO's rooms where nobody speaks | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/mimi_cache_cuda.py`, `streams.room_codes` |
 | The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off, the translation and the cache |
 | The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
 | The tranche's caches: its row gates and their thresholds, running the build on the box or the Mac | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |

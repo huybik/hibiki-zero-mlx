@@ -1,28 +1,28 @@
 #!/usr/bin/env python
-"""Mimi on CUDA for the grounded caches: re-encode the Vietnamese source of a cache split.
+"""Mimi on CUDA for the grounded caches: re-encode the source of a cache split (either language).
 
 Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the same rows in the
-same order. A seeded --fraction of the rows get new Vietnamese source codes: their clip, taken
-from the EN-VI dataset's parquet shard that the cache shard was built from, is decoded and
-resampled by the cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions
-and Mimi-encoded in float32. Text, English codes, frame counts and both EOS positions stay as
-they were. Each row records its conditions under `source_conditions` (None for a row kept
-clean). The noisy second epoch is --seed 0, --fraction 0.6; another epoch's conditions take
-another --seed and --out-dir.
+same order. A seeded --fraction of the rows get new source codes: their clip (the cache's source
+language: `vi_audio` in a `vi-en` cache, `en_audio` in an `en-vi` one), taken from the EN-VI
+dataset's parquet shard that the cache shard was built from, is decoded and resampled by the
+cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions and Mimi-encoded in
+float32. Text, target codes, frame counts and both EOS positions stay as they were. Each row
+records its conditions under `source_conditions` (None for a row kept clean). The noisy second
+epoch is --seed 0, --fraction 0.6; another epoch's conditions take another --seed and --out-dir.
 
 Two steps, so the download runs while the GPU still trains:
 
-    fetch  (network, CPU) HF parquet ─► <out-dir>/.sources/<name>.parquet: id and the Opus bytes
-                          of the selected rows only (30% of a parquet's bytes is Vietnamese
-                          audio; 60% of that is kept)
+    fetch  (network, CPU) HF parquet or --dataset-dir's copy ─► .sources/<name>.parquet:
+                          id and the source clip's bytes of the selected rows only (26-33% of a
+                          parquet's bytes is Vietnamese audio, 67-74% English; 60% of that is kept)
     encode (CUDA)         .sources + clean shard ─► workers: PyAV decode, soxr to 24 kHz
                           ─► GPU: augment, Mimi ─► <out-dir>/shard_<name>.pt; the source is deleted.
                           The next shard's clips decode while the GPU encodes this one.
 
-The first fetch writes <out-dir>/manifest.json (seed, fraction, dataset revision, bank SHA-256);
-later fetches and every encode require the same. `encode` waits for a source that a running
-`fetch` has not written yet, and stops when none is running. Both skip the shards already written,
-so a rerun continues.
+The first fetch writes <out-dir>/manifest.json (seed, fraction, the cache's direction, the dataset,
+bank SHA-256); later fetches require the same, and every encode the same bank and each shard the
+manifest's direction. `encode` waits for a source that a running `fetch` has not written yet, and
+stops when none is running. Both skip the shards already written, so a rerun continues.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ from training.paths import (
     require_file,
 )
 from training.prep import audio, augment, cache_build
-from training.prep.cache_rows import FRAME_SAMPLES
+from training.prep.cache_rows import FRAME_SAMPLES, Settings
 from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION
 
 SOURCES = ".sources"
@@ -77,7 +77,7 @@ DOWNLOAD_ATTEMPTS = 4  # one failed download would leave its shard unwritten ove
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     steps = parser.add_subparsers(dest="step", required=True)
-    fetch = steps.add_parser("fetch", help="Download the selected rows' Vietnamese audio.")
+    fetch = steps.add_parser("fetch", help="Download the selected rows' source audio.")
     encode = steps.add_parser("encode", help="Write the noisy shards on CUDA.")
     for step in (fetch, encode):
         step.add_argument("--cache-dir", type=Path, required=True, help="A clean cache split.")
@@ -85,6 +85,12 @@ def parse_args() -> argparse.Namespace:
     fetch.add_argument("--fraction", type=float, default=0.6, help="Rows given new conditions.")
     fetch.add_argument("--seed", type=int, default=0)
     fetch.add_argument("--jobs", type=int, default=16, help="Parallel downloads.")
+    fetch.add_argument(
+        "--dataset-dir",
+        type=Path,
+        help="Read the parquets from this local copy of the dataset (data/<split>/<name>.parquet), "
+        "the one the cache was built from, instead of downloading them.",
+    )
     # A trainer on the same disk needs a checkpoint pair (37.5 GB) beyond its steady state while
     # the recovery sync still uploads the pair it pruned.
     fetch.add_argument(
@@ -123,19 +129,46 @@ def todo(cache_dir: Path, out_dir: Path) -> list[Path]:
     ]
 
 
-def manifest(args: argparse.Namespace) -> dict[str, Any]:
-    """The out-dir's settings, written by its first fetch. Every run needs the same dataset
-    revision and bank, and a fetch the same seed and fraction."""
+def cache_direction(cache_dir: Path) -> str:
+    """The direction of a clean cache split, read from its first shard."""
+    first = next(iter(sorted(cache_dir.glob("shard_*.pt"))), None)
+    if first is None:
+        raise RuntimeError(f"{cache_dir} holds no shard_*.pt")
+    return torch.load(first, map_location="cpu", mmap=True).get("direction", DEFAULT_DIRECTION)
+
+
+def source_column(direction: str) -> str:
+    """The dataset column of the clip heard in a cache of `direction`: `vi_audio` or `en_audio`."""
+    return f"{Settings(direction=direction).source}_audio"
+
+
+def dataset(args: argparse.Namespace) -> str:
+    """Where a fetch reads the parquets: a local copy, or the Hub repo at its pinned revision."""
+    if args.dataset_dir is not None:
+        return str(args.dataset_dir)
+    return f"{EN_VI_REPO}@{EN_VI_REVISION}"
+
+
+def manifest(args: argparse.Namespace, cache_dir: Path) -> dict[str, Any]:
+    """The out-dir's settings, written by its first fetch. Every run needs the same bank, and a
+    fetch the same seed, fraction, cache direction and dataset."""
     path = args.out_dir / MANIFEST
-    needed = {"dataset_revision": EN_VI_REVISION, "bank_sha256": augment.BANK_SHA256}
+    needed: dict[str, Any] = {"bank_sha256": augment.BANK_SHA256}
     if args.step == "fetch":
-        needed |= {"seed": args.seed, "fraction": args.fraction}
+        needed |= {
+            "seed": args.seed,
+            "fraction": args.fraction,
+            "direction": cache_direction(cache_dir),
+            "dataset": dataset(args),
+        }
         if not path.exists():
             partial = path.with_name(f".{path.name}.tmp")
             partial.write_text(json.dumps(needed, indent=2) + "\n")
             durable(partial)
             partial.replace(path)
     found = read_json(path)
+    if missing := {"seed", "fraction", "direction", "dataset"} - found.keys():
+        raise RuntimeError(f"{path} lacks {sorted(missing)}: fetch into a new --out-dir")
     if any(found.get(key) != value for key, value in needed.items()):
         raise RuntimeError(f"{path} holds {found}, this run needs {needed}")
     return found
@@ -157,8 +190,10 @@ def held(lock: Path) -> bool:
 # --------------------------------------------------------------------------- fetch
 
 
-def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
-    """Write the selected rows' audio of one shard's parquet to .sources."""
+def fetch_one(
+    args: argparse.Namespace, settings: dict[str, Any], split: str, shard_path: Path
+) -> str:
+    """Write the selected rows' source audio of one shard's parquet to .sources."""
     name = shard_name(shard_path)
     target = args.out_dir / SOURCES / f"{name}.parquet"
     if target.exists():
@@ -168,33 +203,40 @@ def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
         while shutil.disk_usage(args.out_dir).free < args.min_free_gb * 1e9:
             time.sleep(WAIT_S)
     source = f"data/{split}/{name}.parquet"
+    column = source_column(settings["direction"])
     with tempfile.TemporaryDirectory(dir=args.out_dir / SOURCES, prefix=".download-") as tmp:
-        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
-            try:
-                path = Path(
-                    hf_hub_download(
-                        EN_VI_REPO,
-                        source,
-                        repo_type="dataset",
-                        revision=EN_VI_REVISION,
-                        local_dir=tmp,
+        if args.dataset_dir is not None:
+            path = require_file(args.dataset_dir / source, "dataset parquet")
+        else:
+            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+                try:
+                    path = Path(
+                        hf_hub_download(
+                            EN_VI_REPO,
+                            source,
+                            repo_type="dataset",
+                            revision=EN_VI_REVISION,
+                            local_dir=tmp,
+                        )
                     )
-                )
-                break
-            except Exception as exc:  # network and Hub errors alike; the last one raises
-                if attempt == DOWNLOAD_ATTEMPTS:
-                    raise
-                print(f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True)
-                time.sleep(60 * attempt)
-        table = pq.read_table(path, columns=["id", "vi_audio"])
+                    break
+                except Exception as exc:  # network and Hub errors alike; the last one raises
+                    if attempt == DOWNLOAD_ATTEMPTS:
+                        raise
+                    print(
+                        f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True
+                    )
+                    time.sleep(60 * attempt)
+        table = pq.read_table(path, columns=["id", column])
         ids = table.column("id").to_pylist()
-        opus = table.column("vi_audio").combine_chunks().field("bytes")
+        clips = table.column(column).combine_chunks().field("bytes")
         keep = pa.array([selected(args.seed, row_id, args.fraction) for row_id in ids])
         slim = pa.table(
             {
                 "id": table.column("id"),
-                # Null for the rows that stay clean.
-                "vi_opus": pc.if_else(keep, opus, pa.scalar(None, opus.type)),
+                # Named as in the dataset, so encode reads only its own direction's clips; null for
+                # the rows that stay clean.
+                column: pc.if_else(keep, clips, pa.scalar(None, clips.type)),
             }
         )
         meta = {"file": source, "bytes": path.stat().st_size}
@@ -208,6 +250,11 @@ def fetch_one(args: argparse.Namespace, split: str, shard_path: Path) -> str:
 
 def fetch(args: argparse.Namespace) -> None:
     cache_dir = require_dir(args.cache_dir, "clean cache split")
+    if args.dataset_dir is not None:
+        # Resolved, so the manifest names the copy one way however it is typed; its split is
+        # checked before the first fetch writes the manifest.
+        args.dataset_dir = require_dir(args.dataset_dir, "dataset copy").resolve()
+        require_dir(args.dataset_dir / "data" / cache_dir.name, "dataset copy's split")
     (args.out_dir / SOURCES).mkdir(parents=True, exist_ok=True)
     shards = todo(cache_dir, args.out_dir)
     print(f"{len(shards)} shards to fetch for {args.out_dir}", flush=True)
@@ -216,14 +263,14 @@ def fetch(args: argparse.Namespace) -> None:
         exclusive(args.out_dir / FETCH_LOCK, busy),
         ThreadPoolExecutor(args.jobs) as pool,
     ):
-        manifest(args)
+        settings = manifest(args, cache_dir)
         # What a killed fetch left: downloads and unrenamed sources.
         for stale in (args.out_dir / SOURCES).glob(".*"):
             if stale.is_dir():
                 shutil.rmtree(stale)
             else:
                 stale.unlink()
-        jobs = [pool.submit(fetch_one, args, cache_dir.name, path) for path in shards]
+        jobs = [pool.submit(fetch_one, args, settings, cache_dir.name, path) for path in shards]
         for number, job in enumerate(jobs, 1):
             print(f"{job.result()} [{number}/{len(jobs)}]", flush=True)
 
@@ -255,45 +302,46 @@ class Encoder:
         self.bank = augment.Bank(augment.fetch_bank(args.bank_dir), self.device)
         self.batch_samples = int(args.batch_seconds * augment.SAMPLE_RATE)
 
-    def shard(self, samples: list[dict[str, Any]], clips: dict[int, Future]) -> float:
+    def shard(self, samples: list[dict[str, Any]], clips: dict[int, Future], frames: str) -> float:
         """Replace the source codes of the rows in `clips` (sample index -> decoded clip), shortest
-        first in padded batches; return the seconds of audio encoded. Empties `clips`, so each
-        clip's PCM is freed once it is encoded."""
+        first in padded batches; `frames` is the samples' source frame count key (`vi_frames` or
+        `en_frames`). Return the seconds of audio encoded. Empties `clips`, so each clip's PCM is
+        freed once it is encoded."""
         pending: list[tuple[dict[str, Any], torch.Tensor]] = []
         seconds = 0.0
-        for index in sorted(clips, key=lambda index: samples[index]["vi_frames"]):
+        for index in sorted(clips, key=lambda index: samples[index][frames]):
             sample = samples[index]
             # Shortest first, so this row sets the padded length of the batch it joins.
             if (
                 pending
-                and (len(pending) + 1) * sample["vi_frames"] * FRAME_SAMPLES > self.batch_samples
+                and (len(pending) + 1) * sample[frames] * FRAME_SAMPLES > self.batch_samples
             ):
-                self._write(pending)
+                self._write(pending, frames)
                 pending = []
             try:
                 pcm = clips.pop(index).result()
             except audio.Rejected as exc:
                 raise RuntimeError(f"{sample['id']}: {exc}") from exc
             clip = torch.from_numpy(pcm).to(self.device)
-            if math.ceil(clip.shape[-1] / FRAME_SAMPLES) != sample["vi_frames"]:
+            if math.ceil(clip.shape[-1] / FRAME_SAMPLES) != sample[frames]:
                 raise RuntimeError(
                     f"{sample['id']}: {clip.shape[-1]} samples, the cache has "
-                    f"{sample['vi_frames']} source frames"
+                    f"{sample[frames]} source frames"
                 )
             conditions = augment.Conditions(**sample["source_conditions"])
             pending.append((sample, self.bank.apply(clip, conditions)))
             seconds += clip.shape[-1] / augment.SAMPLE_RATE
         if pending:
-            self._write(pending)
+            self._write(pending, frames)
         return seconds
 
-    def _write(self, pending: list[tuple[dict[str, Any], torch.Tensor]]) -> None:
+    def _write(self, pending: list[tuple[dict[str, Any], torch.Tensor]], frames: str) -> None:
         codes = cache_build.mimi_batch(self.mimi, [clip for _, clip in pending], self.device)
         for (sample, _), new in zip(pending, codes, strict=True):
             source = sample["codes"][1 + self.dep_q : 1 + self.dep_q + self.source_q]
-            if int(source[0, sample["vi_frames"]]) != self.card:
-                raise RuntimeError(f"{sample['id']}: no codec EOS at frame {sample['vi_frames']}")
-            source[:, : sample["vi_frames"]] = new
+            if int(source[0, sample[frames]]) != self.card:
+                raise RuntimeError(f"{sample['id']}: no codec EOS at frame {sample[frames]}")
+            source[:, : sample[frames]] = new
 
 
 def wait_for_source(out_dir: Path, name: str) -> Path | None:
@@ -313,7 +361,7 @@ def encode(args: argparse.Namespace) -> None:
     split = cache_dir.name
     busy = f"another mimi_cache_cuda encode uses {args.out_dir}"
     with exclusive(args.out_dir / ENCODE_LOCK, busy):
-        settings = manifest(args)
+        settings = manifest(args, cache_dir)
         # Sources of shards already written: a stop between the shard's rename and the unlink.
         for written in sorted(args.out_dir.glob("shard_*.pt")):
             (args.out_dir / SOURCES / f"{shard_name(written)}.parquet").unlink(missing_ok=True)
@@ -335,6 +383,7 @@ class Loaded:
     source_path: Path
     payload: dict[str, Any]
     clips: dict[int, Future]  # sample index -> the decoded clip
+    frames: str  # the samples' source frame count key
 
 
 def load(
@@ -355,32 +404,39 @@ def load(
     payload = torch.load(shard_path, map_location="cpu")
     if payload.get("format") != CACHE_FORMAT:
         raise RuntimeError(f"{shard_path} is not a {CACHE_FORMAT} shard")
-    if payload.get("direction", DEFAULT_DIRECTION) != DEFAULT_DIRECTION:  # its source is Vietnamese
-        raise RuntimeError(f"{shard_path} is {payload['direction']}: only a Vietnamese source is re-encoded")
+    direction = payload.get("direction", DEFAULT_DIRECTION)
+    if direction != settings["direction"]:
+        raise RuntimeError(f"{shard_path} is {direction}, the fetch {settings['direction']}")
+    column = source_column(direction)
+    if column not in table.column_names:
+        raise RuntimeError(
+            f"{source_path} holds {table.column_names}, not {column}: delete it, then fetch again"
+        )
     if (
         payload["source"] != source
         or source["file"] != f"data/{split}/{shard_name(shard_path)}.parquet"
     ):
         raise RuntimeError(f"{shard_path} was built from {payload['source']}, not {source}")
     ids = table.column("id").to_pylist()
-    opus = table.column("vi_opus").to_pylist()
+    audio_bytes = table.column(column).to_pylist()
     samples = payload["samples"]
-    opus_rows: dict[int, bytes] = {}
+    frames = f"{Settings(direction=direction).source}_frames"
+    clip_rows: dict[int, bytes] = {}
     for index, sample in enumerate(samples):
         file, row = sample["source_row"].split("#r")
         row = int(row)
         if file != source["file"] or ids[row] != sample["id"]:
             raise RuntimeError(f"{sample['source_row']} holds {ids[row]}, not {sample['id']}")
         sample["source_conditions"] = None
-        if opus[row] is None:
+        if audio_bytes[row] is None:
             continue
         conditions = bank.draw(f"{settings['seed']}:{sample['id']}")
         sample["source_conditions"] = dataclasses.asdict(conditions)
-        opus_rows[index] = opus[row]
+        clip_rows[index] = audio_bytes[row]
     # Shortest first, the order Encoder.shard takes them in, so its first batch is ready first.
-    order = sorted(opus_rows, key=lambda index: samples[index]["vi_frames"])
-    clips = {index: pool.submit(decode, opus_rows[index]) for index in order}
-    return Loaded(source_path, payload, clips)
+    order = sorted(clip_rows, key=lambda index: samples[index][frames])
+    clips = {index: pool.submit(decode, clip_rows[index]) for index in order}
+    return Loaded(source_path, payload, clips, frames)
 
 
 def encode_shards(
@@ -411,7 +467,7 @@ def encode_shards(
                     continue
                 payload = shard.payload
                 count = len(shard.clips)
-                seconds = encoder.shard(payload["samples"], shard.clips)
+                seconds = encoder.shard(payload["samples"], shard.clips, shard.frames)
                 payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings
                 out_path = args.out_dir / shard_path.name
                 partial = out_path.with_name(f".{out_path.name}.tmp")

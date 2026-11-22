@@ -45,7 +45,7 @@ Decided 2026-11-10, for two-way training:
 | streams | `PACK_VERSION` 5 stores each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
-`mimi_cache_cuda` (the noisy re-encode) is `vi-en` only.
+`mimi_cache_cuda` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)).
 
 ## Tokenizer checks
 
@@ -162,6 +162,8 @@ Two box jobs ([tranche-box](tranche-box.md#jobs)):
   not check, and `envi_en_speech.sh` counts a packed shard as built): both directions' shards and
   packs (~290 GB) would not fit the 350 GB disk beside a run's checkpoints. `two-way` refuses to
   start while a training cache holds shards.
+- The other 1,332 `en_speech` shards' `en-vi` caches (2026-11-21, the RTX PRO 6000 box) go to the
+  same Hub folder ([tranche-box](tranche-box.md#state)).
 - `publish_caches` names its Hub prefix after the out-dir's name, which for
   `data/cache/en-vi/en-vi-grounded-v2` is the `vi-en` cache's: never run it on that folder.
 - The `en_speech` build restarts `cache_codes` every 25 shards (~35 s of model loading each,

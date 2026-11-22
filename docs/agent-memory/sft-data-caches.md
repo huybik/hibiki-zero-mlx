@@ -155,8 +155,7 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   ([en-speech-corpus](en-speech-corpus.md#rules)).
 - It is the HF dataset `huybik/hibiki-zero-vi-full-sft` prefix `phomt-grounded-v2-5s/`: 1,377
   `shard_*.pt` (6.5 GB) holding 361,968 `train` rows, restored as in
-  [docs/finetune.md](../finetune.md). The Mac copy is
-  `/Volumes/data/datasets/phomt-grounded-v2-5s/`.
+  [docs/finetune.md](../finetune.md). The Mac keeps no copy ([environment](environment.md#storage)).
 - It follows `en_speech`'s clip rule (user's choice, 2026-10-23): the rows of the full
   `grounded-v2/` cache in the same repo (690,067 rows, `cache_chunk_{0..7}.tar.zst` with
   `pairs_w*.jsonl` and `manifest.json`) whose English clip lasts at least 5 s
