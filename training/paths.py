@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import fcntl
 import json
+import multiprocessing
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,12 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "weights" / "config.json"
 DEFAULT_MODEL_WEIGHT = REPO_ROOT / "weights" / "hibiki-pytorch-77f82164@110.safetensors"
 DEFAULT_MIMI_WEIGHT = REPO_ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"
 DEFAULT_TOKENIZER = REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
+
+# The EN-VI speech dataset at the revision every `en_speech` cache was built from: its evaluation
+# rows (eval_sets) and the sources of its noisy copies (noisy_cache). Here rather than in eval_sets,
+# whose sphn would turn the GIL back on in the cache env's free-threaded Python (cache-speed-cuda.md).
+EN_VI_REPO = "anquachdev/common-vi-en"
+EN_VI_REVISION = "2ce8777d122123609722814f776f0505ea966ca5"
 
 # Written by training.prep.cache_codes (Mac) and required by streams.load_rows (H100); kept here
 # so the trainer never imports the builder's Mac-only packages.
@@ -83,6 +91,19 @@ def durable(path: Path) -> None:
             os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def exit_with_parent() -> None:
+    """Called in a pool worker (its initializer): exit once the process that started it is gone. A
+    worker outlives a parent killed outright (SIGKILL, the out-of-memory killer), blocked on a job
+    queue whose write end it holds itself, and keeps its memory until the box restarts (2026-11-22)."""
+    parent = multiprocessing.parent_process()  # set by multiprocessing before the worker's imports
+
+    def watch() -> None:
+        parent.join()  # returns once the parent is gone: the parent's end of a pipe closes
+        os._exit(1)
+
+    threading.Thread(target=watch, name="exit-with-parent", daemon=True).start()
 
 
 def exclusive(path: Path, busy: str):

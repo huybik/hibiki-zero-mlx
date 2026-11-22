@@ -58,7 +58,10 @@ from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_DIRECTION,
     DEFAULT_MIMI_WEIGHT,
+    EN_VI_REPO,
+    EN_VI_REVISION,
     durable,
+    exit_with_parent,
     exclusive,
     read_json,
     require_dir,
@@ -66,7 +69,6 @@ from training.paths import (
 )
 from training.prep import audio, augment, cache_build
 from training.prep.cache_rows import FRAME_SAMPLES, Settings
-from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION
 from training.tranche.ingest import REPO as TRANCHE_REPO
 
 SOURCES = ".sources"
@@ -512,7 +514,7 @@ def encode_shards(
     print(f"{workers} decode workers", flush=True)
     spawn = multiprocessing.get_context("spawn")
     missing: list[str] = []
-    with ProcessPoolExecutor(workers, mp_context=spawn) as pool:
+    with ProcessPoolExecutor(workers, mp_context=spawn, initializer=exit_with_parent) as pool:
         try:
             ahead = load(args, settings, encoder.bank, pool, shards[0])
             last = time.perf_counter()

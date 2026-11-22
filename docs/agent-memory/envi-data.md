@@ -2,11 +2,12 @@
 
 Read when preparing or checking the data of the next two-way run: `en_speech` in both directions,
 the noisy copies of every English source (`en_speech`'s and the tranche's voice-cloned English), the
-Mac run that builds them (`envi_mac.py`) and where each folder is on the Hub. The build itself is in
+Mac run that builds them (`envi_mac.py`), the box run that meets it from the other end
+(`envi_box.py`) and where each folder is on the Hub. The build itself is in
 [cache-build](cache-build.md), the noisy copies in [noisy-source](noisy-source.md#noisy-cache), the
 two-way run in [two-way](two-way.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](#on-the-hub) ·
-[The Mac run](#the-mac-run) · [Speed](#speed)
+[The Mac run](#the-mac-run) · [The box run](#the-box-run) · [Speed](#speed)
 
 ## Decision
 
@@ -89,7 +90,7 @@ running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
   `noisy` (the 527 `en_speech` `en-vi` shards the boxes built), `build` (the other 1,305:
   `cache_codes --device mlx --direction en-vi --ane-ctc`, then the noisy copy).
 - Each batch works in its own `work/<batch>/`: its inputs come down by curl (the dataset parquets
-  at `eval_sets.EN_VI_REVISION`, the tranche's `en_audio` parts, the clean shards) while the batch
+  at `paths.EN_VI_REVISION`, the tranche's `en_audio` parts, the clean shards) while the batch
   before it runs on the GPU; its outputs move to `stage/<batch>/`, upload while the next batch runs,
   are checked against the Hub's listing by name and size, then deleted. A restart uploads what is
   staged, drops `work/` and plans again from the Hub's listings.
@@ -103,11 +104,12 @@ running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
   machine:
   - builds with main at c1e778c or later, so its shards are timed by the same aligner
     (wav2vec2-base-vietnamese-250h, `min_score` 0.55; [two-way](two-way.md#vietnamese-aligner));
-    on CUDA that path is the English aligner's, checked on the CPU only;
+    its CUDA path, the English aligner's code, matched the Mac's build of a shard on the RTX 5090
+    ([cache-speed-cuda](cache-speed-cuda.md#rtx-5090));
   - publishes clean shards to `en-vi/en-vi-grounded-v2/train/` and their noisy copies, `--seed 1`
     and `--fraction` 0.6, to `en-vi/en-vi-grounded-v2-noisy/train/` (tranche copies to
     `en-vi/<source>-noisy/` of the tranche cache repo);
-  - goes bottom up: the box's `envi_rest.py` goes top down, so reverse its lists first.
+  - goes bottom up: [The box run](#the-box-run).
 - `touch /Volumes/data/datasets/envi_mac/pause` holds new batches off the GPU (downloads go on);
   delete it to go on. A batch already on the GPU finishes first.
 - To stop it, kill `run.sh`, then `envi_mac.py`, then its GPU step, which outlives its parent
@@ -122,6 +124,26 @@ running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
   crawl through their resumes; curl with `-C -` reads the same files at ~30–40 MB/s. Its Xet
   uploads stalled, so the driver sets `HF_HUB_DISABLE_XET=1` before importing it. Both were
   measured through the proxy above; neither has been tried direct since.
+
+## The box run
+
+The other end since 2026-11-22: the RTX 5090 box (Vast 61906288, [tranche-box](tranche-box.md#state))
+runs `/workspace/envi_box/envi_box.py`, `envi_mac.py` on CUDA, by `/workspace/envi_box/run.sh`
+(the Mac's `run.sh` on the box: at most 20 restarts, 5 minutes apart; log `run.log` beside it).
+Copies of both are kept in `/Volumes/data/datasets/envi_mac/box/`. The user had it build first and
+`both_heads_z`'s run wait ([on-policy-distillation](on-policy-distillation.md)).
+
+- The jobs and each job's shards in the reverse of the Mac's order: `build` from the last name down,
+  then `noisy`, then `tranche`.
+- The cache env alone (`/workspace/envs/cache`, built as `envs-min.sh` builds it) runs the driver
+  and its steps; `h100.sh setup` refuses the 5090 (`require_gpu`), and nothing here needs the
+  `.venv`. huybik's token is read from `$HF_HOME/token`, `HF_TOKEN_AN` from `/workspace/.env`.
+- Batches of 40 shards (the GPU idles ~40 s between batches) and `noisy_cache encode
+  --batch-seconds 320`, for the 32 GB card; the build at `CUDAModels.window` 512, for the box's
+  31 GB of RAM ([cache-speed-cuda](cache-speed-cuda.md#memory)).
+- `touch /workspace/envi_box/pause` holds new batches off the GPU. Stop it with `kill` on the PIDs
+  of `run.sh` (`run.pid`), `envi_box.py` and its GPU step, never `pkill -f` from an ssh command
+  line holding the same pattern ([tranche-box](tranche-box.md#a-box-behind-a-slow-proxy)).
 
 ## Speed
 

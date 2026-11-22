@@ -125,7 +125,7 @@ encode (--device cuda or mlx)                .sources + clean shard ─► shard
   `cache_codes` shard's EN-VI parquet, or a tranche `en-vi` shard's `<source>/en_audio/` part
   beside the segments it was built from (`anquachdev/en-vi-speech-20k`, rows in the segments'
   order; a tranche `vi-en` source is real speech and has no noisy copy). It downloads each file,
-  the EN-VI parquets at `eval_sets.EN_VI_REVISION`, 16 at a time, each tried 4 times, or reads it
+  the EN-VI parquets at `paths.EN_VI_REVISION`, 16 at a time, each tried 4 times, or reads it
   from `--dataset-dir`, a local copy of the dataset the cache was built from (the box's 2026-11-21 `en-vi` build of the remaining `en_speech` shards
   uses it to copy each batch before deleting its sources, [tranche-box](tranche-box.md#state)). It
   keeps the id and the source clip's bytes of the selected rows

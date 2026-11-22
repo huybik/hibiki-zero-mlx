@@ -15,10 +15,10 @@ the shards go ([cache-build](../../docs/agent-memory/cache-build.md)).
 
 from __future__ import annotations
 
+import fcntl
 import math
 import os
 import re
-import shutil
 import sys
 import tempfile
 from collections import Counter, deque
@@ -69,19 +69,62 @@ Aligned = tuple[Future, int]
 AlignJob = Callable[[list[Row], list[np.ndarray]], Future]  # Builder._encode_start's: submits one
 
 
+PCM_PREFIX = "cache_build_pcm_"  # each build's directory of clips in /dev/shm
+PCM_LOCK = ".owner"  # in it, locked (flock) by its build while it runs
+
+
 @contextmanager
 def pcm_dir() -> Iterator[Path | None]:
     """Where the workers leave decoded clips for the main process to map (`cache_rows.Planned`): a
     fresh directory in /dev/shm, removed with whatever a failed run left; None where there is none
-    (macOS), and the clips come back in the replies."""
-    if not Path("/dev/shm").is_dir():
+    (macOS), and the clips come back in the replies. A build killed outright (SIGKILL, the
+    out-of-memory killer) cannot remove its own, and /dev/shm holds RAM until deleted (~11 GB after
+    four killed builds on a 31 GB box, 2026-11-22). So each build holds a lock in its directory,
+    which the kernel drops however the build dies, and first removes every directory whose lock it
+    can take. A directory is locked before it takes its name, so no build finds one unlocked while
+    in use; one from before the lock has none and is left alone. Its lock file goes last
+    (`_remove_pcm`), so a removal that fails leaves the directory to the next build."""
+    shm = Path("/dev/shm")
+    if not shm.is_dir():
         yield None
         return
-    path = Path(tempfile.mkdtemp(prefix="cache_build_pcm_", dir="/dev/shm"))
+    for stale in shm.glob(f"{PCM_PREFIX}*"):
+        try:
+            fd = os.open(stale / PCM_LOCK, os.O_RDWR)
+        except OSError:  # no lock file (from before the lock), or not ours to open
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:  # its build is running
+            continue
+        else:
+            _remove_pcm(stale)
+        finally:
+            os.close(fd)
+    staging = Path(tempfile.mkdtemp(prefix=f".{PCM_PREFIX}", dir=shm))  # outside the glob until locked
+    lock = os.open(staging / PCM_LOCK, os.O_CREAT | os.O_RDWR, 0o600)  # not inherited by the workers
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    path = staging.rename(shm / staging.name.removeprefix("."))
     try:
         yield path
     finally:
-        shutil.rmtree(path, ignore_errors=True)
+        _remove_pcm(path)
+        os.close(lock)
+
+
+def _remove_pcm(path: Path) -> None:
+    """Remove a build's directory of clips, its lock file last: a failure (a dead build's worker
+    still writing) leaves the lock file, and the next build tries again."""
+    try:
+        for entry in path.iterdir():
+            if entry.name != PCM_LOCK:
+                entry.unlink()
+        (path / PCM_LOCK).unlink()
+        path.rmdir()
+    except FileNotFoundError:  # another build removed it first
+        pass
+    except OSError as error:
+        print(f"could not remove {path}, left to the next build: {error}", file=sys.stderr, flush=True)
 
 
 def default_workers(device: str) -> int:
@@ -213,7 +256,11 @@ class CUDAModels:
     `half_ctc=True` to run its transformer in bfloat16 (feature extractor and lm_head stay
     float32, so GroupNorm stats are safe and log-probs match float32 within CTC rounding)."""
 
-    window = 4096  # rows per batched pass
+    # Rows per batched pass. The decoded clips of several windows are held at once (decoding, filling, queued, on
+    # the GPU), in /dev/shm and the main process: on Libriheavy the build took ~5 GB plus ~10 MB a window row. On
+    # four Libriheavy shards (RTX 5090, 31 GB RAM, 2026-11-22): 2,048 rows ran 2,018x at 26.0 GB, 1,024 2,106x at
+    # 15.6 GB, 512 2,133x at 10.4 GB; 4,096 was killed out of memory on a 40-shard batch.
+    window = 512
     threaded = True  # encode runs in the build's GPU thread, a window ahead of the main thread
 
     def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False):
@@ -454,8 +501,9 @@ class Builder:
             try:
                 yield from self._stream(self._read_ahead(keys, read, reads), pool)
             except BaseException:
-                # Drop the queued decodes and the next shard's read rather than wait for them.
-                pool.shutdown(wait=False, cancel_futures=True)
+                # Drop the queued decodes and the next shard's read rather than wait for them. The
+                # decodes already running write clips into pcm: wait for them, so its removal follows.
+                pool.shutdown(wait=True, cancel_futures=True)
                 reads.shutdown(wait=False, cancel_futures=True)
                 raise
 

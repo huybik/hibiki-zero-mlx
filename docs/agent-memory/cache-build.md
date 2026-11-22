@@ -9,7 +9,7 @@ what each device's speed depends on. The builders on top are in [sft-data-caches
 the tranche); the row layout is in [sft-data-caches](sft-data-caches.md#row-layout).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Shape](#shape) · [Rows](#rows) · [MLX](#mlx) ·
 [CUDA](#cuda) · [Across devices](#across-devices) · [Speed on the Mac](#speed-on-the-mac) ·
-[Speed on CUDA](#speed-on-cuda) · [Changing it](#changing-it)
+[Changing it](#changing-it); the speed and memory on CUDA are in [cache-speed-cuda](cache-speed-cuda.md)
 
 ## Shape
 
@@ -36,10 +36,11 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   `cache_codes` missed its measured MLX levers and decoded whole shards into memory).
 - `cache_build` imports MLX, moshi, torch and transformers lazily, and `cache_rows` only torch (a
   sample's codes, the write), so the box runs without MLX and the Mac without CUDA.
-- Windows (each models class's `window`): 64 rows on MLX, 4,096 on CUDA. Decodes run one window
+- Windows (each models class's `window`): 64 rows on MLX, 512 on CUDA. Decodes run one window
   ahead (the pool runs jobs in order, so more would only queue a window's alignments behind more
-  decodes), so about two windows of PCM are held: ~0.3 GB on MLX; on CUDA ~10 GB of GigaSpeech 2's
-  short rows, ~27 GB of PhoAudiobook's long ones (3.3 MB a row), unmeasured on the box. On top, the
+  decodes), so the PCM of several windows is held: ~0.3 GB on MLX; on CUDA the window sets the
+  build's RAM, ~5 GB plus ~10 MB a window row on Libriheavy
+  ([cache-speed-cuda](cache-speed-cuda.md#memory), where 4,096 rows ran a 31 GB box out of memory). On top, the
   builder's reads hold two shards' compressed audio (1–2.5 GB a GigaSpeech 2 shard). Decoding a
   whole shard at once held ~23 GB for a GigaSpeech 2 shard, and swapped the 48 GB Mac. A window
   spans shard ends, so the device does not wait on a shard's tail or the next one's first decodes;
@@ -51,7 +52,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   decodes and runs the Viterbi with its own `CTCWordAligner` (`init_worker`). A job holds many rows
   (32 a decode job; a CTC batch's an alignment job on CUDA, one row on MLX) and returns each row's
   `Rejected` or `AlignmentError` in its place: a job a row cost the main process each row's pool
-  round trip under the GIL its GPU thread needs ([Speed on CUDA](#speed-on-cuda)).
+  round trip under the GIL its GPU thread needs ([cache-speed-cuda](cache-speed-cuda.md)).
 
 ## Rows
 
@@ -146,7 +147,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 ## CUDA
 
 - `CUDAModels`: moshi's Mimi (`cuda_mimi`) and the aligner's CTC (transformers) in float32 with
-  TF32 matmuls and convolutions (`CUDA_TF32`, [Speed on CUDA](#speed-on-cuda)), over padded batches
+  TF32 matmuls and convolutions (`CUDA_TF32`, [cache-speed-cuda](cache-speed-cuda.md)), over padded batches
   of up to `CUDA_BATCH_S` (320 s) of audio, shortest first (`batches`; both clips of a window in one
   sort for Mimi). `encode` runs in the build's GPU thread (`threaded`), one window queued behind it. The CTC takes the first GroupNorm's
   statistics over each clip's own frames (always float32 to avoid overflow) and gives the encoder
@@ -240,62 +241,6 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
   GigaSpeech 2 archives left take ~30 h of the Mac (~14 min an archive).
 - Batching a window's clips into one Mimi and one CTC forward (PR #87, closed) was slower (long
   rows 268–277× → 183–194×), lost the CTC/Mimi overlap and peaked at 15.3 GB: the serial path stays.
-
-## Speed on CUDA
-
-**H200 (2026-11-09, GigaSpeech 2 shards 228–229 rebuilt and compared with their Hub copies):
-1,342× → 3,286× real time**, the GPU 92–94% busy at ~640 W (was 66%, ~500 W). Steps, each measured
-on the same rows (bench: a 4,094-row window for the models, whole shards for the build):
-
-| Step | Build | Why |
-|---|---:|---|
-| fp32, encode in the main thread (before) | 1,342× | GPU idle while the main thread planned, unpickled PCM, collected |
-| TF32 (`CUDA_TF32`) + encode in a GPU thread, the next window queued | 2,014× | CTC 11.7 → 4.1 s, Mimi 13.8 → 7.9 s a window |
-| decode **and** `plan` in the workers, clips through `/dev/shm` (`cache_rows.Planned`) | 2,311× | the pool's one result pipe moved ~1.4 MB a row: ~30 s of main thread a shard |
-| pinned double-buffered staging, batch k+1 launched before k is collected | 3,298× | the GPU thread's host work hid behind kernels: a window 16.5 → 12 s |
-| `CUDA_BATCH_S` 1,280 → 320 | 3,286× | models alone 11.3 → 10.7 s a window, 27 → 7.4 GiB peak; end to end within noise |
-
-- TF32's effect on the rows: 0.021% of text token frames move (at most 4 frames), no row changes
-  its accept/reject; Mimi's first codebook 99.92% equal, residual ones 96–99%. These are near-ties:
-  the fp32 decode of TF32 codes is as close to the source as that of fp32 codes (SNR 9.043 against
-  9.040 dB on 256 clips). Shards before 2026-11-09 16:40 UTC are fp32, the rest TF32; both are
-  valid encodings. The noisy re-encode (`noisy_cache`) keeps `cuda_mimi`'s fp32 default.
-- Rejected: bf16 Mimi (half the residual codes rewritten, ~10% faster than TF32); bf16 CTC (slower
-  than TF32, 0.43% of token frames moved; for omniASR too, the `en-vi` aligner: 82 s against 65 s
-  on GigaSpeech 2 shards 0–1, the H100 SXM, 2026-11-10); `cudnn.benchmark` (no change); `torch.compile` on Mimi:
-  at 1,280 s batches it hits `CUDA_ERROR_ILLEGAL_ADDRESS` (64 channels × 30.7M samples, past int32
-  indexing), and at 320 s it runs 14% faster but its codes are wrong (19.7% equal, 0.76 dB SNR).
-- A run's start costs ~10 s (the first shard's read and window of decodes). Mimi's time is mostly
-  its first SEANet layers at 24 kHz (memory-bound convolutions, ELU, pads), CTC's its layers. The
-  workers use ~15 ms of CPU a row (decode 8.9, soxr 2.3, Viterbi ~3): the 30-CPU box idles.
-- **The en-vi build (omniASR CTC, the Japan H100 SXM, 2026-11-11): 3,101× → 3,471×**, the GPU
-  86% → 98% busy. Each step on GigaSpeech 2 shards 0–2 (the speed between the first shard out and
-  the last, inputs fetched first, nothing pushed), every shard compared with its Hub copy:
-
-  | Step | Build | Why |
-  |---|---:|---|
-  | before | 3,101× | in each ~20 s window Mimi held the GPU at 100% for ~10 s, the CTC at 35–85% for ~9 s |
-  | a decode job of 32 rows (`DECODE_JOB_ROWS`), an alignment job of a CTC batch (`align_rows`) | 3,344× | a job a row: the main thread 100 → 51 s of CPU, the pool's manager thread 44 → 8 s, all under the GIL the GPU thread needs |
-  | the CTC encoder without its host syncs (`_encoder`, `_within`) | 3,409× | a boolean-mask write, the mask's padding check and a blocking mask copy emptied the GPU's queue every CTC batch |
-  | free-threaded Python 3.14 (`/workspace/envs/cache`), Mimi's rope eager | 3,471× | no GIL between the GPU thread and the threads feeding it; CTC 91 → 84 s |
-
-  The text timing came out as the old build's own rebuild (the same 8, 11 and 4 token frames moved
-  against the Hub copies, every accept and reject alike). Audio codes: 99.95% equal on 3.12, 99.47%
-  on 3.14, all from Mimi's rope run eager (the 3.12 `.venv` under `NO_TORCH_COMPILE=1` gives the same
-  codes byte for byte; PyAV 19 decodes as 15.1 to subnormals), near-ties as TF32's. Rejected: CTC batches of 1,280 s (3,344×); Triton under `PYTHON_GIL=0` (died
-  without a traceback in its first window). Without Triton (it turns the GIL back on) Mimi's one
-  compiled function runs eager (`NO_TORCH_COMPILE=1`); safetensors is built from source.
-- What is left on it: a CTC window of 4,096 clips (17,265 s) is 6.3 s of kernels against ~7 s of
-  wall: float32 memory-efficient attention 17%, copies 15% (attention outputs, the feature
-  extractor's layer norms), TF32 matmuls ~24%, convolutions ~20%, layer norm 7%, GELU 6%. Faster
-  needs lower precision (bf16 CTC was rejected) or fused kernels (`torch.compile` needs Triton, so
-  the GIL); Mimi's ~8 s a window is untouched. Unmeasured: one worker less, as the main process now
-  uses ~1.8 CPUs and 20% of the cgroup's periods throttle. `CUDAModels._encoder` copies
-  transformers 5.22.1's encoder forward without its syncs: check it again on an upgrade.
-- Method (the scripts were per session): rebuild whole shards already built and compare them, bench a
-  window's models for code equality and decode SNR; judge precision by reconstruction.
-- CPU: check the main process is not the one throttled (`/sys/fs/cgroup/cpu.stat`): 25 workers on
-  the Japan box's 26.9-CPU quota throttled 14% of the 100 ms periods in bursts (2026-11-07).
 
 ## Changing it
 

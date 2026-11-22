@@ -7,11 +7,17 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 ## State
 
 **The next box: an RTX 5090** (32 GB; user, 2026-11-22: "let's upload everything, then we start on a
-new 5090 machine"): Vast 61906288, $0.558/h, rented until 2026-12-14 15:00 UTC, `ssh -p 30336
-root@ssh1.vast.ai`; not set up yet. All that is left for it is `both_heads_z`'s run, restored
-from the Hub ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box), which
-says what fits in 32 GB); then the palettization finish and the 3B's experiments, which need a
-bigger card.
+new 5090 machine"): Vast 61906288, South Korea, $0.558/h with 350 GB of disk, rented until
+2026-12-14 15:00 UTC; driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 GB of RAM, 15 GB of `/dev/shm`.
+`ssh -p 36687 root@180.189.55.43`, or Vast's proxy `ssh -p 30337 root@ssh1.vast.ai` (30336, the
+API's `ssh_port`, is the portal). It first builds the rest of the EN→VI data from the bottom up
+(user, 2026-11-22: "Cache build first"; [envi-data](envi-data.md#the-box-run)), then runs
+`both_heads_z`, restored from the Hub ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box),
+which says what fits in 32 GB); then the palettization finish and the 3B's experiments, which need
+a bigger card. Set up so far: the checkout, `/workspace/.env` and `$HF_HOME/token`, the cache env
+(`/workspace/cache_env.sh`, its part of `envs-min.sh`), the upstream weights and the swap
+tokenizer in `weights/`, the rooms' noise bank. `h100.sh setup` refuses the 5090 (`require_gpu`):
+the run needs the 5090 added there first.
 
 **The box 2026-11-19 to 2026-11-22: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
 destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver
@@ -108,7 +114,7 @@ out; giga/89–99 excl 98 unvoiced (ASR/VRAM conflict). Never restart ASR while 
 
 **Cache: DONE (2026-11-09 17:51 UTC)**. All 228 buildable GigaSpeech 2 archives cached (pho 224,
 viVoice 354), on the Hub (fetched into `/workspace/tranche/repo/cache/` for SFT). The last 69 built in
-1.24 h at 2,743× after the CUDA build was optimized 1,342× → 3,286× ([cache-build](cache-build.md#speed-on-cuda)).
+1.24 h at 2,743× after the CUDA build was optimized 1,342× → 3,286× ([cache-speed-cuda](cache-speed-cuda.md)).
 Archives below 74 had no local inputs: one-shard read-ahead starved the GPU to ~1,450× until their
 parts were prefetched 8 at a time (a builder prefetch is drafted, not merged).
 

@@ -21,7 +21,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 - Free-threaded Python 3.14 (no GIL) for every box env it can run (user, 2026-11-11: "we use this
   new python setup for everything"), at the `.venv`'s package versions except where a package's
   free-threaded wheel turns the GIL back on (av 15.1.0; `box/envs-min.sh` pins the ones checked).
-  The cache builds run on it (`/workspace/envs/cache`, [cache-build](cache-build.md#speed-on-cuda)).
+  The cache builds run on it (`/workspace/envs/cache`, [cache-speed-cuda](cache-speed-cuda.md)).
   Check `sys._is_gil_enabled()` after a job's imports. Importing Triton turns the GIL back on
   (triton-lang/triton#8491, open), and forcing it off under Triton killed the cache build, so a job
   on `torch.compile` (the trainer; lxml through sacrebleu and the source-built sphn turn it on there
