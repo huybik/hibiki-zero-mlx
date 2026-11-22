@@ -53,7 +53,10 @@ Vast 61906288 (2026-11-22): 32 GB, driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 
   Four Libriheavy shards at window 512: 2,133×, the GPU 98% busy while active.
 - A production batch of 40 shards (`envi_box.py`, [envi-data](envi-data.md#the-box-run)): the
   build 933 s, the noisy copies 265 s, the upload of both 66 s; 13.2 GB of RAM at peak, the GPU
-  98% busy while active. ~30 s of GPU a shard: ~11 h for the 1,304 builds.
+  98% busy while active. The full run's first batch (Libriheavy-medium, 801 h against that
+  batch's 571 h) built in 1,316 s and made its noisy copies in 364 s: the same ~2,200×, on longer
+  shards. At that size a 40-shard batch takes ~29 min of GPU, ~15 h for the run's 1,264 builds
+  if the Mac took none.
 - Against the Mac's `--ane-ctc` build of that shard (c1e778c): the same 3,147 rows kept and 71
   rejected for the same reasons, every non-code field equal, 22 rows with one word a 12.5 Hz frame
   apart, scores within 0.0105, audio codes 94.9% equal (first codebooks 99.8%): TF32's near-ties,
