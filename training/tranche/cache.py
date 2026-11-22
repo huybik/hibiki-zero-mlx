@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", choices=list(MODELS), default="cuda")
     p.add_argument("--direction", choices=DIRECTIONS, default=DEFAULT_DIRECTION,
                    help="<source>-<target>: the language heard, then the one spoken and written")
-    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX) or bfloat16 (CUDA): +~16%% CTC speed (MLX fixed code, unvalidated; CUDA failed quality check)")
+    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX; measured on omniASR only, near-ties) or bfloat16 (CUDA; failed its quality check)")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--drop-inputs", action="store_true",
                    help="delete each shard's parts from the HF cache once read (the box's own copies stay): "

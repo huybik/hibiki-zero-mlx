@@ -133,23 +133,24 @@ python -m training.prep.eval_sets --sets giga-heldout  # giga-heldout/test (gate
 
 ## Noisy source cache
 
-Runs on the pod. `training.prep.mimi_cache_cuda` copies a clean cache split shard by shard,
-re-encoding the source (Vietnamese in a `vi-en` cache, English in an `en-vi` one) of a seeded 60%
-of the rows under drawn room reverb, noise, band and level
-([noisy-source](../../docs/agent-memory/noisy-source.md)). `fetch` downloads each shard's parquet
-from `anquachdev/common-vi-en` (or reads a local copy of the dataset, `--dataset-dir`), keeps only
-the selected rows' source audio and can run while the GPU trains; `encode` needs the GPU, waits for what a running fetch
-has not written yet, and ends with `every shard written`. A rerun of either skips the shards
-written.
+`training.prep.noisy_cache` copies a clean cache split shard by shard, re-encoding the source
+(Vietnamese in a `vi-en` cache, English in an `en-vi` one) of a seeded 60% of the rows under drawn
+room reverb, noise, band and level ([noisy-source](../../docs/agent-memory/noisy-source.md)), on
+the pod (`--device cuda`, the default) or the Mac (`--device mlx`). `fetch` downloads the file each
+shard was built from (an `anquachdev/common-vi-en` parquet, or for a tranche `en-vi` shard its
+`en_audio` part in `anquachdev/en-vi-speech-20k`; or reads a local copy, `--dataset-dir`), keeps
+only the selected rows' source audio and can run while the GPU trains; `encode` needs the GPU,
+waits for what a running fetch has not written yet, and ends with `every shard written`. A rerun
+of either skips the shards written.
 
 ```bash
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
-nohup ./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
-./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O   # once the GPU is free
+nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O   # once the GPU is free
 # English to Vietnamese, from a local copy of the dataset the cache was built from; another seed
 C=data/cache/en-vi/en-vi-grounded-v2/train O=data/cache/en-vi/en-vi-grounded-v2-noisy/train
-./.venv/bin/python -m training.prep.mimi_cache_cuda fetch --cache-dir $C --out-dir $O --seed 1 --dataset-dir DATASET
-./.venv/bin/python -m training.prep.mimi_cache_cuda encode --cache-dir $C --out-dir $O
+./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O --seed 1 --dataset-dir DATASET
+./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O
 ```
 
 ## Vietnamese translations of `en_speech`
