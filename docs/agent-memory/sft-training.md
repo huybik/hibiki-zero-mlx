@@ -201,12 +201,12 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   ahead of its source: by words spread evenly over the clip, 39% of the kept `vi-en` rows and 56%
   of the `en-vi` ones (the English aligner's rejects) do, by ~0.3 s median, ~0.4% of all rows.
   The source tail gate can't see a kept row either; it had too little audio for its text, so it
-  is unlikely to babble. Also left out: a row whose pair's target clip
-  is not its source's length within a frame (the delay's rounding), whose id then names another
-  recording (none locally; a shard where every pair is so raises). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
-  than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies
-  ([cache-build](cache-build.md#rows)), so caches built before it lose those rows too. Its log line
-  counts each reason and how many rows start later.
+  is unlikely to babble. Also left out: a row whose pair's target clip is not its source's length
+  within a frame (the delay's rounding), whose id then names another recording (none locally; a
+  shard where every pair is so raises); one whose Vietnamese, its own or its pair's, runs on more
+  than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%; the build now rejects these,
+  [cache-build](cache-build.md#rows)); and a Libriheavy row whose English is OCR-damaged
+  (`ocr_damaged`, 1.6%, [en-speech-corpus](en-speech-corpus.md#quality-filters)). Its log counts all.
 - The Vietnamese tail gate: VieNeu sometimes keeps speaking past its text, which the alignment
   score does not see. On Common Voice shard 22's `en-vi` rows (8,019), 109 (1.4%) are loud over
   0.6 s from 1 s past the last token; a tail over 1.5 s flags 2.4% of rows and catches all 109,

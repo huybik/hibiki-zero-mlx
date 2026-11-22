@@ -44,7 +44,8 @@ later where a target token would otherwise come before the source it translates 
 The source's word times are the text track of the same row in the other direction's cache (its
 pair), so a run reads both directions' caches. A row whose pair is missing (the other build
 rejected it) is left out, unless it was rejected for fast speech: that row trains at its cached
-delay. A row whose Vietnamese runs on past its last word (`Aligner.max_tail_s`) is left out too:
+delay. A row whose Vietnamese runs on past its last word (`Aligner.max_tail_s`) is left out too,
+and so is a Libriheavy row whose English text a bad book scan garbled (`ocr_damaged`):
 
     EN   [I can't bear to go away from you]
     VI     [em không chịu nổi phải xa anh]        cached delay: ahead of the English
@@ -157,9 +158,28 @@ class Stream:
     frames: int
 
 
+# Libriheavy's text is its books' text, and some books were scanned badly: the reader says
+# "yesterday" where the text reads "ye^erday" or "suppHed". That text is a wrong target for
+# Vietnamese to English and was a wrong source for the Vietnamese translation, so `load_rows` leaves
+# such rows out of both directions (en-speech-corpus.md#quality-filters).
+OCR_MARK = re.compile(
+    r"[\^{}|\\<>~•¬©®¥]"  # a glyph no reader says: ye^erday, dumb¬ founded, {348} (a page number)
+    r"|[£¢](?!\s?\d)"  # a currency sign without an amount: o£ hie
+    r"|\b(?!Mc|Mac|De|La|Le|Van|Von)[A-Za-z]*[a-z][A-Z]"  # a capital inside a word: suppHed, caveNo
+)
+
+
+def ocr_damaged(sample: dict[str, Any]) -> bool:
+    """Whether a cache row is a Libriheavy row whose English text carries an `OCR_MARK`. Other
+    sources' English is typed (Common Voice, PhoMT) or machine-made (the tranche), and it writes
+    names such as YouTube."""
+    return str(sample["id"]).startswith("libriheavy/") and OCR_MARK.search(sample["text_en"]) is not None
+
+
 # 3: docs.json; 4: the shard's direction, the index by source and target; 5: tokenizer, text.bin;
-# 6: the ids the shard's build rejected for the aligner's frame grids (`capacity`)
-PACK_VERSION = 6
+# 6: the ids the shard's build rejected for the aligner's frame grids (`capacity`); 7: the ids
+# whose English is OCR-damaged (`ocr`)
+PACK_VERSION = 7
 PACK_DIR = ".packed"  # beside the shards: <cache-dir>/.packed/<shard stem>/
 
 
@@ -240,7 +260,8 @@ def pack_shard(shard_path: Path) -> None:
         json.dumps({"stamp": _pack_stamp(shard_path), "layout": dataclasses.asdict(layout), "direction": direction,
                     "tokenizer": payload.get("tokenizer", DEFAULT_TOKENIZER.name),
                     "capacity": [str(item["id"]) for item in payload.get("rejected", [])
-                                 if any(reason in item["reason"] for reason in CAPACITY_REASONS)]})
+                                 if any(reason in item["reason"] for reason in CAPACITY_REASONS)],
+                    "ocr": [str(sample["id"]) for sample in payload["samples"] if ocr_damaged(sample)]})
     )
     shutil.rmtree(target, ignore_errors=True)
     temporary.rename(target)
@@ -350,6 +371,7 @@ class _Pack:
     index: np.ndarray
     tokens: Tokens
     readable: np.ndarray  # rows whose text reads the same on the run's tokenizer
+    ocr: np.ndarray  # rows whose English is OCR-damaged (`ocr_damaged`)
 
 
 def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
@@ -366,8 +388,9 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
     shard all of whose pairs are other clips raises), except that a row the other build rejected
     for its aligner's frame grids (`CAPACITY_REASONS`: fast or dense speech, a sound row) trains at
     its cached delay; and when its Vietnamese, its own or its pair's, runs on past its last text token longer than
-    the aligner allows (`Aligner.max_tail_s`: TTS that babbled past its text). A shard none of whose
-    rows has a pair raises: its other direction was not given.
+    the aligner allows (`Aligner.max_tail_s`: TTS that babbled past its text); and when it is a
+    Libriheavy row whose English is OCR-damaged (`ocr_damaged`, recorded in its pack). A shard none
+    of whose rows has a pair raises: its other direction was not given.
 
     Rows load memory-mapped from each shard's pack (`pack_shard`), built in parallel the first
     time a shard is seen or after it changes. Startup then reads the indexes and text tracks, and
@@ -404,7 +427,9 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
                 starts = np.concatenate([[0], np.cumsum(index[:-1, 1])])
                 readable = ~np.logical_or.reduceat(np.isin(text, swapped[on], kind="table"), starts)
         ids = json.loads((directory / "ids.json").read_text())
-        packs.append(_Pack(shard_path, meta["direction"], ids, index, tokens, readable))
+        damaged = set(meta["ocr"])
+        ocr = np.array([row_id in damaged for row_id in ids], dtype=bool)
+        packs.append(_Pack(shard_path, meta["direction"], ids, index, tokens, readable, ocr))
         untimed[meta["direction"]].update(meta["capacity"])
     if layout is None:
         raise RuntimeError(f"No usable shard_*.pt cache rows in {cache_dirs}")
@@ -457,6 +482,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
         # speech) is sound: it trains at its cached delay, its source untimed.
         keep = shard.readable.copy()
         dropped["reassigned"] += int((~keep).sum())
+        dropped["ocr"] += int((keep & shard.ocr).sum())
+        keep &= ~shard.ocr
         dropped["unpaired"] += int((keep & (where == -1)).sum())
         dropped["other clip"] += int((keep & (where == -2)).sum())
         keep &= (where >= 0) | (where == -3)
@@ -509,7 +536,8 @@ def load_rows(cache_dirs: list[Path], max_frames: int, tokenizer: Path,
         f"[streams] kept {len(rows)} rows; left out {dropped['reassigned']} whose text uses a slot "
         f"{Path(tokenizer).name} reassigned, {dropped['unpaired']} the other direction's cache lacks, "
         f"{dropped['other clip']} whose pair there is another clip, "
-        f"{dropped['tail']} whose Vietnamese runs on past its last word, {dropped['long']} over {max_frames} "
+        f"{dropped['tail']} whose Vietnamese runs on past its last word, "
+        f"{dropped['ocr']} whose English is OCR-damaged, {dropped['long']} over {max_frames} "
         f"frames; {len(moved)} start after their cached delay"
         + (f", by {np.median(moved) / FRAME_RATE:.2f} s median" if len(moved) else "")
         + f"; {unfloored} at it, whose pair the other direction's aligner could not time (fast speech)",

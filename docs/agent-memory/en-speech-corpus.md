@@ -76,6 +76,16 @@ dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
   (`the_card_11_bennett_64kb` segments 123 and 147 open with the same sentence), checked
   2026-11-01. Rows are not deduplicated; training streams place them at random
   ([sft-training](sft-training.md#trainer)).
+- Some Libriheavy books were scanned badly, and their text keeps the damage while the reader says
+  the right words: stray glyphs (`ye^erday`, `dumb¬ founded`, `{348}`, a page number), capitals
+  inside words (`suppHed`; poem lines run together, `caveNo`), letter swaps (`worid`). The corpus
+  keeps the rows; training leaves out a Libriheavy row whose `text_en` matches
+  `streams.OCR_MARK` (one of those glyphs, a currency sign without an amount, a capital inside a
+  word not opening Mc, Mac, De, La, Le, Van or Von), in both directions: 47,060 of 2.96M rows
+  (1.59%, 161 h), and 40 of 40 sampled hits were damage (user, 2026-11-22: "ok go ahead"). Common
+  Voice is not checked: its matches (0.57%) are names such as GitHub. Not caught: letter swaps,
+  words a line break split (`suffi cient`, ~0.7% of rows) and long-s readings (`deteftable`,
+  ~0.4%), which need an English word list; ASR put 186 sampled rows at 2.8% CER.
 - Recordings under 10.5 kHz are dropped. Mimi codes up to 12 kHz. CV's 32 kHz MP3s cut off at
   ~11 kHz (a spike at 10.7–11.3 kHz) that an 11 kHz floor would split. Before the filter,
   42% of CV train hours and 17% of Libriheavy's were under 10.5 kHz.
