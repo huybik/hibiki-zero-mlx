@@ -9,7 +9,7 @@ E=/workspace/envs; mkdir -p $E
 UV="uv"
 mk() { [[ -x $E/$1/bin/python ]] || $UV venv -q -p "$2" $E/$1; }
 # The tranche's cache build (restart.sh cache, envi-cache) on free-threaded Python: no GIL, so its GPU thread waits on
-# none of the threads beside it (cache-build.md#speed-on-cuda). Without Triton, which turns the GIL back on: Mimi's one
+# none of the threads beside it (cache-speed-cuda.md). Without Triton, which turns the GIL back on: Mimi's one
 # compiled function (its rope) runs eager under NO_TORCH_COMPILE=1. The .venv's versions (h100.sh) but av, pyarrow and
 # sentencepiece, at versions checked free of the GIL (av 15.1.0's free-threaded wheel turns it back on); safetensors has
 # no free-threaded wheel: built with Rust.

@@ -235,7 +235,7 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]], pushes: 
     grams = eval_grams()
     builder = Builder(args.device, Settings(args.max_frames, direction=args.direction), args.config_path,
                       args.mimi_weight, args.tokenizer or DIRECTION_TOKENIZERS[args.direction], half_ctc=args.half_ctc)
-    # After the models' imports, any of which could turn the GIL back on (cache-build.md#speed-on-cuda).
+    # After the models' imports, any of which could turn the GIL back on (cache-speed-cuda.md).
     gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
     log(f"models loaded; Python {sys.version.split()[0]}, the GIL {gil}")
     pushed = {s: time.monotonic() for s in args.sources}

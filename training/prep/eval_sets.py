@@ -51,7 +51,7 @@ import sphn
 import torch
 from huggingface_hub import hf_hub_download
 
-from training.paths import repo_display_path, resolve_repo_path
+from training.paths import EN_VI_REPO, EN_VI_REVISION, repo_display_path, resolve_repo_path
 from training.prep import augment
 
 FLEURS_REPO = "google/fleurs"
@@ -62,8 +62,6 @@ MULTIMED_REPO = "leduckhai/MultiMed-ST"
 MULTIMED_REVISION = "d8c3b300b0f2e2ec8fa2113df3bdbc25f5e64668"
 MULTIMED_FILE = "vietnamese/corrected.test-00000-of-00001.parquet"
 MULTIMED_SEED = 0
-EN_VI_REPO = "anquachdev/common-vi-en"
-EN_VI_REVISION = "2ce8777d122123609722814f776f0505ea966ca5"
 EN_VI_SOURCES = {
     "cv27": ["cv27-00000"],
     "libriheavy": ["libriheavy-dev-00000", "libriheavy-dev-00001"],

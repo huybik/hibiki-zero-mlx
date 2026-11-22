@@ -15,6 +15,12 @@ DEFAULT_MODEL_WEIGHT = REPO_ROOT / "weights" / "hibiki-pytorch-77f82164@110.safe
 DEFAULT_MIMI_WEIGHT = REPO_ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safetensors"
 DEFAULT_TOKENIZER = REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 
+# The EN-VI speech dataset at the revision every `en_speech` cache was built from: its evaluation
+# rows (eval_sets) and the sources of its noisy copies (noisy_cache). Here rather than in eval_sets,
+# whose sphn would turn the GIL back on in the cache env's free-threaded Python (cache-build.md).
+EN_VI_REPO = "anquachdev/common-vi-en"
+EN_VI_REVISION = "2ce8777d122123609722814f776f0505ea966ca5"
+
 # Written by training.prep.cache_codes (Mac) and required by streams.load_rows (H100); kept here
 # so the trainer never imports the builder's Mac-only packages.
 CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"

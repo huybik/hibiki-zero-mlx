@@ -58,6 +58,8 @@ from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_DIRECTION,
     DEFAULT_MIMI_WEIGHT,
+    EN_VI_REPO,
+    EN_VI_REVISION,
     durable,
     exclusive,
     read_json,
@@ -66,7 +68,6 @@ from training.paths import (
 )
 from training.prep import audio, augment, cache_build
 from training.prep.cache_rows import FRAME_SAMPLES, Settings
-from training.prep.eval_sets import EN_VI_REPO, EN_VI_REVISION
 from training.tranche.ingest import REPO as TRANCHE_REPO
 
 SOURCES = ".sources"

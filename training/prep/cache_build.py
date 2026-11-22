@@ -213,7 +213,11 @@ class CUDAModels:
     `half_ctc=True` to run its transformer in bfloat16 (feature extractor and lm_head stay
     float32, so GroupNorm stats are safe and log-probs match float32 within CTC rounding)."""
 
-    window = 4096  # rows per batched pass
+    # Rows per batched pass. ~3.5 windows of decoded clips are held at once (decoding, filling, queued, on the
+    # GPU), in /dev/shm and the main process: ~3.6 MB a row (both clips at 24 kHz, the CTC's at 16 kHz, float32),
+    # up to ~5.7 MB on 22.4 s clips. On four Libriheavy shards (RTX 5090, 31 GB RAM, 2026-11-22): 4,096 and
+    # 2,048 were killed out of memory, 1,024 ran 2,093x at 25.1 GB, 512 ran 2,134x at 19.9 GB.
+    window = 512
     threaded = True  # encode runs in the build's GPU thread, a window ahead of the main thread
 
     def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False):
