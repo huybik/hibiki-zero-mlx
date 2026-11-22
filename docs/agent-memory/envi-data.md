@@ -2,8 +2,8 @@
 
 Read when preparing or checking the data of the next two-way run: `en_speech` in both directions,
 the noisy copies of every English source (`en_speech`'s and the tranche's voice-cloned English), the
-Mac run that builds them (`envi_mac.py`), the box run that meets it from the other end
-(`envi_box.py`) and where each folder is on the Hub. The build itself is in
+Mac run that made the tranche's copies and the first `en_speech` ones (`envi_mac.py`), the box run
+that finishes the rest (`envi_box.py`) and where each folder is on the Hub. The build itself is in
 [cache-build](cache-build.md), the noisy copies in [noisy-source](noisy-source.md#noisy-cache), the
 two-way run in [two-way](two-way.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](#on-the-hub) ·
@@ -41,11 +41,11 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 |---|---|---:|---|
 | `en-vi-grounded-v2/train` (VI→EN clean) | `huybik/hibiki-zero-vi-full-sft` | 1,832 | the Mac, 2026-10/11 |
 | `en-vi-grounded-v2-noisy/train` (VI→EN noisy, seed 0) | same | 1,832 | the pod |
-| `en-vi/en-vi-grounded-v2/train` (EN→VI clean) | same | 1,832 when done | 527 the boxes (CUDA, TF32), the rest the Mac; omniASR timed the first 528 |
-| `en-vi/en-vi-grounded-v2-noisy/train` (EN→VI noisy, seed 1) | same | 1,832 when done | the Mac |
+| `en-vi/en-vi-grounded-v2/train` (EN→VI clean) | same | 1,832 when done (1,168 on 2026-11-22 17:05) | the boxes (CUDA, TF32); omniASR timed the first 528 |
+| `en-vi/en-vi-grounded-v2-noisy/train` (EN→VI noisy, seed 1) | same | 1,832 when done (821 then) | 180 the Mac, the rest the RTX 5090 box |
 | `en-vi/en-vi-grounded-v2/validation` | same | 3 | the box |
 | `en-vi/{giga,pho,vivoice}` (tranche EN→VI clean) | `anquachdev/mimi-en-vi-speech-20k` | 228, 224, 354 | the box |
-| `en-vi/{giga,pho,vivoice}-noisy` (tranche EN→VI noisy, seed 1) | same | 228, 224, 354 when done | the Mac |
+| `en-vi/{giga,pho,vivoice}-noisy` (tranche EN→VI noisy, seed 1) | same | 228, 224, 354 | the Mac |
 
 - The `en_speech` shard names are the VI→EN cache's (`shard_cv27-*`, `shard_libriheavy-*`); the 7
   `cv-anquach` parquets of the dataset are their own cache and not in these folders.
@@ -76,12 +76,17 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 
 ## The Mac run
 
+**Stopped 2026-11-22 17:05 UTC+7**, after batch 10 of 94 (user: "we can stop after the current batch
+done, let's the other machine finish this"): it made every tranche copy and 180 of the 527 `noisy`
+job's copies, and built no `en-vi` shard. The box does the rest ([The box run](#the-box-run)). The
+scripts and `run.log` stay in `/Volumes/data/datasets/envi_mac/`; its checkout of main is removed.
+
 `/Volumes/data/datasets/envi_mac/envi_mac.py` (outside the repo, as the box's `envi_rest.py` was),
-run from a checkout of main (`.claude/worktrees/envi-run`, from c1e778c on, so its builds use the
-current Vietnamese aligner) with the conda Python, under `caffeinate -is`, by `run.sh` beside
-it, which restarts it after a failure (at most 20 times, 5 minutes apart); log `run.log`. Started
-2026-11-21 17:23 UTC+7 (viVoice and PhoAudiobook copies on the Hub, 354 and 224, that evening);
-running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
+ran from a checkout of main (from c1e778c on, so its builds use the current Vietnamese aligner)
+with the conda Python, under `caffeinate -is`, by `run.sh` beside it, which restarts it after a
+failure (at most 20 times, 5 minutes apart); log `run.log`. Started 2026-11-21 17:23 UTC+7
+(viVoice and PhoAudiobook copies on the Hub, 354 and 224, that evening); from 2026-11-22 09:06
+under the `nohup` line in `run.sh`.
 
 - `run.sh` clears the proxy variables first: a shell Claude Code starts routes HTTPS through
   TeamClaude (`127.0.0.1:3456`), and no download or upload goes through that proxy (user,
@@ -133,11 +138,16 @@ running since 2026-11-22 09:06 with the `nohup` line in `run.sh`.
 
 ## The box run
 
-The other end since 2026-11-22: the RTX 5090 box (Vast 61906288, [tranche-box](tranche-box.md#state))
-runs `/workspace/envi_box/envi_box.py`, `envi_mac.py` on CUDA, by `/workspace/envi_box/run.sh`
-(the Mac's `run.sh` on the box: at most 20 restarts, 5 minutes apart; log `run.log` beside it).
-Copies of both are kept in `/Volumes/data/datasets/envi_mac/box/`. The user had it build first and
-`both_heads_z`'s run wait ([on-policy-distillation](on-policy-distillation.md)).
+The other end since 2026-11-22, and alone since the Mac stopped at 17:05 UTC+7: the RTX 5090 box
+(Vast 61906288, [tranche-box](tranche-box.md#state)) runs `/workspace/envi_box/envi_box.py`,
+`envi_mac.py` on CUDA, by `/workspace/envi_box/run.sh` (the Mac's `run.sh` on the box: at most 20
+restarts, 5 minutes apart; log `run.log` beside it). Copies of both are kept in
+`/Volumes/data/datasets/envi_mac/box/`. The user had it build first and `both_heads_z`'s run wait
+([on-policy-distillation](on-policy-distillation.md)).
+
+- Left for it at 17:05: 664 builds with their noisy copies, then the noisy copies of 347 shards
+  already built. It built and copied 40 shards every ~14 min (~165 an hour: build 590–840 s, noisy
+  170–300 s a batch), so the Hub should hold everything by ~22:00–23:00 UTC+7.
 
 - The jobs and each job's shards in the reverse of the Mac's order: `build` from the last name down,
   then `noisy`, then `tranche`.
