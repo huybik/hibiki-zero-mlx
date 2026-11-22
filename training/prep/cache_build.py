@@ -72,16 +72,34 @@ AlignJob = Callable[[list[Row], list[np.ndarray]], Future]  # Builder._encode_st
 @contextmanager
 def pcm_dir() -> Iterator[Path | None]:
     """Where the workers leave decoded clips for the main process to map (`cache_rows.Planned`): a
-    fresh directory in /dev/shm, removed with whatever a failed run left; None where there is none
-    (macOS), and the clips come back in the replies."""
-    if not Path("/dev/shm").is_dir():
+    fresh directory in /dev/shm named after this process, removed with whatever a failed run left;
+    None where there is none (macOS), and the clips come back in the replies. A build killed outright
+    (SIGKILL, the out-of-memory killer) cannot remove its own, and /dev/shm holds RAM until deleted
+    (~11 GB after four killed builds on a 31 GB box, 2026-11-22), so each build first removes the
+    directories of builds no longer running."""
+    shm = Path("/dev/shm")
+    if not shm.is_dir():
         yield None
         return
-    path = Path(tempfile.mkdtemp(prefix="cache_build_pcm_", dir="/dev/shm"))
+    for stale in shm.glob("cache_build_pcm_*"):
+        owner = stale.name.removeprefix("cache_build_pcm_").split("_", 1)[0]
+        if owner.isdigit() and not _running(int(owner)):
+            shutil.rmtree(stale, ignore_errors=True)
+    path = Path(tempfile.mkdtemp(prefix=f"cache_build_pcm_{os.getpid()}_", dir=shm))
     try:
         yield path
     finally:
         shutil.rmtree(path, ignore_errors=True)
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # another user's process
+        return True
+    return True
 
 
 def default_workers(device: str) -> int:
