@@ -78,14 +78,17 @@ dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
   ([sft-training](sft-training.md#trainer)).
 - Some Libriheavy books were scanned badly, and their text keeps the damage while the reader says
   the right words: stray glyphs (`ye^erday`, `dumb¬ founded`, `{348}`, a page number), capitals
-  inside words (`suppHed`; poem lines run together, `caveNo`), letter swaps (`worid`). The corpus
-  keeps the rows; training leaves out a Libriheavy row whose `text_en` matches
-  `streams.OCR_MARK` (one of those glyphs, a currency sign without an amount, a capital inside a
-  word not opening Mc, Mac, De, La, Le, Van or Von), in both directions: 47,060 of 2.96M rows
-  (1.59%, 161 h), and 40 of 40 sampled hits were damage (user, 2026-11-22: "ok go ahead"). Common
-  Voice is not checked: its matches (0.57%) are names such as GitHub. Not caught: letter swaps,
-  words a line break split (`suffi cient`, ~0.7% of rows) and long-s readings (`deteftable`,
-  ~0.4%), which need an English word list; ASR put 186 sampled rows at 2.8% CER.
+  inside words (`suppHed`; poem lines run together, `caveNo`), UTF-8 read in another encoding
+  (`Dante‚Äôs`), letter swaps (`worid`). The corpus keeps the rows; training leaves out a Libriheavy
+  row whose `text_en` matches `streams.OCR_MARK` (one of those glyphs or `■«»`, a currency sign with
+  no amount on either side, such a misdecoding, a capital inside a word not opening Mc, Mac, De, Du,
+  La, Le, Van, Von or Fitz), in both directions: 50,241 of 2.96M rows (1.70%, 172 h), and 40 of 40
+  sampled hits were damage, as were 40 of 40 caught by the capital alone (user, 2026-11-22: "ok go
+  ahead"). Common Voice is not checked: its matches (0.56%) are names such as GitHub. Kept: letter
+  swaps, words a line break split (`suffi cient`, ~0.7% of rows) and long-s readings (`deteftable`,
+  ~0.4%), which need an English word list; page numbers in square brackets (`[193]`, ~25k rows) and
+  `_italic_` marks, around right text. wav2vec2-base-960h put 186 sampled Libriheavy rows at 2.8%
+  CER.
 - Recordings under 10.5 kHz are dropped. Mimi codes up to 12 kHz. CV's 32 kHz MP3s cut off at
   ~11 kHz (a spike at 10.7–11.3 kHz) that an 11 kHz floor would split. Before the filter,
   42% of CV train hours and 17% of Libriheavy's were under 10.5 kHz.

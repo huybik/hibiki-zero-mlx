@@ -44,12 +44,13 @@ later where a target token would otherwise come before the source it translates 
 The source's word times are the text track of the same row in the other direction's cache (its
 pair), so a run reads both directions' caches. A row whose pair is missing (the other build
 rejected it) is left out, unless it was rejected for fast speech: that row trains at its cached
-delay. A row whose Vietnamese runs on past its last word (`Aligner.max_tail_s`) is left out too,
-and so is a Libriheavy row whose English text a bad book scan garbled (`ocr_damaged`):
+delay. A row whose Vietnamese runs on past its last word (`Aligner.max_tail_s`) is left out too:
 
     EN   [I can't bear to go away from you]
     VI     [em không chịu nổi phải xa anh]        cached delay: ahead of the English
     VI              [em không chịu nổi phải xa anh] floored
+
+So is a Libriheavy row whose English text a bad book scan garbled (`ocr_damaged`).
 """
 
 from __future__ import annotations
@@ -163,9 +164,10 @@ class Stream:
 # Vietnamese to English and was a wrong source for the Vietnamese translation, so `load_rows` leaves
 # such rows out of both directions (en-speech-corpus.md#quality-filters).
 OCR_MARK = re.compile(
-    r"[\^{}|\\<>~•¬©®¥]"  # a glyph no reader says: ye^erday, dumb¬ founded, {348} (a page number)
-    r"|[£¢](?!\s?\d)"  # a currency sign without an amount: o£ hie
-    r"|\b(?!Mc|Mac|De|La|Le|Van|Von)[A-Za-z]*[a-z][A-Z]"  # a capital inside a word: suppHed, caveNo
+    r"[\^{}|\\<>~•¬©®¥■«»]"  # a glyph no reader says: ye^erday, dumb¬ founded, {348} (a page number)
+    r"|(?<!\d)(?<!\d )[£¢](?!\s?\d)"  # a currency sign without an amount: o£ hie (not 12£, £5)
+    r"|â€|‚Ä|ŌĆ|├"  # UTF-8 text decoded in another encoding: Dante‚Äôs, IŌĆÖm
+    r"|\b(?!Mc|Mac|De|Du|La|Le|Van|Von|Fitz)[A-Za-z]*[a-z][A-Z]"  # a capital inside a word: suppHed, caveNo
 )
 
 

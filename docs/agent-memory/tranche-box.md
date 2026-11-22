@@ -210,7 +210,7 @@ answers in 198.18.0.0/15.
   `hf download` got ~2 MB/s a file and stalled.
 - Disk: shards and packs of every training cache (~150 GB each) don't fit together on 300 GB.
   Pack each cache with `streams --drop-shards` as soon as its download completes. A new
-  `PACK_VERSION` (6 since 2026-11-22) refuses dropped packs of the old one: delete a folder's old
+  `PACK_VERSION` (7 since 2026-11-22) refuses dropped packs of the old one: delete a folder's old
   `.packed/<shard>/` folders, then fetch and drop its shards again, a folder at a time, as the disk
   holds a folder's shards beside the packs (a dropped pack left in place counts as fetched, below).
   - A fetch that checks only the files would fetch the dropped shards again, and a trainer

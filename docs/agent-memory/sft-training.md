@@ -114,8 +114,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   teacher-forced validation losses do not compare across that change (2026-11-04).
 - Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
   index and each row's doc and seq, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's
-  size or mtime changes or `PACK_VERSION` does: 6 since each pack lists the rows its build
-  rejected for the frame grids, 2026-11-22, [Target timing](#target-timing); 5 recorded its shard's
+  size or mtime changes or `PACK_VERSION` does: 7 since each pack lists its OCR-damaged rows, 6
+  the rows its build rejected for the frame grids, both 2026-11-22, [Target timing](#target-timing); 5 recorded its shard's
   direction and tokenizer and the rows' text tracks in `text.bin`, [two-way](two-way.md)),
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
@@ -206,7 +206,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   shard where every pair is so raises); one whose Vietnamese, its own or its pair's, runs on more
   than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%; the build now rejects these,
   [cache-build](cache-build.md#rows)); and a Libriheavy row whose English is OCR-damaged
-  (`ocr_damaged`, 1.6%, [en-speech-corpus](en-speech-corpus.md#quality-filters)). Its log counts all.
+  (`ocr_damaged`, 1.7%, [en-speech-corpus](en-speech-corpus.md#quality-filters); validation losses
+  do not compare across that drop, 2026-11-22). Its log line counts each reason.
 - The Vietnamese tail gate: VieNeu sometimes keeps speaking past its text, which the alignment
   score does not see. On Common Voice shard 22's `en-vi` rows (8,019), 109 (1.4%) are loud over
   0.6 s from 1 s past the last token; a tail over 1.5 s flags 2.4% of rows and catches all 109,
@@ -217,8 +218,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   letter by letter stay (CER over 0.25 on 12% of the 600; the alignment score tracks CER at
   r = −0.67). Calibrated on omniASR's timings; on two Libriheavy shards timed by wav2vec2-vi250h
   (`ALIGNERS["vi"]` since 2026-11-22) the gate takes 0.75–1.0% of rows (0.2% over 2 s), against
-  0.05–0.22% on omniASR-timed ones: their texts read whole, so most are slow endings, a cheap loss
-  at `en_speech`'s size.
+  0.05–0.22% on omniASR-timed ones: their texts read whole, so most are slow endings, cheap to lose.
 - Every run reads both directions: `--cache-dir` and `--val-cache-dir` for what it trains and
   scores, `--pair-cache-dir` for the other direction's text alone, training's and validation's
   (GRPO's `en_speech` `en-vi` rows pair with the two-way run's noisy `vi-en` copy,
