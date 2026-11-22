@@ -19,7 +19,6 @@ import fcntl
 import math
 import os
 import re
-import shutil
 import sys
 import tempfile
 from collections import Counter, deque
@@ -83,7 +82,8 @@ def pcm_dir() -> Iterator[Path | None]:
     four killed builds on a 31 GB box, 2026-11-22). So each build holds a lock in its directory,
     which the kernel drops however the build dies, and first removes every directory whose lock it
     can take. A directory is locked before it takes its name, so no build finds one unlocked while
-    in use; one from before the lock has none and is left alone."""
+    in use; one from before the lock has none and is left alone. Its lock file goes last
+    (`_remove_pcm`), so a removal that fails leaves the directory to the next build."""
     shm = Path("/dev/shm")
     if not shm.is_dir():
         yield None
@@ -91,17 +91,14 @@ def pcm_dir() -> Iterator[Path | None]:
     for stale in shm.glob(f"{PCM_PREFIX}*"):
         try:
             fd = os.open(stale / PCM_LOCK, os.O_RDWR)
-        except FileNotFoundError:
+        except OSError:  # no lock file (from before the lock), or not ours to open
             continue
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:  # its build is running
             continue
         else:
-            try:
-                shutil.rmtree(stale)
-            except FileNotFoundError:  # another build removed it first
-                pass
+            _remove_pcm(stale)
         finally:
             os.close(fd)
     staging = Path(tempfile.mkdtemp(prefix=f".{PCM_PREFIX}", dir=shm))  # outside the glob until locked
@@ -111,8 +108,23 @@ def pcm_dir() -> Iterator[Path | None]:
     try:
         yield path
     finally:
-        shutil.rmtree(path, ignore_errors=True)
+        _remove_pcm(path)
         os.close(lock)
+
+
+def _remove_pcm(path: Path) -> None:
+    """Remove a build's directory of clips, its lock file last: a failure (a dead build's worker
+    still writing) leaves the lock file, and the next build tries again."""
+    try:
+        for entry in path.iterdir():
+            if entry.name != PCM_LOCK:
+                entry.unlink()
+        (path / PCM_LOCK).unlink()
+        path.rmdir()
+    except FileNotFoundError:  # another build removed it first
+        pass
+    except OSError as error:
+        print(f"could not remove {path}, left to the next build: {error}", file=sys.stderr, flush=True)
 
 
 def default_workers(device: str) -> int:
@@ -489,8 +501,9 @@ class Builder:
             try:
                 yield from self._stream(self._read_ahead(keys, read, reads), pool)
             except BaseException:
-                # Drop the queued decodes and the next shard's read rather than wait for them.
-                pool.shutdown(wait=False, cancel_futures=True)
+                # Drop the queued decodes and the next shard's read rather than wait for them. The
+                # decodes already running write clips into pcm: wait for them, so its removal follows.
+                pool.shutdown(wait=True, cancel_futures=True)
                 reads.shutdown(wait=False, cancel_futures=True)
                 raise
 

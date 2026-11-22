@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import fcntl
 import json
+import multiprocessing
 import os
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -97,11 +97,10 @@ def exit_with_parent() -> None:
     """Called in a pool worker (its initializer): exit once the process that started it is gone. A
     worker outlives a parent killed outright (SIGKILL, the out-of-memory killer), blocked on a job
     queue whose write end it holds itself, and keeps its memory until the box restarts (2026-11-22)."""
-    parent = os.getppid()
+    parent = multiprocessing.parent_process()  # set by multiprocessing before the worker's imports
 
     def watch() -> None:
-        while os.getppid() == parent:
-            time.sleep(2)
+        parent.join()  # returns once the parent is gone: the parent's end of a pipe closes
         os._exit(1)
 
     threading.Thread(target=watch, name="exit-with-parent", daemon=True).start()
