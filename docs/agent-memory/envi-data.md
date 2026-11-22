@@ -56,6 +56,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   Mac-built clean shard has the box's fields and statistics; noisy copies change only the source
   codebooks of the selected rows (59–62%), and re-applying a row's recorded conditions reproduces
   its codes on the CPU.
+- The aligner switch validated end to end (2026-11-22, `libriheavy-large-00012-00103` whole): the
+  production build (`--ane-ctc`, 208× at thermal state "fair", 21.7 GB peak) kept 3,147 of 3,218
+  rows (58 over the frame cap, the VI→EN shard's same 58; 12 with letters outside the alphabet; 1
+  text too long; none under 0.55, the lowest 0.68); its noisy copy; the trainer's loading, stream
+  plan and assembly beside omniASR-built and VI→EN shards. VI→EN rows built after it are
+  byte-identical to the Hub's.
 - The evaluation set `en-vi-val-en-noisy` (2 × 180 rows) is built on the training box in
   `/workspace/hibiki-zero/data/eval/` (2026-11-21). `eval_sets` run from another checkout whose
   `data/` is a symlink writes the clips' absolute paths (`repo_display_path` resolves the link);
