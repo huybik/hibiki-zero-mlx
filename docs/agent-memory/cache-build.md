@@ -116,14 +116,15 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   (2 of ~3,200 rows had a word 1–2 frames apart), and that model on 252 rows rejects the same rows
   as PyTorch CPU float32 and gives the same spans on 6,180 of 6,181 words. In float16 the
   GroupNorm statistics stay in float32 (`first_frames` passes 65504 past 20.47 s, the sum of squares
-  overflows past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×). On
-  the CPU, `half=True` moved 1.4–1.6% of the English aligner's argmaxes (log-probabilities up to
-  5.5 nats off) and 0–0.2% of the Vietnamese one's (review of PR #161, 2026-11-22): unmeasured on
-  Metal, not near-ties for English.
+  overflows past ~8 s), keeping ~81% of the gain (355× vs 367× on a 13.6 s clip; float32 305×).
+  Against transformers' CPU float32 (40 clips each, 2026-11-22), `half=True` on Metal moved 0.035% of
+  the Vietnamese aligner's argmaxes and 0.14% of the English one's (worst clip 0.76%); float32 moved
+  none. On MLX's CPU backend English moved 1.4–1.6%.
 - `ane_ctc` (`cache_codes --ane-ctc`): the transformer on the Neural Engine in its own process
   (`wav2vec2_coreml`, with the float16 fixes), on `Wav2Vec2CTC.transformer_input` from the GPU in
-  float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)). Measured on
-  the Vietnamese aligner only.
+  float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)). `en-vi`
+  only (`Builder` refuses another direction): the English aligner there kept 99.35% of MLX float32's
+  argmaxes (worst clip 98.39%), the Vietnamese 99.94%.
 - `MLXModels.encode` queues a window's CTC forwards first (`mx.async_eval`), then its Mimi
   encodes (`mx.async_eval`), hands each CTC result to the workers as it lands (with `ane_ctc`, the
   Neural Engine's rows together, then the GPU's; they align while the GPU encodes Mimi), and

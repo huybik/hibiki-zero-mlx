@@ -426,6 +426,9 @@ class Builder:
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
         if ane_ctc and device != "mlx":
             raise ValueError("the Neural Engine CTC (ane_ctc) runs beside MLX: device mlx only")
+        if ane_ctc and settings.target != "vi":
+            # The English aligner there kept 99.35% of MLX float32's argmaxes (the Vietnamese 99.94%).
+            raise ValueError("the Neural Engine CTC (ane_ctc) times Vietnamese text only: direction en-vi")
         mlx_only = {"ane_ctc": True} if ane_ctc else {}
         self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, settings.aligner,
                                      aligner_files(settings.aligner), half_ctc=half_ctc, **mlx_only)
