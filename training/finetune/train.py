@@ -85,6 +85,7 @@ from training.paths import (
 # A resumed run must match these run_config.json entries.
 RESUME_KEYS = (
     "cache_dir",
+    "pair_cache_dir",
     "val_cache_dir",
     "config_path",
     "model_weight",
@@ -142,9 +143,10 @@ def parse_args() -> argparse.Namespace:
     # No abbreviations: h100.sh must be able to reject --out-dir.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cache-dir", type=Path, nargs="+", action="extend", required=True)
+    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", action="extend", default=[], help="The other direction's caches of the same rows, read only for their text, which times each row's source (streams.load_rows); not needed for caches given with --cache-dir.")
     parser.add_argument(
         "--val-cache-dir", type=Path, nargs="+", action="extend", required=True,
-        help="Teacher-forced validation caches; a two-way run passes each direction's.",
+        help="Teacher-forced validation caches, each direction's: each is the others' pair (streams.load_rows).",
     )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -357,7 +359,8 @@ def main() -> None:
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
     teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
+    pair_dirs = [require_dir(path, "pair code cache directory") for path in args.pair_cache_dir]
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
     # near-tie in a residual code); at the cache's codebooks, which streams are assembled at.
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
@@ -386,7 +389,7 @@ def main() -> None:
     val_row_counts: dict[str, int] = {}
     val_stream_counts: dict[str, int] = {}
     for name, val_cache_dir in zip(names, val_cache_dirs, strict=True):
-        val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer)
+        val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer, val_cache_dirs)
         if val_layout != layout:
             raise RuntimeError(f"Validation layout {val_layout} of {name} differs from training {layout}")
         val_dataset = streams.StreamDataset(val_rows, layout, silence, frames, streams.VALIDATION_SEED, codebooks)

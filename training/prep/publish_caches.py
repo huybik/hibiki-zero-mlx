@@ -40,8 +40,8 @@ FOLLOW_WAIT = 600  # a cache shard is built every ~4 min
 def settings(shard: dict[str, Any]) -> dict[str, Any]:
     """What a cache shard holds besides its rows and source: format, rates, gates, model config,
     direction and tokenizer (a shard built before two-way training records neither: it is vi-en,
-    on the base tokenizer)."""
-    unrecorded = {"direction": DEFAULT_DIRECTION, "tokenizer": DEFAULT_TOKENIZER.name}
+    on the base tokenizer; one built before the tail gate records no `max_tail_s`: it had none)."""
+    unrecorded = {"direction": DEFAULT_DIRECTION, "tokenizer": DEFAULT_TOKENIZER.name, "max_tail_s": None}
     return unrecorded | {k: v for k, v in shard.items() if k not in ("samples", "rejected", "source")}
 
 

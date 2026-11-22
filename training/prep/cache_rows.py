@@ -267,6 +267,14 @@ def prepare_rows(rows: list[tuple[dict[str, Any], bytes, bytes]], split: str) ->
     return out
 
 
+def check_tail(tail_frames: int, aligner: Aligner) -> None:
+    """Reject a row whose target runs on `tail_frames` past its last text token (to its text EOS)
+    for longer than its aligner allows (`Aligner.max_tail_s`)."""
+    if aligner.max_tail_s is not None and tail_frames > round(aligner.max_tail_s * FRAME_RATE):
+        raise AlignmentError(f"Speech runs on {tail_frames / FRAME_RATE:.2f} s past the last word "
+                             f"(at most {aligner.max_tail_s} s)")
+
+
 def align_rows(
     log_probs: list[np.ndarray],
     rows: list[tuple[list[int], list[tuple[list[int], str]], int, int]],
@@ -281,6 +289,7 @@ def align_rows(
             alignment = _aligner.align(probs, groups)
             tokens, frames = timed_sentencepiece_tokens(lead, groups, alignment, raw_target_frames, delay_frames,
                                                         eos_id)
+            check_tail(frames[-1] - frames[-2], _settings.aligner)
         except AlignmentError as exc:
             exc.__traceback__ = exc.__context__ = None
             out.append(exc)
@@ -372,6 +381,7 @@ def payload(shard: Shard, settings: Settings, cfg: dict[str, Any], source: dict[
         "sample_rate": SAMPLE_RATE,
         "frame_rate": FRAME_RATE,
         "alignment_min_score": settings.min_score,
+        "max_tail_s": settings.aligner.max_tail_s,
         "max_frames": settings.max_frames,
         "direction": settings.direction,
         "config": {key: int(cfg[key]) for key in CONFIG_KEYS},

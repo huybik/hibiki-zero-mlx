@@ -31,6 +31,8 @@ from training.paths import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cache-dir", type=Path, required=True)
+    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", required=True,
+                        help="The other direction's cache of the same rows, which times each row's source (streams.load_rows).")
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
     )
@@ -77,7 +79,8 @@ def main() -> None:
 
     checkpoint_info = common.load_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
-    rows, layout = streams.load_rows([cache_dir], args.max_frames, args.tokenizer)
+    pair_dirs = [require_dir(path, "pair code cache directory") for path in args.pair_cache_dir]
+    rows, layout = streams.load_rows([cache_dir], args.max_frames, args.tokenizer, pair_dirs)
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
     dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED,
                                     int(checkpoint_info.lm_config["dep_q"]))

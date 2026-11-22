@@ -76,12 +76,16 @@ class Aligner:
     # The lowest mean posterior of the aligned characters a row may have, calibrated per model:
     # each model's scores are its own (docs/agent-memory/two-way.md#vietnamese-aligner).
     min_score: float
+    # The longest a clip may run on past its last text token, or None. VieNeu sometimes keeps
+    # speaking past its text, and the alignment score does not see it; English recordings end on
+    # silence that token times cannot tell from speech (docs/agent-memory/cache-build.md#rows).
+    max_tail_s: float | None
 
 
 ALIGNERS = {  # by the language of the text
     "en": Aligner("wav2vec2_ctc_word_v1", "facebook/wav2vec2-base-960h",
                   "22aad52d435eb6dbaf354bdad9b0da84ce7d6156", "<pad>", "|", _spoken_english,
-                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5),
+                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ'", 0.5, None),
     # wav2vec2-base fine-tuned on 250 h of Vietnamese (non-commercial: its card says CC-BY-NC-4.0, the
     # repo also ships a CC-BY-NC-SA-4.0 text), at the Hub bot's safetensors
     # conversion (refs/pr/2), tensor for tensor its main branch's pytorch_model.bin. It replaced
@@ -89,7 +93,7 @@ ALIGNERS = {  # by the language of the text
     # (user, 2026-11-22).
     "vi": Aligner("wav2vec2_vi250h_ctc_word_v1", "nguyenvulebinh/wav2vec2-base-vietnamese-250h",
                   "bb07d01e57ce84fa73c3e4dd423b663ec6b36753", "<pad>", "|", _spoken_vietnamese,
-                  _VIETNAMESE, 0.55),
+                  _VIETNAMESE, 0.55, 1.5),
 }
 
 

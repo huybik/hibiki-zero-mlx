@@ -93,7 +93,7 @@ from training.paths import (
 
 # A resumed run must match these run_config.json entries.
 RESUME_KEYS = (
-    "cache_dir", "config_path", "model_weight", "mimi_weight", "tokenizer", "max_frames",
+    "cache_dir", "pair_cache_dir", "config_path", "model_weight", "mimi_weight", "tokenizer", "max_frames",
     "stream_seconds", "frames", "tail_seconds", "streams", "group", "updates", "tau", "lr", "adam_beta1",
     "adam_beta2", "weight_decay", "grad_clip", "epsilon", "alpha", "text_weight", "temperature",
     "top_k", "eval_pairs", "eval_batch_size", "eval_every", "save_every", "keep_checkpoints",
@@ -526,6 +526,7 @@ def parse_args() -> argparse.Namespace:
     # No abbreviations: h100.sh must be able to reject --out-dir.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
+    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", default=[], help="The other direction's caches of the same rows, read only for their text, which times each row's source (streams.load_rows); not needed for caches given with --cache-dir.")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--model-weight", type=Path, required=True, help="The SFT checkpoint.")
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -691,7 +692,8 @@ def main() -> None:
     tokenizer = info.get_text_tokenizer()
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
     teach = teacher_info(args, codebooks)
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
+    pair_dirs = [require_dir(path, "pair code cache directory") for path in args.pair_cache_dir]
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
     mimi = info.get_mimi(device=device)
     dataset = stream_dataset(args, info, rows, layout, codebooks, mimi)
     if len(dataset) < args.updates * args.streams:

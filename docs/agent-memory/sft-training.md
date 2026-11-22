@@ -1,7 +1,7 @@
 # Full-model SFT training
 
 Read when touching `training/finetune/`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) ·
+Back to [CONTEXT.md](../../CONTEXT.md) · [Trainer](#trainer) · [Target timing](#target-timing) ·
 [Schedules and averaging](#schedules-and-averaging) · [Speed](#speed) · [Objective](#objective)
 
 The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered in
@@ -23,8 +23,10 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   checkpoint through `get_moshi` resets it. Only the frames after a sampled EOS can differ, and
   evaluation cuts a row's text at its first EOS (found 2026-11-10).
 - Inputs are one or more `--cache-dir` grounded caches plus one or more `--val-cache-dir`
-  (a two-way run passes each direction's; each is planned and scored apart); rows over
-  `--max-frames` (280) are dropped. `--tokenizer` defaults to the start weight's, and every
+  (each direction's, each the others' pair; each is planned and scored apart), and every row's
+  pair in the other direction, from those or from `--pair-cache-dir` ([Target
+  timing](#target-timing)); rows over `--max-frames` (280) with their target where the plan puts
+  it are dropped. `--tokenizer` defaults to the start weight's, and every
   shard must be on it, except that a run on the Vietnamese swap reads base-tokenizer shards
   without the rows the swap reassigned ([two-way](two-way.md#tokenizer-checks)).
 - It trains on streams (`training/finetune/streams.py`): consecutive cache rows joined into
@@ -41,7 +43,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   the next row overflows its drawn length, unless it is still under the minimum; the length range
   must exceed the longest row plus a long gap, so no stream but the last ends short. A stream
   holds one direction's rows: each direction is planned apart ([two-way](two-way.md)). Each row's
-  target starts its cached delay after its source, never before the previous target ends; a
+  target starts its cached delay after its source, or later where the floor puts it ([Target
+  timing](#target-timing)), never before the previous target ends; a
   0.3–1.5 s gap (3–10 s one time in ten) separates the sources, and is stretched so the previous
   target overhangs the next source by at most 2 s. Silent
   stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
@@ -50,8 +53,9 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   as a single-sentence evaluation feeds it: the first run, on 30–120 s streams only, never saw the
   source end after one sentence and never ended a third of the FLEURS rows.
 - Late starts: 5% of rows, in any stream (`streams.LATE_START`), start their target at a frame
-  drawn from [half the source, 1 s past its end] instead of their cached delay; one that would
-  push its stream past the longest keeps the delay. The cache draws every delay from U[0, 0.5 ×
+  drawn from [half the source, 1 s past its end] instead of their start ([Target
+  timing](#target-timing)) when that is later; one that would push its stream past the longest
+  keeps its start. The cache draws every delay from U[0, 0.5 ×
   the source's duration] (`cache_rows.target_delay_s`), so a first word rarely comes after its
   source has ended: measured on the box (2026-11-11, 12 packs a cache), 0.04% of the GigaSpeech 2
   and `en-vi` validation rows, 0.87% of the `en_speech` train rows and 1.7% of the `vi-en`
@@ -158,6 +162,52 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only
   (`train.py` has no device flag); the `training.prep` steps, the cache build included
   ([sft-data-caches](sft-data-caches.md)), run on the Mac.
+
+## Target timing
+
+- A row's target starts at its cached delay or at `streams.start_floor`, whichever is later: no
+  target text token starts before 0.32 s (`START_MARGIN`, 4 frames) after the source token a
+  proportional alignment gives it has been heard (target token i of N waits for source token
+  ⌈(i + 1)M / N⌉ of M; a source token is heard by the next one's start, the last 0.4 s after its
+  own). A row's source token times are its pair's text track: the row of the same id in the other
+  direction's cache (user, 2026-11-22: fix English to Vietnamese starting ahead of its English).
+- Why: the cached delay counts from the source clip's start (U[0, 0.5 × its duration],
+  `cache_rows.target_delay_s`) and ignores where its words are. VI→EN runs behind anyway (its
+  English is longer and English clips open on silence), but EN→VI put a Vietnamese word over 1 s
+  ahead of its English in 20–30% of rows, and began before the English speaker in 4–23%, on one
+  shard of each source (2026-11-22). A model trained on that has to guess words not yet heard.
+- What it moves, on one local shard of each source (58,482 rows of both directions, 2026-11-22):
+
+  | Rows | EN→VI later | by (median, p90) | median start | VI→EN later | by | median start |
+  |---|---:|---:|---|---:|---:|---|
+  | Common Voice | 70% | 1.20, 2.40 s | 1.60 → 2.48 s | 17% | 0.40, 1.22 s | 1.12 → 1.20 s |
+  | Libriheavy | 47% | 1.20, 3.12 s | 2.40 → 3.04 s | 24% | 0.56, 1.60 s | 2.00 → 2.16 s |
+  | GigaSpeech 2 | 73% | 0.88, 2.08 s | 1.04 → 1.92 s | 42% | 0.40, 1.04 s | 0.88 → 1.04 s |
+  | PhoAudiobook | 46% | 1.60, 3.84 s | 3.12 → 4.00 s | 16% | 0.72, 2.00 s | 2.64 → 2.80 s |
+  | viVoice | 60% | 1.36, 2.88 s | 2.00 → 2.96 s | 17% | 0.48, 1.36 s | 1.76 → 1.76 s |
+
+  No more than 0.04% of targets start after their source ends, as before.
+- `load_rows` leaves out a row whose pair is missing: the other direction's build rejected it at
+  alignment, so its speech and text disagree there (2.2% of those rows, most of them GigaSpeech 2's
+  `vi-en` rejects). It also leaves out one whose Vietnamese, its own or its pair's, runs on more
+  than 1.5 s past its last text token (`Aligner.max_tail_s`, 0.7%), the gate the build now applies
+  ([cache-build](cache-build.md#rows)), so caches built before it lose those rows too. Its log line
+  counts each reason and how many rows start later.
+- The Vietnamese tail gate: VieNeu sometimes keeps speaking past its text, which the alignment
+  score does not see. On Common Voice shard 22's `en-vi` rows (8,019), 109 (1.4%) are loud over
+  0.6 s from 1 s past the last token; a tail over 1.5 s flags 2.4% of rows and catches all 109,
+  and the greedy-CTC transcripts of 600 rows show babble where the tail is 5–11 s. Real Vietnamese
+  recordings run under 0.72 s at p99 (>1.5 s ≤0.18%). A gate on the longest gap between tokens
+  adds no babble row and hits real pauses (2.4% of PhoAudiobook rows have one over 2 s): not used.
+  English is not gated: Common Voice clips end on recorded silence. Repeated words and names read
+  letter by letter stay (CER over 0.25 on 12% of the 600; the alignment score tracks CER at
+  r = −0.67).
+- Every run reads both directions: `--cache-dir` for what it trains, `--pair-cache-dir` for the
+  other direction's text alone (GRPO's `en_speech` `en-vi` rows pair with the two-way run's noisy
+  `vi-en` copy, `grpo_launch.sh`); a shard none of whose rows has a pair raises. `validate.py`
+  requires `--pair-cache-dir`. The floor and the left-out rows change every plan, the validation
+  streams' too, so validation losses do not compare across the change, and `pair_cache_dir` is a
+  resume key, so no run from before it resumes on it.
 
 ## Schedules and averaging
 

@@ -50,6 +50,7 @@ from training.paths import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
+    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", default=[], help="The other direction's caches of the same rows, read only for their text, which times each row's source (streams.load_rows); not needed for caches given with --cache-dir.")
     parser.add_argument("--model-weight", type=Path, required=True, help="Start checkpoint.")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -238,7 +239,8 @@ def main() -> None:
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
     info = common.load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer)
+    pair_dirs = [require_dir(path, "pair code cache directory") for path in args.pair_cache_dir]
+    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
     teach = grpo.teacher_info(args, codebooks)
     dataset = grpo.stream_dataset(args, info, rows, layout, codebooks, info.get_mimi(device=device))

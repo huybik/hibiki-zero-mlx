@@ -26,6 +26,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   wav2vec2-base-vietnamese-250h (non-commercial) on the Neural Engine, the first 528 and the tranche's
   with omniASR (user, 2026-11-22: "let's use wav2vec2-base-vietnamese-250h on the neural engine";
   [two-way](two-way.md#vietnamese-aligner)). Each sample records its aligner in `text_timing`.
+- The run drops the `en-vi` rows whose Vietnamese runs on past its text (VieNeu babble, ~2.4% of
+  Common Voice's) and their `vi-en` rows, and floors every target's start
+  ([sft-training](sft-training.md#target-timing)); the shards built so far need no rebuild. The
+  build gate that rejects such rows (`Aligner.max_tail_s`) is recorded in each shard, and a pulled
+  shard must match the settings of one built here: keep the Mac and box runs on code from before
+  it until they finish, or move both at once.
 - Every noisy `en-vi` copy uses `--seed 1` (the `vi-en` copies took seed 0; the draws key on the
   seed and the row id, which both directions share) and `--fraction` 0.6.
 

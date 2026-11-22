@@ -23,12 +23,14 @@ read -r q per < /sys/fs/cgroup/cpu.max; if [[ $q == max ]]; then N=$(nproc); els
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
 T=/workspace/tranche/repo/cache
 # Real Vietnamese speech to English (the tranche), English to Vietnamese from the tranche's
-# voice-cloned English and from en_speech's real recordings. The 3B's H100 profile's sizes
+# voice-cloned English and from en_speech's real recordings, timed by the two-way run's vi-en
+# copy of the same rows (--pair-cache-dir, streams.load_rows). The 3B's H100 profile's sizes
 # (grpo.md); 2,000 updates, judged at 800 (user, 2026-11-13: 800, more while it still improves;
 # the rate is constant, so a longer --updates is the same run up to there).
 args=()
 [[ $# -ge 1 ]] && args=(--cache-dir $T/pho $T/vivoice $T/giga $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga
                          data/cache/en-vi/en-vi-grounded-v2/train
+                         --pair-cache-dir data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
                          --model-weight "$1" --gen-frames 614400 --micro-batch 2 --updates 2000 "${@:2}")
 # The rooms' noise bank (grpo.py --bank-dir's default), fetched here once, not inside the run.
 .venv/bin/python -c 'from pathlib import Path; from training.prep.augment import fetch_bank; print(fetch_bank(Path("data/rirs_noises")))'
