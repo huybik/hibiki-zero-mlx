@@ -5,7 +5,8 @@ a model from scratch and fine-tuning the 3B, or when running or judging the 3B's
 experiments of 2026-11-21 (scheduled sampling, GRPO anchored to its start).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Scratch or fine-tune](#scratch-or-fine-tune) ·
 [Scheduled sampling](#scheduled-sampling) · [Anchored GRPO](#anchored-grpo) ·
-[Experiments](#experiments) · [Checks](#checks)
+[Experiments](#experiments) · [Checks](#checks) ·
+the runs and their full tables: [exposure-bias-runs](exposure-bias-runs.md)
 
 The student's own recipe experiments (on-policy distillation, centered advantages) are in
 [on-policy-distillation](on-policy-distillation.md); the plan in
@@ -169,6 +170,14 @@ From 2026-11-23 experiments 1 and 2 open the teacher's next round, before its fu
    own update 0, since `grpo_launch.sh`'s caches gained the noisy EN→VI rows on 2026-11-23.
    10,000 updates read ~670 h, so it catches data that hurts rather than proving that a full
    pass helps; if it hurts, the full SFT doesn't run.
+   **Run 2026-11-23** (GRPO cut to 200 updates an arm, the rental ending;
+   [tables](exposure-bias-runs.md#scheduled-sampling)): **0.1 is a tie, so it isn't adopted** and its
+   speech check and 0.25 don't run (0.1 − control, selecting: −0.23 [−1.06, +0.68] after the SFT,
+   +0.59 [−0.20, +1.42] after GRPO). The data gate **fails on VI→EN FLEURS dev** (−3.85 [−5.54, −2.30]
+   against `twoway_final` at seed 44, −3.66 at 61; EN→VI isn't clearly up), and GRPO doesn't recover
+   it. The loss is on quiet Vietnamese clips, where the new model depends on the input's level and
+   `twoway_final` doesn't ([the quiet clips](exposure-bias-runs.md#the-quiet-clips); one model, cause
+   not established): the user decides whether the full SFT runs.
 2. **Anchored GRPO.** From the shipped run's start, the two-way SFT's final model, on its streams
    and seed (its `run_config.json`'s caches, given after `grpo_launch.sh`'s, which changed on
    2026-11-23): first a probe of 200 updates each at β 0.02 and 0.1, judged by the KL's size
@@ -179,6 +188,13 @@ From 2026-11-23 experiments 1 and 2 open the teacher's next round, before its fu
    In the teacher's next round the probe alone runs first and decides whether that round's GRPO
    is anchored and at which β; that GRPO is then the run, whose comparison with the shipped run
    also carries the new SFT.
+   **Probed 2026-11-23** ([tables](exposure-bias-runs.md#anchored-grpo)): at 200, β 0.02 reads 39.12
+   selecting (+1.12 [+0.44, +1.88] against the shipped run's 38.00) and 0.1 reads 38.31 (+0.31 [−0.46,
+   +1.13]); the mean of the eight sets +0.62 and +0.63 for both. 0.02 is ahead on selecting (by 0.81
+   [0.12, 1.60], about the noise between two runs of one model) and even on the mean of eight, so
+   they aren't separated; if a round anchors, 0.02. Not proved: the KL per
+   token stays ≤ 0.005 and its share of the update is unmeasured, the EOS share still fell (82.6% →
+   79.0% at 0.02), and no plain GRPO from the same start on today's code was run to isolate the anchor.
 3. **Centered advantages on the 3B**: dropped (2026-11-23). They were to run only if they won
    on the student, and z-scored won there
    ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)).
