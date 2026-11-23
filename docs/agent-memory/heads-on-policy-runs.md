@@ -101,17 +101,27 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
 
 - `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 54
   GiB of RAM in the container and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). The
-  RAM is the 3B's measured structure, 34.4 GiB pinned and 17 more: measure the run's own once it
-  is past window 2 (`HostOffload` pins AdamW's states from then) and its first save (the writer's
-  buffers), by the cgroup's `memory.stat` `anon` or the process's `VmHWM`. `grpo_profile` has no
-  writer, and `memory.peak` counts the packs' page cache. On a 350 GB disk: the caches ~172 GB as
+  RAM is the 3B's measured structure, 34.4 GiB pinned and 17 more. On the 5090 box (58.0 GiB
+  cgroup) the first 40 updates held 34.4 GiB pinned and 13.5 of `anon` past window 2 and the save at
+  20, `memory.current` peaking at 52.1 GiB (page cache included) and the host's MemAvailable bottoming
+  at 4.4: tight, so run with `HF_HUB_DISABLE_XET=1` and watch MemAvailable. Pinned memory is charged to
+  the cgroup as `shmem`, so `anon` alone or `VmHWM` undercounts it, and `memory.peak` counts the
+  packs' page cache. `grpo_profile` has no writer. On a 350 GB disk: the caches ~172 GB as
   packs ([envi-data](envi-data.md#the-runs-on-it)), the run 42, weights ~25, the env and
   evaluation sets ~15.
 - Profile on its box first (`grpo_profile --teacher-weight`; the H100 box's `/workspace/prof_z2.sh`):
-  `--micro-batch`, `--gen-frames`, `--eval-batch-size` (64 so far; validation runs with the update's
-  states on the GPU). The RTX PRO 6000 measured ([on-policy-distillation](on-policy-distillation.md#checks)) the update near 26 GiB at
-  micro-batch 1 (31.0 at 2) and generation 2.4 GiB plus ~0.066 a row: on a 32 GB 5090, micro-batch
-  1 and ≤ ~400 rows (`--gen-frames` = rows × 1,200), at little cost (9.0 rollouts/s at 512 rows,
-  9.3 at 1,024).
+  `--micro-batch`, `--gen-frames`, `--eval-batch-size` (64 so far). On the 5090 (2026-11-24, 575 W,
+  one run of each): generation at 320 rows (`--gen-frames 384000`) 45 ms a step and 5.8 rollouts/s,
+  peak 23.4 GiB, at 384 rows 27.6 GiB, 448 out of memory. Without `--park-states` the update peaked
+  at 29.4 GiB at micro-batch 1 and a run of it ran out of memory at update 7; with it, micro-batch 2
+  is ~5% faster than 1 and 3 no faster than 2 (4 out of memory). `--gen-frames 384000
+  --micro-batch 2 --park-states` is the choice; each update ~9.3 s past the first (generation ~13 s an
+  update on top), so 2,000 updates take ~13 h. The evaluation at batch 64 with AdamW's states on the
+  card ran out of memory, so `evaluate` parks them and the teacher.
+- `--park-states` (grpo.py and `grpo_profile`): only `optimizer.step` reads AdamW's states, so they
+  wait in pinned host memory while π_old's logprobs and an update's micro-batches run
+  (`grpo.park_states`; 9.5 GiB on the heads student, 23.3 on the 3B). It costs a copy out and back an
+  update (~0.8 s here, extrapolated from a 0.81 GB test) and changes no result: 12 fused AdamW steps
+  were bitwise equal with and without it. Cards where the update fits without it leave it off.
 - Not on 32 GB: the 3B's full fine-tunes (a pair is 12.5 GB of weights and 25 GB of AdamW), and
   the palettization finish at the heads run's batch (50.9 GiB, [tranche-box](tranche-box.md#jobs)).

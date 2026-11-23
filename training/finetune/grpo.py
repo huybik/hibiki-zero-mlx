@@ -788,14 +788,19 @@ def main() -> None:
     if step and start_offset is None:
         raise RuntimeError("run_config.json lacks the start's start_end_offset_s")
 
+    offload = HostOffload()
+
     def evaluate(at: int) -> None:
         nonlocal best_state, start_offset
         started = time.time()
         optimizer.zero_grad(set_to_none=True)
+        # It reads neither, and at batch 64 the heads student's ran out of memory beside them on 32 GB.
+        offload.to_host(adam_states(optimizer) + teacher_params)
         free_running = common.validate_free_running(
             lm, info, mimi, tokenizer, eval_rows, eval_sets, args.eval_batch_size,
             out_dir / "eval" / f"step{at:06d}", args.seed,
         )
+        offload.to_device()
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, metrics in free_running.items():
             print(f"val step={at} {name} {common.score_summary(metrics)}")
@@ -827,7 +832,6 @@ def main() -> None:
         evaluate(step)
 
     per_update = args.streams * args.group
-    offload = HostOffload()
     while step < args.updates:
         window = min(args.tau, args.updates - step)
         window_started = time.time()
@@ -926,8 +930,7 @@ def main() -> None:
                         totals[key] = value if key not in totals else torch.maximum(totals[key], value)
                     else:
                         totals[key] = totals.get(key, 0) + value
-            if offload.out:
-                offload.to_device()
+            offload.to_device()
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip or math.inf)
             if not math.isfinite(float(grad_norm)):
                 raise RuntimeError(f"Non-finite gradient norm at update {step + 1}")
