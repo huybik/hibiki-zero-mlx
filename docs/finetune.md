@@ -17,6 +17,8 @@ interruptible pod reruns it on boot.
   SXM they rent out. One epoch takes ~10 h on an H200 NVL or a 700 W H100 SXM and ~14 h on an
   H100 NVL ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
 - NVIDIA driver 580 or newer (CUDA 13), at least 80 GiB of RAM in the container, and Bash 5.1+.
+  `h100.sh` sizes the GPU memory, RAM and disk it requires from the run's weights, so the phone
+  student's runs also take an RTX 5090 ([sft-recovery](agent-memory/sft-recovery.md#launcher)).
 - 350 GB of disk: the environment, weights, caches, their 70 GB of packs and the evaluation sets
   took 157 GiB on a pod, and the run needs 130 GiB: free, plus what a continued run already
   holds (`run` checks it).

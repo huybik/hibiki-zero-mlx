@@ -81,8 +81,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   `--reward-coef 0`: [on-policy-distillation](on-policy-distillation.md); the 3B's own start as
   a KL anchor: [exposure-bias](exposure-bias.md#anchored-grpo).
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
-  free-running pass on `EVAL_PAIRS`' eight sets, both directions of the two-way model GRPO runs
-  on (user, 2026-11-10): FLEURS dev both ways, `en-vi-val` clean and noisy, `en-vi-val-en`. The
+  free-running pass on `EVAL_PAIRS`' ten sets, both directions (user, 2026-11-10): FLEURS dev both
+  ways, `en-vi-val` and `en-vi-val-en`, each clean and noisy (the last since 2026-11-23). The
   first set of each direction selects (`common.selecting_sets`, by the audio a set is heard in):
   promotion goes to the best mean chrF over them among checkpoints that pass every set's gates
   and whose median end offset on each is at most `LATENCY_SLACK_S` (0.5 s) past update 0's.
@@ -151,14 +151,11 @@ The CUDA profile and dry run are under [Running](#running).
   collection stays.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --pair-cache-dir … --model-weight START --out-dir …`.
-  - It times generation at each `--gen-batch`, the rewards serially and in workers, and the
-    old-logprob pass and the update at each `--micro-batch`.
-  - It holds the fp32 policy and AdamW's states as a run does: in host memory while it
-    generates, on the GPU for the update stages.
-  - It times each generation size on a second call, after compilation. Each batch's CUDA graph
-    capture stays in the time, as in a run.
-  - An out-of-memory size is recorded and skipped, and `profile.json` is rewritten after each
-    stage.
+  It times generation at each `--gen-batch` (on a second call, after compilation; each batch's
+  graph capture stays in, as in a run), the rewards serially and in workers, and the old-logprob
+  pass and the update at each `--micro-batch`, holding the states as a run does (on the host while
+  it generates, on the GPU for the update). An out-of-memory size is recorded and skipped;
+  `profile.json` is rewritten after each stage.
 - **Profiled on the box** (2026-11-13, the 700 W H100 SXM, from the two-way run's final model,
   the caches `grpo_launch.sh` passes, T 1,200). Free-threaded Python 3.14 generates faster here
   than CPython 3.12: 29.0 against 30.9 ms a step at 192 rows.
@@ -201,8 +198,8 @@ The CUDA profile and dry run are under [Running](#running).
   - Generation peaked at 72.6 of 79.2 GiB, in a batch of 724 rows of 848 frames. Its peak
     follows ~6.3 + 1.07e-4 × rows × frames GiB, so `--gen-frames 614400` holds ~6 GiB in
     reserve in any window.
-  - Host memory: 77 GiB pinned (the writer's copy and `HostOffload`'s) and ~17 GiB more that
-    can't be given back, so GRPO's preflight needs 128 GiB of RAM.
+  - Host memory: 77 GiB pinned (the writer's and `HostOffload`'s copies, 1.1x their size) and
+    ~17 GiB more that can't be given back; the preflight asks 10% more (`h100.sh sizes`: 104 GiB).
   - Against main over the same 20 updates: final BLEU 32.45 against 32.50 and `eos_rate`
     0.922 against 0.920, with no systematic difference in loss or clipping.
   - Each process pays once: ~63–80 s of compilation in its first π_old pass, and 10–19 s each
@@ -275,15 +272,18 @@ The CUDA profile and dry run are under [Running](#running).
     5.04 → 2.52 s EN→VI from update 0 to 1,400 (medians 3.80 → 2.11, 4.80 → 2.38). The paper's
     short-form Table 1, on spoken words (later than text): LAAL 2.8–3.1 s, End Offset 1.9–2.4 s.
 - **The run:** `training/tranche/box/grpo_launch.sh RUN START [ARGS…]` runs `./training/h100.sh
-  grpo RUN` on those caches at the 3B's sizes, ARGS after them winning (a phone student adds its
+  grpo RUN` on its caches at the 3B's sizes, ARGS after them winning (a phone student adds its
   `--config-path`, `--text-weight 50` and its profile's sizes). `h100.sh` claims, locks,
   preflights and syncs as `run` does ([sft-recovery](sft-recovery.md#launcher)); its boot-hook
   line and a restore use `grpo` where an SFT run's use `run`, and fail on the other's run.
+  - **Its caches** (from 2026-11-23): the tranche's VI→EN rows; EN→VI, the tranche's noisy copies
+    and round 4e's 500 `en_speech` shards clean and noisy, timed by their `vi-en` copy
+    (`--pair-cache-dir`): [envi-data](envi-data.md#the-runs-on-it).
   - **Start weight:** `--model-weight` loads on every resume, before the pair replaces it, so it
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
-  - **Disk:** the preflight needs 131 GiB on the 3B (94 with `--keep-checkpoints 1`), ~62 (45)
-    on a 1.4B student, free plus what the run directory holds. An SFT run's pairs on the same disk (~81 GiB) go first, once they are
-    on the Hub.
+  - **Sizes** ([sft-recovery](sft-recovery.md#launcher)): disk 131 GiB on the 3B (94 at
+    `--keep-checkpoints 1`; an SFT run's pairs, ~81 GiB, go first once on the Hub), GPU states
+    46.7, RAM 104; the heads student under the 3B 42 at 1, 24.9 and 61.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
     the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took
     ~53 min: Xet uploaded ~4.8 GB of the model and ~4.5 GB of the trainer state as new data, at

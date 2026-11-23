@@ -7,7 +7,8 @@ that finishes the rest (`envi_box.py`) and where each folder is on the Hub. The 
 [cache-build](cache-build.md), the noisy copies in [noisy-source](noisy-source.md#noisy-cache), the
 two-way run in [two-way](two-way.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](#on-the-hub) ·
-[The Mac run](#the-mac-run) · [The box run](#the-box-run) · [Speed](#speed)
+[The runs on it](#the-runs-on-it) · [The Mac run](#the-mac-run) · [The box run](#the-box-run) ·
+[Speed](#speed)
 
 ## Decision
 
@@ -74,6 +75,22 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   `/workspace/hibiki-zero/data/eval/` (2026-11-21). `eval_sets` run from another checkout whose
   `data/` is a symlink writes the clips' absolute paths (`repo_display_path` resolves the link);
   its jsonl were rewritten to the repo-relative `data/eval/…` the other sets use.
+
+## The runs on it
+
+- **GRPO** (`grpo_launch.sh`, from 2026-11-23; user: "should we run on both clean + noisy?", then
+  "ok go with your recommendation"): VI→EN, the tranche's `pho`, `vivoice` and `giga`; EN→VI, the
+  tranche's noisy copies (`en-vi/<source>-noisy`, never beside the clean folder) and round 4e's 500
+  `en_speech` shards (`box/en_speech_sub.txt`) clean and noisy, in
+  `data/cache/en-vi/en-vi-grounded-v2{,-noisy}/train`, timed by the same 500 shards' `vi-en` noisy
+  copy (`--pair-cache-dir data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train`, read for its
+  text; an extra `en-vi` shard has no pair and raises). EN→VI is ~59% of the rows, from ~55% in
+  the 3B's GRPO and `both_heads_z`, which had the tranche's clean `en-vi` rows and the 500 clean
+  shards. As packs
+  (`streams --drop-shards` as each folder lands): 57 + ~52 + ~41 GB and the pair ~21, ~171 GB;
+  with the run, weights, env and evaluation sets ~250 of a 350 GB disk. All 1,832 shards both ways
+  would need ~420, and a run of 2,000 updates reads only a few percent of the rows.
+- **The next two-way SFT run** trains on all of it ([Decision](#decision)), on an 80 GB card.
 
 ## The Mac run
 
@@ -159,8 +176,7 @@ restarts, 5 minutes apart; log `run.log` beside it). Copies of both (and `watch.
 - The jobs and each job's shards in the reverse of the Mac's order: `build` from the last name down,
   then `noisy`, then `tranche`.
 - The cache env alone (`/workspace/envs/cache`, built as `envs-min.sh` builds it) runs the driver
-  and its steps; `h100.sh setup` refuses the 5090 (`require_gpu`), and nothing here needs the
-  `.venv`. huybik's token is read from `$HF_HOME/token`, `HF_TOKEN_AN` from `/workspace/.env`.
+  and its steps; nothing here needs the `.venv` (`h100.sh setup` refused the 5090 then). huybik's token is read from `$HF_HOME/token`, `HF_TOKEN_AN` from `/workspace/.env`.
 - Batches of 40 shards (the GPU idles ~40 s between batches) and `noisy_cache encode
   --batch-seconds 320`, for the 32 GB card; the build at `CUDAModels.window` 512, for the box's
   31 GB of RAM ([cache-speed-cuda](cache-speed-cuda.md#memory)).
