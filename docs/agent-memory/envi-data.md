@@ -92,7 +92,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   (`streams --drop-shards` as each folder lands): 57 + ~52 + ~41 GB and the pair ~21, ~172 GB;
   with the run, weights, env and evaluation sets ~250 of a 350 GB disk. All 1,832 shards both ways
   would need ~420, and a run of 2,000 updates reads only a few percent of the rows.
-- **The next two-way SFT run** trains on all of it ([Decision](#decision)), on an 80 GB card.
+- **The next two-way SFT run** trains on all of it ([Decision](#decision)), on an 80 GB card:
+  its folders, hours and plan in [teacher-next](teacher-next.md#data).
 
 ## The Mac run
 

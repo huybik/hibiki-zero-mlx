@@ -607,9 +607,13 @@ Vietnamese text cannot keep up with its speech.
     ([on-policy-distillation](agent-memory/on-policy-distillation.md#experiments)).
 12. The 3B's recipe (2026-11-21), after the student's: scheduled sampling in SFT against plain
     SFT, then each through a short GRPO; then GRPO anchored to its start against the shipped run;
-    centered advantages on the 3B only if they win on the student
-    ([exposure-bias](agent-memory/exposure-bias.md#experiments)). Its next SFT, when the tranche
-    grows, uses what wins.
+    centered advantages on the 3B dropped, as z-scored won on the student
+    ([exposure-bias](agent-memory/exposure-bias.md#experiments)).
+13. The teacher's next round (planned 2026-11-23, after the students' runs): experiments 1 and 2
+    of item 12 first, then one two-way SFT pass from the two-way SFT's final model on all of
+    `en_speech` both ways, noisy, and the tranche (~30,900 h of source, ~36–38 h on a 700 W H100
+    at 4,608 frames), decayed from half the pass and from its end, then GRPO; it ships only if it
+    beats GRPO update 1,400 ([teacher-next](agent-memory/teacher-next.md)).
 
 ## Risks
 

@@ -122,6 +122,25 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
 | H100 SXM 80 GB (500 W, its host's cap) | 7,401 | 0.550 | 20.1 h |
 
 - The H200 NVL drew 536 W on average at 1,705 MHz (1,785 max) and 58 °C: under its 600 W limit.
+- **A run's length from its hours** (4,608-frame updates): ~15.6 updates an hour of source
+  (`full_epoch4e`: 131,659 for 8,456 h) and ~1.21 h of the 700 W SXM per 1,000 h with its
+  validation (05:51–16:05 UTC). Count hours, not another run's updates: `twoway_sft`'s 287,558
+  were of 8,192 frames (a 2026-11-23 estimate read them as 4,608 and came out 1.8× short). An
+  `en_speech` or tranche row's stream costs about the same either way, so a two-way pass costs
+  twice its `vi-en` part ([teacher-next](teacher-next.md#time-disk-and-box)).
+- **RTX 5090 (32 GB): no 3B SFT** (2026-11-23, analysed, not built). Its states alone are 46.7
+  GiB (fp32 weights and gradients 11.7 each, AdamW's moments 23.3; `h100.sh sizes`), and 4,608
+  frames peak at ~72 GiB on an 80 GB card. The only route that keeps the recipe exact is
+  AdamW on the host: bf16 linears with fp32 embeddings and norms on the GPU (~6.3 GiB), fp32
+  masters and moments pinned on the host (~47 GiB), each gradient sent down as it is ready with
+  the clip's norm summed on the GPU, a CPU fused AdamW, the bf16 weights sent back. torchao 0.18's
+  `CPUOffloadOptimizer` can't do it: its host copy keeps the GPU parameter's dtype, it has no
+  clipping, and its state format differs. Estimated (unmeasured) 1,400–2,700 frames/s against the
+  700 W H100's 15,321: the GPU waits on ~94 GB of host traffic an update, since the clip needs
+  every gradient first. That is $0.05–0.10 per million frames on a $0.52/h 5090 against $0.036
+  on a $2/h H100, and 4,608 frames of activations may not fit the ~22 GiB left. 8-bit moments
+  still leave 29 GiB of states (11.7 + 11.7 + 5.8) and broke a tensor ([Measurements](#measurements));
+  LoRA or frozen layers change the teacher. Rent an 80 GB card or larger for the 3B.
 
 - **H200 SXM, alone on the GPU (2026-11-09; round 4's caches, steps 200–300 after warm-up, at
   ~690 W of its 700 W cap, 99–100% busy)**: kernels of 10 warm steps at 4,608: matmuls 48.6%, fused
