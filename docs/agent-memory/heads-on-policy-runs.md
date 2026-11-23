@@ -113,9 +113,10 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   `--micro-batch`, `--gen-frames`, `--eval-batch-size` (64 so far). On the 5090 (2026-11-24, 575 W,
   one run of each): generation at 320 rows (`--gen-frames 384000`) 45 ms a step and 5.8 rollouts/s,
   peak 23.4 GiB, at 384 rows 27.6 GiB, 448 out of memory. Without `--park-states` the update peaked
-  at 29.4 GiB at micro-batch 1 and a run of it ran out of memory at update 7; with it, micro-batch 2
-  is ~5% faster than 1 and 3 no faster than 2 (4 out of memory). `--gen-frames 384000
-  --micro-batch 2 --park-states` is the choice; each update ~9.3 s past the first (generation ~13 s an
+  at 29.4 GiB at micro-batch 1 and a run of it ran out of memory at update 7; with it, the
+  update peaked at 19.5, 21.6, 23.8 and 25.9 GiB at micro-batch 1 to 4 (8.6, 8.2, 8.2 and 7.9 s an
+  update by the profile's estimate, π_old's pass 1.2–1.4 more). The run holds more than the profile,
+  so it stays at `--gen-frames 384000 --micro-batch 2 --park-states`; each update ~9.3 s past the first (generation ~13 s an
   update on top), so 2,000 updates take ~13 h. The evaluation at batch 64 with AdamW's states on the
   card ran out of memory, so `evaluate` parks them and the teacher.
 - `--park-states` (grpo.py and `grpo_profile`): only `optimizer.step` reads AdamW's states, so they
