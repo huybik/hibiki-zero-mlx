@@ -99,9 +99,9 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   | `en-vi-val-en/libriheavy` | 45.73 → 40.75 | 23.99 → 19.74 | 1.92 → 1.92 | 1.08 → 1.06 |
   | `en-vi-val-en-noisy/libriheavy` | 37.94 → 32.68 | 19.52 → 15.11 | 2.31 → 2.55 | 1.02 → 1.00 |
 
-- `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 60
+- `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 54
   GiB of RAM in the container and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). The
-  RAM is the 3B's measured structure, 39.6 GiB pinned and 17 more: measure the run's own once it
+  RAM is the 3B's measured structure, 34.4 GiB pinned and 17 more: measure the run's own once it
   is past window 2 (`HostOffload` pins AdamW's states from then) and its first save (the writer's
   buffers), by the cgroup's `memory.stat` `anon` or the process's `VmHWM`. `grpo_profile` has no
   writer, and `memory.peak` counts the packs' page cache. On a 350 GB disk: the caches ~172 GB as

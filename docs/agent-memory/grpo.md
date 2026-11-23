@@ -199,7 +199,10 @@ The CUDA profile and dry run are under [Running](#running).
     follows ~6.3 + 1.07e-4 × rows × frames GiB, so `--gen-frames 614400` holds ~6 GiB in
     reserve in any window.
   - Host memory: 77 GiB pinned (the writer's and `HostOffload`'s copies, each tensor's block
-    rounded up to a power of two) and ~17 GiB more that can't be given back (`h100.sh sizes`).
+    then rounded up to a power of two) and ~17 GiB more that can't be given back (`h100.sh sizes`).
+    `grpo.ALLOC_CONF` (`pinned_max_round_threshold_mb:1`) keeps blocks over 1 MB at their size:
+    70.0 GiB on the 3B, 34.4 on the heads student with its teacher (39.6 rounded). The run and
+    `grpo_profile` both set it.
   - Against main over the same 20 updates: final BLEU 32.45 against 32.50 and `eos_rate`
     0.922 against 0.920, with no systematic difference in loss or clipping.
   - Each process pays once: ~63–80 s of compilation in its first π_old pass, and 10–19 s each

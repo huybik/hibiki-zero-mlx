@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import time
 from pathlib import Path
 
@@ -227,6 +228,7 @@ def teacher_leak(teacher, teach, codes, keep, shifts: dict[int, int], device, ro
 
 
 def main() -> None:
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", grpo.ALLOC_CONF)  # a run's allocators
     args = parse_args()
     grpo.validate_objective_args(args)
     args.model_weight = require_file(args.model_weight, "start checkpoint")

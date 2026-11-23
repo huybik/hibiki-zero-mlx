@@ -132,8 +132,9 @@ def tensors(path):  # each tensor's parameter count, from the safetensors header
     return [math.prod(entry["shape"]) for key, entry in header.items() if key != "__metadata__"]
 
 
-def pinned(nbytes):  # torch's pinned host allocator rounds each block up to a power of two
-    return 1 << (nbytes - 1).bit_length() if nbytes else 0
+def pinned(nbytes):  # torch's pinned host allocator rounds a block of 1 MB or less up to a power of two,
+    # and keeps larger ones at their size (grpo.ALLOC_CONF's pinned_max_round_threshold_mb)
+    return 1 << (nbytes - 1).bit_length() if 0 < nbytes <= 2**20 else nbytes
 
 
 module, keep = sys.argv[1], int(sys.argv[3])
@@ -155,9 +156,9 @@ disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
 gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30 if grpo else 78
 # RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
 # policy and AdamW's two states, a block each a tensor) and grpo.HostOffload's copy of the same and
-# of a teacher's bf16 weights: 77.4 GiB on the 3B, where the run held 77 pinned and 17 more it
-# could not give back. That 17 and 5% on top: 100 GiB on the 3B, 60 on the heads student under the
-# 3B (39.6 pinned), to be measured in its run past its first save.
+# of a teacher's bf16 weights: 70.0 GiB on the 3B, whose run held 17 GiB more that it could not
+# give back. That 17 and 5% on top: 92 GiB on the 3B, 54 on the heads student under the 3B (34.4
+# pinned), to be measured in its run past its first save.
 pins = (6 * sum(pinned(4 * n) for n in policy) + sum(pinned(2 * n) for n in teacher)) / 2**30
 ram = math.ceil(1.05 * (pins + 17)) if grpo else 80
 print(disk, f"{gpu:.1f}", ram)

@@ -123,6 +123,12 @@ ADVANTAGES = ("zscore", "centered")  # rewards.normalize with and without the st
 # hold one: the other half keep digital silence, what a voice gate passes between sentences.
 ROOMS = 256
 ROOM_SHARE = 0.5
+# The allocators of a run and its profile. Expandable segments keep freed GPU memory reusable
+# between generation batches and updates. Pinned host blocks over 1 MB keep their size, where torch
+# would round each up to a power of two: `HostOffload`'s and the checkpoint writer's buffers, one a
+# tensor, then pin 34.4 GiB on the heads student under the 3B instead of 39.6, 70.0 on the 3B
+# instead of 77.4 (`h100.sh sizes`).
+ALLOC_CONF = "expandable_segments:True,pinned_max_round_threshold_mb:1"
 
 
 def stream_order(count: int, seed: int) -> np.ndarray:
@@ -674,7 +680,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", ALLOC_CONF)
     args = parse_args()
     validate_args(args)
     args.model_weight = require_file(args.model_weight, "start checkpoint")
