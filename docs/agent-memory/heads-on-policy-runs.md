@@ -1,9 +1,9 @@
 # The heads student's on-policy runs
 
 Read when running or judging the heads student's on-policy runs on a box: the probes' results,
-`both_heads_z`, and `both_heads_z2` with its preparation and pre-run scores.
+`both_heads_z`, and `both_heads_z2` with its pre-run scores, results and the sizes a 5090 takes.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Probe results](#probe-results) ·
-[The run, on the next box](#the-run-on-the-next-box)
+[`both_heads_z2`](#both_heads_z2) · [On the 5090](#on-the-5090)
 
 The method, its arguments and its checks are in [on-policy-distillation](on-policy-distillation.md);
 GRPO itself in [grpo](grpo.md); the box in [tranche-box](tranche-box.md#state).
@@ -64,24 +64,73 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
 | en-vi-val-en/cv27 | 32.71 → 33.86 | 14.03 → 15.33 | 1.16 → 1.14 | 0.66 → 1.19 | 0 → 0 | 83 → 42 / 180 | pass |
 | en-vi-val-en/libriheavy | 40.78 → 43.32 | 19.86 → 21.99 | 1.05 → 1.06 | 1.94 → 2.00 | 0 → 0 | 55 → 36 / 180 | pass |
 
-### The run, on the next box
+### `both_heads_z2`
 
-- **A new run, `both_heads_z2`, on the new data** (user, 2026-11-23: "ok go with your
-  recommendation"): `both_heads_z`'s recipe from its start, the heads student's final model at
-  190,126, on main and `grpo_launch.sh`'s caches ([grpo](grpo.md#running)): EN→VI from the
-  tranche's noisy copies and round 4e's 500 `en_speech` shards clean and noisy. Its arguments
-  after the launcher's: `--config-path weights/student_heads14_cb16/config.json --save-every 100
-  --keep-checkpoints 1 --teacher-weight weights/grpo_twoway_best1400.safetensors --lr 1e-6` and
-  its box's profile sizes (both terms, z-scored, seed 44 by default; `--updates 2000` from the
-  launcher). It stops by the user's rule, two validations (every 200 updates) without a new best.
+- **Done 2026-11-23, 18:53–21:42 UTC** (commit `f0b3b8d`, on the RTX 5090 box 62188551; its records, without weights, are in
+  `/Volumes/data/hibiki-zero-evals/box-62188551/`, the pairs of updates 200 and 400 on the Hub): `both_heads_z`'s
+  recipe from its start, the heads student's final model at 190,126, on main and
+  `grpo_launch.sh`'s caches ([grpo](grpo.md#running)), the new data: EN→VI from the tranche's
+  noisy copies and round 4e's 500 `en_speech` shards clean and noisy, `--pair-cache-dir` timing
+  it. Arguments after the launcher's: `--config-path weights/student_heads14_cb16/config.json
+  --save-every 100 --keep-checkpoints 1 --teacher-weight weights/grpo_twoway_best1400.safetensors
+  --lr 1e-6 --gen-frames 384000 --micro-batch 2 --park-states` (both terms, z-scored, seed 44;
+  `--updates 2000` from the launcher).
+- **It stopped at 400 by the user's rule** (two validations without a new best) and promoted
+  nothing: it was healthy but ended too late, past the 0.5 s gate on FLEURS dev by 0.19 s VI→EN
+  and 0.16 s EN→VI at 200 and, at 400, by 0.04 s on VI→EN alone. Validation, 0 → 200 → 400:
+  selecting mean 37.06 → 38.49 → 38.63; mean of the original 8 sets 37.83 → 38.16 → 37.98
+  (`both_heads_z`: 37.33 → 38.92 and 37.88 → 39.44); end offset VI→EN 1.73 → 2.42 → 2.27 s and
+  EN→VI 1.50 → 2.16 → 1.82 s. Both 200 and 400's pairs are on the Hub; no best exists.
+- **`both_heads_z`'s best is the better model.** Test sets (2026-11-24, the box, `eval.py` seed 43,
+  batch 64, text only, LAAL; the 11 of [student-heads](student-heads.md#tests) and the two
+  `en-vi-val-en-noisy` in one call, so absolute scores differ from that table's; every set passes
+  health for all four). chrF, and paired bootstrap over rows (500 draws, 11 sets):
+
+  | Set | Start (190,126) | `both_heads_z` 200 | `z2` 200 | `z2` 400 |
+  |---|---|---|---|---|
+  | fleurs-vi/test | 36.70 | 39.51 | 38.69 | 38.34 |
+  | fleurs-en/test | 34.63 | 36.78 | 37.13 | 37.52 |
+  | multimed-vi/select | 35.64 | 36.64 | 35.22 | 33.92 |
+  | multimed-vi/final | 35.74 | 36.72 | 35.17 | 34.09 |
+  | giga-heldout/test | 61.64 | 64.49 | 63.63 | 63.80 |
+  | en-vi-val/cv27 | 37.80 | 39.23 | 37.70 | 36.76 |
+  | en-vi-val/libriheavy | 41.45 | 43.74 | 43.36 | 40.99 |
+  | en-vi-val-noisy/cv27 | 38.08 | 40.66 | 39.30 | 39.82 |
+  | en-vi-val-noisy/libriheavy | 41.28 | 42.68 | 43.05 | 43.34 |
+  | en-vi-val-en/cv27 | 31.72 | 32.83 | 33.63 | 34.68 |
+  | en-vi-val-en/libriheavy | 40.59 | 43.89 | 43.12 | 43.21 |
+  | en-vi-val-en-noisy/cv27 | 22.76 | 24.93 | 26.78 | 26.42 |
+  | en-vi-val-en-noisy/libriheavy | 33.22 | 37.14 | 37.76 | 37.94 |
+  | Mean of 11 (`-noisy` in `-en` left out) | 39.57 | **41.56** | 40.91 | 40.59 |
+  | Mean of 13 | 37.79 | **39.94** | 39.58 | 39.29 |
+  | Mean LAAL of 11 (s) | 2.66 | 2.78 | 3.02 | 3.05 |
+  | Mean median end offset of 11 (s) | 2.70 | 2.62 | 2.98 | 2.98 |
+
+  Against the start, `both_heads_z` +1.99 [+1.62, +2.32], `z2` 200 +1.34 [+0.97, +1.69], 400 +1.01
+  [+0.61, +1.41]; `z2` 200 against `both_heads_z` −0.65 [−0.96, −0.27], 400 −0.97 [−1.34, −0.60]
+  (11 sets). Against `both_heads_z`, `z2` (200, 400) is ahead on
+  EN→VI `en-vi-val-en` cv27 (+0.8, +1.9) and its noisy cv27 (+1.9, +1.5), and behind on MultiMed-ST
+  (−1.4 to −2.7), FLEURS-vi (−0.8, −1.2), `giga-heldout` (−0.9, −0.7) and `en-vi-val` cv27 (−1.5, −2.5);
+  the rest are within ±1 at 200 but `en-vi-val-noisy` cv27 (−1.4; 400 also `en-vi-val` libriheavy −2.8).
+  **Its cause is not isolated**: the data, main's streams since
+  `9d9573e` (the start floor, the babble and OCR drops,
+  [sft-training](sft-training.md#target-timing)), the sizes (`--micro-batch 2 --gen-frames 384000`,
+  not 4 and 614400) and ten evaluation sets all changed.
+- **Wrong-language drift**: rows whose output is in the other language (a check for Vietnamese
+  letters, so approximate). Test sets, VI→EN, start / `both_heads_z` / `z2` 200 / `z2` 400:
+  `multimed-vi/select` 96 / 103 / 205 / 305 of 1,718, `final` 132 / 140 / 245 / 308 of 1,719,
+  FLEURS-vi 32 / 22 / 46 / 53 of 857, `giga-heldout` 17 / 12 / 24 / 32 of 1,000, `en-vi-val` cv27
+  31 / 26 / 42 / 50 of 180. EN→VI falls (FLEURS-en 15 / 7 / 1 / 1 of 641; `en-vi-val-en-noisy` libriheavy
+  28 / 20 / 7 / 5 of 180). On validation's `en-vi-val` cv27 it went 36 → 54 → 70 of 180 in
+  `z2`, against 40 → 39 in `both_heads_z` (0 → 200). Some of those outputs repeat the source's
+  own Vietnamese (chrF ≥ 50 against it: 2 → 11 → 15 of the wrong rows on that set).
+- A set's chrF moves more than its row-resampling interval says: at 200, `en-vi-val` cv27 was
+  −4.30 in validation (seed 44, rows' 95% interval −6.3 to −2.3) and −0.10 in the test call (seed 43,
+  other batch mates, interval −2.1 to +2.2). Judge on several sets, not one.
 - Why not continue `both_heads_z`: main can't resume it (`pair_cache_dir` is a resume key,
   [sft-training](sft-training.md#target-timing)), and from its 200 pair the run would mix two
-  datasets with AdamW restarted. Compare the two by each one's change from its own update 0 over
-  the same eight sets (`both_heads_z`: +1.59 selecting, +1.56 of 8): the evaluation reseeds by
-  batch over all its rows, so two more sets or another `--eval-batch-size` move every set's
-  absolute scores. The change measures the data and main's streams together (the start floor,
-  the babble and OCR drops, [sft-training](sft-training.md#target-timing)). `both_heads_z` stays on
-  the Hub, its commit `9d9573e` as the branch `run/both_heads_z`.
+  datasets with AdamW restarted. `both_heads_z` stays on the Hub with its commit `9d9573e` as the
+  branch `run/both_heads_z`.
 - The teacher never heard noisy English, so the box scored the teacher and the start on
   `en-vi-val-en` and its noisy copy before the run (user, 2026-11-23: "should we train the teacher
   a bit on noisy data?"; training the 3B on it is the next two-way run's, [envi-data](envi-data.md#decision)).
@@ -99,12 +148,14 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   | `en-vi-val-en/libriheavy` | 45.73 → 40.75 | 23.99 → 19.74 | 1.92 → 1.92 | 1.08 → 1.06 |
   | `en-vi-val-en-noisy/libriheavy` | 37.94 → 32.68 | 19.52 → 15.11 | 2.31 → 2.55 | 1.02 → 1.00 |
 
+### On the 5090
+
 - `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 54
   GiB of RAM in the container and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). The
   RAM is the 3B's measured structure, 34.4 GiB pinned and 17 more. On the 5090 box (58.0 GiB
   cgroup) the first 40 updates held 34.4 GiB pinned and 13.5 of `anon` past window 2 and the save at
   20, `memory.current` peaking at 52.3 GiB (page cache included) and the host's MemAvailable bottoming
-  at 4.3 to 4.7 in three runs: tight, so run with `HF_HUB_DISABLE_XET=1` and watch MemAvailable. Pinned memory is charged to
+  at 4.3 to 4.7 in three runs, and 3.79 in `both_heads_z2`'s 2 h 48 min: tight, so run with `HF_HUB_DISABLE_XET=1` and watch MemAvailable. Pinned memory is charged to
   the cgroup as `shmem` (add it to `anon`, from `memory.stat`), and `memory.peak` counts the packs'
   page cache. `grpo_profile` has no writer. On a 350 GB disk: the caches ~172 GB as
   packs ([envi-data](envi-data.md#the-runs-on-it)), the run 42, weights ~25, the env and
