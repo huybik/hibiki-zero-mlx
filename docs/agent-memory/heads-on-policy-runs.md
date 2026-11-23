@@ -103,8 +103,8 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   GiB of RAM in the container and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). The
   RAM is the 3B's measured structure, 34.4 GiB pinned and 17 more. On the 5090 box (58.0 GiB
   cgroup) the first 40 updates held 34.4 GiB pinned and 13.5 of `anon` past window 2 and the save at
-  20, `memory.current` peaking at 52.1 GiB (page cache included) and the host's MemAvailable bottoming
-  at 4.4: tight, so run with `HF_HUB_DISABLE_XET=1` and watch MemAvailable. Pinned memory is charged to
+  20, `memory.current` peaking at 52.3 GiB (page cache included) and the host's MemAvailable bottoming
+  at 4.3 to 4.7 in three runs: tight, so run with `HF_HUB_DISABLE_XET=1` and watch MemAvailable. Pinned memory is charged to
   the cgroup as `shmem` (add it to `anon`, from `memory.stat`), and `memory.peak` counts the packs'
   page cache. `grpo_profile` has no writer. On a 350 GB disk: the caches ~172 GB as
   packs ([envi-data](envi-data.md#the-runs-on-it)), the run 42, weights ~25, the env and
@@ -112,12 +112,12 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
 - Profile on its box first (`grpo_profile --teacher-weight`): `--micro-batch` and `--gen-frames`.
   It has no evaluation stage, so check `--eval-batch-size` (64 so far) by a short run past an
   evaluation with the optimizer stepped. On the 5090 (2026-11-24, 575 W, one run of each): generation at 320 rows (`--gen-frames 384000`) 45 ms a step and 5.8 rollouts/s,
-  peak 23.4 GiB, at 384 rows 27.6 GiB, 448 out of memory. Without `--park-states` the update peaked
-  at 29.4 GiB at micro-batch 1 and a run of it ran out of memory at update 7; with it, the
+  peak 23.4 GiB, at 384 rows 27.6 GiB, 448 out of memory. Without `--park-states` the
+  micro-batches peaked at 29.0 GiB at 1 and a run of it ran out of memory at update 7 (31.0 GiB in
+  use; its log was overwritten by the next run); with it, the
   micro-batches peaked at 19.5, 21.6, 23.8 and 25.9 GiB at 1 to 4 (8.6, 8.2, 8.2 and 7.9 s an
   update by the profile's estimate, π_old's pass 1.2–1.4 more, the parking copies not counted);
-  the optimizer's step holds 24.9. The run held more than the profile (update 7 of one ran out of
-  memory at 31.0 GiB, against its profile's 29.4), so it stays at `--gen-frames 384000
+  the optimizer's step holds 24.9. The run holds more than the profile, so it stays at `--gen-frames 384000
   --micro-batch 2 --park-states`: ~9.3 s an update, ~13 s of generation and ~1.4 s of π_old's pass
   an update, so 2,000 take ~13.2 h and 11 evaluations of ~2 min. The evaluation at batch 64 with
   AdamW's states on the card ran out of memory, so `evaluate` parks them and the teacher.
