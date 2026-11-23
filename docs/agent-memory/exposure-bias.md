@@ -140,7 +140,7 @@ published (DeepSeekMath used β = 0.04), built for the student's on-policy disti
 - Not for the heads student (2026-11-23, user: "should we add that the both_heads_z?"): its
   teacher term is this anchor, toward a better model than its own start (selecting ~40.8 against
   37.33), and without it plain GRPO wrecked the student in 200 updates
-  ([on-policy-distillation](on-policy-distillation.md#probe-results)). Its EOS share falls with
+  ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)). Its EOS share falls with
   distillation alone as much (FLEURS-en dev 191 → 89 of 392), so a second KL would not hold it,
   and the runtimes never stop at an EOS. If its end offset drifts past the gate, raise
   `--kl-coef` instead.
@@ -181,7 +181,7 @@ From 2026-11-23 experiments 1 and 2 open the teacher's next round, before its fu
    also carries the new SFT.
 3. **Centered advantages on the 3B**: dropped (2026-11-23). They were to run only if they won
    on the student, and z-scored won there
-   ([on-policy-distillation](on-policy-distillation.md#probe-results)).
+   ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)).
 
 The data stays the larger lever: the tranche's first 1,760 h moved every real-speech set by
 9–10 chrF ([plan](../vi_en_parity_plan.md#order) item 6). These experiments tune the recipe that
