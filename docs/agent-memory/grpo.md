@@ -82,7 +82,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   a KL anchor: [exposure-bias](exposure-bias.md#anchored-grpo).
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
   free-running pass on `EVAL_PAIRS`' ten sets, both directions (user, 2026-11-10): FLEURS dev both
-  ways, `en-vi-val` and `en-vi-val-en`, each clean and noisy (the last since 2026-11-23). The
+  ways, `en-vi-val` and `en-vi-val-en`, each clean and noisy (the last since 2026-11-23), with
+  AdamW's states and a teacher parked on the host (2026-11-24). The
   first set of each direction selects (`common.selecting_sets`, by the audio a set is heard in):
   promotion goes to the best mean chrF over them among checkpoints that pass every set's gates
   and whose median end offset on each is at most `LATENCY_SLACK_S` (0.5 s) past update 0's.
@@ -132,13 +133,13 @@ The CUDA profile and dry run are under [Running](#running).
   to heavy optimize grpo when it phase start after sft"). On the 80 GB H100 two levers nearly
   halve an update (measured below):
   - the fp32 policy and AdamW's states wait in pinned host memory while a window generates
-    (`HostOffload`: 35 → 5.8 GiB resident, so generation batches of 512 rows fit, not 256);
+    (`HostOffload`: 35 → 5.8 GiB resident, so generation batches of 512 rows fit, not 256; a 32 GB
+    card needs [`--park-states`](heads-on-policy-runs.md#the-run-on-the-next-box) too);
   - rollouts are as long as their stream plus evaluation's tail, and forwards are cut to their
     last kept token ([A rollout's length](#design)). The user approved moving the last reward
     there (2026-11-10, again 2026-11-13).
 
-  Left: micro-batches by a frame budget (3 rows run out of memory at 1,200 frames, though
-  forwards average ~635; ~4% of an update). Compare on the same streams by updates per GPU-hour.
+  Left: micro-batches by a frame budget (forwards average ~635 of 1,200 frames; ~4% of an update). Compare on the same streams by updates per GPU-hour.
   8-bit AdamW states were measured and rejected ([sft-speed](sft-speed.md#measurements)).
 - **The GPU's idle between stages** (2026-11-14, 40 updates from the two-way model, each host step
   timed; `/Volumes/data/hibiki-zero-evals/box-60447659/idle_prof/`): a steady window (20 updates,
@@ -151,10 +152,9 @@ The CUDA profile and dry run are under [Running](#running).
   collection stays.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --pair-cache-dir … --model-weight START --out-dir …`.
-  It times generation at each `--gen-batch` (on a second call, after compilation; each batch's
-  graph capture stays in, as in a run), the rewards serially and in workers, and the old-logprob
-  pass and the update at each `--micro-batch`, holding the states as a run does (on the host while
-  it generates, on the GPU for the update). An out-of-memory size is recorded and skipped;
+  It times generation at each `--gen-batch` (after compilation; each batch's graph capture stays
+  in), the rewards serially and in workers, and the old-logprob pass and update at each
+  `--micro-batch`, holding the states as a run does. An out-of-memory size is recorded and skipped;
   `profile.json` is rewritten after each stage.
 - **Profiled on the box** (2026-11-13, the 700 W H100 SXM, from the two-way run's final model,
   the caches `grpo_launch.sh` passes, T 1,200). Free-threaded Python 3.14 generates faster here
@@ -166,7 +166,7 @@ The CUDA profile and dry run are under [Running](#running).
   | Generation with them on the host, 256 / 384 / 512 rows | 35.6 / 44.0 / 53.6 ms a step; 5.98 / 7.26 / 7.95 rollouts/s; peak 39 / 56 / 72 GiB |
   | Rewards, 128 groups | 2.3 s serial, 0.47 s in 8 workers |
   | π_old's logprobs, micro-batch 2 | 49,300 frames/s |
-  | Update, micro-batch 2 | 15,400 frames/s, peak 68 GiB; 3 runs out of memory |
+  | Update, micro-batch 2 | 15,400 frames/s, peak 68 GiB |
   | First update's ratio | exactly 1 |
 
   The profiler's estimate for the first window at its own lengths (640 streams; rollouts average
@@ -199,7 +199,7 @@ The CUDA profile and dry run are under [Running](#running).
     follows ~6.3 + 1.07e-4 × rows × frames GiB, so `--gen-frames 614400` holds ~6 GiB in
     reserve in any window.
   - Host memory: 77 GiB pinned (the writer's and `HostOffload`'s copies, each tensor's block
-    rounded up to a power of two) and ~17 GiB more that can't be given back (`h100.sh sizes`).
+    then rounded up to a power of two) and ~17 GiB more that can't be given back (`h100.sh sizes`).
   - Against main over the same 20 updates: final BLEU 32.45 against 32.50 and `eos_rate`
     0.922 against 0.920, with no systematic difference in loss or clipping.
   - Each process pays once: ~63–80 s of compilation in its first π_old pass, and 10–19 s each
@@ -283,7 +283,7 @@ The CUDA profile and dry run are under [Running](#running).
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
   - **Sizes** ([sft-recovery](sft-recovery.md#launcher)): disk 131 GiB on the 3B (94 at
     `--keep-checkpoints 1`; an SFT run's pairs, ~81 GiB, go first once on the Hub), GPU states
-    46.7, RAM 100; the heads student under the 3B 42 at 1, 24.9 and 60.
+    46.7, RAM 92; the heads student under the 3B 42 at 1, 24.9 and 54.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
     the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took
     ~53 min: Xet uploaded ~4.8 GB of the model and ~4.5 GB of the trainer state as new data, at

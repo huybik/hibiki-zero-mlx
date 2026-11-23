@@ -99,19 +99,32 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   | `en-vi-val-en/libriheavy` | 45.73 → 40.75 | 23.99 → 19.74 | 1.92 → 1.92 | 1.08 → 1.06 |
   | `en-vi-val-en-noisy/libriheavy` | 37.94 → 32.68 | 19.52 → 15.11 | 2.31 → 2.55 | 1.02 → 1.00 |
 
-- `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 60
+- `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 54
   GiB of RAM in the container and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). The
-  RAM is the 3B's measured structure, 39.6 GiB pinned and 17 more: measure the run's own once it
-  is past window 2 (`HostOffload` pins AdamW's states from then) and its first save (the writer's
-  buffers), by the cgroup's `memory.stat` `anon` or the process's `VmHWM`. `grpo_profile` has no
-  writer, and `memory.peak` counts the packs' page cache. On a 350 GB disk: the caches ~172 GB as
+  RAM is the 3B's measured structure, 34.4 GiB pinned and 17 more. On the 5090 box (58.0 GiB
+  cgroup) the first 40 updates held 34.4 GiB pinned and 13.5 of `anon` past window 2 and the save at
+  20, `memory.current` peaking at 52.3 GiB (page cache included) and the host's MemAvailable bottoming
+  at 4.3 to 4.7 in three runs: tight, so run with `HF_HUB_DISABLE_XET=1` and watch MemAvailable. Pinned memory is charged to
+  the cgroup as `shmem` (add it to `anon`, from `memory.stat`), and `memory.peak` counts the packs'
+  page cache. `grpo_profile` has no writer. On a 350 GB disk: the caches ~172 GB as
   packs ([envi-data](envi-data.md#the-runs-on-it)), the run 42, weights ~25, the env and
   evaluation sets ~15.
-- Profile on its box first (`grpo_profile --teacher-weight`; the H100 box's `/workspace/prof_z2.sh`):
-  `--micro-batch`, `--gen-frames`, `--eval-batch-size` (64 so far; validation runs with the update's
-  states on the GPU). The RTX PRO 6000 measured ([on-policy-distillation](on-policy-distillation.md#checks)) the update near 26 GiB at
-  micro-batch 1 (31.0 at 2) and generation 2.4 GiB plus ~0.066 a row: on a 32 GB 5090, micro-batch
-  1 and ≤ ~400 rows (`--gen-frames` = rows × 1,200), at little cost (9.0 rollouts/s at 512 rows,
-  9.3 at 1,024).
+- Profile on its box first (`grpo_profile --teacher-weight`): `--micro-batch` and `--gen-frames`.
+  It has no evaluation stage, so check `--eval-batch-size` (64 so far) by a short run past an
+  evaluation with the optimizer stepped. On the 5090 (2026-11-24, 575 W, one run of each): generation at 320 rows (`--gen-frames 384000`) 45 ms a step and 5.8 rollouts/s,
+  peak 23.4 GiB, at 384 rows 27.6 GiB, 448 out of memory. Without `--park-states` the
+  micro-batches peaked at 29.0 GiB at 1 and a run of it ran out of memory at update 7 (31.0 GiB in
+  use; its log was overwritten by the next run); with it, the
+  micro-batches peaked at 19.5, 21.6, 23.8 and 25.9 GiB at 1 to 4 (8.6, 8.2, 8.2 and 7.9 s an
+  update by the profile's estimate, π_old's pass 1.2–1.4 more, the parking copies not counted);
+  the optimizer's step holds 24.9. The run holds more than the profile, so it stays at `--gen-frames 384000
+  --micro-batch 2 --park-states`: ~9.3 s an update, ~13 s of generation and ~1.4 s of π_old's pass
+  an update, so 2,000 take ~13.2 h and 11 evaluations of ~2 min. The evaluation at batch 64 with
+  AdamW's states on the card ran out of memory, so `evaluate` parks them and the teacher.
+- `--park-states` (grpo.py and `grpo_profile`): only `optimizer.step` reads AdamW's states, so they
+  wait in pinned host memory while π_old's logprobs and an update's micro-batches run
+  (`grpo.park_states`; 9.5 GiB on the heads student, 23.3 on the 3B). It costs a copy out and back an
+  update (~0.8 s here, extrapolated from a 0.81 GB test, without `empty_cache` and the remapping) and changes no result: 12 fused AdamW steps
+  were bitwise equal with and without it. Cards where the update fits without it leave it off.
 - Not on 32 GB: the 3B's full fine-tunes (a pair is 12.5 GB of weights and 25 GB of AdamW), and
   the palettization finish at the heads run's batch (50.9 GiB, [tranche-box](tranche-box.md#jobs)).

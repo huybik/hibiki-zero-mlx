@@ -33,14 +33,15 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
     serves the 3B and the phone student (2026-11-23). `preflight` alone checks the 3B's SFT at
     the default `--keep-checkpoints`.
     - GPU: SFT ≥78 GiB (its 4,608-frame batches peak at 75.1 GiB on the 3B; an 80 GB card shows
-      79.2). GRPO: what an update holds before its activations, 16 bytes a policy parameter
+      79.2). GRPO: what the optimizer's step holds, 16 bytes a policy parameter
       (fp32 weights, gradients, AdamW's two moments) and 2 a teacher's: 46.7 GiB on the 3B, 24.9
-      on the heads student under the 3B; its profile fits `--micro-batch` and `--gen-frames`.
+      on the heads student under the 3B. Its profile fits `--micro-batch` and `--gen-frames`, and
+      `--park-states` takes the moments off the card for the micro-batches ([grpo](grpo.md#running)).
     - RAM: SFT 80 GiB. GRPO 5% over its pins and the 17 GiB more the 3B's run held: the pins are
-      the checkpoint snapshot's and `HostOffload`'s, a block a tensor, each rounded up to a power
-      of two as torch's pinned allocator does (77.4 GiB on the 3B, as measured,
-      [grpo](grpo.md#running)). 100 GiB on the 3B, 60 on the heads student under the 3B (39.6
-      pinned).
+      the checkpoint snapshot's and `HostOffload`'s, a block a tensor, at their size above 1 MB
+      (`grpo.ALLOC_CONF` stops torch's pinned allocator rounding them up to a power of two,
+      which pinned 77.4 GiB on the 3B by the formula, 77 measured, [grpo](grpo.md#running)). 92
+      GiB on the 3B (70.0 pinned), 54 on the heads student under the 3B (34.4 pinned).
     - Disk: free space plus, for `run`, what the run dir already holds (each hard-linked inode
       once): the kept pairs (`--keep-checkpoints`), the promoted model and a pair the sync still
       uploads, a pair 3x the fp32 model and 5.5 of margin. The 3B needs 131 GiB at the default 2

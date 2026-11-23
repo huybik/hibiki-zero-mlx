@@ -56,9 +56,10 @@ update micro-batch: teacher forward (no grad) ─┐
 - **The teacher must read the policy's codebooks**: it scores the rollout, which holds only the
   policy's. The 16-codebook heads student fits the 3B; the 8-codebook depformer student does not
   (the 3B reads 16 a stream).
-- While a window generates, the teacher's parameters wait in pinned host memory beside the
-  policy's and AdamW's (`HostOffload`): generation gets the GPU memory a GRPO run gives it. Each
-  update micro-batch then runs the teacher's compiled training forward without a backward.
+- While a window generates or an evaluation runs, the teacher's parameters wait in pinned host
+  memory, beside the policy's and AdamW's while it generates and AdamW's while it evaluates
+  (`HostOffload`): generation gets the GPU memory a GRPO run gives it. Each update micro-batch then
+  runs the teacher's compiled training forward without a backward.
 - Its delays may differ from the policy's (a heads student's codebook j at min(j, 8), the 3B's at
   2): a token is kept only where both forwards score it (`scored_delays`: each codebook's larger
   delay, for `kept_tokens` and the forward lengths alike).
@@ -180,7 +181,8 @@ The probes' results and the runs, `both_heads_z` and `both_heads_z2`, are in
   under GRPO update 1,400; `/workspace/val_stack.sh`, logs in `/workspace/logs/val/`). All passed:
   - **Profile with the teacher** (`--reward-coef 0`): generating 512 rows of 1,200 frames 47.2 ms a
     step (36.0 GiB peak), 1,024 rows 91.1 ms (69.6 GiB), so a first window's update takes 10.7 s
-    and 11.2 s; the update at micro-batch 2, 4 and 8 5.2, 5.0 and 5.8 s (31.0, 40.8 and 52.9 GiB).
+    and 11.2 s; the update at micro-batch 2, 4 and 8 5.2, 5.0 and 5.8 s (2 peaked at 31.0 GiB; the
+    others' peaks were inflated by the size before's graph until 2026-11-24).
     The sizes: `--gen-frames 614400 --micro-batch 4`, ~16 s an update with generation. Plain
     GRPO's profile picks the same (~14 s an update); its first update's ratio deviation is 0.
   - **`teacher_leak`**: text 0.006 nats against `kl_text` 0.08, codebooks 0–2 at most 0.11; 3–15

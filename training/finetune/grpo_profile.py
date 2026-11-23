@@ -2,8 +2,9 @@
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
 The policy's fp32 weights and AdamW's two states are held as in training (in pinned host memory
-while a window generates, `grpo.HostOffload`), and each stage runs on real streams from the start
-checkpoint:
+while a window generates, `grpo.HostOffload`; with --park-states AdamW's also while the old-logprob
+pass and the update's micro-batches run, the round trip untimed and the optimizer's step, which
+holds them, left out of the peaks), and each stage runs on real streams from the start checkpoint:
 - rollout generation at each --gen-batch rows of --frames: time per step and peak memory, timed
   on a second call so moshi's compilation stays out (each batch's CUDA graph capture stays in,
   as in a run);
@@ -67,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tau", type=int, default=20, help="Updates per window.")
     parser.add_argument("--gen-batch", type=int, nargs="+", default=[192, 384, 512])
     parser.add_argument("--micro-batch", type=int, nargs="+", default=[2, 3, 4])
+    parser.add_argument("--park-states", action="store_true", help="As a run's --park-states.")
     parser.add_argument("--reward-workers", type=int, default=8)
     grpo.add_objective_args(parser)
     grpo.add_room_args(parser)
@@ -227,6 +229,7 @@ def teacher_leak(teacher, teach, codes, keep, shifts: dict[int, int], device, ro
 
 
 def main() -> None:
+    grpo.set_alloc_conf()  # a run's allocators
     args = parse_args()
     grpo.validate_objective_args(args)
     args.model_weight = require_file(args.model_weight, "start checkpoint")
@@ -304,6 +307,8 @@ def main() -> None:
     objective = grpo.Objective(weights, grpo.EPSILON, grpo.TEMPERATURE, args.reward_coef,
                                args.kl_coef or 0.0)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
+    if args.park_states:
+        grpo.park_states(grpo.HostOffload(), optimizer)  # as a run's old-logprob pass and micro-batches find them
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
         condition = common.batch_condition_tensors(lm, info.model_type, micro)
@@ -339,7 +344,7 @@ def main() -> None:
         peak = torch.cuda.max_memory_allocated() / 2**30
         lm.zero_grad(set_to_none=True)
         frames = micro * args.frames
-        _, stats = update_loss()
+        stats = update_loss()[1]  # its loss's graph would count in the next size's peak
         lm.zero_grad(set_to_none=True)
         report[f"micro_batch_{micro}"] = {
             "logprob_frames_per_s": frames / score_s,
@@ -355,6 +360,8 @@ def main() -> None:
               f"{frames / update_s:,.0f} frames/s, peak {peak:.1f} GiB", flush=True)
         write(report)
 
+    gc.collect()
+    torch.cuda.empty_cache()
     if teacher is not None:
         policy, teaching = lm.delays[1 : 1 + lm.dep_q], teacher.delays[1 : 1 + lm.dep_q]
         shifts = {j: policy[j] - teaching[j] for j in range(lm.dep_q) if policy[j] > teaching[j]}
