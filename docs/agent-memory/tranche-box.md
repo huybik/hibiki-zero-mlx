@@ -6,18 +6,24 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**No box now** (2026-11-22 21:55 UTC+7). Next on a box: the heads student's on-policy run on the
-new EN→VI data, `both_heads_z2` ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box),
-which says what fits in 32 GB), then the palettization finish and the 3B's experiments, which need
-a bigger card. `h100.sh` takes an RTX 5090 since 2026-11-23 ([sft-recovery](sft-recovery.md#launcher));
-that run needs 60 GiB of RAM in the container (the last 5090 had 31).
+**The box since 2026-11-23: an H100 SXM** (Vast 62170174, Japan, $1.491/h with 350 GB of disk;
+80 GB at 700 W, driver 615.71.09, a 26.9-CPU quota, 684 GiB of RAM, 125 GB of `/dev/shm`).
+**Its rental ends 2026-11-24 07:00 UTC+7.** The user chose it over a 600 W RTX 5090 at $0.751/h,
+and runs its jobs from their own session (2026-11-23: "your job is only to prepare the box, i will
+do the run separately"): `both_heads_z2` ([heads-on-policy-runs](heads-on-policy-runs.md#the-run-on-the-next-box),
+with the pre-run scores), then the 3B's next round from `twoway_final`
+([teacher-next](teacher-next.md)). Prepared from the Hub ([Fetching from the Hub](#fetching-from-the-hub)):
+- the `.venv` from main at `9b3df7a` (`h100.sh preflight` passed), `/workspace/.env`, `$HF_HOME/token`;
+- in `weights/`, each sha256-checked against the Hub: the upstream four, the vi6k tokenizer and
+  its init map, `student_heads14_cb16/config.json`, `student_heads14_cb16_final.safetensors`
+  (190,126), `grpo_twoway_best1400.safetensors` and `twoway_final.safetensors` (two-way SFT 287,558);
+- GRPO's six evaluation sets in `data/eval/`, and `grpo_launch.sh`'s nine caches packed and
+  dropped (168 GB);
+- `/workspace/prof_z2.sh`, the run's `grpo_profile` on them, written but not run.
 
-**The box 2026-11-22: an RTX 5090** (Vast 61906288, South Korea, $0.558/h with 350 GB of disk; 32 GB,
-capped at 500 W by the host, driver 580, a 15.4-CPU quota, 31 GB of RAM, 15 GB of `/dev/shm`;
-destroyed 2026-11-22 21:55 UTC+7 at the user's request, after its run). It built the rest of the
-EN→VI data, alone after the Mac stopped (user: "Cache build first"; [envi-data](envi-data.md#the-box-run)),
-and ran nothing else: `both_heads_z` waits for the next box. Its records and scripts are in
-`/Volumes/data/hibiki-zero-evals/box-61906288/`.
+Past boxes' records and scripts (no weights) are in `/Volumes/data/hibiki-zero-evals/box-<id>/`:
+61906288 (an RTX 5090, South Korea; it built the rest of the EN→VI data, [envi-data](envi-data.md#the-box-run)),
+61345966 (the RTX PRO 6000 below) and 60447659 (an H100 SXM, Japan).
 
 **The box 2026-11-19 to 2026-11-22: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
 destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver
@@ -46,7 +52,7 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
      model, is `weights/twoway_final.safetensors` (fetched 2026-11-21, sha256 checked).
   It stopped before the run (user, 2026-11-22: "let's finish everything and stop before the long
   run"; "can destroy this pro 6000 box when everything done"), once 1, 2 and the probes of 3 were
-  done ([probe results](on-policy-distillation.md#probe-results)). Before it was destroyed:
+  done ([probe results](heads-on-policy-runs.md#probe-results)). Before it was destroyed:
   - every run's pairs, bests and logs were on the Hub, with the probes' last uploads made without
     Xet ([Bring-up](#a-box-behind-a-slow-proxy)); `audit_hub.py` (box-only) matched every weight
     and run file over 10 MB by sha256 against the Hub's LFS objects;
@@ -98,11 +104,6 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
     its tokenizer model came out byte-identical to `release/twoway_grpo1400/`'s.
   - A copy is also kept on the Mac with the last box's results, under `weights-small/`.
 
-**The H200 Indonesia box (59864576) went offline on 2026-11-10** at step ~15,000 of round 4d:
-everything local was lost (round 4d's checkpoints, round 4b's test outputs `eval/cmp_step*`;
-their numbers are in the [plan](../vi_en_parity_plan.md#order)). Round 4b's final pair is on the
-Hub only (deleted from the H200 after a hash check against the Hub).
-
 **VRAM budget (critical; the H200's 141 GB)**: nanovox TTS uses 109 GB VRAM at peak; real ASR (vLLM) 29 GB; together
 = 138 GB → confirmed OOM kills (3 GB headroom insufficient). Voice cannot run with real ASR.
 Without any ASR server voice.py fails (connection refused after 10 × 10 s retries). Result: giga/89–99
@@ -136,10 +137,6 @@ metadata, so the redo took a new name. Its first Hub pair comes with the first v
 step 28,000. Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`)
 and wait for its final sync.
 
-**Next after round 4e (user, 2026-11-10):** its and round 4b's test sets, then two-way before
-GRPO: the `en-vi` caches and one two-way run on all of round 4e's rows, the pilot's test at its
-first validation ([two-way](two-way.md#two-way-run)); GRPO then runs once, on the two-way model.
-
 **GRPO: DONE, `grpo_twoway` (`grpo_launch.sh` from `weights/twoway_final.safetensors`, commit
 `91e3c6f`)**, from the two-way SFT's final model: ~20 s an update with its window's generation,
 ~6.7 s for the update itself, and ~3.6 min of validation every 200. Resumed at update 800 on
@@ -148,18 +145,6 @@ first validation ([two-way](two-way.md#two-way-run)); GRPO then runs once, on th
 `wt-*` worktrees are only for edits while a run holds the checkout); log `/workspace/logs/grpo.log`,
 launcher pid in `grpo.pid`. `/workspace/auto_pipeline.sh`, `grpo_trigger.sh` and
 `monitor_voice_done.sh` are leftovers of a chained attempt and not in the repo.
-
-At the Japan box's end (2026-11-08 ~22:00 UTC+7; Vast instance 59285612): pho and vivoice are
-complete (en_audio and caches on the Hub). GigaSpeech 2's 240 archives all have segments, text_en and
-asr_vi (filters finished 2026-11-08 06:38 UTC+7); 213 have en_audio on the Hub, and `end_rental.sh`
-(2026-11-08 21:46 UTC+7) listed 27 left to voice (74–99 and 185). Of those, 86 and 98 are now held
-out for evaluation and never voiced ([giga-heldout](sft-evaluation.md#evaluation-sets)), so 25 are
-left. The Hub's `giga/en_audio/` is the record: a voice run lists what is left. Next, on a new
-box: asr, filters (it idles, logging "0 shards to hear"; the watchdog expects it up) and voice for
-the rest (~8.6 min an archive alone on the H100; H200 speed unmeasured), then cache (~8 h for the
-~128 archives left at GigaSpeech 2's current build speed; profile first with `--limit 2`
-([tranche-cache](tranche-cache.md#scale-up))), sft and grpo as in [Jobs](#jobs), each optimized before
-its full run (below).
 
 The user's standing decisions for this work (the box's own agent memory does not travel):
 - Minimize rental cost, not wall time: one GPU, its throughput optimized; no extra GPUs for speed
@@ -233,6 +218,21 @@ answers in 198.18.0.0/15.
     Unset both for `setup`, or the env differs from the pinned one.
 - Don't `pkill -f` a pattern that also appears in the ssh command running it: it kills its own
   shell.
+- Record a detached job's PID from inside it: `setsid -f bash -c 'echo $$ > PIDFILE; exec CMD'`.
+  `nohup setsid CMD & echo $! > PIDFILE` saved another PID, a kill by it missed the job, and two
+  fetchers packed one folder at once (`streams --drop-shards`): one failed on the other's dropped
+  shards (`FileNotFoundError`), so the folder was fetched again.
+
+### Fetching from the Hub
+
+The H100 box (62170174, 2026-11-23; its script `/workspace/fetch_z2.py`):
+- One connection gets ~17–27 MB/s (a 12.5 GB weight ~10 min); 16 files at a time
+  (`snapshot_download(max_workers=16)`, `HF_HUB_DISABLE_XET=1`) 110–150 MB/s, the nine caches'
+  172 GB in ~20 min.
+- The Hub limits requests per account: `eval/*` hit HTTP 429 at ~3,800 of its 7,150 files, most of
+  the rest `multimed-vi`'s 3,437 clips (a test set only), and a download beside it sat in 429
+  retries for 12 min. GRPO's validation needs six sets: `fleurs-vi`, `fleurs-en`, `en-vi-val`,
+  `en-vi-val-noisy`, `en-vi-val-en`, `en-vi-val-en-noisy`; fetch those by name.
 
 Round 4 SFT's inputs, all on the Hub (read locally):
 - the tranche caches: `anquachdev/mimi-en-vi-speech-20k` (dataset, `<source>/shard_*.pt`) into

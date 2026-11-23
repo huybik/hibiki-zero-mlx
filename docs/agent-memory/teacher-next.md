@@ -20,7 +20,8 @@ everything down for future plan"):
   the user chose on 2026-11-21, [envi-data](envi-data.md#decision)), then GRPO. The result
   replaces GRPO update 1,400 only if it beats it on the test sets.
 - **From the two-way SFT's final model** (`weights/twoway_final.safetensors`, the shipped GRPO's
-  update 0), not from update 1,400. SFT undoes GRPO: trained from 1,400 with the direction
+  update 0), not from update 1,400 (user, 2026-11-23: "the 3b should be the end of sft one, not
+  end of grpo one? because we training from it"). SFT undoes GRPO: trained from 1,400 with the direction
   conditioner (peak 1e-6, 4,608 frames), the model had lost GRPO's gains by update 4,000 (FLEURS
   dev VI→EN 42.7 → 38.8, EN→VI 38.8 → 32.3, VI→EN end offset 1.1 → 4.5 s;
   [two-way](two-way.md#next)). So any SFT needs GRPO again, and from GRPO's own start both stages
@@ -149,7 +150,7 @@ Weighed 2026-11-23 and not run:
 
 - A quick SFT (~40,000 updates, ~2,700 h, ~3.3 h): experiment 1's control arm does its job.
 - Experiment 3, centered advantages on the 3B: z-scored won on the student
-  ([on-policy-distillation](on-policy-distillation.md#probe-results)).
+  ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)).
 - A peak-rate probe: constant-rate checkpoints compare fairly only after a decay, so each arm
   costs one. A rate too high shows at the first validations as the learning-rate test's knock-back
   did (FLEURS dev −2 chrF at 3e-6 and −3.4 at 1e-5 by 2,500 updates; [plan](../vi_en_parity_plan.md#order)
