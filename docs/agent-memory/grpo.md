@@ -198,8 +198,8 @@ The CUDA profile and dry run are under [Running](#running).
   - Generation peaked at 72.6 of 79.2 GiB, in a batch of 724 rows of 848 frames. Its peak
     follows ~6.3 + 1.07e-4 × rows × frames GiB, so `--gen-frames 614400` holds ~6 GiB in
     reserve in any window.
-  - Host memory: 77 GiB pinned (the writer's and `HostOffload`'s copies, 1.1x their size) and
-    ~17 GiB more that can't be given back; the preflight asks 10% more (`h100.sh sizes`: 104 GiB).
+  - Host memory: 77 GiB pinned (the writer's and `HostOffload`'s copies, each tensor's block
+    rounded up to a power of two) and ~17 GiB more that can't be given back (`h100.sh sizes`).
   - Against main over the same 20 updates: final BLEU 32.45 against 32.50 and `eos_rate`
     0.922 against 0.920, with no systematic difference in loss or clipping.
   - Each process pays once: ~63–80 s of compilation in its first π_old pass, and 10–19 s each
@@ -283,7 +283,7 @@ The CUDA profile and dry run are under [Running](#running).
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
   - **Sizes** ([sft-recovery](sft-recovery.md#launcher)): disk 131 GiB on the 3B (94 at
     `--keep-checkpoints 1`; an SFT run's pairs, ~81 GiB, go first once on the Hub), GPU states
-    46.7, RAM 104; the heads student under the 3B 42 at 1, 24.9 and 61.
+    46.7, RAM 100; the heads student under the 3B 42 at 1, 24.9 and 60.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
     the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took
     ~53 min: Xet uploaded ~4.8 GB of the model and ~4.5 GB of the trainer state as new data, at

@@ -117,7 +117,7 @@ cpus() {
   echo "New shells get $n CPUs: MAX_JOBS, OMP_NUM_THREADS, TORCHINDUCTOR_COMPILE_THREADS"
 }
 
-sizes() {  # MODULE WEIGHT KEEP [TEACHER]: "DISK GPU RAM", what a run needs, from its weights' parameters
+sizes() {  # MODULE WEIGHT KEEP [TEACHER]: "DISK GPU RAM", what a run needs, from its weights' tensors
   local weight="$2" teacher="${4:-}"
   require_python
   [[ -f "$weight" ]] || die "start weight $weight is missing"
@@ -126,34 +126,40 @@ sizes() {  # MODULE WEIGHT KEEP [TEACHER]: "DISK GPU RAM", what a run needs, fro
 import json, math, struct, sys
 
 
-def parameters(path):  # from the safetensors header alone
+def tensors(path):  # each tensor's parameter count, from the safetensors header alone
     with open(path, "rb") as handle:
         header = json.loads(handle.read(struct.unpack("<Q", handle.read(8))[0]))
-    return sum(math.prod(entry["shape"]) for key, entry in header.items() if key != "__metadata__")
+    return [math.prod(entry["shape"]) for key, entry in header.items() if key != "__metadata__"]
+
+
+def pinned(nbytes):  # torch's pinned host allocator rounds each block up to a power of two
+    return 1 << (nbytes - 1).bit_length() if nbytes else 0
 
 
 module, keep = sys.argv[1], int(sys.argv[3])
-policy = parameters(sys.argv[2])
-teacher = parameters(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else 0
-model = policy * 4 / 1e9  # the fp32 model, GB
+grpo = module == "training.finetune.grpo"
+policy = tensors(sys.argv[2])
+teacher = tensors(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else []
+model = sum(policy) * 4 / 1e9  # the fp32 model, GB
 # Disk: the kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
 # uploads after it is pruned. A pair is 3x the fp32 model (its parameters, AdamW's two states), the
 # model 1x, plus 5.5 of margin: on the 3B 37.5 a pair and 12.5 the model (131 at 2, 94 at 1), on the
 # 1.3B heads student 15.4 and 5.1 (42 at 1). 0 keeps every pair, which no check can bound: it gets
 # the default's room.
 disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
-# GPU: an update holds the fp32 policy, its gradients and AdamW's two moments (16 bytes a
-# parameter) and a teacher's bf16 weights (2): 46.7 GiB on the 3B, 24.9 on the heads student under
-# the 3B. Activations come on top, sized by the run's batch arguments, which each GPU's profile
-# picks: SFT's 4,608-frame batches peak at 75.1 GiB on the 3B, the student's GRPO update near 26 at
-# --micro-batch 1.
-gpu = (16 * policy + 2 * teacher) / 2**30
+# GPU: SFT's 4,608-frame batches peak at 75.1 GiB on the 3B, so SFT takes an 80 GB card (CUDA sees
+# 79.2 GiB of it). GRPO's sizes are its profile's (--micro-batch, --gen-frames); the check is
+# what an update holds before its activations: the fp32 policy, its gradients and AdamW's two
+# moments (16 bytes a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B, 24.9 on the
+# heads student under the 3B, whose update peaked near 26 at --micro-batch 1.
+gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30 if grpo else 78
 # RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
-# policy and AdamW's states, 12 bytes a parameter) and grpo.HostOffload's copy of the same and of a
-# teacher's bf16 weights. The 3B's run held 1.1x those pins (77 GiB) and 17 GiB more it could not
-# give back; 10% on top: 104 GiB on the 3B, 61 on the heads student under the 3B.
-pinned = (24 * policy + 2 * teacher) / 2**30
-ram = math.ceil(1.1 * (1.1 * pinned + 17)) if module == "training.finetune.grpo" else 80
+# policy and AdamW's two states, a block each a tensor) and grpo.HostOffload's copy of the same and
+# of a teacher's bf16 weights: 77.4 GiB on the 3B, where the run held 77 pinned and 17 more it
+# could not give back. That 17 and 5% on top: 100 GiB on the 3B, 60 on the heads student under the
+# 3B (39.6 pinned), to be measured in its run past its first save.
+pins = (6 * sum(pinned(4 * n) for n in policy) + sum(pinned(2 * n) for n in teacher)) / 2**30
+ram = math.ceil(1.05 * (pins + 17)) if grpo else 80
 print(disk, f"{gpu:.1f}", ram)
 PY
 }

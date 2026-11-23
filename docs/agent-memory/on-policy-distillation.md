@@ -220,35 +220,40 @@ the long run"). The RTX 5090 rented for it (61906288) built the EN→VI data ins
 destroyed on 2026-11-22 without running it ([tranche-box](tranche-box.md#state)).
 
 - **A new run, `both_heads_z2`, on the new data** (user, 2026-11-23: "ok go with your
-  recommendation"): `both_heads_z`'s recipe (both terms, z-scored, `--lr 1e-6`, the teacher GRPO
-  update 1,400, seed 44) from its start, the heads student's final model at 190,126, on main and
-  `grpo_launch.sh`'s caches ([grpo](grpo.md#running)): EN→VI from the tranche's noisy copies and
-  round 4e's 500 `en_speech` shards clean and noisy. `--updates 2000`; it stops by the user's
-  rule, two validations (every 200 updates) without a new best.
+  recommendation"): `both_heads_z`'s recipe from its start, the heads student's final model at
+  190,126, on main and `grpo_launch.sh`'s caches ([grpo](grpo.md#running)): EN→VI from the
+  tranche's noisy copies and round 4e's 500 `en_speech` shards clean and noisy. Its arguments
+  after the launcher's: `--config-path weights/student_heads14_cb16/config.json --save-every 100
+  --keep-checkpoints 1 --teacher-weight weights/grpo_twoway_best1400.safetensors --lr 1e-6` and
+  the 5090 profile's sizes (both terms, z-scored, seed 44 by default; `--updates 2000` from the
+  launcher). It stops by the user's rule, two validations (every 200 updates) without a new best.
 - Why not continue `both_heads_z`: main can't resume it (`pair_cache_dir` is a resume key,
   [sft-training](sft-training.md#target-timing)), and from its 200 pair the run would mix two
-  datasets with AdamW restarted. From the start, its update 200 compares with `both_heads_z`'s
-  (selecting 37.33 → 38.92, of 8 37.88 → 39.44) and says what the new data does. `both_heads_z`
-  stays on the Hub, its commit `9d9573e` as the branch `run/both_heads_z`.
-- The teacher never heard noisy English (its SFT and GRPO had none). Before the run the box scores
-  the teacher and the start on `en-vi-val-en` and `en-vi-val-en-noisy` (`eval.py`, the run's
-  seed): what the noise costs each says whether the KL on noisy rows can be trusted (user,
-  2026-11-23: "should we train the teacher a bit on noisy data?"). Training the 3B on noisy
-  English is the next two-way run's ([envi-data](envi-data.md#decision)), on an 80 GB card. The
-  noisy set also gates promotion (every set's health gates must pass): if the start fails it,
-  decide before the run.
-- `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 61
-  GiB of RAM (from the 3B's measured pins; check the profile's peak in the cgroup's
-  `memory.peak`) and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). On a 350 GB disk:
-  the caches ~171 GB as packs ([grpo](grpo.md#running)), the run 42, weights ~25, the env and
+  datasets with AdamW restarted. Compare the two by each one's change from its own update 0 over
+  the same eight sets (`both_heads_z`: +1.59 selecting, +1.56 of 8): the evaluation reseeds by
+  batch over all its rows, so two more sets or another `--eval-batch-size` move every set's
+  absolute scores. The change measures the data and main's streams together (the start floor,
+  the babble and OCR drops, [sft-training](sft-training.md#target-timing)). `both_heads_z` stays on
+  the Hub, its commit `9d9573e` as the branch `run/both_heads_z`.
+- The teacher never heard noisy English. Before the run the box scores the teacher and the start
+  on `en-vi-val-en` and `en-vi-val-en-noisy` (`eval.py`, the run's seed): what the noise costs
+  each says whether the KL on noisy rows can be trusted (user, 2026-11-23: "should we train the
+  teacher a bit on noisy data?"; training the 3B on it is the next two-way run's, on an 80 GB
+  card, [envi-data](envi-data.md#decision)). The noisy set also gates promotion (every set's
+  health gates): if the start fails it, decide before the run.
+- `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 60
+  GiB of RAM in the container and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). The
+  RAM is the 3B's measured structure, 39.6 GiB pinned and 17 more: measure the run's own once it
+  is past window 2 (`HostOffload` pins AdamW's states from then) and its first save (the writer's
+  buffers), by the cgroup's `memory.stat` `anon` or the process's `VmHWM`. `grpo_profile` has no
+  writer, and `memory.peak` counts the packs' page cache. On a 350 GB disk: the caches ~172 GB as
+  packs ([envi-data](envi-data.md#the-runs-on-it)), the run 42, weights ~25, the env and
   evaluation sets ~15.
-- Profile on the 5090 before the run (`grpo_profile` with `--teacher-weight`): `--micro-batch` and
-  `--gen-frames`, and the validation's `--eval-batch-size` (64 so far), which translates while
-  the update's states stay on the GPU. From the RTX PRO 6000's (Checks below): the teacher update
-  holds 20.1 GiB and would peak near 26 GiB at micro-batch 1 (31.0 at 2, 40.8 at 4), generation
-  2.4 GiB plus ~0.066 GiB a row (36.0 GiB at 512 rows). On 32 GB that is micro-batch 1 and at most
-  ~400 rows (`--gen-frames` = rows × 1,200); generation's throughput barely depends on the batch
-  (9.0 rollouts/s at 512 rows, 9.3 at 1,024).
+- Profile on the 5090 first (`grpo_profile --teacher-weight`): `--micro-batch`, `--gen-frames` and
+  `--eval-batch-size` (64 so far; validation runs with the update's states on the GPU). The RTX
+  PRO 6000 measured (Checks below) the update near 26 GiB at micro-batch 1 (31.0 at 2) and
+  generation 2.4 GiB plus ~0.066 a row: on 32 GB, micro-batch 1 and ≤ ~400 rows (`--gen-frames` =
+  rows × 1,200), at little cost (9.0 rollouts/s at 512 rows, 9.3 at 1,024).
 - Not on 32 GB: the 3B's full fine-tunes (a pair is 12.5 GB of weights and 25 GB of AdamW), and
   the palettization finish at the heads run's batch (50.9 GiB, [tranche-box](tranche-box.md#jobs)).
 

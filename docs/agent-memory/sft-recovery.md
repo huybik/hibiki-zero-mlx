@@ -28,25 +28,28 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - free-threaded Python 3.14, exact Torch and Moshi versions; one H100 or H200 with compute
     capability 9.0, or an RTX PRO 6000 or RTX 5090 with 12.0 (both GB202);
   - GPU memory, RAM (the container's cgroup limit when lower than `/proc/meminfo`, which shows
-    the host on Vast) and disk, each sized by `h100.sh sizes` from the parameters of the run's
-    weights (read from their safetensors headers: `--model-weight`, and `--teacher-weight` when
-    given), so one check serves the 3B and the phone student (2026-11-23):
-    - GPU: the update's states, 16 bytes a parameter (fp32 weights, gradients, AdamW's two
-      moments) and 2 a teacher's: 46.7 GiB on the 3B, 24.9 on the heads student under the 3B.
-      Activations come on top and are the profile's to fit (`--micro-batch`, batch frames): the
-      3B's SFT batches peak at 75.1 GiB, so it needs an 80 GB card. The check replaces "≥78 GiB".
-    - RAM: SFT 80 GiB; GRPO 1.1x (1.1x its pins + 17 GiB), from the 3B's measured run
-      ([grpo](grpo.md#running)): 104 GiB on the 3B, 61 on the heads student, to be checked by
-      the student's profile;
-    - disk: free space plus, for `run`, what the run dir already holds (each hard-linked inode
+    the host on Vast) and disk, as `h100.sh sizes` computes them from the run's weights (their
+    safetensors headers: `--model-weight`, and `--teacher-weight` when given), so one check
+    serves the 3B and the phone student (2026-11-23). `preflight` alone checks the 3B's SFT at
+    the default `--keep-checkpoints`.
+    - GPU: SFT ≥78 GiB (its 4,608-frame batches peak at 75.1 GiB on the 3B; an 80 GB card shows
+      79.2). GRPO: what an update holds before its activations, 16 bytes a policy parameter
+      (fp32 weights, gradients, AdamW's two moments) and 2 a teacher's: 46.7 GiB on the 3B, 24.9
+      on the heads student under the 3B; its profile fits `--micro-batch` and `--gen-frames`.
+    - RAM: SFT 80 GiB. GRPO 5% over its pins and the 17 GiB more the 3B's run held: the pins are
+      the checkpoint snapshot's and `HostOffload`'s, a block a tensor, each rounded up to a power
+      of two as torch's pinned allocator does (77.4 GiB on the 3B, as measured,
+      [grpo](grpo.md#running)). 100 GiB on the 3B, 60 on the heads student under the 3B (39.6
+      pinned).
+    - Disk: free space plus, for `run`, what the run dir already holds (each hard-linked inode
       once): the kept pairs (`--keep-checkpoints`), the promoted model and a pair the sync still
       uploads, a pair 3x the fp32 model and 5.5 of margin. The 3B needs 131 GiB at the default 2
       and 94 at 1, the heads student 42 at 1 (0 keeps every pair, so it gets the default's).
-      `preflight` alone checks the 3B's SFT at 2. The sync uploads the pair of each validation
-    step (its cadence, `--val-every`), the newest only, and holds its hard links until the Hub has it, at ~12 MB/s
-    (~50 min for the 3B's 37.5 GB, ~23 min for the depformer student's 16.7 GB). Validate less
-    often than an upload takes, or saves land while it still holds an older pair: a 3B run
-    validating every 4,000 updates (18 min) filled the disk at its 8,000 save;
+  - The sync uploads the pair of each validation step (its cadence, `--val-every`), the newest
+    only, and holds its hard links until the Hub has it, at ~12 MB/s (~50 min for the 3B's
+    37.5 GB, ~23 min for the depformer student's 16.7 GB). Validate less often than an upload
+    takes, or saves land while it still holds an older pair: a 3B run validating every 4,000
+    updates (18 min) filled the disk at its 8,000 save;
   - the SHA-256 of the four upstream files in `weights/`.
 - `run RUN_NAME [ARGS…]` is the only way to train, and the same command starts and continues.
   It holds `flock` on `runs/.RUN_NAME.lock` (inherited by the trainer and the sync), so a

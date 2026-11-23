@@ -9,7 +9,8 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 **No box now** (2026-11-22 21:55 UTC+7). Next on a box: the heads student's on-policy run on the
 new EN→VI data, `both_heads_z2` ([on-policy-distillation](on-policy-distillation.md#the-run-on-the-next-box),
 which says what fits in 32 GB), then the palettization finish and the 3B's experiments, which need
-a bigger card. `h100.sh` takes an RTX 5090 since 2026-11-23 ([sft-recovery](sft-recovery.md#launcher)).
+a bigger card. `h100.sh` takes an RTX 5090 since 2026-11-23 ([sft-recovery](sft-recovery.md#launcher));
+that run needs 60 GiB of RAM in the container (the last 5090 had 31).
 
 **The box 2026-11-22: an RTX 5090** (Vast 61906288, South Korea, $0.558/h with 350 GB of disk; 32 GB,
 capped at 500 W by the host, driver 580, a 15.4-CPU quota, 31 GB of RAM, 15 GB of `/dev/shm`;
