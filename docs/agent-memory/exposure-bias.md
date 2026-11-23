@@ -83,7 +83,11 @@ pass 2, grad:     main transformer reads history (earlier steps) ┐
   after another, each after its own previous sample, so codebooks sampled each on its own (as
   one parallel pass gives them) would pair a sampled codebook with the dataset's next, a frame no
   audio has (codebooks 1–15 are Mimi's residual chain; the second review). Sampling audio would
-  mean drawing each frame's codebooks in turn, as `LMGen` does: not built.
+  mean drawing each frame's codebooks in turn, as `LMGen` does: 16 depformer passes in a row a
+  step, each over every frame of the batch, without gradients (unprofiled). Not built (2026-11-23):
+  GRPO already trains on the model's own speech (its rollouts are generated whole), and the audio
+  version is worth building only if 0.1 wins experiment 1 and its speech check shows the audio
+  drifting from the text. It would also remove the dataset-speech cue below.
 - **Pass 1** is the main transformer alone (`lm_training.text_logits`), no depformer. A replaced
   token becomes only an input, never its own target.
 - **Only the history mixes** (`lm_training.forward_history`): the main transformer reads the
@@ -133,14 +137,24 @@ published (DeepSeekMath used β = 0.04), built for the student's on-policy disti
 - Memory: the start's bf16 copy (5.8 GiB) waits in pinned host memory while a window generates and
   joins the update's micro-batches on the GPU; the shipped run's update peaked at 68 GiB at
   micro-batch 2 on an 80 GB H100. Profile with it first (`grpo_profile.py` takes the same flags).
+- Not for the heads student (2026-11-23, user: "should we add that the both_heads_z?"): its
+  teacher term is this anchor, toward a better model than its own start (selecting ~40.8 against
+  37.33), and without it plain GRPO wrecked the student in 200 updates
+  ([on-policy-distillation](on-policy-distillation.md#probe-results)). Its EOS share falls with
+  distillation alone as much (FLEURS-en dev 191 → 89 of 392), so a second KL would not hold it,
+  and the runtimes never stop at an EOS. If its end offset drifts past the gate, raise
+  `--kl-coef` instead.
 
 ## Experiments
 
 Planned 2026-11-21, after the student's experiments, each on the box after the run before it.
-Every validation and test is recorded in full ([sft-evaluation](sft-evaluation.md#recording-results)).
+From 2026-11-23 experiments 1 and 2 open the teacher's next round, before its full SFT
+([teacher-next](teacher-next.md#order)). Every validation and test is recorded in full
+([sft-evaluation](sft-evaluation.md#recording-results)).
 
-1. **Scheduled sampling in SFT.** Two continuations of the two-way SFT's final model on its
-   caches (a new `--seed`, the same for both), 10,000 updates each, 5% warmup to 1e-6 (the learning-rate test's
+1. **Scheduled sampling in SFT.** Two continuations of the two-way SFT's final model on the next
+   round's caches ([teacher-next](teacher-next.md#data); a new `--seed`, the same for both),
+   10,000 updates each, 5% warmup to 1e-6 (the learning-rate test's
    rate that stayed within noise, [plan](../vi_en_parity_plan.md#order) item 4) and cosine to 0:
    `--sampled-text 0` against `0.1`. Judged at the end on FLEURS dev both ways and `en-vi-val`
    (chrF, length ratio, end offset, rows ended). GRPO fixes the same gap, so a win counts only if
@@ -149,15 +163,25 @@ Every validation and test is recorded in full ([sft-evaluation](sft-evaluation.m
    after the mixed text too, so before adopting the winner its generated speech is compared with the control's
    (`eval.py` without `--text-only` writes it): an ASR transcript of each arm's English on FLEURS
    dev scored against the reference, as stage 7.1 measured Mimi, and a listen; that script is
-   written with the experiment. If 0.1 wins all three, try 0.25.
+   written with the experiment. If 0.1 wins all three, try 0.25. The control arm is also the
+   round's first look at its data: after its SFT EN→VI should rise and VI→EN hold, and its GRPO
+   at 400 compares with the shipped run's (selecting 38.89), read as each run's change from its
+   own update 0, since `grpo_launch.sh`'s caches gained the noisy EN→VI rows on 2026-11-23.
+   10,000 updates read ~670 h, so it catches data that hurts rather than proving that a full
+   pass helps; if it hurts, the full SFT doesn't run.
 2. **Anchored GRPO.** From the shipped run's start, the two-way SFT's final model, on its streams
-   and seed: first a probe of 200 updates each at β 0.02 and 0.1, judged by the KL's size against
-   the GRPO term and the evaluation at 200; then the run, against the shipped run's evaluations
-   ([grpo](grpo.md#running): selecting mean 40.76 at 1,400). It wins with a higher best selecting
-   mean, or the same with a higher EOS share and no later end offset; the test sets decide
-   between the two runs' best checkpoints.
-3. **Centered advantages on the 3B**, only if they win on the student
-   ([on-policy-distillation](on-policy-distillation.md#experiments): the centered probe beside the z-scored one).
+   and seed (its `run_config.json`'s caches, given after `grpo_launch.sh`'s, which changed on
+   2026-11-23): first a probe of 200 updates each at β 0.02 and 0.1, judged by the KL's size
+   against the GRPO term and the evaluation at 200 against the shipped run's (selecting 38.00);
+   then the run, against the shipped run's evaluations ([grpo](grpo.md#running): selecting mean
+   40.76 at 1,400). It wins with a higher best selecting mean, or the same with a higher EOS
+   share and no later end offset; the test sets decide between the two runs' best checkpoints.
+   In the teacher's next round the probe alone runs first and decides whether that round's GRPO
+   is anchored and at which β; that GRPO is then the run, whose comparison with the shipped run
+   also carries the new SFT.
+3. **Centered advantages on the 3B**: dropped (2026-11-23). They were to run only if they won
+   on the student, and z-scored won there
+   ([on-policy-distillation](on-policy-distillation.md#probe-results)).
 
 The data stays the larger lever: the tranche's first 1,760 h moved every real-speech set by
 9–10 chrF ([plan](../vi_en_parity_plan.md#order) item 6). These experiments tune the recipe that
