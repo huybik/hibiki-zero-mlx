@@ -31,6 +31,16 @@ weights/student_dep10_distilled.safetensors --config-path weights/student_dep10/
     2026-11-15: "yep go ahead"), the model the iOS app downloads. On the iPhone 13 Pro Max it ran
     `vi2.wav` at 61 ms an 80 ms frame (p90 63–64 ms, two runs), footprint 1.8 GB, against the 3B's
     148 ms and 3.5 GB ([swift-runtime](swift-runtime.md#device-test)).
+  - **It overheats in sustained use** (2026-11-15). The test was the app's `--file` on the first 25
+    OneVoice clips of each direction, joined with 6 s gaps: 239 s VI, then 303 s EN, back to back,
+    on Wi-Fi, speaking aloud.
+    - The thermal state reached fair at 30 s and serious at 60 s.
+    - The GPU's part of a frame rose from 22 ms to 75–90 ms. Mimi's encode on the CPU stayed at 30 ms.
+    - VI→EN kept up: 66 / 93 ms a frame (p50 / p90), at most 3.2 s behind; chrF 40.6, BLEU 18.8.
+    - EN→VI started hot: 110 / 142 ms a frame, up to 128 s behind; chrF 27.7, BLEU 7.6.
+    - No empty turns; the footprint stayed under 1.87 GB.
+    - Each turn's 5 s drain kept the model running through the gaps: 1,582 drain steps against
+      1,195 heard in the VI run.
 
 ## Evaluations
 
