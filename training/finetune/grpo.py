@@ -131,6 +131,14 @@ ROOM_SHARE = 0.5
 ALLOC_CONF = "expandable_segments:True,pinned_max_round_threshold_mb:1"
 
 
+def set_alloc_conf() -> None:
+    """ALLOC_CONF for this process, before CUDA starts. A different preset value is refused, not kept:
+    `h100.sh sizes` checks the RAM for exact pinned blocks, so a run pinning rounded ones (5 GiB more on
+    the heads student, 7 on the 3B) would pass preflight and be killed at its first save."""
+    if (value := os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", ALLOC_CONF)) != ALLOC_CONF:
+        raise RuntimeError(f"PYTORCH_CUDA_ALLOC_CONF={value!r} is set; GRPO runs on {ALLOC_CONF!r}: unset it")
+
+
 def stream_order(count: int, seed: int) -> np.ndarray:
     """The order updates take the planned streams in (`plan_streams` keeps a document's rows in
     consecutive streams, so in plan order a long recording would fill several updates)."""
@@ -680,7 +688,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", ALLOC_CONF)
+    set_alloc_conf()
     args = parse_args()
     validate_args(args)
     args.model_weight = require_file(args.model_weight, "start checkpoint")

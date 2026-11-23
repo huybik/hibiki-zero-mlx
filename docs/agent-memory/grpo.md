@@ -149,6 +149,12 @@ The CUDA profile and dry run are under [Running](#running).
   ~2.6M objects of garbage a window leaves) and updates spiked to 8–12 s four times where main's
   held 6.5–7.1. At best ~1%, inside one run's noise, so it was closed (2026-11-15) and the
   collection stays.
+- **Pinned host memory**: `grpo.ALLOC_CONF` (`pinned_max_round_threshold_mb:1` beside expandable
+  segments) keeps pinned blocks over 1 MB at their size, where torch rounds each up to a power of
+  two. `h100.sh sizes` then computes 70.0 GiB of pins on the 3B (77.4 rounded) and 34.4 on the heads
+  student with its teacher (39.6 rounded). The run and `grpo_profile` both set it and refuse a
+  different preset `PYTORCH_CUDA_ALLOC_CONF`; profiles recorded before it ran without expandable
+  segments.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --pair-cache-dir … --model-weight START --out-dir …`.
   It times generation at each `--gen-batch` (on a second call, after compilation; each batch's
@@ -200,9 +206,6 @@ The CUDA profile and dry run are under [Running](#running).
     reserve in any window.
   - Host memory: 77 GiB pinned (the writer's and `HostOffload`'s copies, each tensor's block
     then rounded up to a power of two) and ~17 GiB more that can't be given back (`h100.sh sizes`).
-    `grpo.ALLOC_CONF` (`pinned_max_round_threshold_mb:1`) keeps blocks over 1 MB at their size:
-    70.0 GiB on the 3B, 34.4 on the heads student with its teacher (39.6 rounded). The run and
-    `grpo_profile` both set it.
   - Against main over the same 20 updates: final BLEU 32.45 against 32.50 and `eos_rate`
     0.922 against 0.920, with no systematic difference in loss or clipping.
   - Each process pays once: ~63–80 s of compilation in its first π_old pass, and 10–19 s each
@@ -286,7 +289,7 @@ The CUDA profile and dry run are under [Running](#running).
     must outlive the run: keep it in `weights/`, not in an SFT run directory that gets cleared.
   - **Sizes** ([sft-recovery](sft-recovery.md#launcher)): disk 131 GiB on the 3B (94 at
     `--keep-checkpoints 1`; an SFT run's pairs, ~81 GiB, go first once on the Hub), GPU states
-    46.7, RAM 100; the heads student under the 3B 42 at 1, 24.9 and 60.
+    46.7, RAM 92; the heads student under the 3B 42 at 1, 24.9 and 54.
   - **Stopping:** `kill -TERM` the launcher's pid alone and wait for its final sync: it uploads
     the newest pair, the best and the logs, which reach the Hub only then. At update 800 it took
     ~53 min: Xet uploaded ~4.8 GB of the model and ~4.5 GB of the trainer state as new data, at
