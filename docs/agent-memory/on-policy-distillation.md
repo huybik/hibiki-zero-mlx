@@ -151,8 +151,10 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    - **Then the phone's finish**: the run's best trained against the 6-bit palettization
      (`train.py --palettize-bits 6`, plan stage 6.4), exported, and scored on the test sets
      against the shipped student.
-   - **Where it stands** (2026-11-23): the probes are done and `both_heads_z` (both terms,
-     z-scored) won ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)); `both_heads_z2` runs its recipe on the new data.
+   - **Where it stands** (2026-11-24): the probes are done and `both_heads_z` (both terms,
+     z-scored) won ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)); `both_heads_z2`, its
+     recipe on the new data, stopped at 400 without a best, below `both_heads_z` on the test sets
+     ([results](heads-on-policy-runs.md#both_heads_z2)).
 
 Warmup-stable-decay and checkpoint averaging for SFT runs are in
 [sft-training](sft-training.md#schedules-and-averaging); training against the phone's

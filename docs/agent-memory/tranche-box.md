@@ -10,7 +10,7 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 80 GB at 700 W, driver 615.71.09, a 26.9-CPU quota, 684 GiB of RAM, 125 GB of `/dev/shm`).
 **Its rental ends 2026-11-24 07:00 UTC+7.** The user chose it over a 600 W RTX 5090 at $0.751/h,
 and runs its jobs from their own session (2026-11-23: "your job is only to prepare the box, i will
-do the run separately"): `both_heads_z2` ([heads-on-policy-runs](heads-on-policy-runs.md#the-run-on-the-next-box),
+do the run separately"): `both_heads_z2` ([heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z2),
 with the pre-run scores), then the 3B's next round from `twoway_final`
 ([teacher-next](teacher-next.md)). Prepared from the Hub ([Fetching from the Hub](#fetching-from-the-hub)):
 - the `.venv` from main at `9b3df7a` (`h100.sh preflight` passed), `/workspace/.env`, `$HF_HOME/token`;
@@ -22,6 +22,8 @@ with the pre-run scores), then the 3B's next round from `twoway_final`
 - `/workspace/prof_z2.sh`, the run's `grpo_profile` on them, written but not run.
 
 Past boxes' records and scripts (no weights) are in `/Volumes/data/hibiki-zero-evals/box-<id>/`:
+62188551 (an RTX 5090, 32 GB, UAE, $0.631/h; it ran `both_heads_z2`,
+[heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z2), destroyed 2026-11-24),
 61906288 (an RTX 5090, South Korea; it built the rest of the EN→VI data, [envi-data](envi-data.md#the-box-run)),
 61345966 (the RTX PRO 6000 below) and 60447659 (an H100 SXM, Japan).
 

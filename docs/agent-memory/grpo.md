@@ -134,7 +134,7 @@ The CUDA profile and dry run are under [Running](#running).
   halve an update (measured below):
   - the fp32 policy and AdamW's states wait in pinned host memory while a window generates
     (`HostOffload`: 35 → 5.8 GiB resident, so generation batches of 512 rows fit, not 256; a 32 GB
-    card needs [`--park-states`](heads-on-policy-runs.md#the-run-on-the-next-box) too);
+    card needs [`--park-states`](heads-on-policy-runs.md#on-the-5090) too);
   - rollouts are as long as their stream plus evaluation's tail, and forwards are cut to their
     last kept token ([A rollout's length](#design)). The user approved moving the last reward
     there (2026-11-10, again 2026-11-13).
