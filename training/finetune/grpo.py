@@ -247,9 +247,9 @@ def distill_loss(
     audio_kl = common.token_kl(teacher.logits, output.logits, audio_valid)
     kl = torch.cat([text_kl, audio_kl], dim=1) * stream_weights[None, :, None]
     stats = {
-        "kl_text_sum": text_kl.sum(),
+        "kl_text_sum": text_kl.sum().detach(),
         "kl_text_tokens": text_valid.sum(),
-        "kl_audio_sum": audio_kl.sum(),
+        "kl_audio_sum": audio_kl.sum().detach(),
         "kl_audio_tokens": audio_valid.sum(),
     }
     return kl.sum(), stats
@@ -494,9 +494,9 @@ def trainer_tensors(lm: Any, optimizer: torch.optim.Optimizer) -> list[torch.Ten
 
 
 def park_states(offload: HostOffload, optimizer: torch.optim.Optimizer) -> None:
-    """AdamW's states to pinned host memory, once, until `offload.to_device()`: only `optimizer.step`
-    reads them, so the window's old-logprob pass and an update's micro-batches get their memory (9.5
-    GiB on the 1.28B student, 25 on the 3B). None before the first step."""
+    """AdamW's states to pinned host memory, once, until `offload.to_device()` (`--park-states`): only
+    `optimizer.step` reads them, so the window's old-logprob pass and an update's micro-batches get
+    their memory (10 GB on the 1.28B student, 25 on the 3B). None before the first step."""
     states = adam_states(optimizer)
     if states and not offload.out:
         offload.to_host(states)
@@ -593,6 +593,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gen-frames", type=int, default=230_400,
         help="A generation batch's rollouts times its longest rollout's frames (profiled: grpo.md).",
+    )
+    parser.add_argument(
+        "--park-states", action="store_true",
+        help="AdamW's states wait in pinned host memory while the old-logprob pass and an update's "
+             "micro-batches run (`park_states`), for a card where the update runs out of memory. It "
+             "costs a copy of them out and back an update, and the results don't change.",
     )
     parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward; 3 runs out of memory at T 1,200.")
     parser.add_argument("--reward-workers", type=int, default=8)
@@ -877,7 +883,8 @@ def main() -> None:
         # first update, through the update's own forward (gradients enabled, never
         # backpropagated). Micro-batches cut as each update cuts them: the same rows in the same
         # batch shapes.
-        park_states(offload, optimizer)
+        if args.park_states:
+            park_states(offload, optimizer)
         old_logprobs = None
         if objective.reward_coef:
             old_logprobs = torch.zeros((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
@@ -895,7 +902,8 @@ def main() -> None:
         for update in range(window):
             update_started = time.time()
             optimizer.zero_grad(set_to_none=True)
-            park_states(offload, optimizer)
+            if args.park_states:
+                park_states(offload, optimizer)
             first = update * per_update
             totals: dict[str, Any] = {"loss": 0.0}
             forward_total = 0
