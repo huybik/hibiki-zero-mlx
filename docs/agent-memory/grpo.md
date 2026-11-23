@@ -132,13 +132,11 @@ The CUDA profile and dry run are under [Running](#running).
   to heavy optimize grpo when it phase start after sft"). On the 80 GB H100 two levers nearly
   halve an update (measured below):
   - the fp32 policy and AdamW's states wait in pinned host memory while a window generates
-    (`HostOffload`: 35 → 5.8 GiB resident, so generation batches of 512 rows fit, not 256);
+    (`HostOffload`: 35 → 5.8 GiB resident, so generation batches of 512 rows fit, not 256; a 32 GB
+    card needs [`--park-states`](heads-on-policy-runs.md#the-run-on-the-next-box) too);
   - rollouts are as long as their stream plus evaluation's tail, and forwards are cut to their
     last kept token ([A rollout's length](#design)). The user approved moving the last reward
     there (2026-11-10, again 2026-11-13).
-
-  On a 32 GB card `--park-states` adds AdamW's states to what waits there during the update
-  ([heads-on-policy-runs](heads-on-policy-runs.md#the-run-on-the-next-box)).
 
   Left: micro-batches by a frame budget (3 rows run out of memory at 1,200 frames, though
   forwards average ~635; ~4% of an update). Compare on the same streams by updates per GPU-hour.
@@ -152,16 +150,12 @@ The CUDA profile and dry run are under [Running](#running).
   ~2.6M objects of garbage a window leaves) and updates spiked to 8–12 s four times where main's
   held 6.5–7.1. At best ~1%, inside one run's noise, so it was closed (2026-11-15) and the
   collection stays.
-- **Pinned host memory**: `grpo.ALLOC_CONF` (set by the run and `grpo_profile`, a different preset
-  refused) keeps pinned blocks at their size ([sft-recovery](sft-recovery.md#launcher)). Profiles
-  recorded before 2026-11-24 ran without expandable segments.
 - **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
   `python -m training.finetune.grpo_profile --cache-dir … --pair-cache-dir … --model-weight START --out-dir …`.
-  It times generation at each `--gen-batch` (on a second call, after compilation; each batch's
-  graph capture stays in, as in a run), the rewards serially and in workers, and the old-logprob
-  pass and the update at each `--micro-batch`, holding the states as a run does (on the host while
-  it generates, and with `--park-states` during the update too). An out-of-memory size is recorded
-  and skipped; `profile.json` is rewritten after each stage.
+  It times generation at each `--gen-batch` (after compilation; each batch's graph capture stays
+  in), the rewards serially and in workers, and the old-logprob pass and update at each
+  `--micro-batch`, holding the states as a run does. An out-of-memory size is recorded and skipped;
+  `profile.json` is rewritten after each stage.
 - **Profiled on the box** (2026-11-13, the 700 W H100 SXM, from the two-way run's final model,
   the caches `grpo_launch.sh` passes, T 1,200). Free-threaded Python 3.14 generates faster here
   than CPython 3.12: 29.0 against 30.9 ms a step at 192 rows.
