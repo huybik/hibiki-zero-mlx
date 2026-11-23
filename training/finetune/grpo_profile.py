@@ -2,9 +2,9 @@
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
 The policy's fp32 weights and AdamW's two states are held as in training (in pinned host memory
-while a window generates, `grpo.HostOffload`; with --park-states also AdamW's alone while the
-old-logprob pass and the update's micro-batches run, as in a run with the flag), and each stage runs
-on real streams from the start checkpoint:
+while a window generates, `grpo.HostOffload`; with --park-states AdamW's also while the old-logprob
+pass and the update's micro-batches run, the round trip untimed and the optimizer's step, which
+holds them, left out of the peaks), and each stage runs on real streams from the start checkpoint:
 - rollout generation at each --gen-batch rows of --frames: time per step and peak memory, timed
   on a second call so moshi's compilation stays out (each batch's CUDA graph capture stays in,
   as in a run);

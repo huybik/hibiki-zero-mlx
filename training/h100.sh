@@ -152,14 +152,15 @@ disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
 # 79.2 GiB of it). GRPO's sizes are its profile's (--micro-batch, --gen-frames); the check is
 # what the optimizer's step holds: the fp32 policy, its gradients and AdamW's two moments (16 bytes
 # a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B, 24.9 on the heads student
-# under the 3B. An update's micro-batches hold 8 a parameter less, AdamW's moments on the host
-# (grpo.park_states), plus their activations.
+# under the 3B. The micro-batches' activations come on top, or, with --park-states, where the
+# moments (8 a parameter) were; on a 32 GB card the heads student needs the flag, which this
+# check can't see.
 gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30 if grpo else 78
 # RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
 # policy and AdamW's two states, a block each a tensor) and grpo.HostOffload's copy of the same and
 # of a teacher's bf16 weights: 70.0 GiB on the 3B, whose run held 17 GiB more that it could not
 # give back. That 17 and 5% on top: 92 GiB on the 3B, 54 on the heads student under the 3B (34.4
-# pinned), to be measured in its run past its first save.
+# pinned; its first 40 updates on a 5090 held 52.1, page cache included).
 pins = (6 * sum(pinned(4 * n) for n in policy) + sum(pinned(2 * n) for n in teacher)) / 2**30
 ram = math.ceil(1.05 * (pins + 17)) if grpo else 80
 print(disk, f"{gpu:.1f}", ram)

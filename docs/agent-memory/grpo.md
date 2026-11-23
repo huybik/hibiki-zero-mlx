@@ -82,7 +82,8 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   a KL anchor: [exposure-bias](exposure-bias.md#anchored-grpo).
 - **Evaluation** runs at update 0 and every `--eval-every` (200) updates, SFT validation's
   free-running pass on `EVAL_PAIRS`' ten sets, both directions (user, 2026-11-10): FLEURS dev both
-  ways, `en-vi-val` and `en-vi-val-en`, each clean and noisy (the last since 2026-11-23). The
+  ways, `en-vi-val` and `en-vi-val-en`, each clean and noisy (the last since 2026-11-23), with
+  AdamW's states and a teacher parked on the host (2026-11-24). The
   first set of each direction selects (`common.selecting_sets`, by the audio a set is heard in):
   promotion goes to the best mean chrF over them among checkpoints that pass every set's gates
   and whose median end offset on each is at most `LATENCY_SLACK_S` (0.5 s) past update 0's.
@@ -138,8 +139,7 @@ The CUDA profile and dry run are under [Running](#running).
     last kept token ([A rollout's length](#design)). The user approved moving the last reward
     there (2026-11-10, again 2026-11-13).
 
-  Left: micro-batches by a frame budget (3 rows run out of memory at 1,200 frames, though
-  forwards average ~635; ~4% of an update). Compare on the same streams by updates per GPU-hour.
+  Left: micro-batches by a frame budget (forwards average ~635 of 1,200 frames; ~4% of an update). Compare on the same streams by updates per GPU-hour.
   8-bit AdamW states were measured and rejected ([sft-speed](sft-speed.md#measurements)).
 - **The GPU's idle between stages** (2026-11-14, 40 updates from the two-way model, each host step
   timed; `/Volumes/data/hibiki-zero-evals/box-60447659/idle_prof/`): a steady window (20 updates,
@@ -166,7 +166,7 @@ The CUDA profile and dry run are under [Running](#running).
   | Generation with them on the host, 256 / 384 / 512 rows | 35.6 / 44.0 / 53.6 ms a step; 5.98 / 7.26 / 7.95 rollouts/s; peak 39 / 56 / 72 GiB |
   | Rewards, 128 groups | 2.3 s serial, 0.47 s in 8 workers |
   | π_old's logprobs, micro-batch 2 | 49,300 frames/s |
-  | Update, micro-batch 2 | 15,400 frames/s, peak 68 GiB; 3 runs out of memory |
+  | Update, micro-batch 2 | 15,400 frames/s, peak 68 GiB |
   | First update's ratio | exactly 1 |
 
   The profiler's estimate for the first window at its own lengths (640 streams; rollouts average

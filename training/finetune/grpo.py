@@ -600,7 +600,7 @@ def parse_args() -> argparse.Namespace:
              "micro-batches run (`park_states`), for a card where the update runs out of memory. It "
              "costs a copy of them out and back an update, and the results don't change.",
     )
-    parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward; 3 runs out of memory at T 1,200.")
+    parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward.")
     parser.add_argument("--reward-workers", type=int, default=8)
     parser.add_argument("--eval-pairs", type=Path, nargs="+", default=EVAL_PAIRS)
     parser.add_argument("--eval-batch-size", type=int, default=64)
