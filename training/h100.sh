@@ -446,6 +446,17 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   mkdir -p "$RUNS_DIR"
   exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
   flock -n "$lock_fd" || die "$run_name is already running"
+  # A started run continues with its saved arguments alone: refused here, before they size the checks.
+  local -a saved=()
+  if [[ -f "$run_dir/run_id.json" ]]; then
+    [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
+    require_python
+    mapfile -t saved < <("$PYTHON" -c \
+      'import json, sys; print("\n".join(json.load(open(sys.argv[1]))))' "$run_dir/train_args.json")
+    if [[ $# -gt 0 && "$*" != "${saved[*]}" ]]; then
+      die "$run_name was started with other arguments; run it with none to continue"
+    fi
+  fi
   local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors teacher=
   [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
   # The last of each, as argparse keeps (grpo_launch.sh's ARGS follow its defaults).
@@ -458,13 +469,6 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   read -r disk gpu ram <<< "$needs"
   preflight "$disk" "$run_dir" "$ram" "$gpu"
   if [[ -f "$run_dir/run_id.json" ]]; then
-    [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
-    local -a saved
-    mapfile -t saved < <("$PYTHON" -c \
-      'import json, sys; print("\n".join(json.load(open(sys.argv[1]))))' "$run_dir/train_args.json")
-    if [[ $# -gt 0 && "$*" != "${saved[*]}" ]]; then
-      die "$run_name was started with other arguments; run it with none to continue"
-    fi
     run_with_sync "$run_dir" resume \
       "$PYTHON" -m "$module" --out-dir "$run_dir" "${saved[@]}"
   else

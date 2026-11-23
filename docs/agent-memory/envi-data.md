@@ -53,8 +53,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
 - The `en_speech` shard names are the VI→EN cache's (`shard_cv27-*`, `shard_libriheavy-*`).
 - Give a run a tranche folder or its `-noisy` copy, never both: streams group a tranche's rows by
   `doc` alone, and a copy keeps its row's `doc` and `seq`, so both copies of a sentence would sit
-  side by side (1,859 such pairs on viVoice in the validation). `en_speech` rows have no `doc`, so
-  its clean and noisy copies land in different streams. A noisy copy keeps 40% of rows clean.
+  side by side (1,859 such pairs on viVoice in the validation). `en_speech` rows have no `doc` and
+  are shuffled one by one, so its clean and noisy copies rarely share a stream: 2.45 a plan of
+  4,554 pairs over 20 seeds (2026-11-23), ~2 streams in a GRPO run's plan. A noisy copy keeps 40%
+  of rows clean.
 - The trainer takes whatever a folder holds: train on a noisy folder only once the Hub lists all of
   its shards (the run's last line is "done: the Hub holds every shard").
 - A shard built on the Mac and one built on a box differ only by near-ties
