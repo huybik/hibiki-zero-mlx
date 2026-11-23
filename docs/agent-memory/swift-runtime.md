@@ -302,17 +302,3 @@ always on the frame after a progress line: its on-screen log, a text view one li
 - Long input breaks the model, not the port: on a 64 s clip looped for 6 minutes, Python and
   Swift both start repeating after ~1.6 min and emit garbage after ~2.4 min; the iPhone run's
   text ends in garbage too.
-- Echo cancellation in the Speech Live app (2026-11-15). The app is now in the onevoice repo, at
-  `apps/ios`. It uses Apple's voice processing on the microphone (`AudioIO`,
-  `setVoiceProcessingEnabled`, with its gain control off).
-  - The test: one live session on the 2,000-update student. The Mac played 7 OneVoice clips at
-    afplay 0.5 and the phone spoke each translation aloud. The room was not quiet: up to -24 dBFS
-    with nobody speaking.
-  - While only the phone spoke loudly (8 s in all), the microphone's median was -87 dBFS. The
-    room alone was -48 and the clips -19.
-  - The voice gate opened on 2% of the phone-only frames, and the phone's own voice started no
-    turn. Three turns (two empty) began on other sounds in the room.
-  - A clip played while the phone spoke came through 7 dB quieter (median -26 dBFS), and the gate
-    still opened.
-  - Not measured: a run with voice processing off. Whether the processing costs translation
-    quality is unknown.

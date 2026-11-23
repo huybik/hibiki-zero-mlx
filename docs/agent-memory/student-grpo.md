@@ -41,6 +41,19 @@ weights/student_dep10_distilled.safetensors --config-path weights/student_dep10/
     - No empty turns; the footprint stayed under 1.87 GB.
     - Each turn's 5 s drain kept the model running through the gaps: 1,582 drain steps against
       1,195 heard in the VI run.
+  - **Echo cancellation in the Speech Live app** (2026-11-15; the app:
+    [swift-runtime](swift-runtime.md)). The app runs Apple's voice processing on the microphone
+    (`AudioIO`, `setVoiceProcessingEnabled`, its gain control off).
+    - The test: one live session. The Mac played 7 OneVoice clips at afplay 0.5 and the phone spoke
+      each translation aloud. The room was not quiet: up to -24 dBFS with nobody speaking.
+    - While only the phone spoke loudly (8 s in all), the microphone's median was -87 dBFS. The
+      room alone was -48 and the clips -19.
+    - The voice gate opened on 2% of the phone-only frames, and the phone's own voice started no
+      turn. Three turns (two empty) began on other sounds in the room.
+    - A clip played while the phone spoke came through 7 dB quieter (median -26 dBFS), and the gate
+      still opened.
+    - Not measured: a run with voice processing off. Whether the processing costs translation
+      quality is unknown.
 
 ## Evaluations
 
