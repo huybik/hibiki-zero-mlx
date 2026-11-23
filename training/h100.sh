@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery, on one H100, H200 or
-# RTX PRO 6000 Blackwell.
+# Setup and launcher for full-model Hibiki-Zero SFT with HF disaster recovery, on one H100, H200,
+# RTX PRO 6000 Blackwell or RTX 5090 (the phone student's runs; a run's GPU and RAM minimums follow
+# its weights, `sizes`).
 #
 #   setup             a pinned .venv (free-threaded Python 3.14, Torch 2.15 on CUDA 13.4), then cpus
 #   cpus              the container's CPU quota into /etc/environment for every later shell; rerun
@@ -43,8 +44,9 @@ require_gpu() {
   local gpu_names
   gpu_names="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
   [[ -n "$gpu_names" && "$gpu_names" != *$'\n'* ]] || die "exactly one GPU is required"
-  [[ "${gpu_names^^}" == *H100* || "${gpu_names^^}" == *H200* || "${gpu_names^^}" == *"RTX PRO 6000"* ]] \
-    || die "an H100, H200 or RTX PRO 6000 is required, got $gpu_names"
+  [[ "${gpu_names^^}" == *H100* || "${gpu_names^^}" == *H200* || "${gpu_names^^}" == *"RTX PRO 6000"* \
+     || "${gpu_names^^}" == *"RTX 5090"* ]] \
+    || die "an H100, H200, RTX PRO 6000 or RTX 5090 is required, got $gpu_names"
 }
 
 require_empty_dir() {
@@ -115,10 +117,57 @@ cpus() {
   echo "New shells get $n CPUs: MAX_JOBS, OMP_NUM_THREADS, TORCHINDUCTOR_COMPILE_THREADS"
 }
 
+sizes() {  # MODULE WEIGHT KEEP [TEACHER]: "DISK GPU RAM", what a run needs, from its weights' tensors
+  local weight="$2" teacher="${4:-}"
+  require_python
+  [[ -f "$weight" ]] || die "start weight $weight is missing"
+  [[ -z "$teacher" || -f "$teacher" ]] || die "teacher weight $teacher is missing"
+  "$PYTHON" - "$@" <<'PY'
+import json, math, struct, sys
+
+
+def tensors(path):  # each tensor's parameter count, from the safetensors header alone
+    with open(path, "rb") as handle:
+        header = json.loads(handle.read(struct.unpack("<Q", handle.read(8))[0]))
+    return [math.prod(entry["shape"]) for key, entry in header.items() if key != "__metadata__"]
+
+
+def pinned(nbytes):  # torch's pinned host allocator rounds each block up to a power of two
+    return 1 << (nbytes - 1).bit_length() if nbytes else 0
+
+
+module, keep = sys.argv[1], int(sys.argv[3])
+grpo = module == "training.finetune.grpo"
+policy = tensors(sys.argv[2])
+teacher = tensors(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else []
+model = sum(policy) * 4 / 1e9  # the fp32 model, GB
+# Disk: the kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
+# uploads after it is pruned. A pair is 3x the fp32 model (its parameters, AdamW's two states), the
+# model 1x, plus 5.5 of margin: on the 3B 37.5 a pair and 12.5 the model (131 at 2, 94 at 1), on the
+# 1.3B heads student 15.4 and 5.1 (42 at 1). 0 keeps every pair, which no check can bound: it gets
+# the default's room.
+disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
+# GPU: SFT's 4,608-frame batches peak at 75.1 GiB on the 3B, so SFT takes an 80 GB card (CUDA sees
+# 79.2 GiB of it). GRPO's sizes are its profile's (--micro-batch, --gen-frames); the check is
+# what an update holds before its activations: the fp32 policy, its gradients and AdamW's two
+# moments (16 bytes a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B, 24.9 on the
+# heads student under the 3B, whose update peaked near 26 at --micro-batch 1.
+gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30 if grpo else 78
+# RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
+# policy and AdamW's two states, a block each a tensor) and grpo.HostOffload's copy of the same and
+# of a teacher's bf16 weights: 77.4 GiB on the 3B, where the run held 77 pinned and 17 more it
+# could not give back. That 17 and 5% on top: 100 GiB on the 3B, 60 on the heads student under the
+# 3B (39.6 pinned), to be measured in its run past its first save.
+pins = (6 * sum(pinned(4 * n) for n in policy) + sum(pinned(2 * n) for n in teacher)) / 2**30
+ram = math.ceil(1.05 * (pins + 17)) if grpo else 80
+print(disk, f"{gpu:.1f}", ram)
+PY
+}
+
 preflight() {
-  # The run needs MIN GiB of disk: free space plus what RUN_DIR (when given) already holds;
-  # RAM_GIB (default 80) of RAM.
-  local minimum_gib="$1" run_dir="${2:-}" minimum_ram_gib="${3:-80}"
+  # The run needs DISK GiB of disk: free space plus what RUN_DIR (when given) already holds; RAM
+  # GiB of RAM and GPU GiB of GPU memory (`sizes`).
+  local minimum_gib="$1" run_dir="$2" minimum_ram_gib="$3" minimum_gpu_gib="$4"
   require_python
   require_cuda_driver
   require_gpu
@@ -126,7 +175,7 @@ preflight() {
   git diff --cached --quiet || die "staged changes must be committed before training"
 
   local profile
-  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_gib" "$run_dir" "$minimum_ram_gib" <<'PY'
+  profile="$("$PYTHON" - "$REPO_ROOT" "$minimum_gib" "$run_dir" "$minimum_ram_gib" "$minimum_gpu_gib" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -142,6 +191,7 @@ root = Path(sys.argv[1])
 minimum_gib = float(sys.argv[2])
 run_dir = Path(sys.argv[3]) if sys.argv[3] else None
 minimum_ram_gib = float(sys.argv[4])
+minimum_gpu_gib = float(sys.argv[5])
 
 if sys.version_info[:2] != (3, 14) or not sysconfig.get_config_var("Py_GIL_DISABLED"):
     raise RuntimeError(f"free-threaded Python 3.14 required (h100.sh setup), got {sys.version}")
@@ -152,18 +202,18 @@ if version("moshi") != "0.2.13":
 if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
     raise RuntimeError("exactly one CUDA GPU is required")
 name = torch.cuda.get_device_name(0)
-# The GPUs the trainer was checked on: Hopper (sm_90) and the RTX PRO 6000 Blackwell (sm_120).
-supported = {"H100": (9, 0), "H200": (9, 0), "RTX PRO 6000": (12, 0)}
+# The GPUs the trainer was checked on: Hopper (sm_90), and Blackwell's GB202 (sm_120) in the RTX
+# PRO 6000 and the RTX 5090.
+supported = {"H100": (9, 0), "H200": (9, 0), "RTX PRO 6000": (12, 0), "RTX 5090": (12, 0)}
 if not any(gpu in name.upper() and torch.cuda.get_device_capability(0) == capability
            for gpu, capability in supported.items()):
-    raise RuntimeError(f"an H100 or H200 (compute capability 9.0) or an RTX PRO 6000 Blackwell (12.0) is required, got {name}")
+    raise RuntimeError(f"an H100 or H200 (compute capability 9.0) or an RTX PRO 6000 or RTX 5090 (12.0) is required, got {name}")
 if not torch.cuda.is_bf16_supported():
     raise RuntimeError("CUDA bf16 support is required")
 memory_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
-# Training's 4,608-frame batches peak at 75.1 GiB reserved or less, and validation's translation
-# below that: an 80 GB card fits (CUDA sees 79.2 GiB of it).
-if memory_gib < 78:
-    raise RuntimeError(f"an 80 GB GPU or larger is required, got {memory_gib:.1f} GiB")
+if memory_gib < minimum_gpu_gib:
+    raise RuntimeError(f"at least {minimum_gpu_gib:.1f} GiB of GPU memory required for the run's weights, gradients and"
+                       f" optimizer states, got {memory_gib:.1f}")
 
 host_bytes = 1024 * int(
     next(
@@ -178,8 +228,7 @@ for limit in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_i
     if text != "max":
         host_bytes = min(host_bytes, int(text))
 host_gib = host_bytes / 2**30
-# The packed cache stays on disk; the checkpoint snapshot pins 37.5 GB, and GRPO pins as much
-# again for the policy and AdamW's states while it generates (grpo.HostOffload).
+# The packed cache stays on disk; what the run pins on the host is `sizes`'s.
 if host_gib < minimum_ram_gib:
     raise RuntimeError(f"at least {minimum_ram_gib:.0f} GiB of RAM required, got {host_gib:.1f}")
 free_gib = shutil.disk_usage(root).free / 2**30
@@ -397,40 +446,29 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
   mkdir -p "$RUNS_DIR"
   exec {lock_fd}>"$RUNS_DIR/.$run_name.lock"
   flock -n "$lock_fd" || die "$run_name is already running"
-  # The kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
-  # uploads after it is pruned. A pair is 3x the start weight's fp32 size (its parameters, AdamW's
-  # two states), the model 1x, plus 5.5 of margin: on the 3B 37.5 a pair and 12.5 the model (131 at
-  # 2, 94 at 1), on the 1.4B phone student 16.7 and 5.6 (45 at 1). 0 keeps every pair, which no
-  # check can bound: it gets the default's room.
-  local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors
-  [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
-  # The last of each, as argparse keeps (grpo_launch.sh's ARGS follow its defaults).
-  [[ "$given" =~ .*--keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
-  [[ "$given" =~ .*--model-weight[=[:space:]]+([^[:space:]]+) ]] && weight="${BASH_REMATCH[1]}"
-  (( keep >= 1 )) || keep=2
-  [[ -f "$weight" ]] || die "start weight $weight is missing"
-  local disk
-  disk="$("$PYTHON" - "$weight" "$keep" <<'PY'
-import json, math, struct, sys
-
-with open(sys.argv[1], "rb") as handle:  # the safetensors header alone
-    header = json.loads(handle.read(struct.unpack("<Q", handle.read(8))[0]))
-model = sum(math.prod(entry["shape"]) for key, entry in header.items() if key != "__metadata__") * 4 / 1e9
-print(math.ceil((int(sys.argv[2]) + 1) * 3 * model + model + 5.5))
-PY
-)"
-  local ram=80
-  # GRPO pins a second copy (grpo.HostOffload): 77 GiB pinned and ~17 GiB more it cannot give back.
-  [[ "$module" == training.finetune.grpo ]] && ram=128
-  preflight "$disk" "$run_dir" "$ram"
+  # A started run continues with its saved arguments alone: refused here, before they size the checks.
+  local -a saved=()
   if [[ -f "$run_dir/run_id.json" ]]; then
     [[ -f "$run_dir/train_args.json" ]] || die "restore $run_dir/train_args.json to continue"
-    local -a saved
+    require_python
     mapfile -t saved < <("$PYTHON" -c \
       'import json, sys; print("\n".join(json.load(open(sys.argv[1]))))' "$run_dir/train_args.json")
     if [[ $# -gt 0 && "$*" != "${saved[*]}" ]]; then
       die "$run_name was started with other arguments; run it with none to continue"
     fi
+  fi
+  local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors teacher=
+  [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
+  # The last of each, as argparse keeps (grpo_launch.sh's ARGS follow its defaults).
+  [[ "$given" =~ .*--keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
+  [[ "$given" =~ .*--model-weight[=[:space:]]+([^[:space:]]+) ]] && weight="${BASH_REMATCH[1]}"
+  [[ "$given" =~ .*--teacher-weight[=[:space:]]+([^[:space:]]+) ]] && teacher="${BASH_REMATCH[1]}"
+  (( keep >= 1 )) || keep=2
+  local needs disk gpu ram
+  needs="$(sizes "$module" "$weight" "$keep" "$teacher")"
+  read -r disk gpu ram <<< "$needs"
+  preflight "$disk" "$run_dir" "$ram" "$gpu"
+  if [[ -f "$run_dir/run_id.json" ]]; then
     run_with_sync "$run_dir" resume \
       "$PYTHON" -m "$module" --out-dir "$run_dir" "${saved[@]}"
   else
@@ -454,8 +492,10 @@ case "$command" in
   cpus)
     cpus
     ;;
-  preflight)
-    preflight 130
+  preflight)  # an SFT run of the 3B at the default --keep-checkpoints
+    needs="$(sizes training.finetune.train weights/hibiki-pytorch-77f82164@110.safetensors 2)"
+    read -r disk gpu ram <<< "$needs"
+    preflight "$disk" "" "$ram" "$gpu"
     ;;
   run)
     run training.finetune.train "$@"

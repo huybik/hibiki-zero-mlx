@@ -216,24 +216,44 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
 ### The run, on the next box
 
 The user stopped the box before the run (2026-11-22: "let's finish everything and stop before
-the long run"); it continues on the next box. The RTX 5090 rented for it (61906288) built the
-EN→VI data instead and was destroyed on 2026-11-22 without running it ([tranche-box](tranche-box.md#state)).
+the long run"). The RTX 5090 rented for it (61906288) built the EN→VI data instead and was
+destroyed on 2026-11-22 without running it ([tranche-box](tranche-box.md#state)).
 
-- **It continues `both_heads_z`** from its 200 pair (on the Hub with its best; restore as in
-  [finetune](../finetune.md#recover-a-run-on-a-replacement-pod)), extended by hand as an SFT run is
-  ([sft-recovery](sft-recovery.md#checkpoints-and-recovery)): `updates` and `total_steps` 2000 in
-  `run_config.json`, the last `--updates` in `train_args.json` 2000. It stops by the user's rule,
-  two validations (every 200 updates) without a new best; the gate keeps the start's end offsets
-  (2.00 / 1.415 s).
-- Its commit, `9d9573e`, is kept as the branch `run/both_heads_z`, and the run stays on it: main's
-  streams need a pair cache for its `en_speech` `en-vi` rows, which its `train_args.json` lacks, and
-  `pair_cache_dir` is a resume key ([sft-training](sft-training.md#target-timing)).
-- `--micro-batch` and `--gen-frames` are not resume keys: set them in `train_args.json` from the
-  new GPU's profile. From the RTX PRO 6000's (Checks below): the teacher update holds 20.1 GiB
-  and would peak near 26 GiB at micro-batch 1 (31.0 at 2, 40.8 at 4), generation 2.4 GiB plus
-  ~0.066 GiB a row (36.0 GiB at 512 rows). On 32 GB that is micro-batch 1 and at most ~400 rows
-  (`--gen-frames` = rows × 1,200), to be profiled there; generation's throughput barely depends
-  on the batch (9.0 rollouts/s at 512 rows, 9.3 at 1,024).
+- **A new run, `both_heads_z2`, on the new data** (user, 2026-11-23: "ok go with your
+  recommendation"): `both_heads_z`'s recipe from its start, the heads student's final model at
+  190,126, on main and `grpo_launch.sh`'s caches ([grpo](grpo.md#running)): EN→VI from the
+  tranche's noisy copies and round 4e's 500 `en_speech` shards clean and noisy. Its arguments
+  after the launcher's: `--config-path weights/student_heads14_cb16/config.json --save-every 100
+  --keep-checkpoints 1 --teacher-weight weights/grpo_twoway_best1400.safetensors --lr 1e-6` and
+  the 5090 profile's sizes (both terms, z-scored, seed 44 by default; `--updates 2000` from the
+  launcher). It stops by the user's rule, two validations (every 200 updates) without a new best.
+- Why not continue `both_heads_z`: main can't resume it (`pair_cache_dir` is a resume key,
+  [sft-training](sft-training.md#target-timing)), and from its 200 pair the run would mix two
+  datasets with AdamW restarted. Compare the two by each one's change from its own update 0 over
+  the same eight sets (`both_heads_z`: +1.59 selecting, +1.56 of 8): the evaluation reseeds by
+  batch over all its rows, so two more sets or another `--eval-batch-size` move every set's
+  absolute scores. The change measures the data and main's streams together (the start floor,
+  the babble and OCR drops, [sft-training](sft-training.md#target-timing)). `both_heads_z` stays on
+  the Hub, its commit `9d9573e` as the branch `run/both_heads_z`.
+- The teacher never heard noisy English. Before the run the box scores the teacher and the start
+  on `en-vi-val-en` and `en-vi-val-en-noisy` (`eval.py`, the run's seed): what the noise costs
+  each says whether the KL on noisy rows can be trusted (user, 2026-11-23: "should we train the
+  teacher a bit on noisy data?"; training the 3B on it is the next two-way run's, on an 80 GB
+  card, [envi-data](envi-data.md#decision)). The noisy set also gates promotion (every set's
+  health gates): if the start fails it, decide before the run.
+- `h100.sh` takes the RTX 5090 and sizes its checks from the weights: 24.9 GiB of GPU states, 60
+  GiB of RAM in the container and 42 GiB of disk ([sft-recovery](sft-recovery.md#launcher)). The
+  RAM is the 3B's measured structure, 39.6 GiB pinned and 17 more: measure the run's own once it
+  is past window 2 (`HostOffload` pins AdamW's states from then) and its first save (the writer's
+  buffers), by the cgroup's `memory.stat` `anon` or the process's `VmHWM`. `grpo_profile` has no
+  writer, and `memory.peak` counts the packs' page cache. On a 350 GB disk: the caches ~172 GB as
+  packs ([envi-data](envi-data.md#the-runs-on-it)), the run 42, weights ~25, the env and
+  evaluation sets ~15.
+- Profile on the 5090 first (`grpo_profile --teacher-weight`): `--micro-batch`, `--gen-frames` and
+  `--eval-batch-size` (64 so far; validation runs with the update's states on the GPU). The RTX
+  PRO 6000 measured (Checks below) the update near 26 GiB at micro-batch 1 (31.0 at 2) and
+  generation 2.4 GiB plus ~0.066 a row: on 32 GB, micro-batch 1 and ≤ ~400 rows (`--gen-frames` =
+  rows × 1,200), at little cost (9.0 rollouts/s at 512 rows, 9.3 at 1,024).
 - Not on 32 GB: the 3B's full fine-tunes (a pair is 12.5 GB of weights and 25 GB of AdamW), and
   the palettization finish at the heads run's batch (50.9 GiB, [tranche-box](tranche-box.md#jobs)).
 

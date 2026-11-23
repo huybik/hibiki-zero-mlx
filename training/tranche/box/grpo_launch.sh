@@ -22,16 +22,18 @@ fi
 read -r q per < /sys/fs/cgroup/cpu.max; if [[ $q == max ]]; then N=$(nproc); else N=$(( q / per )); fi  # the container's quota
 export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
 T=/workspace/tranche/repo/cache
-# Real Vietnamese speech to English (the tranche), English to Vietnamese from the tranche's
-# voice-cloned English and from en_speech's real recordings, timed by the two-way run's vi-en
-# copy of the same rows (--pair-cache-dir, streams.load_rows): round 4e's 500 shards, so the en-vi
-# folder must hold those 500 alone (an extra shard has no pair and raises; once both directions'
-# folders are whole, pair the full vi-en one). The 3B's H100 profile's sizes
-# (grpo.md); 2,000 updates, judged at 800 (user, 2026-11-13: 800, more while it still improves;
-# the rate is constant, so a longer --updates is the same run up to there).
+# Real Vietnamese speech to English (the tranche); English to Vietnamese from the tranche's
+# voice-cloned English, its noisy copy alone (a tranche folder and its copy never go together:
+# streams group its rows by doc), and from en_speech's real recordings, clean and noisy (each copy
+# keeps 40% of its rows clean). The en_speech rows are round 4e's 500 shards
+# (box/en_speech_sub.txt) in both en-vi folders, timed by the vi-en copy of the same rows
+# (--pair-cache-dir, streams.load_rows), so each en-vi folder holds those 500 alone: an extra shard
+# has no pair and raises (envi-data.md#the-runs-on-it). The 3B's H100 profile's sizes (grpo.md);
+# 2,000 updates, judged at 800 (user, 2026-11-13: 800, more while it still improves; the rate is
+# constant, so a longer --updates is the same run up to there).
 args=()
-[[ $# -ge 1 ]] && args=(--cache-dir $T/pho $T/vivoice $T/giga $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga
-                         data/cache/en-vi/en-vi-grounded-v2/train
+[[ $# -ge 1 ]] && args=(--cache-dir $T/pho $T/vivoice $T/giga $T/en-vi/pho-noisy $T/en-vi/vivoice-noisy $T/en-vi/giga-noisy
+                         data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2-noisy/train
                          --pair-cache-dir data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
                          --model-weight "$1" --gen-frames 614400 --micro-batch 2 --updates 2000 "${@:2}")
 # The rooms' noise bank (grpo.py --bank-dir's default), fetched here once, not inside the run.

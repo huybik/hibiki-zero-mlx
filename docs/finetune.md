@@ -17,6 +17,9 @@ interruptible pod reruns it on boot.
   SXM they rent out. One epoch takes ~10 h on an H200 NVL or a 700 W H100 SXM and ~14 h on an
   H100 NVL ([sft-speed](agent-memory/sft-speed.md#by-gpu)).
 - NVIDIA driver 580 or newer (CUDA 13), at least 80 GiB of RAM in the container, and Bash 5.1+.
+  These are the 3B's SFT, which `preflight` alone checks. `run` and `grpo` size the GPU memory,
+  RAM and disk from the run's weights, so the phone student's GRPO also takes an RTX 5090 with
+  60 GiB of RAM ([sft-recovery](agent-memory/sft-recovery.md#launcher)).
 - 350 GB of disk: the environment, weights, caches, their 70 GB of packs and the evaluation sets
   took 157 GiB on a pod, and the run needs 130 GiB: free, plus what a continued run already
   holds (`run` checks it).
