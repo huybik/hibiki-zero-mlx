@@ -136,6 +136,10 @@ The CUDA profile and dry run are under [Running](#running).
   - rollouts are as long as their stream plus evaluation's tail, and forwards are cut to their
     last kept token ([A rollout's length](#design)). The user approved moving the last reward
     there (2026-11-10, again 2026-11-13).
+  - AdamW's states wait there too while π_old's logprobs and an update's micro-batches run, as
+    only `optimizer.step` reads them (`grpo.park_states`, since 2026-11-24): 9.5 GiB less on the
+    heads student, 25 on the 3B, so a 32 GB card takes micro-batch 2 and up
+    ([heads-on-policy-runs](heads-on-policy-runs.md#the-run-on-the-next-box)).
 
   Left: micro-batches by a frame budget (3 rows run out of memory at 1,200 frames, though
   forwards average ~635; ~4% of an update). Compare on the same streams by updates per GPU-hour.

@@ -2,7 +2,8 @@
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
 The policy's fp32 weights and AdamW's two states are held as in training (in pinned host memory
-while a window generates, `grpo.HostOffload`), and each stage runs on real streams from the start
+while a window generates, `grpo.HostOffload`, and AdamW's alone while the old-logprob pass and the
+update's micro-batches run, `grpo.park_states`), and each stage runs on real streams from the start
 checkpoint:
 - rollout generation at each --gen-batch rows of --frames: time per step and peak memory, timed
   on a second call so moshi's compilation stays out (each batch's CUDA graph capture stays in,
@@ -305,6 +306,8 @@ def main() -> None:
     objective = grpo.Objective(weights, grpo.EPSILON, grpo.TEMPERATURE, args.reward_coef,
                                args.kl_coef or 0.0)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
+    states = grpo.HostOffload()
+    grpo.park_states(states, optimizer)  # as a run's old-logprob pass and micro-batches find them
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
         condition = common.batch_condition_tensors(lm, info.model_type, micro)
@@ -356,6 +359,8 @@ def main() -> None:
               f"{frames / update_s:,.0f} frames/s, peak {peak:.1f} GiB", flush=True)
         write(report)
 
+    if states.out:
+        states.to_device()
     if teacher is not None:
         policy, teaching = lm.delays[1 : 1 + lm.dep_q], teacher.delays[1 : 1 + lm.dep_q]
         shifts = {j: policy[j] - teaching[j] for j in range(lm.dep_q) if policy[j] > teaching[j]}

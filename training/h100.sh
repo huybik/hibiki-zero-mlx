@@ -150,9 +150,10 @@ model = sum(policy) * 4 / 1e9  # the fp32 model, GB
 disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
 # GPU: SFT's 4,608-frame batches peak at 75.1 GiB on the 3B, so SFT takes an 80 GB card (CUDA sees
 # 79.2 GiB of it). GRPO's sizes are its profile's (--micro-batch, --gen-frames); the check is
-# what an update holds before its activations: the fp32 policy, its gradients and AdamW's two
-# moments (16 bytes a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B, 24.9 on the
-# heads student under the 3B, whose update peaked near 26 at --micro-batch 1.
+# what the optimizer's step holds: the fp32 policy, its gradients and AdamW's two moments (16 bytes
+# a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B, 24.9 on the heads student
+# under the 3B. An update's micro-batches hold 8 a parameter less, AdamW's moments on the host
+# (grpo.park_states), plus their activations.
 gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30 if grpo else 78
 # RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
 # policy and AdamW's two states, a block each a tensor) and grpo.HostOffload's copy of the same and

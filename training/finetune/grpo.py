@@ -483,10 +483,23 @@ class HostOffload:
         self.out = []
 
 
+def adam_states(optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
+    """AdamW's state tensors (none before its first step)."""
+    return [value for state in optimizer.state.values() for value in state.values() if torch.is_tensor(value)]
+
+
 def trainer_tensors(lm: Any, optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
-    """The fp32 policy's parameters and AdamW's state tensors (none before its first step)."""
-    return [*lm.parameters(), *(value for state in optimizer.state.values()
-                                for value in state.values() if torch.is_tensor(value))]
+    """The fp32 policy's parameters and AdamW's state tensors."""
+    return [*lm.parameters(), *adam_states(optimizer)]
+
+
+def park_states(offload: HostOffload, optimizer: torch.optim.Optimizer) -> None:
+    """AdamW's states to pinned host memory, once, until `offload.to_device()`: only `optimizer.step`
+    reads them, so the window's old-logprob pass and an update's micro-batches get their memory (9.5
+    GiB on the 1.28B student, 25 on the 3B). None before the first step."""
+    states = adam_states(optimizer)
+    if states and not offload.out:
+        offload.to_host(states)
 
 
 def kept_tokens(
@@ -864,6 +877,7 @@ def main() -> None:
         # first update, through the update's own forward (gradients enabled, never
         # backpropagated). Micro-batches cut as each update cuts them: the same rows in the same
         # batch shapes.
+        park_states(offload, optimizer)
         old_logprobs = None
         if objective.reward_coef:
             old_logprobs = torch.zeros((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
@@ -881,6 +895,7 @@ def main() -> None:
         for update in range(window):
             update_started = time.time()
             optimizer.zero_grad(set_to_none=True)
+            park_states(offload, optimizer)
             first = update * per_update
             totals: dict[str, Any] = {"loss": 0.0}
             forward_total = 0
@@ -903,6 +918,8 @@ def main() -> None:
                         totals[key] = value if key not in totals else torch.maximum(totals[key], value)
                     else:
                         totals[key] = totals.get(key, 0) + value
+            if offload.out:
+                offload.to_device()
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip or math.inf)
             if not math.isfinite(float(grad_norm)):
                 raise RuntimeError(f"Non-finite gradient norm at update {step + 1}")
