@@ -129,6 +129,14 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   - logs, on the final sync only.
   It requires a public repo and a remote `run.json` byte-equal to the local `run_id.json`. It
   polls every 60 s and aborts after three failures.
+- **A rental about to end:** the final sync uploads a 3B run's newest pair and best (~50 GB), which
+  takes ~70 min at the ~12 MB/s a box in Japan gave, and a queue waits for each. The 2026-11-23 H100 queue
+  stopped `hf_sync` as the trainer exited
+  (`pkill -TERM -P <h100.sh pid> -f 'training.finetune.hf_sync '`) and deleted each run's weights
+  (the next preflight wants ~93 GiB free). That loses the weights, so decide before the run which
+  it must keep; the records (`rsync` without `*.safetensors`, `*.pt`, `.hf_sync`, `*.wav`) go to
+  the Mac, checked by checksum, before the instance ends (one `rsync` connection from Japan to the
+  Mac gave ~4–6 MB/s, a 12.5 GB model ~49 min).
 - Deleting a file from the Hub leaves its LFS object in the repo, and every object counts against
   the account's storage: pruned pairs had grown the recovery repo to 5.5 TB for 1.7 TB of files
   when the Hub refused every upload ("You have exceeded your public storage space", 2026-11-22;

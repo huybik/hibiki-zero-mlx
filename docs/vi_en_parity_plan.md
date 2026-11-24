@@ -610,7 +610,10 @@ Vietnamese text cannot keep up with its speech.
     centered advantages on the 3B dropped, as z-scored won on the student
     ([exposure-bias](agent-memory/exposure-bias.md#experiments)).
 13. The teacher's next round (planned 2026-11-23, after the students' runs): experiments 1 and 2
-    of item 12 first, then one two-way SFT pass from the two-way SFT's final model on all of
+    of item 12 first (run 2026-11-23: 0.1 tied, GRPO at β 0.02 if anchored, and the data gate failed
+    on quiet clips, so the next step is the user's:
+    [exposure-bias-runs](agent-memory/exposure-bias-runs.md)), then one two-way SFT pass from the
+    two-way SFT's final model on all of
     `en_speech` both ways, noisy, and the tranche (~30,900 h of source, ~36–38 h on a 700 W H100
     at 4,608 frames), decayed from half the pass and from its end, then GRPO; it ships only if it
     beats GRPO update 1,400 ([teacher-next](agent-memory/teacher-next.md)).

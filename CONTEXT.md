@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-23
+Last verified: 2026-11-24
 
 ## Purpose
 
@@ -194,6 +194,7 @@ inference/ (Apple Silicon, MLX)
 | On-policy distillation and centered advantages in GRPO; the student's recipe experiments | [on-policy-distillation](docs/agent-memory/on-policy-distillation.md) | `training/finetune/grpo.py`, `training/finetune/rewards.py` |
 | The heads student's on-policy runs: the probes' results, `both_heads_z`, `both_heads_z2` and its pre-run scores | [heads-on-policy-runs](docs/agent-memory/heads-on-policy-runs.md) | `runs/both_heads_z*`, `training/tranche/box/grpo_launch.sh` |
 | Exposure bias and the 3B's recipe: scratch or fine-tune, scheduled sampling in SFT, GRPO anchored to its start, their experiments | [exposure-bias](docs/agent-memory/exposure-bias.md) | `train.py --sampled-text`, `grpo.py --teacher-weight` |
+| Those experiments' runs: both SFT arms, their GRPO, the anchored probes, the quiet-clip loss (a level effect), noise | [exposure-bias-runs](docs/agent-memory/exposure-bias-runs.md) | `/Volumes/data/hibiki-zero-evals/box-62170174/` |
 | The 3B teacher's next round: the full two-way SFT on the new EN→VI data, its gates, decay branches and GRPO, time, disk and card | [teacher-next](docs/agent-memory/teacher-next.md) | `restart.sh two-way`, `grpo_launch.sh` |
 | Two-way speech: directions in caches, streams and evaluation, the run's tokenizer checks, the Vietnamese aligner, the two-way run and its box jobs | [two-way](docs/agent-memory/two-way.md) | `--direction`, `--tokenizer`, `common.run_tokenizer`, `text_timing.ALIGNERS`, `training/prep/cache_rows.py`, `training/finetune/streams.py` |
 | The next two-way run's EN→VI data: `en_speech` both ways, the noisy copies of every English source, where each is on the Hub, the Mac run that builds them | [envi-data](docs/agent-memory/envi-data.md) | `/Volumes/data/datasets/envi_mac/envi_mac.py`, `en-vi/*-noisy` on the Hub |

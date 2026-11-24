@@ -6,26 +6,22 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**The box since 2026-11-23: an H100 SXM** (Vast 62170174, Japan, $1.491/h with 350 GB of disk;
-80 GB at 700 W, driver 615.71.09, a 26.9-CPU quota, 684 GiB of RAM, 125 GB of `/dev/shm`).
-**Its rental ends 2026-11-24 07:00 UTC+7.** The user chose it over a 600 W RTX 5090 at $0.751/h,
-and runs its jobs from their own session (2026-11-23: "your job is only to prepare the box, i will
-do the run separately"): `both_heads_z2` ([heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z2),
-with the pre-run scores), then the 3B's next round from `twoway_final`
-([teacher-next](teacher-next.md)). Prepared from the Hub ([Fetching from the Hub](#fetching-from-the-hub)):
-- the `.venv` from main at `9b3df7a` (`h100.sh preflight` passed), `/workspace/.env`, `$HF_HOME/token`;
-- in `weights/`, each sha256-checked against the Hub: the upstream four, the vi6k tokenizer and
-  its init map, `student_heads14_cb16/config.json`, `student_heads14_cb16_final.safetensors`
-  (190,126), `grpo_twoway_best1400.safetensors` and `twoway_final.safetensors` (two-way SFT 287,558);
-- GRPO's six evaluation sets in `data/eval/`, and `grpo_launch.sh`'s nine caches packed and
-  dropped (168 GB);
-- `/workspace/prof_z2.sh`, the run's `grpo_profile` on them, written but not run.
+**The box of 2026-11-23: an H100 SXM** (Vast 62170174, Japan, $1.491/h with 350 GB of disk; 80 GB
+at 700 W, driver 615.71.09, a 26.9-CPU quota, 684 GiB of RAM, 125 GB of `/dev/shm`), rented for
+`both_heads_z2` and the 3B's next round, prepared from the Hub
+([Fetching from the Hub](#fetching-from-the-hub)). `both_heads_z2` went to the RTX 5090 below;
+this box ran the 3B's experiments 1 and 2 (user, 2026-11-23: "Exp 1 (cut) + exp 2 probe";
+[exposure-bias-runs](exposure-bias-runs.md)) from 14:07 to 22:33 UTC and was destroyed
+2026-11-23 23:37 UTC at the user's word ("if we finish everything before the box expire can destroy it when
+done"). Its weights are gone but one (`exp1_grpo_ss01` at 200, 12.5 GB, in its records
+folder). Nothing was rented on 2026-11-24 06:40 UTC+7.
 
-Past boxes' records and scripts (no weights) are in `/Volumes/data/hibiki-zero-evals/box-<id>/`:
+Past boxes' records and scripts (no weights, but 62170174's) are in
+`/Volumes/data/hibiki-zero-evals/box-<id>/`:
 62188551 (an RTX 5090, 32 GB, UAE, $0.631/h; it ran `both_heads_z2`,
 [heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z2), destroyed 2026-11-24),
 61906288 (an RTX 5090, South Korea; it built the rest of the EN→VI data, [envi-data](envi-data.md#the-box-run)),
-61345966 (the RTX PRO 6000 below) and 60447659 (an H100 SXM, Japan).
+62170174 (the H100 above), 61345966 (the RTX PRO 6000 below) and 60447659 (an H100 SXM, Japan).
 
 **The box 2026-11-19 to 2026-11-22: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
 destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver

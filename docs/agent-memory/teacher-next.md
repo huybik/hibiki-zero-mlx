@@ -12,9 +12,9 @@ The experiments are in [exposure-bias](exposure-bias.md#experiments), the data i
 
 ## Decision
 
-Planned 2026-11-23, not started (user: "let's finetune the teacher a bit on new data", then "if
-not a quick sft, what you recommend?", "keep it at 4,608 frame update on h100", "ok note
-everything down for future plan"):
+Planned 2026-11-23; its gates are run ([Order](#order)), the full SFT is not started (user:
+"let's finetune the teacher a bit on new data", then "if not a quick sft, what you recommend?",
+"keep it at 4,608 frame update on h100", "ok note everything down for future plan"):
 
 - One full pass of two-way SFT on all of `en_speech` both ways, noisy, and the tranche (the data
   the user chose on 2026-11-21, [envi-data](envi-data.md#decision)), then GRPO. The result
@@ -43,10 +43,16 @@ everything down for future plan"):
              ≈ 60 h of a 700 W H100 SXM, ~$120 at $2/h
 ```
 
+- **Gates run 2026-11-23** ([tables](exposure-bias-runs.md)): scheduled sampling 0.1 ties the control
+  (not adopted); the anchored probe favours β 0.02; **the data gate failed as written** on VI→EN FLEURS
+  dev (−3.85 chrF at seed 44, −3.66 at 61), on its quiet clips, where the new model depends on the
+  input's level and `twoway_final` doesn't. Why the SFT lost that is not established. The full SFT
+  waits for the user: try one of [two candidate fixes](exposure-bias-runs.md#the-quiet-clips)
+  (deeper gain augmentation in its data, or a louder stage target) before spending ~36–38 h.
 - **Experiment 1's control arm is the data gate**: plain SFT on this mix from the shipped run's
-  start, then 400 GRPO updates at its settings, compared with the shipped run's 400 (selecting
-  38.89) as each run's change from its own update 0. It reads ~670 h, so it catches data that
-  hurts rather than proving the full pass helps: if it hurts, stop before step 2
+  start, then GRPO at its settings, compared with the shipped run's as each run's change from its
+  own update 0 (planned 400 updates, run 200, against the shipped 38.00). It reads ~670 h, so it
+  catches data that hurts rather than proving the full pass helps: if it hurts, stop before step 2
   ([exposure-bias](exposure-bias.md#experiments)).
 - The round's winner becomes the students' teacher in place of update 1,400.
 
@@ -81,7 +87,7 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   fit, saving ~5 h for ~25% more money, but at 3e-6 and 1.78× fewer updates an hour of data,
   which changes the recipe ([sft-speed](sft-speed.md#measurements)).
 - `--schedule constant` for one pass (~445,000 updates), validated every 20,000, saved every
-  4,000, `--keep-checkpoints 1`, a new `--seed`; `--sampled-text 0.1` only if experiment 1 won it.
+  4,000, `--keep-checkpoints 1`, a new `--seed`; no `--sampled-text` (0.1 tied in experiment 1).
 - **Two decay branches** (`--schedule decay`, [sft-training](sft-training.md#schedules-and-averaging)),
   each with a new seed, over ~10% of the updates before it:
   - A from the pair at about half the pass (~222,000; ~22,000 updates, ~2 h);
@@ -95,10 +101,10 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
 - **Averaging**: `average.py` on the winning branch's last checkpoints, scored beside it.
 - **GRPO** from the winning branch's final model at the shipped run's settings (`grpo_launch.sh`),
   evaluated every 200 updates and stopped by the user's rule (two evaluations without a new
-  best); `--teacher-weight <its start> --kl-coef β` if experiment 2 won. Its `en-vi` folders
-  hold round 4e's 500 `en_speech` shards alone, timed by their `vi-en` copy (an extra shard has no
-  pair and raises), while the SFT's `en-vi/en-vi-grounded-v2-noisy/train` holds all 1,832: keep
-  GRPO's folders apart on the box, or point its `--pair-cache-dir` at the SFT's full `vi-en` noisy
+  best); `--teacher-weight <its start> --kl-coef 0.02` if it is anchored (the probe's better β, its
+  gain not isolated from the code's drift). Its `en-vi` folders hold round 4e's 500 `en_speech`
+  shards alone, timed by their `vi-en` copy (an extra shard has no pair and raises), while the SFT's
+  `en-vi/en-vi-grounded-v2-noisy/train` holds all 1,832: keep GRPO's folders apart on the box, or point its `--pair-cache-dir` at the SFT's full `vi-en` noisy
   folder; settle it at launch ([envi-data](envi-data.md#the-runs-on-it)).
 - When the round starts, `restart.sh two-way` is repointed at these folders, this start and the
   schedule. Its current target (`twoway_sft_4608` on the old data) goes.
