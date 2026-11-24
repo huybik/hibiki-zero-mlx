@@ -6,22 +6,25 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**The box of 2026-11-23: an H100 SXM** (Vast 62170174, Japan, $1.491/h with 350 GB of disk; 80 GB
-at 700 W, driver 615.71.09, a 26.9-CPU quota, 684 GiB of RAM, 125 GB of `/dev/shm`), rented for
-`both_heads_z2` and the 3B's next round, prepared from the Hub
-([Fetching from the Hub](#fetching-from-the-hub)). `both_heads_z2` went to the RTX 5090 below;
-this box ran the 3B's experiments 1 and 2 (user, 2026-11-23: "Exp 1 (cut) + exp 2 probe";
-[exposure-bias-runs](exposure-bias-runs.md)) from 14:07 to 22:33 UTC and was destroyed
-2026-11-23 23:37 UTC at the user's word ("if we finish everything before the box expire can destroy it when
-done"). Its weights are gone but one (`exp1_grpo_ss01` at 200, 12.5 GB, in its records
-folder). Nothing was rented on 2026-11-24 06:40 UTC+7.
+**The box of 2026-11-24: an RTX 5090** (Vast 62366622, Switzerland, $0.671/h with 350 GB of disk;
+32 GB at 500 W of 600, driver 580.173.02, a 15.4-CPU quota, 83.8 GiB of RAM), rented by the user
+to continue `both_heads_z` from update 200
+([heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z-continued)). Ask the user before
+destroying it.
+- Uploads from the Mac run at ~20 KB/s: the box clones the repo from GitHub. The Hub gives ~80 MB/s
+  (the seven caches' 130 GB, the weights and 200's pair in ~38 min, four fetches at once).
+- The default openslr mirror serves the rooms' bank at ~250 KB/s a connection; `aria2c -x16` over
+  it and `openslr.trmal.net` took ~2 min (`fetch_bank` checks the SHA-256 either way).
+- Right after boot `nvidia-smi` read 100% busy at 118 W with nothing on the card; it later read
+  0% at 12 W.
 
 Past boxes' records and scripts (no weights, but 62170174's) are in
 `/Volumes/data/hibiki-zero-evals/box-<id>/`:
 62188551 (an RTX 5090, 32 GB, UAE, $0.631/h; it ran `both_heads_z2`,
 [heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z2), destroyed 2026-11-24),
 61906288 (an RTX 5090, South Korea; it built the rest of the EN→VI data, [envi-data](envi-data.md#the-box-run)),
-62170174 (the H100 above), 61345966 (the RTX PRO 6000 below) and 60447659 (an H100 SXM, Japan).
+62170174 (an H100 SXM, Japan; the 3B's experiments 1 and 2,
+[exposure-bias-runs](exposure-bias-runs.md), destroyed 2026-11-23), 61345966 (the RTX PRO 6000 below) and 60447659 (an H100 SXM, Japan).
 
 **The box 2026-11-19 to 2026-11-22: an RTX PRO 6000 Blackwell Workstation Edition** (Vast 61345966,
 destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver
