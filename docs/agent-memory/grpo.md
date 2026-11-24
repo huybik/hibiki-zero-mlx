@@ -86,18 +86,15 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   AdamW's states and a teacher parked on the host (2026-11-24). The
   first set of each direction selects (`common.selecting_sets`, by the audio a set is heard in):
   promotion goes to the best mean chrF over them among checkpoints that pass every set's gates
-  and whose median end offset on each is at most `LATENCY_SLACK_S` (1.0 s) past update 0's.
+  and whose median end offset on each is at most `LATENCY_LIMIT_S` (3 s).
   The rewards need nothing per direction: a row's reference is its own text track decoded with
   the run's tokenizer (the start weight's, the Vietnamese swap), Vietnamese for an `en-vi` row.
-  - The slack: quality first (user, 2026-11-22: "latency can be bit more relax"): 0.5 s, then 1.0 s
-    (2026-11-25: "relax speed limit") once 0.5 blocked every `both_heads_z2` checkpoint. Noise needs
-    some: in the dry run, update 2 (two updates at 2e-7, in effect the start) had the better chrF
-    (39.90 against 39.29) but ended 4.6 s against 4.5 s. A blocked checkpoint is not kept.
+  - The limit: quality first (user, 2026-11-22: "latency can be bit more relax"). It was the start's
+    offset (update 0's) plus 0.5 s, which blocked every `both_heads_z2` checkpoint; since 2026-11-25
+    it is 3 s fixed, both ways and every run (user: "same relaxed limit for both vi-en, en-vi, and z
+    and z2 at 3s"), as one start measured 0.1–0.3 s apart in two runs. A blocked checkpoint is not kept.
   - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted` (this step is
     now the best).
-  - That baseline is stored as `start_end_offset_s` (by selecting set) in `run_config.json`, which
-    `hf_sync` uploads when its size changes (adding the key at update 0 does). The logs reach the
-    Hub only at the end, so a restore needs this file.
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
   has stopped improving is simply stopped; its stop cannot be extended.
 - **Losing work:** `hf_sync` uploads only evaluation-step pairs, so a lost pod costs up to
