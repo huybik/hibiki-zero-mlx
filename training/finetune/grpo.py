@@ -23,8 +23,8 @@ codebook, summed over frames and averaged over rollouts.
 Every --eval-every updates, and at the start, the run translates --eval-pairs free-running, as SFT
 validation does. The first set of each direction selects (`common.selecting_sets`: FLEURS dev
 both ways by default): the run promotes the checkpoint with the best mean chrF over them among
-those that pass every set's health gates and end no more than LATENCY_SLACK_S later than the start
-on each (its median end offset); val_log.jsonl records each evaluation's verdict.
+those that pass every set's health gates and end within LATENCY_LIMIT_S of the source on each (its
+median end offset); val_log.jsonl records each evaluation's verdict.
 
 With --teacher-weight, the update also distils a frozen teacher on-policy: the reverse
 KL(policy || teacher) of every kept token's next-token distribution on the policy's own rollouts
@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import json
 import math
 import multiprocessing
 import os
@@ -73,7 +72,6 @@ from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
     append_log,
-    atomic_write_text,
     claim_run_config,
     jsonable,
     keep_log_lines,
@@ -110,7 +108,7 @@ EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both direc
     Path("data/eval/en-vi-val-en/cv27.jsonl"),
     Path("data/eval/en-vi-val-en/libriheavy.jsonl"),
 ]
-LATENCY_SLACK_S = 1.0  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
+LATENCY_LIMIT_S = 3.0  # the latest median end offset, on each selecting set, at which a checkpoint may promote
 # The defaults the profiler measures with too.
 TEMPERATURE = 0.8  # rollouts sample, and logprobs are taken, at evaluation's temperature
 TOP_K = 250
@@ -745,7 +743,6 @@ def main() -> None:
     )
     # Before the model loads: a resume with other arguments or data stops here, in seconds.
     claim_run_config(out_dir, run_config, RESUME_KEYS, resuming)
-    config_path = out_dir / "run_config.json"
 
     lm = common.load_policy(info, device)
     params = list(lm.parameters())
@@ -777,17 +774,11 @@ def main() -> None:
     # stay out of the collection after every generation batch (0.6 s each otherwise).
     gc.collect()
     gc.freeze()
-    # The start's end offset on each selecting set, which a promoted checkpoint may exceed by at
-    # most LATENCY_SLACK_S. It is kept in run_config.json, which hf_sync uploads as it changes,
-    # unlike the logs.
-    start_offset = json.loads(config_path.read_text(encoding="utf-8")).get("start_end_offset_s")
-    if step and start_offset is None:
-        raise RuntimeError("run_config.json lacks the start's start_end_offset_s")
 
     offload = HostOffload()
 
     def evaluate(at: int) -> None:
-        nonlocal best_state, start_offset
+        nonlocal best_state
         started = time.time()
         optimizer.zero_grad(set_to_none=True)
         # It reads neither, and at batch 64 the heads student's ran out of memory beside them on 32 GB.
@@ -800,18 +791,9 @@ def main() -> None:
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, metrics in free_running.items():
             print(f"val step={at} {name} {common.score_summary(metrics)}")
-        if at == 0:
-            start_offset = {name: free_running[name]["median_end_offset_s"] for name in selecting}
-            if silent := [name for name, offset in start_offset.items() if not math.isfinite(offset)]:
-                raise RuntimeError(f"The start emitted no word on {', '.join(silent)}")
-            stored = json.loads(config_path.read_text(encoding="utf-8"))
-            stored["start_end_offset_s"] = start_offset
-            atomic_write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", config_path)
-        # The gate allows LATENCY_SLACK_S: quality comes first, so some later output is accepted for
-        # it (two updates at 2e-7, in effect the start, already measured 0.1 s later), and a blocked
-        # checkpoint is not kept.
-        on_time = all(free_running[name]["median_end_offset_s"] <= start_offset[name] + LATENCY_SLACK_S
-                      for name in selecting)
+        # A fixed limit, the same for both directions and every run of one start (user, 2026-11-25):
+        # quality comes first. A blocked checkpoint is not kept.
+        on_time = all(free_running[name]["median_end_offset_s"] <= LATENCY_LIMIT_S for name in selecting)
         if at > 0 and healthy and on_time:
             writer.wait()
             chrf = sum(float(free_running[name]["chrf"]) for name in selecting) / len(selecting)
