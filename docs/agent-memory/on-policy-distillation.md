@@ -112,8 +112,8 @@ training/tranche/box/grpo_launch.sh opd_heads weights/<student start>.safetensor
 ```
 
 The heads student keeps `--text-weight` 100 (16 codebooks: the 3B's 100:16). Evaluation and
-promotion are GRPO's ([grpo](grpo.md#design)): the latency gate holds a checkpoint to its start's
-end offset plus 1.0 s (0.5 s until 2026-11-25).
+promotion are GRPO's ([grpo](grpo.md#design)): the latency gate holds a checkpoint to a 3 s end
+offset on each FLEURS dev set (until 2026-11-25, its start's plus 0.5 s).
 
 ## Experiments
 
