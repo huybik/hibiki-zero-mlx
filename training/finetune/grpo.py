@@ -112,7 +112,7 @@ EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both direc
     Path("data/eval/en-vi-val-en-noisy/cv27.jsonl"),  # the English sources the training rows now take noisy
     Path("data/eval/en-vi-val-en-noisy/libriheavy.jsonl"),
 ]
-LATENCY_SLACK_S = 0.5  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
+LATENCY_SLACK_S = 1.0  # how far past the start's median end offset, on each selecting set, a checkpoint may promote
 # The defaults the profiler measures with too.
 TEMPERATURE = 0.8  # rollouts sample, and logprobs are taken, at evaluation's temperature
 TOP_K = 250
