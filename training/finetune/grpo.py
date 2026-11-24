@@ -121,6 +121,20 @@ ADVANTAGES = ("zscore", "centered")  # rewards.normalize with and without the st
 # hold one: the other half keep digital silence, what a voice gate passes between sentences.
 ROOMS = 256
 ROOM_SHARE = 0.5
+# The allocators of a run and its profile. Expandable segments keep freed GPU memory reusable
+# between generation batches and updates. Pinned host blocks over 1 MB keep their size, where torch
+# would round each up to a power of two: `HostOffload`'s and the checkpoint writer's buffers, one a
+# tensor, then pin 34.4 GiB on the heads student under the 3B instead of 39.6, 70.0 on the 3B
+# instead of 77.4 (`h100.sh sizes`).
+ALLOC_CONF = "expandable_segments:True,pinned_max_round_threshold_mb:1"
+
+
+def set_alloc_conf() -> None:
+    """ALLOC_CONF for this process, before CUDA starts. A different preset value is refused, not kept:
+    `h100.sh sizes` checks the RAM for exact pinned blocks, so a run pinning rounded ones (5 GiB more on
+    the heads student, 7 on the 3B) would pass preflight and be killed at its first save."""
+    if (value := os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", ALLOC_CONF)) != ALLOC_CONF:
+        raise RuntimeError(f"PYTORCH_CUDA_ALLOC_CONF={value!r} is set; GRPO runs on {ALLOC_CONF!r}: unset it")
 
 
 def stream_order(count: int, seed: int) -> np.ndarray:
@@ -231,9 +245,9 @@ def distill_loss(
     audio_kl = common.token_kl(teacher.logits, output.logits, audio_valid)
     kl = torch.cat([text_kl, audio_kl], dim=1) * stream_weights[None, :, None]
     stats = {
-        "kl_text_sum": text_kl.sum(),
+        "kl_text_sum": text_kl.sum().detach(),
         "kl_text_tokens": text_valid.sum(),
-        "kl_audio_sum": audio_kl.sum(),
+        "kl_audio_sum": audio_kl.sum().detach(),
         "kl_audio_tokens": audio_valid.sum(),
     }
     return kl.sum(), stats
@@ -467,10 +481,23 @@ class HostOffload:
         self.out = []
 
 
+def adam_states(optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
+    """AdamW's state tensors (none before its first step)."""
+    return [value for state in optimizer.state.values() for value in state.values() if torch.is_tensor(value)]
+
+
 def trainer_tensors(lm: Any, optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
-    """The fp32 policy's parameters and AdamW's state tensors (none before its first step)."""
-    return [*lm.parameters(), *(value for state in optimizer.state.values()
-                                for value in state.values() if torch.is_tensor(value))]
+    """The fp32 policy's parameters and AdamW's state tensors."""
+    return [*lm.parameters(), *adam_states(optimizer)]
+
+
+def park_states(offload: HostOffload, optimizer: torch.optim.Optimizer) -> None:
+    """AdamW's states to pinned host memory, once, until `offload.to_device()` (`--park-states`): only
+    `optimizer.step` reads them, so the window's old-logprob pass and an update's micro-batches get
+    their memory (10 GB on the 1.28B student, 25 on the 3B). None before the first step."""
+    states = adam_states(optimizer)
+    if states and not offload.out:
+        offload.to_host(states)
 
 
 def kept_tokens(
@@ -564,7 +591,13 @@ def parse_args() -> argparse.Namespace:
         "--gen-frames", type=int, default=230_400,
         help="A generation batch's rollouts times its longest rollout's frames (profiled: grpo.md).",
     )
-    parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward; 3 runs out of memory at T 1,200.")
+    parser.add_argument(
+        "--park-states", action="store_true",
+        help="AdamW's states wait in pinned host memory while the old-logprob pass and an update's "
+             "micro-batches run (`park_states`), for a card where the update runs out of memory. It "
+             "costs a copy of them out and back an update, and the results don't change.",
+    )
+    parser.add_argument("--micro-batch", type=int, default=2, help="Rollouts per forward.")
     parser.add_argument("--reward-workers", type=int, default=8)
     parser.add_argument("--eval-pairs", type=Path, nargs="+", default=EVAL_PAIRS)
     parser.add_argument("--eval-batch-size", type=int, default=64)
@@ -671,7 +704,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    set_alloc_conf()
     args = parse_args()
     validate_args(args)
     args.model_weight = require_file(args.model_weight, "start checkpoint")
@@ -751,14 +784,19 @@ def main() -> None:
     if step and start_offset is None:
         raise RuntimeError("run_config.json lacks the start's start_end_offset_s")
 
+    offload = HostOffload()
+
     def evaluate(at: int) -> None:
         nonlocal best_state, start_offset
         started = time.time()
         optimizer.zero_grad(set_to_none=True)
+        # It reads neither, and at batch 64 the heads student's ran out of memory beside them on 32 GB.
+        offload.to_host(adam_states(optimizer) + teacher_params)
         free_running = common.validate_free_running(
             lm, info, mimi, tokenizer, eval_rows, eval_sets, args.eval_batch_size,
             out_dir / "eval" / f"step{at:06d}", args.seed,
         )
+        offload.to_device()
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, metrics in free_running.items():
             print(f"val step={at} {name} {common.score_summary(metrics)}")
@@ -790,7 +828,6 @@ def main() -> None:
         evaluate(step)
 
     per_update = args.streams * args.group
-    offload = HostOffload()
     while step < args.updates:
         window = min(args.tau, args.updates - step)
         window_started = time.time()
@@ -846,6 +883,8 @@ def main() -> None:
         # first update, through the update's own forward (gradients enabled, never
         # backpropagated). Micro-batches cut as each update cuts them: the same rows in the same
         # batch shapes.
+        if args.park_states:
+            park_states(offload, optimizer)
         old_logprobs = None
         if objective.reward_coef:
             old_logprobs = torch.zeros((len(codes), 1 + lm.dep_q, args.frames), dtype=torch.float32)
@@ -863,6 +902,8 @@ def main() -> None:
         for update in range(window):
             update_started = time.time()
             optimizer.zero_grad(set_to_none=True)
+            if args.park_states:
+                park_states(offload, optimizer)
             first = update * per_update
             totals: dict[str, Any] = {"loss": 0.0}
             forward_total = 0
@@ -885,6 +926,7 @@ def main() -> None:
                         totals[key] = value if key not in totals else torch.maximum(totals[key], value)
                     else:
                         totals[key] = totals.get(key, 0) + value
+            offload.to_device()
             grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip or math.inf)
             if not math.isfinite(float(grad_norm)):
                 raise RuntimeError(f"Non-finite gradient norm at update {step + 1}")
