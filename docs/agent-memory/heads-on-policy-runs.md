@@ -175,11 +175,19 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   π_old's pass ~2.3 s: ~85 min from one validation to the next. MemAvailable was ≥ 47.7 GiB
   through update 220 (an 83.8 GiB container).
   The box's profile: generation at 320 rows 44.3 ms a step (peak 23.4 GiB), the update at
-  micro-batch 2 ~8.0 s (22.4 GiB).
+  micro-batch 2 ~8.0 s (22.4 GiB). Update 400 promoted: selecting mean 39.36 (200: 38.92), mean
+  of 8 39.44 (39.44), end offsets VI→EN 1.74 s and EN→VI 1.82 s (200: 1.71, 1.63).
+- **The slack 1.0 s from update 500** (user, 2026-11-25: "relax speed limit";
+  [grpo](grpo.md#design)): the run stops at its pair of 500 and continues on `a61ec4a`, which
+  changes only `LATENCY_SLACK_S` (validation, so a commit move, [finetune](../finetune.md#move-a-running-run-to-another-pod)).
 - **The stop**: two validations in a row with no new best on the selecting mean or the mean of
   8. A validation the latency gate blocked while either mean rose is not "not improving"
   (the agent's reading, put to the user 2026-11-24, not yet answered). Then the test sets as
   `both_heads_z2`'s.
+- **Then `both_heads_z2` from its 400** on the same box (user, 2026-11-25: "can later try both head
+  z2 too min 800 steps"): to 800 at least, then the same stop, on main's HEAD. Its pair of 400 and
+  its five caches `both_heads_z` lacks download meanwhile (packed once `both_heads_z` stops). At
+  1.0 s its 200 and 400 pass the gate, so its `best.json` is set to 400 (selecting 38.63) first.
 
 ### On the 5090
 
