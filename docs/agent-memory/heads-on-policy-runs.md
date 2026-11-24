@@ -1,9 +1,10 @@
 # The heads student's on-policy runs
 
 Read when running or judging the heads student's on-policy runs on a box: the probes' results,
-`both_heads_z`, and `both_heads_z2` with its pre-run scores, results and the sizes a 5090 takes.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Probe results](#probe-results) ·
-[`both_heads_z2`](#both_heads_z2) · [On the 5090](#on-the-5090)
+`both_heads_z` and its continuation past 200, and `both_heads_z2` with its pre-run scores, results
+and the sizes a 5090 takes. Back to [CONTEXT.md](../../CONTEXT.md) · [Probe results](#probe-results) ·
+[`both_heads_z2`](#both_heads_z2) · [`both_heads_z` continued](#both_heads_z-continued) ·
+[On the 5090](#on-the-5090)
 
 The method, its arguments and its checks are in [on-policy-distillation](on-policy-distillation.md);
 GRPO itself in [grpo](grpo.md); the box in [tranche-box](tranche-box.md#state).
@@ -75,8 +76,11 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   --save-every 100 --keep-checkpoints 1 --teacher-weight weights/grpo_twoway_best1400.safetensors
   --lr 1e-6 --gen-frames 384000 --micro-batch 2 --park-states` (both terms, z-scored, seed 44;
   `--updates 2000` from the launcher).
-- **It stopped at 400 by the user's rule** (two validations without a new best) and promoted
-  nothing: it was healthy but ended too late, past the 0.5 s gate on FLEURS dev by 0.19 s VI→EN
+- **It was stopped at 400 and promoted nothing.** The agent took two validations without a
+  promotion for the user's rule ("stop distil when 2 rounds of validation not improving",
+  2026-11-15), but the selecting mean rose at both: they were blocked by the latency gate alone,
+  so by the rule's words it would have gone on (the reading since, [below](#both_heads_z-continued)).
+  It was healthy but ended too late, past the 0.5 s gate on FLEURS dev by 0.19 s VI→EN
   and 0.16 s EN→VI at 200 and, at 400, by 0.04 s on VI→EN alone. Validation, 0 → 200 → 400:
   selecting mean 37.06 → 38.49 → 38.63; mean of the original 8 sets 37.83 → 38.16 → 37.98
   (`both_heads_z`: 37.33 → 38.92 and 37.88 → 39.44); end offset VI→EN 1.73 → 2.42 → 2.27 s and
@@ -127,10 +131,9 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
 - A set's chrF moves more than its row-resampling interval says: at 200, `en-vi-val` cv27 was
   −4.30 in validation (seed 44, rows' 95% interval −6.3 to −2.3) and −0.10 in the test call (seed 43,
   other batch mates, interval −2.1 to +2.2). Judge on several sets, not one.
-- Why not continue `both_heads_z`: main can't resume it (`pair_cache_dir` is a resume key,
-  [sft-training](sft-training.md#target-timing)), and from its 200 pair the run would mix two
-  datasets with AdamW restarted. `both_heads_z` stays on the Hub with its commit `9d9573e` as the
-  branch `run/both_heads_z`.
+- `both_heads_z2` was a new run rather than `both_heads_z` resumed: main can't resume it
+  (`pair_cache_dir` is a resume key, [sft-training](sft-training.md#target-timing)), and from its
+  200 pair the run would mix two datasets with AdamW restarted.
 - The teacher never heard noisy English, so the box scored the teacher and the start on
   `en-vi-val-en` and its noisy copy before the run (user, 2026-11-23: "should we train the teacher
   a bit on noisy data?"; training the 3B on it is the next two-way run's, [envi-data](envi-data.md#decision)).
@@ -147,6 +150,36 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   | `en-vi-val-en-noisy/cv27` | 26.60 → 23.58 | 11.85 → 8.70 | 1.42 → 1.62 | 1.06 → 1.11 |
   | `en-vi-val-en/libriheavy` | 45.73 → 40.75 | 23.99 → 19.74 | 1.92 → 1.92 | 1.08 → 1.06 |
   | `en-vi-val-en-noisy/libriheavy` | 37.94 → 32.68 | 19.52 → 15.11 | 2.31 → 2.55 | 1.02 → 1.00 |
+
+### `both_heads_z` continued
+
+- **Why**: `both_heads_z` was a 200-update probe (`probes.sh`). Its long run, queued 2026-11-22,
+  was dropped for `both_heads_z2`, yet its update 200 beats `both_heads_z2` on the tests, and the 3B's
+  GRPO kept rising to 1,400 ([grpo](grpo.md#running)). So it goes on to 2,000 from its pair at
+  200, on its own data (user, 2026-11-24: "i rent a new box, let's go").
+- **The code**: `run/both_heads_z` at `c058985`, `9d9573e` with main's `h100.sh` and #177's
+  `grpo.py` and `grpo_profile.py` (`--park-states`; evaluation parks AdamW's states and the
+  teacher; `ALLOC_CONF`). They move memory, not results (12 parked AdamW steps bitwise equal,
+  [On the 5090](#on-the-5090)); its `grpo.py` differs from main only by #174's
+  `--pair-cache-dir` and two evaluation sets.
+- **The resume** ([sft-recovery](sft-recovery.md)): 200's pair, best and logs from the Hub;
+  `run_config.json` and `train_args.json` edited by hand (`updates` and `total_steps` 2,000,
+  `--gen-frames 384000 --micro-batch 2 --park-states`, neither size a resume key); `run_id.json`'s
+  commit set to `c058985` and uploaded as `run.json`. The originals are in `/workspace/logs/z200/`
+  on the box. 200's files are also copied to `both_heads_z_at200/` on the Hub, as the run prunes
+  its own prefix.
+- **Running** on the RTX 5090 box 62366622 ([tranche-box](tranche-box.md#state)) from 2026-11-24
+  15:44 UTC, through `grpo_launch.sh both_heads_z` with `HF_HUB_DISABLE_XET=1`: the same 9,088,899
+  rows and 1,721,906 streams. Update 201's `kl_text` 0.089, `kl_audio` 1.43 and grad norm 1.5e5
+  continue 200's (0.087, 1.34, 1.5e5). An update takes ~9.8 s, its window's generation ~12.9 s and
+  π_old's pass ~2.3 s: ~85 min from one validation to the next. MemAvailable was ≥ 47.7 GiB
+  through update 220 (an 83.8 GiB container).
+  The box's profile: generation at 320 rows 44.3 ms a step (peak 23.4 GiB), the update at
+  micro-batch 2 ~8.0 s (22.4 GiB).
+- **The stop**: two validations in a row with no new best on the selecting mean or the mean of
+  8. A validation the latency gate blocked while either mean rose is not "not improving"
+  (the agent's reading, put to the user 2026-11-24, not yet answered). Then the test sets as
+  `both_heads_z2`'s.
 
 ### On the 5090
 
