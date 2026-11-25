@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-24
+Last verified: 2026-11-25
 
 ## Purpose
 
@@ -105,7 +105,9 @@ inference/ (Apple Silicon, MLX)
 - Profile every job before its full run (a cache build, an encode, a training or GRPO run, an
   evaluation pass) and optimize it until its costliest resource stays busy; only then start the
   real run. Time each stage on a few
-  shards, sample the GPU (`nvidia-smi` every 0.5 s) and know the CPU budget (a container's quota
+  shards, profile the GPU kernels of a few steps (`torch.profiler`: stage times hid generation's
+  whole-cache attention through 1,600 GRPO updates; user, 2026-11-25), sample the GPU (`nvidia-smi`
+  every 0.5 s) and know the CPU budget (a container's quota
   in `/sys/fs/cgroup/cpu.max`, not `nproc`; `h100.sh cpus` makes new shells follow it); compare variants on the same rows. The user's rule
   since the first noisy encode ran ~3 h with its GPU idle half the time →
   [noisy-source](docs/agent-memory/noisy-source.md#speed),

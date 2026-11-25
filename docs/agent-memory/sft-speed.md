@@ -43,7 +43,8 @@ Seeded rollouts are token for token the same, with CUDA graphs on: the student a
 at 32, and all 7,375 outputs of the 13 test sets (`eval.py`, batch 64; its generation 259.5 →
 170.7 s). Its contract: only `LMGen` steps it, one frame a call, rows in sync and the context fixed
 while streaming (`support_out_of_sync` and steps past the cache's ring keep moshi's). A graph is
-captured again at each width.
+captured again at each width. In a GRPO run (`both_heads_z2` 921–1,200) a window's generation took
+~107 s instead of ~257: 16.9 s an update instead of 24.3.
 
 Checked against moshi as shipped (2026-11-03, H100 NVL): fp32 loss equal, logits within 1.7e-6
 and every gradient within 3.1e-6; in bf16 both are as far from an fp32 reference (gradients:
