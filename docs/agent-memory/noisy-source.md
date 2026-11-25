@@ -90,12 +90,11 @@ room does not give.
     once noise came. The plain-SFT student (update 48,000) wrote on noise alone VI→EN 10 of 10.
   - GRPO's BLEU already teaches quiet after a source (the teacher's FLEURS dev rows ending more
     than 4 s after it: 136 → 27 VI→EN, 165 → 33 EN→VI), but in digital silence only.
-- **Drawn** by `augment.room_tracks`: a background noise looped from a drawn offset, peaking at
-  U[−65, −35] dBFS, and events starting every 15 s on average, each an excerpt of at most 3 s of
-  a foreground file (they run up to 8 min) peaking at U[−45, −25], its cut edges ramped over
-  10 ms; then the level stage from the track's start. After it, frame peaks sit at a median
-  −38.4 dBFS (p90 −32.6, 8% of frames over −30, events up to −20). Codebook 0 takes one of the
-  steady silence's values on ~71% of room frames (35–97% per room; 24 rooms, seed 44).
+- **Drawn** by `augment.room_tracks`: a background looped from a drawn offset, peaking at U[−65, −35]
+  dBFS, and events every 15 s on average, each at most 3 s of a foreground file (up to 8 min long)
+  peaking at U[−45, −25], cut edges ramped over 10 ms; then the level stage from the track's start:
+  frame peaks at a median −24.8 dBFS (p90 −18.9, events up to −6; 24 rooms of 30 s, seed 44), −38.7
+  at its first settings, when codebook 0 took a steady silence value on ~71% of room frames.
 - **Encoded** by `streams.run_rooms`: GRPO 256 rooms, SFT 2,048 (a pass draws ~890,000 room streams),
   each as long as the silence track (GRPO's `--frames`, SFT's longest stream), from a fresh state on
   the run's GPU at its start, SFT's before its resume check (TF32 on, so residual codes may differ by
@@ -107,7 +106,8 @@ room does not give.
   level for a few seconds: training's gaps are louder than live ones, erring toward quiet.
 - **Held out:** every fifth file of each kind (26 backgrounds, 162 events; `quiet_noises(bank,
   held_out=True)`), from the rooms only: the noisy caches (`Bank`) mix every file under speech.
-  Re-run the check on held-out rooms after a model's GRPO, and after an SFT with rooms.
+  Re-run the check on held-out rooms after a model's GRPO, and after an SFT with rooms (cold in
+  `eval.py` the 3B models write on most, [the level-stage test](exposure-bias-runs.md#the-level-stage-test)).
 
 ## Noisy cache
 

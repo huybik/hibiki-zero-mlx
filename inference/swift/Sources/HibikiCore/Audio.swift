@@ -58,9 +58,9 @@ public enum Audio {
     /// leave it as it is). Frames whose envelope is above `targetPeak`
     /// pass unchanged and nothing clips. One per stream, fed its samples in order in whole frames.
     public struct Leveller {
-        static let targetPeak = pow(10.0, -20.0 / 20)
-        static let maxGain = pow(10.0, 30.0 / 20)
-        static let noiseCeiling = pow(10.0, -40.0 / 20)
+        static let targetPeak = pow(10.0, -6.0 / 20)
+        static let maxGain = pow(10.0, 44.0 / 20)
+        static let noiseCeiling = pow(10.0, -26.0 / 20)
         static let release = pow(10.0, -6.0 / 20 / 12.5)  // per frame
         static let rise = pow(10.0, 1.5 / 20 / 12.5)  // per frame
         static let silence = 1.0 / 32_768  // one 16-bit step, 2^-15

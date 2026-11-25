@@ -53,7 +53,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   at 24 kHz (80 ms, 12.5 Hz).
 - The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
   Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
-  frames (timed in "level + mimi encode"). It raises quiet speech toward −20 dBFS; how and why
+  frames (timed in "level + mimi encode"). It raises quiet speech toward −6 dBFS; how and why
   in [sft-evaluation](sft-evaluation.md#input-level). The evaluation (`training/finetune/
   common.py`) imports it as `inference.hibiki_mlx.level`, so the module needs only NumPy.
 - `hibiki_mlx` and `moshi_mlx` are installed editable from the main checkout, so in a worktree

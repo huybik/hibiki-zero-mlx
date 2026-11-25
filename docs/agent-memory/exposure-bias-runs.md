@@ -4,7 +4,7 @@ Read when judging or repeating the 3B's scheduled-sampling SFT arms or anchored 
 scores drop on quiet clips. Back to [CONTEXT.md](../../CONTEXT.md) · [The box](#the-box) ·
 [Scheduled sampling](#scheduled-sampling) · [Their GRPO](#their-grpo) ·
 [The data gate](#the-data-gate) · [The quiet clips](#the-quiet-clips) ·
-[Anchored GRPO](#anchored-grpo) · [Noise](#noise)
+[The level-stage test](#the-level-stage-test) · [Anchored GRPO](#anchored-grpo) · [Noise](#noise)
 
 The plan, the decision rules and the method are in [exposure-bias](exposure-bias.md#experiments);
 what they mean for the next round in [teacher-next](teacher-next.md#order).
@@ -176,12 +176,55 @@ intervals from 1,000 resamples of the rows. "Stage" = the level stage on, as eve
 - Why an SFT at 1e-6 over 10,000 updates of this data loses its level robustness is **not
   established**. The training sources are loud and never see the stage
   ([sft-evaluation](sft-evaluation.md#input-level)); noisy copies use `augment.GAIN_DB`, −15 to 0 dB.
-- **Two candidate fixes, neither run:** deeper level augmentation in the next SFT's data, so the
-  model stays level-robust; or the stage's target raised from −20 toward −6 dBFS, which costs
-  `twoway_final` nothing on these rows (+0.2 [−1.7, +2.0]) but lifts a quiet room's noise with it, so
-  it needs every set, the noise-only checks and the runtimes measured first.
+- **Two candidate fixes:** deeper level augmentation in the next SFT's data, so the model stays
+  level-robust (not run); or the stage's target raised from −20 toward −6 dBFS, which costs
+  `twoway_final` nothing on these rows (+0.2 [−1.7, +2.0]) but lifts a quiet room's noise with it:
+  measured on every set and noise alone, and adopted ([the level-stage test](#the-level-stage-test)).
 - Caveats: one model (0.1 after GRPO; the control's weights are gone, so it is untested), one set
   (FLEURS-vi dev), one seed, row-sampling intervals only.
+
+## The level-stage test
+
+The input level stage as it was (target −20 dBFS, noise ceiling −40, gain cap 30 dB) and with
+all three 10 and 14 dB louder (`eval_stage.py` scales `level.py`'s constants), 2026-11-25 on the
+RTX 5090 box 62513802 ([tranche-box](tranche-box.md#state)), main at `4aa3177`. `eval.py` seed
+43, batch 64, text only, one call a model and setting: the 11 test sets, FLEURS dev both ways,
+the noisy English sets and noise alone (24 rooms from the bank's held-out files by
+`augment.room_tracks`' recipe, seed 44, and the 5 synthetic noises of
+[sft-evaluation](sft-evaluation.md#input-level), 30 s each, fed as either direction's source with
+empty references). 15 min a 3B pass, 5 min the student's. Paired bootstrap over rows, seed 43,
+1,000 draws. Records: `/Volumes/data/hibiki-zero-evals/box-62513802/level/` (`records.tgz`:
+predictions, metrics, logs, scripts, the noise clips; `tables.txt`: every set and pair).
+
+| Model | Mean of 11: as it was / +10 / +14 dB | +14 − as it was | Quiet FLEURS-vi dev | Noise rows with text (of 58), words |
+|---|---|---|---|---|
+| update 1,400 (shipped teacher) | 45.45 / 45.54 / 45.34 | −0.11 [−0.49, +0.24] | 42.46 / 42.85 / 43.02 | 44 / 42 / 41; 599 / 709 / 606 |
+| `twoway_final` | 41.34 / 41.42 / 41.65 | +0.31 [−0.12, +0.73] | 39.12 / 40.87 / 41.42 | 42 / 32 / 31; 603 / 353 / 376 |
+| 0.1 arm, GRPO 200 (`exp1_grpo_ss01`) | 42.71 / 42.88 / 43.12 | +0.41 [+0.04, +0.79] | 33.02 / 37.65 / 39.43 | 31 / 28 / 27; 370 / 409 / 302 |
+| phone student, 6 bits ([update 4,000 snapped](student-palettize.md#tests)) | 42.30 / 42.42 / 42.46 | +0.16 [−0.18, +0.51] | 40.63 / 40.59 / 40.91 | 7 / 7 / 9; 80 / 63 / 88 |
+
+Quiet FLEURS-vi dev: its 180 rows under −32.5 dBFS RMS, as [the quiet clips](#the-quiet-clips).
+Every set healthy in every pass.
+
+- **The data gate's loss is the stage's level.** The 0.1 arm against `twoway_final`, as it was →
+  +14 dB: FLEURS-vi dev −2.76 [−4.42, −1.09] → −0.94 [−2.35, +0.33], its quiet half −6.11 →
+  −1.99 [−4.03, −0.15], FLEURS-vi test −3.21 → −0.83 [−1.72, +0.02], the mean of 11 +1.37 → +1.47.
+  At +14 its quiet clips read as `twoway_final`'s did as it was (39.43 against 39.12). +10 dB gets
+  about half of it (quiet half +4.63, still −3.23 behind).
+- **The rest is a wash.** VI→EN FLEURS test rose in all four models (+0.43 to +3.65) and EN→VI
+  FLEURS, the quietest set (median RMS −59.5 dBFS), dipped 0.0–0.8. Single sets past their
+  intervals at +14: update 1,400 FLEURS-en test −0.78 [−1.53, −0.02] and dev −1.09
+  [−2.11, −0.12], `twoway_final` FLEURS-en dev −1.56 [−2.77, −0.43], the 0.1 arm
+  `en-vi-val/libriheavy` −1.46 [−2.63, −0.40], the student `giga-heldout` −1.03 [−1.71, −0.36];
+  run-to-run noise reaches ~1.3 a set ([Noise](#noise)).
+- **Noise alone:** the 3B models write fluent invented sentences on most held-out rooms at every
+  setting ("Thank you for joining our New Day Life") and on 1–4 of the 10 synthetic rows; the louder
+  stage adds none. The student, whose on-policy stage heard rooms, writes on 5–8 of 48 rooms.
+  The Mac check that found update 1,400 silent on noise alone used other rooms and a primed stream
+  ([noisy-source](noisy-source.md#rooms)); these rows start cold.
+- The student as it was reproduces its tests (mean of 11 42.30 against 42.48).
+- **Adopted** (2026-11-26): the +14 dB stage in `level.py` and Swift's `Audio.Leveller`
+  ([sft-evaluation](sft-evaluation.md#input-level)).
 
 ## Anchored GRPO
 

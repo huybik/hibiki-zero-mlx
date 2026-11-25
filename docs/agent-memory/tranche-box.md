@@ -9,8 +9,8 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 **Box 62513802** (2026-11-25, rented by the user's 5090 watcher at 11:47 UTC): an RTX 5090, Russia,
 $0.511/h, `ssh -p 17399 root@109.195.243.87`; 32 GB at 575 W, driver 595.91.07, an i5-14600K with
 a 19.2-CPU quota, 123 GiB of RAM, 350 GB of disk. It ran the heads student's 6-bit palettization
-finish ([student-palettize](student-palettize.md#the-6-bit-run)), then another session's level
-queue (PR #187).
+finish ([student-palettize](student-palettize.md#the-6-bit-run)), then the level-stage test
+([runs](exposure-bias-runs.md#the-level-stage-test)) and PR #187's check; a YODAS3 data pilot next.
 - The Hub gives ~45–58 MB/s down but takes uploads at only ~1–2 MB/s: a final pair (15.4 GB)
   takes 2–4 h, so wait for the run's sync before destroying the box.
 - To the Mac over ssh: ~1.8 MB/s a stream, ~7.4 MB/s over 8 (`split`, parallel `scp`; 12 dropped

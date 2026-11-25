@@ -225,14 +225,17 @@ Every runtime and `eval.py` raise quiet source audio before Mimi with one level 
 sample: equal on eleven signals in 1-, 2- and whole-clip frame chunks, 2026-11-12). Each 80 ms
 frame takes one gain from two trackers of the frame peaks, a signal envelope (instant rise,
 6 dB a second fall) and a noise floor (instant fall, 1.5 dB a second rise; digitally silent
-frames, under one 16-bit step, leave it as it is): quiet speech is raised toward −20 dBFS, by at
-most 30 dB, unless that would lift its noise floor past −40 dBFS. Frames whose envelope is above
-−20 dBFS pass unchanged, and nothing clips. Non-finite or multichannel input is an error (Swift:
+frames, under one 16-bit step, leave it as it is): quiet speech is raised toward −6 dBFS, by at
+most 44 dB, unless that would lift its noise floor past −26 dBFS. Frames whose envelope is above
+−6 dBFS pass unchanged, and nothing clips. Non-finite or multichannel input is an error (Swift:
 `HibikiError.badAudio`, the session left as it was). `common.read_source` levels each clip as a
 stream of its own (its `_stereo.wav` keeps the levelled source, what the model heard);
 `main.py` levels a file's first channel or a mic session, `Translator` a session (`reset` starts
-a new one). Scores from
-before the stage (2026-11-12) do not compare with later ones on any set, most of all on FLEURS.
+a new one). Scores do not compare across settings: none from before the stage (2026-11-12) with
+later ones, most of all on FLEURS, nor from before 2026-11-26, when the first settings (−20, −40
+and 30 dB, those of the measurements below) all moved 14 dB louder. Over every set, four models
+lost nothing on the mean of the 11 test sets, the next SFT's quiet FLEURS-vi clips gained 6.4
+chrF and noise alone drew no more words ([the test](exposure-bias-runs.md#the-level-stage-test)).
 
 Why (2026-11-12, the two-way run's predictions at 60,000 and 72,000; true sample peaks):
 
@@ -256,7 +259,7 @@ alone a stream's start and every pause once the envelope fell under −20 dBFS (
 −3 dBFS peak) were raised to −20 like speech (a −45 dBFS room to −20, and 22% of
 `en-vi-val-noisy`'s frames). With the floor tracker, noise-only streams at −66 and −45 dBFS come
 out with their loudest frame at −36 to −37, as do −45 dBFS noise after 2 s of digital silence and
-a −55 room after a 3 s mute that outputs zeros. The ceiling sits where the English training recordings' quietest
+a −55 room after a 3 s mute that outputs zeros. The first ceiling sat where the English training recordings' quietest
 80 ms frame stays in 90% of clips (Common Voice −40, Libriheavy −48 dBFS at p90; medians −63; the
 VieNeu TTS is digital silence; the tranche's GigaSpeech 2 runs louder, median −33, and
 `en-vi-val-noisy` −43). What it costs or leaves:

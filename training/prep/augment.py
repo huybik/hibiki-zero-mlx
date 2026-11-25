@@ -59,8 +59,8 @@ BANDS = {
 }
 TRANSITION = 0.1  # raised-cosine edge, as a fraction of the cutoff
 # A room where nobody speaks, before the level stage raises it: a background peaking from a quiet
-# room to a loud one (the user's room peaked at -54 dBFS; the stage lifts a floor under -40 dBFS
-# to -40), with an event (a door, a cough) starting every 15 s on average: an excerpt of a
+# room to a loud one (the user's room peaked at -54 dBFS; the stage lifts a floor under -26 dBFS
+# to -26), with an event (a door, a cough) starting every 15 s on average: an excerpt of a
 # foreground file (they run up to 8 min, median 11 s) of at most QUIET_EVENT_MAX_S.
 QUIET_PEAK_DB = (-65.0, -35.0)
 QUIET_EVENT_PEAK_DB = (-45.0, -25.0)
