@@ -131,12 +131,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   output, the audio of the first `max_delay` steps after it included; the stream keeps that
   direction, as training streams never switch. The gate never primes; priming takes ~70–90 of
   rustymimi's ~2,920-frame session limit.
-  - main.py seeds before every run, so priming is the same each time: pick a primer by what it
-    does at that seed (299792458). It must settle before the cap with its translation complete:
-    of 8 English and 4 Vietnamese FLEURS sentences screened (2026-11-14), the ones that hit the cap
-    ran their unfinished translation into every clip ("…care of the fish."), and the first English
-    primer ("He built a WiFi door bell, he said.") began a quote every English clip continued. The
-    chosen two settle after 35 and 32 steps of silence.
+  - main.py seeds before every run, so priming is the same each time: pick a primer by what it does at
+    that seed (299792458). It must settle before the cap with its translation complete: of 8 English
+    and 4 Vietnamese FLEURS sentences screened (2026-11-14), the ones that hit the cap ran their
+    unfinished translation into every clip ("…care of the fish."); the first English primer ("He
+    built a WiFi door bell, he said.") began a quote every English clip continued. The chosen two
+    settle after 35 and 32 silent steps, heard as recorded (levelled, the English one hit the cap).
   - Measured at that seed (2026-11-14, OneVoice, 6-bit two-way), Auto → primed: the user's own
     Vietnamese (laptop mic) English; the 18 English rows that came out English, 2 → 17 in
     Vietnamese, chrF 10.6 → 30.1; 25 other English rows 32.9 → 36.0; 25 Vietnamese rows 41.9 →

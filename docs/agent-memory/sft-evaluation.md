@@ -222,7 +222,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 
 Every runtime and `eval.py` raise quiet source audio before Mimi with one level stage,
 `inference/hibiki_mlx/level.py` (`Leveller`; Swift's `Audio.Leveller` mirrors it sample for
-sample: equal on eleven signals in 1-, 2- and whole-clip frame chunks, 2026-11-12). Each 80 ms
+sample: equal on 14 signals in 1-, 2- and whole-clip frame chunks, 2026-11-26). Each 80 ms
 frame takes one gain from two trackers of the frame peaks, a signal envelope (instant rise,
 6 dB a second fall) and a noise floor (instant fall, 1.5 dB a second rise; digitally silent
 frames, under one 16-bit step, leave it as it is): quiet speech is raised toward −6 dBFS, by at
