@@ -117,8 +117,9 @@ TOP_K = 250
 EPSILON = 0.2  # the ratio clip
 TEXT_WEIGHT = 100.0  # c_0: the text stream against 1 for each audio codebook
 ADVANTAGES = ("zscore", "centered")  # rewards.normalize with and without the std
-# Half the streams hold a room where nobody speaks (streams.run_rooms): the other half keep digital
-# silence, what a voice gate passes between sentences.
+# Rooms where nobody speaks (streams.run_rooms), drawn once (a window's 640 streams draw from them).
+# Half the streams hold one: the other half keep digital silence, what a voice gate passes.
+ROOMS = 256
 ROOM_SHARE = 0.5
 # The allocators of a run and its profile. Expandable segments keep freed GPU memory reusable
 # between generation batches and updates. Pinned host blocks over 1 MB keep their size, where torch
@@ -319,7 +320,7 @@ def stream_dataset(
     silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
     return streams.StreamDataset(
         rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks,
-        streams.run_rooms(args, mimi, args.frames, layout.dep_q), args.room_share,
+        streams.run_rooms(args, mimi, silence, ROOMS), args.room_share,
     )
 
 

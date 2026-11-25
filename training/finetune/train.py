@@ -89,6 +89,10 @@ from training.paths import (
     resolve_repo_path,
 )
 
+# Rooms where nobody speaks (--room-share), drawn and encoded once a run. More than GRPO's 256: a
+# full pass draws ~890,000 room streams, so each room's codes (its lead's above all) recur ~430
+# times, not ~3,500; the encode takes minutes at the run's start.
+ROOMS = 2048
 # A resumed run must match these run_config.json entries.
 RESUME_KEYS = (
     "cache_dir",
@@ -282,6 +286,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--teacher-config needs --teacher-weight")
     if not 0 <= args.sampled_text < 1:
         raise ValueError("--sampled-text must be in [0, 1)")
+    if not 0 <= args.room_share <= 1:
+        raise ValueError("--room-share must be in [0, 1]")
     if args.sampled_text and args.teacher_weight is not None:
         raise ValueError("--sampled-text trains on the dataset's targets; a student learns from "
                          "its own samples on-policy, with grpo.py --teacher-weight")
@@ -360,6 +366,8 @@ def main() -> None:
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
     args.tokenizer = common.run_tokenizer(args.tokenizer, args.model_weight)
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
+    if args.room_share > 0:
+        require_dir(args.bank_dir / "RIRS_NOISES", "noise bank (augment.fetch_bank)")
 
     out_dir = resolve_repo_path(args.out_dir)
     resuming, best_state = open_run(out_dir)
@@ -387,7 +395,7 @@ def main() -> None:
         student_rows = torch.tensor(streams.model_rows(layout, codebooks), device=device)
     dataset = streams.StreamDataset(
         rows, layout, silence, frames, args.seed, layout.dep_q if teacher_info else codebooks,
-        streams.run_rooms(args, mimi, frames[1], layout.dep_q), args.room_share,
+        streams.run_rooms(args, mimi, silence, ROOMS), args.room_share,
     )
     batches = dataset.batches(args.batch_frames, args.seed)
     exposure = dataset.exposure()

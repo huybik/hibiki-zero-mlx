@@ -109,7 +109,8 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   shards alone, timed by their `vi-en` copy (an extra shard has no pair and raises), while the SFT's
   `en-vi/en-vi-grounded-v2-noisy/train` holds all 1,832: keep GRPO's folders apart on the box, or point its `--pair-cache-dir` at the SFT's full `vi-en` noisy
   folder; settle it at launch ([envi-data](envi-data.md#the-runs-on-it)).
-- When the round starts, `restart.sh two-way` is repointed at these folders, this start and the
+- When the round starts, `restart.sh two-way` is repointed at these folders, `--room-share 0.5`
+  (fetching the bank first), this start and the
   schedule. Its current target (`twoway_sft_4608` on the old data) goes.
 
 ## Judging
@@ -129,6 +130,7 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   - the user's Vietnamese clips (`data/eval/user/test.jsonl`; `user5/` holds each five times),
     which update 1,400 took for English;
   - `en-vi-val-en-noisy`, which the teacher has never been scored on;
+  - after the SFT too, the held-out room check ([noisy-source](noisy-source.md#rooms));
   - LAAL on FLEURS test (`eval.py --laal`; update 1,400: 2.18 s VI→EN, 2.52 s EN→VI).
 
 ## Time, disk and box
