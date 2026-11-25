@@ -53,7 +53,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   at 24 kHz (80 ms, 12.5 Hz).
 - The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
   Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
-  frames (timed in "level + mimi encode"). It raises quiet speech toward −20 dBFS; how and why
+  frames (timed in "level + mimi encode"). It raises quiet speech toward −6 dBFS; how and why
   in [sft-evaluation](sft-evaluation.md#input-level). The evaluation (`training/finetune/
   common.py`) imports it as `inference.hibiki_mlx.level`, so the module needs only NumPy.
 - `hibiki_mlx` and `moshi_mlx` are installed editable from the main checkout, so in a worktree
@@ -107,22 +107,21 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   (`decode_text_batch`; 2026-11-14, scratch check: the repo's ~6,500 lines of docs and
   Vietnamese sentences, on both tokenizers, PADs between pieces); an invalid run of bytes is one
   U+FFFD where SentencePiece writes one per byte. Without byte pieces its text equals the old
-  piece-by-piece output. `<s>` is printed as before. Mic mode prints the flushed tail before
-  `[stopping]`.
-- The voice gate (`hibiki_mlx/voice.py`, `VoiceGate`; `translate(voice_gate=True)` from `run`,
-  and `run_mic`'s encoder) passes the levelled source only near speech and digital silence
-  elsewhere: Silero VAD v6 (MIT, ONNX, 0.1 ms per 32 ms window, run at 16 kHz through a streaming
-  24→16 kHz resampler, since `sphn.resample` returns a different length per frame) marks an
-  80 ms frame as speech when a window reaches 0.5; a frame passes with speech in it, in the 10
-  frames before (pauses) or the 2 after (word starts), so the model hears the source 160 ms
-  late. The gate (`tools/gate.py`) never gates. Measured 2026-11-14 at main.py's seed: OneVoice
-  25 Vietnamese rows chrF 41.9 → 47.0, 25 English 32.9 → 34.2, no empty rows; the user's first
-  recording (a short sound, then the room) went from "Nom sạo, Nom, Nom, Nom." to the sound's
-  words alone. That room's noise alone (−54 dBFS) gave no words either way: the gate is for
-  noise the level stage raises into something the model reads as speech. Speech near the noise
-  floor is cut (second review, OneVoice clips mixed into that room): peaks at −30 dBFS lost up to
-  6% of their frames, −34 up to 21%, and at −38 (~0 dB SNR) 2 of 24 clips were dropped whole;
-  the user's voice (peaks −21 to −33) passed 185 of 188 frames.
+  piece-by-piece output. `<s>` is printed as before. Mic mode prints the flushed tail before `[stopping]`.
+- The voice gate (`hibiki_mlx/voice.py`, `VoiceGate`; `translate(voice_gate=True)` from `run`, and
+  `run_mic`'s encoder) passes the levelled source only near speech and digital silence elsewhere:
+  Silero VAD v6 (MIT, ONNX, 0.1 ms per 32 ms window, run at 16 kHz through a streaming 24→16 kHz
+  resampler, since `sphn.resample` returns a different length per frame) marks an 80 ms frame as
+  speech when a window reaches 0.5; a frame passes with speech in it, in the 10 frames before
+  (pauses) or the 2 after (word starts), so the model hears the source 160 ms late. The gate
+  (`tools/gate.py`) never gates. Measured 2026-11-14 (the first level stage) at main.py's seed:
+  OneVoice 25 Vietnamese rows chrF 41.9 → 47.0, 25 English 32.9 → 34.2, no empty rows; the user's
+  first recording (a short sound, then the room) went from "Nom sạo, Nom, Nom, Nom." to the sound's
+  words alone. That room's noise alone (−54 dBFS) gave no words either way: the gate is for noise
+  the level stage raises into something the model reads as speech. Speech near the noise floor is
+  cut (second review, OneVoice clips mixed into that room): peaks at −30 dBFS lost up to 6% of their
+  frames, −34 up to 21%, and at −38 (~0 dB SNR) 2 of 24 clips were dropped whole; the user's voice
+  (peaks −21 to −33) passed 185 of 188 frames.
 - `--speaking vi|en` (`translate(speaking=)`, `run_mic`) primes the direction (a trained direction
   input was tried and does not control it: [two-way](two-way.md#next)): `prime` steps a short sentence in that language
   (`PRIMERS`: `inference/assets/primer_{vi,en}.wav`, FLEURS dev, CC BY 4.0: "Nửa giờ để đi dạo đến
@@ -132,12 +131,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   output, the audio of the first `max_delay` steps after it included; the stream keeps that
   direction, as training streams never switch. The gate never primes; priming takes ~70–90 of
   rustymimi's ~2,920-frame session limit.
-  - main.py seeds before every run, so priming is the same each time: pick a primer by what it
-    does at that seed (299792458). It must settle before the cap with its translation complete:
-    of 8 English and 4 Vietnamese FLEURS sentences screened (2026-11-14), the ones that hit the cap
-    ran their unfinished translation into every clip ("…care of the fish."), and the first English
-    primer ("He built a WiFi door bell, he said.") began a quote every English clip continued. The
-    chosen two settle after 35 and 32 steps of silence.
+  - main.py seeds before every run, so priming is the same each time: pick a primer by what it does at
+    that seed (299792458). It must settle before the cap with its translation complete: of 8 English
+    and 4 Vietnamese FLEURS sentences screened (2026-11-14), the ones that hit the cap ran their
+    unfinished translation into every clip ("…care of the fish."); the first English primer ("He
+    built a WiFi door bell, he said.") began a quote every English clip continued. The chosen two
+    settle after 35 and 32 silent steps, heard as recorded (levelled, the English one hit the cap).
   - Measured at that seed (2026-11-14, OneVoice, 6-bit two-way), Auto → primed: the user's own
     Vietnamese (laptop mic) English; the 18 English rows that came out English, 2 → 17 in
     Vietnamese, chrF 10.6 → 30.1; 25 other English rows 32.9 → 36.0; 25 Vietnamese rows 41.9 →
@@ -159,12 +158,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   callback and finds the delay itself, up to ~450 ms only: the MacBook Pro's echo is 132 ms at
   480-sample blocks, 282 at 1920, so a Bluetooth or AirPlay speaker may be out of reach. A callback
   ≥12 ms late shifts it for good (up to ~125 ms; AEC3 re-finds it in 1–3 s). Measured 2026-11-14
-  (6-bit, `--speaking vi`; 1920 blocks, volume 31 unless said): nobody speaking over 34 s of the
-  room playing translations, 49 words → the 3 pure silence gives; at 480 and volume 100, gate-open
-  frames 91 → 29 of 204. Live (a clip from the speakers as the speaker; 75, and 100 at 480): 5 min
-  of self-translation → none 20 s after the clip, 9 runs. 25 OneVoice VI rows, chrF, 2 seeds: clean
-  40.4/39.3, speakers silent 36.4/38.3, headphones 32.9/37.1, over the echo 34.1, null (9 ms delay)
-  36.9. Over the translation, a voice as loud as its echo loses >3 dB in 70% of 0.5 s chunks.
+  (the first level stage; 6-bit, `--speaking vi`; 1920 blocks, volume 31 unless said): nobody
+  speaking over 34 s of the room playing translations, 49 words → the 3 pure silence gives; at 480
+  and volume 100, gate-open frames 91 → 29 of 204. Live (a clip from the speakers as the speaker;
+  75, and 100 at 480): 5 min of self-translation → none 20 s after the clip, 9 runs. 25 OneVoice VI
+  rows, chrF, 2 seeds: clean 40.4/39.3, speakers silent 36.4/38.3, headphones 32.9/37.1, over the
+  echo 34.1, null (9 ms delay) 36.9. Over the translation, a voice as loud as its echo loses >3 dB
+  in 70% of 0.5 s chunks.
 - rustymimi stops at 8,192 positions (`narrow invalid args start + len > dim_len: [8192, 32]`):
   frame 2,920 (3.9 min) of a 6-minute file, 4,096 (5.46 min) of noise through one tokenizer, and
   `reset()` keeps the count, so reuse across clips fails too. Swift has no such limit ([swift-runtime](swift-runtime.md)).

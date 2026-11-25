@@ -129,10 +129,11 @@ rows. The teacher's chrF, BLEU, End Offset and LAAL follow.
 
 The student is 3.7–9.4 chrF below its teacher, with about the same lag.
 
-- **Room noise** (2026-11-15, the Mac, MLX bf16, `measure_held.py`). Each run is a primer, then
-  30 s of quiet with no speech, using held-out noise files (`augment.quiet_noises(held_out=True)`).
-  The quiet takes 5 forms: a room at −55 and at −40 dBFS, white noise at −45, pink at −40, and
-  events. Each form ran twice in each direction, 20 runs in all.
+- **Room noise** (2026-11-15, the Mac, MLX bf16, `measure_held.py`, the first level stage). Each run
+  is a primer, then 30 s of quiet with no speech, using held-out noise files
+  (`augment.quiet_noises(held_out=True)`). The quiet takes 5 forms: a room at −55 and at −40 dBFS,
+  white noise at −45, pink at −40, and events. Each form ran twice in each direction, 20 runs in
+  all.
   - Update 2,000 wrote no words in any of the 20 runs.
   - The distilled student before GRPO (64,000) wrote words in 7 of 20: VI→EN 2/10 (22 tokens,
     pink), EN→VI 5/10 (71 tokens: room −55, white, pink).

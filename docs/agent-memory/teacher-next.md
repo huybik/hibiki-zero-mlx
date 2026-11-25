@@ -46,9 +46,11 @@ Planned 2026-11-23; its gates are run ([Order](#order)), the full SFT is not sta
 - **Gates run 2026-11-23** ([tables](exposure-bias-runs.md)): scheduled sampling 0.1 ties the control
   (not adopted); the anchored probe favours β 0.02; **the data gate failed as written** on VI→EN FLEURS
   dev (−3.85 chrF at seed 44, −3.66 at 61), on its quiet clips, where the new model depends on the
-  input's level and `twoway_final` doesn't. Why the SFT lost that is not established. The full SFT
-  waits for the user: try one of [two candidate fixes](exposure-bias-runs.md#the-quiet-clips)
-  (deeper gain augmentation in its data, or a louder stage target) before spending ~36–38 h.
+  input's level and `twoway_final` doesn't. Why the SFT lost that is not established, but the
+  input level stage 14 dB louder, adopted 2026-11-26, takes most of it back: there the 0.1 arm
+  after GRPO trails `twoway_final` on FLEURS-vi dev within noise
+  ([the level-stage test](exposure-bias-runs.md#the-level-stage-test)). The full SFT (~36–38 h)
+  waits for the user's go.
 - **Experiment 1's control arm is the data gate**: plain SFT on this mix from the shipped run's
   start, then GRPO at its settings, compared with the shipped run's as each run's change from its
   own update 0 (planned 400 updates, run 200, against the shipped 38.00). It reads ~670 h, so it
@@ -122,16 +124,17 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   - every set healthy.
 
   Branch A against B: the 11 test sets (paired bootstrap, seed 43) and OneVoice.
-- **Ship** only if the round's GRPO best beats update 1,400 on the 11 test sets (mean 45.48,
-  seed 43, paired bootstrap) and writes English for fewer OneVoice EN→VI clips.
+- **Ship** only if the round's GRPO best beats update 1,400 on the 11 test sets (mean 45.34 at
+  the current stage, 45.45–45.48 at the old one; seed 43, paired bootstrap, both scored at one
+  stage) and writes English for fewer OneVoice EN→VI clips.
 - **Every evaluation adds**, recorded in full ([sft-evaluation](sft-evaluation.md#recording-results)):
   - OneVoice EN→VI clips written in English (`data/eval/onevoice-en/test.jsonl`): update 1,400
-    wrote 18 of 100 at 6 bits in MLX and 22 in PyTorch at seed 43, so compare on one runtime;
+    wrote 18 of 100 at 6 bits in MLX and 22 in PyTorch at seed 43 (old stage), so compare on one runtime;
   - the user's Vietnamese clips (`data/eval/user/test.jsonl`; `user5/` holds each five times),
     which update 1,400 took for English;
-  - `en-vi-val-en-noisy`, which the teacher has never been scored on;
+  - `en-vi-val-en-noisy` (update 1,400: cv27 24.79, Libriheavy 37.35 at seed 43, the current stage);
   - after the SFT too, the held-out room check ([noisy-source](noisy-source.md#rooms));
-  - LAAL on FLEURS test (`eval.py --laal`; update 1,400: 2.18 s VI→EN, 2.52 s EN→VI).
+  - LAAL on FLEURS test (`eval.py --laal`; update 1,400 at the old stage: 2.18 s VI→EN, 2.52 s EN→VI).
 
 ## Time, disk and box
 

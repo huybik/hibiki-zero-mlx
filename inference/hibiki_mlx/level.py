@@ -22,7 +22,8 @@ the floor has risen to the new level at 1.5 dB a second: 17 s from a −70 dBFS 
 Frames whose envelope is above TARGET_PEAK pass unchanged, and a raised frame never peaks above
 it (to float32 rounding), so nothing clips. It is causal and frame by frame, so a stream gives
 the same samples in any whole-frame chunks. The MLX runtime and the PyTorch evaluation use this
-module; the Swift runtime mirrors it (`Audio.Leveller`).
+module; the Swift runtime mirrors it (`Audio.Leveller`). Why these settings, and the first ones
+(14 dB quieter): docs/agent-memory/exposure-bias-runs.md#the-level-stage-test.
 """
 
 from __future__ import annotations
@@ -33,9 +34,9 @@ import numpy as np
 
 FRAME = 1920  # samples at 24 kHz: one Mimi frame, 80 ms
 FRAME_RATE = 12.5
-TARGET_PEAK = 10 ** (-20 / 20)
-MAX_GAIN = 10 ** (30 / 20)  # speech peaking at −50 dBFS reaches the target
-NOISE_CEILING = 10 ** (-40 / 20)  # where 90% of the English training recordings' floors stay
+TARGET_PEAK = 10 ** (-6 / 20)
+MAX_GAIN = 10 ** (44 / 20)  # speech peaking at −50 dBFS reaches the target
+NOISE_CEILING = 10 ** (-26 / 20)  # 14 dB over where 90% of English training recordings' floors stay
 SILENCE = 2.0**-15  # one 16-bit step, −90.3 dBFS: a frame under it holds no room to measure
 RELEASE = 10 ** (-6 / 20 / FRAME_RATE)  # per frame: the envelope falls 6 dB a second
 RISE = 10 ** (1.5 / 20 / FRAME_RATE)  # per frame: the floor rises 1.5 dB a second

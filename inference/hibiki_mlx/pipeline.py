@@ -188,10 +188,11 @@ def load(weights_dir: Path) -> Model:
 def prime(model: Model, gen: models.LmGen, mimi_enc: rustymimi.Tokenizer, ct, language: str) -> None:
     """Steps the primer of `language` (a PRIMERS key) through `gen` and `mimi_enc` at the start of
     a stream, then silence until the model has written no word for PRIMER_SETTLE_S (at most
-    PRIMER_MAX_GAP_S). Their output is dropped."""
+    PRIMER_MAX_GAP_S). Their output is dropped. The primers are heard as recorded, without the
+    level stage: they peak at its target already, and it would raise all that follows their
+    loudest frame."""
     pcm, _ = sphn.read(str(PRIMERS[language]), sample_rate=24000)
-    pcm = Leveller()(pcm[0])
-    pcm = np.pad(pcm, (0, -pcm.shape[-1] % FRAME))
+    pcm = np.pad(pcm[0], (0, -pcm.shape[-1] % FRAME))
     pad_token = model.tokenizer.pad_id()
 
     def step(frame: np.ndarray) -> int:
