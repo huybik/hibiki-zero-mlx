@@ -149,15 +149,16 @@ The CUDA profile and dry run are under [Running](#running).
   ~2.6M objects of garbage a window leaves) and updates spiked to 8–12 s four times where main's
   held 6.5–7.1. At best ~1%, inside one run's noise, so it was closed (2026-11-15) and the
   collection stays.
-- **Profile first, on the pod**, with `nvidia-smi` sampled beside it:
-  `python -m training.finetune.grpo_profile --cache-dir … --pair-cache-dir … --model-weight START --out-dir …`.
-  It times generation at each `--gen-batch` (after compilation; each batch's graph capture stays
-  in), the rewards serially and in workers, and the old-logprob pass and update at each
-  `--micro-batch`, holding the states as a run does. An out-of-memory size is recorded and skipped;
-  `profile.json` is rewritten after each stage.
-- **Profiled on the box** (2026-11-13, the 700 W H100 SXM, from the two-way run's final model,
-  the caches `grpo_launch.sh` passes, T 1,200). Free-threaded Python 3.14 generates faster here
-  than CPython 3.12: 29.0 against 30.9 ms a step at 192 rows.
+- **Profile first, on the pod**, with `nvidia-smi` sampled beside it: `python -m
+  training.finetune.grpo_profile --cache-dir … --pair-cache-dir … --model-weight START --out-dir …`
+  times generation at each `--gen-batch` (after compilation, graph captures in), the rewards
+  serially and in workers, and the old-logprob pass and update at each `--micro-batch`, holding the
+  states as a run does; an out-of-memory size is recorded and skipped, `profile.json` rewritten
+  after each stage. Those times only choose sizes: before a long run, also profile the GPU kernels
+  of a few generation steps and micro-batches (`torch.profiler`; user, 2026-11-25): attention over
+  the whole KV cache, 37.7 of a step's 46 ms, hid that way for 1,600 updates ([sft-speed](sft-speed.md)).
+- **Profiled on the box** (2026-11-13, the 700 W H100 SXM, the two-way run's final model, the
+  caches `grpo_launch.sh` passes, T 1,200; Python 3.14t 29.0 against 3.12's 30.9 ms at 192 rows).
 
   | Stage | Measured |
   |---|---|
@@ -174,8 +175,8 @@ The CUDA profile and dry run are under [Running](#running).
   ~18.6 s an update. The profile overstates the short forwards' speed: in a run (2026-11-13, the
   end-to-end check below) an update took ~20.5 s, with ~11.0 s of generation, 2.4 s of old
   logprobs and 7.0 s of update. That compares with main's full-length rollouts at 34.4 s on the
-  same streams. So 800 updates take ~4.9 h and 2,000 ~12 h with the evaluations (~3.7 min each).
-  The rollouts' mean final BLEU was 33.5.
+  same streams. So 800 updates take ~4.9 h and 2,000 ~12 h with the evaluations (~3.7 min each);
+  the rollouts' mean final BLEU was 33.5.
 - **The cut changes almost no reward** (2026-11-13). The same full-length rollouts were scored
   over 1,200 frames and over their cut length: the final model, GRPO's first 128 streams in its
   seeded order, 4 rollouts each.

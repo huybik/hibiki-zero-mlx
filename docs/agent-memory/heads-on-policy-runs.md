@@ -85,35 +85,38 @@ start + 0.5 s): the two blocked distillation probes would pass at 3 s.
   and 0.16 s EN→VI at 200 and, at 400, by 0.04 s on VI→EN alone. Validation, 0 → 200 → 400:
   selecting mean 37.06 → 38.49 → 38.63; mean of the original 8 sets 37.83 → 38.16 → 37.98
   (`both_heads_z`: 37.33 → 38.92 and 37.88 → 39.44); end offset VI→EN 1.73 → 2.42 → 2.27 s and
-  EN→VI 1.50 → 2.16 → 1.82 s. Both 200 and 400's pairs are on the Hub; no best exists.
+  EN→VI 1.50 → 2.16 → 1.82 s. It went on from 400 to 1,200 later ([below](#both_heads_z-continued)).
 - **`both_heads_z`'s best is the better model.** Test sets (2026-11-24, the box, `eval.py` seed 43,
   batch 64, text only, LAAL; the 11 of [student-heads](student-heads.md#tests) and the two
-  `en-vi-val-en-noisy` in one call, so absolute scores differ from that table's; every set passes
-  health for all four). chrF, and paired bootstrap over rows (500 draws, 11 sets):
+  `en-vi-val-en-noisy` in one call, so absolute scores differ from that table's; 800 and 1,200 on
+  62366622 on 2026-11-25; every set passes health for all six).
+  chrF, and paired bootstrap over rows (500 draws, 11 sets):
 
-  | Set | Start (190,126) | `both_heads_z` 200 | `z2` 200 | `z2` 400 |
-  |---|---|---|---|---|
-  | fleurs-vi/test | 36.70 | 39.51 | 38.69 | 38.34 |
-  | fleurs-en/test | 34.63 | 36.78 | 37.13 | 37.52 |
-  | multimed-vi/select | 35.64 | 36.64 | 35.22 | 33.92 |
-  | multimed-vi/final | 35.74 | 36.72 | 35.17 | 34.09 |
-  | giga-heldout/test | 61.64 | 64.49 | 63.63 | 63.80 |
-  | en-vi-val/cv27 | 37.80 | 39.23 | 37.70 | 36.76 |
-  | en-vi-val/libriheavy | 41.45 | 43.74 | 43.36 | 40.99 |
-  | en-vi-val-noisy/cv27 | 38.08 | 40.66 | 39.30 | 39.82 |
-  | en-vi-val-noisy/libriheavy | 41.28 | 42.68 | 43.05 | 43.34 |
-  | en-vi-val-en/cv27 | 31.72 | 32.83 | 33.63 | 34.68 |
-  | en-vi-val-en/libriheavy | 40.59 | 43.89 | 43.12 | 43.21 |
-  | en-vi-val-en-noisy/cv27 | 22.76 | 24.93 | 26.78 | 26.42 |
-  | en-vi-val-en-noisy/libriheavy | 33.22 | 37.14 | 37.76 | 37.94 |
-  | Mean of 11 (`-noisy` in `-en` left out) | 39.57 | **41.56** | 40.91 | 40.59 |
-  | Mean of 13 | 37.79 | **39.94** | 39.58 | 39.29 |
-  | Mean LAAL of 11 (s) | 2.66 | 2.78 | 3.02 | 3.05 |
-  | Mean median end offset of 11 (s) | 2.70 | 2.62 | 2.98 | 2.98 |
+  | Set | Start (190,126) | `both_heads_z` 200 | `z2` 200 | `z2` 400 | `z2` 800 (best) | `z2` 1,200 |
+  |---|---|---|---|---|---|---|
+  | fleurs-vi/test | 36.70 | 39.51 | 38.69 | 38.34 | 38.79 | 38.65 |
+  | fleurs-en/test | 34.63 | 36.78 | 37.13 | 37.52 | 37.34 | 37.41 |
+  | multimed-vi/select | 35.64 | 36.64 | 35.22 | 33.92 | 35.19 | 34.21 |
+  | multimed-vi/final | 35.74 | 36.72 | 35.17 | 34.09 | 35.56 | 34.05 |
+  | giga-heldout/test | 61.64 | 64.49 | 63.63 | 63.80 | 64.15 | 64.54 |
+  | en-vi-val/cv27 | 37.80 | 39.23 | 37.70 | 36.76 | 37.51 | 36.35 |
+  | en-vi-val/libriheavy | 41.45 | 43.74 | 43.36 | 40.99 | 42.66 | 42.26 |
+  | en-vi-val-noisy/cv27 | 38.08 | 40.66 | 39.30 | 39.82 | 40.41 | 39.48 |
+  | en-vi-val-noisy/libriheavy | 41.28 | 42.68 | 43.05 | 43.34 | 42.98 | 43.21 |
+  | en-vi-val-en/cv27 | 31.72 | 32.83 | 33.63 | 34.68 | 34.67 | 34.01 |
+  | en-vi-val-en/libriheavy | 40.59 | 43.89 | 43.12 | 43.21 | 43.72 | 44.19 |
+  | en-vi-val-en-noisy/cv27 | 22.76 | 24.93 | 26.78 | 26.42 | 26.69 | 26.13 |
+  | en-vi-val-en-noisy/libriheavy | 33.22 | 37.14 | 37.76 | 37.94 | 38.60 | 38.71 |
+  | Mean of 11 (`-noisy` in `-en` left out) | 39.57 | **41.56** | 40.91 | 40.59 | 41.18 | 40.76 |
+  | Mean of 13 | 37.79 | **39.94** | 39.58 | 39.29 | 39.87 | 39.48 |
+  | Mean LAAL of 11 (s) | 2.66 | 2.78 | 3.02 | 3.05 | 3.04 | 3.03 |
+  | Mean median end offset of 11 (s) | 2.70 | 2.62 | 2.98 | 2.98 | 2.93 | 2.95 |
 
   Against the start, `both_heads_z` +1.99 [+1.62, +2.32], `z2` 200 +1.34 [+0.97, +1.69], 400 +1.01
-  [+0.61, +1.41]; `z2` 200 against `both_heads_z` −0.65 [−0.96, −0.27], 400 −0.97 [−1.34, −0.60]
-  (11 sets). Against `both_heads_z`, `z2` (200, 400) is ahead on
+  [+0.61, +1.41]; `z2` 200 against `both_heads_z` −0.65 [−0.96, −0.27], 400 −0.97 [−1.34, −0.60],
+  800 −0.38 [−0.78, −0.01], 1,200 −0.80 [−1.15, −0.41]; 1,200 against 800 −0.42 [−0.76, −0.05];
+  800 against `both_heads_z` 1,200 −1.35 [−1.76, −1.00] (11 sets).
+  Against `both_heads_z`, `z2` (200, 400) is ahead on
   EN→VI `en-vi-val-en` cv27 (+0.8, +1.9) and its noisy cv27 (+1.9, +1.5), and behind on MultiMed-ST
   (−1.4 to −2.7), FLEURS-vi (−0.8, −1.2), `giga-heldout` (−0.9, −0.7) and `en-vi-val` cv27 (−1.5, −2.5);
   the rest are within ±1 at 200 but `en-vi-val-noisy` cv27 (−1.4; 400 also `en-vi-val` libriheavy −2.8).
@@ -123,8 +126,9 @@ start + 0.5 s): the two blocked distillation probes would pass at 3 s.
   not 4 and 614400) and ten evaluation sets all changed.
 - **Wrong-language drift**: rows whose output is in the other language (a check for Vietnamese
   letters, so approximate). Test sets, VI→EN, start / `both_heads_z` / `z2` 200 / `z2` 400:
-  `multimed-vi/select` 96 / 103 / 205 / 305 of 1,718, `final` 132 / 140 / 245 / 308 of 1,719,
-  FLEURS-vi 32 / 22 / 46 / 53 of 857, `giga-heldout` 17 / 12 / 24 / 32 of 1,000, `en-vi-val` cv27
+  `multimed-vi/select` 96 / 103 / 205 / 305 of 1,718 (800 and 1,200: 206, 281), `final` 132 / 140 /
+  245 / 308 of 1,719 (224, 313), FLEURS-vi 32 / 22 / 46 / 53 of 857 (60, 68),
+  `giga-heldout` 17 / 12 / 24 / 32 of 1,000, `en-vi-val` cv27
   31 / 26 / 42 / 50 of 180. EN→VI falls (FLEURS-en 15 / 7 / 1 / 1 of 641; `en-vi-val-en-noisy` libriheavy
   28 / 20 / 7 / 5 of 180). On validation's `en-vi-val` cv27 it went 36 → 54 → 70 of 180 in
   `z2`, against 40 → 39 in `both_heads_z` (0 → 200). Some of those outputs repeat the source's
@@ -235,15 +239,25 @@ start + 0.5 s): the two blocked distillation probes would pass at 3 s.
   `/Volumes/data/hibiki-zero-evals/`. An update took ~25 s wall (9.8 s of it the update), and 200 to
   1,800 (1,600 updates, the 500 restart and the validations) 11.3 h at $0.671/h.
 - **Then `both_heads_z2` from its 400** on the same box (user, 2026-11-25: "can later try both head
-  z2 too min 800 steps"): to 800 at least, then the same stop, on main's HEAD. At 3 s its 200 and
-  400 pass the gate, so its `best.json` is set to 400 (selecting 38.63) first. The run moves to
-  main's commit 396fabb and main's packs: the box's z caches are format 5 (its branch), main's
-  streams are 7, so the shared caches (pho, vivoice, giga, en-vi-grounded-v2, ~72 GB) were fetched
-  and packed again before the launch (z's packs deleted; z is on the Hub). Resumed 2026-11-25 03:47
-  UTC; 600: selecting 38.78 (best), mean of 8 38.81 (best; start 37.06 / 37.83), end offsets VI→EN
-  2.48 s and EN→VI 2.02 s (start 1.73, 1.50), the drift easing on `en-vi-val/cv27` (wrong-language
-  rows 36 → 54 → 70 → 51 of ~180 at 0 / 200 / 400 / 600; that set's chrF 34.96 against its start's
-  37.29). 200 and 400's copies are in `both_heads_z2_at400/` on the Hub.
+  z2 too min 800 steps"), on main (396fabb; 0bce879 from 900) and main's packs: the box's z caches
+  were format 5 (its branch), main's streams 7, so the shared caches (pho, vivoice, giga,
+  en-vi-grounded-v2, ~72 GB) were fetched and packed again (z's packs deleted; z is on the Hub). At
+  3 s its 200 and 400 pass the gate, so `best.json` was set to 400 first. Resumed 03:47 UTC, stopped
+  at 900's save for the generation speed-up ([sft-speed](sft-speed.md#fast-path), the same training
+  code; 800 tested meanwhile), resumed 08:14, stopped at 1,200 (user: "continue up to step 1200 if
+  still worse then stop"). **Best 800**, below `both_heads_z` 200 on the tests ([above](#both_heads_z2)).
+
+  | Update | 0 | 200 | 400 | 600 | 800 | 1,000 | 1,200 |
+  |---|---|---|---|---|---|---|---|
+  | Selecting | 37.06 | 38.49 | 38.63 | 38.78 | **38.91** | 38.05 | 38.61 |
+  | Of 8 | 37.83 | 38.16 | 37.98 | **38.81** | 38.57 | 37.42 | 37.82 |
+  | End offsets (s) | 1.73 / 1.50 | 2.42 / 2.16 | 2.27 / 1.82 | 2.48 / 2.02 | 2.34 / 2.01 | 2.23 / 2.02 | 1.98 / 2.02 |
+
+  VI→EN drifts into Vietnamese: wrong-language rows on validation's `en-vi-val/cv27` 36 / 54 / 70 /
+  51 / 50 / 74 / 59 of 180 (its chrF 37.29 at 0, 30.41 at 1,000), FLEURS-vi dev 20 / 29 / 35 / 38 of
+  361 from 600; EN→VI none. The Hub's `both_heads_z2/` holds the pairs of 1,000 and 1,200 and the
+  best, sha256-checked against the box; 200 and 400 are in `both_heads_z2_at400/`; the records (no
+  weights) in `box-62366622/run_both_heads_z2.tgz`.
 
 ### On the 5090
 
@@ -257,7 +271,8 @@ start + 0.5 s): the two blocked distillation probes would pass at 3 s.
   page cache. `grpo_profile` has no writer. On a 350 GB disk: the caches ~172 GB as
   packs ([envi-data](envi-data.md#the-runs-on-it)), the run 42, weights ~25, the env and
   evaluation sets ~15.
-- Profile on its box first (`grpo_profile --teacher-weight`): `--micro-batch` and `--gen-frames`.
+- Profile on its box first (`grpo_profile --teacher-weight`): `--micro-batch` and `--gen-frames`,
+  and the kernels ([grpo](grpo.md#running)).
   It has no evaluation stage, so check `--eval-batch-size` (64 so far) by a short run past an
   evaluation with the optimizer stepped. On the 5090 (2026-11-24, 575 W, one run of each): generation at 320 rows (`--gen-frames 384000`) 45 ms a step and 5.8 rollouts/s,
   peak 23.4 GiB, at 384 rows 27.6 GiB, 448 out of memory. Without `--park-states` the
@@ -267,7 +282,10 @@ start + 0.5 s): the two blocked distillation probes would pass at 3 s.
   update by the profile's estimate, π_old's pass 1.2–1.4 more, the parking copies not counted);
   the optimizer's step holds 24.9. The run holds more than the profile, so it stays at `--gen-frames 384000
   --micro-batch 2 --park-states`: ~9.3 s an update, ~13 s of generation and ~1.4 s of π_old's pass
-  an update, so 2,000 take ~13.2 h and 11 evaluations of ~2 min. The evaluation at batch 64 with
+  an update, so 2,000 take ~13.2 h and 11 evaluations of ~2 min. Since #185 (`z2` 921–1,200) a
+  window's generation takes ~107 s, not ~257: 16.9 s an update in all, not 24.3, and an evaluation
+  90 s, not 120. `--micro-batch 4` gained nothing in a run (9.6 s against 9.4) and peaked at 28.2 GiB.
+  The evaluation at batch 64 with
   AdamW's states on the card ran out of memory, so `evaluate` parks them and the teacher.
 - `--park-states` (grpo.py and `grpo_profile`): only `optimizer.step` reads AdamW's states, so they
   wait in pinned host memory while π_old's logprobs and an update's micro-batches run

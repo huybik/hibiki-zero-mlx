@@ -153,11 +153,11 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
      against the shipped student.
    - **Where it stands** (2026-11-25): the probes are done and `both_heads_z` (both terms,
      z-scored) won ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)); `both_heads_z2`, its
-     recipe on the new data, stopped at 400 without a best, below `both_heads_z` on the test sets
-     ([results](heads-on-policy-runs.md#both_heads_z2)); `both_heads_z` continued to 1,800 (best
+     recipe on the new data, went on to 1,200 with a 3 s latency limit (best 800, test mean of 11
+     sets 41.18, below `both_heads_z`'s 200 at 41.56; its VI→EN drifts into Vietnamese;
+     [results](heads-on-policy-runs.md#both_heads_z2)); `both_heads_z` continued to 1,800 (best
      1,200, test mean of 11 sets 42.53 against the start's 39.57;
-     [continued](heads-on-policy-runs.md#both_heads_z-continued)). Next `both_heads_z2` from its 400
-     with a 3 s latency limit, to 800 at least.
+     [continued](heads-on-policy-runs.md#both_heads_z-continued)), the best heads student so far.
 
 Warmup-stable-decay and checkpoint averaging for SFT runs are in
 [sft-training](sft-training.md#schedules-and-averaging); training against the phone's
