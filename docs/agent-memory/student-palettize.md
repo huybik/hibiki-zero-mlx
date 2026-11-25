@@ -41,6 +41,12 @@ argmax on 92.1% of tokens against fp16's 94.6% ([lm-npu](lm-npu.md#precision)), 
   the first batch, at batch 64 and 32 (2026-11-25; 28 GiB held, the palettizer's full-precision
   copy among it). Off by default: the 3B's SFT fits on 80 GB without it, and parking would pin
   23 GiB more of host memory, which `h100.sh`'s fixed 80 GiB RAM check for SFT doesn't count.
+  GRPO after `HostOffload` and `adam_states` moved to `common.py` (2026-11-25, main e8dfbe8,
+  the 5090): 4 updates of the heads student from `both_heads_z` update 1,200 (4 streams × 4
+  rollouts, `--park-states`, an evaluation and a save every 2) ran to the final save; first
+  ratio 1.0000, then ≤ 1.0003, no clipping, gradient norms 2.7–4.4e5 (the 3B's 2026-11-13 check:
+  4.4–4.9e5). A smoke test, not a comparison with the code before the move. Records:
+  `/Volumes/data/hibiki-zero-evals/box-62513802/grpocheck/`.
 - **Export**: `python -m training.student.palettize --weight CKPT --bits N --out SNAPPED` snaps a
   checkpoint onto its tables; then `convert_mlx.py` (bf16) and `export_lm_coreml.py --bits N` as
   before.
