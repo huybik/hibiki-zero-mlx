@@ -1,6 +1,6 @@
 """Faster moshi LM for training and generation: the same modules and weights, the same math.
 
-`install()` (called when `common` is imported) replaces five things in moshi 0.2.13:
+`install()` (called when `common` is imported) replaces six things in moshi 0.2.13:
 
 - Causal attention. moshi passes SDPA a boolean mask, which rules out the flash kernel; at
   offset 0 that mask is exactly lower-triangular, so it becomes `is_causal=True`.
@@ -8,6 +8,12 @@
   moshi copies each key and value to 16 heads before attending: in generation that is the whole
   3,000-frame KV cache, twice per layer and step (44% of a generation step at batch 16). SDPA
   groups the heads itself with `enable_gqa=True`.
+- A generation step's attention (`_step_attention`). moshi attends over the whole KV cache at
+  every step, whatever is written: at 320 rows of 1,208 slots, 38 of the 46 ms a step. Here it
+  reads the written slots only, rounded up to STEP_SLOTS (`_lm_gen_step` narrows them), and the
+  query heads that share a key/value head become that head's query positions, so the cache is
+  read once and not once a query head. Seeded rollouts come out token for token the same, at 16
+  ms a step instead of 44 (the heads student at 320 rows; the 3B at 32 rows is identical too).
 - The depformer's training forward. moshi runs its 16 codebook steps as slices `x[:, t:t+1]` of
   a `[B*T, 16, C]` tensor, three times per layer, and the backward pass of every slice allocates
   and zero-fills a full-size gradient before adding it in. Here the activations are step-major,
@@ -25,8 +31,8 @@
     x[:, t:t+1] ─► linear_t ─┐ ×16         x[16, N, C] ─unbind─► linear_t ─┐ ×16
     backward: 16 zero-filled grads + adds  backward: one stack ───────────┘
 
-In eval mode (teacher-forced validation, generation) the main transformer is moshi's own, and
-generation (`LMGen`) also keeps moshi's depformer and gating. `install()` also lets each
+In eval mode (teacher-forced validation, generation) the main transformer is moshi's own but for
+that attention, and generation (`LMGen`) also keeps moshi's depformer and gating. `install()` also lets each
 compiled function keep 64 graphs instead of dynamo's 8, so none of moshi's runs eagerly.
 """
 from __future__ import annotations
@@ -37,11 +43,11 @@ import math
 
 import torch
 import torch.nn.functional as F
-from moshi.models.lm import LMModel, LMOutput
+from moshi.models.lm import LMGen, LMModel, LMOutput
 from moshi.models.lm_utils import _delay_sequence, _undelay_sequence
 from moshi.modules import transformer as moshi_transformer
 from moshi.modules.gating import ActivationGating
-from moshi.modules.transformer import RMSNorm, StreamingTransformer
+from moshi.modules.transformer import RMSNorm, StreamingMultiheadAttention, StreamingTransformer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
@@ -333,6 +339,83 @@ def _transformer_forward(self: StreamingTransformer, x: torch.Tensor, *args, **k
     return _compiled_transformer_layers(self, x)
 
 
+# A generation step's attention reads its cache in whole STEP_SLOTS. The graph is captured again at
+# each change, so a finer width costs captures and a coarser one reads unwritten slots: 320 rows of
+# 1,208 steps take 19.7, 19.2, 19.4 and 20.5 s at 32, 64, 128 and 256, 29.9 s at the whole cache.
+STEP_SLOTS = 64
+
+_moshi_attention_forward = StreamingMultiheadAttention.forward
+_moshi_lm_gen_step = LMGen._step
+
+
+def _step_attention(
+    self: StreamingMultiheadAttention, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+) -> torch.Tensor:
+    """moshi's attention for one streamed step, over the `step_slots` slots `_narrow` set on the
+    streaming state (moshi's own without them). It assumes what `_narrow` checks: the rows step
+    together, so they share one offset, and the cache's ring has not wrapped, so slot j holds
+    position j."""
+    state = self._streaming_state
+    slots = getattr(state, "step_slots", None)
+    if slots is None or query.shape[1] != 1:
+        return _moshi_attention_forward(self, query, key, value)
+    batch, _, channels = query.shape
+    groups, dim = self.num_heads // self.kv_repeat, channels // self.num_heads
+    projected = self.in_projs[0](query)
+    q = projected[..., :channels].view(batch, 1, self.num_heads, dim).transpose(1, 2)  # [B, H, 1, D]
+    k, v = projected[..., channels:].view(batch, 1, 2, groups, dim).permute(2, 0, 3, 1, 4)  # [B, G, 1, D]
+    q, k = self.rope(q, k, state.offset, time_before_heads=False)
+    keys, values = state.kv_cache.cache
+    position = state.offset[:1]
+    keys.index_copy_(2, position, k)
+    values.index_copy_(2, position, v)
+    mask = torch.arange(slots, device=position.device) <= position
+    # Query heads kh*kv_repeat .. kh*kv_repeat+kv_repeat-1 use key/value head kh: as kv_repeat
+    # query positions of it, they read its cache once.
+    out = F.scaled_dot_product_attention(
+        q.reshape(batch, groups, self.kv_repeat, dim),
+        keys[:, :, :slots], values[:, :, :slots], mask[None, None, None])
+    out = self.out_projs[0](out.reshape(batch, 1, channels))
+    state.kv_cache.end_offset.add_(1)
+    state.offset.add_(1)
+    state.offset_cpu += 1
+    return out
+
+
+def _can_narrow(attention: StreamingMultiheadAttention) -> bool:
+    return (attention.causal and attention.kv_repeat != 1 and attention.rope is not None
+            and not attention.cross_attention and not attention.weights_per_step)
+
+
+def _narrow(lm_gen: LMGen) -> None:
+    """Set the slots the coming step's attention reads (`_step_attention`): the written ones and
+    this step's, up to a whole STEP_SLOTS, or none (moshi's attention) if the cache's ring will
+    have wrapped, or rows may step apart. At a change the main transformer's CUDA graph is
+    captured again."""
+    state = lm_gen._streaming_state
+    layers = lm_gen.lm_model.transformer.layers
+    attentions = [layer.self_attn for layer in layers]
+    capacity = attentions[0]._streaming_state.kv_cache.capacity
+    slots = None
+    if state.offset_cpu < capacity and not lm_gen.support_out_of_sync and all(map(_can_narrow, attentions)):
+        slots = min(STEP_SLOTS * (state.offset_cpu // STEP_SLOTS + 1), capacity)
+    current = getattr(attentions[0]._streaming_state, "step_slots", None)
+    if slots == current:
+        return
+    for attention in attentions:
+        attention._streaming_state.step_slots = slots
+    if current is not None:  # a step was run: its graph reads the old slots
+        state.graphed_main.reset()
+
+
+def _lm_gen_step(
+    self: LMGen, input_tokens: torch.Tensor, depformer_replace_tokens: torch.Tensor | None = None
+) -> Any:
+    if self._streaming_state is not None:
+        _narrow(self)
+    return _moshi_lm_gen_step(self, input_tokens, depformer_replace_tokens)
+
+
 def install() -> None:
     # moshi compiles _rms_norm, apply_rope and gating_forward_kernel with automatic dynamic
     # shapes: one graph per dtype, rank, grad mode, autocast state and shape class. A training
@@ -341,6 +424,8 @@ def install() -> None:
     torch._dynamo.config.recompile_limit = 64
     moshi_transformer.F = _CausalSDPA()
     moshi_transformer.expand_repeated_kv = _keep_kv_heads
+    StreamingMultiheadAttention.forward = _step_attention
+    LMGen._step = _lm_gen_step
     LMModel.forward_depformer_training = forward_depformer_training
     ActivationGating.forward = _gating_forward
     StreamingTransformer.forward = _transformer_forward

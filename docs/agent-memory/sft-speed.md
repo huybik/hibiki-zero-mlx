@@ -10,12 +10,15 @@ The trainer itself is in [sft-training](sft-training.md); the pod procedure in
 
 ## Fast path
 
-`lm_training.install()` (run when `common` is imported) replaces five things in moshi 0.2.13
+`lm_training.install()` (run when `common` is imported) replaces six things in moshi 0.2.13
 with the same math on the same weights:
 
 - the causal attention mask becomes `is_causal=True` (flash);
 - grouped-query attention runs in SDPA (`enable_gqa`) instead of copying each key and value to 16
   heads: in generation that copy is the whole KV cache, twice per layer and step;
+- a generation step's attention (`_step_attention`, from `LMGen._step`) reads only the written
+  slots of the KV cache, rounded up to `STEP_SLOTS` (64), and the query heads that share a
+  key/value head as that head's query positions (see below);
 - the depformer's training forward runs its 16 codebook steps step-major (`unbind`/`stack`,
   whose backward is one copy, instead of slices whose backward zero-fills a full gradient each),
   compiled with dynamic shapes, with the memory-efficient attention kernel;
@@ -31,6 +34,16 @@ with the same math on the same weights:
   shape class, and past the limit a function's new variants run eagerly for the rest of the
   process. Training builds two graphs of `_rms_norm` (the LM's output norm); a process that
   resumes, validates, trains and validates again built 8 (2026-11-03, H200 NVL).
+
+**A generation step's attention** (2026-11-25, RTX 5090, the heads student at 320 rows of 1,208
+steps): moshi reads the whole cache at every step, 38 of the 46 ms of GPU a step; narrowed, the
+whole rollout takes 19.2 s instead of 52.8 (15.9 against 43.7 ms a step), the peak unchanged
+(23.4 GiB). Only the layout, no narrowing: 29.9 s. Seeded rollouts are token for token the same,
+with CUDA graphs on: the student at 320 rows, the 3B at 32, and all 7,375 outputs of the 13 test
+sets (`eval.py`, batch 64; its generation 259.5 → 170.7 s). It applies to `LMGen` runs of a
+main transformer with grouped-query attention whose rows step together: an attention step past
+the cache's ring, `support_out_of_sync` and any other transformer keep moshi's. A graph is
+captured again at each width.
 
 Checked against moshi as shipped (2026-11-03, H100 NVL): fp32 loss equal, logits within 1.7e-6
 and every gradient within 3.1e-6; in bf16 both are as far from an fp32 reference (gradients:
