@@ -91,8 +91,10 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   the run's tokenizer (the start weight's, the Vietnamese swap), Vietnamese for an `en-vi` row.
   - The limit: quality first (user, 2026-11-22: "latency can be bit more relax"). It was the start's
     offset (update 0's) plus 0.5 s, which blocked every `both_heads_z2` checkpoint; since 2026-11-25
-    it is 3 s fixed, both ways and every run (user: "same relaxed limit for both vi-en, en-vi, and z
-    and z2 at 3s"), as one start measured 0.1–0.3 s apart in two runs. A blocked checkpoint is not kept.
+    it is 3 s fixed, both ways and every run. The user asked whether it should be (2026-11-25); the
+    agent implemented it and the user has not objected (1 s of slack, #181, for one merge first).
+    The start's offset varies 0.1–0.3 s between runs; 3B starts are 2.7–4.1 s (VI→EN) and 3.4–3.7
+    (EN→VI), so update 0 can be late. A silent start no longer stops the run. Blocked is not kept.
   - `val_log.jsonl` records each evaluation's `healthy`, `on_time` and `promoted` (this step is
     now the best).
 - **Length:** `--updates` defaults to the paper's 2,000. Every evaluation promotes, so a run that
