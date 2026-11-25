@@ -39,7 +39,7 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   elements by k-means, one table of 2^N entries per 16 output channels: trunk 1,958 → 738 MB, heads 134
   → 51 MB. It takes ~15 min on one core. Compute plan of the 6-bit models: all 892 trunk ops and
   all 18 head ops on the Neural Engine. A student trained against these tables is snapped onto
-  them first ([student-heads](student-heads.md#palettization)).
+  them first ([student-palettize](student-palettize.md)).
 
 ## Runtime
 
@@ -162,4 +162,4 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   allocated per frame) that vDSP and reused buffers could shrink.
 - Fewer bytes on the Neural Engine may free bandwidth for the encode and the LM: 4-bit
   palettization (~490 MB), after a quality gate; training against the tables is built
-  ([student-heads](student-heads.md#palettization)).
+  ([student-palettize](student-palettize.md)).

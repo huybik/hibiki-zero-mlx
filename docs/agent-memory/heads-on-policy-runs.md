@@ -292,5 +292,5 @@ start + 0.5 s): the two blocked distillation probes would pass at 3 s.
   (`grpo.park_states`; 9.5 GiB on the heads student, 23.3 on the 3B). It costs a copy out and back an
   update (~0.8 s here, extrapolated from a 0.81 GB test, without `empty_cache` and the remapping) and changes no result: 12 fused AdamW steps
   were bitwise equal with and without it. Cards where the update fits without it leave it off.
-- Not on 32 GB: the 3B's full fine-tunes (a pair is 12.5 GB of weights and 25 GB of AdamW), and
-  the palettization finish at the heads run's batch (50.9 GiB, [tranche-box](tranche-box.md#jobs)).
+- Not on 32 GB: the 3B's full fine-tunes (a pair is 12.5 GB of weights and 25 GB of AdamW). The
+  palettization finish fits at 3,072 frames with `--park-states` ([student-palettize](student-palettize.md#the-6-bit-run)).

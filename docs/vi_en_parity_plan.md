@@ -269,8 +269,9 @@ codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-me
    with the deployment palettization (k-means, one table per 16 output channels) in the forward,
    distilled from the bf16 student, recovers most of a post-training quantizer's loss in 2026
    reports (4-bit quantization-aware distillation at ~97% of bf16), and could let 4 bits ship.
-   Built (`train.py --palettize-bits`, `training/student/palettize.py`; its run and how it is
-   judged: [student-heads](agent-memory/student-heads.md#palettization)).
+   Built (`train.py --palettize-bits`, `training/student/palettize.py`); the 6-bit run from the
+   best heads student (2026-11-25) leaves test chrF where it was, as does snapping without
+   training ([student-palettize](agent-memory/student-palettize.md#tests)).
 
 ### 7. Two-way speech
 
