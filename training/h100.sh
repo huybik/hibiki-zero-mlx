@@ -148,14 +148,14 @@ model = sum(policy) * 4 / 1e9  # the fp32 model, GB
 # 1.3B heads student 15.4 and 5.1 (42 at 1). 0 keeps every pair, which no check can bound: it gets
 # the default's room.
 disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
-# GPU: SFT's 4,608-frame batches peak at 75.1 GiB on the 3B, so SFT takes an 80 GB card (CUDA sees
-# 79.2 GiB of it). GRPO's sizes are its profile's (--micro-batch, --gen-frames); the check is
-# what the optimizer's step holds: the fp32 policy, its gradients and AdamW's two moments (16 bytes
-# a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B, 24.9 on the heads student
-# under the 3B. The micro-batches' activations come on top, or, with --park-states, where the
-# moments (8 a parameter) were; on a 32 GB card the heads student needs the flag, which this
-# check can't see.
-gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30 if grpo else 78
+# GPU: what the optimizer's step holds, SFT's and GRPO's alike: the fp32 model, its gradients and
+# AdamW's two moments (16 bytes a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B,
+# 24.9 on the heads student under the 3B, 21.4 on the heads student distilling itself. The
+# batches' activations come on top, sized by each run's profile: SFT's --batch-frames (the 3B's
+# 4,608 peak at 75.1 GiB, so it takes an 80 GB card), a palettizing SFT's full-precision copy (4
+# bytes a palettized parameter), GRPO's --micro-batch and --gen-frames, or, with --park-states,
+# where the moments (8 a parameter) were.
+gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30
 # RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
 # policy and AdamW's two states, a block each a tensor) and grpo.HostOffload's copy of the same and
 # of a teacher's bf16 weights: 70.0 GiB on the 3B, whose run held 17 GiB more that it could not
