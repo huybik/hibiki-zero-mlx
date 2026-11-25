@@ -44,11 +44,11 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   must exceed the longest row plus a long gap, so no stream but the last ends short. A stream
   holds one direction's rows: each direction is planned apart ([two-way](two-way.md)). Each row's
   target starts its cached delay after its source, or later where the floor puts it ([Target
-  timing](#target-timing)), never before the previous target ends; a
-  0.3–1.5 s gap (3–10 s one time in ten) separates the sources, and is stretched so the previous
-  target overhangs the next source by at most 2 s. Silent
-  stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
-  the last row keeps the source and text EOS, and the source after its EOS stays silence. A tenth
+  timing](#target-timing)), never before the previous target ends; a 0.3–1.5 s gap (3–10 s one
+  time in ten) separates the sources, and is stretched so the previous target overhangs the next
+  source by at most 2 s. Silent stretches hold slices of an encoded-silence track on both sides (a
+  room's in a `--room-share` of sources, [noisy-source](noisy-source.md#rooms)) and PAD text, all
+  supervised; the last row keeps the source and text EOS, and the source after its EOS stays quiet. A tenth
   of the streams (`streams.SINGLE_ROW_STREAMS`, from 2026-11-04) hold one row, lead to both EOS,
   as a single-sentence evaluation feeds it: the first run, on 30–120 s streams only, never saw the
   source end after one sentence and never ended a third of the FLEURS rows.

@@ -1,8 +1,8 @@
 # Noisy source
 
 Read when touching `training/prep/augment.py`, `training/prep/noisy_cache.py`, the
-`en-vi-val-noisy` or `en-vi-val-en-noisy` evaluation set, a `*-noisy` cache or GRPO's rooms
-(`streams.room_codes`).
+`en-vi-val-noisy` or `en-vi-val-en-noisy` evaluation set, a `*-noisy` cache or the rooms of GRPO
+and SFT (`streams.run_rooms`, `--room-share`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Conditions](#conditions) ·
 [Rooms](#rooms) · [Noisy cache](#noisy-cache) · [Speed](#speed) · [Checks](#checks) ·
 [Evaluation](#evaluation)
@@ -62,14 +62,15 @@ clip ─► reverb p 0.5 ─► + noise p 0.8, SNR U[5, 30] dB ─► band ─�
   - speed changes: the cached delays and text timing assume the clip's own timing, and a slowed
     source would move Vietnamese words past the English that translates them;
   - low-bitrate codecs.
-- Known gap: SFT stream gaps hold the encoded digital-silence track, so a noisy row sits between
-  silent gaps where a real recording stays noisy. GRPO's gaps hold rooms ([Rooms](#rooms)).
+- SFT stream gaps hold digital silence by default, so a noisy row sits between silent gaps where
+  a real recording stays noisy; `train.py --room-share` fills a share with rooms ([Rooms](#rooms)).
 
 ## Rooms
 
 GRPO's streams hold a room's noise in their source wherever nobody speaks, in a `--room-share`
 (0.5) of streams; the rest keep digital silence, what a voice gate passes
-([grpo](grpo.md#design)). The user asked for it (2026-11-14: "can we add artifical silence into
+([grpo](grpo.md#design)); so do SFT's with `train.py --room-share` (default 0, unused so far;
+validation keeps silence). The user asked for it (2026-11-14: "can we add artifical silence into
 the data so that grpo also penalise translating when user silent?"). Text after a rollout's
 first EOS is neither rewarded nor trained, and 92–96% of rollouts write one after the source
 EOS, so the room is taught mainly in the lead (0–2 s) and the gaps, a tenth of them 3–10 s long:
@@ -95,18 +96,18 @@ room does not give.
   10 ms; then the level stage from the track's start. After it, frame peaks sit at a median
   −38.4 dBFS (p90 −32.6, 8% of frames over −30, events up to −20). Codebook 0 takes one of the
   steady silence's values on ~71% of room frames (35–97% per room; 24 rooms, seed 44).
-- **Encoded** by `streams.room_codes`: 256 rooms, each `--frames` long, from a fresh state on the
-  run's GPU at its start (TF32 on, so their residual codes may differ by GPU, unlike the CPU
-  silence track). `StreamDataset` draws one for a stream from (seed, index), the same on a
-  resume, and `assemble` puts it in the source's lead, gaps and the stretch after the EOS; the
-  target keeps silence. `grpo_launch.sh` fetches the bank into `data/rirs_noises` first; the run
-  only requires it.
+- **Encoded** by `streams.run_rooms`: GRPO 256 rooms, SFT 2,048 (a pass draws ~890,000 room streams),
+  each as long as the silence track (GRPO's `--frames`, SFT's longest stream), from a fresh state on
+  the run's GPU at its start, SFT's before its resume check (TF32 on, so residual codes may differ by
+  GPU). `StreamDataset` draws one for a stream from (seed, index), the same on a resume; `assemble`
+  puts it in the source's lead, gaps and after the EOS; the target keeps silence. `grpo_launch.sh`
+  fetches the bank into `data/rirs_noises`; nothing does for SFT (`augment.fetch_bank`).
 - **The level stage runs on the room alone**, so a gap right after speech is lifted at once,
   where live the envelope still falls 6 dB a second after speech and the room stays near its raw
   level for a few seconds: training's gaps are louder than live ones, erring toward quiet.
 - **Held out:** every fifth file of each kind (26 backgrounds, 162 events; `quiet_noises(bank,
-  held_out=True)`), from GRPO's rooms only: the noisy caches (`Bank`) mix every file under speech.
-  Re-run the check on held-out rooms after a model's GRPO.
+  held_out=True)`), from the rooms only: the noisy caches (`Bank`) mix every file under speech.
+  Re-run the check on held-out rooms after a model's GRPO, and after an SFT with rooms.
 
 ## Noisy cache
 

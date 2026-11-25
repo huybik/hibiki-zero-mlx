@@ -83,7 +83,8 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
   next log step.
 - A start in an out-dir with complete pairs resumes the newest one (`checkpoints.open_run`), and
   only if `run_config.json` matches on `RESUME_KEYS` (`checkpoints.claim_run_config`, before the
-  model loads, so a resume with other arguments stops in seconds): data dirs, weights,
+  model loads, so a resume with other arguments stops in seconds, or after the rooms' encode with
+  `--room-share`): data dirs, weights,
   hyperparameters, cadences,
   seed, train row count, evaluation pairs and rows, and total steps. Lines of `train_log.jsonl`
   and `val_log.jsonl` past the resumed step are dropped. A start without a pair begins at step 0

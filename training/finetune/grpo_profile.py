@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--park-states", action="store_true", help="As a run's --park-states.")
     parser.add_argument("--reward-workers", type=int, default=8)
     grpo.add_objective_args(parser)
-    grpo.add_room_args(parser)
+    streams.add_room_args(parser, grpo.ROOM_SHARE)
     return parser.parse_args()
 
 

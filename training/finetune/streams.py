@@ -15,9 +15,9 @@ next Vietnamese by at most MAX_OVERHANG.
 Wherever nobody speaks, both audio streams hold encoded silence and the text holds PAD, all
 supervised. The last row keeps the source EOS and the text EOS; the source after its EOS stays
 silence (as upstream inference feeds it), while the target and text after the text EOS are -1.
-With rooms (`room_codes`; GRPO's) a share of streams hold a room's noise in the source instead
-of silence, its lead, gaps and the stretch after its EOS alike, as a phone's microphone hears a
-room between sentences.
+With rooms (`run_rooms`; GRPO's, and SFT's with `train.py --room-share`) a share of streams hold a
+room's noise in the source instead of silence, its lead, gaps and the stretch after its EOS
+alike, as a phone's microphone hears a room between sentences.
 
 Mimi codes depend on the encoder's state. Inference encodes one continuous stream from a fresh
 state, so a stream opens with the encoder's start-up codes and is steady silence elsewhere. Every
@@ -72,7 +72,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, swap_slots
+from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, require_dir, swap_slots
 from training.prep import augment
 from training.prep.text_timing import ALIGNERS, CAPACITY_REASONS
 
@@ -731,6 +731,25 @@ def room_codes(mimi: Any, bank: Any, count: int, frames: int, codebooks: int, se
     samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
     tracks = augment.room_tracks(bank, count, samples, seed)
     return torch.stack([encode_track(mimi, torch.from_numpy(track), codebooks) for track in tracks])
+
+
+def add_room_args(parser: Any, share: float) -> None:
+    """The rooms' options, --room-share defaulting to `share`."""
+    parser.add_argument(
+        "--room-share", type=float, default=share,
+        help="The share of streams whose source holds a room's noise where nobody speaks; 0 keeps digital silence.",
+    )
+    parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="The noise bank's parent (augment.fetch_bank's root).")
+
+
+def run_rooms(args: Any, mimi: Any, silence: torch.Tensor, count: int) -> torch.Tensor | None:
+    """A run's `count` rooms where nobody speaks (`room_codes`, drawn with --seed from the bank
+    under --bank-dir), shaped as its `silence` track, encoded by `mimi` (the run's, on its GPU);
+    None at --room-share 0."""
+    if args.room_share <= 0:
+        return None
+    bank = require_dir(args.bank_dir / "RIRS_NOISES", "noise bank (augment.fetch_bank; grpo_launch.sh fetches it)")
+    return room_codes(mimi, bank, count, silence.shape[1], silence.shape[0], args.seed)
 
 
 def model_rows(layout: Layout, codebooks: int) -> list[int]:

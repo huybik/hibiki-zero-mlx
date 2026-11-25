@@ -117,8 +117,8 @@ TOP_K = 250
 EPSILON = 0.2  # the ratio clip
 TEXT_WEIGHT = 100.0  # c_0: the text stream against 1 for each audio codebook
 ADVANTAGES = ("zscore", "centered")  # rewards.normalize with and without the std
-# Rooms where nobody speaks, drawn once (a window's 640 streams draw from them). Half the streams
-# hold one: the other half keep digital silence, what a voice gate passes between sentences.
+# Rooms where nobody speaks (streams.run_rooms), drawn once (a window's 640 streams draw from them).
+# Half the streams hold one: the other half keep digital silence, what a voice gate passes.
 ROOMS = 256
 ROOM_SHARE = 0.5
 # The allocators of a run and its profile. Expandable segments keep freed GPU memory reusable
@@ -318,13 +318,9 @@ def stream_dataset(
     most; a --room-share of them hold a room in their source where nobody speaks, encoded by
     `mimi` (the run's, on its GPU)."""
     silence = streams.silence_track(info.get_mimi(device="cpu"), args.frames, layout.dep_q)
-    rooms = None
-    if args.room_share > 0:
-        bank = require_dir(args.bank_dir / "RIRS_NOISES", "noise bank (grpo_launch.sh fetches it)")
-        rooms = streams.room_codes(mimi, bank, ROOMS, args.frames, layout.dep_q, args.seed)
     return streams.StreamDataset(
         rows, layout, silence, streams.frame_range(args.stream_seconds), args.seed, codebooks,
-        rooms, args.room_share,
+        streams.run_rooms(args, mimi, silence, ROOMS), args.room_share,
     )
 
 
@@ -561,7 +557,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=200)
     parser.add_argument("--save-every", type=int, default=20)
     parser.add_argument("--keep-checkpoints", type=int, default=2)
-    add_room_args(parser)
+    streams.add_room_args(parser, ROOM_SHARE)
     parser.add_argument("--seed", type=int, default=44)
     return parser.parse_args()
 
@@ -583,15 +579,6 @@ def add_objective_args(parser: argparse.ArgumentParser) -> None:
         "--reward-coef", type=float, default=1.0,
         help="The GRPO term's weight; 0, with a teacher, is on-policy distillation alone.",
     )
-
-
-def add_room_args(parser: argparse.ArgumentParser) -> None:
-    """The rooms' options, the profiler's too."""
-    parser.add_argument(
-        "--room-share", type=float, default=ROOM_SHARE,
-        help="The share of streams whose source holds a room's noise where nobody speaks; 0 keeps digital silence.",
-    )
-    parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="The noise bank's parent (augment.fetch_bank's root).")
 
 
 def validate_objective_args(args: argparse.Namespace) -> None:
