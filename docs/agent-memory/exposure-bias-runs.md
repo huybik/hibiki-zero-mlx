@@ -225,7 +225,7 @@ Every scored set healthy in every pass (the noise rows have no reference).
   on fewer rows than as it was (44 → 41, 42 → 31, 31 → 27). The student writes on 5–8 of 48 rooms
   (7 → 9 rows, 80 → 88 words), and this repo's Swift runtime gives it no voice gate (Speech Live
   gates: [student-grpo](student-grpo.md)). `main.py`'s gate (6-bit update 1,400) opened 13 of
-  10,875 noise frames at both settings, on another room each; at −6 that room drew 5 words.
+  10,875 noise frames at each setting, each time on one other room: 0 words as it was, 5 at −6.
   The Mac check that found update 1,400 silent on noise alone used other rooms and a primed stream
   ([noisy-source](noisy-source.md#rooms)); these rows start cold.
 - The student as it was reproduces its tests (mean of 11 42.30 against 42.48).

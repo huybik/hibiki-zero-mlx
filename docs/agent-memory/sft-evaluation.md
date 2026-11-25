@@ -221,21 +221,21 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
 ## Input level
 
 Every runtime and `eval.py` raise quiet source audio before Mimi with one level stage,
-`inference/hibiki_mlx/level.py` (`Leveller`; Swift's `Audio.Leveller` mirrors it sample for
-sample: equal on 14 signals in 1-, 2- and whole-clip frame chunks, 2026-11-26). Each 80 ms
-frame takes one gain from two trackers of the frame peaks, a signal envelope (instant rise,
-6 dB a second fall) and a noise floor (instant fall, 1.5 dB a second rise; digitally silent
-frames, under one 16-bit step, leave it as it is): quiet speech is raised toward −6 dBFS, by at
-most 44 dB, unless that would lift its noise floor past −26 dBFS. Frames whose envelope is above
-−6 dBFS pass unchanged, and nothing clips. Non-finite or multichannel input is an error (Swift:
-`HibikiError.badAudio`, the session left as it was). `common.read_source` levels each clip as a
-stream of its own (its `_stereo.wav` keeps the levelled source, what the model heard);
-`main.py` levels a file's first channel or a mic session, `Translator` a session (`reset` starts
-a new one). Scores do not compare across settings: none from before the stage (2026-11-12) with
-later ones, most of all on FLEURS, nor from before 2026-11-26, when the first settings (−20, −40
-and 30 dB; the "Why" and "On the model" measurements below) all moved 14 dB louder: four models
-lost nothing beyond noise on the 11 test sets' mean, quiet FLEURS-vi clips gained where a model
-had lost them, EN→VI FLEURS lost a little, and noise alone drew about as many words
+`inference/hibiki_mlx/level.py` (`Leveller`; Swift's `Audio.Leveller` mirrors it sample for sample:
+equal on 14 signals in 1-, 2- and whole-clip frame chunks, 2026-11-26). Each 80 ms frame takes one
+gain from two trackers of the frame peaks, a signal envelope (instant rise, 6 dB a second fall) and
+a noise floor (instant fall, 1.5 dB a second rise; digitally silent frames, under one 16-bit step,
+leave it as it is): quiet speech is raised toward −6 dBFS, by at most 44 dB, unless that would lift
+its noise floor past −26 dBFS. Frames whose envelope is above −6 dBFS pass unchanged, and nothing
+clips. Non-finite or multichannel input is an error (Swift: `HibikiError.badAudio`, the session left
+as it was). `common.read_source` levels each clip as a stream of its own (its `_stereo.wav` keeps
+the levelled source, what the model heard); `main.py` levels a file's first channel or a mic
+session, `Translator` a session (`reset` starts a new one); `prime` feeds its primers as recorded,
+at −6 dBFS already. Scores do not compare across settings: none from before the stage (2026-11-12)
+with later ones, most of all on FLEURS, nor from before 2026-11-26, when the first settings (−20,
+−40 and 30 dB; the "Why" and "On the model" measurements below) all moved 14 dB louder: four models
+lost nothing beyond noise on the 11 test sets' mean, quiet FLEURS-vi clips gained where a model had
+lost them, EN→VI FLEURS lost a little, and noise alone drew no more words (fewer in two 3B models)
 ([the test](exposure-bias-runs.md#the-level-stage-test), which holds the numbers).
 
 Why (2026-11-12, the two-way run's predictions at 60,000 and 72,000; true sample peaks):
