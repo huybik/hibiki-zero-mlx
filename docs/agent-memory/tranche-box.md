@@ -6,19 +6,22 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 
 ## State
 
-**No box is rented** (2026-11-25). The last, 2026-11-24 to 25: an RTX 5090 (Vast 62366622,
-Switzerland, $0.671/h with 350 GB of disk; 32 GB at 500 W of 600, driver 580.173.02, a 15.4-CPU
-quota, 83.8 GiB of RAM), rented by the user to continue `both_heads_z` from update 200
-([heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z-continued)). It ran `both_heads_z`
-200 → 1,800 and `both_heads_z2` 400 → 1,200, and was destroyed 2026-11-25 09:53 UTC at the user's
-request ("we destroy the box when done"), once both runs' Hub files matched the box by sha256.
-Other tenants on its host left MemAvailable at 4–15 GiB at times; the run never ran out.
-- Uploads from the Mac run at ~20 KB/s: the box clones the repo from GitHub. The Hub gives ~80 MB/s
-  (the seven caches' 130 GB, the weights and 200's pair in ~38 min, four fetches at once).
+**Box 62513802** (2026-11-25, rented by the user's 5090 watcher at 11:47 UTC): an RTX 5090, Russia,
+$0.511/h, `ssh -p 17399 root@109.195.243.87`; 32 GB at 575 W, driver 595.91.07, an i5-14600K with
+a 19.2-CPU quota, 123 GiB of RAM, 350 GB of disk. It ran the heads student's 6-bit palettization
+finish ([student-palettize](student-palettize.md#the-6-bit-run)), then another session's level
+queue (PR #187).
+- The Hub gives ~45–58 MB/s down but takes uploads at only ~1–2 MB/s: a final pair (15.4 GB)
+  takes 2–4 h, so wait for the run's sync before destroying the box.
+- To the Mac over ssh: ~1.8 MB/s a stream, ~7.4 MB/s over 8 (`split`, parallel `scp`; 12 dropped
+  a connection, so re-fetch the missing parts and check the sha256).
+
+The one before, 62366622 (2026-11-24 to 25; an RTX 5090, Switzerland, $0.671/h, 500 W of 600), ran
+`both_heads_z` 200 → 1,800 and `both_heads_z2` 400 → 1,200 ([runs](heads-on-policy-runs.md#both_heads_z-continued));
+destroyed 2026-11-25 09:53 UTC at the user's request once both runs' Hub files matched by sha256.
+- Uploads from the Mac run at ~20 KB/s: the box clones the repo from GitHub. The Hub gave ~80 MB/s.
 - The default openslr mirror serves the rooms' bank at ~250 KB/s a connection; `aria2c -x16` over
   it and `openslr.trmal.net` took ~2 min (`fetch_bank` checks the SHA-256 either way).
-- Right after boot `nvidia-smi` read 100% busy at 118 W with nothing on the card; it later read
-  0% at 12 W.
 
 Past boxes' records and scripts (no weights, but 62170174's) are in
 `/Volumes/data/hibiki-zero-evals/box-<id>/`: 62366622 (above; `run_both_heads_z.tgz` and

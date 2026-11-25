@@ -32,11 +32,14 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
     safetensors headers: `--model-weight`, and `--teacher-weight` when given), so one check
     serves the 3B and the phone student (2026-11-23). `preflight` alone checks the 3B's SFT at
     the default `--keep-checkpoints`.
-    - GPU: SFT ≥78 GiB (its 4,608-frame batches peak at 75.1 GiB on the 3B; an 80 GB card shows
-      79.2). GRPO: what the optimizer's step holds, 16 bytes a policy parameter
+    - GPU, SFT and GRPO alike: what the optimizer's step holds, 16 bytes a model parameter
       (fp32 weights, gradients, AdamW's two moments) and 2 a teacher's: 46.7 GiB on the 3B, 24.9
-      on the heads student under the 3B. Its profile fits `--micro-batch` and `--gen-frames`, and
-      `--park-states` takes the moments off the card for the micro-batches ([grpo](grpo.md#running)).
+      on the heads student under the 3B, 21.4 on the heads student distilling itself (2026-11-25;
+      it was a fixed 78 for SFT, which refused the heads student's palettizing SFT on a 32 GB
+      card). The activations come on top, sized by the run's profile: SFT's `--batch-frames` (the
+      3B's 4,608 peak at 75.1 GiB, so the 3B's SFT takes an 80 GB card), a palettizing run's
+      full-precision copy, GRPO's `--micro-batch` and `--gen-frames`, and `--park-states` takes
+      the moments off the card for the micro-batches ([grpo](grpo.md#running)).
     - RAM: SFT 80 GiB. GRPO 5% over its pins and the 17 GiB more the 3B's run held: the pins are
       the checkpoint snapshot's and `HostOffload`'s, a block a tensor, at their size above 1 MB
       (`grpo.ALLOC_CONF` stops torch's pinned allocator rounding them up to a power of two,

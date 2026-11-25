@@ -149,8 +149,10 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
      [student-grpo](student-grpo.md#evaluations)) or an end offset past the gate disqualifies a
      checkpoint.
    - **Then the phone's finish**: the run's best trained against the 6-bit palettization
-     (`train.py --palettize-bits 6`, plan stage 6.4), exported, and scored on the test sets
-     against the shipped student.
+     (`train.py --palettize-bits 6`, plan stage 6.4). Done 2026-11-25 from `both_heads_z`'s 1,200:
+     its test chrF equals the start's and the start's snapped without training, within noise, and
+     on the Neural Engine it agrees with bf16 on 0.9 points more tokens than the plain 6-bit export
+     ([student-palettize](student-palettize.md#neural-engine-agreement)).
    - **Where it stands** (2026-11-25): the probes are done and `both_heads_z` (both terms,
      z-scored) won ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)); `both_heads_z2`, its
      recipe on the new data, went on to 1,200 with a 3 s latency limit (best 800, test mean of 11

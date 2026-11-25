@@ -442,60 +442,16 @@ def sample_window(
     return outputs
 
 
-class HostOffload:
-    """GPU storages parked in pinned host memory while a phase that never reads them runs. A
-    window generates on a bf16 copy, so the fp32 policy and AdamW's states (37.5 GB on the 3.1B
-    model) wait on the host and the generation batches get the GPU's memory (grpo.md#running).
-    `to_host` copies each storage out and shrinks it to nothing, so nothing may read those tensors
-    until `to_device` restores them exactly; the tensors, the optimizer's and the compiled
-    forward's alike, stay the same objects. The pinned buffers are allocated once per storage and
-    reused (AdamW's states appear at the first update)."""
-
-    def __init__(self) -> None:
-        self.host: dict[int, torch.Tensor] = {}
-        self.out: list[tuple[torch.UntypedStorage, torch.Tensor]] = []
-
-    def to_host(self, tensors: list[torch.Tensor]) -> None:
-        if self.out:
-            raise RuntimeError("HostOffload.to_host while storages are already out")
-        storages = {}
-        for tensor in tensors:
-            storage = tensor.untyped_storage()
-            if storage.nbytes():
-                storages.setdefault(storage._cdata, storage)  # its StorageImpl: shared views once
-        for key, storage in storages.items():
-            if key not in self.host:
-                self.host[key] = torch.empty(storage.nbytes(), dtype=torch.uint8, pin_memory=True)
-            self.host[key].untyped_storage().copy_(storage, non_blocking=True)
-            self.out.append((storage, self.host[key]))
-        torch.cuda.synchronize()  # every copy has landed before its storage goes
-        for storage, _ in self.out:
-            storage.resize_(0)
-        torch.cuda.empty_cache()  # whole segments for the generation batches
-
-    def to_device(self) -> None:
-        for storage, host in self.out:
-            storage.resize_(host.numel())
-            storage.copy_(host.untyped_storage(), non_blocking=True)
-        torch.cuda.synchronize()
-        self.out = []
-
-
-def adam_states(optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
-    """AdamW's state tensors (none before its first step)."""
-    return [value for state in optimizer.state.values() for value in state.values() if torch.is_tensor(value)]
-
-
 def trainer_tensors(lm: Any, optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
     """The fp32 policy's parameters and AdamW's state tensors."""
-    return [*lm.parameters(), *adam_states(optimizer)]
+    return [*lm.parameters(), *common.adam_states(optimizer)]
 
 
-def park_states(offload: HostOffload, optimizer: torch.optim.Optimizer) -> None:
+def park_states(offload: common.HostOffload, optimizer: torch.optim.Optimizer) -> None:
     """AdamW's states to pinned host memory, once, until `offload.to_device()` (`--park-states`): only
     `optimizer.step` reads them, so the window's old-logprob pass and an update's micro-batches get
     their memory (10 GB on the 1.28B student, 25 on the 3B). None before the first step."""
-    states = adam_states(optimizer)
+    states = common.adam_states(optimizer)
     if states and not offload.out:
         offload.to_host(states)
 
@@ -779,14 +735,14 @@ def main() -> None:
     gc.collect()
     gc.freeze()
 
-    offload = HostOffload()
+    offload = common.HostOffload()
 
     def evaluate(at: int) -> None:
         nonlocal best_state
         started = time.time()
         optimizer.zero_grad(set_to_none=True)
         # It reads neither, and at batch 64 the heads student's ran out of memory beside them on 32 GB.
-        offload.to_host(adam_states(optimizer) + teacher_params)
+        offload.to_host(common.adam_states(optimizer) + teacher_params)
         free_running = common.validate_free_running(
             lm, info, mimi, tokenizer, eval_rows, eval_sets, args.eval_batch_size,
             out_dir / "eval" / f"step{at:06d}", args.seed,

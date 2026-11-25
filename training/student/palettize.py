@@ -1,5 +1,5 @@
 """Training against the phone's palettization (plan stage 6.4,
-[student-heads](../../docs/agent-memory/student-heads.md#palettization)).
+[student-palettize](../../docs/agent-memory/student-palettize.md)).
 
 The Core ML export (`inference/tools/export_lm_coreml.py --bits N`) palettizes every weight of the
 heads student's trunk and heads with more than 2^20 elements: k-means, one table of 2^N values for

@@ -289,9 +289,9 @@ sampling temperature) all run it, so a change to it needs all three checked
   distribution on the same stream, with the same weights, where both models' masks hold (a
   heads student's delays differ from its teacher's); the teacher reads the whole stream and the
   model its cut. Validation still reports CE against the targets.
-- **Palettization** (`--palettize-bits`, a heads student): the step runs on the weights snapped
-  to the Core ML export's k-means tables, the straight-through estimator
-  ([student-heads](student-heads.md#palettization)).
+- **Palettization** (`--palettize-bits`, a heads student: the step runs on the weights snapped to
+  the Core ML export's k-means tables, straight-through) and **parking** (`--park-states`: AdamW's
+  states and the teacher in pinned host memory while validation translates): [student-palettize](student-palettize.md).
 - **Scheduled sampling** (`--sampled-text P`, not with a teacher): the main transformer samples
   every scored text token without gradients, each word piece it reads becomes the sampled word
   piece there with probability P, and the loss scores the dataset's tokens; the PADs (timing),
