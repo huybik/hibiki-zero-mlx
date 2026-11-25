@@ -182,12 +182,61 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   move, [finetune](../finetune.md#move-a-running-run-to-another-pod)). Every validation so far is under 3 s.
 - **The stop**: two validations in a row with no new best on the selecting mean or the mean of
   8. A validation the latency gate blocked while either mean rose is not "not improving"
-  (the agent's reading, put to the user 2026-11-24, not yet answered). Then the test sets as
-  `both_heads_z2`'s.
+  (the agent's reading, put to the user 2026-11-24, not yet answered). It held at 1,600 and 1,800:
+  stopped by TERM at 1,800's validation (2026-11-25 03:00 UTC; 1,600 and 1,800's pairs, best 1,200
+  and the logs on the Hub, hash-checked).
+- **Validation**, selecting mean / mean of 8: 400 39.36 / 39.44, 600 38.95 / 39.13, 800 39.64 /
+  39.45, 1,000 40.01 / 39.89, **1,200 40.17 / 40.03** (best), 1,400 40.04 / 40.15, 1,600 39.88 /
+  40.07, 1,800 39.68 / 39.80 (200: 38.92 / 39.44; start 37.33 / 37.88). End offsets VI→EN and
+  EN→VI: 1.79 and 1.97 s at 1,200 (1.71 and 1.63 at 200, start 2.00 and 1.42). The 3 s gate
+  blocked none; a start-relative 0.5 s would have blocked 800, 1,200 and 1,600 (EN→VI 2.08, 1.97
+  and 1.93 s against 1.915).
+- **Test sets** (the box, `eval.py` seed 43, batch 64, text only, LAAL, all 13 in one call;
+  `giga-heldout` built there, `eval_sets --sets giga-heldout`). chrF, and paired bootstrap over rows
+  (500 draws) against the same-call outputs of the start and `both_heads_z` 200:
+
+  | Set | Start | `both_heads_z` 200 | 1,200 (best) | 1,800 |
+  |---|---|---|---|---|
+  | fleurs-vi/test | 36.70 | 39.51 | 40.21 | 40.30 |
+  | fleurs-en/test | 34.63 | 36.78 | 37.71 | 38.07 |
+  | multimed-vi/select | 35.64 | 36.64 | 37.54 | 37.35 |
+  | multimed-vi/final | 35.74 | 36.72 | 37.42 | 37.56 |
+  | giga-heldout/test | 61.64 | 64.49 | 65.86 | 65.97 |
+  | en-vi-val/cv27 | 37.80 | 39.23 | 39.60 | 39.61 |
+  | en-vi-val/libriheavy | 41.45 | 43.74 | 43.94 | 43.91 |
+  | en-vi-val-noisy/cv27 | 38.08 | 40.66 | 41.94 | 40.52 |
+  | en-vi-val-noisy/libriheavy | 41.28 | 42.68 | 43.90 | 44.33 |
+  | en-vi-val-en/cv27 | 31.72 | 32.83 | 35.09 | 34.92 |
+  | en-vi-val-en/libriheavy | 40.59 | 43.89 | 44.68 | 44.38 |
+  | en-vi-val-en-noisy/cv27 | 22.76 | 24.93 | 26.01 | 26.34 |
+  | en-vi-val-en-noisy/libriheavy | 33.22 | 37.14 | 37.98 | 37.99 |
+  | Mean of 11 (`-noisy` in `-en` left out) | 39.57 | 41.56 | **42.53** | 42.45 |
+  | Mean of 13 | 37.79 | 39.94 | **40.91** | 40.86 |
+  | Mean BLEU of 11 | 14.20 | 16.72 | **17.85** | 17.56 |
+  | Mean LAAL of 11 (s) | 2.66 | 2.78 | 2.86 | 2.84 |
+  | Mean median end offset of 11 (s) | 2.70 | 2.62 | 2.63 | 2.64 |
+
+  1,200 against the start +2.96 [+2.57, +3.32] of 11 sets, against `both_heads_z` 200 +0.97 [+0.62,
+  +1.32]; every set is up on 200, with the interval above zero on FLEURS both ways, `giga-heldout`,
+  MultiMed both, `en-vi-val-noisy/libriheavy` and `en-vi-val-en/cv27`. 1,800 − 1,200 is −0.09 [−0.43,
+  +0.22]: the validations' decline past 1,200 is inside the noise of the tests.
+  The depformer student (GRPO 2,000) has a mean of 39.48 over the same 11 sets in its own test calls
+  ([student-grpo](student-grpo.md#tests)); on validation it is at 35.50 selecting and 38.12 of 8 against
+  1,200's 40.17 and 40.03, with end offsets 0.93 and 1.20 s against 1.79 and 1.97.
+- **No wrong-language drift** (rows in the other language, by Vietnamese letters, so approximate):
+  `multimed-vi` select 96 / 103 / 83 / 77 and final 132 / 140 / 108 / 90 of ~1,719 (start / 200 /
+  1,200 / 1,800), FLEURS-vi 32 / 22 / 38 / 29 of 857, EN→VI 15 / 7 / 0 / 0 of 641 on FLEURS-en.
+  `z2` drifted to 305 of 1,718 on `multimed-vi/select`. Outputs are EOS-ended less often
+  (FLEURS-vi 402 → 286 of 857 at 1,200) and length ratios fall.
+- **The box's records** (no weights: the run's logs, evals, test outputs): `box-62366622/` under
+  `/Volumes/data/hibiki-zero-evals/`. An update took ~25 s wall (9.8 s of it the update), and 200 to
+  1,800 (1,600 updates, the 500 restart and the validations) 11.3 h at $0.671/h.
 - **Then `both_heads_z2` from its 400** on the same box (user, 2026-11-25: "can later try both head
-  z2 too min 800 steps"): to 800 at least, then the same stop, on main's HEAD. Its pair of 400 and
-  its five caches `both_heads_z` lacks download meanwhile (packed once `both_heads_z` stops). At
-  3 s its 200 and 400 pass the gate, so its `best.json` is set to 400 (selecting 38.63) first.
+  z2 too min 800 steps"): to 800 at least, then the same stop, on main's HEAD. At 3 s its 200 and
+  400 pass the gate, so its `best.json` is set to 400 (selecting 38.63) first. The run moves to
+  main's commit 396fabb and main's packs: the box's z caches are format 5 (its branch), main's
+  streams are 7, so the shared caches (pho, vivoice, giga, en-vi-grounded-v2, ~72 GB) were fetched
+  and packed again before the launch.
 
 ### On the 5090
 
