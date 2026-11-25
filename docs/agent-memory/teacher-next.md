@@ -47,8 +47,8 @@ Planned 2026-11-23; its gates are run ([Order](#order)), the full SFT is not sta
   (not adopted); the anchored probe favours β 0.02; **the data gate failed as written** on VI→EN FLEURS
   dev (−3.85 chrF at seed 44, −3.66 at 61), on its quiet clips, where the new model depends on the
   input's level and `twoway_final` doesn't. Why the SFT lost that is not established, but the
-  input level stage 14 dB louder, adopted 2026-11-26, takes most of it back: there the 0.1 arm after GRPO
-  trails `twoway_final` on FLEURS-vi dev by −0.94 [−2.35, +0.33], against −2.76 at the old stage
+  input level stage 14 dB louder, adopted 2026-11-26, takes most of it back: there the 0.1 arm
+  after GRPO trails `twoway_final` on FLEURS-vi dev within noise
   ([the level-stage test](exposure-bias-runs.md#the-level-stage-test)). The full SFT (~36–38 h)
   waits for the user's go.
 - **Experiment 1's control arm is the data gate**: plain SFT on this mix from the shipped run's

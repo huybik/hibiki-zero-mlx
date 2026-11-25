@@ -233,10 +233,10 @@ stream of its own (its `_stereo.wav` keeps the levelled source, what the model h
 `main.py` levels a file's first channel or a mic session, `Translator` a session (`reset` starts
 a new one). Scores do not compare across settings: none from before the stage (2026-11-12) with
 later ones, most of all on FLEURS, nor from before 2026-11-26, when the first settings (−20, −40
-and 30 dB; the "Why" and "On the model" measurements below) all moved 14 dB louder. Four models
-lost nothing beyond noise on the mean of the 11 test sets (−0.11 to +0.41), the 0.1 arm's quiet
-FLEURS-vi clips gained 6.4 chrF, EN→VI FLEURS lost ~0.75, and the 3B models wrote on fewer
-noise-only rows, the student on about as many ([the test](exposure-bias-runs.md#the-level-stage-test)).
+and 30 dB; the "Why" and "On the model" measurements below) all moved 14 dB louder: four models
+lost nothing beyond noise on the 11 test sets' mean, quiet FLEURS-vi clips gained where a model
+had lost them, EN→VI FLEURS lost a little, and noise alone drew about as many words
+([the test](exposure-bias-runs.md#the-level-stage-test), which holds the numbers).
 
 Why (2026-11-12, the two-way run's predictions at 60,000 and 72,000; true sample peaks):
 
@@ -279,7 +279,7 @@ the current one is 14 dB over it. What it costs or leaves:
 - Mic mode on speakers: the stage raises the echo of the translation like any quiet sound, up
   to speech level a few seconds after the user stops talking, so mic mode cancels the echo
   before the stage ([mlx-inference](mlx-inference.md#runtime)).
-- Frames raised over the test sets' clips: FLEURS-vi 99%, FLEURS-en 98%, Libriheavy English 93%,
+- Frames raised over eight test sets' clips: FLEURS-vi 99%, FLEURS-en 98%, Libriheavy English 93%,
   `en-vi-val-noisy` 83–88%, Common Voice English 77%, MultiMed-ST 76%, the TTS 57% (45, 73, 4,
   13–17, 19, 5 and 1% at the first settings). The training caches were coded without the stage.
   leon.wav as it is (peak −3.8 dBFS) passes unchanged.

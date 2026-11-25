@@ -81,7 +81,7 @@ room does not give.
 - **Why:** a live-like check on the Mac (2026-11-14, MLX, main.py's seed, a primed stream with no
   source EOS and no voice gate) counted the words written in 30 s of quiet after a FLEURS dev
   sentence or after the primer alone: rooms at −55 and −40 dBFS peaks, white −45, pink −40,
-  door-and-cough events at −30, all through the level stage.
+  door-and-cough events at −30, all through the level stage (its first settings).
   - The teacher (GRPO update 1,400, 6 bits) wrote nothing on noise alone (20 runs); after a
     sentence, once the late end of its own translation.
   - The distilled student (update 8,000, bf16) wrote on noise alone in EN→VI 10 of 10 times
