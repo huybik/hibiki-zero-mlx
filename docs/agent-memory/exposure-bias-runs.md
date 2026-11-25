@@ -204,22 +204,25 @@ predictions, metrics, logs, scripts, the noise clips; `tables.txt`: every set an
 | phone student, 6 bits ([update 4,000 snapped](student-palettize.md#tests)) | 42.30 / 42.42 / 42.46 | +0.16 [−0.18, +0.51] | 40.63 / 40.59 / 40.91 | 7 / 7 / 9; 80 / 63 / 88 |
 
 Quiet FLEURS-vi dev: its 180 rows under −32.5 dBFS RMS, as [the quiet clips](#the-quiet-clips).
-Every set healthy in every pass.
+Every scored set healthy in every pass (the noise rows have no reference).
 
-- **The data gate's loss is the stage's level.** The 0.1 arm against `twoway_final`, as it was →
+- **Most of the data gate's loss is the stage's level** (on the 0.1 arm after GRPO, the gate's
+  only model left; the control SFT is gone). It against `twoway_final`, both as it was → both at
   +14 dB: FLEURS-vi dev −2.76 [−4.42, −1.09] → −0.94 [−2.35, +0.33], its quiet half −6.11 →
   −1.99 [−4.03, −0.15], FLEURS-vi test −3.21 → −0.83 [−1.72, +0.02], the mean of 11 +1.37 → +1.47.
-  At +14 its quiet clips read as `twoway_final`'s did as it was (39.43 against 39.12). +10 dB gets
-  about half of it (quiet half +4.63, still −3.23 behind).
-- **The rest is a wash.** VI→EN FLEURS test rose in all four models (+0.43 to +3.65) and EN→VI
-  FLEURS, the quietest set (median RMS −59.5 dBFS), dipped 0.0–0.8. Single sets past their
-  intervals at +14: update 1,400 FLEURS-en test −0.78 [−1.53, −0.02] and dev −1.09
-  [−2.11, −0.12], `twoway_final` FLEURS-en dev −1.56 [−2.77, −0.43], the 0.1 arm
-  `en-vi-val/libriheavy` −1.46 [−2.63, −0.40], the student `giga-heldout` −1.03 [−1.71, −0.36];
-  run-to-run noise reaches ~1.3 a set ([Noise](#noise)).
+  So a quiet-clip gap of ~2 remains, as [the quiet clips](#the-quiet-clips) found (part of the
+  cause, not all). +10 dB gets about half (quiet half +4.63, still −3.23 behind).
+- **A trade between directions.** VI→EN FLEURS test rose in all four models (+0.43 to +3.65;
+  past its interval in all but the student) and EN→VI FLEURS, the quietest set (median RMS −59.5
+  dBFS), fell in all eight model-and-split cells (test −0.04 to −0.78, dev −0.07 to −1.56, ~0.75
+  on average). Losses past their intervals at +14: update 1,400 FLEURS-en test −0.78
+  [−1.53, −0.02] and dev −1.09 [−2.11, −0.12], `twoway_final` FLEURS-en dev −1.56 [−2.77, −0.43],
+  the 0.1 arm `en-vi-val/libriheavy` −1.46 [−2.63, −0.40], the student `giga-heldout` −1.03
+  [−1.71, −0.36]; run-to-run noise reaches ~1.3 a set ([Noise](#noise)).
 - **Noise alone:** the 3B models write fluent invented sentences on most held-out rooms at every
-  setting ("Thank you for joining our New Day Life") and on 1–4 of the 10 synthetic rows; the louder
-  stage adds none. The student, whose on-policy stage heard rooms, writes on 5–8 of 48 rooms.
+  setting ("Thank you for joining our New Day Life") and on 1–4 of the 10 synthetic rows; at +14
+  on fewer rows than as it was (44 → 41, 42 → 31, 31 → 27). The student writes on 5–8 of 48 rooms
+  (7 → 9 rows, 80 → 88 words), and it runs without a voice gate on the phone.
   The Mac check that found update 1,400 silent on noise alone used other rooms and a primed stream
   ([noisy-source](noisy-source.md#rooms)); these rows start cold.
 - The student as it was reproduces its tests (mean of 11 42.30 against 42.48).

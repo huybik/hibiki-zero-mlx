@@ -47,7 +47,7 @@ Planned 2026-11-23; its gates are run ([Order](#order)), the full SFT is not sta
   (not adopted); the anchored probe favours β 0.02; **the data gate failed as written** on VI→EN FLEURS
   dev (−3.85 chrF at seed 44, −3.66 at 61), on its quiet clips, where the new model depends on the
   input's level and `twoway_final` doesn't. Why the SFT lost that is not established, but the
-  input level stage 14 dB louder, adopted 2026-11-26, takes it back: there the 0.1 arm after GRPO
+  input level stage 14 dB louder, adopted 2026-11-26, takes most of it back: there the 0.1 arm after GRPO
   trails `twoway_final` on FLEURS-vi dev by −0.94 [−2.35, +0.33], against −2.76 at the old stage
   ([the level-stage test](exposure-bias-runs.md#the-level-stage-test)). The full SFT (~36–38 h)
   waits for the user's go.
@@ -129,10 +129,10 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   stage) and writes English for fewer OneVoice EN→VI clips.
 - **Every evaluation adds**, recorded in full ([sft-evaluation](sft-evaluation.md#recording-results)):
   - OneVoice EN→VI clips written in English (`data/eval/onevoice-en/test.jsonl`): update 1,400
-    wrote 18 of 100 at 6 bits in MLX and 22 in PyTorch at seed 43, so compare on one runtime;
+    wrote 18 of 100 at 6 bits in MLX and 22 in PyTorch at seed 43 (old stage), so compare on one runtime;
   - the user's Vietnamese clips (`data/eval/user/test.jsonl`; `user5/` holds each five times),
     which update 1,400 took for English;
-  - `en-vi-val-en-noisy`, which the teacher has never been scored on;
+  - `en-vi-val-en-noisy` (update 1,400: cv27 24.79, Libriheavy 37.35 at seed 43, the current stage);
   - after the SFT too, the held-out room check ([noisy-source](noisy-source.md#rooms));
   - LAAL on FLEURS test (`eval.py --laal`; update 1,400 at the old stage: 2.18 s VI→EN, 2.52 s EN→VI).
 

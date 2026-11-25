@@ -22,12 +22,8 @@ the floor has risen to the new level at 1.5 dB a second: 17 s from a −70 dBFS 
 Frames whose envelope is above TARGET_PEAK pass unchanged, and a raised frame never peaks above
 it (to float32 rounding), so nothing clips. It is causal and frame by frame, so a stream gives
 the same samples in any whole-frame chunks. The MLX runtime and the PyTorch evaluation use this
-module; the Swift runtime mirrors it (`Audio.Leveller`).
-
-The settings were first a −20 dBFS target, a −40 dBFS ceiling and 30 dB of gain; all three moved
-14 dB louder on 2026-11-26. Four models scored over every set at both: none lost on the mean of the
-eleven test sets, the next SFT recipe's quiet Vietnamese clips gained 6.4 chrF, and noise alone
-drew no more words (docs/agent-memory/sft-evaluation.md#input-level).
+module; the Swift runtime mirrors it (`Audio.Leveller`). Why these settings, and the first ones
+(14 dB quieter): docs/agent-memory/exposure-bias-runs.md#the-level-stage-test.
 """
 
 from __future__ import annotations

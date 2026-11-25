@@ -233,9 +233,10 @@ stream of its own (its `_stereo.wav` keeps the levelled source, what the model h
 `main.py` levels a file's first channel or a mic session, `Translator` a session (`reset` starts
 a new one). Scores do not compare across settings: none from before the stage (2026-11-12) with
 later ones, most of all on FLEURS, nor from before 2026-11-26, when the first settings (−20, −40
-and 30 dB, those of the measurements below) all moved 14 dB louder. Over every set, four models
-lost nothing on the mean of the 11 test sets, the next SFT's quiet FLEURS-vi clips gained 6.4
-chrF and noise alone drew no more words ([the test](exposure-bias-runs.md#the-level-stage-test)).
+and 30 dB; the "Why" and "On the model" measurements below) all moved 14 dB louder. Four models
+lost nothing beyond noise on the mean of the 11 test sets (−0.11 to +0.41), the 0.1 arm's quiet
+FLEURS-vi clips gained 6.4 chrF, EN→VI FLEURS lost ~0.75, and the 3B models wrote on fewer
+noise-only rows, the student on about as many ([the test](exposure-bias-runs.md#the-level-stage-test)).
 
 Why (2026-11-12, the two-way run's predictions at 60,000 and 72,000; true sample peaks):
 
@@ -255,40 +256,39 @@ Why (2026-11-12, the two-way run's predictions at 60,000 and 72,000; true sample
   −12 dBFS on 90% of its clips, shows no trend.
 
 The noise ceiling: the gain cannot tell quiet speech from a quiet room, so with the envelope
-alone a stream's start and every pause once the envelope fell under −20 dBFS (2.9 s after a
-−3 dBFS peak) were raised to −20 like speech (a −45 dBFS room to −20, and 22% of
-`en-vi-val-noisy`'s frames). With the floor tracker, noise-only streams at −66 and −45 dBFS come
-out with their loudest frame at −36 to −37, as do −45 dBFS noise after 2 s of digital silence and
-a −55 room after a 3 s mute that outputs zeros. The first ceiling sat where the English training recordings' quietest
-80 ms frame stays in 90% of clips (Common Voice −40, Libriheavy −48 dBFS at p90; medians −63; the
-VieNeu TTS is digital silence; the tranche's GigaSpeech 2 runs louder, median −33, and
-`en-vi-val-noisy` −43). What it costs or leaves:
+alone a stream's start and every pause were raised to the target like speech (at the first
+settings a −45 dBFS room to −20, and 22% of `en-vi-val-noisy`'s frames). With the floor tracker,
+noise-only streams at −66 and −45 dBFS come out with their loudest frame at −22 to −23, as do
+−45 dBFS noise after 2 s of digital silence and a −55 room after a 3 s mute that outputs zeros.
+The first ceiling, −40, sat where the English training recordings' quietest 80 ms frame stays in
+90% of clips (Common Voice −40, Libriheavy −48 dBFS at p90; medians −63; the VieNeu TTS is
+digital silence; the tranche's GigaSpeech 2 runs louder, median −33, and `en-vi-val-noisy` −43);
+the current one is 14 dB over it. What it costs or leaves:
 
 - Speech whose quietest frames are less than ~20 dB under its peaks is raised less: leon.wav
-  (continuous narration) lowered 30 to 50 dB comes out at −29 dBFS each time. Quiet speech whose
+  (continuous narration) lowered 30 to 50 dB comes out at −15 dBFS each time. Quiet speech whose
   pauses are exact zeros (noise-gated, trimmed) is raised less still, as only its speech frames
-  set the floor: leon with its quietest 30% of frames zeroed, lowered 45 dB, comes out at −34.
+  set the floor: leon with its quietest 30% of frames zeroed, lowered 45 dB, comes out at −20.
 - Frames from −90 to −70 dBFS set the floor at its lowest, so a real room that gets louder (a
-  fan switched on) is raised toward −20 until the floor has risen to it: −75 dBFS for 2 s, then
-  −45 noise, comes out near −20 at its onset, −22 to −25 at 4 s, −27 at 6 s and −33 at 10 s,
-  its loudest frame settling near −37 once the floor has caught up (~15 s; three noise seeds).
-  A mute that dithers (±1 16-bit step) counts as such a
-  room. Only digital silence is left out of the floor; leaving out everything under −70 cost the
-  quiet FLEURS clips' agreement 0.74 → 0.59, because their own floor is under −70 (FLEURS-en
-  median −83, 2-3 16-bit steps).
+  fan switched on) is raised toward −6 until the floor has risen to it: −75 dBFS for 2 s, then
+  −45 noise, comes out near −6 at its onset, −8 to −11 at 4 s, −13 at 6 s and −19 at 10 s,
+  its loudest frame settling near −23 once the floor has caught up (~15 s; three noise seeds).
+  A mute that dithers (±1 16-bit step) counts as such a room. Only digital silence is left out of
+  the floor; leaving out everything under −70 cost the quiet FLEURS clips' agreement 0.74 → 0.59,
+  because their own floor is under −70 (FLEURS-en median −83, 2-3 16-bit steps).
 - Mic mode on speakers: the stage raises the echo of the translation like any quiet sound, up
   to speech level a few seconds after the user stops talking, so mic mode cancels the echo
   before the stage ([mlx-inference](mlx-inference.md#runtime)).
-- Frames raised, over every clip: FLEURS-en 72%, FLEURS-vi 49%, Common Voice English 20%,
-  `en-vi-val-noisy` 14-17%, MultiMed-ST 5%, Libriheavy 5%, the TTS 1%. The training caches were
-  coded without the stage. leon.wav as it is (peak −3.8 dBFS) passes unchanged.
+- Frames raised over the test sets' clips: FLEURS-vi 99%, FLEURS-en 98%, Libriheavy English 93%,
+  `en-vi-val-noisy` 83–88%, Common Voice English 77%, MultiMed-ST 76%, the TTS 57% (45, 73, 4,
+  13–17, 19, 5 and 1% at the first settings). The training caches were coded without the stage.
+  leon.wav as it is (peak −3.8 dBFS) passes unchanged.
 
 On the model (2026-11-13, the two-way run's step 252,000, `eval.py` batch 64, seed 47 without
 and with the stage, seed 48 without for the noise between seeds):
 
 - FLEURS-en 23.15 → 33.39 chrF, empty rows 36 → 4 (its 191 clips under −40 dBFS: 35 → 4 empty,
-  18.0 → 34.1 on the non-empty rows); FLEURS-vi 36.21 → 39.35, empty rows 6 → 0. Seed 48 moved
-  them 0.8 each.
+  18.0 → 34.1 on the non-empty rows); FLEURS-vi 36.21 → 39.35, empty rows 6 → 0 (seed 48: ±0.8).
 - The loud sets hold: MultiMed-ST 37.37 both, `en-vi-val` 43.18/45.45 → 44.05/45.41,
   `en-vi-val-en` 31.83/38.72 → 32.77/39.73 (seed 48 moved cv27 2.8). `en-vi-val-noisy`,
   averaged over seeds 47 and 48: cv27 41.33 → 41.11, Libriheavy 42.62 → 43.07.
