@@ -15,7 +15,7 @@ with the same math on the same weights:
 
 - the causal attention mask becomes `is_causal=True` (flash);
 - grouped-query attention runs in SDPA (`enable_gqa`) instead of copying each key and value to 16
-  heads: in generation that copy is the whole KV cache, twice per layer and step;
+  heads (validation, and steps past the ring; generation steps are the next item);
 - a generation step's attention (`_step_attention`, from `LMGen._step`) reads only the written
   slots of the KV cache, rounded up to `STEP_SLOTS` (64), and the query heads that share a
   key/value head as that head's query positions (see below);
@@ -28,7 +28,7 @@ with the same math on the same weights:
   and `is_causal` attention, which equals moshi's mask while T is within the 3,000-frame
   context (`train.py` checks `--stream-seconds` at startup, the forward each call). Compiling
   moshi's own forward instead recompiles per batch shape. Validation and generation (eval mode)
-  keep moshi's forward;
+  keep moshi's forward but for the generation step's attention;
 - each compiled function keeps up to 64 graphs, not dynamo's 8. moshi compiles `_rms_norm`,
   `apply_rope` and `gating_forward_kernel` once per dtype, rank, grad mode, autocast state and
   shape class, and past the limit a function's new variants run eagerly for the rest of the
@@ -36,13 +36,13 @@ with the same math on the same weights:
   resumes, validates, trains and validates again built 8 (2026-11-03, H200 NVL).
 
 **A generation step's attention** (2026-11-25, RTX 5090, the heads student at 320 rows of 1,208
-steps): moshi reads the whole cache at every step, 38 of the 46 ms of GPU a step; narrowed, the
-whole rollout takes 19.2 s instead of 52.8 (15.9 against 43.7 ms a step), the peak unchanged
-(23.4 GiB). Only the layout, no narrowing: 29.9 s. Seeded rollouts are token for token the same,
-with CUDA graphs on: the student at 320 rows, the 3B at 32, and all 7,375 outputs of the 13 test
-sets (`eval.py`, batch 64; its generation 259.5 → 170.7 s). It applies to `LMGen` runs of a
-main transformer with grouped-query attention whose rows step together: an attention step past
-the cache's ring, `support_out_of_sync` and any other transformer keep moshi's. A graph is
+steps): moshi reads the whole cache at every step, 37.7 of the 46.2 ms of kernels a step (profiled,
+eager; 43.7 ms of wall with CUDA graphs); narrowed, the whole rollout takes 19.2 s instead of 52.8
+(15.9 against 43.7 ms a step), the peak unchanged (23.4 GiB). Only the layout, no narrowing: 29.9 s.
+Seeded rollouts are token for token the same, with CUDA graphs on: the student at 320 rows, the 3B
+at 32, and all 7,375 outputs of the 13 test sets (`eval.py`, batch 64; its generation 259.5 →
+170.7 s). Its contract: only `LMGen` steps it, one frame a call, rows in sync and the context fixed
+while streaming (`support_out_of_sync` and steps past the cache's ring keep moshi's). A graph is
 captured again at each width.
 
 Checked against moshi as shipped (2026-11-03, H100 NVL): fp32 loss equal, logits within 1.7e-6
