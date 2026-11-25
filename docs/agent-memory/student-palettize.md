@@ -3,7 +3,7 @@
 Read when touching `training/student/palettize.py`, `train.py --palettize-bits` or `--park-states`,
 or training, exporting or judging a heads student against the phone's Core ML palettization. Back
 to [CONTEXT.md](../../CONTEXT.md) · [Method](#method) · [The 6-bit run](#the-6-bit-run) ·
-[Tests](#tests). The student is in [student-heads](student-heads.md), its Core ML export and the
+[Tests](#tests) · [Neural Engine agreement](#neural-engine-agreement). The student is in [student-heads](student-heads.md), its Core ML export and the
 Precision table in [lm-npu](lm-npu.md#precision).
 
 Plan stage 6.4 (2026-11-21): on the Neural Engine the 6-bit palettized LM agrees with bf16's
@@ -134,6 +134,42 @@ every set healthy:
   intervals miss zero, about what chance gives: `en-vi-val/libriheavy` +1.05 [+0.02, +2.39] and
   `en-vi-val-noisy/libriheavy` −0.96 [−2.00, −0.06].
 - **Reading**: at 6 bits the palettization costs no measurable translation quality on the GPU,
-  snapped without training or not, so free-running chrF cannot rank them. Training against the
-  tables nearly halved the KL from the bf16 weights (0.0030 → 0.0017); whether that shows in the
-  phone's arithmetic is the Neural Engine's argmax agreement to measure. 4 bits is not run yet.
+  snapped without training or not, so free-running chrF cannot rank them; the Neural Engine's
+  agreement below does.
+
+## Neural Engine agreement
+
+The [Precision](lm-npu.md#precision) measurement (2026-11-25, the Mac, M4 Pro): the start in MLX
+bf16 (`z1200_bf16`) translated the first 8 FLEURS dev rows each way (seed 42 + row, the gate's),
+recording every frame's inputs and sampled text; each Core ML model replayed those 4,533 frames on
+the Neural Engine. Share of argmaxes equal to the reference's:
+
+| Model | Text | Codebook 0 | 1–7 | 8–15 | All 16 |
+|---|---|---|---|---|---|
+| Start, Core ML fp16 (`z1200_ane16`) | 99.6% | 98.9% | 97.0% | 96.9% | 97.1% |
+| Start, 6 bits, the export's own k-means (`z1200_ane6`) | 99.3% | 97.8% | 93.9% | 93.3% | 93.8% |
+| Start snapped, 6 bits (`z1200snap_ane6`) | 99.4% | 97.7% | 93.6% | 92.9% | 93.5% |
+| Update 4,000 snapped, 6 bits (`pal6c4000_ane6`) | 99.5% | 98.2% | 94.8% | 94.3% | 94.7% |
+
+- **Training wins on the phone's arithmetic.** Paired over the 16 clips (10,000 draws), All 16:
+  update 4,000 − the plain 6-bit export +0.89 [+0.71, +1.07], − the snapped start +1.23 [+0.98,
+  +1.55]; snapping alone −0.34 [−0.57, −0.16] (its k-means fits slightly worse than the
+  export's). Text +0.15 [+0.00, +0.32], at the ceiling. It closes about a quarter of the 6-bit
+  export's gap to fp16 (3.3 points).
+- 2,543 of the frames follow the source (eight clips wrote no EOS and ran the 20 s silent tail),
+  where agreement comes easier. While the source plays (1,990 frames), All 16: fp16 95.9, plain
+  6 bits 91.3, snapped 90.8, update 4,000 92.4.
+- Update 4,000 is a trained model scored against the start's argmaxes, so its gain is less
+  palettization error net of any drift from the teacher it distilled.
+- The export round trip: every palettized weight read back from the compiled models equals the
+  snapped one, bit for bit in 72 of update 4,000's 73 weights (one group of
+  `layers.4.gating.linear_in` stores −0.0 where the export writes +0.0) and all 73 of the snapped
+  start's.
+- Tools and records: `/Volumes/data/hibiki-zero-evals/mac/npu-agree/` (`npu_agree.py record` and
+  `replay`; `phase2.sh TAG CHECKPOINT` stages, exports at 6 bits and replays a checkpoint against
+  the saved trajectory in ~12 min; `roundtrip.py`, `compare.py`; run through `py.sh`, which puts
+  the worktree's code first at nice 19). On update 16,000's models and 4 clips it reproduces the
+  Precision table within a point once the silent tails are cut. Models are under
+  `/Volumes/data/models/hibiki/weights/student_heads14_cb16/` (`z1200_*`, `z1200snap_*`,
+  `pal6c4000_*`).
+- 4 bits is not run yet.

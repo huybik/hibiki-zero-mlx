@@ -66,7 +66,9 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
 ## Precision
 
 Teacher-forced on the MLX runtime's own steps: 695 frames of 4 FLEURS dev clips (2 each way,
-`student_heads14_cb16` update 16,000, 2026-11-20, scratch scripts). Each column is the share of
+`student_heads14_cb16` update 16,000, 2026-11-20; rebuilt 2026-11-25 as
+`/Volumes/data/hibiki-zero-evals/mac/npu-agree/npu_agree.py`, with a model trained against the
+6-bit tables: [student-palettize](student-palettize.md#neural-engine-agreement)). Each column is the share of
 argmaxes equal to the MLX bf16 run's, given the same inputs and sampled text:
 
 | Model | Text | Codebook 0 | 1–7 | 8–15 | All 16 |

@@ -270,8 +270,9 @@ codebook 0 on 6% of frames, so the encoder stays on the CPU, [mimi-npu](agent-me
    distilled from the bf16 student, recovers most of a post-training quantizer's loss in 2026
    reports (4-bit quantization-aware distillation at ~97% of bf16), and could let 4 bits ship.
    Built (`train.py --palettize-bits`, `training/student/palettize.py`); the 6-bit run from the
-   best heads student (2026-11-25) leaves test chrF where it was, as does snapping without
-   training ([student-palettize](agent-memory/student-palettize.md#tests)).
+   best heads student (2026-11-25) leaves test chrF where it was and lifts the Neural Engine's
+   agreement with bf16 from 93.8% to 94.7% of tokens, about a quarter of the way to fp16's 97.1%
+   ([student-palettize](agent-memory/student-palettize.md#neural-engine-agreement)). 4 bits next.
 
 ### 7. Two-way speech
 
