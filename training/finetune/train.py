@@ -38,6 +38,13 @@ forcing never does: this shows the model its own word choices in training at the
 main-transformer forward a step. Validation is unchanged
 ([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
 
+With --room-share S, that share of the training streams hold a room's noise in their source
+wherever nobody speaks (the lead, the gaps between sentences, after the last), instead of digital
+silence, as GRPO's streams do (`streams.run_rooms`, from the noise bank in --bank-dir); the targets
+keep their silence there, so the model learns to stay quiet in a room, as a phone's microphone hears
+one between sentences. Validation keeps digital silence, so its losses compare across runs
+([noisy-source](../../docs/agent-memory/noisy-source.md#rooms)).
+
 Checkpoint pairs (model + optimizer) are saved every --save-every steps from a pinned-memory
 snapshot written by a background thread, so a save stalls training only for the copy off the
 GPU. A start in an --out-dir that holds complete pairs resumes the newest one, so a preempted run
@@ -95,6 +102,7 @@ RESUME_KEYS = (
     "palettize_bits",
     "palettize_refit",
     "sampled_text",
+    "room_share",
     "mimi_weight",
     "tokenizer",
     "epochs",
@@ -175,6 +183,7 @@ def parse_args() -> argparse.Namespace:
         "sampled there, where it sampled one (scheduled sampling of the words); the timing and "
         "the targets stay the dataset's.",
     )
+    streams.add_room_args(parser, 0.0)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
@@ -369,6 +378,7 @@ def main() -> None:
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
     # near-tie in a residual code); at the cache's codebooks, which streams are assembled at.
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
+    mimi = checkpoint_info.get_mimi(device=device)  # the rooms' encoder, then validation's
     # A teacher reads the whole stream; the model's rows are cut from each batch on the GPU.
     student_rows = None
     if teacher_info is not None:
@@ -376,7 +386,8 @@ def main() -> None:
             raise ValueError(f"the teacher must read the cache's {layout.dep_q} codebooks a stream")
         student_rows = torch.tensor(streams.model_rows(layout, codebooks), device=device)
     dataset = streams.StreamDataset(
-        rows, layout, silence, frames, args.seed, layout.dep_q if teacher_info else codebooks
+        rows, layout, silence, frames, args.seed, layout.dep_q if teacher_info else codebooks,
+        streams.run_rooms(args, mimi, frames[1], layout.dep_q), args.room_share,
     )
     batches = dataset.batches(args.batch_frames, args.seed)
     exposure = dataset.exposure()
@@ -465,7 +476,6 @@ def main() -> None:
     if teacher_info is not None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
         teacher = common.load_teacher(teacher_info, args.teacher_weight, device, codebooks)
-    mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
     optimizer = common.fused_adamw(params, args)

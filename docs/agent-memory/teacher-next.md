@@ -86,6 +86,9 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   80 GB whole (~97 GiB), ran 6.5% slower in slices, and `--micro-frames` is gone. On an H200 they
   fit, saving ~5 h for ~25% more money, but at 3e-6 and 1.78× fewer updates an hour of data,
   which changes the recipe ([sft-speed](sft-speed.md#measurements)).
+- `--room-share 0.5` (the bank fetched as `grpo_launch.sh` fetches it): half the streams hear a room
+  where nobody speaks, as GRPO's do, so the SFT already teaches quiet in a room
+  ([noisy-source](noisy-source.md#rooms)).
 - `--schedule constant` for one pass (~445,000 updates), validated every 20,000, saved every
   4,000, `--keep-checkpoints 1`, a new `--seed`; no `--sampled-text` (0.1 tied in experiment 1).
 - **Two decay branches** (`--schedule decay`, [sft-training](sft-training.md#schedules-and-averaging)),

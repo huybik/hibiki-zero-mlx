@@ -72,7 +72,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, swap_slots
+from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, require_dir, swap_slots
 from training.prep import augment
 from training.prep.text_timing import ALIGNERS, CAPACITY_REASONS
 
@@ -111,6 +111,8 @@ SILENCE_WARMUP = 16  # frames of Mimi's start-up codes when it encodes from a fr
 # Teacher-forced validation streams and their batch order use one fixed seed, so every run and
 # validate.py score the same streams, and --val-batches takes a random subset.
 VALIDATION_SEED = 0
+# Rooms where nobody speaks (`run_rooms`), drawn and encoded once a run; its streams draw from them.
+ROOMS = 256
 PHOMT_ID = re.compile(r"^(phomt_s\d+)r(\d+)$")  # consecutive rows of one source chunk: doc, seq
 PACK_WORKERS = 32
 
@@ -731,6 +733,24 @@ def room_codes(mimi: Any, bank: Any, count: int, frames: int, codebooks: int, se
     samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
     tracks = augment.room_tracks(bank, count, samples, seed)
     return torch.stack([encode_track(mimi, torch.from_numpy(track), codebooks) for track in tracks])
+
+
+def add_room_args(parser: Any, share: float) -> None:
+    """The rooms' options (`grpo.py`, its profiler, `train.py`), --room-share defaulting to `share`."""
+    parser.add_argument(
+        "--room-share", type=float, default=share,
+        help="The share of streams whose source holds a room's noise where nobody speaks; 0 keeps digital silence.",
+    )
+    parser.add_argument("--bank-dir", type=Path, default=Path("data/rirs_noises"), help="The noise bank's parent (augment.fetch_bank's root).")
+
+
+def run_rooms(args: Any, mimi: Any, frames: int, codebooks: int) -> torch.Tensor | None:
+    """A run's ROOMS rooms (`room_codes`, drawn with --seed from the bank under --bank-dir), each
+    `frames` long, encoded by `mimi` (the run's, on its GPU); None at --room-share 0."""
+    if args.room_share <= 0:
+        return None
+    bank = require_dir(args.bank_dir / "RIRS_NOISES", "noise bank (augment.fetch_bank; grpo_launch.sh fetches it)")
+    return room_codes(mimi, bank, ROOMS, frames, codebooks, args.seed)
 
 
 def model_rows(layout: Layout, codebooks: int) -> list[int]:

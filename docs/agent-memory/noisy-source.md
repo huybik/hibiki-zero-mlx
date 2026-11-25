@@ -62,13 +62,16 @@ clip ─► reverb p 0.5 ─► + noise p 0.8, SNR U[5, 30] dB ─► band ─�
   - speed changes: the cached delays and text timing assume the clip's own timing, and a slowed
     source would move Vietnamese words past the English that translates them;
   - low-bitrate codecs.
-- Known gap: SFT stream gaps hold the encoded digital-silence track, so a noisy row sits between
-  silent gaps where a real recording stays noisy. GRPO's gaps hold rooms ([Rooms](#rooms)).
+- SFT stream gaps hold the encoded digital-silence track by default, so a noisy row sits between
+  silent gaps where a real recording stays noisy. `train.py --room-share` fills a share of them
+  with rooms as GRPO's are ([Rooms](#rooms)); no run has used it yet.
 
 ## Rooms
 
 GRPO's streams hold a room's noise in their source wherever nobody speaks, in a `--room-share`
-(0.5) of streams; the rest keep digital silence, what a voice gate passes
+(0.5) of streams; the rest keep digital silence, what a voice gate passes. `train.py` takes the
+same `--room-share` and `--bank-dir` (off by default; validation streams keep silence), with the
+targets silent there, so an SFT run can teach the same quiet before GRPO (`streams.run_rooms`)
 ([grpo](grpo.md#design)). The user asked for it (2026-11-14: "can we add artifical silence into
 the data so that grpo also penalise translating when user silent?"). Text after a rollout's
 first EOS is neither rewarded nor trained, and 92–96% of rollouts write one after the source

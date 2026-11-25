@@ -47,7 +47,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   timing](#target-timing)), never before the previous target ends; a
   0.3–1.5 s gap (3–10 s one time in ten) separates the sources, and is stretched so the previous
   target overhangs the next source by at most 2 s. Silent
-  stretches hold slices of an encoded-silence track on both sides and PAD text, all supervised;
+  stretches hold slices of an encoded-silence track on both sides (in the source, a room's noise
+  for a `--room-share` of streams: [noisy-source](noisy-source.md#rooms)) and PAD text, all supervised;
   the last row keeps the source and text EOS, and the source after its EOS stays silence. A tenth
   of the streams (`streams.SINGLE_ROW_STREAMS`, from 2026-11-04) hold one row, lead to both EOS,
   as a single-sentence evaluation feeds it: the first run, on 30–120 s streams only, never saw the
