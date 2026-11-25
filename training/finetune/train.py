@@ -165,6 +165,11 @@ def parse_args() -> argparse.Namespace:
         help="Refit the palettization tables every this many steps; must divide --save-every.",
     )
     parser.add_argument(
+        "--park-states", action="store_true",
+        help="Park AdamW's states and the teacher in pinned host memory while validation translates "
+        "free-running, which reads neither: the heads student's validation on a 32 GB card.",
+    )
+    parser.add_argument(
         "--sampled-text", type=float, default=0.0, metavar="P",
         help="Probability that a word piece the main transformer reads is the word piece the model "
         "sampled there, where it sampled one (scheduled sampling of the words); the timing and "
@@ -465,6 +470,8 @@ def main() -> None:
 
     optimizer = common.fused_adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
+    offload = common.HostOffload()
+    teacher_params = [] if teacher is None else list(teacher.parameters())
 
     val_log_path = out_dir / "val_log.jsonl"
     log_path = out_dir / "train_log.jsonl"
@@ -553,11 +560,15 @@ def main() -> None:
                 )
                 for name, loader in val_loaders.items()
             }
-            # On a bf16 copy of the model, in the room the gradients freed above.
+            # On a bf16 copy of the model, in the room the gradients freed above, and with
+            # --park-states AdamW's states and the teacher.
+            if args.park_states:
+                offload.to_host(common.adam_states(optimizer) + teacher_params)
             free_running = common.validate_free_running(
                 lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
                 args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
             )
+            offload.to_device()
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, losses in teacher_forced.items():
             print(

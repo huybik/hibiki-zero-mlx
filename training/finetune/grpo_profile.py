@@ -2,7 +2,7 @@
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
 The policy's fp32 weights and AdamW's two states are held as in training (in pinned host memory
-while a window generates, `grpo.HostOffload`; with --park-states AdamW's also while the old-logprob
+while a window generates, `common.HostOffload`; with --park-states AdamW's also while the old-logprob
 pass and the update's micro-batches run, the round trip untimed and the optimizer's step, which
 holds them, left out of the peaks), and each stage runs on real streams from the start checkpoint:
 - rollout generation at each --gen-batch rows of --frames: time per step and peak memory, timed
@@ -91,7 +91,7 @@ def profile_generation(
     optimizer states and `parked` (a teacher's parameters) in host memory as a run parks them, and
     return the rollouts of every source at the largest size that fits, with them back on the GPU."""
     generator = common.bf16_copy(info, lm, lm.device)
-    offload = grpo.HostOffload()
+    offload = common.HostOffload()
     offload.to_host(grpo.trainer_tensors(lm, optimizer) + parked)
     report["resident_while_generating_gib"] = torch.cuda.memory_allocated() / 2**30
 
@@ -308,7 +308,7 @@ def main() -> None:
                                args.kl_coef or 0.0)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     if args.park_states:
-        grpo.park_states(grpo.HostOffload(), optimizer)  # as a run's old-logprob pass and micro-batches find them
+        grpo.park_states(common.HostOffload(), optimizer)  # as a run's old-logprob pass and micro-batches find them
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
         condition = common.batch_condition_tensors(lm, info.model_type, micro)

@@ -292,6 +292,12 @@ sampling temperature) all run it, so a change to it needs all three checked
 - **Palettization** (`--palettize-bits`, a heads student): the step runs on the weights snapped
   to the Core ML export's k-means tables, the straight-through estimator
   ([student-heads](student-heads.md#palettization)).
+- **Parking** (`--park-states`): while validation translates free-running, AdamW's states and
+  the teacher wait in pinned host memory (`common.HostOffload`, as GRPO's evaluation parks them):
+  9.5 + 2.4 GiB on the heads student distilling itself. Without it, that run's validation on a
+  32 GB card ran out of memory at Mimi's encode of the first batch, at batch 64 and 32 (2026-11-25;
+  28 GiB held, the palettizer's full-precision copy among it). Off by default: the 3B's SFT fits
+  on 80 GB without it, and parking would pin 23 GiB more of host memory.
 - **Scheduled sampling** (`--sampled-text P`, not with a teacher): the main transformer samples
   every scored text token without gradients, each word piece it reads becomes the sampled word
   piece there with probability P, and the loss scores the dataset's tokens; the PADs (timing),

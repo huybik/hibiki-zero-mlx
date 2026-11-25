@@ -157,7 +157,7 @@ disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
 # where the moments (8 a parameter) were.
 gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30
 # RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
-# policy and AdamW's two states, a block each a tensor) and grpo.HostOffload's copy of the same and
+# policy and AdamW's two states, a block each a tensor) and common.HostOffload's copy of the same and
 # of a teacher's bf16 weights: 70.0 GiB on the 3B, whose run held 17 GiB more that it could not
 # give back. That 17 and 5% on top: 92 GiB on the 3B, 54 on the heads student under the 3B (34.4
 # pinned; its first 40 updates on a 5090 held 52.1, page cache included).

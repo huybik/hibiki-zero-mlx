@@ -218,6 +218,51 @@ def fused_adamw(params: list[Any], args: argparse.Namespace) -> torch.optim.Adam
     )
 
 
+class HostOffload:
+    """GPU storages parked in pinned host memory while a phase that never reads them runs: GRPO's
+    window generates on a bf16 copy, so the fp32 policy and AdamW's states (37.5 GB on the 3.1B
+    model) wait on the host and the generation batches get the GPU's memory (grpo.md#running);
+    SFT's free-running validation, with --park-states, parks AdamW's states and the teacher.
+    `to_host` copies each storage out and shrinks it to nothing, so nothing may read those tensors
+    until `to_device` restores them exactly; the tensors, the optimizer's and the compiled
+    forward's alike, stay the same objects. The pinned buffers are allocated once per storage and
+    reused (AdamW's states appear at the first update)."""
+
+    def __init__(self) -> None:
+        self.host: dict[int, torch.Tensor] = {}
+        self.out: list[tuple[torch.UntypedStorage, torch.Tensor]] = []
+
+    def to_host(self, tensors: list[torch.Tensor]) -> None:
+        if self.out:
+            raise RuntimeError("HostOffload.to_host while storages are already out")
+        storages = {}
+        for tensor in tensors:
+            storage = tensor.untyped_storage()
+            if storage.nbytes():
+                storages.setdefault(storage._cdata, storage)  # its StorageImpl: shared views once
+        for key, storage in storages.items():
+            if key not in self.host:
+                self.host[key] = torch.empty(storage.nbytes(), dtype=torch.uint8, pin_memory=True)
+            self.host[key].untyped_storage().copy_(storage, non_blocking=True)
+            self.out.append((storage, self.host[key]))
+        torch.cuda.synchronize()  # every copy has landed before its storage goes
+        for storage, _ in self.out:
+            storage.resize_(0)
+        torch.cuda.empty_cache()  # whole segments for the generation batches
+
+    def to_device(self) -> None:
+        for storage, host in self.out:
+            storage.resize_(host.numel())
+            storage.copy_(host.untyped_storage(), non_blocking=True)
+        torch.cuda.synchronize()
+        self.out = []
+
+
+def adam_states(optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
+    """AdamW's state tensors (none before its first step)."""
+    return [value for state in optimizer.state.values() for value in state.values() if torch.is_tensor(value)]
+
+
 def load_lm(checkpoint_info: Any, checkpoint: Path | None, device: Any, dtype: torch.dtype) -> Any:
     """The base model, or `checkpoint` in a model built without reading the base weights, which
     a full checkpoint overwrites anyway (12.5 GB of fp32 for a fine-tuned base)."""
