@@ -3,7 +3,8 @@
 Read when touching `training/student/palettize.py`, `train.py --palettize-bits` or `--park-states`,
 or training, exporting or judging a heads student against the phone's Core ML palettization. Back
 to [CONTEXT.md](../../CONTEXT.md) · [Method](#method) · [The 6-bit run](#the-6-bit-run) ·
-[Tests](#tests) · [Neural Engine agreement](#neural-engine-agreement). The student is in [student-heads](student-heads.md), its Core ML export and the
+[Tests](#tests) · [Neural Engine agreement](#neural-engine-agreement) ·
+[Release and phone](#release-and-phone). The student is in [student-heads](student-heads.md), its Core ML export and the
 Precision table in [lm-npu](lm-npu.md#precision).
 
 Plan stage 6.4 (2026-11-21): on the Neural Engine the 6-bit palettized LM agrees with bf16's
@@ -172,4 +173,20 @@ the Neural Engine. Share of argmaxes equal to the reference's:
   Precision table within a point once the silent tails are cut. Models are under
   `/Volumes/data/models/hibiki/weights/student_heads14_cb16/` (`z1200_*`, `z1200snap_*`,
   `pal6c4000_*`).
+
+## Release and phone
+
+- **Release** (2026-11-25): update 4,000 snapped, exported at 6 bits, with update 16,000's
+  16-codebook Mimi decoder, is the Hub's `release/student_heads_coreml6/` (1.74 GB, 16 files and a
+  card). On the Mac: `/Volumes/data/models/hibiki/weights/student_heads14_cb16/pal6c4000_ane6/`;
+  on the phone, HibikiBench's `Documents/pal6c4000/`.
+- **Phone** (HibikiBench `--model pal6c4000 --clip clip-vi.wav --minutes 10`, the iPhone 13 Pro
+  Max wired and from cool, Mimi on the GPU): 53.0–53.5 ms a frame (p50) every minute, p90 ≤ 54.3
+  after minute 1, the Core ML LM 51.1–51.8, lag ≤ 0.12 s, thermal "serious" from minute 7 without
+  slowing, footprint 541–542 MB (717 in minute 1): update 16,000's speed
+  ([lm-npu](lm-npu.md#speed)). Over the 10-minute loop it wrote two sentences and a few words,
+  then nothing; update 16,000 rambled into garbage. A loop past the 3,000-frame context tests no
+  quality. Files: `/Volumes/data/hibiki-zero-evals/mac/npu-agree/phone/`.
+- **Speech Live**: [onevoice-ai-challenge PR #8](https://github.com/anthoai97/onevoice-ai-challenge/pull/8)
+  copies the Core ML LM into the app's runtime and makes this release its download (open).
 - 4 bits is not run yet.

@@ -121,7 +121,8 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   52.2–53.9 ms a frame every minute, p90 ≤ 55.3 after minute 1, lag ≤ 0.08 s, thermal "serious"
   from 324 s, footprint 541 MB. The LM held 50.6–52.2 ms a frame, with no throttle step; on the GPU in
   MLX, a 14-layer depformer cut of the 3B (4 bits, 8 codebooks) had run 64 ms a frame in minute 1
-  and 94–98 from minute 3, GPU-bound ([swift-runtime](swift-runtime.md#device-test)).
+  and 94–98 from minute 3, GPU-bound ([swift-runtime](swift-runtime.md#device-test)). The trained
+  6-bit release ran the same ([student-palettize](student-palettize.md#release-and-phone)).
 - **On the GPU the encode is off the frame's critical path**: the driving thread builds and submits
   it compiled (9.5–10.6 ms; 11.8 uncompiled), waits on the decoder while the GPU encodes
   (42.7–45.6 ms: the LM, then the decode, on the Neural Engine) and finds the codes ready (encode
