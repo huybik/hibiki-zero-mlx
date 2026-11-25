@@ -189,4 +189,8 @@ the Neural Engine. Share of argmaxes equal to the reference's:
   quality. Files: `/Volumes/data/hibiki-zero-evals/mac/npu-agree/phone/`.
 - **Speech Live**: [onevoice-ai-challenge PR #8](https://github.com/anthoai97/onevoice-ai-challenge/pull/8)
   copies the Core ML LM into the app's runtime and makes this release its download (open).
+  On the phone (2026-11-25, the phone hot from the bench), a `--file` run of two FLEURS
+  Vietnamese sentences 4 s apart translated both turns at 53 ms a frame (p50; p90 65, max 110),
+  ≤ 0.2 s behind, 752 MB peak footprint; the MLX depformer student on the same clip: 75 ms,
+  1.7 GB. The app's text sampling (0.4 / top 25) is not quality-tested with this model.
 - 4 bits is not run yet.
