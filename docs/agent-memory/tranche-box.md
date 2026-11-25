@@ -10,7 +10,8 @@ Sections: [State](#state), [Bring-up](#bring-up), [Jobs](#jobs), [Operating](#op
 32 GB at 500 W of 600, driver 580.173.02, a 15.4-CPU quota, 83.8 GiB of RAM), rented by the user
 to continue `both_heads_z` from update 200
 ([heads-on-policy-runs](heads-on-policy-runs.md#both_heads_z-continued)). Ask the user before
-destroying it.
+destroying it. It ran `both_heads_z` 200 → 1,800 (2026-11-24 15:44 to 2026-11-25 03:00 UTC); next
+is `both_heads_z2` from its 400.
 - Uploads from the Mac run at ~20 KB/s: the box clones the repo from GitHub. The Hub gives ~80 MB/s
   (the seven caches' 130 GB, the weights and 200's pair in ~38 min, four fetches at once).
 - The default openslr mirror serves the rooms' bank at ~250 KB/s a connection; `aria2c -x16` over
