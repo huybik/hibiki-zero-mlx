@@ -21,7 +21,8 @@ pairs, bests and logs on the Hub under `<run>/`.
 
 "Selecting" is the mean of FLEURS dev VI→EN and EN→VI chrF; "of 8" the mean over all eight
 sets. End offsets are FLEURS dev's medians, VI→EN / EN→VI; the start's are in brackets. KL is the
-train log's `kl_text` / `kl_audio` at update 1 → 200.
+train log's `kl_text` / `kl_audio` at update 1 → 200. The gate column is the old rule's (the
+start + 0.5 s): the two blocked distillation probes would pass at 3 s.
 
 | Run | Start | Terms | Selecting 0 → 200 | Of 8 0 → 200 | End offset at 200 (start) | Health | Gate | KL |
 |---|---|---|---|---|---|---|---|---|
@@ -177,7 +178,9 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   The box's profile: generation at 320 rows 44.3 ms a step (peak 23.4 GiB), the update at
   micro-batch 2 ~8.0 s (22.4 GiB). Update 400 promoted: selecting mean 39.36 (200: 38.92), mean
   of 8 39.44 (39.44), end offsets VI→EN 1.74 s and EN→VI 1.82 s (200: 1.71, 1.63).
-- **The gate 3 s from update 500** (user, 2026-11-25; [grpo](grpo.md#design)): the run stops at its
+- **The gate 3 s from update 500** (2026-11-25; [grpo](grpo.md#design); #181 and #182 were merged
+  without a review, reviewed after: no defect, replay of 56 recorded evaluations blocks none that
+  passed and frees six): the run stops at its
   pair of 500 and continues on `c4c061f`, which changes only the gate (validation, so a commit
   move, [finetune](../finetune.md#move-a-running-run-to-another-pod)). Every validation so far is under 3 s.
 - **The stop**: two validations in a row with no new best on the selecting mean or the mean of
@@ -236,7 +239,11 @@ train log's `kl_text` / `kl_audio` at update 1 → 200.
   400 pass the gate, so its `best.json` is set to 400 (selecting 38.63) first. The run moves to
   main's commit 396fabb and main's packs: the box's z caches are format 5 (its branch), main's
   streams are 7, so the shared caches (pho, vivoice, giga, en-vi-grounded-v2, ~72 GB) were fetched
-  and packed again before the launch.
+  and packed again before the launch (z's packs deleted; z is on the Hub). Resumed 2026-11-25 03:47
+  UTC; 600: selecting 38.78 (best), mean of 8 38.81 (best; start 37.06 / 37.83), end offsets VI→EN
+  2.48 s and EN→VI 2.02 s (start 1.73, 1.50), the drift easing on `en-vi-val/cv27` (wrong-language
+  rows 36 → 54 → 70 → 51 of ~180 at 0 / 200 / 400 / 600; that set's chrF 34.96 against its start's
+  37.29). 200 and 400's copies are in `both_heads_z2_at400/` on the Hub.
 
 ### On the 5090
 

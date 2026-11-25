@@ -795,8 +795,8 @@ def main() -> None:
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, metrics in free_running.items():
             print(f"val step={at} {name} {common.score_summary(metrics)}")
-        # A fixed limit, the same for both directions and every run of one start (user, 2026-11-25):
-        # quality comes first. A blocked checkpoint is not kept.
+        # A fixed limit, the same for both directions and every run: quality comes first.
+        # A blocked checkpoint is not kept.
         on_time = all(free_running[name]["median_end_offset_s"] <= LATENCY_LIMIT_S for name in selecting)
         if at > 0 and healthy and on_time:
             writer.wait()
