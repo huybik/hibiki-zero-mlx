@@ -87,7 +87,7 @@ def seed_all(seed: int) -> None:
     np.random.seed(seed)
 
 
-# moshi's training forward, faster (lm_training.py); inference keeps moshi's path.
+# moshi's training forward and generation step, faster (lm_training.py).
 lm_training.install()
 
 
@@ -904,10 +904,9 @@ def generate_batch(
     output_audio_tokens: list[Any] = []
     finished = torch.zeros(batch_wavs.shape[0], dtype=torch.bool, device=codes.device)
     eos_id = int(text_tokenizer.eos_id())
-    # moshi sizes the main transformer's KV cache to its whole context (3,000 frames) and attends
-    # over every slot at each step, written or not, while a batch takes only its own steps. A
-    # cache of those steps gives the same attention (unwritten slots are masked out) and, at batch
-    # 64 on the Mac, is 15 GiB smaller and steps faster.
+    # moshi sizes the main transformer's KV cache to its whole context (3,000 frames), while a batch
+    # takes only its own steps. A cache of those steps gives the same attention (unwritten slots are
+    # masked out) and, at batch 64 on the Mac, is 15 GiB smaller.
     set_attention_context(lm.transformer, min(warmup_codes.shape[-1] + codes.shape[-1], lm.context))
     start_time = time.time()
     try:
