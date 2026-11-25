@@ -3,8 +3,8 @@
 Read when choosing a Vietnamese speech corpus, checking its licence, or reading its files (layout,
 labels, order, transcripts).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Corpora](#corpora) · [Corpus samples](#corpus-samples) ·
-[YODAS layout and sample](#yodas-layout-and-sample). What the tranche takes from them, and how, is
-in [real-vi-tranche](real-vi-tranche.md).
+[YODAS layout and sample](#yodas-layout-and-sample) · [YODAS3](#yodas3). What the tranche takes from
+them, and how, is in [real-vi-tranche](real-vi-tranche.md).
 
 ## Corpora
 
@@ -12,7 +12,7 @@ in [real-vi-tranche](real-vi-tranche.md).
 |---|---:|---|---|---|
 | YODAS2 vi, [`espnet/yodas2`](https://huggingface.co/datasets/espnet/yodas2)@`631fc44` (2.1 TB) | 14.7k (69k whole videos) | YouTube, mixed genres, 24 kHz, no speaker or dialect labels. Captions: ~0.78k h made by uploaders, ~9.2k h YouTube ASR; noisy, often unpunctuated, language labels unreliable | CC BY 3.0, per uploader | pool |
 | Cleaned YODAS2, [`espnet/yodas_owsmv4`](https://huggingface.co/datasets/espnet/yodas_owsmv4)@`3bc62fd` | 4,644 vie | Segments of up to 30 s, re-aligned, wrong-language segments dropped; ids give the video and start/end in ms, so consecutive segments can be joined | CC BY 3.0 | first ~700 h |
-| YODAS3 vi, [`espnet/yodas3`](https://huggingface.co/datasets/espnet/yodas3)@`81d802f` (670 GB) | 12.6k (44k videos, none in v1/v2) | ~95% YouTube ASR captions with word timestamps; whole videos | CC BY 3.0 | ~250 h, then the scale-up pool |
+| YODAS3 vi, [`espnet/yodas3.1`](https://huggingface.co/datasets/espnet/yodas3.1)@`3247e8c` (670 GB; `espnet/yodas3` redirects) | 12.6k (44k videos, none in v1/v2) | 94% of videos with YouTube ASR captions timed word by word; whole videos ([layout](#yodas3)) | CC BY 3.0 (the audio; the repo's metadata CC BY 4.0) | the YODAS pilot ([tranche-yodas](tranche-yodas.md)), then the scale-up pool |
 | Common Voice 27 vi (Mozilla Data Collective) | 23 (7.8 validated), 419 speakers | Read prompts | CC0 | speakers |
 | FOSD, `doof-ferb/fpt_fosd`@`e6ff950` ([source](https://data.mendeley.com/datasets/k9sxg2twv4/4)) | 30 (the mirror's "100h" is wrong) | FPT 2018, sentences without punctuation | CC BY 4.0 | read speech |
 | [PhoAudiobook](https://huggingface.co/datasets/thivux/phoaudiobook)@`f19f241` (VinAI, gated) | 941 (+554 augmented), 710 speakers | Audiobooks: book text, long continuous reading | Research or education only | first tranche |
@@ -86,8 +86,7 @@ Measured 2026-11-04 from the index files and one yodas2 shard (the sample is on 
   ~10 h of whole-video 24 kHz WAV, readable only whole. All 38,596 owsmv4 vie videos are yodas2
   videos, and owsmv4's segment times match the yodas2 audio within 0.4 ms. 4,324 of owsmv4's
   hours come from YouTube ASR captions (vi100/101), 320 from uploaders' (vi000).
-- yodas3 vi: 80 WebDataset tars of ~8.6 GB (Opus `.webm`) and metadata parquets whose
-  transcripts carry punctuation and, for auto captions, word times.
+- yodas3 vi: 80 WebDataset tars ([YODAS3](#yodas3)).
 
 | owsmv4 vie | 0.10 | 0.00 |
 |---|---:|---:|
@@ -107,3 +106,30 @@ Measured 2026-11-04 from the index files and one yodas2 shard (the sample is on 
 - ~700 h costs ~185 GB of yodas2 shards (the best 125, 0.33 GB per kept hour in vi100/101,
   2.15 in vi000), streamed and cut on the box, or ~43 GB of 16 kHz FLAC by range reads from the
   owsmv4 arks.
+
+## YODAS3
+
+Measured 2026-11-25 on the RTX 5090 box from all 80 metadata parquets (1.1 GB) and the head of tar
+0000. `espnet/yodas3` now redirects to `espnet/yodas3.1` (its commit `81d802f` is gone; read at
+`3247e8c`, modified 2026-11-19).
+
+- `data/vi/audio/NNNN.tar` (0000–0079, 670 GB; 0079 holds one video) hold `<video>.json` then
+  `<video>.webm` (Opus, mostly 48 kHz stereo) per video, sorted by the scrambled 32-hex id, so a tar
+  streams video by video. The json is the metadata row with `transcript` as a list of cues
+  `{start, duration, text, words: [{t, w}]}` in ms (`t` from the cue's start); the parquets under
+  `data/vi/metadata/` hold the same rows with `transcript` as a JSON string.
+- 44,007 videos, 12,564 h; 41,285 (12,249 h) have word times; 94 have no transcript. Videos are
+  short: 0.5 / 3.9 / 40 minutes at p10 / p50 / p90.
+- The captions are YouTube ASR: lower case or random case, 54% of videos with any punctuation,
+  cue `duration` a display time (cues overlap) while the word times run in order. Words cover
+  9,504 h of speech (runs with word starts ≤ 2 s apart); 4,364 h under a 20-minute cap a video,
+  ~57 h a tar (48–65 at p10–p90).
+- Tags as words or whole cues: `[âm nhạc]` (music, 43,703), `[ __ ]` (censored, 9,475),
+  `[tiếng cười]`, `[ca hát]` (singing), `[vỗ tay]`…
+- Pace over a video's words: 1.5 / 3.4 / 4.7 syllables/s at p5 / p50 / p95 (p5: music, sparse speech).
+- Bandwidth (`estimated_bandwidth_hz`, hours of speech): 44.1 kHz 5,885, 32 kHz 2,536, 22.05 kHz
+  686, 24 kHz 189, 16 kHz 112.
+- Locale: 21,974 videos `vi`, 5,279 none, the rest other locales with Vietnamese captions (Khmer
+  1,010).
+- `translation_en` holds YouTube's own English captions, not used: the tranche translates
+  Qwen3-ASR's transcript ([tranche-translate](tranche-translate.md)).

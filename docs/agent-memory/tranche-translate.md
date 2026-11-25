@@ -23,6 +23,12 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   430 W while vLLM's engine loop and the main process each hold a core: the engine is
   CPU-bound. Chat templates and tokenizing take 0.08 ms a row. py-spy cannot attach in this
   container (no ptrace).
+- On Blackwell (`engine` checks the GPU's compute capability) it loads IndexTeam's own NVFP4 build,
+  `Index-Translate-35B-A3B-preview-FP4`@`111ff5e` (21 GB; the FP8 35B does not fit a 32 GB RTX 5090),
+  in vLLM 0.34 at 0.95 of the GPU and 256 sequences: at 0.9 only 232 sequences' linear-attention
+  state fits and the engine refuses 512. On the 5090 (2026-11-25): FLEURS dev chrF 64.5, BLEU 36.4
+  (the FP8's 65.1 in the [bake-off](#bake-off), 149 sentences); GigaSpeech 2 archive 60, 21,810
+  rows in 225 s (97 rows/s, the GPU 92% busy), none failed, chrF 90.3 against the FP8's English.
 - GigaSpeech 2's transcripts are all capitals: a transcript all in capitals goes in lowercased,
   because kept, the model answers in capitals (Muse did on 5.7% of archive 50's rows), and such
   rows broke in the TTS 59.8% of the time against 21.3% (archives 13–24).

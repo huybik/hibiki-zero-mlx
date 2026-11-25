@@ -693,6 +693,8 @@ def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    from training.tranche import ingest
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     steps = parser.add_subparsers(dest="step", required=True)
     p = steps.add_parser("bench")
@@ -705,7 +707,7 @@ def main() -> None:
     p.add_argument("--gpu-memory", type=float, default=0.5)
     p.add_argument("--write", action="store_true")
     p = steps.add_parser("run")
-    p.add_argument("sources", nargs="+", choices=["pho", "vivoice", "giga"])
+    p.add_argument("sources", nargs="+", choices=sorted(ingest.SOURCES))
     p.add_argument("--root", type=Path, default=Path("/workspace/tranche/repo"))
     p.add_argument("--asr", default="http://localhost:8100/v1/audio/transcriptions")
     p.add_argument("--concurrency", type=int, default=512)
