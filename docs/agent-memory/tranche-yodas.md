@@ -170,7 +170,8 @@ pilot only if the arm with YODAS improves on the one without (user, 2026-11-26).
 - Arms: `restart.sh yodas-control`, then `restart.sh yodas-pilot`: `two-way-5090`'s rows and route
   (`--bf16-adamw`, 14 checkpointed layers, 4,608 frames), `--max-steps 20000` with the cosine
   over them, seed 47, validated at the end; the pilot adds `cache/yodas` and `cache/en-vi/yodas`,
-  ~11% of the rows. Each ~3.9 h at 6,554 frames/s ([sft-speed](sft-speed.md)).
+  about a tenth of its rows (the control's packs are 148 GB). Each ~3.9 h at 6,554 frames/s
+  ([sft-speed](sft-speed.md)), so an arm reads ~2,000 h, the pilot's ~200 h of them YODAS.
 - Judged on the test sets as [the level-stage test](exposure-bias-runs.md#the-level-stage-test)
   scored them (`eval.py` seed 43, batch 64, one call a model, paired bootstrap seed 43), the two
   arms and `twoway_final` together.
