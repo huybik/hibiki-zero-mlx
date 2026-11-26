@@ -23,8 +23,11 @@ case $job in
   asr) export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
        # A check is under ~1.2k tokens (a clip of at most 22.4 s, 512 tokens out). At 0.2 of the 5090's 32 GB the KV
        # cache (0.91 GiB) held less than one sequence of the model's own maximum length, and the server did not start.
+       # No processor cache: every clip is new, and vLLM's 4 GiB a process (7 of them) only held RAM (31.6 GB in all,
+       # 2026-11-26).
        cmd=(/workspace/envs/asr/bin/qwen-asr-serve $ASR_SNAP --served-model-name asr --gpu-memory-utilization 0.25
-            --max-model-len 4096 --port 8100 --max-num-seqs 256 --api-server-count $(( N / 3 > 0 ? N / 3 : 1 ))) ;;
+            --max-model-len 4096 --mm-processor-cache-gb 0 --port 8100 --max-num-seqs 256
+            --api-server-count $(( N / 3 > 0 ? N / 3 : 1 ))) ;;
   # The VI->EN server translate.py calls; it needs the GPU memory voice holds, so the two take turns.
   mt) read -ra cmd <<< "$(/workspace/envs/translate/bin/python -m training.tranche.translate serve)" ;;
   # The scale-up: each reruns 30 s after a run that succeeds, as the ingest and translation bring

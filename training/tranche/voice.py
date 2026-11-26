@@ -23,7 +23,8 @@ environment and the ASR server up (`restart.sh asr`):
       <root>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
       en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
       30 min and at its end. Rows the cache build drops on the Vietnamese side (`filters.vi_gate`
-      on asr_vi) are not voiced: en_tries 0, the other columns null. A rerun skips the shards
+      on asr_vi), and those whose text_en is missing or has nothing speakable, are not voiced:
+      en_tries 0, the other columns null. A rerun skips the shards
       already written or pushed, and first pushes any written but not yet pushed.
 """
 from __future__ import annotations
