@@ -61,7 +61,10 @@ not increase latency so much"). `restart.sh student-heads` cuts `student_heads14
   0.32 / 12.2, heads student 0.00–0.15 / 4.2–6.6 (the phone's release, `pal6c4000_bf16`, plain
   `s16k_q6` and `s112k_pal6_bf16` on the Mac alike). Audio sampling doesn't help: argmax on
   codebooks 8–15 or 1–15, or 0.5 / top 25 on 1–15. So the heads lose the voice, not the
-  quantization, the training length or the phone. Files: `/Volumes/data/hibiki-zero-evals/mac/heads-voice/`.
+  quantization, the training length or the phone. Decoding only codebooks 0–7 (`drive8.py`): the
+  teacher keeps 0.30 / 14.5 dB, the heads reach 0.10–0.11 / 6.7–8.1, so the loss is already in
+  codebooks 1–7, not only in the parallel 8–15. Every gate scored text only, so none caught it.
+  Files: `/Volumes/data/hibiki-zero-evals/mac/heads-voice/`.
 - The change's review (2026-11-20, tiny CPU models with these delays): no logit moves unless its
   token is sampled after the changed one; greedy `LMGen` equals the teacher-forced argmax on text and
   all 16 codebooks; distillation scores where both masks hold (codebooks 8–15 lose their last 8
