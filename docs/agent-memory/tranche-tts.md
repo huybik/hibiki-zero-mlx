@@ -22,6 +22,14 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   - VibeVoice (research only, an audible disclaimer in every output);
   - MegaTTS 3 (its cloning encoder is unreleased);
   - OpenVoice v2 (22.05 kHz).
+- Newer, from their cards (2026-11-26), for YODAS's ~20k h, which needs ~1,000× real time
+  ([tranche-yodas](tranche-yodas.md#voice)): [ZONOS3-Mini](https://huggingface.co/Zyphra/ZONOS3-Mini)
+  (Apache-2.0, 0.8B MoE with ~0.1B active, 44.1 kHz, 43 languages with Vietnamese, no transcript
+  needed, 457 s of audio a second on an H100 through SGLang-Omni, no Seed-TTS numbers) and
+  [Confucius4-TTS](https://huggingface.co/netease-youdao/Confucius4-TTS) (code Apache-2.0, built
+  for cross-lingual cloning in 14 languages with Vietnamese, Seed test-en WER 1.49 and similarity
+  0.700 against VoxCPM2's 1.70 and 0.752 in its table, no speed). Out: Audio8-TTS-Realistic
+  (Seed-TTS en similarity 0.663) and OmniVoice (CC-BY-NC weights).
 - Kyutai's `tts-0.75b-en-public` (CC BY 4.0, clones by an audio prefix, English only) is a fourth
   candidate if time allows: it is the closest to the paper's setup.
 - From the cards and repos (2026-11-04): VoxCPM2 lists Vietnamese among its languages and
@@ -237,6 +245,11 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   archive 156, a run's first, RTF 0.0067 against 0.0070–0.0078 for the six first archives before it
   on the old VAE; the encode 52–58 s an archive (~2.8 ms a prompt beside the ASR server), the warm
   61 s (Inductor's on-disk cache held the graphs from the benchmarks).
+- Memory (2026-11-25, RTX 5090): `main` sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+  The VAE's batches of many shapes fragmented PyTorch's cached blocks: at `--gpu-memory 0.5` the
+  process held 29.6 GB, with expandable segments 20.5, at the same speed. `--gpu-memory` bounds
+  the engine (weights and KV cache, ~36 KB a token: 36 causal layers, 2 KV heads of 128); the VAE's
+  warm peak and graphs add ~5 GB beyond it. The 5090's numbers: [tranche-yodas](tranche-yodas.md#voice).
 - CPU: process pools take shares of the container's quota (`cpu_budget()`, cgroup `cpu.max`;
   26.88 CPUs on the Japan box, `nproc` 224): voice's clip decoders a quarter, filters' a sixth.
   The 32 checkers stay fixed: they are the ASR requests in flight, not CPU work.

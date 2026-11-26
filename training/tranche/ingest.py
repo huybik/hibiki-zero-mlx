@@ -4,7 +4,9 @@ own order ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#pipeline
 
   segments <source>  download each source shard at its pinned commit, keep its usable segments,
                      re-encode their audio to Ogg Opus and write
-                     <root>/<source>/segments/<shard>.parquet; the download is deleted
+                     <root>/<source>/segments/<shard>.parquet; the download is deleted. yodas
+                     (training/tranche/yodas.py) cuts its rows from whole videos, hears them on the
+                     ASR server and writes their asr_vi too: the GPU's, not the CPU's
   push <source>      upload <root>/<source>/segments, or with --part another stage's folder
                      (text_en, en_audio, asr_vi; cache: <root>/cache/<source>, to CACHE_REPO), to
                      the tranche repo (a rerun skips files already committed), only while it is gated
@@ -16,15 +18,19 @@ seq within a shard:
   id, source
   doc       the recording the row comes from, as far as the corpus tells; a doc never spans
             shards. PhoAudiobook: one reader's run of chunks in rising time (it names no book);
-            GigaSpeech 2: the recording; viVoice: the row itself (its rows are shuffled).
+            GigaSpeech 2: the recording; viVoice: the row itself (its rows are shuffled);
+            YODAS3: the video.
   seq       the row's order within its shard, and so within its doc
   speaker   the corpus's reader or channel, which can be a platform rather than one voice;
-            none for GigaSpeech 2, whose recordings may hold several voices
+            none for GigaSpeech 2 and YODAS3, whose recordings may hold several voices
   start_s, end_s  the times the corpus names the clip by, within the recording; the trimmed
             audio can be seconds shorter than end - start, so seams come from alignment
-  text      the corpus transcript; duration_s, source_rate and audio {bytes, path} of the clip
-A rerun skips shards already written. CPU only; from the repo root on the box:
+  text      the corpus transcript (YODAS3: Qwen3-ASR's); duration_s, source_rate and audio
+            {bytes, path} of the clip
+A rerun skips shards already written. CPU only but for yodas (the nanovox env, beside the ASR
+server); from the repo root on the box:
   .venv/bin/python -m training.tranche.ingest segments pho --shards 0:40
+  /workspace/envs/nanovox/bin/python -m training.tranche.ingest segments yodas --shards 0:25
 """
 from __future__ import annotations
 
@@ -76,6 +82,8 @@ SOURCES = {
     # not yet voiced or cached when they were held out (2026-11-09; 185 waits on its translation).
     "giga": Source("speechcolab/gigaspeech2", "8dc0d0e", r"data/vi/train/\d+\.tar\.gz",
                    heldout=frozenset({"86.parquet", "98.parquet"})),
+    # YODAS3 (`espnet/yodas3` renamed): ~550 videos a tar, none in YODAS2 (training/tranche/yodas.py).
+    "yodas": Source("espnet/yodas3.1", "3247e8cabda1e8e9418a6d8fe582e8c1abe75861", r"data/vi/audio/\d+\.tar"),
 }
 SCHEMA = pa.schema([
     ("id", pa.string()), ("source", pa.string()), ("doc", pa.string()), ("seq", pa.int64()),
@@ -213,12 +221,17 @@ def shard_files(name: str) -> list[str]:
 
 def segments(args: argparse.Namespace) -> None:
     name = args.source
+    if name == "yodas":
+        from training.tranche import yodas
+
+        yodas.segments(args)
+        return
     out = args.root / name / "segments"
     out.mkdir(parents=True, exist_ok=True)
     files = shard_files(name)
     picked = range(len(files))[args.shards]
     print(f"{name}: {len(picked)} of {len(files)} shards -> {out}", flush=True)
-    with ProcessPoolExecutor(args.workers) as pool:
+    with ProcessPoolExecutor(args.workers or 8) as pool:
         jobs = [pool.submit(ingest_shard, name, i, files[i], out) for i in picked]
         try:
             for job in as_completed(jobs):
@@ -315,7 +328,10 @@ def main() -> None:
     p.add_argument("source", choices=sorted(SOURCES))
     p.add_argument("--shards", type=lambda s: slice(*(int(n) if n else None for n in s.split(":"))),
                    default=slice(None), help="a slice of the usable source shards, e.g. 0:40")
-    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--workers", type=int, default=None,
+                   help="8; yodas: its cutting processes, the CPU quota less 3 by default")
+    p.add_argument("--push", action=argparse.BooleanOptionalAction, default=True,
+                   help="yodas: push each tar's segments and asr_vi as it is written")
     p = steps.add_parser("push")
     p.add_argument("source", choices=sorted(SOURCES))
     p.add_argument("--part", choices=["segments", "text_en", "en_audio", "asr_vi", "cache"], default="segments",

@@ -44,6 +44,9 @@ OVERLAP_N = 13
 MIN_SENTENCE = 9
 # Spellings the corpora mix for the same number word, folded to num2words' choice.
 NUMBER_VARIANTS = {"ngàn": "nghìn", "linh": "lẻ", "nhăm": "lăm"}
+# A longer run of digits is an id or an ASR loop, read digit by digit: num2words overflows on one of
+# hundreds of digits (a YODAS row's transcript, 2026-11-25).
+MAX_DIGITS = 15
 ASR_URL = "http://localhost:8100/v1/audio/transcriptions"
 ASR_MAX_TOKENS = 512  # as voice.py: a looping transcript comes back long instead of running on
 ASR_TIMEOUT_S = 60
@@ -62,9 +65,14 @@ def spoken(text: str) -> list[str]:
     PhoAudiobook, digit rows were 48% of those over 0.1 CER before this)."""
     from num2words import num2words
 
+    def say(digits: str) -> str:
+        if len(digits) > MAX_DIGITS:
+            return " ".join(num2words(int(d), lang="vi") for d in digits)
+        return num2words(int(digits), lang="vi")
+
     text = unicodedata.normalize("NFC", text).lower()
     text = re.sub(r"(?<=\d)[.,](?=\d{3}\b)", "", text)  # 1.500.000: thousands separators
-    text = re.sub(r"\d+", lambda m: f" {num2words(int(m.group()), lang='vi')} ", text)
+    text = re.sub(r"\d+", lambda m: f" {say(m.group())} ", text)
     return [NUMBER_VARIANTS.get(w, w) for w in re.sub(r"[^\w\s]", " ", text).split()]
 
 
@@ -196,11 +204,11 @@ def wav_16k(data: bytes) -> bytes:
 class Hearer:
     """One HTTP client to the ASR server; each call sends one clip as 16 kHz WAV."""
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, concurrency: int = CONCURRENCY):
         import httpx
 
         self.url = url
-        self.client = httpx.Client(timeout=ASR_TIMEOUT_S, limits=httpx.Limits(max_connections=CONCURRENCY))
+        self.client = httpx.Client(timeout=ASR_TIMEOUT_S, limits=httpx.Limits(max_connections=concurrency))
 
     def hear(self, audio: bytes) -> tuple[str, str]:
         """WAV bytes -> (language, transcript). Unforced, the model writes `language <Name><asr_text><text>`,
@@ -302,7 +310,7 @@ def main() -> None:
     steps = parser.add_subparsers(dest="step", required=True)
     steps.add_parser("overlap")
     p = steps.add_parser("asr")
-    p.add_argument("sources", nargs="+", choices=["pho", "vivoice", "giga"])
+    p.add_argument("sources", nargs="+", choices=["pho", "vivoice", "giga"])  # yodas: ingest hears its rows
     p.add_argument("--root", type=Path, default=ROOT)
     p.add_argument("--asr", default=ASR_URL)
     p.add_argument("--limit", type=int, help="hear only this many shards (a staged start)")

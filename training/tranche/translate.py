@@ -34,8 +34,10 @@ from training.prep.translate_en_speech import NON_LATIN, broken
 from training.tranche.ingest import REPO, ROOT, SOURCES
 
 # Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (tranche-translate, Bake-off).
-# Apache-2.0; BF16 weights, quantized to FP8 as they load.
+# Apache-2.0; BF16 weights, quantized to FP8 as they load. On Blackwell (an RTX 5090's 32 GB hold no
+# FP8 35B) IndexTeam's own NVFP4 build of it, which Blackwell runs natively.
 MODEL = ("IndexTeam/Index-Translate-35B-A3B-preview", "7e4029e0df842502cb009cf493d6467c247043b3")
+MODEL_FP4 = ("IndexTeam/Index-Translate-35B-A3B-preview-FP4", "111ff5e950f75dcccb1e631f65e936781a9c34d7")
 MAX_TOKENS = 512  # a row's English takes ~20 tokens, the longest a few hundred
 BANNED = 1000  # token ids a row's later tries may not emit, at most: vLLM's V2 runner takes 1,024 biases
 TRIES = 6  # per row and run: greedy, then sampled; a failing row holds its whole shard back, and retries cost seconds
@@ -120,14 +122,19 @@ def prompt(texts: list[str], docs: list[str], k: int, rows: int = CONTEXT_ROWS) 
     return f"{PROMPT}{background}\n\nSegment:\n{texts[k]}"
 
 
-def engine(gpu_memory: float):
+def engine(gpu_memory: float | None):
     """Prefix caching off: on this hybrid (linear-attention) model it never hit, and its aligned state
     blocks cut the sequences that fit by ~3×. Images and video off, so requests skip the processor."""
+    import torch
     from huggingface_hub import snapshot_download
     from vllm import LLM
 
-    return LLM(model=snapshot_download(MODEL[0], revision=MODEL[1]), quantization="fp8",
-               gpu_memory_utilization=gpu_memory, max_model_len=4096, max_num_seqs=512,
+    fp4 = torch.cuda.get_device_capability() >= (10, 0)  # Blackwell; its quantization is the checkpoint's own
+    repo, revision = MODEL_FP4 if fp4 else MODEL
+    # FP4 (a 32 GB RTX 5090): at 0.9 of it only 232 sequences' linear-attention state fits
+    gpu_memory = gpu_memory or (0.95 if fp4 else 0.9)
+    return LLM(model=snapshot_download(repo, revision=revision), quantization=None if fp4 else "fp8",
+               gpu_memory_utilization=gpu_memory, max_model_len=4096, max_num_seqs=256 if fp4 else 512,
                max_num_batched_tokens=16384, enable_prefix_caching=False,
                limit_mm_per_prompt={"image": 0, "video": 0})
 
@@ -200,8 +207,9 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--shards", type=lambda s: slice(*(int(n) if n else None for n in s.split(":"))),
                         default=slice(None), help="a slice of the source's segments shards, e.g. 0:1")
-    parser.add_argument("--gpu-memory", type=float, default=0.9,
-                        help="the engine's share of the GPU, with voice and the ASR server stopped")
+    parser.add_argument("--gpu-memory", type=float,
+                        help="the engine's share of the GPU, with voice and the ASR server stopped "
+                             "(default 0.9, FP4 0.95)")
     args = parser.parse_args()
 
     from huggingface_hub import HfApi, HfFileSystem

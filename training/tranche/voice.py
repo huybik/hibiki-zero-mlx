@@ -693,6 +693,8 @@ def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    from training.tranche import ingest
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     steps = parser.add_subparsers(dest="step", required=True)
     p = steps.add_parser("bench")
@@ -705,13 +707,16 @@ def main() -> None:
     p.add_argument("--gpu-memory", type=float, default=0.5)
     p.add_argument("--write", action="store_true")
     p = steps.add_parser("run")
-    p.add_argument("sources", nargs="+", choices=["pho", "vivoice", "giga"])
+    p.add_argument("sources", nargs="+", choices=sorted(ingest.SOURCES))
     p.add_argument("--root", type=Path, default=Path("/workspace/tranche/repo"))
     p.add_argument("--asr", default="http://localhost:8100/v1/audio/transcriptions")
     p.add_argument("--concurrency", type=int, default=512)
     p.add_argument("--gpu-memory", type=float, default=0.45)
     p.add_argument("--limit", type=int, help="voice only this many shards (a staged start)")
     args = parser.parse_args()
+    # The VAE's batches of many shapes fragment PyTorch's cached blocks: on the 5090 the process held
+    # 29.6 GB at --gpu-memory 0.5, 20.5 with expandable segments, at the same speed (tranche-tts.md).
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     {"bench": bench, "run": run}[args.step](args)
 
 

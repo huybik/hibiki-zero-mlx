@@ -132,7 +132,7 @@ unchanged; the shared cache build runs it on CUDA, or on the Mac in MLX
 ([cache-build](cache-build.md)):
 
 ```text
-YODAS runs (24 kHz) ─► Vietnamese ASR: punctuation, word times ─────────┐
+YODAS3 caption runs (24 kHz) ─► Qwen3-ASR transcripts, gated on CER ───┐
 other corpora ─► their transcripts, word times by forced alignment ─────┤ (ASR where they are poor)
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
@@ -142,11 +142,8 @@ other corpora ─► their transcripts, word times by forced alignment ───
   ─► EN-VI parquet ─► CUDA cache build ─► trainer
 ```
 
-- Rows come from re-transcribing contiguous runs, never from owsmv4's segments: choose videos
-  whose 0.10 subset keeps ≥ 70% of the 0.00 speech (16,729 videos, 2,145 h under the cap), take
-  their 0.00 runs (gaps ≤ 2 s joined), and spend each video's 20 minutes on one or two of its
-  longest runs. Each row stores its `run_id` and `gap_before`, so the trainer joins rows only
-  within a run.
+- YODAS3's rows are cut from its videos' caption runs and transcribed by Qwen3-ASR during ingest
+  ([tranche-yodas](tranche-yodas.md)), not taken from owsmv4's segments.
 - Filter rows on syllables per second, transcript confidence, language ID, clipping and
   bandwidth (flag sources at 16 kHz or below).
 - Speaker labels cannot pick the TTS reference: YODAS has none, and GigaSpeech 2's recordings

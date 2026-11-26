@@ -17,8 +17,9 @@ fi
 read -r q per < /sys/fs/cgroup/cpu.max; if [[ $q == max ]]; then N=$(nproc); else N=$(( q / per )); fi
 ASR_SNAP=/workspace/.hf_home/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5
 case $job in
-  # Capped: uncapped, its 8 API processes held 508 threads each, most of the container's 6,656.
-  asr) export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4
+  # One thread each: uncapped, its 8 API processes held 508 threads each, most of the container's 6,656;
+  # at 4 the server spent 2.4× the CPU of 1 for the same rows/s (170 against 71 CPU-s per 3,000 YODAS rows, 5090).
+  asr) export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
        cmd=(/workspace/envs/asr/bin/qwen-asr-serve $ASR_SNAP --served-model-name asr --gpu-memory-utilization 0.2
             --port 8100 --max-num-seqs 256 --api-server-count $(( N / 3 > 0 ? N / 3 : 1 ))) ;;
   # The VI->EN server translate.py calls; it needs the GPU memory voice holds, so the two take turns.
