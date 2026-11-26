@@ -29,7 +29,7 @@ cache=$!
 (mk asr 3.12; $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
  $E/asr/bin/python -c "import torch; print('asr:', torch.__version__, torch.version.cuda)") &
 asr=$!
-(mk vieneu 3.12; $UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer
+(mk vieneu 3.12; $UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer num2words
  $E/vieneu/bin/python -c "import torch; print('vieneu:', torch.__version__, torch.version.cuda)") &
 vieneu=$!
 set +m

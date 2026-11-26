@@ -24,7 +24,7 @@ $UV pip install -q -p $E/nanovox nano-vllm-voxcpm==2.0.5 pyarrow av httpx jiwer 
 log vieneu; mk vieneu 3.12
 # The production TTS (training/tranche/voice.py): VieNeu-TTS v3 Turbo's SDK, whose cuda extra pins torch 2.8.0
 # (CUDA 12.8); its ONNX graphs run in PyTorch (onnx_graph.py).
-$UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer
+$UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer num2words
 log dots; mk dots 3.12
 $UV pip install -q -p $E/dots dots.tts==0.3.1 torch==2.8.0 torchaudio==2.8.0 transformers==4.57.0 soundfile
 log qwentts; mk qwentts 3.12
