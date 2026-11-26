@@ -16,8 +16,10 @@ YODAS3's Vietnamese (12.6k h in 44k YouTube videos, none in YODAS v1/v2) is the 
   next downloading while one is cut) and streams it video by video to the cutting processes.
 - A video's caption words (YouTube ASR, timed word by word) only place its rows: runs of words
   ≤ 2 s apart with no tag (`[âm nhạc]`, `[ __ ]`) between them; the longest runs first up to
-  20 min a video (many voices and topics rather than a few long videos). Videos whose cues are
-  more than 20% tags are music.
+  20 min a video (many voices and topics rather than a few long videos). Videos where more than
+  20% of the cues are tags alone are music; a censored `[ __ ]` inside a spoken cue only splits its run.
+  Every run, the short ones too, bounds its neighbours' rows: a run that is cut at its lead or tail
+  window, one that is not at its words.
 - Each run is cut into 5–22.4 s rows (`ROW_S`), each ending at the widest pause between two words
   (≥ 0.33 s between their starts) that keeps the row in range, preferring cuts that strand no tail
   under 5 s, at the quietest 20 ms frame of that pause. A run starts at the quietest point of the
@@ -32,9 +34,10 @@ YODAS3's Vietnamese (12.6k h in 44k YouTube videos, none in YODAS v1/v2) is the 
   its language and its CER against the caption over `spoken`. So `filters asr` has nothing to hear
   for yodas, and voice.py's and the cache build's `vi_gate` see the same CER as ingest did.
 - `doc` is the video (`yodas/<tar>/<video>`), `speaker` none, `seq` the video's index in the tar
-  × 10,000 + its row; rows are 24 kHz Opus as every source's.
+  × 10,000 + its row; rows are 24 kHz Opus (each source keeps its own rate).
 - Tar 0000 (551 videos, 162 h): 60 music, 28 without caption words, 12 without a run of 5 s;
-  14,993 rows cut (54 h).
+  14,993 rows cut (54 h). The pilot's music count took a tag-only cue twice when its tag also came
+  as a word, and censored words as tags.
 
 ## Gate
 
@@ -50,8 +53,9 @@ talk: caption "800", ASR "tám ngàn một"), and the CER gate. Of the 13,544 ot
 
 - Sampled by band: at 0.15–0.25 the ASR's transcript reads well and is usually better than the
   caption; at 0.25–0.4 mostly; above 0.4 a mix, some of it garbage (music, noise, overlap).
-- Kept at 0.15: a looser cut for yodas needs per-source thresholds in voice.py and the cache
-  build, and gains nothing downstream (translation, voice and cache cost per kept hour, not per
+- Kept at 0.15: a looser cut for yodas needs a per-source threshold in ingest (which keeps only
+  the rows the gate passes), voice.py and the cache build, and every tar ingested again; it gains
+  nothing downstream (translation, voice and cache cost per kept hour, not per
   tar): 1,000 h is ~26 tars at 0.15 against ~22 at 0.25, ~13 min more of ingest, from a pool of ~80
   tars (~3,000 h at 0.15). Loosen it only if the pool runs short.
 
@@ -98,8 +102,13 @@ with `HF_TOKEN_AN` in the environment:
 /workspace/envs/nanovox/bin/python -m training.tranche.ingest --root <root> segments yodas --shards 0:23
 ```
 
-- It writes `<root>/yodas/segments/<tar>.parquet` and `<root>/yodas/asr_vi/<tar>.parquet` and
-  pushes both folders after each tar (`--no-push` for checks); a rerun skips the tars written.
+- It writes `<root>/yodas/asr_vi/<tar>.parquet`, then `<root>/yodas/segments/<tar>.parquet`, and
+  pushes both folders after each tar, asr_vi first, in one thread. A rerun first pushes what an
+  earlier run wrote but did not push, and skips every tar whose segments are written or on the Hub:
+  cut again, a tar gives other rows (the ASR's batches vary) under English already made from the
+  first. A tar with segments but no asr_vi, here or on the Hub, stops the run. So a check
+  (`--no-push`, another `--root`) takes a tar not yet on the Hub (0023 on).
+- A push uploads the part's whole folder: two boxes must not ingest the same tars.
   Translation and voice find shards on the Hub, so they follow the pushes (the 5090 box uploaded at
   ~2–5 MB/s, ~0.65 GB of segments a tar).
 - `--workers` is the cutting processes, the CPU quota less 3 by default (16 of 19.2 on the 5090).

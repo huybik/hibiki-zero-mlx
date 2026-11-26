@@ -23,14 +23,17 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   430 W while vLLM's engine loop and the main process each hold a core: the engine is
   CPU-bound. Chat templates and tokenizing take 0.08 ms a row. py-spy cannot attach in this
   container (no ptrace).
-- On Blackwell (`engine` checks the GPU's compute capability) it loads IndexTeam's own NVFP4 build,
+- On a card under 64 GiB (`engine` reads its memory from NVML, not torch, which would start CUDA
+  in the main process; a 48 GB card would keep ~8 GB beside the FP8 weights) it loads IndexTeam's
+  own NVFP4 build (Blackwell only),
   `Index-Translate-35B-A3B-preview-FP4`@`111ff5e` (21 GB; the FP8 35B does not fit a 32 GB RTX 5090),
   in vLLM 0.34 at 0.95 of the GPU (its default there) and 256 sequences: at 0.9 only 232 sequences'
   linear-attention state fits and the engine refuses 512. On the 5090 (2026-11-25): FLEURS dev chrF 64.5, BLEU 36.4
   (the FP8's 65.1 in the [bake-off](#bake-off), 149 sentences); GigaSpeech 2 archive 60, 21,810
   rows in 225 s (97 rows/s, the GPU 92% busy), none failed, chrF 90.3 against the FP8's English.
   The YODAS pilot (2026-11-25, 23 shards, 264,665 rows of 213 Vietnamese characters on average, ~3×
-  GigaSpeech 2's): 44 rows/s, 99.8 min, the GPU ~89% busy at ~460 W; 10 rows failed every try. Its
+  GigaSpeech 2's): 44 rows/s, 99.8 min, the GPU ~89% busy at ~460 W; 10 rows failed every try, reruns translated
+  9 and the last was blanked by hand ([tranche-yodas](tranche-yodas.md#voice)). Its
   KV cache holds ~137k tokens beside the 21 GB of weights, so longer rows run fewer at once.
 - GigaSpeech 2's transcripts are all capitals: a transcript all in capitals goes in lowercased,
   because kept, the model answers in capitals (Muse did on 5.7% of archive 50's rows), and such

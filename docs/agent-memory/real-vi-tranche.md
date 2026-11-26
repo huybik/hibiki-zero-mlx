@@ -62,7 +62,7 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
     global dedup still leaves a few percent of each file to send (19 MB of a 500 MB shard), more
     than its uplink carried (18 Mbps, Xet uploads timing out, 2026-11-07).
   - The card of `REPO` declares the segments configs (`pho-segments`, `vivoice-segments`,
-    `giga-segments`, `audio` as Audio) beside PhoMT's `default`, so the viewer and `datasets`
+    `giga-segments`, `yodas-segments`, `audio` as Audio) beside PhoMT's `default`, so the viewer and `datasets`
     decode those. `en_audio` has no config: its readers decode the Opus bytes themselves.
 - First tranche: ~2,000 h. The FLEURS and MultiMed lift per 1,000 h decides the scale-up, toward
   ~10k h with more GigaSpeech 2 and YODAS ([First tranche](#first-tranche)).

@@ -295,19 +295,23 @@ def push_part(root: Path, source: str, part: str) -> None:
 
 
 class Pushes:
-    """A stage's pushes (`push_part`), in order in one thread beside its work: in the cache build's
-    loop each held the GPU idle ~13 min at the box's ~5 MB/s to the Hub (2026-11-10). A push that
-    failed its retries is raised by the next `push` or `check`, and by `wait`, which returns once
-    the last push is in."""
+    """A stage's pushes (`push_part` of each of its parts, in their order), in order in one thread
+    beside its work: in the cache build's loop each held the GPU idle ~13 min at the box's ~5 MB/s
+    to the Hub (2026-11-10). A push that failed its retries is raised by the next `push` or `check`,
+    and by `wait`, which returns once the last push is in."""
 
-    def __init__(self, root: Path, part: str) -> None:
-        self.root, self.part = root, part
-        self._thread = ThreadPoolExecutor(1, thread_name_prefix=f"push-{part}")
+    def __init__(self, root: Path, *parts: str) -> None:
+        self.root, self.parts = root, parts
+        self._thread = ThreadPoolExecutor(1, thread_name_prefix=f"push-{'-'.join(parts)}")
         self._pending: list[Future] = []
 
     def push(self, source: str) -> None:
         self.check()
-        self._pending.append(self._thread.submit(push_part, self.root, source, self.part))
+        self._pending.append(self._thread.submit(self._push, source))
+
+    def _push(self, source: str) -> None:
+        for part in self.parts:
+            push_part(self.root, source, part)
 
     def check(self) -> None:
         for future in [f for f in self._pending if f.done()]:
