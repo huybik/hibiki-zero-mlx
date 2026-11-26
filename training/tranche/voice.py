@@ -52,6 +52,10 @@ DENOISE_BATCH = 16  # a batch padded to it with copies of its last clip (instanc
 # cold, and this module's first run on the box missed the bench's cache.
 DENOISE_MODE = "default"
 ENROL_BATCH = 64  # references per speaker-encoder and codec batch
+# Rows enrolled at once (a multiple of both batches, so the batches are a whole shard's): their denoised, 16 kHz
+# and 48 kHz copies (~3.4 MB a row) live for a piece. Over a whole shard they peaked at ~59 GB, which glibc then
+# kept in the process.
+ENROL_PIECE = 1024
 CHUNK_CHARS = 256  # the SDK's chunk length
 SAMPLING = dict(temperature=0.8, top_k=25, top_p=0.95, repetition_penalty=1.2)  # generate_batch's defaults
 # A chunk's frame cap: max_expected_frames of its phonemes up to MAX_NEW_FRAMES (the bench's; the SDK's default is
@@ -244,7 +248,8 @@ class Voicer:
             return list((out[:n, : x.shape[1]] * scale[:n]).float().cpu().numpy())
 
     def enrol(self, clips: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
-        """44.1 kHz references (`reference`) -> each one's (speaker embedding, reference codes [T, n_vq])."""
+        """44.1 kHz references (`reference`) -> each one's (speaker embedding, reference codes [T, n_vq]), ENROL_PIECE
+        rows at a time; each reference is dropped from `clips` once denoised."""
         import soxr
         import torch
         import torchaudio
@@ -259,25 +264,27 @@ class Voicer:
         groups: dict[int, list[int]] = {}
         for i, c in enumerate(clips):
             groups.setdefault(len(c), []).append(i)
-        clean: list = [None] * len(clips)
-        for members in groups.values():
-            for k in range(0, len(members), DENOISE_BATCH):
-                part = members[k: k + DENOISE_BATCH]
-                for i, c in zip(part, self.denoise([clips[i] for i in part])):
-                    clean[i] = c
-        ins = list(self.threads.map(lambda c: (soxr.resample(c, DENOISE_RATE, SPEAKER_RATE).astype(np.float32),
-                                               soxr.resample(c, DENOISE_RATE, OUT_RATE).astype(np.float32)), clean))
         out: list = [None] * len(clips)
-        with torch.no_grad():
-            for members in groups.values():
-                for k in range(0, len(members), ENROL_BATCH):
-                    part = members[k: k + ENROL_BATCH]
-                    emb = self.speaker(torch.stack([fbank(ins[i][0]) for i in part]))[0].float().cpu().numpy()
-                    enc = self.codec.batch_encode([torch.from_numpy(ins[i][1]).cuda().expand(2, -1) for i in part])
-                    lengths = enc.audio_codes_lengths.tolist()
-                    codes = enc.audio_codes.permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
-                    for j, i in enumerate(part):
-                        out[i] = (emb[j], np.ascontiguousarray(codes[j, : lengths[j]]))
+        for members in groups.values():
+            for p in range(0, len(members), ENROL_PIECE):
+                piece = members[p: p + ENROL_PIECE]
+                clean = []
+                for k in range(0, len(piece), DENOISE_BATCH):
+                    clean += self.denoise([clips[i] for i in piece[k: k + DENOISE_BATCH]])
+                for i in piece:
+                    clips[i] = None
+                ins = list(self.threads.map(lambda c: (soxr.resample(c, DENOISE_RATE, SPEAKER_RATE).astype(np.float32),
+                                                       soxr.resample(c, DENOISE_RATE, OUT_RATE).astype(np.float32)), clean))
+                del clean
+                with torch.no_grad():
+                    for k in range(0, len(piece), ENROL_BATCH):
+                        part = range(k, min(k + ENROL_BATCH, len(piece)))
+                        emb = self.speaker(torch.stack([fbank(ins[j][0]) for j in part]))[0].float().cpu().numpy()
+                        enc = self.codec.batch_encode([torch.from_numpy(ins[j][1]).cuda().expand(2, -1) for j in part])
+                        lengths = enc.audio_codes_lengths.tolist()
+                        codes = enc.audio_codes.permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
+                        for b, j in enumerate(part):
+                            out[piece[j]] = (emb[b].copy(), np.ascontiguousarray(codes[b, : lengths[b]]))
         return out
 
     # generation
