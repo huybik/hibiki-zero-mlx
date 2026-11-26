@@ -169,6 +169,9 @@ Measured on box 62513802 (2026-11-26):
   enrolments, ~26 rows/s, ~440× real time (16.8 s of English a row, RTF ~0.0023): 3.1–3.3×
   VoxCPM2's production RTF (0.0070–0.0075, [tranche-yodas](tranche-yodas.md#voice)). Still broken
   after the check: 7.6% of shard 0004 (9,839 rows), 7.2% of 0005 (12,299), 1.00 tries a row.
+- One process over shards 0005–0021, loading and enrolment in: 197,947 rows, 919.9 h of English
+  in 2.33 h, 23.7 rows/s, RTF 0.00253 (~395× real time, 2.8–3.0× VoxCPM2's); still broken 6.1–8.7%
+  a shard.
 - Enrolment holds the frames for 128–156 s a shard (13 ms a row), ~30% of a shard's
   time: the next lever is to run it beside the frames. Voice's main process stays at ~30 GB.
 
