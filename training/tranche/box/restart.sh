@@ -8,9 +8,10 @@ cd /workspace/hibiki-zero
 set -a; . /workspace/.env; set +a  # HF_TOKEN_AN: the stages push to the anquachdev repo
 # Hub progress bars (the stages' threaded pushes and downloads, hf_sync) would glue onto the jobs' log lines.
 export HF_HUB_DISABLE_PROGRESS_BARS=1
-if [[ -f $L/$job.pid ]] && kill -0 "$(cat $L/$job.pid)" 2>/dev/null; then
+# The whole group, its leader gone or not: a run killed out of memory leaves its spawned workers alive in it.
+if [[ -f $L/$job.pid ]] && kill -0 -- -"$(cat $L/$job.pid)" 2>/dev/null; then
   kill -- -"$(cat $L/$job.pid)" || true
-  for _ in $(seq 60); do kill -0 "$(cat $L/$job.pid)" 2>/dev/null || break; sleep 1; done
+  for _ in $(seq 60); do kill -0 -- -"$(cat $L/$job.pid)" 2>/dev/null || break; sleep 1; done
   kill -9 -- -"$(cat $L/$job.pid)" 2>/dev/null || true
 fi
 # The container's CPU quota (cgroup cpu.max), not nproc (the host's cores): threads and pools follow it.
