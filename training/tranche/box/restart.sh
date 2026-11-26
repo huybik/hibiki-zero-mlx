@@ -28,7 +28,7 @@ case $job in
   # shards (a run takes the shards ready at its start); the first error stops the loop.
   # Voice reruns after a failure too (an ASR request timing out at 60 s ends a run about once a
   # day: 2026-11-06, 2026-11-07 17:30 UTC+7), but stops after 3 in a row.
-  voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/nanovox/bin/python -m training.tranche.voice run giga; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
+  voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/vieneu/bin/python -m training.tranche.voice run yodas; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
   # The cache builds run in the free-threaded env (envs-min.sh), Mimi's rope eager there (no Triton). Plain HTTP for the
   # Hub: 143 MB/s, where Xet throttles to ~4 MB/s.

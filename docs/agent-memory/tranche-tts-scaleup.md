@@ -4,7 +4,8 @@ Read when choosing or speeding up the English TTS for YODAS's ~20k h, or running
 VieNeu-TTS v3 Turbo on the RTX 5090.
 Back to [CONTEXT.md](../../CONTEXT.md) · part of [tranche-tts](tranche-tts.md) ·
 [Candidates](#candidates) · [Method](#method) · [Results](#results) · [ZONOS3 settings](#zonos3-settings) ·
-[Optimizing VieNeu and VoxCPM2](#optimizing-vieneu-and-voxcpm2) · [Running them on the 5090](#running-them-on-the-5090) ·
+[Optimizing VieNeu and VoxCPM2](#optimizing-vieneu-and-voxcpm2) · [In production](#in-production) ·
+[Running them on the 5090](#running-them-on-the-5090) ·
 [Finding](#finding)
 
 The user's bar (2026-11-26): at least ~1,000× real time (RTF 0.001) on the 5090, at VoxCPM2's
@@ -104,19 +105,20 @@ VieNeu, each step adding to the one above:
 | codec encode in fp16, prompt embeddings built ahead | 34.1 | 7.3% | 0.604 | 3.18 |
 | denoiser autotuned | 35.5 | 7.7% | 0.604 | 3.18 |
 
-- Enrolment on the GPU: the SDK's ONNX denoiser and speaker encoder through onnx2torch, its Kaldi
-  fbank by torchaudio, clips trimmed to whole 0.25 s and batched by length (81% are the full 8 s).
+- Enrolment on the GPU: the SDK's ONNX denoiser and speaker encoder in PyTorch (onnx2torch in the
+  bench, `training/tranche/onnx_graph.py` in production: on the speaker encoder cosine ≥ 0.99997 to
+  onnxruntime, on the denoiser bit-exact to the bench's runner), its Kaldi fbank by torchaudio, clips trimmed to whole 0.25 s and batched by length (81% are the full 8 s).
   Without the denoiser VieNeu runs 38.1 rows/s at the continuous step but breaks 11.9%: it stays.
 - MOSS decode: `batch_decode(chunk_duration=2.0)` keeps each layer's context as a ring cache and
   matches the SDK's one-row decode within 7e-6 (unchunked batch decode builds a dense T² bias and
   runs out of memory); fp16 is 59 dB from fp32 (bf16 41 dB). 2 s chunks at 64 rows is its best,
   ~3,200× real time on 20 s rows.
-- Continuous batching (`vieneu_cb.py`): the SDK's fused CUDA-graph frame with each row's own cache
+- Continuous batching (the bench's `vieneu_cb.py`, `training/tranche/vieneu_frame.py` in production): the SDK's fused CUDA-graph frame with each row's own cache
   position, frame counter and repetition window, a finished row's slot refilled; the SDK's static
   batches run to their longest row (37% of row-frames real). Graph-captured writes need device
   tensors: a host scalar fails capture ("operation not permitted when stream is capturing").
 - Denoiser compiled: onnx2torch's modules read shapes from tensors, which Dynamo cannot trace, and
-  onnx-simplifier's folding does not fix that. `onnx_torch.py` plans the graph's shape arithmetic
+  onnx-simplifier's folding does not fix that. `onnx_graph.py` (the bench's `onnx_torch.py`) plans the graph's shape arithmetic
   in NumPy for each input shape and compiles the tensor ops: 21.3 → 8.9 ms a clip in fp16 (68 dB
   from fp32), a graph per reference length (32; ~14 min the first time, ~1 min from Inductor's
   cache), batches padded to 16 with copies (instance norms keep clips apart).
@@ -138,6 +140,18 @@ VieNeu, each step adding to the one above:
 - At 35.5 rows/s (56.3 s): enrolment 26.7 s (denoise 16.6, fbank and speaker encoder 3.3, codec
   encode 3.2, trim and resampling 3.5), frames 13.9 s, decode 14.7 s, joining 0.9 s.
 
+## In production
+
+`training/tranche/voice.py` (env `vieneu`) runs the bench's last setup with the denoiser compiled in
+Inductor's default mode (the 34.1 rows/s step: max-autotune's first compile takes ~54 min, and the
+module's first run on the box missed the bench's cache), streamed:
+
+- The loader's processes trim, cut and resample each shard's references and phonemize its lines a
+  shard ahead: 217 rows/s with 4 processes. The GPU enrols a shard at a time, between frames.
+- Rows enter as slots free, from a queue of 512 chunks whose prompt embeddings a thread builds ahead.
+  A chunk made again (too short, or suspected of babble) goes to the queue's front. Chunks are
+  decoded once 512 wait, sorted by length into batches of 64, or all that wait once nothing generates.
+
 ## Running them on the 5090
 
 - ZONOS3's `servers/sgl/scripts/env.sh` takes compute capability ≥ 9 for Hopper: on sm_120 set
@@ -154,8 +168,6 @@ VieNeu, each step adding to the one above:
   itself and counts such a row broken (1 of 2,000).
 - VieNeu's batch engine runs each frame as one CUDA graph (`vieneu.v3_turbo_serve.fused`), its
   repetition penalty on the GPU inside it; its batches are static, grouped by phoneme length.
-- onnx2torch's install pulls a newer torch through torchvision: install it and onnxsim with
-  `--no-deps` into VieNeu's env, which stays on torch 2.8.0+cu128.
 
 ## Finding
 
@@ -163,5 +175,5 @@ Optimized, VieNeu runs 35.5 rows/s (583× real time) against VoxCPM2's 11.3–11
 3.0× on rows that do not break. By the user's rule VieNeu is the scale-up's TTS (2026-11-26). It
 keeps its SDK's quality: 7.7% broken against VoxCPM2's 3.8–4.5%, voice match 0.60 against 0.69,
 UTMOS 3.18 against 2.7. Neither reaches 1,000×: at these rates 20k h of YODAS rows take ~41
-5090-hours on VieNeu against ~130 on VoxCPM2. Production's voice stage still runs VoxCPM2
-(`training/tranche/voice.py`); the fast path is the bench's, in the archive above.
+5090-hours on VieNeu against ~130 on VoxCPM2. `voice.py` runs VieNeu from YODAS shard 0004 on
+([In production](#in-production)).

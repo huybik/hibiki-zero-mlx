@@ -29,13 +29,13 @@ cd /workspace/hibiki-zero && set -a && . /workspace/.env && set +a
 import sys
 from huggingface_hub import HfApi
 from training.tranche import ingest
-ingest.push_part(ingest.ROOT, "giga", "en_audio")  # tried again after a transient Hub error
+ingest.push_part(ingest.ROOT, "yodas", "en_audio")  # tried again after a transient Hub error
 files = HfApi().list_repo_files(ingest.REPO, repo_type="dataset")
-hub = {f.rsplit("/", 1)[1] for f in files if f.startswith("giga/en_audio/")}
-local = {p.name for p in (ingest.ROOT / "giga" / "en_audio").glob("*.parquet")}
-to_voice = {f.rsplit("/", 1)[1] for f in files if f.startswith("giga/segments/")} - ingest.SOURCES["giga"].heldout
+hub = {f.rsplit("/", 1)[1] for f in files if f.startswith("yodas/en_audio/")}
+local = {p.name for p in (ingest.ROOT / "yodas" / "en_audio").glob("*.parquet")}
+to_voice = {f.rsplit("/", 1)[1] for f in files if f.startswith("yodas/segments/")} - ingest.SOURCES["yodas"].heldout
 left = sorted(to_voice - hub)
-print(f"giga en_audio on the Hub: {len(hub & to_voice)} of {len(to_voice)} (held out: {len(ingest.SOURCES['giga'].heldout)}); "
+print(f"yodas en_audio on the Hub: {len(hub & to_voice)} of {len(to_voice)} (held out: {len(ingest.SOURCES['yodas'].heldout)}); "
       f"local not on the Hub: {sorted(local - hub) or 'none'}")
 print(f"left to voice ({len(left)}): {' '.join(n.split('.')[0] for n in left)}")
 sys.exit(1 if local - hub else 0)

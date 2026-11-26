@@ -194,10 +194,10 @@ def wav_16k(data: bytes) -> bytes:
 
     import soundfile as sf
 
-    from training.tranche.voice import ENCODE_RATE, decode_16k
+    from training.tranche.voice import ASR_RATE, decode_16k
 
     buf = io.BytesIO()
-    sf.write(buf, decode_16k(data), ENCODE_RATE, subtype="PCM_16", format="WAV")
+    sf.write(buf, decode_16k(data), ASR_RATE, subtype="PCM_16", format="WAV")
     return buf.getvalue()
 
 

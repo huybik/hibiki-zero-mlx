@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Only the nanovox and asr parts of training/tranche/envs.sh (the bake-off envs are not needed), and the
+# Only the nanovox, vieneu and asr parts of training/tranche/envs.sh (the bake-off envs are not needed), and the
 # cache build's env.
 set -Eeuo pipefail
 # A failed step stops the env builds still running beside it, each job's whole process group (set -m below).
@@ -29,6 +29,9 @@ cache=$!
 (mk asr 3.12; $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
  $E/asr/bin/python -c "import torch; print('asr:', torch.__version__, torch.version.cuda)") &
 asr=$!
+(mk vieneu 3.12; $UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer
+ $E/vieneu/bin/python -c "import torch; print('vieneu:', torch.__version__, torch.version.cuda)") &
+vieneu=$!
 set +m
 mk nanovox 3.12
 $UV pip install -q -p $E/nanovox "torch==2.10.*" "torchaudio==2.10.*" --index-url https://download.pytorch.org/whl/cu130
@@ -36,11 +39,13 @@ $UV pip install -q -p $E/nanovox nano-vllm-voxcpm==2.0.5 pyarrow av httpx jiwer 
   "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" \
   --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
 $E/nanovox/bin/python -c "import torch; print('nanovox:', torch.__version__, torch.version.cuda)"
-rc=0; wait $cache || rc=1; wait $asr || rc=1  # each by its PID: a bare wait returns 0 whatever they returned
+rc=0; wait $cache || rc=1; wait $asr || rc=1; wait $vieneu || rc=1  # each by its PID: a bare wait returns 0 whatever they returned
 ((rc == 0))
 $E/asr/bin/python -c "
 from huggingface_hub import snapshot_download as s
 print(s(\"Qwen/Qwen3-ASR-1.7B\", revision=\"7278e1e\"))
-print(s(\"openbmb/VoxCPM2\", revision=\"32279ef\"))
+print(s(\"pnnbao-ump/VieNeu-TTS-v3-Turbo\", revision=\"61b85e3d937fbbacb387714180e8182823512523\",
+        allow_patterns=[\"config.json\", \"update/*\", \"denoiser.onnx\", \"speaker_encoder.onnx\"]))
+print(s(\"OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano\", revision=\"6aa02b01e445cc585582cf0ba480bc3ea6c8dd68\"))
 print(s(\"openai/whisper-large-v3\", revision=\"06f233f\", allow_patterns=[\"*.json\",\"*.txt\"]))"
 echo envs done

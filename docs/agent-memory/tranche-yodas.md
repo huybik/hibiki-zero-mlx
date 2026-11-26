@@ -115,8 +115,10 @@ with `HF_TOKEN_AN` in the environment:
 
 ## Voice
 
-VoxCPM2 through `voice.py` ([tranche-tts](tranche-tts.md)) on the RTX 5090 (2026-11-25/26).
-Alone on the GPU, 2,999 YODAS rows (RTF is wall time over English voiced):
+Shards 0000–0003 by VoxCPM2 ([tranche-tts](tranche-tts.md)) on the RTX 5090 (2026-11-25/26), the
+rest by VieNeu-TTS v3 Turbo, which `voice.py` now runs
+([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)). VoxCPM2 alone on the GPU, 2,999 YODAS
+rows (RTF is wall time over English voiced):
 
 | Setup | RTF | The process's GPU memory |
 |---|---:|---:|
