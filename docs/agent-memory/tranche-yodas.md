@@ -4,7 +4,7 @@ Read when touching `training/tranche/yodas.py` (YODAS3's Vietnamese ingest, `ing
 yodas`) or running the YODAS pilot. The corpus's layout and captions are in
 [vi-corpora](vi-corpora.md#yodas3); the stages after ingest in [real-vi-tranche](real-vi-tranche.md#pipeline).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Rows](#rows) · [Gate](#gate) · [Speed](#speed) ·
-[Running](#running) · [Pilot](#pilot)
+[Running](#running) · [Voice](#voice) · [Pilot](#pilot)
 
 More GigaSpeech 2 moved FLEURS by nothing in round 4, so the lever past ~41–42 FLEURS dev chrF is
 more diverse real Vietnamese speech through the same SFT → GRPO → student pipeline (2026-11-25).
@@ -100,13 +100,50 @@ with `HF_TOKEN_AN` in the environment:
 
 - It writes `<root>/yodas/segments/<tar>.parquet` and `<root>/yodas/asr_vi/<tar>.parquet` and
   pushes both folders after each tar (`--no-push` for checks); a rerun skips the tars written.
-  Translation and voice find shards on the Hub, so they follow the pushes (the box uploads at
-  ~1–2 MB/s, ~0.65 GB of segments a tar).
+  Translation and voice find shards on the Hub, so they follow the pushes (the 5090 box uploaded at
+  ~2–5 MB/s, ~0.65 GB of segments a tar).
 - `--workers` is the cutting processes, the CPU quota less 3 by default (16 of 19.2 on the 5090).
+
+## Voice
+
+VoxCPM2 through `voice.py` ([tranche-tts](tranche-tts.md)) on the RTX 5090 (2026-11-25/26).
+Alone on the GPU, 2,999 YODAS rows (RTF is wall time over English voiced):
+
+| Setup | RTF | The process's GPU memory |
+|---|---:|---:|
+| 512 sequences, `--gpu-memory 0.5` | 0.0059 | 29.6 GB |
+| 1,024 sequences | 0.0062 | |
+| the VAE's `BATCH_FRAMES` 4,000 | 0.0061 | 26.0 GB |
+| expandable segments, 0.5 (762 KV blocks of 256 tokens) | 0.0058 | 20.5 GiB |
+| expandable segments, 0.6 (1,119 blocks) | 0.0055 | 23.6 GiB |
+
+- A YODAS row needs ~430 tokens of KV, 2–3 blocks. At 0.9 the VAE's warm-up ran out of memory.
+- In production, beside the ASR server at 0.22 of the GPU, voice at `--gpu-memory 0.58`
+  (0.57 under MPS); per shard, from the log's cumulative figures:
+
+  | Run | Shard | English voiced | RTF |
+  |---|---|---:|---:|
+  | plain processes | 0001, the first (warm-up and its prompts' encode in) | 53.9 h | 0.0088 |
+  | plain processes | 0002 | 46.1 h | 0.0075 |
+  | under MPS (`nvidia-cuda-mps-control -d`) | 0000, the first | 46.5 h | 0.0075 |
+  | under MPS | 0003 | 47.8 h | 0.0070 |
+
+  The gap to the bench is the ASR server's share (~8% of the GPU), each shard's prompt encode (67–86 s
+  at ~93% busy, not worth a thread) and each shard's tail of long rows. The GPU sat 93% busy at
+  ~560 W, touching the card's 575 W limit; the CPU used 2.2 of 19.2. MPS let the two processes'
+  kernels overlap: 7% on a warm shard, 15% on the first.
+- 4.6–4.9% of each shard's rows stay broken (`MAX_TRIES` 1; the cache drops them).
+- One row failed every translation try (`yodas/0020/dc7d71a6a9cd974feba4ce55fc036641/000`, a
+  grammar lesson whose English must quote "sẽ"); its `text_en` was set to "" by hand, so voice
+  skips it and the rest of shard 0020 can be voiced.
+- Stopped 2026-11-26 00:55 UTC after shards 0000–0003 (46,501 rows, ~194 h of English, pushed):
+  the YODAS scale-up (~20k h) needs a TTS at ~1,000× real time (RTF 0.001) or better, at
+  VoxCPM2's accuracy, so the newer models are measured first (user, 2026-11-26).
 
 ## Pilot
 
 ~1,000 h kept (tars 0000–0022), translated, voiced and cached on the RTX 5090 box, then measured
 by two 20k-update SFT arms from `twoway_final` (with and without the YODAS cache) on an 80 GB GPU.
 The card of `anquachdev/en-vi-speech-20k` lists `yodas/` with its config and YODAS v3's terms
-(CC BY 3.0 audio, attributed; 2026-11-25).
+(CC BY 3.0 audio, attributed; 2026-11-25). Ingest and translation are done (264,665 rows, 1,012 h;
+[tranche-translate](tranche-translate.md#running)); voice stopped at four shards ([Voice](#voice)).

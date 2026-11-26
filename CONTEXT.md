@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-25
+Last verified: 2026-11-26
 
 ## Purpose
 
@@ -186,7 +186,7 @@ inference/ (Apple Silicon, MLX)
 | The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off, the translation and the cache |
 | The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
 | The tranche's caches: its row gates and their thresholds, running the build on the box or the Mac | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
-| YODAS3's Vietnamese in the tranche: rows cut from caption runs, the ASR in ingest, its CER gate, ingest speed on the 5090, the pilot | [tranche-yodas](docs/agent-memory/tranche-yodas.md) | `training/tranche/yodas.py` |
+| YODAS3's Vietnamese in the tranche: rows cut from caption runs, the ASR in ingest, its CER gate, ingest and voice speed on the 5090, the pilot | [tranche-yodas](docs/agent-memory/tranche-yodas.md) | `training/tranche/yodas.py` |
 | The tranche's English voice-cloning TTS: candidates, bake-off, scores, tuning | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/bakeoff.py`, `training/tranche/voice.py`, `training/tranche/envs.sh` |
 | The tranche's jobs on a rented box: bring-up, job order, the restart/watchdog/pause scripts, round 4's inputs | [tranche-box](docs/agent-memory/tranche-box.md) | `training/tranche/box/` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |

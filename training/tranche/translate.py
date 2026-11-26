@@ -122,7 +122,7 @@ def prompt(texts: list[str], docs: list[str], k: int, rows: int = CONTEXT_ROWS) 
     return f"{PROMPT}{background}\n\nSegment:\n{texts[k]}"
 
 
-def engine(gpu_memory: float):
+def engine(gpu_memory: float | None):
     """Prefix caching off: on this hybrid (linear-attention) model it never hit, and its aligned state
     blocks cut the sequences that fit by ~3×. Images and video off, so requests skip the processor."""
     import torch
@@ -131,6 +131,8 @@ def engine(gpu_memory: float):
 
     fp4 = torch.cuda.get_device_capability() >= (10, 0)  # Blackwell; its quantization is the checkpoint's own
     repo, revision = MODEL_FP4 if fp4 else MODEL
+    # FP4 (a 32 GB RTX 5090): at 0.9 of it only 232 sequences' linear-attention state fits
+    gpu_memory = gpu_memory or (0.95 if fp4 else 0.9)
     return LLM(model=snapshot_download(repo, revision=revision), quantization=None if fp4 else "fp8",
                gpu_memory_utilization=gpu_memory, max_model_len=4096, max_num_seqs=256 if fp4 else 512,
                max_num_batched_tokens=16384, enable_prefix_caching=False,
@@ -205,8 +207,9 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--shards", type=lambda s: slice(*(int(n) if n else None for n in s.split(":"))),
                         default=slice(None), help="a slice of the source's segments shards, e.g. 0:1")
-    parser.add_argument("--gpu-memory", type=float, default=0.9,
-                        help="the engine's share of the GPU, with voice and the ASR server stopped")
+    parser.add_argument("--gpu-memory", type=float,
+                        help="the engine's share of the GPU, with voice and the ASR server stopped "
+                             "(default 0.9, FP4 0.95)")
     args = parser.parse_args()
 
     from huggingface_hub import HfApi, HfFileSystem

@@ -714,6 +714,9 @@ def main() -> None:
     p.add_argument("--gpu-memory", type=float, default=0.45)
     p.add_argument("--limit", type=int, help="voice only this many shards (a staged start)")
     args = parser.parse_args()
+    # The VAE's batches of many shapes fragment PyTorch's cached blocks: on the 5090 the process held
+    # 29.6 GB at --gpu-memory 0.5, 20.5 with expandable segments, at the same speed (tranche-tts.md).
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     {"bench": bench, "run": run}[args.step](args)
 
 
