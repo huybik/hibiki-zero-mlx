@@ -130,6 +130,15 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   1.2–2.0 → 5.0–5.9 ms (2.2–2.8 in minutes 5–6; the CPU sits idle while the GPU works, likely its
   clock drops) and the trunk 42.3 → 43.0. 2-frame steps would shrink only the encode, so they were
   not run on the GPU.
+- **In Speech Live the screen shares the GPU with the encode** (iPhone 13 Pro Max, `ab-vi2en.wav`,
+  2026-11-26, [onevoice PR #9](https://github.com/anthoai97/onevoice-ai-challenge/pull/9)). Liquid
+  Glass under moving views (the wave strip, the orb, a card growing per word) had the render server
+  (`backboardd`) take 192 ms of GPU a second, beside the app's own 357–377 (the encode, mostly);
+  flat panels cut it to 23 (Metal System Trace, 10 s each). From cool the frame stays 52 ms, set by
+  the Neural Engine. Hot, the encode outgrows the decode's window: three sessions back to back on
+  the glass UI ran 51 → 54 → 66 ms p50, the third with encode wait p90 69 ms and 7.2 s of lag; on
+  flat panels 52 → 54 → 56 ms, encode wait 0, lag 0.1 s. The UI split also took the main thread
+  27–29% → 17–21% of a core. Raw: `/Volumes/data/hibiki-zero-evals/iphone/speechlive-ui/`.
 - **On the CPU, Mimi's encode sets the margin** (`--encoder cpu`, from cool, 2026-11-20: thermal
   "serious" from 41 s, lag ≤ 0.36 s, footprint 653 MB). The frame is the larger of the LM and the
   driving thread's encode plus decode: 4–6 ms faster than on the GPU for 7 minutes, but the encode
@@ -160,9 +169,11 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
 - A full-set gate of the Core ML LM against MLX 6 bits, in one runtime.
 - Long sessions: the fp16 drift past ~2 minutes of context. Untried: attention over the cache in
   chunks with their partial sums combined (more fp16 headroom per sum), or a shorter context.
-- With Mimi on the GPU, the LM's host part (5–6 ms there) is the next lever: about 1 ms of
-  scalar work at full clock (logit conversion and sampling over 48k + 16 × 2,048 values,
-  allocated per frame) that vDSP and reused buffers could shrink.
+- The encode is the GPU's main load in Speech Live; MLX in fp16 would halve its bytes, with codes
+  99.8 / 98 / 95% equal to fp32's ([mimi-npu](mimi-npu.md)), after a chrF gate.
+- Not a lever: the LM's host part beside the GPU encode (5–6 ms). Its logit conversion and
+  sampling take 0.7 ms a frame on the M4 Pro, the same with reused buffers and vImage (0.73
+  against 0.67 ms; the conversion 0.02 → 0.006), so the CPU's clock sets it (2026-11-26).
 - Fewer bytes on the Neural Engine may free bandwidth for the encode and the LM: 4-bit
   palettization (~490 MB), after a quality gate; training against the tables is built
   ([student-palettize](student-palettize.md)).

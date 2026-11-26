@@ -67,7 +67,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
   (`apps/ios/`), copies `HibikiCore` by hand, adding `Translator.mlxMemoryMB()` and keeping the
   −20 dBFS level stage (+14 dB cost the phone EN→VI). It downloads the heads student's Core ML
   `release/student_heads_coreml6` and samples as `lm_gen_config` says
-  ([student-palettize](student-palettize.md#release-and-phone)).
+  ([student-palettize](student-palettize.md#release-and-phone)). Its screen shares the GPU with
+  Mimi's encode, which a hot phone runs short of ([lm-npu](lm-npu.md#speed)).
 
 ## Hibiki-Zero deltas
 
