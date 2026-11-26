@@ -151,7 +151,8 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
 - Skipped rows (2026-11-07): the cache build drops a row on its Vietnamese side alone (language,
   CER over 0.15, a nghìn/triệu/tỷ the transcript lacks: `filters.vi_gate` on asr_vi) whatever its
   English, 5.5% of GigaSpeech 2's rows and 6.6–6.9% of its hours (archives 147, 148). `voice.py`
-  no longer voices them: `en_tries` 0, the other English columns null. So a shard waits for its
+  no longer voices them: `en_tries` 0, the other English columns null; nor rows whose `text_en` VieNeu
+  finds nothing speakable in (logged per shard). So a shard waits for its
   asr_vi as for its text_en: run `filters.py` beside voice, ahead of it (a run logs how many
   translated shards wait for their asr_vi). Its per-shard "still broken" now counts voiced rows
   only, so it reads lower than the ~17.7% of the shards voiced before (many skipped rows broke).

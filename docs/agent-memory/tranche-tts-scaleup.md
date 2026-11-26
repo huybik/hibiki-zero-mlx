@@ -147,7 +147,11 @@ Inductor's default mode (the 34.1 rows/s step: max-autotune's first compile take
 module's first run on the box missed the bench's cache), streamed:
 
 - The loader's processes trim, cut and resample each shard's references and phonemize its lines a
-  shard ahead: 217 rows/s with 4 processes. The GPU enrols a shard at a time, between frames.
+  shard ahead: 217 rows/s with 4 processes. A reference under one 0.25 s bucket is padded with
+  silence to one, so the 32 compiled lengths cover them all. The GPU enrols a shard at a time,
+  between frames.
+- The SDK's own onnxruntime denoiser and speaker encoder, built by its constructor, are dropped
+  (each holds a thread per core); PyTorch runs with expandable segments, as the bench did.
 - Rows enter as slots free, from a queue of 512 chunks whose prompt embeddings a thread builds ahead.
   A chunk made again (too short, or suspected of babble) goes to the queue's front. Chunks are
   decoded once 512 wait, sorted by length into batches of 64, or all that wait once nothing generates.

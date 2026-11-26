@@ -124,25 +124,24 @@ def decode_16k(data: bytes) -> np.ndarray:
 
 def reference(data: bytes) -> np.ndarray:
     """A segment's Ogg Opus -> its reference before the denoiser: silence trimmed at TRIM_DB, the first REF_S, cut to
-    whole BUCKET_S, at 44.1 kHz by soxr (the SDK's resampler)."""
+    whole BUCKET_S (one under a bucket padded with silence to one: a new length would compile mid-run, and under 25 ms
+    the speaker's fbank has no frame), at 44.1 kHz by soxr (the SDK's resampler)."""
     import librosa
     import soxr
 
     pcm, rate = decode(data)
     w = librosa.effects.trim(pcm, top_db=TRIM_DB)[0][: int(REF_S * rate)]
     q = int(BUCKET_S * rate)
-    if len(w) > q:
-        w = w[: len(w) // q * q]
+    w = w[: len(w) // q * q] if len(w) >= q else np.pad(w, (0, q - len(w)))
     return soxr.resample(w, rate, DENOISE_RATE).astype(np.float32)
 
 
 def phonemize(text: str) -> tuple[list[str], list]:
-    """An English line -> its chunks phonemized and the SDK's pauses between them."""
+    """An English line -> its chunks phonemized and the SDK's pauses between them; no chunk when nothing in it is
+    speakable (the row is then skipped)."""
     from vieneu_utils.phonemize_text import normalize_to_chunks_v3_with_gaps, phonemize_text_with_emotions
 
     chunks, gaps = normalize_to_chunks_v3_with_gaps(text, max_chars=CHUNK_CHARS)
-    if not chunks:
-        raise ValueError(f"no speakable chunk in {text!r}")
     return [phonemize_text_with_emotions(c) for c in chunks], gaps
 
 
@@ -195,6 +194,7 @@ class Voicer:
         path = snapshot(*MODEL, allow_patterns=MODEL_FILES)
         tts = VieNeuTTSv3Turbo(checkpoint_path=path, model_subfolder="update", moss_tokenizer_path=snapshot(*CODEC),
                                device="cuda")
+        tts.speaker_encoder = tts.denoiser = None  # its onnxruntime sessions, each with a thread per core: run here on the GPU
         self.codec = tts.audio_tokenizer
         self.codec.set_compute_dtype("fp16")  # encode and decode: 59 dB from fp32 on the bench
         self.prompt = V3TurboBatchEngine(tts)._prompt_embeds
@@ -215,7 +215,7 @@ class Voicer:
         log(f"VieNeu loaded and its frame captured in {time.perf_counter() - began:.0f} s")
         began = time.perf_counter()
         q = int(BUCKET_S * DENOISE_RATE)
-        for n in range(1, int(REF_S / BUCKET_S) + 1):  # every reference length but the rare one under a bucket
+        for n in range(1, int(REF_S / BUCKET_S) + 1):  # every reference length
             self.denoise([np.zeros(n * q, np.float32)])
         torch.cuda.synchronize()
         log(f"denoiser compiled for {len(self.denoiser.plans)} lengths in {time.perf_counter() - began:.0f} s")
@@ -356,7 +356,7 @@ class Voicer:
                 audio = dec.audio.float().mean(1).cpu().numpy()
                 lengths = dec.audio_lengths.tolist()
             for (chunk, codes), wav, n in zip(batch, audio, lengths):
-                wav = wav[:n]
+                wav = wav[:n].copy()  # not a view holding the batch's array
                 verdict = babble_suspect(wav, OUT_RATE, chunk.req.chunks[chunk.k], chunk.cap, len(codes))
                 if chunk.wav is None:
                     chunk.wav, chunk.verdict = wav, verdict
@@ -393,7 +393,7 @@ class Shard:
     clips: list[np.ndarray] | None  # the voiced rows' references (`reference`), until enrolled
     lines: list[tuple[list[str], list]]  # the voiced rows' chunks and pauses (`phonemize`)
     results: dict = None  # id -> the best attempt so far: {"wer", "broken", "asr", "audio", "duration", "tries"}
-    skipped: set[str] = None  # rows voice.py skips: those filters.vi_gate drops or missing text_en; not voiced, their English columns null
+    skipped: set[str] = None  # rows voice.py skips: filters.vi_gate's, and those missing or with nothing speakable in text_en; not voiced, their English columns null
 
 
 class Checker:
@@ -487,8 +487,15 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     voiced = [(i, a["bytes"]) for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
     clips = pool.map(reference, [a for _, a in voiced], chunksize=32)  # both maps run at once
     lines = pool.map(phonemize, [en[i] for i, _ in voiced], chunksize=32)
-    return Shard(source, name, root / source / "en_audio" / name, ids, [en.get(i, "") for i in ids], list(clips),
-                 list(lines), {}, skipped)
+    clips, lines = list(clips), list(lines)
+    mute = [k for k, (chunks, _) in enumerate(lines) if not chunks]  # skipped too: en_tries 0, as the SDK says nothing
+    if mute:
+        log(f"{source}/{name}: {len(mute)} rows whose text_en has nothing speakable, e.g. {voiced[mute[0]][0]}")
+        skipped |= {voiced[k][0] for k in mute}
+        keep = [k for k in range(len(voiced)) if lines[k][0]]
+        clips, lines = [clips[k] for k in keep], [lines[k] for k in keep]
+    return Shard(source, name, root / source / "en_audio" / name, ids, [en.get(i, "") for i in ids], clips, lines, {},
+                 skipped)
 
 
 def write_shard(shard: Shard) -> None:
@@ -635,7 +642,7 @@ def run(args: argparse.Namespace) -> None:
         key = f"{shard.source}/{shard.name}"
         write_shard(shard)
         kept = list(shard.results.values())
-        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by voice.py (Vietnamese gates or missing text_en), "
+        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by voice.py (Vietnamese gates, text_en missing or unspeakable), "
             f"{sum(x['tries'] for x in kept) / max(len(kept), 1):.2f} tries a row, "
             f"{sum(x['broken'] for x in kept) / max(len(kept), 1):.1%} still broken; overall "
             f"{attempts / (time.monotonic() - began):.1f} rows/s, RTF {(time.monotonic() - began) / max(voiced_s, 1):.5f} "
@@ -705,6 +712,8 @@ def main() -> None:
     p.add_argument("--root", type=Path, default=Path("/workspace/tranche/repo"))
     p.add_argument("--asr", default="http://localhost:8100/v1/audio/transcriptions")
     p.add_argument("--limit", type=int, help="voice only this many shards (a staged start)")
+    # As the bench ran: the prefill, decode and enrolment batches of many shapes fragment PyTorch's cached blocks.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     run(parser.parse_args())
 
 
