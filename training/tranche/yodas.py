@@ -53,12 +53,14 @@ def log(msg: str) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
 
 
-def caption(meta: dict) -> tuple[list[tuple[float, str]], list[float], int]:
-    """A video's caption words as (start in seconds, word), the starts of its tags, and its cue count."""
-    words, tags, cues = [], [], meta["transcript"] or []
+def caption(meta: dict) -> tuple[list[tuple[float, str]], list[float], float]:
+    """A video's caption words as (start in seconds, word), the starts of its tags, and the share of
+    its cues that are tags alone (a censored word inside a spoken cue splits its run, but is speech)."""
+    words, tags, cues, tag_cues = [], [], meta["transcript"] or [], 0
     for cue in cues:
         if TAG.match(cue["text"]):
             tags.append(cue["start"] / 1000)
+            tag_cues += 1
         for w in cue.get("words") or []:
             t, word = (cue["start"] + w["t"]) / 1000, w["w"].strip()
             if TAG.match(word):
@@ -66,7 +68,7 @@ def caption(meta: dict) -> tuple[list[tuple[float, str]], list[float], int]:
             elif word:
                 words.append((t, word))
     words.sort(key=lambda w: w[0])
-    return words, sorted(tags), len(cues)
+    return words, sorted(tags), tag_cues / max(len(cues), 1)
 
 
 def runs_of(words: list[tuple[float, str]], tags: list[float]) -> list[list[tuple[float, str]]]:
@@ -97,6 +99,8 @@ def capped(run: list[tuple[float, str]], room: float) -> tuple[list[tuple[float,
 
 def quietest(pcm: np.ndarray, off: float, a: float, b: float) -> float:
     """The middle of the quietest 20 ms frame between a and b seconds of pcm, audio from `off` seconds."""
+    if b <= a:  # the window's bound comes first (the next run starts within it): cut there
+        return b
     i, j = max(0, int((a - off) * RATE)), min(len(pcm), int((b - off) * RATE))
     if j - i < FRAME:
         return (a + b) / 2
@@ -180,16 +184,17 @@ def video_rows(tar: str, index: int, meta: dict, webm: bytes, row_s: tuple[float
 
     from training.tranche.ingest import encode_opus
 
-    words, tags, cues = caption(meta)
+    words, tags, tag_share = caption(meta)
     if not words:
         return [], "no caption words"
-    if len(tags) > MAX_TAG_SHARE * cues:
+    if tag_share > MAX_TAG_SHARE:
         return [], "music"
-    runs = [r for r in runs_of(words, tags) if r[-1][0] - r[0][0] + TAIL_S[0] >= row_s[0]]
-    if not runs:
+    runs = runs_of(words, tags)  # every run bounds its neighbours' rows, the short ones too
+    long = [k for k, r in enumerate(runs) if r[-1][0] - r[0][0] + TAIL_S[0] >= row_s[0]]
+    if not long:
         return [], "no run long enough"
     # The longest runs first, until the video's cap.
-    order = sorted(range(len(runs)), key=lambda k: runs[k][0][0] - runs[k][-1][0])
+    order = sorted(long, key=lambda k: runs[k][0][0] - runs[k][-1][0])
     chosen, total = {}, 0.0  # run index -> the run, cut to the cap, and the bound of its end
     for k in order:
         if total >= CAP_S:
@@ -228,6 +233,8 @@ def video_rows(tar: str, index: int, meta: dict, webm: bytes, row_s: tuple[float
 def download(url: str, dst: Path) -> Path:
     """curl that drops a connection crawling under 1 MB/s for 30 s and resumes on a new one: some of
     the box's Hub connections crawl at ~50 KB/s and never time out (real-vi-tranche.md)."""
+    if dst.exists():  # left by a run that stopped before cutting it: only a whole download is renamed to dst
+        return dst
     dst.parent.mkdir(parents=True, exist_ok=True)
     part = dst.with_name(dst.name + ".part")
     for attempt in range(20):
@@ -307,11 +314,12 @@ def finish_tar(name: str, root: Path, heard: list[tuple[dict, Future]], videos: 
     kept.sort(key=lambda r: r["seq"])
     order = {r["id"]: k for k, r in enumerate(kept)}
     asr.sort(key=lambda r: order[r["id"]])
-    for part, table in (("segments", pa.Table.from_pylist(kept, schema=SCHEMA)),
-                        ("asr_vi", pa.table({"id": [r["id"] for r in asr],
+    # asr_vi first: a tar's segments, which mark it done, then mean its asr_vi is there too.
+    for part, table in (("asr_vi", pa.table({"id": [r["id"] for r in asr],
                                              "asr_vi": pa.array([r["asr_vi"] for r in asr], pa.string()),
                                              "language": pa.array([r["language"] for r in asr], pa.string()),
-                                             "cer": pa.array([r["cer"] for r in asr], pa.float32())}))):
+                                             "cer": pa.array([r["cer"] for r in asr], pa.float32())})),
+                        ("segments", pa.Table.from_pylist(kept, schema=SCHEMA))):
         dst = root / "yodas" / part / f"{name}.parquet"
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(dst.name + ".part")
@@ -326,21 +334,35 @@ def finish_tar(name: str, root: Path, heard: list[tuple[dict, Future]], videos: 
 
 
 def segments(args: argparse.Namespace) -> None:
-    """Every picked tar not yet written: one is cut while the next downloads and the one before is
-    heard to its end and written."""
+    """Every picked tar whose segments are neither written nor on the Hub: one is cut while the next
+    downloads and the one before is heard to its end and written. First pushes what an earlier run
+    wrote but did not push. Cutting a tar again would not give the same rows (the ASR's batches
+    vary), so a tar on the Hub, which translation and voice may have read, is never cut again."""
     import os
+
+    from huggingface_hub import HfApi
 
     from training.paths import cpu_budget
     from training.tranche.filters import ASR_URL, Hearer
-    from training.tranche.ingest import ROW_S, SOURCES, Pushes, an_token, shard_files
+    from training.tranche.ingest import REPO, ROW_S, SOURCES, Pushes, an_token, push_part, shard_files
 
-    if args.push:
-        an_token()
+    hub = set(HfApi(token=an_token()).list_repo_files(REPO, repo_type="dataset"))
+    parts = ("asr_vi", "segments")
+    has = lambda part, stem: (f"yodas/{part}/{stem}.parquet" in hub  # noqa: E731
+                              or (args.root / "yodas" / part / f"{stem}.parquet").exists())
     src = SOURCES["yodas"]
     files = shard_files("yodas")
     picked = [files[i] for i in range(len(files))[args.shards]]
-    todo = [f for f in picked if not (args.root / "yodas" / "segments" / f"{Path(f).stem}.parquet").exists()]
+    if half := [Path(f).stem for f in picked if has("segments", Path(f).stem) and not has("asr_vi", Path(f).stem)]:
+        raise SystemExit(f"yodas: tars {half} have segments but no asr_vi, here or on the Hub; "
+                         "delete their segments (and anything made from them) to cut them again")
+    todo = [f for f in picked if not has("segments", Path(f).stem)]
     log(f"yodas: {len(todo)} of {len(picked)} picked tars to cut, of {len(files)}")
+    if args.push:
+        for part in parts:
+            local = {p.stem for p in (args.root / "yodas" / part).glob("*.parquet")}
+            if any(f"yodas/{part}/{stem}.parquet" not in hub for stem in local):
+                push_part(args.root, "yodas", part)
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"
     workers = args.workers or max(1, int(cpu_budget()) - 3)  # the main process, the ASR client and the pushes
@@ -351,7 +373,7 @@ def segments(args: argparse.Namespace) -> None:
     finisher = ThreadPoolExecutor(1, thread_name_prefix="finish")
     scratch = args.root / "yodas" / ".download"
     url = lambda f: f"https://huggingface.co/datasets/{src.repo}/resolve/{src.revision}/{f}"  # noqa: E731
-    pushes = {part: Pushes(args.root, part) for part in ("segments", "asr_vi")}
+    pushes = {part: Pushes(args.root, part) for part in parts}
 
     def written(done: Future[str]) -> None:
         log(done.result())

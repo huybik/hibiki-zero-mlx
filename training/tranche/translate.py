@@ -34,8 +34,8 @@ from training.prep.translate_en_speech import NON_LATIN, broken
 from training.tranche.ingest import REPO, ROOT, SOURCES
 
 # Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (tranche-translate, Bake-off).
-# Apache-2.0; BF16 weights, quantized to FP8 as they load. On Blackwell (an RTX 5090's 32 GB hold no
-# FP8 35B) IndexTeam's own NVFP4 build of it, which Blackwell runs natively.
+# Apache-2.0; BF16 weights, quantized to FP8 as they load. On a card too small for the FP8 35B (an
+# RTX 5090's 32 GB) IndexTeam's own NVFP4 build of it, which Blackwell runs natively.
 MODEL = ("IndexTeam/Index-Translate-35B-A3B-preview", "7e4029e0df842502cb009cf493d6467c247043b3")
 MODEL_FP4 = ("IndexTeam/Index-Translate-35B-A3B-preview-FP4", "111ff5e950f75dcccb1e631f65e936781a9c34d7")
 MAX_TOKENS = 512  # a row's English takes ~20 tokens, the longest a few hundred
@@ -125,11 +125,13 @@ def prompt(texts: list[str], docs: list[str], k: int, rows: int = CONTEXT_ROWS) 
 def engine(gpu_memory: float | None):
     """Prefix caching off: on this hybrid (linear-attention) model it never hit, and its aligned state
     blocks cut the sequences that fit by ~3×. Images and video off, so requests skip the processor."""
-    import torch
     from huggingface_hub import snapshot_download
     from vllm import LLM
+    from vllm.platforms import current_platform
 
-    fp4 = torch.cuda.get_device_capability() >= (10, 0)  # Blackwell; its quantization is the checkpoint's own
+    # The FP8 build's 35 GB of weights fit no 32 GB card: there the NVFP4 build (Blackwell; its
+    # quantization is the checkpoint's own). NVML's figure: torch's would start CUDA in this process.
+    fp4 = current_platform.get_device_total_memory() < 40 * 2**30
     repo, revision = MODEL_FP4 if fp4 else MODEL
     # FP4 (a 32 GB RTX 5090): at 0.9 of it only 232 sequences' linear-attention state fits
     gpu_memory = gpu_memory or (0.95 if fp4 else 0.9)
