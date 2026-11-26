@@ -150,16 +150,27 @@ module's first run on the box missed the bench's cache), streamed:
   shard ahead: 217 rows/s with 4 processes. A shard's references are ~17 GB (8 s at 44.1 kHz in
   float32 a row), so the next shard loads only once the one before is enrolled and its references
   freed: holding three, the first production run filled the box's 127 GB and was killed (2026-11-26).
-  The GPU enrols 1,024 rows at a time, dropping each reference once denoised: a whole shard's
-  denoised, 16 kHz and 48 kHz copies peaked at ~59 GB, which glibc kept in the process after.
-  A reference under one 0.25 s bucket is padded with
-  silence to one, so the 32 compiled lengths cover them all. The GPU enrols a shard at a time,
-  between frames.
+- The GPU enrols a shard at a time, between frames, 1,024 rows at once, dropping each reference
+  once denoised: a whole shard's denoised, 16 kHz and 48 kHz copies peaked at ~59 GB, which glibc
+  kept in the process after. A reference under one 0.25 s bucket is padded with silence to one,
+  so the 32 compiled lengths cover them all.
 - The SDK's own onnxruntime denoiser and speaker encoder, built by its constructor, are dropped
   (each holds a thread per core); PyTorch runs with expandable segments, as the bench did.
 - Rows enter as slots free, from a queue of 512 chunks whose prompt embeddings a thread builds ahead.
   A chunk made again (too short, or suspected of babble) goes to the queue's front. Chunks are
   decoded once 512 wait, sorted by length into batches of 64, or all that wait once nothing generates.
+
+Measured on box 62513802 (2026-11-26):
+
+- Alone, 2,000 YODAS rows of shard 0004 (the smoke test, enrolment in): 30.7 rows/s, 499× real
+  time; pace off 2× on 1.1%. The denoiser's first compile took 681 s, 66–77 s from Inductor's
+  cache after; VieNeu loads and captures its frame in 10 s.
+- In production, beside the ASR server (0.25 of the GPU) under MPS: a shard every ~469 s between
+  enrolments, ~26 rows/s, ~440× real time (16.8 s of English a row, RTF ~0.0023): 3.1–3.3×
+  VoxCPM2's production RTF (0.0070–0.0075, [tranche-yodas](tranche-yodas.md#voice)). Still broken
+  after the check: 7.6% of shard 0004 (9,839 rows), 7.2% of 0005 (12,299), 1.00 tries a row.
+- Enrolment holds the frames for 128–156 s a shard (13 ms a row), ~30% of a shard's
+  time: the next lever is to run it beside the frames. Voice's main process stays at ~30 GB.
 
 ## Running them on the 5090
 

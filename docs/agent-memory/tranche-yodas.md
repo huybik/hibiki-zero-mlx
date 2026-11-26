@@ -152,6 +152,8 @@ rows (RTF is wall time over English voiced):
   VoxCPM2's accuracy, so the newer models are measured first (user, 2026-11-26). None reached
   it; optimized, VieNeu runs 3.1× VoxCPM2 and is chosen for the scale-up by the user's 3× rule
   ([tranche-tts-scaleup](tranche-tts-scaleup.md#finding)).
+- VieNeu from shard 0004 on (2026-11-26 17:00 UTC): a shard every ~8 min, ~440× real time, 7.2–7.6%
+  of rows still broken ([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
 
 ## Pilot
 
