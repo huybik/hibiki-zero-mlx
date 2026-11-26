@@ -147,7 +147,8 @@ Alone on the GPU, 2,999 YODAS rows (RTF is wall time over English voiced):
   skips it and the rest of shard 0020 can be voiced.
 - Stopped 2026-11-26 00:55 UTC after shards 0000–0003 (46,501 rows, ~194 h of English, pushed):
   the YODAS scale-up (~20k h) needs a TTS at ~1,000× real time (RTF 0.001) or better, at
-  VoxCPM2's accuracy, so the newer models are measured first (user, 2026-11-26).
+  VoxCPM2's accuracy, so the newer models are measured first (user, 2026-11-26). Neither
+  candidate reached it ([tranche-tts-scaleup](tranche-tts-scaleup.md#finding)).
 
 ## Pilot
 

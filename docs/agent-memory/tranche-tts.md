@@ -22,14 +22,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   - VibeVoice (research only, an audible disclaimer in every output);
   - MegaTTS 3 (its cloning encoder is unreleased);
   - OpenVoice v2 (22.05 kHz).
-- Newer, from their cards (2026-11-26), for YODAS's ~20k h, which needs ~1,000× real time
-  ([tranche-yodas](tranche-yodas.md#voice)): [ZONOS3-Mini](https://huggingface.co/Zyphra/ZONOS3-Mini)
-  (Apache-2.0, 0.8B MoE with ~0.1B active, 44.1 kHz, 43 languages with Vietnamese, no transcript
-  needed, 457 s of audio a second on an H100 through SGLang-Omni, no Seed-TTS numbers) and
-  [Confucius4-TTS](https://huggingface.co/netease-youdao/Confucius4-TTS) (code Apache-2.0, built
-  for cross-lingual cloning in 14 languages with Vietnamese, Seed test-en WER 1.49 and similarity
-  0.700 against VoxCPM2's 1.70 and 0.752 in its table, no speed). Out: Audio8-TTS-Realistic
-  (Seed-TTS en similarity 0.663) and OmniVoice (CC-BY-NC weights).
+- For YODAS's ~20k h at ~1,000× real time, ZONOS3-Mini and VieNeu-TTS v3 Turbo were measured
+  against VoxCPM2 on the 5090 (2026-11-26): neither is that fast or that accurate →
+  [tranche-tts-scaleup](tranche-tts-scaleup.md).
 - Kyutai's `tts-0.75b-en-public` (CC BY 4.0, clones by an audio prefix, English only) is a fourth
   candidate if time allows: it is the closest to the paper's setup.
 - From the cards and repos (2026-11-04): VoxCPM2 lists Vietnamese among its languages and
