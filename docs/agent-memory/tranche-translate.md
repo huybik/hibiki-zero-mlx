@@ -23,8 +23,9 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   430 W while vLLM's engine loop and the main process each hold a core: the engine is
   CPU-bound. Chat templates and tokenizing take 0.08 ms a row. py-spy cannot attach in this
   container (no ptrace).
-- On a card under 40 GiB (`engine` reads its memory from NVML, not torch, which would start CUDA
-  in the main process) it loads IndexTeam's own NVFP4 build (Blackwell only),
+- On a card under 64 GiB (`engine` reads its memory from NVML, not torch, which would start CUDA
+  in the main process; a 48 GB card would keep ~8 GB beside the FP8 weights) it loads IndexTeam's
+  own NVFP4 build (Blackwell only),
   `Index-Translate-35B-A3B-preview-FP4`@`111ff5e` (21 GB; the FP8 35B does not fit a 32 GB RTX 5090),
   in vLLM 0.34 at 0.95 of the GPU (its default there) and 256 sequences: at 0.9 only 232 sequences'
   linear-attention state fits and the engine refuses 512. On the 5090 (2026-11-25): FLEURS dev chrF 64.5, BLEU 36.4

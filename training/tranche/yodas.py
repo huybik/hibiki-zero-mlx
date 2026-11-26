@@ -208,8 +208,11 @@ def video_rows(tar: str, index: int, meta: dict, webm: bytes, row_s: tuple[float
         stream.codec_context.thread_count = 1  # ffmpeg's default is a thread per host CPU
         for k in sorted(chosen):
             run, bound = chosen[k]
-            lo = runs[k - 1][-1][0] + TAIL_S[0] if k else 0.0
-            hi = bound if bound is not None else runs[k + 1][0][0] - LEAD_S[0] if k + 1 < len(runs) else math.inf
+            # A chosen neighbour's rows reach into the gap (its tail or lead window); one never cut
+            # bounds at its own words, so a short run past a tag does not take this run's last word.
+            lo = runs[k - 1][-1][0] + (TAIL_S[0] if k - 1 in chosen else WORD_S) if k else 0.0
+            hi = (bound if bound is not None else runs[k + 1][0][0] - (LEAD_S[0] if k + 1 in chosen else 0.0)
+                  if k + 1 < len(runs) else math.inf)
             pcm, off = decode(container, stream, max(lo, run[0][0] - LEAD_S[0]), min(hi, run[-1][0] + TAIL_S[1]))
             hi = min(hi, off + len(pcm) / RATE)  # a video shorter than its captions
             cuts += [(a, b, text, pcm, off) for a, b, text in cut_run(pcm, off, run, lo, hi, row_s)]
@@ -373,13 +376,12 @@ def segments(args: argparse.Namespace) -> None:
     finisher = ThreadPoolExecutor(1, thread_name_prefix="finish")
     scratch = args.root / "yodas" / ".download"
     url = lambda f: f"https://huggingface.co/datasets/{src.repo}/resolve/{src.revision}/{f}"  # noqa: E731
-    pushes = {part: Pushes(args.root, part) for part in parts}
+    pushes = Pushes(args.root, *parts)  # asr_vi first, as written: segments on the Hub mean asr_vi too
 
     def written(done: Future[str]) -> None:
         log(done.result())
         if args.push:
-            for p in pushes.values():
-                p.push("yodas")
+            pushes.push("yodas")
 
     try:
         nxt = fetch.submit(download, url(todo[0]), scratch / Path(todo[0]).name) if todo else None
@@ -394,8 +396,7 @@ def segments(args: argparse.Namespace) -> None:
             last = cut
         if last:
             written(last)
-        for p in pushes.values():
-            p.wait()
+        pushes.wait()
     finally:
         cutters.shutdown(wait=False, cancel_futures=True)
         asr_pool.shutdown(wait=False, cancel_futures=True)
