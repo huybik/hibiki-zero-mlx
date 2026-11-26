@@ -55,6 +55,13 @@ not increase latency so much"). `restart.sh student-heads` cuts `student_heads14
 - Untested: codebooks 9–15 are sampled without seeing 8..j-1 of their frame (MusicGen found fully
   parallel sampling worse). The teacher's depformer has read them, so on those codebooks the KL has
   a floor the student can't reach: it learns the teacher's distribution averaged over them.
+- Voice (2026-11-26, user on the phone: "really weird, like a very old man. nothing like the input
+  voice"): on 5 of the user's Vietnamese mic clips, WeSpeaker ResNet34 similarity to the input and
+  harmonics-to-noise ratio (input 11.0 dB): teacher 0.36 / 14.4 dB, depformer student `g2000_q6`
+  0.32 / 12.2, heads student 0.00–0.15 / 4.2–6.6 (the phone's release, `pal6c4000_bf16`, plain
+  `s16k_q6` and `s112k_pal6_bf16` on the Mac alike). Audio sampling doesn't help: argmax on
+  codebooks 8–15 or 1–15, or 0.5 / top 25 on 1–15. So the heads lose the voice, not the
+  quantization, the training length or the phone. Files: `/Volumes/data/hibiki-zero-evals/mac/heads-voice/`.
 - The change's review (2026-11-20, tiny CPU models with these delays): no logit moves unless its
   token is sampled after the changed one; greedy `LMGen` equals the teacher-forced argmax on text and
   all 16 codebooks; distillation scores where both masks hold (codebooks 8–15 lose their last 8
