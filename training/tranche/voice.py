@@ -327,6 +327,7 @@ class Voicer:
 
     def _admit(self, free: list[int]) -> None:
         take = [self.queue.popleft() for _ in range(min(len(free), len(self.queue)))]
+        free = free[: len(take)]  # a draining queue fills fewer slots than are free
         for k in range(0, len(take), PREFILL):
             part, slots = take[k: k + PREFILL], free[k: k + PREFILL]
             self.frame.admit(slots, [c.embed.result() for c in part], [c.req.speaker for c in part],
