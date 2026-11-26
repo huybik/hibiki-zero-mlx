@@ -22,9 +22,9 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   - VibeVoice (research only, an audible disclaimer in every output);
   - MegaTTS 3 (its cloning encoder is unreleased);
   - OpenVoice v2 (22.05 kHz).
-- For YODAS's ~20k h at ~1,000× real time, ZONOS3-Mini and VieNeu-TTS v3 Turbo were measured
-  against VoxCPM2 on the 5090 (2026-11-26): neither is that fast or that accurate →
-  [tranche-tts-scaleup](tranche-tts-scaleup.md).
+- For YODAS's ~20k h, ZONOS3-Mini and VieNeu-TTS v3 Turbo were measured against VoxCPM2 on the
+  5090 (2026-11-26); both optimized, VieNeu runs 3.1× VoxCPM2 at its own lower accuracy and is the
+  scale-up's TTS by the user's 3× rule → [tranche-tts-scaleup](tranche-tts-scaleup.md#finding).
 - Kyutai's `tts-0.75b-en-public` (CC BY 4.0, clones by an audio prefix, English only) is a fourth
   candidate if time allows: it is the closest to the paper's setup.
 - From the cards and repos (2026-11-04): VoxCPM2 lists Vietnamese among its languages and

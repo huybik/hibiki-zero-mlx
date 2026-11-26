@@ -4,7 +4,8 @@ Read when choosing or speeding up the English TTS for YODAS's ~20k h, or running
 VieNeu-TTS v3 Turbo on the RTX 5090.
 Back to [CONTEXT.md](../../CONTEXT.md) · part of [tranche-tts](tranche-tts.md) ·
 [Candidates](#candidates) · [Method](#method) · [Results](#results) · [ZONOS3 settings](#zonos3-settings) ·
-[Running them on the 5090](#running-them-on-the-5090) · [Finding](#finding)
+[Optimizing VieNeu and VoxCPM2](#optimizing-vieneu-and-voxcpm2) · [Running them on the 5090](#running-them-on-the-5090) ·
+[Finding](#finding)
 
 The user's bar (2026-11-26): at least ~1,000× real time (RTF 0.001) on the 5090, at VoxCPM2's
 accuracy, chosen by the measures below without a listening test. VoxCPM2's production speed there:
@@ -30,7 +31,9 @@ accuracy, chosen by the measures below without a listening test. VoxCPM2's produ
   of rows (3.9% broken against 3.65%). Voice match is the bake-off's WeSpeaker ResNet293-LM cosine
   against the row's own Vietnamese clip; UTMOS22 strong (SpeechMOS) stands in for naturalness.
 - Scripts, logs, scores and every output (as 64 kbps Opus):
-  `/Volumes/data/hibiki-zero-evals/box-62513802/ttsbench-2026-11-26/`.
+  `/Volumes/data/hibiki-zero-evals/box-62513802/ttsbench-2026-11-26/`; the optimization round's
+  in `ttsbench-opt-2026-11-26/` beside it (its fast VieNeu path: `vieneu_fast.py`,
+  `vieneu_cb.py`, `onnx_torch.py`).
 
 ## Results
 
@@ -67,6 +70,74 @@ Every 7th row (286; VoxCPM2 there: 2.8% broken, voice match 0.686):
   applied as its steering does: subtracted, then rescaled to the embedding's norm) keeps it in
   English, and takes the voice with it; so does the raw reference.
 
+## Optimizing VieNeu and VoxCPM2
+
+The user's rule (2026-11-26): optimize both heavily, and VieNeu is chosen if it is at least 3×
+VoxCPM2. Same 2,000 rows, each system alone on the GPU, timed from clips in memory to waveforms
+(load, compiles and warm-up excluded; VoxCPM2's 48 → 16 kHz resample too, which production runs in
+its decoder processes); rows/s, since VieNeu says the same lines ~12% longer. Every speed-up was
+scored before it counted.
+
+VoxCPM2, production's `Voicer` (CFG 2.0, 8 steps, 512 concurrent):
+
+| Setting | Rows/s | Broken | Voice match | UTMOS |
+|---|---:|---:|---:|---:|
+| production | 11.29 | 3.8% | 0.686 | 2.71 |
+| 768 concurrent (`gpu_memory` 0.72; 1,024 at 0.85 runs out of memory) | 11.45 | 4.5% | 0.686 | 2.72 |
+| 6 steps | 12.43 | 5.8% | 0.677 | 2.54 |
+| 4 steps | 11.15 | 14.6% | 0.617 | 1.92 |
+| no CFG | 6.58 | rows never stop (14.8 h of output) | | |
+
+- Its VAE already runs compiled in fp16 both ways and its LM in nano-vllm's CUDA graphs; the card
+  reads 100% busy at 515–535 W. Only fewer steps are left, and they break more rows.
+
+VieNeu, each step adding to the one above:
+
+| Step | Rows/s | Broken | Voice match | UTMOS |
+|---|---:|---:|---:|---:|
+| SDK batch engine (enrolment on the CPU) | 0.77 | 7.1% | 0.604 | 3.18 |
+| enrolment on the GPU, MOSS decode batched and chunked | 14.8 (torch 2.15) | | | |
+| continuous batching, 256 slots | 20.6 | 7.2% | 0.603 | 3.18 |
+| denoiser compiled | 27.8 | | | |
+| frame compiled, top-k-first sampler | 31.4 | 6.8% | 0.604 | 3.17 |
+| 512 slots | 32.0 | 7.4% | 0.606 | 3.18 |
+| codec encode in fp16, prompt embeddings built ahead | 34.1 | 7.3% | 0.604 | 3.18 |
+| denoiser autotuned | 35.5 | 7.7% | 0.604 | 3.18 |
+
+- Enrolment on the GPU: the SDK's ONNX denoiser and speaker encoder through onnx2torch, its Kaldi
+  fbank by torchaudio, clips trimmed to whole 0.25 s and batched by length (81% are the full 8 s).
+  Without the denoiser VieNeu runs 38.1 rows/s at the continuous step but breaks 11.9%: it stays.
+- MOSS decode: `batch_decode(chunk_duration=2.0)` keeps each layer's context as a ring cache and
+  matches the SDK's one-row decode within 7e-6 (unchunked batch decode builds a dense T² bias and
+  runs out of memory); fp16 is 59 dB from fp32 (bf16 41 dB). 2 s chunks at 64 rows is its best,
+  ~3,200× real time on 20 s rows.
+- Continuous batching (`vieneu_cb.py`): the SDK's fused CUDA-graph frame with each row's own cache
+  position, frame counter and repetition window, a finished row's slot refilled; the SDK's static
+  batches run to their longest row (37% of row-frames real). Graph-captured writes need device
+  tensors: a host scalar fails capture ("operation not permitted when stream is capturing").
+- Denoiser compiled: onnx2torch's modules read shapes from tensors, which Dynamo cannot trace, and
+  onnx-simplifier's folding does not fix that. `onnx_torch.py` plans the graph's shape arithmetic
+  in NumPy for each input shape and compiles the tensor ops: 21.3 → 8.9 ms a clip in fp16 (68 dB
+  from fp32), a graph per reference length (32; ~14 min the first time, ~1 min from Inductor's
+  cache), batches padded to 16 with copies (instance norms keep clips apart).
+- Frame compiled: each layer's projections, norms, rotary and MLP, and the acoustic decoder with
+  its sampling (attention as math), through Inductor; the cache writes and the backbone's attention
+  stay eager, since compiling the whole frame copies the 1.5 GB cache and runs out of memory.
+  10.1 → 6.0 ms a frame at 256 slots, 9.9 ms at 512. The top-k-first sampler draws from the 25
+  top-k values, the SDK's distribution without its sort over 1,024 codes.
+- Codec encode in fp16: 3.13 → 1.51 ms a clip, 97.9% of codes as fp32's (codebook 0 99.9%; bf16
+  76%).
+- Denoiser autotuned (`mode="max-autotune-no-cudagraphs"`): 8.9 → 7.4 ms a clip, but its first
+  compile takes 54 min for the 32 lengths; later runs load it from Inductor's cache.
+- Broken rows across VieNeu's steps (6.8–7.7%) and VoxCPM2's two concurrencies (3.8%, 4.5%) differ
+  by sampling noise (±0.6 points on 2,000 rows).
+- No gain: two processes on the GPU (25.5 rows/s against one's 27.8: without MPS they take
+  turns), a second CUDA stream beside the frames (overlaps ~25% of the shorter stage), denoiser
+  batches of 32, `cudnn.benchmark`, longer decode chunks or bigger decode batches. Not done: the
+  speaker encoder compiled (1 ms a clip).
+- At 35.5 rows/s (56.3 s): enrolment 26.7 s (denoise 16.6, fbank and speaker encoder 3.3, codec
+  encode 3.2, trim and resampling 3.5), frames 13.9 s, decode 14.7 s, joining 0.9 s.
+
 ## Running them on the 5090
 
 - ZONOS3's `servers/sgl/scripts/env.sh` takes compute capability ≥ 9 for Hopper: on sm_120 set
@@ -81,13 +152,16 @@ Every 7th row (286; VoxCPM2 there: 2.8% broken, voice match 0.686):
 - `TTSLLM.generate` decodes each row alone after the batch. A row that never stops can fail the
   codec's check ("Invalid matched codec tokens"), inside `generate` too: the bench decodes rows
   itself and counts such a row broken (1 of 2,000).
-- VieNeu's `repetition_penalty` (1.2) turns off its CUDA graphs; its batches are static, grouped by
-  phoneme length.
+- VieNeu's batch engine runs each frame as one CUDA graph (`vieneu.v3_turbo_serve.fused`), its
+  repetition penalty on the GPU inside it; its batches are static, grouped by phoneme length.
+- onnx2torch's install pulls a newer torch through torchvision: install it and onnxsim with
+  `--no-deps` into VieNeu's env, which stays on torch 2.8.0+cu128.
 
 ## Finding
 
-Neither model reaches 1,000×, and neither matches VoxCPM2: VieNeu breaks 3.2 points more rows,
-ZONOS3 holds English only by giving up voice match, and both lose ~0.08 voice match at best. Their
-generation is ~1.8× VoxCPM2's before their conditioning and decode are batched. Throughput is
-bought with boxes instead: 20k h at VoxCPM2's production RTF ~0.007 is ~140 5090-hours (~$72 at
-$0.51/h, ~1.2 days on 5 boxes), against ~20 hours at 1,000×. The choice is the user's.
+Optimized, VieNeu runs 35.5 rows/s (583× real time) against VoxCPM2's 11.3–11.45 (~168×): 3.1×,
+3.0× on rows that do not break. By the user's rule VieNeu is the scale-up's TTS (2026-11-26). It
+keeps its SDK's quality: 7.7% broken against VoxCPM2's 3.8–4.5%, voice match 0.60 against 0.69,
+UTMOS 3.18 against 2.7. Neither reaches 1,000×: at these rates 20k h of YODAS rows take ~41
+5090-hours on VieNeu against ~130 on VoxCPM2. Production's voice stage still runs VoxCPM2
+(`training/tranche/voice.py`); the fast path is the bench's, in the archive above.
