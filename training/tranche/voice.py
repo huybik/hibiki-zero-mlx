@@ -579,11 +579,15 @@ def run(args: argparse.Namespace) -> None:
         os.environ[name] = "1"
     spawn = get_context("spawn")
     pool = ProcessPoolExecutor(max(1, int(cpu_budget() // LOADER_SHARE)), mp_context=spawn)
-    loaded: queue.Queue = queue.Queue(maxsize=1)  # one shard ahead
+    # A shard's references are ~17 GB (8 s at 44.1 kHz in float32 a row): the next shard loads once the one before it
+    # is enrolled and its references freed. Its ~80 s load hides behind a shard's voicing.
+    loaded: queue.Queue = queue.Queue()
+    ahead = threading.Semaphore(1)
 
     def loader():
         try:
             for source, name in todo:
+                ahead.acquire()
                 began_load = time.monotonic()
                 shard = load_shard(source, name, args.root, pool)
                 log(f"{source}/{name}: loaded {len(shard.clips)} references and lines in "
@@ -625,6 +629,7 @@ def run(args: argparse.Namespace) -> None:
         began_enrol = time.monotonic()
         refs = voicer.enrol(shard.clips)
         shard.clips = None
+        ahead.release()
         key = f"{shard.source}/{shard.name}"
         log(f"{key}: enrolled {len(refs)} references in {time.monotonic() - began_enrol:.0f} s")
         rows = [(i, t_en) for i, t_en in zip(shard.ids, shard.texts_en) if i not in shard.skipped]

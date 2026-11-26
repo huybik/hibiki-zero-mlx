@@ -147,7 +147,10 @@ Inductor's default mode (the 34.1 rows/s step: max-autotune's first compile take
 module's first run on the box missed the bench's cache), streamed:
 
 - The loader's processes trim, cut and resample each shard's references and phonemize its lines a
-  shard ahead: 217 rows/s with 4 processes. A reference under one 0.25 s bucket is padded with
+  shard ahead: 217 rows/s with 4 processes. A shard's references are ~17 GB (8 s at 44.1 kHz in
+  float32 a row), so the next shard loads only once the one before is enrolled and its references
+  freed: holding three, the first production run filled the box's 127 GB and was killed (2026-11-26).
+  A reference under one 0.25 s bucket is padded with
   silence to one, so the 32 compiled lengths cover them all. The GPU enrols a shard at a time,
   between frames.
 - The SDK's own onnxruntime denoiser and speaker encoder, built by its constructor, are dropped

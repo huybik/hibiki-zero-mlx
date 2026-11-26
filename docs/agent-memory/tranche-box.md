@@ -275,6 +275,9 @@ the two-way caches and run before GRPO):
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with
 `restart.sh <job>`, never `pkill -f` (voice's spawned workers look like vLLM's processes).
+Under MPS (`nvidia-cuda-mps-control -d`), a GPU process that dies abnormally (killed out of
+memory) faults the MPS server, which then refuses every new client ("Server teardown in
+progress", error 807) until all its clients exit: restart asr, then voice (2026-11-26).
 
 ## Operating
 
