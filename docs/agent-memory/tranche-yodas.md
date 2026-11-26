@@ -159,7 +159,21 @@ rows (RTF is wall time over English voiced):
 ## Pilot
 
 ~1,000 h kept (tars 0000–0022), translated, voiced and cached on the RTX 5090 box, then measured
-by two 20k-update SFT arms from `twoway_final` (with and without the YODAS cache) on an 80 GB GPU.
+by two 20k-update SFT arms from `twoway_final`, with and without the YODAS caches, on the 5090 too
+(user, 2026-11-26: "sft can run on 5090 too for your validation"). The voicing continues past the
+pilot only if the arm with YODAS improves on the one without (user, 2026-11-26).
+
+- Caches: `restart.sh cache` builds both directions (`en-vi` second, deleting the parts it has
+  read); every YODAS row needs its pair in the other direction, which times its source
+  ([sft-training](sft-training.md#target-timing)). Then `streams --drop-shards` on
+  `cache/yodas` and `cache/en-vi/yodas`.
+- Arms: `restart.sh yodas-control`, then `restart.sh yodas-pilot`: `two-way-5090`'s rows and route
+  (`--bf16-adamw`, 14 checkpointed layers, 4,608 frames), `--max-steps 20000` with the cosine
+  over them, seed 47, validated at the end; the pilot adds `cache/yodas` and `cache/en-vi/yodas`,
+  ~11% of the rows. Each ~3.9 h at 6,554 frames/s ([sft-speed](sft-speed.md)).
+- Judged on the test sets as [the level-stage test](exposure-bias-runs.md#the-level-stage-test)
+  scored them (`eval.py` seed 43, batch 64, one call a model, paired bootstrap seed 43), the two
+  arms and `twoway_final` together.
 The card of `anquachdev/en-vi-speech-20k` lists `yodas/` with its config and YODAS v3's terms
 (CC BY 3.0 audio, attributed; 2026-11-25). Ingest and translation are done (264,665 rows, 1,012 h;
 [tranche-translate](tranche-translate.md#running)); voice stopped at four shards ([Voice](#voice)).
