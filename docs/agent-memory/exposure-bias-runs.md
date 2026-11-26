@@ -203,8 +203,7 @@ predictions, metrics, logs, scripts, the noise clips; `tables.txt`: every set an
 | 0.1 arm, GRPO 200 (`exp1_grpo_ss01`) | 42.71 / 42.88 / 43.12 | +0.41 [+0.04, +0.79] | 33.02 / 37.65 / 39.43 | 31 / 28 / 27; 370 / 409 / 302 |
 | phone student, 6 bits ([update 4,000 snapped](student-palettize.md#tests)) | 42.30 / 42.42 / 42.46 | +0.16 [−0.18, +0.51] | 40.63 / 40.59 / 40.91 | 7 / 7 / 9; 80 / 63 / 88 |
 
-Quiet FLEURS-vi dev: its 180 rows under −32.5 dBFS RMS, as [the quiet clips](#the-quiet-clips).
-Every scored set healthy in every pass (the noise rows have no reference).
+Quiet FLEURS-vi dev: its 180 rows under −32.5 dBFS RMS ([the quiet clips](#the-quiet-clips)); every set healthy.
 
 - **Most of the data gate's loss is the stage's level** (on the 0.1 arm after GRPO, the gate's
   only model left; the control SFT is gone). It against `twoway_final`, both as it was → both at
@@ -230,7 +229,8 @@ Every scored set healthy in every pass (the noise rows have no reference).
   ([noisy-source](noisy-source.md#rooms)); these rows start cold.
 - The student as it was reproduces its tests (mean of 11 42.30 against 42.48).
 - **Adopted** (2026-11-26): the +14 dB stage in `level.py` and Swift's `Audio.Leveller`
-  ([sft-evaluation](sft-evaluation.md#input-level)).
+  ([sft-evaluation](sft-evaluation.md#input-level)). Not in Speech Live: on the phone it cost the
+  student EN→VI ([student-palettize](student-palettize.md#release-and-phone)).
 
 ## Anchored GRPO
 

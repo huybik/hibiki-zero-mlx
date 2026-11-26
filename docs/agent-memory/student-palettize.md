@@ -194,9 +194,24 @@ the Neural Engine. Share of argmaxes equal to the reference's:
   then nothing; update 16,000 rambled into garbage. A loop past the 3,000-frame context tests no
   quality. Files: `/Volumes/data/hibiki-zero-evals/mac/npu-agree/phone/`.
 - **Speech Live**: [onevoice-ai-challenge PR #8](https://github.com/anthoai97/onevoice-ai-challenge/pull/8)
-  copies the Core ML LM into the app's runtime and makes this release its download (open).
+  copies the Core ML LM into the app's runtime and makes this release its download (merged
+  2026-11-26).
   On the phone (2026-11-25, the phone hot from the bench), a `--file` run of two FLEURS
   Vietnamese sentences 4 s apart translated both turns at 53 ms a frame (p50; p90 65, max 110),
   ≤ 0.2 s behind, 752 MB peak footprint; the MLX depformer student on the same clip: 75 ms,
-  1.7 GB. The app's text sampling (0.4 / top 25) is not quality-tested with this model.
+  1.7 GB. A phone with other models downloads it from Settings › Model.
+- **Speech Live's sampling** (2026-11-26): the app samples as `lm_gen_config` says (0.8 / top 250;
+  the Mac app forces 0.4 / 25). Phone A/B, 10 FLEURS dev sentences each way
+  played with `--file`, 2 reps in ABBA order: chrF tied (0.8 − 0.4, per sentence over 20: +0.7 ±
+  8.4, 95% −2.8 to +4.4; VI→EN 39.0 vs 38.1, EN→VI 38.6 vs 40.3). 0.8 ended 13 of 40 turns on its
+  end of text against 6 (p = 0.11), cut 1 turn short against 2 and never left a whole EN→VI turn
+  in English (0.4 did twice), but wrote more junk words. Heat changed the timing, not the text.
+  Files: `/Volumes/data/hibiki-zero-evals/mac/npu-agree/phone/speechlive-sampling-2026-11-25/`.
+- **Speech Live's level stage** (2026-11-26): the app keeps the −20 dBFS stage. At +14 dB
+  ([the level-stage test](exposure-bias-runs.md#the-level-stage-test)), same clips and sampling:
+  EN→VI 32.8 chrF over three runs (29.8, 36.2, 32.3) against 38.6 (37.9, 39.2), all three below
+  all four old-level runs of either sampling (p ≈ 0.03; per sentence −3.4, 95% −11.1 to +3.9),
+  mostly mistranslation, not English left in; VI→EN 37.4 against 39.0 (three runs, no clear
+  change). The gate opened on the same frames (±1 a turn); on the test's 870 s of noise alone it
+  opened once (23 frames) and wrote nothing. Files: `level-d27d931/` in the folder above.
 - 4 bits is not run yet.
