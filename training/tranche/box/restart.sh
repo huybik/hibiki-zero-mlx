@@ -8,9 +8,10 @@ cd /workspace/hibiki-zero
 set -a; . /workspace/.env; set +a  # HF_TOKEN_AN: the stages push to the anquachdev repo
 # Hub progress bars (the stages' threaded pushes and downloads, hf_sync) would glue onto the jobs' log lines.
 export HF_HUB_DISABLE_PROGRESS_BARS=1
-if [[ -f $L/$job.pid ]] && kill -0 "$(cat $L/$job.pid)" 2>/dev/null; then
+# The whole group, its leader gone or not: a run killed out of memory leaves its spawned workers alive in it.
+if [[ -f $L/$job.pid ]] && kill -0 -- -"$(cat $L/$job.pid)" 2>/dev/null; then
   kill -- -"$(cat $L/$job.pid)" || true
-  for _ in $(seq 60); do kill -0 "$(cat $L/$job.pid)" 2>/dev/null || break; sleep 1; done
+  for _ in $(seq 60); do kill -0 -- -"$(cat $L/$job.pid)" 2>/dev/null || break; sleep 1; done
   kill -9 -- -"$(cat $L/$job.pid)" 2>/dev/null || true
 fi
 # The container's CPU quota (cgroup cpu.max), not nproc (the host's cores): threads and pools follow it.
@@ -20,15 +21,20 @@ case $job in
   # One thread each: uncapped, its 8 API processes held 508 threads each, most of the container's 6,656;
   # at 4 the server spent 2.4× the CPU of 1 for the same rows/s (170 against 71 CPU-s per 3,000 YODAS rows, 5090).
   asr) export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-       cmd=(/workspace/envs/asr/bin/qwen-asr-serve $ASR_SNAP --served-model-name asr --gpu-memory-utilization 0.2
-            --port 8100 --max-num-seqs 256 --api-server-count $(( N / 3 > 0 ? N / 3 : 1 ))) ;;
+       # A check is under ~1.2k tokens (a clip of at most 22.4 s, 512 tokens out). At 0.2 of the 5090's 32 GB the KV
+       # cache (0.91 GiB) held less than one sequence of the model's own maximum length, and the server did not start.
+       # No processor cache: every clip is new, and vLLM's 4 GiB a process (7 of them) only held RAM (31.6 GB in all,
+       # 2026-11-26).
+       cmd=(/workspace/envs/asr/bin/qwen-asr-serve $ASR_SNAP --served-model-name asr --gpu-memory-utilization 0.25
+            --max-model-len 4096 --mm-processor-cache-gb 0 --port 8100 --max-num-seqs 256
+            --api-server-count $(( N / 3 > 0 ? N / 3 : 1 ))) ;;
   # The VI->EN server translate.py calls; it needs the GPU memory voice holds, so the two take turns.
   mt) read -ra cmd <<< "$(/workspace/envs/translate/bin/python -m training.tranche.translate serve)" ;;
   # The scale-up: each reruns 30 s after a run that succeeds, as the ingest and translation bring
   # shards (a run takes the shards ready at its start); the first error stops the loop.
   # Voice reruns after a failure too (an ASR request timing out at 60 s ends a run about once a
   # day: 2026-11-06, 2026-11-07 17:30 UTC+7), but stops after 3 in a row.
-  voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/nanovox/bin/python -m training.tranche.voice run giga; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
+  voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/vieneu/bin/python -m training.tranche.voice run yodas; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
   # The cache builds run in the free-threaded env (envs-min.sh), Mimi's rope eager there (no Triton). Plain HTTP for the
   # Hub: 143 MB/s, where Xet throttles to ~4 MB/s.

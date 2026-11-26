@@ -1,66 +1,75 @@
 #!/usr/bin/env python
-"""English TTS for the real-Vietnamese tranche: VoxCPM2 with the reference's transcript (`ult` in the
-bake-off), batched on nano-vllm-voxcpm's engine ([tranche-tts](../../docs/agent-memory/tranche-tts.md)).
+"""English TTS for the real-Vietnamese tranche: VieNeu-TTS v3 Turbo in each row's own voice, its SDK's steps
+batched on the GPU ([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu-and-voxcpm2)).
 
-The engine runs in this process. Its runner returns each step's latent patch and stop flag
-without decoding audio: nano-vllm's own streaming VAE decoder loops over every stream in Python in
-each causal conv layer, which took ~70% of the engine loop at 256 streams. Each row's audio is
-decoded once the row ends, as voxcpm's own non-streaming path decodes it, many rows per batched
-pass of the VAE decoder in fp16 under torch.compile (3.4x fp32's speed; 57 dB SNR against fp32,
-which voxcpm runs). The VAE is causal throughout, so a batch's right padding leaves every row's
-audio as decoded alone. Prompts are encoded in fp16 batches the same way.
+Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=True, use_ref_codes=True)`:
+- the reference: the row's clip trimmed of silence at 30 dB, its first 8 s, cut to whole quarter seconds so the
+  clips batch at 32 lengths, at 44.1 kHz (the loader's processes, a shard ahead); on the GPU, a shard at a time:
+  the resemble-enhance denoiser (onnx_graph.py, fp16, compiled per length), the speaker encoder (onnx_graph.py) on
+  a Kaldi fbank of the clean clip at 16 kHz, and MOSS's codes of it at 48 kHz (fp16);
+- the English line in chunks of at most 256 characters, phonemized (the loader's processes);
+- each chunk generated in one of SLOTS continuous-batching slots (vieneu_frame.py) and made again while shorter
+  than the SDK's minimum (twice at most, the longest kept); decoded by MOSS in fp16, in batches of chunks of
+  similar length; made again while the SDK's babble guard suspects it (twice at most, its preference kept);
+- the chunks joined with the SDK's pauses, at 48 kHz.
 
-Env /workspace/envs/nanovox (training/tranche/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in
-the environment and the ASR server up:
-  /workspace/envs/asr/bin/qwen-asr-serve <Qwen3-ASR-1.7B snapshot> --served-model-name asr \
-      --gpu-memory-utilization 0.2 --port 8100 --max-num-seqs 256 --api-server-count 8 &
-      (one API process decodes and featurizes ~11 requests/s on the CPU, below the TTS's ~13 attempts/s)
-  /workspace/envs/nanovox/bin/python -m training.tranche.voice run pho vivoice giga
+Env /workspace/envs/vieneu (training/tranche/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in the
+environment and the ASR server up (`restart.sh asr`):
+  /workspace/envs/vieneu/bin/python -m training.tranche.voice run yodas
       every segments shard (each has its text_en and asr_vi) on the Hub without en_audio yet, but
       those held out for evaluation (`ingest.SOURCES[...].heldout`): each
-      row voiced with its own clip and transcript as prompt and reference, heard by the ASR, voiced
-      again while broken (WER over 20% or pace off by 2x) up to MAX_TRIES, the best try kept; writes
+      row voiced from its own clip, heard by the ASR, voiced again while broken (WER over 20% or pace
+      off by 2x) up to MAX_TRIES, the best try kept; writes
       <root>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
       en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
       30 min and at its end. Rows the cache build drops on the Vietnamese side (`filters.vi_gate`
-      on asr_vi) are not voiced: en_tries 0, the other columns null. A rerun skips the shards
+      on asr_vi), and those whose text_en is missing or has nothing speakable, are not voiced:
+      en_tries 0, the other columns null. A rerun skips the shards
       already written or pushed, and first pushes any written but not yet pushed.
-  /workspace/envs/nanovox/bin/python -m training.tranche.voice bench --concurrency 512 --repeats 8
-      the bake-off's rows in its `ult` setup (prompt and reference: the row's reference clip),
-      timed; --write saves the first pass as <out>/out/<system>/ in the bake-off's layout, beside a
-      link to its clips.jsonl, for `bakeoff mimi --root <out>` and `bakeoff score --root <out>`
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import time
-import uuid
-from collections.abc import Iterable, Iterator
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-BAKEOFF = Path("/workspace/tranche/bakeoff")
-BENCH = Path("/workspace/tranche/voice-bench")
-MODEL = ("openbmb/VoxCPM2", "32279ef")  # the bake-off's revision
-CFG = 2.0  # voxcpm 2.0.3's generate defaults, which the bake-off ran
-# Flow-matching steps: 8 from 2026-11-08 (tranche-tts.md, "Quality against speed": the diffusion head is
-# ~92% of a decode step; 8 was within noise of 10 on broken share, kept-row WER and voice match, for 8.5%
-# less GPU per kept row; voxcpm runs 10)
-TIMESTEPS = 8
-MIN_PATCHES = 4  # voxcpm stops no earlier than its fourth patch (`i > min_len`, min_len 2)
-MAX_MODEL_LEN = 4096
-ENCODE_RATE, OUT_RATE = 16000, 48000
-CONTEXT_FRAMES = 12  # the prompt's last 3 patches lead the decode, then are cut, as voxcpm decodes
-BATCH_FRAMES = 8_000  # VAE frames per batched encode or decode (~5 min of audio)
-BUCKET = 64  # VAE frames (2.56 s)
-WARM_FRAMES = 1024  # the widest decode shape warmed at start (41 s; longer rows are rare)
-ROW_S = (5.0, 22.4)  # the tranche's row lengths
-MAX_WAIT_S = 120
+MODEL = ("pnnbao-ump/VieNeu-TTS-v3-Turbo", "61b85e3d937fbbacb387714180e8182823512523")
+MODEL_FILES = ["config.json", "update/*", "denoiser.onnx", "speaker_encoder.onnx"]  # the PyTorch path's
+CODEC = ("OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano", "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68")
+ASR_RATE, DENOISE_RATE, SPEAKER_RATE, OUT_RATE = 16000, 44100, 16000, 48000
+# The reference, as _enroll_reference cuts it, then to whole BUCKET_S: equal lengths batch, and each length is one
+# compiled denoiser graph (32 of them)
+TRIM_DB, REF_S, BUCKET_S = 30, 8.0, 0.25
+DENOISE_BATCH = 16  # a batch padded to it with copies of its last clip (instance norms keep clips apart)
+# Inductor's default: the first compile of the 32 lengths takes ~14 min, later runs of the same code read its cache
+# (/tmp/torchinductor_root) in about a minute. max-autotune-no-cudagraphs ran the bench 4% faster but compiles ~54 min
+# cold, and this module's first run on the box missed the bench's cache.
+DENOISE_MODE = "default"
+ENROL_BATCH = 64  # references per speaker-encoder and codec batch
+# Rows enrolled at once (a multiple of both batches, so the batches are a whole shard's): their denoised, 16 kHz
+# and 48 kHz copies (~3.4 MB a row) live for a piece. Over a whole shard they peaked at ~59 GB, which glibc then
+# kept in the process.
+ENROL_PIECE = 1024
+CHUNK_CHARS = 256  # the SDK's chunk length
+SAMPLING = dict(temperature=0.8, top_k=25, top_p=0.95, repetition_penalty=1.2)  # generate_batch's defaults
+# A chunk's frame cap: max_expected_frames of its phonemes up to MAX_NEW_FRAMES (the bench's; the SDK's default is
+# 300), and in a slot also V3TurboBatchEngine.FUSED_MAX_FRAMES (512, 41 s) and the cache's room after the prompt
+MAX_NEW_FRAMES = 1000
+SHORT_RETRIES = 2  # generate_batch's max_retries
+SLOTS = 512  # 3% faster than 256 on the bench, 4% than 768
+ADMIT_MIN = 32  # free slots that make a prefill (in groups of PREFILL)
+PREFILL = 64
+QUEUE = 512  # chunks waiting for a slot, their prompt embeddings built ahead on a thread
+DECODE_POOL = 512  # chunks decoded together, sorted by length into batches of DECODE_BATCH
+DECODE_BATCH = 64
+DECODE_CHUNK_S = 2.0  # MOSS's chunked decode (a multiple of its 80 ms frame)
 # Verification, as the bake-off scored ([tranche-tts](../../docs/agent-memory/tranche-tts.md)):
 WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English normalizer only
 BROKEN_WER = 0.2
@@ -74,308 +83,31 @@ ASR_TIMEOUT_S = 60  # a request takes well under a second
 ASR_TRIES = 10
 ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
 CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
-DECODER_SHARE = 4  # processes decoding the next shard's clips: a quarter of the CPU quota (6 of 26)
+LOADER_SHARE = 4  # processes preparing the next shard's references and lines: a quarter of the CPU quota
 OPUS_AT_ONCE = 4
 PUSH_S = 1800
-MAX_OPEN = 3  # shards in the engine at once: those finishing their slowest rows, and the next
+MAX_OPEN = 3  # shards in the voicer at once: those finishing their slowest rows, and the next
 
 
 def log(msg: str) -> None:
     print(f"{time.strftime('%F %T', time.gmtime())} {msg}", flush=True)
 
 
-def snapshot(repo: str, revision: str) -> str:
+def snapshot(repo: str, revision: str, **kwargs) -> str:
     from huggingface_hub import snapshot_download
 
-    return snapshot_download(repo, revision=revision)
+    return snapshot_download(repo, revision=revision, **kwargs)
 
 
-@dataclass
-class Request:
-    key: str
-    text: str  # what to say
-    prompt_text: str  # the transcript of the prompt audio
-    latents: np.ndarray  # the prompt audio, VAE frames [F, 64]: both voxcpm's reference and its prompt
+# --- the loader's processes --------------------------------------------------------------------
 
 
-def build_engine(path: str, max_seqs: int, gpu_memory: float):
-    """nano-vllm-voxcpm's VoxCPM2 engine with a runner that decodes no audio."""
-    import torch
-    from nanovllm_voxcpm.config import Config
-    from nanovllm_voxcpm.engine.llm_engine import LLMEngineBase
-    from nanovllm_voxcpm.layers.audio_vae_v2 import AudioVAEV2
-    from nanovllm_voxcpm.models.voxcpm2.config import VoxCPM2Config
-    from nanovllm_voxcpm.models.voxcpm2.engine import VoxCPM2Engine
-    from nanovllm_voxcpm.models.voxcpm2.model import VoxCPM2Model
-    from nanovllm_voxcpm.models.voxcpm2.runner import VoxCPM2Runner
-    from nanovllm_voxcpm.utils.loader import load_model
-    from torch.nn.utils import remove_weight_norm
-
-    class Runner(VoxCPM2Runner):
-        def init_model(self, model_config, model_path):
-            self.model = VoxCPM2Model(model_config, self.inference_timesteps, lora_config=self.lora_config)
-            load_model(self.model, model_path)
-            torch.set_default_dtype(torch.float32)  # weights folded in fp32, then halved by Voicer
-            self.vae = AudioVAEV2(config=model_config.audio_vae_config)
-            self.vae.load_state_dict(torch.load(os.path.join(model_path, "audiovae.pth"))["state_dict"])
-            for module in self.vae.modules():
-                if hasattr(module, "weight_g"):
-                    remove_weight_norm(module)
-            torch.set_default_dtype(torch.bfloat16)
-
-        def run(self, seqs, is_prefill):
-            """VoxCPM2Runner.run up to the model's outputs: every request unseeded, so one draw of
-            noise per step serves the batch."""
-            inputs = {"positions": self.prepare_prefill_context(seqs) if is_prefill
-                      else self.prepare_decode_context(seqs)}
-            payloads = [seq.custom_payload for seq in seqs]
-            if is_prefill:
-                inputs["text_only_prefill"] = not any(p.feat_masks.any() for p in payloads)
-
-            def cuda(arrays):
-                return torch.from_numpy(np.concatenate(arrays, axis=0)).cuda(non_blocking=True)
-
-            inputs["text_tokens"] = cuda([p.text_tokens for p in payloads])
-            inputs["feat"] = cuda([p.feats for p in payloads]).to(self.dtype)
-            inputs["feat_mask"] = cuda([p.feat_masks for p in payloads])
-            for name in ("temperature", "cfg_value"):
-                inputs[name] = torch.tensor([getattr(p, name) for p in payloads], dtype=torch.float32,
-                                            pin_memory=True).cuda(non_blocking=True).to(self.dtype)
-            inputs["z_noise"] = torch.randn((len(seqs), self.feat_dim, self.patch_size), dtype=self.dtype,
-                                            device="cuda")
-            outputs = self.run_model(inputs, is_prefill)
-            latents = outputs["latents"].to(torch.float32).cpu().numpy()
-            stops = outputs["stop_flag"].cpu().tolist()
-            return [{"latents": latents[i], "stop_flag": stops[i]} for i in range(len(seqs))]
-
-    class Engine(VoxCPM2Engine):
-        def __init__(self, config):
-            # VoxCPM2Engine.__init__, with the runner above
-            self.n_decode_pad_frames = 12
-            self.feat_dim = config.model_config.feat_dim
-            self.patch_size = config.model_config.patch_size
-            self.audio_start_token, self.ref_audio_start_token, self.ref_audio_end_token = 101, 103, 104
-            self.block_size = config.kvcache_block_size
-            self.max_model_len = config.max_model_len
-            from nanovllm_voxcpm.models.voxcpm2.utils import mask_multichar_chinese_tokens
-            from transformers import LlamaTokenizerFast
-
-            self.tokenizer = mask_multichar_chinese_tokens(LlamaTokenizerFast.from_pretrained(config.model))
-            LLMEngineBase.__init__(self, Runner, config, config.tensor_parallel_size)
-
-        def postprocess_seq(self, seq, outputs, is_prefill):
-            payload = seq.custom_payload
-            patch = outputs["latents"]  # [patch, feat]
-            seq.append_token(patch.tobytes())
-            payload.feats.append(patch[None])
-            payload.text_tokens.append(0)
-            payload.feat_masks.append(True)
-            payload.generated_waveforms.append(patch)  # here the row's patches, decoded when it ends
-            n = len(payload.generated_waveforms)
-            if (outputs["stop_flag"] == 1 and n >= MIN_PATCHES) or n >= payload.max_generate_length:
-                seq.stoped = True
-
-    model_config = VoxCPM2Config.model_validate_json(open(os.path.join(path, "config.json")).read())
-    model_config.inference_timesteps = TIMESTEPS
-    return Engine(Config(model=path, max_num_batched_tokens=16384, max_num_seqs=max_seqs,
-                         max_model_len=MAX_MODEL_LEN, gpu_memory_utilization=gpu_memory,
-                         model_config=model_config, devices=[0]))
-
-
-class Voicer:
-    """Voices requests `concurrency` at a time; finished rows come back in batches, as audio."""
-
-    def __init__(self, concurrency: int, gpu_memory: float):
-        import torch
-
-        from training.paths import cpu_budget
-
-        # Thread pools default to the host's CPUs (224 on the box), past the container's limit
-        # on threads; the tokenizer's reads this when it first runs.
-        os.environ.setdefault("RAYON_NUM_THREADS", "4")
-        torch.set_num_threads(max(1, int(cpu_budget() // 4)))
-        self.torch = torch
-        self.concurrency = concurrency
-        self.engine = build_engine(snapshot(*MODEL), concurrency, gpu_memory)
-        self.vae = self.engine.model_runner.vae
-        self.hop = self.vae.encoder_chunk_size  # 640 samples at 16 kHz per frame
-        self.align = self.hop * self.engine.patch_size
-        self.out_hop = self.vae.decoder_chunk_size  # 1920 samples at 48 kHz per frame
-        # Memory-bound depthwise convs and Snake activations: half the bytes and fused elementwise
-        # kernels. A graph per batch shape (each width has one), all warmed below: static shapes
-        # run the decoder 24% and the encoder 35% faster than one dynamic graph. The fp16 encoder's
-        # latents are 51 dB from fp32's; the quality test saw no change (tranche-tts.md, "Speed").
-        torch._dynamo.config.recompile_limit = 64  # the default 8 would fall back to eager
-        self.decoder = torch.compile(self.vae.decoder.half(), dynamic=False)
-        self.encoder = torch.compile(self.vae.encoder.half(), dynamic=False)
-        self.active: dict[str, Request] = {}  # by engine sequence id
-        self.waiting: dict[int, tuple[float, list[tuple[Request, np.ndarray]]]] = {}  # by decode width
-        began = time.perf_counter()
-        # Every shape a run meets, so none compiles mid-run: inputs made in inference mode, as the
-        # runs make theirs (Dynamo's guards tell inference tensors from others).
-        with torch.inference_mode():
-            for width in range(BUCKET, WARM_FRAMES + 1, BUCKET):
-                self.decoder(torch.zeros(shape(width)[0], self.vae.latent_dim, width, device="cuda",
-                                         dtype=torch.float16))
-                if (width - BUCKET) * self.hop < ROW_S[1] * ENCODE_RATE:  # the prompts: rows' clips
-                    self.encoder(torch.zeros(shape(width)[0], 1, width * self.hop, device="cuda", dtype=torch.float16))
-        torch.cuda.synchronize()
-        log(f"VAE warmed in {time.perf_counter() - began:.0f} s")
-
-    def tokens(self, text: str) -> int:
-        return len(self.engine.tokenizer(text))
-
-    def _padded(self, arrays: list[np.ndarray], size: int, width: int, dtype):
-        """[size, C, width] on the GPU, row i holding arrays[i] ([C, n]) from the left, zeros
-        elsewhere."""
-        x = self.torch.zeros(size, arrays[0].shape[0], width, device="cuda", dtype=dtype)
-        for i, a in enumerate(arrays):
-            x[i, :, : a.shape[1]] = self.torch.from_numpy(a)
-        return x
-
-    def encode(self, clips: list[np.ndarray]) -> list[np.ndarray]:
-        """16 kHz clips -> their VAE frames [F, 64], each left-padded to whole patches (voxcpm pads a
-        prompt on the left)."""
-        clips = [np.pad(c, ((-len(c)) % self.align, 0))[None] for c in clips]
-        groups: dict[int, list[int]] = {}
-        for i, c in enumerate(clips):
-            groups.setdefault(shape(c.shape[1] // self.hop)[1], []).append(i)
-        out: list[np.ndarray | None] = [None] * len(clips)
-        for width, members in groups.items():
-            size = shape(width)[0]
-            for k in range(0, len(members), size):
-                batch = members[k: k + size]
-                with self.torch.inference_mode():
-                    x = self._padded([clips[i] for i in batch], size, width * self.hop, self.torch.float16)
-                    z = self.encoder(x)["mu"].float().transpose(1, 2).cpu().numpy()  # [B, width, 64]
-                for j, i in enumerate(batch):
-                    out[i] = np.ascontiguousarray(z[j, : clips[i].shape[1] // self.hop])
-        return out
-
-    def decode(self, width: int, rows: list[tuple[Request, np.ndarray]]) -> list[tuple[Request, np.ndarray]]:
-        """(request, generated patches) whose frames fit `width` -> each with the 48 kHz audio of its
-        generated part, decoded after the prompt's last frames as context, a batch at a time."""
-        size, out = shape(width)[0], []
-        for k in range(0, len(rows), size):
-            batch = rows[k: k + size]
-            z = [np.concatenate([req.latents[-CONTEXT_FRAMES:], patches.reshape(-1, req.latents.shape[1])]).T
-                 for req, patches in batch]
-            with self.torch.inference_mode():
-                wav = self.decoder(self._padded(z, size, width, self.torch.float16))[:, 0].float().cpu().numpy()
-            for i, (req, _) in enumerate(batch):
-                out.append((req, wav[i, min(CONTEXT_FRAMES, len(req.latents)) * self.out_hop: z[i].shape[1] * self.out_hop]))
-        return out
-
-    @property
-    def room(self) -> int:
-        return self.concurrency - len(self.active)
-
-    def submit(self, req: Request) -> None:
-        text = re.sub(r"\s+", " ", req.text.replace("\n", " "))  # as voxcpm's generate
-        seq_id = uuid.uuid4().hex
-        # voxcpm's own cap on the patches: 6 per token of the text to say, plus 10
-        self.engine.add_request(seq_id=seq_id, target_text=text, prompt_text=req.prompt_text,
-                                prompt_latents=req.latents, ref_audio_latents=req.latents,
-                                max_generate_length=self.tokens(text) * 6 + 10, temperature=1.0, cfg_value=CFG)
-        self.active[seq_id] = req
-
-    def step(self) -> list[tuple[Request, np.ndarray]]:
-        """One engine step; returns the rows of every decode shape whose batch filled, or whose
-        oldest row has waited MAX_WAIT_S (so a rare shape cannot hold a shard back), with audio. (A
-        decode thread on its own CUDA stream gained nothing: the engine's steps keep the GPU busy.)"""
-        out = []
-        for seq in self.engine.step():
-            if seq.is_finished:
-                patches = np.stack(seq.custom_payload.generated_waveforms)
-                width = shape(CONTEXT_FRAMES + patches.shape[0] * self.engine.patch_size)[1]
-                self.waiting.setdefault(width, (time.monotonic(), []))[1].append((self.active.pop(seq.seq_id), patches))
-        now = time.monotonic()
-        for width, (since, rows) in list(self.waiting.items()):
-            if len(rows) >= shape(width)[0] or now - since > MAX_WAIT_S:
-                out += self.decode(width, self.waiting.pop(width)[1])
-        return out
-
-    def flush(self) -> list[tuple[Request, np.ndarray]]:
-        out = []
-        for width, (_, rows) in self.waiting.items():
-            out += self.decode(width, rows)
-        self.waiting.clear()
-        return out
-
-    def voice(self, requests: Iterable[Request]) -> Iterator[list[tuple[Request, np.ndarray]]]:
-        """Every request, `concurrency` at a time; yields finished rows with their audio."""
-        pending = iter(requests)
-        while True:
-            while self.room and (req := next(pending, None)) is not None:
-                self.submit(req)
-            if not self.active:
-                break
-            if done := self.step():
-                yield done
-        yield self.flush()
-
-
-def shape(frames: int) -> tuple[int, int]:
-    """The batch size and width for VAE inputs of `frames`: widths round up to BUCKET frames and
-    each width has one batch size, so cuDNN plans each conv shape once (~0.9 s per new shape)."""
-    width = -(-frames // BUCKET) * BUCKET
-    return max(1, BATCH_FRAMES // width), width
-
-
-# --- bench -------------------------------------------------------------------------------------
-
-
-def load_16k(path: str) -> np.ndarray:
-    import librosa
-
-    return librosa.load(path, sr=ENCODE_RATE, mono=True)[0]
-
-
-def bench(args: argparse.Namespace) -> None:
-    import soundfile as sf
-
-    rows = [json.loads(line) for line in open(args.rows / "clips.jsonl")][: args.limit]
-    voicer = Voicer(args.concurrency, args.gpu_memory)
-    began = time.perf_counter()
-    latents = voicer.encode([load_16k(r["ref"]) for r in rows])
-    log(f"encoded {len(rows)} prompts in {time.perf_counter() - began:.1f} s")
-    out = args.out / "out" / args.system
-    out.mkdir(parents=True, exist_ok=True)
-    if not (args.out / "clips.jsonl").exists():
-        (args.out / "clips.jsonl").symlink_to(args.rows / "clips.jsonl")
-    requests = [Request(f"{rep}/{r['id']}", r["text_en"], r["ref_text"], lat)
-                for rep in range(args.repeats) for r, lat in zip(rows, latents)]
-    run = time.strftime("%Y%m%dT%H%M%S")
-    began, start = time.perf_counter(), time.time()
-    audio_s, timing = 0.0, []
-    for batch in voicer.voice(requests):
-        now = time.time()
-        for req, wav in batch:
-            audio_s += len(wav) / OUT_RATE
-            rep, row_id = req.key.split("/")
-            if args.write and rep == "0":
-                sf.write(out / f"{row_id}.wav", np.clip(wav, -1, 1), OUT_RATE, subtype="PCM_16")
-                timing.append({"id": row_id, "run": run, "workers": args.concurrency,
-                               "audio_s": round(len(wav) / OUT_RATE, 3), "end": now})
-    wall = time.perf_counter() - began
-    if args.write:  # the bake-off's timing: one run spanning the whole pass
-        with (out / "timing.jsonl").open("w") as f:
-            for t in timing:
-                f.write(json.dumps(t | {"seconds": round(t["end"] - start, 3)}) + "\n")
-    log(f"{args.system}: {len(requests)} rows, {audio_s:.0f} s of audio in {wall:.1f} s: RTF {wall / audio_s:.4f} "
-        f"at concurrency {args.concurrency}")
-
-
-# --- run ---------------------------------------------------------------------------------------
-
-
-def decode_16k(data: bytes) -> np.ndarray:
-    """A segment's Ogg Opus -> mono float32 at 16 kHz, the VAE encoder's rate. Resampled by scipy:
-    PyAV's AudioResampler builds an ffmpeg filter graph whose threads (one per host CPU) pile up."""
+def decode(data: bytes) -> tuple[np.ndarray, int]:
+    """A segment's Ogg Opus -> mono float32 at its own rate. Without PyAV's AudioResampler, whose ffmpeg filter
+    graph holds a thread per host CPU (they pile up)."""
     import io
 
     import av
-    from scipy.signal import resample_poly
 
     with av.open(io.BytesIO(data)) as container:
         stream = container.streams.audio[0]
@@ -383,9 +115,280 @@ def decode_16k(data: bytes) -> np.ndarray:
         frames = [f.to_ndarray().astype(np.float32) for f in container.decode(stream)]
         rate = stream.codec_context.sample_rate
     pcm = np.concatenate(frames, axis=-1)
-    pcm = pcm.mean(axis=0) if pcm.ndim == 2 and frames[0].shape[0] > 1 else pcm.reshape(-1)
-    g = np.gcd(ENCODE_RATE, rate)
-    return resample_poly(pcm, ENCODE_RATE // g, rate // g).astype(np.float32)
+    return (pcm.mean(axis=0) if pcm.ndim == 2 and frames[0].shape[0] > 1 else pcm.reshape(-1)), rate
+
+
+def decode_16k(data: bytes) -> np.ndarray:
+    """A segment's Ogg Opus -> mono float32 at 16 kHz, the ASR server's rate (filters.py), resampled by scipy."""
+    from scipy.signal import resample_poly
+
+    pcm, rate = decode(data)
+    g = np.gcd(ASR_RATE, rate)
+    return resample_poly(pcm, ASR_RATE // g, rate // g).astype(np.float32)
+
+
+def reference(data: bytes) -> np.ndarray:
+    """A segment's Ogg Opus -> its reference before the denoiser: silence trimmed at TRIM_DB, the first REF_S, cut to
+    whole BUCKET_S (one under a bucket padded with silence to one: a new length would compile mid-run, and under 25 ms
+    the speaker's fbank has no frame), at 44.1 kHz by soxr (the SDK's resampler)."""
+    import librosa
+    import soxr
+
+    pcm, rate = decode(data)
+    w = librosa.effects.trim(pcm, top_db=TRIM_DB)[0][: int(REF_S * rate)]
+    q = int(BUCKET_S * rate)
+    w = w[: len(w) // q * q] if len(w) >= q else np.pad(w, (0, q - len(w)))
+    return soxr.resample(w, rate, DENOISE_RATE).astype(np.float32)
+
+
+def phonemize(text: str) -> tuple[list[str], list]:
+    """An English line -> its chunks phonemized and the SDK's pauses between them; no chunk when nothing in it is
+    speakable (the row is then skipped)."""
+    from vieneu_utils.phonemize_text import normalize_to_chunks_v3_with_gaps, phonemize_text_with_emotions
+
+    chunks, gaps = normalize_to_chunks_v3_with_gaps(text, max_chars=CHUNK_CHARS)
+    return [phonemize_text_with_emotions(c) for c in chunks], gaps
+
+
+# --- the voicer --------------------------------------------------------------------------------
+
+
+@dataclass(eq=False)
+class Request:
+    key: str
+    text: str  # the English line, which the check hears against
+    chunks: list[str]  # its phonemized chunks
+    gaps: list  # the pauses between them
+    speaker: np.ndarray  # the row's speaker embedding
+    codes: np.ndarray  # its reference codes [T, n_vq]
+
+
+@dataclass(eq=False)
+class Chunk:
+    req: Request
+    k: int  # its place in the line
+    cap: int  # generate_batch's frame cap for it, as babble_suspect takes it
+    min_frames: int  # shorter, it is made again
+    embed: object = None  # its prompt embedding's future, until it takes a slot
+    codes: object = None  # the longest generation so far [T, n_vq] on the GPU, until decoded
+    tries: int = 0  # generations before its first decode
+    wav: np.ndarray | None = None  # the audio kept
+    verdict: tuple | None = None  # babble_suspect's on it
+    rerolls: int = 0  # generations the babble guard asked for
+
+
+class Voicer:
+    """Rows in, their 48 kHz audio out: `enrol` a shard's references, `submit` its rows while there is `room`, `step`
+    until each comes back."""
+
+    def __init__(self):
+        import torch
+        from concurrent.futures import ThreadPoolExecutor
+
+        from vieneu._v3_turbo_engine import VieNeuTTSv3Turbo
+        from vieneu._v3_turbo_engine.onnx_denoiser import N_FFT
+        from vieneu._v3_turbo_engine.rep_history import DEFAULT_REP_WINDOW
+        from vieneu.v3_turbo_serve import V3TurboBatchEngine
+
+        from training.paths import cpu_budget
+        from training.tranche.onnx_graph import OnnxGraph
+        from training.tranche.vieneu_frame import ContinuousFrame
+
+        began = time.perf_counter()
+        torch.set_num_threads(max(1, int(cpu_budget() // 4)))
+        path = snapshot(*MODEL, allow_patterns=MODEL_FILES)
+        tts = VieNeuTTSv3Turbo(checkpoint_path=path, model_subfolder="update", moss_tokenizer_path=snapshot(*CODEC),
+                               device="cuda")
+        tts.speaker_encoder = tts.denoiser = None  # its onnxruntime sessions, each with a thread per core: run here on the GPU
+        self.codec = tts.audio_tokenizer
+        self.codec.set_compute_dtype("fp16")  # encode and decode: 59 dB from fp32 on the bench
+        self.prompt = V3TurboBatchEngine(tts)._prompt_embeds
+        self.denoiser = OnnxGraph(f"{path}/denoiser.onnx", "cuda", torch.float16, compile=True, mode=DENOISE_MODE)
+        self.speaker = OnnxGraph(f"{path}/speaker_encoder.onnx", "cuda")
+        self.window = torch.hann_window(N_FFT, periodic=True, device="cuda")
+        self.frame = ContinuousFrame(tts.model, SLOTS, tts.config.max_position_embeddings,
+                                     V3TurboBatchEngine.FUSED_MAX_FRAMES, repetition_window=DEFAULT_REP_WINDOW,
+                                     **SAMPLING)
+        self.ahead = ThreadPoolExecutor(1)  # prompt embeddings, built while the frames run
+        self.threads = ThreadPoolExecutor(max(1, int(cpu_budget() // 4)))  # soxr
+        self.active: dict[str, Request] = {}  # by key, until its audio is returned
+        self.queue: deque[Chunk] = deque()  # chunks waiting for a slot; retries first
+        self.slots: dict[int, Chunk] = {}
+        self.decoding: list[tuple[Chunk, object]] = []  # (chunk, the codes to decode)
+        self.parts: dict[str, list] = {}  # key -> its chunks' audio, as each finishes
+        self.done: list[tuple[Request, np.ndarray]] = []
+        log(f"VieNeu loaded and its frame captured in {time.perf_counter() - began:.0f} s")
+        began = time.perf_counter()
+        q = int(BUCKET_S * DENOISE_RATE)
+        for n in range(1, int(REF_S / BUCKET_S) + 1):  # every reference length
+            self.denoise([np.zeros(n * q, np.float32)])
+        torch.cuda.synchronize()
+        log(f"denoiser compiled for {len(self.denoiser.plans)} lengths in {time.perf_counter() - began:.0f} s")
+
+    # enrolment
+
+    def denoise(self, clips: list[np.ndarray]) -> list[np.ndarray]:
+        """OnnxDenoiser.denoise of equal-length 44.1 kHz clips, batched: the STFT in fp32, the UNet in fp16."""
+        import torch
+        from vieneu._v3_turbo_engine.onnx_denoiser import HOP, N_FFT
+
+        n = len(clips)
+        clips = clips + [clips[-1]] * (-n % DENOISE_BATCH)
+        with torch.no_grad():
+            x = torch.from_numpy(np.stack(clips)).cuda()
+            scale = x.abs().amax(1, keepdim=True).clamp(min=1e-7)
+            w = torch.nn.functional.pad(x / scale, (0, 441))  # resemble's npad
+            w = w / (w.abs().amax(1, keepdim=True) + 1e-7)
+            s = torch.stft(w, N_FFT, HOP, window=self.window, center=True, pad_mode="reflect",
+                           return_complex=True)[..., :-1]
+            phi = s.angle()
+            mag, cos, sin = (t.float() for t in self.denoiser(*(t.half() for t in (s.abs(), phi.cos(), phi.sin()))))
+            spec = torch.complex(mag * cos, mag * sin)
+            spec = torch.cat([spec, spec[..., -1:]], -1)
+            out = torch.istft(spec, N_FFT, HOP, window=self.window, center=True, length=w.shape[1])
+            return list((out[:n, : x.shape[1]] * scale[:n]).float().cpu().numpy())
+
+    def enrol(self, clips: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
+        """44.1 kHz references (`reference`) -> each one's (speaker embedding, reference codes [T, n_vq]), ENROL_PIECE
+        rows at a time; each reference is dropped from `clips` once denoised."""
+        import soxr
+        import torch
+        import torchaudio
+
+        def fbank(w16: np.ndarray):  # the SDK's extract_speaker_fbank on the GPU
+            f = torchaudio.compliance.kaldi.fbank(torch.from_numpy(w16).cuda()[None], num_mel_bins=80,
+                                                  sample_frequency=SPEAKER_RATE, dither=0.0, frame_length=25.0,
+                                                  frame_shift=10.0, window_type="povey", snip_edges=True,
+                                                  preemphasis_coefficient=0.97, remove_dc_offset=True)
+            return f - f.mean(0, keepdim=True)
+
+        groups: dict[int, list[int]] = {}
+        for i, c in enumerate(clips):
+            groups.setdefault(len(c), []).append(i)
+        out: list = [None] * len(clips)
+        for members in groups.values():
+            for p in range(0, len(members), ENROL_PIECE):
+                piece = members[p: p + ENROL_PIECE]
+                clean = []
+                for k in range(0, len(piece), DENOISE_BATCH):
+                    clean += self.denoise([clips[i] for i in piece[k: k + DENOISE_BATCH]])
+                for i in piece:
+                    clips[i] = None
+                ins = list(self.threads.map(lambda c: (soxr.resample(c, DENOISE_RATE, SPEAKER_RATE).astype(np.float32),
+                                                       soxr.resample(c, DENOISE_RATE, OUT_RATE).astype(np.float32)), clean))
+                del clean
+                with torch.no_grad():
+                    for k in range(0, len(piece), ENROL_BATCH):
+                        part = range(k, min(k + ENROL_BATCH, len(piece)))
+                        emb = self.speaker(torch.stack([fbank(ins[j][0]) for j in part]))[0].float().cpu().numpy()
+                        enc = self.codec.batch_encode([torch.from_numpy(ins[j][1]).cuda().expand(2, -1) for j in part])
+                        lengths = enc.audio_codes_lengths.tolist()
+                        codes = enc.audio_codes.permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
+                        for b, j in enumerate(part):
+                            out[piece[j]] = (emb[b].copy(), np.ascontiguousarray(codes[b, : lengths[b]]))
+        return out
+
+    # generation
+
+    @property
+    def room(self) -> int:
+        return max(0, QUEUE - len(self.queue))
+
+    def submit(self, req: Request) -> None:
+        from vieneu.v3_turbo_serve.engine import _min_expected_frames
+        from vieneu_utils.core_utils import max_expected_frames
+
+        self.active[req.key] = req
+        self.parts[req.key] = [None] * len(req.chunks)
+        for k, ph in enumerate(req.chunks):
+            chunk = Chunk(req, k, min(MAX_NEW_FRAMES, max_expected_frames(ph)), _min_expected_frames(ph))
+            self._queue(chunk)
+
+    def _queue(self, chunk: Chunk, first: bool = False) -> None:
+        req = chunk.req
+        prompt = {"phonemes": req.chunks[chunk.k], "speaker_emb": req.speaker, "ref_codes": req.codes,
+                  "use_ref_codes": True}
+        chunk.embed = self.ahead.submit(self.prompt, prompt)
+        (self.queue.appendleft if first else self.queue.append)(chunk)
+
+    def step(self) -> list[tuple[Request, np.ndarray]]:
+        """Fills free slots, runs one frame of every slot, decodes when DECODE_POOL chunks wait (or all that wait
+        once nothing generates); returns the rows whose every chunk is done, with their audio."""
+        free = self.frame.free
+        if self.queue and len(free) >= min(ADMIT_MIN, len(self.queue)):
+            self._admit(free)
+        if self.slots:
+            for slot, codes in self.frame.step():
+                self._generated(self.slots.pop(slot), codes)
+        if len(self.decoding) >= DECODE_POOL or (self.decoding and not self.slots and not self.queue):
+            self._decode()
+        out, self.done = self.done, []
+        return out
+
+    def _admit(self, free: list[int]) -> None:
+        take = [self.queue.popleft() for _ in range(min(len(free), len(self.queue)))]
+        for k in range(0, len(take), PREFILL):
+            part, slots = take[k: k + PREFILL], free[k: k + PREFILL]
+            self.frame.admit(slots, [c.embed.result() for c in part], [c.req.speaker for c in part],
+                             [c.cap for c in part])
+            for s, c in zip(slots, part):
+                c.embed = None
+                self.slots[s] = c
+
+    def _generated(self, chunk: Chunk, codes) -> None:
+        if chunk.wav is not None:  # the babble guard's new try: decoded, then weighed against the kept one
+            self.decoding.append((chunk, codes))
+            return
+        chunk.tries += 1
+        if chunk.codes is None or len(codes) > len(chunk.codes):
+            chunk.codes = codes
+        if len(chunk.codes) < chunk.min_frames and chunk.tries <= SHORT_RETRIES:
+            self._queue(chunk, first=True)
+        else:
+            self.decoding.append((chunk, chunk.codes))
+            chunk.codes = None
+
+    def _decode(self) -> None:
+        """MOSS's chunked decode in fp16, batched by length (its decoder attends within 4-10 s, which the chunked
+        path keeps as a ring cache: 7e-6 from the SDK's one-chunk decode), then the babble guard."""
+        import torch
+        from vieneu_utils.core_utils import BABBLE_MAX_RETRIES, babble_prefer, babble_suspect
+
+        pending = sorted(self.decoding, key=lambda x: len(x[1]))
+        self.decoding = []
+        for b in range(0, len(pending), DECODE_BATCH):
+            batch = pending[b: b + DECODE_BATCH]
+            with torch.no_grad():
+                dec = self.codec.batch_decode([codes.T.contiguous() for _, codes in batch],
+                                              chunk_duration=DECODE_CHUNK_S)
+                audio = dec.audio.float().mean(1).cpu().numpy()
+                lengths = dec.audio_lengths.tolist()
+            for (chunk, codes), wav, n in zip(batch, audio, lengths):
+                wav = wav[:n].copy()  # not a view holding the batch's array
+                verdict = babble_suspect(wav, OUT_RATE, chunk.req.chunks[chunk.k], chunk.cap, len(codes))
+                if chunk.wav is None:
+                    chunk.wav, chunk.verdict = wav, verdict
+                else:
+                    chunk.rerolls += 1
+                    if babble_prefer(verdict, chunk.verdict):
+                        chunk.wav, chunk.verdict = wav, verdict
+                if chunk.verdict[0] and chunk.rerolls < BABBLE_MAX_RETRIES:
+                    self._queue(chunk, first=True)
+                else:
+                    self._finished(chunk)
+
+    def _finished(self, chunk: Chunk) -> None:
+        from vieneu_utils.core_utils import gaps_to_silence, join_audio_chunks
+
+        req = chunk.req
+        parts = self.parts[req.key]
+        parts[chunk.k] = chunk.wav
+        if all(p is not None for p in parts):
+            del self.parts[req.key], self.active[req.key]
+            self.done.append((req, join_audio_chunks(parts, OUT_RATE, silence_ps=gaps_to_silence(req.gaps))))
+
+
+# --- run ---------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -394,11 +397,11 @@ class Shard:
     name: str  # the segments file's name
     dst: Path  # <root>/<source>/en_audio/<name>
     ids: list[str]
-    texts: list[str]  # Vietnamese transcripts: the prompts' texts
     texts_en: list[str]
-    clips: list[np.ndarray] | None  # the voiced rows' clips at 16 kHz, until encoded
+    clips: list[np.ndarray] | None  # the voiced rows' references (`reference`), until enrolled
+    lines: list[tuple[list[str], list]]  # the voiced rows' chunks and pauses (`phonemize`)
     results: dict = None  # id -> the best attempt so far: {"wer", "broken", "asr", "audio", "duration", "tries"}
-    skipped: set[str] = None  # rows voice.py skips: those filters.vi_gate drops or missing text_en; not voiced, their English columns null
+    skipped: set[str] = None  # rows voice.py skips: filters.vi_gate's, and those missing or with nothing speakable in text_en; not voiced, their English columns null
 
 
 class Checker:
@@ -433,7 +436,7 @@ class Checker:
         from training.tranche.ingest import encode_opus
 
         buf = io.BytesIO()
-        sf.write(buf, resample_poly(wav, 1, 3).astype(np.float32), ENCODE_RATE, subtype="PCM_16", format="WAV")
+        sf.write(buf, resample_poly(wav, 1, 3).astype(np.float32), ASR_RATE, subtype="PCM_16", format="WAV")
         for attempt in range(ASR_TRIES):  # it also drops an idle keep-alive connection now and then
             try:
                 reply = self.client.post(self.url, files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
@@ -489,9 +492,18 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     # Skipped: rows missing text_en (left null in en_audio) and those the Vietnamese gates drop.
     # The cache build rejects the vi_gate rows as "not voiced" and the no_en rows gracefully.
     skipped = no_en | {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
-    audio = [a["bytes"] for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
-    clips = list(pool.map(decode_16k, audio, chunksize=32))
-    return Shard(source, name, root / source / "en_audio" / name, ids, texts, [en.get(i, "") for i in ids], clips, {}, skipped)
+    voiced = [(i, a["bytes"]) for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
+    clips = pool.map(reference, [a for _, a in voiced], chunksize=32)  # both maps run at once
+    lines = pool.map(phonemize, [en[i] for i, _ in voiced], chunksize=32)
+    clips, lines = list(clips), list(lines)
+    mute = [k for k, (chunks, _) in enumerate(lines) if not chunks]  # skipped too: en_tries 0, as the SDK says nothing
+    if mute:
+        log(f"{source}/{name}: {len(mute)} rows whose text_en has nothing speakable, e.g. {voiced[mute[0]][0]}")
+        skipped |= {voiced[k][0] for k in mute}
+        keep = [k for k in range(len(voiced)) if lines[k][0]]
+        clips, lines = [clips[k] for k in keep], [lines[k] for k in keep]
+    return Shard(source, name, root / source / "en_audio" / name, ids, [en.get(i, "") for i in ids], clips, lines, {},
+                 skipped)
 
 
 def write_shard(shard: Shard) -> None:
@@ -499,7 +511,7 @@ def write_shard(shard: Shard) -> None:
     import pyarrow.parquet as pq
 
     r = [shard.results.get(i) for i in shard.ids]  # None: skipped (no text_en or Vietnamese gates)
-    col = lambda f, kind: pa.array([None if x is None else f(x) for x in r], kind)
+    col = lambda f, kind: pa.array([None if x is None else f(x) for x in r], kind)  # noqa: E731
     table = pa.table({
         "id": shard.ids,
         "en_audio": pa.array([None if x is None else {"bytes": x["audio"], "path": f"{i.replace('/', '_')}.opus"}
@@ -517,9 +529,9 @@ def write_shard(shard: Shard) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
-    """Every shard of each source in turn, the next one loading while the engine voices; the engine
-    is kept full with retries first, then new rows. A shard is written once every voiced row has a
-    kept attempt, and each source's written shards are pushed every PUSH_S and at its end."""
+    """Every shard of each source in turn, the next one loading while the voicer voices; the voicer is kept full
+    with retries first, then new rows. A shard is written once every voiced row has a kept attempt, and each
+    source's written shards are pushed every PUSH_S and at its end."""
     import queue
     import threading
     from concurrent.futures import ProcessPoolExecutor
@@ -568,25 +580,33 @@ def run(args: argparse.Namespace) -> None:
     if not todo:
         return
 
-    # Decoding and checking run in processes: as threads, their Python (PyAV's frame loop, the
-    # normalizer, scipy, Opus) held the GIL from the engine loop and starved the GPU. Their thread
-    # pools stay at one thread each.
+    # Loading and checking run in processes: as threads, their Python (PyAV's frame loop, the trim,
+    # the phonemizer, the normalizer, scipy, Opus) would hold the GIL from the frame loop and starve
+    # the GPU. Their thread pools stay at one thread each.
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_NUM_THREADS"):
         os.environ[name] = "1"
     spawn = get_context("spawn")
-    pool = ProcessPoolExecutor(max(1, int(cpu_budget() // DECODER_SHARE)), mp_context=spawn)
-    loaded: queue.Queue = queue.Queue(maxsize=1)  # one shard ahead
+    pool = ProcessPoolExecutor(max(1, int(cpu_budget() // LOADER_SHARE)), mp_context=spawn)
+    # A shard's references are ~17 GB (8 s at 44.1 kHz in float32 a row): the next shard loads once the one before it
+    # is enrolled and its references freed. Its ~80 s load hides behind a shard's voicing.
+    loaded: queue.Queue = queue.Queue()
+    ahead = threading.Semaphore(1)
 
     def loader():
         try:
             for source, name in todo:
-                loaded.put(load_shard(source, name, args.root, pool))
+                ahead.acquire()
+                began_load = time.monotonic()
+                shard = load_shard(source, name, args.root, pool)
+                log(f"{source}/{name}: loaded {len(shard.clips)} references and lines in "
+                    f"{time.monotonic() - began_load:.0f} s")
+                loaded.put(shard)
         except BaseException as exc:  # raised again in the main thread
             loaded.put(exc)
         loaded.put(None)
 
     threading.Thread(target=loader, name="shard-loader", daemon=True).start()
-    voicer = Voicer(args.concurrency, args.gpu_memory)
+    voicer = Voicer()
     checks = ProcessPoolExecutor(CHECKERS, mp_context=spawn, initializer=_start_checker,
                                  initargs=(args.asr, spawn.BoundedSemaphore(OPUS_AT_ONCE)))
     checking: dict = {}  # future -> its request
@@ -614,16 +634,18 @@ def run(args: argparse.Namespace) -> None:
         if shard is None:
             loading_done = True
             return False
-        began_encode = time.monotonic()
-        latents = voicer.encode(shard.clips)
+        began_enrol = time.monotonic()
+        refs = voicer.enrol(shard.clips)
         shard.clips = None
+        ahead.release()
         key = f"{shard.source}/{shard.name}"
-        log(f"{key}: encoded {len(latents)} prompts in {time.monotonic() - began_encode:.0f} s")
-        rows = [(i, t_en, t_vi) for i, t_en, t_vi in zip(shard.ids, shard.texts_en, shard.texts) if i not in shard.skipped]
+        log(f"{key}: enrolled {len(refs)} references in {time.monotonic() - began_enrol:.0f} s")
+        rows = [(i, t_en) for i, t_en in zip(shard.ids, shard.texts_en) if i not in shard.skipped]
         shards[key], remaining[key] = shard, len(rows)
-        for i, _, _ in rows:
+        for i, _ in rows:
             owner[i] = shard
-        fresh = (Request(i, t_en, t_vi, lat) for (i, t_en, t_vi), lat in zip(rows, latents, strict=True))
+        fresh = (Request(i, t_en, chunks, gaps, spk, codes)
+                 for (i, t_en), (chunks, gaps), (spk, codes) in zip(rows, shard.lines, refs, strict=True))
         if not rows:
             finish(shard)
         return True
@@ -633,10 +655,11 @@ def run(args: argparse.Namespace) -> None:
         key = f"{shard.source}/{shard.name}"
         write_shard(shard)
         kept = list(shard.results.values())
-        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by voice.py (Vietnamese gates or missing text_en), "
+        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by voice.py (Vietnamese gates, text_en missing or unspeakable), "
             f"{sum(x['tries'] for x in kept) / max(len(kept), 1):.2f} tries a row, "
-            f"{sum(x['broken'] for x in kept) / max(len(kept), 1):.1%} still broken; overall RTF "
-            f"{(time.monotonic() - began) / max(voiced_s, 1):.4f} over {voiced_s / 3600:.1f} h voiced ({attempts} attempts)")
+            f"{sum(x['broken'] for x in kept) / max(len(kept), 1):.1%} still broken; overall "
+            f"{attempts / (time.monotonic() - began):.1f} rows/s, RTF {(time.monotonic() - began) / max(voiced_s, 1):.5f} "
+            f"over {voiced_s / 3600:.1f} h voiced ({attempts} attempts)")
         for i in shard.results:
             del owner[i]
         del shards[key], remaining[key]
@@ -672,7 +695,7 @@ def run(args: argparse.Namespace) -> None:
                         break  # a few shards open: those finishing and the next
                     continue
                 voicer.submit(req)
-            out = voicer.step() if voicer.active else voicer.flush()
+            out = voicer.step()
             for req, wav in out:
                 fut = checks.submit(_check, req.text, wav)
                 checking[fut] = req
@@ -681,10 +704,10 @@ def run(args: argparse.Namespace) -> None:
                 inflight.discard(fut)
                 settle(checking.pop(fut), fut.result())
             pushes.check()  # a failed upload stops the run; a rerun pushes what is written
-            if loading_done and not voicer.active and not voicer.waiting and not inflight and not retries:
+            if loading_done and not voicer.active and not inflight and not retries:
                 break
             if not voicer.active and not out:
-                time.sleep(0.05)  # waiting on checks: their retries refill the engine
+                time.sleep(0.05)  # waiting on checks: their retries refill the voicer
     finally:  # after a crash, queued checks are dropped, not run, so the GPU frees promptly
         checks.shutdown(wait=False, cancel_futures=True)
         pool.shutdown(wait=False, cancel_futures=True)
@@ -697,27 +720,14 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     steps = parser.add_subparsers(dest="step", required=True)
-    p = steps.add_parser("bench")
-    p.add_argument("--rows", type=Path, default=BAKEOFF, help="a folder with the bake-off's clips.jsonl")
-    p.add_argument("--out", type=Path, default=BENCH)
-    p.add_argument("--system", default="voxcpm2-batched")
-    p.add_argument("--concurrency", type=int, default=256)
-    p.add_argument("--repeats", type=int, default=1)
-    p.add_argument("--limit", type=int)
-    p.add_argument("--gpu-memory", type=float, default=0.5)
-    p.add_argument("--write", action="store_true")
     p = steps.add_parser("run")
     p.add_argument("sources", nargs="+", choices=sorted(ingest.SOURCES))
     p.add_argument("--root", type=Path, default=Path("/workspace/tranche/repo"))
     p.add_argument("--asr", default="http://localhost:8100/v1/audio/transcriptions")
-    p.add_argument("--concurrency", type=int, default=512)
-    p.add_argument("--gpu-memory", type=float, default=0.45)
     p.add_argument("--limit", type=int, help="voice only this many shards (a staged start)")
-    args = parser.parse_args()
-    # The VAE's batches of many shapes fragment PyTorch's cached blocks: on the 5090 the process held
-    # 29.6 GB at --gpu-memory 0.5, 20.5 with expandable segments, at the same speed (tranche-tts.md).
+    # As the bench ran: the prefill, decode and enrolment batches of many shapes fragment PyTorch's cached blocks.
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    {"bench": bench, "run": run}[args.step](args)
+    run(parser.parse_args())
 
 
 if __name__ == "__main__":

@@ -176,7 +176,7 @@ one expires; everything a job writes goes to the Hub as it runs, so a new box re
 2. `/workspace/.env` (mode 600): `HF_TOKEN_AN`, a write token of anquachdev, for the tranche repos'
    pushes; huybik's token in `$HF_HOME/token` for the run recovery repo. Never print either.
 3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs-min.sh` builds the `nanovox`
-   (voice.py), `asr` (the Qwen3-ASR server) and `cache` (the cache builds, free-threaded Python 3.14;
+   (ingest, filters), `vieneu` (voice.py), `asr` (the Qwen3-ASR server) and `cache` (the cache builds, free-threaded Python 3.14;
    installs Rust for safetensors) envs and downloads the models at their pinned revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet hung or crawled at ~5 MB/s on the
    Japan box; plain HTTP ran ~140 MB/s).
 4. The jobs read the tranche repos' parts locally under `/workspace/tranche/repo/<source>/<part>/`
@@ -263,7 +263,7 @@ the two-way caches and run before GRPO):
 |---|---|---|
 | asr | `restart.sh asr` (the Qwen3-ASR server on :8100, beside filters and voice) | not needed after voice |
 | filters | `restart.sh filters` (asr_vi for every ingested shard) | it logs "0 shards to hear" |
-| voice | `restart.sh voice` (en_audio for every shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
+| voice | `restart.sh voice` (en_audio for every YODAS shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
 | cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
 | envi-cache | `restart.sh envi-cache`: every `en-vi` cache and the English evaluation sets ([two-way](two-way.md#two-way-run)) | "en_speech en-vi done", then the tranche builder's "done:" line, logged once its last push is in (a rerun with nothing left logs "0 shards to build", then pushes any leftovers before it exits) |
 | two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft_4608`, [two-way](two-way.md#two-way-run); `twoway_sft` ran before at 8,192 frames) | its best checkpoint, then the test sets both ways |
@@ -275,6 +275,11 @@ the two-way caches and run before GRPO):
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with
 `restart.sh <job>`, never `pkill -f` (voice's spawned workers look like vLLM's processes).
+Under MPS (`nvidia-cuda-mps-control -d`), a GPU process that dies abnormally (killed out of
+memory) faults the MPS server, which then refuses every new client ("Server teardown in
+progress", error 807) until all its clients exit: restart asr, then voice (2026-11-26). Its
+spawned workers outlive a killed process, in the job's group: `restart.sh` stops the whole group
+even when its leader is gone (36 of voice's, ~16 GB, were left so).
 
 ## Operating
 

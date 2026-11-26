@@ -148,7 +148,7 @@ def cut_run(pcm: np.ndarray, off: float, run: list[tuple[float, str]], lo: float
 def decode(container, stream, a: float, b: float) -> tuple[np.ndarray, float]:
     """A video's audio from SEEK_S before a to just past b seconds, mono at RATE, and the time its
     first sample is at: only the chosen runs are decoded, not the hours of video around them.
-    Resampled by scipy: PyAV's AudioResampler starts a thread per host CPU, as voice.decode_16k says."""
+    Resampled by scipy: PyAV's AudioResampler starts a thread per host CPU, as voice.decode says."""
     from scipy.signal import resample_poly
 
     container.seek(int(max(0.0, a - SEEK_S) / stream.time_base), stream=stream)

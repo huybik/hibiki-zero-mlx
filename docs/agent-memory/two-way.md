@@ -122,8 +122,11 @@ Hub bot's safetensors conversion (`refs/pr/2`), tensor for tensor the main branc
   Own-text medians 0.91–0.94 (5th percentile 0.73–0.88), the wrong text's 95th percentile
   0.48–0.51: it scores wrong text higher than omniASR did, whose 0.5 rejected 98.2–99.8% of it and
   0–2.5% of own text (on the same Common Voice rows 2.5%; on the tranche's real speech, 2026-11-10,
-  viVoice 0.3% and GigaSpeech 2 0.5%). Not yet calibrated on real recordings: do so before a build
-  of one. English's wav2vec2-base-960h at 0.5 rejects 72.5% of another's text on Libriheavy
+  viVoice 0.3% and GigaSpeech 2 0.5%). On real recordings, 400 YODAS rows that `vi_gate` keeps
+  (shard 0004, 2026-11-26): below 0.55 own text 0.2% (one row that would not align), another's
+  98.0%, 30% swapped 1.5%; own median 0.94 (5th percentile 0.83), another's 95th percentile 0.53.
+  So 0.55 holds on real speech (`/Volumes/data/hibiki-zero-evals/box-62513802/vi-aligner-yodas-2026-11-26/`).
+  English's wav2vec2-base-960h at 0.5 rejects 72.5% of another's text on Libriheavy
   (median 0.47 against its own 0.96): the English gate is the loosest.
 - Speed: the device hands the host only the Viterbi's columns (`vocab_columns`: blank,
   delimiter, alphabet; 95 of 110). For omniASR's 10,288 this was the difference between 342× and

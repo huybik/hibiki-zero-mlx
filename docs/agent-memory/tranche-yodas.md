@@ -115,8 +115,10 @@ with `HF_TOKEN_AN` in the environment:
 
 ## Voice
 
-VoxCPM2 through `voice.py` ([tranche-tts](tranche-tts.md)) on the RTX 5090 (2026-11-25/26).
-Alone on the GPU, 2,999 YODAS rows (RTF is wall time over English voiced):
+Shards 0000–0003 by VoxCPM2 ([tranche-tts](tranche-tts.md)) on the RTX 5090 (2026-11-25/26), the
+rest by VieNeu-TTS v3 Turbo, which `voice.py` now runs
+([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)). VoxCPM2 alone on the GPU, 2,999 YODAS
+rows (RTF is wall time over English voiced):
 
 | Setup | RTF | The process's GPU memory |
 |---|---:|---:|
@@ -147,7 +149,11 @@ Alone on the GPU, 2,999 YODAS rows (RTF is wall time over English voiced):
   skips it and the rest of shard 0020 can be voiced.
 - Stopped 2026-11-26 00:55 UTC after shards 0000–0003 (46,501 rows, ~194 h of English, pushed):
   the YODAS scale-up (~20k h) needs a TTS at ~1,000× real time (RTF 0.001) or better, at
-  VoxCPM2's accuracy, so the newer models are measured first (user, 2026-11-26).
+  VoxCPM2's accuracy, so the newer models are measured first (user, 2026-11-26). None reached
+  it; optimized, VieNeu runs 3.1× VoxCPM2 and is chosen for the scale-up by the user's 3× rule
+  ([tranche-tts-scaleup](tranche-tts-scaleup.md#finding)).
+- VieNeu from shard 0004 on (2026-11-26 17:00 UTC): a shard every ~8 min, ~440× real time, 7.2–7.6%
+  of rows still broken ([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
 
 ## Pilot
 

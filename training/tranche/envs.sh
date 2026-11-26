@@ -15,12 +15,16 @@ mk() { [[ -x $E/$1/bin/python ]] || $UV venv -q -p "$2" $E/$1; }
 log voxcpm; mk voxcpm 3.12
 $UV pip install -q -p $E/voxcpm voxcpm==2.0.3 soundfile
 log nanovox; mk nanovox 3.12
-# The production TTS (training/tranche/voice.py): nano-vllm-voxcpm needs flash-attn, whose newest
-# prebuilt wheel is for torch 2.10 on CUDA 13.
+# The env of ingest, filters and box/end_rental.sh (CPU). Its nano-vllm-voxcpm (VoxCPM2's engine) needs
+# flash-attn, whose newest prebuilt wheel is for torch 2.10 on CUDA 13.
 $UV pip install -q -p $E/nanovox "torch==2.10.*" "torchaudio==2.10.*" --index-url https://download.pytorch.org/whl/cu130
 $UV pip install -q -p $E/nanovox nano-vllm-voxcpm==2.0.5 pyarrow av httpx jiwer num2words "torch==2.10.*" "torchaudio==2.10.*" \
   "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" \
   --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
+log vieneu; mk vieneu 3.12
+# The production TTS (training/tranche/voice.py): VieNeu-TTS v3 Turbo's SDK, whose cuda extra pins torch 2.8.0
+# (CUDA 12.8); its ONNX graphs run in PyTorch (onnx_graph.py).
+$UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer num2words
 log dots; mk dots 3.12
 $UV pip install -q -p $E/dots dots.tts==0.3.1 torch==2.8.0 torchaudio==2.8.0 transformers==4.57.0 soundfile
 log qwentts; mk qwentts 3.12
@@ -50,7 +54,7 @@ $UV pip install -q -p $E/mt vllm==0.33.0 pyarrow anthropic google-genai av==15.1
 # run compiles its kernels itself (an FP8 MoE took about an hour).
 fi=$($E/mt/bin/python -c "import flashinfer, torch; print(flashinfer.__version__, 'cu' + torch.version.cuda.replace('.', ''))")
 $UV pip install -q -p $E/mt "flashinfer-jit-cache==${fi% *}+${fi#* }" --index-url "https://flashinfer.ai/whl/${fi#* }"
-for e in voxcpm nanovox dots qwentts cosyvoice score asr mt; do
+for e in voxcpm nanovox vieneu dots qwentts cosyvoice score asr mt; do
   echo "$e: $($E/$e/bin/python -c 'import torch; print(torch.__version__, torch.version.cuda)')"
 done
 du -sh $E; df -h /workspace | tail -1
