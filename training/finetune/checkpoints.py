@@ -292,7 +292,7 @@ def load_newest_pair(model: Any, optimizer: Any, out_dir: Path, device: torch.de
     checkpoint = torch.load(trainer_path, map_location="cpu", weights_only=False)
     if int(checkpoint["step"]) != step or checkpoint["model"] != model_path.name:
         raise RuntimeError(f"{trainer_path.name} does not match {model_path.name}")
-    common.load_model(model, model_path, torch.float32)
+    common.load_model(model, model_path, None)
     optimizer.load_state_dict(checkpoint["optimizer"])
     _states_to(optimizer, device)
     print(f"Resumed step {step} from {repo_display_path(trainer_path)}")

@@ -158,10 +158,15 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     `--eval-batch-size` 64 that mix the sets, each batch generated until every row ends or 20 s
     past its longest row: at most 4,918 generation steps. Mimi codes 8 rows at a time
     (`hibiki_helpers.MIMI_CHUNK_ROWS`).
-- Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". Batches pad to 16-frame
-  buckets (`streams.FRAME_BUCKET`), and training requires torch compile (moshi's and
-  `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is CUDA-only
-  (`train.py` has no device flag); the `training.prep` steps, the cache build included
+- Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". On 32 GB GPUs (RTX 5090),
+  `--bf16-adamw` keeps 2D+ weights, gradients, and AdamW moments in bf16 with fused Triton
+  stochastic rounding and fused gradient clipping (1D norms/scales stay fp32; 8 bytes/param),
+  paired with `--grad-checkpoint` (optionally `--grad-checkpoint-layers N`), `--micro-frames`
+  (exact full-batch loss weighting via `common.batch_loss_denominators`), `--park-states`, and
+  optional `--fp8` (rowwise E4M3 on main-transformer linears) ([sft-speed](sft-speed.md#by-gpu)).
+  Batches pad to 16-frame buckets (`streams.FRAME_BUCKET`), and training requires torch compile
+  (moshi's and `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is
+  CUDA-only (`train.py` has no device flag); the `training.prep` steps, the cache build included
   ([sft-data-caches](sft-data-caches.md)), run on the Mac.
 
 ## Target timing

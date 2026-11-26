@@ -32,23 +32,24 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
     safetensors headers: `--model-weight`, and `--teacher-weight` when given), so one check
     serves the 3B and the phone student (2026-11-23). `preflight` alone checks the 3B's SFT at
     the default `--keep-checkpoints`.
-    - GPU, SFT and GRPO alike: what the optimizer's step holds, 16 bytes a model parameter
-      (fp32 weights, gradients, AdamW's two moments) and 2 a teacher's: 46.7 GiB on the 3B, 24.9
-      on the heads student under the 3B, 21.4 on the heads student distilling itself (2026-11-25;
-      it was a fixed 78 for SFT, which refused the heads student's palettizing SFT on a 32 GB
-      card). The activations come on top, sized by the run's profile: SFT's `--batch-frames` (the
-      3B's 4,608 peak at 75.1 GiB, so the 3B's SFT takes an 80 GB card), a palettizing run's
-      full-precision copy, GRPO's `--micro-batch` and `--gen-frames`, and `--park-states` takes
-      the moments off the card for the micro-batches ([grpo](grpo.md#running)).
-    - RAM: SFT 80 GiB. GRPO 5% over its pins and the 17 GiB more the 3B's run held: the pins are
-      the checkpoint snapshot's and `HostOffload`'s, a block a tensor, at their size above 1 MB
-      (`grpo.ALLOC_CONF` stops torch's pinned allocator rounding them up to a power of two,
-      which pinned 77.4 GiB on the 3B by the formula, 77 measured, [grpo](grpo.md#running)). 92
-      GiB on the 3B (70.0 pinned), 54 on the heads student under the 3B (34.4 pinned).
+    - GPU, SFT and GRPO alike: what the optimizer's step holds, `4 * elem` bytes a model parameter
+      (`elem=4` for fp32, `elem=2` for `--bf16-adamw`: weights, gradients, AdamW's two moments) and
+      2 a teacher's: 46.7 GiB on fp32 3B, 23.3 on `--bf16-adamw` 3B, 24.9 on fp32 heads student
+      under the 3B, 15.4 on `--bf16-adamw` heads student under the 3B. The activations come on top,
+      sized by each run's profile (`--batch-frames`, `--micro-frames`, `--grad-checkpoint`,
+      `--grad-checkpoint-layers`, a palettizing run's full-precision copy, GRPO's `--micro-batch`
+      and `--gen-frames`, or `--park-states`).
+    - RAM: 5% over pinned host buffers plus 17 GiB process overhead (`train.py` and `grpo.py` both
+      set `pinned_max_round_threshold_mb:1` so blocks > 1 MB pin at their exact size).
+      `CheckpointWriter` pins 3× policy; `HostOffload` adds 3× policy + teacher in GRPO or 2×
+      policy + teacher in SFT with `--park-states` (49 GiB on `--bf16-adamw --park-states` 3B, 37
+      GiB on `--bf16-adamw --park-states` heads student under the 3B, 92 GiB on 3B GRPO).
     - Disk: free space plus, for `run`, what the run dir already holds (each hard-linked inode
       once): the kept pairs (`--keep-checkpoints`), the promoted model and a pair the sync still
-      uploads, a pair 3x the fp32 model and 5.5 of margin. The 3B needs 131 GiB at the default 2
-      and 94 at 1, the heads student 42 at 1 (0 keeps every pair, so it gets the default's).
+      uploads, a pair 3× the model (`elem=2` for `--bf16-adamw`, `4` for fp32) and 5.5 of margin.
+      With `--keep-checkpoints 1`: 94 GiB on fp32 3B, 50 GiB on `--bf16-adamw` 3B, 42 GiB on fp32
+      heads student, 24 GiB on `--bf16-adamw` heads student (0 keeps every pair, so it gets the
+      default's).
   - The sync uploads the pair of each validation step (its cadence, `--val-every`), the newest
     only, and holds its hard links until the Hub has it, at ~12 MB/s (~50 min for the 3B's
     37.5 GB, ~23 min for the depformer student's 16.7 GB). Validate less often than an upload

@@ -142,19 +142,43 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   were of 8,192 frames (a 2026-11-23 estimate read them as 4,608 and came out 1.8× short). An
   `en_speech` or tranche row's stream costs about the same either way, so a two-way pass costs
   twice its `vi-en` part ([teacher-next](teacher-next.md#time-disk-and-box)).
-- **RTX 5090 (32 GB): no 3B SFT** (2026-11-23, analysed, not built). Its states alone are 46.7
-  GiB (fp32 weights and gradients 11.7 each, AdamW's moments 23.3; `h100.sh sizes`), and 4,608
-  frames peak at ~72 GiB on an 80 GB card. The only route that keeps the recipe exact is
-  AdamW on the host: bf16 linears with fp32 embeddings and norms on the GPU (~6.3 GiB), fp32
-  masters and moments pinned on the host (~47 GiB), each gradient sent down as it is ready with
-  the clip's norm summed on the GPU, a CPU fused AdamW, the bf16 weights sent back. torchao 0.18's
-  `CPUOffloadOptimizer` can't do it: its host copy keeps the GPU parameter's dtype, it has no
-  clipping, and its state format differs. Estimated (unmeasured) 1,400–2,700 frames/s against the
-  700 W H100's 15,321: the GPU waits on ~94 GB of host traffic an update, since the clip needs
-  every gradient first. That is $0.05–0.10 per million frames on a $0.52/h 5090 against $0.036
-  on a $2/h H100, and 4,608 frames of activations may not fit the ~22 GiB left. 8-bit moments
-  still leave 29 GiB of states (11.7 + 11.7 + 5.8) and broke a tensor ([Measurements](#measurements));
-  LoRA or frozen layers change the teacher. Rent an 80 GB card or larger for the 3B.
+- **RTX 5090 (32 GB, sm_120, $0.511/h, ~515 W; 2026-11-26, box 62513802)**: full-model 3B SFT
+  and 14L 16-codebook heads-student distillation both run on a 32 GB card at ~39–44% lower $/M
+  frames than H100 SXM ($0.0363/M at $2/h) and RTX PRO 6000 ($0.0200/M at $1.217/h).
+  - Earlier analysis (2026-11-23) ruled out 3B fp32 SFT (46.7 GiB of static states) and host-offload
+    AdamW (~94 GB host traffic/step, estimated 1,400–2,700 fr/s) and 8-bit blockwise moments
+    (29 GiB static, broke a tensor above).
+  - **`--bf16-adamw`** (`training/finetune/bf16_adamw.py`): keeps 2D+ weights, gradients, and AdamW
+    moments (`m`, `v`) in bf16 (8 bytes/param = **23.3 GiB** on 3B, **15.4 GiB** on student + 3B
+    bf16 teacher), keeping 1D norms/scales/biases in fp32. A single fused Triton kernel runs each
+    AdamW update in fp32 registers with fused gradient clipping (no separate grad-scaling pass or
+    host sync) and unbiased IEEE-754 stochastic rounding (`tl.randint`) back to bf16 for `p`, `m`,
+    and `v`, preserving fp32's full 8-bit exponent range so `v` never underflows to 0.
+  - **50-step real-data parity** (PhoAudiobook `pho`, `lr=1e-5`, `batch_frames=4608`):
+    - `fp32_adamw`: 17,790 fr/s, 24.48 GiB, `mean_last10=2.2132`;
+    - `bf16_adamw`: 22,466 fr/s (+26%), 12.96 GiB, `mean_last10=2.2132` (`mean|diff|=0.00033`,
+      `last10=+0.00001`);
+    - `bf16_adamw + --fp8`: `mean_last10=2.2152` (`+0.00207`, slower on small student batches).
+  - **Selective checkpointing (`--grad-checkpoint --grad-checkpoint-layers N`) and `--fp8`**
+    (`training/finetune/fp8_linear.py`, rowwise E4M3 `torch._scaled_mm` on main-transformer
+    linears): whole-loop compiled checkpointing in bf16 fuses norms/residuals across layers; per-layer
+    compile under `--fp8` avoids unrolling 28 quantize+scaled_mm blocks (~20× faster compile).
+    Keeping Mimi on CPU during training saves ~0.4 GiB; detaching `step_losses` and avoiding
+    long-lived gradient list references prevents a 5.8 GiB step-2 leak.
+  - **Measured on real variable-shape batches** (31.4 GiB usable VRAM, `--park-states` for
+    validation):
+
+    | Config | frames/s | s/step | Peak VRAM | $/M frames (@ $0.511/h) |
+    |---|---:|---:|---:|---:|
+    | 3B `--bf16-adamw --grad-checkpoint --grad-checkpoint-layers 14` (`4,608` whole) | 6,554 | 0.703 | 28.3 GiB | $0.0217 |
+    | 3B `--bf16-adamw --fp8 --grad-checkpoint --grad-checkpoint-layers 8` (`4,608` whole) | 7,242 | 0.636 | 28.1 GiB | $0.0196 |
+    | Student 14L 16cb + 3B teacher, exact fp32 + `--grad-checkpoint --micro-frames 3072` (`12,288`) | 10,065 | 1.221 | 27.4 GiB | $0.0141 |
+    | Student 14L 16cb + 3B teacher, `--bf16-adamw --micro-frames 6144` (`12,288`, no ckpt) | 12,417 | 0.902 | 26.0 GiB | $0.0114 |
+
+  - Launch entries in `training/tranche/box/restart.sh`: `two-way-5090` and `student-heads-5090`.
+    Both passed full preempt → resume (exact 4-digit loss match) → teacher-forced + free-running
+    FLEURS validation (15.9 GiB peak with `--park-states`) → promotion end-to-end tests on box
+    62513802.
 
 - **H200 SXM, alone on the GPU (2026-11-09; round 4's caches, steps 200–300 after warm-up, at
   ~690 W of its 700 W cap, 99–100% busy)**: kernels of 10 warm steps at 4,608: matmuls 48.6%, fused
