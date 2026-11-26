@@ -64,7 +64,7 @@ import torch
 from moshi.utils.sampling import sample_token
 from torch.utils.data import DataLoader
 
-from training.finetune import common, lm_training, streams
+from training.finetune import bf16_adamw, common, lm_training, streams
 from training.student import heads, palettize
 from training.finetune.checkpoints import (
     BEST_METRIC,
@@ -105,6 +105,8 @@ RESUME_KEYS = (
     "optimizer_state",
     "palettize_bits",
     "palettize_refit",
+    "bf16_adamw",
+    "fp8",
     "sampled_text",
     "room_share",
     "mimi_weight",
@@ -180,6 +182,33 @@ def parse_args() -> argparse.Namespace:
         "--park-states", action="store_true",
         help="Park AdamW's states and the teacher in pinned host memory while validation translates "
         "free-running, which reads neither: the heads student's validation on a 32 GB card.",
+    )
+    parser.add_argument(
+        "--micro-frames", type=int, default=0,
+        help="Max padded frames per gradient-accumulation micro-batch (0 runs the whole batch at "
+        "once). Splits a batch's streams with exact full-batch loss weighting so large batches fit "
+        "a 32 GB card.",
+    )
+    parser.add_argument(
+        "--grad-checkpoint", action="store_true",
+        help="Checkpoint main transformer and depformer layers during training to cut activation "
+        "memory (~6-8x smaller activations for ~20-25%% more compute).",
+    )
+    parser.add_argument(
+        "--grad-checkpoint-layers", type=int, default=0, metavar="N",
+        help="With --grad-checkpoint, checkpoint the first N main transformer layers plus the "
+        "depformer; 0 checkpoints all main and depformer layers.",
+    )
+    parser.add_argument(
+        "--bf16-adamw", action="store_true",
+        help="All-GPU bf16 weights, gradients and AdamW moments with fused Triton stochastic "
+        "rounding and fused gradient clipping (1D norms/scales stay fp32): 8 bytes/param instead "
+        "of 16, fitting full 3B SFT on a 32 GB RTX 5090.",
+    )
+    parser.add_argument(
+        "--fp8", action="store_true",
+        help="Rowwise FP8 (E4M3 via torch._scaled_mm) on the main transformer's linears for "
+        "Blackwell (RTX 5090 / RTX PRO 6000) speedup.",
     )
     parser.add_argument(
         "--sampled-text", type=float, default=0.0, metavar="P",
@@ -270,9 +299,11 @@ def validate_args(args: argparse.Namespace) -> None:
     for name in ("epochs", "batch_frames", "max_frames", "eval_batch_size"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
-    for name in ("max_steps", "grad_clip", "val_every", "val_batches", "save_every"):
+    for name in ("max_steps", "micro_frames", "grad_checkpoint_layers", "grad_clip", "val_every", "val_batches", "save_every"):
         if getattr(args, name) < 0:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
+    if args.grad_checkpoint_layers and not args.grad_checkpoint:
+        raise ValueError("--grad-checkpoint-layers needs --grad-checkpoint")
     if args.keep_checkpoints < 0:
         raise ValueError("--keep-checkpoints must be non-negative")
     if len({resolve_repo_path(path).resolve() for path in args.val_cache_dir}) != len(args.val_cache_dir):
@@ -350,8 +381,9 @@ def learning_rate(
 
 def main() -> None:
     # Validation builds and frees a bf16 model and generation caches between training steps;
-    # expandable segments keep the freed memory reusable for the training batches.
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # expandable segments keep the freed memory reusable, and exact pinned blocks above 1 MB save
+    # ~5-7 GiB of host RAM on CheckpointWriter and HostOffload.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,pinned_max_round_threshold_mb:1")
     args = parse_args()
     validate_args(args)
     common.seed_all(args.seed)
@@ -385,17 +417,25 @@ def main() -> None:
     rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
     # near-tie in a residual code); at the cache's codebooks, which streams are assembled at.
-    silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
-    mimi = checkpoint_info.get_mimi(device=device)  # the rooms' encoder, then validation's
+    # Keep Mimi on CPU during training (~0.4 GiB saved on 32 GB cards); move to GPU only for
+    # room encoding and free-running validation.
+    mimi = checkpoint_info.get_mimi(device="cpu")
+    silence = streams.silence_track(mimi, frames[1], layout.dep_q)
     # A teacher reads the whole stream; the model's rows are cut from each batch on the GPU.
     student_rows = None
     if teacher_info is not None:
         if int(teacher_info.lm_config["dep_q"]) != layout.dep_q:
             raise ValueError(f"the teacher must read the cache's {layout.dep_q} codebooks a stream")
         student_rows = torch.tensor(streams.model_rows(layout, codebooks), device=device)
+    if args.room_share > 0:
+        mimi.to(device)
+    rooms = streams.run_rooms(args, mimi, silence, ROOMS)
+    if args.room_share > 0:
+        mimi.to("cpu")
+        torch.cuda.empty_cache()
     dataset = streams.StreamDataset(
         rows, layout, silence, frames, args.seed, layout.dep_q if teacher_info else codebooks,
-        streams.run_rooms(args, mimi, silence, ROOMS), args.room_share,
+        rooms, args.room_share,
     )
     batches = dataset.batches(args.batch_frames, args.seed)
     exposure = dataset.exposure()
@@ -471,7 +511,21 @@ def main() -> None:
     claim_run_config(out_dir, run_config, RESUME_KEYS, resuming)
 
     print(f"Loading the start model from {repo_display_path(args.model_weight)}")
-    lm = common.load_policy(checkpoint_info, device)
+    lm = common.load_policy(checkpoint_info, device, bf16_adamw_mode=args.bf16_adamw)
+    if args.grad_checkpoint:
+        lm.transformer.checkpointing = True
+        lm.transformer.checkpoint_layers = args.grad_checkpoint_layers
+        if hasattr(lm.depformer, "checkpointing"):
+            lm.depformer.checkpointing = True
+        scope = (
+            f"first {args.grad_checkpoint_layers} main + depformer layers"
+            if args.grad_checkpoint_layers
+            else "all main + depformer layers"
+        )
+        print(f"Gradient checkpointing enabled ({scope})")
+    if args.fp8:
+        lm.transformer.use_fp8 = True
+        print("Rowwise FP8 enabled on main transformer linears")
     # The training forward attends causally over the whole stream (lm_training): the longest
     # padded stream must fit the attention context, checked here rather than at its first batch.
     context = lm.transformer.layers[0].self_attn.context
@@ -486,7 +540,16 @@ def main() -> None:
         teacher = common.load_teacher(teacher_info, args.teacher_weight, device, codebooks)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
-    optimizer = common.fused_adamw(params, args)
+    if args.bf16_adamw:
+        optimizer = bf16_adamw.BF16StochasticAdamW(
+            params,
+            lr=args.lr,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.weight_decay,
+            seed=args.seed,
+        )
+    else:
+        optimizer = common.fused_adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     offload = common.HostOffload()
     teacher_params = [] if teacher is None else list(teacher.parameters())
@@ -582,10 +645,15 @@ def main() -> None:
             # --park-states AdamW's states and the teacher.
             if args.park_states:
                 offload.to_host(common.adam_states(optimizer) + teacher_params)
-            free_running = common.validate_free_running(
-                lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
-                args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
-            )
+            mimi.to(device)
+            try:
+                free_running = common.validate_free_running(
+                    lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
+                    args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
+                )
+            finally:
+                mimi.to("cpu")
+                torch.cuda.empty_cache()
             offload.to_device()
         healthy = all(metrics["health_eligible"] for metrics in free_running.values())
         for name, losses in teacher_forced.items():
@@ -631,45 +699,88 @@ def main() -> None:
         log["data_seconds"] += time.time() - fetch_started  # the wait for the stream workers
         codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size, frames_padded = int(codes.shape[0]), int(codes.shape[-1])
-        if batch_size not in condition_cache:
-            condition_cache[batch_size] = common.batch_condition_tensors(
-                lm, checkpoint_info.model_type, batch_size
-            )
-        teacher_output = None
-        if teacher is not None:
-            if batch_size not in teacher_conditions:
-                teacher_conditions[batch_size] = common.batch_condition_tensors(
-                    teacher, teacher_info.model_type, batch_size
-                )
-            with torch.no_grad(), autocast:
-                teacher_output = teacher(codes, condition_tensors=teacher_conditions[batch_size])
-            codes = codes.index_select(1, student_rows)
+        micro_b = batch_size
+        if args.micro_frames and batch_size * frames_padded > args.micro_frames:
+            micro_b = max(1, args.micro_frames // frames_padded)
+        use_micro = micro_b < batch_size
+        denominators = None
+        if use_micro:
+            student_codes_all = codes if student_rows is None else codes.index_select(1, student_rows)
+            denominators = common.batch_loss_denominators(lm, student_codes_all, weights, teacher=teacher)
+            del student_codes_all
+        step_sums: dict[str, Any] | None = None
         with palettized():  # the straight-through estimator: gradients at the palettized weights
-            with autocast:
-                history = None
-                if args.sampled_text:
-                    history, changed = sample_text(
-                        lm, codes, condition_cache[batch_size], args.sampled_text
+            for start in range(0, batch_size, micro_b):
+                end = min(start + micro_b, batch_size)
+                sub_codes = codes[start:end]
+                sub_b = end - start
+                if sub_b not in condition_cache:
+                    condition_cache[sub_b] = common.batch_condition_tensors(
+                        lm, checkpoint_info.model_type, sub_b
                     )
-                    log["text_changed"] += changed
-                losses = common.compute_batch_losses(
-                    lm, codes, condition_cache[batch_size], weights,
-                    teacher=teacher_output, history=history,
-                )
-            history = teacher_output = None  # the loss's graph keeps what its backward needs
-            losses["loss"].backward()
+                teacher_output = None
+                if teacher is not None:
+                    if sub_b not in teacher_conditions:
+                        teacher_conditions[sub_b] = common.batch_condition_tensors(
+                            teacher, teacher_info.model_type, sub_b
+                        )
+                    with torch.no_grad(), autocast:
+                        teacher_output = teacher(sub_codes, condition_tensors=teacher_conditions[sub_b])
+                    sub_codes = sub_codes.index_select(1, student_rows)
+                with autocast:
+                    history = None
+                    if args.sampled_text:
+                        history, changed = sample_text(
+                            lm, sub_codes, condition_cache[sub_b], args.sampled_text
+                        )
+                        log["text_changed"] += changed
+                    losses = common.compute_batch_losses(
+                        lm, sub_codes, condition_cache[sub_b], weights,
+                        teacher=teacher_output, history=history, denominators=denominators,
+                    )
+                history = teacher_output = None  # the loss's graph keeps what its backward needs
+                losses["loss"].backward()
+                if use_micro:
+                    if step_sums is None:
+                        step_sums = {
+                            f"{name}_{part}": losses[f"{name}_{part}"].detach()
+                            for name in common.LOSS_SUMS
+                            for part in ("sum", "n")
+                        }
+                    else:
+                        for name in common.LOSS_SUMS:
+                            for part in ("sum", "n"):
+                                key = f"{name}_{part}"
+                                step_sums[key] = step_sums[key] + losses[key].detach()
+                else:
+                    step_losses = {key: value.detach() for key, value in losses.items()}
+                del losses
+        if use_micro:
+            assert step_sums is not None
+            step_losses = {**step_sums, **common.loss_means(step_sums, weights)}
         for key in LOG_LOSSES:
-            log["losses"][key] += losses[key].detach()
-        log["audio_tokens"] += losses["semantic_n"] + losses["acoustic_n"]
-        log["text_tokens"] += losses["content_n"] + losses["pad_n"]
-        log["word_tokens"] += losses["content_n"]
-        if args.grad_clip > 0:
-            grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
-        else:
+            log["losses"][key] += step_losses[key].detach()
+        log["audio_tokens"] += step_losses["semantic_n"] + step_losses["acoustic_n"]
+        log["text_tokens"] += step_losses["content_n"] + step_losses["pad_n"]
+        log["word_tokens"] += step_losses["content_n"]
+        del step_losses
+        if args.bf16_adamw:
             grad_norm = torch.nn.utils.get_total_norm(
                 [param.grad for param in params if param.grad is not None]
             )
-        optimizer.step()
+            if args.grad_clip > 0:
+                clip_coef = (args.grad_clip / (grad_norm.float() + 1e-6)).clamp(max=1.0)
+            else:
+                clip_coef = None
+            optimizer.step(clip_coef=clip_coef)
+        else:
+            if args.grad_clip > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
+            else:
+                grad_norm = torch.nn.utils.get_total_norm(
+                    [param.grad for param in params if param.grad is not None]
+                )
+            optimizer.step()
         global_step += 1
         # On the last step too: its validation and the snapped export then share one fit.
         if palettizer is not None and (global_step % args.palettize_refit == 0

@@ -51,6 +51,8 @@ from moshi.modules.gating import ActivationGating
 from moshi.modules.transformer import RMSNorm, StreamingMultiheadAttention, StreamingTransformer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from training.finetune.fp8_linear import fp8_linear
+
 
 class _CausalSDPA:
     """Namespace proxy injected as moshi.modules.transformer.F (rebinds only that module's
@@ -98,9 +100,10 @@ def _keep_kv_heads(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     return x
 
 
-def _gating(module: ActivationGating, x: torch.Tensor) -> torch.Tensor:
-    gate, value = F.linear(x, module.linear_in.weight).unflatten(-1, (2, -1)).unbind(-2)
-    return F.linear(module.activation(gate) * value, module.linear_out.weight)
+def _gating(module: ActivationGating, x: torch.Tensor, use_fp8: bool = False) -> torch.Tensor:
+    lin = fp8_linear if use_fp8 else F.linear
+    gate, value = lin(x, module.linear_in.weight).unflatten(-1, (2, -1)).unbind(-2)
+    return lin(module.activation(gate) * value, module.linear_out.weight)
 
 
 _moshi_gating_forward = ActivationGating.forward
@@ -150,13 +153,20 @@ def _depformer_layers(depformer: Any, xs: torch.Tensor) -> torch.Tensor:
     return xs
 
 
+def _depformer_layers_ckpt_graph(depformer: Any, xs: torch.Tensor) -> torch.Tensor:
+    for layer in depformer.layers:
+        xs = torch.utils.checkpoint.checkpoint(_depformer_layer, layer, xs, use_reentrant=False)
+    return xs
+
+
 # Compiled on first call; every batch shape shares one dynamic graph.
 _compiled_depformer_layers = torch.compile(_depformer_layers, dynamic=True)
+_compiled_depformer_layers_ckpt = torch.compile(_depformer_layers_ckpt_graph, dynamic=True)
 
 
 def _check_depformer(depformer: Any) -> None:
-    if depformer._streaming_state is not None or depformer.checkpointing:
-        raise RuntimeError("The training depformer runs without streaming or checkpointing")
+    if depformer._streaming_state is not None:
+        raise RuntimeError("The training depformer runs without streaming")
     if depformer.positional_embedding in {"sin", "sin_rope"}:
         raise RuntimeError("The training depformer has no positional embedding")
     for layer in depformer.layers:
@@ -192,7 +202,12 @@ def forward_depformer_training(
             token_in = self.depformer_emb[cb - 1](sequence[:, cb + self.audio_offset - 1])
         inputs.append(token_in + projections[index])
     xs = torch.stack(inputs, 0).view(steps, B * T, -1)
-    out = _compiled_depformer_layers(self.depformer, xs).to(xs.dtype).unbind(0)
+    run_dep = (
+        _compiled_depformer_layers_ckpt
+        if getattr(self.depformer, "checkpointing", False)
+        else _compiled_depformer_layers
+    )
+    out = run_dep(self.depformer, xs).to(xs.dtype).unbind(0)
     logits = [
         self.linears[cb](self.depformer_norms[cb](out[cb])).view(B, T, -1) for cb in range(steps)
     ]
@@ -275,39 +290,79 @@ def _rope(q: torch.Tensor, k: torch.Tensor, max_period: float) -> tuple[torch.Te
     return rotate(q), rotate(k)
 
 
-def _transformer_layer(layer: Any, x: torch.Tensor, max_period: float) -> torch.Tensor:
+def _transformer_layer(
+    layer: Any, x: torch.Tensor, max_period: float, use_fp8: bool = False
+) -> torch.Tensor:
     """One moshi StreamingTransformerLayer on x [B, T, C] at offset 0, without streaming."""
     attention = layer.self_attn
     channels = x.shape[-1]
     kv_heads = attention.num_heads // attention.kv_repeat
-    projected = attention.in_projs[0](_rms_norm(layer.norm1, x))
+    lin = fp8_linear if use_fp8 else F.linear
+    projected = lin(_rms_norm(layer.norm1, x), attention.in_projs[0].weight)
     q = projected[..., :channels].unflatten(-1, (attention.num_heads, -1)).transpose(1, 2)
     k, v = projected[..., channels:].unflatten(-1, (2, kv_heads, -1)).permute(2, 0, 3, 1, 4)
     q, k = _rope(q, k, max_period)
     out = F.scaled_dot_product_attention(
         q, k, v, is_causal=True, enable_gqa=attention.kv_repeat != 1
     )  # [B, H, T, D]
-    update = attention.out_projs[0](out.transpose(1, 2).flatten(2))
+    update = lin(out.transpose(1, 2).flatten(2), attention.out_projs[0].weight)
     x = x.to(update) + layer.layer_scale_1(update)
-    update = _gating(layer.gating, _rms_norm(layer.norm2, x))
+    update = _gating(layer.gating, _rms_norm(layer.norm2, x), use_fp8=use_fp8)
     return x.to(update) + layer.layer_scale_2(update)
 
 
 def _transformer_layers(transformer: Any, x: torch.Tensor) -> torch.Tensor:
     out = x
+    max_period = transformer.rope.max_period
     for layer in transformer.layers:
-        out = _transformer_layer(layer, out, transformer.rope.max_period)
+        out = _transformer_layer(layer, out, max_period, False)
     return out.to(x.dtype)
 
 
-# Compiled on first call with dynamic shapes: two graphs, as batches under 4,096 frames get
-# their own (an inductor fusion guard).
+def _transformer_layers_ckpt_bf16(transformer: Any, x: torch.Tensor) -> torch.Tensor:
+    """Whole-loop compiled checkpointing for pure bf16 (+6.5% faster than per-layer compile via
+    cross-layer norm/residual fusion)."""
+    out = x
+    max_period = transformer.rope.max_period
+    ckpt_n = int(getattr(transformer, "checkpoint_layers", 0)) or len(transformer.layers)
+    for index, layer in enumerate(transformer.layers):
+        if index < ckpt_n:
+            out = torch.utils.checkpoint.checkpoint(
+                _transformer_layer, layer, out, max_period, False, use_reentrant=False
+            )
+        else:
+            out = _transformer_layer(layer, out, max_period, False)
+    return out.to(x.dtype)
+
+
+# Whole-loop compile for bf16 (fuses norms/residuals across layers); per-layer compile for --fp8
+# (avoids unrolling 28 FP8 quantize+scaled_mm blocks, ~20x faster compile).
 _compiled_transformer_layers = torch.compile(_transformer_layers, dynamic=True)
+_compiled_transformer_layers_ckpt_bf16 = torch.compile(_transformer_layers_ckpt_bf16, dynamic=True)
+_compiled_transformer_layer = torch.compile(_transformer_layer, dynamic=True)
+
+
+def _transformer_layers_ckpt(transformer: Any, x: torch.Tensor) -> torch.Tensor:
+    """Checkpoint the first `checkpoint_layers` main layers (all layers when 0 or unset), leaving
+    later layers uncheckpointed to use spare GPU memory for speed."""
+    if not getattr(transformer, "use_fp8", False):
+        return _compiled_transformer_layers_ckpt_bf16(transformer, x)
+    out = x
+    max_period = transformer.rope.max_period
+    ckpt_n = int(getattr(transformer, "checkpoint_layers", 0)) or len(transformer.layers)
+    for index, layer in enumerate(transformer.layers):
+        if index < ckpt_n:
+            out = torch.utils.checkpoint.checkpoint(
+                _compiled_transformer_layer, layer, out, max_period, True, use_reentrant=False
+            )
+        else:
+            out = _compiled_transformer_layer(layer, out, max_period, True)
+    return out.to(x.dtype)
 
 
 def _check_transformer(transformer: Any, steps: int, args: tuple, kwargs: dict) -> None:
-    if transformer._streaming_state is not None or transformer.checkpointing:
-        raise RuntimeError("The training transformer runs without streaming or checkpointing")
+    if transformer._streaming_state is not None:
+        raise RuntimeError("The training transformer runs without streaming")
     if args or kwargs.get("cross_attention_src") is not None:
         raise RuntimeError("The training transformer has no cross-attention")
     if transformer.positional_embedding != "rope_concat":
@@ -318,6 +373,8 @@ def _check_transformer(transformer: Any, steps: int, args: tuple, kwargs: dict) 
         attention = layer.self_attn
         if not attention.causal or attention.cross_attention or len(attention.in_projs) != 1:
             raise RuntimeError("Unsupported transformer attention")
+        if attention.in_projs[0].bias is not None or attention.out_projs[0].bias is not None:
+            raise RuntimeError("Unsupported transformer attention bias")
         if attention.context is not None and steps > attention.context:
             raise RuntimeError(f"{steps} frames exceed the attention context {attention.context}")
         gating = layer.gating
@@ -337,6 +394,15 @@ def _transformer_forward(self: StreamingTransformer, x: torch.Tensor, *args, **k
     if not self.training:
         return _moshi_transformer_forward(self, x, *args, **kwargs)
     _check_transformer(self, x.shape[1], args, kwargs)
+    if self.checkpointing:
+        return _transformer_layers_ckpt(self, x)
+    if getattr(self, "use_fp8", False):
+        # Per-layer compile avoids unrolling 14-28 FP8 quantize+scaled_mm blocks (~20x faster compile).
+        out = x
+        max_period = self.rope.max_period
+        for layer in self.layers:
+            out = _compiled_transformer_layer(layer, out, max_period, True)
+        return out.to(x.dtype)
     return _compiled_transformer_layers(self, x)
 
 

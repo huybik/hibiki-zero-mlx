@@ -117,7 +117,7 @@ cpus() {
   echo "New shells get $n CPUs: MAX_JOBS, OMP_NUM_THREADS, TORCHINDUCTOR_COMPILE_THREADS"
 }
 
-sizes() {  # MODULE WEIGHT KEEP [TEACHER]: "DISK GPU RAM", what a run needs, from its weights' tensors
+sizes() {  # MODULE WEIGHT KEEP [TEACHER] [BF16_ADAMW] [PARK_STATES]: "DISK GPU RAM"
   local weight="$2" teacher="${4:-}"
   require_python
   [[ -f "$weight" ]] || die "start weight $weight is missing"
@@ -133,7 +133,7 @@ def tensors(path):  # each tensor's parameter count, from the safetensors header
 
 
 def pinned(nbytes):  # torch's pinned host allocator rounds a block of 1 MB or less up to a power of two,
-    # and keeps larger ones at their size (grpo.ALLOC_CONF's pinned_max_round_threshold_mb)
+    # and keeps larger ones at their size (ALLOC_CONF's pinned_max_round_threshold_mb)
     return 1 << (nbytes - 1).bit_length() if 0 < nbytes <= 2**20 else nbytes
 
 
@@ -141,28 +141,24 @@ module, keep = sys.argv[1], int(sys.argv[3])
 grpo = module == "training.finetune.grpo"
 policy = tensors(sys.argv[2])
 teacher = tensors(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else []
-model = sum(policy) * 4 / 1e9  # the fp32 model, GB
-# Disk: the kept pairs (--keep-checkpoints, default 2), the promoted model, and a pair the sync still
-# uploads after it is pruned. A pair is 3x the fp32 model (its parameters, AdamW's two states), the
-# model 1x, plus 5.5 of margin: on the 3B 37.5 a pair and 12.5 the model (131 at 2, 94 at 1), on the
-# 1.3B heads student 15.4 and 5.1 (42 at 1). 0 keeps every pair, which no check can bound: it gets
-# the default's room.
+bf16_adamw = len(sys.argv) > 5 and sys.argv[5] == "1"
+park_states = len(sys.argv) > 6 and sys.argv[6] == "1"
+elem = 2 if bf16_adamw else 4  # bytes per policy element (weights, grads, each AdamW moment)
+model = sum(policy) * elem / 1e9  # model file size, GB
+# Disk: kept pairs (--keep-checkpoints, default 2), promoted model, and a pair still uploading.
 disk = math.ceil((keep + 1) * 3 * model + model + 5.5)
-# GPU: what the optimizer's step holds, SFT's and GRPO's alike: the fp32 model, its gradients and
-# AdamW's two moments (16 bytes a parameter) and a teacher's bf16 weights (2). 46.7 GiB on the 3B,
-# 24.9 on the heads student under the 3B, 21.4 on the heads student distilling itself. The
-# batches' activations come on top, sized by each run's profile: SFT's --batch-frames (the 3B's
-# 4,608 peak at 75.1 GiB, so it takes an 80 GB card), a palettizing SFT's full-precision copy (4
-# bytes a palettized parameter), GRPO's --micro-batch and --gen-frames, or, with --park-states,
-# where the moments (8 a parameter) were.
-gpu = (16 * sum(policy) + 2 * sum(teacher)) / 2**30
-# RAM: SFT's 80 GiB (the checkpoint snapshot pins 37.5 GB on the 3B). GRPO pins the snapshot (the
-# policy and AdamW's two states, a block each a tensor) and common.HostOffload's copy of the same and
-# of a teacher's bf16 weights: 70.0 GiB on the 3B, whose run held 17 GiB more that it could not
-# give back. That 17 and 5% on top: 92 GiB on the 3B, 54 on the heads student under the 3B (34.4
-# pinned; its first 40 updates on a 5090 held 52.1, page cache included).
-pins = (6 * sum(pinned(4 * n) for n in policy) + sum(pinned(2 * n) for n in teacher)) / 2**30
-ram = math.ceil(1.05 * (pins + 17)) if grpo else 80
+# GPU: policy weights + grads + 2 AdamW moments (4*elem bytes/param) + bf16 teacher (2 bytes/param).
+# 46.7 GiB on fp32 3B, 23.3 GiB on bf16-adamw 3B, 24.9 on fp32 heads student under 3B, 15.4 on bf16-adamw student.
+gpu = (4 * elem * sum(policy) + 2 * sum(teacher)) / 2**30
+# RAM: CheckpointWriter pins 3x policy; HostOffload pins 3x policy + teacher in GRPO, or 2x policy + teacher
+# in SFT with --park-states. Add 17 GiB non-reclaimable process overhead and 5% margin.
+if grpo:
+    pins = (6 * sum(pinned(elem * n) for n in policy) + sum(pinned(2 * n) for n in teacher)) / 2**30
+else:
+    offload_mult = 5 if park_states else 3
+    offload_teacher = sum(pinned(2 * n) for n in teacher) if park_states else 0
+    pins = (offload_mult * sum(pinned(elem * n) for n in policy) + offload_teacher) / 2**30
+ram = math.ceil(1.05 * (pins + 17))
 print(disk, f"{gpu:.1f}", ram)
 PY
 }
@@ -460,15 +456,17 @@ run() {  # MODULE RUN_NAME [ARGS...]: the trainer module and its run
       die "$run_name was started with other arguments; run it with none to continue"
     fi
   fi
-  local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors teacher=
+  local keep=2 given="$*" weight=weights/hibiki-pytorch-77f82164@110.safetensors teacher= bf16_adamw=0 park_states=0
   [[ -z "$given" && -f "$run_dir/train_args.json" ]] && given="$(tr -d '[],"' < "$run_dir/train_args.json")"
   # The last of each, as argparse keeps (grpo_launch.sh's ARGS follow its defaults).
   [[ "$given" =~ .*--keep-checkpoints[=[:space:]]+([0-9]+) ]] && keep=$(( 10#${BASH_REMATCH[1]} ))
   [[ "$given" =~ .*--model-weight[=[:space:]]+([^[:space:]]+) ]] && weight="${BASH_REMATCH[1]}"
   [[ "$given" =~ .*--teacher-weight[=[:space:]]+([^[:space:]]+) ]] && teacher="${BASH_REMATCH[1]}"
+  [[ "$given" =~ (^|[[:space:]])--bf16-adamw([[:space:]]|$) ]] && bf16_adamw=1
+  [[ "$given" =~ (^|[[:space:]])--park-states([[:space:]]|$) ]] && park_states=1
   (( keep >= 1 )) || keep=2
   local needs disk gpu ram
-  needs="$(sizes "$module" "$weight" "$keep" "$teacher")"
+  needs="$(sizes "$module" "$weight" "$keep" "$teacher" "$bf16_adamw" "$park_states")"
   read -r disk gpu ram <<< "$needs"
   preflight "$disk" "$run_dir" "$ram" "$gpu"
   if [[ -f "$run_dir/run_id.json" ]]; then

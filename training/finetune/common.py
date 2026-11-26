@@ -35,7 +35,7 @@ from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 
 from inference.hibiki_mlx.level import Leveller
-from training.finetune import lm_training
+from training.finetune import bf16_adamw, lm_training
 from training.student import heads
 from training.finetune.hibiki_helpers import (
     audio_read,
@@ -123,10 +123,13 @@ def save_state(state: dict[str, torch.Tensor], path: Path, metadata: dict[str, s
         temp_path.unlink(missing_ok=True)
 
 
-def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
-    """Load an exact full-model checkpoint; partial states are rejected."""
+def load_model(model: Any, path: Path, dtype: torch.dtype | None) -> None:
+    """Load an exact full-model checkpoint; partial states are rejected.
+    When `dtype` is None, each floating tensor is cast to its destination parameter's own dtype
+    (preserving mixed bf16/fp32 policies such as `--bf16-adamw`)."""
     state = load_file(str(path), device="cpu")
-    expected = set(model.state_dict())
+    model_state = model.state_dict()
+    expected = set(model_state)
     actual = set(state)
     if missing := sorted(expected - actual):
         raise RuntimeError(f"Checkpoint is missing model tensors: {missing[:5]}")
@@ -136,7 +139,8 @@ def load_model(model: Any, path: Path, dtype: torch.dtype) -> None:
     # bf16 copy whole at once held 18 GiB on the Mac.
     for name, tensor in state.items():
         if tensor.dtype.is_floating_point:
-            state[name] = tensor.to(dtype=dtype)
+            target_dtype = model_state[name].dtype if dtype is None else dtype
+            state[name] = tensor.to(dtype=target_dtype)
     model.load_state_dict(state, strict=True)
     print(f"Loaded {len(state)} model tensors from {repo_display_path(path)}")
 
@@ -192,15 +196,20 @@ def bf16_copy(checkpoint_info: Any, lm: Any, device: Any) -> Any:
     return generator
 
 
-def load_policy(checkpoint_info: Any, device: Any) -> Any:
+def load_policy(checkpoint_info: Any, device: Any, bf16_adamw_mode: bool = False) -> Any:
     """The model a trainer updates (SFT's and GRPO's), from the checkpoint info's weight
-    (--model-weight): fp32 masters, every parameter trainable, in training mode.
+    (--model-weight): fp32 masters by default, or bf16 2D+ weights + fp32 1D norms/scales when
+    `bf16_adamw_mode` is True (all-GPU 3B SFT on 32 GB cards), every parameter trainable, in
+    training mode.
 
     Loading a Hibiki weight, `build_lm` (moshi's `get_moshi`, or its own load for a heads student)
     copies the text PAD's input embedding over the text EOS's (so a sampled early EOS reads on as PAD), so every run starts from that; the row
     trains from there (cosine 0.88 to PAD's after round 4), and a resumed pair restores its own.
     `load_lm` and `bf16_copy` keep a checkpoint's own row."""
-    lm = build_lm(checkpoint_info, device, torch.float32, lm_kwargs_overrides={"gradient_checkpointing": False})
+    dtype = torch.bfloat16 if bf16_adamw_mode else torch.float32
+    lm = build_lm(checkpoint_info, device, dtype, lm_kwargs_overrides={"gradient_checkpointing": False})
+    if bf16_adamw_mode:
+        bf16_adamw.cast_policy_bf16(lm)
     lm.train()
     for param in lm.parameters():
         param.requires_grad_(True)
@@ -259,8 +268,13 @@ class HostOffload:
 
 
 def adam_states(optimizer: torch.optim.Optimizer) -> list[torch.Tensor]:
-    """AdamW's state tensors (none before its first step)."""
-    return [value for state in optimizer.state.values() for value in state.values() if torch.is_tensor(value)]
+    """AdamW's CUDA state tensors (none before its first step)."""
+    return [
+        value
+        for state in optimizer.state.values()
+        for value in state.values()
+        if torch.is_tensor(value) and value.is_cuda
+    ]
 
 
 def load_lm(checkpoint_info: Any, checkpoint: Path | None, device: Any, dtype: torch.dtype) -> Any:
@@ -383,6 +397,38 @@ def token_kl(logits: Any, teacher_logits: Any, valid: Any) -> Any:
     return torch.where(valid, kl, 0.0)
 
 
+def batch_loss_denominators(
+    lm: Any,
+    codes: Any,
+    weights: LossWeights,
+    teacher: Any | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Exact full-batch `(audio_n, text_n)` denominators for micro-batch gradient accumulation,
+    computed directly from `codes` and delays without running any forward pass."""
+    T = int(codes.shape[-1])
+    device = codes.device
+    audio = slice(lm.audio_offset, lm.audio_offset + lm.dep_q)
+    lm_audio_delays = lm.delays[audio]
+    if teacher is not None:
+        t_audio = slice(teacher.audio_offset, teacher.audio_offset + lm.dep_q)
+        max_delays = [max(d1, d2) for d1, d2 in zip(lm_audio_delays, teacher.delays[t_audio], strict=True)]
+    else:
+        max_delays = list(lm_audio_delays)
+    delay_t = torch.tensor(max_delays, device=device, dtype=torch.long).view(1, -1, 1)
+    pos = torch.arange(T, device=device, dtype=torch.long).view(1, 1, T)
+    audio_valid = (pos < (T - delay_t)) & (codes[:, audio] != lm.zero_token_id)
+    semantic = torch.zeros_like(audio_valid)
+    semantic[:, 0] = audio_valid[:, 0]
+    audio_n = (torch.where(semantic, weights.first_codebook, 1.0) * audio_valid).sum()
+
+    text_delay = max(lm.delays[0], teacher.delays[0]) if teacher is not None else lm.delays[0]
+    text_targets = codes[:, :1]
+    text_valid = (pos < (T - text_delay)) & (text_targets != lm.zero_token_id)
+    pad = (text_targets == lm.text_padding_token_id) & text_valid
+    text_n = (torch.where(pad, weights.text_pad, 1.0) * text_valid).sum()
+    return audio_n, text_n
+
+
 def compute_batch_losses(
     lm: Any,
     codes: Any,
@@ -391,6 +437,7 @@ def compute_batch_losses(
     accuracy: bool = False,
     teacher: Any | None = None,
     history: Any | None = None,
+    denominators: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> dict[str, Any]:
     """Teacher-forced losses of one batch, as tensors on the GPU (no host sync), with every
     component's sum and count beside them so evaluation can aggregate exactly. Positions holding
@@ -443,6 +490,12 @@ def compute_batch_losses(
         "pad_n": pad.sum(),
     }
     result = {**sums, **loss_means(sums, weights)}
+    if denominators is not None:
+        total_audio_n, total_text_n = denominators
+        result["loss"] = (
+            weights.audio * (sums["audio_sum"] / total_audio_n.clamp(min=1))
+            + weights.text * (sums["text_sum"] / total_text_n.clamp(min=1))
+        )
     if accuracy:
         correct = output.text_logits.argmax(-1) == text_targets
         result["content_correct"] = (correct & content).sum()

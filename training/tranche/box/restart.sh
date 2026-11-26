@@ -104,7 +104,47 @@ case $job in
             --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|student|student-heads|student-distill" >&2; exit 1 ;;
+  # 5090 route for 3B full-model two-way SFT: all-GPU bf16 weights/grads/moments with fused Triton
+  # stochastic rounding (--bf16-adamw: 23.3 GiB static, +0.00001 loss parity vs fp32 AdamW),
+  # whole-loop compiled selective checkpointing (first 14 main + depformer layers) and whole
+  # 4,608-frame batches (6,554 fr/s, 28.3 GiB reserved on real variable batches; or add --fp8 with
+  # --grad-checkpoint-layers 8 for 7,242 fr/s at 28.1 GiB reserved).
+  two-way-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
+       for d in $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train; do
+         [[ -d $d ]] || { echo "$d is missing: run envi-cache first" >&2; exit 1; }
+         if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
+       done
+       cmd=(./training/h100.sh run twoway_sft_5090
+            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --model-weight weights/twoway_start_vi6k.safetensors
+            --bf16-adamw --grad-checkpoint --grad-checkpoint-layers 14 --park-states --batch-frames 4608
+            --eval-batch-size 64 --keep-checkpoints 1
+            --epochs 2 --seed 47 --save-every 4000 --val-every 20000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  # 5090 route for 14-layer 16-codebook parallel-heads student distillation from the 3B teacher:
+  # --bf16-adamw + 6,144-frame slices (12,362 fr/s, 26.0 GiB peak, no checkpointing needed).
+  # For exact fp32 AdamW instead, drop --bf16-adamw and use --grad-checkpoint --micro-frames 3072 (10,065 fr/s, 27.35 GiB).
+  student-heads-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
+       name=student_heads14_cb16 S=weights/$name
+       [[ -f $S/config.json ]] || .venv/bin/python -m training.student.cut \
+         --weight weights/grpo_twoway_best1400.safetensors --heads --num-layers 14 --codebooks 16 --out-dir $S
+       cmd=(./training/h100.sh run ${name}_5090
+            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --config-path $S/config.json --model-weight $S/model.safetensors
+            --teacher-weight weights/grpo_twoway_best1400.safetensors
+            --bf16-adamw --batch-frames 12288 --micro-frames 6144 --park-states
+            --lr 5e-5 --eval-batch-size 64 --keep-checkpoints 1
+            --epochs 2 --seed 47 --save-every 4000 --val-every 16000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-distill" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &
