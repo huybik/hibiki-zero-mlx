@@ -66,10 +66,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
 - Speech Live, the iPhone app in [onevoice-ai-challenge](https://github.com/anthoai97/onevoice-ai-challenge)
   (`apps/ios/`), carries its own adapted copy of `HibikiCore` from 2026-11-16: the MLX LM only,
   Mimi on the CPU. Changes here reach it only when copied over. It ships the depformer student
-  (`release/student_grpo2000_mlx_q6`) in MLX on the GPU, where Mimi stays on the CPU anyway, so
-  [Mimi on the GPU](#mimi-on-the-gpu) does not apply to it. The Neural Engine LM would need the
-  heads student, 10–13 chrF below that student at update 16,000
-  ([student-heads](student-heads.md#speed)).
+  (`release/student_grpo2000_mlx_q6`) in MLX on the GPU. Its PR #8 (open, 2026-11-25) copies the
+  Core ML LM over and makes the heads student's `release/student_heads_coreml6` its download,
+  3 chrF above the depformer student
+  ([student-palettize](student-palettize.md#release-and-phone)).
 
 ## Hibiki-Zero deltas
 
