@@ -134,6 +134,11 @@ student's and the depformer student's on the same sets.
 
 ## Runs
 
+- `student_slices14_stage2`: started 2026-11-27 13:29 UTC on box 62513802, commit d015ab6
+  (PR #205), `restart.sh student-slices-joint-5090` from Stage 1's update 16,000; HF recovery
+  prefix `student_slices14_stage2`. Runs at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
+  validates every 8,000 to 40,000 (~8.2 h). Its first updates continue Stage 1's acoustic losses
+  (cb 1–7 0.94, cb 8–15 1.21) with text KL 0.11 → 0.10 by update 100.
 - `student_slices14_stage1`: started 2026-11-27 11:20 UTC on box 62513802, commit 65f6b51
   (PR #205), `restart.sh student-slices-5090`; HF recovery prefix `student_slices14_stage1`.
   Ran at 0.43 s an update, 15 GiB, the GPU at 100% and ~535 W; validated at 8,000 and 16,000.
