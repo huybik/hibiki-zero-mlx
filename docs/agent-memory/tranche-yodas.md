@@ -170,9 +170,9 @@ stop to report and merge after validation done, dont start 20k h yet").
   ([sft-training](sft-training.md#target-timing)). Then `streams --drop-shards` on
   `cache/yodas` and `cache/en-vi/yodas`. Built 2026-11-26 (2,129× and 2,180× real time, 44 min
   each way, 10.2 GB packed): vi-en kept 85.0% of VoxCPM2's rows (0000–0003) and 72.6% of
-  VieNeu's, en-vi 83.8% and 71.2%. The gap is length: VieNeu's ~12% longer English puts 18.8% of
-  its rows past the trainer's 280 frames against VoxCPM2's 8.7%, and fails the ASR check on 7.2%
-  against 4.8%. For a scale-up on VieNeu, faster speech or shorter rows at ingest would win back
+  VieNeu's, en-vi 83.8% and 71.2%. The gap is mostly length: VieNeu's ~12% longer English puts
+  18.8% of its rows past the trainer's 280 frames against VoxCPM2's 8.7% (~10 of its 12 points);
+  the rest is the ASR check, failed on 7.2% against 4.8%. For a scale-up on VieNeu, faster speech or shorter rows at ingest would win back
   ~10% of the rows it voices, beside the enrolment overlap's ~30% of its time
   ([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
 - Arms: `restart.sh yodas-control`, then `restart.sh yodas-pilot`: `two-way-5090`'s rows and route
@@ -200,7 +200,7 @@ passes the health gates for all three. Raw outputs, logs and scripts:
 recovery repo's `yodas_control/` and `yodas_pilot/`. The pilot trained 3.55 h (01:19 to 04:52
 UTC), as the control did.
 
-- On real Vietnamese, what YODAS is for, the pilot gained nothing: pilot − control +0.05 [−0.30,
+- On real Vietnamese, what YODAS is for, the pilot showed no gain: pilot − control +0.05 [−0.30,
   +0.41] on the mean of FLEURS test, both MultiMed-ST sets and `giga-heldout` (−0.06 with FLEURS
   dev added, which itself fell 0.53). The control's 20,000 updates on the old mix gave those four
   +0.51 [+0.13, +0.88] over `twoway_final`, the pilot's +0.56 [+0.19, +0.90].
@@ -220,7 +220,7 @@ UTC), as the control did.
   `en-vi-val-en-noisy/cv27` (+1.2 s): the extra SFT moved it, not YODAS.
 - The group means above are `pilot_groups.py`'s (`logs/pilot_groups.txt`), bootstrapped as
   `pilot_compare.py` does. Both runs record commit `5ee7f64`, this branch before its rebase onto
-  #200 and #201; its `restart.sh` is the one merged here.
+  #200 and #201; its `restart.sh` is this branch's.
 - Not acted on: the user decides on the scale-up (2026-11-27).
 
 Test sets (chrF / BLEU / median End Offset s / length ratio):
