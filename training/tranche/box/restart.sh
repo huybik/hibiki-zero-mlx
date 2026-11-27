@@ -239,13 +239,13 @@ case $job in
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # The slices student's 6-bit finish (slices-on-policy.md#phone-finish, the heads student's recipe in
-  # student-palettize.md): its on-policy best (hard-linked to weights/both_slices_z_best.safetensors)
-  # distilled from its own bf16 weights with the Core ML export's 6-bit tables in the step, at 5e-7
+  # student-palettize.md): the refit's final model on the on-policy trunk (hard-linked to
+  # weights/both_slices_z_refit.safetensors) distilled from its own bf16 weights with the Core ML export's 6-bit tables in the step, at 5e-7
   # (a usual rate walks the weights from the teacher), 3,072-frame batches, --park-states for the
   # validation on 32 GB.
   student-slices-pal6-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       W=weights/both_slices_z_best.safetensors C=weights/student_slices14/config.json
+       W=weights/both_slices_z_refit.safetensors C=weights/student_slices14/config.json
        cmd=(./training/h100.sh run pal6_slices_z
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train

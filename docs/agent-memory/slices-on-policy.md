@@ -116,3 +116,20 @@ On these sets the on-policy text gain is smaller (+0.17 selecting, +0.39 mean) a
 loss the same (−0.83 dB, every set).
 
 ## Phone finish
+
+The Mac path, first run on a trained slices checkpoint (`both_slices_z` 200 from the Hub,
+2026-11-28, the M4 Pro, `nice -n 19`; models in `/Volumes/data/models/hibiki/weights/student_slices14/`,
+records in `/Volumes/data/hibiki-zero-evals/mac/slices-gate/`):
+
+- `convert_mlx.py` (bf16, the worktree's `PYTHONPATH`, the vi6k tokenizer passed) → `z200_bf16`,
+  2.69 GB. `gate.py --limit 5` on FLEURS dev each way (seed 42): VI→EN chrF 54.32, BLEU 22.56,
+  EOS 1 of 5, speaker_sim 0.32, HNR 2.1 dB; EN→VI 52.85, 27.21, 0 of 5, 0.19, 5.1 dB.
+- `export_lm_coreml.py --bits 6` → `z200_ane6` in 10.4 min (peak 10.4 GB): trunk 704 MB, nine
+  slices 7.7 MB each and the last 13 MB, slice tables 63 MB, trunk tables 444 MB; then
+  `export_mimi_coreml.py --decoder-codebooks 16` into it.
+- The Swift CLI (built in the worktree, `xcodebuild` Release) on the Neural Engine, the same rows
+  and seeds (`swift_gate.py` beside the records: `hibiki translate` a row each, scored by
+  training's `score_sets` and voice scores): VI→EN 49.15 / 16.46, 0 of 5, 0.31, 3.2 dB; EN→VI
+  45.70 / 23.70, 3 of 5, 0.13, 5.4 dB; trunk 11.6, slices 3.2, host 3.0 ms a frame. A plain
+  6-bit export (not trained against its tables) on 5 sampled rows: a check that the path runs,
+  not a comparison.
