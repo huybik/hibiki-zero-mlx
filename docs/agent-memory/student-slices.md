@@ -135,6 +135,11 @@ student's and the depformer student's on the same sets.
 
 ## Runs
 
+- `student_slices14_stage1_decay`: started 2026-11-27 15:24 UTC on box 62513802, commit e9e6e81,
+  `restart.sh student-slices-decay-5090`; HF recovery prefix `student_slices14_stage1_decay`. AdamW
+  continues from Stage 1's step 16,000; the rate 1.9e-4 at update 10, 1.8e-4 at 100 (1 − sqrt).
+  Runs at 0.43 s an update, 15 GiB, the GPU at 100% and ~550 W; its loss continues Stage 1's
+  (0.74–0.86 over updates 10–100, grad norm 0.29–0.54).
 - `student_slices14_stage2`: started 2026-11-27 13:29 UTC on box 62513802, commit d015ab6
   (PR #205), `restart.sh student-slices-joint-5090` from Stage 1's update 16,000; HF recovery
   prefix `student_slices14_stage2`. Ran at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
