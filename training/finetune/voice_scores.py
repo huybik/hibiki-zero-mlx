@@ -1,13 +1,15 @@
 """How much a translation's speech sounds like its speaker, and how clean it is: free-running
 evaluation's voice scores (`common.generate_batch`, `inference/tools/gate.py`).
 
-- `speaker_sim`: cosine between WeSpeaker ResNet34-LM (VoxCeleb) embeddings of the source clip and
-  the translation, each cut to its 25 ms frames within 30 dB of its loudest, so silence does not
-  dilute either.
-- `hnr_db`: the translation's harmonics-to-noise ratio, the mean over its voiced 40 ms frames.
-  A rough, breathy or buzzing voice scores low.
+- `speaker_sim`: cosine between WeSpeaker ResNet34-LM (VoxCeleb) embeddings of the source file as
+  recorded (not through the level stage, which lifts the pauses' noise) and the translation, each
+  cut to its stretches of speech (`_speech`), so silence does not dilute either.
+- `hnr_db`: the translation's harmonics-to-noise ratio over its loud 40 ms frames, voiced or not.
+  A rough or breathy voice, or speech turning to noise, scores low; a steady buzz is periodic
+  and does not.
 
-Both are "" where the translation has under a second of speech. WeSpeaker's own runtimes (its
+Both are "" where the translation has under a second of speech, `speaker_sim` also where the
+source has. WeSpeaker's own runtimes (its
 package, ONNX Runtime) are not in the trainer's environment, so its ResNet34 and Kaldi filterbank
 are written here in PyTorch and load its published checkpoint. WavLM's speaker head, which
 transformers has, scored a voice the user heard as unlike theirs as high as the teacher's.
@@ -17,9 +19,11 @@ from __future__ import annotations
 
 import functools
 import math
+from pathlib import Path
 
 import numpy as np
 import soxr
+import sphn
 import torch
 from huggingface_hub import hf_hub_download
 from torch import nn
@@ -110,11 +114,21 @@ def _encoder(device: str) -> SpeakerEncoder:
     return model.eval().to(device)
 
 
-def _speech(x: np.ndarray, frame: int = 400) -> np.ndarray:
-    """The 25 ms frames within 30 dB of the loudest and above -60 dBFS, joined."""
+def _speech(x: np.ndarray, frame: int = 400, gap: int = 12) -> np.ndarray:
+    """The 25 ms frames within 30 dB of the loudest and above -60 dBFS, and the gaps under
+    `gap` frames (0.3 s) between them, joined: whole stretches of speech, since every join of
+    loose frames moves the embedding (two borderline frames flipped by 16-bit rounding moved a
+    clip's similarity to itself to 0.96)."""
+    if len(x) < frame:
+        return x[:0]
     frames = x[: len(x) // frame * frame].reshape(-1, frame)
     db = 10 * np.log10(np.mean(frames**2, axis=1) + 1e-12)
-    return frames[db > max(db.max() - 30, -60)].reshape(-1)
+    keep = db > max(db.max() - 30, -60)
+    loud = np.flatnonzero(keep)
+    for start, end in zip(loud, loud[1:]):
+        if end - start <= gap:
+            keep[start:end] = True
+    return frames[keep].reshape(-1)
 
 
 def _embedding(x: np.ndarray, device: str) -> torch.Tensor:
@@ -123,13 +137,20 @@ def _embedding(x: np.ndarray, device: str) -> torch.Tensor:
         return F.normalize(_encoder(device)(fbank(wav)[None])[0], dim=0)
 
 
+@functools.lru_cache(maxsize=None)
+def _source_embedding(path: str, device: str) -> torch.Tensor | None:
+    """A source file's embedding, None under a second of speech; cached, since every validation
+    scores the same rows."""
+    data, rate = sphn.read(path)
+    speech = _speech(soxr.resample(np.asarray(data, np.float32).mean(0), rate, RATE))
+    return _embedding(speech, device) if len(speech) >= MIN_SPEECH_S * RATE else None
+
+
 def hnr_db(x: np.ndarray) -> float:
-    """Mean harmonics-to-noise ratio of 16 kHz audio's voiced frames: 40 ms Hann windows every
+    """Harmonics-to-noise ratio of 16 kHz audio (a second or more): 40 ms Hann windows every
     10 ms within 26 dB of the loudest, each with its normalized autocorrelation's peak r between
-    the lags of 400 and 60 Hz, voiced where r > 0.5, as 10 log10(r / (1 - r)); NaN if none is."""
+    the lags of 400 and 60 Hz (clipped to 0 .. 0.999), as 10 log10(m / (1 - m)) of their mean m."""
     n = 640
-    if len(x) < n:
-        return math.nan
     frames = np.lib.stride_tricks.sliding_window_view(x, n)[::160].astype(np.float64)
     rms = np.sqrt(np.mean(frames**2, axis=1))
     frames = frames[rms >= rms.max() * 0.05]
@@ -139,21 +160,20 @@ def hnr_db(x: np.ndarray) -> float:
     wac = np.fft.irfft(np.abs(np.fft.rfft(window, 2 * n)) ** 2)[:n]
     ac = ac / np.maximum(ac[:, :1], 1e-12) / (wac / wac[0])
     lo, hi = RATE // 400, RATE // 60
-    r = np.minimum(ac[:, lo:hi].max(axis=1), 0.999)
-    r = r[r > 0.5]
-    return float(np.mean(10 * np.log10(r / (1 - r)))) if len(r) else math.nan
+    m = float(np.clip(ac[:, lo:hi].max(axis=1), 0, 0.999).mean())
+    return 10 * math.log10(max(m, 1e-6) / (1 - m))
 
 
-def score(source: np.ndarray, output: np.ndarray, sample_rate: int, device: str | torch.device) -> dict:
-    """`speaker_sim` and `hnr_db` of a translation's mono float audio against its source's."""
+def score(source: str | Path, output: np.ndarray, sample_rate: int, device: str | torch.device) -> dict:
+    """`speaker_sim` and `hnr_db` of a translation's mono float audio at `sample_rate` against its
+    source file."""
     out = soxr.resample(np.asarray(output, np.float32), sample_rate, RATE)
-    speech = _speech(out) if len(out) else out
+    speech = _speech(out)
     if len(speech) < MIN_SPEECH_S * RATE:
         return {"speaker_sim": "", "hnr_db": ""}
-    src = _speech(soxr.resample(np.asarray(source, np.float32), sample_rate, RATE))
-    device = str(device)
-    hnr = hnr_db(out)
+    source_embedding = _source_embedding(str(source), str(device))
     return {
-        "speaker_sim": round(float(_embedding(src, device) @ _embedding(speech, device)), 4),
-        "hnr_db": "" if math.isnan(hnr) else round(hnr, 2),
+        "speaker_sim": "" if source_embedding is None
+        else round(float(source_embedding @ _embedding(speech, str(device))), 4),
+        "hnr_db": round(hnr_db(out), 2),
     }

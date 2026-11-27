@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 import mlx.core as mx
-import sphn
+import numpy as np
 import torch
 
 from hibiki_mlx import pipeline
@@ -80,8 +80,7 @@ def main() -> None:
             start = time.perf_counter()
             out = pipeline.translate(model, source)
             seconds = time.perf_counter() - start
-            heard = sphn.read(source, sample_rate=SAMPLE_RATE)[0].mean(0)
-            spoken = out.pcm if out.pcm is not None else heard[:0]
+            spoken = out.pcm if out.pcm is not None else np.zeros(0, np.float32)
             # Training's End Offset counts a word at the frames of the clip its step heard, plus
             # one: its output i heard i - max_delay + 1 (moshi's LMGen hears max_delay - 1 silent
             # frames first) and it takes max_delay - 2 off. The runtime's step t heard t.
@@ -98,7 +97,7 @@ def main() -> None:
                 "end_offset_s": offset,
                 "frames": out.frames,
                 "seconds": round(seconds, 2),
-                **voice_scores.score(heard, spoken, SAMPLE_RATE, device),
+                **voice_scores.score(source, spoken, SAMPLE_RATE, device),
             }
             records.append(record)
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")

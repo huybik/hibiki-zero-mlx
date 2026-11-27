@@ -1066,8 +1066,8 @@ def generate_batch(
         end_frames = [t["end_frame"] for t in text_outputs]
         wavs = decode_wavs(torch.concat(output_audio_tokens, dim=-1), end_frames, mimi)
         voices = [
-            voice_scores.score(source[0].numpy(), wav[0].numpy(), mimi.sample_rate, lm.device)
-            for source, wav in zip(input_wavs, wavs, strict=True)
+            voice_scores.score(path, wav[0].numpy(), mimi.sample_rate, lm.device)
+            for path, wav in zip(files, wavs, strict=True)
         ]
     outputs = [
         {**t, "wav": wav, **voice} for t, wav, voice in zip(text_outputs, wavs, voices, strict=True)
