@@ -63,8 +63,30 @@ def install(lm: LMModel, parallel: int) -> LMModel:
     lm.depformer_emb = lm.depformer_emb[: slices - 1]
     lm.depformer_norms = lm.depformer_norms[:slices]
     lm.parallel_codebooks = parallel
+    lm.forward_depformer_hidden = types.MethodType(_forward_hidden, lm)
     lm.forward_depformer_training = types.MethodType(_forward_training, lm)
     return lm
+
+
+def _apply_depformer_norms(norms: Any, out: tuple[torch.Tensor, ...], B: int, T: int) -> tuple[torch.Tensor, ...]:
+    return tuple(norm(x).view(B, T, -1) for norm, x in zip(norms, out, strict=True))
+
+
+_compiled_apply_depformer_norms = torch.compile(_apply_depformer_norms, dynamic=True)
+
+
+def _forward_hidden(self: LMModel, sequence: torch.Tensor, transformer_out: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    """Normed per-slice outputs `[slices]` of `[B, T, dep_dim]` before `self.linears`, for
+    chunked linear+KL distillation (zero full-vocab logit materialization)."""
+    B, _, T = sequence.shape
+    slices = len(self.depformer_in)
+    proj = lm_training.project_depformer_in(self.depformer_in, transformer_out)  # [slices, B, T, dep_dim]
+    inputs = [proj[0] + self.depformer_text_emb(sequence[:, 0])]
+    for k in range(1, slices):
+        token = sequence[:, k + self.audio_offset - 1]
+        inputs.append(proj[k] + self.depformer_emb[k - 1](token))
+    out = lm_training.run_depformer(self.depformer, torch.stack(inputs, 0).view(slices, B * T, -1))
+    return _compiled_apply_depformer_norms(self.depformer_norms, out, B, T)
 
 
 def _forward_training(self: LMModel, sequence: torch.Tensor, transformer_out: torch.Tensor) -> torch.Tensor:
@@ -72,14 +94,16 @@ def _forward_training(self: LMModel, sequence: torch.Tensor, transformer_out: to
     timeline, teacher-forced (slice k > 0 reads codebook k - 1 of the step)."""
     B, _, T = sequence.shape
     slices = len(self.depformer_in)
-    inputs = [self.depformer_in[0](transformer_out) + self.depformer_text_emb(sequence[:, 0])]
-    for k in range(1, slices):
-        token = sequence[:, k + self.audio_offset - 1]
-        inputs.append(self.depformer_in[k](transformer_out) + self.depformer_emb[k - 1](token))
-    out = lm_training.run_depformer(self.depformer, torch.stack(inputs, 0).view(slices, B * T, -1))
-    normed = [norm(x) for norm, x in zip(self.depformer_norms, out, strict=True)]
-    logits = [self.linears[cb](normed[min(cb, slices - 1)]).view(B, T, -1) for cb in range(self.dep_q)]
-    return torch.stack(logits, 1)
+    normed = _forward_hidden(self, sequence, transformer_out)
+    ar_logits = [self.linears[cb](normed[cb]) for cb in range(slices - 1)]
+    # Fuse parallel codebooks (e.g. 8..15) sharing the last slice into one GEMM.
+    par_count = self.dep_q - (slices - 1)
+    if par_count > 1 and all(self.linears[cb].bias is None for cb in range(slices - 1, self.dep_q)):
+        w_par = torch.cat([self.linears[cb].weight for cb in range(slices - 1, self.dep_q)], dim=0)
+        par_logits = torch.nn.functional.linear(normed[-1], w_par).view(B, T, par_count, -1).unbind(2)
+        return torch.stack([*ar_logits, *par_logits], 1)
+    par_logits = [self.linears[cb](normed[-1]) for cb in range(slices - 1, self.dep_q)]
+    return torch.stack([*ar_logits, *par_logits], 1)
 
 
 _depformer_step = LMGen.depformer_step  # heads.py's, which runs moshi's for any non-heads model

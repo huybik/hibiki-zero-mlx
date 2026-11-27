@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-joint-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -175,27 +175,49 @@ case $job in
             --seed 47 --save-every 4000 --val-every 20000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The heads student's trunk (after its on-policy stage) with depformer slices for its heads
-  # (training/student/slices.py, docs/agent-memory/student-slices.md), distilled as the heads were, but
-  # the slices alone (--freeze-trunk): with the trunk training, its text drifted at the peak rate.
+  # Stage 1 of the depformer-slices phone student (training/student/slices.py,
+  # docs/agent-memory/student-slices.md): warm up the 9 random 512x2 slices on the frozen
+  # both_heads_z_best1200 trunk with chunked KL + cached frozen trunk FP8 + pre-quantized FP8
+  # teacher (~0.43 s/update, 16.1 GiB peak on RTX 5090) and rebalanced AR acoustic loss (cb 1..7).
   student-slices-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        name=student_slices14 S=weights/$name
        [[ -f $S/config.json ]] || .venv/bin/python -m training.student.slices \
          --weight weights/both_heads_z_best1200.safetensors --config-path weights/student_heads14_cb16/config.json \
          --dim 512 --num-heads 8 --layers 2 --parallel 8 --seed 47 --out-dir $S
-       cmd=(./training/h100.sh run ${name}_frozen
+       cmd=(./training/h100.sh run ${name}_stage1
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
             --config-path $S/config.json --model-weight $S/model.safetensors
             --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --bf16-adamw --freeze-trunk --batch-frames 12288 --park-states
-            --lr 5e-5 --eval-batch-size 64 --keep-checkpoints 1
-            --epochs 1 --seed 47 --save-every 4000 --val-every 8000
+            --bf16-adamw --freeze-trunk --fp8 --fp8-teacher all --batch-frames 12288 --park-states
+            --lr 2e-4 --first-codebook-weight 10 --acoustic-ar-weight 3
+            --schedule constant --warmup-fraction 0.05 --max-steps 16000
+            --eval-batch-size 64 --keep-checkpoints 1 --seed 47 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
+  # Stage 2 of the depformer-slices phone student: joint refinement from Stage 1's checkpoint
+  # (hard-linked to weights/student_slices14_stage1.safetensors) with differential LR (--trunk-lr
+  # 1e-5 so the trunk adapts to the [0,2,...,2] delays without text drift, slices at 5e-5),
+  # WSD constant phase (~0.70 s/update, ~26 GiB peak on RTX 5090). Branch --schedule decay once
+  # selecting chrF and voice scores plateau.
+  student-slices-joint-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
+       name=student_slices14 S=weights/$name
+       cmd=(./training/h100.sh run ${name}_stage2
+            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --config-path $S/config.json --model-weight weights/student_slices14_stage1.safetensors
+            --teacher-weight weights/grpo_twoway_best1400.safetensors
+            --bf16-adamw --fp8 --fp8-teacher all --batch-frames 12288 --micro-frames 6144 --park-states
+            --trunk-lr 1e-5 --lr 5e-5 --first-codebook-weight 20 --acoustic-ar-weight 2
+            --schedule constant --warmup-fraction 0.05 --max-steps 40000
+            --eval-batch-size 64 --keep-checkpoints 1 --seed 48 --save-every 4000 --val-every 8000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-joint-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

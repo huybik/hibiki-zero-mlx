@@ -63,39 +63,66 @@ trunk comes back bit for bit and the student loads strictly.
 
 ## Training
 
-`restart.sh student-slices-5090` cuts `weights/student_slices14` from `both_heads_z_best1200` (the
-heads student after its on-policy stage) and trains its slices alone on the 5090
-(`student_slices14_frozen`): `train.py --freeze-trunk` trains only `slices.AUDIO_PARTS` (134.7M
-parameters), the trunk, its embeddings and text head keep the cut's weights and no backward runs
-through them. Otherwise the heads student's recipe: distilled from GRPO update 1,400 on the
-two-way run's rows both ways, whole 12,288-frame batches (`--bf16-adamw`), peak 5e-5 with 5%
-warmup and cosine, seed 47; one epoch (94,034 updates), validation every 8,000 with the voice
-scores ([voice-scores](voice-scores.md)). The first run trained the trunk too, its audio inputs
-moving to the new delays, and its text drifted ([Runs](#runs)). A frozen trunk reads the new
-delays as it is: its text KL at the start is 0.114 against 0.088 at the heads student's delays.
-Not yet run: the trunk of a frozen run's save checked bit for bit against the cut's (the check's
-40 updates ran; it was stopped in its validation, 2026-11-27).
+`restart.sh student-slices-5090` (Stage 1) and `restart.sh student-slices-joint-5090` (Stage 2)
+train `weights/student_slices14` (cut from `both_heads_z_best1200`) in two stages on the RTX 5090:
 
-Speed on the 5090 (box 62513802, 2026-11-27, the same rows; files in
-`/Volumes/data/hibiki-zero-evals/box-62513802/slices-bench-2026-11-27/`):
+- **Stage 1 (`student_slices14_stage1`, `--freeze-trunk`)**: warms up the 9 random `512 × 2` slices
+  (`slices.AUDIO_PARTS`, 134.7M params) while keeping the trunk, embeddings, and text head frozen
+  bit-for-bit. Uses `--fp8 --fp8-teacher all --lr 2e-4 --first-codebook-weight 10
+  --acoustic-ar-weight 3 --schedule constant --max-steps 16000` (giving AR codebooks `cb 1..7` 54%
+  of audio loss instead of 6.1%, and skipping student trunk backward, `text_linear`, and `text_kl`).
+  A frozen trunk reads the new `[0, 0, 2, ..., 2]` delays immediately (`text KL = 0.114` vs `0.088`).
+- **Stage 2 (`student_slices14_stage2`, joint differential LR)**: refines from Stage 1's checkpoint
+  (`weights/student_slices14_stage1.safetensors`) with `--trunk-lr 1e-5 --lr 5e-5
+  --first-codebook-weight 20 --acoustic-ar-weight 2 --fp8 --fp8-teacher all --micro-frames 6144
+  --schedule constant --max-steps 40000`, keeping the trunk below its `~2.5e-5` drift threshold
+  while adapting to the new delays. Branch `--schedule decay` once selecting chrF and voice scores
+  plateau.
+- **Diagnostics**: `train_log.jsonl` and `val_log.jsonl` always log `acoustic_ar_loss` (`cb 1..7`)
+  and `acoustic_par_loss` (`cb 8..15`) separately, plus `trunk_grad_norm`, `audio_grad_norm`,
+  `clipped_frac`, and `trunk_lr` (without extra per-step GPU syncs).
 
-| Recipe | s an update | Peak (nvidia-smi) |
-|---|---:|---:|
-| Heads student, pieces of 6,144 (its run's) | 0.947 | 27.1 GiB |
-| Slices, pieces of 6,144 | out of memory in the first backward (30.4 GiB in use) | |
-| Slices, pieces of 6,144, `--grad-checkpoint --grad-checkpoint-layers 1` | 1.00 | 30.8 GiB |
-| Slices, pieces of 4,096 (the first run's) | 0.99 | 26.1 GiB |
-| **Slices alone (`--freeze-trunk`), whole batches** | **0.697** | **21.4 GiB** |
-| Slices alone, pieces of 6,144 | 0.70 | 16.2 GiB |
-| Slices alone, pieces of 4,096 | 0.705 | 13.9 GiB |
+**Training optimizations (2026-11-27, branch `slices-opt`, box 62513802 RTX 5090, `pho` + `en-vi/pho`
+12,288-frame batches; baseline `db0de25` vs optimized, warm updates 20–50):**
 
-Checkpointing the slices saves next to no memory, so their activations are not what fills the
-card. The kernel profile of 3 updates (torch.profiler; `prof_train.py` there) has the GPU busy
-98% of the wall time in both students, matmuls 75% of it; the slices take 3.6% more GPU time
-(2.92 s against 2.82 s), their small matmuls and the smaller pieces. The epoch is ~26 h with
-the trunk training and ~18 h with it frozen (the GPU at 100% in its updates; not kernel-profiled).
-A validation (all 7 sets, free-running, voice scores, `--park-states`) took 291 s at 26.1 GiB:
-12 in the epoch, ~1 h.
+- **Exact Track A** (`common.py`, `lm_training.py`, `slices.py`, `train.py`): chunked fused
+  linear+KL (`compute_distill_losses_chunked`, eliminating full-vocab logit materialization and
+  `_undelay_sequence` NaN copies, saving ~5.5 GiB), batched contiguous schedule runs in `_per_step`
+  (8× fewer teacher slice-8 GEMMs/HBM reads), fused `depformer_in` and `linears[8..15]` GEMMs,
+  cached RoPE tables, compiled embeddings/norms, cuDNN SDPA for forward-only teacher depformer
+  attention (1.57× faster on Blackwell), and freeing `trunk_grads`/`audio_grads` before `optimizer.step`
+  (preventing a 2.69 GiB step-2 grad-list leak).
+- **Blackwell `sm_120` FP8 Track B** (`fp8_linear.py`): fused Triton rowwise E4M3 quantization
+  (1-pass for `K <= 8192`, 2-pass for wider rows, fused tiled `BLOCK_M=256, BLOCK_K=16`
+  transpose+quantize 3.8× faster on 170 SMs) registered as `torch.library.custom_op` (zero graph
+  breaks under whole-loop `torch.compile`), pre-quantized frozen teacher (`--fp8-teacher trunk|all`,
+  halving teacher weight VRAM and avoiding runtime weight quantization), and plain-attribute FP8
+  weight caching for frozen student trunk linears under `--freeze-trunk --fp8` (keeps `state_dict()`
+  and bf16 eval intact).
+- **Teacher FP8 target shift** (5 real variable-shape batches, `KL(bf16 || fp8)` / argmax flip):
+  `--fp8-teacher trunk`: `text 0.00197 (0.89%)`, `cb 0 0.00280 (2.53%)`, `cb 1..7 0.00957 (7.57%)`,
+  `cb 8..15 0.00745 (7.58%)`; `--fp8-teacher all`: `text 0.00197 (0.89%)`, `cb 0 0.00482 (3.37%)`,
+  `cb 1..7 0.02270 (11.65%)`, `cb 8..15 0.03674 (16.56%)` — under ~0.3–1.1% of student acoustic KL.
+
+| Recipe (12,288 frames/update, `--bf16-adamw`) | Micro-frames | s/update | frames/s | Peak (`nvidia-smi`) | Step-50 loss |
+|---|---:|---:|---:|---:|---|
+| Baseline joint (`db0de25`) | 4,096 (3×) | 0.985 | 12,475 | 25.9 GiB | `step40=2.6602` |
+| Opt joint exact bf16 (Track A) | 6,144 (2×) | 0.946 | 12,989 | 27.8 GiB | `2.2784` (`step40=2.6599`) |
+| Opt joint `--fp8 --fp8-teacher trunk` | 6,144 (2×) | 0.764 | 16,084 | ~27.0 GiB | `2.2793` (`text=0.1499`) |
+| **Opt joint `--fp8 --fp8-teacher all`** | **6,144 (2×)** | **0.698** | **17,604** | **25.5 GiB** (`24.2` alloc) | **`2.2785`** (`+0.0001`) |
+| Opt joint `--fp8 --fp8-teacher all --grad-checkpoint-layers 2` | whole (1×) | 0.690 | 17,809 | 31.2 GiB | `2.2826` |
+| Baseline frozen (`db0de25 --freeze-trunk`) | whole (1×) | 0.699 | 17,579 | 25.2 GiB | `audio=3.7827` |
+| Opt frozen exact bf16 (Track A + R1) | whole (1×) | 0.620 | 19,819 | 16.7 GiB | `audio=3.7823` |
+| Opt frozen `--fp8-teacher trunk` | whole (1×) | 0.534 | 23,011 | 15.1 GiB | `audio=3.7771` |
+| Opt frozen `--fp8-teacher all` | whole (1×) | 0.472 | 26,034 | 15.1 GiB | `audio=3.7763` |
+| **Opt frozen `--fp8 --fp8-teacher all`** | **whole (1×)** | **0.428** | **28,710** | **15.8 GiB** (`13.7` alloc) | **`audio=3.7741`** |
+
+`torch.profiler` (updates 26–28, `prof_train.py`): Stage 1 is 96.4% GPU busy (`52.1%` FP8 `_scaled_mm`,
+`7.5%` bf16 `mm`, `5.2%` Triton 1-pass quant, `13.72 GiB` peak allocated); Stage 2 is 99.0% GPU busy
+(`48.9%` FP8 `_scaled_mm`, `11.5%` bf16 `mm`, `4.9%` transpose-quant, `3.2%` 1-pass quant, `2.3%`
+AdamW, `24.19 GiB` peak allocated). A validation (all 7 sets, free-running, voice scores,
+`--park-states`) took 291 s at 26.1 GiB. Two-stage total (16k Stage 1 @ 0.428 s + 40k Stage 2 @
+0.698 s + 7 validations) is ~10.3 h (~$5.25 on RTX 5090 vs ~26.7 h / $13.65 baseline).
 The voice decides at 8,000 and 16,000: `mean_speaker_sim` and `mean_hnr_db` against the heads
 student's and the depformer student's on the same sets.
 
@@ -136,4 +163,6 @@ export on a trained checkpoint.
 
 ## Not yet
 
-- Palettization against the export's tables (`train.py --palettize-bits` takes heads students only).
+- End-to-end Core ML export and iPhone 13 Pro Max gate on a trained slices checkpoint (palettization
+  in `training/student/palettize.py` and `train.py --palettize-bits` now support `depformer_parallel`
+  slices models).

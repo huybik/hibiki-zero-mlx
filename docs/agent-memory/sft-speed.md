@@ -174,6 +174,24 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
     | 3B `--bf16-adamw --fp8 --grad-checkpoint --grad-checkpoint-layers 8` (`4,608` whole) | 7,242 | 0.636 | 28.1 GiB | $0.0196 |
     | Student 14L 16cb + 3B teacher, exact fp32 + `--grad-checkpoint --micro-frames 3072` (`12,288`) | 10,065 | 1.221 | 27.4 GiB | $0.0141 |
     | Student 14L 16cb + 3B teacher, `--bf16-adamw --micro-frames 6144` (`12,288`, no ckpt) | 12,417 | 0.902 | 26.0 GiB | $0.0114 |
+    | Slices student (`student_slices14`, joint) + 3B teacher, `--bf16-adamw --fp8 --fp8-teacher all --micro-frames 6144` (`12,288`, chunked KL + Triton FP8) | 17,604 | 0.698 | 25.5 GiB | $0.0081 |
+    | Slices student (`student_slices14`, `--freeze-trunk`) + 3B teacher, `--bf16-adamw --fp8 --fp8-teacher all` (`12,288` whole) | 28,710 | 0.428 | 15.8 GiB | $0.0049 |
+
+  - **Slices distillation kernels (2026-11-27, RTX 5090, box 62513802)**:
+    - `common.compute_distill_losses_chunked` computes linear projections + exact forward KL in
+      chunks (`2048` audio / `1024` text) without materializing full-vocab logits (~5.5 GiB saved),
+      and skips `text_linear` / `text_kl` when `--freeze-trunk` is set.
+    - `lm_training._per_step` batches contiguous duplicate schedule indices (8× fewer teacher
+      slice-8 GEMMs/HBM reads), `project_depformer_in` fuses `depformer_in` into one GEMM,
+      `slices.py` fuses `linears[8..15]`, `_rope_tables` caches RoPE once per forward, and
+      `_depformer_sdpa` uses cuDNN for forward-only teacher attention (1.57× faster on Blackwell)
+      and memory-efficient for backward-enabled student attention.
+    - `fp8_linear.py` uses single-pass/two-pass Triton rowwise E4M3 quantization + fused tiled
+      `BLOCK_M=256, BLOCK_K=16` transpose-quantize (3.8× faster on 170 SMs) wrapped in
+      `torch.library.custom_op` for zero-graph-break whole-loop `torch.compile`, plus
+      `FrozenFP8Linear` (`--fp8-teacher trunk|all`) and plain-attribute frozen student trunk FP8
+      caches (`--freeze-trunk --fp8`). Full table & kernel profiles in
+      [student-slices](student-slices.md#training).
 
   - Launch entries in `training/tranche/box/restart.sh`: `two-way-5090` and `student-heads-5090`.
     Both passed full preempt → resume (exact 4-digit loss match) → teacher-forced + free-running
