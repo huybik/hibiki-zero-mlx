@@ -270,7 +270,6 @@ the two-way caches and run before GRPO):
 | grpo | `grpo_launch.sh RUN <weight> [ARGS]` (from the checkout, [grpo](grpo.md#running)), on the two-way model or a phone student | its updates; stop with TERM to the launcher alone |
 | student | `restart.sh student` (`student_dep10`, cut from GRPO update 1,400 if missing; [phone-student](phone-student.md#next)) | its 190,126 updates (~12 h), then the test sets both ways; stop with TERM to the launcher alone |
 | student-distill | `restart.sh student-distill` (`student_dep10_anneal`, from `student_dep10_distill`'s model 32,000, the teacher GRPO update 1,400; [phone-student](phone-student.md#distillation)) | its `--max-steps`, then the test sets both ways; stop with TERM to the launcher alone |
-| yodas-control, yodas-pilot | `restart.sh yodas-control`, then `yodas-pilot` ([tranche-yodas](tranche-yodas.md#pilot)) | their 20,000 updates, then the test sets |
 | student-heads | `restart.sh student-heads` (`student_heads14_cb16`, 16 codebooks, distilled from GRPO update 1,400 from the start; [student-heads](student-heads.md#runs)): running on the RTX PRO 6000 ([State](#state)), ~37 h there (0.694 s an update, 50.9 GiB peak) | the same steps, then the test sets both ways |
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own

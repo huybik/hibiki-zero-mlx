@@ -178,14 +178,15 @@ stop to report and merge after validation done, dont start 20k h yet").
 - Arms: `restart.sh yodas-control`, then `restart.sh yodas-pilot`: `two-way-5090`'s rows and route
   (`--bf16-adamw`, 14 checkpointed layers, 4,608 frames), `--max-steps 20000` with the cosine
   over them, seed 47, validated at the end; the pilot adds `cache/yodas` and `cache/en-vi/yodas`:
-  359,254 rows past the loader (3,399 unpaired and 29,307 over 280 frames left out), 3.5% of its
-  10,243,579, and 1,273.6 source hours, 6.5% of its 19,586.8 (the control's 18,313.2). 20,000
-  updates are ~7% of an epoch (285,576 batches; the control's 268,096), so an arm reads ~1,370 h,
-  the pilot's ~90 h of them YODAS. The control trained 3.55 h at 0.63 s/update, then validated
-  for 8 min (2026-11-26 21:35 to 11-27 01:17 UTC).
+  359,254 rows past the loader (3,399 unpaired, 29,307 over 280 frames and 177 on a reassigned
+  slot left out), 3.5% of its 10,243,579, and 1,273.6 source hours, 6.5% of its 19,586.8 (the
+  control's 18,313.2). 20,000 updates are ~7% of an epoch (285,576 batches; the control's
+  268,096), so an arm reads ~1,370 h, the pilot's ~90 h of them YODAS. The control trained 3.55 h
+  at 0.64 s/update, then validated for 8 min (2026-11-26 21:35 to 11-27 01:17 UTC).
 - Judged on the test sets as [the level-stage test](exposure-bias-runs.md#the-level-stage-test)
   scored them (`eval.py` seed 43, batch 64, one call a model, paired bootstrap seed 43), the two
   arms and `twoway_final` together.
+
 The card of `anquachdev/en-vi-speech-20k` lists `yodas/` with its config and YODAS v3's terms
 (CC BY 3.0 audio, attributed; 2026-11-25). Ingest and translation are done (264,665 rows, 1,012 h;
 [tranche-translate](tranche-translate.md#running)); all 23 shards are voiced ([Voice](#voice)).
@@ -199,16 +200,27 @@ passes the health gates for all three. Raw outputs, logs and scripts:
 recovery repo's `yodas_control/` and `yodas_pilot/`. The pilot trained 3.55 h (01:19 to 04:52
 UTC), as the control did.
 
-- The pilot beats the control on VI→EN: +0.64 chrF [+0.19, +1.10] on the mean of the 8 VI→EN test
-  sets, most on `en-vi-val` cv27 (+2.12, the only set whose interval clears 0) and its noisy copy
-  (+1.76); FLEURS test, MultiMed-ST and `giga-heldout` moved inside their noise (−0.25 to +0.29).
-- EN→VI fell on all three test sets (−0.21 to −0.67), each inside its noise, so on the mean of
-  the 11 the pilot's +0.33 [−0.07, +0.78] is no clear win.
-- More updates on the old mix moved nothing: control − `twoway_final` +0.07 [−0.42, +0.56] on the
-  11, so the pilot's gain over `twoway_final` (VI→EN +0.80 [+0.33, +1.33]) is YODAS's.
+- On real Vietnamese, what YODAS is for, the pilot gained nothing: pilot − control +0.05 [−0.30,
+  +0.41] on the mean of FLEURS test, both MultiMed-ST sets and `giga-heldout` (−0.06 with FLEURS
+  dev added, which itself fell 0.53). The control's 20,000 updates on the old mix gave those four
+  +0.51 [+0.13, +0.88] over `twoway_final`, the pilot's +0.56 [+0.19, +0.90].
+- The VI→EN mean's +0.64 [+0.19, +1.10] is all on the four VieNeu-voiced `en-vi-val*` sets,
+  +1.23 [+0.36, +2.17]; its largest, `en-vi-val/cv27` (+2.12), is the control's dip (−2.05 from
+  `twoway_final`; the pilot +0.08).
+- EN→VI: pilot − control −0.51 [−1.50, +0.46] on its three test sets; against `twoway_final` the
+  pilot is worse on FLEURS-en test (−1.48 [−2.59, −0.35]) and dev (−1.78) and
+  `en-vi-val-en-noisy/libriheavy` (−1.62), each interval below 0.
+- The mean of the 11, +0.33 [−0.07, +0.78], is no clear win, and the validation's selecting
+  chrF prefers the control (37.76 against 36.85).
+- One seed an arm: the intervals cover row sampling only, the arms read different streams of the
+  old mix, and the control's own updates moved single sets by ±2 chrF (−2.05, +1.81). At ~90 h
+  read, YODAS shows no effect on real Vietnamese.
 - Both arms finish later than `twoway_final`, End Offset up 0.4–1.6 s on every set but
   `giga-heldout` (0.1–0.2 s), the pilot within 0.5 s of the control on all but
   `en-vi-val-en-noisy/cv27` (+1.2 s): the extra SFT moved it, not YODAS.
+- The group means above are `pilot_groups.py`'s (`logs/pilot_groups.txt`), bootstrapped as
+  `pilot_compare.py` does. Both runs record commit `5ee7f64`, this branch before its rebase onto
+  #200 and #201; its `restart.sh` is the one merged here.
 - Not acted on: the user decides on the scale-up (2026-11-27).
 
 Test sets (chrF / BLEU / median End Offset s / length ratio):
@@ -256,7 +268,7 @@ Paired bootstrap of corpus chrF (seed 43, 1,000 resamples, 95% interval):
 | **mean of the 8 VI→EN test sets** | **+0.64 [+0.19, +1.10]** | +0.16 [−0.39, +0.71] | +0.80 [+0.33, +1.33] |
 
 The arms' final validations (update 20,000, seed 47; chrF / BLEU / length ratio / End Offset s;
-health passes on every set); selecting chrF (the FLEURS dev pair) control 37.76, pilot 36.86:
+health passes on every set); selecting chrF (the FLEURS dev pair) control 37.76, pilot 36.85:
 
 | Set | control | pilot |
 |---|---|---|
