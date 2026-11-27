@@ -135,6 +135,23 @@ mean +0.35, speaker_sim +0.012, HNR +0.05 dB), the trunk's teacher-forced text l
 (0.8555 on `en-vi-grounded-v2/validation` at both). Training audio loss 0.73 → 0.70
 (semantic 0.16 → 0.15). So on-policy updates train the trunk and a refit follows them.
 
+The refit on the run's best (`slices_z400_refit`, from `both_slices_z` 400 by `finish_slices.sh`,
+2026-11-27 23:12–23:38 UTC, commit d5a9ec4, seed 51, 0.43 s/update; HF prefix `slices_z400_refit`;
+raw outputs in `/Volumes/data/hibiki-zero-evals/box-62513802/slices_z400_refit/`), same seven sets
+and columns:
+
+| Model | Selecting | Mean chrF | speaker_sim | HNR | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| z400 refit 1,000 | 39.02 | 41.13 | 0.303 | 4.86 | 42.05 / 10.61 / 1.34 / 1.7 / 0.36 / 4.4 | 35.98 / 16.45 / 1.01 / 2.1 / 0.17 / 5.5 | 38.31 / 10.74 / 1.43 / 3.5 / 0.28 / 5.9 | 45.59 / 18.73 / 1.15 / 2.3 / 0.31 / 4.0 | 46.29 / 20.35 / 1.08 / 2.7 / 0.42 / 4.1 | 34.98 / 16.67 / 1.13 / 1.1 / 0.28 / 4.9 | 44.68 / 23.34 / 1.06 / 2.1 / 0.30 / 5.2 |
+| z400 refit 2,000 | 38.72 | 40.89 | 0.307 | 4.93 | 41.08 / 9.87 / 1.36 / 1.9 / 0.36 / 4.4 | 36.35 / 17.11 / 1.01 / 2.0 / 0.17 / 5.6 | 38.40 / 10.92 / 1.43 / 3.5 / 0.28 / 6.0 | 45.94 / 18.09 / 1.15 / 2.4 / 0.33 / 4.1 | 45.32 / 19.42 / 1.07 / 2.6 / 0.42 / 4.2 | 34.82 / 16.17 / 1.14 / 1.4 / 0.28 / 5.0 | 44.34 / 23.11 / 1.06 / 2.1 / 0.31 / 5.2 |
+
+Against the on-policy start (decay 8,000) the final model gains +0.40 selecting, +0.35 mean,
++0.014 speaker_sim at the same clarity (−0.01 dB), and ties the z200 refit's 2,000 (+0.16
+selecting, the same mean): the extra 200 on-policy updates bought nothing the seven sets can
+see. 1,000 beat 2,000 on text by 0.3 (the z200 refit had it the other way round), inside one
+seed's noise; the finish goes on from 2,000 as planned. Teacher-forced audio loss on the two
+validation caches 4.4069 / 3.6156 at 1,000, 4.4026 / 3.6121 at 2,000.
+
 ## Phone finish
 
 On the box, after the on-policy run's final sync, from the branch's checkout (not the run's

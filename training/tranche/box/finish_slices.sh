@@ -16,12 +16,14 @@ set -euo pipefail
 cd /workspace/hibiki-zero
 L=/workspace/logs B=training/tranche/box C=weights/student_slices14/config.json O=runs/slices_tests
 log() { echo "$(date -u '+%F %T') $*"; }
-run_job() {  # a restart.sh job, waited for
+run_job() {  # restart.sh job $1, waited for, unless its final model $2 exists; stops the chain without it
+  [[ -f $2 ]] && return
   log "start $1"
   $B/restart.sh "$1"
   sleep 5
   while kill -0 -- -"$(cat $L/$1.pid)" 2>/dev/null; do sleep 30; done
   log "end $1"
+  [[ -f $2 ]] || { log "$1 ended without $2: see $L/$1.log"; exit 1; }
 }
 snap() { [[ -f $2 ]] || { log "snap $1"; .venv/bin/python -m training.student.palettize --weight "$1" --bits 6 --out "$2"; }; }
 publish() {
@@ -33,10 +35,10 @@ HfApi().upload_file(path_or_fileobj=sys.argv[1], path_in_repo="phone/" + os.path
 
 u=$(.venv/bin/python -c 'import json; print(json.load(open("runs/both_slices_z/best.json"))["step"])')
 R=runs/slices_z${u}_refit
-[[ -f $R/model_step002000.safetensors ]] || run_job student-slices-refit-5090
+run_job student-slices-refit-5090 $R/model_step002000.safetensors
 ln -f $R/model_step002000.safetensors weights/both_slices_z_refit.safetensors
 P=runs/pal6_slices_z
-[[ -f $P/model_step004000.safetensors ]] || run_job student-slices-pal6-5090
+run_job student-slices-pal6-5090 $P/model_step004000.safetensors
 snap weights/both_slices_z_refit.safetensors weights/both_slices_z_refit_snap6.safetensors
 snap $P/model_step004000.safetensors weights/pal6_slices_z4000_snap6.safetensors
 publish weights/both_slices_z_refit_snap6.safetensors
