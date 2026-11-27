@@ -4,7 +4,7 @@ Read when touching `training/tranche/yodas.py` (YODAS3's Vietnamese ingest, `ing
 yodas`) or running the YODAS pilot. The corpus's layout and captions are in
 [vi-corpora](vi-corpora.md#yodas3); the stages after ingest in [real-vi-tranche](real-vi-tranche.md#pipeline).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Rows](#rows) · [Gate](#gate) · [Speed](#speed) ·
-[Running](#running) · [Voice](#voice) · [Pilot](#pilot)
+[Running](#running) · [Voice](#voice) · [Pilot](#pilot) · [Pilot results](#pilot-results)
 
 More GigaSpeech 2 moved FLEURS by nothing in round 4, so the lever past ~41–42 FLEURS dev chrF is
 more diverse real Vietnamese speech through the same SFT → GRPO → student pipeline (2026-11-25).
@@ -161,20 +161,111 @@ rows (RTF is wall time over English voiced):
 ~1,000 h kept (tars 0000–0022), translated, voiced and cached on the RTX 5090 box, then measured
 by two 20k-update SFT arms from `twoway_final`, with and without the YODAS caches, on the 5090 too
 (user, 2026-11-26: "sft can run on 5090 too for your validation"). The voicing continues past the
-pilot only if the arm with YODAS improves on the one without (user, 2026-11-26).
+pilot only if the arm with YODAS improves on the one without (user, 2026-11-26), and only once
+the user has the pilot's results and says so, whatever they show (user, 2026-11-27: "either way
+stop to report and merge after validation done, dont start 20k h yet").
 
 - Caches: `restart.sh cache` builds both directions (`en-vi` second, deleting the parts it has
   read); every YODAS row needs its pair in the other direction, which times its source
   ([sft-training](sft-training.md#target-timing)). Then `streams --drop-shards` on
-  `cache/yodas` and `cache/en-vi/yodas`.
+  `cache/yodas` and `cache/en-vi/yodas`. Built 2026-11-26 (2,129× and 2,180× real time, 44 min
+  each way, 10.2 GB packed): vi-en kept 85.0% of VoxCPM2's rows (0000–0003) and 72.6% of
+  VieNeu's, en-vi 83.8% and 71.2%. The gap is length: VieNeu's ~12% longer English puts 18.8% of
+  its rows past the trainer's 280 frames against VoxCPM2's 8.7%, and fails the ASR check on 7.2%
+  against 4.8%. For a scale-up on VieNeu, faster speech or shorter rows at ingest would win back
+  ~10% of the rows it voices, beside the enrolment overlap's ~30% of its time
+  ([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
 - Arms: `restart.sh yodas-control`, then `restart.sh yodas-pilot`: `two-way-5090`'s rows and route
   (`--bf16-adamw`, 14 checkpointed layers, 4,608 frames), `--max-steps 20000` with the cosine
-  over them, seed 47, validated at the end; the pilot adds `cache/yodas` and `cache/en-vi/yodas`,
-  about a tenth of its rows (the control's packs are 148 GB). Each ~3.9 h at 6,554 frames/s
-  ([sft-speed](sft-speed.md)), so an arm reads ~2,000 h, the pilot's ~200 h of them YODAS.
+  over them, seed 47, validated at the end; the pilot adds `cache/yodas` and `cache/en-vi/yodas`:
+  359,254 rows past the loader (3,399 unpaired and 29,307 over 280 frames left out), 3.5% of its
+  10,243,579, and 1,273.6 source hours, 6.5% of its 19,586.8 (the control's 18,313.2). 20,000
+  updates are ~7% of an epoch (285,576 batches; the control's 268,096), so an arm reads ~1,370 h,
+  the pilot's ~90 h of them YODAS. The control trained 3.55 h at 0.63 s/update, then validated
+  for 8 min (2026-11-26 21:35 to 11-27 01:17 UTC).
 - Judged on the test sets as [the level-stage test](exposure-bias-runs.md#the-level-stage-test)
   scored them (`eval.py` seed 43, batch 64, one call a model, paired bootstrap seed 43), the two
   arms and `twoway_final` together.
 The card of `anquachdev/en-vi-speech-20k` lists `yodas/` with its config and YODAS v3's terms
 (CC BY 3.0 audio, attributed; 2026-11-25). Ingest and translation are done (264,665 rows, 1,012 h;
-[tranche-translate](tranche-translate.md#running)); voice stopped at four shards ([Voice](#voice)).
+[tranche-translate](tranche-translate.md#running)); all 23 shards are voiced ([Voice](#voice)).
+
+## Pilot results
+
+Tested 2026-11-27 on box 62513802: each arm's `model_step020000` (also its best) and
+`twoway_final`, `eval.py --text-only` seed 43, batch 64, through the input level stage; every set
+passes the health gates for all three. Raw outputs, logs and scripts:
+`/Volumes/data/hibiki-zero-evals/box-62513802/yodas-pilot-2026-11-27/`; the models are in the
+recovery repo's `yodas_control/` and `yodas_pilot/`. The pilot trained 3.55 h (01:19 to 04:52
+UTC), as the control did.
+
+- The pilot beats the control on VI→EN: +0.64 chrF [+0.19, +1.10] on the mean of the 8 VI→EN test
+  sets, most on `en-vi-val` cv27 (+2.12, the only set whose interval clears 0) and its noisy copy
+  (+1.76); FLEURS test, MultiMed-ST and `giga-heldout` moved inside their noise (−0.25 to +0.29).
+- EN→VI fell on all three test sets (−0.21 to −0.67), each inside its noise, so on the mean of
+  the 11 the pilot's +0.33 [−0.07, +0.78] is no clear win.
+- More updates on the old mix moved nothing: control − `twoway_final` +0.07 [−0.42, +0.56] on the
+  11, so the pilot's gain over `twoway_final` (VI→EN +0.80 [+0.33, +1.33]) is YODAS's.
+- Both arms finish later than `twoway_final`, End Offset up 0.4–1.6 s on every set but
+  `giga-heldout` (0.1–0.2 s), the pilot within 0.5 s of the control on all but
+  `en-vi-val-en-noisy/cv27` (+1.2 s): the extra SFT moved it, not YODAS.
+- Not acted on: the user decides on the scale-up (2026-11-27).
+
+Test sets (chrF / BLEU / median End Offset s / length ratio):
+
+| Set | `twoway_final` | control | pilot |
+|---|---|---|---|
+| fleurs-vi/test | 39.90 / 12.10 / 2.70 / 1.15 | 40.39 / 12.29 / 3.28 / 1.13 | 40.68 / 12.16 / 3.36 / 1.17 |
+| multimed-vi/select | 37.83 / 11.95 / 3.87 / 1.23 | 38.08 / 12.27 / 4.40 / 1.21 | 37.99 / 11.95 / 4.70 / 1.23 |
+| multimed-vi/final | 37.73 / 11.84 / 4.14 / 1.20 | 38.25 / 12.40 / 4.70 / 1.18 | 38.51 / 12.32 / 4.94 / 1.21 |
+| giga-heldout/test | 63.63 / 38.48 / 2.46 / 1.13 | 64.39 / 39.30 / 2.54 / 1.11 | 64.14 / 38.71 / 2.64 / 1.12 |
+| en-vi-val/cv27 | 46.16 / 18.44 / 3.22 / 1.11 | 44.12 / 18.87 / 4.03 / 1.10 | 46.24 / 19.56 / 3.91 / 1.13 |
+| en-vi-val/libriheavy | 43.87 / 19.57 / 3.97 / 1.03 | 44.42 / 19.61 / 5.06 / 1.02 | 45.28 / 20.70 / 5.19 / 1.01 |
+| en-vi-val-noisy/cv27 | 40.74 / 13.76 / 3.43 / 1.15 | 41.09 / 13.96 / 3.83 / 1.13 | 42.85 / 14.98 / 4.08 / 1.18 |
+| en-vi-val-noisy/libriheavy | 41.98 / 17.26 / 4.02 / 1.02 | 42.41 / 18.30 / 5.16 / 1.01 | 42.59 / 18.33 / 4.86 / 0.99 |
+| fleurs-en/test | 32.71 / 13.93 / 3.78 / 1.00 | 31.90 / 13.28 / 4.83 / 0.95 | 31.23 / 13.20 / 4.89 / 0.92 |
+| en-vi-val-en/cv27 | 34.06 / 16.65 / 1.20 / 1.08 | 35.00 / 16.25 / 2.26 / 1.07 | 34.34 / 17.45 / 2.10 / 1.03 |
+| en-vi-val-en/libriheavy | 39.32 / 18.50 / 3.79 / 1.04 | 38.64 / 18.30 / 5.42 / 1.02 | 38.43 / 18.38 / 5.31 / 1.01 |
+| fleurs-vi/dev | 41.06 / 11.60 / 2.78 / 1.21 | 42.05 / 12.49 / 3.33 / 1.15 | 41.53 / 12.11 / 3.77 / 1.19 |
+| fleurs-en/dev | 32.62 / 14.13 / 3.66 / 0.98 | 31.99 / 13.76 / 4.83 / 0.93 | 30.84 / 13.05 / 4.99 / 0.94 |
+| en-vi-val-en-noisy/cv27 | 21.99 / 8.86 / 2.54 / 0.97 | 23.80 / 10.14 / 2.96 / 0.90 | 22.37 / 9.05 / 4.16 / 0.98 |
+| en-vi-val-en-noisy/libriheavy | 33.20 / 15.03 / 4.54 / 0.96 | 31.90 / 13.79 / 5.01 / 0.94 | 31.58 / 13.30 / 5.51 / 0.92 |
+| **mean of the 11 test sets** (first 11 rows) | 41.63 | 41.70 | 42.02 |
+| **mean of the 8 VI→EN test sets** | 43.98 | 44.14 | 44.78 |
+
+Paired bootstrap of corpus chrF (seed 43, 1,000 resamples, 95% interval):
+
+| Set | pilot − control | control − `twoway_final` | pilot − `twoway_final` |
+|---|---|---|---|
+| fleurs-vi/test | +0.29 [−0.43, +1.05] | +0.50 [−0.31, +1.28] | +0.79 [+0.07, +1.56] |
+| multimed-vi/select | −0.09 [−0.57, +0.41] | +0.25 [−0.26, +0.73] | +0.16 [−0.34, +0.66] |
+| multimed-vi/final | +0.26 [−0.21, +0.69] | +0.52 [+0.01, +1.00] | +0.78 [+0.25, +1.30] |
+| giga-heldout/test | −0.25 [−1.24, +0.79] | +0.76 [−0.24, +1.84] | +0.51 [−0.53, +1.55] |
+| en-vi-val/cv27 | +2.12 [+0.06, +4.23] | −2.05 [−4.26, +0.32] | +0.08 [−2.30, +2.38] |
+| en-vi-val/libriheavy | +0.86 [−0.57, +2.28] | +0.56 [−1.06, +2.28] | +1.41 [−0.04, +2.75] |
+| en-vi-val-noisy/cv27 | +1.76 [−0.26, +3.68] | +0.34 [−2.04, +2.69] | +2.10 [−0.02, +4.27] |
+| en-vi-val-noisy/libriheavy | +0.17 [−1.48, +1.80] | +0.43 [−1.15, +1.96] | +0.61 [−1.01, +2.17] |
+| fleurs-en/test | −0.67 [−1.84, +0.40] | −0.81 [−1.90, +0.26] | −1.48 [−2.59, −0.35] |
+| en-vi-val-en/cv27 | −0.65 [−2.85, +1.54] | +0.93 [−1.34, +3.11] | +0.28 [−1.99, +2.39] |
+| en-vi-val-en/libriheavy | −0.21 [−1.88, +1.50] | −0.68 [−2.10, +0.66] | −0.89 [−2.37, +0.68] |
+| fleurs-vi/dev | −0.53 [−1.48, +0.50] | +0.99 [−0.05, +2.07] | +0.47 [−0.70, +1.66] |
+| fleurs-en/dev | −1.15 [−2.54, +0.36] | −0.64 [−2.07, +0.81] | −1.78 [−3.22, −0.41] |
+| en-vi-val-en-noisy/cv27 | −1.44 [−3.24, +0.25] | +1.81 [+0.24, +3.38] | +0.37 [−1.28, +2.03] |
+| en-vi-val-en-noisy/libriheavy | −0.32 [−2.00, +1.39] | −1.30 [−2.99, +0.31] | −1.62 [−3.21, −0.14] |
+| **mean of the 11 test sets** | **+0.33 [−0.07, +0.78]** | +0.07 [−0.42, +0.56] | +0.40 [−0.01, +0.86] |
+| **mean of the 8 VI→EN test sets** | **+0.64 [+0.19, +1.10]** | +0.16 [−0.39, +0.71] | +0.80 [+0.33, +1.33] |
+
+The arms' final validations (update 20,000, seed 47; chrF / BLEU / length ratio / End Offset s;
+health passes on every set); selecting chrF (the FLEURS dev pair) control 37.76, pilot 36.86:
+
+| Set | control | pilot |
+|---|---|---|
+| vi-en validation loss (semantic, content, acc) | 2.6229 (1.7213, 1.6642, 0.669) | 2.6214 (1.7204, 1.6620, 0.669) |
+| en-vi validation loss (semantic, content, acc) | 2.3239 (1.4923, 1.5795, 0.683) | 2.3256 (1.4930, 1.5839, 0.682) |
+| fleurs-vi/dev | 42.34 / 13.19 / 1.15 / 3.2 | 41.83 / 12.08 / 1.20 / 3.7 |
+| fleurs-en/dev | 33.18 / 14.17 / 0.97 / 4.7 | 31.88 / 13.61 / 0.93 / 5.0 |
+| multimed-vi/select | 38.07 / 12.12 / 1.19 / 4.4 | 38.47 / 12.11 / 1.23 / 4.9 |
+| en-vi-val/cv27 | 44.95 / 16.54 / 1.09 / 4.2 | 45.95 / 18.25 / 1.14 / 4.4 |
+| en-vi-val/libriheavy | 44.44 / 20.06 / 1.02 / 6.1 | 44.78 / 20.56 / 1.01 / 6.0 |
+| en-vi-val-en/cv27 | 36.28 / 19.32 / 1.07 / 2.6 | 35.30 / 18.11 / 1.04 / 3.1 |
+| en-vi-val-en/libriheavy | 38.87 / 18.83 / 1.02 / 5.0 | 39.10 / 19.25 / 1.00 / 4.6 |

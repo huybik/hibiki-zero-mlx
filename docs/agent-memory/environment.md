@@ -37,6 +37,13 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   `h100.sh cpus`, which writes `MAX_JOBS`, `OMP_NUM_THREADS` and `TORCHINDUCTOR_COMPILE_THREADS`
   at the quota into `/etc/environment`, loaded by every ssh session (not a tmux server started
   before it, nor what starts outside a login); rerun it after a container restart. Code that starts several processes splits the quota itself (`training.paths.cpu_budget`).
+- An env that worked and now fails one CUDA op ("no kernel image is available" on a bool `&`) may
+  hold a flipped bit: check its files against their wheels' `RECORD` hashes, and read a bad file
+  both through the page cache and with `dd iflag=direct`. On box 62513802 (2026-11-26) one bit of
+  the cache env's `libtorch_cuda.so` read 0x30 for 0x31 in RAM only (the disk held 0x31), between
+  a 45-min build that ran on it and the next process: copying the `.venv`'s copy of the same wheel
+  over it (a new file, so new pages) fixed the build, and a user-space
+  pattern test of 96 GiB (`memtest.py` in the box's archive) found no further fault.
 
 ## Secrets
 
