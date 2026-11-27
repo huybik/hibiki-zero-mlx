@@ -261,7 +261,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   `--seed` + the row's index, and scores each pairs file as its own set with training's
   `common.score_sets` (corpus chrF and BLEU, length ratio, empty and ended rows, the health gates,
   the voice scores of each row's decoded speech on the Mac's GPU:
-  [sft-evaluation](sft-evaluation.md#voice-scores); decoding steps `max_delay` − 1 frames past
+  [voice-scores](voice-scores.md); decoding steps `max_delay` − 1 frames past
   the EOS, so its `frames` and `seconds` don't compare with gates before 2026-11-27). It writes
   `hypotheses.jsonl` (a row each, as it finishes) and `scores.json`. Its scores compare
   with the box's in sampling and input, not in batching: training samples rows 64 at a time. The

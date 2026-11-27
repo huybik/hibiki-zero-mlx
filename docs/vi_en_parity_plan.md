@@ -209,7 +209,7 @@ GRPO on a distilled student, come later if needed. The shipped run stopped impro
      plain-SFT updates, the heads student from its cut), so it compares finished students. Compare chrF in each direction (the real-Vietnamese sets,
      `fleurs-en` and `en-vi-val-en`), the generated speech (each target language's ASR
      transcript scored against the reference, and speaker similarity to the source, which
-     evaluation scores since 2026-11-27: [sft-evaluation](agent-memory/sft-evaluation.md#voice-scores))
+     evaluation scores since 2026-11-27: [voice-scores](agent-memory/voice-scores.md))
      and ms a frame on the phone. Adopt the heads only if they win at real
      time. Heads make more codebooks cheaper than the depformer does (no sequential step each),
      so a 16-codebook Vietnamese side fits them better, but delays 0–15 would lag 1.2 s;

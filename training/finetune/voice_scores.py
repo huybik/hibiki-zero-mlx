@@ -3,7 +3,8 @@ evaluation's voice scores (`common.generate_batch`, `inference/tools/gate.py`).
 
 - `speaker_sim`: cosine between WeSpeaker ResNet34-LM (VoxCeleb) embeddings of the source file as
   recorded (not through the level stage, which lifts the pauses' noise) and the translation, each
-  cut to its stretches of speech (`_speech`), so silence does not dilute either.
+  cut to its stretches of speech (`_speech`), so pauses more than 30 dB under the speech do not
+  dilute either (a noisy recording's pauses stay: every model meets the same source embedding).
 - `hnr_db`: the translation's harmonics-to-noise ratio over its loud 40 ms frames, voiced or not.
   A rough or breathy voice, or speech turning to noise, scores low; a steady buzz is periodic
   and does not.

@@ -120,12 +120,13 @@ def encode_inputs(
 def decode_wavs(
     batch_codes: torch.Tensor, end_frames: list[int], mimi: MimiModel
 ) -> list[torch.Tensor]:
-    """Decode each row's audio codes and cut it at its end frame."""
-    with torch.no_grad():
-        output_wavs = torch.cat(
-            [mimi.decode(chunk).cpu() for chunk in batch_codes.split(MIMI_CHUNK_ROWS)]
-        )
+    """Each row's audio codes up to its end frame, decoded alone: Mimi's decoder is causal, so the
+    audio is the same as a batch's cut after, and the memory is one row's (8 rows of a 52 s
+    batch together took 15 GiB on MPS, one at a time 4, and less time)."""
     frame_size = mimi.sample_rate / mimi.frame_rate
-    return [
-        wav[:, : int(end * frame_size)] for wav, end in zip(output_wavs, end_frames, strict=True)
-    ]
+    with torch.no_grad():
+        return [
+            mimi.decode(codes[None, :, :end])[0, :, : int(end * frame_size)].cpu()
+            if end else torch.zeros(1, 0)
+            for codes, end in zip(batch_codes, end_frames, strict=True)
+        ]
