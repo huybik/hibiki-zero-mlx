@@ -28,6 +28,10 @@ to their k-means tables, the optimizer updates the full-precision ones, and vali
 palettized model; saved checkpoints hold the full-precision weights, which `palettize` snaps for
 the export.
 
+With --freeze-trunk only the audio part trains (the depformer, its slices or heads, their inputs
+and the codebooks' output linears: `slices.AUDIO_PARTS`); the main transformer, its embeddings and
+the text head keep the start model's weights, and no backward runs through them.
+
 With --sampled-text P (parallel scheduled sampling of the words, against exposure bias), each
 step first runs the main transformer teacher-forced without gradients and samples every text
 token as generation samples it (temperature 0.8, top-k 250); each word piece of the text then
@@ -65,7 +69,7 @@ from moshi.utils.sampling import sample_token
 from torch.utils.data import DataLoader
 
 from training.finetune import bf16_adamw, common, lm_training, streams
-from training.student import heads, palettize
+from training.student import heads, palettize, slices
 from training.finetune.checkpoints import (
     BEST_METRIC,
     CheckpointWriter,
@@ -104,6 +108,7 @@ RESUME_KEYS = (
     "teacher_weight",
     "optimizer_state",
     "palettize_bits",
+    "freeze_trunk",
     "palettize_refit",
     "bf16_adamw",
     "fp8",
@@ -177,6 +182,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--palettize-refit", type=int, default=100,
         help="Refit the palettization tables every this many steps; must divide --save-every.",
+    )
+    parser.add_argument(
+        "--freeze-trunk", action="store_true",
+        help="Train only the audio part (slices.AUDIO_PARTS): the main transformer, its embeddings "
+        "and the text head keep the start model's weights.",
     )
     parser.add_argument(
         "--park-states", action="store_true",
@@ -532,7 +542,10 @@ def main() -> None:
     longest = math.ceil(frames[1] / streams.FRAME_BUCKET) * streams.FRAME_BUCKET
     if context is not None and longest > context:
         raise ValueError(f"--stream-seconds allows {longest} frames, over the context of {context}")
-    params = list(lm.parameters())
+    if args.freeze_trunk:
+        for name, param in lm.named_parameters():
+            param.requires_grad_(name.startswith(slices.AUDIO_PARTS))
+    params = [param for param in lm.parameters() if param.requires_grad]
     print(f"Trainable params: {sum(param.numel() for param in params):,}")
     teacher = None
     if teacher_info is not None:
