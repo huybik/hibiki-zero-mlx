@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -218,7 +218,25 @@ case $job in
             --eval-batch-size 64 --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
+  # The slices student's 6-bit finish (slices-on-policy.md#phone-finish, the heads student's recipe in
+  # student-palettize.md): its on-policy best (hard-linked to weights/both_slices_z_best.safetensors)
+  # distilled from its own bf16 weights with the Core ML export's 6-bit tables in the step, at 5e-7
+  # (a usual rate walks the weights from the teacher), 3,072-frame batches, --park-states for the
+  # validation on 32 GB.
+  student-slices-pal6-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
+       W=weights/both_slices_z_best.safetensors C=weights/student_slices14/config.json
+       cmd=(./training/h100.sh run pal6_slices_z
+            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --config-path $C --model-weight $W --teacher-weight $W --teacher-config $C
+            --palettize-bits 6 --palettize-refit 100 --park-states
+            --batch-frames 3072 --lr 5e-7 --max-steps 4000
+            --eval-batch-size 64 --keep-checkpoints 1 --seed 50 --save-every 1000 --val-every 1000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &
