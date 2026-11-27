@@ -35,7 +35,7 @@ from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
 
 from inference.hibiki_mlx.level import Leveller
-from training.finetune import bf16_adamw, lm_training
+from training.finetune import bf16_adamw, lm_training, voice_scores
 from training.student import heads
 from training.finetune.hibiki_helpers import (
     audio_read,
@@ -801,6 +801,10 @@ def score_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     if "laal_s" in records[0]:  # eval.py --laal
         laals = [float(record["laal_s"]) for record in records if record["laal_s"] != ""]
         metrics["mean_laal_s"] = float(np.mean(laals)) if laals else float("nan")
+    if "speaker_sim" in records[0]:  # the speech was scored: rows with under a second of it are left out
+        for key in voice_scores.COLUMNS:
+            values = [float(record[key]) for record in records if record[key] != ""]
+            metrics[f"mean_{key}"] = float(np.mean(values)) if values else float("nan")
     metrics["bleu"] = sacrebleu.corpus_bleu(hypotheses, [references]).score
     metrics["chrf"] = sacrebleu.corpus_chrf(hypotheses, [references]).score
     if nonempty_pairs:
@@ -904,7 +908,7 @@ def save_batch_outputs(
         paths = output_paths(out_dir, global_index, source_path, cfg.tag)
         mono_wav = ""
         stereo_wav = ""
-        if out_wav is not None:
+        if out_wav is not None and cfg.write_audio:
             stereo_audio = stack_and_pad_audio([in_wav, out_wav]).squeeze()
             sphn.write_wav(paths["mono_wav"], out_wav.numpy(), sample_rate)
             sphn.write_wav(paths["stereo_wav"], stereo_audio.numpy(), sample_rate)
@@ -926,6 +930,7 @@ def save_batch_outputs(
         }
         if cfg.laal:
             record["laal_s"] = output["laal_s"]
+        record.update({key: output[key] for key in voice_scores.COLUMNS if key in output})
         records.append(record)
     return records
 
@@ -941,7 +946,8 @@ class GenerationConfig:
     # row ended, and 8 s cut a third of them.
     tail_s: float = 20.0
     stop_on_eos: bool = True
-    text_only: bool = False  # skip decoding and writing the generated audio
+    text_only: bool = False  # skip decoding, scoring and writing the generated audio
+    write_audio: bool = True  # write each row's generated wavs (the trainers only score them)
     tag: str | None = None  # appended to every output file's name
     laal: bool = False  # also record each row's text LAAL (eval.py --laal; the trainers never do)
     # The paper samples every token at temperature 0.8, top-k 250 (Sec. 4.5), as the checkpoint's
@@ -953,8 +959,9 @@ class GenerationConfig:
     top_k_text: int = 250
 
 
-# How the trainers validate: eval.py's defaults, text only (checkpoints are selected on the text).
-TRAINER_GENERATION = GenerationConfig(text_only=True)
+# How the trainers validate: eval.py's defaults, the speech scored but not written (checkpoints are
+# selected on the text; the voice scores are reported).
+TRAINER_GENERATION = GenerationConfig(write_audio=False)
 
 
 def read_source(path: Path, sample_rate: int) -> torch.Tensor:
@@ -1054,10 +1061,17 @@ def generate_batch(
             t["laal_s"] = round(laal(times, duration, words), 2) if times else ""
     if cfg.text_only:
         wavs = [None] * len(text_outputs)
+        voices = [{}] * len(text_outputs)
     else:
         end_frames = [t["end_frame"] for t in text_outputs]
         wavs = decode_wavs(torch.concat(output_audio_tokens, dim=-1), end_frames, mimi)
-    outputs = [{**t, "wav": wav} for t, wav in zip(text_outputs, wavs, strict=True)]
+        voices = [
+            voice_scores.score(path, wav[0].numpy(), mimi.sample_rate, lm.device)
+            for path, wav in zip(files, wavs, strict=True)
+        ]
+    outputs = [
+        {**t, "wav": wav, **voice} for t, wav, voice in zip(text_outputs, wavs, voices, strict=True)
+    ]
     return save_batch_outputs(
         rows, files, input_wavs, outputs, mimi.sample_rate, out_dir, cfg, batch_start
     )
@@ -1137,23 +1151,29 @@ def score_summary(metrics: dict[str, Any]) -> str:
     """One line of a set's metrics, as eval.py and train.py print them."""
     count = metrics["num_predictions"]
     laal_part = f"laal={metrics['mean_laal_s']:.1f}s " if "mean_laal_s" in metrics else ""
+    voice_part = (
+        f"speaker_sim={metrics['mean_speaker_sim']:.2f} hnr={metrics['mean_hnr_db']:.1f}dB "
+        if "mean_speaker_sim" in metrics
+        else ""
+    )
     return (
         f"chrf={metrics['chrf']:.2f} bleu={metrics['bleu']:.2f} "
         f"length_ratio={metrics['mean_length_ratio']:.2f} eos={metrics['eos_found']}/{count} "
         f"empty={metrics['empty_predictions']} repeat4={metrics['repeated_4gram_predictions']} "
-        f"end_offset={metrics['median_end_offset_s']:.1f}s {laal_part}"
+        f"end_offset={metrics['median_end_offset_s']:.1f}s {laal_part}{voice_part}"
         f"health={'pass' if metrics['health_eligible'] else 'fail'}"
     )
 
 
 def write_predictions(path: Path, records: list[dict[str, str]]) -> None:
     latency = ["end_offset_s", "laal_s"] if records and "laal_s" in records[0] else ["end_offset_s"]
+    voice = list(voice_scores.COLUMNS) if records and "speaker_sim" in records[0] else []
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
                 "id", EVAL_SET, "source_audio", "reference_text", "prediction_text", "eos_found",
-                "generated_text_tokens", *latency, "mono_wav", "stereo_wav", "text_file",
+                "generated_text_tokens", *latency, *voice, "mono_wav", "stereo_wav", "text_file",
             ],
         )
         writer.writeheader()

@@ -77,7 +77,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--text-only",
         action="store_true",
-        help="Write text sidecars and predictions.csv only; skip generated wav decode/write.",
+        help="Write text sidecars and predictions.csv only; skip decoding, scoring and writing the "
+        "generated speech.",
+    )
+    parser.add_argument(
+        "--write-audio",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.write_audio,
+        help="Write each row's generated wavs (the voice scores need only the decode).",
     )
     parser.add_argument(
         "--laal",

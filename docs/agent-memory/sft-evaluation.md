@@ -7,7 +7,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Checkpoint selection](#checkpoint-sel
 [Side tools](#side-tools) · [Recording results](#recording-results) ·
 [Evaluation sets](#evaluation-sets) · [Input level](#input-level)
 
-The trainer itself is in [sft-training](sft-training.md); checkpoint files, resume and their sync
+Every decoded translation's voice is scored as [voice-scores](voice-scores.md) says. The trainer itself is in [sft-training](sft-training.md); checkpoint files, resume and their sync
 in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 
 ## Checkpoint selection

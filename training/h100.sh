@@ -270,6 +270,11 @@ for relative, expected in expected_hashes.items():
     if digest != expected:
         raise RuntimeError(f"hash mismatch for {relative}")
 
+# Validation scores every translation's voice; fetch its speaker model now, not mid-run.
+from training.finetune import voice_scores
+
+voice_scores.checkpoint()
+
 print(f"{memory_gib:.1f} {host_gib:.1f} {free_gib:.1f}")
 PY
 )"

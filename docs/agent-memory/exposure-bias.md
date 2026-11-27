@@ -160,7 +160,8 @@ From 2026-11-23 experiments 1 and 2 open the teacher's next round, before its fu
    `--sampled-text 0` against `0.1`. Judged at the end on FLEURS dev both ways and `en-vi-val`
    (chrF, length ratio, end offset, rows ended). GRPO fixes the same gap, so a win counts only if
    it survives GRPO: 400 updates from each arm's final model at the shipped run's settings,
-   compared on validation's selecting mean. Validation scores text only, and the audio is trained
+   compared on validation's selecting mean. Validation selects on the text and reports only the
+   voice scores ([voice-scores](voice-scores.md)), and the audio is trained
    after the mixed text too, so before adopting the winner its generated speech is compared with the control's
    (`eval.py` without `--text-only` writes it): an ASR transcript of each arm's English on FLEURS
    dev scored against the reference, as stage 7.1 measured Mimi, and a listen; that script is
