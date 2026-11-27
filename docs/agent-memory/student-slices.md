@@ -154,6 +154,17 @@ student's and the depformer student's on the same sets.
   cb 1–7 / cb 8–15 1.929 / 3.938 / 4.866 → 1.914 / 3.886 / 4.819 → 1.906 / 3.867 / 4.803 on
   `en-vi-grounded-v2/validation`. The decay's gain came by 4,000. Ended 2026-11-27 16:34 UTC
   (~70 min); `best.json` names 8,000, the final model: the on-policy stage's start.
+- **The teacher on the same sets** (`grpo_twoway_best1400`, bf16, `eval.py` seed 47 batch 64 as
+  Stage 1 validates, 2026-11-27 16:34–16:42 UTC on box 62513802; outputs with the speech in
+  `/Volumes/data/hibiki-zero-evals/box-62513802/teacher_eval/`), cells as above:
+
+  | Model | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+  |---|---|---|---|---|---|---|---|---|
+  | Teacher | 41.00 | 44.33 / 12.90 / 1.24 / 1.0 / 0.47 / 6.0 | 37.66 / 17.86 / 1.02 / 1.6 / 0.29 / 7.2 | 40.49 / 13.14 / 1.26 / 2.3 / 0.41 / 7.1 | 48.44 / 20.60 / 1.13 / 2.0 / 0.38 / 5.8 | 48.32 / 22.01 / 1.06 / 2.0 / 0.46 / 5.8 | 38.14 / 18.32 / 1.16 / 0.7 / 0.33 / 6.8 | 45.51 / 24.00 / 1.08 / 2.0 / 0.38 / 6.8 |
+
+  Means of the seven: chrF 43.27, speaker_sim 0.389, HNR 6.50 dB; the decay's 8,000 is 2.73
+  chrF, 0.096 and 1.56 dB below. The teacher ends with text EOS on most rows (FLEURS-vi 312 /
+  361, the student 79).
 - `student_slices14_stage2`: started 2026-11-27 13:29 UTC on box 62513802, commit d015ab6
   (PR #205), `restart.sh student-slices-joint-5090` from Stage 1's update 16,000; HF recovery
   prefix `student_slices14_stage2`. Ran at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
