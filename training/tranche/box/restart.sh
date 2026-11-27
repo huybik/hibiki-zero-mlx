@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-joint-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -197,27 +197,28 @@ case $job in
             --eval-batch-size 64 --keep-checkpoints 1 --seed 47 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # Stage 2 of the depformer-slices phone student: joint refinement from Stage 1's checkpoint
-  # (hard-linked to weights/student_slices14_stage1.safetensors) with differential LR (--trunk-lr
-  # 1e-5 so the trunk adapts to the [0,2,...,2] delays without text drift, slices at 5e-5),
-  # WSD constant phase (~0.70 s/update, ~26 GiB peak on RTX 5090). Branch --schedule decay once
-  # selecting chrF and voice scores plateau.
-  student-slices-joint-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+  # Stage 1's decay: a --schedule decay branch from Stage 1's update-16,000 pair (hard-linked under
+  # its own names into weights/student_slices14_stage1_step016000/), the trunk still frozen, the
+  # rate 2e-4 to 0 as 1 - sqrt over 8,000 updates (~0.43 s/update). Unfreezing the trunk on this
+  # data (the joint stage, --trunk-lr 1e-5) lost chrF on every set by 8,000:
+  # docs/agent-memory/student-slices.md.
+  student-slices-decay-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       name=student_slices14 S=weights/$name
-       cmd=(./training/h100.sh run ${name}_stage2
+       name=student_slices14 S=weights/$name P=weights/student_slices14_stage1_step016000
+       cmd=(./training/h100.sh run ${name}_stage1_decay
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --config-path $S/config.json --model-weight weights/student_slices14_stage1.safetensors
+            --config-path $S/config.json --model-weight $P/model_step016000.safetensors
+            --optimizer-state $P/trainer_step016000.pt
             --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --bf16-adamw --fp8 --fp8-teacher all --batch-frames 12288 --micro-frames 6144 --park-states
-            --trunk-lr 1e-5 --lr 5e-5 --first-codebook-weight 20 --acoustic-ar-weight 2
-            --schedule constant --warmup-fraction 0.05 --max-steps 40000
-            --eval-batch-size 64 --keep-checkpoints 1 --seed 48 --save-every 4000 --val-every 8000
+            --bf16-adamw --freeze-trunk --fp8 --fp8-teacher all --batch-frames 12288 --park-states
+            --lr 2e-4 --first-codebook-weight 10 --acoustic-ar-weight 3
+            --schedule decay --warmup-fraction 0 --max-steps 8000
+            --eval-batch-size 64 --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-joint-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

@@ -63,8 +63,9 @@ trunk comes back bit for bit and the student loads strictly.
 
 ## Training
 
-`restart.sh student-slices-5090` (Stage 1) and `restart.sh student-slices-joint-5090` (Stage 2)
-train `weights/student_slices14` (cut from `both_heads_z_best1200`) in two stages on the RTX 5090:
+`restart.sh student-slices-5090` (Stage 1) and `restart.sh student-slices-decay-5090` (its decay)
+train `weights/student_slices14` (cut from `both_heads_z_best1200`) on the RTX 5090 with the trunk
+frozen: a trunk trained on this data lost text (the joint stage below).
 
 - **Stage 1 (`student_slices14_stage1`, `--freeze-trunk`)**: warms up the 9 random `512 × 2` slices
   (`slices.AUDIO_PARTS`, 134.7M params) while keeping the trunk, embeddings, and text head frozen
@@ -72,21 +73,21 @@ train `weights/student_slices14` (cut from `both_heads_z_best1200`) in two stage
   --acoustic-ar-weight 3 --schedule constant --max-steps 16000` (giving AR codebooks `cb 1..7` 54%
   of audio loss instead of 6.1%, and skipping student trunk backward, `text_linear`, and `text_kl`).
   A frozen trunk reads the new `[0, 0, 2, ..., 2]` delays immediately (`text KL = 0.114` vs `0.088`).
-- **Stage 2 (`student_slices14_stage2`, joint differential LR)**: refines from Stage 1's checkpoint
-  (`weights/student_slices14_stage1.safetensors`) with `--trunk-lr 1e-5 --lr 5e-5
-  --first-codebook-weight 20 --acoustic-ar-weight 2 --fp8 --fp8-teacher all --micro-frames 6144
-  --schedule constant --max-steps 40000`, meant to let the trunk adapt to the new delays without
-  text drift. It drifts: by 8,000 the voice rose and every set's chrF fell
-  ([Runs](#runs)).
+- **Stage 1's decay (`student_slices14_stage1_decay`)**: a `--schedule decay` branch from Stage
+  1's update-16,000 pair (both files hard-linked into `weights/student_slices14_stage1_step016000/`),
+  the same recipe with the rate 2e-4 to 0 as 1 − sqrt over 8,000 updates, seed 49, validating at
+  4,000 and 8,000.
+- **The joint stage (`student_slices14_stage2`, stopped)**: from Stage 1's 16,000 with
+  `--trunk-lr 1e-5 --lr 5e-5 --first-codebook-weight 20 --acoustic-ar-weight 2 --micro-frames 6144
+  --schedule constant`, meant to let the trunk adapt to the new delays without text drift. It
+  drifted: by 8,000 the voice rose and every set's chrF fell ([Runs](#runs)). Its job was
+  `restart.sh student-slices-joint-5090` in 6afc776.
 - **Diagnostics**: `train_log.jsonl` and `val_log.jsonl` always log `acoustic_ar_loss` (`cb 1..7`)
   and `acoustic_par_loss` (`cb 8..15`) separately, plus `trunk_grad_norm`, `audio_grad_norm`,
   `clipped_frac`, and `trunk_lr` (without extra per-step GPU syncs). Stage 1's training log has
   text losses of 0 and `loss` = `audio`: its frozen trunk's text is not computed (its
   validation's `loss` still includes text). `validate.py --acoustic-ar-weight` reproduces a
   stage's teacher-forced `loss`.
-- **Stage 2's start**: link Stage 1's final model (update 16,000) to
-  `weights/student_slices14_stage1.safetensors` before `restart.sh student-slices-joint-5090`;
-  a missing file stops h100.sh at its `sizes` step.
 
 **Training optimizations (2026-11-27, branch `slices-opt`, box 62513802 RTX 5090, `pho` + `en-vi/pho`
 12,288-frame batches; baseline `db0de25` vs optimized, warm updates 20–50):**
@@ -136,8 +137,9 @@ student's and the depformer student's on the same sets.
 
 - `student_slices14_stage2`: started 2026-11-27 13:29 UTC on box 62513802, commit d015ab6
   (PR #205), `restart.sh student-slices-joint-5090` from Stage 1's update 16,000; HF recovery
-  prefix `student_slices14_stage2`. Runs at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
-  validates every 8,000 to 40,000 (~8.2 h). Its first updates continue Stage 1's acoustic losses
+  prefix `student_slices14_stage2`. Ran at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
+  was to validate every 8,000 to 40,000; stopped by hand at 9,230 (2026-11-27 15:23 UTC; user:
+  "stop stage 2 now and start the decay"), its 8,000 pair on the box. Its first updates continue Stage 1's acoustic losses
   (cb 1–7 0.94, cb 8–15 1.21); training text KL 0.095 (updates 1–200) → 0.072 (1,001–1,500), flat
   after. Validations (cells as Stage 1's table; outputs in
   `/Volumes/data/hibiki-zero-evals/box-62513802/student_slices14_stage2/`):
