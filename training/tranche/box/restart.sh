@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|student|student-heads|student-distill: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -38,8 +38,12 @@ case $job in
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
   # The cache builds run in the free-threaded env (envs-min.sh), Mimi's rope eager there (no Triton). Plain HTTP for the
   # Hub: 143 MB/s, where Xet throttles to ~4 MB/s.
+  # Both directions: each pass builds the shards its cache folder on the Hub lacks; the en-vi pass, second, deletes
+  # each shard's parts from the HF cache once read.
   cache) export HF_HUB_DISABLE_XET=1 NO_TORCH_COMPILE=1
-         cmd=(/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga) ;;
+         cmd=(bash -c 'set -e; P=/workspace/envs/cache/bin/python
+              $P -m training.tranche.cache build pho vivoice giga yodas
+              $P -m training.tranche.cache build pho vivoice giga yodas --direction en-vi --drop-inputs') ;;
   # The two-way run's English-to-Vietnamese inputs (two-way.md#two-way-run): the English evaluation sets, round 4e's 500
   # en_speech shards (envi_en_speech.sh, which pushes them at its end), then every tranche shard by the tranche builder
   # (pushed to its cache repo's en-vi/ as it goes; each shard's parts deleted once read). ~8 h on the H100 (2,490x real
@@ -150,7 +154,28 @@ case $job in
             --epochs 2 --seed 47 --save-every 4000 --val-every 16000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-distill" >&2; exit 1 ;;
+  # The YODAS pilot (tranche-yodas.md#pilot): 20,000 updates from the two-way SFT's final model on two-way-5090's
+  # rows and route, the cosine over them; yodas-pilot adds YODAS's caches both ways, yodas-control does not. One
+  # seed, validated at the end; the test sets then compare the two.
+  yodas-pilot|yodas-control) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
+       dirs=($T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train)
+       if [[ $job == yodas-pilot ]]; then dirs+=($T/yodas $T/en-vi/yodas); fi
+       for d in "${dirs[@]}"; do
+         [[ -d $d ]] || { echo "$d is missing" >&2; exit 1; }
+         if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
+       done
+       cmd=(./training/h100.sh run ${job/-/_}
+            --cache-dir "${dirs[@]}"
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --model-weight weights/twoway_final.safetensors
+            --bf16-adamw --grad-checkpoint --grad-checkpoint-layers 14 --park-states --batch-frames 4608
+            --max-steps 20000 --eval-batch-size 64 --keep-checkpoints 1
+            --seed 47 --save-every 4000 --val-every 20000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

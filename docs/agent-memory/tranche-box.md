@@ -264,7 +264,7 @@ the two-way caches and run before GRPO):
 | asr | `restart.sh asr` (the Qwen3-ASR server on :8100, beside filters and voice) | not needed after voice |
 | filters | `restart.sh filters` (asr_vi for every ingested shard) | it logs "0 shards to hear" |
 | voice | `restart.sh voice` (en_audio for every YODAS shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
-| cache | `restart.sh cache` ([tranche-cache](tranche-cache.md)) | every voiced shard has its cache on the Hub |
+| cache | `restart.sh cache` (both directions, [tranche-cache](tranche-cache.md)) | every voiced shard has its caches on the Hub |
 | envi-cache | `restart.sh envi-cache`: every `en-vi` cache and the English evaluation sets ([two-way](two-way.md#two-way-run)) | "en_speech en-vi done", then the tranche builder's "done:" line, logged once its last push is in (a rerun with nothing left logs "0 shards to build", then pushes any leftovers before it exits) |
 | two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft_4608`, [two-way](two-way.md#two-way-run); `twoway_sft` ran before at 8,192 frames) | its best checkpoint, then the test sets both ways |
 | grpo | `grpo_launch.sh RUN <weight> [ARGS]` (from the checkout, [grpo](grpo.md#running)), on the two-way model or a phone student | its updates; stop with TERM to the launcher alone |
