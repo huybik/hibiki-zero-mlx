@@ -139,7 +139,18 @@ student's and the depformer student's on the same sets.
   `restart.sh student-slices-decay-5090`; HF recovery prefix `student_slices14_stage1_decay`. AdamW
   continues from Stage 1's step 16,000; the rate 1.9e-4 at update 10, 1.8e-4 at 100 (1 − sqrt).
   Runs at 0.43 s an update, 15 GiB, the GPU at 100% and ~550 W; its loss continues Stage 1's
-  (0.74–0.86 over updates 10–100, grad norm 0.29–0.54).
+  (0.74–0.86 over updates 10–100, grad norm 0.29–0.54). Validations (cells as Stage 1's table;
+  outputs in `/Volumes/data/hibiki-zero-evals/box-62513802/student_slices14_stage1_decay/`):
+
+  | Update (date) | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+  |---|---|---|---|---|---|---|---|---|
+  | 4,000 (11-27) | 38.04 | 40.98 / 9.86 / 1.38 / 1.3 / 0.34 / 4.4 | 35.09 / 15.95 / 1.00 / 1.8 / 0.16 / 5.3 | 38.13 / 10.35 / 1.47 / 3.2 / 0.27 / 5.9 | 45.81 / 17.00 / 1.24 / 2.2 / 0.33 / 4.2 | 45.90 / 18.26 / 1.17 / 2.2 / 0.41 / 4.4 | 35.43 / 16.89 / 1.15 / 1.2 / 0.26 / 4.8 | 43.59 / 22.40 / 1.08 / 1.7 / 0.30 / 5.2 |
+
+  Health passed (empty rows: 2 on fleurs-en). At 4,000 (rate 5.7e-5), against Stage 1's 16,000:
+  seven-set mean chrF 40.55 → 40.70 and selecting 38.41 → 38.04 (inside evaluation noise, ±0.7; the
+  teacher-forced text loss is unchanged, 1.885), mean speaker_sim 0.280 → 0.296, HNR 4.89 → 4.89 dB;
+  teacher-forced semantic / cb 1–7 / cb 8–15 1.929 / 3.938 / 4.866 → 1.914 / 3.886 / 4.819 on
+  `en-vi-grounded-v2/validation`.
 - `student_slices14_stage2`: started 2026-11-27 13:29 UTC on box 62513802, commit d015ab6
   (PR #205), `restart.sh student-slices-joint-5090` from Stage 1's update 16,000; HF recovery
   prefix `student_slices14_stage2`. Ran at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
