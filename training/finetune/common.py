@@ -348,12 +348,13 @@ LOSS_SUMS = ("audio", "semantic", "acoustic", "acoustic_ar", "acoustic_par", "te
 
 def audio_ar_end(lm: Any) -> int:
     """Exclusive upper codebook index of autoregressive acoustic codebooks (e.g. 8 for 16-cb
-    slices with parallel_codebooks=8, meaning cb 1..7 are AR and cb 8..15 are parallel)."""
+    slices with parallel_codebooks=8, meaning cb 1..7 are AR and cb 8..15 are parallel). Other
+    models split their logged acoustic loss at codebook 8; `--acoustic-ar-weight` is slices-only."""
     dep_q = int(lm.dep_q)
     parallel = getattr(lm, "parallel_codebooks", None)
     if parallel is not None:
         return max(1, dep_q - int(parallel))
-    return min(dep_q, 8) if dep_q > 8 else dep_q
+    return min(dep_q, 8)
 
 
 def audio_codebook_weights(lm: Any, weights: LossWeights, device: torch.device) -> torch.Tensor:

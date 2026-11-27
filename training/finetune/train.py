@@ -452,6 +452,8 @@ def main() -> None:
     checkpoint_info = common.load_checkpoint_info(args)
     if args.palettize_bits and checkpoint_info.audio_heads not in (heads.KIND, slices.KIND):
         raise ValueError("--palettize-bits trains for the Core ML export (parallel-heads or depformer-slices student)")
+    if args.acoustic_ar_weight != 1.0 and checkpoint_info.audio_heads != slices.KIND:
+        raise ValueError("--acoustic-ar-weight weights a slices student's autoregressive codebooks")
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
     teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
@@ -617,19 +619,20 @@ def main() -> None:
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     offload = common.HostOffload()
     teacher_params = [] if teacher is None else list(teacher.parameters()) + list(teacher.buffers())
-    if args.freeze_trunk and args.fp8 and not args.palettize_bits:
-        from training.finetune import fp8_linear
-
-        frozen_fp8 = fp8_linear.cache_frozen_fp8_weights(lm)
-        if frozen_fp8:
-            teacher_params.extend(frozen_fp8)
-            print(f"Cached rowwise FP8 weights for {len(frozen_fp8) // 2} frozen student trunk linears")
     use_chunked_distill = common.can_chunked_distill(lm, teacher) and not args.sampled_text
     if use_chunked_distill:
         print(
             "Chunked linear+KL distillation enabled"
             + (" (frozen trunk: skipping text_linear and text_kl)" if args.freeze_trunk else "")
         )
+    # Only the chunked path's no-grad trunk forward reads the cached FP8 weights.
+    if use_chunked_distill and args.freeze_trunk and args.fp8 and not args.palettize_bits:
+        from training.finetune import fp8_linear
+
+        frozen_fp8 = fp8_linear.cache_frozen_fp8_weights(lm)
+        if frozen_fp8:
+            teacher_params.extend(frozen_fp8)
+            print(f"Cached rowwise FP8 weights for {len(frozen_fp8) // 2} frozen student trunk linears")
 
     val_log_path = out_dir / "val_log.jsonl"
     log_path = out_dir / "train_log.jsonl"

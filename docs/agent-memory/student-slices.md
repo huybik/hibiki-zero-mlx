@@ -80,7 +80,13 @@ train `weights/student_slices14` (cut from `both_heads_z_best1200`) in two stage
   plateau.
 - **Diagnostics**: `train_log.jsonl` and `val_log.jsonl` always log `acoustic_ar_loss` (`cb 1..7`)
   and `acoustic_par_loss` (`cb 8..15`) separately, plus `trunk_grad_norm`, `audio_grad_norm`,
-  `clipped_frac`, and `trunk_lr` (without extra per-step GPU syncs).
+  `clipped_frac`, and `trunk_lr` (without extra per-step GPU syncs). Stage 1's training log has
+  text losses of 0 and `loss` = `audio`: its frozen trunk's text is not computed (its
+  validation's `loss` still includes text). `validate.py --acoustic-ar-weight` reproduces a
+  stage's teacher-forced `loss`.
+- **Stage 2's start**: link Stage 1's final model (update 16,000) to
+  `weights/student_slices14_stage1.safetensors` before `restart.sh student-slices-joint-5090`;
+  a missing file stops h100.sh at its `sizes` step.
 
 **Training optimizations (2026-11-27, branch `slices-opt`, box 62513802 RTX 5090, `pho` + `en-vi/pho`
 12,288-frame batches; baseline `db0de25` vs optimized, warm updates 20–50):**
