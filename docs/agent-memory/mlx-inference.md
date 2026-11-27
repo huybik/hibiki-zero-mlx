@@ -49,7 +49,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   needs a fresh one (after `reset()`, a clip's first frame differed in 14 of 16 codebooks).
 - `translate()` overlaps CPU Mimi encoder and decoder threads with the GPU LM on the main thread;
   queues carry NumPy arrays (lazy MLX graphs are bound to their thread). `audio=False` skips the
-  decoder (the gate scores text only); `run()` writes its WAV and text. A frame is 1920 samples
+  decoder; `run()` writes its WAV and text. A frame is 1920 samples
   at 24 kHz (80 ms, 12.5 Hz).
 - The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
   Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
@@ -259,8 +259,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   directory as training's free-running evaluation scores a checkpoint, to gate a quantization
   against BF16 (plan stage 6). It translates each row alone in file mode, the MLX seed set to
   `--seed` + the row's index, and scores each pairs file as its own set with training's
-  `common.score_sets` (corpus chrF and BLEU, length ratio, empty and ended rows, the health gates).
-  It writes `hypotheses.jsonl` (a row each, as it finishes) and `scores.json`. Its scores compare
+  `common.score_sets` (corpus chrF and BLEU, length ratio, empty and ended rows, the health gates,
+  the voice scores of each row's decoded speech on the Mac's GPU:
+  [sft-evaluation](sft-evaluation.md#voice-scores)). It writes `hypotheses.jsonl` (a row each, as it finishes) and `scores.json`. Its scores compare
   with the box's in sampling and input, not in batching: training samples rows 64 at a time. The
   pairs are `data/eval/` files ([sft-evaluation](sft-evaluation.md#evaluation-sets)), their audio
   paths relative to the repo root.

@@ -4,7 +4,7 @@ Read when touching `training/finetune/eval.py`, `training/finetune/validate.py`,
 `training/prep/eval_sets.py`, `data/eval/`, the validation and promotion in
 `training/finetune/train.py`, or the input level stage (`inference/hibiki_mlx/level.py`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Checkpoint selection](#checkpoint-selection) ·
-[Side tools](#side-tools) · [Recording results](#recording-results) ·
+[Voice scores](#voice-scores) · [Side tools](#side-tools) · [Recording results](#recording-results) ·
 [Evaluation sets](#evaluation-sets) · [Input level](#input-level)
 
 The trainer itself is in [sft-training](sft-training.md); checkpoint files, resume and their sync
@@ -62,6 +62,37 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     now allows a tenth of a set (18 of 180, 36 of FLEURS dev's 361), which sampling cannot
     reach from 5% and a collapse into silence still fails. chrF already counts an empty row
     as a miss.
+
+## Voice scores
+
+Every free-running evaluation that decodes the speech scores it (`training/finetune/voice_scores.py`):
+training's validation (`TRAINER_GENERATION` decodes and scores but writes no wav), `eval.py`
+(not with `--text-only`; `--no-write-audio` skips the wavs) and the Mac gate. Text-only
+evaluation had missed a phone student speaking in a voice unlike the speaker's
+([student-heads](student-heads.md#codebooks)).
+
+- Per row `speaker_sim` (cosine of WeSpeaker ResNet34-LM embeddings of the source and the
+  translation, each cut to its frames within 30 dB of its loudest and above −60 dBFS) and
+  `hnr_db` (the translation's harmonics-to-noise ratio over its voiced 40 ms frames); each set
+  reports `mean_speaker_sim` and `mean_hnr_db` over the rows with a second of speech or more.
+  Reported, not gated: checkpoints are still chosen on the text.
+- WeSpeaker's runtimes (its package, ONNX Runtime) are not in the trainer's free-threaded
+  environment, so its ResNet34 and Kaldi filterbank are written in PyTorch and load its checkpoint
+  (`avg_model`, Hub revision `f0c48c2`). Against WeSpeaker's ONNX model and torchaudio's
+  `kaldi.fbank` on the Mac (2026-11-27): filterbanks within 2.6e-4, embeddings at cosine
+  0.999999. WavLM's speaker head (`microsoft/wavlm-base-plus-sv`, in transformers) did not
+  separate the models: 0.83 for the teacher and 0.83 for the heads student the user heard as
+  unlike them, where WeSpeaker gave 0.31 and 0.05.
+- What they read (2026-11-27): on 5 of the user's Vietnamese mic clips, the teacher 0.31 /
+  14.5 dB, the depformer student 0.28 / 12.2, the heads student 0.02–0.13 / 4.2–6.7 (the input
+  11.0 dB). On the gate's first 5 FLEURS dev rows each way (VI→EN, then EN→VI): the teacher
+  (GRPO 1,400, 6 bits) 0.46 / 9.0 dB and 0.16 / 14.0, the depformer student (GRPO 2,000) 0.27 /
+  11.5 and 0.12 / 13.3, the heads release 0.19 / 5.4 and 0.10 / 6.7; `eval.py` on MPS with the
+  heads student's update 112,000 0.20 / 6.2 and 0.14 / 8.0. EN→VI similarity is low for every
+  model, the teacher too. Files: `/Volumes/data/hibiki-zero-evals/mac/heads-voice/` and
+  `voice-scores/`.
+- Cost: scoring took ~0.08 s a row on the M4 Pro's GPU; on the box the validation now also
+  decodes every row's speech (unmeasured there).
 
 ## Side tools
 

@@ -12,7 +12,9 @@ text EOS after the source EOS), sampled as the model's config.json says (`lm_gen
 the MLX seed set to --seed plus the row's index: give every model compared the same --pairs,
 --limit and --seed.
 Each pairs file is scored as its own set by training's `score_sets` (corpus chrF and BLEU,
-length ratio, empty rows, rows that ended and the health gates). Training's evaluation also stops
+length ratio, empty rows, rows that ended, the health gates and the voice scores: the speech's
+speaker similarity to the source and its clarity, `training/finetune/voice_scores.py`, on the
+Mac's GPU). Training's evaluation also stops
 at an EOS written before the source EOS and keeps the text to it, so a row with one scores
 differently here; `eos_found` is an EOS after the source EOS. Writes <out-dir>/hypotheses.jsonl,
 a row each as it finishes, then <out-dir>/scores.json.
@@ -26,12 +28,15 @@ import time
 from pathlib import Path
 
 import mlx.core as mx
+import sphn
+import torch
 
 from hibiki_mlx import pipeline
-from training.finetune import common
+from training.finetune import common, voice_scores
 from training.paths import repo_display_path, require_file, resolve_repo_path
 
 FRAME_RATE = 12.5
+SAMPLE_RATE = 24_000
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,14 +71,17 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     model_dir = pipeline.resolve_weights_dir(args.model)
     model = pipeline.load(model_dir)
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
 
     records: list[dict] = []
     with hypotheses.open("w", encoding="utf-8") as handle:
         for index, (row, source) in enumerate(zip(rows, sources, strict=True)):
             mx.random.seed(args.seed + index)
             start = time.perf_counter()
-            out = pipeline.translate(model, source, audio=False)
+            out = pipeline.translate(model, source)
             seconds = time.perf_counter() - start
+            heard = sphn.read(source, sample_rate=SAMPLE_RATE)[0].mean(0)
+            spoken = out.pcm if out.pcm is not None else heard[:0]
             # Training's End Offset counts a word at the frames of the clip its step heard, plus
             # one: its output i heard i - max_delay + 1 (moshi's LMGen hears max_delay - 1 silent
             # frames first) and it takes max_delay - 2 off. The runtime's step t heard t.
@@ -90,13 +98,15 @@ def main() -> None:
                 "end_offset_s": offset,
                 "frames": out.frames,
                 "seconds": round(seconds, 2),
+                **voice_scores.score(heard, spoken, SAMPLE_RATE, device),
             }
             records.append(record)
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             handle.flush()
             print(
                 f"[{index + 1}/{len(rows)}] {row['id']} "
-                f"{'ended' if out.ended else 'no EOS'} {out.frames} frames {seconds:.1f}s: "
+                f"{'ended' if out.ended else 'no EOS'} {out.frames} frames {seconds:.1f}s "
+                f"speaker_sim {record['speaker_sim']} hnr {record['hnr_db']}: "
                 f"{out.text[:100]}",
                 flush=True,
             )

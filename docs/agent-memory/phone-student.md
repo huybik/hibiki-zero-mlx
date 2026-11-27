@@ -238,7 +238,8 @@ update 2,000 are in [student-grpo](student-grpo.md).
   5e-5, the same for the comparison. Free-running chrF at 1,500 updates (10–17, most sets failing
   the empty-row gate) is too early to rank them; the heads student leaves fewer rows empty.
 - Speech evaluation in both directions: each target language's ASR transcript against the
-  reference and speaker similarity to the source (evaluation is text-only today).
+  reference. Speaker similarity to the source and clarity are scored
+  ([sft-evaluation](sft-evaluation.md#voice-scores)).
 - Architecture changes wait for the trained student's scores (2026-11-13). The untrained cut
   already holds real time on the A15 (41 → 44.5 ms a frame, GPU-bound,
   [swift-runtime](swift-runtime.md#device-test)), so the budget has room; what costs quality is
