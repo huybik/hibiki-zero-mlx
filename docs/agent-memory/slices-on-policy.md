@@ -38,4 +38,30 @@ teacher, `--park-states`; raw report `runs/grpo_profile_slices/profile.json`, co
 
 ## The run
 
+`both_slices_z`: started 2026-11-27 17:00 UTC on box 62513802, commit 7a71224, HF recovery prefix
+`both_slices_z`, through
+
+```bash
+T=/workspace/tranche/repo/cache HF_HUB_DISABLE_XET=1 ./training/tranche/box/grpo_launch.sh both_slices_z \
+  weights/student_slices14_decay8000.safetensors \
+  --cache-dir $T/pho $T/vivoice $T/giga $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga \
+    data/cache/en-vi/en-vi-grounded-v2/train \
+  --config-path weights/student_slices14/config.json --save-every 100 --keep-checkpoints 1 \
+  --teacher-weight weights/grpo_twoway_best1400.safetensors --lr 1e-6 \
+  --gen-frames 384000 --micro-batch 2 --park-states --seed 45
+```
+
+(`both_heads_z`'s caches, which won over `both_heads_z2`'s noisy EN→VI copies; the launcher's
+`--pair-cache-dir` times the `en_speech` rows; seed 45 for streams the trunk's run did not see;
+8,979,646 rows, 1,713,710 streams; 2,000 updates, validated every 200 on the 10 default sets, 2,193
+rows, stopped after two validations without a new best). ~16 s an update with its window's
+generation, 176 s a validation; `ratio` ≤ 1.0006, grad norm 1.2–2.0e5 over updates 1–100.
+
+Validations (chrF / BLEU / length ratio / end offset in s / speaker_sim / HNR dB; selecting =
+FLEURS dev both ways; raw outputs in `/Volumes/data/hibiki-zero-evals/box-62513802/both_slices_z/`):
+
+| Update | Selecting | fleurs-vi/dev | fleurs-en/dev | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-noisy cv27 | en-vi-val-noisy libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy | en-vi-val-en-noisy cv27 | en-vi-val-en-noisy libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 37.94 | 40.62 / 9.50 / 1.36 / 1.3 / 0.34 / 4.5 | 35.26 / 16.21 / 1.01 / 1.9 / 0.16 / 5.5 | 44.67 / 15.80 / 1.20 / 2.1 / 0.31 / 4.1 | 45.74 / 18.60 / 1.12 / 2.3 / 0.41 / 4.3 | 42.33 / 14.38 / 1.24 / 2.3 / 0.25 / 4.0 | 44.01 / 16.51 / 1.14 / 2.3 / 0.34 / 4.3 | 35.78 / 16.90 / 1.14 / 1.0 / 0.27 / 4.9 | 43.94 / 22.46 / 1.07 / 1.9 / 0.29 / 5.2 | 23.82 / 10.44 / 0.99 / 2.0 / 0.25 / 4.4 | 36.04 / 17.51 / 1.01 / 2.8 / 0.27 / 4.8 |
+
 ## Phone finish
