@@ -2,7 +2,8 @@
 
 Read when touching `training/student/`, `streams.model_rows` or a `StreamDataset`'s `codebooks`, or
 when cutting, training, distilling or scoring a smaller model for the phone; the parallel heads
-student is in [student-heads](student-heads.md).
+student is in [student-heads](student-heads.md), the slices student in
+[student-slices](student-slices.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Cut](#cut) · [Training a student](#training-a-student) ·
 [Parallel heads](#parallel-heads) · [Distillation](#distillation) · [GRPO](#grpo) · [Checks](#checks) ·
 [Next](#next)

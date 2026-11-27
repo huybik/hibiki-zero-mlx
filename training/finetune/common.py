@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader
 
 from inference.hibiki_mlx.level import Leveller
 from training.finetune import bf16_adamw, lm_training, voice_scores
-from training.student import heads
+from training.student import heads, slices
 from training.finetune.hibiki_helpers import (
     audio_read,
     decode_wavs,
@@ -171,13 +171,17 @@ def run_tokenizer(tokenizer: Path | None, weight: Path) -> Path:
 
 
 def build_lm(checkpoint_info: Any, device: Any, dtype: torch.dtype, load_weight: bool = True, **kwargs: Any) -> Any:
-    """moshi's model for the checkpoint info, with its weight (`load_weight`) or without. A
-    parallel-heads student (the config's `audio_heads`, which `load_checkpoint_info` took out) is
-    built without it, given its heads, then loaded, with the text EOS row copied from PAD's as
-    moshi's own load of a Hibiki weight does."""
+    """moshi's model for the checkpoint info, with its weight (`load_weight`) or without. A phone
+    student's audio part (the config's `audio_heads`, which `load_checkpoint_info` took out: parallel
+    heads, or depformer slices) is installed in a model built without it, then loaded, with the text
+    EOS row copied from PAD's as moshi's own load of a Hibiki weight does."""
     if checkpoint_info.audio_heads is None:
         return checkpoint_info.get_moshi(device=device, dtype=dtype, load_weight=load_weight, **kwargs)
-    lm = heads.install(checkpoint_info.get_moshi(device=device, dtype=dtype, load_weight=False, **kwargs))
+    lm = checkpoint_info.get_moshi(device=device, dtype=dtype, load_weight=False, **kwargs)
+    if checkpoint_info.audio_heads == heads.KIND:
+        lm = heads.install(lm)
+    else:
+        lm = slices.install(lm, checkpoint_info.parallel_codebooks)
     if load_weight:
         load_model(lm, Path(checkpoint_info.moshi_weights), dtype)
         if checkpoint_info.model_type == "hibiki":
@@ -1214,7 +1218,8 @@ def validate_free_running(
 # --------------------------------------------------------------------------- #
 def load_checkpoint_info(args: argparse.Namespace) -> Any:
     """moshi's checkpoint info, its `audio_heads` (None, or a phone student's parallel heads,
-    `heads.KIND`) taken out of the LM config, which moshi hands whole to the model."""
+    `heads.KIND`, or depformer slices, `slices.KIND`, with their `parallel_codebooks`) taken out
+    of the LM config, which moshi hands whole to the model."""
     info = loaders.CheckpointInfo.from_hf_repo(
         args.hf_repo,
         moshi_weights=args.model_weight,
@@ -1223,6 +1228,9 @@ def load_checkpoint_info(args: argparse.Namespace) -> Any:
         config_path=args.config_path,
     )
     info.audio_heads = info.lm_config.pop(heads.CONFIG_KEY, None)
-    if info.audio_heads not in (None, heads.KIND):
+    info.parallel_codebooks = info.lm_config.pop(slices.PARALLEL_KEY, None)
+    if info.audio_heads not in (None, heads.KIND, slices.KIND):
         raise ValueError(f"unknown {heads.CONFIG_KEY} {info.audio_heads!r} in {args.config_path}")
+    if (info.audio_heads == slices.KIND) != (info.parallel_codebooks is not None):
+        raise ValueError(f"{slices.PARALLEL_KEY} goes with {heads.CONFIG_KEY} {slices.KIND!r} only, in {args.config_path}")
     return info

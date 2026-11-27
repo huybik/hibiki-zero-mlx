@@ -97,8 +97,11 @@ class Depformer:
             raise ValueError(f"parallel_codebooks {parallel} for dep_q {c['dep_q']}")
         if not (c["depformer_weights_per_step"] and c["depformer_multi_linear"]):
             raise ValueError("a depformer_parallel model has weights and an input linear per slice")
-        if c.get("depformer_weights_per_step_schedule") not in (None, list(range(slices))):
-            raise ValueError("a depformer_parallel model shares no slice's weights")
+        # moshi's schedule, codebook -> weight set (none: one a codebook)
+        if (c.get("depformer_weights_per_step_schedule") or list(range(c["dep_q"]))) != [
+            min(j, slices - 1) for j in range(c["dep_q"])
+        ]:
+            raise ValueError("a depformer_parallel model has a slice a codebook, the last one the last codebooks'")
         if c["depformer_pos_emb"] != "none" or c.get("depformer_kv_repeat", c["kv_repeat"]) != 1:
             raise ValueError("a depformer positional embedding or grouped queries are not implemented")
         if c.get("depformer_norm") != "layer_norm" or c.get("depformer_low_rank_embeddings"):

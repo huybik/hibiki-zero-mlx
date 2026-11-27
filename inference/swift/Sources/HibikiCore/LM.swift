@@ -204,11 +204,13 @@ public struct HibikiConfig: Decodable {
         if layerScale != nil { throw HibikiError.unsupported("layer_scale") }
         if conditioners > 0 { throw HibikiError.unsupported("conditioners") }
         if delays.count != nQ + 1 { throw HibikiError.unsupported("\(delays.count) delays") }
-        if let schedule = depformerWeightsPerStepSchedule, schedule.count != depformerSlices {
+        if let schedule = depformerWeightsPerStepSchedule, schedule.count != depQ {
             throw HibikiError.unsupported("a weights-per-step schedule of \(schedule.count)")
         }
-        if audioHeads == "depformer_parallel", depformerSchedule != Array(0..<depformerSlices) {
-            throw HibikiError.unsupported("depformer_parallel slices that share weights")
+        if audioHeads == "depformer_parallel",
+            depformerSchedule != (0..<depQ).map({ min($0, depformerSlices - 1) })
+        {
+            throw HibikiError.unsupported("depformer_parallel slices other than one a codebook, the last one the last codebooks'")
         }
     }
 
@@ -220,8 +222,8 @@ public struct HibikiConfig: Decodable {
     var depformerSlices: Int {
         audioHeads == "depformer_parallel" ? depQ - parallelCodebooks! + 1 : depQ
     }
-    /// Which depformer weight set each step uses.
-    var depformerSchedule: [Int] { depformerWeightsPerStepSchedule ?? Array(0..<depformerSlices) }
+    /// Which depformer weight set each codebook uses (moshi's schedule; none is one a codebook).
+    var depformerSchedule: [Int] { depformerWeightsPerStepSchedule ?? Array(0..<depQ) }
 
     var transformer: TransformerConfig {
         TransformerConfig(
