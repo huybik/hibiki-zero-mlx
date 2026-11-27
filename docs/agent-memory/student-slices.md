@@ -1,6 +1,7 @@
 # Slices student
 
-Read when touching `training/student/slices.py`, `restart.sh student-slices-5090` or moshi_mlx's
+Read when touching `training/student/slices.py`, `restart.sh student-slices-5090`, `train.py
+--freeze-trunk` or moshi_mlx's
 `parallel_codebooks`, or training,
 scoring or deciding on the phone student whose audio part is depformer slices. Back to
 [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Why this shape](#why-this-shape) ·
@@ -63,11 +64,17 @@ trunk comes back bit for bit and the student loads strictly.
 ## Training
 
 `restart.sh student-slices-5090` cuts `weights/student_slices14` from `both_heads_z_best1200` (the
-heads student after its on-policy stage) and runs the heads student's recipe on the 5090:
-distilled from GRPO update 1,400 on the two-way run's rows both ways, 12,288-frame batches
-(`--bf16-adamw`) in pieces of 4,096 frames, peak 5e-5 with 5% warmup and cosine, seed 47; one
-epoch (94,034 updates, the trunk already trained), validation every 8,000 with the voice scores
-([voice-scores](voice-scores.md)). The trunk trains too: its audio inputs move to the new delays.
+heads student after its on-policy stage) and trains its slices alone on the 5090
+(`student_slices14_frozen`): `train.py --freeze-trunk` trains only `slices.AUDIO_PARTS` (134.7M
+parameters), the trunk, its embeddings and text head keep the cut's weights and no backward runs
+through them. Otherwise the heads student's recipe: distilled from GRPO update 1,400 on the
+two-way run's rows both ways, whole 12,288-frame batches (`--bf16-adamw`), peak 5e-5 with 5%
+warmup and cosine, seed 47; one epoch (94,034 updates), validation every 8,000 with the voice
+scores ([voice-scores](voice-scores.md)). The first run trained the trunk too, its audio inputs
+moving to the new delays, and its text drifted ([Runs](#runs)). A frozen trunk reads the new
+delays as it is: its text KL at the start is 0.114 against 0.088 at the heads student's delays.
+Not yet run: the trunk of a frozen run's save checked bit for bit against the cut's (the check's
+40 updates ran; it was stopped in its validation, 2026-11-27).
 
 Speed on the 5090 (box 62513802, 2026-11-27, the same rows; files in
 `/Volumes/data/hibiki-zero-evals/box-62513802/slices-bench-2026-11-27/`):
@@ -77,12 +84,16 @@ Speed on the 5090 (box 62513802, 2026-11-27, the same rows; files in
 | Heads student, pieces of 6,144 (its run's) | 0.947 | 27.1 GiB |
 | Slices, pieces of 6,144 | out of memory in the first backward (30.4 GiB in use) | |
 | Slices, pieces of 6,144, `--grad-checkpoint --grad-checkpoint-layers 1` | 1.00 | 30.8 GiB |
-| **Slices, pieces of 4,096** | **0.99** | **26.1 GiB** |
+| Slices, pieces of 4,096 (the first run's) | 0.99 | 26.1 GiB |
+| **Slices alone (`--freeze-trunk`), whole batches** | **0.697** | **21.4 GiB** |
+| Slices alone, pieces of 6,144 | 0.70 | 16.2 GiB |
+| Slices alone, pieces of 4,096 | 0.705 | 13.9 GiB |
 
 Checkpointing the slices saves next to no memory, so their activations are not what fills the
 card. The kernel profile of 3 updates (torch.profiler; `prof_train.py` there) has the GPU busy
 98% of the wall time in both students, matmuls 75% of it; the slices take 3.6% more GPU time
-(2.92 s against 2.82 s), their small matmuls and the smaller pieces. The epoch is ~26 h.
+(2.92 s against 2.82 s), their small matmuls and the smaller pieces. The epoch is ~26 h with
+the trunk training and ~18 h with it frozen (the GPU at 100% in its updates; not kernel-profiled).
 A validation (all 7 sets, free-running, voice scores, `--park-states`) took 291 s at 26.1 GiB:
 12 in the epoch, ~1 h.
 The voice decides at 8,000 and 16,000: `mean_speaker_sim` and `mean_hnr_db` against the heads
@@ -90,7 +101,26 @@ student's and the depformer student's on the same sets.
 
 ## Runs
 
-None yet.
+- `student_slices14_5090`: started 2026-11-27 06:38 UTC on box 62513802 (RTX 5090), commit
+  35e35d9, `restart.sh student-slices-5090` with the trunk training; HF recovery prefix
+  `student_slices14_5090`. Ran at 0.99 s an update, 26.1 GiB, the GPU at 100% and 505 W; stopped
+  by TERM at 8,520 (2026-11-27 ~09:10 UTC; user: "start the slice training only"), its 8,000 pair
+  on the box and the Hub. Validations
+  (seed 47; chrF / BLEU / length ratio / end offset in s / speaker_sim / HNR dB; every set's
+  health pass, no empty outputs; outputs in
+  `/Volumes/data/hibiki-zero-evals/box-62513802/student_slices14_5090/`):
+
+  | Update (date) | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+  |---|---|---|---|---|---|---|---|---|
+  | 8,000 (11-27) | 30.50 | 34.98 / 5.24 / 1.63 / 2.2 / 0.15 / 2.9 | 26.03 / 8.47 / 1.06 / 2.2 / 0.10 / 4.0 | 33.29 / 6.41 / 1.66 / 4.2 / 0.18 / 5.0 | 38.65 / 11.07 / 1.38 / 2.5 / 0.21 / 3.5 | 41.18 / 13.30 / 1.13 / 3.0 / 0.27 / 3.5 | 29.90 / 11.31 / 1.20 / 0.7 / 0.18 / 3.7 | 39.12 / 16.86 / 1.10 / 2.0 / 0.18 / 3.8 |
+
+  At 8,000: text behind the heads student's final (190,126, same validation): seven-set mean
+  34.74 against 37.72, selecting 30.50 against 36.92, FLEURS EN→VI −9.0, the rest −0.5 to −3.8;
+  outputs run on past the translation (EOS on 242 of 361 FLEURS-vi rows). The training text KL
+  fell to 0.096 (updates 2,000–3,000) and rose to 0.136 (8,000–9,000) once the rate reached its
+  peak: the trunk drifting. Voice on the gate's 10 FLEURS dev rows
+  ([voice-scores](voice-scores.md)): VI→EN 0.15 / 2.3 dB, EN→VI 0.14 / 4.5 dB, against the heads
+  release's 0.21 / 3.2 and 0.13 / 4.8 and the depformer student's 0.27 / 4.7 and 0.20 / 7.8.
 
 ## On the Mac
 
