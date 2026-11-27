@@ -55,8 +55,11 @@ public struct HibikiConfig: Decodable {
     public let quantization: Quantization?
     public let lmGenConfig: LmGenConfig
     /// "parallel" for the parallel-heads student, whose 16 codebooks come from linear heads in
-    /// the depformer's place; nil for a depformer model.
+    /// the depformer's place; "depformer_parallel" for a depformer whose last slice emits the
+    /// last `parallelCodebooks` at once; nil for a depformer model.
     public let audioHeads: String?
+    /// How many codebooks a depformer_parallel model's last slice emits at once.
+    public let parallelCodebooks: Int?
     /// Whether `export_lm_coreml.py` wrote this directory (`lm_coreml`): the LM is the Core ML
     /// models beside this file (`NeuralLM`).
     public let lmCoreML: Bool
@@ -100,6 +103,7 @@ public struct HibikiConfig: Decodable {
         case quantization
         case lmGenConfig = "lm_gen_config"
         case audioHeads = "audio_heads"
+        case parallelCodebooks = "parallel_codebooks"
         case lmCoreML = "lm_coreml"
     }
 
@@ -141,6 +145,7 @@ public struct HibikiConfig: Decodable {
         quantization = try c.decodeIfPresent(Quantization.self, forKey: .quantization)
         lmGenConfig = try c.decode(LmGenConfig.self, forKey: .lmGenConfig)
         audioHeads = try c.decodeIfPresent(String.self, forKey: .audioHeads)
+        parallelCodebooks = try c.decodeIfPresent(Int.self, forKey: .parallelCodebooks)
         lmCoreML = c.contains(.lmCoreML)
         gating = try c.decodeIfPresent(String.self, forKey: .gating)
         norm = try c.decodeIfPresent(String.self, forKey: .norm)
@@ -166,15 +171,22 @@ public struct HibikiConfig: Decodable {
 
     /// Fails on any setting this runtime does not implement, instead of running a wrong model.
     func validate() throws {
-        if let audioHeads, audioHeads != "parallel" {
+        if let audioHeads, !["parallel", "depformer_parallel"].contains(audioHeads) {
             throw HibikiError.unsupported("audio_heads \(audioHeads)")
         }
-        // The MLX LM has a depformer only; the heads run as Core ML (export_lm_coreml.py).
+        // The MLX LM has a depformer only; the other audio heads run as Core ML
+        // (export_lm_coreml.py).
         if (audioHeads != nil) != lmCoreML {
             throw HibikiError.unsupported(
                 audioHeads != nil
-                    ? "parallel heads in MLX: export the LM with export_lm_coreml.py"
-                    : "a Core ML LM without parallel heads")
+                    ? "\(audioHeads!) audio heads in MLX: export the LM with export_lm_coreml.py"
+                    : "a Core ML LM with a plain depformer")
+        }
+        if audioHeads == "depformer_parallel" {
+            guard let parallelCodebooks, (1...depQ).contains(parallelCodebooks) else {
+                throw HibikiError.unsupported("parallel_codebooks \(parallelCodebooks.map(String.init) ?? "missing")")
+            }
+            if !depformerOutputNorm { throw HibikiError.unsupported("a depformer without its output norm") }
         }
         if let gating, gating != "silu" { throw HibikiError.unsupported("gating \(gating)") }
         if let norm, !norm.hasPrefix("rms_norm") { throw HibikiError.unsupported("norm \(norm)") }
@@ -192,16 +204,24 @@ public struct HibikiConfig: Decodable {
         if layerScale != nil { throw HibikiError.unsupported("layer_scale") }
         if conditioners > 0 { throw HibikiError.unsupported("conditioners") }
         if delays.count != nQ + 1 { throw HibikiError.unsupported("\(delays.count) delays") }
-        if let schedule = depformerWeightsPerStepSchedule, schedule.count != depQ {
+        if let schedule = depformerWeightsPerStepSchedule, schedule.count != depformerSlices {
             throw HibikiError.unsupported("a weights-per-step schedule of \(schedule.count)")
+        }
+        if audioHeads == "depformer_parallel", depformerSchedule != Array(0..<depformerSlices) {
+            throw HibikiError.unsupported("depformer_parallel slices that share weights")
         }
     }
 
     var audioDelays: [Int] { Array(delays.dropFirst()) }  // delays[0] is the text stream's
     var audioPaddingToken: Int { card }  // audio vocabulary is card + 1
     var textInitToken: Int { textCard }  // text input vocabulary is text_card + 1
-    /// Which depformer weight set each codebook step uses.
-    var depformerSchedule: [Int] { depformerWeightsPerStepSchedule ?? Array(0..<depQ) }
+    /// The depformer's sequential steps a frame: one a codebook, except that a depformer_parallel
+    /// model's last emits its last `parallelCodebooks` together.
+    var depformerSlices: Int {
+        audioHeads == "depformer_parallel" ? depQ - parallelCodebooks! + 1 : depQ
+    }
+    /// Which depformer weight set each step uses.
+    var depformerSchedule: [Int] { depformerWeightsPerStepSchedule ?? Array(0..<depformerSlices) }
 
     var transformer: TransformerConfig {
         TransformerConfig(

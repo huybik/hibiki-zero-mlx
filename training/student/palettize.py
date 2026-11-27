@@ -2,7 +2,7 @@
 [student-palettize](../../docs/agent-memory/student-palettize.md)).
 
 The Core ML export (`inference/tools/export_lm_coreml.py --bits N`) palettizes every weight of the
-heads student's trunk and heads with more than 2^20 elements: k-means, one table of 2^N values for
+heads student's trunk and heads with more than 2^16 elements: k-means, one table of 2^N values for
 each 16 output channels (rows of the torch weight; convert_mlx.py keeps the rows in order).
 Measured on a layer used as lm_step uses it (`x @ W.T`, 2026-11-21): the tables come out
 [rows / 16, 1, 2^N, 1], and a weight whose every 16 rows already hold at most 2^N values comes back
@@ -34,7 +34,7 @@ from typing import Any
 import torch
 
 GROUP_ROWS = 16  # export_lm_coreml's group_size: one table per 16 output channels
-THRESHOLD = 1 << 20  # its weight_threshold: a weight with more elements than this is palettized
+THRESHOLD = 1 << 16  # its weight_threshold: a weight with more elements than this is palettized
 # The weights lm_step's Trunk and Heads hold (the embeddings stay on the host, in fp16).
 PALETTIZED = re.compile(r"transformer\.layers\.\d+\..+\.weight|text_linear\.weight|depformer\.heads\.\d+\.weight")
 LLOYD_ITERATIONS = 10
