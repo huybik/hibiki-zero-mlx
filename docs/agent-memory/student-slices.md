@@ -145,12 +145,15 @@ student's and the depformer student's on the same sets.
   | Update (date) | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
   |---|---|---|---|---|---|---|---|---|
   | 4,000 (11-27) | 38.04 | 40.98 / 9.86 / 1.38 / 1.3 / 0.34 / 4.4 | 35.09 / 15.95 / 1.00 / 1.8 / 0.16 / 5.3 | 38.13 / 10.35 / 1.47 / 3.2 / 0.27 / 5.9 | 45.81 / 17.00 / 1.24 / 2.2 / 0.33 / 4.2 | 45.90 / 18.26 / 1.17 / 2.2 / 0.41 / 4.4 | 35.43 / 16.89 / 1.15 / 1.2 / 0.26 / 4.8 | 43.59 / 22.40 / 1.08 / 1.7 / 0.30 / 5.2 |
+  | 8,000 (11-27) | 38.32 | 41.15 / 9.74 / 1.39 / 1.5 / 0.34 / 4.5 | 35.49 / 16.47 / 1.01 / 1.9 / 0.16 / 5.4 | 37.98 / 10.29 / 1.48 / 3.4 / 0.27 / 6.0 | 45.93 / 17.93 / 1.18 / 2.1 / 0.32 / 4.1 | 44.98 / 17.89 / 1.11 / 2.1 / 0.41 / 4.4 | 34.36 / 17.19 / 1.11 / 1.1 / 0.26 / 5.0 | 43.92 / 22.29 / 1.07 / 1.6 / 0.29 / 5.2 |
 
-  Health passed (empty rows: 2 on fleurs-en). At 4,000 (rate 5.7e-5), against Stage 1's 16,000:
-  seven-set mean chrF 40.55 → 40.70 and selecting 38.41 → 38.04 (inside evaluation noise, ±0.7; the
-  teacher-forced text loss is unchanged, 1.885), mean speaker_sim 0.280 → 0.296, HNR 4.89 → 4.89 dB;
-  teacher-forced semantic / cb 1–7 / cb 8–15 1.929 / 3.938 / 4.866 → 1.914 / 3.886 / 4.819 on
-  `en-vi-grounded-v2/validation`.
+  Health passed (empty rows: 2 on fleurs-en at both). Against Stage 1's 16,000, at 4,000 (rate
+  5.7e-5) and 8,000 (the end, 0): seven-set mean chrF 40.55 → 40.70 → 40.54 and selecting 38.41 →
+  38.04 → 38.32 (inside evaluation noise, ±0.7; the teacher-forced text loss is unchanged, 1.885),
+  mean speaker_sim 0.280 → 0.296 → 0.293, HNR 4.89 → 4.89 → 4.94 dB; teacher-forced semantic /
+  cb 1–7 / cb 8–15 1.929 / 3.938 / 4.866 → 1.914 / 3.886 / 4.819 → 1.906 / 3.867 / 4.803 on
+  `en-vi-grounded-v2/validation`. The decay's gain came by 4,000. Ended 2026-11-27 16:34 UTC
+  (~70 min); `best.json` names 8,000, the final model: the on-policy stage's start.
 - `student_slices14_stage2`: started 2026-11-27 13:29 UTC on box 62513802, commit d015ab6
   (PR #205), `restart.sh student-slices-joint-5090` from Stage 1's update 16,000; HF recovery
   prefix `student_slices14_stage2`. Ran at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
