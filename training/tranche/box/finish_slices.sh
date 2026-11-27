@@ -5,9 +5,12 @@
 #      model hard-linked to weights/both_slices_z_refit.safetensors;
 #   2. the 6-bit finish from it (restart.sh student-slices-pal6-5090);
 #   3. the refit and the finish's final update snapped onto their 6-bit tables (training.student.palettize);
-#   4. test_student.sh on the on-policy start, the refit (bf16 and snapped) and the finish (snapped),
+#   4. both snapped models uploaded to the Hub repo's phone/ (the Mac's export fetches them there:
+#      ssh to the Mac runs at ~2 MB/s, the Hub at ~30);
+#   5. test_student.sh on the on-policy start, the refit (bf16 and snapped) and the finish (snapped),
 #      under runs/slices_tests/.
-# A step whose output exists is skipped, so a rerun continues. Run it detached:
+# A step whose output exists is skipped (an upload the Hub already holds sends nothing), so a rerun
+# continues. Run it detached:
 #   setsid nohup training/tranche/box/finish_slices.sh >> /workspace/logs/finish_slices.log 2>&1 < /dev/null &
 set -euo pipefail
 cd /workspace/hibiki-zero
@@ -21,6 +24,12 @@ run_job() {  # a restart.sh job, waited for
   log "end $1"
 }
 snap() { [[ -f $2 ]] || { log "snap $1"; .venv/bin/python -m training.student.palettize --weight "$1" --bits 6 --out "$2"; }; }
+publish() {
+  log "upload $1"
+  (set -a; . /workspace/.env; set +a; .venv/bin/python -c 'import sys, os; from huggingface_hub import HfApi
+HfApi().upload_file(path_or_fileobj=sys.argv[1], path_in_repo="phone/" + os.path.basename(sys.argv[1]),
+                    repo_id="huybik/hibiki-zero-vi-full-sft")' "$1")
+}
 
 u=$(.venv/bin/python -c 'import json; print(json.load(open("runs/both_slices_z/best.json"))["step"])')
 R=runs/slices_z${u}_refit
@@ -30,6 +39,8 @@ P=runs/pal6_slices_z
 [[ -f $P/model_step004000.safetensors ]] || run_job student-slices-pal6-5090
 snap weights/both_slices_z_refit.safetensors weights/both_slices_z_refit_snap6.safetensors
 snap $P/model_step004000.safetensors weights/pal6_slices_z4000_snap6.safetensors
+publish weights/both_slices_z_refit_snap6.safetensors
+publish weights/pal6_slices_z4000_snap6.safetensors
 for t in "student_slices14_decay8000 decay8000" "both_slices_z_refit refit" \
          "both_slices_z_refit_snap6 refit_snap6" "pal6_slices_z4000_snap6 pal6_4000_snap6"; do
   set -- $t
