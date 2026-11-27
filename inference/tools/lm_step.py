@@ -7,7 +7,10 @@ emits the last codebooks at once (`"depformer_parallel"`):
     Trunk:  x, cos, sin, mask, slot  ->  hidden, text_logits          (state: keys, values)
     host:   text token sampled from text_logits
     Heads:  hidden, text_emb[sampled text]  ->  audio_logits [dep_q, card]
-  or, slice k = 0 .. slices - 1:
+  or, fused (`DepformerStep`, the default export):
+    host:   emb = slice 0's table [the sampled text]; noise = temp * Gumbel(0, 1) [dep_q, card]
+    DepformerStep: hidden, emb, noise -> tokens [dep_q] (all slices + top-k sampling on ANE)
+  or, per-slice (`DepformerSlice`, --per-slice):
     host:   emb = slice k's table [the token before: the sampled text, else codebook k - 1]
     DepformerSlice k:  hidden, emb, keys and values of slices < k  ->  logits, key, value
     host:   codebook k sampled (the last slice: codebooks slices - 1 .. dep_q - 1)
@@ -139,6 +142,12 @@ def depformer_embeddings(cfg: Config, w: dict[str, torch.Tensor]) -> np.ndarray:
     return torch.cat([w[f"depformer.slices.{k}.emb.weight"] for k in range(slices)]).to(torch.float16).numpy()
 
 
+def depformer_text_embeddings(cfg: Config, w: dict[str, torch.Tensor]) -> np.ndarray:
+    """Slice 0's input table [text_card + 1, depformer dim] in fp16 for the fused `Depformer`
+    model, whose later slices embed their sampled tokens inside the graph."""
+    return w["depformer.slices.0.emb.weight"].to(torch.float16).numpy()
+
+
 def _rms_norm(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-8) * weight
 
@@ -148,6 +157,12 @@ def _rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor
     half = x.shape[-1] // 2
     x1, x2 = x[..., :half], x[..., half:]
     return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+
+
+# KV-cache chunk size for online-softmax attention in `Trunk`: summing 3,000 fp16 values in one
+# accumulator drifts past ~1,500 frames on the Neural Engine; splitting into chunks of 250 keeps
+# fp16 headroom per partial sum with zero 6-bit latency cost (`lm-npu.md#precision`).
+_ATTN_CHUNK = 250
 
 
 class Trunk(nn.Module):
@@ -174,6 +189,7 @@ class Trunk(nn.Module):
     def forward(self, x, cos, sin, mask, slot):
         cfg = self.cfg
         h, hkv, d = cfg.heads, cfg.kv_heads, cfg.head_dim
+        chunk = _ATTN_CHUNK if (cfg.context > _ATTN_CHUNK and cfg.context % _ATTN_CHUNK == 0) else 0
         for i in range(cfg.layers):
             p = f"transformer.layers.{i}."
             qkv = _rms_norm(x, self._w(p + "norm1.weight")) @ self._w(p + "self_attn.in_proj.weight").T
@@ -185,7 +201,20 @@ class Trunk(nn.Module):
             keys, values = self.keys[i].to(x.dtype), self.values[i].to(x.dtype)
             # Grouped queries: query head j reads key/value head j // (h / hkv).
             scores = q.reshape(hkv, h // hkv, d) @ keys.transpose(1, 2) / math.sqrt(d) + mask
-            attn = (F.softmax(scores, dim=-1) @ values).reshape(1, h * d)
+            if chunk:
+                # Online-softmax across `.split(chunk)` (Core ML MLState rejects reshaping state
+                # directly to 4-D, whereas split stays 100% on the Neural Engine).
+                outs, lses = [], []
+                for sc, vc in zip(scores.split(chunk, dim=-1), values.split(chunk, dim=1)):
+                    mc = sc.max(dim=-1, keepdim=True).values
+                    wc = torch.exp(sc - mc)
+                    lc = wc.sum(dim=-1, keepdim=True)
+                    outs.append((wc / lc) @ vc)
+                    lses.append(mc + torch.log(lc))
+                cw = F.softmax(torch.cat(lses, dim=-1), dim=-1)
+                attn = sum(o * cw[..., idx : idx + 1] for idx, o in enumerate(outs)).reshape(1, h * d)
+            else:
+                attn = (F.softmax(scores, dim=-1) @ values).reshape(1, h * d)
             x = x + attn @ self._w(p + "self_attn.out_proj.weight").T
             gate, up = (_rms_norm(x, self._w(p + "norm2.weight")) @ self._w(p + "gating.linear_in.weight").T).chunk(2, -1)
             x = x + (F.silu(gate) * up) @ self._w(p + "gating.linear_out.weight").T
@@ -256,6 +285,93 @@ class DepformerSlice(nn.Module):
         # One matmul a codebook: the Neural Engine takes none as wide as several together.
         logits = torch.cat([x @ out[j * card : (j + 1) * card].T for j in range(out.shape[0] // card)])
         return logits, torch.stack(new_keys), torch.stack(new_values)
+
+
+class DepformerStep(nn.Module):
+    """All slices of a `depformer_parallel` model in one Core ML call, with top-k Gumbel-max
+    sampling and inter-slice embedding lookups inside the graph using Neural-Engine-native ops
+    only (no `reduce_argmax` or `gather`, which would split the graph onto the CPU).
+
+    hidden [1, dim]; emb [1, d] (slice 0's embedding of the sampled text token);
+    noise [dep_q, card] (fp16: temp * Gumbel(0, 1), or zeros for greedy temp = 0)
+    -> tokens [dep_q] (exact integers 0 .. card - 1 in fp16; requires card <= 2048).
+    """
+
+    def __init__(self, cfg: Config, w: dict[str, torch.Tensor], top_k: int | None = None):
+        super().__init__()
+        if cfg.depformer is None:
+            raise ValueError("Depformer requires a depformer_parallel config")
+        if cfg.card > 2048:
+            raise ValueError(f"fp16 exact token indices require card <= 2048, got {cfg.card}")
+        self.cfg = cfg
+        self.slices = cfg.depformer.slices(cfg.dep_q)
+        self.top_k = top_k if (top_k is not None and 0 < top_k < cfg.card) else None
+        # Exact fp16 integers 1 .. card for tie-free one-hot selection and token readout.
+        self.register_buffer("ids", torch.arange(1, cfg.card + 1, dtype=torch.float32).reshape(1, cfg.card))
+        for k in range(self.slices):
+            prefix = f"depformer.slices.{k}."
+            for name, t in w.items():
+                if not name.startswith(prefix):
+                    continue
+                if name == prefix + "emb.weight":
+                    if k > 0:
+                        # Generated tokens are in 0 .. card - 1 (never the padding row `card`),
+                        # stored as [d, card] so `oh @ W.T` keeps its MIL weight name.
+                        self.register_buffer(f"s{k}_emb_weight", t[: cfg.card].T.contiguous())
+                    continue
+                self.register_buffer(f"s{k}_{name[len(prefix):].replace('.', '_')}", t)
+            codebooks = cfg.depformer.parallel if k == self.slices - 1 else 1
+            if self._w(k, "linear_out.weight").shape[0] != codebooks * cfg.card:
+                raise ValueError(f"slice {k}'s linear_out has {self._w(k, 'linear_out.weight').shape[0]} rows "
+                                 f"for {codebooks} codebooks of {cfg.card}")
+
+    def _w(self, k: int, name: str) -> torch.Tensor:
+        return getattr(self, f"s{k}_{name.replace('.', '_')}")
+
+    def forward(self, hidden, emb, noise):
+        d = self.cfg.depformer
+        h, hd, card = d.heads, d.head_dim, self.cfg.card
+        past_k: list[torch.Tensor | None] = [None] * d.layers
+        past_v: list[torch.Tensor | None] = [None] * d.layers
+        tokens = []
+        for k in range(self.slices):
+            x = hidden @ self._w(k, "linear_in.weight").T + emb
+            for i in range(d.layers):
+                p = f"transformer.layers.{i}."
+                qkv = _rms_norm(x, self._w(k, p + "norm1.weight")) @ self._w(k, p + "self_attn.in_proj.weight").T
+                q, key, value = (t.reshape(h, 1, hd) for t in qkv.chunk(3, -1))
+                if past_k[i] is None:
+                    past_k[i], past_v[i] = key, value
+                else:
+                    past_k[i] = torch.cat([past_k[i], key], dim=1)
+                    past_v[i] = torch.cat([past_v[i], value], dim=1)
+                attn = (F.softmax(q @ past_k[i].transpose(1, 2) / math.sqrt(hd), dim=-1) @ past_v[i]).reshape(1, d.dim)
+                x = x + attn @ self._w(k, p + "self_attn.out_proj.weight").T
+                gate, up = (_rms_norm(x, self._w(k, p + "norm2.weight")) @ self._w(k, p + "gating.linear_in.weight").T).chunk(2, -1)
+                x = x + (F.silu(gate) * up) @ self._w(k, p + "gating.linear_out.weight").T
+            x = F.layer_norm(x, (d.dim,), self._w(k, "norm.weight"), self._w(k, "norm.bias"), 1e-5)
+            out = self._w(k, "linear_out.weight")
+            ncb = d.parallel if k == self.slices - 1 else 1
+            # One matmul a codebook: the Neural Engine takes none as wide as several together.
+            logits = torch.cat([x @ out[j * card : (j + 1) * card].T for j in range(ncb)], dim=0)
+            # Center at max = 0 for peak fp16 precision around the top logits and safe -1e4 masking.
+            logits = logits - logits.max(dim=-1, keepdim=True).values
+            nk = noise[k : k + ncb]
+            if self.top_k is not None:
+                vals, _ = torch.topk(logits, self.top_k, dim=-1)
+                thresh = vals[:, -1:]
+                pert = torch.where(logits >= thresh, logits + nk, torch.full_like(logits, -1e4))
+            else:
+                pert = logits + nk
+            m = pert.max(dim=-1, keepdim=True).values
+            tied = (pert >= m).to(x.dtype)
+            scored = tied * self.ids
+            winner = scored.max(dim=-1, keepdim=True).values
+            tokens.append((winner - 1.0).reshape(ncb))
+            if k < self.slices - 1:
+                oh = (scored >= winner).to(x.dtype)
+                emb = oh @ self._w(k + 1, "emb.weight").T
+        return torch.cat(tokens, dim=0)
 
 
 @dataclass

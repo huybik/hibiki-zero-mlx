@@ -63,6 +63,8 @@ public struct HibikiConfig: Decodable {
     /// Whether `export_lm_coreml.py` wrote this directory (`lm_coreml`): the LM is the Core ML
     /// models beside this file (`NeuralLM`).
     public let lmCoreML: Bool
+    /// Top-k baked into a fused `lm-depformer.mlmodelc` model (nil for full-vocab or per-slice).
+    public let lmCoreMLDepformerTopK: Int?
     // Read only to refuse models this runtime would run wrongly.
     let gating: String?
     let norm: String?
@@ -111,6 +113,13 @@ public struct HibikiConfig: Decodable {
         init(from decoder: Decoder) throws {}
     }
 
+    private struct LMCoreMLRecord: Decodable {
+        let depformerTopK: Int?
+        enum CodingKeys: String, CodingKey {
+            case depformerTopK = "depformer_top_k"
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         card = try c.decode(Int.self, forKey: .card)
@@ -147,6 +156,7 @@ public struct HibikiConfig: Decodable {
         audioHeads = try c.decodeIfPresent(String.self, forKey: .audioHeads)
         parallelCodebooks = try c.decodeIfPresent(Int.self, forKey: .parallelCodebooks)
         lmCoreML = c.contains(.lmCoreML)
+        lmCoreMLDepformerTopK = (try? c.decodeIfPresent(LMCoreMLRecord.self, forKey: .lmCoreML))?.depformerTopK
         gating = try c.decodeIfPresent(String.self, forKey: .gating)
         norm = try c.decodeIfPresent(String.self, forKey: .norm)
         depformerMultiLinear = try c.decodeIfPresent(Bool.self, forKey: .depformerMultiLinear)
