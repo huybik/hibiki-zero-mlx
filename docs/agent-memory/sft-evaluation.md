@@ -73,11 +73,14 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
 
 - Per row `speaker_sim`: cosine of WeSpeaker ResNet34-LM embeddings of the source file as
   recorded and the translation. Each is cut to its stretches of speech: 25 ms frames within
-  30 dB of its loudest and above −60 dBFS, with gaps under 0.3 s between them kept. Joined loose
-  frames moved the score (two borderline frames flipped by 16-bit rounding took a clip's
+  30 dB of its loudest, with gaps under 0.3 s between them kept; nothing if no frame reaches
+  −70 dBFS (Mimi's silence sits near −74, FLEURS-en's quietest recording peaks at −61). Joined
+  loose frames moved the score (two borderline frames flipped by 16-bit rounding took a clip's
   similarity to itself to 0.96); cutting only the ends let the pauses dominate, so every model
-  scored alike. The source is not taken through the level stage, which lifts the pauses' noise
-  (a review measured the score moving by up to 0.19 a row).
+  scored alike; a fixed −60 dBFS floor cut most of the speech from FLEURS-en's quiet recordings
+  (median peak −48 dBFS; source embeddings at cosine 0.51–0.96 to the full cut). The source is
+  not taken through the level stage, which lifts the pauses' noise (a review measured the score
+  moving by up to 0.19 a row). Audio with a NaN or infinity raises.
 - Per row `hnr_db`: the translation's harmonics-to-noise ratio, 10 log10(m / (1 − m)) of the
   mean m over its 40 ms frames within 26 dB of its loudest of each frame's autocorrelation peak
   between the lags of 400 and 60 Hz. Every loud frame counts, voiced or not, so speech turning to
@@ -87,7 +90,7 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
   checkpoints are still chosen on the text.
 - WeSpeaker's runtimes (its package, ONNX Runtime) are not in the trainer's free-threaded
   environment, so its ResNet34 and Kaldi filterbank are written in PyTorch and load its checkpoint
-  (`avg_model`, Hub revision `f0c48c2`, fetched at the first validation). Against WeSpeaker's ONNX
+  (`avg_model`, Hub revision `f0c48c2`, fetched by `h100.sh preflight`). Against WeSpeaker's ONNX
   model and torchaudio's `kaldi.fbank` on the Mac (2026-11-27): filterbanks within 2.6e-4,
   embeddings at cosine 0.999999. WavLM's speaker head (`microsoft/wavlm-base-plus-sv`, in
   transformers) did not separate the models: 0.83 for the teacher and 0.83 for the heads student
@@ -95,9 +98,9 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
 - What they read (2026-11-27). On 5 of the user's Vietnamese mic clips (input 5.2 dB): the
   teacher 0.33 / 8.0 dB, the depformer student 0.32 / 6.9, the heads student 0.00–0.16 /
   1.6–3.7 (the release on the phone 0.16 / 2.7). On the first 5 FLEURS dev rows each way, VI→EN
-  then EN→VI, the gate: the teacher (GRPO 1,400, 6 bits) 0.47 / 4.4 dB and 0.26 / 8.1, the
+  then EN→VI, the gate: the teacher (GRPO 1,400, 6 bits) 0.47 / 4.4 dB and 0.29 / 8.1, the
   depformer student (GRPO 2,000, 6 bits) 0.27 / 4.7 and 0.19 / 7.8, the heads release 0.20 / 3.2
-  and 0.11 / 4.8; `eval.py` on MPS, the heads student's update 112,000: 0.18 / 3.5 and 0.11 / 5.0.
+  and 0.12 / 4.8; `eval.py` on MPS, the heads student's update 112,000: 0.18 / 3.5 and 0.13 / 5.0.
   Clarity separates the heads less on English speech, which has more unvoiced sounds. Files:
   `/Volumes/data/hibiki-zero-evals/mac/heads-voice/` and `voice-scores/`.
 - Cost: scoring takes ~0.08 s a row on the M4 Pro's GPU; source embeddings are cached for the

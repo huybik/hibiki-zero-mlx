@@ -102,28 +102,36 @@ def fbank(wav: torch.Tensor) -> torch.Tensor:
     return feats - feats.mean(0, keepdim=True)
 
 
+def checkpoint() -> str:
+    """The speaker model's checkpoint, from the Hub cache (`h100.sh preflight` fetches it before
+    a run, so a run never meets the Hub at its first validation)."""
+    return hf_hub_download(SPEAKER_MODEL[0], "avg_model", revision=SPEAKER_MODEL[1])
+
+
 @functools.cache
 def _encoder(device: str) -> SpeakerEncoder:
-    state = torch.load(
-        hf_hub_download(SPEAKER_MODEL[0], "avg_model", revision=SPEAKER_MODEL[1]),
-        map_location="cpu",
-        weights_only=True,
-    )
+    state = torch.load(checkpoint(), map_location="cpu", weights_only=True)
     model = SpeakerEncoder()
     model.load_state_dict({k: v for k, v in state.items() if not k.startswith("projection.")})
     return model.eval().to(device)
 
 
 def _speech(x: np.ndarray, frame: int = 400, gap: int = 12) -> np.ndarray:
-    """The 25 ms frames within 30 dB of the loudest and above -60 dBFS, and the gaps under
-    `gap` frames (0.3 s) between them, joined: whole stretches of speech, since every join of
-    loose frames moves the embedding (two borderline frames flipped by 16-bit rounding moved a
-    clip's similarity to itself to 0.96)."""
+    """The 25 ms frames within 30 dB of the loudest, and the gaps under `gap` frames (0.3 s)
+    between them, joined: whole stretches of speech, since every join of loose frames moves the
+    embedding (two borderline frames flipped by 16-bit rounding moved a clip's similarity to
+    itself to 0.96). Relative to the clip's own loudest, so a quiet recording (FLEURS-en peaks
+    near -48 dBFS) keeps the same speech as a loud one. Nothing where no frame reaches -70 dBFS:
+    above Mimi's silence (about -74), below FLEURS-en's quietest recording (-61)."""
+    if not np.isfinite(x).all():
+        raise ValueError("audio with non-finite samples")
     if len(x) < frame:
         return x[:0]
     frames = x[: len(x) // frame * frame].reshape(-1, frame)
     db = 10 * np.log10(np.mean(frames**2, axis=1) + 1e-12)
-    keep = db > max(db.max() - 30, -60)
+    if db.max() < -70:
+        return x[:0]
+    keep = db > db.max() - 30
     loud = np.flatnonzero(keep)
     for start, end in zip(loud, loud[1:]):
         if end - start <= gap:

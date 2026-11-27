@@ -50,6 +50,8 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
       With `--keep-checkpoints 1`: 94 GiB on fp32 3B, 50 GiB on `--bf16-adamw` 3B, 42 GiB on fp32
       heads student, 24 GiB on `--bf16-adamw` heads student (0 keeps every pair, so it gets the
       default's).
+  - the model artifacts' hashes, and it fetches validation's speaker model
+    (`voice_scores.checkpoint()`), so a run never meets the Hub at its first validation.
   - The sync uploads the pair of each validation step (its cadence, `--val-every`), the newest
     only, and holds its hard links until the Hub has it, at ~12 MB/s (~50 min for the 3B's
     37.5 GB, ~23 min for the depformer student's 16.7 GB). Validate less often than an upload
