@@ -116,22 +116,23 @@ def _encoder(device: str) -> SpeakerEncoder:
     return model.eval().to(device)
 
 
-def _speech(x: np.ndarray, frame: int = 400, gap: int = 12) -> np.ndarray:
-    """The 25 ms frames within 30 dB of the loudest, and the gaps under `gap` frames (0.3 s)
-    between them, joined: whole stretches of speech, since every join of loose frames moves the
-    embedding (two borderline frames flipped by 16-bit rounding moved a clip's similarity to
-    itself to 0.96). Relative to the clip's own loudest, so a quiet recording (FLEURS-en peaks
-    near -48 dBFS) keeps the same speech as a loud one. Nothing where no frame reaches -70 dBFS:
-    above Mimi's silence (about -74), below FLEURS-en's quietest recording (-61)."""
-    if not np.isfinite(x).all():
-        raise ValueError("audio with non-finite samples")
+# The quietest a translation's speech frame may be: above Mimi's decoded silence (about -74 dBFS),
+# so a silent translation, whose loudest frame is the decoder's onset click (-53 to -60), keeps
+# under a second. A source has none: FLEURS-en's quietest recording peaks at -61.
+TRANSLATION_FLOOR_DB = -70.0
+
+
+def _speech(x: np.ndarray, floor_db: float = -120.0, frame: int = 400, gap: int = 12) -> np.ndarray:
+    """The 25 ms frames within 30 dB of the loudest and above `floor_db`, and the gaps under
+    `gap` frames (0.3 s) between them, joined: whole stretches of speech, since every join of
+    loose frames moves the embedding (two borderline frames flipped by 16-bit rounding moved a
+    clip's similarity to itself to 0.96). Relative to the clip's own loudest, so a quiet recording
+    (FLEURS-en peaks near -48 dBFS) keeps the same speech as a loud one."""
     if len(x) < frame:
         return x[:0]
     frames = x[: len(x) // frame * frame].reshape(-1, frame)
     db = 10 * np.log10(np.mean(frames**2, axis=1) + 1e-12)
-    if db.max() < -70:
-        return x[:0]
-    keep = db > db.max() - 30
+    keep = db > max(db.max() - 30, floor_db)
     loud = np.flatnonzero(keep)
     for start, end in zip(loud, loud[1:]):
         if end - start <= gap:
@@ -145,12 +146,20 @@ def _embedding(x: np.ndarray, device: str) -> torch.Tensor:
         return F.normalize(_encoder(device)(fbank(wav)[None])[0], dim=0)
 
 
+def _finite(x: np.ndarray, what: str) -> np.ndarray:
+    if not np.isfinite(x).all():
+        raise ValueError(f"{what} has non-finite samples")
+    return x
+
+
 @functools.lru_cache(maxsize=None)
-def _source_embedding(path: str, device: str) -> torch.Tensor | None:
+def _source_embedding(path: str, output_rate: int, device: str) -> torch.Tensor | None:
     """A source file's embedding, None under a second of speech; cached, since every validation
-    scores the same rows."""
+    scores the same rows. Resampled through the translation's rate, so both lose the same band
+    (a 16 kHz FLEURS clip scored against itself at 24 kHz went from 0.96-0.99 to 1.00)."""
     data, rate = sphn.read(path)
-    speech = _speech(soxr.resample(np.asarray(data, np.float32).mean(0), rate, RATE))
+    x = _finite(np.asarray(data, np.float32).mean(0), f"source {path}")
+    speech = _speech(soxr.resample(soxr.resample(x, rate, output_rate), output_rate, RATE))
     return _embedding(speech, device) if len(speech) >= MIN_SPEECH_S * RATE else None
 
 
@@ -175,11 +184,12 @@ def hnr_db(x: np.ndarray) -> float:
 def score(source: str | Path, output: np.ndarray, sample_rate: int, device: str | torch.device) -> dict:
     """`speaker_sim` and `hnr_db` of a translation's mono float audio at `sample_rate` against its
     source file."""
-    out = soxr.resample(np.asarray(output, np.float32), sample_rate, RATE)
-    speech = _speech(out)
+    output = _finite(np.asarray(output, np.float32), f"the translation of {source}")
+    out = soxr.resample(output, sample_rate, RATE)
+    speech = _speech(out, TRANSLATION_FLOOR_DB)
     if len(speech) < MIN_SPEECH_S * RATE:
         return {"speaker_sim": "", "hnr_db": ""}
-    source_embedding = _source_embedding(str(source), str(device))
+    source_embedding = _source_embedding(str(source), sample_rate, str(device))
     return {
         "speaker_sim": "" if source_embedding is None
         else round(float(source_embedding @ _embedding(speech, str(device))), 4),
