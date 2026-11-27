@@ -50,6 +50,7 @@ def main() -> None:
     ct = loaded.condition()
     other_cb = loaded.config.other_codebooks
     n_slices = loaded.config.generated_codebooks
+    steps = loaded.config.depformer.num_slices  # sequential depformer steps (fewer for a slices student)
 
     if args.silence:
         in_pcms = np.zeros((1, args.frames * 1920), dtype=np.float32)
@@ -71,7 +72,7 @@ def main() -> None:
     # Time the audio head (the autoregressive depformer, or the parallel heads) inside the LM step
     # with eval barriers.
     parallel = loaded.config.parallel_heads
-    head_label = f"LM heads ({n_slices} at once)" if parallel else f"LM depformer ({n_slices}x)"
+    head_label = f"LM heads ({n_slices} at once)" if parallel else f"LM depformer ({steps}x)"
     audio_head = model.depformer
     head_t = [0.0]
     original_sample = audio_head.sample
@@ -141,7 +142,7 @@ def main() -> None:
         print(f"{name:<26}{1000 * t / n:>10.2f}{100 * t / wall:>9.1f}%")
     print(f"{'LM total':<26}{lm_ms:>10.2f}")
     if not parallel:
-        print(f"depformer per slice: {1000 * head_t[0] / n / max(n_slices, 1):.2f} ms")
+        print(f"depformer per slice: {1000 * head_t[0] / n / steps:.2f} ms")
     print(f"artifact (LM weights): {size_gb:.2f} GB")
     print(
         f"pipelined critical path = LM total {lm_ms:.1f} ms/frame "

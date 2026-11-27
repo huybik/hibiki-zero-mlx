@@ -80,10 +80,12 @@ None yet.
 The vendored moshi_mlx reads the config (`DepFormerConfig.parallel_codebooks`; the slice count
 dep_q − P + 1, `generated_codebooks` still dep_q) and the weights (the last slice's `linear_out`
 is `linears.8`..`15` stacked), and samples the last slice's codebooks at once, so `convert_mlx.py`
-stages a checkpoint, the gate runs it and `export_lm_coreml.py` exports the staging. Checked on
-the tiny student with larger random weights (2026-11-27): MLX's greedy `DepFormer.sample` equals
-PyTorch's `depformer_step` on all 4 codebooks of 6 rows, and `lm_step` builds every slice from the
-staging.
+stages a checkpoint, the gate runs it through `LmGen` and `export_lm_coreml.py` exports the staging.
+Checked on tiny students with larger random weights (2026-11-27): MLX's greedy `DepFormer.sample`
+equals PyTorch's `depformer_step` on every codebook (4 of them; and 16, the last 8 at once, its
+logits within 1.9e-6), `LmGen` steps, `convert_mlx.py` staged the 4-codebook one, and `lm_step`'s
+slices on a staging match PyTorch's logits on all 16 codebooks. Not yet run: the gate and the
+export on a trained checkpoint.
 
 ## Not yet
 
