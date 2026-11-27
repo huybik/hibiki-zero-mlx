@@ -99,7 +99,7 @@ class Depformer:
             raise ValueError("a depformer_parallel model has weights and an input linear per slice")
         if c.get("depformer_weights_per_step_schedule") not in (None, list(range(slices))):
             raise ValueError("a depformer_parallel model shares no slice's weights")
-        if c["depformer_pos_emb"] != "none" or c.get("depformer_kv_repeat", 1) != 1:
+        if c["depformer_pos_emb"] != "none" or c.get("depformer_kv_repeat", c["kv_repeat"]) != 1:
             raise ValueError("a depformer positional embedding or grouped queries are not implemented")
         if c.get("depformer_norm") != "layer_norm" or c.get("depformer_low_rank_embeddings"):
             raise ValueError("only a depformer LayerNorm before each output and full embeddings are implemented")
@@ -222,6 +222,10 @@ class DepformerSlice(nn.Module):
         for name, t in w.items():
             if name.startswith(prefix) and not name.startswith(prefix + "emb."):
                 self.register_buffer(name[len(prefix):].replace(".", "_"), t)
+        codebooks = cfg.depformer.parallel if k == cfg.depformer.slices(cfg.dep_q) - 1 else 1
+        if self._w("linear_out.weight").shape[0] != codebooks * cfg.card:
+            raise ValueError(f"slice {k}'s linear_out has {self._w('linear_out.weight').shape[0]} rows "
+                             f"for {codebooks} codebooks of {cfg.card}")
 
     def _w(self, name: str) -> torch.Tensor:
         return getattr(self, name.replace(".", "_"))

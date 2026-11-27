@@ -183,7 +183,7 @@ public struct HibikiConfig: Decodable {
                     : "a Core ML LM with a plain depformer")
         }
         if audioHeads == "depformer_parallel" {
-            guard let parallelCodebooks, (1...depQ).contains(parallelCodebooks) else {
+            guard let parallelCodebooks, parallelCodebooks >= 1, parallelCodebooks <= depQ else {
                 throw HibikiError.unsupported("parallel_codebooks \(parallelCodebooks.map(String.init) ?? "missing")")
             }
             if !depformerOutputNorm { throw HibikiError.unsupported("a depformer without its output norm") }
