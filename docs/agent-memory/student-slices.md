@@ -90,7 +90,24 @@ student's and the depformer student's on the same sets.
 
 ## Runs
 
-None yet.
+- `student_slices14_5090`: started 2026-11-27 06:38 UTC on box 62513802 (RTX 5090), commit
+  35e35d9, `restart.sh student-slices-5090`; HF recovery prefix `student_slices14_5090`. Running at
+  0.99 s an update, 26.1 GiB, the GPU at 100% and 505 W; due ~2026-11-28 10:00 UTC. Validations
+  (seed 47; chrF / BLEU / length ratio / end offset in s / speaker_sim / HNR dB; every set's
+  health pass, no empty outputs; outputs in
+  `/Volumes/data/hibiki-zero-evals/box-62513802/student_slices14_5090/`):
+
+  | Update (date) | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+  |---|---|---|---|---|---|---|---|---|
+  | 8,000 (11-27) | 30.50 | 34.98 / 5.24 / 1.63 / 2.2 / 0.15 / 2.9 | 26.03 / 8.47 / 1.06 / 2.2 / 0.10 / 4.0 | 33.29 / 6.41 / 1.66 / 4.2 / 0.18 / 5.0 | 38.65 / 11.07 / 1.38 / 2.5 / 0.21 / 3.5 | 41.18 / 13.30 / 1.13 / 3.0 / 0.27 / 3.5 | 29.90 / 11.31 / 1.20 / 0.7 / 0.18 / 3.7 | 39.12 / 16.86 / 1.10 / 2.0 / 0.18 / 3.8 |
+
+  At 8,000: text behind the heads student's final (190,126, same validation): seven-set mean
+  34.74 against 37.72, selecting 30.50 against 36.92, FLEURS EN→VI −9.0, the rest −0.5 to −3.8;
+  outputs run on past the translation (EOS on 242 of 361 FLEURS-vi rows). The training text KL
+  fell to 0.096 (updates 2,000–3,000) and rose to 0.136 (8,000–9,000) once the rate reached its
+  peak: the trunk drifting. Voice on the gate's 10 FLEURS dev rows
+  ([voice-scores](voice-scores.md)): VI→EN 0.15 / 2.3 dB, EN→VI 0.14 / 4.5 dB, against the heads
+  release's 0.21 / 3.2 and 0.13 / 4.8 and the depformer student's 0.27 / 4.7 and 0.20 / 7.8.
 
 ## On the Mac
 
