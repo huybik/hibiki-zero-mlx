@@ -47,7 +47,9 @@ K = 1. The decoder runs one frame per call on the Neural Engine, whatever K is.
 
 The parallel-heads student (`"audio_heads": "parallel"`) runs only as Core ML: its LM exported from
 the bf16 staging, two models a frame with the text sampled between them
-([lm-npu](../../docs/agent-memory/lm-npu.md)). From the repo root:
+([lm-npu](../../docs/agent-memory/lm-npu.md)). So does a `depformer_parallel` model, whose depformer
+slices are one model each, sampled between them
+([lm-npu](../../docs/agent-memory/lm-npu.md#depformer-slices)). From the repo root:
 
 ```sh
 # ~15 min of k-means on one core at 6 bits
@@ -61,7 +63,7 @@ inference/swift/.build/xcode/Build/Products/Release/hibiki translate CLIP.wav \
 ```
 
 `--lm-units ane|gpu|cpu|all` (CLI and app) places the Core ML LM: the Neural Engine by default.
-`translate` prints its own time per frame (main transformer, heads, host) beside the step's;
+`translate` prints its own time per frame (main transformer, heads or slices, host) beside the step's;
 `bench` prints their sum per minute and logs each in its `.jsonl`.
 
 `--encoder cpu|gpu` (CLI and app) places Mimi's encoder. By default it encodes on the GPU beside

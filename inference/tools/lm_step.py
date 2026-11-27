@@ -1,13 +1,19 @@
-"""The parallel-heads student's LM step (`training/student/heads.py`) as fixed-shape PyTorch modules,
-for the Apple Neural Engine: one frame per call, the KV cache as Core ML state.
+"""A phone student's LM step as fixed-shape PyTorch modules, for the Apple Neural Engine: one
+frame per call, the KV cache as Core ML state. Its audio comes from parallel heads
+(`"audio_heads": "parallel"`, `training/student/heads.py`) or from a depformer whose last slice
+emits the last codebooks at once (`"depformer_parallel"`):
 
     host:   x = text_emb[text] + sum of audio_embs[q][audio q]        (the tables in `embeddings`)
     Trunk:  x, cos, sin, mask, slot  ->  hidden, text_logits          (state: keys, values)
     host:   text token sampled from text_logits
     Heads:  hidden, text_emb[sampled text]  ->  audio_logits [dep_q, card]
+  or, slice k = 0 .. slices - 1:
+    host:   emb = slice k's table [the token before: the sampled text, else codebook k - 1]
+    DepformerSlice k:  hidden, emb, keys and values of slices < k  ->  logits, key, value
+    host:   codebook k sampled (the last slice: codebooks slices - 1 .. dep_q - 1)
 
-Text is sampled between the two calls because the heads read its embedding, as
-`moshi_mlx.models.lm.ParallelHeads` does. The host computes the RoPE tables of the frame's
+Text is sampled before the audio because the heads and the first slice read its embedding, as
+`moshi_mlx.models.lm.ParallelHeads` and `DepFormer` do. The host computes the RoPE tables of the frame's
 position and the mask of its cache slots (`Inputs`), so positions, which grow without bound,
 never enter a half-precision graph. The cache is a ring of `context` slots: frame t writes slot
 t mod context and attends to the frames t - context + 1 .. t, as moshi's training does.
@@ -42,6 +48,7 @@ class Config:
     text_card: int
     n_q: int
     dep_q: int
+    depformer: Depformer | None = None  # None: parallel heads
 
     @property
     def head_dim(self) -> int:
@@ -50,8 +57,8 @@ class Config:
     @staticmethod
     def read(model_dir: Path) -> Config:
         c = json.loads((model_dir / "config.json").read_text())
-        if c.get("audio_heads") != "parallel":
-            raise ValueError(f"{model_dir} is not a parallel-heads model")
+        if c.get("audio_heads") not in ("parallel", "depformer_parallel"):
+            raise ValueError(f"{model_dir} is not a parallel-heads or depformer_parallel model")
         if c["norm"] != "rms_norm_f32" or c["positional_embedding"] != "rope_concat" or c["gating"] != "silu":
             raise ValueError("only RMS norms, rope_concat and SiLU gating are implemented")
         if c.get("layer_scale") is not None or c.get("cross_attention") or c.get("conditioners"):
@@ -62,7 +69,47 @@ class Config:
             dim=c["dim"], heads=c["num_heads"], kv_heads=c["num_heads"] // c["kv_repeat"],
             layers=c["num_layers"], context=c["context"], max_period=c["max_period"],
             card=c["card"], text_card=c["text_card"], n_q=c["n_q"], dep_q=c["dep_q"],
+            depformer=Depformer.read(c) if c["audio_heads"] == "depformer_parallel" else None,
         )
+
+
+@dataclass(frozen=True)
+class Depformer:
+    """A `depformer_parallel` model's depformer: `slices` sequential steps a frame, one codebook
+    each, the last emitting the last `parallel` codebooks at once. Each slice has its own weights
+    (moshi's `depformer_weights_per_step`, `depformer_multi_linear`), RMS-normed layers, no
+    positional embedding and a LayerNorm before its output (`depformer_norm`)."""
+
+    dim: int
+    heads: int
+    layers: int
+    parallel: int
+
+    @property
+    def head_dim(self) -> int:
+        return self.dim // self.heads
+
+    @staticmethod
+    def read(c: dict) -> Depformer:
+        parallel = c["parallel_codebooks"]
+        slices = c["dep_q"] - parallel + 1
+        if not 1 <= parallel <= c["dep_q"]:
+            raise ValueError(f"parallel_codebooks {parallel} for dep_q {c['dep_q']}")
+        if not (c["depformer_weights_per_step"] and c["depformer_multi_linear"]):
+            raise ValueError("a depformer_parallel model has weights and an input linear per slice")
+        if c.get("depformer_weights_per_step_schedule") not in (None, list(range(slices))):
+            raise ValueError("a depformer_parallel model shares no slice's weights")
+        if c["depformer_pos_emb"] != "none" or c.get("depformer_kv_repeat", c["kv_repeat"]) != 1:
+            raise ValueError("a depformer positional embedding or grouped queries are not implemented")
+        if c.get("depformer_norm") != "layer_norm" or c.get("depformer_low_rank_embeddings"):
+            raise ValueError("only a depformer LayerNorm before each output and full embeddings are implemented")
+        return Depformer(
+            dim=c["depformer_dim"], heads=c["depformer_num_heads"], layers=c["depformer_num_layers"],
+            parallel=parallel,
+        )
+
+    def slices(self, dep_q: int) -> int:
+        return dep_q - self.parallel + 1
 
 
 def load(model_dir: Path) -> tuple[Config, dict[str, torch.Tensor]]:
@@ -80,6 +127,13 @@ def embeddings(cfg: Config, w: dict[str, torch.Tensor]) -> np.ndarray:
     audio_embs 0 .. n_q - 1, each [card + 1, dim]."""
     tables = [w["text_emb.weight"]] + [w[f"audio_embs.{q}.weight"] for q in range(cfg.n_q)]
     return torch.cat(tables).to(torch.float16).numpy()
+
+
+def depformer_embeddings(cfg: Config, w: dict[str, torch.Tensor]) -> np.ndarray:
+    """The depformer slices' input tables the host reads, fp16, in order: slice 0's [text_card + 1,
+    depformer dim] (it reads the sampled text), then each later slice's [card + 1, depformer dim]."""
+    slices = cfg.depformer.slices(cfg.dep_q)
+    return torch.cat([w[f"depformer.slices.{k}.emb.weight"] for k in range(slices)]).to(torch.float16).numpy()
 
 
 def _rms_norm(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -149,6 +203,56 @@ class Heads(nn.Module):
         x, card = hidden + text, self.cfg.card
         # One matmul a head: the Neural Engine takes none as wide as all 16 together.
         return torch.cat([x @ self.weight[j * card : (j + 1) * card].T for j in range(self.cfg.dep_q)])
+
+
+class DepformerSlice(nn.Module):
+    """Depformer slice k for one frame, as `moshi_mlx.models.lm.DepFormerSlice._step`: the trunk's
+    hidden state through the slice's input linear plus the host's embedding of the token before it,
+    attending to itself and to the slices before it in the frame.
+
+    hidden [1, dim]; emb [1, d]; keys, values [layers, heads, k, head_dim] (slices k > 0 only)
+    -> logits [n, card] (n = 1, or `parallel` for the last slice); key, value [layers, heads, 1,
+    head_dim], this slice's, which the host passes to the slices after it.
+    """
+
+    def __init__(self, cfg: Config, w: dict[str, torch.Tensor], k: int):
+        super().__init__()
+        self.cfg, self.k = cfg, k
+        prefix = f"depformer.slices.{k}."
+        for name, t in w.items():
+            if name.startswith(prefix) and not name.startswith(prefix + "emb."):
+                self.register_buffer(name[len(prefix):].replace(".", "_"), t)
+        codebooks = cfg.depformer.parallel if k == cfg.depformer.slices(cfg.dep_q) - 1 else 1
+        if self._w("linear_out.weight").shape[0] != codebooks * cfg.card:
+            raise ValueError(f"slice {k}'s linear_out has {self._w('linear_out.weight').shape[0]} rows "
+                             f"for {codebooks} codebooks of {cfg.card}")
+
+    def _w(self, name: str) -> torch.Tensor:
+        return getattr(self, name.replace(".", "_"))
+
+    def forward(self, hidden, emb, keys=None, values=None):
+        d = self.cfg.depformer
+        h, hd, card = d.heads, d.head_dim, self.cfg.card
+        x = hidden @ self._w("linear_in.weight").T + emb
+        new_keys, new_values = [], []
+        for i in range(d.layers):
+            p = f"transformer.layers.{i}."
+            qkv = _rms_norm(x, self._w(p + "norm1.weight")) @ self._w(p + "self_attn.in_proj.weight").T
+            q, key, value = (t.reshape(h, 1, hd) for t in qkv.chunk(3, -1))
+            new_keys.append(key)
+            new_values.append(value)
+            if keys is not None:
+                key = torch.cat([keys[i].to(x.dtype), key], 1)
+                value = torch.cat([values[i].to(x.dtype), value], 1)
+            attn = (F.softmax(q @ key.transpose(1, 2) / math.sqrt(hd), dim=-1) @ value).reshape(1, d.dim)
+            x = x + attn @ self._w(p + "self_attn.out_proj.weight").T
+            gate, up = (_rms_norm(x, self._w(p + "norm2.weight")) @ self._w(p + "gating.linear_in.weight").T).chunk(2, -1)
+            x = x + (F.silu(gate) * up) @ self._w(p + "gating.linear_out.weight").T
+        x = F.layer_norm(x, (d.dim,), self._w("norm.weight"), self._w("norm.bias"), 1e-5)
+        out = self._w("linear_out.weight")
+        # One matmul a codebook: the Neural Engine takes none as wide as several together.
+        logits = torch.cat([x @ out[j * card : (j + 1) * card].T for j in range(out.shape[0] // card)])
+        return logits, torch.stack(new_keys), torch.stack(new_values)
 
 
 @dataclass

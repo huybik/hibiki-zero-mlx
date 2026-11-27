@@ -4,22 +4,24 @@ Read when touching `inference/tools/lm_step.py`, `inference/tools/export_lm_core
 `inference/swift/Sources/HibikiCore/NeuralLM.swift`, or when running the phone LM on an NPU.
 Mimi's own Core ML models are in [mimi-npu](mimi-npu.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Export](#export) · [Runtime](#runtime) ·
-[Precision](#precision) · [Speed](#speed) · [Next](#next)
+[Precision](#precision) · [Speed](#speed) · [Depformer slices](#depformer-slices) · [Next](#next)
 
 ```text
 convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.py --bits 6 ─► model dir ─► NeuralLM (Swift, ANE)
                                                          lm-trunk.mlmodelc   main transformer + text head, KV cache as state
                                                          lm-heads.mlmodelc   16 codebook heads
+                                                      or lm-depformer-k.mlmodelc, lm-depformer-embeddings.bin
                                                          lm-embeddings.bin   input tables, summed on the host
 ```
 
 ## Export
 
-- Only the parallel-heads student ([student-heads](student-heads.md)): its audio is one call a
-  frame, where the depformer would take 8 sequential round trips (user, 2026-11-16: "i will do
-  parallel head then we can consider this"). The Swift runtime runs the heads only this way; its
-  MLX LM has a depformer only, and `HibikiConfig.validate` refuses a heads config without
-  `lm_coreml`.
+- Two audio heads (`audio_heads` in the config): the parallel-heads student's
+  ([student-heads](student-heads.md)), one call a frame (user, 2026-11-16: "i will do parallel
+  head then we can consider this"), and `depformer_parallel`, a depformer whose last slice emits
+  the last `parallel_codebooks` at once, one call a slice ([Depformer slices](#depformer-slices)).
+  The Swift runtime runs both only this way; its MLX LM has a plain depformer only, and
+  `HibikiConfig.validate` refuses either without `lm_coreml`.
 - `lm_step.py` reads the bf16 staging (MLX weight names) and holds the step as fixed-shape PyTorch,
   one frame per call. `Trunk`: x [1, 2048] → hidden, text logits. Its KV cache is Core ML state
   (iOS 18), a ring of `context` (3,000) slots per layer, fp16, 172 MB (sizes here in 10^6 bytes). Frame t writes slot t mod
@@ -27,7 +29,10 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   tables (angles in Double, rounded straight to fp16), the slot and the mask (`Inputs.at`, as
   `NeuralLM` does), so positions never enter fp16 arithmetic.
   `Heads`: hidden + `text_emb[sampled text]` → [16, 2048] logits, the text sampled on the host
-  between the two calls, as `moshi_mlx`'s `ParallelHeads`.
+  between the two calls, as `moshi_mlx`'s `ParallelHeads`. `DepformerSlice` k: hidden + the
+  slice's embedding of the token before it (the text, else codebook k − 1) and the keys and values
+  of the frame's slices before it → logits (one codebook, or `parallel_codebooks` for the last)
+  and its own key and value, as `moshi_mlx`'s `DepFormerSlice._step`.
 - The heads are 16 separate matmuls: one [2048 → 32,768] matmul ran on the CPU (compute plan), the
   16 run on the Neural Engine. The embedding gathers stay on the host (465 MB fp16, memory-mapped,
   one row from each of 33 tables a frame), since gathers are CPU ops in Core ML.
@@ -35,8 +40,11 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
 - `export_lm_coreml.py MODEL_DIR OUT_DIR --bits 6` writes a model directory: both models compiled,
   the tables, the tokenizer and Mimi checkpoint, and the config with `lm_coreml: {bits}` in place
   of `moshi_name`. Mimi's decoder comes from `export_mimi_coreml.py`
-  ([README](../../inference/swift/README.md#core-ml-lm)). `--bits` palettizes weights over 1M
-  elements by k-means, one table of 2^N entries per 16 output channels: trunk 1,958 → 738 MB, heads 134
+  ([README](../../inference/swift/README.md#core-ml-lm)). A `depformer_parallel` model gets
+  `lm-depformer-{k}.mlmodelc` and the slices' input tables, `lm-depformer-embeddings.bin` (fp16,
+  memory-mapped), in place of the heads. `--bits` palettizes weights over 65,536
+  elements by k-means (every heads-student weight is over 1M; a 512-wide slice's are not, so the
+  threshold was 1M until 2026-11-27), one table of 2^N entries per 16 output channels: trunk 1,958 → 738 MB, heads 134
   → 51 MB. It takes ~15 min on one core. Compute plan of the 6-bit models: all 892 trunk ops and
   all 18 head ops on the Neural Engine. A student trained against these tables is snapped onto
   them first ([student-palettize](student-palettize.md)).
@@ -51,7 +59,10 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   - the text sampled on the CPU (`Sampler` on `[Float]`: exactly k kept, by quickselect, the first
     of any tied with the k-th, as MLX's argpartition keeps k; `SplitMix64`);
   - its `text_emb` row copied to the heads;
-  - the 16 codebooks sampled.
+  - the 16 codebooks sampled;
+  - or, for `depformer_parallel`, between the slices: each slice's table row copied in, its key
+    and value copied into the later slices' inputs, its codebooks sampled (timed as `lmHeadsMs`
+    for the slices' calls and `lmHostMs` for the rest).
   The same seed does not reproduce MLX's tokens: the generators differ.
 - `Translator.step` encodes before it decodes: the Core ML LM holds the Neural Engine at the
   start of its frame, and a Mimi decode queued behind it left the CPU idle (M4 Pro: frame 26 →
@@ -164,8 +175,64 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   `heads6_ane_chunk2_vi_10min`), each `.jsonl` (a sample a step), `.txt` (summary and text) and
   `.wav`.
 
+## Depformer slices
+
+- **Why:** the heads student speaks in a voice unlike the speaker's, from codebook 1 on, at every
+  checkpoint and precision, where the depformer student keeps it
+  ([voice-scores](voice-scores.md)). `depformer_parallel` (2026-11-27, not yet
+  trained): a depformer for codebooks 0–7, one slice each, whose 9th slice reads codebook 7 and
+  emits 8–15 at once (`parallel_codebooks: 8`), so the delays go back to the teacher's (max 2).
+- **The math is moshi's:** `lm_step`'s slices against `moshi_mlx`'s `DepFormerSlice._step` on the
+  depformer student (update 2,000 bf16, 8 slices, read as `parallel_codebooks: 1`), fp32, the same
+  hidden states and tokens: logits within 5.4e-7 of the largest, argmax 32 of 32.
+- **The Core ML path keeps the voice:** that student exported at 6 bits as `depformer_parallel`
+  with `parallel_codebooks: 1` (`/Volumes/data/models/hibiki/weights/student_dep10/g2000_ane6`),
+  through the Swift CLI on the M4 Pro's Neural Engine, on the gate's 5 FLEURS dev rows each way,
+  against the same model in MLX 6 bits: VI→EN chrF 44.8 (49.6), `speaker_sim` 0.27 (0.27),
+  `hnr_db` 4.4 (4.7); EN→VI 39.8 (40.8), 0.18 (0.19), 7.6 (7.8). Its LM: trunk 8.6, slices 5.9,
+  host 1.2 ms a frame. The CLI feeds no direction primer, so on the user's mic clips the two-way
+  model guessed EN→VI from the voice, where MLX primed with `speaking="vi"` translated to English.
+- **Untrained sizes** (random slices on the heads release's trunk, 6 bits; the slices' tables fp16
+  on the host):
+
+  | Variant (dim × layers, 9 slices) | Slices | Tables | M4 Pro: slices / host ms a frame |
+  |---|---|---|---|
+  | heads release (for reference) | 51 MB heads | – | 1.2 / 1.1 |
+  | 512 × 1 | 47 MB | 63 MB | 1.8 / 3.1 |
+  | 512 × 2 | 74 MB | 63 MB | 2.6 / 2.4 |
+  | 1024 × 1 | 147 MB | 126 MB | 4.1 / 1.9 |
+  | 1024 × 3 (the depformer student's shape) | 365 MB | 126 MB | 6.3 / 3.1 |
+
+  The trunk held 11.6–12.2 ms in each (`hibiki bench`, 1 minute, Mimi on the GPU). The trained
+  depformer student (10-layer trunk, 8 slices of 1024 × 3): trunk 8.8, slices 5.9, host 0.9 ms,
+  the LM 15.7 against the heads release's 14.8.
+- **On the A15** (the app, 2 minutes each from the same Vietnamese clip, Mimi on the GPU, one after
+  another, so warm; ms a frame, frame times from minute 2):
+
+  | Variant | Trunk | Slices | Host | Frame p50 / p99 |
+  |---|---|---|---|---|
+  | heads release | 43.0 | 3.3 heads | 5.0 | 53.2 / 55.1 |
+  | 512 × 1 | 42.4 | 16.0 | 7.8 | 66.1 / 69.5 |
+  | 512 × 2 | 42.4 | 17.2 | 7.9 | 67.7 / 70.3 |
+  | 1024 × 1 | 42.2 | 19.6 | 7.9 | 69.7 / 73.2 |
+  | 1024 × 3 | 40.9 | 28.0 | 9.0 | 78.0 / 82.0 |
+
+  The slices cost mostly their 9 calls: doubling the layers added 1.2 ms, where the phone takes
+  ~1.8 ms a call even for 512 × 1 (the Mac 0.2). The 9 samplings add ~3 ms of host. Each reached
+  thermal state 2 (fair) within the 2 minutes. 1024 × 3, the depformer student's shape, misses
+  the frame's 80 ms (p90 80.0). **512 × 2 holds for 10 minutes** (run on its own after these):
+  frame p50 66.8–68.8 ms every minute, p99 69.3–74.5 but 79.4 in minute 10, thermal 2 throughout,
+  lag at most 0.09 s; LM 66.8 (trunk 42.9, slices 17.4, host 6.3). The trained depformer student
+  was not timed: it trails the heads student by ~14 chrF ([phone-student](phone-student.md)), so
+  a new student is trained either way. Raw results:
+  `/Volumes/data/hibiki-zero-evals/iphone/depformer/` (`*_vi_2min.jsonl` and
+  `d512x2_vi_10min.jsonl`, a sample a step, and `.txt`, the console), the Mac's in
+  `/Volumes/data/hibiki-zero-evals/mac/depformer/`.
+
 ## Next
 
+- Fewer Core ML calls for the slices, whose cost on the A15 is ~1.8 ms a call: a larger
+  `parallel_codebooks` (fewer slices), or every slice in one model with the sampling inside it.
 - A full-set gate of the Core ML LM against MLX 6 bits, in one runtime.
 - Long sessions: the fp16 drift past ~2 minutes of context. Untried: attention over the cache in
   chunks with their partial sums combined (more fp16 headroom per sum), or a shorter context.

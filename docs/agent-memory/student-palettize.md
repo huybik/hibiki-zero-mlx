@@ -14,7 +14,8 @@ argmax on 92.1% of tokens against fp16's 94.6% ([lm-npu](lm-npu.md#precision)), 
 ## Method
 
 - **What the export does** (measured 2026-11-21 on a layer used as `lm_step` uses it, `x @ W.T`):
-  every trunk and head weight over 2^20 elements gets one k-means table of 2^N entries per 16 output
+  every trunk and head weight over 2^16 elements (2^20 until 2026-11-27; every heads-student
+  weight is over both) gets one k-means table of 2^N entries per 16 output
   channels, rows of the torch weight (tables [rows / 16, 1, 2^N, 1]); `convert_mlx.py` keeps the
   rows in order (the heads are concatenated, 2,048 rows each). A weight whose every 16 rows already
   hold at most 2^N values comes back exact: the export's k-means (scikit-learn here, kmeans1d where

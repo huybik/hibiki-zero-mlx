@@ -1,15 +1,18 @@
-"""Export the parallel-heads student's LM step (`lm_step.py`) as compiled Core ML models for the
-Apple Neural Engine: fp16, one frame per call, the KV cache as state (iOS 18).
+"""Export a phone student's LM step (`lm_step.py`) as compiled Core ML models for the Apple Neural
+Engine: fp16, one frame per call, the KV cache as state (iOS 18).
 
     python inference/tools/export_lm_coreml.py MODEL_DIR OUT_DIR [--bits 6]
 
 MODEL_DIR is the student staged by `convert_mlx.py` in bf16. OUT_DIR becomes a model directory
 for the Swift runtime (`NeuralLM`): `lm-trunk.mlmodelc` (the main transformer and the text head),
-`lm-heads.mlmodelc` (the 16 heads), `lm-embeddings.bin` (the input tables in fp16, which the host
-sums: text_emb, then each audio_embs), the tokenizer and Mimi checkpoint, and MODEL_DIR's
-`config.json` with `lm_coreml` in place of the MLX weights (`moshi_name`). Mimi's decoder comes
-from `export_mimi_coreml.py`, as for any model directory. `--bits N` palettizes the trunk's and the
-heads' weights to N bits (k-means, one table per 16 output channels); without it they stay fp16.
+`lm-embeddings.bin` (the input tables in fp16, which the host sums: text_emb, then each
+audio_embs), the audio head, the tokenizer and Mimi checkpoint, and MODEL_DIR's `config.json` with
+`lm_coreml` in place of the MLX weights (`moshi_name`). The audio head is `lm-heads.mlmodelc` (the
+16 parallel heads) or, for a `depformer_parallel` model, `lm-depformer-K.mlmodelc` (slice K) and
+`lm-depformer-embeddings.bin` (the slices' input tables, fp16, which the host reads a row of).
+Mimi's decoder comes from `export_mimi_coreml.py`, as for any model directory. `--bits N`
+palettizes every model's weights to N bits (k-means, one table per 16 output channels); without it
+they stay fp16.
 """
 
 from __future__ import annotations
@@ -30,8 +33,29 @@ from export_mimi_coreml import convert, save_compiled
 
 def _palettize(model: ct.models.MLModel, bits: int) -> ct.models.MLModel:
     op = cto.OpPalettizerConfig(nbits=bits, mode="kmeans", granularity="per_grouped_channel",
-                                group_size=16, weight_threshold=1 << 20)
+                                group_size=16, weight_threshold=1 << 16)
     return cto.palettize_weights(model, cto.OptimizationConfig(global_config=op))
+
+
+def export_audio_head(cfg: ls.Config, w: dict[str, torch.Tensor], out_dir: Path, bits: int | None) -> None:
+    """The heads, or each depformer slice and the slices' input tables, into `out_dir`."""
+    if cfg.depformer is None:
+        heads = convert(
+            ls.Heads(cfg, w),
+            {"hidden": ((1, cfg.dim), np.float16), "text": ((1, cfg.dim), np.float16)},
+            ["audio_logits"],
+        )
+        save_compiled(_palettize(heads, bits) if bits else heads, out_dir / "lm-heads.mlmodelc")
+        return
+    d = cfg.depformer
+    ls.depformer_embeddings(cfg, w).tofile(out_dir / "lm-depformer-embeddings.bin")
+    for k in range(d.slices(cfg.dep_q)):
+        inputs = {"hidden": ((1, cfg.dim), np.float16), "emb": ((1, d.dim), np.float16)}
+        if k:
+            past = (d.layers, d.heads, k, d.head_dim)
+            inputs |= {"keys": (past, np.float16), "values": (past, np.float16)}
+        model = convert(ls.DepformerSlice(cfg, w, k), inputs, ["logits", "key", "value"])
+        save_compiled(_palettize(model, bits) if bits else model, out_dir / f"lm-depformer-{k}.mlmodelc")
 
 
 def main() -> None:
@@ -65,15 +89,8 @@ def main() -> None:
         ["hidden", "text_logits"],
         {"keys": cache, "values": cache},
     )
-    heads = convert(
-        ls.Heads(cfg, w),
-        {"hidden": ((1, cfg.dim), np.float16), "text": ((1, cfg.dim), np.float16)},
-        ["audio_logits"],
-    )
-    if args.bits:
-        trunk, heads = _palettize(trunk, args.bits), _palettize(heads, args.bits)
-    save_compiled(trunk, args.out_dir / "lm-trunk.mlmodelc")
-    save_compiled(heads, args.out_dir / "lm-heads.mlmodelc")
+    save_compiled(_palettize(trunk, args.bits) if args.bits else trunk, args.out_dir / "lm-trunk.mlmodelc")
+    export_audio_head(cfg, w, args.out_dir, args.bits)
     # Last: a directory whose config names a Core ML LM holds one.
     (args.out_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
 
