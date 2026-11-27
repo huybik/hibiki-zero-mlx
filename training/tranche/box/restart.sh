@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -218,6 +218,26 @@ case $job in
             --eval-batch-size 64 --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
+  # The slices' refit on the on-policy trunk (slices-on-policy.md#refit): on-policy updates raised the
+  # text but lowered the speech's clarity (HNR), so the slices are distilled again from the 3B on the
+  # SFT data, the trunk frozen, from the on-policy run's best (runs/both_slices_z/best.json), with a
+  # fresh optimizer at 5e-5, cosine over 2,000 updates (~0.43 s/update).
+  student-slices-refit-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
+       u=$(.venv/bin/python -c 'import json; print(json.load(open("runs/both_slices_z/best.json"))["step"])')
+       cmd=(./training/h100.sh run slices_z${u}_refit
+            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
+            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
+            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
+            --config-path weights/student_slices14/config.json
+            --model-weight runs/both_slices_z/$(printf best_step%06d.safetensors "$u")
+            --teacher-weight weights/grpo_twoway_best1400.safetensors
+            --bf16-adamw --freeze-trunk --fp8 --fp8-teacher all --batch-frames 12288 --park-states
+            --lr 5e-5 --first-codebook-weight 10 --acoustic-ar-weight 3
+            --schedule cosine --warmup-fraction 0.05 --max-steps 2000
+            --eval-batch-size 64 --keep-checkpoints 1 --seed 51 --save-every 1000 --val-every 1000
+            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
+            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # The slices student's 6-bit finish (slices-on-policy.md#phone-finish, the heads student's recipe in
   # student-palettize.md): its on-policy best (hard-linked to weights/both_slices_z_best.safetensors)
   # distilled from its own bf16 weights with the Core ML export's 6-bit tables in the step, at 5e-7
@@ -236,7 +256,7 @@ case $job in
             --eval-batch-size 64 --keep-checkpoints 1 --seed 50 --save-every 1000 --val-every 1000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
+  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &
