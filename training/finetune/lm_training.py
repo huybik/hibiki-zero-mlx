@@ -41,6 +41,7 @@ from __future__ import annotations
 from typing import Any
 
 import math
+import os
 
 import torch
 import torch.nn.functional as F
@@ -51,7 +52,38 @@ from moshi.modules.gating import ActivationGating
 from moshi.modules.transformer import RMSNorm, StreamingMultiheadAttention, StreamingTransformer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from training.finetune.fp8_linear import fp8_linear
+from training.finetune.fp8_linear import (
+    FrozenFP8Linear,
+    _fp8_frozen_linear_op,
+    fp8_frozen_linear,
+    fp8_linear,
+)
+
+# Depformer attention backend for short sequences (K=9 student, K=16 teacher); "auto" uses cuDNN
+# for forward-only teacher attention (1.57x faster on Blackwell sm_120) and memory-efficient for
+# backward-enabled student attention. Overridable via HIBIKI_DEPFORMER_ATTN=auto|efficient|math|flash|cudnn.
+DEPFORMER_ATTN = os.environ.get("HIBIKI_DEPFORMER_ATTN", "auto")
+
+_ROPE_CACHE: dict[tuple[torch.device, int, float], tuple[torch.Tensor, torch.Tensor]] = {}
+_ROPE_MAX_LEN = 4096
+
+
+def _rope_tables(
+    steps: int, dim: int, max_period: float, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Cached (cos, sin) tables for rope_concat at offset 0: computed once per device/dim/period
+    instead of inside every transformer layer."""
+    key = (device, dim, float(max_period))
+    cached = _ROPE_CACHE.get(key)
+    if cached is None or cached[0].shape[0] < steps:
+        length = max(_ROPE_MAX_LEN, steps)
+        ds = torch.arange(dim // 2, device=device, dtype=torch.float32)
+        freqs = torch.exp(ds * (-math.log(max_period) * 2 / dim))
+        ts = torch.arange(length, device=device, dtype=torch.float32).view(-1, 1)
+        angles = freqs * ts
+        cached = (torch.cos(angles), torch.sin(angles))
+        _ROPE_CACHE[key] = cached
+    return cached[0][:steps], cached[1][:steps]
 
 
 class _CausalSDPA:
@@ -100,33 +132,86 @@ def _keep_kv_heads(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     return x
 
 
+def _linear_apply(module: Any, x: torch.Tensor, use_fp8: bool = False) -> torch.Tensor:
+    if isinstance(module, FrozenFP8Linear):
+        return module(x)
+    if use_fp8:
+        wq = getattr(module, "_fp8_w_cache", None)
+        if wq is not None and not torch.is_grad_enabled():
+            return fp8_frozen_linear(x, wq, module._fp8_s_cache)
+        return fp8_linear(x, module.weight)
+    return F.linear(x, module.weight, module.bias)
+
+
 def _gating(module: ActivationGating, x: torch.Tensor, use_fp8: bool = False) -> torch.Tensor:
-    lin = fp8_linear if use_fp8 else F.linear
-    gate, value = lin(x, module.linear_in.weight).unflatten(-1, (2, -1)).unbind(-2)
-    return lin(module.activation(gate) * value, module.linear_out.weight)
+    gate, value = _linear_apply(module.linear_in, x, use_fp8).unflatten(-1, (2, -1)).unbind(-2)
+    return _linear_apply(module.linear_out, module.activation(gate) * value, use_fp8)
 
 
 _moshi_gating_forward = ActivationGating.forward
 
 
 def _gating_forward(self: ActivationGating, x: torch.Tensor) -> torch.Tensor:
-    if self.training and isinstance(self.linear_in, torch.nn.Linear):
+    if self.training and isinstance(self.linear_in, (torch.nn.Linear, FrozenFP8Linear)):
         return _gating(self, x)
     return _moshi_gating_forward(self, x)
 
 
 def _schedule(owner: Any, steps: int) -> list[int]:
     schedule = owner.weights_per_step_schedule
-    return list(schedule) if schedule is not None else list(range(steps))
+    return list(schedule[:steps]) if schedule is not None else list(range(steps))
 
 
 def _per_step(modules: Any, schedule: list[int], xs: torch.Tensor, function: Any) -> torch.Tensor:
-    """xs [K, N, C]: step k through function(modules[schedule[k]], step)."""
-    return torch.stack([function(modules[index], x) for index, x in zip(schedule, xs.unbind(0))])
+    """xs [K, N, C]: step k through function(modules[schedule[k]], step).
+    Contiguous runs of identical schedule indices (e.g. the 3B teacher's steps 8..15 sharing slice 8)
+    are batched into one call, eliminating 7/8 of slice-8 GEMMs and weight HBM reads."""
+    runs: list[tuple[int, int]] = []
+    for idx in schedule:
+        if runs and runs[-1][0] == idx:
+            runs[-1] = (idx, runs[-1][1] + 1)
+        else:
+            runs.append((idx, 1))
+    if len(runs) == len(schedule):
+        return torch.stack([function(modules[index], x) for index, x in zip(schedule, xs.unbind(0))])
+    n, c = xs.shape[1], xs.shape[2]
+    chunks = xs.split([count for _, count in runs], dim=0)
+    outs = []
+    for (idx, count), chunk in zip(runs, chunks, strict=True):
+        if count == 1:
+            outs.append(function(modules[idx], chunk.squeeze(0)).unsqueeze(0))
+        else:
+            outs.append(function(modules[idx], chunk.reshape(count * n, c)).view(count, n, -1))
+    return torch.cat(outs, dim=0)
 
 
-def _linear(module: torch.nn.Linear, x: torch.Tensor) -> torch.Tensor:
+def _linear(module: Any, x: torch.Tensor) -> torch.Tensor:
     return module(x)
+
+
+def _depformer_sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, steps: int) -> torch.Tensor:
+    """Causal attention for short depformer sequences (K=9 or K=16)."""
+    if DEPFORMER_ATTN == "math":
+        scale = 1.0 / math.sqrt(q.shape[-1])
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+        causal = torch.triu(torch.ones((steps, steps), device=q.device, dtype=torch.bool), diagonal=1)
+        scores = scores.masked_fill(causal, float("-inf"))
+        return torch.matmul(torch.softmax(scores.float(), dim=-1).to(q.dtype), v)
+    if DEPFORMER_ATTN == "auto":
+        if not q.is_cuda:
+            backend = SDPBackend.MATH
+        elif not torch.is_grad_enabled():
+            backend = SDPBackend.CUDNN_ATTENTION
+        else:
+            backend = SDPBackend.EFFICIENT_ATTENTION
+    else:
+        backend = {
+            "efficient": SDPBackend.EFFICIENT_ATTENTION,
+            "flash": SDPBackend.FLASH_ATTENTION,
+            "cudnn": SDPBackend.CUDNN_ATTENTION,
+        }[DEPFORMER_ATTN]
+    with sdpa_kernel([backend]):
+        return F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
 
 def _depformer_layer(layer: Any, xs: torch.Tensor) -> torch.Tensor:
@@ -136,10 +221,7 @@ def _depformer_layer(layer: Any, xs: torch.Tensor) -> torch.Tensor:
     schedule = _schedule(attention, steps)
     projected = _per_step(attention.in_projs, schedule, layer.norm1(xs), _linear)  # [K, N, 3C]
     q, k, v = projected.view(steps, n, 3, attention.num_heads, -1).permute(2, 1, 3, 0, 4)
-    # 16 positions per sequence and N sequences: the memory-efficient kernel's backward is faster
-    # here than flash's (measured on the H100).
-    with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION]):
-        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # [N, H, K, D]
+    out = _depformer_sdpa(q, k, v, steps)  # [N, H, K, D]
     out = out.permute(2, 0, 1, 3).reshape(steps, n, channels)
     update = _per_step(attention.out_projs, schedule, out, _linear)
     xs = xs.to(update) + layer.layer_scale_1(update)
@@ -185,33 +267,67 @@ def run_depformer(depformer: Any, xs: torch.Tensor) -> torch.Tensor:
     return run(depformer, xs).to(xs.dtype).unbind(0)
 
 
+def project_depformer_in(depformer_in: Any, transformer_out: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    """Run all `depformer_in` projections on `transformer_out` [B, T, C] in a single fused GEMM,
+    reading `transformer_out` once instead of S times. Returns a tuple of S tensors [B, T, D]."""
+    B, T, _ = transformer_out.shape
+    count = len(depformer_in)
+    if count == 1:
+        return (depformer_in[0](transformer_out),)
+    if all(isinstance(m, torch.nn.Linear) and m.bias is None for m in depformer_in):
+        w = torch.cat([m.weight for m in depformer_in], dim=0)
+        return F.linear(transformer_out, w).view(B, T, count, -1).unbind(2)
+    if all(isinstance(m, FrozenFP8Linear) for m in depformer_in):
+        if transformer_out.is_cuda and ((B * T) % 16 == 0):
+            wq = torch.cat([m.weight_fp8 for m in depformer_in], dim=0)
+            sw = torch.cat([m.scale_fp8 for m in depformer_in], dim=0)
+            if (wq.shape[0] % 16 == 0) and (wq.shape[1] % 16 == 0):
+                return _fp8_frozen_linear_op(transformer_out, wq, sw).view(B, T, count, -1).unbind(2)
+    return tuple(m(transformer_out) for m in depformer_in)
+
+
+def _apply_norms(norms: Any, out: tuple[torch.Tensor, ...], B: int, T: int) -> tuple[torch.Tensor, ...]:
+    return tuple(norm(x).view(B, T, -1) for norm, x in zip(norms, out, strict=True))
+
+
+_compiled_apply_norms = torch.compile(_apply_norms, dynamic=True)
+
+
+def forward_depformer_hidden(
+    lm: LMModel, sequence: torch.Tensor, transformer_out: torch.Tensor
+) -> tuple[torch.Tensor, ...]:
+    """Normed depformer outputs `[S]` of `[B, T, dep_dim]` before `lm.linears`, for chunked
+    linear+KL distillation. Dispatches to a slices model's custom `forward_depformer_hidden`."""
+    custom = getattr(lm, "forward_depformer_hidden", None)
+    if custom is not None:
+        return custom(sequence, transformer_out)
+    B, K, T = sequence.shape
+    if K != lm.num_codebooks:
+        raise RuntimeError(f"Depformer training needs all {lm.num_codebooks} codebooks, got {K}")
+    steps = lm.dep_q
+    projected = project_depformer_in(lm.depformer_in, transformer_out)
+    inputs = []
+    for cb in range(steps):
+        index = 0
+        if lm.depformer_multi_linear:
+            index = cb
+            if lm.depformer_weights_per_step_schedule is not None:
+                index = lm.depformer_weights_per_step_schedule[cb]
+        if cb == 0:
+            token_in = lm.depformer_text_emb(sequence[:, 0])
+        else:
+            token_in = lm.depformer_emb[cb - 1](sequence[:, cb + lm.audio_offset - 1])
+        inputs.append(token_in + projected[index])
+    out = run_depformer(lm.depformer, torch.stack(inputs, 0).view(steps, B * T, -1))
+    return _compiled_apply_norms(lm.depformer_norms[:steps], out, B, T)
+
+
 def forward_depformer_training(
     self: LMModel, sequence: torch.Tensor, transformer_out: torch.Tensor
 ) -> torch.Tensor:
     """moshi's LMModel.forward_depformer_training: logits [B, dep_q, T, card]."""
-    B, K, T = sequence.shape
-    if K != self.num_codebooks:
-        raise RuntimeError(f"Depformer training needs all {self.num_codebooks} codebooks, got {K}")
-    steps = self.dep_q
-    projections: dict[int, torch.Tensor] = {}
-    inputs = []
-    for cb in range(steps):
-        index = 0
-        if self.depformer_multi_linear:
-            index = cb
-            if self.depformer_weights_per_step_schedule is not None:
-                index = self.depformer_weights_per_step_schedule[cb]
-        if index not in projections:
-            projections[index] = self.depformer_in[index](transformer_out)
-        if cb == 0:
-            token_in = self.depformer_text_emb(sequence[:, 0])
-        else:
-            token_in = self.depformer_emb[cb - 1](sequence[:, cb + self.audio_offset - 1])
-        inputs.append(token_in + projections[index])
-    out = run_depformer(self.depformer, torch.stack(inputs, 0).view(steps, B * T, -1))
-    logits = [
-        self.linears[cb](self.depformer_norms[cb](out[cb])).view(B, T, -1) for cb in range(steps)
-    ]
+    normed = forward_depformer_hidden(self, sequence, transformer_out)
+    logits = [self.linears[cb](normed[cb]) for cb in range(self.dep_q)]
     return torch.stack(logits, 1)
 
 
@@ -219,6 +335,41 @@ def _delayed(lm: LMModel, codes: torch.Tensor) -> torch.Tensor:
     """moshi's delayed sequence of `codes`: the initial token, then each row at its delay."""
     initial = lm._get_initial_token().expand(codes.shape[0], -1, -1)
     return torch.cat([initial, _delay_sequence(lm.delays, codes, initial)], dim=2)
+
+
+def _embed_inputs(lm: LMModel, sequence: torch.Tensor) -> torch.Tensor:
+    """Sum text + all audio embeddings for `sequence` [B, K, T] in one compiled graph."""
+    input_ = lm.text_emb(sequence[:, 0])
+    for cb_index in range(lm.num_audio_codebooks):
+        input_ = input_ + lm.emb[cb_index](sequence[:, cb_index + lm.audio_offset])
+    return input_
+
+
+_compiled_embed_inputs = torch.compile(_embed_inputs, dynamic=True)
+
+
+def forward_trunk_hidden(
+    lm: LMModel, codes: torch.Tensor, condition_tensors: Any = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Main transformer output `[B, T, dim]` (after `out_norm`, skipping `text_linear`) and
+    `delayed` `[B, K, T + 1]`. Used by chunked distillation and `--freeze-trunk`."""
+    delayed = _delayed(lm, codes)
+    sequence = delayed[:, :, :-1]
+    sum_condition = cross_attention_src = None
+    if condition_tensors is not None:
+        sum_condition = lm.fuser.get_sum(condition_tensors)
+        cross_attention_src = lm.fuser.get_cross(condition_tensors)
+    elif lm.fuser is not None:
+        raise ValueError("this model needs its condition tensors")
+    input_ = _compiled_embed_inputs(lm, sequence)
+    if sum_condition is not None:
+        input_ = input_ + sum_condition.to(input_)
+    if cross_attention_src is not None:
+        cross_attention_src = cross_attention_src.to(input_)
+    transformer_out = lm.transformer(input_, cross_attention_src=cross_attention_src)
+    if lm.out_norm:
+        transformer_out = lm.out_norm(transformer_out)
+    return transformer_out, delayed
 
 
 def _main_transformer(
@@ -275,16 +426,14 @@ def _rms_norm(norm: RMSNorm, x: torch.Tensor) -> torch.Tensor:
     return (y * (norm.alpha.to(variance) * torch.rsqrt(variance))).to(x.dtype)
 
 
-def _rope(q: torch.Tensor, k: torch.Tensor, max_period: float) -> tuple[torch.Tensor, torch.Tensor]:
-    """moshi's `apply_rope` at offset 0 on [B, H, T, D], halves concatenated (`rope_concat`)."""
-    steps, dim = q.shape[-2], q.shape[-1]
-    ds = torch.arange(dim // 2, device=q.device, dtype=torch.float32)
-    freqs = torch.exp(ds * (-math.log(max_period) * 2 / dim))
-    ts = torch.arange(steps, device=q.device, dtype=torch.float32).view(-1, 1)
-    rotr, roti = torch.cos(freqs * ts), torch.sin(freqs * ts)
+def _apply_rope(
+    q: torch.Tensor, k: torch.Tensor, rotr: torch.Tensor, roti: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply precomputed (cos, sin) rope_concat tables to [B, H, T, D] q and k."""
+    half = q.shape[-1] // 2
 
     def rotate(x: torch.Tensor) -> torch.Tensor:
-        xr, xi = x[..., : dim // 2].float(), x[..., dim // 2 :].float()
+        xr, xi = x[..., :half].float(), x[..., half:].float()
         real, imaginary = xr * rotr - xi * roti, xr * roti + xi * rotr
         return torch.cat([real.to(q.dtype), imaginary.to(q.dtype)], -1)
 
@@ -292,73 +441,58 @@ def _rope(q: torch.Tensor, k: torch.Tensor, max_period: float) -> tuple[torch.Te
 
 
 def _transformer_layer(
-    layer: Any, x: torch.Tensor, max_period: float, use_fp8: bool = False
+    layer: Any,
+    x: torch.Tensor,
+    rotr: torch.Tensor,
+    roti: torch.Tensor,
+    use_fp8: bool = False,
 ) -> torch.Tensor:
     """One moshi StreamingTransformerLayer on x [B, T, C] at offset 0, without streaming."""
     attention = layer.self_attn
     channels = x.shape[-1]
     kv_heads = attention.num_heads // attention.kv_repeat
-    lin = fp8_linear if use_fp8 else F.linear
-    projected = lin(_rms_norm(layer.norm1, x), attention.in_projs[0].weight)
+    projected = _linear_apply(attention.in_projs[0], _rms_norm(layer.norm1, x), use_fp8)
     q = projected[..., :channels].unflatten(-1, (attention.num_heads, -1)).transpose(1, 2)
     k, v = projected[..., channels:].unflatten(-1, (2, kv_heads, -1)).permute(2, 0, 3, 1, 4)
-    q, k = _rope(q, k, max_period)
+    q, k = _apply_rope(q, k, rotr, roti)
     out = F.scaled_dot_product_attention(
         q, k, v, is_causal=True, enable_gqa=attention.kv_repeat != 1
     )  # [B, H, T, D]
-    update = lin(out.transpose(1, 2).flatten(2), attention.out_projs[0].weight)
+    update = _linear_apply(attention.out_projs[0], out.transpose(1, 2).flatten(2), use_fp8)
     x = x.to(update) + layer.layer_scale_1(update)
     update = _gating(layer.gating, _rms_norm(layer.norm2, x), use_fp8=use_fp8)
     return x.to(update) + layer.layer_scale_2(update)
 
 
-def _transformer_layers(transformer: Any, x: torch.Tensor) -> torch.Tensor:
+def _transformer_layers(
+    transformer: Any, x: torch.Tensor, rotr: torch.Tensor, roti: torch.Tensor, use_fp8: bool
+) -> torch.Tensor:
     out = x
-    max_period = transformer.rope.max_period
     for layer in transformer.layers:
-        out = _transformer_layer(layer, out, max_period, False)
+        out = _transformer_layer(layer, out, rotr, roti, use_fp8)
     return out.to(x.dtype)
 
 
-def _transformer_layers_ckpt_bf16(transformer: Any, x: torch.Tensor) -> torch.Tensor:
-    """Whole-loop compiled checkpointing for pure bf16 (+6.5% faster than per-layer compile via
-    cross-layer norm/residual fusion)."""
+def _transformer_layers_ckpt_loop(
+    transformer: Any, x: torch.Tensor, rotr: torch.Tensor, roti: torch.Tensor, use_fp8: bool
+) -> torch.Tensor:
+    """Whole-loop compiled selective checkpointing (fuses norms/residuals across layers)."""
     out = x
-    max_period = transformer.rope.max_period
     ckpt_n = int(getattr(transformer, "checkpoint_layers", 0)) or len(transformer.layers)
     for index, layer in enumerate(transformer.layers):
         if index < ckpt_n:
             out = torch.utils.checkpoint.checkpoint(
-                _transformer_layer, layer, out, max_period, False, use_reentrant=False
+                _transformer_layer, layer, out, rotr, roti, use_fp8, use_reentrant=False
             )
         else:
-            out = _transformer_layer(layer, out, max_period, False)
+            out = _transformer_layer(layer, out, rotr, roti, use_fp8)
     return out.to(x.dtype)
 
 
-# Whole-loop compile for bf16 (fuses norms/residuals across layers); per-layer compile for --fp8
-# (avoids unrolling 28 FP8 quantize+scaled_mm blocks, ~20x faster compile).
+# Whole-loop compiled functions: since fp8_linear is a single opaque custom_op, both bf16 and
+# FP8 compile cleanly in one graph and fuse RMSNorm + residuals + SiLU across layers.
 _compiled_transformer_layers = torch.compile(_transformer_layers, dynamic=True)
-_compiled_transformer_layers_ckpt_bf16 = torch.compile(_transformer_layers_ckpt_bf16, dynamic=True)
-_compiled_transformer_layer = torch.compile(_transformer_layer, dynamic=True)
-
-
-def _transformer_layers_ckpt(transformer: Any, x: torch.Tensor) -> torch.Tensor:
-    """Checkpoint the first `checkpoint_layers` main layers (all layers when 0 or unset), leaving
-    later layers uncheckpointed to use spare GPU memory for speed."""
-    if not getattr(transformer, "use_fp8", False):
-        return _compiled_transformer_layers_ckpt_bf16(transformer, x)
-    out = x
-    max_period = transformer.rope.max_period
-    ckpt_n = int(getattr(transformer, "checkpoint_layers", 0)) or len(transformer.layers)
-    for index, layer in enumerate(transformer.layers):
-        if index < ckpt_n:
-            out = torch.utils.checkpoint.checkpoint(
-                _compiled_transformer_layer, layer, out, max_period, True, use_reentrant=False
-            )
-        else:
-            out = _compiled_transformer_layer(layer, out, max_period, True)
-    return out.to(x.dtype)
+_compiled_transformer_layers_ckpt = torch.compile(_transformer_layers_ckpt_loop, dynamic=True)
 
 
 def _check_transformer(transformer: Any, steps: int, args: tuple, kwargs: dict) -> None:
@@ -368,20 +502,23 @@ def _check_transformer(transformer: Any, steps: int, args: tuple, kwargs: dict) 
         raise RuntimeError("The training transformer has no cross-attention")
     if transformer.positional_embedding != "rope_concat":
         raise RuntimeError("The training transformer needs rope_concat positions")
+    linear_types = (torch.nn.Linear, FrozenFP8Linear)
     for layer in transformer.layers:
         if layer.cross_attention is not None or layer.skip_self_attn or layer.weights_per_step:
             raise RuntimeError("Unsupported transformer layer")
         attention = layer.self_attn
         if not attention.causal or attention.cross_attention or len(attention.in_projs) != 1:
             raise RuntimeError("Unsupported transformer attention")
+        if not isinstance(attention.in_projs[0], linear_types) or not isinstance(attention.out_projs[0], linear_types):
+            raise RuntimeError("Unsupported transformer attention linear")
         if attention.in_projs[0].bias is not None or attention.out_projs[0].bias is not None:
             raise RuntimeError("Unsupported transformer attention bias")
         if attention.context is not None and steps > attention.context:
             raise RuntimeError(f"{steps} frames exceed the attention context {attention.context}")
         gating = layer.gating
         if not isinstance(gating, ActivationGating) or not (
-            isinstance(gating.linear_in, torch.nn.Linear)
-            and isinstance(gating.linear_out, torch.nn.Linear)
+            isinstance(gating.linear_in, linear_types)
+            and isinstance(gating.linear_out, linear_types)
         ):
             raise RuntimeError("Unsupported transformer feed-forward")
         if not (isinstance(layer.norm1, RMSNorm) and isinstance(layer.norm2, RMSNorm)):
@@ -395,16 +532,12 @@ def _transformer_forward(self: StreamingTransformer, x: torch.Tensor, *args, **k
     if not self.training:
         return _moshi_transformer_forward(self, x, *args, **kwargs)
     _check_transformer(self, x.shape[1], args, kwargs)
+    head_dim = x.shape[-1] // self.layers[0].self_attn.num_heads
+    rotr, roti = _rope_tables(x.shape[1], head_dim, self.rope.max_period, x.device)
+    use_fp8 = bool(getattr(self, "use_fp8", False))
     if self.checkpointing:
-        return _transformer_layers_ckpt(self, x)
-    if getattr(self, "use_fp8", False):
-        # Per-layer compile avoids unrolling 14-28 FP8 quantize+scaled_mm blocks (~20x faster compile).
-        out = x
-        max_period = self.rope.max_period
-        for layer in self.layers:
-            out = _compiled_transformer_layer(layer, out, max_period, True)
-        return out.to(x.dtype)
-    return _compiled_transformer_layers(self, x)
+        return _compiled_transformer_layers_ckpt(self, x, rotr, roti, use_fp8)
+    return _compiled_transformer_layers(self, x, rotr, roti, use_fp8)
 
 
 # A generation step's attention reads its cache in whole STEP_SLOTS. The graph is captured again at

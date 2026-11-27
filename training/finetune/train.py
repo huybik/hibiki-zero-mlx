@@ -112,6 +112,7 @@ RESUME_KEYS = (
     "palettize_refit",
     "bf16_adamw",
     "fp8",
+    "fp8_teacher",
     "sampled_text",
     "room_share",
     "mimi_weight",
@@ -122,6 +123,7 @@ RESUME_KEYS = (
     "stream_seconds",
     "max_frames",
     "lr",
+    "trunk_lr",
     "schedule",
     "warmup_fraction",
     "adam_beta1",
@@ -131,6 +133,7 @@ RESUME_KEYS = (
     "audio_loss_weight",
     "text_loss_weight",
     "first_codebook_weight",
+    "acoustic_ar_weight",
     "text_pad_weight",
     "val_batches",
     "eval_pairs",
@@ -151,6 +154,8 @@ LOG_LOSSES = (
     "audio_loss",
     "semantic_loss",
     "acoustic_loss",
+    "acoustic_ar_loss",
+    "acoustic_par_loss",
     "text_loss",
     "content_text_loss",
     "pad_text_loss",
@@ -177,7 +182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher-config", type=Path, help="The teacher's config; default the 3B's.")
     parser.add_argument(
         "--palettize-bits", type=int, choices=(4, 6, 8),
-        help="Train against the Core ML export's palettization at this many bits (a heads student).",
+        help="Train against the Core ML export's palettization at this many bits (a heads or slices student).",
     )
     parser.add_argument(
         "--palettize-refit", type=int, default=100,
@@ -221,6 +226,12 @@ def parse_args() -> argparse.Namespace:
         "Blackwell (RTX 5090 / RTX PRO 6000) speedup.",
     )
     parser.add_argument(
+        "--fp8-teacher", choices=("none", "trunk", "all"), default="none",
+        help="Pre-quantize the frozen teacher's linear weights once to rowwise E4M3 FP8 "
+        "('trunk': 28 main layers only; 'all': main layers + depformer; keeps text_linear and "
+        "audio output linears in bf16).",
+    )
+    parser.add_argument(
         "--sampled-text", type=float, default=0.0, metavar="P",
         help="Probability that a word piece the main transformer reads is the word piece the model "
         "sampled there, where it sampled one (scheduled sampling of the words); the timing and "
@@ -253,6 +264,11 @@ def parse_args() -> argparse.Namespace:
         "sqrt(4,608 / 8,192), Adam's square-root rule for the smaller batch.",
     )
     parser.add_argument(
+        "--trunk-lr", type=float, default=None,
+        help="Optional separate peak learning rate for trunk parameters (non-slices.AUDIO_PARTS); "
+        "default uses --lr for all trainable parameters.",
+    )
+    parser.add_argument(
         "--warmup-fraction", type=float, default=0.05, help="Share of steps warming up linearly."
     )
     parser.add_argument(
@@ -276,6 +292,13 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=100.0,
         help="Weight of audio codebook 0 against each acoustic codebook.",
+    )
+    parser.add_argument(
+        "--acoustic-ar-weight",
+        type=float,
+        default=1.0,
+        help="Weight of autoregressive acoustic codebooks (cb 1..7 on slices14) against each "
+        "parallel acoustic codebook (cb 8..15).",
     )
     parser.add_argument(
         "--text-pad-weight", type=float, default=0.5, help="Weight of a text PAD against a word."
@@ -325,6 +348,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--warmup-fraction must be in [0, 1)")
     if args.teacher_config is not None and args.teacher_weight is None:
         raise ValueError("--teacher-config needs --teacher-weight")
+    if args.fp8_teacher != "none" and args.teacher_weight is None:
+        raise ValueError("--fp8-teacher needs --teacher-weight")
+    if args.trunk_lr is not None:
+        if args.trunk_lr <= 0:
+            raise ValueError("--trunk-lr must be positive")
+        if args.freeze_trunk:
+            raise ValueError("--trunk-lr does not apply with --freeze-trunk")
+    if args.acoustic_ar_weight <= 0:
+        raise ValueError("--acoustic-ar-weight must be positive")
     if not 0 <= args.sampled_text < 1:
         raise ValueError("--sampled-text must be in [0, 1)")
     if not 0 <= args.room_share <= 1:
@@ -418,8 +450,10 @@ def main() -> None:
                                 else require_file(args.optimizer_state, "optimizer state"))
 
     checkpoint_info = common.load_checkpoint_info(args)
-    if args.palettize_bits and checkpoint_info.audio_heads != heads.KIND:
-        raise ValueError("--palettize-bits trains for the Core ML export, which runs only a parallel-heads student")
+    if args.palettize_bits and checkpoint_info.audio_heads not in (heads.KIND, slices.KIND):
+        raise ValueError("--palettize-bits trains for the Core ML export (parallel-heads or depformer-slices student)")
+    if args.acoustic_ar_weight != 1.0 and checkpoint_info.audio_heads != slices.KIND:
+        raise ValueError("--acoustic-ar-weight weights a slices student's autoregressive codebooks")
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
     teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
@@ -500,6 +534,7 @@ def main() -> None:
         text=args.text_loss_weight,
         first_codebook=args.first_codebook_weight,
         text_pad=args.text_pad_weight,
+        acoustic_ar=args.acoustic_ar_weight,
     )
     run_config = {key: jsonable(value) for key, value in vars(args).items()}
     run_config.update(
@@ -525,12 +560,16 @@ def main() -> None:
     if args.grad_checkpoint:
         lm.transformer.checkpointing = True
         lm.transformer.checkpoint_layers = args.grad_checkpoint_layers
-        if hasattr(lm.depformer, "checkpointing"):
+        ckpt_dep = hasattr(lm.depformer, "checkpointing") and not (
+            slices.is_slices(lm) and args.grad_checkpoint_layers > 0
+        )
+        if ckpt_dep:
             lm.depformer.checkpointing = True
+        dep_note = " + depformer layers" if ckpt_dep else " (slices uncheckpointed)"
         scope = (
-            f"first {args.grad_checkpoint_layers} main + depformer layers"
+            f"first {args.grad_checkpoint_layers} main{dep_note}"
             if args.grad_checkpoint_layers
-            else "all main + depformer layers"
+            else f"all main{dep_note}"
         )
         print(f"Gradient checkpointing enabled ({scope})")
     if args.fp8:
@@ -545,27 +584,55 @@ def main() -> None:
     if args.freeze_trunk:
         for name, param in lm.named_parameters():
             param.requires_grad_(name.startswith(slices.AUDIO_PARTS))
-    params = [param for param in lm.parameters() if param.requires_grad]
+    trunk_params = [p for n, p in lm.named_parameters() if p.requires_grad and not n.startswith(slices.AUDIO_PARTS)]
+    audio_params = [p for n, p in lm.named_parameters() if p.requires_grad and n.startswith(slices.AUDIO_PARTS)]
+    params = trunk_params + audio_params
     print(f"Trainable params: {sum(param.numel() for param in params):,}")
     teacher = None
     if teacher_info is not None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
-        teacher = common.load_teacher(teacher_info, args.teacher_weight, device, codebooks)
+        teacher = common.load_teacher(
+            teacher_info, args.teacher_weight, device, codebooks, fp8_mode=args.fp8_teacher
+        )
     text_tokenizer = checkpoint_info.get_text_tokenizer()
+
+    if args.trunk_lr is not None and trunk_params and audio_params:
+        opt_groups: Any = [
+            {"params": trunk_params, "lr": args.trunk_lr},
+            {"params": audio_params, "lr": args.lr},
+        ]
+        base_lrs = [args.trunk_lr, args.lr]
+    else:
+        opt_groups = params
+        base_lrs = [args.lr]
 
     if args.bf16_adamw:
         optimizer = bf16_adamw.BF16StochasticAdamW(
-            params,
+            opt_groups,
             lr=args.lr,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.weight_decay,
             seed=args.seed,
         )
     else:
-        optimizer = common.fused_adamw(params, args)
+        optimizer = common.fused_adamw(opt_groups, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     offload = common.HostOffload()
-    teacher_params = [] if teacher is None else list(teacher.parameters())
+    teacher_params = [] if teacher is None else list(teacher.parameters()) + list(teacher.buffers())
+    use_chunked_distill = common.can_chunked_distill(lm, teacher) and not args.sampled_text
+    if use_chunked_distill:
+        print(
+            "Chunked linear+KL distillation enabled"
+            + (" (frozen trunk: skipping text_linear and text_kl)" if args.freeze_trunk else "")
+        )
+    # Only the chunked path's no-grad trunk forward reads the cached FP8 weights.
+    if use_chunked_distill and args.freeze_trunk and args.fp8 and not args.palettize_bits:
+        from training.finetune import fp8_linear
+
+        frozen_fp8 = fp8_linear.cache_frozen_fp8_weights(lm)
+        if frozen_fp8:
+            teacher_params.extend(frozen_fp8)
+            print(f"Cached rowwise FP8 weights for {len(frozen_fp8) // 2} frozen student trunk linears")
 
     val_log_path = out_dir / "val_log.jsonl"
     log_path = out_dir / "train_log.jsonl"
@@ -626,6 +693,9 @@ def main() -> None:
             "max_batch": 0,
             "max_frames": 0,
             "grad_norm": 0.0,
+            "trunk_grad_norm": 0.0,
+            "audio_grad_norm": 0.0,
+            "clipped_steps": 0,
             "max_grad_norm": None,
             "data_seconds": 0.0,
             "text_changed": 0,
@@ -673,6 +743,7 @@ def main() -> None:
             print(
                 f"val step={step} {name} loss={losses['loss']:.4f} "
                 f"semantic={losses['semantic_loss']:.4f} "
+                f"ar={losses['acoustic_ar_loss']:.4f} par={losses['acoustic_par_loss']:.4f} "
                 f"content={losses['content_text_loss']:.4f} "
                 f"acc={losses['content_acc']:.3f} pad_acc={losses['pad_acc']:.3f}"
             )
@@ -703,9 +774,10 @@ def main() -> None:
         run_validation(global_step)
 
     while global_step < total_steps:
-        lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps, args.schedule)
-        for group in optimizer.param_groups:
-            group["lr"] = lr_value
+        lr_scale = learning_rate(global_step, 1.0, warmup_steps, total_steps, args.schedule)
+        lr_value = args.lr * lr_scale
+        for group, base_lr in zip(optimizer.param_groups, base_lrs, strict=True):
+            group["lr"] = base_lr * lr_scale
         optimizer.zero_grad(set_to_none=True)
         fetch_started = time.time()
         batch = next(data_iter)
@@ -731,27 +803,48 @@ def main() -> None:
                     condition_cache[sub_b] = common.batch_condition_tensors(
                         lm, checkpoint_info.model_type, sub_b
                     )
-                teacher_output = None
-                if teacher is not None:
+                if use_chunked_distill:
+                    assert teacher is not None and teacher_info is not None
                     if sub_b not in teacher_conditions:
                         teacher_conditions[sub_b] = common.batch_condition_tensors(
                             teacher, teacher_info.model_type, sub_b
                         )
-                    with torch.no_grad(), autocast:
-                        teacher_output = teacher(sub_codes, condition_tensors=teacher_conditions[sub_b])
-                    sub_codes = sub_codes.index_select(1, student_rows)
-                with autocast:
-                    history = None
-                    if args.sampled_text:
-                        history, changed = sample_text(
-                            lm, sub_codes, condition_cache[sub_b], args.sampled_text
+                    student_sub = sub_codes if student_rows is None else sub_codes.index_select(1, student_rows)
+                    with autocast:
+                        losses = common.compute_distill_losses_chunked(
+                            lm,
+                            teacher,
+                            student_sub,
+                            sub_codes,
+                            condition_cache[sub_b],
+                            teacher_conditions[sub_b],
+                            weights,
+                            denominators=denominators,
+                            freeze_trunk=args.freeze_trunk,
                         )
-                        log["text_changed"] += changed
-                    losses = common.compute_batch_losses(
-                        lm, sub_codes, condition_cache[sub_b], weights,
-                        teacher=teacher_output, history=history, denominators=denominators,
-                    )
-                history = teacher_output = None  # the loss's graph keeps what its backward needs
+                    del student_sub
+                else:
+                    teacher_output = None
+                    if teacher is not None:
+                        if sub_b not in teacher_conditions:
+                            teacher_conditions[sub_b] = common.batch_condition_tensors(
+                                teacher, teacher_info.model_type, sub_b
+                            )
+                        with torch.no_grad(), autocast:
+                            teacher_output = teacher(sub_codes, condition_tensors=teacher_conditions[sub_b])
+                        sub_codes = sub_codes.index_select(1, student_rows)
+                    with autocast:
+                        history = None
+                        if args.sampled_text:
+                            history, changed = sample_text(
+                                lm, sub_codes, condition_cache[sub_b], args.sampled_text
+                            )
+                            log["text_changed"] += changed
+                        losses = common.compute_batch_losses(
+                            lm, sub_codes, condition_cache[sub_b], weights,
+                            teacher=teacher_output, history=history, denominators=denominators,
+                        )
+                    history = teacher_output = None  # the loss's graph keeps what its backward needs
                 losses["loss"].backward()
                 if use_micro:
                     if step_sums is None:
@@ -777,22 +870,30 @@ def main() -> None:
         log["text_tokens"] += step_losses["content_n"] + step_losses["pad_n"]
         log["word_tokens"] += step_losses["content_n"]
         del step_losses
+
+        trunk_grads = [p.grad for p in trunk_params if p.grad is not None]
+        audio_grads = [p.grad for p in audio_params if p.grad is not None]
+        trunk_norm = torch.nn.utils.get_total_norm(trunk_grads) if trunk_grads else None
+        audio_norm = torch.nn.utils.get_total_norm(audio_grads) if audio_grads else None
+        del trunk_grads, audio_grads
+        if trunk_norm is not None and audio_norm is not None:
+            grad_norm = torch.hypot(trunk_norm.float(), audio_norm.float())
+        elif audio_norm is not None:
+            grad_norm = audio_norm.float()
+        elif trunk_norm is not None:
+            grad_norm = trunk_norm.float()
+        else:
+            grad_norm = torch.zeros((), device=device, dtype=torch.float32)
+
         if args.bf16_adamw:
-            grad_norm = torch.nn.utils.get_total_norm(
-                [param.grad for param in params if param.grad is not None]
-            )
             if args.grad_clip > 0:
-                clip_coef = (args.grad_clip / (grad_norm.float() + 1e-6)).clamp(max=1.0)
+                clip_coef = (args.grad_clip / (grad_norm + 1e-6)).clamp(max=1.0)
             else:
                 clip_coef = None
             optimizer.step(clip_coef=clip_coef)
         else:
             if args.grad_clip > 0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
-            else:
-                grad_norm = torch.nn.utils.get_total_norm(
-                    [param.grad for param in params if param.grad is not None]
-                )
+                torch.nn.utils.clip_grads_with_norm_(params, args.grad_clip, grad_norm)
             optimizer.step()
         global_step += 1
         # On the last step too: its validation and the snapped export then share one fit.
@@ -803,6 +904,12 @@ def main() -> None:
         # Summed on the GPU, as the losses are: checked and logged without a sync per step.
         grad_norm = grad_norm.detach()
         log["grad_norm"] += grad_norm
+        if trunk_norm is not None:
+            log["trunk_grad_norm"] += trunk_norm.detach()
+        if audio_norm is not None:
+            log["audio_grad_norm"] += audio_norm.detach()
+        if args.grad_clip > 0:
+            log["clipped_steps"] += (grad_norm > args.grad_clip).to(torch.int64)
         previous_max = log["max_grad_norm"]
         log["max_grad_norm"] = (
             grad_norm if previous_max is None else torch.maximum(previous_max, grad_norm)
@@ -843,14 +950,21 @@ def main() -> None:
                 "log_steps": steps,
                 "lr": lr_value,
                 "grad_norm": float(log["grad_norm"]) / steps,
+                "trunk_grad_norm": float(log["trunk_grad_norm"]) / steps,
+                "audio_grad_norm": float(log["audio_grad_norm"]) / steps,
+                "clipped_frac": float(log["clipped_steps"]) / steps,
                 "max_grad_norm": float(log["max_grad_norm"]),
             }
+            if args.trunk_lr is not None:
+                item["trunk_lr"] = args.trunk_lr * lr_scale
             if args.sampled_text:  # the share of the content tokens (words, EOS) it read as other words
                 item["text_changed"] = float(log["text_changed"]) / max(1, int(log["word_tokens"]))
             append_log(log_path, item)
             print(
                 f"step={global_step} loss={item['loss']:.4f} "
-                f"audio={item['audio_loss']:.4f} text={item['text_loss']:.4f} "
+                f"audio={item['audio_loss']:.4f} (sem={item['semantic_loss']:.3f} "
+                f"ar={item['acoustic_ar_loss']:.3f} par={item['acoustic_par_loss']:.3f}) "
+                f"text={item['text_loss']:.4f} "
                 f"B={item['streams'] / steps:.1f} T<={item['max_padded_frames']} "
                 f"lr={item['lr']:.1e} grad_norm={item['grad_norm']:.3f} "
                 f"s/step={item['sec_per_step']:.3f} data={item['data_sec_per_step']:.3f}"

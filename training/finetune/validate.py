@@ -3,8 +3,8 @@
 
 The streams and batches are planned as `train.py` plans its validation (fixed seed, silence track
 encoded on the CPU). To reproduce a cache's entry in the `teacher_forced` metrics of a run's `val_log.jsonl`, pass its
---stream-seconds, --max-frames and --batch-frames and use --dtype float32, as training validates
-its fp32 weights.
+--stream-seconds, --max-frames, --batch-frames and loss weights (--first-codebook-weight,
+--acoustic-ar-weight) and use --dtype float32, as training validates its fp32 weights.
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-loss-weight", type=float, default=1.0)
     parser.add_argument("--text-loss-weight", type=float, default=1.0)
     parser.add_argument("--first-codebook-weight", type=float, default=100.0)
+    parser.add_argument("--acoustic-ar-weight", type=float, default=1.0)
     parser.add_argument("--text-pad-weight", type=float, default=0.5)
     parser.add_argument("--num-workers", type=int, default=0)
     return parser.parse_args()
@@ -101,6 +102,7 @@ def main() -> None:
         text=args.text_loss_weight,
         first_codebook=args.first_codebook_weight,
         text_pad=args.text_pad_weight,
+        acoustic_ar=args.acoustic_ar_weight,
     )
     metrics = common.evaluate_teacher_forced(
         lm, dataloader, device, checkpoint_info.model_type, weights, args.max_batches
@@ -112,7 +114,8 @@ def main() -> None:
     }
     print(
         f"loss={metrics['loss']:.4f} audio={metrics['audio_loss']:.4f} "
-        f"semantic={metrics['semantic_loss']:.4f} text={metrics['text_loss']:.4f} "
+        f"semantic={metrics['semantic_loss']:.4f} ar={metrics['acoustic_ar_loss']:.4f} "
+        f"par={metrics['acoustic_par_loss']:.4f} text={metrics['text_loss']:.4f} "
         f"content={metrics['content_text_loss']:.4f} pad={metrics['pad_text_loss']:.4f} "
         f"acc={metrics['content_acc']:.3f} pad_acc={metrics['pad_acc']:.3f} "
         f"streams={metrics['streams']}"
