@@ -71,6 +71,10 @@ seven SFT sets): the GRPO term's BLEU advantages also move the audio tokens. Sto
 200's save (2026-11-27 18:15 UTC), its 200 pair and best on the box and the Hub, to compare
 distillation alone on the same streams (`opd_slices`, below).
 
+Resumed 2026-11-27 19:58 UTC from its 200 pair (`grpo_launch.sh both_slices_z`, commit 7a71224
+checked out again) once the refit below had shown the clarity comes back: the on-policy updates
+now go on for the trunk's text, to the stop rule, and a refit follows their best.
+
 `opd_slices`: the same launch with `--reward-coef 0` (on-policy distillation alone, no π_old pass),
 2026-11-27 18:15–19:25 UTC, stopped by TERM after its validation at 200 (raw outputs in
 `/Volumes/data/hibiki-zero-evals/box-62513802/opd_slices/`). Distillation alone lost on every

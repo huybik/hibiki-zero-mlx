@@ -242,11 +242,11 @@ stages a checkpoint, the gate runs it through `LmGen` and `export_lm_coreml.py` 
 Checked on tiny students with larger random weights (2026-11-27): MLX's greedy `DepFormer.sample`
 equals PyTorch's `depformer_step` on every codebook (4 of them; and 16, the last 8 at once, its
 logits within 1.9e-6), `LmGen` steps, `convert_mlx.py` staged the 4-codebook one, and `lm_step`'s
-slices on a staging match PyTorch's logits on all 16 codebooks. Not yet run: the gate and the
-export on a trained checkpoint.
+slices on a staging match PyTorch's logits on all 16 codebooks. On a trained checkpoint
+(`both_slices_z` 200, 2026-11-28) the staging, the gate, the 6-bit export and the Swift CLI on the
+Neural Engine all ran ([slices-on-policy](slices-on-policy.md#phone-finish)).
 
 ## Not yet
 
-- End-to-end Core ML export and iPhone 13 Pro Max gate on a trained slices checkpoint (palettization
-  in `training/student/palettize.py` and `train.py --palettize-bits` now support `depformer_parallel`
-  slices models).
+- The iPhone 13 Pro Max gate of the finished model (10 minutes in HibikiBench), the user's
+  ([slices-on-policy](slices-on-policy.md#phone-finish)).
