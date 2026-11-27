@@ -101,8 +101,18 @@ The text is the trunk's and the speech the slices': so the trunk keeps its on-po
 slices are distilled again on it, off-policy, as Stage 1 trained them (`restart.sh
 student-slices-refit-5090`: the trunk frozen, the 3B on the SFT data, from `both_slices_z`'s best,
 a fresh optimizer at 5e-5, cosine over 2,000 updates, validated at 1,000 and 2,000 on the slices
-runs' seven sets, seed 47). Probe from update 200, its baseline `eval.py` on the same seven sets
-and seed (`runs/slices_eval7/both_slices_z200_seed47`), started 2026-11-27 19:31 UTC from commit
-904afa4.
+runs' seven sets, seed 47). Probe from update 200, started 2026-11-27 19:31 UTC from commit
+904afa4, after its baseline: `eval.py` on the same seven sets and seed
+(`runs/slices_eval7/both_slices_z200_seed47`, `--no-write-audio`, 4 min), beside the decay's 8,000
+([student-slices](student-slices.md#runs)), chrF / BLEU / length ratio / end offset / speaker_sim /
+HNR:
+
+| Model | Selecting | Mean chrF | speaker_sim | HNR | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Decay 8,000 (on-policy start) | 38.32 | 40.54 | 0.293 | 4.94 | 41.15 / 9.74 / 1.39 / 1.5 / 0.34 / 4.5 | 35.49 / 16.47 / 1.01 / 1.9 / 0.16 / 5.4 | 37.98 / 10.29 / 1.48 / 3.4 / 0.27 / 6.0 | 45.93 / 17.93 / 1.18 / 2.1 / 0.32 / 4.1 | 44.98 / 17.89 / 1.11 / 2.1 / 0.41 / 4.4 | 34.36 / 17.19 / 1.11 / 1.1 / 0.26 / 5.0 | 43.92 / 22.29 / 1.07 / 1.6 / 0.29 / 5.2 |
+| `both_slices_z` 200 | 38.49 | 40.93 | 0.293 | 4.11 | 41.18 / 10.21 / 1.33 / 1.7 / 0.33 / 3.7 | 35.81 / 16.37 / 1.00 / 2.0 / 0.16 / 4.6 | 38.41 / 10.99 / 1.41 / 3.4 / 0.28 / 5.3 | 45.49 / 17.75 / 1.15 / 2.5 / 0.33 / 3.5 | 46.09 / 20.40 / 1.06 / 2.1 / 0.42 / 3.4 | 35.45 / 16.91 / 1.15 / 1.0 / 0.27 / 4.1 | 44.12 / 22.95 / 1.07 / 2.0 / 0.27 / 4.2 |
+
+On these sets the on-policy text gain is smaller (+0.17 selecting, +0.39 mean) and the clarity
+loss the same (−0.83 dB, every set).
 
 ## Phone finish
