@@ -181,7 +181,9 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   checkpoint and precision, where the depformer student keeps it
   ([voice-scores](voice-scores.md)). `depformer_parallel` (2026-11-27, not yet
   trained): a depformer for codebooks 0–7, one slice each, whose 9th slice reads codebook 7 and
-  emits 8–15 at once (`parallel_codebooks: 8`), so the delays go back to the teacher's (max 2).
+  emits 8–15 at once (`parallel_codebooks: 8`; moshi's step schedule, codebook j → slice
+  min(j, 8)), so the delays go back to the teacher's (max 2). Its training:
+  [student-slices](student-slices.md).
 - **The math is moshi's:** `lm_step`'s slices against `moshi_mlx`'s `DepFormerSlice._step` on the
   depformer student (update 2,000 bf16, 8 slices, read as `parallel_codebooks: 1`), fp32, the same
   hidden states and tokens: logits within 5.4e-7 of the largest, argmax 32 of 32.

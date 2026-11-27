@@ -24,6 +24,9 @@ class DepFormerConfig:
     weights_per_step_schedule: list[int] | None = None
     low_rank_embeddings: int | None = None
     output_layer_norm: bool = False
+    # Hibiki-Zero phone student: the last slice predicts the last `parallel_codebooks` codebooks at
+    # once (the config's "audio_heads": "depformer_parallel", training/student/slices.py).
+    parallel_codebooks: int = 1
 
 
 @dataclass
@@ -45,7 +48,7 @@ class LmConfig:
 
     @property
     def generated_codebooks(self):
-        return self.depformer.num_slices
+        return self.depformer.num_slices + self.depformer.parallel_codebooks - 1
 
     @property
     def other_codebooks(self):
@@ -56,6 +59,14 @@ class LmConfig:
         # hibiki-zero: feedforward width is `hidden_scale * dim` (not 4*dim) and
         # the main transformer uses grouped-query attention (`kv_repeat` > 1).
         hidden_scale = data.get("hidden_scale", 4)
+        audio_heads = data.get("audio_heads")
+        if audio_heads not in (None, "parallel", "depformer_parallel"):
+            raise ValueError(f"unsupported audio_heads {audio_heads!r}")
+        parallel = data["parallel_codebooks"] if audio_heads == "depformer_parallel" else 1
+        num_slices = data["dep_q"] - parallel + 1
+        schedule = data.get("depformer_weights_per_step_schedule", None)
+        if parallel > 1 and schedule != [min(j, num_slices - 1) for j in range(data["dep_q"])]:
+            raise ValueError("a depformer_parallel model has a slice a codebook, the last one the last codebooks'")
 
         def scaled_dimension(dim: int) -> int:
             return int(round(hidden_scale * dim))
@@ -110,10 +121,11 @@ class LmConfig:
                 kv_repeat=1,
                 max_seq_len=4096,
             ),
-            num_slices=data["dep_q"],
-            weights_per_step_schedule=data.get("depformer_weights_per_step_schedule", None),
+            num_slices=num_slices,
+            weights_per_step_schedule=schedule,
             low_rank_embeddings=data.get("depformer_low_rank_embeddings", None),
             output_layer_norm=data.get("depformer_output_layer_norm", "depformer_norm" in data),
+            parallel_codebooks=parallel,
         )
         conditioners = {}
         if "conditioners" in data:
@@ -134,9 +146,6 @@ class LmConfig:
                 else:
                     raise ValueError(f"unsupported conditioner type {_cfg['type']}")
                 conditioners[_name] = _cfg
-        audio_heads = data.get("audio_heads")
-        if audio_heads not in (None, "parallel"):
-            raise ValueError(f"unsupported audio_heads {audio_heads!r}")
         return LmConfig(
             transformer=transformer,
             depformer=depformer,
@@ -279,11 +288,15 @@ class DepFormer(nn.Module):
         super().__init__()
 
         self.slices: list[DepFormerSlice] = []
+        last = cfg.depformer.num_slices - 1
+        self.parallel_codebooks = cfg.depformer.parallel_codebooks
         for slice_idx in range(cfg.depformer.num_slices):
             in_vs = cfg.text_in_vocab_size if slice_idx == 0 else cfg.audio_vocab_size
+            # The last slice's rows j * card ... are codebook last + j's (PyTorch's linears).
+            codebooks = self.parallel_codebooks if slice_idx == last else 1
             slice = DepFormerSlice(
                 in_vs,
-                cfg.audio_vocab_size - 1,
+                (cfg.audio_vocab_size - 1) * codebooks,
                 main_transformer_dim=cfg.transformer.d_model,
                 demux_second_stream=slice_idx == 0 and cfg.demux_second_stream,
                 cfg=cfg.depformer,
@@ -312,9 +325,17 @@ class DepFormer(nn.Module):
                 if slice._step_c is None:
                     slice._step_c = mx.compile(slice._step)
                 logits, kv = slice._step_c(main_transformer_out, last_token, kv)
+                if slice is self.slices[-1] and self.parallel_codebooks > 1:
+                    # [B, 1, P * card] -> P tokens [B, 1], the last slice's codebooks at once
+                    b, t, _ = logits.shape
+                    sampled, _ = sampler(logits.reshape(b, t, self.parallel_codebooks, -1).swapaxes(1, 2))
+                    tokens.extend(sampled[:, j] for j in range(self.parallel_codebooks))
+                    break
                 last_token, _ = sampler(logits)
                 tokens.append(last_token)
             return mx.stack(tokens, axis=1)
+        if self.parallel_codebooks > 1:
+            raise NotImplementedError("classifier-free guidance with depformer_parallel")
         # The cache is shared between the depformer slices but not persisted between sample calls.
         for c in cache:
             c.reset()
@@ -454,7 +475,14 @@ class Lm(nn.Module):
                 pth_idx = lm_config.depformer.weights_per_step_schedule[slice_idx]
             slice_p = f"depformer.slices.{slice_idx}"
             mlx_t[f"{slice_p}.linear_in.weight"] = pth_t[f"depformer_in.{pth_idx}.weight"]
-            mlx_t[f"{slice_p}.linear_out.weight"] = pth_t[f"linears.{slice_idx}.weight"]
+            codebooks = (
+                lm_config.depformer.parallel_codebooks
+                if slice_idx == lm_config.depformer.num_slices - 1
+                else 1
+            )
+            mlx_t[f"{slice_p}.linear_out.weight"] = mx.concatenate(
+                [pth_t[f"linears.{slice_idx + j}.weight"] for j in range(codebooks)]
+            )
             for _p in ("weight", "bias"):
                 _k = f"depformer_norms.{slice_idx}.{_p}"
                 if _k in pth_t:

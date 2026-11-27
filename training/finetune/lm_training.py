@@ -164,7 +164,7 @@ _compiled_depformer_layers = torch.compile(_depformer_layers, dynamic=True)
 _compiled_depformer_layers_ckpt = torch.compile(_depformer_layers_ckpt_graph, dynamic=True)
 
 
-def _check_depformer(depformer: Any) -> None:
+def check_depformer(depformer: Any) -> None:
     if depformer._streaming_state is not None:
         raise RuntimeError("The training depformer runs without streaming")
     if depformer.positional_embedding in {"sin", "sin_rope"}:
@@ -177,6 +177,14 @@ def _check_depformer(depformer: Any) -> None:
             raise RuntimeError("Unsupported depformer layer")
 
 
+def run_depformer(depformer: Any, xs: torch.Tensor) -> torch.Tensor:
+    """The depformer's layers on step-major xs [K, N, C], compiled (checkpointed if the depformer
+    is), as unbound steps."""
+    check_depformer(depformer)
+    run = _compiled_depformer_layers_ckpt if getattr(depformer, "checkpointing", False) else _compiled_depformer_layers
+    return run(depformer, xs).to(xs.dtype).unbind(0)
+
+
 def forward_depformer_training(
     self: LMModel, sequence: torch.Tensor, transformer_out: torch.Tensor
 ) -> torch.Tensor:
@@ -184,7 +192,6 @@ def forward_depformer_training(
     B, K, T = sequence.shape
     if K != self.num_codebooks:
         raise RuntimeError(f"Depformer training needs all {self.num_codebooks} codebooks, got {K}")
-    _check_depformer(self.depformer)
     steps = self.dep_q
     projections: dict[int, torch.Tensor] = {}
     inputs = []
@@ -201,13 +208,7 @@ def forward_depformer_training(
         else:
             token_in = self.depformer_emb[cb - 1](sequence[:, cb + self.audio_offset - 1])
         inputs.append(token_in + projections[index])
-    xs = torch.stack(inputs, 0).view(steps, B * T, -1)
-    run_dep = (
-        _compiled_depformer_layers_ckpt
-        if getattr(self.depformer, "checkpointing", False)
-        else _compiled_depformer_layers
-    )
-    out = run_dep(self.depformer, xs).to(xs.dtype).unbind(0)
+    out = run_depformer(self.depformer, torch.stack(inputs, 0).view(steps, B * T, -1))
     logits = [
         self.linears[cb](self.depformer_norms[cb](out[cb])).view(B, T, -1) for cb in range(steps)
     ]

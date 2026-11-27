@@ -245,10 +245,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   (`pip install -e ./inference/moshi-mlx`); it and the root `pyproject.toml` need `mlx>=0.31`.
 - Hibiki-Zero deltas: grouped-query attention via `kv_repeat`, FFN width `hidden_scale * dim`,
   `rope_concat` as non-traditional RoPE, and a learned per-slice depformer output LayerNorm.
-- The audio head is the depformer or a heads student's `ParallelHeads` (`"audio_heads":
-  "parallel"`, [student-heads](student-heads.md#design)): its `depformer.heads.{j}` stacked into one
-  Linear, `depformer.linear` (8 bits under `--bits`), on the normed main output plus the sampled
-  text token's `text_emb`, all codebooks at once. `load_pytorch_weights` reads upstream's fused
+- The audio head is the depformer (a slices student's last slice samples its `parallel_codebooks`
+  at once, their `linears` stacked: [student-slices](student-slices.md)) or a heads student's
+  `ParallelHeads` (`"parallel"`, [student-heads](student-heads.md#design)): `depformer.heads.{j}` as
+  one Linear (8 bits under `--bits`) on the main output plus the text token's `text_emb`. `load_pytorch_weights` reads upstream's fused
   `in_proj_weight` and moshi 0.2.13's per-slice `in_projs.N`. `LmGen` checks for ungenerated tokens
   only with `check=True` (callers pass False): a GPU sync a codebook, 3–4.5 ms of a student's step.
 
