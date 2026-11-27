@@ -63,5 +63,15 @@ FLEURS dev both ways; raw outputs in `/Volumes/data/hibiki-zero-evals/box-625138
 | Update | Selecting | fleurs-vi/dev | fleurs-en/dev | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-noisy cv27 | en-vi-val-noisy libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy | en-vi-val-en-noisy cv27 | en-vi-val-en-noisy libriheavy |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 | 37.94 | 40.62 / 9.50 / 1.36 / 1.3 / 0.34 / 4.5 | 35.26 / 16.21 / 1.01 / 1.9 / 0.16 / 5.5 | 44.67 / 15.80 / 1.20 / 2.1 / 0.31 / 4.1 | 45.74 / 18.60 / 1.12 / 2.3 / 0.41 / 4.3 | 42.33 / 14.38 / 1.24 / 2.3 / 0.25 / 4.0 | 44.01 / 16.51 / 1.14 / 2.3 / 0.34 / 4.3 | 35.78 / 16.90 / 1.14 / 1.0 / 0.27 / 4.9 | 43.94 / 22.46 / 1.07 / 1.9 / 0.29 / 5.2 | 23.82 / 10.44 / 0.99 / 2.0 / 0.25 / 4.4 | 36.04 / 17.51 / 1.01 / 2.8 / 0.27 / 4.8 |
+| 200 | 38.74 | 41.58 / 10.68 / 1.31 / 1.6 / 0.33 / 3.6 | 35.90 / 16.52 / 1.01 / 2.1 / 0.15 / 4.6 | 45.83 / 18.10 / 1.15 / 2.4 / 0.33 / 3.4 | 46.06 / 20.19 / 1.05 / 2.2 / 0.43 / 3.4 | 43.34 / 15.39 / 1.24 / 2.7 / 0.26 / 3.3 | 43.95 / 17.46 / 1.08 / 2.7 / 0.35 / 3.3 | 36.80 / 18.32 / 1.13 / 0.9 / 0.26 / 4.1 | 44.12 / 22.27 / 1.06 / 1.9 / 0.28 / 4.1 | 24.67 / 10.37 / 1.01 / 2.1 / 0.24 / 3.7 | 35.53 / 16.92 / 1.01 / 2.5 / 0.26 / 3.7 |
+
+At 200 the text rose (mean chrF of 10 39.22 → 39.78, selecting +0.80) and speaker_sim held
+(0.290 → 0.289), but HNR fell on every set (mean 4.59 → 3.73 dB; the teacher's 6.50 on the
+seven SFT sets): the GRPO term's BLEU advantages also move the audio tokens. Stopped by TERM after
+200's save (2026-11-27 18:15 UTC), its 200 pair and best on the box and the Hub, to compare
+distillation alone on the same streams (`opd_slices`, below).
+
+`opd_slices`: the same launch with `--reward-coef 0` (on-policy distillation alone, no π_old pass),
+started 2026-11-27 18:15 UTC; compared with `both_slices_z` at 200 on text and voice.
 
 ## Phone finish
