@@ -136,7 +136,7 @@ student's and the depformer student's on the same sets.
 
 - `student_slices14_stage1`: started 2026-11-27 11:20 UTC on box 62513802, commit 65f6b51
   (PR #205), `restart.sh student-slices-5090`; HF recovery prefix `student_slices14_stage1`.
-  Runs at 0.428 s an update, 15 GiB, the GPU at 100% and ~535 W; validates at 8,000 and 16,000.
+  Ran at 0.43 s an update, 15 GiB, the GPU at 100% and ~535 W; validated at 8,000 and 16,000.
   Before it, a 20-update frozen run on the same recipe saved a trunk equal to the cut's on all 119
   tensors (compared in bf16, the weight's dtype, with text_emb's row 2 set to row 3 as `build_lm`
   loads it), and all 128 slice tensors moved. Validations (cells as the table below; outputs in
@@ -145,11 +145,18 @@ student's and the depformer student's on the same sets.
   | Update (date) | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
   |---|---|---|---|---|---|---|---|---|
   | 8,000 (11-27) | 38.33 | 41.43 / 9.98 / 1.39 / 1.6 / 0.27 / 4.0 | 35.22 / 16.00 / 1.01 / 1.9 / 0.15 / 4.7 | 38.38 / 10.74 / 1.43 / 3.4 / 0.24 / 5.4 | 44.29 / 16.81 / 1.18 / 2.4 / 0.28 / 3.5 | 45.27 / 18.23 / 1.12 / 2.2 / 0.37 / 3.8 | 35.82 / 17.32 / 1.14 / 1.0 / 0.25 / 4.2 | 44.16 / 22.41 / 1.07 / 1.8 / 0.25 / 4.5 |
+  | 16,000 (11-27) | 38.41 | 41.49 / 10.38 / 1.31 / 1.4 / 0.33 / 4.6 | 35.33 / 16.24 / 0.99 / 1.9 / 0.15 / 5.2 | 38.31 / 10.87 / 1.41 / 3.3 / 0.25 / 6.0 | 44.66 / 16.75 / 1.16 / 2.2 / 0.30 / 4.2 | 45.40 / 18.65 / 1.09 / 1.9 / 0.40 / 4.5 | 34.84 / 16.62 / 1.13 / 1.1 / 0.26 / 4.8 | 43.82 / 21.98 / 1.06 / 1.7 / 0.27 / 4.9 |
 
-  Every set's health passed (empty rows: 2 on fleurs-en, 1 on multimed). At 8,000, against the
+  Every set's health passed (empty rows at 8,000: 2 on fleurs-en, 1 on multimed; at 16,000: 3 on
+  fleurs-en). Rows ending with text EOS, 8,000 → 16,000, in the table's order: 111 → 93 / 361,
+  25 → 24 / 392, 511 → 458 / 1,718, 60 → 56, 58 → 51, 24 → 16, 11 → 12 / 180. At 8,000, against the
   first run's 8,000: seven-set mean 40.65 against 34.74, selecting 38.33 against 30.50, and the
-  voice up on every set (FLEURS-vi 0.27 / 4.0 dB against 0.15 / 2.9). Training losses at 8,000:
-  cb 0 0.21, cb 1–7 1.10, cb 8–15 1.37 (the first run's acoustic mean 1.55 at 8,000).
+  voice up on every set (FLEURS-vi 0.27 / 4.0 dB against 0.15 / 2.9). 8,000 → 16,000 the text held
+  (seven-set mean 40.65 → 40.55, selecting 38.33 → 38.41: the frozen trunk writes it) while the
+  voice rose (mean speaker_sim 0.259 → 0.280, HNR 4.30 → 4.89 dB). Training losses, mean of the
+  1,000 updates before 8,000 → 16,000: cb 0 0.209 → 0.184, cb 1–7 1.105 → 0.940, cb 8–15 1.368 →
+  1.209 (the first run's acoustic mean 1.55 at 8,000). Ended 13:26 UTC after 16,000's validation
+  (2 h 06 min, ~$1.07); `best.json` names 16,000, the final model.
 - `student_slices14_5090`: started 2026-11-27 06:38 UTC on box 62513802 (RTX 5090), commit
   35e35d9, `restart.sh student-slices-5090` with the trunk training; HF recovery prefix
   `student_slices14_5090`. Ran at 0.99 s an update, 26.1 GiB, the GPU at 100% and 505 W; stopped
