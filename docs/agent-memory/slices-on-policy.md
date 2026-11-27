@@ -2,7 +2,7 @@
 
 Read when running or judging the slices student's on-policy run (`both_slices_z`), its 6-bit
 palettization and its export to the phone. Back to [CONTEXT.md](../../CONTEXT.md) ·
-[Profile](#profile) · [The run](#the-run) · [Phone finish](#phone-finish). The student and its
+[Profile](#profile) · [The run](#the-run) · [Refit](#refit) · [Phone finish](#phone-finish). The student and its
 off-policy stages are in [student-slices](student-slices.md); the method in
 [on-policy-distillation](on-policy-distillation.md), GRPO in [grpo](grpo.md).
 
@@ -72,6 +72,37 @@ seven SFT sets): the GRPO term's BLEU advantages also move the audio tokens. Sto
 distillation alone on the same streams (`opd_slices`, below).
 
 `opd_slices`: the same launch with `--reward-coef 0` (on-policy distillation alone, no π_old pass),
-started 2026-11-27 18:15 UTC; compared with `both_slices_z` at 200 on text and voice.
+2026-11-27 18:15–19:25 UTC, stopped by TERM after its validation at 200 (raw outputs in
+`/Volumes/data/hibiki-zero-evals/box-62513802/opd_slices/`). Distillation alone lost on every
+count: selecting 37.94 → 37.47, mean chrF of 10 39.22 → 38.46, speaker_sim 0.290 → 0.286, HNR
+4.59 → 3.42 dB, FLEURS-vi's end offset 1.3 → 2.2 s; `kl_text` 0.081, `kl_audio` 0.80 at 200,
+grad norm ~2.3e4. Unlike the heads student's (`opd_heads_lr1e6`, +1.8 chrF each way by 200,
+[heads-on-policy-runs](heads-on-policy-runs.md)), this student starts close to the teacher
+(`kl_text` 0.09, `kl_audio` 0.84 against the heads' 0.10 / 2.12), so the teacher's pull adds little
+and its leaning on the student's own audio (the caveat in
+[on-policy-distillation](on-policy-distillation.md)) costs clarity. At 200:
+
+| Set | chrF / BLEU / length ratio / end offset / speaker_sim / HNR |
+|---|---|
+| fleurs-vi/dev | 40.58 / 9.99 / 1.32 / 2.2 / 0.32 / 3.1 |
+| fleurs-en/dev | 34.37 / 15.33 / 0.99 / 2.8 / 0.15 / 4.3 |
+| en-vi-val cv27 | 45.26 / 17.66 / 1.20 / 2.8 / 0.33 / 3.3 |
+| en-vi-val libriheavy | 45.19 / 19.56 / 1.06 / 2.5 / 0.42 / 3.2 |
+| en-vi-val-noisy cv27 | 42.25 / 14.47 / 1.24 / 2.8 / 0.27 / 3.2 |
+| en-vi-val-noisy libriheavy | 43.21 / 17.11 / 1.10 / 2.6 / 0.35 / 3.1 |
+| en-vi-val-en cv27 | 33.83 / 16.60 / 1.13 / 1.9 / 0.26 / 3.8 |
+| en-vi-val-en libriheavy | 43.40 / 22.14 / 1.07 / 2.5 / 0.26 / 3.8 |
+| en-vi-val-en-noisy cv27 | 22.15 / 9.22 / 0.99 / 3.6 / 0.24 / 3.2 |
+| en-vi-val-en-noisy libriheavy | 34.40 / 16.41 / 0.99 / 3.4 / 0.26 / 3.3 |
+
+## Refit
+
+The text is the trunk's and the speech the slices': so the trunk keeps its on-policy update and the
+slices are distilled again on it, off-policy, as Stage 1 trained them (`restart.sh
+student-slices-refit-5090`: the trunk frozen, the 3B on the SFT data, from `both_slices_z`'s best,
+a fresh optimizer at 5e-5, cosine over 2,000 updates, validated at 1,000 and 2,000 on the slices
+runs' seven sets, seed 47). Probe from update 200, its baseline `eval.py` on the same seven sets
+and seed (`runs/slices_eval7/both_slices_z200_seed47`), started 2026-11-27 19:31 UTC from commit
+904afa4.
 
 ## Phone finish
