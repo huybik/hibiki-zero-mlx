@@ -204,9 +204,11 @@ the CPU's on every frame (760 frames, all 16 codebooks), and translations are by
   meanwhile, then collects the codes (`Timing.encodeWait`); at k ≥ 2 the chunk's first LM step
   needs the codes before the decode comes, so it waits for the encode first. The CPU encode cannot overlap this way (`asyncEval`
   of a CPU graph waits for most of it).
-- fp16 weights would read half the bytes (Mac encode 9.4 → 6.9 ms) but change the codes:
-  equal to fp32's on 99.2% of frames in codebook 0, 94.8% in 1–7 and 84.8% in 8–15 (bf16 94.6,
-  63.3, 25.7%); not used without a gate.
+- **fp16 / mixed GPU encode failed the chrF gate** (2026-11-27, M4 Pro, `pal6c4000_ane6`,
+  `/Volumes/data/hibiki-zero-evals/mac/mimi-fp16/`): full fp16 (653 vs 797 MB, frame p50 14.0 vs
+  16.7 ms) and mixed (`encoder_transformer` + `downsample` fp16: 737 MB, 14.4 ms) both dropped
+  20×2 FLEURS dev chrF and EN→VI EOS (fp32 **43.51**, EOS 7/6 vs mixed 41.67, EOS 7/2 and fp16
+  41.81, EOS 5/**0**); kept fp32.
 
 ## Speed and memory
 

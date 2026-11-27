@@ -158,6 +158,8 @@ the Neural Engine. Share of argmaxes equal to the reference's:
 | Start, 6 bits, the export's own k-means (`z1200_ane6`) | 99.3% | 97.8% | 93.9% | 93.3% | 93.8% |
 | Start snapped, 6 bits (`z1200snap_ane6`) | 99.4% | 97.7% | 93.6% | 92.9% | 93.5% |
 | Update 4,000 snapped, 6 bits (`pal6c4000_ane6`) | 99.5% | 98.2% | 94.8% | 94.3% | 94.7% |
+| Start, 4-bit trunk + 6-bit heads PTQ (`z1200_ane4_6`) | 97.2% | 94.1% | 84.4% | 82.8% | 84.2% |
+| Start, all 4-bit PTQ (`z1200_ane4`) | 97.2% | 91.4% | 78.5% | 75.6% | 77.9% |
 
 - **Training wins on the phone's arithmetic.** Paired over the 16 clips (10,000 draws), All 16:
   update 4,000 − the plain 6-bit export +0.89 [+0.71, +1.07], − the snapped start +1.23 [+0.98,
@@ -215,4 +217,11 @@ the Neural Engine. Share of argmaxes equal to the reference's:
   mostly mistranslation, not English left in; VI→EN 37.4 against 39.0 (three runs, no clear
   change). The gate opened on the same frames (±1 a turn); on the test's 870 s of noise alone it
   opened once (23 frames) and wrote nothing. Files: `level-d27d931/` in the folder above.
-- 4 bits is not run yet.
+- **4-bit PTQ fails without QAT** (2026-11-27, M4 Pro ANE, `export_lm_coreml.py --trunk-bits 4`,
+  490.6 MB trunk, all 892 ops on ANE): on the 4,533-frame replay, `z1200_ane4_6` lost −2.07% Text
+  and −9.65% All 16 (−14.7% while source plays: `91.3% → 76.6%`); `z1200_ane4` lost −15.97% All 16
+  (`68.0%` while source plays). On 10×2 FLEURS dev through Swift `hibiki translate`, `z1200_ane4_6`
+  dropped **−4.12 chrF** (`44.69 → 40.57`; VI→EN `50.29 → 45.86`, EN→VI `39.09 → 35.27`), and M4
+  Pro trunk speed was unchanged (`11.1 vs 11.2 ms`). 4-bit QAT (`--palettize-bits 4`) is not run
+  yet. Raw: `/Volumes/data/hibiki-zero-evals/mac/npu-agree/models/z1200_ane4*` and
+  `gate_z1200_ane4_6_10x2/`.

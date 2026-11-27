@@ -4,7 +4,9 @@ import Foundation
 
 /// A phone student's LM in Core ML, on the Neural Engine by default: the models
 /// `inference/tools/export_lm_coreml.py` writes from `lm_step.py`. The audio comes from the
-/// parallel heads (two calls a frame) or from a depformer_parallel model's slices (one call each).
+/// parallel heads (`lm-heads.mlmodelc`), a fused `depformer_parallel` model
+/// (`lm-depformer.mlmodelc`, one call for all slices with in-graph top-k Gumbel-max sampling),
+/// or legacy per-slice `lm-depformer-K.mlmodelc` models.
 ///
 ///     host:   x = text_emb[text] + sum of audio_embs[q][audio q]     (lm-embeddings.bin, fp16)
 ///     trunk:  x, cos, sin, mask, slot -> hidden, text_logits        (KV cache: Core ML state)
@@ -22,16 +24,22 @@ import Foundation
 final class NeuralLM: FrameLM {
     let cfg: HibikiConfig
     private let trunk: MLModel
-    /// The parallel heads; nil for a depformer_parallel model, which has `slices`.
+    /// The parallel heads; nil for a depformer_parallel model, which has `depformer` (fused) or `slices`.
     private let heads: MLModel?
+    /// Fused depformer_parallel model (`lm-depformer.mlmodelc`); nil for heads or per-slice directories.
+    private let depformer: MLModel?
     private let slices: [MLModel]
-    /// The slices' input tables, memory-mapped: slice 0's [text_card + 1, depformer dim], then
-    /// each later slice's [card + 1, depformer dim].
+    /// The slices' input tables, memory-mapped: for `depformer`, slice 0's [text_card + 1, d];
+    /// for `slices`, slice 0's followed by each later slice's [card + 1, d].
     private let sliceTables: Data?
     /// Slice k's inputs: its table row, and (k > 0) the keys and values of the frame's slices
     /// before it, [layers, heads, k, head_dim], at `past[k - 1]`.
     private let sliceEmb: MLMultiArray
     private let past: [(keys: MLMultiArray, values: MLMultiArray)]
+    /// Gumbel noise [dep_q, card] fp16 for fused `depformer` (zeros when temp == 0), filled from
+    /// a 65,536-entry quantile LUT (128 KB, pre-scaled by `temp`) using 4 lookups per 64-bit RNG step.
+    private let depformerNoise: MLMultiArray?
+    private let gumbelLUT: [Float16]
     /// The KV cache; nil only while `reset` replaces it, so two never coexist (172 MB each).
     private var state: MLState?
     /// The input tables, memory-mapped: text_emb [text_card + 1, dim], then each audio_embs
@@ -62,14 +70,17 @@ final class NeuralLM: FrameLM {
         let config = MLModelConfiguration()
         config.computeUnits = computeUnits
         trunk = try MLModel(contentsOf: file("lm-trunk.mlmodelc"), configuration: config)
-        let depformer = cfg.audioHeads == "depformer_parallel"
-        heads = depformer ? nil : try MLModel(contentsOf: file("lm-heads.mlmodelc"), configuration: config)
-        slices = depformer
+        let isDepformer = cfg.audioHeads == "depformer_parallel"
+        heads = isDepformer ? nil : try MLModel(contentsOf: file("lm-heads.mlmodelc"), configuration: config)
+        let fusedURL = directory.appending(path: "lm-depformer.mlmodelc")
+        let fused = isDepformer && FileManager.default.fileExists(atPath: fusedURL.path)
+        depformer = fused ? try MLModel(contentsOf: fusedURL, configuration: config) : nil
+        slices = (isDepformer && !fused)
             ? try (0..<cfg.depformerSlices).map {
                 try MLModel(contentsOf: file("lm-depformer-\($0).mlmodelc"), configuration: config)
             }
             : []
-        sliceTables = depformer
+        sliceTables = isDepformer
             ? try Data(contentsOf: file("lm-depformer-embeddings.bin"), options: .alwaysMapped) : nil
         state = trunk.makeState()
         tables = try Data(contentsOf: file("lm-embeddings.bin"), options: .alwaysMapped)
@@ -79,10 +90,14 @@ final class NeuralLM: FrameLM {
         }
         let d = cfg.depformerDim, headDim = cfg.depformerDim / cfg.depformerNumHeads
         if let sliceTables {
-            let rows = cfg.textCard + 1 + (slices.count - 1) * (cfg.card + 1)
+            let rows = fused ? (cfg.textCard + 1) : (cfg.textCard + 1 + (slices.count - 1) * (cfg.card + 1))
             guard sliceTables.count == rows * d * MemoryLayout<Float16>.size else {
                 throw HibikiError.unsupported("lm-depformer-embeddings.bin of \(sliceTables.count) bytes")
             }
+        }
+        let sampling = cfg.lmGenConfig
+        if fused, sampling.temp > 0, let baked = cfg.lmCoreMLDepformerTopK, baked != sampling.topK {
+            throw HibikiError.unsupported("fused lm-depformer top_k \(baked) for lm_gen_config top_k \(sampling.topK)")
         }
         let half = cfg.dim / cfg.numHeads / 2
         var inputs: [(MLModel, String, [Int])] = [
@@ -95,6 +110,13 @@ final class NeuralLM: FrameLM {
         if let heads {
             inputs += [(heads, "hidden", [1, cfg.dim]), (heads, "text", [1, cfg.dim])]
             outputs += [(heads, "audio_logits", [cfg.depQ, cfg.card])]
+        }
+        if let depformer {
+            inputs += [
+                (depformer, "hidden", [1, cfg.dim]), (depformer, "emb", [1, d]),
+                (depformer, "noise", [cfg.depQ, cfg.card]),
+            ]
+            outputs += [(depformer, "tokens", [cfg.depQ])]
         }
         for (k, slice) in slices.enumerated() {
             let pastShape = [cfg.depformerNumLayers, cfg.depformerNumHeads, k, headDim]
@@ -127,7 +149,23 @@ final class NeuralLM: FrameLM {
             let shape = [cfg.depformerNumLayers, cfg.depformerNumHeads, k, headDim]
             return (try array(shape, .float16), try array(shape, .float16))
         }
-        let sampling = cfg.lmGenConfig
+        if fused {
+            let noise = try array([cfg.depQ, cfg.card], .float16)
+            memset(noise.dataPointer, 0, noise.count * MemoryLayout<Float16>.size)
+            depformerNoise = noise
+            if sampling.temp > 0 {
+                let t = Double(sampling.temp)
+                gumbelLUT = (0..<65536).map { i in
+                    let u = (Double(i) + 0.5) / 65536.0
+                    return Float16(-t * Foundation.log(-Foundation.log(u)))
+                }
+            } else {
+                gumbelLUT = []
+            }
+        } else {
+            depformerNoise = nil
+            gumbelLUT = []
+        }
         textSampler = Sampler(temp: sampling.tempText, topK: sampling.topKText)
         audioSampler = Sampler(temp: sampling.temp, topK: sampling.topK)
         closeMask()
@@ -194,6 +232,18 @@ final class NeuralLM: FrameLM {
             let logits = rows(audioOut.featureValue(for: "audio_logits")!.multiArrayValue!)
             precondition(logits.count == cfg.depQ && logits[0].count == cfg.card)
             audioTokens = logits.map { audioSampler($0, using: &rng) }
+        }
+        if let depformer, let depformerNoise {
+            copyRow(textToken, of: sliceTables!, width: cfg.depformerDim, into: sliceEmb)
+            if !gumbelLUT.isEmpty { fillGumbelNoise(into: depformerNoise) }
+            busy.host += lap()
+            let depOut = try depformer.prediction(
+                from: MLDictionaryFeatureProvider(dictionary: [
+                    "hidden": hidden, "emb": sliceEmb, "noise": depformerNoise,
+                ]))
+            busy.heads += lap()
+            let tokArray = depOut.featureValue(for: "tokens")!.multiArrayValue!
+            audioTokens = readTokens(tokArray, count: cfg.depQ)
         }
         for (k, slice) in slices.enumerated() {
             // The token before codebook k: the text, else codebook k - 1, in slice k's table.
@@ -295,6 +345,40 @@ final class NeuralLM: FrameLM {
         table.withUnsafeBytes { raw in
             let src = raw.bindMemory(to: Float16.self).baseAddress! + row * width
             dst.update(from: src, count: width)
+        }
+    }
+
+    /// Fills `noise` [dep_q, card] fp16 with i.i.d. `temp * Gumbel(0, 1)` from `gumbelLUT`.
+    private func fillGumbelNoise(into noise: MLMultiArray) {
+        let n = noise.count
+        let dst = noise.dataPointer.bindMemory(to: Float16.self, capacity: n)
+        gumbelLUT.withUnsafeBufferPointer { lut in
+            let table = lut.baseAddress!
+            var i = 0
+            while i + 3 < n {
+                let r = rng.next()
+                dst[i] = table[Int(r & 0xFFFF)]
+                dst[i + 1] = table[Int((r >> 16) & 0xFFFF)]
+                dst[i + 2] = table[Int((r >> 32) & 0xFFFF)]
+                dst[i + 3] = table[Int(r >> 48)]
+                i += 4
+            }
+            while i < n {
+                dst[i] = table[Int(rng.next() & 0xFFFF)]
+                i += 1
+            }
+        }
+    }
+
+    /// Reads exact integer token IDs from a 1-D fp16 Core ML output `[count]`.
+    private func readTokens(_ array: MLMultiArray, count: Int) -> [Int] {
+        let stride = array.strides[0].intValue
+        return array.withUnsafeBufferPointer(ofType: Float16.self) { values in
+            (0..<count).map { i in
+                let tok = Int(Float(values[i * stride]).rounded())
+                precondition(tok >= 0 && tok < cfg.card, "depformer token \(tok)")
+                return tok
+            }
         }
     }
 

@@ -10,8 +10,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Export](#export) · [Runtime](#runtim
 convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.py --bits 6 ─► model dir ─► NeuralLM (Swift, ANE)
                                                          lm-trunk.mlmodelc   main transformer + text head, KV cache as state
                                                          lm-heads.mlmodelc   16 codebook heads
-                                                      or lm-depformer-k.mlmodelc, lm-depformer-embeddings.bin
-                                                         lm-embeddings.bin   input tables, summed on the host
+                                                      or lm-depformer.mlmodelc (fused, default) / lm-depformer-k.mlmodelc (--per-slice)
+                                                         lm-depformer-embeddings.bin, lm-embeddings.bin
 ```
 
 ## Export
@@ -39,15 +39,19 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
 - Fed the MLX runtime's own inputs, `lm_step` in fp32 matches MLX bf16's argmaxes ([Precision](#precision)).
 - `export_lm_coreml.py MODEL_DIR OUT_DIR --bits 6` writes a model directory: both models compiled,
   the tables, the tokenizer and Mimi checkpoint, and the config with `lm_coreml: {bits}` in place
-  of `moshi_name`. Mimi's decoder comes from `export_mimi_coreml.py`
-  ([README](../../inference/swift/README.md#core-ml-lm)). A `depformer_parallel` model gets
-  `lm-depformer-{k}.mlmodelc` and the slices' input tables, `lm-depformer-embeddings.bin` (fp16,
-  memory-mapped), in place of the heads. `--bits` palettizes weights over 65,536
-  elements by k-means (every heads-student weight is over 1M; a 512-wide slice's are not, so the
-  threshold was 1M until 2026-11-27), one table of 2^N entries per 16 output channels: trunk 1,958 → 738 MB, heads 134
-  → 51 MB. It takes ~15 min on one core. Compute plan of the 6-bit models: all 892 trunk ops and
-  all 18 head ops on the Neural Engine. A student trained against these tables is snapped onto
-  them first ([student-palettize](student-palettize.md)).
+  of `moshi_name` (`--trunk-bits` overrides the trunk's bit width alone). Mimi's decoder comes from
+  `export_mimi_coreml.py` ([README](../../inference/swift/README.md#core-ml-lm)). By default a
+  `depformer_parallel` model exports one fused `lm-depformer.mlmodelc` (`DepformerStep`, all slices
+  plus top-k Gumbel-max sampling and inter-slice embeddings in one ANE graph, `depformer_top_k`
+  recorded in `lm_coreml`) and slice 0's table in `lm-depformer-embeddings.bin`; `--per-slice`
+  writes legacy separate `lm-depformer-{k}.mlmodelc` models. `--bits` palettizes weights over
+  65,536 elements by k-means (every heads-student weight is over 1M; a 512-wide slice's are not, so
+  the threshold was 1M until 2026-11-27), one table of 2^N entries per 16 output channels: trunk
+  1,958 → 738 MB (491 MB at 4 bits), heads 134 → 51 MB. It takes ~15 min on one core. Compute plan
+  of the 6-bit models: all trunk ops (2,754 with chunked attention), all 18 head ops, and all
+  fused depformer ops (757 for 9 slices of 512 × 2; 952 for 8 slices of 1024 × 3) run on the Neural
+  Engine with 0 CPU ops. A student trained against these tables is snapped onto them first
+  ([student-palettize](student-palettize.md)).
 
 ## Runtime
 
@@ -90,14 +94,20 @@ argmaxes equal to the MLX bf16 run's, given the same inputs and sampled text:
 | Core ML 6 bits (palettized), M4 Pro Neural Engine | 98.7% | 95.4% | 90.8% | 92.8% | 92.1% |
 
 - The Neural Engine's fp16 costs about what MLX's 6 bits do; palettizing costs as much again.
-- **Agreement drifts over long contexts.** On a 4.5-minute clip (FLEURS dev VI rows joined, 3,412
-  frames, the same replay), codebook 0 agreed 96–97% over frames 0–1,500, then fell to 92%, 84–85%
-  and 79–80% by frames 3,000–3,412, in fp16 and at 6 bits alike. MLX 6 bits held 95–97% throughout.
-  There is no step at the ring's wrap (frame 3,000), so this is the Neural Engine's fp16 summing
-  over thousands of keys, as with Mimi's encoder ([mimi-npu](mimi-npu.md#precision)), not
-  palettizing or the ring. The short-clip numbers and the gate do not see it. The model
-  itself degenerates on long input anyway ([swift-runtime](swift-runtime.md#device-test)); the
-  reference's text stopped after frame 2,250.
+- **Agreement drifts over long contexts — fixed by chunked online-softmax attention.** On a
+  4.5-minute clip (FLEURS dev VI rows joined, 3,412–3,670 frames, the same replay), flat fp16
+  attention over all 3,000 KV slots agreed on codebook 0 for 97–98% over frames 0–1,500, then fell
+  to 95%, 87%, 81%, 83–84% over frames 1,500–3,670 (`z1200_ane16`; `student_heads14_cb16` s16k
+  fell 96–97% → 79–80% in fp16 and 6 bits alike, while MLX 6 bits held 95–97%). There is no step
+  at the ring's wrap (frame 3,000), so the loss was fp16 summing 3,000 keys in one accumulator.
+  Splitting KV attention into 12 chunks of 250 keys (`_ATTN_CHUNK = 250` via `.split(250)`, since
+  Core ML `MLState` rejects 4-D reshapes with error `-14`) and combining them with online-softmax
+  log-sum-exp weights keeps all 2,754 trunk ops on the Neural Engine at **zero 6-bit latency cost**
+  (M4 Pro 6-bit trunk 11.31 vs 11.55 ms) and cuts the long-context drift sharply on `z1200_ane16`
+  (2026-11-27, `/Volumes/data/hibiki-zero-evals/mac/long-context/`):
+  - frames 0–1,500: cb0 97.6–98.0% (vs 97.0–98.0%), All 16 95.0–96.5% (vs 94.0–94.8%);
+  - frames 2,000–3,670: cb0 **91.4 / 89.2 / 91.4 / 95.3%** (vs 86.6 / 81.2 / 82.6 / 84.1%, **+4.8
+    to +11.2 pts**), All 16 **93.0 / 92.2 / 94.6 / 94.9%** (vs 90.8 / 90.2 / 93.2 / 92.0%).
   Range is no issue: the student's activations peak at 50.5, 1,300x under fp16's limit (measured
   on the depformer student, 2026-11-16).
 - The gate's first 20 FLEURS dev rows each way through the Swift CLI (`hibiki translate`, seed 42
@@ -231,18 +241,35 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   `d512x2_vi_10min.jsonl`, a sample a step, and `.txt`, the console), the Mac's in
   `/Volumes/data/hibiki-zero-evals/mac/depformer/`.
 
+- **Single-model fused depformer (`lm-depformer.mlmodelc`, 2026-11-27, default export):** puts all
+  slices, top-k Gumbel-max sampling, and inter-slice embedding lookups inside **one** 100%-ANE
+  Core ML model (`DepformerStep`). Key ANE finding: `ios18.topk`, `greater_equal`, `select`, and
+  `reduce_max` all stay on the Neural Engine, whereas `reduce_argmax` and `gather` split the graph
+  onto the CPU. Using exact fp16 integer tie-breaking (`1..card`, exact in IEEE 754 fp16 for
+  `card <= 2048`) to form a guaranteed one-hot vector `oh @ emb.T` and return exact integer token
+  IDs in fp16 keeps **100% of ops on the Neural Engine (0 CPU ops)**: `757/757` for 9 slices of
+  `512 × 2` (`80 MB` at 6 bits, host table `63 → 47 MB`), `952/952` for 8 slices of `1024 × 3`
+  (`325 MB`). `NeuralLM` fills `noise [dep_q, card]` from a 128 KB (65,536-entry) pre-scaled
+  Gumbel quantile LUT (4 lookups per `SplitMix64` call; zeros when `temp == 0`) and remains
+  backward-compatible with legacy per-slice `lm-depformer-K.mlmodelc` directories.
+  - **Parity & quality (`student_dep10/g2000`):** PyTorch greedy matches `DepformerSlice` `80/80`
+    exact codebooks; ANE 6-bit greedy matches per-slice `g2000_ane6` `100%` cb0, `98%` cb1–2,
+    `96%` cb3–4; 5×2 FLEURS dev through Swift CLI matches quality and voice (`VI→EN 38.61 chrF /
+    sim 0.29 / HNR 5.7 dB`, `EN→VI 47.27 chrF / sim 0.12 / HNR 7.4 dB`, health pass; baseline
+    per-slice `40.65 / 0.30 / 5.3` and `36.28 / 0.20 / 8.4`).
+  - **M4 Pro speed (`hibiki bench`, Mimi on GPU):** `512 × 2` drops **`17.58 → 14.72 ms`** frame
+    p50 (LM **`17.54 → 14.48 ms`**, slices `2.65 → 1.80 ms`, host `2.50 → 1.35 ms` — faster than
+    parallel heads' `16.06 ms` LM); `1024 × 3` (`g2000`) drops **`15.83 → 14.63 ms`** (slices
+    **`5.86 → 3.62 ms`**). A15 timing pending a re-signed `HibikiBench` build (`d512x2_fused` is
+    staged in `Documents/d512x2_fused/`).
+
 ## Next
 
-- Fewer Core ML calls for the slices, whose cost on the A15 is ~1.8 ms a call: a larger
-  `parallel_codebooks` (fewer slices), or every slice in one model with the sampling inside it.
+- Time `lm-depformer.mlmodelc` (`d512x2_fused`) and `ane4_6` on the A15 once `HibikiBench`'s
+  provisioning profile is renewed in Xcode.
 - A full-set gate of the Core ML LM against MLX 6 bits, in one runtime.
-- Long sessions: the fp16 drift past ~2 minutes of context. Untried: attention over the cache in
-  chunks with their partial sums combined (more fp16 headroom per sum), or a shorter context.
-- The encode is the GPU's main load in Speech Live; MLX in fp16 would halve its bytes, with codes
-  99.8 / 98 / 95% equal to fp32's ([mimi-npu](mimi-npu.md)), after a chrF gate.
-- Not a lever: the LM's host part beside the GPU encode (5–6 ms). Its logit conversion and
-  sampling take 0.7 ms a frame on the M4 Pro, the same with reused buffers and vImage (0.73
-  against 0.67 ms; the conversion 0.02 → 0.006), so the CPU's clock sets it (2026-11-26).
-- Fewer bytes on the Neural Engine may free bandwidth for the encode and the LM: 4-bit
-  palettization (~490 MB), after a quality gate; training against the tables is built
-  ([student-palettize](student-palettize.md)).
+- Not a lever: Mimi GPU encode in fp16 or mixed fp16 failed the 20×2 FLEURS dev gate
+  ([swift-runtime](swift-runtime.md#mimi-on-the-gpu)); the LM's host part beside the GPU encode
+  (5–6 ms; CPU clock bound, 2026-11-26).
+- 4-bit trunk (~491 MB) needs QAT (`--palettize-bits 4`): plain 4-bit PTQ lost −4.1 chrF and
+  −9.6% All-16 NPU agreement ([student-palettize](student-palettize.md#neural-engine-agreement)).

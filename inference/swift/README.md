@@ -47,8 +47,9 @@ K = 1. The decoder runs one frame per call on the Neural Engine, whatever K is.
 
 The parallel-heads student (`"audio_heads": "parallel"`) runs only as Core ML: its LM exported from
 the bf16 staging, two models a frame with the text sampled between them
-([lm-npu](../../docs/agent-memory/lm-npu.md)). So does a `depformer_parallel` model, whose depformer
-slices are one model each, sampled between them
+([lm-npu](../../docs/agent-memory/lm-npu.md)). So does a `depformer_parallel` model, whose slices
+and in-graph top-k Gumbel-max sampling run in one fused model (`lm-depformer.mlmodelc`, or
+`--per-slice` for separate `lm-depformer-K.mlmodelc` models)
 ([lm-npu](../../docs/agent-memory/lm-npu.md#depformer-slices)). From the repo root:
 
 ```sh
