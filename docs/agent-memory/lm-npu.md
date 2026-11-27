@@ -215,15 +215,19 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   | 512 × 1 | 42.4 | 16.0 | 7.8 | 66.1 / 69.5 |
   | 512 × 2 | 42.4 | 17.2 | 7.9 | 67.7 / 70.3 |
   | 1024 × 1 | 42.2 | 19.6 | 7.9 | 69.7 / 73.2 |
+  | 1024 × 3 | 40.9 | 28.0 | 9.0 | 78.0 / 82.0 |
 
-  The slices cost what their 9 calls cost, not their size: doubling the layers added 1.2 ms, where
-  the phone takes ~1.8 ms a call even for 512 × 1 (the Mac 0.2). The 9 samplings add ~3 ms of
-  host. Each reached thermal state 2 (fair) within the 2 minutes, and 1024 × 1's minute-1 p99 was
-  80.4 ms, at the frame's 80. 1024 × 3 and the depformer student were not timed: the run was
-  stopped there since the depformer student trails the heads student by ~14 chrF
-  ([phone-student](phone-student.md)), so a new student is trained either way. Raw results:
-  `/Volumes/data/hibiki-zero-evals/iphone/depformer/` (`*_vi_2min.jsonl`, a sample a step, and
-  `.txt`, the console), the Mac's in `/Volumes/data/hibiki-zero-evals/mac/depformer/`.
+  The slices cost mostly their 9 calls: doubling the layers added 1.2 ms, where the phone takes
+  ~1.8 ms a call even for 512 × 1 (the Mac 0.2). The 9 samplings add ~3 ms of host. Each reached
+  thermal state 2 (fair) within the 2 minutes. 1024 × 3, the depformer student's shape, misses
+  the frame's 80 ms (p90 80.0). **512 × 2 holds for 10 minutes** (run on its own after these):
+  frame p50 66.8–68.8 ms every minute, p99 69.3–74.5 but 79.4 in minute 10, thermal 2 throughout,
+  lag at most 0.09 s; LM 66.8 (trunk 42.9, slices 17.4, host 6.3). The trained depformer student
+  was not timed: it trails the heads student by ~14 chrF ([phone-student](phone-student.md)), so
+  a new student is trained either way. Raw results:
+  `/Volumes/data/hibiki-zero-evals/iphone/depformer/` (`*_vi_2min.jsonl` and
+  `d512x2_vi_10min.jsonl`, a sample a step, and `.txt`, the console), the Mac's in
+  `/Volumes/data/hibiki-zero-evals/mac/depformer/`.
 
 ## Next
 
