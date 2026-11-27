@@ -164,10 +164,10 @@ python -m training.prep.translate_en_speech claim --key OPEN_ROUTER  # all untra
 nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER --concurrency 96 \
   >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &        # `kill` stops it cleanly; rerun to resume
 nohup caffeinate -i python -m training.prep.translate_en_speech translate \
-  --profile claude-p --profile claude-l --profile claude-5x --profile default \
+  --profile claude-p --profile claude-l --profile default \
   >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
 python -m training.prep.translate_en_speech retranslate --profile claude-p --profile claude-l \
-  --profile claude-5x --profile default                  # CJK-script lines again on Claude; retexts.parquet
+  --profile default                                      # CJK-script lines again on Claude; retexts.parquet
 python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
 ```
 
