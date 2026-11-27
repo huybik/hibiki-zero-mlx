@@ -135,6 +135,17 @@ mean +0.35, speaker_sim +0.012, HNR +0.05 dB), the trunk's teacher-forced text l
 
 ## Phone finish
 
+On the box, after the on-policy run's final sync, from the branch's checkout (not the run's
+commit, which the refit's and the finish's jobs postdate): `training/tranche/box/finish_slices.sh`
+runs the refit on the run's best, the 6-bit finish from the refit (`restart.sh
+student-slices-pal6-5090`, the heads student's recipe in [student-palettize](student-palettize.md)),
+snaps the refit and the finish's update 4,000 onto their 6-bit tables, then tests the on-policy
+start, the refit (bf16 and snapped) and the finish (snapped) with `test_student.sh` (13 test sets,
+seed 43, LAAL, voice scored) into `runs/slices_tests/`. Each step whose output exists is skipped.
+On the Mac the finished snapped model goes through `convert_mlx.py` (bf16), `gate.py`,
+`export_lm_coreml.py --bits 6`, `export_mimi_coreml.py` and the Swift CLI, as below; the iPhone
+13 Pro Max's 10 minutes in HibikiBench are the user's.
+
 The Mac path, first run on a trained slices checkpoint (`both_slices_z` 200 from the Hub,
 2026-11-28, the M4 Pro, `nice -n 19`; models in `/Volumes/data/models/hibiki/weights/student_slices14/`,
 records in `/Volumes/data/hibiki-zero-evals/mac/slices-gate/`):
