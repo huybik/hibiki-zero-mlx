@@ -1,9 +1,11 @@
 # Slices student
 
-Read when touching `training/student/slices.py` or `restart.sh student-slices-5090`, or training,
+Read when touching `training/student/slices.py`, `restart.sh student-slices-5090` or moshi_mlx's
+`parallel_codebooks`, or training,
 scoring or deciding on the phone student whose audio part is depformer slices. Back to
 [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Why this shape](#why-this-shape) ·
-[Making it](#making-it) · [Training](#training) · [Runs](#runs) · [Not yet](#not-yet). The phone side
+[Making it](#making-it) · [Training](#training) · [Runs](#runs) · [On the Mac](#on-the-mac) ·
+[Not yet](#not-yet). The phone side
 (export, Swift, A15 timings) is in [lm-npu](lm-npu.md#depformer-slices); the heads student it
 replaces in [student-heads](student-heads.md).
 
@@ -73,8 +75,16 @@ student's and the depformer student's on the same sets.
 
 None yet.
 
+## On the Mac
+
+The vendored moshi_mlx reads the config (`DepFormerConfig.parallel_codebooks`; the slice count
+dep_q − P + 1, `generated_codebooks` still dep_q) and the weights (the last slice's `linear_out`
+is `linears.8`..`15` stacked), and samples the last slice's codebooks at once, so `convert_mlx.py`
+stages a checkpoint, the gate runs it and `export_lm_coreml.py` exports the staging. Checked on
+the tiny student with larger random weights (2026-11-27): MLX's greedy `DepFormer.sample` equals
+PyTorch's `depformer_step` on all 4 codebooks of 6 rows, and `lm_step` builds every slice from the
+staging.
+
 ## Not yet
 
-- The MLX runtime and `convert_mlx.py` (moshi_mlx refuses `depformer_parallel`), so neither the Mac
-  gate nor the Core ML export reads a trained slices checkpoint yet.
 - Palettization against the export's tables (`train.py --palettize-bits` takes heads students only).

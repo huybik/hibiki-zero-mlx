@@ -13,8 +13,8 @@ which `common.load_checkpoint_info` takes out before moshi reads the config. Its
 moshi's own, the step schedule codebook j -> slice min(j, dep_q - P) (`schedule`), so moshi builds
 the slices' weights, the input linears and the 16 output linears; `install` keeps a slice's input
 embedding and output norm, not a codebook's, and runs the steps (`_forward_training`,
-`depformer_step`). The phone runs the slices as one Core ML model each
-(`inference/tools/export_lm_coreml.py`), once `convert_mlx.py` stages such a checkpoint (not yet).
+`depformer_step`). `inference/tools/convert_mlx.py` stages a checkpoint for MLX, and
+`export_lm_coreml.py` exports the staging for the phone, one Core ML model a slice.
 
 `python -m training.student.slices` gives a student new slices: its trunk, text and input
 embeddings copied, its audio part (heads or depformer) dropped, its target delays set to the source
