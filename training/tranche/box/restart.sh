@@ -176,21 +176,21 @@ case $job in
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # The heads student's trunk (after its on-policy stage) with depformer slices for its heads
-  # (training/student/slices.py, docs/agent-memory/student-slices.md), distilled as the heads were.
-  # In pieces of 4,096 frames: at the heads' 6,144 the first backward ran out of the 5090's memory.
+  # (training/student/slices.py, docs/agent-memory/student-slices.md), distilled as the heads were, but
+  # the slices alone (--freeze-trunk): with the trunk training, its text drifted at the peak rate.
   student-slices-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        name=student_slices14 S=weights/$name
        [[ -f $S/config.json ]] || .venv/bin/python -m training.student.slices \
          --weight weights/both_heads_z_best1200.safetensors --config-path weights/student_heads14_cb16/config.json \
          --dim 512 --num-heads 8 --layers 2 --parallel 8 --seed 47 --out-dir $S
-       cmd=(./training/h100.sh run ${name}_5090
+       cmd=(./training/h100.sh run ${name}_frozen
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
             --config-path $S/config.json --model-weight $S/model.safetensors
             --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --bf16-adamw --batch-frames 12288 --micro-frames 4096 --park-states
+            --bf16-adamw --freeze-trunk --batch-frames 12288 --park-states
             --lr 5e-5 --eval-batch-size 64 --keep-checkpoints 1
             --epochs 1 --seed 47 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
