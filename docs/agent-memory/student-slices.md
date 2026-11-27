@@ -75,9 +75,9 @@ train `weights/student_slices14` (cut from `both_heads_z_best1200`) in two stage
 - **Stage 2 (`student_slices14_stage2`, joint differential LR)**: refines from Stage 1's checkpoint
   (`weights/student_slices14_stage1.safetensors`) with `--trunk-lr 1e-5 --lr 5e-5
   --first-codebook-weight 20 --acoustic-ar-weight 2 --fp8 --fp8-teacher all --micro-frames 6144
-  --schedule constant --max-steps 40000`, keeping the trunk below its `~2.5e-5` drift threshold
-  while adapting to the new delays. Branch `--schedule decay` once selecting chrF and voice scores
-  plateau.
+  --schedule constant --max-steps 40000`, meant to let the trunk adapt to the new delays without
+  text drift. It drifts: by 8,000 the voice rose and every set's chrF fell
+  ([Runs](#runs)).
 - **Diagnostics**: `train_log.jsonl` and `val_log.jsonl` always log `acoustic_ar_loss` (`cb 1..7`)
   and `acoustic_par_loss` (`cb 8..15`) separately, plus `trunk_grad_norm`, `audio_grad_norm`,
   `clipped_frac`, and `trunk_lr` (without extra per-step GPU syncs). Stage 1's training log has
@@ -138,7 +138,25 @@ student's and the depformer student's on the same sets.
   (PR #205), `restart.sh student-slices-joint-5090` from Stage 1's update 16,000; HF recovery
   prefix `student_slices14_stage2`. Runs at 0.70 s an update, 26.2 GiB, the GPU at 99% and ~520 W;
   validates every 8,000 to 40,000 (~8.2 h). Its first updates continue Stage 1's acoustic losses
-  (cb 1–7 0.94, cb 8–15 1.21) with text KL 0.11 → 0.10 by update 100.
+  (cb 1–7 0.94, cb 8–15 1.21); training text KL 0.095 (updates 1–200) → 0.072 (1,001–1,500), flat
+  after. Validations (cells as Stage 1's table; outputs in
+  `/Volumes/data/hibiki-zero-evals/box-62513802/student_slices14_stage2/`):
+
+  | Update (date) | Selecting | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+  |---|---|---|---|---|---|---|---|---|
+  | 8,000 (11-27) | 33.58 | 39.31 / 8.15 / 1.42 / 1.9 / 0.36 / 4.4 | 27.85 / 11.34 / 0.98 / 2.0 / 0.22 / 5.4 | 36.15 / 8.49 / 1.58 / 4.0 / 0.31 / 5.8 | 42.83 / 14.71 / 1.19 / 2.2 / 0.35 / 4.3 | 44.24 / 16.93 / 1.14 / 2.8 / 0.45 / 4.4 | 32.29 / 15.19 / 1.11 / 0.8 / 0.29 / 5.1 | 42.00 / 20.11 / 1.06 / 2.0 / 0.32 / 5.2 |
+
+  Health passed (empty rows: 1 each on fleurs-en, en-vi-val cv27, en-vi-val-en cv27). The joint
+  stage trades text for voice: against Stage 1's 16,000, every set's chrF fell (seven-set mean
+  40.55 → 37.81, selecting 38.41 → 33.58, FLEURS EN→VI −7.48, the rest −1.16 to −2.55) while the
+  voice rose (mean speaker_sim 0.280 → 0.329, HNR 4.89 → 4.94 dB), though the teacher-forced text
+  improved (content loss 1.885 → 1.816 on `en-vi-grounded-v2/validation`). FLEURS EN→VI answers in
+  English on 77 of 392 rows (no Vietnamese letter; Stage 1: 12), garbled English rather than a
+  transcript, and scores 31.96 without them. Outputs end with text EOS far more often (FLEURS-vi
+  93 → 231 / 361, FLEURS-en 24 → 183 / 392) and run longer (FLEURS-vi length ratio 1.31 → 1.42).
+  The trunk's text came from on-policy training (`both_heads_z`, which took FLEURS EN→VI
+  wrong-language rows to 0, [heads-on-policy-runs](heads-on-policy-runs.md)); teacher-forced
+  distillation at `--trunk-lr 1e-5` undoes it, as the first joint run's text did at 5e-5.
 - `student_slices14_stage1`: started 2026-11-27 11:20 UTC on box 62513802, commit 65f6b51
   (PR #205), `restart.sh student-slices-5090`; HF recovery prefix `student_slices14_stage1`.
   Ran at 0.43 s an update, 15 GiB, the GPU at 100% and ~535 W; validated at 8,000 and 16,000.
