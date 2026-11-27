@@ -112,8 +112,17 @@ HNR:
 | Decay 8,000 (on-policy start) | 38.32 | 40.54 | 0.293 | 4.94 | 41.15 / 9.74 / 1.39 / 1.5 / 0.34 / 4.5 | 35.49 / 16.47 / 1.01 / 1.9 / 0.16 / 5.4 | 37.98 / 10.29 / 1.48 / 3.4 / 0.27 / 6.0 | 45.93 / 17.93 / 1.18 / 2.1 / 0.32 / 4.1 | 44.98 / 17.89 / 1.11 / 2.1 / 0.41 / 4.4 | 34.36 / 17.19 / 1.11 / 1.1 / 0.26 / 5.0 | 43.92 / 22.29 / 1.07 / 1.6 / 0.29 / 5.2 |
 | `both_slices_z` 200 | 38.49 | 40.93 | 0.293 | 4.11 | 41.18 / 10.21 / 1.33 / 1.7 / 0.33 / 3.7 | 35.81 / 16.37 / 1.00 / 2.0 / 0.16 / 4.6 | 38.41 / 10.99 / 1.41 / 3.4 / 0.28 / 5.3 | 45.49 / 17.75 / 1.15 / 2.5 / 0.33 / 3.5 | 46.09 / 20.40 / 1.06 / 2.1 / 0.42 / 3.4 | 35.45 / 16.91 / 1.15 / 1.0 / 0.27 / 4.1 | 44.12 / 22.95 / 1.07 / 2.0 / 0.27 / 4.2 |
 
+| Refit 1,000 | 38.32 | 40.86 | 0.304 | 4.93 | 41.35 / 10.27 / 1.34 / 1.7 / 0.36 / 4.5 | 35.29 / 16.38 / 1.00 / 2.2 / 0.17 / 5.5 | 38.30 / 10.47 / 1.45 / 3.6 / 0.28 / 5.9 | 46.02 / 17.49 / 1.15 / 2.3 / 0.31 / 4.0 | 46.04 / 19.55 / 1.08 / 2.5 / 0.41 / 4.2 | 35.08 / 16.51 / 1.10 / 1.0 / 0.28 / 5.1 | 43.92 / 23.11 / 1.05 / 2.1 / 0.31 / 5.2 |
+| Refit 2,000 | 38.56 | 40.89 | 0.305 | 4.99 | 41.74 / 10.82 / 1.31 / 1.8 / 0.36 / 4.5 | 35.37 / 16.03 / 1.00 / 2.1 / 0.17 / 5.6 | 38.29 / 10.72 / 1.44 / 3.7 / 0.29 / 6.0 | 45.40 / 19.31 / 1.15 / 2.3 / 0.33 / 4.3 | 46.12 / 20.59 / 1.06 / 2.3 / 0.42 / 4.3 | 34.88 / 15.96 / 1.13 / 1.1 / 0.27 / 5.0 | 44.44 / 23.11 / 1.05 / 2.1 / 0.30 / 5.3 |
+
 On these sets the on-policy text gain is smaller (+0.17 selecting, +0.39 mean) and the clarity
-loss the same (−0.83 dB, every set).
+loss the same (−0.83 dB, every set). The refit (`slices_z200_refit`, 19:31–19:58 UTC, 0.43
+s/update; HF prefix `slices_z200_refit`; raw outputs in
+`/Volumes/data/hibiki-zero-evals/box-62513802/slices_z200_refit/`) gave the clarity back by
+1,000 and kept the text: at 2,000 it beats the on-policy start on every count (selecting +0.24,
+mean +0.35, speaker_sim +0.012, HNR +0.05 dB), the trunk's teacher-forced text loss unchanged
+(0.8555 on `en-vi-grounded-v2/validation` at both). Training audio loss 0.73 → 0.70
+(semantic 0.16 → 0.15). So on-policy updates train the trunk and a refit follows them.
 
 ## Phone finish
 
