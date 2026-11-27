@@ -177,6 +177,7 @@ case $job in
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # The heads student's trunk (after its on-policy stage) with depformer slices for its heads
   # (training/student/slices.py, docs/agent-memory/student-slices.md), distilled as the heads were.
+  # In pieces of 4,096 frames: at the heads' 6,144 the first backward ran out of the 5090's memory.
   student-slices-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        name=student_slices14 S=weights/$name
@@ -189,7 +190,7 @@ case $job in
             --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
             --config-path $S/config.json --model-weight $S/model.safetensors
             --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --bf16-adamw --batch-frames 12288 --micro-frames 6144 --park-states
+            --bf16-adamw --batch-frames 12288 --micro-frames 4096 --park-states
             --lr 5e-5 --eval-batch-size 64 --keep-checkpoints 1
             --epochs 1 --seed 47 --save-every 4000 --val-every 8000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl

@@ -65,9 +65,26 @@ trunk comes back bit for bit and the student loads strictly.
 `restart.sh student-slices-5090` cuts `weights/student_slices14` from `both_heads_z_best1200` (the
 heads student after its on-policy stage) and runs the heads student's recipe on the 5090:
 distilled from GRPO update 1,400 on the two-way run's rows both ways, 12,288-frame batches
-(`--bf16-adamw --micro-frames 6144`), peak 5e-5 with 5% warmup and cosine, seed 47; one epoch
-(95,063 updates, the trunk already trained), validation every 8,000 with the voice scores
+(`--bf16-adamw`) in pieces of 4,096 frames, peak 5e-5 with 5% warmup and cosine, seed 47; one
+epoch (94,034 updates, the trunk already trained), validation every 8,000 with the voice scores
 ([voice-scores](voice-scores.md)). The trunk trains too: its audio inputs move to the new delays.
+
+Speed on the 5090 (box 62513802, 2026-11-27, the same rows; files in
+`/Volumes/data/hibiki-zero-evals/box-62513802/slices-bench-2026-11-27/`):
+
+| Recipe | s an update | Peak (nvidia-smi) |
+|---|---:|---:|
+| Heads student, pieces of 6,144 (its run's) | 0.947 | 27.1 GiB |
+| Slices, pieces of 6,144 | out of memory in the first backward (30.4 GiB in use) | |
+| Slices, pieces of 6,144, `--grad-checkpoint --grad-checkpoint-layers 1` | 1.00 | 30.8 GiB |
+| **Slices, pieces of 4,096** | **0.99** | **26.1 GiB** |
+
+Checkpointing the slices saves next to no memory, so their activations are not what fills the
+card. The kernel profile of 3 updates (torch.profiler; `prof_train.py` there) has the GPU busy
+98% of the wall time in both students, matmuls 75% of it; the slices take 3.6% more GPU time
+(2.92 s against 2.82 s), their small matmuls and the smaller pieces. The epoch is ~26 h.
+A validation (all 7 sets, free-running, voice scores, `--park-states`) took 291 s at 26.1 GiB:
+12 in the epoch, ~1 h.
 The voice decides at 8,000 and 16,000: `mean_speaker_sim` and `mean_hnr_db` against the heads
 student's and the depformer student's on the same sets.
 
