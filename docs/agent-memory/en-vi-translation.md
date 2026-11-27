@@ -48,11 +48,10 @@ Measured with Sonnet 5.5:
 
 - Output is 0.60-0.62 tokens per English character (Vietnamese costs 0.585 per character) and
   ~88% of the cost at API price weights.
-- One 5-hour window held ~4-5M output tokens on `claude-p` and `claude-l`, ~3.2M on `claude-5x`
-  (Max 5x) and ~11M on `default`. A full window used ~5% of `claude-5x`'s week and ~11% of
-  `default`'s, so their weeks hold ~64M and ~100M. At 8 calls (~600M a week) the weekly caps,
-  not the windows, bound the run: every named account, `default` included, reaches its weekly
-  cap each week until the corpus is done.
+- One 5-hour window held ~4-5M output tokens on `claude-p` and `claude-l` and ~11M on `default`.
+  A full window used ~11% of `default`'s week, so its week holds ~100M. At 8 calls (~600M a
+  week) the weekly caps, not the windows, bound the run: every named account, `default`
+  included, reaches its weekly cap each week until the corpus is done.
 - Measured levers, as changes to total cost: one call per line +80%; no prompt cache for the
   687-token instructions +2.2% (they are ~0.3% of cost cached, so trimming them saves nothing);
   no output line numbers −2.1%, but merged or split lines would pass unnoticed; 16k-character
@@ -98,9 +97,9 @@ Measured with Sonnet 5.5:
   Mac with the conda Python against the local Claude API (`~/.local/share/claude-local-api/`).
 - `--concurrency` (default 8, at most the server's 48) sets the calls in flight, and quota
   drains in proportion: 8 calls spend ~3.6M output tokens an hour, so a 5-hour window lasts
-  from ~1 hour on `claude-5x` to ~3 on `default`.
+  from ~1-1.5 hours on `claude-p` and `claude-l` to ~3 on `default`.
 - `--profile` names each subscription to spend, in order of use; the run uses `claude-p`,
-  `claude-l`, `claude-5x`, then `default`. When all are out of quota it waits for the earliest
+  `claude-l`, then `default`. When all are out of quota it waits for the earliest
   reset, checking the clock every minute so it also resumes after the Mac sleeps. `default` is
   the `~/.claude` login; the user works interactively on another account, so the run may spend
   it like the others, weekly cap included. Every named profile must
