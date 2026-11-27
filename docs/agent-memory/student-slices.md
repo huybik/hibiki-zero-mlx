@@ -128,6 +128,12 @@ student's and the depformer student's on the same sets.
 
 ## Runs
 
+- `student_slices14_stage1`: started 2026-11-27 11:20 UTC on box 62513802, commit 65f6b51
+  (PR #205), `restart.sh student-slices-5090`; HF recovery prefix `student_slices14_stage1`.
+  Runs at 0.428 s an update, 15 GiB, the GPU at 100% and ~535 W; validates at 8,000 and 16,000.
+  Before it, a 20-update frozen run on the same recipe saved a trunk equal to the cut's on all 119
+  tensors (compared in bf16, the weight's dtype, with text_emb's row 2 set to row 3 as `build_lm`
+  loads it), and all 128 slice tensors moved.
 - `student_slices14_5090`: started 2026-11-27 06:38 UTC on box 62513802 (RTX 5090), commit
   35e35d9, `restart.sh student-slices-5090` with the trunk training; HF recovery prefix
   `student_slices14_5090`. Ran at 0.99 s an update, 26.1 GiB, the GPU at 100% and 505 W; stopped

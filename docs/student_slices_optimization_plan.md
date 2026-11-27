@@ -6,6 +6,18 @@ Systems, kernel, Blackwell FP8, and recipe optimization plan for training the 14
 
 Related notes: [student-slices](agent-memory/student-slices.md) · [sft-speed](agent-memory/sft-speed.md) · [sft-training](agent-memory/sft-training.md) · [phone-student](agent-memory/phone-student.md) · [voice-scores](agent-memory/voice-scores.md) · [student_architecture_plan](student_architecture_plan.md).
 
+**Status (2026-11-27, PR #205):**
+- **Built:** S1–S4, F1, F2 and R1–R3. Not built: S5 (multi-tensor AdamW, batched embeddings).
+- **Measured speed** ([student-slices](agent-memory/student-slices.md#training)):
+  - Stage 1: 0.428 s an update, against the 0.30–0.38 s projected below.
+  - Stage 2: 0.698 s an update, in pieces of 6,144, against the 0.46–0.52 s projected. Whole batches did not fit without checkpointing.
+- **How parity was checked:** no unit tests (the repo adds none). Instead, on the box:
+  - losses at updates 40–50 against `db0de25`;
+  - a resume at update 10;
+  - a frozen run's trunk, bit for bit against the cut.
+- **The FP8 teacher:** both stages use `--fp8-teacher all`. F2 below planned `trunk` first, gated by a 2k-update A/B against the bf16 teacher. That A/B was not run; 5 batches measured the target shift instead.
+- **Stage 1 is running** as `student_slices14_stage1`.
+
 ---
 
 ## 1. Current Baseline & Diagnosis

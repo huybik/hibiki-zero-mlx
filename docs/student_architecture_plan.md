@@ -4,6 +4,8 @@ Date: 2026-11-27
 
 Design analysis and architecture plan for the next phone student, replacing the 16-codebook parallel-heads student (`student_heads14_cb16`) after voice evaluation showed severe voice-preservation and harmonic degradation despite strong text translation and Apple Neural Engine (ANE) speed.
 
+**Status (2026-11-27):** the student in training is the slices student ([student-slices](agent-memory/student-slices.md)): the heads student's 14-layer trunk with 9 depformer slices of `512 × 2` (codebooks 0–7 one at a time, 8–15 together from the last slice) at the teacher's delays. That is Candidate 2's step layout at Candidate 1's width, trained from random slices rather than cut from the 3B. On the A15 it held 67 ms a frame for 10 minutes ([lm-npu](agent-memory/lm-npu.md#depformer-slices)). Candidate 1's grouping is a later lever if the frame needs room.
+
 Related notes: [student-heads](agent-memory/student-heads.md) · [phone-student](agent-memory/phone-student.md) · [lm-npu](agent-memory/lm-npu.md) · [student-palettize](agent-memory/student-palettize.md) · [on-policy-distillation](agent-memory/on-policy-distillation.md) · [vi_en_parity_plan](vi_en_parity_plan.md).
 
 ---
@@ -59,7 +61,7 @@ The next student should **drop the delay pattern**, return to the **teacher's ex
 ### A15 ANE Frame Budget (80 ms / frame at 12.5 Hz)
 
 Measured on iPhone 13 Pro Max (A15, wired, 10 min flat, Mimi encode overlapped on GPU; [lm-npu](agent-memory/lm-npu.md#speed)):
-- **Sustained ANE weight bandwidth:** `~17.2–17.5 GB/s` (14L 6-bit trunk `738 MB` = `42.6–44.3 ms`; 16 heads `51 MB` = `3.2–3.5 ms`, implying `~0.4–0.6 ms` Core ML call dispatch overhead).
+- **Sustained ANE weight bandwidth:** `~17.2–17.5 GB/s` (14L 6-bit trunk `738 MB` = `42.6–44.3 ms`; 16 heads `51 MB` = `3.2–3.5 ms`). A small model costs more than one call suggests: 9 slices on the A15 cost `~1.8 ms` a call even at `512 × 1` (16.0 ms for 9 calls of `512 × 1`, 17.2 ms of `512 × 2`, 19.6 ms of `1024 × 1`, 28.0 ms of `1024 × 3`; [lm-npu](agent-memory/lm-npu.md#depformer-slices)). The estimates below use that measured cost per call.
 - **Fixed non-LM costs on critical path:** Mimi decode on ANE `~6.9 ms` + host embedding gather/sampling `~4–5 ms` ≈ **`11–12 ms`**.
 - **Core ML constraint:** Embedding gathers run on CPU in Core ML ([lm-npu](agent-memory/lm-npu.md#export)), so discrete token sampling and embedding lookup between sequential AR steps stay on the host.
 
@@ -101,8 +103,8 @@ Step 5: [cb 8..15]      8 cb in parallel   (all read exact 0..7)
 - **Parameter & ANE math (`d=512`, 3L, SwiGLU hidden `1536`, per-step weights, 6-bit):**
   - 1 step (3 layers): `3 × (512×1536 + 512×512 + 3×512×1536) = 10.2M` params = **`7.7 MB`** at 6-bit.
   - 6 steps + 6 `depformer_in` (`2048×512`) + 16 output heads (`512×2048`): **`~85M` params (`~64 MB` total at 6-bit)**—smaller than a single main layer and ~5× smaller than `student_dep10`'s 436M-param depformer.
-  - Projected A15 ANE time: `64 MB / 17.2 GB/s` (`3.7 ms`) + `6 × 0.5 ms` dispatch (`3.0 ms`) + host (`~1.0 ms`) ≈ **`8–10 ms`**.
-  - **Total A15 frame time:** **`~63–65 ms`** with a 14L 6-bit trunk, or **`~58 ms`** with a 12L 6-bit trunk.
+  - Projected A15 ANE time: `6 × ~1.9 ms` a call (measured per slice, above) ≈ **`11–13 ms`**, plus `~6 ms` of host for 6 samplings.
+  - **Total A15 frame time:** **`~61–63 ms`** with a 14L 6-bit trunk (against the measured 67 ms of 9 slices of `512 × 2`), or **`~56 ms`** with a 12L 6-bit trunk.
 - **Core ML export:** iOS 18 multifunction Core ML model (`6` entry points sharing a tiny `[3, 8, 6, 64]` KV state) or 6 small compiled models.
 - **Training & RL:** Clean extension of `forward_depformer_training` in [`lm_training.py`](../training/finetune/lm_training.py#L180-L214); faster than a 16-step depformer; exact teacher delay alignment for off-policy distillation and on-policy `both_z`.
 - **Risk:** Narrow `d=512` depformer trains from scratch (no warm start from 3B's `d=1024`). Mitigate with a 16k-update voice probe and higher acoustic weight (e.g., 3–5× on `cb 1–7`) or short depformer warmup if needed.
@@ -126,7 +128,7 @@ Cut directly from the 3B teacher's own `d=1024` depformer with **2 layers** (e.g
 
 Same `d=512`, 3-layer depformer as Candidate 1, but with **`weights_per_step = False`** and **exact 16-step causal AR** across all 16 codebooks (`cb 0 → 1 → ... → 15`):
 - **Pros:** Zero parallel marginalization anywhere (exact teacher KL match on all 16 codebooks, highest voice quality ceiling); only `~35M` depformer parameters total; a single **`7.7 MB`** Core ML model that may stay resident in A15 ANE SRAM/SLC after step 0.
-- **Cons:** 16 sequential host↔ANE calls per frame (`~8 ms` in Core ML dispatch overhead alone, plus compute → `~15–20 ms` projected). Must be micro-benchmarked on A15 before committing.
+- **Cons:** 16 sequential host↔ANE calls per frame: at the measured `~1.8 ms` a call, `~29 ms` of calls alone, plus `~10 ms` of host for 16 samplings, so `~76 ms` a frame on a 12L trunk. It misses the 65–70 ms budget unless the calls get cheaper.
 
 ---
 
@@ -145,9 +147,9 @@ All A15 numbers below assume Core ML on ANE, Mimi decode on ANE (`~7 ms`), host 
 | Candidate | Trunk (6-bit) | Audio Head (6-bit) | ANE Calls | Speech Lag | Est. A15 Frame | Warm-Start | Voice Risk |
 |---|---|---|---:|---:|---:|---|---|
 | Current `heads14_cb16` | 14L (43 ms) | 16 linear (3.5 ms) | 1 | 640 ms | **53 ms** (measured) | Trunk only | **Failed** (0.10 sim, 6 dB HNR) |
-| **1. Grouped Thin (`d=512`, 3L)** | 14L (43 ms) / 12L (37 ms) | 6-step grouped (~9 ms) | 6 | **160 ms** | **~64 / ~58 ms** | Trunk only | **Low** (verify at 16k) |
+| **1. Grouped Thin (`d=512`, 3L)** | 14L (43 ms) / 12L (37 ms) | 6-step grouped (~12 ms) | 6 | **160 ms** | **~62 / ~56 ms** | Trunk only | **Low** (verify at 16k) |
 | **2. Hybrid Warm-Start (`d=1024`, 2L)** | 12L (37 ms) | 0–7 AR + 8–15 par (~20 ms) | 9 | **160 ms** | **~69 ms** (~52 @ 4-bit) | **Full** | **Lowest** |
-| **3. Shared Narrow AR (`d=512`, 3L)** | 12L (37 ms) | 16-step shared (~15–20 ms) | 16 | **160 ms** | **~64–69 ms** | Trunk only | **Lowest** |
+| **3. Shared Narrow AR (`d=512`, 3L)** | 12L (37 ms) | 16-step shared (~29 ms of calls) | 16 | **160 ms** | **~76 ms** (misses) | Trunk only | **Lowest** |
 | **4. Flow-Matching Head** | 14L (43 ms) | 4-step flow (~5 ms) | **1** | **160 ms** | **~59 ms** | Trunk only | Medium (new recipe) |
 
 ---
@@ -165,7 +167,7 @@ Export dummy Core ML models on the Mac and run 10-minute sustained benchmarks on
 This establishes exact A15 frame times and decides whether 14L or 12L fits comfortably under `65–70 ms`.
 
 ### Step 2: Add an Automated Voice + Speech Gate
-Every existing gate scores text only, which allowed the heads student's voice collapse to go undetected through 48+ GPU-hours of training and deployment. Add a lightweight voice check to validation / milestone evaluation:
+Done: since `voice_scores.py` ([voice-scores](agent-memory/voice-scores.md)), every validation and `eval.py` pass reports each set's `mean_speaker_sim` and `mean_hnr_db`. The scores are reported, not gated. The floors below are mic-clip numbers. Validation's sets score lower for every model: on FLEURS-vi dev the heads release reads 0.21 / 3.2 dB and the depformer student 0.27 / 4.7 dB. So compare a candidate with those models on the same set, not with a floor:
 - **Speaker similarity:** WeSpeaker ResNet34 cosine similarity on the 5 Vietnamese mic clips (pass floor: `≥ 0.30`).
 - **Harmonic quality:** Harmonics-to-noise ratio (pass floor: `≥ 12.0 dB`).
 - **Speech intelligibility (EN→VI):** Qwen3-ASR WER on a small FLEURS-en slice to confirm 16-codebook Vietnamese clarity holds.
