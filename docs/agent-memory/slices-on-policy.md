@@ -182,3 +182,17 @@ records in `/Volumes/data/hibiki-zero-evals/mac/slices-gate/`):
   45.70 / 23.70, 3 of 5, 0.13, 5.4 dB; trunk 11.6, slices 3.2, host 3.0 ms a frame. A plain
   6-bit export (not trained against its tables) on 5 sampled rows: a check that the path runs,
   not a comparison.
+
+The refit's snap (`both_slices_z_refit_snap6`, the z400 refit's 2,000 on its 6-bit tables, from the
+Hub's `phone/`), the same rows and seeds, 2026-11-28: so the snapped weights reach the Neural
+Engine as MLX runs them (the plain export's 5–7 chrF loss is gone, inside 5 rows' noise):
+
+| Model | VI→EN chrF / BLEU / EOS / speaker_sim / HNR | EN→VI chrF / BLEU / EOS / speaker_sim / HNR |
+|---|---|---|
+| z200, MLX bf16 | 54.32 / 22.56 / 1 of 5 / 0.32 / 2.1 | 52.85 / 27.21 / 0 of 5 / 0.19 / 5.1 |
+| z200, Core ML 6-bit (plain export) | 49.15 / 16.46 / 0 of 5 / 0.31 / 3.2 | 45.70 / 23.70 / 3 of 5 / 0.13 / 5.4 |
+| refit snap, MLX bf16 (`refit_snap6_bf16`) | 54.22 / 18.97 / 3 of 5 / 0.38 / 3.9 | 45.33 / 25.33 / 2 of 5 / 0.21 / 6.0 |
+| refit snap, Core ML 6-bit (`refit_snap6_ane6`) | 55.98 / 26.15 / 4 of 5 / 0.31 / 3.8 | 46.42 / 22.92 / 1 of 5 / 0.24 / 6.7 |
+
+The export took 8.5 GB at peak, the same sizes as z200's; trunk 11.7, slices 3.3, host 2.2 ms a
+frame (means of the 10 rows). Records in `refit_snap6_bf16/` and `refit_snap6_ane6_swift/`.
