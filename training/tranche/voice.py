@@ -4,9 +4,10 @@ batched on the GPU ([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-sc
 
 Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=True, use_ref_codes=True)`:
 - the reference: the row's clip trimmed of silence at 30 dB, its first 8 s, cut to whole quarter seconds so the
-  clips batch at 32 lengths, at 44.1 kHz (the loader's processes, a shard ahead); on the GPU, a shard at a time:
-  the resemble-enhance denoiser (onnx_graph.py, fp16, compiled per length), the speaker encoder (onnx_graph.py) on
-  a Kaldi fbank of the clean clip at 16 kHz, and MOSS's codes of it at 48 kHz (fp16);
+  clips batch at 32 lengths, at 44.1 kHz (the loader's processes, a shard ahead); on the GPU, ENROL_PIECE rows at a
+  time as the voicer takes them, shortest first: the resemble-enhance denoiser (onnx_graph.py, fp16, compiled per
+  length; clean references skip it), the speaker encoder (onnx_graph.py) on a Kaldi fbank of the clean clip at
+  16 kHz, and MOSS's codes of it at 48 kHz (fp16);
 - the English line in chunks of at most 256 characters, phonemized (the loader's processes);
 - each chunk generated in one of SLOTS continuous-batching slots (vieneu_frame.py) and made again while shorter
   than the SDK's minimum (twice at most, the longest kept); decoded by MOSS in fp16, in batches of chunks of
@@ -32,7 +33,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import sys
 import time
+import types
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -48,15 +51,19 @@ ASR_RATE, DENOISE_RATE, SPEAKER_RATE, OUT_RATE = 16000, 44100, 16000, 48000
 # compiled denoiser graph (32 of them)
 TRIM_DB, REF_S, BUCKET_S = 30, 8.0, 0.25
 DENOISE_BATCH = 16  # a batch padded to it with copies of its last clip (instance norms keep clips apart)
+# References at least this clean (`level_spread`) skip the denoiser: YODAS's cleanest ~30%. On the bench's paired runs
+# with and without the denoiser, those rows broke no more undenoised (5.5% against 5.7%) and matched the voice a
+# little better; past ~40% skipped, broken rows grow. Without the denoiser at all, 11.9% broke against 6.8%.
+CLEAN_SPREAD_DB = 40.0
 # Inductor's default: the first compile of the 32 lengths takes ~14 min, later runs of the same code read its cache
 # (/tmp/torchinductor_root) in about a minute. max-autotune-no-cudagraphs ran the bench 4% faster but compiles ~54 min
 # cold, and this module's first run on the box missed the bench's cache.
 DENOISE_MODE = "default"
 ENROL_BATCH = 64  # references per speaker-encoder and codec batch
-# Rows enrolled at once (a multiple of both batches, so the batches are a whole shard's): their denoised, 16 kHz
-# and 48 kHz copies (~3.4 MB a row) live for a piece. Over a whole shard they peaked at ~59 GB, which glibc then
-# kept in the process.
-ENROL_PIECE = 1024
+# Rows enrolled at once, as the voicer takes them (a multiple of both batches): their denoised, 16 kHz and 48 kHz
+# copies (~3.4 MB a row) live for a piece. A whole shard at once peaked at ~59 GB, which glibc then kept in the
+# process, and paused the frames and the ASR for 131-156 s.
+ENROL_PIECE = 256
 CHUNK_CHARS = 256  # the SDK's chunk length
 SAMPLING = dict(temperature=0.8, top_k=25, top_p=0.95, repetition_penalty=1.2)  # generate_batch's defaults
 # A chunk's frame cap: max_expected_frames of its phonemes up to MAX_NEW_FRAMES (the bench's; the SDK's default is
@@ -69,7 +76,7 @@ PREFILL = 64
 QUEUE = 512  # chunks waiting for a slot, their prompt embeddings built ahead on a thread
 DECODE_POOL = 512  # chunks decoded together, sorted by length into batches of DECODE_BATCH
 DECODE_BATCH = 64
-DECODE_CHUNK_S = 2.0  # MOSS's chunked decode (a multiple of its 80 ms frame)
+DECODE_MIN_FRAMES = 33  # shorter, a decode stage of MOSS's fits one flex_attention block: compiled apart (Voicer)
 # Verification, as the bake-off scored ([tranche-tts](../../docs/agent-memory/tranche-tts.md)):
 WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English normalizer only
 BROKEN_WER = 0.2
@@ -82,7 +89,11 @@ ASR_TIMEOUT_S = 60  # a request takes well under a second
 # times in two days (2026-11-06, 11-07 17:22 and 23:17 UTC+7), each losing the shards in flight.
 ASR_TRIES = 10
 ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
-CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
+CHECKERS = 32  # checking processes
+# rows a checking process hears at once, each on its own thread: 256 requests in flight, the server's --max-num-seqs.
+# The server's time is its decode steps, mostly a read of its weights: one request a process (~30 in flight) held
+# the whole run to ~28 rows/s beside the voicer (2026-11-28).
+CHECK_ROWS = 8
 LOADER_SHARE = 4  # processes preparing the next shard's references and lines: a quarter of the CPU quota
 OPUS_AT_ONCE = 4
 PUSH_S = 1800
@@ -139,6 +150,33 @@ def reference(data: bytes) -> np.ndarray:
     q = int(BUCKET_S * rate)
     w = w[: len(w) // q * q] if len(w) >= q else np.pad(w, (0, q - len(w)))
     return soxr.resample(w, rate, DENOISE_RATE).astype(np.float32)
+
+
+def level_spread(x):
+    """Equal-length 44.1 kHz clips [B, N] on the GPU -> each one's spread between its loud and quiet 20 ms frames,
+    dB (the 95th minus the 10th percentile of their RMS levels): a clean clip's pauses sit far below its speech."""
+    import torch
+
+    hop = DENOISE_RATE // 50
+    frames = x[:, : x.shape[1] // hop * hop].unflatten(1, (-1, hop))
+    db = 10 * torch.log10(frames.float().square().mean(-1) + 1e-12)
+    lo, hi = torch.quantile(db, torch.tensor([0.10, 0.95], device=x.device), dim=1)
+    return hi - lo
+
+
+def window_attention(self, x, input_lengths):
+    """MOSS's non-streaming attention (`MossAudioTokenizerMultiheadAttention._forward_non_streaming_sdpa`) as the
+    causal sliding window it is, through flex_attention: the tiles outside the window are skipped, where the SDK's
+    dense T x T mask computed them all. Batches are padded only on the right and every layer is causal, so the
+    padding never reaches a real frame and `input_lengths` is not needed."""
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+    B, T, _ = x.shape
+    q, k, v = self._project_qkv(x)
+    q, k = self._apply_dense_rope(q, k)
+    W = self.context
+    mask = create_block_mask(lambda b, h, i, j: (i >= j) & (i - j < W), None, None, T, T, device=x.device)
+    return flex_attention(q, k, v, block_mask=mask).transpose(1, 2).reshape(B, T, self.embed_dim)
 
 
 def phonemize(text: str) -> tuple[list[str], list]:
@@ -202,6 +240,26 @@ class Voicer:
         tts.speaker_encoder = tts.denoiser = None  # its onnxruntime sessions, each with a thread per core: run here on the GPU
         self.codec = tts.audio_tokenizer
         self.codec.set_compute_dtype("fp16")  # encode and decode: 59 dB from fp32 on the bench
+        # Encode and decode whole (no streaming chunks), their attention windowed (window_attention), compiled:
+        # decode 7.7x and encode 2.8x the SDK's (decode 54.6 dB from fp32's one-row decode, as fp16's 55.1; 98.4% of
+        # the codes equal). Every layer is causal, so right padding never reaches a real frame. The encode runs at one
+        # shape, ENROL_BATCH references padded to the longest; the decode at any length of at least
+        # DECODE_MIN_FRAMES and batch of at least two. Smaller, PyTorch specializes it (a batch of one; a stage of a
+        # single flex_attention block): a recompile of 25-50 s each, mid-run.
+        attention = sys.modules[type(self.codec).__module__].MossAudioTokenizerMultiheadAttention
+        windowed = 0
+        for m in self.codec.modules():
+            if isinstance(m, attention):
+                if not (m.causal and m.context):
+                    raise SystemExit("MOSS attention without a causal window: window_attention does not apply")
+                m._forward_non_streaming_sdpa = types.MethodType(window_attention, m)
+                windowed += 1
+        if not windowed:  # the SDK's dense decode would build a T x T bias and run out of memory
+            raise SystemExit("no MOSS attention layer found to window")
+        hop = self.codec.downsample_rate  # samples a code frame
+        self.encode_len = -(-int(REF_S * OUT_RATE) // hop) * hop
+        self.encode = torch.compile(lambda wav: self.codec._encode_frame(wav).audio_codes, dynamic=False)
+        self.decode_codes = torch.compile(lambda codes: self.codec._decode_frame(codes).audio, dynamic=True)
         self.prompt = V3TurboBatchEngine(tts)._prompt_embeds
         self.denoiser = OnnxGraph(f"{path}/denoiser.onnx", "cuda", torch.float16, compile=True, mode=DENOISE_MODE)
         self.speaker = OnnxGraph(f"{path}/speaker_encoder.onnx", "cuda")
@@ -224,6 +282,13 @@ class Voicer:
             self.denoise([np.zeros(n * q, np.float32)])
         torch.cuda.synchronize()
         log(f"denoiser compiled for {len(self.denoiser.plans)} lengths in {time.perf_counter() - began:.0f} s")
+        began = time.perf_counter()
+        with torch.no_grad():
+            self.encode(torch.zeros(ENROL_BATCH, 2, self.encode_len, device="cuda"))
+            # sizes unlike each other and the codebooks' 16, so none is tied to another
+            self.decode_codes(torch.zeros(tts.config.n_vq, 3, DECODE_MIN_FRAMES + 7, dtype=torch.long, device="cuda"))
+        torch.cuda.synchronize()
+        log(f"codec encode and decode compiled in {time.perf_counter() - began:.0f} s")
 
     # enrolment
 
@@ -250,17 +315,12 @@ class Voicer:
 
     def enrol(self, clips: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
         """44.1 kHz references (`reference`) -> each one's (speaker embedding, reference codes [T, n_vq]), ENROL_PIECE
-        rows at a time; each reference is dropped from `clips` once denoised."""
+        rows at a time, those clean enough (`level_spread`) not denoised; each reference is dropped from `clips` once
+        through the denoiser."""
         import soxr
         import torch
-        import torchaudio
 
-        def fbank(w16: np.ndarray):  # the SDK's extract_speaker_fbank on the GPU
-            f = torchaudio.compliance.kaldi.fbank(torch.from_numpy(w16).cuda()[None], num_mel_bins=80,
-                                                  sample_frequency=SPEAKER_RATE, dither=0.0, frame_length=25.0,
-                                                  frame_shift=10.0, window_type="povey", snip_edges=True,
-                                                  preemphasis_coefficient=0.97, remove_dc_offset=True)
-            return f - f.mean(0, keepdim=True)
+        from training.prep import kaldi
 
         groups: dict[int, list[int]] = {}
         for i, c in enumerate(clips):
@@ -269,23 +329,32 @@ class Voicer:
         for members in groups.values():
             for p in range(0, len(members), ENROL_PIECE):
                 piece = members[p: p + ENROL_PIECE]
-                clean = []
-                for k in range(0, len(piece), DENOISE_BATCH):
-                    clean += self.denoise([clips[i] for i in piece[k: k + DENOISE_BATCH]])
+                with torch.no_grad():
+                    spread = level_spread(torch.from_numpy(np.stack([clips[i] for i in piece])).cuda()).tolist()
+                noisy = [i for i, db in zip(piece, spread) if db < CLEAN_SPREAD_DB]
+                clean = {i: clips[i] for i in piece}
+                for k in range(0, len(noisy), DENOISE_BATCH):
+                    part = noisy[k: k + DENOISE_BATCH]
+                    clean.update(zip(part, self.denoise([clips[i] for i in part])))
                 for i in piece:
                     clips[i] = None
                 ins = list(self.threads.map(lambda c: (soxr.resample(c, DENOISE_RATE, SPEAKER_RATE).astype(np.float32),
-                                                       soxr.resample(c, DENOISE_RATE, OUT_RATE).astype(np.float32)), clean))
+                                                       soxr.resample(c, DENOISE_RATE, OUT_RATE).astype(np.float32)),
+                                            [clean[i] for i in piece]))
                 del clean
                 with torch.no_grad():
                     for k in range(0, len(piece), ENROL_BATCH):
                         part = range(k, min(k + ENROL_BATCH, len(piece)))
-                        emb = self.speaker(torch.stack([fbank(ins[j][0]) for j in part]))[0].float().cpu().numpy()
-                        enc = self.codec.batch_encode([torch.from_numpy(ins[j][1]).cuda().expand(2, -1) for j in part])
-                        lengths = enc.audio_codes_lengths.tolist()
-                        codes = enc.audio_codes.permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
+                        w16 = torch.from_numpy(np.stack([ins[j][0] for j in part])).cuda()
+                        # the SDK's extract_speaker_fbank (kaldi-native-fbank), batched: embeddings at cosine 0.999999
+                        emb = self.speaker(kaldi.fbank(w16, SPEAKER_RATE, "povey"))[0].float().cpu().numpy()
+                        wav = torch.zeros(ENROL_BATCH, 2, self.encode_len, device="cuda")
                         for b, j in enumerate(part):
-                            out[piece[j]] = (emb[b].copy(), np.ascontiguousarray(codes[b, : lengths[b]]))
+                            wav[b, :, : len(ins[j][1])] = torch.from_numpy(ins[j][1]).cuda()
+                        codes = self.encode(wav).permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
+                        for b, j in enumerate(part):  # batch_encode's lengths: whole frames of the clip
+                            n = len(ins[j][1]) // self.codec.downsample_rate
+                            out[piece[j]] = (emb[b].copy(), np.ascontiguousarray(codes[b, :n]))
         return out
 
     # generation
@@ -350,8 +419,8 @@ class Voicer:
             chunk.codes = None
 
     def _decode(self) -> None:
-        """MOSS's chunked decode in fp16, batched by length (its decoder attends within 4-10 s, which the chunked
-        path keeps as a ring cache: 7e-6 from the SDK's one-chunk decode), then the babble guard."""
+        """MOSS's decode in fp16, batched by length (each batch's codes padded on the right), then the babble
+        guard."""
         import torch
         from vieneu_utils.core_utils import BABBLE_MAX_RETRIES, babble_prefer, babble_suspect
 
@@ -360,12 +429,13 @@ class Voicer:
         for b in range(0, len(pending), DECODE_BATCH):
             batch = pending[b: b + DECODE_BATCH]
             with torch.no_grad():
-                dec = self.codec.batch_decode([codes.T.contiguous() for _, codes in batch],
-                                              chunk_duration=DECODE_CHUNK_S)
-                audio = dec.audio.float().mean(1).cpu().numpy()
-                lengths = dec.audio_lengths.tolist()
-            for (chunk, codes), wav, n in zip(batch, audio, lengths):
-                wav = wav[:n].copy()  # not a view holding the batch's array
+                codes = torch.zeros(batch[0][1].shape[1], max(len(batch), 2), max(len(batch[-1][1]), DECODE_MIN_FRAMES),
+                                    dtype=torch.long, device="cuda")
+                for j, (_, c) in enumerate(batch):
+                    codes[:, j, : len(c)] = c.T
+                audio = self.decode_codes(codes).float().mean(1).cpu().numpy()
+            for (chunk, codes), wav in zip(batch, audio):
+                wav = wav[: len(codes) * self.codec.downsample_rate].copy()  # not a view holding the batch's array
                 verdict = babble_suspect(wav, OUT_RATE, chunk.req.chunks[chunk.k], chunk.cap, len(codes))
                 if chunk.wav is None:
                     chunk.wav, chunk.verdict = wav, verdict
@@ -463,15 +533,19 @@ class Checker:
 
 
 _checker: Checker | None = None
+_hearing = None  # the checking process's threads, one a row of a part
 
 
 def _start_checker(url: str, encoding) -> None:
-    global _checker
+    from concurrent.futures import ThreadPoolExecutor
+
+    global _checker, _hearing
     _checker = Checker(url, encoding)
+    _hearing = ThreadPoolExecutor(CHECK_ROWS)
 
 
-def _check(text: str, wav: np.ndarray) -> dict:
-    return _checker.check(text, wav)
+def _check(rows: list[tuple[str, np.ndarray]]) -> list[dict]:
+    return list(_hearing.map(lambda row: _checker.check(*row), rows))
 
 
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
@@ -588,8 +662,8 @@ def run(args: argparse.Namespace) -> None:
         os.environ[name] = "1"
     spawn = get_context("spawn")
     pool = ProcessPoolExecutor(max(1, int(cpu_budget() // LOADER_SHARE)), mp_context=spawn)
-    # A shard's references are ~17 GB (8 s at 44.1 kHz in float32 a row): the next shard loads once the one before it
-    # is enrolled and its references freed. Its ~80 s load hides behind a shard's voicing.
+    # A shard's references are ~17 GB (8 s at 44.1 kHz in float32 a row), freed as they enrol: the next shard loads
+    # once the one before it starts enrolling, so at most two are held. Its ~80 s load hides behind a shard's voicing.
     loaded: queue.Queue = queue.Queue()
     ahead = threading.Semaphore(1)
 
@@ -610,7 +684,7 @@ def run(args: argparse.Namespace) -> None:
     voicer = Voicer()
     checks = ProcessPoolExecutor(CHECKERS, mp_context=spawn, initializer=_start_checker,
                                  initargs=(args.asr, spawn.BoundedSemaphore(OPUS_AT_ONCE)))
-    checking: dict = {}  # future -> its request
+    checking: dict = {}  # future -> its part's requests
     inflight = set()
     retries: list[Request] = []
     fresh: Iterator[Request] = iter(())
@@ -627,6 +701,25 @@ def run(args: argparse.Namespace) -> None:
         pushed[source] = time.monotonic()
         pushes.push(source)
 
+    def requests(key: str, shard: Shard, rows: list) -> Iterator[Request]:
+        """The shard's rows, enrolled ENROL_PIECE at a time as the voicer takes them, shortest references first (a
+        piece's references share few lengths): the frames and the ASR keep running between pieces."""
+        if len(rows) != len(shard.clips) or len(rows) != len(shard.lines):
+            raise SystemExit(f"{key}: {len(rows)} rows to voice, {len(shard.clips)} references, {len(shard.lines)} lines")
+        order = sorted(range(len(rows)), key=lambda k: len(shard.clips[k]))
+        spent = 0.0
+        for p in range(0, len(order), ENROL_PIECE):
+            piece = order[p: p + ENROL_PIECE]
+            began_enrol = time.monotonic()
+            refs = voicer.enrol([shard.clips[k] for k in piece])
+            spent += time.monotonic() - began_enrol
+            for k in piece:
+                shard.clips[k] = None
+            for k, (spk, codes) in zip(piece, refs):
+                (i, t_en), (chunks, gaps) = rows[k], shard.lines[k]
+                yield Request(i, t_en, chunks, gaps, spk, codes)
+        log(f"{key}: enrolled {len(rows)} references in {spent:.0f} s")
+
     def next_shard() -> bool:
         nonlocal fresh, loading_done
         shard = loaded.get()
@@ -635,18 +728,13 @@ def run(args: argparse.Namespace) -> None:
         if shard is None:
             loading_done = True
             return False
-        began_enrol = time.monotonic()
-        refs = voicer.enrol(shard.clips)
-        shard.clips = None
-        ahead.release()
+        ahead.release()  # the next shard loads while this one's references enrol, piece by piece
         key = f"{shard.source}/{shard.name}"
-        log(f"{key}: enrolled {len(refs)} references in {time.monotonic() - began_enrol:.0f} s")
         rows = [(i, t_en) for i, t_en in zip(shard.ids, shard.texts_en) if i not in shard.skipped]
         shards[key], remaining[key] = shard, len(rows)
         for i, _ in rows:
             owner[i] = shard
-        fresh = (Request(i, t_en, chunks, gaps, spk, codes)
-                 for (i, t_en), (chunks, gaps), (spk, codes) in zip(rows, shard.lines, refs, strict=True))
+        fresh = requests(key, shard, rows)
         if not rows:
             finish(shard)
         return True
@@ -697,13 +785,15 @@ def run(args: argparse.Namespace) -> None:
                     continue
                 voicer.submit(req)
             out = voicer.step()
-            for req, wav in out:
-                fut = checks.submit(_check, req.text, wav)
-                checking[fut] = req
+            for p in range(0, len(out), CHECK_ROWS):
+                part = out[p: p + CHECK_ROWS]
+                fut = checks.submit(_check, [(req.text, wav) for req, wav in part])
+                checking[fut] = [req for req, _ in part]
                 inflight.add(fut)
             for fut in [f for f in inflight if f.done()]:
                 inflight.discard(fut)
-                settle(checking.pop(fut), fut.result())
+                for req, result in zip(checking.pop(fut), fut.result()):
+                    settle(req, result)
             pushes.check()  # a failed upload stops the run; a rerun pushes what is written
             if loading_done and not voicer.active and not inflight and not retries:
                 break

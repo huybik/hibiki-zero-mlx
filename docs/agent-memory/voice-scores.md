@@ -1,6 +1,6 @@
 # Voice scores
 
-Read when touching `training/finetune/voice_scores.py`, or the speech decode and scores in
+Read when touching `training/finetune/voice_scores.py` or `training/prep/kaldi.py`, or the speech decode and scores in
 `common.generate_batch` (`hibiki_helpers.decode_wavs`) and `inference/tools/gate.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · evaluation itself: [sft-evaluation](sft-evaluation.md)
 
@@ -34,7 +34,8 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
   have neither, and rows whose source has under a second no `speaker_sim`. Reported, not gated:
   checkpoints are still chosen on the text.
 - WeSpeaker's runtimes (its package, ONNX Runtime) are not in the trainer's free-threaded
-  environment, so its ResNet34 and Kaldi filterbank are written in PyTorch and load its checkpoint
+  environment, so its ResNet34 and Kaldi filterbank (`training/prep/kaldi.py`, Hamming windows; the voicer's
+  speaker encoder takes it with povey windows) are written in PyTorch and load its checkpoint
   (`avg_model`, Hub revision `f0c48c2`, fetched by `h100.sh preflight`). Against WeSpeaker's ONNX
   model and torchaudio's `kaldi.fbank` on the Mac (2026-11-27): filterbanks within 2.6e-4,
   embeddings at cosine 0.999999. WavLM's speaker head (`microsoft/wavlm-base-plus-sv`, in
