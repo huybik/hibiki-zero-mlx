@@ -16,6 +16,7 @@ Run from the repo root with HF_TOKEN exported (write access to --repo):
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import time
@@ -31,6 +32,9 @@ from huggingface_hub.utils import disable_progress_bars
 from training.cache.en_speech import DATASET_DIR, cache_path, source_record, source_shards
 from training.hub import COMMIT_BYTES, retried
 from training.paths import DEFAULT_DIRECTION, DEFAULT_TOKENIZER, durable, exclusive, log
+
+# The system allocator returns freed shard buffers (en_vi_dataset/publish.py says why).
+os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
 
 REPO = "huybik/hibiki-zero-vi-full-sft"  # a dataset repo; the PhoMT cache is there too
 FOLLOW_WAIT = 600  # a cache shard is built every ~4 min

@@ -145,7 +145,8 @@ under the `nohup` line in `run.sh`.
 - `touch /Volumes/data/datasets/envi_mac/pause` holds new batches off the GPU (downloads go on);
   delete it to go on. A batch already on the GPU finishes first.
 - To stop it, kill `run.sh`, then `envi_mac.py`, then its GPU step, which outlives its parent
-  (`pkill -f 'training.cache.(noisy|en_speech)'`): a restart reuses `work/` and would race a
+  (`pkill -f 'training.prep.(noisy_cache|cache_codes)'`; `envi_mac.py` launches the module names
+  from before #219, so update them before a rerun): a restart reuses `work/` and would race a
   leftover step. Its Hub client has a 300 s timeout (`huggingface_hub`'s own waits forever).
 - GigaSpeech 2's noisy copies hold ~10 GB more memory than the others: the next shard's clips
   (~5 GB decoded) are queued before the current one encodes.

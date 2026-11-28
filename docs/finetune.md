@@ -67,7 +67,7 @@ limit (429) partway; logged in they do not, and `hf download` resumes where it s
   --include "en-vi-grounded-v2/*/shard_*.pt"
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data/cache \
   --include "en-vi/en-vi-grounded-v2/*/shard_*.pt"
-./.venv/bin/python -m training.finetune.streams \
+./.venv/bin/python -m training.finetune.packs \
   data/cache/en-vi-grounded-v2/train data/cache/en-vi-grounded-v2/validation
 ./.venv/bin/python -m training.finetune.packs --drop-shards \
   data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation
@@ -153,7 +153,7 @@ rm -r $C/.packed                                            # 70 GB
 ./.venv/bin/python -m training.finetune.eval_sets --sets en-vi-val-noisy
 ./.venv/bin/python -m training.cache.noisy encode --cache-dir $C --out-dir $O   # ends with "every shard written"
 rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean shards stay on the Hub
-./.venv/bin/python -m training.finetune.streams $O $V       # pack before run checks the free disk
+./.venv/bin/python -m training.finetune.packs $O $V       # pack before run checks the free disk
 ./training/h100.sh run RUN_NAME --cache-dir $O --val-cache-dir $V \
   --pair-cache-dir data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation \
   --model-weight weights/PREVIOUS_RUN_stepFINAL.safetensors --seed 43 --val-every 18000 \
