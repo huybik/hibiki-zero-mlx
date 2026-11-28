@@ -141,6 +141,35 @@ def reference(data: bytes) -> np.ndarray:
     return soxr.resample(w, rate, DENOISE_RATE).astype(np.float32)
 
 
+def kaldi_mel(bins: int, fft: int, rate: int) -> np.ndarray:
+    """Kaldi's triangular mel filters, 20 Hz to Nyquist, over an rfft's fft // 2 + 1 bins (the last, Nyquist, unused):
+    [bins, fft // 2 + 1]."""
+    mel = lambda f: 1127.0 * np.log(1.0 + f / 700.0)  # noqa: E731
+    lo, hi = mel(20.0), mel(rate / 2)
+    delta = (hi - lo) / (bins + 1)
+    at = mel(np.arange(fft // 2) * rate / fft)[None]
+    left = lo + np.arange(bins)[:, None] * delta
+    w = np.maximum(0.0, np.minimum((at - left) / delta, (left + 2 * delta - at) / delta))
+    return np.pad(w, ((0, 0), (0, 1))).astype(np.float32)
+
+
+def speaker_fbank(w16):
+    """The SDK's extract_speaker_fbank (kaldi-native-fbank: 80 mel bins of 25 ms povey frames every 10 ms, edges
+    snipped, DC removed, pre-emphasis 0.97, power spectrum, log floored at float32's epsilon, mean-normalised over
+    time) of equal-length 16 kHz clips [B, N] on the GPU: [B, frames, 80]."""
+    import torch
+
+    n, hop, fft = SPEAKER_RATE // 40, SPEAKER_RATE // 100, 512
+    f = w16.float().unfold(1, n, hop)
+    f = f - f.mean(-1, keepdim=True)
+    f = torch.cat([f[..., :1] * (1 - 0.97), f[..., 1:] - 0.97 * f[..., :-1]], -1)
+    f = f * torch.hann_window(n, periodic=False, device=f.device).pow(0.85)
+    power = torch.fft.rfft(f, n=fft).abs().pow(2)
+    mel = power @ torch.from_numpy(kaldi_mel(80, fft, SPEAKER_RATE)).to(f.device).T
+    mel = mel.clamp(min=torch.finfo(torch.float32).eps).log()
+    return mel - mel.mean(1, keepdim=True)
+
+
 def phonemize(text: str) -> tuple[list[str], list]:
     """An English line -> its chunks phonemized and the SDK's pauses between them; no chunk when nothing in it is
     speakable (the row is then skipped)."""
@@ -253,14 +282,6 @@ class Voicer:
         rows at a time; each reference is dropped from `clips` once denoised."""
         import soxr
         import torch
-        import torchaudio
-
-        def fbank(w16: np.ndarray):  # the SDK's extract_speaker_fbank on the GPU
-            f = torchaudio.compliance.kaldi.fbank(torch.from_numpy(w16).cuda()[None], num_mel_bins=80,
-                                                  sample_frequency=SPEAKER_RATE, dither=0.0, frame_length=25.0,
-                                                  frame_shift=10.0, window_type="povey", snip_edges=True,
-                                                  preemphasis_coefficient=0.97, remove_dc_offset=True)
-            return f - f.mean(0, keepdim=True)
 
         groups: dict[int, list[int]] = {}
         for i, c in enumerate(clips):
@@ -280,7 +301,8 @@ class Voicer:
                 with torch.no_grad():
                     for k in range(0, len(piece), ENROL_BATCH):
                         part = range(k, min(k + ENROL_BATCH, len(piece)))
-                        emb = self.speaker(torch.stack([fbank(ins[j][0]) for j in part]))[0].float().cpu().numpy()
+                        w16 = torch.from_numpy(np.stack([ins[j][0] for j in part])).cuda()
+                        emb = self.speaker(speaker_fbank(w16))[0].float().cpu().numpy()
                         enc = self.codec.batch_encode([torch.from_numpy(ins[j][1]).cuda().expand(2, -1) for j in part])
                         lengths = enc.audio_codes_lengths.tolist()
                         codes = enc.audio_codes.permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
