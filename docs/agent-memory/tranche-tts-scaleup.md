@@ -241,8 +241,16 @@ the voicer's start-up (compiles out) to the last shard written:
 - The ASR alone on those rows (their Opus at 16 kHz, 256 in flight, `asr_ab.py`): 80.0 rows/s in
   bf16, so ~12.5 ms of the GPU a row against the voicer's ~17. With `--quantization fp8` (vLLM's
   online FP8; weights 3.87 → 2.55 GiB) 111.2 rows/s, 1.39×: the broken flag agrees on 98.7% of
-  rows, broken 7.61% against 7.66%, kept WER median 0.036 against 0.037. Not adopted: the same
-  server hears the Vietnamese of ingest and filters, unchecked in FP8.
+  rows, broken 7.61% against 7.66%, kept WER median 0.036 against 0.037.
+- FP8 is the server's (`restart.sh asr`, 2026-11-28), after bf16, FP8 and bf16 again on the same rows
+  (`asrcheck/` in the records). Per row it disagrees ~5× as often as bf16 with itself; every total
+  holds. On the bench's 2,000 voiced rows the broken flag agrees with bf16 on 98.30% (bf16 again:
+  99.65%), broken 6.65% against 6.55%, kept WER 0.0501 against 0.0498. On 5,000 rows of YODAS tar
+  0030 cut before the gate, with their captions, ingest's gate agrees on 98.02% (bf16 again:
+  99.60%), keeps 75.88% against 76.42% (14.64 against 14.71 h), CER against the caption 0.116
+  against 0.120, and the rows both keep 0.0500 against 0.0499. Its one systematic difference: it
+  tags sung Vietnamese as Chinese (24 rows of 11 videos, all song lyrics, transcribed right; bf16
+  2), which the gate drops on language.
 - Not done (the plan's B1, B3): vLLM past 0.14 (`qwen-asr` pins it), and checks that verify
   `text_en` as a draft in one forward pass, which the server's HTTP API cannot take (it builds the
   prompt itself); an in-process vLLM would.
