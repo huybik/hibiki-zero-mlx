@@ -47,7 +47,9 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
   depformer student (GRPO 2,000, 6 bits) 0.27 / 4.7 and 0.20 / 7.8, the heads release 0.21 / 3.2
   and 0.13 / 4.8; `eval.py` on MPS, the heads student's update 112,000: 0.19 / 3.5 and 0.13 / 5.0.
   Clarity separates the heads less on English speech, which has more unvoiced sounds. Files:
-  `/Volumes/data/hibiki-zero-evals/mac/heads-voice/` and `voice-scores/`.
+  `/Volumes/data/hibiki-zero-evals/mac/heads-voice/` and `voice-scores/`. On the slices runs'
+  seven validation sets (`eval.py`, seed 47) the teacher means 0.389 / 6.50 dB, the slices student
+  after Stage 1's decay 0.293 / 4.94 ([student-slices](student-slices.md#runs)).
 - Cost: scoring takes ~0.08 s a row on the M4 Pro's GPU; source embeddings are cached for the
   process. On the box the validation also decodes every row's speech, each row alone up to its
   end frame (`decode_wavs`): the same audio as a batch's (Mimi is causal), and 8 rows of a 52 s

@@ -180,7 +180,9 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   - **Slices distillation kernels (2026-11-27, RTX 5090, box 62513802)**:
     - `common.compute_distill_losses_chunked` computes linear projections + exact forward KL in
       chunks (`2048` audio / `1024` text) without materializing full-vocab logits (~5.5 GiB saved),
-      and skips `text_linear` / `text_kl` when `--freeze-trunk` is set.
+      and skips `text_linear` / `text_kl` when `--freeze-trunk` is set. A slices teacher (the
+      6-bit finish distils the slices student from its own bf16 weights) feeds its last slice's
+      output to every parallel codebook, as the student side does.
     - `lm_training._per_step` batches contiguous duplicate schedule indices (8× fewer teacher
       slice-8 GEMMs/HBM reads), `project_depformer_in` fuses `depformer_in` into one GEMM,
       `slices.py` fuses `linears[8..15]`, `_rope_tables` caches RoPE once per forward, and

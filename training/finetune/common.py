@@ -695,6 +695,9 @@ def can_chunked_distill(lm: Any, teacher: Any | None) -> bool:
         return False
     if len(s_audio) > 1 and len(set(s_audio[1:])) != 1:
         return False
+    if slices.is_slices(teacher) and teacher.parallel_codebooks != lm.dep_q - audio_ar_end(lm):
+        return False  # its last slice feeds other codebooks than the student's parallel ones
+
     if lm.text_linear.bias is not None or teacher.text_linear.bias is not None:
         return False
     return all(
@@ -791,7 +794,10 @@ def compute_distill_losses_chunked(
         valid_par = (audio_targets[:, ar_end:, :T_ac] != lm.zero_token_id).transpose(0, 1).reshape(k_par, -1)
         w_par = valid_par.float()
         w_s_par = torch.stack([lm.linears[cb].weight for cb in range(ar_end, dep_q)], dim=0)
-        h_t_par = torch.stack([normed_t[cb][:, d_ac:].reshape(-1, D_t) for cb in range(ar_end, dep_q)], dim=0)
+        if slices.is_slices(teacher):  # a slices teacher (self-distillation): its last slice feeds them all
+            h_t_par = normed_t[-1][:, d_ac:].reshape(-1, D_t).expand(k_par, -1, -1)
+        else:
+            h_t_par = torch.stack([normed_t[cb][:, d_ac:].reshape(-1, D_t) for cb in range(ar_end, dep_q)], dim=0)
         w_t_par = torch.stack([teacher.linears[cb].weight for cb in range(ar_end, dep_q)], dim=0)
         if is_slices_model:
             h_s_par = normed_s[-1][:, d_ac:].reshape(-1, D_s)

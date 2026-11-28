@@ -1,0 +1,285 @@
+# The slices student's on-policy stage and phone finish
+
+Read when running or judging the slices student's on-policy run (`both_slices_z`), its 6-bit
+palettization and its export to the phone. Back to [CONTEXT.md](../../CONTEXT.md) ·
+[Profile](#profile) · [The run](#the-run) · [Refit](#refit) · [Phone finish](#phone-finish) · [Tests](#tests). The student and its
+off-policy stages are in [student-slices](student-slices.md); the method in
+[on-policy-distillation](on-policy-distillation.md), GRPO in [grpo](grpo.md).
+
+## Why on-policy
+
+Training the trunk off-policy on the SFT data lost text on every set (the joint stage,
+[student-slices](student-slices.md#runs)): the trunk's text came from `both_heads_z`'s on-policy
+run. So the trunk changes only on-policy, with `both_heads_z`'s recipe (both terms, z-scored, the
+3B teacher, 1e-6), which also distils the audio codebooks on the student's own rollouts.
+
+## Profile
+
+`grpo_profile` on box 62513802 (RTX 5090, 2026-11-27 16:42 UTC) from Stage 1's decay at 8,000
+(`weights/student_slices14_decay8000.safetensors`, hard-linked), `both_heads_z`'s data, the
+teacher, `--park-states`; raw report `runs/grpo_profile_slices/profile.json`, copied to
+`/Volumes/data/hibiki-zero-evals/box-62513802/grpo_profile_slices/`:
+
+- Generation: 192 / 320 / 384 rows at 14.5 / 20.2 / 23.2 ms a step, peaks 15.1 / 23.4 / 27.6 GiB;
+  a step costs 5.7 ms + 0.045 ms a row. A window's generation is 6.72 s an update at 320 rows.
+- π_old's pass and the update at micro-batch 1 / 2 / 4: 1.36 / 1.26 / 1.18 s and 8.14 / 7.72 /
+  7.35 s an update, peaks 20.9 / 23.9 / 28.0 GiB. First update's ratio deviation 0 at each.
+- Start: `kl_text` 0.13–0.14, `kl_audio` 0.76–0.90 (the heads student's 1.3–1.4), final BLEU of the
+  profile's rollouts 38.1.
+- Kernels (`torch.profiler` over the profile at 320 rows and micro-batch 2, `prof_grpo.py` beside
+  the records): the narrowed grouped-KV step attention (`fmha_cutlassF`, a boolean mask) is 49% of
+  the CUDA time, ~0.8 ms a layer a step, near the card's bandwidth for 320 rows' KV cache; the
+  update's GEMMs (bf16 under fp32 master weights) most of the rest.
+- Levers left out: FP8 in the update (train.py's `--fp8`, `--fp8-teacher`) would save ~12% of an
+  update at the cost of the teacher's targets (`all` flips 12–17% of acoustic argmaxes) and the
+  policy's log-probabilities; `--bf16-adamw` cannot hold a 1e-6 step in bf16 weights; 384 rows
+  and micro-batch 4 save ~1% and ~2% but peak within 4 GiB of 32 (the heads run held more than its
+  profile). Sizes chosen: `--gen-frames 384000 --micro-batch 2 --park-states`, ~16.5 s an update.
+
+## The run
+
+`both_slices_z`: started 2026-11-27 17:00 UTC on box 62513802, commit 7a71224, HF recovery prefix
+`both_slices_z`, through
+
+```bash
+T=/workspace/tranche/repo/cache HF_HUB_DISABLE_XET=1 ./training/tranche/box/grpo_launch.sh both_slices_z \
+  weights/student_slices14_decay8000.safetensors \
+  --cache-dir $T/pho $T/vivoice $T/giga $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga \
+    data/cache/en-vi/en-vi-grounded-v2/train \
+  --config-path weights/student_slices14/config.json --save-every 100 --keep-checkpoints 1 \
+  --teacher-weight weights/grpo_twoway_best1400.safetensors --lr 1e-6 \
+  --gen-frames 384000 --micro-batch 2 --park-states --seed 45
+```
+
+(`both_heads_z`'s caches, which won over `both_heads_z2`'s noisy EN→VI copies; the launcher's
+`--pair-cache-dir` times the `en_speech` rows; seed 45 for streams the trunk's run did not see;
+8,979,646 rows, 1,713,710 streams; 2,000 updates, validated every 200 on the 10 default sets, 2,193
+rows, stopped after two validations without a new best). ~16 s an update with its window's
+generation, 176 s a validation; `ratio` ≤ 1.0006, grad norm 1.2–2.0e5 over updates 1–100.
+
+Validations (chrF / BLEU / length ratio / end offset in s / speaker_sim / HNR dB; selecting =
+FLEURS dev both ways; raw outputs in `/Volumes/data/hibiki-zero-evals/box-62513802/both_slices_z/`):
+
+| Update | Selecting | fleurs-vi/dev | fleurs-en/dev | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-noisy cv27 | en-vi-val-noisy libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy | en-vi-val-en-noisy cv27 | en-vi-val-en-noisy libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 37.94 | 40.62 / 9.50 / 1.36 / 1.3 / 0.34 / 4.5 | 35.26 / 16.21 / 1.01 / 1.9 / 0.16 / 5.5 | 44.67 / 15.80 / 1.20 / 2.1 / 0.31 / 4.1 | 45.74 / 18.60 / 1.12 / 2.3 / 0.41 / 4.3 | 42.33 / 14.38 / 1.24 / 2.3 / 0.25 / 4.0 | 44.01 / 16.51 / 1.14 / 2.3 / 0.34 / 4.3 | 35.78 / 16.90 / 1.14 / 1.0 / 0.27 / 4.9 | 43.94 / 22.46 / 1.07 / 1.9 / 0.29 / 5.2 | 23.82 / 10.44 / 0.99 / 2.0 / 0.25 / 4.4 | 36.04 / 17.51 / 1.01 / 2.8 / 0.27 / 4.8 |
+| 200 | 38.74 | 41.58 / 10.68 / 1.31 / 1.6 / 0.33 / 3.6 | 35.90 / 16.52 / 1.01 / 2.1 / 0.15 / 4.6 | 45.83 / 18.10 / 1.15 / 2.4 / 0.33 / 3.4 | 46.06 / 20.19 / 1.05 / 2.2 / 0.43 / 3.4 | 43.34 / 15.39 / 1.24 / 2.7 / 0.26 / 3.3 | 43.95 / 17.46 / 1.08 / 2.7 / 0.35 / 3.3 | 36.80 / 18.32 / 1.13 / 0.9 / 0.26 / 4.1 | 44.12 / 22.27 / 1.06 / 1.9 / 0.28 / 4.1 | 24.67 / 10.37 / 1.01 / 2.1 / 0.24 / 3.7 | 35.53 / 16.92 / 1.01 / 2.5 / 0.26 / 3.7 |
+| 400 | 39.39 | 41.89 / 11.04 / 1.32 / 1.5 / 0.33 / 3.5 | 36.90 / 17.12 / 1.01 / 2.0 / 0.15 / 4.4 | 44.48 / 16.11 / 1.17 / 2.3 / 0.33 / 3.3 | 45.70 / 19.57 / 1.07 / 2.2 / 0.43 / 3.3 | 42.02 / 13.98 / 1.22 / 2.6 / 0.28 / 3.3 | 43.96 / 18.48 / 1.08 / 2.5 / 0.36 / 3.3 | 35.18 / 16.45 / 1.17 / 1.2 / 0.27 / 3.9 | 43.95 / 22.63 / 1.05 / 1.6 / 0.26 / 3.9 | 23.90 / 9.76 / 0.99 / 2.0 / 0.24 / 3.4 | 36.76 / 18.06 / 1.02 / 2.7 / 0.25 / 3.6 |
+| 600 | 38.95 | 41.56 / 10.90 / 1.31 / 1.7 / 0.32 / 3.4 | 36.35 / 16.30 / 1.01 / 2.2 / 0.15 / 4.3 | 45.40 / 17.32 / 1.17 / 2.6 / 0.33 / 3.2 | 46.03 / 20.21 / 1.06 / 2.4 / 0.43 / 3.2 | 41.82 / 14.68 / 1.16 / 2.5 / 0.27 / 3.3 | 44.09 / 18.04 / 1.05 / 2.4 / 0.36 / 3.1 | 36.60 / 18.76 / 1.11 / 1.3 / 0.27 / 3.8 | 43.60 / 22.49 / 1.05 / 2.0 / 0.27 / 3.8 | 23.45 / 9.06 / 0.97 / 2.3 / 0.24 / 3.5 | 35.66 / 17.70 / 0.99 / 2.8 / 0.26 / 3.5 |
+| 800 | 38.88 | 41.61 / 10.97 / 1.29 / 1.8 / 0.32 / 3.3 | 36.15 / 16.29 / 1.02 / 2.2 / 0.15 / 4.3 | 45.24 / 16.64 / 1.16 / 2.4 / 0.34 / 3.2 | 46.59 / 21.25 / 1.05 / 2.1 / 0.43 / 3.2 | 42.51 / 14.79 / 1.20 / 2.5 / 0.28 / 3.3 | 43.73 / 18.88 / 1.04 / 2.3 / 0.36 / 3.1 | 36.11 / 16.69 / 1.15 / 1.1 / 0.26 / 3.7 | 44.48 / 23.04 / 1.07 / 2.1 / 0.27 / 3.9 | 23.95 / 10.05 / 1.03 / 2.5 / 0.25 / 3.4 | 36.57 / 18.50 / 1.00 / 2.8 / 0.26 / 3.5 |
+
+At 200 the text rose (mean chrF of 10 39.22 → 39.78, selecting +0.80) and speaker_sim held
+(0.290 → 0.289), but HNR fell on every set (mean 4.59 → 3.73 dB; the teacher's 6.50 on the
+seven SFT sets): the GRPO term's BLEU advantages also move the audio tokens. Stopped by TERM after
+200's save (2026-11-27 18:15 UTC), its 200 pair and best on the box and the Hub, to compare
+distillation alone on the same streams (`opd_slices`, below).
+
+Resumed 2026-11-27 19:58 UTC from its 200 pair (`grpo_launch.sh both_slices_z`, commit 7a71224
+checked out again) once the refit below had shown the clarity comes back: the on-policy updates
+now go on for the trunk's text, to the stop rule, and a refit follows their best. 400 promoted:
+selecting 39.39 (200: 38.74), but the mean of 10 fell to 39.47 (39.78; the synthetic `en-vi-val`
+VI→EN sets −0.4 to −1.4), speaker_sim 0.290, HNR 3.60 dB; ~16 s an update. 600: no new best
+(selecting 38.95, mean 39.46, HNR 3.51). 800: none again (selecting 38.88, mean 39.69,
+speaker_sim 0.292, HNR 3.48; `kl_text` 0.083, `kl_audio` 0.77, grad norm 1.8e5), so stopped by
+TERM at 2026-11-27 23:01 UTC, the second validation without a new best; the best stays 400.
+
+`opd_slices`: the same launch with `--reward-coef 0` (on-policy distillation alone, no π_old pass),
+2026-11-27 18:15–19:25 UTC, stopped by TERM after its validation at 200 (raw outputs in
+`/Volumes/data/hibiki-zero-evals/box-62513802/opd_slices/`). Distillation alone lost on every
+count: selecting 37.94 → 37.47, mean chrF of 10 39.22 → 38.46, speaker_sim 0.290 → 0.286, HNR
+4.59 → 3.42 dB, FLEURS-vi's end offset 1.3 → 2.2 s; `kl_text` 0.081, `kl_audio` 0.80 at 200,
+grad norm ~2.3e4. Unlike the heads student's (`opd_heads_lr1e6`, +1.8 chrF each way by 200,
+[heads-on-policy-runs](heads-on-policy-runs.md)), this student starts close to the teacher
+(`kl_text` 0.09, `kl_audio` 0.84 against the heads' 0.10 / 2.12), so the teacher's pull adds little
+and its leaning on the student's own audio (the caveat in
+[on-policy-distillation](on-policy-distillation.md)) costs clarity. At 200:
+
+| Set | chrF / BLEU / length ratio / end offset / speaker_sim / HNR |
+|---|---|
+| fleurs-vi/dev | 40.58 / 9.99 / 1.32 / 2.2 / 0.32 / 3.1 |
+| fleurs-en/dev | 34.37 / 15.33 / 0.99 / 2.8 / 0.15 / 4.3 |
+| en-vi-val cv27 | 45.26 / 17.66 / 1.20 / 2.8 / 0.33 / 3.3 |
+| en-vi-val libriheavy | 45.19 / 19.56 / 1.06 / 2.5 / 0.42 / 3.2 |
+| en-vi-val-noisy cv27 | 42.25 / 14.47 / 1.24 / 2.8 / 0.27 / 3.2 |
+| en-vi-val-noisy libriheavy | 43.21 / 17.11 / 1.10 / 2.6 / 0.35 / 3.1 |
+| en-vi-val-en cv27 | 33.83 / 16.60 / 1.13 / 1.9 / 0.26 / 3.8 |
+| en-vi-val-en libriheavy | 43.40 / 22.14 / 1.07 / 2.5 / 0.26 / 3.8 |
+| en-vi-val-en-noisy cv27 | 22.15 / 9.22 / 0.99 / 3.6 / 0.24 / 3.2 |
+| en-vi-val-en-noisy libriheavy | 34.40 / 16.41 / 0.99 / 3.4 / 0.26 / 3.3 |
+
+## Refit
+
+The text is the trunk's and the speech the slices': so the trunk keeps its on-policy update and the
+slices are distilled again on it, off-policy, as Stage 1 trained them (`restart.sh
+student-slices-refit-5090`: the trunk frozen, the 3B on the SFT data, from `both_slices_z`'s best,
+a fresh optimizer at 5e-5, cosine over 2,000 updates, validated at 1,000 and 2,000 on the slices
+runs' seven sets, seed 47). Probe from update 200, started 2026-11-27 19:31 UTC from commit
+904afa4, after its baseline: `eval.py` on the same seven sets and seed
+(`runs/slices_eval7/both_slices_z200_seed47`, `--no-write-audio`, 4 min), beside the decay's 8,000
+([student-slices](student-slices.md#runs)), chrF / BLEU / length ratio / end offset / speaker_sim /
+HNR:
+
+| Model | Selecting | Mean chrF | speaker_sim | HNR | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Decay 8,000 (on-policy start) | 38.32 | 40.54 | 0.293 | 4.94 | 41.15 / 9.74 / 1.39 / 1.5 / 0.34 / 4.5 | 35.49 / 16.47 / 1.01 / 1.9 / 0.16 / 5.4 | 37.98 / 10.29 / 1.48 / 3.4 / 0.27 / 6.0 | 45.93 / 17.93 / 1.18 / 2.1 / 0.32 / 4.1 | 44.98 / 17.89 / 1.11 / 2.1 / 0.41 / 4.4 | 34.36 / 17.19 / 1.11 / 1.1 / 0.26 / 5.0 | 43.92 / 22.29 / 1.07 / 1.6 / 0.29 / 5.2 |
+| `both_slices_z` 200 | 38.49 | 40.93 | 0.293 | 4.11 | 41.18 / 10.21 / 1.33 / 1.7 / 0.33 / 3.7 | 35.81 / 16.37 / 1.00 / 2.0 / 0.16 / 4.6 | 38.41 / 10.99 / 1.41 / 3.4 / 0.28 / 5.3 | 45.49 / 17.75 / 1.15 / 2.5 / 0.33 / 3.5 | 46.09 / 20.40 / 1.06 / 2.1 / 0.42 / 3.4 | 35.45 / 16.91 / 1.15 / 1.0 / 0.27 / 4.1 | 44.12 / 22.95 / 1.07 / 2.0 / 0.27 / 4.2 |
+| Refit 1,000 | 38.32 | 40.86 | 0.304 | 4.93 | 41.35 / 10.27 / 1.34 / 1.7 / 0.36 / 4.5 | 35.29 / 16.38 / 1.00 / 2.2 / 0.17 / 5.5 | 38.30 / 10.47 / 1.45 / 3.6 / 0.28 / 5.9 | 46.02 / 17.49 / 1.15 / 2.3 / 0.31 / 4.0 | 46.04 / 19.55 / 1.08 / 2.5 / 0.41 / 4.2 | 35.08 / 16.51 / 1.10 / 1.0 / 0.28 / 5.1 | 43.92 / 23.11 / 1.05 / 2.1 / 0.31 / 5.2 |
+| Refit 2,000 | 38.56 | 40.89 | 0.305 | 4.99 | 41.74 / 10.82 / 1.31 / 1.8 / 0.36 / 4.5 | 35.37 / 16.03 / 1.00 / 2.1 / 0.17 / 5.6 | 38.29 / 10.72 / 1.44 / 3.7 / 0.29 / 6.0 | 45.40 / 19.31 / 1.15 / 2.3 / 0.33 / 4.3 | 46.12 / 20.59 / 1.06 / 2.3 / 0.42 / 4.3 | 34.88 / 15.96 / 1.13 / 1.1 / 0.27 / 5.0 | 44.44 / 23.11 / 1.05 / 2.1 / 0.30 / 5.3 |
+
+On these sets the on-policy text gain is smaller (+0.17 selecting, +0.39 mean) and the clarity
+loss the same (−0.83 dB, every set). The refit (`slices_z200_refit`, 19:31–19:58 UTC, 0.43
+s/update; HF prefix `slices_z200_refit`; raw outputs in
+`/Volumes/data/hibiki-zero-evals/box-62513802/slices_z200_refit/`) gave the clarity back by
+1,000 and kept the text: at 2,000 it beats the on-policy start on every count (selecting +0.24,
+mean +0.35, speaker_sim +0.012, HNR +0.05 dB), the trunk's teacher-forced text loss unchanged
+(0.8555 on `en-vi-grounded-v2/validation` at both). Training audio loss 0.73 → 0.70
+(semantic 0.16 → 0.15). So on-policy updates train the trunk and a refit follows them.
+
+The refit on the run's best (`slices_z400_refit`, from `both_slices_z` 400 by `finish_slices.sh`,
+2026-11-27 23:12–23:38 UTC, commit d5a9ec4, seed 51, 0.43 s/update; HF prefix `slices_z400_refit`;
+raw outputs in `/Volumes/data/hibiki-zero-evals/box-62513802/slices_z400_refit/`), same seven sets
+and columns:
+
+| Model | Selecting | Mean chrF | speaker_sim | HNR | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| z400 refit 1,000 | 39.02 | 41.13 | 0.303 | 4.86 | 42.05 / 10.61 / 1.34 / 1.7 / 0.36 / 4.4 | 35.98 / 16.45 / 1.01 / 2.1 / 0.17 / 5.5 | 38.31 / 10.74 / 1.43 / 3.5 / 0.28 / 5.9 | 45.59 / 18.73 / 1.15 / 2.3 / 0.31 / 4.0 | 46.29 / 20.35 / 1.08 / 2.7 / 0.42 / 4.1 | 34.98 / 16.67 / 1.13 / 1.1 / 0.28 / 4.9 | 44.68 / 23.34 / 1.06 / 2.1 / 0.30 / 5.2 |
+| z400 refit 2,000 | 38.72 | 40.89 | 0.307 | 4.93 | 41.08 / 9.87 / 1.36 / 1.9 / 0.36 / 4.4 | 36.35 / 17.11 / 1.01 / 2.0 / 0.17 / 5.6 | 38.40 / 10.92 / 1.43 / 3.5 / 0.28 / 6.0 | 45.94 / 18.09 / 1.15 / 2.4 / 0.33 / 4.1 | 45.32 / 19.42 / 1.07 / 2.6 / 0.42 / 4.2 | 34.82 / 16.17 / 1.14 / 1.4 / 0.28 / 5.0 | 44.34 / 23.11 / 1.06 / 2.1 / 0.31 / 5.2 |
+
+Against the on-policy start (decay 8,000) the final model gains +0.40 selecting, +0.35 mean,
++0.014 speaker_sim at the same clarity (−0.01 dB), and ties the z200 refit's 2,000 (+0.16
+selecting, the same mean): the extra 200 on-policy updates bought nothing the seven sets can
+see. 1,000 beat 2,000 on text by 0.3 (the z200 refit had it the other way round), inside one
+seed's noise; the finish goes on from 2,000 as planned. Teacher-forced audio loss on the two
+validation caches 4.4069 / 3.6156 at 1,000, 4.4026 / 3.6121 at 2,000.
+
+## Phone finish
+
+On the box, after the on-policy run's final sync, from the branch's checkout (not the run's
+commit, which the refit's and the finish's jobs postdate): `training/tranche/box/finish_slices.sh`
+runs the refit on the run's best, the 6-bit finish from the refit (`restart.sh
+student-slices-pal6-5090`, the heads student's recipe in [student-palettize](student-palettize.md)),
+snaps the refit and the finish's update 4,000 onto their 6-bit tables, uploads both snaps to the
+Hub repo's `phone/` (the Mac fetches them there: ssh from the box runs at ~2 MB/s), then tests the on-policy
+start, the refit (bf16 and snapped) and the finish (snapped) with `test_student.sh` (13 test sets,
+seed 43, LAAL, voice scored) into `runs/slices_tests/`. Each step whose output exists is skipped,
+a job that ends without its final model stops the chain, one copy runs at a time (a lock), and
+the outputs are tied to the best they started from (`runs/slices_finish_best.txt`: a new best
+stops the chain until they are moved aside). Rerun on the box after the tests (fe0ddbc): every
+step skipped, the uploads sent nothing, in 1 min.
+On the Mac the finished snapped model goes through `convert_mlx.py` (bf16), `gate.py`,
+`export_lm_coreml.py --bits 6`, `export_mimi_coreml.py` and the Swift CLI, as below; the iPhone
+13 Pro Max's 10 minutes in HibikiBench are the user's.
+
+The finish's run (`pal6_slices_z`, 2026-11-27 23:46 – 2026-11-28 00:21 UTC, commit 04ccd80, from
+the z400 refit's 2,000; HF prefix `pal6_slices_z`; raw outputs in
+`/Volumes/data/hibiki-zero-evals/box-62513802/pal6_slices_z/`). Its first launch stopped at
+update 1: the chunked distillation read the slices teacher's hidden states as one per codebook
+(fixed in 04ccd80, [sft-speed](sft-speed.md)). 0.21 s an update, ~4.5 min a validation; the GPU at
+31.9 of 32 GB with a few recovered `expandable_segments` mapping warnings. Training KL 0.0022 at
+130, 0.0018 at 260 (the heads finish's 0.0030 at 200). Validations of the 6-bit model (seed 50),
+the same seven sets and columns as the refit's:
+
+| Update | Selecting | Mean chrF | speaker_sim | HNR | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1,000 | 38.71 | 40.87 | 0.306 | 4.97 | 41.32 / 10.07 / 1.33 / 1.8 / 0.35 / 4.5 | 36.10 / 16.57 / 1.00 / 2.3 / 0.17 / 5.5 | 38.31 / 10.74 / 1.44 / 3.7 / 0.29 / 6.0 | 45.19 / 17.11 / 1.16 / 2.3 / 0.32 / 4.1 | 46.02 / 20.70 / 1.10 / 2.6 / 0.42 / 4.3 | 34.81 / 15.92 / 1.14 / 1.3 / 0.28 / 5.1 | 44.33 / 23.23 / 1.06 / 1.9 / 0.31 / 5.3 |
+| 2,000 | 38.45 | 40.90 | 0.306 | 4.91 | 41.40 / 10.53 / 1.34 / 1.9 / 0.36 / 4.4 | 35.50 / 16.13 / 1.01 / 2.1 / 0.17 / 5.5 | 38.41 / 10.74 / 1.42 / 3.5 / 0.28 / 6.0 | 45.46 / 17.71 / 1.17 / 2.4 / 0.32 / 4.0 | 46.02 / 19.42 / 1.08 / 2.3 / 0.42 / 4.3 | 35.19 / 16.58 / 1.13 / 1.3 / 0.29 / 5.0 | 44.30 / 23.07 / 1.06 / 2.1 / 0.30 / 5.2 |
+| 3,000 | 38.75 | 40.92 | 0.306 | 4.94 | 41.39 / 10.10 / 1.35 / 1.9 / 0.36 / 4.4 | 36.11 / 16.73 / 1.01 / 2.2 / 0.17 / 5.6 | 38.18 / 10.80 / 1.43 / 3.7 / 0.29 / 6.0 | 45.36 / 18.01 / 1.17 / 2.5 / 0.32 / 4.0 | 46.05 / 19.82 / 1.09 / 2.5 / 0.43 / 4.3 | 35.10 / 16.57 / 1.13 / 1.3 / 0.28 / 5.1 | 44.28 / 23.22 / 1.05 / 2.1 / 0.29 / 5.2 |
+| 4,000 | 38.69 | 40.76 | 0.309 | 4.94 | 41.19 / 9.96 / 1.33 / 1.9 / 0.36 / 4.5 | 36.18 / 16.53 / 1.01 / 2.0 / 0.17 / 5.5 | 38.29 / 10.94 / 1.42 / 3.4 / 0.29 / 5.9 | 44.93 / 16.35 / 1.18 / 2.3 / 0.33 / 4.2 | 46.14 / 20.55 / 1.05 / 2.4 / 0.42 / 4.3 | 34.28 / 16.21 / 1.13 / 1.3 / 0.29 / 5.0 | 44.34 / 23.48 / 1.05 / 2.1 / 0.30 / 5.2 |
+
+Every validation sits within noise of its bf16 start (the refit's 2,000: 38.72 / 40.89 / 0.307 /
+4.93): the 6-bit tables cost nothing these sets see. Update 4,000 is snapped, as the heads
+finish's was.
+
+The Mac path, first run on a trained slices checkpoint (`both_slices_z` 200 from the Hub,
+2026-11-28, the M4 Pro, `nice -n 19`; models in `/Volumes/data/models/hibiki/weights/student_slices14/`,
+records in `/Volumes/data/hibiki-zero-evals/mac/slices-gate/`):
+
+- `convert_mlx.py` (bf16, the worktree's `PYTHONPATH`, the vi6k tokenizer passed) → `z200_bf16`,
+  2.69 GB. `gate.py --limit 5` on FLEURS dev each way (seed 42): VI→EN chrF 54.32, BLEU 22.56,
+  EOS 1 of 5, speaker_sim 0.32, HNR 2.1 dB; EN→VI 52.85, 27.21, 0 of 5, 0.19, 5.1 dB.
+- `export_lm_coreml.py --bits 6` → `z200_ane6` in 10.4 min (peak 10.4 GB): trunk 704 MB, nine
+  slices 7.7 MB each and the last 13 MB, slice tables 63 MB, trunk tables 444 MB; then
+  `export_mimi_coreml.py --decoder-codebooks 16` into it.
+- The Swift CLI (built in the worktree, `xcodebuild` Release) on the Neural Engine, the same rows
+  and seeds (`swift_gate.py` beside the records: `hibiki translate` a row each, scored by
+  training's `score_sets` and voice scores): VI→EN 49.15 / 16.46, 0 of 5, 0.31, 3.2 dB; EN→VI
+  45.70 / 23.70, 3 of 5, 0.13, 5.4 dB; trunk 11.6, slices 3.2, host 3.0 ms a frame. A plain
+  6-bit export (not trained against its tables) on 5 sampled rows: a check that the path runs,
+  not a comparison.
+
+The refit's snap (`both_slices_z_refit_snap6`, the z400 refit's 2,000 on its 6-bit tables, from the
+Hub's `phone/`), the same rows and seeds, 2026-11-28: so the snapped weights reach the Neural
+Engine as MLX runs them (the plain export's 5–7 chrF loss is gone, inside 5 rows' noise):
+
+| Model | VI→EN chrF / BLEU / EOS / speaker_sim / HNR | EN→VI chrF / BLEU / EOS / speaker_sim / HNR |
+|---|---|---|
+| z200, MLX bf16 | 54.32 / 22.56 / 1 of 5 / 0.32 / 2.1 | 52.85 / 27.21 / 0 of 5 / 0.19 / 5.1 |
+| z200, Core ML 6-bit (plain export) | 49.15 / 16.46 / 0 of 5 / 0.31 / 3.2 | 45.70 / 23.70 / 3 of 5 / 0.13 / 5.4 |
+| refit snap, MLX bf16 (`refit_snap6_bf16`) | 54.22 / 18.97 / 3 of 5 / 0.38 / 3.9 | 45.33 / 25.33 / 2 of 5 / 0.21 / 6.0 |
+| refit snap, Core ML 6-bit (`refit_snap6_ane6`) | 55.98 / 26.15 / 4 of 5 / 0.31 / 3.8 | 46.42 / 22.92 / 1 of 5 / 0.24 / 6.7 |
+| finish 4,000 snap, MLX bf16 (`pal6_snap6_bf16`) | 42.74 / 12.85 / 2 of 5 / 0.41 / 3.0 | 45.58 / 22.17 / 1 of 5 / 0.16 / 5.6 |
+| finish 4,000 snap, Core ML 6-bit (`pal6_snap6_ane6`) | 55.59 / 23.69 / 3 of 5 / 0.34 / 3.8 | 48.68 / 25.87 / 1 of 5 / 0.27 / 6.3 |
+
+The export took 8.5 GB at peak, the same sizes as z200's; trunk 11.7, slices 3.3, host 2.2 ms a
+frame (means of the 10 rows). Records in `refit_snap6_bf16/` and `refit_snap6_ane6_swift/`.
+
+The finish's snap (`phone/pal6_slices_z4000_snap6.safetensors`, fp32 as pal6 saves, 5.39 GB;
+2.69 GB in MLX bf16): the export in 3.5 min at 8.4 GB peak, 1.7 GB on disk (trunk 704 MB, slices
+7.7 MB each and the last 13 MB, Mimi's decoder 93 MB); trunk 11.8, slices 3.4, host 2.0 ms a
+frame. Its MLX VI→EN is 12 chrF under its Core ML on the same weights: sampling, not the runtime
+(row by row the three models make the same errors, Vietnamese words in the English among them,
+and the gap sits in two rows whose samples took other words). Five sampled rows check that the
+path runs and the tables survive the export; the 13-set tests below compare the models.
+
+## Tests
+
+`finish_slices.sh`'s `test_student.sh` calls (13 test sets, `eval.py` seed 43, batch 64, LAAL,
+voice scored, 2026-11-28 00:22–00:56 UTC on box 62513802, ~8.5 min a model; records, `table.md`
+and `paired.txt` in `/Volumes/data/hibiki-zero-evals/box-62513802/slices_tests/`). Every set
+healthy for every model. Cells chrF / BLEU / length ratio / median End Offset (s) / mean LAAL (s)
+/ speaker_sim / HNR dB:
+
+| Set | Decay 8,000 (on-policy start) | z400 refit 2,000 (bf16) | z400 refit 2,000, snapped | 6-bit finish 4,000, snapped |
+|---|---|---|---|---|
+| fleurs-vi/test | 39.97 / 9.80 / 1.33 / 1.3 / 2.54 / 0.34 / 4.5 | 40.18 / 10.28 / 1.31 / 1.7 / 2.90 / 0.36 / 4.5 | 39.97 / 10.15 / 1.33 / 1.7 / 2.87 / 0.35 / 4.4 | 39.96 / 10.40 / 1.31 / 1.7 / 2.85 / 0.35 / 4.5 |
+| fleurs-en/test | 34.62 / 15.55 / 1.01 / 2.0 / 3.20 / 0.16 / 5.4 | 35.98 / 16.53 / 1.02 / 2.1 / 3.27 / 0.18 / 5.6 | 35.39 / 15.89 / 1.03 / 2.1 / 3.31 / 0.17 / 5.6 | 35.58 / 16.13 / 1.02 / 2.3 / 3.38 / 0.17 / 5.6 |
+| multimed-vi/select | 38.37 / 10.51 / 1.48 / 3.4 / 2.64 / 0.27 / 6.0 | 38.52 / 11.07 / 1.41 / 3.6 / 2.74 / 0.28 / 6.0 | 38.16 / 10.55 / 1.43 / 3.4 / 2.71 / 0.28 / 6.0 | 38.25 / 10.83 / 1.43 / 3.6 / 2.74 / 0.29 / 5.9 |
+| multimed-vi/final | 38.53 / 10.62 / 1.46 / 3.4 / 2.67 / 0.28 / 6.1 | 38.34 / 10.69 / 1.40 / 3.6 / 2.75 / 0.29 / 6.0 | 38.21 / 10.51 / 1.43 / 3.6 / 2.72 / 0.29 / 6.0 | 38.43 / 10.83 / 1.40 / 3.6 / 2.76 / 0.29 / 6.0 |
+| giga-heldout/test | 66.36 / 39.35 / 1.26 / 2.2 / 2.02 / 0.35 / 5.1 | 66.19 / 39.75 / 1.22 / 2.4 / 2.08 / 0.36 / 5.1 | 65.96 / 39.13 / 1.24 / 2.4 / 2.05 / 0.36 / 5.1 | 66.44 / 40.67 / 1.24 / 2.4 / 2.07 / 0.36 / 5.1 |
+| en-vi-val/cv27 | 44.95 / 16.28 / 1.23 / 2.2 / 2.45 / 0.31 / 4.0 | 44.81 / 17.72 / 1.15 / 2.2 / 2.48 / 0.32 / 4.2 | 45.31 / 16.54 / 1.18 / 2.5 / 2.54 / 0.32 / 4.2 | 45.68 / 17.86 / 1.19 / 2.5 / 2.64 / 0.33 / 4.2 |
+| en-vi-val/libriheavy | 45.78 / 18.33 / 1.12 / 2.1 / 2.59 / 0.40 / 4.4 | 46.17 / 20.44 / 1.06 / 2.5 / 2.78 / 0.42 / 4.3 | 45.69 / 19.36 / 1.08 / 2.5 / 2.79 / 0.43 / 4.3 | 45.82 / 19.58 / 1.07 / 2.6 / 2.85 / 0.42 / 4.2 |
+| en-vi-val-noisy/cv27 | 43.57 / 14.84 / 1.23 / 2.3 / 2.46 / 0.26 / 4.3 | 42.77 / 14.67 / 1.20 / 2.3 / 2.50 / 0.27 / 4.2 | 42.65 / 15.39 / 1.20 / 2.4 / 2.60 / 0.27 / 4.1 | 42.80 / 14.77 / 1.23 / 2.6 / 2.60 / 0.27 / 4.0 |
+| en-vi-val-noisy/libriheavy | 43.70 / 16.51 / 1.15 / 2.4 / 2.66 / 0.33 / 4.4 | 43.92 / 18.22 / 1.07 / 2.5 / 2.71 / 0.35 / 4.3 | 43.80 / 17.89 / 1.10 / 2.7 / 2.77 / 0.35 / 4.4 | 44.20 / 18.34 / 1.08 / 2.7 / 2.85 / 0.36 / 4.1 |
+| en-vi-val-en/cv27 | 35.35 / 16.71 / 1.14 / 1.1 / 2.17 / 0.27 / 4.9 | 34.85 / 15.88 / 1.14 / 1.3 / 2.16 / 0.29 / 5.0 | 35.21 / 16.12 / 1.17 / 1.3 / 2.20 / 0.29 / 5.0 | 35.22 / 17.10 / 1.12 / 1.2 / 2.16 / 0.29 / 5.1 |
+| en-vi-val-en/libriheavy | 44.34 / 22.11 / 1.08 / 1.8 / 2.50 / 0.29 / 5.2 | 43.54 / 22.53 / 1.05 / 2.0 / 2.64 / 0.30 / 5.2 | 43.79 / 22.41 / 1.06 / 1.8 / 2.49 / 0.30 / 5.2 | 44.08 / 22.53 / 1.06 / 2.1 / 2.71 / 0.30 / 5.2 |
+| en-vi-val-en-noisy/cv27 | 23.69 / 10.14 / 1.01 / 2.3 / 3.47 / 0.23 / 4.4 | 25.19 / 10.81 / 1.03 / 2.6 / 3.46 / 0.25 / 4.6 | 24.10 / 10.44 / 1.00 / 2.5 / 3.28 / 0.26 / 4.5 | 24.28 / 10.48 / 0.97 / 2.3 / 3.47 / 0.25 / 4.3 |
+| en-vi-val-en-noisy/libriheavy | 35.84 / 17.35 / 1.03 / 2.7 / 3.28 / 0.27 / 4.9 | 36.08 / 17.95 / 1.00 / 2.9 / 3.40 / 0.28 / 4.8 | 35.84 / 17.45 / 1.02 / 2.9 / 3.35 / 0.29 / 4.8 | 36.42 / 17.94 / 0.98 / 3.1 / 3.48 / 0.27 / 4.9 |
+
+| Model | chrF, mean of 11 (no en-noisy) | of 13 | BLEU of 11 | LAAL of 11 | speaker_sim of 11 | HNR of 11 |
+|---|---|---|---|---|---|---|
+| Decay 8,000 (on-policy start) | 43.23 | 41.16 | 17.33 | 2.54 | 0.298 | 4.93 |
+| z400 refit 2,000 (bf16) | 43.21 | 41.27 | 17.98 | 2.64 | 0.309 | 4.95 |
+| z400 refit 2,000, snapped | 43.10 | 41.08 | 17.63 | 2.64 | 0.311 | 4.95 |
+| **6-bit finish 4,000, snapped** | **43.32** | **41.32** | **18.10** | 2.69 | **0.312** | 4.90 |
+| Heads 6-bit finish ([student-palettize](student-palettize.md#tests), text only) | 42.48 | 40.90 | 17.81 | 2.87 | | |
+
+Paired bootstrap of chrF (the heads note's `paired.py`, 500 draws of the same rows):
+- **Slices finish − heads finish**: mean of 11 +0.83 [+0.44, +1.21], of 13 +0.42 [+0.08, +0.78].
+  Better from Vietnamese: `en-vi-val/cv27` +4.53 [+2.15, +6.96], libriheavy +1.52 [+0.30, +2.85],
+  MultiMed-ST select +0.86 [+0.44, +1.31] and final +1.04 [+0.58, +1.48]. Worse from English:
+  FLEURS-en −2.47 [−3.29, −1.70], `en-vi-val-en-noisy` cv27 −1.96 [−3.87, −0.40] and libriheavy
+  −1.68 [−3.03, −0.58]; the clean synthetic EN→VI sets tie.
+- **Against the on-policy start** (decay 8,000): the refit −0.02 [−0.36, +0.28] (of 11), its snap
+  −0.13 [−0.46, +0.18], the finish +0.09 [−0.25, +0.38]. FLEURS-en is the one gain past noise:
+  +1.36 [+0.57, +2.09], +0.77 [+0.04, +1.55], +0.96 [+0.21, +1.70].
+
+Reading: the on-policy stage and its refit bought FLEURS-en (+1 chrF), BLEU (+0.8) and speaker
+similarity (+0.014), and cost 0.15 s of LAAL; the 6-bit finish keeps all of it (its snap scores
+as the bf16 refit, the plain snap a little under). Against the heads phone model the slices
+finish translates better from Vietnamese, worse from real and noisy English, waits 0.18 s less
+(LAAL) and sounds more like the speaker (the gate's 5 FLEURS rows each way: 0.34 / 0.27 against
+the heads release's 0.21 / 0.13, HNR 3.8 / 6.3 dB against 3.2 / 4.8,
+[voice-scores](voice-scores.md)). The phone candidate is the finish's snap,
+`phone/pal6_slices_z4000_snap6.safetensors` on the Hub, exported in
+`/Volumes/data/models/hibiki/weights/student_slices14/pal6_snap6_ane6/`; its iPhone 13 Pro Max
+run in HibikiBench is the gate left.
