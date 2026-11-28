@@ -17,11 +17,14 @@ with the same math on the same weights:
 - grouped-query attention runs in SDPA (`enable_gqa`) instead of copying each key and value to 16
   heads (validation, and steps past the ring; generation steps are the next item);
 - a generation step's attention (`_step_attention`, from `LMGen._step`) reads only the written
-  slots of the KV cache, rounded up to `STEP_SLOTS` (64), and the query heads that share a
-  key/value head as that head's query positions (see below);
+  slots of the KV cache, in the Triton kernel `training/tranche/decode_attention.py` (VieNeu's),
+  which reads their count on the device, so the main transformer's CUDA graph replays at every
+  step; the query heads that share a key/value head read its cache once, together (see below);
 - the depformer's training forward runs its 16 codebook steps step-major (`unbind`/`stack`,
   whose backward is one copy, instead of slices whose backward zero-fills a full gradient each),
-  compiled with dynamic shapes, with the memory-efficient attention kernel;
+  compiled with dynamic shapes; its attention is the explicit form with gradients (compiled into
+  the layers) and cuDNN without (`_depformer_sdpa`), and with `train.py --fp8` its linears and
+  `depformer_in` run rowwise FP8 in training (`lm_training.depformer_fp8`), validation bf16;
 - the training gating FFN splits with `unbind` for the same reason;
 - the main transformer's training forward (training mode, no streaming state) runs its 28 layers
   as one function compiled with dynamic shapes, moshi's RMS norms and rope (at offset 0) inline
@@ -50,9 +53,17 @@ eager; 43.7 ms of wall with CUDA graphs); narrowed, the whole rollout takes 19.2
 Seeded rollouts are token for token the same, with CUDA graphs on: the student at 320 rows, the 3B
 at 32, and all 7,375 outputs of the 13 test sets (`eval.py`, batch 64; its generation 259.5 →
 170.7 s). Its contract: only `LMGen` steps it, one frame a call, rows in sync and the context fixed
-while streaming (`support_out_of_sync` and steps past the cache's ring keep moshi's). A graph is
-captured again at each width. In a GRPO run (`both_heads_z2` 921–1,200) a window's generation took
-~107 s instead of ~257: 16.9 s an update instead of 24.3.
+while streaming (`support_out_of_sync` and steps past the cache's ring keep moshi's). In a GRPO run
+(`both_heads_z2` 921–1,200) a window's generation took ~107 s instead of ~257: 16.9 s an update
+instead of 24.3. That narrowing read whole widths of 64 slots through SDPA with a boolean mask
+(`fmha_cutlassF` 64×128, 49% of a slices GRPO's CUDA time) and captured the graph again at each
+width; the Triton kernel since (2026-11-28, RTX 5090) reads the exact count on the device, one
+graph for the whole stream: one layer's attention 18.5 / 100 / 195 µs at 64 rows of 100 / 600 /
+1,200 written slots (SDPA's 60 / 210 / 388), 945 at 320 rows of 1,200 (1,503), within 1e-3 to 4e-3
+of it in bf16. The slices release's free-running validation on the seven sets (`eval.py`, batch 64,
+seed 47) took 234 s instead of 254, its scores within sampling noise (chrF −0.4 to +0.8 a set,
+speaker similarity and HNR within 0.01 and 0.1 dB; records in
+`/Volumes/data/hibiki-zero-evals/box-62513802/wide-slices-opt-2026-11-28/`).
 
 Checked against moshi as shipped (2026-11-03, H100 NVL): fp32 loss equal, logits within 1.7e-6
 and every gradient within 3.1e-6; in bf16 both are as far from an fp32 reference (gradients:
@@ -150,64 +161,9 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   were of 8,192 frames (a 2026-11-23 estimate read them as 4,608 and came out 1.8× short). An
   `en_speech` or tranche row's stream costs about the same either way, so a two-way pass costs
   twice its `vi-en` part ([teacher-next](teacher-next.md#time-disk-and-box)).
-- **RTX 5090 (32 GB, sm_120, $0.511/h, ~515 W; 2026-11-26, box 62513802)**: full-model 3B SFT
-  and 14L 16-codebook heads-student distillation both run on a 32 GB card at ~39–44% lower $/M
-  frames than H100 SXM ($0.0363/M at $2/h) and RTX PRO 6000 ($0.0200/M at $1.217/h).
-  - Earlier analysis (2026-11-23) ruled out 3B fp32 SFT (46.7 GiB of static states) and host-offload
-    AdamW (~94 GB host traffic/step, estimated 1,400–2,700 fr/s) and 8-bit blockwise moments
-    (29 GiB static, broke a tensor above).
-  - **`--bf16-adamw`** (`training/finetune/bf16_adamw.py`): keeps 2D+ weights, gradients, and AdamW
-    moments (`m`, `v`) in bf16 (8 bytes/param = **23.3 GiB** on 3B, **15.4 GiB** on student + 3B
-    bf16 teacher), keeping 1D norms/scales/biases in fp32. A single fused Triton kernel runs each
-    AdamW update in fp32 registers with fused gradient clipping (no separate grad-scaling pass or
-    host sync) and unbiased IEEE-754 stochastic rounding (`tl.randint`) back to bf16 for `p`, `m`,
-    and `v`, preserving fp32's full 8-bit exponent range so `v` never underflows to 0.
-  - **50-step real-data parity** (PhoAudiobook `pho`, `lr=1e-5`, `batch_frames=4608`):
-    - `fp32_adamw`: 17,790 fr/s, 24.48 GiB, `mean_last10=2.2132`;
-    - `bf16_adamw`: 22,466 fr/s (+26%), 12.96 GiB, `mean_last10=2.2132` (`mean|diff|=0.00033`,
-      `last10=+0.00001`);
-    - `bf16_adamw + --fp8`: `mean_last10=2.2152` (`+0.00207`, slower on small student batches).
-  - **Selective checkpointing (`--grad-checkpoint --grad-checkpoint-layers N`) and `--fp8`**
-    (`training/finetune/fp8_linear.py`, rowwise E4M3 `torch._scaled_mm` on main-transformer
-    linears): whole-loop compiled checkpointing in bf16 fuses norms/residuals across layers; per-layer
-    compile under `--fp8` avoids unrolling 28 quantize+scaled_mm blocks (~20× faster compile).
-    Keeping Mimi on CPU during training saves ~0.4 GiB; detaching `step_losses` and avoiding
-    long-lived gradient list references prevents a 5.8 GiB step-2 leak.
-  - **Measured on real variable-shape batches** (31.4 GiB usable VRAM, `--park-states` for
-    validation):
-
-    | Config | frames/s | s/step | Peak VRAM | $/M frames (@ $0.511/h) |
-    |---|---:|---:|---:|---:|
-    | 3B `--bf16-adamw --grad-checkpoint --grad-checkpoint-layers 14` (`4,608` whole) | 6,554 | 0.703 | 28.3 GiB | $0.0217 |
-    | 3B `--bf16-adamw --fp8 --grad-checkpoint --grad-checkpoint-layers 8` (`4,608` whole) | 7,242 | 0.636 | 28.1 GiB | $0.0196 |
-    | Student 14L 16cb + 3B teacher, exact fp32 + `--grad-checkpoint --micro-frames 3072` (`12,288`) | 10,065 | 1.221 | 27.4 GiB | $0.0141 |
-    | Student 14L 16cb + 3B teacher, `--bf16-adamw --micro-frames 6144` (`12,288`, no ckpt) | 12,417 | 0.902 | 26.0 GiB | $0.0114 |
-    | Slices student (`student_slices14`, joint) + 3B teacher, `--bf16-adamw --fp8 --fp8-teacher all --micro-frames 6144` (`12,288`, chunked KL + Triton FP8) | 17,604 | 0.698 | 25.5 GiB | $0.0081 |
-    | Slices student (`student_slices14`, `--freeze-trunk`) + 3B teacher, `--bf16-adamw --fp8 --fp8-teacher all` (`12,288` whole) | 28,710 | 0.428 | 15.8 GiB | $0.0049 |
-
-  - **Slices distillation kernels (2026-11-27, RTX 5090, box 62513802)**:
-    - `common.compute_distill_losses_chunked` computes linear projections + exact forward KL in
-      chunks (`2048` audio / `1024` text) without materializing full-vocab logits (~5.5 GiB saved),
-      and skips `text_linear` / `text_kl` when `--freeze-trunk` is set. A slices teacher (the
-      6-bit finish distils the slices student from its own bf16 weights) feeds its last slice's
-      output to every parallel codebook, as the student side does.
-    - `lm_training._per_step` batches contiguous duplicate schedule indices (8× fewer teacher
-      slice-8 GEMMs/HBM reads), `project_depformer_in` fuses `depformer_in` into one GEMM,
-      `slices.py` fuses `linears[8..15]`, `_rope_tables` caches RoPE once per forward, and
-      `_depformer_sdpa` uses cuDNN for forward-only teacher attention (1.57× faster on Blackwell)
-      and memory-efficient for backward-enabled student attention.
-    - `fp8_linear.py` uses single-pass/two-pass Triton rowwise E4M3 quantization + fused tiled
-      `BLOCK_M=256, BLOCK_K=16` transpose-quantize (3.8× faster on 170 SMs) wrapped in
-      `torch.library.custom_op` for zero-graph-break whole-loop `torch.compile`, plus
-      `FrozenFP8Linear` (`--fp8-teacher trunk|all`) and plain-attribute frozen student trunk FP8
-      caches (`--freeze-trunk --fp8`). Full table & kernel profiles in
-      [student-slices](student-slices.md#training).
-
-  - Launch entries in `training/tranche/box/restart.sh`: `two-way-5090` and `student-heads-5090`.
-    Both passed full preempt → resume (exact 4-digit loss match) → teacher-forced + free-running
-    FLEURS validation (15.9 GiB peak with `--park-states`) → promotion end-to-end tests on box
-    62513802.
-
+- **RTX 5090 (32 GB, sm_120, $0.511/h)**: 3B SFT and student distillation on a 32 GB card
+  (`--bf16-adamw`, `--fp8`, the FP8 kernels, the slices' distillation kernels) are in
+  [sft-speed-5090](sft-speed-5090.md).
 - **H200 SXM, alone on the GPU (2026-11-09; round 4's caches, steps 200–300 after warm-up, at
   ~690 W of its 700 W cap, 99–100% busy)**: kernels of 10 warm steps at 4,608: matmuls 48.6%, fused
   AdamW and the clip's scaling 11.7%, the depformer's attention 6.4%, the loss's boolean-mask gather

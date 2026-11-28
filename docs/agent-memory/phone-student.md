@@ -189,8 +189,8 @@ update 2,000 are in [student-grpo](student-grpo.md).
   the heads): no target codebook ≤ j of a frame moves when codebook j of that frame is perturbed
   (no leak), head j sees codebook j-1 of the same frame, and greedy `LMGen` output equals the
   teacher-forced argmax at every valid position, audio and text, for a heads and a depformer model.
-- The trainer's forward pins the GPU's efficient attention and compiles: a CPU check runs eager
-  with `lm_training.sdpa_kernel` replaced, and needs Hibiki's (empty) condition tensors.
+- The trainer's forward compiles: a CPU check runs eager (`TORCH_COMPILE_DISABLE=1`; compiled CPU
+  kernels crash in OpenMP on the Mac), and needs Hibiki's (empty) condition tensors.
 
 ## Next
 

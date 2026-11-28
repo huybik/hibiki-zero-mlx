@@ -222,8 +222,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--fp8", action="store_true",
-        help="Rowwise FP8 (E4M3 via torch._scaled_mm) on the main transformer's linears for "
-        "Blackwell (RTX 5090 / RTX PRO 6000) speedup.",
+        help="Rowwise FP8 (E4M3 via torch._scaled_mm) on the main transformer's linears, and a "
+        "depformer's (its slices') and their depformer_in, for Blackwell (RTX 5090 / RTX PRO 6000) "
+        "speedup; the output linears stay bf16.",
     )
     parser.add_argument(
         "--fp8-teacher", choices=("none", "trunk", "all"), default="none",
@@ -574,7 +575,11 @@ def main() -> None:
         print(f"Gradient checkpointing enabled ({scope})")
     if args.fp8:
         lm.transformer.use_fp8 = True
-        print("Rowwise FP8 enabled on main transformer linears")
+        scope = "main transformer"
+        if hasattr(lm.depformer, "layers"):  # a depformer or its slices, not a heads student's heads
+            lm.depformer.use_fp8 = True
+            scope += ", depformer and depformer_in"
+        print(f"Rowwise FP8 enabled on {scope} linears")
     # The training forward attends causally over the whole stream (lm_training): the longest
     # padded stream must fit the attention context, checked here rather than at its first batch.
     context = lm.transformer.layers[0].self_attn.context

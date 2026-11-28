@@ -18,7 +18,10 @@ embedding and output norm, not a codebook's, and runs the steps (`_forward_train
 
 `python -m training.student.slices` gives a student new slices: its trunk, text and input
 embeddings copied, its audio part (heads or depformer) dropped, its target delays set to the source
-stream's (the teacher's), the slices initialized as moshi initializes a depformer (`--seed`).
+stream's (the teacher's), the slices initialized as moshi initializes a depformer (`--seed`), or
+copied from a model of the same slice shape (`--audio-from`, the teacher, whose depformer at 1024 x 3
+is the slices' but for its depth: `--audio-layers` picks the layers; the last slice's codebooks
+8..15 read their output linears from the teacher's).
 
     python -m training.student.slices --weight weights/student_heads14_cb16_final.safetensors \\
         --config-path weights/student_heads14_cb16/config.json --out-dir weights/student_slices14
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import types
 from pathlib import Path
 from typing import Any
@@ -80,7 +84,8 @@ def _forward_hidden(self: LMModel, sequence: torch.Tensor, transformer_out: torc
     chunked linear+KL distillation (zero full-vocab logit materialization)."""
     B, _, T = sequence.shape
     slices = len(self.depformer_in)
-    proj = lm_training.project_depformer_in(self.depformer_in, transformer_out)  # [slices, B, T, dep_dim]
+    proj = lm_training.project_depformer_in(  # [slices, B, T, dep_dim]
+        self.depformer_in, transformer_out, lm_training.depformer_fp8(self.depformer))
     inputs = [proj[0] + self.depformer_text_emb(sequence[:, 0])]
     for k in range(1, slices):
         token = sequence[:, k + self.audio_offset - 1]
@@ -154,6 +159,27 @@ def slices_config(parent: dict[str, Any], dim: int, num_heads: int, layers: int,
     return config
 
 
+def audio_source(weight: Path, keys: list[str], layers: list[int], depth: int) -> dict[str, torch.Tensor]:
+    """The tensors of `weight` that the student's audio part `keys` copy: the same names (its first
+    slices' input linears, embeddings and norms, and the 16 output linears), but slice layer i reads
+    the source's depformer layer `layers[i]`."""
+    from safetensors import safe_open
+
+    if len(layers) != depth or layers != sorted(set(layers)) or layers[0] < 0:
+        raise ValueError(f"--audio-layers needs {depth} increasing layers, got {layers}")
+
+    def source(key: str) -> str:
+        match = re.match(r"^depformer\.layers\.(\d+)\.", key)
+        return key if match is None else f"depformer.layers.{layers[int(match[1])]}.{key[match.end():]}"
+
+    with safe_open(str(weight), "pt") as f:
+        names = set(f.keys())
+        missing = [f"{key} ({source(key)})" for key in keys if source(key) not in names]
+        if missing:
+            raise KeyError(f"{weight.name} has no tensor for student {', '.join(missing[:5])}")
+        return {key: f.get_tensor(source(key)) for key in keys}
+
+
 def main() -> None:
     from safetensors import safe_open
 
@@ -169,7 +195,11 @@ def main() -> None:
     parser.add_argument("--layers", type=int, default=2, help="the slices' layers")
     parser.add_argument("--parallel", type=int, default=8, help="codebooks the last slice predicts at once")
     parser.add_argument("--seed", type=int, default=0, help="the slices' initialization")
+    parser.add_argument("--audio-from", type=Path, help="copy the slices from this model's audio part (safetensors)")
+    parser.add_argument("--audio-layers", help="with --audio-from, its depformer layers to copy, e.g. 0,2,5")
     args = parser.parse_args()
+    if (args.audio_from is None) != (args.audio_layers is None):
+        parser.error("--audio-from and --audio-layers go together")
 
     weight = require_file(args.weight, "parent weight")
     config = slices_config(read_json(require_file(args.config_path, "parent config")),
@@ -189,9 +219,16 @@ def main() -> None:
         tokenizer=DEFAULT_TOKENIZER, config_path=staged))  # Mimi and the tokenizer are never read here
     torch.manual_seed(args.seed)
     child = common.build_lm(info, "cpu", dtype, load_weight=False).state_dict()
+    audio = None if args.audio_from is None else audio_source(
+        require_file(args.audio_from, "audio source"), [key for key in child if key.startswith(AUDIO_PARTS)],
+        [int(part) for part in args.audio_layers.split(",")], args.layers)
     state = {}
     for key, tensor in child.items():
         if key.startswith(AUDIO_PARTS):
+            if audio is not None:
+                if audio[key].shape != tensor.shape:
+                    raise ValueError(f"student {key} {tuple(tensor.shape)}, its source {tuple(audio[key].shape)}")
+                tensor = audio.pop(key).to(dtype)
             state[key] = tensor.contiguous()
             continue
         if key not in parent or parent[key].shape != tensor.shape:
@@ -200,15 +237,20 @@ def main() -> None:
     if parent:
         raise ValueError(f"parent tensors the student has no place for: {sorted(parent)[:5]}")
     record = {"dim": args.dim, "num_heads": args.num_heads, "layers": args.layers,
-              "parallel": args.parallel, "seed": args.seed, "parent_student": metadata.get("student")}
+              "parallel": args.parallel, "parent_student": metadata.get("student")}
+    if args.audio_from is None:
+        record["seed"] = args.seed
+    else:
+        record.update(audio_from=repo_display_path(args.audio_from), audio_layers=args.audio_layers)
     metadata["student_of"] = repo_display_path(weight)
     metadata["student"] = json.dumps(record)
     common.save_state(state, out_weight, metadata)
     staged.replace(config_path)
-    audio = sum(t.numel() for key, t in state.items() if key.startswith(AUDIO_PARTS))
+    audio_params = sum(t.numel() for key, t in state.items() if key.startswith(AUDIO_PARTS))
+    origin = f"seed {args.seed}" if args.audio_from is None else f"from {args.audio_from.name} layers {args.audio_layers}"
     print(f"student: {len(state)} tensors, {sum(t.numel() for t in state.values()) / 1e9:.3f}B parameters "
-          f"({audio / 1e6:.1f}M in {config['dep_q'] - args.parallel + 1} slices of {args.dim} x {args.layers}) -> "
-          f"{repo_display_path(out_weight)}, {repo_display_path(config_path)}")
+          f"({audio_params / 1e6:.1f}M in {config['dep_q'] - args.parallel + 1} slices of {args.dim} x {args.layers}, "
+          f"{origin}) -> {repo_display_path(out_weight)}, {repo_display_path(config_path)}")
 
 
 if __name__ == "__main__":

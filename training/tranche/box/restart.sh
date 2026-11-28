@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-slices-wide-warm-5090|student-slices-wide-warm-decay-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -258,15 +258,19 @@ case $job in
             --eval-batch-size 64 --keep-checkpoints 1 --seed 50 --save-every 1000 --val-every 1000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The wide slices (student-slices.md#wide-slices): 9 random slices of 1024x3 for the 512x2 ones, whose voice is
-  # hoarse, on the shipping trunk (the 6-bit finish's snap, frozen, so the text stays the release's), with
-  # Stage 1's recipe and then its decay.
-  student-slices-wide-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+  # The wide slices (student-slices.md#wide-slices): 9 slices of 1024x3 for the 512x2 ones, whose voice is hoarse, on
+  # the shipping trunk (the 6-bit finish's snap, frozen, so the text stays the release's), with Stage 1's recipe and
+  # then its decay. Two starts: random slices at Stage 1's rate (2e-4), or the teacher's depformer at its layers
+  # 0,2,5 (slices.py --audio-from, which the wide slices' shape takes whole) at half the rate, not to scramble it.
+  student-slices-wide-5090|student-slices-wide-warm-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       name=student_slices14_wide S=weights/$name
+       name=student_slices14_wide start=(--seed 47) lr=2e-4
+       [[ $job == *warm* ]] && name=student_slices14_wide_warm lr=1e-4 \
+         start=(--audio-from weights/grpo_twoway_best1400.safetensors --audio-layers 0,2,5)
+       S=weights/$name
        [[ -f $S/config.json ]] || .venv/bin/python -m training.student.slices \
          --weight weights/pal6_slices_z4000_snap6.safetensors --config-path weights/student_slices14/config.json \
-         --dim 1024 --num-heads 16 --layers 3 --parallel 8 --seed 47 --out-dir $S
+         --dim 1024 --num-heads 16 --layers 3 --parallel 8 "${start[@]}" --out-dir $S
        cmd=(./training/h100.sh run ${name}_stage1
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
@@ -274,16 +278,18 @@ case $job in
             --config-path $S/config.json --model-weight $S/model.safetensors
             --teacher-weight weights/grpo_twoway_best1400.safetensors
             --bf16-adamw --freeze-trunk --fp8 --fp8-teacher all --batch-frames 12288 --park-states
-            --lr 2e-4 --first-codebook-weight 10 --acoustic-ar-weight 3
+            --lr $lr --first-codebook-weight 10 --acoustic-ar-weight 3
             --schedule constant --warmup-fraction 0.05 --max-steps 16000
-            --eval-batch-size 64 --keep-checkpoints 1 --seed 47 --save-every 4000 --val-every 8000
+            --eval-batch-size 64 --keep-checkpoints 1 --seed 47 --save-every 4000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # Its decay, as Stage 1's: a --schedule decay branch from its update-16,000 pair, hard-linked here first so the
   # branch's own checkpoints never rotate it away.
-  student-slices-wide-decay-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
+  student-slices-wide-decay-5090|student-slices-wide-warm-decay-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       name=student_slices14_wide S=weights/student_slices14_wide P=weights/student_slices14_wide_stage1_step016000
+       name=student_slices14_wide lr=2e-4
+       [[ $job == *warm* ]] && name=student_slices14_wide_warm lr=1e-4
+       S=weights/$name P=weights/${name}_stage1_step016000
        [[ -d $P ]] || { mkdir -p $P; ln runs/${name}_stage1/{model_step016000.safetensors,trainer_step016000.pt} $P/; }
        cmd=(./training/h100.sh run ${name}_stage1_decay
             --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
@@ -293,12 +299,12 @@ case $job in
             --optimizer-state $P/trainer_step016000.pt
             --teacher-weight weights/grpo_twoway_best1400.safetensors
             --bf16-adamw --freeze-trunk --fp8 --fp8-teacher all --batch-frames 12288 --park-states
-            --lr 2e-4 --first-codebook-weight 10 --acoustic-ar-weight 3
+            --lr $lr --first-codebook-weight 10 --acoustic-ar-weight 3
             --schedule decay --warmup-fraction 0 --max-steps 8000
             --eval-batch-size 64 --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
+  *) echo "usage: $0 asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-slices-wide-warm-5090|student-slices-wide-warm-decay-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

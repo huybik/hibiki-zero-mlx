@@ -256,13 +256,28 @@ the user ([slices-phone](slices-phone.md#voice)), so the slices are trained agai
   phone runs): 9 random slices of 1024 × 3, 16 heads, `--parallel 8` as before, since the frozen
   trunk reads its own codebooks 8–15. 1.783B parameters, 571.4M of them in the slices (512 × 2:
   134.7M); the cut takes 55 s on the Mac. Stage 1's recipe on it, the trunk frozen, so the text
-  stays the release's; then `student-slices-wide-decay-5090`, its decay over 8,000 updates.
+  stays the release's, validating every 4,000; then `student-slices-wide-decay-5090`, its decay
+  over 8,000 updates.
+- `student-slices-wide-warm-5090` (and `-warm-decay-5090`) starts the slices from the teacher
+  instead (`slices.py --audio-from weights/grpo_twoway_best1400.safetensors --audio-layers 0,2,5`,
+  into `weights/student_slices14_wide_warm`): at 1024 × 3 every audio tensor has the teacher's
+  shape, so slices 0–8 are its depformer cut to layers 0, 2 and 5 (as `student_dep10`'s), its 16
+  output linears whole, at half the rate (1e-4) so as not to scramble them. On a tiny CPU model the
+  copy is exact and slices 0–8 give that cut depformer's outputs (max diff 1.9e-9;
+  `cpu_check.py` in the records below). At update 60 on the same rows its loss is 1.553 against
+  the random start's 1.986 (semantic and acoustic both lower).
+- Speed (2026-11-28, box 62513802, 60 updates on Stage 1's rows, whole 12,288-frame batches): the
+  base code 0.605 s an update at 27.9 GiB (`nvidia-smi`); with the slices' linears and
+  `depformer_in` in FP8 (`--fp8` now covers them) and the split transpose-quantize 0.571; with the
+  explicit K=9 attention 0.563 at 27.0 GiB, loss at update 60 1.9859 against the base's 1.9864.
+  Stage 1 and its decay, 24,000 updates and 6 validations: ~4.2 h. Kernel profile (before the
+  attention change): FP8 GEMMs 54%, activation quantization 6%, the backward's transposes 3.4%,
+  the student's attention 5%. Records, scripts and profile in
+  `/Volumes/data/hibiki-zero-evals/box-62513802/wide-slices-opt-2026-11-28/`.
 - It fits the phone: the depformer student's fused 8 slices of 1024 × 3 took 18.6 ms a frame
   (p90 21.2) in Speech Live on the A15 (2026-11-28, `two-turns-vi.wav`, records in
   `/Volumes/data/hibiki-zero-evals/mac/slices-voice-fix/phone/`), against 11.1–11.8 for the
   release's 9 of 512 × 2 beside its 44 ms trunk: about 69 ms a frame of 80 for 9 wide slices.
-- Not profiled yet: from the slices' share of the FLOPs (4.2×) an update should take ~0.6–0.7 s,
-  both stages ~5 h on the 5090.
 - It wins if its validations' voice scores pass the release's on the same seven sets (`runs/pal6_slices_z/val_log.jsonl`, update 4,000),
   and then if its Core ML export, decoded from 16 codebooks and from 8, sounds clearer on the user's clips (`arch_ab.py`).
 

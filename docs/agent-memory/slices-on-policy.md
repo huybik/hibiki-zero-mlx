@@ -28,8 +28,9 @@ teacher, `--park-states`; raw report `runs/grpo_profile_slices/profile.json`, co
   profile's rollouts 38.1.
 - Kernels (`torch.profiler` over the profile at 320 rows and micro-batch 2, `prof_grpo.py` beside
   the records): the narrowed grouped-KV step attention (`fmha_cutlassF`, a boolean mask) is 49% of
-  the CUDA time, ~0.8 ms a layer a step, near the card's bandwidth for 320 rows' KV cache; the
-  update's GEMMs (bf16 under fp32 master weights) most of the rest.
+  the CUDA time, ~0.8 ms a layer a step; the update's GEMMs (bf16 under fp32 master weights) most
+  of the rest. A Triton kernel replaced that attention since (1.6× at 320 rows of 1,200 slots;
+  [sft-speed](sft-speed.md#fast-path)); GRPO not re-profiled on it yet.
 - Levers left out: FP8 in the update (train.py's `--fp8`, `--fp8-teacher`) would save ~12% of an
   update at the cost of the teacher's targets (`all` flips 12–17% of acoustic argmaxes) and the
   policy's log-probabilities; `--bf16-adamw` cannot hold a 1e-6 step in bf16 weights; 384 rows
