@@ -46,7 +46,12 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 - `training/paths.py` holds the repo defaults (`weights/` artifacts), file guards, `durable` and
   `cpu_budget`.
 - A sample also holds `text_vi` and `cross_lingual_timbre_matched`; a shard's `source` holds the
-  file and its byte size. A rerun skips shards that exist, without checking their source again;
+  file and its byte size.
+- `--vi-check <dir>` (a copy of the tranche repo's `en_speech/vi_check/`, `voice.py run en_speech`'s parts,
+  [tranche-tts](tranche-tts.md#vietnamese)): every train shard needs its part; a row re-voiced there takes its new
+  Vietnamese, one still broken or never heard is rejected, and the shard's `source` names the part (`vi_check`:
+  file and bytes), which `noisy_cache` then reads too, and `publish_caches --vi-check` checks a pulled shard
+  against. Without it the dataset's Vietnamese is taken as it is. A rerun skips shards that exist, without checking their source again;
   `--overwrite` rebuilds. A lock (`.cache_codes.lock`) keeps a second run off the same
   `--out-dir`. Run a multi-day build under `caffeinate -i -s`.
 

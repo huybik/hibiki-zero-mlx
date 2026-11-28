@@ -101,7 +101,7 @@ e.g. `--gpu-memory-utilization 0.8 --max-num-seqs 256 --max-model-len 4096`), fr
 with `HF_TOKEN_AN` in the environment:
 
 ```text
-/workspace/envs/nanovox/bin/python -m training.tranche.ingest --root <root> segments yodas --shards 0:23
+/workspace/envs/ingest/bin/python -m training.tranche.ingest --root <root> segments yodas --shards 0:23
 ```
 
 - It writes `<root>/yodas/asr_vi/<tar>.parquet`, then `<root>/yodas/segments/<tar>.parquet`, and

@@ -14,8 +14,8 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards; the code so far
-(`training/tranche/`) is the English TTS bake-off, the ASR check, ingest, translate, the
-English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`cache.py`).
+(`training/tranche/`) is ingest (with YODAS's caption cut, `yodas.py`), translate, VieNeu's TTS both ways
+(`voice.py`), the row filters (`filters.py`) and the cache build (`cache.py`); the bake-off and the ASR check are in git history.
 
 ## Decision
 
@@ -74,8 +74,8 @@ English TTS (`voice.py`), the row filters (`filters.py`) and the cache build (`c
 
 ## English TTS
 
-The English targets are voiced in each row's speaker's voice: the candidates, the bake-off that
-chose VoxCPM2, its scores and running it are in [tranche-tts](tranche-tts.md).
+The English targets are voiced in each row's speaker's voice, by VoxCPM2 for the first tranche and VieNeu-TTS v3
+Turbo from YODAS's shard 0004 on, the voicer that now runs both ways: [tranche-tts](tranche-tts.md).
 
 ## First tranche
 
@@ -107,12 +107,12 @@ here is published or estimated, to be measured on the box first:
 | VAD | Silero VAD v6.2.3 (MIT) | FireRedVAD | |
 | Diarization, overlap | `nvidia/Nemotron-3-Diarization` (OpenMDW-1.1) | pyannote community-1 (CC BY 4.0, gated) | DIHARD III DER 12.7 against 20.2; up to 8 speakers |
 | Speaker embedding (voice reference) | WeSpeaker ResNet293-LM (CC BY 4.0) | TitaNet-Large | |
-| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. `checks` (2026-11-05): WER 5.5% on FLEURS dev, 1.8% PhoAudiobook, 7.7% viVoice (3 of 300 clips detected as another language), 4.9% GigaSpeech 2; 941 clips in 11 s. Parakeet was not run: the gate compares Qwen3-ASR with the corpus transcript ([tranche-cache](tranche-cache.md#gates)) |
+| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. `checks.py` (2026-11-05, in git history): WER 5.5% on FLEURS dev, 1.8% PhoAudiobook, 7.7% viVoice (3 of 300 clips detected as another language), 4.9% GigaSpeech 2; 941 clips in 11 s. Parakeet was not run: the gate compares Qwen3-ASR with the corpus transcript ([tranche-cache](tranche-cache.md#gates)) |
 | Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Not run: the gate uses Qwen3-ASR's own language tag ([tranche-cache](tranche-cache.md#gates)) |
 | Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
 | English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame. Not run: the tranche cache keeps `wav2vec2-base-960h`, as the existing caches do |
 | VI→EN translation | `IndexTeam/Index-Translate-35B-A3B-preview` (Apache-2.0, Qwen3.5 MoE, FP8 as it loads) in vLLM 0.33 on the box, a row per prompt (`training/tranche/translate.py`), from GigaSpeech 2 archive 51 on (2026-11-06) | `IndexTeam/Index-Translate-9B-FP8` | [bake-off](tranche-translate.md#bake-off). Before: Muse Spark 1.3 Contributor through OpenRouter (user, 2026-11-05) for the first tranche and GigaSpeech 2 archives 13–50, until Meta blocked the key on 2026-11-06 21:46 UTC+7 (HTTP 403 `user_blocked`, "repeated policy violations"); paid APIs (Gemini 3.1 Flash-Lite, ~$1.2 an archive on OpenRouter's batch price) were too dear for the user |
-| English TTS | VoxCPM2, prompted by the row's own clip and transcript, checked by Qwen3-ASR and retried (`training/tranche/voice.py`) | dots.tts-soar | [bake-off and tuning](tranche-tts.md); chosen by blind listening |
+| English TTS | VieNeu-TTS v3 Turbo from the row's own clip, checked by Qwen3-ASR (`training/tranche/voice.py`); VoxCPM2 with the clip's transcript before | VoxCPM2 | [choice and checks](tranche-tts.md): VoxCPM2 by blind listening, VieNeu for 3.1× its speed |
 | TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
 | Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
 

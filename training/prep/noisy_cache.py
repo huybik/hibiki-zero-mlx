@@ -9,7 +9,8 @@ resampled by the cache builder's own code (PyAV, soxr), put under `augment`'s dr
 Mimi-encoded in float32 (on CUDA with TF32 matmuls and convolutions, as the cache build:
 `cache_build.CUDA_TF32`). The file is an EN-VI dataset parquet (`data/<split>/<name>.parquet`,
 `vi_audio` or `en_audio`) for `cache_codes`' caches, and for the tranche's a part of its repo
-(`<source>/en_audio/<name>.parquet` beside the segments an `en-vi` shard was built from). Text,
+(`<source>/en_audio/<name>.parquet` beside the segments an `en-vi` shard was built from); a Vietnamese source
+built with `cache_codes --vi-check` takes the re-voiced clips of the part its `source` names, as that build did. Text,
 target codes, frame counts and both EOS positions stay as they were. Each row records its
 conditions under `source_conditions` (None for a row kept clean). The noisy second epoch is
 --seed 0, --fraction 0.6; another epoch's conditions take another --seed and --out-dir.
@@ -71,6 +72,7 @@ from training.paths import (
     require_file,
 )
 from training.prep import audio, augment, cache_build
+from training.prep.cache_codes import vi_checked
 from training.prep.cache_rows import FRAME_SAMPLES, Settings
 from training.tranche.ingest import REPO as TRANCHE_REPO
 
@@ -99,7 +101,8 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Read the parquets from this local copy of the dataset the cache was built from "
         "(each `clip_file` under it: data/<split>/<name>.parquet, or the tranche's "
-        "<source>/en_audio/<name>.parquet), instead of downloading them.",
+        "<source>/en_audio/<name>.parquet; a vi_check part at en_speech/vi_check/<name>.parquet), "
+        "instead of downloading them.",
     )
     # A trainer on the same disk needs a checkpoint pair (37.5 GB) beyond its steady state while
     # the recovery sync still uploads the pair it pruned.
@@ -237,31 +240,35 @@ def fetch_one(args: argparse.Namespace, settings: dict[str, Any], shard_path: Pa
         print(f"{name}: waiting for {args.min_free_gb:.0f} GB of free disk", flush=True)
         while shutil.disk_usage(args.out_dir).free < args.min_free_gb * 1e9:
             time.sleep(WAIT_S)
-    built_from = shard_source(shard_path)
+    built = torch.load(shard_path, map_location="cpu", mmap=True)["source"]
+    built_from = built["file"]
     source, column = clip_file(built_from, settings["direction"])
-    with tempfile.TemporaryDirectory(dir=args.out_dir / SOURCES, prefix=".download-") as tmp:
+    vi_check = built.get("vi_check") if column == "vi_audio" else None
+
+    def local(file: str, repo: str, revision: str | None, tmp: str) -> Path:
         if args.dataset_dir is not None:
-            path = require_file(args.dataset_dir / source, "dataset parquet")
-        else:
-            repo, revision = hub_dataset(built_from)
-            for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
-                try:
-                    path = Path(
-                        hf_hub_download(
-                            repo, source, repo_type="dataset", revision=revision, local_dir=tmp
-                        )
-                    )
-                    break
-                except Exception as exc:  # network and Hub errors alike; the last one raises
-                    if attempt == DOWNLOAD_ATTEMPTS:
-                        raise
-                    print(
-                        f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True
-                    )
-                    time.sleep(60 * attempt)
+            return require_file(args.dataset_dir / file, "dataset parquet")
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            try:
+                return Path(hf_hub_download(repo, file, repo_type="dataset", revision=revision, local_dir=tmp))
+            except Exception as exc:  # network and Hub errors alike; the last one raises
+                if attempt == DOWNLOAD_ATTEMPTS:
+                    raise
+                print(f"{name}: download attempt {attempt} failed ({exc}); retrying", flush=True)
+                time.sleep(60 * attempt)
+        raise AssertionError("unreachable: the last attempt raises")
+
+    with tempfile.TemporaryDirectory(dir=args.out_dir / SOURCES, prefix=".download-") as tmp:
+        path = local(source, *hub_dataset(built_from), tmp)
         table = pq.read_table(path, columns=["id", column])
         ids = table.column("id").to_pylist()
         clips = table.column(column).combine_chunks().field("bytes")
+        if vi_check is not None:  # as the clean build read them: its rejected rows are in no sample
+            check = local(vi_check["file"], TRANCHE_REPO, None, tmp)
+            if check.stat().st_size != vi_check["bytes"]:
+                raise RuntimeError(f"{vi_check['file']} is {check.stat().st_size} bytes, not the build's {vi_check['bytes']}")
+            rows = vi_checked(table.to_pylist(), check)
+            clips = pa.array([r and r["vi_audio"]["bytes"] for r in rows], clips.type)
         keep = pa.array([selected(args.seed, row_id, args.fraction) for row_id in ids])
         slim = pa.table(
             {
@@ -271,7 +278,7 @@ def fetch_one(args: argparse.Namespace, settings: dict[str, Any], shard_path: Pa
                 column: pc.if_else(keep, clips, pa.scalar(None, clips.type)),
             }
         )
-        meta = {"file": built_from, "clips": source, "bytes": path.stat().st_size}
+        meta = {"file": built_from, "clips": source, "bytes": path.stat().st_size, "vi_check": vi_check}
         slim = slim.replace_schema_metadata({META_KEY: json.dumps(meta)})
         partial = target.with_name(f".{target.name}.tmp")
         pq.write_table(slim, partial)
@@ -569,7 +576,8 @@ def load(
         raise RuntimeError(f"{shard_path} is {direction}, the fetch {settings['direction']}")
     built_from = payload["source"]
     clips_file, column = clip_file(built_from["file"], direction)
-    if column not in table.column_names or source.get("clips") != clips_file:
+    vi_check = built_from.get("vi_check") if column == "vi_audio" else None
+    if column not in table.column_names or source.get("clips") != clips_file or source.get("vi_check") != vi_check:
         raise RuntimeError(
             f"{source_path} holds {table.column_names} of {source.get('clips')}, not {column} of "
             f"{clips_file}: delete it, then fetch again"

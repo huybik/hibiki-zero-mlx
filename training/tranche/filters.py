@@ -17,7 +17,7 @@
 From the repo root, with HF_TOKEN_AN (pushes) in the environment; `asr` on the box with the ASR server up
 (see voice.py):
   python -m training.tranche.filters overlap
-  /workspace/envs/nanovox/bin/python -m training.tranche.filters asr pho vivoice giga
+  /workspace/envs/ingest/bin/python -m training.tranche.filters asr pho vivoice giga
 """
 from __future__ import annotations
 

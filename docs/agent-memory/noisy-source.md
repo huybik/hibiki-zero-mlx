@@ -122,14 +122,14 @@ encode (--device cuda or mlx)                .sources + clean shard ─► shard
 - The source is the cache's (`direction`): `vi_audio` and `vi_frames` in a `vi-en` cache,
   `en_audio` and `en_frames` in an `en-vi` one (Common Voice's MP3 and Libriheavy's Opus decode
   through the same `audio.decode`).
-- `fetch` reads the clips from the file each clean shard names as its `source` (`clip_file`): a
-  `cache_codes` shard's EN-VI parquet, or a tranche `en-vi` shard's `<source>/en_audio/` part
-  beside the segments it was built from (`anquachdev/en-vi-speech-20k`, rows in the segments'
-  order; a tranche `vi-en` source is real speech and has no noisy copy). It downloads each file,
-  the EN-VI parquets at `paths.EN_VI_REVISION`, 16 at a time, each tried 4 times, or reads it
-  from `--dataset-dir`, a local copy of the dataset the cache was built from (the box's 2026-11-21 `en-vi` build of the remaining `en_speech` shards
-  uses it to copy each batch before deleting its sources, [tranche-box](tranche-box.md#state)). It
-  keeps the id and the source clip's bytes of the selected rows
+- `fetch` reads the clips from the file each clean shard names as its `source` (`clip_file`): a `cache_codes`
+  shard's EN-VI parquet, or a tranche `en-vi` shard's `<source>/en_audio/` part beside the segments it was built
+  from (`anquachdev/en-vi-speech-20k`, rows in the segments' order; a tranche `vi-en` source is real speech and has
+  no noisy copy), with a `vi_check` part's re-voiced clips where the shard was built with one (`cache_codes
+  --vi-check`). It downloads each file, the EN-VI parquets at `paths.EN_VI_REVISION`, 16 at a time, each tried 4
+  times, or reads it from `--dataset-dir`, a local copy of the dataset the cache was built from (the box's
+  2026-11-21 `en-vi` build of the remaining `en_speech` shards uses it to copy each batch before deleting its
+  sources, [tranche-box](tranche-box.md#state)). It keeps the id and the source clip's bytes of the selected rows
   (`random.Random(f"{seed}:select:{id}").random() < --fraction`, 0.6), null for the others, in
   `.sources/` under the dataset's column name, and deletes the download: about a fifth of the
   parquet's bytes for a Vietnamese source (its audio is 26–33% of a parquet), ~40–45% for an

@@ -178,7 +178,7 @@ restarts, 5 minutes apart; log `run.log` beside it). Copies of both (and `watch.
 
 - The jobs and each job's shards in the reverse of the Mac's order: `build` from the last name down,
   then `noisy`, then `tranche`.
-- The cache env alone (`/workspace/envs/cache`, built as `envs-min.sh` builds it) runs the driver
+- The cache env alone (`/workspace/envs/cache`, `box/envs.sh cache`) runs the driver
   and its steps; nothing here needs the `.venv` (`h100.sh setup` refused the 5090 then). huybik's token is read from `$HF_HOME/token`, `HF_TOKEN_AN` from `/workspace/.env`.
 - Batches of 40 shards (the GPU idles ~40 s between batches) and `noisy_cache encode
   --batch-seconds 320`, for the 32 GB card; the build at `CUDAModels.window` 512, for the box's

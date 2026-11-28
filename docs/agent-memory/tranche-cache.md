@@ -89,10 +89,9 @@ draws use split `train`. It skips the shards held out for evaluation
 ## Running
 
 - On the box: `restart.sh cache` ([tranche-box](tranche-box.md)), which runs
-  `NO_TORCH_COMPILE=1 /workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice
-  giga yodas`, then the same with `--direction en-vi --drop-inputs` (`--device cuda`, the default): free-threaded Python 3.14 from `box/envs-min.sh`, ~2% faster
-  than the 3.12 `.venv` it ran in before (the `.venv` runs it too) ([cache-speed-cuda](cache-speed-cuda.md)). Its "models
-  loaded" line says whether the GIL is off. Needs `data/eval` (`.venv/bin/python -m training.prep.eval_sets --sets fleurs
+  `/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga yodas --direction both
+  --drop-inputs` (`--device cuda`, the default): both directions in one pass, each shard read and decoded once, on
+  Python 3.14t with Triton from `box/envs.sh` (the `.venv` runs it too) ([cache-speed-cuda](cache-speed-cuda.md)). Needs `data/eval` (`.venv/bin/python -m training.prep.eval_sets --sets fleurs
   multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
   server on the GPU, ~1.3 GB of it is free, so the build runs after them.
 - On the Mac, when no box runs: from the repo root with `HF_TOKEN_AN` in the environment,

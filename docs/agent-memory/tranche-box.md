@@ -111,7 +111,7 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
     its tokenizer model came out byte-identical to `release/twoway_grpo1400/`'s.
   - A copy is also kept on the Mac with the last box's results, under `weights-small/`.
 
-**VRAM budget (critical; the H200's 141 GB)**: nanovox TTS uses 109 GB VRAM at peak; real ASR (vLLM) 29 GB; together
+**VRAM budget (critical; the H200's 141 GB)**: VoxCPM2's TTS (nano-vllm-voxcpm, the TTS then) used 109 GB VRAM at peak; real ASR (vLLM) 29 GB; together
 = 138 GB → confirmed OOM kills (3 GB headroom insufficient). Voice cannot run with real ASR.
 Without any ASR server voice.py fails (connection refused after 10 × 10 s retries). Result: giga/89–99
 excl 98 (10 shards) are unvoiced — absent from Hub, not corrupted; recoverable on a future box with
@@ -175,10 +175,10 @@ one expires; everything a job writes goes to the Hub as it runs, so a new box re
 1. Clone the repo to `/workspace/hibiki-zero`; `training/h100.sh setup` (the `.venv`).
 2. `/workspace/.env` (mode 600): `HF_TOKEN_AN`, a write token of anquachdev, for the tranche repos'
    pushes; huybik's token in `$HF_HOME/token` for the run recovery repo. Never print either.
-3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs-min.sh` builds the `nanovox`
-   (ingest, filters), `vieneu` (voice.py), `asr` (the Qwen3-ASR server) and `cache` (the cache builds, free-threaded Python 3.14;
-   installs Rust for safetensors) envs and downloads the models at their pinned revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet hung or crawled at ~5 MB/s on the
-   Japan box; plain HTTP ran ~140 MB/s).
+3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs.sh [env ...]` builds, side by side, the `ingest` (ingest,
+   filters, end_rental.sh), `vieneu` (voice.py), `asr` (the Qwen3-ASR server), `cache` (the cache builds, free-threaded
+   3.14; installs Rust for safetensors) and `mt` (translate.py) envs, all without arguments, and downloads their models
+   at their pinned revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet crawled at ~5 MB/s; HTTP ~140).
 4. The jobs read the tranche repos' parts locally under `/workspace/tranche/repo/<source>/<part>/`
    and fall back to the Hub (`ingest.part_file`), so voice and filters need no download first.
 

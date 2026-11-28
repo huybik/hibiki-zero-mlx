@@ -1,12 +1,10 @@
-# The TTS for YODAS's scale-up
+# VieNeu's speed on the 5090
 
-Read when choosing or speeding up the English TTS for YODAS's ~20k h, or running ZONOS3-Mini or
-VieNeu-TTS v3 Turbo on the RTX 5090.
+Read when speeding up VieNeu-TTS v3 Turbo or its ASR checks on the RTX 5090 (`voice.Voicer`, `vieneu_frame.py`,
+`decode_attention.py`, `onnx_graph.py`), or weighing another TTS against it.
 Back to [CONTEXT.md](../../CONTEXT.md) · part of [tranche-tts](tranche-tts.md) ·
-[Candidates](#candidates) · [Method](#method) · [Results](#results) · [ZONOS3 settings](#zonos3-settings) ·
-[Optimizing VieNeu and VoxCPM2](#optimizing-vieneu-and-voxcpm2) · [In production](#in-production) ·
-[Running them on the 5090](#running-them-on-the-5090) ·
-[Finding](#finding)
+[Candidates](#candidates) · [Method](#method) · [Results](#results) ·
+[Optimizing VieNeu](#optimizing-vieneu) · [In production](#in-production) · [Finding](#finding)
 
 The user's bar (2026-11-26): at least ~1,000× real time (RTF 0.001) on the 5090, at VoxCPM2's
 accuracy, chosen by the measures below without a listening test. VoxCPM2's production speed there:
@@ -46,51 +44,26 @@ Paired differences are against VoxCPM2 on the rows neither broke, ± standard er
 | ZONOS3, speaker embedding | 31.2% | 0.015 | 0.594 (−0.087 ± 0.003) | 3.39 | LM 315× at 256 rows; 184× with embeddings and decode |
 | VieNeu v3 Turbo | 7.1% | 0.035 | 0.604 (−0.081 ± 0.002) | 3.18 | generation 326× at 128 rows a batch; 12× with its CPU enrolment |
 
+- ZONOS3 breaks by leaving English mid-line ("Adi tine jam province ay la to comments sa trang…"): a Vietnamese
+  voice pulls the multilingual model off English. Its shipped Vietnamese-accent steering direction, or a raw
+  reference prefix, brought broken rows to 3–5% and took the voice with them (−0.14 to −0.23 of voice match).
+  It was not optimized further (its bench's sm_120 fixes are in the records' scripts).
+- VieNeu's batch engine runs each frame as one CUDA graph (`vieneu.v3_turbo_serve.fused`), its repetition penalty
+  on the GPU inside it; its batches are static, grouped by phoneme length.
 - Both new models speak cleaner audio (higher UTMOS) and take ~10–20% longer to say the same line
   (9.1–9.8 h against VoxCPM2's 8.2 h).
 - VieNeu's enrolment (denoise, speaker encoder, codec encode) runs on the CPU in ONNX at 1.3 s a
   clip. Its generation read 92% busy at 270 W, ZONOS3's LM 73% at 246 W, against the card's 575 W.
 
-## ZONOS3 settings
-
-Every 7th row (286; VoxCPM2 there: 2.8% broken, voice match 0.686):
-
-| Setting | Broken | Voice match against VoxCPM2 |
-|---|---:|---:|
-| speaker embedding | 35.0% | −0.079 ± 0.007 |
-| embedding moved by −0.25 × the Vietnamese direction | 16.4% | −0.102 ± 0.007 |
-| −0.5 × | 4.2% | −0.142 ± 0.007 |
-| −0.5 ×, speaker guidance 1.5 (twice the compute) | 8.0% | −0.088 ± 0.007 |
-| −1.0 × | 2.8% | −0.232 ± 0.007 |
-| temperature 0.5 | 33.6% | −0.087 ± 0.007 |
-| raw reference prefix | 4.5% | −0.174 ± 0.006 |
-
-- ZONOS3 breaks by leaving English mid-line ("Adi tine jam province ay la to comments sa trang…"):
-  a Vietnamese voice pulls the multilingual model off English. Its shipped speaker-embedding
-  direction `assets/steering/speaker_accents_mect60k_x10/vie.npy` (Vietnamese minus English speakers,
-  applied as its steering does: subtracted, then rescaled to the embedding's norm) keeps it in
-  English, and takes the voice with it; so does the raw reference.
-
-## Optimizing VieNeu and VoxCPM2
+## Optimizing VieNeu
 
 The user's rule (2026-11-26): optimize both heavily, and VieNeu is chosen if it is at least 3×
-VoxCPM2. Same 2,000 rows, each system alone on the GPU, timed from clips in memory to waveforms
-(load, compiles and warm-up excluded; VoxCPM2's 48 → 16 kHz resample too, which production runs in
-its decoder processes); rows/s, since VieNeu says the same lines ~12% longer. Every speed-up was
-scored before it counted.
-
-VoxCPM2, production's `Voicer` (CFG 2.0, 8 steps, 512 concurrent):
-
-| Setting | Rows/s | Broken | Voice match | UTMOS |
-|---|---:|---:|---:|---:|
-| production | 11.29 | 3.8% | 0.686 | 2.71 |
-| 768 concurrent (`gpu_memory` 0.72; 1,024 at 0.85 runs out of memory) | 11.45 | 4.5% | 0.686 | 2.72 |
-| 6 steps | 12.43 | 5.8% | 0.677 | 2.54 |
-| 4 steps | 11.15 | 14.6% | 0.617 | 1.92 |
-| no CFG | 6.58 | rows never stop (14.8 h of output) | | |
-
-- Its VAE already runs compiled in fp16 both ways and its LM in nano-vllm's CUDA graphs; the card
-  reads 100% busy at 515–535 W. Only fewer steps are left, and they break more rows.
+VoxCPM2. VoxCPM2 (its VAE compiled in fp16, its LM in nano-vllm's CUDA graphs, 100% busy at 515–535 W) ran
+11.29 rows/s at production's 8 steps and 512 concurrent, 11.45 at 768; fewer steps broke more rows (6: 5.8%, 4:
+14.6%, against 3.8%) and without CFG rows never stopped. Same 2,000 rows, each system alone on the GPU, timed
+from clips in memory to waveforms (load, compiles and warm-up excluded; VoxCPM2's 48 → 16 kHz resample too,
+which production runs in its decoder processes); rows/s, since VieNeu says the same lines ~12% longer. Every
+speed-up was scored before it counted.
 
 VieNeu, each step adding to the one above:
 
@@ -255,23 +228,6 @@ the voicer's start-up (compiles out) to the last shard written:
   `text_en` as a draft in one forward pass, which the server's HTTP API cannot take (it builds the
   prompt itself); an in-process vLLM would.
 
-## Running them on the 5090
-
-- ZONOS3's `servers/sgl/scripts/env.sh` takes compute capability ≥ 9 for Hopper: on sm_120 set
-  `FLA_TILELANG=0 ZONOS3_USE_TRAINING_SONIC_EXPERTS=0` (the A100 kernels).
-- No attention kernel serves its head_dim 32 on sm_120: FlashInfer has no decode for 32 and
-  sgl-kernel's FA3 is sm_90 only. The bench swapped the `fa` backend's `_fa_sgl_impl` for PyTorch
-  (gather the page-size-1 cache, masked softmax; decode stays in the CUDA graphs) with
-  `ZONOS3_PREFILL_CUDA_GRAPH=0` and `max_seq_len_override` 2048.
-- Its speaker encoder runs on the CPU unless `ZONOS3_SPEAKER_EMBEDDER_DEVICE=cuda:0` (then 24 ms a
-  clip, one at a time); the raw-reference encoder runs a 600M w2v-BERT teacher on 20 s chunks, one
-  clip at a time (0.27 s a clip once loaded).
-- `TTSLLM.generate` decodes each row alone after the batch. A row that never stops can fail the
-  codec's check ("Invalid matched codec tokens"), inside `generate` too: the bench decodes rows
-  itself and counts such a row broken (1 of 2,000).
-- VieNeu's batch engine runs each frame as one CUDA graph (`vieneu.v3_turbo_serve.fused`), its
-  repetition penalty on the GPU inside it; its batches are static, grouped by phoneme length.
-
 ## Finding
 
 Optimized, VieNeu ran 35.5 rows/s (583× real time) against VoxCPM2's 11.3–11.45 (~168×): 3.1×,
@@ -284,3 +240,11 @@ whole job 36.6 rows/s beside its ASR checks (602×, 2026-11-28): 20k h of YODAS 
 row against the voicer's ~17. The user heard five rows of it against main's (each with its
 Vietnamese source, one whose reference skipped the denoiser; `listen/` in the records): "my listen
 test is good" (2026-11-28).
+
+The optimization plan's ~2,000× end to end (its Phase 3, ~122 rows/s: ~8.2 ms of the GPU a row) was a projection
+from levers not yet measured. Measured: the voicer needs ~17 ms a row and the ASR's check alone ~12.5 (FP8 ~9),
+over that whole budget. Its stage targets missed (at 58.3 rows/s: enrolment 12.9 s against ~8, MOSS 8.2 against
+~6, frames 10.0 against ~5), its biggest levers did not hold (TensorRT for the denoiser: wrong output, no faster;
+5 s references: −0.02 voice match; vLLM past 0.14 and draft verification: not possible on `qwen-asr`'s server;
+FP8 or NVFP4 frames and denoiser: not tried), and it started from 34.1 rows/s alone and 23.7 in production where
+main measured 29.6 and 19.9. The round gave 1.97× alone and 1.84× end to end against its ~4.5×.

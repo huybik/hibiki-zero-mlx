@@ -25,7 +25,7 @@ done
 echo "$(date -u '+%F %T') stopped: the rental ends" | tee -a $L/voice.log $L/filters.log >> $L/asr.log
 say "voice, filters and asr stopped; pushing en_audio"
 cd /workspace/hibiki-zero && set -a && . /workspace/.env && set +a
-/workspace/envs/nanovox/bin/python - <<'EOF'
+/workspace/envs/ingest/bin/python - <<'EOF'
 import sys
 from huggingface_hub import HfApi
 from training.tranche import ingest

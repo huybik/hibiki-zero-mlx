@@ -29,7 +29,7 @@ from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import disable_progress_bars
 
 from training.paths import DEFAULT_DIRECTION, DEFAULT_TOKENIZER, durable, exclusive
-from training.prep.cache_codes import DATASET_DIR, cache_path, source_shards
+from training.prep.cache_codes import DATASET_DIR, cache_path, source_record, source_shards
 from training.prep.publish_en_vi_speech import COMMIT_BYTES, retried
 from training.prep.translate_en_speech import log
 
@@ -45,7 +45,7 @@ def settings(shard: dict[str, Any]) -> dict[str, Any]:
     return unrecorded | {k: v for k, v in shard.items() if k not in ("samples", "rejected", "source")}
 
 
-def publish(out_dir: Path, sources: list[Path], repo: str, follow: bool) -> None:
+def publish(out_dir: Path, sources: list[Path], repo: str, follow: bool, vi_check: Path | None) -> None:
     """Commit the local cache shards the Hub lacks, then bring in the Hub's shards missing here."""
     disable_progress_bars()  # in a log, their redraws come to ~1 MB a commit
     api = HfApi()
@@ -105,7 +105,7 @@ def publish(out_dir: Path, sources: list[Path], repo: str, follow: bool) -> None
         if missing and built:  # pulled shards are checked against one already here
             reference = settings(torch.load(built, weights_only=True, mmap=True))
             for path in missing:
-                pull(api, repo, out_dir, hub(path), path, caches[path], reference)
+                pull(api, repo, out_dir, hub(path), path, caches[path], reference, vi_check)
         if not follow or all(p.exists() and hub(p) in remote for p in caches):
             return
         time.sleep(FOLLOW_WAIT)
@@ -119,10 +119,11 @@ def pull(
     path: Path,
     source: Path,
     reference: dict[str, Any],
+    vi_check: Path | None,
 ) -> None:
     """Put the Hub's cache shard of `source`, built on the other machine, in place once it checks
-    out: the settings of a shard already here, the same source file at the same size, and every
-    source row once, kept or rejected."""
+    out: the settings of a shard already here, the same source file at the same size (and vi_check part, as
+    `cache_codes --vi-check` records it), and every source row once, kept or rejected."""
     got = Path(
         retried(
             f"downloading {name}",
@@ -133,7 +134,7 @@ def pull(
     )
     shard = torch.load(got, weights_only=True, mmap=True)
     rows = [s["id"] for s in shard["samples"]] + [r["id"] for r in shard["rejected"]]
-    expected = {"file": f"data/{source.parent.name}/{source.name}", "bytes": source.stat().st_size}
+    expected = source_record(source, vi_check)
     if not (
         settings(shard) == reference
         and shard["source"] == expected
@@ -163,6 +164,7 @@ def main() -> None:
     )
     p.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
     p.add_argument("--shards", nargs="+", required=True, help="the builder's --shards")
+    p.add_argument("--vi-check", type=Path, help="the builder's --vi-check")
     p.add_argument("--repo", default=REPO)
     p.add_argument(
         "--follow",
@@ -175,7 +177,7 @@ def main() -> None:
     with exclusive(
         args.out_dir / ".publish_caches.lock", f"another publish_caches run is using {args.out_dir}"
     ):
-        publish(args.out_dir, sources, args.repo, args.follow)
+        publish(args.out_dir, sources, args.repo, args.follow, args.vi_check)
 
 
 if __name__ == "__main__":

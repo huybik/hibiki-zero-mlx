@@ -21,7 +21,7 @@ snapshot_download("anquachdev/en-vi-speech-20k", repo_type="dataset", local_dir=
                   allow_patterns=sys.argv[1:], max_workers=8)
 PY
 }
-build() {  # shard paths under data/; the cache builds' env (envs-min.sh)
+build() {  # shard paths under data/; the cache builds' env (box/envs.sh)
   /workspace/envs/cache/bin/python -m training.prep.cache_codes --device cuda --direction en-vi --dataset-dir ${D%/data} --out-dir $OUT \
     --shards "$@"
 }

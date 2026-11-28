@@ -8,7 +8,10 @@ fits --max-frames), then 16 Vietnamese source Mimi codebooks ending in codec EOS
 --direction en-vi the languages trade places: Vietnamese text and target, English source, for
 two-way training; that build tokenizes with the Vietnamese swap (the direction's default --tokenizer)
 and takes its own --out-dir. Rows whose clips exceed --max-frames, or whose target text fails CTC alignment, are
-rejected and listed with their reason. The build itself (decode, gates, the target language's
+rejected and listed with their reason. With --vi-check, each train shard's Vietnamese is as its part of
+`training.tranche.voice run en_speech` says (`en_speech/vi_check/<name>.parquet` of the tranche repo): a row it
+re-voiced takes the new audio, a row still broken or never heard there is rejected, and the shard's `source`
+records the part (noisy_cache reads it too). The build itself (decode, gates, the target language's
 CTC aligner and Mimi on --device, the Viterbi) is `cache_build`'s, shared with the tranche's
 builder.
 
@@ -33,6 +36,7 @@ from training.paths import (
     DIRECTION_TOKENIZERS,
     exclusive,
     require_dir,
+    require_file,
 )
 from training.prep.cache_build import MODELS, Builder, default_workers, summary
 from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
@@ -56,6 +60,8 @@ def parse_args() -> argparse.Namespace:
         "--out-dir", type=Path, required=True, help="Cache root; one folder per split."
     )
     parser.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
+    parser.add_argument("--vi-check", type=Path,
+                        help="A copy of the tranche repo's en_speech/vi_check/: every train shard needs its part.")
     parser.add_argument(
         "--shards",
         nargs="+",
@@ -105,12 +111,44 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def read(source: Path) -> Shard:
-    """The source shard's rows, all kept: this dataset has no gates of its own."""
+VI_CHECK = "en_speech/vi_check"  # the tranche repo's folder of voice.py's en_speech parts
+
+
+def vi_checked(rows: list[dict[str, Any]], check_file: Path) -> list[dict[str, Any] | None]:
+    """A source shard's rows (id, vi_audio, vi_duration_s) as its vi_check part says: a row re-voiced there with
+    its new Vietnamese, None for a row still broken or never heard. Shared with noisy_cache."""
+    import pyarrow.parquet as pq
+
+    check = pq.read_table(check_file, columns=["id", "vi_audio", "vi_duration_s", "vi_broken"]).to_pylist()
+    if [c["id"] for c in check] != [r["id"] for r in rows]:
+        raise RuntimeError(f"{check_file} does not hold its source shard's rows in their order")
+    return [
+        None if c["vi_broken"] is not False
+        else row | ({"vi_audio": c["vi_audio"], "vi_duration_s": c["vi_duration_s"]} if c["vi_audio"] else {})
+        for row, c in zip(rows, check)
+    ]
+
+
+def source_record(source: Path, vi_check: Path | None) -> dict[str, Any]:
+    """A cache shard's `source`: the dataset file and its size, and the vi_check part read for a train shard
+    (`publish_caches` checks a pulled shard against it)."""
+    record: dict[str, Any] = {"file": f"data/{source.parent.name}/{source.name}", "bytes": source.stat().st_size}
+    if vi_check is not None and source.parent.name == "train":
+        check = vi_check / source.name
+        record["vi_check"] = {"file": f"{VI_CHECK}/{check.name}", "bytes": check.stat().st_size}
+    return record
+
+
+def read(source: Path, vi_check: Path | None) -> Shard:
+    """The source shard's rows, all kept (this dataset has no gates of its own) but, with `vi_check` on a train
+    shard, those whose Vietnamese is still broken or was never heard (`vi_checked`)."""
     import pyarrow.parquet as pq
 
     split = source.parent.name
     rows = pq.read_table(source, columns=COLUMNS).to_pylist()
+    checked: list[dict[str, Any] | None] = rows
+    if vi_check is not None and split == "train":
+        checked = vi_checked(rows, require_file(vi_check / source.name, "vi_check part"))
     kept: list[tuple[int, dict[str, Any]]] = [
         (
             index,
@@ -125,9 +163,12 @@ def read(source: Path) -> Shard:
                 "fields": {"cross_lingual_timbre_matched": row["cross_lingual_timbre_matched"]},
             },
         )
-        for index, row in enumerate(rows)
+        for index, row in enumerate(checked)
+        if row is not None
     ]
-    return Shard(source, f"data/{split}/{source.name}", split, len(rows), kept, [])
+    rejected = [{"id": rows[i]["id"], "reason": "Vietnamese broken or not heard (vi_check)"}
+                for i, row in enumerate(checked) if row is None]
+    return Shard(source, f"data/{split}/{source.name}", split, len(rows), kept, rejected)
 
 
 def source_shards(dataset_dir: Path, patterns: list[str]) -> list[Path]:
@@ -176,9 +217,9 @@ def main() -> None:
         workers = args.workers or default_workers(args.device)
         with ThreadPoolExecutor(1) as writes:
             written: Future | None = None
-            for shard in builder.run(todo(args, sources), read, workers):
+            for shard in builder.run(todo(args, sources), lambda source: read(source, args.vi_check), workers):
                 out_path = cache_path(args.out_dir, shard.key)
-                payload = builder.payload(shard, {"file": shard.file, "bytes": shard.key.stat().st_size})
+                payload = builder.payload(shard, source_record(shard.key, args.vi_check))
                 if written is not None:
                     written.result()
                 written = writes.submit(write, payload, out_path)

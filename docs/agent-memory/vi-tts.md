@@ -12,7 +12,9 @@ Step 3 of phase 1 in [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md): each 
 the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)) gets its Vietnamese line
 (`text_vi`) spoken in the voice of its own English clip. The user chose VieNeu-TTS v3 Turbo on
 the Mac on 2026-10-23, after Fish Drama 3 on OpenRouter came to ~$1,430 for the corpus (715M
-UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices.
+UTF-8 bytes at its discounted $2 per million) and no cheaper API cloned voices. On the box the same model voices both
+ways in CUDA (`training/tranche/voice.py`), which checks this Vietnamese and voices its broken rows again
+([tranche-tts](tranche-tts.md#vietnamese)); this MLX path stays for the Mac's nights (user, 2026-11-28).
 
 ## Recipe
 

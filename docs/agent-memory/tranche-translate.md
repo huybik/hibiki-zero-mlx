@@ -1,13 +1,13 @@
 # Tranche translation (VI→EN)
 
-Read when touching `training/tranche/translate.py`, the `mt` env in `training/tranche/envs.sh`, or
+Read when touching `training/tranche/translate.py`, the `mt` env of `training/tranche/box/envs.sh`, or
 `/workspace/translate_burst.sh`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [real-vi-tranche](real-vi-tranche.md#pipeline) ·
 [Running](#running) · [Bake-off](#bake-off)
 
 ## Running
 
-`training/tranche/translate.py`, in the env `/workspace/envs/mt` that `envs.sh` builds, runs
+`training/tranche/translate.py`, in the env `/workspace/envs/mt` that `box/envs.sh mt` builds, runs
 Index-Translate-35B-A3B in vLLM in its own process. It reads each segments shard's `id`, `doc` and
 `text` from the Hub, translates each row as its own prompt, with up to two earlier rows of its doc
 as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest push

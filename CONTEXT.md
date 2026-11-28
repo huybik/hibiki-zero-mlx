@@ -43,9 +43,10 @@ inference/ (Apple Silicon, MLX)
   Vietnamese translation of its English text, the Vietnamese TTS in MLX, the grounded cache build
   every cache builder shares (`cache_build`, MLX or CUDA) and the EN-VI dataset's builder on it,
   the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, GRPO, evaluation
-  and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: the English
-  TTS bake-off, the ASR check, each model in its own uv env, the ingest of the corpora's
-  segments to the tranche repos, their translation, the English TTS, the row filters and its cache builder) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
+  and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: its envs
+  (`box/envs.sh`), the ingest of the corpora's segments to the tranche repos, their translation,
+  VieNeu's TTS both ways (the tranche's English, the EN-VI dataset's Vietnamese re-voiced), the row
+  filters and its cache builder) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
   CPUs). Its modules run from the repo root as
   `python -m training.<package>.<module>`; everything except the translation, the TTS, the dataset
   publisher, the cache builder, the evaluation-set builder and the tokenizer swap runs on CUDA only.
@@ -184,12 +185,12 @@ inference/ (Apple Silicon, MLX)
 | GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Noisy source (Vietnamese and English): simulated rooms, noise and bands, the noisy caches, `en-vi-val-noisy` and `en-vi-val-en-noisy`, the rooms where nobody speaks (GRPO's, SFT's `--room-share`) | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/noisy_cache.py`, `streams.run_rooms` |
-| The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the bake-off, the translation and the cache |
+| The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the TTS, the translation and the cache |
 | The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
 | The tranche's caches: its row gates and their thresholds, running the build on the box or the Mac | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
 | YODAS3's Vietnamese in the tranche: rows cut from caption runs, the ASR in ingest, its CER gate, ingest and voice speed on the 5090, the pilot | [tranche-yodas](docs/agent-memory/tranche-yodas.md) | `training/tranche/yodas.py` |
-| The tranche's English voice-cloning TTS: candidates, bake-off, scores, tuning | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/bakeoff.py`, `training/tranche/voice.py`, `training/tranche/vieneu_frame.py`, `training/tranche/decode_attention.py`, `training/tranche/onnx_graph.py`, `training/tranche/envs.sh` |
-| The TTS for YODAS's ~20k h: ZONOS3-Mini and VieNeu-TTS v3 Turbo against VoxCPM2 on the 5090, optimizing VieNeu and VoxCPM2, running them there | [tranche-tts-scaleup](docs/agent-memory/tranche-tts-scaleup.md) | `/Volumes/data/hibiki-zero-evals/box-62513802/ttsbench-2026-11-26/`, `ttsbench-opt-2026-11-26/`, `ttsbench-5090opt-2026-11-28/` |
+| VieNeu TTS both ways on the box: the tranche's English, the EN-VI dataset's Vietnamese re-voiced where broken (`run en_speech`, its `vi_check` parts), the ASR check, how the TTS was chosen, which TTS voiced what | [tranche-tts](docs/agent-memory/tranche-tts.md) | `training/tranche/voice.py`, `training/tranche/vieneu_frame.py`, `training/tranche/decode_attention.py`, `training/tranche/onnx_graph.py`, `training/tranche/box/envs.sh` |
+| VieNeu's speed on the 5090: its benches against VoxCPM2 and ZONOS3-Mini, each optimization, production and end-to-end speed, the FP8 ASR server, why the plan's 2,000× was not reached | [tranche-tts-scaleup](docs/agent-memory/tranche-tts-scaleup.md) | `/Volumes/data/hibiki-zero-evals/box-62513802/ttsbench-*` |
 | The tranche's jobs on a rented box: bring-up, job order, the restart/watchdog/pause scripts, round 4's inputs | [tranche-box](docs/agent-memory/tranche-box.md) | `training/tranche/box/` |
 | Vietnamese speech corpora: licences, file layouts, labels and order, measured samples | [vi-corpora](docs/agent-memory/vi-corpora.md) | `training/tranche/ingest.py`, the tranche repos |
 | Vietnamese tokenizer swap for two-way text: build, English check, embedding init map, the runtimes on it | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
@@ -216,7 +217,7 @@ inference/ (Apple Silicon, MLX)
 | EN→VI transcript translation | [en-vi-translation](docs/agent-memory/en-vi-translation.md) | `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text` |
 | EN→VI translation on the Gemini Batch API, claims | [en-vi-gemini](docs/agent-memory/en-vi-gemini.md) | the `claim` and `gemini` steps of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/gemini` |
 | EN→VI translation on Muse through OpenRouter | [en-vi-muse](docs/agent-memory/en-vi-muse.md) | the `muse` step of `training/prep/translate_en_speech.py`, `/Volumes/data/datasets/en_speech_vi_text/muse` |
-| Vietnamese voice-transfer TTS (VieNeu in MLX) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py`, `vi_audio` of `/Volumes/data/datasets/en_vi_speech` |
+| Vietnamese voice-transfer TTS in MLX on the Mac, which voiced the EN-VI dataset (the box's: tranche-tts) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py`, `vi_audio` of `/Volumes/data/datasets/en_vi_speech` |
 | EN-VI speech dataset, its upload and the cache repo | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`, `huybik/en-vi-speech`, `anquachdev/common-vi-en`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
 
 ## Canonical resources

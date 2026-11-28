@@ -27,10 +27,10 @@ seq within a shard:
             audio can be seconds shorter than end - start, so seams come from alignment
   text      the corpus transcript (YODAS3: Qwen3-ASR's); duration_s, source_rate and audio
             {bytes, path} of the clip
-A rerun skips shards already written. CPU only but for yodas (the nanovox env, beside the ASR
+A rerun skips shards already written. CPU only but for yodas (the ingest env, beside the ASR
 server); from the repo root on the box:
   .venv/bin/python -m training.tranche.ingest segments pho --shards 0:40
-  /workspace/envs/nanovox/bin/python -m training.tranche.ingest segments yodas --shards 0:25
+  /workspace/envs/ingest/bin/python -m training.tranche.ingest segments yodas --shards 0:25
 """
 from __future__ import annotations
 
