@@ -16,14 +16,16 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Parity](#parity)
   - Mimi's encoder and its transformer are vendored from
     [moshi-swift](https://github.com/kyutai-labs/moshi-swift) (MIT, commit `df64ffd`,
     `LICENSE-moshi-swift`), cut to Mimi's streaming encoder (`encodeStep`) in MLX on the GPU.
-    `Quantization.swift` is Mimi's residual vector quantizer. Its ring KV cache is replaced by
+    `MimiQuantizer.swift` is Mimi's residual vector quantizer. Its ring KV cache is replaced by
     `WindowKVCache` ([Mimi's encoder](#mimis-encoder)).
   - `NeuralDecoder.swift` runs Mimi's decoder on the Neural Engine, one frame per call, from the
     compiled Core ML model `mimi-decoder.mlmodelc` in the model directory
     ([mimi-npu](mimi-npu.md)).
-  - `LM.swift` (`HibikiConfig`, the model directory's `config.json`), `NeuralLM.swift` (the Core
-    ML LM, [lm-npu](lm-npu.md)), `Generator.swift` (the delayed streams over it), `Sampler.swift`
-    (top-k on the host, `SplitMix64`), `Translator.swift` (one 80 ms frame per step: the LM on its
+  - `HibikiConfig.swift` (`HibikiConfig`, the model directory's `config.json`; `HibikiError`;
+    `URL.modelFile`, every check that a directory holds a file), `NeuralLM.swift` (the Core ML LM,
+    [lm-npu](lm-npu.md); its host side, the embedding sums, input rows, Gumbel noise and output
+    reads, in `NeuralLM+Host.swift`), `Generator.swift` (the delayed streams over it),
+    `Sampler.swift` (top-k on the host, `SplitMix64`), `Translator.swift` (one 80 ms frame per step: the LM on its
     own thread, on the Neural Engine by default, beside it Mimi encoding on the GPU and decoding
     on the Neural Engine), `Bench.swift` (sustained-load test), `Vocabulary.swift` (reads the
     SentencePiece `.model` protobuf directly, and `TextDecoder`) and `Audio.swift` (file reading,
@@ -38,12 +40,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Parity](#parity)
   down ([Device test](#device-test)).
 - `Translator.Output.text` is what the frame's token completes: `TextDecoder` assembles UTF-8
   from byte-fallback pieces (`<0xE1>`, type BYTE) across frames, as `TextDecoder` in
-  `pipeline.py` does, an invalid sequence as U+FFFD; `flush` returns the rest. Fed the same
+  `hibiki_mlx/text.py` does, an invalid sequence as U+FFFD; `flush` returns the rest. Fed the same
   token streams (2026-11-14, scratch harness compiling `Vocabulary.swift`: 364 streams on both
   tokenizers, PADs between pieces), it returns Python's text call for call, and the same whole
   text at 2, 3 and 5 tokens per call.
 - `Translator.endInput()` ends a file's input: one LM step whose 16 source codes are all the
-  source EOS (`card`) while Mimi codes a silent frame, as `pipeline.translate` does.
+  source EOS (`card`) while Mimi codes a silent frame, as `file_mode.translate` does.
 - `Sources/hibiki/` is the macOS CLI: `translate` mirrors `inference/main.py` (the clip
   zero-padded to whole frames, `endInput`, silence to 250 frames after the clip, stop at the
   first frame after `endInput` with the text EOS, seed 299792458; it has no quiet stop, so it
@@ -78,7 +80,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Parity](#parity)
 
 - Mimi: Swift MLX codes equal rustymimi's in 98% of frames on codebook 0, falling to 87% on
   codebook 15 (`inference/assets/leon.wav`, 2026-11-01). Against the training caches' encoder
-  (`training/prep/mimi_mlx.py`, whole clip) on the same 800 frames, they are equal on 100% of
+  (`training/cache/mimi_mlx.py`, whole clip) on the same 800 frames, they are equal on 100% of
   frames in codebooks 0–9 and 99% in 10–15 (2026-11-02), both measured on MLX's CPU; the GPU's
   codes equal the CPU's on every frame (760 frames, all 16 codebooks; 2026-11-20).
 - The Core ML LM's agreement with the MLX runtime is in [lm-npu](lm-npu.md#precision).
@@ -87,7 +89,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Parity](#parity)
 
 `Translator.step` queues LM step t on the LM's thread, submits frame t's encode to the GPU
 (`asyncEval`), decodes the audio of step t − 1 on the Neural Engine ([mimi-npu](mimi-npu.md)),
-collects the codes (`Timing.encodeWait`), then waits for the LM, as `pipeline.py` overlaps
+collects the codes (`Timing.encodeWait`), then waits for the LM, as `file_mode.py` overlaps
 rustymimi threads with the LM. The encode goes first: the Core ML LM holds the Neural Engine at
 the start of its frame, and a decode queued behind it left the CPU idle (the Mac's frame 26 →
 18.5 ms, [lm-npu](lm-npu.md#runtime)). An LM step's audio is decoded during the next one, so it
@@ -134,7 +136,7 @@ comes out after its text; `flush` returns the audio and text left when the input
 
 ## Speed and memory
 
-The M4 Pro numbers need an idle machine: with the cache build running (`cache_codes`), Mimi's
+The M4 Pro numbers need an idle machine: with the cache build running (`cache.en_speech`), Mimi's
 encode took ~55 ms per frame there, more than on the A15.
 
 Mimi's encoder takes 0.18 GB (fp32, MLX) and its decoder 0.09 GB (fp16, Core ML; the MLX decoder

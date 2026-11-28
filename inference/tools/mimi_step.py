@@ -30,7 +30,6 @@ import torch.nn.functional as F
 from safetensors.torch import load_file
 from torch import nn
 
-FRAME = 1920  # samples per 12.5 Hz frame at 24 kHz
 RATIOS = (4, 5, 6, 8)  # SEANet encoder strides; the decoder runs them reversed
 DIM, HEADS, HEAD_DIM, LAYERS, CONTEXT = 512, 8, 64, 8, 250
 WINDOW = CONTEXT - 1  # past steps each transformer keeps

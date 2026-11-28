@@ -1,4 +1,4 @@
-"""Repository paths, default artifacts and file guards shared by training code."""
+"""Repository paths, default artifacts, file guards and the log line shared by training code."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import multiprocessing
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +19,12 @@ DEFAULT_MIMI_WEIGHT = REPO_ROOT / "weights" / "mimi-pytorch-e351c8d8@125.safeten
 DEFAULT_TOKENIZER = REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 
 # The EN-VI speech dataset at the revision every `en_speech` cache was built from: its evaluation
-# rows (eval_sets) and the sources of its noisy copies (noisy_cache). Here rather than in eval_sets,
+# rows (eval_sets) and the sources of its noisy copies (cache.noisy). Here rather than in eval_sets,
 # whose sphn would turn the GIL back on in the cache env's free-threaded Python (cache-speed-cuda.md).
 EN_VI_REPO = "anquachdev/common-vi-en"
 EN_VI_REVISION = "2ce8777d122123609722814f776f0505ea966ca5"
 
-# Written by training.prep.cache_codes (Mac) and required by streams.load_rows (H100); kept here
+# Written by training.cache.en_speech (Mac) and required by streams.load_rows (H100); kept here
 # so the trainer never imports the builder's Mac-only packages.
 CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
 # A cache shard's direction, <source>-<target>, when the shard records none: the caches built
@@ -142,3 +143,7 @@ def cpu_budget() -> float:
     elif v1.exists() and (quota := int(v1.read_text())) > 0:
         cpus = min(cpus, quota / int(v1.with_name("cpu.cfs_period_us").read_text()))
     return cpus
+
+
+def log(msg: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)

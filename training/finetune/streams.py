@@ -72,9 +72,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from training.audio import augment
+from training.cache.timing import ALIGNERS, CAPACITY_REASONS
 from training.paths import CACHE_FORMAT, DEFAULT_DIRECTION, DEFAULT_TOKENIZER, cpu_budget, require_dir, swap_slots
-from training.prep import augment
-from training.prep.text_timing import ALIGNERS, CAPACITY_REASONS
 
 FRAME_RATE = 12.5
 # Stream lengths, seconds. Upstream's coarse stage trained on 30-75 s utterances and its RL stage

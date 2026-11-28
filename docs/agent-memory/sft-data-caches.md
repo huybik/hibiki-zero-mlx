@@ -1,6 +1,7 @@
 # SFT grounded caches
 
-Read when touching `training/prep/cache_codes.py`, `training/prep/publish_caches.py` or
+Read when touching `training/cache/en_speech.py`, `training/cache/publish.py` (its Hub commits in
+`training/hub.py`) or
 `training/paths.py`: the EN-VI dataset's caches, their builds and publishing, the PhoMT cache and
 the row layout every cache shares. How rows are built and the models run, on either device, is in
 [cache-build](cache-build.md).
@@ -11,9 +12,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Flow](#flow) · [Builds](#builds) ·
 
 ```text
 /Volumes/data/datasets/en_vi_speech/data/<split>/<name>.parquet
-  ─► cache_codes (--device mlx on the Mac, or cuda) ─► <out-dir>/<split>/shard_<name>.pt
-       read: every row, no gates of its own; the build is cache_build's (cache-build)
-  ─► publish_caches ─► HF cache repo <out-dir name>/<split>/shard_<name>.pt ◄─ second machine
+  ─► cache.en_speech (--device mlx on the Mac, or cuda) ─► <out-dir>/<split>/shard_<name>.pt
+       read: every row, no gates of its own; the build is cache.build's (cache-build)
+  ─► cache.publish ─► HF cache repo <out-dir name>/<split>/shard_<name>.pt ◄─ second machine
 HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 <prefix>/train + phomt-grounded-v2-5s ─► training.finetune.train --cache-dir (several)
 <prefix>/validation ─► --val-cache-dir (several)
@@ -50,7 +51,7 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
 - `--vi-check <dir>` (a copy of the tranche repo's `en_speech/vi_check/`, `voice.py run en_speech`'s parts,
   [tranche-tts](tranche-tts.md#vietnamese)): every train shard needs its part; a row re-voiced there takes its new
   Vietnamese, one still broken or never heard is rejected, and the shard's `source` names the part (`vi_check`:
-  file and bytes), which `noisy_cache` then reads too, and `publish_caches --vi-check` checks a pulled shard
+  file and bytes), which `cache.noisy` then reads too, and `cache.publish --vi-check` checks a pulled shard
   against. Without it the dataset's Vietnamese is taken as it is. A rerun skips shards that exist, without checking their source again;
   `--overwrite` rebuilds. A lock (`.cache_codes.lock`) keeps a second run off the same
   `--out-dir`. Run a multi-day build under `caffeinate -i -s`.
@@ -70,20 +71,20 @@ idle), ~5.5 days on the Mac alone.
 - `build.log` has no line for three main shards (`libriheavy-large-00001-00031`, `-00033`,
   `-00036`): the 2026-10-28 replug below lost them while the builder kept building. Their
   shards match their neighbours' layout and hold 2,783 rows.
-- To stop it, `pkill -f training.prep.cache_codes`: the launch script then exits with status 143,
+- To stop it, `pkill -f training.cache.en_speech`: the launch script then exits with status 143,
   but only once the two orphaned decode workers
   (`multiprocessing.spawn` and its `resource_tracker`, parent pid 1) are killed too, since they
-  hold its log pipe open. Stop the publisher the same way (`training.prep.publish_caches`) after its
+  hold its log pipe open. Stop the publisher the same way (`training.cache.publish`) after its
   log shows `0 left`; it logs only commits and retries, so a quiet log means nothing is waiting.
 - Nothing restarts it on its own, after a stop, a logout or a restart (a macOS update logs out).
   Run from the repo root on `main` `nohup bash <out-dir>/launch.sh >/dev/null 2>&1 &`, and
   the same for `publish.sh` if it stopped; the builder skips the built shards and rebuilds the
   unfinished one.
-- `publish.sh` beside `launch.sh` in the out-dir runs `publish_caches --follow` on it, logging
+- `publish.sh` beside `launch.sh` in the out-dir runs `cache.publish --follow` on it, logging
   to `<out-dir>/publish.log`.
 - Both scripts append each log line on its own: unplugging `/Volumes/data` kills a log a
   process holds open. On 2026-10-28 a replug lost the builder's lines while it kept building, and
-  `publish_caches` died on its next one (exit 120: Python could not write its stdout). A process
+  `cache.publish` died on its next one (exit 120: Python could not write its stdout). A process
   reading the drive while it is gone can still fail, so stop the build before unplugging.
 - Keep the Mac on AC: `caffeinate -s` holds only on AC, and on 2026-10-29 the build ran on battery
   until Low Power Sleep at 1% (23:49), losing 7 h. A process started from a terminal reads
@@ -103,10 +104,10 @@ anquachdev can build part of them, as the two machines voiced the dataset
 ([vi-tts](vi-tts.md#running)):
 
 ```text
-train/cv27-00000 ... ─► Mac, cache_codes top down
+train/cv27-00000 ... ─► Mac, cache.en_speech top down
                 ... meet ...
-... validation/*     ◄─ second machine, cache_codes --bottom-up
-both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <out-dir name>/<split>/
+... validation/*     ◄─ second machine, cache.en_speech --bottom-up
+both: cache.publish --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <out-dir name>/<split>/
 ```
 
 - The Hub prefix is the out-dir's name (`en-vi-grounded-v2/`), so the second machine names its
@@ -130,7 +131,7 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   shard on the Hub (`HfApi().delete_file`) for this machine to build; then `rm -r .pull` and
   rerun. Row contents are not checked, nor the delay seed and ratio, which a shard does not
   record: both machines run `main` with the default settings, and the second checks once that it
-  rebuilds a Mac shard ([training/prep/README.md](../../training/prep/README.md)).
+  rebuilds a Mac shard ([training/cache/README.md](../../training/cache/README.md)).
 - Near the meeting point a few shards may be built on both machines: each sees the other's work
   only after its commit and the 10 min wait. The Hub keeps the copy committed first; the other
   machine's local copy may be its own build, the same rows up to float near-ties. The pod
@@ -138,7 +139,7 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
 - With `--follow` it looks again every 10 min and ends once every source shard is cached here
   and on the Hub. It stops when the out-dir is gone (a dropped drive), rather than download onto
   the internal disk.
-- Each direction's aligner is pinned (`text_timing.ALIGNERS`: `facebook/wav2vec2-base-960h` at
+- Each direction's aligner is pinned (`cache.timing.ALIGNERS`: `facebook/wav2vec2-base-960h` at
   `22aad52` for English text, `nguyenvulebinh/wav2vec2-base-vietnamese-250h` at `bb07d01` for
   Vietnamese, [two-way](two-way.md#vietnamese-aligner)),
   its weights, `config.json` and `vocab.json` only, so every machine times with the same model. The builder no longer sets `HF_HUB_OFFLINE`, so a
@@ -146,7 +147,7 @@ both: publish_caches --follow ─► huybik/hibiki-zero-vi-full-sft (dataset) <o
   connection, ~75 s on a hanging one).
 - The second machine needs Apple Silicon, or a CUDA GPU with `--device cuda` (its rows differ
   from the Mac's by float near-ties, [cache-build](cache-build.md#across-devices)), and write
-  access to the cache repo; commands are in [training/prep/README.md](../../training/prep/README.md).
+  access to the cache repo; commands are in [training/cache/README.md](../../training/cache/README.md).
 
 ## PhoMT cache
 

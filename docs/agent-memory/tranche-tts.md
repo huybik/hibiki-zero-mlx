@@ -128,9 +128,9 @@ repo (`en_speech/train/`, 1,832 shards; the 3 validation shards are evaluation r
   Common Voice's ~180–220 rows/s were heard (4.6 s of Vietnamese a row); Libriheavy's ~12.5 s rows were not timed
   apart. The corpus is 1,745 Libriheavy shards (409 GB) and 87 Common Voice (34 GB). In the same run YODAS 0010's
   English came out as main voiced it: 6.40% broken on both, kept WER median 0.031 against 0.032.
-- Its consumers: `cache_codes --vi-check <copy of en_speech/vi_check>` takes the new audio of the rows re-voiced
+- Its consumers: `cache.en_speech --vi-check <copy of en_speech/vi_check>` takes the new audio of the rows re-voiced
   and rejects those still broken or never heard (every train shard needs its part), and records the part in each
-  shard's `source`; `noisy_cache` then fetches the same clips for a Vietnamese source
+  shard's `source`; `cache.noisy` then fetches the same clips for a Vietnamese source
   ([sft-data-caches](sft-data-caches.md#builds), [noisy-source](noisy-source.md)).
 
 ## Running

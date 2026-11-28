@@ -23,10 +23,10 @@ sampled between them; for a `depformer_parallel` model the trunk and one depform
 
 ```sh
 # ~15 min of k-means on one core at 6 bits
-python inference/tools/export_lm_coreml.py weights/student_heads14_cb16/s16k_bf16 \
+python -m inference.tools.export_lm_coreml weights/student_heads14_cb16/s16k_bf16 \
   weights/student_heads14_cb16/s16k_ane6 --bits 6
 # Mimi's decoder for this model's dep_q (or fewer codebooks, which the runtime accepts)
-python inference/tools/export_mimi_coreml.py \
+python -m inference.tools.export_mimi_coreml \
   weights/student_heads14_cb16/s16k_ane6/mimi-pytorch-e351c8d8@125.safetensors \
   weights/student_heads14_cb16/s16k_ane6 --decoder-codebooks 16
 ```
@@ -86,6 +86,11 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
 
 This copies every file of the slices release's directory; set `MODEL` for another (only its
 `config.json`, the files it names, the `.bin` tables and the `.mlmodelc` directories are read).
+
+Without a phone or a team, `xcodebuild -project HibikiBench.xcodeproj -scheme HibikiBench
+-destination 'generic/platform=iOS' -configuration Release -derivedDataPath ../.build/ios
+CODE_SIGNING_ALLOWED=NO -skipPackagePluginValidation build` (from `HibikiBench/`) checks that the
+app compiles.
 
 `--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models
 on the phone, and `--clip NAME` reads `Documents/NAME` instead of `clip.wav`; `--unpaced` and

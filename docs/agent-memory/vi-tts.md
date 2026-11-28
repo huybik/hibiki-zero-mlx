@@ -1,6 +1,6 @@
 # Vietnamese voice-transfer TTS
 
-Read when touching `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py` or the
+Read when touching `training/en_vi_dataset/tts.py`, `training/en_vi_dataset/vieneu_mlx.py` or the
 `vi_audio` of `/Volumes/data/datasets/en_vi_speech`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Recipe](#recipe) ·
 [Voice transfer](#voice-transfer) · [Engine](#engine) · [Speed and memory](#speed-and-memory) ·
@@ -140,7 +140,7 @@ codes, yet their Common Voice CER means differ by 0.036 (their medians favour fp
 
 ## Running
 
-Commands are in [training/prep/README.md](../../training/prep/README.md). Only rows without
+Commands are in [training/en_vi_dataset/README.md](../../training/en_vi_dataset/README.md). Only rows without
 speech are voiced. A shard is rewritten whole once its last such row is encoded (through the
 publisher's `write_shard`, so a crash never leaves half a shard), and a rerun skips the shards
 whose `vi_duration_s` has no nulls.

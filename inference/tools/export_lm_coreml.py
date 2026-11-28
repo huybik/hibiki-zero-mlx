@@ -1,7 +1,7 @@
 """Export a phone student's LM step (`lm_step.py`) as compiled Core ML models for the Apple Neural
 Engine: fp16, one frame per call, the KV cache as state (iOS 18).
 
-    python inference/tools/export_lm_coreml.py MODEL_DIR OUT_DIR [--bits 6]
+    python -m inference.tools.export_lm_coreml MODEL_DIR OUT_DIR [--bits 6]
 
 MODEL_DIR is the student staged by `convert_mlx.py` in bf16. OUT_DIR becomes a model directory
 for the Swift runtime (`NeuralLM`): `lm-trunk.mlmodelc` (the main transformer and the text head),
@@ -22,19 +22,11 @@ import json
 import shutil
 from pathlib import Path
 
-import coremltools as ct
-import coremltools.optimize.coreml as cto
 import numpy as np
 import torch
 
-import lm_step as ls
-from export_mimi_coreml import convert, save_compiled
-
-
-def _palettize(model: ct.models.MLModel, bits: int) -> ct.models.MLModel:
-    op = cto.OpPalettizerConfig(nbits=bits, mode="kmeans", granularity="per_grouped_channel",
-                                group_size=16, weight_threshold=1 << 16)
-    return cto.palettize_weights(model, cto.OptimizationConfig(global_config=op))
+from inference.tools import lm_step as ls
+from inference.tools.coreml import convert, palettize, save_compiled
 
 
 def export_audio_head(
@@ -53,7 +45,7 @@ def export_audio_head(
             {"hidden": ((1, cfg.dim), np.float16), "text": ((1, cfg.dim), np.float16)},
             ["audio_logits"],
         )
-        save_compiled(_palettize(heads, bits) if bits else heads, out_dir / "lm-heads.mlmodelc")
+        save_compiled(palettize(heads, bits) if bits else heads, out_dir / "lm-heads.mlmodelc")
         return {}
     d = cfg.depformer
     ls.depformer_text_embeddings(w).tofile(out_dir / "lm-depformer-embeddings.bin")
@@ -67,7 +59,7 @@ def export_audio_head(
         },
         ["tokens"],
     )
-    save_compiled(_palettize(model, bits) if bits else model, out_dir / "lm-depformer.mlmodelc")
+    save_compiled(palettize(model, bits) if bits else model, out_dir / "lm-depformer.mlmodelc")
     return {"depformer_top_k": dep.top_k}
 
 
@@ -102,7 +94,7 @@ def main() -> None:
         ["hidden", "text_logits"],
         {"keys": cache, "values": cache},
     )
-    save_compiled(_palettize(trunk, args.bits) if args.bits else trunk, args.out_dir / "lm-trunk.mlmodelc")
+    save_compiled(palettize(trunk, args.bits) if args.bits else trunk, args.out_dir / "lm-trunk.mlmodelc")
     top_k = config.get("lm_gen_config", {}).get("top_k")
     lm_coreml |= export_audio_head(cfg, w, args.out_dir, args.bits, top_k=top_k)
     config["lm_coreml"] = lm_coreml

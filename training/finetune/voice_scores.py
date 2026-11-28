@@ -30,7 +30,7 @@ from huggingface_hub import hf_hub_download
 from torch import nn
 from torch.nn import functional as F
 
-from training.prep import kaldi
+from training.audio import kaldi
 
 SPEAKER_MODEL = ("Wespeaker/wespeaker-voxceleb-resnet34-LM", "f0c48c298fd835726c27956a5d617bad7115627e")
 RATE = 16_000

@@ -1,12 +1,13 @@
 # Cache build
 
-Read when touching `training/prep/cache_build.py`, `training/prep/cache_rows.py`,
-`training/prep/mimi_mlx.py`, `training/prep/mimi_cuda.py`, `training/prep/wav2vec2_mlx.py`,
-`training/prep/wav2vec2_cuda.py`, `training/prep/wav2vec2_coreml.py`, `training/prep/text_timing.py`,
-`training/prep/_ctc_viterbi.c` or `training/prep/audio.py`, and before running Mimi or a CTC
-aligner anywhere else, on MLX or CUDA: how every grounded cache is built on either device, and
-what each device's speed depends on. The builders on top are in [sft-data-caches](sft-data-caches.md)
-(`cache_codes`, the EN-VI dataset) and [tranche-cache](tranche-cache.md) (`training.tranche.cache`,
+Read when touching `training/cache/build.py`, `training/cache/mlx.py`, `training/cache/cuda.py`,
+`training/cache/rows.py`, `training/cache/mimi_mlx.py`, `training/cache/mimi_cuda.py`,
+`training/cache/wav2vec2_mlx.py`, `training/cache/wav2vec2_cuda.py`, `training/cache/wav2vec2_coreml.py`,
+`training/cache/timing.py`, `training/cache/_ctc_viterbi.c` or `training/audio/decode.py`, and
+before running Mimi or a CTC aligner anywhere else, on MLX or CUDA: how every grounded cache is
+built on either device, and what each device's speed depends on. The builders on top are in
+[sft-data-caches](sft-data-caches.md)
+(`cache.en_speech`, the EN-VI dataset) and [tranche-cache](tranche-cache.md) (`training.tranche.cache`,
 the tranche); the row layout is in [sft-data-caches](sft-data-caches.md#row-layout).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Shape](#shape) · [Rows](#rows) · [MLX](#mlx) ·
 [CUDA](#cuda) · [Across devices](#across-devices) · [Speed on the Mac](#speed-on-the-mac) ·
@@ -15,28 +16,30 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Shape](#shape) · [Rows](#rows) · [M
 ## Shape
 
 ```text
-builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows, its own gates)
-  └─ cache_build.Builder(device).run(keys, read, workers) ─► each Shard filled, in key order
+builder (cache.en_speech | tranche.cache): its shard keys, read(key) -> Shard (rows, its own gates)
+  └─ cache.build.Builder(device).run(keys, read, workers) ─► each Shard filled, in key order
        read             a thread, one shard ahead
-       decode workers   cache_rows.prepare_rows, jobs of 32 rows of a shard: PyAV, soxr to 24 kHz
-                        (Mimi) and 16 kHz (CTC, normalized), then cache_rows.plan (decode gates,
+       decode workers   cache.rows.prepare_rows, jobs of 32 rows of a shard: PyAV, soxr to 24 kHz
+                        (Mimi) and 16 kHz (CTC, normalized), then cache.rows.plan (decode gates,
                         delay draw, text groups); one window of rows ahead of the device; clips
                         back through /dev/shm (inline where there is none) ─► windows, across
                         shard ends
        device           MLXModels | CUDAModels .encode: CTC ─► the Viterbi in the workers
-                        (cache_rows.align_rows, a job a CTC batch) while the device runs Mimi
-       cache_rows       sample ─► its shard; the builder writes payload() with write()
+                        (cache.rows.align_rows, a job a CTC batch) while the device runs Mimi
+       cache.rows       sample ─► its shard; the builder writes payload() with write()
 ```
 
 - One implementation per model per device. Every grounded cache runs Mimi and wav2vec2 through
-  `cache_build`, and the noisy re-encode takes its CUDA Mimi from it (`cuda_mimi`;
+  `cache.build`, and the noisy re-encode takes its CUDA Mimi from it (`cache.cuda.cuda_mimi`;
   [noisy-source](noisy-source.md#noisy-cache)). A builder adds only its source's reading and gates,
   the sample fields it keeps (`fields`) and where its shards go. A new source is a new `read`, a
-  new device a new `*Models` class with `window`, `cardinality` and `encode`; never a second
+  new device a new `*Models` class with `window`, `cardinality` and `encode`, in its own module
+  beside `cache.mlx` and `cache.cuda`, registered in `cache.build.MODELS`; never a second
   pipeline (2026-11-09: an MLX path written inside the tranche's builder without reading
-  `cache_codes` missed its measured MLX levers and decoded whole shards into memory).
-- `cache_build` imports MLX, moshi, torch and transformers lazily, and `cache_rows` only torch (a
-  sample's codes, the write), so the box runs without MLX and the Mac without CUDA.
+  `cache.en_speech` missed its measured MLX levers and decoded whole shards into memory).
+- `cache.build` and its device models (`cache.mlx`, `cache.cuda`) import MLX, moshi, torch and
+  transformers lazily, and `cache.rows` only torch (a sample's codes, the write), so the box runs
+  without MLX and the Mac without CUDA.
 - Windows (each models class's `window`): 64 rows on MLX, 512 on CUDA. Decodes run one window
   ahead (the pool runs jobs in order, so more would only queue a window's alignments behind more
   decodes), so the PCM of several windows is held: ~0.3 GB on MLX; on CUDA the window sets the
@@ -71,7 +74,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   rows rejected at alignment or token timing are encoded and dropped.
 - The direction (`Settings.direction`, `vi-en` by default, `en-vi` for two-way) says which clip
   is the source and times the target's text against the target clip with that language's CTC
-  model (`text_timing.ALIGNERS`: wav2vec2-base-960h for English, wav2vec2-base-vietnamese-250h
+  model (`cache.timing.ALIGNERS`: wav2vec2-base-960h for English, wav2vec2-base-vietnamese-250h
   for Vietnamese, [two-way](two-way.md#vietnamese-aligner)). The CTC hands the host only the columns its Viterbi
   reads (`vocab_columns`).
 - The delay is drawn from U[0, min(0.5 × source duration, room)], seeded by
@@ -85,7 +88,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   with it (half of Libriheavy rows). Leading ones were rejected before 2026-10-27 (51k Libriheavy
   rows, 1.7%).
 - Only data faults reject a row: `audio.Rejected` (undecodable or non-mono audio, a duration
-  mismatch, the frame cap) and `text_timing.AlignmentError`. Any other error, such as a dead
+  mismatch, the frame cap) and `cache.timing.AlignmentError`. Any other error, such as a dead
   worker (`BrokenProcessPool`), a device error or PyAV running out of memory, stops the run
   before the shard is written, so a rerun rebuilds it rather than skipping lost rows. A shard
   whose rows all fail on data is written, empty.
@@ -96,7 +99,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   `torch.load` keeps the `weights_only` default, which refuses NumPy scalars.
 - A shard is written as a hidden `.tmp`, flushed with `paths.durable` (`F_FULLFSYNC` on macOS),
   then renamed.
-- Decoding: PyAV for every stream (Opus, cv27's MP3), in `audio.decode`; anything but mono `fltp`
+- Decoding: PyAV for every stream (Opus, cv27's MP3), in `training.audio.decode`; anything but mono `fltp`
   is rejected. Opus decodes at 48 kHz and MP3 at 32 or 48 kHz; soxr resamples from that rate
   straight to each target. `sphn.read` cannot decode Opus, `sphn.read_opus_bytes` keeps the
   312-sample Opus pre-skip, and `sphn.resample` delays its output (256 samples at 48 → 24 kHz).
@@ -120,7 +123,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 - CTC: `wav2vec2_mlx.Wav2Vec2CTC` in float32 by default; `half=True` (`tranche.cache --half-ctc`)
   for float16 weights, measured on omniASR (the former Vietnamese aligner) only; `Builder` refuses
   it on CUDA, whose CTC always runs in FP16. One clip per forward, then the C Viterbi
-  (`text_timing.CTCWordAligner`) in a worker. The port pads each
+  (`cache.timing.CTCWordAligner`) in a worker. The port pads each
   clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional
   convolution input, attention keys), so it computes the clip alone and compiles over ~18 shapes.
   It ports the base layout both aligners have (GroupNorm on the first convolution, post-norm
@@ -134,7 +137,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   Against transformers' CPU float32 (40 clips each, 2026-11-22), `half=True` on Metal moved 0.035% of
   the Vietnamese aligner's argmaxes and 0.14% of the English one's (worst clip 0.76%); float32 moved
   none. On MLX's CPU backend English moved 1.4–1.6%.
-- `ane_ctc` (`cache_codes --ane-ctc`): the transformer on the Neural Engine in its own process
+- `ane_ctc` (`cache.en_speech --ane-ctc`): the transformer on the Neural Engine in its own process
   (`wav2vec2_coreml`, with the float16 fixes), on `Wav2Vec2CTC.transformer_input` from the GPU in
   float32; the longest rows' CTC stays on the GPU (`_split`, [speed](#speed-on-the-mac)). `en-vi`
   only (`Builder` refuses another direction): the English aligner there kept 99.35% of MLX float32's
@@ -166,12 +169,12 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   silence applied zero-copy in `_stage`). `encode` runs in the build's GPU thread
   (`threaded`) with preallocated double-buffered pinned H2D/D2H pools (`_PinnedOutputPool`), one window
   queued behind it.
-- Workers (`cache_rows.prepare_rows` / `prepare_dual_rows`) pack each 32-row decode job into ONE
+- Workers (`cache.rows.prepare_rows` / `prepare_dual_rows`) pack each 32-row decode job into ONE
   contiguous `/dev/shm` `.f32` slab file instead of per-row files, each row's 24 kHz clips and its
-  normalized 16 kHz target. `text_timing.CTCWordAligner` runs the Viterbi in a C99 shared library
+  normalized 16 kHz target. `cache.timing.CTCWordAligner` runs the Viterbi in a C99 shared library
   (`_ctc_viterbi.c`), built with `cc -O3` into `__pycache__` beside it on first use (again when
   the source is newer); without a compiler, or if the build or load fails, it raises, on MLX too.
-  `cache_codes` writes shards on a background thread; `tranche.cache` prefetches up to `--prefetch 3` Hub shards and gates metadata columns before
+  `cache.en_speech` writes shards on a background thread; `tranche.cache` prefetches up to `--prefetch 3` Hub shards and gates metadata columns before
   reading audio bytes.
 - `FastWav2Vec2CTC` keeps `c0_conv`, the Triton two-pass masked GroupNorm+GELU statistics, and `lm_head`
   in FP32, runs `c1..c6` as channels-last FP16 `conv2d`, folds `pos_conv_embed` `weight_norm` once at
@@ -190,7 +193,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 
 Checked on 2026-11-09, after both builders moved onto this build:
 
-- On 400 rows of `validation/libriheavy-dev-00000`, `cache_codes` on MLX gave byte-identical
+- On 400 rows of `validation/libriheavy-dev-00000`, `cache.en_speech` on MLX gave byte-identical
   samples and rejections to the build before the change and to the production shard.
 - On viVoice shard `train_00003_of_00354` (831 rows), the MLX build kept and rejected the same
   rows as the box's CUDA build on the Hub, every text row, delay and field equal (alignment scores
@@ -201,7 +204,7 @@ Checked on 2026-11-09, after both builders moved onto this build:
   apart, 94.8% of audio codes equal (first codebooks 99.8%). That gap is TF32's: on 40 rows MLX
   matched moshi's CPU float32 on 99.99% of codes (first codebooks all), the Hub's shard 94.7%.
 - So a cache may be built on either device, or partly on each: rows differ only by near-ties.
-- `cache_codes` now lists an English clip shorter than one CTC frame as `Rejected`; it used to stop
+- `cache.en_speech` now lists an English clip shorter than one CTC frame as `Rejected`; it used to stop
   the run with wav2vec2_mlx's ValueError.
 
 ## Speed on the Mac
@@ -285,7 +288,7 @@ dataset's rows; speed is real time on the Mimi audio (both clips plus the delay)
 - A speed lever, a device or a model goes here, for every builder at once; read both Speed
   sections first, since each device's levers were measured there and do not carry over (MLX runs
   one clip per forward, CUDA large padded batches).
-- Check a change against rows already built: the old build's shards (`cache_codes`'
+- Check a change against rows already built: the old build's shards (`cache.en_speech`'s
   `en-vi-grounded-v2/` and the tranche's, both on the Hub) must come out equal, or equal but for
   near-ties on another device or with `ane_ctc`, whose device for a row's CTC depends on its window,
   so on where the build started. Compare speeds interleaved on the same rows.

@@ -81,7 +81,7 @@ VieNeu, each step adding to the one above:
 - Enrolment on the GPU: the SDK's ONNX denoiser and speaker encoder in PyTorch (onnx2torch in the
   bench, `training/tranche/onnx_graph.py` in production: on the speaker encoder cosine ≥ 0.99997 to
   onnxruntime, on the denoiser bit-exact to the bench's runner), its Kaldi fbank batched on the GPU
-  (`training/prep/kaldi.py`, shared with the WeSpeaker scores: 0.019 ms a clip, embeddings at cosine 0.999999 to the SDK's
+  (`training/audio/kaldi.py`, shared with the WeSpeaker scores: 0.019 ms a clip, embeddings at cosine 0.999999 to the SDK's
   kaldi-native-fbank), clips trimmed to whole 0.25 s and batched by length (81% are the full 8 s).
   Without the denoiser VieNeu runs 38.1 rows/s at the continuous step but breaks 11.9%: it stays.
 - MOSS decode and encode run whole: every attention layer of the codec is causal with a window

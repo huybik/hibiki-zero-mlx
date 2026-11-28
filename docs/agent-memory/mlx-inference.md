@@ -18,17 +18,15 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `inference/macos/HibikiTestApp/` is a SwiftUI wrapper that runs `inference/main.py` (file mode,
   which it can stop, or the mic) with the conda Python path hard-coded. It finds the repo root by
   walking up from the current directory, then from its bundle, to a directory holding
-  `inference/main.py` and `inference/hibiki_mlx/`,
-  and sets `PYTHONPATH` to that checkout's `inference` and `inference/moshi-mlx`: the editable
-  installs point at the main checkout, so an app built in a worktree would otherwise run the
-  worktree's `hibiki_mlx` on main's `moshi_mlx`. It opens on the model last chosen (user defaults
-  `com.huybik.hibiki-test` `modelPath`, written only by a choice, so a model on an unmounted drive
-  is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download). Closing its window
-  quits it, and quitting ends its backend. The mic transcript starts after the blank line that
-  follows main.py's `listening` line (a traceback during load has blank lines of its own). It
-  decodes each pipe read as UTF-8 with replacement (Python writes each streamed character in one
-  small write, which a pipe does not split, so only a long write such as a traceback can be cut
-  mid-character) and reads what is left at exit.
+  `inference/main.py` and `inference/hibiki_mlx/`, whose `main.py` imports the `hibiki_mlx` beside
+  it first, so an app built in a worktree runs the worktree's runtime. It opens on the model last
+  chosen (user defaults `com.huybik.hibiki-test` `modelPath`, written only by a choice, so a model
+  on an unmounted drive is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's
+  download). Closing its window quits it, and quitting ends its backend. The mic transcript starts
+  after the blank line that follows main.py's `listening` line (a traceback during load has blank
+  lines of its own). It decodes each pipe read as UTF-8 with replacement (Python writes each
+  streamed character in one small write, which a pipe does not split, so only a long write such as a
+  traceback can be cut mid-character) and reads what is left at exit.
   Its "Spoken language" picker (Auto, Vietnamese, English) passes `--speaking` to both modes
   ([priming](#runtime)). `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by
   System Events (by index under `group 1 of window "Hibiki Test"`: `group 1` the model, `radio
@@ -40,25 +38,26 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 
 ## Runtime
 
-`inference/hibiki_mlx/pipeline.py` owns load and run, plus the repo-root constants `W`
-(`weights/`), `UPSTREAM` (`weights/hibiki-zero-3b-q4`) and `SAMPLE` (`inference/assets/leon.wav`).
-`pip install -e .` installs `hibiki_mlx` from `inference/`.
+`inference/hibiki_mlx/` is the runtime, a module per job: `model.py` (load, quantize, `Model`, the
+repo-root paths `W`, `UPSTREAM` (`weights/hibiki-zero-3b-q4`) and `SAMPLE` (`leon.wav`)),
+`file_mode.py` (`translate`, `run`), `mic.py` (`run_mic`), `primer.py`, `text.py`, `level.py`,
+`voice.py`, `echo.py` and `lm/`, the LM ([Vendored moshi-mlx](#vendored-moshi-mlx)); `main.py`
+parses arguments and picks a mode. `pip install -e .` installs `hibiki_mlx` from `inference/`.
 
-- `load()` returns a `Model`: the LM, its config, tokenizer and the samplers `lm_gen_config` sets.
-  `Model.mimi()` makes a fresh `rustymimi.Tokenizer`: one cannot serve two threads, and each stream
-  needs a fresh one (after `reset()`, a clip's first frame differed in 14 of 16 codebooks).
+- `load()` returns a `Model`: the LM, its config, tokenizer and the samplers `lm_gen_config` sets,
+  which `Model.generator` gives a stream's `LmGen`. `Model.mimi()` makes a fresh
+  `rustymimi.Tokenizer`: one cannot serve two threads, and each stream needs a fresh one (after
+  `reset()`, a clip's first frame differed in 14 of 16 codebooks).
 - `translate()` overlaps CPU Mimi encoder and decoder threads with the GPU LM on the main thread;
   queues carry NumPy arrays (lazy MLX graphs are bound to their thread). `audio=False` skips the
-  decoder; `run()` writes its WAV and text. A frame is 1920 samples at 24 kHz (80 ms, 12.5 Hz).
+  decoder; `run()` writes its WAV and text. A frame (`level.FRAME`) is 1920 samples at 24 kHz.
 - The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
-  Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
+  Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench`'s
   frames (timed in "level + mimi encode"). It raises quiet speech toward −6 dBFS; how and why
   in [sft-evaluation](sft-evaluation.md#input-level). The evaluation (`training/finetune/
   common.py`) imports it as `inference.hibiki_mlx.level`, so the module needs only NumPy.
-- `hibiki_mlx` and `moshi_mlx` are installed editable from the main checkout, so in a worktree
-  run the tools with `PYTHONPATH=<worktree>/inference:<worktree>/inference/moshi-mlx`: otherwise
-  they import main's packages (`main.py` finds its own `hibiki_mlx` first, not `moshi_mlx`). With
-  main's older `moshi_mlx` the source EOS was code 2047 and no clip ended.
+- `hibiki_mlx` is installed editable from the main checkout, so in a worktree run the tools with
+  `PYTHONPATH=<worktree>/inference`, or they run main's runtime (`main.py` finds its own first).
 - File mode feeds a file as training's free-running evaluation does
   (`common.generate_batch`), so its scores compare with the box's: the levelled first channel
   zero-padded to whole frames, then one frame whose 16 source codes are all the source EOS
@@ -172,7 +171,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - `config.json` names the MLX weights (`moshi_name`, required), the sampling (`lm_gen_config`,
   required) and, for quantized weights, `quantization`: `group_size` and `bits` for every Linear
   and Embedding, plus an entry `{"group_size", "bits"}` of its own for each layer quantized
-  otherwise, keyed by its module path (mlx-lm's layout). `pipeline.quantize` quantizes the bf16
+  otherwise, keyed by its module path (mlx-lm's layout). `model.quantize` quantizes the bf16
   model by it (MLX's per-layer `class_predicate`), then loads strictly, shapes included: a record
   that disagrees with the weights fails to load. Without `quantization` the weights are bf16. The
   Swift runtime runs no MLX weights, only a Core ML LM's directory ([lm-npu](lm-npu.md#export)).
@@ -221,8 +220,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   and the base share `text_card`, so a wrong one loads and prints the wrong words,
   [vi-tokenizer](vi-tokenizer.md#runtimes)); its vocabulary must equal `text_card`. The Mimi
   file is `mimi_name` (default `mimi-pytorch-e351c8d8@125.safetensors`).
-- `inference/tools/convert_mlx.py --checkpoint --config --mimi [--tokenizer] [--bits {4,6}]
-  --out-dir` stages an exact PyTorch checkpoint (upstream's, or an SFT or GRPO
+- `python -m inference.tools.convert_mlx --checkpoint --config --mimi [--tokenizer]
+  [--bits {4,6}] --out-dir` stages an exact PyTorch checkpoint (upstream's, or an SFT or GRPO
   `*_step*.safetensors`, fp32 or bf16) into a new directory, quantized or BF16, and refuses to
   overwrite. It ships the tokenizer the checkpoint is on: its safetensors metadata `text_tokenizer`
   (else the base, as in training), from `weights/` or `--tokenizer`, whose file name must match; the
@@ -232,9 +231,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 
 ## Vendored moshi-mlx
 
-- `inference/moshi-mlx/` is upstream's LM cut to what Hibiki-Zero's models use (`pip install -e
-  ./inference/moshi-mlx`; it and the root `pyproject.toml` need `mlx>=0.31`): one stream generated
-  a frame at a time (`LmGen.step`; `RotatingKVCache` takes one step a call), top-k sampling, no
+- `inference/hibiki_mlx/lm/` is moshi_mlx 0.3.0's LM (MIT, its `LICENSE` there; `mlx>=0.31`) cut
+  to what Hibiki-Zero's models use: `lm.py`, `transformer.py` with its `RotatingKVCache` (one step
+  a call), `generate.py` (`LmGen`, one stream a frame at a time) and `sampling.py` (top-k); no
   conditioning or guidance. `LmConfig.from_config_dict` refuses upstream's options no Hibiki-Zero
   model sets (conditioners, cross-attention, a demuxed second stream, extra heads, layer scale,
   low-rank depformer embeddings, a positional embedding other than `rope_concat`, or any in the
@@ -245,9 +244,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
 - The audio head is the depformer (a slices student's last slice samples its `parallel_codebooks`
   at once, their `linears` stacked: [student-slices](student-slices.md)) or a heads student's
   `ParallelHeads` (`"parallel"`, [student-heads](student-heads.md#design)): `depformer.heads.{j}` as
-  one Linear (8 bits under `--bits`) on the main output plus the text token's `text_emb`. `load_pytorch_weights` reads upstream's fused
-  `in_proj_weight` and moshi 0.2.13's per-slice `in_projs.N`. `LmGen` does not check the tokens it
-  feeds for ungenerated ones: that check is a GPU sync a codebook, 3–4.5 ms of a student's step.
+  one Linear (8 bits under `--bits`) on the main output plus the text token's `text_emb`.
+  `convert_mlx.load_pytorch_weights` reads upstream's fused `in_proj_weight` and moshi 0.2.13's
+  per-slice `in_projs.N`. `LmGen` does not check the tokens it feeds for ungenerated ones: that
+  check is a GPU sync a codebook, 3–4.5 ms of a student's step.
 
 ## Gates
 
@@ -264,7 +264,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   with the box's in sampling and input, not in batching: training samples rows 64 at a time. The
   pairs are `data/eval/` files ([sft-evaluation](sft-evaluation.md#evaluation-sets)), their audio
   paths relative to the repo root.
-- `inference/tools/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
+- `python -m inference.tools.bench --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
   Mimi decode), the RT factor and the artifact size. `--silence` gates rms < 0.10 and peak < 1.1. Its GPU idles
   on Mimi between steps and clocks down, as live steps do ([student-heads](student-heads.md#inference)).
 
@@ -277,14 +277,14 @@ These rules hold for every MLX model here (the Hibiki LM, VieNeu, Mimi, wav2vec2
   again for each new input shape, and memory grows with every one: MLX wav2vec2-base compiled and
   fed 252 clips of 252 different lengths reached a 61 GB footprint and filled 43 GB of swap
   (2026-10-27); uncompiled, the same run peaked at 3.6 GB. `mx.set_cache_limit` (1 GB in that
-  run) does not bound it. Bucket lengths before compiling (`training/prep/mimi_mlx.py` pads to
+  run) does not bound it. Bucket lengths before compiling (`training/cache/mimi_mlx.py` pads to
   multiples of 16 frames: at most 18 shapes, 1.8 GB), or keep the function eager. A model whose
-  output changes with padding needs the padding masked first (`training/prep/wav2vec2_mlx.py`
+  output changes with padding needs the padding masked first (`training/cache/wav2vec2_mlx.py`
   masks wav2vec2-base's GroupNorm, positional convolution and attention keys).
 - Every compiled function in the repo sees fixed shapes: the depformer step, one compile per
-  slice (`moshi_mlx/models/lm.py`); the attention regions of a single-token step, with the RoPE
-  offset passed as an array (`moshi_mlx/modules/transformer.py`); the samplers; the VieNeu
-  frame (`training/prep/vieneu_mlx.py`); the bucketed Mimi encoder (`mimi_mlx.py`) and wav2vec2
+  slice (`hibiki_mlx/lm/lm.py`); the attention regions of a single-token step, with the RoPE
+  offset passed as an array (`hibiki_mlx/lm/transformer.py`); the samplers; the VieNeu
+  frame (`training/en_vi_dataset/vieneu_mlx.py`); the bucketed Mimi encoder (`mimi_mlx.py`) and wav2vec2
   (`wav2vec2_mlx.py`). Hold any new compiled path to the same rule.
 - MLX also keeps freed buffers across shapes; cap the cache with `mx.set_cache_limit` when shapes
   vary ([vi-tts](vi-tts.md#engine) caps the codec at 2 GB). Too small a cap costs speed instead:

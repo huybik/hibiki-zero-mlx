@@ -1,6 +1,6 @@
 import Foundation
 
-/// Top-k sampling at a temperature, as `moshi_mlx.utils.sampling.Sampler(temp:, top_k:)`, on
+/// Top-k sampling at a temperature, as `hibiki_mlx.lm.sampling.Sampler(temp:, top_k:)`, on
 /// logits in host memory (the Core ML LM's). A temperature of 0 takes the argmax.
 public struct Sampler {
     public let temp: Float

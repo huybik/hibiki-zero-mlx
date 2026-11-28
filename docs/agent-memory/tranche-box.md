@@ -76,13 +76,13 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
   English speech (2,481 of 8,456 h). The `vi-en` caches of all 1,832 train shards, noisy and
   clean, are on the Hub (78 GB each): a run fetches them, so `vi-en` needs no data work; using all
   of them is the next run's shard list (round 4e listed 500). `en-vi` had round 4e's 500; this
-  box built 27 more beside the heads run (`cache_codes --direction en-vi`, capped at 30% of the
+  box built 27 more beside the heads run (`cache.en_speech --direction en-vi`, capped at 30% of the
   card) before the user took the data preparation to a separate session (2026-11-21: "continue with
   training, i will do the data preparation on a separate session"). Profiled on 2 shards: 21.3 h
   of audio built in 122 s, 98.7% of rows kept; the heads run went 0.69 → ~1.4 s an update while it
   built. A batch of 25 (512 h of Mimi audio, both clips) took 1,903 s at ~970× real time on the
   shared GPU, 719 s of download (~8 MB/s) and 180 s of upload. The Mac and then the RTX 5090 box
-  built the rest and every noisy copy (`training/prep/noisy_cache.py`, [envi-data](envi-data.md)).
+  built the rest and every noisy copy (`training/cache/noisy.py`, [envi-data](envi-data.md)).
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
@@ -183,7 +183,7 @@ answers in 198.18.0.0/15.
     starting meanwhile packs half-written ones. A shard whose `pack.json` is marked `dropped`
     counts as fetched.
 - `fleurs-en`, `en-vi-val-en` and `en-vi-val-en-noisy` are in the dataset repo's `eval/` since
-  2026-11-22 (built on the box with `training.prep.eval_sets`).
+  2026-11-22 (built on the box with `training.finetune.eval_sets`).
 - Xet uploads stalled twice at the end of a probe's final sync (2026-11-22): ~250 KB/s at 99% of
   the model. Plain LFS ran 20–35 MB/s. The stalled sync was stopped by its PID (its files stay
   staged), and the run's one-shot final sync rerun with `HF_HUB_DISABLE_XET=1`

@@ -12,7 +12,7 @@ voice-matched VI→EN pair rows by the data phase of
 [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md). Its transcripts are all translated to
 Vietnamese ([en-vi-translation](en-vi-translation.md)) and voiced in Vietnamese
 ([vi-tts](vi-tts.md)); no pair rows are built from them yet. Those rows would then go through
-`cache_codes` and train together with the ~0.8k-hour PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)).
+`cache.en_speech` and train together with the ~0.8k-hour PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)).
 
 ## Contents
 
@@ -49,7 +49,7 @@ clip's Ogg length against `en_duration_s` found no others.
 
 ## Origin
 
-`training/prep/build_en_speech.py` built the corpus and was retired once it moved into the
+`build_en_speech.py` built the corpus and was retired once it moved into the
 dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
 
 - Common Voice came from the Mozilla Data Collective API (dataset `cmu5jplf300nwmh07iqvk9leo`,

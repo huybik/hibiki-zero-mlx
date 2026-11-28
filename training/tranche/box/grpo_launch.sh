@@ -37,7 +37,7 @@ args=()
                          --pair-cache-dir data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
                          --model-weight "$1" --gen-frames 614400 --micro-batch 2 --updates 2000 "${@:2}")
 # The rooms' noise bank (grpo.py --bank-dir's default), fetched here once, not inside the run.
-.venv/bin/python -c 'from pathlib import Path; from training.prep.augment import fetch_bank; print(fetch_bank(Path("data/rirs_noises")))'
+.venv/bin/python -c 'from pathlib import Path; from training.audio.augment import fetch_bank; print(fetch_bank(Path("data/rirs_noises")))'
 echo "$(date -u '+%F %T') $run ${args[*]}" >> /workspace/logs/grpo.log
 setsid ./training/h100.sh grpo "$run" "${args[@]}" >> /workspace/logs/grpo.log 2>&1 < /dev/null &
 echo $! > /workspace/logs/grpo.pid

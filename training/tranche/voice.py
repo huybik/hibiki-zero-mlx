@@ -3,7 +3,7 @@
 ([tranche-tts](../../docs/agent-memory/tranche-tts.md); speed: [tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu)):
 - English for the real-Vietnamese tranche (`run <source>`): each segments row's text_en from its Vietnamese clip;
 - Vietnamese for the EN-VI dataset (`run en_speech`): each en_speech train row's text_vi from its English clip, where
-  the Vietnamese the dataset holds (the Mac's MLX voicing, training/prep/tts_en_speech.py) is broken.
+  the Vietnamese the dataset holds (the Mac's MLX voicing, training/en_vi_dataset/tts.py) is broken.
 
 Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=True, use_ref_codes=True)`:
 - the reference: the row's clip trimmed of silence at 30 dB, its first 8 s, cut to whole quarter seconds so the
@@ -325,7 +325,7 @@ class Voicer:
         import soxr
         import torch
 
-        from training.prep import kaldi
+        from training.audio import kaldi
 
         groups: dict[int, list[int]] = {}
         for i, c in enumerate(clips):

@@ -3,7 +3,7 @@
 `training/h100.sh` sets up a pinned environment, checks the pod, and runs
 `training.finetune.train` with Hugging Face disaster recovery. Training starts from
 the upstream Hibiki-Zero weight and updates every parameter on grounded cache
-directories built by `training.prep.cache_codes`. A run survives preemption: running
+directories built by `training.cache.en_speech`. A run survives preemption: running
 `h100.sh run RUN_NAME` again continues it from its newest local checkpoint, so an
 interruptible pod reruns it on boot.
 
@@ -54,7 +54,7 @@ checks the Python build, the GPU, driver, package pins, RAM (the container's lim
 and the SHA-256 of the four upstream artifacts, and requires a clean tracked worktree.
 
 Restore the training caches from the cache repo (built with
-[training/prep](../training/prep/README.md)): the `en_speech` cache with its validation split.
+[training/cache](../training/cache/README.md)): the `en_speech` cache with its validation split.
 The PhoMT cache (`--include "phomt-grounded-v2-5s/shard_*.pt"`) trains as one more `--cache-dir`
 in a later ablation, once its `en-vi` cache is built (it is not yet): every row needs its pair in
 the other direction ([sft-training](agent-memory/sft-training.md#target-timing)).
@@ -73,7 +73,7 @@ limit (429) partway; logged in they do not, and `hf download` resumes where it s
   data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data \
   --include "eval/*"
-./.venv/bin/python -m training.prep.eval_sets --sets giga-heldout  # gated: HF_TOKEN with access
+./.venv/bin/python -m training.finetune.eval_sets --sets giga-heldout  # gated: HF_TOKEN with access
 ```
 
 The second downloads the other direction's caches, the pairs (78 GB). The third packs each shard
@@ -82,7 +82,7 @@ into a flat memory-mapped array beside it
 of unpickling them for 7.5 minutes, and keeps them out of RAM. Training builds missing packs
 itself, so this only moves that work before `run` checks the free disk. The fourth packs the
 pairs and deletes their shards (~75 GB of packs stay: count them in the disk). The fifth downloads the
-evaluation sets into `data/eval/` (`training.prep.eval_sets` builds them anew); training translates FLEURS dev and the held-out `en-vi-val` rows at every
+evaluation sets into `data/eval/` (`training.finetune.eval_sets` builds them anew); training translates FLEURS dev and the held-out `en-vi-val` rows at every
 validation, scores each set apart, chooses its checkpoint on FLEURS, and refuses to start
 without them
 ([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)). The sixth builds the held-out
@@ -145,13 +145,13 @@ it with `--include "en-vi-grounded-v2-noisy/train/*"` and packs it rather than r
 C=data/cache/en-vi-grounded-v2/train O=data/cache/en-vi-grounded-v2-noisy/train
 V=data/cache/en-vi-grounded-v2/validation
 # From a second worktree of the PR's commit: a preempted first run resumes only on its own commit.
-nohup ./.venv/bin/python -m training.prep.noisy_cache fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
+nohup ./.venv/bin/python -m training.cache.noisy fetch --cache-dir $C --out-dir $O >> fetch.log 2>&1 &
 # After the first run's final save and sync (its final pair is in PREVIOUS_RUN/checkpoints/ on the Hub):
 ln runs/PREVIOUS_RUN/model_stepFINAL.safetensors weights/PREVIOUS_RUN_stepFINAL.safetensors
 rm runs/PREVIOUS_RUN/trainer_step*.pt runs/PREVIOUS_RUN/model_stepOTHER.safetensors
 rm -r $C/.packed                                            # 70 GB
-./.venv/bin/python -m training.prep.eval_sets --sets en-vi-val-noisy
-./.venv/bin/python -m training.prep.noisy_cache encode --cache-dir $C --out-dir $O   # ends with "every shard written"
+./.venv/bin/python -m training.finetune.eval_sets --sets en-vi-val-noisy
+./.venv/bin/python -m training.cache.noisy encode --cache-dir $C --out-dir $O   # ends with "every shard written"
 rm -r $O/.sources $C/shard_*.pt                             # 73 GB; the clean shards stay on the Hub
 ./.venv/bin/python -m training.finetune.streams $O $V       # pack before run checks the free disk
 ./training/h100.sh run RUN_NAME --cache-dir $O --val-cache-dir $V \

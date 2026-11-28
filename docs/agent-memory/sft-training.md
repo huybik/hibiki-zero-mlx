@@ -56,7 +56,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   drawn from [half the source, 1 s past its end] instead of their start ([Target
   timing](#target-timing)) when that is later; one that would push its stream past the longest
   keeps its start. The cache draws every delay from U[0, 0.5 ×
-  the source's duration] (`cache_rows.target_delay_s`), so a first word rarely comes after its
+  the source's duration] (`cache.rows.target_delay_s`), so a first word rarely comes after its
   source has ended: measured on the box (2026-11-11, 12 packs a cache), 0.04% of the GigaSpeech 2
   and `en-vi` validation rows, 0.87% of the `en_speech` train rows and 1.7% of the `vi-en`
   validation rows (2.6% of its CV27 rows, 0% of its Libriheavy ones: the English Common Voice
@@ -165,7 +165,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   optional `--fp8` (rowwise E4M3 on the main transformer's and a depformer's linears) ([sft-speed-5090](sft-speed-5090.md)).
   Batches pad to 16-frame buckets (`streams.FRAME_BUCKET`), and training requires torch compile
   (moshi's and `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is
-  CUDA-only (`train.py` has no device flag); the `training.prep` steps, the cache build included
+  CUDA-only (`train.py` has no device flag); the `training.en_vi_dataset` and `training.cache` steps, the cache build included
   ([sft-data-caches](sft-data-caches.md)), run on the Mac.
 
 ## Target timing
@@ -177,7 +177,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   own). A row's source token times are its pair's text track: the row of the same id in the other
   direction's cache (user, 2026-11-22: fix English to Vietnamese starting ahead of its English).
 - Why: the cached delay counts from the source clip's start (U[0, 0.5 × its duration],
-  `cache_rows.target_delay_s`) and ignores where its words are. VI→EN runs behind anyway (its
+  `cache.rows.target_delay_s`) and ignores where its words are. VI→EN runs behind anyway (its
   English is longer and English clips open on silence), but EN→VI put a Vietnamese word over 1 s
   ahead of its English in 20–30% of rows, and began before the English speaker in 4–23%, on one
   shard of each source (2026-11-22). A model trained on that has to guess words not yet heard.
@@ -195,7 +195,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - `load_rows` leaves out a row whose pair is missing because the other direction's build
   rejected it for a low alignment score: speech and text disagree (1.2% of those rows; 2.4% of
   GigaSpeech 2's `vi-en` rows). A row the other build rejected for its frame grids
-  (`text_timing.CAPACITY_REASONS`: more characters than CTC frames, more tokens than 80 ms
+  (`cache.timing.CAPACITY_REASONS`: more characters than CTC frames, more tokens than 80 ms
   frames) is fast or dense speech and sound: it trains at its cached delay, its source untimed
   (2.8% of GigaSpeech 2's `vi-en` rows, 2.0% of PhoAudiobook's; each pack lists them as
   `capacity`). The user kept them (2026-11-22: "yes keep them"). The CTC ones came from a length

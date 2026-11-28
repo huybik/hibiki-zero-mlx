@@ -1,9 +1,9 @@
 # Two-way speech: English to Vietnamese beside Vietnamese to English
 
-Read when touching a direction (`--direction`, `cache_rows.Settings.direction`, a shard's or
+Read when touching a direction (`--direction`, `cache.rows.Settings.direction`, a shard's or
 pack's `direction`), the run's text tokenizer (`--tokenizer`, `common.run_tokenizer`,
 `paths.swap_slots`, a pack's `tokenizer` and `text.bin`), the Vietnamese aligner
-(`text_timing.ALIGNERS["vi"]`), an `en-vi` cache, the English-audio evaluation sets, or the
+(`cache.timing.ALIGNERS["vi"]`), an `en-vi` cache, the English-audio evaluation sets, or the
 two-way run ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)); the next one is [teacher-next](teacher-next.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Where a direction lives](#where-a-direction-lives) ·
 [Tokenizer checks](#tokenizer-checks) · [Vietnamese aligner](#vietnamese-aligner) · [Checked](#checked) ·
@@ -17,7 +17,7 @@ Decided 2026-11-10, for two-way training:
   The row layout holds in both: text, 16 target codebooks, 16 source codebooks
   ([sft-data-caches](sft-data-caches.md#row-layout)), so an `en-vi` row's target is Vietnamese
   speech and its text Vietnamese.
-- An `en-vi` cache is built from audio through `cache_build`, never by swapping a `vi-en` row's
+- An `en-vi` cache is built from audio through `cache.build`, never by swapping a `vi-en` row's
   tracks: the target text must be timed against the target audio
   ([cache-build](cache-build.md#rows)).
 - `en-vi` text is tokenized with the Vietnamese swap (`tokenizer_spm_48k_multi6_2_vi6k.model`,
@@ -39,14 +39,14 @@ Decided 2026-11-10, for two-way training:
 |---|---|
 | cache rows | `Settings(direction=…)`: `.source`, `.target`, `.aligner` (the target language's); a builder's rows carry `text_en` and `text_vi` |
 | shards | payload `direction` and `tokenizer` (its file name); samples keep `vi_frames` and `en_frames` (the target's counts its delay), both texts as the source wrote them, `text_timing` (the aligner's name); Vietnamese text is NFC'd before it is tokenized and timed |
-| `cache_codes` | `--direction en-vi` on either device (`--ane-ctc` puts the Vietnamese aligner on the Mac's Neural Engine, [cache-build](cache-build.md#mlx)); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
+| `cache.en_speech` | `--direction en-vi` on either device (`--ane-ctc` puts the Vietnamese aligner on the Mac's Neural Engine, [cache-build](cache-build.md#mlx)); the tokenizer follows the direction (`paths.DIRECTION_TOKENIZERS`) |
 | checkpoints | metadata `text_tokenizer`: the run's `--tokenizer` file name (none before 2026-11-10: the base) |
 | trainers | `--tokenizer` defaults to the start weight's; each shard checked against it ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache, scored apart |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
 | streams | Packs (`PACK_VERSION` 5 on) store each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
 | evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
-`noisy_cache` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)); the next run's data is in [envi-data](envi-data.md).
+`cache.noisy` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)); the next run's data is in [envi-data](envi-data.md).
 
 ## Tokenizer checks
 
@@ -163,7 +163,7 @@ pilot ("use more data for the two ways run"), update on round 4's 8,192 frames. 
 both directions of every row round 4e trained, and the pilot's test at its first validation.
 
 - Its `en-vi` inputs, all on the Hub: `fleurs-en` and `en-vi-val-en`; the 3 `en_speech`
-  validation shards and round 4e's 500 train shards (`box/en_speech_sub.txt`) by `cache_codes
+  validation shards and round 4e's 500 train shards (`box/en_speech_sub.txt`) by `cache.en_speech
   --direction en-vi`, at `en-vi/en-vi-grounded-v2/` of `huybik/hibiki-zero-vi-full-sft` (dataset;
   the other 1,332 train shards are there too, [envi-data](envi-data.md#on-the-hub)); every
   tranche shard `en-vi` (`cache build`), at the cache repo's `en-vi/<source>/`.
@@ -172,7 +172,7 @@ both directions of every row round 4e trained, and the pilot's test at its first
   the swap, the same 1,265 reassigned dropped), each folder only once the Hub lists its shards
   (`--drop-shards` does not check): both directions' shards and packs (~290 GB) would not fit the
   350 GB disk beside a run's checkpoints.
-- `publish_caches` names its Hub prefix after the out-dir's name, which for
+- `cache.publish` names its Hub prefix after the out-dir's name, which for
   `data/cache/en-vi/en-vi-grounded-v2` is the `vi-en` cache's: never run it on that folder.
 - `init_weights` moves round 4's final model onto the swap
   (`weights/twoway_start_vi6k.safetensors`); `eval.py` scores it on the run's seven sets with
@@ -233,7 +233,7 @@ both directions of every row round 4e trained, and the pilot's test at its first
   60,000 and 72,000 all peak at −40 to −25 dBFS. Short clips go silent a little more often at any
   level (MultiMed-ST, 90% of it peaking above −12 dBFS: 0.6-1.4% of the clips under 8 s, 0-0.6%
   of longer ones), as the cache rarely starts a target after its source ends
-  (`cache_rows.target_delay_s` draws the delay from U[0, 0.5 × the source's duration]). This
+  (`cache.rows.target_delay_s` draws the delay from U[0, 0.5 × the source's duration]). This
   run validates without the input level stage (its commit predates it), so its scores compare
   with each other, not with evaluations after 2026-11-12.
 

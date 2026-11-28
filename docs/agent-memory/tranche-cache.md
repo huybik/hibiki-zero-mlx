@@ -91,12 +91,12 @@ draws use split `train`. It skips the shards held out for evaluation
 - On the box: `restart.sh cache` ([tranche-box](tranche-box.md)), which runs
   `/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga yodas --direction both
   --drop-inputs` (`--device cuda`, the default): both directions in one pass, each shard read and decoded once, on
-  Python 3.14t with Triton from `box/envs.sh` (the `.venv` runs it too) ([cache-speed-cuda](cache-speed-cuda.md)). Needs `data/eval` (`.venv/bin/python -m training.prep.eval_sets --sets fleurs
+  Python 3.14t with Triton from `box/envs.sh` (the `.venv` runs it too) ([cache-speed-cuda](cache-speed-cuda.md)). Needs `data/eval` (`.venv/bin/python -m training.finetune.eval_sets --sets fleurs
   multimed`, 41 s) and `weights/` ([docs/finetune.md](../finetune.md)). With the TTS and the ASR
   server on the GPU, ~1.3 GB of it is free, so the build runs after them.
 - On the Mac, when no box runs: from the repo root with `HF_TOKEN_AN` in the environment,
   `nice -n 19 python -m training.tranche.cache build giga --device mlx --root <dir> --limit <n>`
-  (the conda Python, as `cache_codes`). Its parts come from the Hub into the HF
+  (the conda Python, as `cache.en_speech`). Its parts come from the Hub into the HF
   cache on `/Volumes/data`; the caches go to `<root>/cache/` and the cache repo. Give it `--limit`
   when the box builds too: each run lists the Hub once at its start, so both would build the same
   shards (wasted work, not corrupt data). A GigaSpeech 2 archive takes ~14 min at ~220x

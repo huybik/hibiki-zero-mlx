@@ -1,7 +1,7 @@
 # SFT evaluation
 
 Read when touching `training/finetune/eval.py`, `training/finetune/validate.py`,
-`training/prep/eval_sets.py`, `data/eval/`, the validation and promotion in
+`training/finetune/eval_sets.py`, `data/eval/`, the validation and promotion in
 `training/finetune/train.py`, or the input level stage (`inference/hibiki_mlx/level.py`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Checkpoint selection](#checkpoint-selection) ·
 [Side tools](#side-tools) · [Recording results](#recording-results) ·
@@ -140,7 +140,7 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 
 ## Evaluation sets
 
-`training.prep.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, and for `giga-heldout`
+`training.finetune.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, and for `giga-heldout`
 PyAV and num2words, so it runs on the Mac or the pod)
 writes `eval.py` pair files under `data/eval/`; they are never trained on
 ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). FLEURS and MultiMed-ST built and checked
@@ -189,7 +189,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
   commit (`GIGA_HELDOUT_REVISION`), so every pod writes the same rows.
 - GigaSpeech 2's terms keep its audio off the public dataset repo (an upload of `data/eval` to its
   `eval/` passes `--exclude "giga-heldout/*"`): build it where it runs, from the
-  gated tranche repo with an `HF_TOKEN` granted access (`training.prep.eval_sets --sets
+  gated tranche repo with an `HF_TOKEN` granted access (`training.finetune.eval_sets --sets
   giga-heldout`: ~5 min on the Mac, most of it reading the text columns of every training shard;
   ~0.9 GB of parquet into the HF cache, 354 MB of 48 kHz WAV). It is not in the cache build's
   overlap check (`filters.EVAL_SETS`): the build drops overlapping rows from the set instead.
@@ -214,7 +214,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
   the Libriheavy ones: libopus there sits 2 samples off with differences up to 0.45 (pod,
   2026-11-04; [noisy-source](noisy-source.md#checks)). Scores are comparable across checkpoints
   either way. It cuts at the stored duration, not the last granule: the TTS
-  encoder (`tts_en_speech.encode`) counts the pre-skip twice, so granules run 312 samples high. It refuses a clip that is not mono, has an output gain, or
+  encoder (`en_vi_dataset.tts.encode`) counts the pre-skip twice, so granules run 312 samples high. It refuses a clip that is not mono, has an output gain, or
   decodes shorter than its stored duration or a 20 ms packet or more longer. The rows keep
   `speaker` and `source_row`.
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Unified per-stage benchmark for the MLX hibiki runtime.
 
-  python inference/tools/bench.py --model 3b            # per-stage ms table
-  python inference/tools/bench.py --model 3b --silence  # silence-in gate (rms/peak)
+  python -m inference.tools.bench --model 3b            # per-stage ms table
+  python -m inference.tools.bench --model 3b --silence  # silence-in gate (rms/peak)
 
 Splits each frame into level + mimi encode / LM main transformer / LM audio head (the depformer,
 or a heads student's parallel heads) / mimi decode using mx.eval barriers, then reports the RT
@@ -17,9 +17,8 @@ import mlx.core as mx
 import numpy as np
 import sphn
 
-from hibiki_mlx import pipeline as pl
 from hibiki_mlx.level import Leveller
-from moshi_mlx import models
+from hibiki_mlx.model import SAMPLE, load, resolve_weights_dir
 
 
 def main() -> None:
@@ -34,8 +33,8 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    weights_dir = pl.resolve_weights_dir(args.model)
-    loaded = pl.load(weights_dir)
+    weights_dir = resolve_weights_dir(args.model)
+    loaded = load(weights_dir)
     mx.random.seed(299792458)
     model = loaded.lm
     mimi_enc, mimi_dec = loaded.mimi(), loaded.mimi()
@@ -47,16 +46,11 @@ def main() -> None:
         in_pcms = np.zeros((1, args.frames * 1920), dtype=np.float32)
         args.warmup = 0
     else:
-        in_pcms, _ = sphn.read(str(pl.SAMPLE), sample_rate=24000)
+        in_pcms, _ = sphn.read(str(SAMPLE), sample_rate=24000)
     total = args.warmup + args.frames
     assert in_pcms.shape[-1] >= total * 1920, "sample too short for --frames"
 
-    gen = models.LmGen(
-        model=model,
-        max_steps=total + 8,
-        text_sampler=loaded.text_sampler,
-        audio_sampler=loaded.audio_sampler,
-    )
+    gen = loaded.generator(total + 8)
 
     # Time the audio head (the autoregressive depformer, or the parallel heads) inside the LM step
     # with eval barriers.

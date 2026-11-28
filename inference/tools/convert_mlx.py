@@ -2,7 +2,7 @@
 """Stage an exact Hibiki PyTorch checkpoint as an MLX model directory, bf16 or (--bits)
 quantized, with the text tokenizer the checkpoint is on.
 
-  python inference/tools/convert_mlx.py --checkpoint CKPT.safetensors --config config.json \\
+  python -m inference.tools.convert_mlx --checkpoint CKPT.safetensors --config config.json \\
       --mimi mimi-pytorch-e351c8d8@125.safetensors [--tokenizer TOK.model] [--bits {4,6}] \\
       --out-dir DIR
 
@@ -28,9 +28,9 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten
 
-from hibiki_mlx.pipeline import W as WEIGHTS
-from hibiki_mlx.pipeline import quantize
-from moshi_mlx import models
+from hibiki_mlx.lm.lm import Lm, LmConfig
+from hibiki_mlx.model import W as WEIGHTS
+from hibiki_mlx.model import quantize
 
 # Upstream's tokenizer, which a checkpoint without `text_tokenizer` is on (training/paths.py
 # DEFAULT_TOKENIZER).
@@ -68,6 +68,91 @@ def quantization_record(lm: nn.Module, bits: int) -> dict:
     return record
 
 
+def load_pytorch_weights(
+    lm: Lm,
+    file: str,
+    lm_config: LmConfig,
+    strict: bool = True,
+) -> nn.Module:
+    """Loads a PyTorch checkpoint into `lm` under its MLX names."""
+    pth_t = mx.load(file)
+
+    mlx_t = {}
+    mlx_t["out_norm.weight"] = pth_t["out_norm.alpha"][0, 0]
+    for name in ["text_emb.weight", "text_linear.weight"]:
+        mlx_t[name] = pth_t[name]
+    for cb_idx in range(lm_config.audio_codebooks):
+        mlx_t[f"audio_embs.{cb_idx}.weight"] = pth_t[f"emb.{cb_idx}.weight"]
+    for k, v in sorted(pth_t.items()):
+        if k.startswith("transformer"):
+            if k.endswith(".alpha"):
+                v = v[0, 0]
+            k = k.replace(".alpha", ".weight")
+            k = k.replace(".in_proj_weight", ".in_proj.weight")
+            k = k.replace(".in_projs.0.weight", ".in_proj.weight")
+            k = k.replace(".out_projs.0.weight", ".out_proj.weight")
+            mlx_t[k] = v
+
+    if lm_config.parallel_heads:
+        mlx_t["depformer.linear.weight"] = mx.concatenate(
+            [pth_t[f"depformer.heads.{j}.weight"] for j in range(lm_config.depformer.num_slices)]
+        )
+        return lm.load_weights(list(mlx_t.items()), strict=strict)
+    depformer_chunks = lm_config.depformer.num_slices
+    if lm_config.depformer.weights_per_step_schedule is not None:
+        depformer_chunks = max(lm_config.depformer.weights_per_step_schedule) + 1
+    for slice_idx in range(lm_config.depformer.num_slices):
+        pth_idx = slice_idx
+        if lm_config.depformer.weights_per_step_schedule is not None:
+            pth_idx = lm_config.depformer.weights_per_step_schedule[slice_idx]
+        slice_p = f"depformer.slices.{slice_idx}"
+        mlx_t[f"{slice_p}.linear_in.weight"] = pth_t[f"depformer_in.{pth_idx}.weight"]
+        codebooks = (
+            lm_config.depformer.parallel_codebooks
+            if slice_idx == lm_config.depformer.num_slices - 1
+            else 1
+        )
+        mlx_t[f"{slice_p}.linear_out.weight"] = mx.concatenate(
+            [pth_t[f"linears.{slice_idx + j}.weight"] for j in range(codebooks)]
+        )
+        for _p in ("weight", "bias"):
+            _k = f"depformer_norms.{slice_idx}.{_p}"
+            if _k in pth_t:
+                mlx_t[f"{slice_p}.norm.{_p}"] = pth_t[_k]
+        if slice_idx == 0:
+            mlx_t[f"{slice_p}.emb.weight"] = pth_t["depformer_text_emb.weight"]
+        else:
+            mlx_t[f"{slice_p}.emb.weight"] = pth_t[f"depformer_emb.{slice_idx - 1}.weight"]
+        for layer_idx in range(lm_config.depformer.transformer.num_layers):
+            p = f"{slice_p}.transformer.layers.{layer_idx}"
+            mlx_t[f"{p}.norm1.weight"] = pth_t[f"depformer.layers.{layer_idx}.norm1.alpha"][
+                0, 0
+            ]
+            mlx_t[f"{p}.norm2.weight"] = pth_t[f"depformer.layers.{layer_idx}.norm2.alpha"][
+                0, 0
+            ]
+            mlx_t[f"{p}.gating.linear_in.weight"] = pth_t[
+                f"depformer.layers.{layer_idx}.gating.{pth_idx}.linear_in.weight"
+            ]
+            mlx_t[f"{p}.gating.linear_out.weight"] = pth_t[
+                f"depformer.layers.{layer_idx}.gating.{pth_idx}.linear_out.weight"
+            ]
+            source = f"depformer.layers.{layer_idx}.self_attn"
+            current_in = f"{source}.in_projs.{pth_idx}.weight"
+            current_out = f"{source}.out_projs.{pth_idx}.weight"
+            mlx_t[f"{p}.self_attn.in_proj.weight"] = (
+                pth_t[current_in]
+                if current_in in pth_t
+                else mx.split(pth_t[f"{source}.in_proj_weight"], depformer_chunks)[pth_idx]
+            )
+            mlx_t[f"{p}.self_attn.out_proj.weight"] = (
+                pth_t[current_out]
+                if current_out in pth_t
+                else mx.split(pth_t[f"{source}.out_proj.weight"], depformer_chunks)[pth_idx]
+            )
+    return lm.load_weights(list(mlx_t.items()), strict=strict)
+
+
 def convert(args: argparse.Namespace) -> None:
     if args.out_dir.exists():
         raise FileExistsError(f"Refusing to overwrite model directory: {args.out_dir}")
@@ -91,10 +176,10 @@ def convert(args: argparse.Namespace) -> None:
     parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{args.out_dir.name}.", dir=parent))
     try:
-        lm_config = models.LmConfig.from_config_dict(cfg)
-        lm = models.Lm(lm_config)
+        lm_config = LmConfig.from_config_dict(cfg)
+        lm = Lm(lm_config)
         print(f"loading PyTorch weights from {args.checkpoint} ...", flush=True)
-        lm.load_pytorch_weights(str(args.checkpoint), lm_config, strict=True)
+        load_pytorch_weights(lm, str(args.checkpoint), lm_config, strict=True)
         # Quantized from bf16, so scales and biases are bf16 as the runtimes build them.
         lm.set_dtype(mx.bfloat16)
         if args.bits:

@@ -5,7 +5,7 @@ eval_sets builds giga-heldout by the same rules, and translate.py rejects replie
 
 - `spoken`: a transcript as compared, lower-case syllables with numbers written out;
 - the evaluation overlap: a row sharing a run of OVERLAP_N syllables (or a whole shorter sentence) with
-  a FLEURS vi or MultiMed-ST vi evaluation sentence (data/eval/, built by training.prep.eval_sets;
+  a FLEURS vi or MultiMed-ST vi evaluation sentence (data/eval/, built by training.finetune.eval_sets;
   `eval_grams`, `overlaps`);
 - `vi_gate`: the Vietnamese side's gate on a row's asr_vi (its language, its CER against the transcript);
 - `Hearer`: the ASR server's client, its language detected rather than forced.

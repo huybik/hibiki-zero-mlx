@@ -19,13 +19,13 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero),
 ## Map
 
 ```text
-training/  (CUDA, Linux H100; prep/ voices, publishes and caches the EN-VI dataset)
+training/  (CUDA, Linux H100; en_vi_dataset/ voices and publishes the EN-VI dataset on the Mac)
   en_vi_speech (the en_speech corpus; text_vi translated once; that code is in git at 364091a)
-    ─► prep/tts_en_speech (fills vi_audio) ─► prep/publish_en_vi_speech upload ─► HF common-vi-en
-    ─► prep/cache_codes (on prep/cache_build, MLX or CUDA; Mac top down, a second machine bottom up)
+    ─► en_vi_dataset/tts (fills vi_audio) ─► en_vi_dataset/publish upload ─► HF common-vi-en
+    ─► cache/en_speech (on cache/build, MLX or CUDA; Mac top down, a second machine bottom up)
          ─► <out-dir>/{train,validation}
-    ─► prep/publish_caches --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
-    ─► prep/noisy_cache (CUDA or MLX: the source, either language, re-encoded under prep/augment) ─► *-noisy
+    ─► cache/publish --follow ─► HF cache repo <out-dir name>/ ─► data/cache/ on the pod
+    ─► cache/noisy (CUDA or MLX: the source, either language, re-encoded under audio/augment) ─► *-noisy
     ─► h100.sh run → finetune/train.py ─► runs/, HF recovery repo
   HF PhoMT cache ─► data/cache/phomt-grounded-v2-5s ─────────┘ (one more --cache-dir, ablation)
 inference/ (Apple Silicon, MLX)
@@ -36,14 +36,15 @@ inference/ (Apple Silicon, MLX)
   heads or depformer_parallel student (bf16) ─► tools/export_lm_coreml.py (from tools/lm_step.py) ─► lm-trunk, lm-heads or lm-depformer .mlmodelc ─► swift/
 ```
 
-- `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime, the
-  vendored `moshi-mlx/`, `tools/`, `assets/leon.wav`, the `macos/` test app and `swift/`, the
+- `inference/` is the Apple Silicon runtime: `main.py`, the `hibiki_mlx/` runtime (its LM,
+  vendored from moshi_mlx, in `hibiki_mlx/lm/`), `tools/`, `assets/leon.wav`, the `macos/` test app and `swift/`, the
   native Swift runtime (a Core ML LM, Mimi in MLX) with its iOS benchmark app.
-- `training/` holds `h100.sh`, shared `paths.py`, `prep/` (the EN-VI dataset publisher, the
-  Vietnamese TTS in MLX, the grounded cache build
-  every cache builder shares (`cache_build`, MLX or CUDA) and the EN-VI dataset's builder on it,
-  the evaluation-set builder, the noisy source re-encode), `finetune/` (the generic SFT trainer, GRPO, evaluation
-  and HF recovery sync), `tranche/` (the real-Vietnamese tranche on the box: its envs
+- `training/` holds `h100.sh`, shared `paths.py` and `hub.py`, `cache/` (the grounded cache
+  build every cache builder shares, `cache.build` on MLX or CUDA, the EN-VI dataset's builder on it,
+  publishing, the noisy source re-encode), `audio/` (decoding, augmentation, Kaldi features),
+  `en_vi_dataset/` (the EN-VI dataset publisher, the Vietnamese TTS in MLX), `finetune/` (the
+  generic SFT trainer, GRPO, evaluation, the evaluation-set builder and HF recovery sync),
+  `student/` (the phone students' cut and training), `tranche/` (the real-Vietnamese tranche on the box: its envs
   (`box/envs.sh`), the ingest of the corpora's segments to the tranche repos, their translation,
   VieNeu's TTS both ways (the tranche's English, the EN-VI dataset's Vietnamese re-voiced), the row
   filters and its cache builder) and `vi_tokenizer/` (the Vietnamese tokenizer swap, on the box's
@@ -86,9 +87,9 @@ inference/ (Apple Silicon, MLX)
   Vietnamese lines in each row's own English voice, filling the dataset's `vi_audio` shard by
   shard, the Mac top down and anquachdev's hardware bottom up, meeting through the Hub; all
   1,835 shards were voiced on 2026-10-27 ([vi-tts](docs/agent-memory/vi-tts.md)).
-  `cache_codes` builds the training caches from it in MLX;
+  `cache.en_speech` builds the training caches from it in MLX;
   the full build ran on the Mac from 2026-10-27 to 2026-11-02: 1,835 shards (3.45M rows), all on the
-  Hub ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `publish_caches`
+  Hub ([sft-data-caches](docs/agent-memory/sft-data-caches.md#builds)). `cache.publish`
   commits each shard to the cache repo as it is built, and anquachdev's machine may build bottom
   up, meeting the Mac through the Hub as for the TTS
   ([sft-data-caches](docs/agent-memory/sft-data-caches.md#publishing)).
@@ -118,7 +119,7 @@ inference/ (Apple Silicon, MLX)
   other jobs; a busy GPU is no proof (voicing read ~94% busy while mid-run changes still sped it
   up; user, 2026-11-08: "we didn't optimize voicing enough and wasted lot's of time and money").
 - One implementation per job: every grounded cache runs Mimi and wav2vec2 through
-  `training/prep/cache_build.py` → [cache-build](docs/agent-memory/cache-build.md). Before adding
+  `training/cache/build.py` → [cache-build](docs/agent-memory/cache-build.md). Before adding
   a device, model or speed lever, search where that model already runs (`MimiEncoder`,
   `get_mimi`, `Wav2Vec2`) and extend that code.
 - Record every validation and test in full: each set's chrF, BLEU, End Offset, length ratio and
@@ -180,12 +181,12 @@ inference/ (Apple Silicon, MLX)
 | A phone student's LM on the Neural Engine (the heads, or `depformer_parallel`'s slices): export, runtime, precision, phone speed | [lm-npu](docs/agent-memory/lm-npu.md) | `inference/tools/lm_step.py`, `inference/tools/export_lm_coreml.py`, `inference/swift/Sources/HibikiCore/NeuralLM.swift` |
 | SFT trainer: streams, defaults, precision, objective, schedules, checkpoint averaging | [sft-training](docs/agent-memory/sft-training.md) | `training/finetune/` |
 | SFT H100 launcher, checkpoints, resume, HF recovery sync | [sft-recovery](docs/agent-memory/sft-recovery.md) | `training/h100.sh`, `training/finetune/hf_sync.py`, `training/finetune/checkpoints.py` |
-| SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets, the input level stage | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/prep/eval_sets.py`, `data/eval/`, `inference/hibiki_mlx/level.py` |
-| Voice scores of every decoded translation: speaker similarity to the source, clarity, the speech cut, what models score | [voice-scores](docs/agent-memory/voice-scores.md) | `training/finetune/voice_scores.py`, `training/prep/kaldi.py`, `hibiki_helpers.decode_wavs` |
+| SFT checkpoint selection, `eval.py` and `validate.py`, evaluation sets, the input level stage | [sft-evaluation](docs/agent-memory/sft-evaluation.md) | `training/finetune/eval.py`, `training/finetune/validate.py`, `training/finetune/eval_sets.py`, `data/eval/`, `inference/hibiki_mlx/level.py` |
+| Voice scores of every decoded translation: speaker similarity to the source, clarity, the speech cut, what models score | [voice-scores](docs/agent-memory/voice-scores.md) | `training/finetune/voice_scores.py`, `training/audio/kaldi.py`, `hibiki_helpers.decode_wavs` |
 | GRPO: rollouts, process rewards, the update, its profiler and launcher | [grpo](docs/agent-memory/grpo.md) | `training/finetune/grpo.py`, `training/finetune/grpo_profile.py`, `training/finetune/rewards.py` |
 | SFT speed: the `lm_training` fast path, benchmarks, choosing a GPU pod | [sft-speed](docs/agent-memory/sft-speed.md) | `training/finetune/lm_training.py` |
 | Training on a 32 GB RTX 5090: `--bf16-adamw`, `--fp8` and its kernels, the slices' distillation kernels, measured | [sft-speed-5090](docs/agent-memory/sft-speed-5090.md) | `training/finetune/bf16_adamw.py`, `training/finetune/fp8_linear.py` |
-| Noisy source (Vietnamese and English): simulated rooms, noise and bands, the noisy caches, `en-vi-val-noisy` and `en-vi-val-en-noisy`, the rooms where nobody speaks (GRPO's, SFT's `--room-share`) | [noisy-source](docs/agent-memory/noisy-source.md) | `training/prep/augment.py`, `training/prep/noisy_cache.py`, `streams.run_rooms` |
+| Noisy source (Vietnamese and English): simulated rooms, noise and bands, the noisy caches, `en-vi-val-noisy` and `en-vi-val-en-noisy`, the rooms where nobody speaks (GRPO's, SFT's `--room-share`) | [noisy-source](docs/agent-memory/noisy-source.md) | `training/audio/augment.py`, `training/cache/noisy.py`, `streams.run_rooms` |
 | The real-Vietnamese tranche: its decision and storage, models, pipeline and ingest, the ASR check, the row filters | [real-vi-tranche](docs/agent-memory/real-vi-tranche.md) | `training/tranche/` other than the TTS, the translation and the cache |
 | The tranche's VI→EN translation on the box: the model and its bake-off, the reply checks, speed, bursts beside voice | [tranche-translate](docs/agent-memory/tranche-translate.md) | `training/tranche/translate.py` |
 | The tranche's caches: its row gates and their thresholds, running the build on the box or the Mac | [tranche-cache](docs/agent-memory/tranche-cache.md) | `training/tranche/cache.py` |
@@ -197,7 +198,7 @@ inference/ (Apple Silicon, MLX)
 | Vietnamese tokenizer swap for two-way text: build, English check, embedding init map, the runtimes on it | [vi-tokenizer](docs/agent-memory/vi-tokenizer.md) | `training/vi_tokenizer/` |
 | The phone student cut from the two-way model: the cut, training and distilling a student, checks | [phone-student](docs/agent-memory/phone-student.md) | `training/student/`, `training/finetune/streams.py` (`model_rows`) |
 | The parallel-heads student: its delays, 16 codebooks with 8–15 at one delay, speed, runs and validations | [student-heads](docs/agent-memory/student-heads.md) | `training/student/heads.py`, `training/student/cut.py` |
-| The slices student: the heads student's trunk with depformer slices (9 of 512 × 2, the last for codebooks 8–15), its cut, training and runs, the wide 1024 × 3 retrain | [student-slices](docs/agent-memory/student-slices.md) | `training/student/slices.py`, `train.py --freeze-trunk`, `restart.sh student-slices-5090`, `inference/moshi-mlx/moshi_mlx/models/lm.py` |
+| The slices student: the heads student's trunk with depformer slices (9 of 512 × 2, the last for codebooks 8–15), its cut, training and runs, the wide 1024 × 3 retrain | [student-slices](docs/agent-memory/student-slices.md) | `training/student/slices.py`, `train.py --freeze-trunk`, `restart.sh student-slices-5090`, `inference/hibiki_mlx/lm/lm.py` |
 | The slices student's phone release: its fused Core ML export, Speech Live, its voice on the phone against the teacher | [slices-phone](docs/agent-memory/slices-phone.md) | `release/student_slices_coreml6`, onevoice-ai-challenge `apps/ios` |
 | Training the heads student against the Core ML palettization: the method, `--park-states`, the 6-bit run, its tests and Neural Engine agreement | [student-palettize](docs/agent-memory/student-palettize.md) | `training/student/palettize.py`, `train.py --palettize-bits` |
 | The slices student's on-policy run (`both_slices_z`): its profile and sizes, the run, its 6-bit finish and export to the phone | [slices-on-policy](docs/agent-memory/slices-on-policy.md) | `grpo_launch.sh both_slices_z`, `runs/both_slices_z` |
@@ -207,19 +208,19 @@ inference/ (Apple Silicon, MLX)
 | Exposure bias and the 3B's recipe: scratch or fine-tune, scheduled sampling in SFT, GRPO anchored to its start, their experiments | [exposure-bias](docs/agent-memory/exposure-bias.md) | `grpo.py --teacher-weight` |
 | Those experiments' runs: both SFT arms, their GRPO, the anchored probes, the quiet-clip loss (a level effect), noise | [exposure-bias-runs](docs/agent-memory/exposure-bias-runs.md) | `/Volumes/data/hibiki-zero-evals/box-62170174/` |
 | The 3B teacher's next round: the full two-way SFT on the new EN→VI data, its gates, decay branches and GRPO, time, disk and card | [teacher-next](docs/agent-memory/teacher-next.md) | `training/finetune/train.py`, `grpo_launch.sh` |
-| Two-way speech: directions in caches, streams and evaluation, the run's tokenizer checks, the Vietnamese aligner, the two-way run and its box jobs | [two-way](docs/agent-memory/two-way.md) | `--direction`, `--tokenizer`, `common.run_tokenizer`, `text_timing.ALIGNERS`, `training/prep/cache_rows.py`, `training/finetune/streams.py` |
+| Two-way speech: directions in caches, streams and evaluation, the run's tokenizer checks, the Vietnamese aligner, the two-way run and its box jobs | [two-way](docs/agent-memory/two-way.md) | `--direction`, `--tokenizer`, `common.run_tokenizer`, `timing.ALIGNERS`, `training/cache/rows.py`, `training/finetune/streams.py` |
 | The next two-way run's EN→VI data: `en_speech` both ways, the noisy copies of every English source, where each is on the Hub, the Mac run that builds them | [envi-data](docs/agent-memory/envi-data.md) | `/Volumes/data/datasets/envi_mac/envi_mac.py`, `en-vi/*-noisy` on the Hub |
-| Every grounded cache build: rows, gates, Mimi and wav2vec2 on MLX or CUDA, the Mac's speed; Mimi or wav2vec2 run anywhere | [cache-build](docs/agent-memory/cache-build.md) | `training/prep/cache_build.py`, `training/prep/cache_rows.py`, `training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/wav2vec2_coreml.py`, `training/prep/mimi_cuda.py`, `training/prep/wav2vec2_cuda.py`, `training/prep/text_timing.py` (`_ctc_viterbi.c`), `training/prep/audio.py` |
-| A cache build or noisy copy on a GPU: speed and memory levers, measured per GPU (H100, H200, RTX 5090), the window and small-RAM boxes | [cache-speed-cuda](docs/agent-memory/cache-speed-cuda.md) | `CUDAModels` in `training/prep/cache_build.py`, `training/prep/mimi_cuda.py`, `training/prep/wav2vec2_cuda.py`, `noisy_cache encode --device cuda` |
-| The EN-VI dataset's caches, their builds and publishing, the PhoMT cache, the row layout | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/prep/cache_codes.py`, `training/prep/publish_caches.py`, `training/paths.py` |
+| Every grounded cache build: rows, gates, Mimi and wav2vec2 on MLX or CUDA, the Mac's speed; Mimi or wav2vec2 run anywhere | [cache-build](docs/agent-memory/cache-build.md) | `training/cache/build.py`, `training/cache/rows.py`, `training/cache/mimi_mlx.py`, `training/cache/wav2vec2_mlx.py`, `training/cache/wav2vec2_coreml.py`, `training/cache/mimi_cuda.py`, `training/cache/wav2vec2_cuda.py`, `training/cache/timing.py` (`_ctc_viterbi.c`), `training/audio/decode.py` |
+| A cache build or noisy copy on a GPU: speed and memory levers, measured per GPU (H100, H200, RTX 5090), the window and small-RAM boxes | [cache-speed-cuda](docs/agent-memory/cache-speed-cuda.md) | `CUDAModels` in `training/cache/build.py`, `training/cache/mimi_cuda.py`, `training/cache/wav2vec2_cuda.py`, `cache.noisy encode --device cuda` |
+| The EN-VI dataset's caches, their builds and publishing, the PhoMT cache, the row layout | [sft-data-caches](docs/agent-memory/sft-data-caches.md) | `training/cache/en_speech.py`, `training/cache/publish.py`, `training/paths.py` |
 | English read-speech corpus (Common Voice, Libriheavy rows) | [en-speech-corpus](docs/agent-memory/en-speech-corpus.md) | `cv27-*` and `libriheavy-*` shards of `/Volumes/data/datasets/en_vi_speech` |
 | Roadmap, GRPO plan, analyses, reports | [docs-and-plans](docs/agent-memory/docs-and-plans.md) | `docs/` |
 | Python, secrets, external storage and corpora, pushing | [environment](docs/agent-memory/environment.md) | `.env`, `weights/`, `data/`, `runs/`, `/Volumes/data` |
 | EN→VI transcript translation | [en-vi-translation](docs/agent-memory/en-vi-translation.md) | `/Volumes/data/datasets/en_speech_vi_text` (code in git at 364091a) |
 | EN→VI translation on the Gemini Batch API, claims | [en-vi-gemini](docs/agent-memory/en-vi-gemini.md) | `/Volumes/data/datasets/en_speech_vi_text/gemini` |
 | EN→VI translation on Muse through OpenRouter | [en-vi-muse](docs/agent-memory/en-vi-muse.md) | `/Volumes/data/datasets/en_speech_vi_text/muse` |
-| Vietnamese voice-transfer TTS in MLX on the Mac, which voiced the EN-VI dataset (the box's: tranche-tts) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/prep/tts_en_speech.py`, `training/prep/vieneu_mlx.py`, `vi_audio` of `/Volumes/data/datasets/en_vi_speech` |
-| EN-VI speech dataset, its upload and the cache repo | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`, `huybik/en-vi-speech`, `anquachdev/common-vi-en`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
+| Vietnamese voice-transfer TTS in MLX on the Mac, which voiced the EN-VI dataset (the box's: tranche-tts) | [vi-tts](docs/agent-memory/vi-tts.md) | `training/en_vi_dataset/tts.py`, `training/en_vi_dataset/vieneu_mlx.py`, `vi_audio` of `/Volumes/data/datasets/en_vi_speech` |
+| EN-VI speech dataset, its upload and the cache repo | [en-vi-speech-dataset](docs/agent-memory/en-vi-speech-dataset.md) | `training/en_vi_dataset/publish.py`, `/Volumes/data/datasets/en_vi_speech`, `huybik/en-vi-speech`, `anquachdev/common-vi-en`, `huybik/hibiki-zero-vi-full-sft` (dataset) |
 
 ## Canonical resources
 

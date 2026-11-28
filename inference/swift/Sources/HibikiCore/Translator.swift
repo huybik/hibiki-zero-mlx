@@ -3,7 +3,7 @@ import Foundation
 import MLX
 
 /// Streaming translation: source audio in, one 80 ms frame per step, and per frame a text token
-/// and 80 ms of translated audio out, as `inference/hibiki_mlx/pipeline.py`. The source goes
+/// and 80 ms of translated audio out, as `inference/hibiki_mlx/file_mode.py`. The source goes
 /// through the session's `Audio.Leveller` before Mimi. Tokens are sampled as the model's
 /// `config.json` says (`lm_gen_config`). A file's input ends with `endInput`; a live one never
 /// does.
@@ -101,13 +101,7 @@ public final class Translator {
         if let cacheLimit { Memory.cacheLimit = cacheLimit }
         config = try HibikiConfig.load(directory: directory)
         let lm = try NeuralLM(directory: directory, cfg: config, computeUnits: lmComputeUnits)
-        let file = { (name: String) throws -> URL in
-            let url = directory.appending(path: name)
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                throw HibikiError.missingFile(url)
-            }
-            return url
-        }
+        let file = directory.modelFile
         vocabulary = try Vocabulary(url: file(config.tokenizerName))
         if vocabulary.pieces.count != config.textCard {
             throw HibikiError.badTokenizer(

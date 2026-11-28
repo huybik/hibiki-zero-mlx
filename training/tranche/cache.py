@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 """The tranche's training caches: each segments shard's rows as grounded-v2 cache rows
 ([tranche-cache](../../docs/agent-memory/tranche-cache.md)), built by the cache build every builder
-shares (`training.prep.cache_build`, [cache-build](../../docs/agent-memory/cache-build.md)).
+shares (`training.cache.build`, [cache-build](../../docs/agent-memory/cache-build.md)).
 
   build <sources...>  every shard whose segments, text_en, en_audio and asr_vi are on the Hub
                       becomes <root>/cache/<source>/shard_<shard stem>.pt:
                       the rows the filters below keep, the English text timed by wav2vec2-base-960h
-                      CTC (the `text_timing` Viterbi) and both clips Mimi-encoded (FP16 on CUDA, float32 in MLX), each
+                      CTC (the `timing` Viterbi) and both clips Mimi-encoded (FP16 on CUDA, float32 in MLX), each
                       sample with its `doc` and `seq` so the trainer joins a document's rows in
                       order. Pushes each source's folder every 30 min and at its end, in a thread
                       beside the build (`ingest.Pushes`), and logs `done:` once the last is in; a
@@ -46,9 +46,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from training.cache.build import MODELS, Builder, DualBuilder, default_workers, summary
+from training.cache.rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DIRECTION_TOKENIZERS, exclusive
-from training.prep.cache_build import MODELS, Builder, DualBuilder, default_workers, summary
-from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
 from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, Pushes, part_file
 

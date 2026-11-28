@@ -32,7 +32,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   ([sft-training](sft-training.md#target-timing)); the shards built so far need no rebuild. The
   build now rejects such rows too (`Aligner.max_tail_s`, recorded in each shard). The Mac and box
   runs check their uploads by name and size, so their shards from before and after it mix
-  freely; only `publish_caches` compares settings, and refuses a pull across the change.
+  freely; only `cache.publish` compares settings, and refuses a pull across the change.
 - The run also drops the Libriheavy rows whose English text is OCR-damaged, both ways (1.7%,
   [en-speech-corpus](en-speech-corpus.md#quality-filters)); no shard changes.
 - Every noisy `en-vi` copy uses `--seed 1` (the `vi-en` copies took seed 0; the draws key on the
@@ -120,7 +120,7 @@ under the `nohup` line in `run.sh`.
 
 - Jobs in order, in batches of 20 shards: `tranche` (each tranche `en-vi` shard's noisy copy),
   `noisy` (the 527 `en_speech` `en-vi` shards the boxes built), `build` (the other 1,305:
-  `cache_codes --device mlx --direction en-vi --ane-ctc`, then the noisy copy).
+  `cache.en_speech --device mlx --direction en-vi --ane-ctc`, then the noisy copy).
 - Each batch works in its own `work/<batch>/`: its inputs come down by curl (the dataset parquets
   at `paths.EN_VI_REVISION`, the tranche's `en_audio` parts, the clean shards) while the batch
   before it runs on the GPU; its outputs move to `stage/<batch>/`, upload while the next batch runs,
@@ -145,7 +145,7 @@ under the `nohup` line in `run.sh`.
 - `touch /Volumes/data/datasets/envi_mac/pause` holds new batches off the GPU (downloads go on);
   delete it to go on. A batch already on the GPU finishes first.
 - To stop it, kill `run.sh`, then `envi_mac.py`, then its GPU step, which outlives its parent
-  (`pkill -f 'training.prep.(noisy_cache|cache_codes)'`): a restart reuses `work/` and would race a
+  (`pkill -f 'training.cache.(noisy|en_speech)'`): a restart reuses `work/` and would race a
   leftover step. Its Hub client has a 300 s timeout (`huggingface_hub`'s own waits forever).
 - GigaSpeech 2's noisy copies hold ~10 GB more memory than the others: the next shard's clips
   (~5 GB decoded) are queued before the current one encodes.
@@ -180,7 +180,7 @@ restarts, 5 minutes apart; log `run.log` beside it). Copies of both (and `watch.
   then `noisy`, then `tranche`.
 - The cache env alone (`/workspace/envs/cache`, `box/envs.sh cache`) runs the driver
   and its steps; nothing here needs the `.venv` (`h100.sh setup` refused the 5090 then). huybik's token is read from `$HF_HOME/token`, `HF_TOKEN_AN` from `/workspace/.env`.
-- Batches of 40 shards (the GPU idles ~40 s between batches) and `noisy_cache encode
+- Batches of 40 shards (the GPU idles ~40 s between batches) and `cache.noisy encode
   --batch-seconds 320`, for the 32 GB card; the build at `CUDAModels.window` 512, for the box's
   31 GB of RAM ([cache-speed-cuda](cache-speed-cuda.md#memory)).
 - `touch /workspace/envi_box/pause` holds new batches off the GPU. Stop it with `kill` on the PIDs
@@ -194,8 +194,8 @@ On the M4 Pro, 2026-11-21/22 (`mimi_mlx` with its fused kernel), the Mac otherwi
 
 | Step | Speed | Note |
 |---|---:|---|
-| `en-vi` build (`cache_codes --device mlx --ane-ctc`) | 285–340× | Mimi audio of both clips; the aligner's transformer on the Neural Engine; how it got there: [cache-build](cache-build.md#speed-on-the-mac) |
-| noisy copy (`noisy_cache encode --device mlx`) | 391–447× | the re-encoded English; 2 decode workers, the conditions on the CPU |
+| `en-vi` build (`cache.en_speech --device mlx --ane-ctc`) | 285–340× | Mimi audio of both clips; the aligner's transformer on the Neural Engine; how it got there: [cache-build](cache-build.md#speed-on-the-mac) |
+| noisy copy (`cache.noisy encode --device mlx`) | 391–447× | the re-encoded English; 2 decode workers, the conditions on the CPU |
 | download (curl, 4 at a time) | ~30–40 MB/s | |
 | upload (plain LFS, `HF_HUB_DISABLE_XET=1`) | ~20 MB/s | through Xet a 255 MB batch crawled at ~25 KB/s and stalled |
 

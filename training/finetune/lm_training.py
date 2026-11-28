@@ -566,13 +566,13 @@ _moshi_mimi_apply = MimiModel._apply
 
 
 def _fast_mimi_encode(self: MimiModel, x: torch.Tensor) -> torch.Tensor:
-    """Accelerated stateless CUDA Mimi encode (`training.prep.mimi_cuda.FastMimiEncoder`) for
+    """Accelerated stateless CUDA Mimi encode (`training.cache.mimi_cuda.FastMimiEncoder`) for
     non-streaming `MimiModel.encode` in fine-tuning, room encoding, validation, and eval; moshi's
     stock encode on CPU, MPS or in streaming mode."""
     if self._streaming_state is None and x.is_cuda:
         fast = getattr(self, "_fast_encoder", None)
         if fast is None or fast._device != x.device:
-            from training.prep.mimi_cuda import FastMimiEncoder
+            from training.cache.mimi_cuda import FastMimiEncoder
 
             fast = FastMimiEncoder.from_moshi(self, device=x.device)
             object.__setattr__(self, "_fast_encoder", fast)

@@ -1,7 +1,7 @@
 # Slices student
 
 Read when touching `training/student/slices.py`, `restart.sh student-slices-5090`, `train.py
---freeze-trunk` or moshi_mlx's
+--freeze-trunk` or `hibiki_mlx.lm`'s
 `parallel_codebooks`, or training,
 scoring or deciding on the phone student whose audio part is depformer slices. Back to
 [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Why this shape](#why-this-shape) ·
@@ -236,7 +236,7 @@ student's and the depformer student's on the same sets.
 
 ## On the Mac
 
-The vendored moshi_mlx reads the config (`DepFormerConfig.parallel_codebooks`; the slice count
+The vendored LM (`hibiki_mlx/lm/`) reads the config (`DepFormerConfig.parallel_codebooks`; the slice count
 dep_q − P + 1, `generated_codebooks` still dep_q) and the weights (the last slice's `linear_out`
 is `linears.8`..`15` stacked), and samples the last slice's codebooks at once, so `convert_mlx.py`
 stages a checkpoint, the gate runs it through `LmGen` and `export_lm_coreml.py` exports the staging.

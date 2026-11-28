@@ -7,7 +7,7 @@ checkpoint, to gate a quantized bundle against its bf16 one on the Mac. From the
 
 Each row's source clip (`vi_audio`, scored against `text_en`, or `en_audio`, against `text_vi`;
 the model picks the direction from what it hears) is translated alone in the runtime's file mode
-(`pipeline.translate`: the level stage, the source EOS, 20 s of silence, stopping at the first
+(`file_mode.translate`: the level stage, the source EOS, 20 s of silence, stopping at the first
 text EOS after the source EOS), sampled as the model's config.json says (`lm_gen_config`), with
 the MLX seed set to --seed plus the row's index: give every model compared the same --pairs,
 --limit and --seed.
@@ -31,7 +31,8 @@ import mlx.core as mx
 import numpy as np
 import torch
 
-from hibiki_mlx import pipeline
+from hibiki_mlx.file_mode import translate
+from hibiki_mlx.model import load, resolve_weights_dir
 from training.finetune import common, voice_scores
 from training.paths import repo_display_path, require_file, resolve_repo_path
 
@@ -69,8 +70,8 @@ def main() -> None:
     if hypotheses.exists():
         raise FileExistsError(f"Refusing to overwrite {hypotheses}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    model_dir = pipeline.resolve_weights_dir(args.model)
-    model = pipeline.load(model_dir)
+    model_dir = resolve_weights_dir(args.model)
+    model = load(model_dir)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
 
     records: list[dict] = []
@@ -78,7 +79,7 @@ def main() -> None:
         for index, (row, source) in enumerate(zip(rows, sources, strict=True)):
             mx.random.seed(args.seed + index)
             start = time.perf_counter()
-            out = pipeline.translate(model, source)
+            out = translate(model, source)
             seconds = time.perf_counter() - start
             spoken = out.pcm if out.pcm is not None else np.zeros(0, np.float32)
             # Training's End Offset counts a word at the frames of the clip its step heard, plus

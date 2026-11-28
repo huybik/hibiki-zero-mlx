@@ -1,7 +1,7 @@
 # Cache build speed and memory on CUDA
 
 Read when running, tuning or bringing up a grounded cache build (`CUDAModels` in
-`training/prep/cache_build.py`, on `mimi_cuda` and `wav2vec2_cuda`) or a noisy copy (`noisy_cache encode --device cuda`) on a GPU,
+`training/cache/cuda.py`, on `mimi_cuda` and `wav2vec2_cuda`) or a noisy copy (`cache.noisy encode --device cuda`) on a GPU,
 above all on a new GPU or a box with little RAM: what each lever measured, and on which GPU. How
 the build works is in [cache-build](cache-build.md#cuda). Back to [CONTEXT.md](../../CONTEXT.md) ·
 [Memory](#memory) · [RTX 5090](#rtx-5090) · [H100 and H200](#h100-and-h200)
@@ -38,7 +38,7 @@ the build works is in [cache-build](cache-build.md#cuda). Back to [CONTEXT.md](.
   so measure 512 against a larger window there before a full run.
 - The GPU: `nvidia-smi` showed 16 GB for one shard and 25–30 GB over four or a batch of 40
   (PyTorch's cache keeps what it freed); the 32 GB card ran them all.
-- `noisy_cache encode` at `--batch-seconds` 320 and 640 (RTX 5090, interleaved twice): 2,128–2,131×
+- `cache.noisy encode` at `--batch-seconds` 320 and 640 (RTX 5090, interleaved twice): 2,128–2,131×
   against 2,137–2,145×, 27.0 against 29.9 GB of the card, codes equal but for near-ties (29 of
   3,147 rows, 99.9989%). Its main process peaked at 4.7 GB of RAM on one shard.
 
@@ -64,13 +64,13 @@ Vast 61906288 (2026-11-22): 32 GB, driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 
   apart, scores within 0.0105, audio codes 94.9% equal (first codebooks 99.8%): TF32's near-ties,
   as in [cache-build](cache-build.md#across-devices). The Vietnamese aligner's CUDA path, the
   English aligner's code, had been checked on the CPU only.
-- `noisy_cache encode` on moshi's Mimi, before `FastMimiEncoder`: ~2,100× (7.08 h of re-encoded
+- `cache.noisy encode` on moshi's Mimi, before `FastMimiEncoder`: ~2,100× (7.08 h of re-encoded
   English in 12 s) in fp32. TF32 (`CUDA_TF32`,
   as the build), interleaved with fp32 on the GPU alone (two shards of batch 11, 3,135 rows, 10.8 h
   re-encoded): 14 s against 17 s every run (+20%; 2,645 → 3,182× on the 7.45 h shard), 21–22 against
   24–25 s with the start. Codebook 0 99.85% equal to fp32, all 16 95.3%, the build's TF32 near-ties;
   each precision repeats its own codes exactly. Importing `sphn` turns the
-  free-threaded interpreter's GIL back on; `noisy_cache` once did through `eval_sets`' constants, and
+  free-threaded interpreter's GIL back on; `cache.noisy` once did through `eval_sets`' constants, and
   with the GIL forced off it ran 2,202–2,209× against 2,118–2,135×. The constants are in `paths` now.
 - The noisy fetch reads a local shard's sources in ~1 s (2 s on a 25 h shard). Between batches the
   GPU idles ~40 s: each step's start and the fetch.
@@ -105,7 +105,7 @@ Measured on Vast `62513802` (RTX 5090 32 GB, sm_120, torch 2.15 + triton 3.9, 19
     rejected, `99.995%` exact text frames (`max_shift = 1 fr`), `cb0 = 99.66%`.
   - `DualBuilder` (`--direction both`, 8 shards, `49.75 h`): **`41.27 s`** vs `95.81 s` for two passes
     (**2.32× faster**, `4,357× RT` incl. startup / `~5,400× RT` steady-state), 100% kept/rejected match.
-  - `noisy_cache encode` (4 shards, `6.11 h` re-encoded; `FastMimiEncoder` + `Bank.apply_batch` +
+  - `cache.noisy encode` (4 shards, `6.11 h` re-encoded; `FastMimiEncoder` + `Bank.apply_batch` +
     32-clip `/dev/shm` slabs + background loader/saver): stock `18.22 s` (`2,009–2,990× RT` steady) →
     **`11.76 s` (`4,965–11,911× RT` steady, ~3.3× steady-state)**; `1,694/1,694` clean rows byte-identical,
     `2,506/2,506` conditions match, `cb0 = 99.74%`, `all16 = 95.41%`.
@@ -135,7 +135,7 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
 |---|---:|---|
 | fp32, encode in the main thread (before) | 1,342× | GPU idle while the main thread planned, unpickled PCM, collected |
 | TF32 (`CUDA_TF32`) + encode in a GPU thread, the next window queued | 2,014× | CTC 11.7 → 4.1 s, Mimi 13.8 → 7.9 s a window |
-| decode **and** `plan` in the workers, clips through `/dev/shm` (`cache_rows.Planned`) | 2,311× | the pool's one result pipe moved ~1.4 MB a row: ~30 s of main thread a shard |
+| decode **and** `plan` in the workers, clips through `/dev/shm` (`cache.rows.Planned`) | 2,311× | the pool's one result pipe moved ~1.4 MB a row: ~30 s of main thread a shard |
 | pinned double-buffered staging, batch k+1 launched before k is collected | 3,298× | the GPU thread's host work hid behind kernels: a window 16.5 → 12 s |
 | `CUDA_BATCH_S` 1,280 → 320 | 3,286× | models alone 11.3 → 10.7 s a window, 27 → 7.4 GiB peak; end to end within noise |
 
@@ -143,7 +143,7 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
   its accept/reject; Mimi's first codebook 99.92% equal, residual ones 96–99%. These are near-ties:
   the fp32 decode of TF32 codes is as close to the source as that of fp32 codes (SNR 9.043 against
   9.040 dB on 256 clips). Shards before 2026-11-09 16:40 UTC are fp32, the rest TF32; both are
-  valid encodings. The noisy re-encode (`noisy_cache`) took TF32 too on 2026-11-22 ([RTX 5090](#rtx-5090)):
+  valid encodings. The noisy re-encode (`cache.noisy`) took TF32 too on 2026-11-22 ([RTX 5090](#rtx-5090)):
   the box run's noisy shards are TF32 from batch 13 on and fp32 before; its clean shards are all TF32.
 - Rejected: bf16 Mimi (half the residual codes rewritten, ~10% faster than TF32); bf16 CTC (slower
   than TF32, 0.43% of token frames moved; for omniASR too, the `en-vi` aligner: 82 s against 65 s

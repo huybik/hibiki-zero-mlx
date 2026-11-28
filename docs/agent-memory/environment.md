@@ -13,8 +13,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 - Inference needs MLX 0.31+, NumPy, rustymimi, sentencepiece, sphn, silero-vad with its `onnx-cpu` extra (the
   voice gate: torch and onnxruntime, which the conda env has; 6.2.3 installed 2026-11-14; without
   onnxruntime the gate fails as it starts), and, for the microphone, sounddevice and livekit (mic
-  mode's echo canceller; 1.1.2 in the conda env). Install with `pip install -e ./inference/moshi-mlx` then `pip install -e .`; both
-  are editable installs, so moving either directory requires reinstalling them.
+  mode's echo canceller; 1.1.2 in the conda env). Install with `pip install -e .`, an editable
+  install of `inference/hibiki_mlx` (its LM in `lm/` included), so moving that directory requires
+  reinstalling it.
 - CUDA training uses only the environment that `./training/h100.sh setup` builds; see
   [sft-recovery](sft-recovery.md).
 - Free-threaded Python 3.14 (no GIL) for every box env it can run (user, 2026-11-11: "we use this
@@ -67,7 +68,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
 - The Mac keeps no copy of the EN-VI dataset or its training caches (`en-vi-grounded-v2*`, the
   PhoMT cache): `anquachdev/common-vi-en` and the dataset `huybik/hibiki-zero-vi-full-sft` are the
   copies. The local ones matched them file for file and were deleted on 2026-11-21 to free the drive.
-  The prep scripts still default to `/Volumes/data/datasets/en_vi_speech`
+  The dataset and cache scripts still default to `/Volumes/data/datasets/en_vi_speech`
   ([en-vi-speech-dataset](en-vi-speech-dataset.md)), so download what a step reads back there
   first (`hf download anquachdev/common-vi-en --repo-type dataset --local-dir …`), or pass another
   `--root`/`--src`. `/Volumes/data/datasets/` still holds the translation work

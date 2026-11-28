@@ -284,7 +284,7 @@ def parse_args() -> argparse.Namespace:
             Path("data/eval/en-vi-val/cv27.jsonl"),
             Path("data/eval/en-vi-val/libriheavy.jsonl"),
         ],
-        help="Pairs files (training.prep.eval_sets) translated free-running at each validation, "
+        help="Pairs files (training.finetune.eval_sets) translated free-running at each validation, "
         "each scored as its own set; the first of each direction selects the checkpoint (their mean chrF).",
     )
     # bf16 at batch 64 decodes FLEURS dev with an 8 s tail in ~1,750 steps of ~22 ms on the H100.

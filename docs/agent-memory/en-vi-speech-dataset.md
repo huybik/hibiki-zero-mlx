@@ -1,6 +1,7 @@
 # EN-VI speech dataset
 
-Read when touching `training/prep/publish_en_vi_speech.py`, `/Volumes/data/datasets/en_vi_speech`,
+Read when touching `training/en_vi_dataset/publish.py` (its Hub commits in `training/hub.py`),
+`/Volumes/data/datasets/en_vi_speech`,
 the HF datasets `huybik/en-vi-speech` and `anquachdev/common-vi-en` or the cache repo
 `huybik/hibiki-zero-vi-full-sft`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Contents](#contents) ·
@@ -13,7 +14,7 @@ The user asked on 2026-10-23 for one research dataset of pair-row sources: Engli
 transcript and Vietnamese translation, with the Vietnamese speech to come. It is kept in full on
 the Mac, where it replaced the `en_speech` corpus folder (user's choice). The voice-transfer TTS
 step ([vi-tts](vi-tts.md)) filled the Vietnamese speech of its shards in place, and
-`upload --follow` published each as it was voiced; `cache_codes` then builds the training caches
+`upload --follow` published each as it was voiced; `cache.en_speech` then builds the training caches
 straight from its shards ([sft-data-caches](sft-data-caches.md)).
 
 It is published as `anquachdev/common-vi-en`, in place of that contributor's voiced Common Voice
@@ -37,7 +38,7 @@ folder table), file for file with `data/` at `2ce8777`, every sha256 equal (2026
 ```text
 /Volumes/data/datasets/en_vi_speech/        (laid out as the HF repo, ~316 GB + ~120 GB of VI)
   data/{train,validation}/cv27-*, libriheavy-*  ◄─ the corpus, moved in (en_speech step, retired)
-                                              ◄─ tts_en_speech: vi_audio filled, shard by shard
+                                              ◄─ en_vi_dataset.tts: vi_audio filled, shard by shard
   README.md                                   ◄─ card step, and each upload pass
         └─► upload step (4 GB commits; --follow every 10 min) ─► anquachdev/common-vi-en
 ```
@@ -73,7 +74,7 @@ folder table), file for file with `data/` at `2ce8777`, every sha256 equal (2026
 ## Building and publishing
 
 - Steps `card` and `upload`; commands are in
-  [training/prep/README.md](../../training/prep/README.md). Each resumes when run again and holds
+  [training/en_vi_dataset/README.md](../../training/en_vi_dataset/README.md). Each resumes when run again and holds
   a `.<step>.lock` in the dataset folder.
 - The `en_speech` step moved the corpus in, converting each shard and deleting its original;
   with the corpus in, it is removed (in git at `a236ad5`).
@@ -147,5 +148,5 @@ choice), leaving 10.4 GB. The model repository of the same name holds training r
 caches.
 
 Every file of it (10,457, 170 GB) is copied at its own path into `anquachdev/mimi-en-vi-speech-20k`,
-beside the real-Vietnamese tranche's caches, every sha256 equal (2026-11-06). `publish_caches`
+beside the real-Vietnamese tranche's caches, every sha256 equal (2026-11-06). `cache.publish`
 still writes to `huybik/hibiki-zero-vi-full-sft`, and the trainer reads from it.
