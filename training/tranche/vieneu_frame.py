@@ -8,9 +8,10 @@ until their longest row ends. Prompts are prefilled by the SDK's BatchedBackbone
 keys copied into the slot from position 0, as the prefill numbered them.
 
 Before capture, each backbone layer's projections, norms, rotary and MLP, and the acoustic frame with its
-sampling, go through Inductor; the cache writes and the backbone's attention stay eager (compiled, the in-place
-writes copy the whole cache). The sampler draws from the top-k values: the SDK's distribution without its sort
-over the vocabulary.
+sampling, go through Inductor; the cache writes stay eager (compiled, the in-place writes copy the whole cache), and
+the backbone's attention reads each slot's live keys only (decode_attention.py; the dense masked form read the whole
+1,024-position cache of every slot each frame). The sampler draws from the top-k values: the SDK's distribution
+without its sort over the vocabulary.
 """
 from __future__ import annotations
 
@@ -21,6 +22,8 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 from vieneu.v3_turbo_serve.batched_backbone import BatchedBackbone
+
+from training.tranche.decode_attention import attend
 
 
 def sample_topk_first(logits: torch.Tensor, temperature: float, top_k: int, top_p: float) -> torch.Tensor:
@@ -117,12 +120,9 @@ class SlotBackbone:
         self.B, self.max_len = B, int(max_len)
         self.k = torch.zeros(len(self.layers), B, self.n_kv, self.max_len, self.hd, device=p.device, dtype=p.dtype)
         self.v = torch.zeros_like(self.k)
-        # 0 where a slot may attend, -inf elsewhere: a float bias keeps SDPA on its memory-efficient kernel
-        self.bias = torch.full((B, 1, 1, self.max_len), float("-inf"), device=p.device, dtype=p.dtype)
-        self.cur = torch.zeros(B, device=p.device, dtype=torch.long)
+        self.cur = torch.zeros(B, device=p.device, dtype=torch.long)  # each slot's next write position
         self.pos = torch.zeros(B, 1, device=p.device, dtype=torch.long)
         self.ar = torch.arange(B, device=p.device)
-        self._zero = torch.zeros((), device=p.device, dtype=p.dtype)  # a capture writes device values only
         self.pre = torch.compile(self._pre, dynamic=False)
         self.post = torch.compile(self._post, dynamic=False)
 
@@ -141,37 +141,33 @@ class SlotBackbone:
 
     @torch.no_grad()
     def load(self, slots: list[int], cache, attn_mask: torch.Tensor, cur_pos: torch.Tensor) -> None:
-        """Rows of a BatchedBackbone prefill (left-padded, `attn_mask` [n, T]) into `slots`, from position 0."""
+        """Rows of a BatchedBackbone prefill (left-padded, `attn_mask` [n, T]) into `slots`, from position 0: every
+        layer's keys shifted left by its row's padding in one gather (the positions after a row's prompt get copies of
+        its last key, never read before the slot writes them)."""
         T = attn_mask.shape[1]
-        lens = attn_mask.sum(1).tolist()
-        for i in range(len(self.layers)):
-            layer = cache.layers[i] if hasattr(cache, "layers") else None
-            k = layer.keys if layer is not None else cache.key_cache[i]
-            v = layer.values if layer is not None else cache.value_cache[i]
-            for r, (s, n) in enumerate(zip(slots, lens)):
-                self.k[i, s, :, :n].copy_(k[r, :, T - n:])
-                self.v[i, s, :, :n].copy_(v[r, :, T - n:])
+        layers = cache.layers if hasattr(cache, "layers") else None
+        k = torch.stack([l.keys for l in layers] if layers is not None else list(cache.key_cache))
+        v = torch.stack([l.values for l in layers] if layers is not None else list(cache.value_cache))
+        n = attn_mask.sum(1)
+        src = (torch.arange(T, device=n.device)[None] + (T - n)[:, None]).clamp(max=T - 1)  # [rows, T]
+        src = src.view(1, -1, 1, T, 1).expand(k.shape[0], -1, k.shape[2], -1, k.shape[4])
         idx = torch.tensor(slots, device=self.cur.device)
-        n = torch.tensor(lens, device=self.cur.device)
-        self.bias[idx, 0, 0] = torch.where(torch.arange(self.max_len, device=n.device)[None] < n[:, None], 0.0,
-                                           float("-inf")).to(self.bias.dtype)
+        self.k[:, idx, :, :T] = k.gather(3, src)
+        self.v[:, idx, :, :T] = v.gather(3, src)
         self.cur[idx] = n
         self.pos[idx] = (cur_pos + 1).view(-1, 1)
 
     @torch.no_grad()
     def step(self, x: torch.Tensor, running: torch.Tensor) -> torch.Tensor:
         """`x` [B, 1, H] -> the last hidden [B, H]; slots not `running` keep their position."""
-        B, g = self.B, self.n_heads // self.n_kv
         idx = self.cur
-        self.bias.view(B, self.max_len)[self.ar, idx] = self._zero  # the new token attends to itself
+        live = idx + 1  # the slot's keys so far and the new one's
         cos, sin = self.rotary(x, self.pos)
         for i, layer in enumerate(self.layers):
             q, k, v = self.pre(layer, x, cos, sin)
             self.k[i][self.ar, :, idx] = k[:, :, 0]
             self.v[i][self.ar, :, idx] = v[:, :, 0]
-            attn = F.scaled_dot_product_attention(q.view(B, self.n_kv, g, self.hd), self.k[i], self.v[i],
-                                                  attn_mask=self.bias, scale=layer.self_attn.scaling)
-            x = self.post(layer, x, attn)
+            x = self.post(layer, x, attend(q[:, :, 0], self.k[i], self.v[i], live, layer.self_attn.scaling))
         step = running.long()
         self.cur += step
         self.pos += step.view(-1, 1)
