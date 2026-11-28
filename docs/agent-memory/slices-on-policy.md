@@ -2,7 +2,7 @@
 
 Read when running or judging the slices student's on-policy run (`both_slices_z`), its 6-bit
 palettization and its export to the phone. Back to [CONTEXT.md](../../CONTEXT.md) ·
-[Profile](#profile) · [The run](#the-run) · [Refit](#refit) · [Phone finish](#phone-finish). The student and its
+[Profile](#profile) · [The run](#the-run) · [Refit](#refit) · [Phone finish](#phone-finish) · [Tests](#tests). The student and its
 off-policy stages are in [student-slices](student-slices.md); the method in
 [on-policy-distillation](on-policy-distillation.md), GRPO in [grpo](grpo.md).
 
@@ -229,3 +229,56 @@ frame. Its MLX VI→EN is 12 chrF under its Core ML on the same weights: samplin
 (row by row the three models make the same errors, Vietnamese words in the English among them,
 and the gap sits in two rows whose samples took other words). Five sampled rows check that the
 path runs and the tables survive the export; the 13-set tests below compare the models.
+
+## Tests
+
+`finish_slices.sh`'s `test_student.sh` calls (13 test sets, `eval.py` seed 43, batch 64, LAAL,
+voice scored, 2026-11-28 00:22–00:40 UTC on box 62513802, ~4 min a model; records, `table.md`
+and `paired.txt` in `/Volumes/data/hibiki-zero-evals/box-62513802/slices_tests/`). Every set
+healthy for every model. Cells chrF / BLEU / length ratio / median End Offset (s) / mean LAAL (s)
+/ speaker_sim / HNR dB:
+
+| Set | Decay 8,000 (on-policy start) | z400 refit 2,000 (bf16) | z400 refit 2,000, snapped | 6-bit finish 4,000, snapped |
+|---|---|---|---|---|
+| fleurs-vi/test | 39.97 / 9.80 / 1.33 / 1.3 / 2.54 / 0.34 / 4.5 | 40.18 / 10.28 / 1.31 / 1.7 / 2.90 / 0.36 / 4.5 | 39.97 / 10.15 / 1.33 / 1.7 / 2.87 / 0.35 / 4.4 | 39.96 / 10.40 / 1.31 / 1.7 / 2.85 / 0.35 / 4.5 |
+| fleurs-en/test | 34.62 / 15.55 / 1.01 / 2.0 / 3.20 / 0.16 / 5.4 | 35.98 / 16.53 / 1.02 / 2.1 / 3.27 / 0.18 / 5.6 | 35.39 / 15.89 / 1.03 / 2.1 / 3.31 / 0.17 / 5.6 | 35.58 / 16.13 / 1.02 / 2.3 / 3.38 / 0.17 / 5.6 |
+| multimed-vi/select | 38.37 / 10.51 / 1.48 / 3.4 / 2.64 / 0.27 / 6.0 | 38.52 / 11.07 / 1.41 / 3.6 / 2.74 / 0.28 / 6.0 | 38.16 / 10.55 / 1.43 / 3.4 / 2.71 / 0.28 / 6.0 | 38.25 / 10.83 / 1.43 / 3.6 / 2.74 / 0.29 / 5.9 |
+| multimed-vi/final | 38.53 / 10.62 / 1.46 / 3.4 / 2.67 / 0.28 / 6.1 | 38.34 / 10.69 / 1.40 / 3.6 / 2.75 / 0.29 / 6.0 | 38.21 / 10.51 / 1.43 / 3.6 / 2.72 / 0.29 / 6.0 | 38.43 / 10.83 / 1.40 / 3.6 / 2.76 / 0.29 / 6.0 |
+| giga-heldout/test | 66.36 / 39.35 / 1.26 / 2.2 / 2.02 / 0.35 / 5.1 | 66.19 / 39.75 / 1.22 / 2.4 / 2.08 / 0.36 / 5.1 | 65.96 / 39.13 / 1.24 / 2.4 / 2.05 / 0.36 / 5.1 | 66.44 / 40.67 / 1.24 / 2.4 / 2.07 / 0.36 / 5.1 |
+| en-vi-val/cv27 | 44.95 / 16.28 / 1.23 / 2.2 / 2.45 / 0.31 / 4.0 | 44.81 / 17.72 / 1.15 / 2.2 / 2.48 / 0.32 / 4.2 | 45.31 / 16.54 / 1.18 / 2.5 / 2.54 / 0.32 / 4.2 | 45.68 / 17.86 / 1.19 / 2.5 / 2.64 / 0.33 / 4.2 |
+| en-vi-val/libriheavy | 45.78 / 18.33 / 1.12 / 2.1 / 2.59 / 0.40 / 4.4 | 46.17 / 20.44 / 1.06 / 2.5 / 2.78 / 0.42 / 4.3 | 45.69 / 19.36 / 1.08 / 2.5 / 2.79 / 0.43 / 4.3 | 45.82 / 19.58 / 1.07 / 2.6 / 2.85 / 0.42 / 4.2 |
+| en-vi-val-noisy/cv27 | 43.57 / 14.84 / 1.23 / 2.3 / 2.46 / 0.26 / 4.3 | 42.77 / 14.67 / 1.20 / 2.3 / 2.50 / 0.27 / 4.2 | 42.65 / 15.39 / 1.20 / 2.4 / 2.60 / 0.27 / 4.1 | 42.80 / 14.77 / 1.23 / 2.6 / 2.60 / 0.27 / 4.0 |
+| en-vi-val-noisy/libriheavy | 43.70 / 16.51 / 1.15 / 2.4 / 2.66 / 0.33 / 4.4 | 43.92 / 18.22 / 1.07 / 2.5 / 2.71 / 0.35 / 4.3 | 43.80 / 17.89 / 1.10 / 2.7 / 2.77 / 0.35 / 4.4 | 44.20 / 18.34 / 1.08 / 2.7 / 2.85 / 0.36 / 4.1 |
+| en-vi-val-en/cv27 | 35.35 / 16.71 / 1.14 / 1.1 / 2.17 / 0.27 / 4.9 | 34.85 / 15.88 / 1.14 / 1.3 / 2.16 / 0.29 / 5.0 | 35.21 / 16.12 / 1.17 / 1.3 / 2.20 / 0.29 / 5.0 | 35.22 / 17.10 / 1.12 / 1.2 / 2.16 / 0.29 / 5.1 |
+| en-vi-val-en/libriheavy | 44.34 / 22.11 / 1.08 / 1.8 / 2.50 / 0.29 / 5.2 | 43.54 / 22.53 / 1.05 / 2.0 / 2.64 / 0.30 / 5.2 | 43.79 / 22.41 / 1.06 / 1.8 / 2.49 / 0.30 / 5.2 | 44.08 / 22.53 / 1.06 / 2.1 / 2.71 / 0.30 / 5.2 |
+| en-vi-val-en-noisy/cv27 | 23.69 / 10.14 / 1.01 / 2.3 / 3.47 / 0.23 / 4.4 | 25.19 / 10.81 / 1.03 / 2.6 / 3.46 / 0.25 / 4.6 | 24.10 / 10.44 / 1.00 / 2.5 / 3.28 / 0.26 / 4.5 | 24.28 / 10.48 / 0.97 / 2.3 / 3.47 / 0.25 / 4.3 |
+| en-vi-val-en-noisy/libriheavy | 35.84 / 17.35 / 1.03 / 2.7 / 3.28 / 0.27 / 4.9 | 36.08 / 17.95 / 1.00 / 2.9 / 3.40 / 0.28 / 4.8 | 35.84 / 17.45 / 1.02 / 2.9 / 3.35 / 0.29 / 4.8 | 36.42 / 17.94 / 0.98 / 3.1 / 3.48 / 0.27 / 4.9 |
+
+| Model | chrF, mean of 11 (no en-noisy) | of 13 | BLEU of 11 | LAAL of 11 | speaker_sim of 11 | HNR of 11 |
+|---|---|---|---|---|---|---|
+| Decay 8,000 (on-policy start) | 43.23 | 41.16 | 17.33 | 2.54 | 0.298 | 4.93 |
+| z400 refit 2,000 (bf16) | 43.21 | 41.27 | 17.98 | 2.64 | 0.309 | 4.95 |
+| z400 refit 2,000, snapped | 43.10 | 41.08 | 17.63 | 2.64 | 0.311 | 4.95 |
+| **6-bit finish 4,000, snapped** | **43.32** | **41.32** | **18.10** | 2.69 | **0.312** | 4.90 |
+| Heads 6-bit finish ([student-palettize](student-palettize.md#tests), text only) | 42.48 | 40.90 | 17.81 | 2.87 | | |
+
+Paired bootstrap of chrF (the heads note's `paired.py`, 500 draws of the same rows):
+- **Slices finish − heads finish**: mean of 11 +0.83 [+0.44, +1.21], of 13 +0.42 [+0.08, +0.78].
+  Better from Vietnamese: `en-vi-val/cv27` +4.53 [+2.15, +6.96], libriheavy +1.52 [+0.30, +2.85],
+  MultiMed-ST select +0.86 [+0.44, +1.31] and final +1.04 [+0.58, +1.48]. Worse from English:
+  FLEURS-en −2.47 [−3.29, −1.70], `en-vi-val-en-noisy` cv27 −1.96 [−3.87, −0.40] and libriheavy
+  −1.68 [−3.03, −0.58]; the clean synthetic EN→VI sets tie.
+- **Against the on-policy start** (decay 8,000): the refit −0.02 [−0.36, +0.28] (of 11), its snap
+  −0.13 [−0.46, +0.18], the finish +0.09 [−0.25, +0.38]. FLEURS-en is the one gain past noise:
+  +1.36 [+0.57, +2.09], +0.77 [+0.04, +1.55], +0.96 [+0.21, +1.70].
+
+Reading: the on-policy stage and its refit bought FLEURS-en (+1 chrF), BLEU (+0.8) and speaker
+similarity (+0.014), and cost 0.15 s of LAAL; the 6-bit finish keeps all of it (its snap scores
+as the bf16 refit, the plain snap a little under). Against the heads phone model the slices
+finish translates better from Vietnamese, worse from real and noisy English, waits 0.18 s less
+(LAAL) and sounds more like the speaker (the gate's 5 FLEURS rows each way: 0.34 / 0.27 against
+the heads release's 0.21 / 0.13, HNR 3.8 / 6.3 dB against 3.2 / 4.8,
+[voice-scores](voice-scores.md)). The phone candidate is the finish's snap,
+`phone/pal6_slices_z4000_snap6.safetensors` on the Hub, exported in
+`/Volumes/data/models/hibiki/weights/student_slices14/pal6_snap6_ane6/`; its iPhone 13 Pro Max
+run in HibikiBench is the gate left.
