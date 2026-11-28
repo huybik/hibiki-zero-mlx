@@ -169,6 +169,26 @@ On the Mac the finished snapped model goes through `convert_mlx.py` (bf16), `gat
 `export_lm_coreml.py --bits 6`, `export_mimi_coreml.py` and the Swift CLI, as below; the iPhone
 13 Pro Max's 10 minutes in HibikiBench are the user's.
 
+The finish's run (`pal6_slices_z`, 2026-11-27 23:46 – 2026-11-28 00:21 UTC, commit 04ccd80, from
+the z400 refit's 2,000; HF prefix `pal6_slices_z`; raw outputs in
+`/Volumes/data/hibiki-zero-evals/box-62513802/pal6_slices_z/`). Its first launch stopped at
+update 1: the chunked distillation read the slices teacher's hidden states as one per codebook
+(fixed in 04ccd80, [sft-speed](sft-speed.md)). 0.21 s an update, ~4.5 min a validation; the GPU at
+31.9 of 32 GB with a few recovered `expandable_segments` mapping warnings. Training KL 0.0022 at
+130, 0.0018 at 260 (the heads finish's 0.0030 at 200). Validations of the 6-bit model (seed 50),
+the same seven sets and columns as the refit's:
+
+| Update | Selecting | Mean chrF | speaker_sim | HNR | fleurs-vi/dev | fleurs-en/dev | multimed-vi/select | en-vi-val cv27 | en-vi-val libriheavy | en-vi-val-en cv27 | en-vi-val-en libriheavy |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1,000 | 38.71 | 40.87 | 0.306 | 4.97 | 41.32 / 10.07 / 1.33 / 1.8 / 0.35 / 4.5 | 36.10 / 16.57 / 1.00 / 2.3 / 0.17 / 5.5 | 38.31 / 10.74 / 1.44 / 3.7 / 0.29 / 6.0 | 45.19 / 17.11 / 1.16 / 2.3 / 0.32 / 4.1 | 46.02 / 20.70 / 1.10 / 2.6 / 0.42 / 4.3 | 34.81 / 15.92 / 1.14 / 1.3 / 0.28 / 5.1 | 44.33 / 23.23 / 1.06 / 1.9 / 0.31 / 5.3 |
+| 2,000 | 38.45 | 40.90 | 0.306 | 4.91 | 41.40 / 10.53 / 1.34 / 1.9 / 0.36 / 4.4 | 35.50 / 16.13 / 1.01 / 2.1 / 0.17 / 5.5 | 38.41 / 10.74 / 1.42 / 3.5 / 0.28 / 6.0 | 45.46 / 17.71 / 1.17 / 2.4 / 0.32 / 4.0 | 46.02 / 19.42 / 1.08 / 2.3 / 0.42 / 4.3 | 35.19 / 16.58 / 1.13 / 1.3 / 0.29 / 5.0 | 44.30 / 23.07 / 1.06 / 2.1 / 0.30 / 5.2 |
+| 3,000 | 38.75 | 40.92 | 0.306 | 4.94 | 41.39 / 10.10 / 1.35 / 1.9 / 0.36 / 4.4 | 36.11 / 16.73 / 1.01 / 2.2 / 0.17 / 5.6 | 38.18 / 10.80 / 1.43 / 3.7 / 0.29 / 6.0 | 45.36 / 18.01 / 1.17 / 2.5 / 0.32 / 4.0 | 46.05 / 19.82 / 1.09 / 2.5 / 0.43 / 4.3 | 35.10 / 16.57 / 1.13 / 1.3 / 0.28 / 5.1 | 44.28 / 23.22 / 1.05 / 2.1 / 0.29 / 5.2 |
+| 4,000 | 38.69 | 40.76 | 0.309 | 4.94 | 41.19 / 9.96 / 1.33 / 1.9 / 0.36 / 4.5 | 36.18 / 16.53 / 1.01 / 2.0 / 0.17 / 5.5 | 38.29 / 10.94 / 1.42 / 3.4 / 0.29 / 5.9 | 44.93 / 16.35 / 1.18 / 2.3 / 0.33 / 4.2 | 46.14 / 20.55 / 1.05 / 2.4 / 0.42 / 4.3 | 34.28 / 16.21 / 1.13 / 1.3 / 0.29 / 5.0 | 44.34 / 23.48 / 1.05 / 2.1 / 0.30 / 5.2 |
+
+Every validation sits within noise of its bf16 start (the refit's 2,000: 38.72 / 40.89 / 0.307 /
+4.93): the 6-bit tables cost nothing these sets see. Update 4,000 is snapped, as the heads
+finish's was.
+
 The Mac path, first run on a trained slices checkpoint (`both_slices_z` 200 from the Hub,
 2026-11-28, the M4 Pro, `nice -n 19`; models in `/Volumes/data/models/hibiki/weights/student_slices14/`,
 records in `/Volumes/data/hibiki-zero-evals/mac/slices-gate/`):
