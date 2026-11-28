@@ -161,7 +161,10 @@ student-slices-pal6-5090`, the heads student's recipe in [student-palettize](stu
 snaps the refit and the finish's update 4,000 onto their 6-bit tables, uploads both snaps to the
 Hub repo's `phone/` (the Mac fetches them there: ssh from the box runs at ~2 MB/s), then tests the on-policy
 start, the refit (bf16 and snapped) and the finish (snapped) with `test_student.sh` (13 test sets,
-seed 43, LAAL, voice scored) into `runs/slices_tests/`. Each step whose output exists is skipped.
+seed 43, LAAL, voice scored) into `runs/slices_tests/`. Each step whose output exists is skipped,
+a job that ends without its final model stops the chain, one copy runs at a time (a lock), and
+the outputs are tied to the best they started from (`runs/slices_finish_best.txt`: a new best
+stops the chain until they are moved aside).
 On the Mac the finished snapped model goes through `convert_mlx.py` (bf16), `gate.py`,
 `export_lm_coreml.py --bits 6`, `export_mimi_coreml.py` and the Swift CLI, as below; the iPhone
 13 Pro Max's 10 minutes in HibikiBench are the user's.

@@ -695,6 +695,9 @@ def can_chunked_distill(lm: Any, teacher: Any | None) -> bool:
         return False
     if len(s_audio) > 1 and len(set(s_audio[1:])) != 1:
         return False
+    if slices.is_slices(teacher) and teacher.parallel_codebooks != lm.dep_q - audio_ar_end(lm):
+        return False  # its last slice feeds other codebooks than the student's parallel ones
+
     if lm.text_linear.bias is not None or teacher.text_linear.bias is not None:
         return False
     return all(
