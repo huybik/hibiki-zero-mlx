@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DIRECTION_TOKENIZERS, exclusive
-from training.prep.cache_build import MODELS, Builder, default_workers, summary
+from training.prep.cache_build import MODELS, Builder, DualBuilder, default_workers, summary
 from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
 from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, Pushes, part_file
@@ -79,9 +79,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-cer", type=float, default=MAX_CER)
     p.add_argument("--max-frames", type=int, default=280, help="The trainer's frame cap.")
     p.add_argument("--device", choices=list(MODELS), default="cuda")
-    p.add_argument("--direction", choices=DIRECTIONS, default=DEFAULT_DIRECTION,
-                   help="<source>-<target>: the language heard, then the one spoken and written")
-    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX; against transformers' float32, 0.035%% of argmaxes moved for Vietnamese, 0.14%% for English) or bfloat16 (CUDA; failed its quality check)")
+    p.add_argument("--direction", choices=[*DIRECTIONS, "both"], default=DEFAULT_DIRECTION,
+                   help="<source>-<target>: the language heard, then the one spoken and written; "
+                        "'both' builds vi-en and en-vi in a single CUDA pass (decodes each clip once)")
+    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX; on CUDA fp16 is default)")
+    p.add_argument("--fp8-ctc", action="store_true", help="CUDA Blackwell FP8 on wav2vec2 transformer linears")
+    p.add_argument("--fp8-mimi", action="store_true", help="CUDA Blackwell FP8 on Mimi encoder transformer linears")
+    p.add_argument("--prefetch", type=int, default=3, help="Number of shards to prefetch from the Hub ahead of reading")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--drop-inputs", action="store_true",
                    help="delete each shard's parts from the HF cache once read (the box's own copies stay): "
@@ -137,14 +141,63 @@ def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
     return None
 
 
-def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str], drop_inputs: bool = False) -> Shard:
-    """The shard fetched, read and gated (in the build's read thread); with `drop_inputs`, the parts
-    the HF cache holds are deleted once read, the rows being in memory."""
+def fetch_shard_parts(root: Path, key: tuple[str, str]) -> dict[str, Path]:
+    """Fetch a shard's four parquet parts in parallel (local box copies first, else Hub)."""
     source, name = key
-    # Each part from the box's own copy first (`ingest.part_file`), the four at once.
     with ThreadPoolExecutor(len(PARTS)) as fetch:
-        files = dict(zip(PARTS, fetch.map(lambda part: part_file(root, source, part, name), PARTS), strict=True))
-    rows = read_parts(source, name, files)
+        return dict(zip(PARTS, fetch.map(lambda part: part_file(root, source, part, name), PARTS), strict=True))
+
+
+def read_shard(
+    root: Path,
+    max_cer: float,
+    grams,
+    key: tuple[str, str],
+    drop_inputs: bool = False,
+    prefetched: dict[str, Path] | None = None,
+) -> Shard:
+    """The shard fetched, read and gated (in the build's read thread); filters on lightweight
+    metadata columns before extracting audio bytes, avoiding Python dict/bytes allocation for
+    rejected rows."""
+    import pyarrow.parquet as pq
+
+    source, name = key
+    files = prefetched if prefetched is not None else fetch_shard_parts(root, key)
+
+    # Read lightweight metadata columns first; check row-id alignment and run gates before
+    # touching the heavy audio binary columns.
+    seg_meta = pq.read_table(files["segments"], columns=["id", "doc", "seq", "text", "duration_s"]).to_pylist()
+    txt_rows = pq.read_table(files["text_en"], columns=PART_COLUMNS["text_en"]).to_pylist()
+    asr_rows = pq.read_table(files["asr_vi"], columns=PART_COLUMNS["asr_vi"]).to_pylist()
+    en_meta = pq.read_table(files["en_audio"], columns=["id", "en_duration_s", "en_asr", "en_broken"]).to_pylist()
+    en_audio_col = pq.read_table(files["en_audio"], columns=["en_audio"]).column("en_audio")
+
+    seg_ids = [r["id"] for r in seg_meta]
+    for part_name, other in (("text_en", txt_rows), ("asr_vi", asr_rows), ("en_audio", en_meta)):
+        if [r["id"] for r in other] != seg_ids:
+            raise RuntimeError(f"{source}/{part_name}/{name} does not hold the segments' rows in their order")
+
+    en_audio_valid = en_audio_col.is_valid().to_pylist()
+    kept_indices: list[int] = []
+    kept_meta: list[dict[str, Any]] = []
+    rejected: list[dict[str, str]] = []
+    for index, (seg, txt, asr, enm, has_en) in enumerate(
+        zip(seg_meta, txt_rows, asr_rows, en_meta, en_audio_valid, strict=True)
+    ):
+        merged = {**seg, **txt, **asr, **enm, "en_audio": True if has_en else None}
+        if reason := gate(merged, max_cer, grams):
+            rejected.append({"id": seg["id"], "reason": reason})
+            continue
+        kept_indices.append(index)
+        kept_meta.append(merged)
+
+    if kept_indices:
+        vi_audio_col = pq.read_table(files["segments"], columns=["audio"]).column("audio")
+        vi_bytes = vi_audio_col.take(kept_indices).combine_chunks().field("bytes").to_pylist()
+        en_bytes = en_audio_col.take(kept_indices).combine_chunks().field("bytes").to_pylist()
+    else:
+        vi_bytes, en_bytes = [], []
+
     if drop_inputs:
         for path in files.values():
             if not path.is_relative_to(root):  # the HF cache's: a snapshot link to its blob
@@ -152,21 +205,17 @@ def read_shard(root: Path, max_cer: float, grams, key: tuple[str, str], drop_inp
                 path.unlink()
                 if blob is not None:
                     blob.unlink(missing_ok=True)
-    kept, rejected = [], []
-    for index, row in enumerate(rows):
-        if reason := gate(row, max_cer, grams):
-            rejected.append({"id": row["id"], "reason": reason})
-            continue
-        # GigaSpeech 2's transcripts are upper case (vi-corpora): lower-cased, as translate.py read them,
-        # since an en-vi row writes them.
+
+    kept: list[tuple[int, dict[str, Any]]] = []
+    for index, row, vi_b, en_b in zip(kept_indices, kept_meta, vi_bytes, en_bytes, strict=True):
         text_vi = row["text"].lower() if row["text"].isupper() else row["text"]
         kept.append((index, {
             "id": row["id"], "text_en": row["text_en"], "text_vi": text_vi,
             "vi_duration_s": row["duration_s"], "en_duration_s": row["en_duration_s"],
-            "vi_audio": row["audio"]["bytes"], "en_audio": row["en_audio"]["bytes"],
+            "vi_audio": vi_b, "en_audio": en_b,
             "fields": {"doc": row["doc"], "seq": int(row["seq"])},
         }))
-    return Shard(key, f"{source}/segments/{name}", SPLIT, len(rows), kept, rejected)
+    return Shard(key, f"{source}/segments/{name}", SPLIT, len(seg_meta), kept, rejected)
 
 
 def cache_key(direction: str, source: str) -> str:
@@ -190,20 +239,26 @@ def todo_shards(args: argparse.Namespace) -> tuple[list[tuple[str, str]], list[s
 
     api, todo, unpushed = HfApi(), [], []
     files, cached = (api.list_repo_files(r, repo_type="dataset") for r in (REPO, CACHE_REPO))
+    directions = DIRECTIONS if args.direction == "both" else (args.direction,)
     for source in args.sources:
         parts = {part: {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/{part}/")}
                  for part in PARTS}
-        key = cache_key(args.direction, source)
-        pushed = {f.rsplit("/", 1)[1] for f in cached if f.startswith(f"{key}/")}
-        local = {p.name for p in cache_dir(args.root, key).glob("shard_*.pt")}
         heldout = SOURCES[source].heldout
         ready = set.intersection(*parts.values()) - heldout
         waiting = len(parts["segments"] - heldout - ready)
-        todo += [(source, n) for n in sorted(ready) if shard_file(n) not in pushed | local]
-        log(f"{source}: {len(parts['segments'])} shards ({len(heldout)} held out), {len(pushed)} cached on the "
-            f"Hub, {len(local - pushed)} only here, {waiting} waiting for an input")
-        if local - pushed:
-            unpushed.append(key)
+        done_all: set[str] | None = None
+        for d in directions:
+            key = cache_key(d, source)
+            pushed = {f.rsplit("/", 1)[1] for f in cached if f.startswith(f"{key}/")}
+            local = {p.name for p in cache_dir(args.root, key).glob("shard_*.pt")}
+            have = pushed | local
+            done_all = have if done_all is None else (done_all & have)
+            log(f"{source} ({d}): {len(parts['segments'])} shards ({len(heldout)} held out), {len(pushed)} cached on the "
+                f"Hub, {len(local - pushed)} only here, {waiting} waiting for an input")
+            if local - pushed:
+                unpushed.append(key)
+        assert done_all is not None
+        todo += [(source, n) for n in sorted(ready) if shard_file(n) not in done_all]
     return todo[: args.limit], unpushed
 
 
@@ -220,7 +275,10 @@ def build(args: argparse.Namespace) -> None:
         try:  # the lock is held until the last push ends, after a failure too
             for key in unpushed:
                 pushes.push(key)
-            built = build_shards(args, todo, pushes) if todo else None
+            if todo:
+                built = build_shards_dual(args, todo, pushes) if args.direction == "both" else build_shards(args, todo, pushes)
+            else:
+                built = None
         finally:
             pushes.wait()
     if built:  # once every shard is on the Hub, as whatever waits on this line expects
@@ -229,40 +287,137 @@ def build(args: argparse.Namespace) -> None:
             f"({hours * 3600 / max(wall, 1e-9):.0f}x RT)")
 
 
+def _make_prefetched_reader(
+    root: Path, max_cer: float, grams: Any, todo: list[tuple[str, str]], drop_inputs: bool, prefetch: int
+):
+    """Prefetch up to `prefetch` shards' compressed parquets ahead of `read_shard`."""
+    from collections import deque
+
+    pool = ThreadPoolExecutor(max(1, prefetch), thread_name_prefix="prefetch") if prefetch > 0 else None
+    pending: dict[tuple[str, str], Future] = {}
+    order = deque(todo)
+
+    def fill() -> None:
+        if pool is None:
+            return
+        while len(pending) < prefetch and order:
+            nxt = order.popleft()
+            pending[nxt] = pool.submit(fetch_shard_parts, root, nxt)
+
+    fill()
+
+    def read(key: tuple[str, str]) -> Shard:
+        fut = pending.pop(key, None)
+        fill()
+        files = fut.result() if fut is not None else None
+        return read_shard(root, max_cer, grams, key, drop_inputs, prefetched=files)
+
+    return read, pool
+
+
 def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]], pushes: Pushes) -> tuple[float, float]:
     """Builds `todo`, handing each source's folder to `pushes` as due; returns the hours of Mimi
     audio built and the build's wall time."""
     grams = eval_grams()
-    builder = Builder(args.device, Settings(args.max_frames, direction=args.direction), args.config_path,
-                      args.mimi_weight, args.tokenizer or DIRECTION_TOKENIZERS[args.direction], half_ctc=args.half_ctc)
-    # After the models' imports, any of which could turn the GIL back on (cache-speed-cuda.md).
+    builder = Builder(
+        args.device,
+        Settings(args.max_frames, direction=args.direction),
+        args.config_path,
+        args.mimi_weight,
+        args.tokenizer or DIRECTION_TOKENIZERS[args.direction],
+        half_ctc=args.half_ctc,
+        fp8_ctc=args.fp8_ctc,
+        fp8_mimi=args.fp8_mimi,
+    )
     gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
     log(f"models loaded; Python {sys.version.split()[0]}, the GIL {gil}")
     pushed = {s: time.monotonic() for s in args.sources}
     workers = args.workers or default_workers(args.device)
-
-    def read(key: tuple[str, str]) -> Shard:
-        return read_shard(args.root, args.max_cer, grams, key, args.drop_inputs)
-
-    with ThreadPoolExecutor(1) as writes:
-        written: Future | None = None  # the last shard's save, which runs while the next one builds
-        began, hours = time.monotonic(), 0.0
-        for k, shard in enumerate(builder.run(todo, read, workers)):
-            source, name = shard.key
-            payload = builder.payload(shard, {"file": shard.file, "rows": shard.size}, max_cer=args.max_cer)
+    read, prefetch_pool = _make_prefetched_reader(
+        args.root, args.max_cer, grams, todo, args.drop_inputs, args.prefetch
+    )
+    try:
+        with ThreadPoolExecutor(1) as writes:
+            written: Future | None = None
+            began, hours = time.monotonic(), 0.0
+            for k, shard in enumerate(builder.run(todo, read, workers)):
+                source, name = shard.key
+                payload = builder.payload(shard, {"file": shard.file, "rows": shard.size}, max_cer=args.max_cer)
+                if written is not None:
+                    written.result()
+                key = cache_key(args.direction, source)
+                written = writes.submit(write, payload, cache_dir(args.root, key) / shard_file(name))
+                hours += mimi_hours(shard.samples)
+                now = time.monotonic()
+                log(f"{source}/{name}: {summary(shard, hours, now - began)} [{k + 1}/{len(todo)}]")
+                last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
+                if last_of_source or now - pushed[source] > PUSH_S:
+                    written.result()
+                    pushes.push(key)
+                    pushed[source] = now
             if written is not None:
                 written.result()
-            key = cache_key(args.direction, source)
-            written = writes.submit(write, payload, cache_dir(args.root, key) / shard_file(name))
-            hours += mimi_hours(shard.samples)
-            now = time.monotonic()
-            log(f"{source}/{name}: {summary(shard, hours, now - began)} [{k + 1}/{len(todo)}]")
-            last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
-            if last_of_source or now - pushed[source] > PUSH_S:
-                written.result()  # the shard is in its folder before the push lists it
-                pushes.push(key)
-                pushed[source] = now
-        return hours, time.monotonic() - began
+            return hours, time.monotonic() - began
+    finally:
+        if prefetch_pool is not None:
+            prefetch_pool.shutdown(wait=False, cancel_futures=True)
+
+
+def build_shards_dual(args: argparse.Namespace, todo: list[tuple[str, str]], pushes: Pushes) -> tuple[float, float]:
+    """Single-pass dual-direction CUDA build (`vi-en` and `en-vi` simultaneously)."""
+    if args.device != "cuda":
+        raise ValueError("--direction both is supported on --device cuda only")
+    grams = eval_grams()
+    builder = DualBuilder(
+        Settings(args.max_frames, direction="vi-en"),
+        Settings(args.max_frames, direction="en-vi"),
+        args.config_path,
+        args.mimi_weight,
+        DIRECTION_TOKENIZERS["vi-en"],
+        DIRECTION_TOKENIZERS["en-vi"],
+        fp8_ctc=args.fp8_ctc,
+        fp8_mimi=args.fp8_mimi,
+    )
+    gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
+    log(f"dual models loaded (vi-en + en-vi); Python {sys.version.split()[0]}, the GIL {gil}")
+    pushed = {s: time.monotonic() for s in args.sources}
+    workers = args.workers or default_workers(args.device)
+    read, prefetch_pool = _make_prefetched_reader(
+        args.root, args.max_cer, grams, todo, args.drop_inputs, args.prefetch
+    )
+    try:
+        with ThreadPoolExecutor(2) as writes:
+            written: list[Future] = []
+            began, hours = time.monotonic(), 0.0
+            for k, (sh_ve, sh_ev) in enumerate(builder.run(todo, read, workers)):
+                source, name = sh_ve.key
+                for fut in written:
+                    fut.result()
+                written = []
+                for d, sh in (("vi-en", sh_ve), ("en-vi", sh_ev)):
+                    key = cache_key(d, source)
+                    dst = cache_dir(args.root, key) / shard_file(name)
+                    if not dst.exists():
+                        pl = builder.payload(d, sh, {"file": sh.file, "rows": sh.size}, max_cer=args.max_cer)
+                        written.append(writes.submit(write, pl, dst))
+                hours += mimi_hours(sh_ve.samples) + mimi_hours(sh_ev.samples)
+                now = time.monotonic()
+                log(f"{source}/{name} [vi-en]: {summary(sh_ve, hours, now - began)} [{k + 1}/{len(todo)}]")
+                log(f"{source}/{name} [en-vi]: {summary(sh_ev, hours, now - began)} [{k + 1}/{len(todo)}]")
+                last_of_source = k + 1 == len(todo) or todo[k + 1][0] != source
+                if last_of_source or now - pushed[source] > PUSH_S:
+                    for fut in written:
+                        fut.result()
+                    written = []
+                    for d in DIRECTIONS:
+                        pushes.push(cache_key(d, source))
+                    pushed[source] = now
+            for fut in written:
+                fut.result()
+            return hours, time.monotonic() - began
+    finally:
+        if prefetch_pool is not None:
+            prefetch_pool.shutdown(wait=False, cancel_futures=True)
 
 
 def main() -> None:

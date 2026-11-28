@@ -213,9 +213,25 @@ class Bank:
             for paths in noises.values()
             for p in paths
         }
+        self.device = torch.device(device)
         self.foreground = set(self.noise_names["foreground"])
+        self._band_gains: dict[tuple[str, int], torch.Tensor] = {}
         if not self.rirs or not all(self.noise_names.values()):
             raise RuntimeError(f"{bank} lacks impulse responses or a kind of noise")
+
+    def _band_gain(self, band: str, size: int, device: torch.device) -> torch.Tensor:
+        key = (band, size)
+        gain = self._band_gains.get(key)
+        if gain is None or gain.device != device:
+            _, high_pass, low_pass = BANDS[band]
+            freqs = torch.fft.rfftfreq(size, 1 / SAMPLE_RATE, device=device)
+            gain = torch.ones_like(freqs)
+            if low_pass:
+                gain = gain * _edge(freqs, low_pass * (1 - TRANSITION), low_pass)
+            if high_pass:
+                gain = gain * (1 - _edge(freqs, high_pass * (1 - TRANSITION), high_pass))
+            self._band_gains[key] = gain
+        return gain
 
     def draw(self, key: str) -> Conditions:
         """The conditions for the clip `key` (a row id with its seed)."""
@@ -255,8 +271,95 @@ class Bank:
             out = out + track * (level / (_rms(event) * 10 ** (conditions.snr_db / 20)))
         _, high_pass, low_pass = BANDS[conditions.band]
         if high_pass or low_pass:
-            out = _band(out, high_pass, low_pass)
+            size = _fft_size(out.shape[-1] + SAMPLE_RATE // 10)
+            gain = self._band_gain(conditions.band, size, out.device)
+            out = torch.fft.irfft(torch.fft.rfft(out, size) * gain, size)[: out.shape[-1]]
         return (out * 10 ** (conditions.gain_db / 20)).clamp(-1.0, 1.0)
+
+    @torch.no_grad()
+    def apply_batch(
+        self, batch: torch.Tensor, lengths: list[int], conditions_list: list[Conditions]
+    ) -> torch.Tensor:
+        """Batched GPU equivalent of `apply` on right-padded `batch` `[B, T]` float32.
+
+        Matches unbatched `apply` to float32 FFT rounding (<1e-5) while collapsing per-clip
+        reverb & band FFTs into batched `rfft`/`irfft` calls with cached band gain curves.
+        Returns `[B, T]` with samples past `lengths[b]` zeroed (ready for causal Mimi)."""
+        B, T = batch.shape
+        device = batch.device
+        lens = torch.tensor(lengths, device=device, dtype=torch.long)
+        mask = torch.arange(T, device=device)[None, :] < lens[:, None]  # [B, T]
+        mask_f = mask.float()
+        lens_f = lens.float().clamp(min=1.0)
+
+        out = torch.where(mask, batch, 0.0)
+        level = ((out.square() * mask_f).sum(dim=-1) / lens_f).sqrt().clamp_min(1e-8)  # [B]
+
+        # 1. Batched reverb convolution for all clips with an RIR
+        rev_idx = [i for i, c in enumerate(conditions_list) if c.rir is not None]
+        if rev_idx:
+            rirs = [self.rirs[conditions_list[i].rir] for i in rev_idx]
+            max_x = max(lengths[i] for i in rev_idx)
+            max_h = max(r.shape[-1] for r in rirs)
+            fft_sz = _fft_size(max_x + max_h - 1)
+            idx_t = torch.tensor(rev_idx, device=device, dtype=torch.long)
+            x_rev = out.index_select(0, idx_t)[:, :max_x]
+            h_buf = torch.zeros((len(rev_idx), max_h), device=device, dtype=out.dtype)
+            for row, r in enumerate(rirs):
+                h_buf[row, : r.shape[-1]] = r
+            wet = torch.fft.irfft(
+                torch.fft.rfft(x_rev, fft_sz, dim=-1) * torch.fft.rfft(h_buf, fft_sz, dim=-1),
+                fft_sz,
+                dim=-1,
+            )[:, :max_x]
+            rev_mask = mask.index_select(0, idx_t)[:, :max_x]
+            wet = torch.where(rev_mask, wet, 0.0)
+            rev_lens_f = lens_f.index_select(0, idx_t)
+            wet_rms = (wet.square().sum(dim=-1) / rev_lens_f).sqrt().clamp_min(1e-8)
+            wet = wet * (level.index_select(0, idx_t) / wet_rms)[:, None]
+            out[idx_t, :max_x] = wet
+
+        # 2. Noise mixing (batched scale + add)
+        noise_idx = [i for i, c in enumerate(conditions_list) if c.noise is not None]
+        if noise_idx:
+            noise_buf = torch.zeros((len(noise_idx), T), device=device, dtype=out.dtype)
+            event_rms = torch.empty(len(noise_idx), device=device, dtype=out.dtype)
+            snr_lin = torch.empty(len(noise_idx), device=device, dtype=out.dtype)
+            for row, i in enumerate(noise_idx):
+                c = conditions_list[i]
+                L = lengths[i]
+                noise = self.noises[c.noise]
+                if c.noise in self.foreground:
+                    track, event = _event(noise, c.noise_offset, L)
+                else:
+                    start = int(c.noise_offset * noise.shape[-1])
+                    track = event = _loop(noise, start, L)
+                noise_buf[row, :L] = track
+                event_rms[row] = _rms(event)
+                snr_lin[row] = 10.0 ** (c.snr_db / 20.0)
+            idx_t = torch.tensor(noise_idx, device=device, dtype=torch.long)
+            scale = level.index_select(0, idx_t) / (event_rms * snr_lin)
+            out[idx_t] = out.index_select(0, idx_t) + noise_buf * scale[:, None]
+
+        # 3. Batched band filtering grouped by (band, exact_fft_size)
+        band_groups: dict[tuple[str, int], list[int]] = {}
+        for i, c in enumerate(conditions_list):
+            _, hp, lp = BANDS[c.band]
+            if hp or lp:
+                sz = _fft_size(lengths[i] + SAMPLE_RATE // 10)
+                band_groups.setdefault((c.band, sz), []).append(i)
+        for (band, sz), idxs in band_groups.items():
+            max_l = max(lengths[i] for i in idxs)
+            idx_t = torch.tensor(idxs, device=device, dtype=torch.long)
+            x_b = out.index_select(0, idx_t)[:, :max_l]
+            gain = self._band_gain(band, sz, device)
+            y_b = torch.fft.irfft(torch.fft.rfft(x_b, sz, dim=-1) * gain[None, :], sz, dim=-1)[:, :max_l]
+            b_mask = mask.index_select(0, idx_t)[:, :max_l]
+            out[idx_t, :max_l] = torch.where(b_mask, y_b, 0.0)
+
+        # 4. Batched gain + clamp
+        gains = torch.tensor([10.0 ** (c.gain_db / 20.0) for c in conditions_list], device=device, dtype=out.dtype)
+        return torch.where(mask, (out * gains[:, None]).clamp(-1.0, 1.0), 0.0)
 
 
 def _rir(wav: np.ndarray) -> np.ndarray:

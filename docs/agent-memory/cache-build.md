@@ -157,18 +157,25 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 
 ## CUDA
 
-- `CUDAModels`: moshi's Mimi (`cuda_mimi`) and the aligner's CTC (transformers) in float32 with
-  TF32 matmuls and convolutions (`CUDA_TF32`, [cache-speed-cuda](cache-speed-cuda.md)), over padded batches
+- `CUDAModels` (and `CUDAModelsDual` / `DualBuilder` for single-pass `--direction both` in
+  `tranche.cache`): runs `mimi_cuda.FastMimiEncoder` (`cuda_mimi`; `HIBIKI_LEGACY_MIMI=1` falls back
+  to stock moshi, `HIBIKI_FP32_MIMI=1` forces FP32) and `wav2vec2_cuda.FastWav2Vec2CTC` (`HIBIKI_FP32_CTC=1`
+  forces FP32; `--fp8-ctc` and `--fp8-mimi` are opt-in), with `CUDA_TF32` enabled, over padded batches
   of up to `CUDA_BATCH_S` (320 s) of audio, shortest first (`batches`; both clips of a window in one
-  sort for Mimi). `encode` runs in the build's GPU thread (`threaded`), one window queued behind it. The CTC takes the first GroupNorm's
-  statistics over each clip's own frames (always float32 to avoid overflow) and gives the encoder
-  the attention mask, as `wav2vec2_mlx` masks; Mimi needs no mask. `--half-ctc` runs the 12-layer
-  transformer under `torch.autocast("cuda", bfloat16)`, keeping the feature extractor and lm_head
-  in float32; tested on 30 clips from giga/154 (2026-11-09): 99.0% overall argmax agreement but
-  min per-clip 96.9%, so quality threshold (all clips ≥ 99%) was not met; not used in production.
-- On CPU, 8 clips of a shard batched against each alone kept every argmax, log-probabilities within
-  2.9e-3 (fp32 rounding: transformers' own fp32 and fp64 forwards differ by 3.1e-3); Mimi's
-  batched codes equal the clip-alone ones on all 16 codebooks.
+  sort for Mimi, delay silence applied zero-copy in `_stage`). `encode` runs in the build's GPU thread
+  (`threaded`) with preallocated double-buffered pinned H2D/D2H pools (`_PinnedOutputPool`), one window
+  queued behind it.
+- Workers (`cache_rows.prepare_rows` / `prepare_dual_rows`) pack each 32-row decode job into ONE
+  contiguous `/dev/shm` `.f32` slab file instead of per-row files; `text_timing.CTCWordAligner` runs
+  the Viterbi DP in an auto-compiled C99 shared library (`training/prep/_ctc_viterbi.c`, bit-exact to
+  the NumPy fallback, `HIBIKI_NUMPY_VITERBI=1` to override). `cache_codes` writes shards on a background
+  thread; `tranche.cache` prefetches up to `--prefetch 3` Hub shards and gates metadata columns before
+  reading audio bytes.
+- `FastWav2Vec2CTC` keeps `c0_conv`, the Triton two-pass masked GroupNorm+GELU statistics, and `lm_head`
+  in FP32, runs `c1..c6` as channels-last FP16 `conv2d`, folds `pos_conv_embed` `weight_norm` once at
+  load, fuses QKV (`768 -> 2304`), and uses packed varlen FA2 when `flash_attn` is installed or additive
+  float-mask cuDNN SDPA otherwise. Measured RTX 5090 parity and speed are in
+  [cache-speed-cuda](cache-speed-cuda.md#blackwell-kernels-and-pipeline-2026-11-28).
 - transformers reports `wav2vec2.masked_spec_embed` as missing from the checkpoint: it only masks
   in training, so the CTC is unaffected.
 - `DEVICE` is the torch device. Set to `"cpu"`, the CUDA path no longer runs since its pinned

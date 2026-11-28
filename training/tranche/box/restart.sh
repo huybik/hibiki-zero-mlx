@@ -37,22 +37,19 @@ case $job in
   # day: 2026-11-06, 2026-11-07 17:30 UTC+7), but stops after 3 in a row.
   voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/vieneu/bin/python -m training.tranche.voice run yodas; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
   filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
-  # The cache builds run in the free-threaded env (envs-min.sh), Mimi's rope eager there (no Triton). Plain HTTP for the
-  # Hub: 143 MB/s, where Xet throttles to ~4 MB/s.
-  # Both directions: each pass builds the shards its cache folder on the Hub lacks; the en-vi pass, second, deletes
-  # each shard's parts from the HF cache once read.
-  cache) export HF_HUB_DISABLE_XET=1 NO_TORCH_COMPILE=1
-         cmd=(bash -c 'set -e; P=/workspace/envs/cache/bin/python
-              $P -m training.tranche.cache build pho vivoice giga yodas
-              $P -m training.tranche.cache build pho vivoice giga yodas --direction en-vi --drop-inputs') ;;
+  # Single-pass dual-direction CUDA build (vi-en + en-vi): reads parquets & decodes clips ONCE,
+  # runs Triton fused SEANet Mimi + FP16 wav2vec2 CTC + C Viterbi + /dev/shm slabs. Plain HTTP
+  # for the Hub: 143 MB/s, where Xet throttles to ~4 MB/s.
+  cache) export HF_HUB_DISABLE_XET=1
+         cmd=(/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga yodas
+              --direction both --drop-inputs) ;;
   # The two-way run's English-to-Vietnamese inputs (two-way.md#two-way-run): the English evaluation sets, round 4e's 500
   # en_speech shards (envi_en_speech.sh, which pushes them at its end), then every tranche shard by the tranche builder
-  # (pushed to its cache repo's en-vi/ as it goes; each shard's parts deleted once read). ~8 h on the H100 (2,490x real
-  # time on the Mimi audio).
+  # (pushed to its cache repo's en-vi/ as it goes; each shard's parts deleted once read).
   envi-cache) export HF_HUB_DISABLE_XET=1
        cmd=(bash -c 'set -e; .venv/bin/python -m training.prep.eval_sets --sets fleurs-en en-vi-val-en
             training/tranche/box/envi_en_speech.sh
-            NO_TORCH_COMPILE=1 /workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga \
+            /workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga \
               --direction en-vi --drop-inputs') ;;
   # The two-way SFT (two-way.md#two-way-run): round 4e's rows both ways, from round 4's final model moved onto the
   # Vietnamese swap (init_weights writes weights/twoway_start_vi6k.safetensors; --tokenizer follows the weight), in

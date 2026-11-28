@@ -74,6 +74,53 @@ Vast 61906288 (2026-11-22): 32 GB, driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 
 - The noisy fetch reads a local shard's sources in ~1 s (2 s on a 25 h shard). Between batches the
   GPU idles ~40 s: each step's start and the fetch.
 
+### Blackwell kernels and pipeline (2026-11-28)
+
+Measured on Vast `62513802` (RTX 5090 32 GB, sm_120, torch 2.15 + triton 3.9, 19 CPUs) against stock
+`main` (TF32 moshi + transformers, `NO_TORCH_COMPILE=1`) on 4 shards × 1,080 real Opus bilingual rows
+(4,320 rows, ~25 h Mimi audio per direction, 15 workers):
+
+- **Model microbenchmarks (320 s batch, 16 × 20 s):**
+  - `mimi_cuda.FastMimiEncoder` (channels-last `(B, T, C)`, FP16 SEANet + FP32 TC accum, Triton fused
+    `init_conv1d_k7` & stages 0–2 residual+ELU, zero-copy strided GEMM downsamples, FP16 8L transformer
+    with cached RoPE, transposeless FP32 RVQ with Triton argmin, `compile_transformer=False`):
+    **`18.63 ms` (`17,175× RT`, `3.15 GiB`)** vs stock moshi TF32 `119.23 ms` (`2,684× RT`, `19.79 GiB`)
+    — **6.40× faster, 6.3× less VRAM**. Against exact FP32 (`6.746 dB` decode SNR): `cb0 = 99.83%`,
+    `all16 = 93.59%`, SNR **`6.795 dB`** (beats stock moshi TF32 `99.78%` / `92.29%` / `6.745 dB`).
+  - `wav2vec2_cuda.FastWav2Vec2CTC` (FP32 `c0_conv` + Triton two-pass masked GroupNorm+GELU + FP16
+    NHWC `conv2d` `c1..c6` + load-time folded `pos_conv_embed` `weight_norm` + fused QKV + additive
+    float mask cuDNN SDPA / varlen FA2 + FP32 `lm_head`):
+    - English (`vi-en`): **`43.00 ms` (`7,442× RT`, `4.01 GiB`)** vs `119.76 ms` (`2,672× RT`, `20.56 GiB`)
+      — **2.79× faster**; argmax vs single-clip exact FP32 `mean = 99.889%`, `min = 99.387%`.
+    - Vietnamese (`en-vi`): **`43.41 ms` (`7,371× RT`, `5.07 GiB`)** vs `121.81 ms` (`2,627× RT`, `21.51 GiB`)
+      — **2.81× faster**; argmax vs single-clip exact FP32 `mean = 99.945%`, `min = 99.552%`.
+- **End-to-end 4-shard builds (plus C99 Viterbi `_ctc_viterbi.c`, 32-row `/dev/shm` slabs, zero-copy
+  delay staging, double-buffered pinned output pools, async shard writer, `DualBuilder`):**
+  - `vi-en` (`24.61 h`): stock `46 s` (`1,939× RT`; shards 1–3 `27 s` = `2,461× RT`) → **`23 s`
+    (`3,791× RT`; shards 1–3 `9 s` = `7,384× RT`, 3.00× steady-state)**; `4,200/4,200` kept, `30/30`
+    rejected, `99.883%` exact text frames (`max_shift = 7 fr`), `cb0 = 99.66%`.
+  - `en-vi` (`25.15 h`): stock `44 s` (`2,063× RT`; shards 1–3 `26 s` = `2,614× RT`) → **`25 s`
+    (`3,676× RT`; shards 1–3 `10 s` = `6,797× RT`, 2.60× steady-state)**; `4,212/4,212` kept, `27/27`
+    rejected, `99.995%` exact text frames (`max_shift = 1 fr`), `cb0 = 99.66%`.
+  - `DualBuilder` (`--direction both`, 8 shards, `49.75 h`): **`41.27 s`** vs `95.81 s` for two passes
+    (**2.32× faster**, `4,357× RT` incl. startup / `~5,400× RT` steady-state), 100% kept/rejected match.
+  - `noisy_cache encode` (4 shards, `6.11 h` re-encoded; `FastMimiEncoder` + `Bank.apply_batch` +
+    32-clip `/dev/shm` slabs + background loader/saver): stock `18.22 s` (`2,009–2,990× RT` steady) →
+    **`11.76 s` (`4,965–11,911× RT` steady, ~3.3× steady-state)**; `1,694/1,694` clean rows byte-identical,
+    `2,506/2,506` conditions match, `cb0 = 99.74%`, `all16 = 95.41%`.
+- **Rejected as defaults after measurement on RTX 5090:**
+  - `compile_transformer=True` on `FastMimiEncoder`: saves only `1.36 ms` per 320 s (`18.63 → 17.27 ms`)
+    while adding `12–17 s` of compile/recompile stalls on variable shapes (`B = 1` tail batches). Default
+    is `False`.
+  - FP8 wav2vec2 (`--fp8-ctc`): min per-clip argmax agreement dropped below the 99% gate (`93.87%` EN,
+    `97.63%` VI). Opt-in only.
+  - GPU 24 kHz → 16 kHz resampler (`Resample24to16`) for CTC: min per-clip argmax vs CPU `soxr` was
+    `94.48%` EN / `96.04%` VI; CPU `soxr` in workers stays default (`gpu_resample_ctc=False`).
+  - `c0_conv` in FP16 (`c0_fp16=True`): passes 99% gate (`99.19%` EN, `99.60%` VI, `38.75 ms`), but
+    `max_lp_diff` on EN was 4× larger (`2.99` vs `0.75`) for only `4.2 ms`/320 s; default stays `False`.
+- Env note: `/workspace/envs/cache` now keeps `triton` (`envs-min.sh`) and drops `NO_TORCH_COMPILE=1`
+  (`restart.sh`, `envi_en_speech.sh`); `restart.sh cache` uses `--direction both --drop-inputs`.
+
 ## H100 and H200
 
 **H200 (2026-11-09, GigaSpeech 2 shards 228–229 rebuilt and compared with their Hub copies):

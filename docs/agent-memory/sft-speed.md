@@ -33,7 +33,15 @@ with the same math on the same weights:
   `apply_rope` and `gating_forward_kernel` once per dtype, rank, grad mode, autocast state and
   shape class, and past the limit a function's new variants run eagerly for the rest of the
   process. Training builds two graphs of `_rms_norm` (the LM's output norm); a process that
-  resumes, validates, trains and validates again built 8 (2026-11-03, H200 NVL).
+  resumes, validates, trains and validates again built 8 (2026-11-03, H200 NVL);
+- non-streaming CUDA `MimiModel.encode` dispatches to `training.prep.mimi_cuda.FastMimiEncoder.from_moshi`
+  (`HIBIKI_LEGACY_MIMI=1` disables it), and `MimiModel._apply` clears `_fast_encoder` when Mimi moves
+  to CPU so parking Mimi during training frees GPU weights immediately. Together with batched CUDA
+  `streams.room_codes` (`ROOM_BATCH_CUDA = 8`) and batched causal `hibiki_helpers.decode_wavs`
+  (`MIMI_DECODE_CHUNK_CUDA = 8`, `MIMI_CHUNK_ROWS_CUDA = 16`), RTX 5090 measurements (2026-11-28,
+  box `62513802`): `MimiModel.encode(8 × 16 s)` runs at `8.01 ms` (`15,976× RT`), `streams.room_codes`
+  (32 × 40 s rooms) drops `2.577 s → 0.477 s` (**5.40×**, `cb0 = 99.93%`), and `decode_wavs(8 rows)`
+  drops `857.2 ms → 244.2 ms` (**3.51×**, `max_diff = 1.86e-4`).
 
 **A generation step's attention** (2026-11-25, RTX 5090, the heads student at 320 rows of 1,208
 steps): moshi reads the whole cache at every step, 37.7 of the 46.2 ms of kernels a step (profiled,

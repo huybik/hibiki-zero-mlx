@@ -725,12 +725,40 @@ def encode_track(mimi: Any, pcm: torch.Tensor, codebooks: int | None = None) -> 
     return codes.to(device="cpu", dtype=torch.int32)
 
 
+ROOM_BATCH_CUDA = 8
+
+
 def room_codes(mimi: Any, bank: Any, count: int, frames: int, codebooks: int, seed: int) -> torch.Tensor:
     """Mimi codes of `count` rooms where nobody speaks (`augment.room_tracks` from the noise bank
-    `bank`), each `frames` long from a fresh state: [count, codebooks, frames] int32 on the CPU."""
-    samples = int(round(mimi.sample_rate / mimi.frame_rate)) * frames
+    `bank`), each `frames` long from a fresh state: [count, codebooks, frames] int32 on the CPU.
+    Batched on CUDA (all room tracks share the same `samples` length, zero padding waste)."""
+    frame = int(round(mimi.sample_rate / mimi.frame_rate))
+    samples = frame * frames
     tracks = augment.room_tracks(bank, count, samples, seed)
-    return torch.stack([encode_track(mimi, torch.from_numpy(track), codebooks) for track in tracks])
+    device = next(mimi.parameters()).device
+    if device.type != "cuda":
+        return torch.stack([encode_track(mimi, torch.from_numpy(track), codebooks) for track in tracks])
+    active = mimi.num_codebooks
+    mimi.set_num_codebooks(codebooks)
+    out: list[torch.Tensor] = []
+    buf: list[torch.Tensor] = []
+    try:
+        with torch.no_grad():
+            for track in tracks:
+                buf.append(torch.from_numpy(track))
+                if len(buf) == ROOM_BATCH_CUDA:
+                    batch = torch.stack(buf, dim=0).unsqueeze(1).to(device=device, dtype=torch.float32)
+                    out.append(mimi.encode(batch).to(device="cpu", dtype=torch.int32))
+                    buf.clear()
+            if buf:
+                batch = torch.stack(buf, dim=0).unsqueeze(1).to(device=device, dtype=torch.float32)
+                out.append(mimi.encode(batch).to(device="cpu", dtype=torch.int32))
+    finally:
+        mimi.set_num_codebooks(active)
+    result = torch.cat(out, dim=0)
+    if result.shape[-1] != frames:
+        raise RuntimeError(f"Mimi encoded {result.shape[-1]} room frames, expected {frames}")
+    return result
 
 
 def add_room_args(parser: Any, share: float) -> None:
