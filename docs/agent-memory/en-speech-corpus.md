@@ -12,7 +12,7 @@ voice-matched VI→EN pair rows by the data phase of
 [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md). Its transcripts are all translated to
 Vietnamese ([en-vi-translation](en-vi-translation.md)) and voiced in Vietnamese
 ([vi-tts](vi-tts.md)); no pair rows are built from them yet. Those rows would then go through
-`cache_codes` and train together with the ~0.8k-hour PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)).
+`cache.en_speech` and train together with the ~0.8k-hour PhoMT cache ([sft-data-caches](sft-data-caches.md#phomt-cache)).
 
 ## Contents
 
@@ -49,7 +49,7 @@ clip's Ogg length against `en_duration_s` found no others.
 
 ## Origin
 
-`training/prep/build_en_speech.py` built the corpus and was retired once it moved into the
+`build_en_speech.py` built the corpus and was retired once it moved into the
 dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
 
 - Common Voice came from the Mozilla Data Collective API (dataset `cmu5jplf300nwmh07iqvk9leo`,
@@ -80,7 +80,7 @@ dataset; to rebuild, restore it from git (last at commit `7fde7f5`).
   the right words: stray glyphs (`ye^erday`, `dumb¬ founded`, `■`), capitals inside words
   (`suppHed`; poem lines run together, `caveNo`), UTF-8 read in another encoding (`Dante‚Äôs`),
   letter swaps (`worid`). The corpus keeps the rows; training leaves out a Libriheavy row whose
-  `text_en` matches `streams.OCR_MARK`, in both directions: a glyph no reader says (`^ { } | \ < > ~
+  `text_en` matches `packs.OCR_MARK`, in both directions: a glyph no reader says (`^ { } | \ < > ~
   • ¬ © ® ¥ ■ « »`), a currency sign with no amount on either side, the curly-quote misdecodings, or
   a capital inside a word not opening Mc, Mac, De, Du, La, Le, Van, Von or Fitz. That is 50,241 of
   2.96M rows (1.70%, 172 h; user, 2026-11-22: "ok go ahead"). 40 of 40 sampled hits, and 40 of 40

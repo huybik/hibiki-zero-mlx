@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 """The tranche's training caches: each segments shard's rows as grounded-v2 cache rows
 ([tranche-cache](../../docs/agent-memory/tranche-cache.md)), built by the cache build every builder
-shares (`training.prep.cache_build`, [cache-build](../../docs/agent-memory/cache-build.md)).
+shares (`training.cache.build`, [cache-build](../../docs/agent-memory/cache-build.md)).
 
   build <sources...>  every shard whose segments, text_en, en_audio and asr_vi are on the Hub
                       becomes <root>/cache/<source>/shard_<shard stem>.pt:
                       the rows the filters below keep, the English text timed by wav2vec2-base-960h
-                      CTC (the `text_timing` Viterbi) and both clips Mimi-encoded (FP16 on CUDA, float32 in MLX), each
+                      CTC (the `timing` Viterbi) and both clips Mimi-encoded (FP16 on CUDA, float32 in MLX), each
                       sample with its `doc` and `seq` so the trainer joins a document's rows in
                       order. Pushes each source's folder every 30 min and at its end, in a thread
-                      beside the build (`ingest.Pushes`), and logs `done:` once the last is in; a
+                      beside the build (`repo.Pushes`), and logs `done:` once the last is in; a
                       rerun skips the shards written or pushed, and first pushes any written but not
                       yet pushed.
                       With --direction en-vi the languages trade places for two-way training (the
@@ -46,16 +46,15 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from training.cache.build import MODELS, Builder, DualBuilder, default_workers, summary
+from training.cache.rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
 from training.paths import DEFAULT_CONFIG_PATH, DEFAULT_MIMI_WEIGHT, DIRECTION_TOKENIZERS, exclusive
-from training.prep.cache_build import MODELS, Builder, DualBuilder, default_workers, summary
-from training.prep.cache_rows import DEFAULT_DIRECTION, DIRECTIONS, Settings, Shard, mimi_hours, write
-from training.tranche.filters import MAX_CER, eval_grams, overlaps, vi_gate
-from training.tranche.ingest import CACHE_REPO, REPO, ROOT, SOURCES, Pushes, part_file
+from training.tranche.filters import MAX_CER, VI_LETTERS, eval_grams, overlaps, vi_gate
+from training.tranche.repo import CACHE_REPO, REPO, ROOT, SOURCES, Pushes, an_token, log, part_file
 
 SPLIT = "train"  # the delay draw's key
-VI_LETTERS = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
 PUSH_S = 1800
-# The columns the build reads of each part (read_parts).
+# The columns the build reads of each part (read_shard).
 PART_COLUMNS = {
     "segments": ["id", "doc", "seq", "text", "duration_s", "audio"],
     "text_en": ["id", "text_en"],
@@ -63,10 +62,6 @@ PART_COLUMNS = {
     "asr_vi": ["id", "asr_vi", "language", "cer"],
 }
 PARTS = tuple(PART_COLUMNS)
-
-
-def log(msg: str) -> None:
-    print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,25 +100,6 @@ def vietnamese_letters(en_asr: str, text_en: str) -> set[str]:
     in Vietnamese (tranche-tts), or a Vietnamese name the ASR spelled otherwise."""
     have = set(unicodedata.normalize("NFC", text_en).lower())
     return {c for c in unicodedata.normalize("NFC", en_asr).lower() if c in VI_LETTERS} - have
-
-
-def read_parts(source: str, name: str, files: dict[str, Path],
-               columns: dict[str, list[str]] = PART_COLUMNS) -> list[dict[str, Any]]:
-    """The shard's rows with these columns of each part's file (segments' among them), in the
-    segments' order."""
-    import pyarrow.parquet as pq
-
-    def get(part: str) -> list[dict[str, Any]]:
-        return pq.read_table(files[part], columns=columns[part]).to_pylist()
-
-    rows = get("segments")
-    for part in [p for p in columns if p != "segments"]:
-        other = get(part)
-        if [r["id"] for r in other] != [r["id"] for r in rows]:
-            raise RuntimeError(f"{source}/{part}/{name} does not hold the segments' rows in their order")
-        for row, extra in zip(rows, other, strict=True):
-            row.update(extra)
-    return rows
 
 
 def gate(row: dict[str, Any], max_cer: float, grams) -> str | None:
@@ -264,8 +240,6 @@ def todo_shards(args: argparse.Namespace) -> tuple[list[tuple[str, str]], list[s
 
 
 def build(args: argparse.Namespace) -> None:
-    from training.tranche.ingest import an_token
-
     an_token()
     # Taken first: a second run must not push or load models onto a GPU the first one uses.
     args.root.mkdir(parents=True, exist_ok=True)

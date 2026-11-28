@@ -43,7 +43,7 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
   Then upload everything and destroy the box. The user (2026-11-21): "should run grpo after
   distil". So the distilled best goes through GRPO first (`grpo_launch.sh`, as `grpo_student`
   ran: [student-grpo](student-grpo.md#run)), and the test sets score GRPO's best. GRPO loads,
-  samples and scores through the same `common.build_lm`, `get_lmgen` and forward as the heads
+  samples and scores through the same `model.build_lm`, `get_lmgen` and forward as the heads
   student's training and validation. The rooms' noise bank was fetched ahead of time.
 - One session runs the box's jobs from 2026-11-21 (user: "you in control of the training on the box
   now"). After the heads run, in order, one GPU job at a time:
@@ -76,13 +76,13 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
   English speech (2,481 of 8,456 h). The `vi-en` caches of all 1,832 train shards, noisy and
   clean, are on the Hub (78 GB each): a run fetches them, so `vi-en` needs no data work; using all
   of them is the next run's shard list (round 4e listed 500). `en-vi` had round 4e's 500; this
-  box built 27 more beside the heads run (`cache_codes --direction en-vi`, capped at 30% of the
+  box built 27 more beside the heads run (`cache.en_speech --direction en-vi`, capped at 30% of the
   card) before the user took the data preparation to a separate session (2026-11-21: "continue with
   training, i will do the data preparation on a separate session"). Profiled on 2 shards: 21.3 h
   of audio built in 122 s, 98.7% of rows kept; the heads run went 0.69 → ~1.4 s an update while it
   built. A batch of 25 (512 h of Mimi audio, both clips) took 1,903 s at ~970× real time on the
   shared GPU, 719 s of download (~8 MB/s) and 180 s of upload. The Mac and then the RTX 5090 box
-  built the rest and every noisy copy (`training/prep/noisy_cache.py`, [envi-data](envi-data.md)).
+  built the rest and every noisy copy (`training/cache/noisy.py`, [envi-data](envi-data.md)).
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
@@ -151,11 +151,11 @@ one expires; everything a job writes goes to the Hub as it runs, so a new box re
 2. `/workspace/.env` (mode 600): `HF_TOKEN_AN`, a write token of anquachdev, for the tranche repos'
    pushes; huybik's token in `$HF_HOME/token` for the run recovery repo. Never print either.
 3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs.sh [env ...]` builds, side by side, the `ingest`
-   (YODAS's ingest), `vieneu` (voice.py), `asr` (the Qwen3-ASR server), `cache` (the cache builds, free-threaded
+   (YODAS's ingest), `vieneu` (voice.py and its engine, `vieneu/`), `asr` (the Qwen3-ASR server), `cache` (the cache builds, free-threaded
    3.14; installs Rust for safetensors) and `mt` (translate.py) envs, all without arguments, and downloads their models
    at their pinned revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet crawled at ~5 MB/s; HTTP ~140).
 4. The jobs read the tranche repos' parts locally under `/workspace/tranche/repo/<source>/<part>/`
-   and fall back to the Hub (`ingest.part_file`), so voice and the cache build need no download first.
+   and fall back to the Hub (`repo.part_file`), so voice and the cache build need no download first.
 
 ### A box behind a slow proxy
 
@@ -175,7 +175,7 @@ answers in 198.18.0.0/15.
   a time. The CDN links are signed for ~1 h, so they were resolved in ~6 GB batches.
   `hf download` got ~2 MB/s a file and stalled.
 - Disk: shards and packs of every training cache (~150 GB each) don't fit together on 300 GB.
-  Pack each cache with `streams --drop-shards` as soon as its download completes. A new
+  Pack each cache with `packs --drop-shards` as soon as its download completes. A new
   `PACK_VERSION` (7 since 2026-11-22) refuses dropped packs of the old one: delete a folder's old
   `.packed/<shard>/` folders, then fetch and drop its shards again, a folder at a time, as the disk
   holds a folder's shards beside the packs (a dropped pack left in place counts as fetched, below).
@@ -183,7 +183,7 @@ answers in 198.18.0.0/15.
     starting meanwhile packs half-written ones. A shard whose `pack.json` is marked `dropped`
     counts as fetched.
 - `fleurs-en`, `en-vi-val-en` and `en-vi-val-en-noisy` are in the dataset repo's `eval/` since
-  2026-11-22 (built on the box with `training.prep.eval_sets`).
+  2026-11-22 (built on the box with `training.finetune.eval_sets`).
 - Xet uploads stalled twice at the end of a probe's final sync (2026-11-22): ~250 KB/s at 99% of
   the model. Plain LFS ran 20–35 MB/s. The stalled sync was stopped by its PID (its files stay
   staged), and the run's one-shot final sync rerun with `HF_HUB_DISABLE_XET=1`
@@ -202,7 +202,7 @@ answers in 198.18.0.0/15.
   shell.
 - Record a detached job's PID from inside it: `setsid -f bash -c 'echo $$ > PIDFILE; exec CMD'`.
   `nohup setsid CMD & echo $! > PIDFILE` saved another PID, a kill by it missed the job, and two
-  fetchers packed one folder at once (`streams --drop-shards`): one failed on the other's dropped
+  fetchers packed one folder at once (`packs --drop-shards`): one failed on the other's dropped
   shards (`FileNotFoundError`), so the folder was fetched again.
 
 ### Fetching from the Hub
@@ -232,7 +232,8 @@ Round 4 SFT's inputs, all on the Hub (read locally):
 ## Jobs
 
 The tranche's order (user, 2026-11-07): all voicing first, then every cache, then SFT, then GRPO.
-`restart.sh <job>` starts each of its jobs:
+`restart.sh <job>` starts each of its jobs. The `student-slices-*` jobs share their env (`HIBIKI_HF_REPO`, the CPU
+quota's threads), training and validation caches and validation sets, set once before the jobs' cases:
 
 | Job | What | Done when |
 |---|---|---|
@@ -240,12 +241,12 @@ The tranche's order (user, 2026-11-07): all voicing first, then every cache, the
 | voice | `voice.py run yodas`: en_audio for every YODAS shard with text_en and asr_vi, rerun as shards arrive ([tranche-tts](tranche-tts.md#running)) | it logs "0 shards to voice" |
 | voice-en-speech | `voice.py run en_speech`: the EN-VI dataset's Vietnamese heard, its broken rows voiced again ([tranche-tts](tranche-tts.md#vietnamese)) | it exits 0 after its last shard |
 | cache | every source's caches both ways in one pass ([tranche-cache](tranche-cache.md)) | every voiced shard has its caches on the Hub |
-| student-slices-5090, student-slices-decay-5090 | the slices student's Stage 1 and its decay ([student-slices](student-slices.md)) | its `--max-steps`, then `test_student.sh` |
+| student-slices-5090, student-slices-decay-5090 | the slices student's Stage 1 and its decay ([student-slices](student-slices.md)) | its `--max-steps`, then `test_sets.sh` |
 | student-slices-refit-5090, student-slices-pal6-5090 | the slices' refit on the on-policy trunk and its 6-bit finish ([slices-on-policy](slices-on-policy.md)) | the same |
 | student-slices-wide-5090, student-slices-wide-warm-5090, and their `-decay-5090` | the wide slices, from random or the teacher's depformer, then their decays ([student-slices](student-slices.md#wide-slices)) | the same |
 
 GRPO starts with `grpo_launch.sh RUN <weight> [ARGS]` instead (from the checkout, [grpo](grpo.md#running)); stop
-it with TERM to the launcher alone. `test_student.sh CONFIG WEIGHT OUT_DIR` scores a phone student on the 13
+it with TERM to the launcher alone. `test_sets.sh CONFIG WEIGHT OUT_DIR` scores a model on the 13
 test sets.
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own

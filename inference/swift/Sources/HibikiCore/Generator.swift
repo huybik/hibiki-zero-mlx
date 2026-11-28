@@ -16,7 +16,7 @@ struct LMBusy {
     var host = 0.0
 }
 
-/// The delayed-stream state of one translation session, as `moshi_mlx.models.LmGen`.
+/// The delayed-stream state of one translation session, as `hibiki_mlx.lm.generate.LmGen`.
 ///
 /// Frame t feeds the model the previous text token and, for each of the 32 audio codebooks,
 /// the token of frame t - 1 - delay. Source codes enter at their own frame; generated target

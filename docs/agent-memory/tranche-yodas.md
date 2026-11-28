@@ -29,9 +29,10 @@ YODAS3's Vietnamese (12.6k h in 44k YouTube videos, none in YODAS v1/v2) is the 
   of the cap is cut at its last pause that fits (`capped`): a livestream can be one run of hours,
   which decoded whole held 15+ GB in one cutting process (48 kHz stereo) and cut hours of rows that
   the cap then dropped.
-- Every row is heard by the ASR server (Qwen3-ASR-1.7B, `filters.Hearer`, 16 kHz WAV, language
-  detected) and the transcript becomes the row's `text`; `<source>/asr_vi/<tar>` stores it again,
-  its language and its CER against the caption over `spoken`. So voice.py's and the cache build's
+- Every row is heard by the ASR server (Qwen3-ASR-1.7B, `asr.Client`, 16 kHz WAV, language
+  detected, 3 tries on a dropped connection) and the transcript becomes the row's `text`; `<source>/asr_vi/<tar>`
+  stores it again, its language and its CER against the caption over `spoken` (`asr.cer`, as voice.py scores its
+  Vietnamese). So voice.py's and the cache build's
   `vi_gate` see the same CER as ingest did.
 - `doc` is the video (`yodas/<tar>/<video>`), `speaker` none, `seq` the video's index in the tar
   × 10,000 + its row; rows are 24 kHz Opus (each source keeps its own rate).
@@ -158,7 +159,7 @@ stop to report and merge after validation done, dont start 20k h yet").
 
 - Caches: `restart.sh cache` builds both directions in one pass (`--direction both`, deleting the
   parts it has read); every YODAS row needs its pair in the other direction, which times its source
-  ([sft-training](sft-training.md#target-timing)). Then `streams --drop-shards` on
+  ([sft-training](sft-training.md#target-timing)). Then `packs --drop-shards` on
   `cache/yodas` and `cache/en-vi/yodas`. Built 2026-11-26 a direction at a time (2,129× and 2,180×
   real time, 44 min each way, 10.2 GB packed): vi-en kept 85.0% of VoxCPM2's rows (0000–0003) and 72.6% of
   VieNeu's, en-vi 83.8% and 71.2%. The gap is mostly length: VieNeu's ~12% longer English puts

@@ -20,14 +20,14 @@ from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import RemoteEntryNotFoundError
 from huggingface_hub.hf_api import RepoFile
 
+from training.finetune.run_files import checkpoint_pairs, load_best_state
+
 POLL_S = 60
 REMOTE_KEEP = 2
 STAGE_ROOT = ".hf_sync"
 REMOTE_ROOT = os.environ.get("HIBIKI_HF_PREFIX", "full_run").strip("/")
 if not REMOTE_ROOT or ".." in REMOTE_ROOT.split("/"):
     raise ValueError("HIBIKI_HF_PREFIX must be a non-empty relative repository path")
-STEP_MODEL = re.compile(r"model_step(\d+)\.safetensors$")
-STEP_TRAINER = re.compile(r"trainer_step(\d+)\.pt$")
 STAGED_PAIR = re.compile(r"checkpoint_step(\d+)$")
 STAGED_BEST = re.compile(r"best_step(\d+)$")
 RUN_METADATA = ("run_config.json", "train_args.json")
@@ -49,20 +49,6 @@ def parse_args() -> argparse.Namespace:
         help="Poll while this training PID lives, then sync the newest final pair and exit.",
     )
     return parser.parse_args()
-
-
-def checkpoint_pairs(run_dir: Path) -> list[tuple[int, Path, Path]]:
-    models = {
-        int(match.group(1)): path
-        for path in run_dir.glob("model_step*.safetensors")
-        if (match := STEP_MODEL.fullmatch(path.name))
-    }
-    trainers = {
-        int(match.group(1)): path
-        for path in run_dir.glob("trainer_step*.pt")
-        if (match := STEP_TRAINER.fullmatch(path.name))
-    }
-    return [(step, models[step], trainers[step]) for step in sorted(models.keys() & trainers.keys())]
 
 
 def remote_path(path: str) -> str:
@@ -93,25 +79,6 @@ def remote_pairs(files: dict[str, int]) -> list[int]:
         if (match := re.fullmatch(r"checkpoints/trainer_step(\d+)\.pt", path))
     }
     return sorted(models & trainers)
-
-
-def best_state(run_dir: Path) -> dict[str, object] | None:
-    path = run_dir / "best.json"
-    if not path.is_file():
-        return None
-    state = json.loads(path.read_text(encoding="utf-8"))
-    if set(state) != {"step", "model", "metric", "chrf"}:
-        raise RuntimeError("invalid local best-checkpoint metadata")
-    step = int(state["step"])
-    model = run_dir / str(state["model"])
-    if (
-        state["metric"] != "selecting_chrf"  # checkpoints.BEST_METRIC (the sync does not load torch)
-        or model.name != f"best_step{step:06d}.safetensors"
-        or not model.is_file()
-    ):
-        raise RuntimeError("local best-checkpoint metadata is inconsistent")
-    float(state["chrf"])
-    return state
 
 
 def remote_best_steps(files: dict[str, int]) -> list[int]:
@@ -430,7 +397,7 @@ def sync_once(run_dir: Path, repo: str, final: bool) -> None:
         elif step in uploaded_best:
             uploaded_best.remove(step)
     remote_best = max(uploaded_best, default=-1)
-    local_best = best_state(run_dir)
+    local_best = load_best_state(run_dir)
     candidates = [*staged_best]
     if local_best is not None and int(local_best["step"]) > remote_best:
         candidates.append(int(local_best["step"]))

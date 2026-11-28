@@ -17,7 +17,8 @@ import numpy as np
 import torch
 from silero_vad import load_silero_vad
 
-FRAME = 1920  # samples at 24 kHz: one Mimi frame, 80 ms
+from hibiki_mlx.level import FRAME
+
 THRESHOLD = 0.5  # Silero's default speech probability
 LOOKAHEAD = 2  # frames: 160 ms
 HOLD = 10  # frames: 0.8 s

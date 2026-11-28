@@ -74,7 +74,7 @@ validation cache, its word accuracy is 0.569 at 96,000 (0.544 at 64,000) against
 model's 0.664.
 
 - `train.py --teacher-weight` ([sft-training](sft-training.md#objective)): each training token's
-  loss is `common.token_kl`, KL(teacher ‖ student) of its next-token distribution, in place of
+  loss is `losses.token_kl`, KL(teacher ‖ student) of its next-token distribution, in place of
   its CE, with the same weights (text PAD 0.5, codebook 0 100) where both models' masks hold. The student learns
   the teacher's whole distribution at every position, and with GRPO update 1,400 as the teacher
   its timing too: where that model would write a word before the SFT target's, its distribution

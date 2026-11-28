@@ -155,7 +155,7 @@ class Palettizer:
 
 
 def main() -> None:
-    from training.finetune import common
+    from training.finetune.model import save_state
     from training.paths import repo_display_path, require_file, resolve_repo_path
 
     parser = argparse.ArgumentParser(description="Snap a heads student's checkpoint onto its palettization tables.")
@@ -175,7 +175,7 @@ def main() -> None:
         state[name] = snap(on, fit(on, args.bits)).cpu()
     metadata["palettized"] = f"{args.bits} bits, {GROUP_ROWS} rows a table"
     out = resolve_repo_path(args.out)
-    common.save_state(state, out, metadata)
+    save_state(state, out, metadata)
     print(f"Snapped {repo_display_path(weight)} onto {args.bits}-bit tables: {repo_display_path(out)}")
 
 

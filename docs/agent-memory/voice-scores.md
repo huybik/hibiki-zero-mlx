@@ -1,7 +1,7 @@
 # Voice scores
 
-Read when touching `training/finetune/voice_scores.py` or `training/prep/kaldi.py`, or the speech decode and scores in
-`common.generate_batch` (`hibiki_helpers.decode_wavs`) and `inference/tools/gate.py`.
+Read when touching `training/finetune/voice_scores.py` or `training/audio/kaldi.py`, or the speech decode and scores in
+`generation.generate_batch` (`generation.decode_wavs`) and `inference/tools/gate.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · evaluation itself: [sft-evaluation](sft-evaluation.md)
 
 Every free-running evaluation that decodes the speech scores it (`training/finetune/voice_scores.py`):
@@ -34,7 +34,7 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
   have neither, and rows whose source has under a second no `speaker_sim`. Reported, not gated:
   checkpoints are still chosen on the text.
 - WeSpeaker's runtimes (its package, ONNX Runtime) are not in the trainer's free-threaded
-  environment, so its ResNet34 and Kaldi filterbank (`training/prep/kaldi.py`, Hamming windows; the voicer's
+  environment, so its ResNet34 and Kaldi filterbank (`training/audio/kaldi.py`, Hamming windows; the voicer's
   speaker encoder takes it with povey windows) are written in PyTorch and load its checkpoint
   (`avg_model`, Hub revision `f0c48c2`, fetched by `h100.sh preflight`). Against WeSpeaker's ONNX
   model and torchaudio's `kaldi.fbank` on the Mac (2026-11-27): filterbanks within 2.6e-4,
@@ -53,7 +53,7 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
   after Stage 1's decay 0.293 / 4.94 ([student-slices](student-slices.md#runs)).
 - Cost: scoring takes ~0.08 s a row on the M4 Pro's GPU; source embeddings are cached for the
   process. The validation also decodes every row's speech up to its end frame (`decode_wavs`):
-  on CUDA in length-sorted batches of 8 rows (`hibiki_helpers.MIMI_DECODE_CHUNK_CUDA`), each
+  on CUDA in length-sorted batches of 8 rows (`generation.MIMI_DECODE_CHUNK_CUDA`), each
   padded only to its group's longest, the same audio as each row alone (Mimi is causal; 8 rows
   of a validation batch 857 → 244 ms on the RTX 5090, [sft-speed](sft-speed.md#fast-path));
   on MPS and the CPU each row alone, to keep the peak small (8 rows of a 52 s batch took 4 GiB of

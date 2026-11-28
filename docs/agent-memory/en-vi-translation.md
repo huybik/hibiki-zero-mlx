@@ -9,7 +9,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [What exists](#what-exists) ·
 
 Every `en_speech` clip has a Vietnamese line for voice-transfer TTS to read ([vi-tts](vi-tts.md));
 Vietnamese is the model's source stream, so each line stays aligned with its English audio. The
-translation is finished. The code that made it, `training/prep/translate_en_speech.py`, is in git
+translation is finished. The code that made it, `translate_en_speech.py`, is in git
 at commit 364091a.
 
 - 3,388,263 unique texts (526M characters) in 3,490,088 rows: Claude Sonnet 5.5 translated 616,834
@@ -57,4 +57,4 @@ at commit 364091a.
   at low effort, then the lines failing alone on Opus at high effort (7, all fixed), into
   `retranslations.jsonl`. `retexts.parquet` (`id`, `text_vi`) lists the rows of every
   retranslated text: 7,102 texts, 7,152 rows in 1,460 shards, voiced again with
-  `tts_en_speech --texts` ([vi-tts](vi-tts.md#running)).
+  `en_vi_dataset.tts --texts` ([vi-tts](vi-tts.md#running)).

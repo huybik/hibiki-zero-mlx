@@ -27,7 +27,7 @@ T=/workspace/tranche/repo/cache
 # streams group its rows by doc), and from en_speech's real recordings, clean and noisy (each copy
 # keeps 40% of its rows clean). The en_speech rows are round 4e's 500 shards
 # (box/en_speech_sub.txt) in both en-vi folders, timed by the vi-en copy of the same rows
-# (--pair-cache-dir, streams.load_rows), so each en-vi folder holds those 500 alone: an extra shard
+# (--pair-cache-dir, rows.load_rows), so each en-vi folder holds those 500 alone: an extra shard
 # has no pair and raises (envi-data.md#the-runs-on-it). The 3B's H100 profile's sizes (grpo.md);
 # 2,000 updates, judged at 800 (user, 2026-11-13: 800, more while it still improves; the rate is
 # constant, so a longer --updates is the same run up to there).
@@ -37,7 +37,7 @@ args=()
                          --pair-cache-dir data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
                          --model-weight "$1" --gen-frames 614400 --micro-batch 2 --updates 2000 "${@:2}")
 # The rooms' noise bank (grpo.py --bank-dir's default), fetched here once, not inside the run.
-.venv/bin/python -c 'from pathlib import Path; from training.prep.augment import fetch_bank; print(fetch_bank(Path("data/rirs_noises")))'
+.venv/bin/python -c 'from pathlib import Path; from training.audio.augment import fetch_bank; print(fetch_bank(Path("data/rirs_noises")))'
 echo "$(date -u '+%F %T') $run ${args[*]}" >> /workspace/logs/grpo.log
 setsid ./training/h100.sh grpo "$run" "${args[@]}" >> /workspace/logs/grpo.log 2>&1 < /dev/null &
 echo $! > /workspace/logs/grpo.pid

@@ -74,7 +74,7 @@ grows sentence by sentence.
    ([sft-data-caches](agent-memory/sft-data-caches.md#builds)). The trainer builds streams from its
    rows; nothing needs re-encoding.
 2. Noisy Vietnamese re-encode (built 2026-11-04, the second epoch's data):
-   `training.prep.noisy_cache` copies the cache with the Vietnamese source of a seeded 60% of
+   `training.cache.noisy` copies the cache with the Vietnamese source of a seeded 60% of
    the rows re-encoded under room reverb, background noise, a narrowed band (16 kHz as FLEURS,
    8 kHz as MultiMed, a phone band) and a level change, reusing each row's English codes and
    text timing; it runs on the pod's GPU after a run, where the Mac would take days
@@ -100,7 +100,7 @@ grows sentence by sentence.
 
 ### 2. Evaluation sets
 
-Built by `training.prep.eval_sets` into `data/eval/`; evaluation only, never training
+Built by `training.finetune.eval_sets` into `data/eval/`; evaluation only, never training
 ([sft-evaluation](agent-memory/sft-evaluation.md#evaluation-sets)).
 
 | Set | Speech | Role |
@@ -572,7 +572,7 @@ Vietnamese text cannot keep up with its speech.
       on the Mimi audio, ~8 h for all of it;
    3. the `en-vi` caches of everything round 4e trained (user, 2026-11-10: "use more data for
       the two ways run"): the whole tranche and the same 500 `en_speech` shards, ~8,500 h a
-      direction; the box keeps only their packs (`streams --drop-shards`), as both directions'
+      direction; the box keeps only their packs (`packs --drop-shards`), as both directions'
       shards and packs would not fit its 350 GB;
    4. the two-way SFT on both directions of those rows (~17k h, ~150k updates of 8,192 frames,
       ~23 h on the H100 at 14,330 frames/s) from the start through `init_weights`, the pilot's test at its first

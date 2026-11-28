@@ -1,5 +1,5 @@
 """How much a translation's speech sounds like its speaker, and how clean it is: free-running
-evaluation's voice scores (`common.generate_batch`, `inference/tools/gate.py`).
+evaluation's voice scores (`generation.generate_batch`, `inference/tools/gate.py`).
 
 - `speaker_sim`: cosine between WeSpeaker ResNet34-LM (VoxCeleb) embeddings of the source file as
   recorded (not through the level stage, which lifts the pauses' noise) and the translation, each
@@ -30,7 +30,7 @@ from huggingface_hub import hf_hub_download
 from torch import nn
 from torch.nn import functional as F
 
-from training.prep import kaldi
+from training.audio import kaldi
 
 SPEAKER_MODEL = ("Wespeaker/wespeaker-voxceleb-resnet34-LM", "f0c48c298fd835726c27956a5d617bad7115627e")
 RATE = 16_000

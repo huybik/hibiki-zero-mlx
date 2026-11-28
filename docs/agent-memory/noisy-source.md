@@ -1,8 +1,8 @@
 # Noisy source
 
-Read when touching `training/prep/augment.py`, `training/prep/noisy_cache.py`, the
+Read when touching `training/audio/augment.py`, `training/cache/noisy.py`, the
 `en-vi-val-noisy` or `en-vi-val-en-noisy` evaluation set, a `*-noisy` cache or the rooms of GRPO
-and SFT (`streams.run_rooms`, `--room-share`).
+and SFT (`rooms.run_rooms`, `--room-share`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Conditions](#conditions) ·
 [Rooms](#rooms) · [Noisy cache](#noisy-cache) · [Speed](#speed) · [Checks](#checks) ·
 [Evaluation](#evaluation)
@@ -95,7 +95,7 @@ room does not give.
   peaking at U[−45, −25], cut edges ramped over 10 ms; then the level stage from the track's start:
   frame peaks at a median −24.8 dBFS (p90 −18.9, events up to −6; 24 rooms of 30 s, seed 44), −38.7
   at its first settings, when codebook 0 took a steady silence value on ~71% of room frames.
-- **Encoded** by `streams.run_rooms`: GRPO 256 rooms, SFT 2,048 (a pass draws ~890,000 room streams),
+- **Encoded** by `rooms.run_rooms`: GRPO 256 rooms, SFT 2,048 (a pass draws ~890,000 room streams),
   each as long as the silence track (GRPO's `--frames`, SFT's longest stream), from a fresh state on
   the run's GPU at its start, SFT's before its resume check (TF32 on, so residual codes may differ by
   GPU). `StreamDataset` draws one for a stream from (seed, index), the same on a resume; `assemble`
@@ -111,7 +111,7 @@ room does not give.
 
 ## Noisy cache
 
-`training.prep.noisy_cache` writes, for each `shard_<name>.pt` of a clean cache split, a shard
+`training.cache.noisy` writes, for each `shard_<name>.pt` of a clean cache split, a shard
 with the same rows in the same order, in two steps that share `--out-dir`:
 
 ```text
@@ -121,11 +121,11 @@ encode (--device cuda or mlx)                .sources + clean shard ─► shard
 
 - The source is the cache's (`direction`): `vi_audio` and `vi_frames` in a `vi-en` cache,
   `en_audio` and `en_frames` in an `en-vi` one (Common Voice's MP3 and Libriheavy's Opus decode
-  through the same `audio.decode`).
-- `fetch` reads the clips from the file each clean shard names as its `source` (`clip_file`): a `cache_codes`
+  through the same `training.audio.decode`).
+- `fetch` reads the clips from the file each clean shard names as its `source` (`clip_file`): a `cache.en_speech`
   shard's EN-VI parquet, or a tranche `en-vi` shard's `<source>/en_audio/` part beside the segments it was built
   from (`anquachdev/en-vi-speech-20k`, rows in the segments' order; a tranche `vi-en` source is real speech and has
-  no noisy copy), with a `vi_check` part's re-voiced clips where the shard was built with one (`cache_codes
+  no noisy copy), with a `vi_check` part's re-voiced clips where the shard was built with one (`cache.en_speech
   --vi-check`). It downloads each file, the EN-VI parquets at `paths.EN_VI_REVISION`, 16 at a time, each tried 4
   times, or reads it from `--dataset-dir`, a local copy of the dataset the cache was built from (the box's
   2026-11-21 `en-vi` build of the remaining `en_speech` shards uses it to copy each batch before deleting its
@@ -139,13 +139,13 @@ encode (--device cuda or mlx)                .sources + clean shard ─► shard
   writes `manifest.json` (seed, fraction, the cache's direction, the dataset, bank SHA-256); a
   later fetch with other values stops, and `encode` refuses a shard of another direction.
 - `encode` re-encodes the rows whose source holds audio:
-  - the clip is decoded by the builder's own code, `audio.decode` (PyAV), and resampled with
+  - the clip is decoded by the builder's own code, `training.audio.decode` (PyAV), and resampled with
     soxr, so it has the samples and frame count the cache was built from. Any other decoder is
     wrong here ([Checks](#checks));
   - the clip goes under `Bank.draw(f"{seed}:{id}")`, stored as `source_conditions` (None for a
     clean row);
   - Mimi encodes the clips shortest first, in batches of up to `--batch-seconds` (640) of padded
-    audio: on CUDA the clean build's `FastMimiEncoder` (`cache_build.cuda_mimi`: FP16 SEANet and
+    audio: on CUDA the clean build's `FastMimiEncoder` (`cache.cuda.cuda_mimi`: FP16 SEANet and
     transformer, FP32 quantizer, `CUDA_TF32`; [cache-build](cache-build.md#cuda);
     [cache-speed-cuda](cache-speed-cuda.md) has its speed and the codes it moves), right-padded, the
     conditions on the GPU (`Bank.apply_batch`); on MLX `mimi_mlx` in float32, one clip per forward,
@@ -207,12 +207,12 @@ came out identical to the first encode's.
   pod with a larger quota) as well as a faster GPU step.
 - **RTX 5090 pipeline & kernel pass (2026-11-28, box `62513802`)**: `augment.Bank` caches raised-cosine
   band-filter gains and provides batched GPU `apply_batch()` (0.00 max abs diff vs `apply()`), while
-  `noisy_cache encode` uses `mimi_cuda.FastMimiEncoder` (via `cuda_mimi`), 32-clip `/dev/shm` decode
+  `cache.noisy encode` uses `mimi_cuda.FastMimiEncoder` (via `cuda_mimi`), 32-clip `/dev/shm` decode
   slabs (`decode_batch`), preallocated double-buffered pinned H2D/D2H, and background loader/saver
   threads (`fetch --dataset-dir` defaults to `--jobs 4`, the Hub's to 16, to cap peak RAM). On 4 shards
   (6.11 h re-encoded, 15 workers): `18.22 s → 11.76 s` total wall (`2,009–2,990×` → `4,965–11,911× RT`
   steady-state, ~3.3× faster steady-state); clean rows 100% byte-identical, conditions 100% identical,
-  re-encoded `cb0 = 99.74%`, `all16 = 95.41%`. `streams.room_codes` also batches room encoding
+  re-encoded `cb0 = 99.74%`, `all16 = 95.41%`. `rooms.room_codes` also batches room encoding
   (`ROOM_BATCH_CUDA = 8`) on CUDA through `lm_training.install()`'s fast Mimi (`2.577 s → 0.477 s`
   for 32 × 40 s rooms, **5.40× faster**, `cb0 = 99.93%`).
 
@@ -268,7 +268,7 @@ came out identical to the first encode's.
 
 ## Evaluation
 
-`training.prep.eval_sets --sets en-vi-val-noisy` writes `en-vi-val-noisy/{cv27,libriheavy}.jsonl`
+`training.finetune.eval_sets --sets en-vi-val-noisy` writes `en-vi-val-noisy/{cv27,libriheavy}.jsonl`
 from the built `en-vi-val` rows: every clip under `Bank.draw(f"0:{id}")` (always applied, unlike
 training's 60%), as 24 kHz WAV, with the drawn `conditions` in the row. It resamples the clean
 48 kHz clip with `sphn.resample`, as `eval.py` resamples the clean set, so the two sets differ by

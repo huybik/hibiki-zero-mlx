@@ -13,7 +13,22 @@ import dataclasses
 import json
 from pathlib import Path
 
-from training.finetune import common
+from training.finetune.eval_rows import (
+    ids_from_args,
+    read_eval_sets,
+    select_eval_rows,
+    validate_eval_rows,
+)
+from training.finetune.generation import GenerationConfig, translate_rows, write_predictions
+from training.finetune.metrics import score_sets, score_summary
+from training.finetune.model import (
+    check_device,
+    dtype_from_name,
+    load_checkpoint_info,
+    load_lm,
+    run_tokenizer,
+    seed_all,
+)
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
@@ -25,7 +40,7 @@ from training.paths import (
 
 
 def parse_args() -> argparse.Namespace:
-    defaults = common.GenerationConfig()
+    defaults = GenerationConfig()
     parser = argparse.ArgumentParser(
         description="Generate validation outputs with a base or full-SFT model."
     )
@@ -106,17 +121,17 @@ def main() -> None:
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
 
-    device = common.check_device(args.device)
-    dtype = common.dtype_from_name(args.dtype)
-    common.seed_all(args.seed)
+    device = check_device(args.device)
+    dtype = dtype_from_name(args.dtype)
+    seed_all(args.seed)
 
-    ids = common.ids_from_args(args.ids, args.ids_file)
-    sets = common.read_eval_sets(args.pairs)
+    ids = ids_from_args(args.ids, args.ids_file)
+    sets = read_eval_sets(args.pairs)
     rows = [row for set_rows in sets.values() for row in set_rows]
     # Every row, before selection: --ids must not pick one of two rows that share an id.
-    common.validate_eval_rows(rows, args.id_column, duration_column="duration_s")
+    validate_eval_rows(rows, args.id_column, duration_column="duration_s")
     if ids:
-        rows = common.select_eval_rows(rows, ids, args.id_column)
+        rows = select_eval_rows(rows, ids, args.id_column)
     else:
         rows = [row for set_rows in sets.values() for row in set_rows[: args.limit]]
     checkpoint = require_file(args.checkpoint, "checkpoint") if args.checkpoint else None
@@ -124,23 +139,23 @@ def main() -> None:
     if checkpoint is None:  # a checkpoint replaces the base weights, which are never read
         args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    args.tokenizer = common.run_tokenizer(args.tokenizer, checkpoint or args.model_weight)
+    args.tokenizer = run_tokenizer(args.tokenizer, checkpoint or args.model_weight)
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    fields = dataclasses.fields(common.GenerationConfig)
-    generation = common.GenerationConfig(
+    fields = dataclasses.fields(GenerationConfig)
+    generation = GenerationConfig(
         **{field.name: getattr(args, field.name) for field in fields}
     )
-    checkpoint_info = common.load_checkpoint_info(args)
+    checkpoint_info = load_checkpoint_info(args)
 
     print(f"Loading Mimi on {device} from {repo_display_path(args.mimi_weight)}")
     mimi = checkpoint_info.get_mimi(device=device)
     text_tokenizer = checkpoint_info.get_text_tokenizer()
-    lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
+    lm = load_lm(checkpoint_info, checkpoint, device, dtype)
     lm.eval()
 
-    records = common.translate_rows(
+    records = translate_rows(
         rows,
         generation,
         args.batch_size,
@@ -151,10 +166,10 @@ def main() -> None:
         out_dir,
         args.seed,
     )
-    metrics = common.score_sets(records, list(sets))
+    metrics = score_sets(records, list(sets))
 
     predictions_path = out_dir / "predictions.csv"
-    common.write_predictions(predictions_path, records)
+    write_predictions(predictions_path, records)
     print(f"Wrote {len(records)} predictions -> {repo_display_path(predictions_path)}")
     metrics_path = resolve_repo_path(args.metrics_json) if args.metrics_json else out_dir / "metrics.json"
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,7 +177,7 @@ def main() -> None:
         json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     for name, set_metrics in metrics.items():
-        print(f"Metrics {name}: {common.score_summary(set_metrics)}")
+        print(f"Metrics {name}: {score_summary(set_metrics)}")
     print(f"Wrote metrics -> {repo_display_path(metrics_path)}")
 
 

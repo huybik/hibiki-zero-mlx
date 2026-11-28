@@ -33,10 +33,11 @@ export and runtime: [lm-npu](lm-npu.md#depformer-slices).
 ## Speech Live
 
 - [onevoice-ai-challenge](https://github.com/anthoai97/onevoice-ai-challenge)'s `apps/ios`
-  copies `LM.swift` and `NeuralLM.swift` from `inference/swift` (keeping its read-through of
-  the mapped tables at load, now of both tables), counts a `depformer_parallel` folder complete
-  with `lm-depformer.mlmodelc` and `lm-depformer-embeddings.bin`, and lists the release in
-  Settings › Model.
+  copies `LM.swift` and `NeuralLM.swift` from `inference/swift` as they were before #219 (since
+  split into `HibikiConfig.swift`, `NeuralLM.swift` and `NeuralLM+Host.swift`: a re-sync copies all three)
+  (keeping its read-through of the mapped tables at load, now of both tables), counts a
+  `depformer_parallel` folder complete with `lm-depformer.mlmodelc` and
+  `lm-depformer-embeddings.bin`, and lists the release in Settings › Model.
 - iPhone 13 Pro Max, `--file two-turns-vi.wav` (two FLEURS Vietnamese sentences), wired, thermal
   fair or nominal (2026-11-28, two runs; files in
   `/Volumes/data/hibiki-zero-evals/mac/slices-phone/speechlive-2026-11-28/`): 60 and 58 ms a

@@ -11,7 +11,7 @@ The heads sit in the model's `depformer` slot, so moshi's
 training forward and its generation (`LMGen`, which samples audio only when a depformer exists) run
 them through two replaced methods; the depformer's own tensors are dropped.
 
-A config marks such a model with `"audio_heads": "parallel"`, which `common.load_checkpoint_info`
+A config marks such a model with `"audio_heads": "parallel"`, which `model.load_checkpoint_info`
 takes out before moshi reads the config (moshi hands every key to the model).
 """
 

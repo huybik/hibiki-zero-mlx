@@ -1,7 +1,8 @@
 # The LM on the Neural Engine
 
-Read when touching `inference/tools/lm_step.py`, `inference/tools/export_lm_coreml.py` or
-`inference/swift/Sources/HibikiCore/NeuralLM.swift`, or when running the phone LM on an NPU.
+Read when touching `inference/tools/lm_step.py`, `inference/tools/export_lm_coreml.py`,
+`inference/tools/coreml.py`, `inference/swift/Sources/HibikiCore/NeuralLM.swift` or
+`NeuralLM+Host.swift`, or when running the phone LM on an NPU.
 Mimi's own Core ML models are in [mimi-npu](mimi-npu.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Export](#export) · [Runtime](#runtime) ·
 [Precision](#precision) · [Speed](#speed) · [Depformer slices](#depformer-slices) · [Next](#next)
@@ -28,15 +29,16 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
   tables (angles in Double, rounded straight to fp16), the slot and the mask (`Inputs.at`, as
   `NeuralLM` does), so positions never enter fp16 arithmetic.
   `Heads`: hidden + `text_emb[sampled text]` → [16, 2048] logits, the text sampled on the host
-  between the two calls, as `moshi_mlx`'s `ParallelHeads`. `DepformerStep`: hidden + slice 0's
+  between the two calls, as `hibiki_mlx.lm`'s `ParallelHeads`. `DepformerStep`: hidden + slice 0's
   embedding of the sampled text + Gumbel noise [16, 2048] → the 16 codebooks, every slice in one
-  graph, each sampling its codebook and embedding it for the next, as `moshi_mlx`'s
+  graph, each sampling its codebook and embedding it for the next, as `hibiki_mlx.lm`'s
   `DepFormer.sample` ([Depformer slices](#depformer-slices)).
 - The heads are 16 separate matmuls: one [2048 → 32,768] matmul ran on the CPU (compute plan), the
   16 run on the Neural Engine. The embedding gathers stay on the host (465 MB fp16, memory-mapped,
   one row from each of 33 tables a frame), since gathers are CPU ops in Core ML.
 - Fed the MLX runtime's own inputs, `lm_step` in fp32 matches MLX bf16's argmaxes ([Precision](#precision)).
-- `export_lm_coreml.py MODEL_DIR OUT_DIR --bits 6` writes a model directory: both models compiled,
+- `python -m inference.tools.export_lm_coreml MODEL_DIR OUT_DIR --bits 6` writes a model
+  directory (converted and palettized by `tools/coreml.py`): both models compiled,
   the tables, the tokenizer and Mimi checkpoint, and the config with `lm_coreml: {bits}` in place
   of `moshi_name`. Mimi's decoder comes from `export_mimi_coreml.py`
   ([README](../../inference/swift/README.md#core-ml-lm)). A `depformer_parallel` model exports
@@ -79,7 +81,7 @@ Teacher-forced on the MLX runtime's own steps: 695 frames of 4 FLEURS dev clips 
 `student_heads14_cb16` update 16,000, 2026-11-20; rebuilt 2026-11-25 as
 `/Volumes/data/hibiki-zero-evals/mac/npu-agree/npu_agree.py`, with a model trained against the
 6-bit tables: [student-palettize](student-palettize.md#neural-engine-agreement)). The script predates the
-slimmed `moshi_mlx` (it patches `Lm._sample`, now `Lm.sample`, and expects samplers to return
+slimmed vendored LM, now `hibiki_mlx.lm` (it patches `Lm._sample`, now `Lm.sample`, and expects samplers to return
 logprobs, and warmup now samples with the stream's own samplers): port it before rerunning.
 Each column is the share of argmaxes equal to the MLX bf16 run's, given the same inputs and sampled text:
 
@@ -191,7 +193,7 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   (exact for `card <= 2048`) break ties into a one-hot vector, `oh @ emb.T` embeds it, and the
   tokens come out as exact integers in fp16. All ops run on the Neural Engine: 757 for 9 slices of
   512 × 2 (80 MB at 6 bits, slice 0's host table 47 MB), 952 for 8 slices of 1024 × 3 (325 MB).
-- **The math is moshi's:** `lm_step`'s slices, one at a time, against `moshi_mlx`'s
+- **The math is moshi's:** `lm_step`'s slices, one at a time, against `hibiki_mlx.lm`'s
   `DepFormerSlice._step` on the depformer student (update 2,000 bf16, 8 slices, read as
   `parallel_codebooks: 1`), fp32, the same hidden states and tokens: logits within 5.4e-7 of the
   largest, argmax 32 of 32; `DepformerStep` greedy matched those slices on 80 of 80 codebooks.

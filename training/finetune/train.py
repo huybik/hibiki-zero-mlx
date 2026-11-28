@@ -13,11 +13,11 @@ the rows of every --eval-pairs file free-running in one pass, sampled as `eval.p
 scores each file as its own set. By default these are FLEURS dev (real Vietnamese speech) and
 held-out Common Voice and Libriheavy rows of the training data's own domain. Of the checkpoints
 whose every set passes the generation health gates, the one with the highest mean chrF over the
-first set of each direction (`common.selecting_sets`: the first set, for a run of one) is
+first set of each direction (`eval_rows.selecting_sets`: the first set, for a run of one) is
 promoted to best_stepNNNNNN.safetensors.
 With --teacher-weight (a model reading the cache's codebooks, on the same tokenizer), each token's
 training loss is its KL from that frozen bf16 teacher's distribution on the same stream
-(`common.token_kl`) instead of its cross-entropy, with the same weights, where both models score
+(`losses.token_kl`) instead of its cross-entropy, with the same weights, where both models score
 (their delays may differ, as a heads student's do): a phone student distils the model it was cut
 from ([phone-student](../../docs/agent-memory/phone-student.md)). The teacher reads every codebook
 of the stream, the model its own cut. Validation is unchanged.
@@ -34,7 +34,7 @@ the text head keep the start model's weights, and no backward runs through them.
 
 With --room-share S, that share of the training streams hold a room's noise in their source
 wherever nobody speaks (the lead, the gaps between sentences, after the last), instead of digital
-silence, as GRPO's streams do (`streams.run_rooms`, from the noise bank in --bank-dir); the targets
+silence, as GRPO's streams do (`rooms.run_rooms`, from the noise bank in --bank-dir); the targets
 keep their silence there, so the model learns to stay quiet in a room, as a phone's microphone hears
 one between sentences. Validation keeps digital silence, so its losses compare across runs
 ([noisy-source](../../docs/agent-memory/noisy-source.md#rooms)).
@@ -57,13 +57,38 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from training.finetune import bf16_adamw, common, streams
+from training.finetune import bf16_adamw, streams
+from training.finetune.distill import can_chunked_distill, compute_distill_losses_chunked
+from training.finetune.eval_rows import selecting_sets
+from training.finetune.generation import load_eval_rows, validate_free_running
+from training.finetune.losses import (
+    LossWeights,
+    batch_condition_tensors,
+    compute_batch_losses,
+    evaluate_teacher_forced,
+)
+from training.finetune.metrics import score_summary
+from training.finetune.model import (
+    HostOffload,
+    adam_states,
+    check_device,
+    fused_adamw,
+    load_checkpoint_info,
+    load_policy,
+    load_teacher,
+    require_torch_compile,
+    run_tokenizer,
+    seed_all,
+    teacher_checkpoint_info,
+)
+from training.finetune.packs import FRAME_RATE
+from training.finetune.rooms import add_room_args, run_rooms
+from training.finetune.rows import load_rows
+from training.finetune.run_files import BEST_METRIC, checkpoint_pairs
 from training.student import heads, palettize, slices
 from training.finetune.checkpoints import (
-    BEST_METRIC,
     CheckpointWriter,
     append_log,
-    checkpoint_pairs,
     claim_run_config,
     jsonable,
     keep_log_lines,
@@ -154,10 +179,10 @@ def parse_args() -> argparse.Namespace:
     # No abbreviations: h100.sh must be able to reject --out-dir.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cache-dir", type=Path, nargs="+", action="extend", required=True)
-    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", action="extend", default=[], help="The other direction's caches of the training and validation rows, read only for their text, which times each row's source (streams.load_rows); not needed for caches given with --cache-dir or --val-cache-dir.")
+    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", action="extend", default=[], help="The other direction's caches of the training and validation rows, read only for their text, which times each row's source (rows.load_rows); not needed for caches given with --cache-dir or --val-cache-dir.")
     parser.add_argument(
         "--val-cache-dir", type=Path, nargs="+", action="extend", required=True,
-        help="Teacher-forced validation caches, each direction's: each is the others' pair (streams.load_rows).",
+        help="Teacher-forced validation caches, each direction's: each is the others' pair (rows.load_rows).",
     )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -212,7 +237,7 @@ def parse_args() -> argparse.Namespace:
         help="'all' pre-quantizes the frozen teacher's main-transformer and depformer linears once "
         "to rowwise E4M3 FP8; text_linear and the audio output linears stay bf16.",
     )
-    streams.add_room_args(parser, 0.0)
+    add_room_args(parser, 0.0)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     parser.add_argument("--tokenizer", type=Path, help="Default: the one the model weight is on (its text_tokenizer metadata), in weights/.")
     parser.add_argument("--hf-repo", default="kyutai/hibiki-zero-3b-pytorch-bf16")
@@ -284,7 +309,7 @@ def parse_args() -> argparse.Namespace:
             Path("data/eval/en-vi-val/cv27.jsonl"),
             Path("data/eval/en-vi-val/libriheavy.jsonl"),
         ],
-        help="Pairs files (training.prep.eval_sets) translated free-running at each validation, "
+        help="Pairs files (training.finetune.eval_sets) translated free-running at each validation, "
         "each scored as its own set; the first of each direction selects the checkpoint (their mean chrF).",
     )
     # bf16 at batch 64 decodes FLEURS dev with an 8 s tail in ~1,750 steps of ~22 ms on the H100.
@@ -334,7 +359,7 @@ def validate_args(args: argparse.Namespace) -> None:
     # Best-model promotion hard-links the checkpoint saved at the validation step.
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
-    common.require_torch_compile()
+    require_torch_compile()
 
 
 def learning_rate(
@@ -361,9 +386,9 @@ def main() -> None:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,pinned_max_round_threshold_mb:1")
     args = parse_args()
     validate_args(args)
-    common.seed_all(args.seed)
+    seed_all(args.seed)
 
-    device = common.check_device("cuda")
+    device = check_device("cuda")
     torch.set_float32_matmul_precision("high")
 
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
@@ -371,7 +396,7 @@ def main() -> None:
     args.config_path = require_file(args.config_path, "config")
     args.model_weight = require_file(args.model_weight, "upstream model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    args.tokenizer = common.run_tokenizer(args.tokenizer, args.model_weight)
+    args.tokenizer = run_tokenizer(args.tokenizer, args.model_weight)
     args.eval_pairs = [require_file(path, "evaluation pairs") for path in args.eval_pairs]
     if args.room_share > 0:
         require_dir(args.bank_dir / "RIRS_NOISES", "noise bank (augment.fetch_bank)")
@@ -382,16 +407,16 @@ def main() -> None:
         args.optimizer_state = (resolve_repo_path(args.optimizer_state) if resuming
                                 else require_file(args.optimizer_state, "optimizer state"))
 
-    checkpoint_info = common.load_checkpoint_info(args)
+    checkpoint_info = load_checkpoint_info(args)
     if args.palettize_bits and checkpoint_info.audio_heads not in (heads.KIND, slices.KIND):
         raise ValueError("--palettize-bits trains for the Core ML export (parallel-heads or depformer-slices student)")
     if args.acoustic_ar_weight != 1.0 and checkpoint_info.audio_heads != slices.KIND:
         raise ValueError("--acoustic-ar-weight weights a slices student's autoregressive codebooks")
     codebooks = int(checkpoint_info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    teacher_info = None if args.teacher_weight is None else common.teacher_checkpoint_info(args)
+    teacher_info = None if args.teacher_weight is None else teacher_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
     pair_dirs = [require_dir(path, "pair code cache directory") for path in args.pair_cache_dir]
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
+    rows, layout = load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
     # On the CPU in float32, so every machine and resume encodes the same silence (up to a rare
     # near-tie in a residual code); at the cache's codebooks, which streams are assembled at.
     # Keep Mimi on CPU during training (~0.4 GiB saved on 32 GB cards); move to GPU only for
@@ -406,7 +431,7 @@ def main() -> None:
         student_rows = torch.tensor(streams.model_rows(layout, codebooks), device=device)
     if args.room_share > 0:
         mimi.to(device)
-    rooms = streams.run_rooms(args, mimi, silence, ROOMS)
+    rooms = run_rooms(args, mimi, silence, ROOMS)
     if args.room_share > 0:
         mimi.to("cpu")
         torch.cuda.empty_cache()
@@ -423,15 +448,15 @@ def main() -> None:
     )
     # Each validation cache is planned and scored apart, as `validate.py` scores one: a direction's
     # losses stay visible beside the other's. Its rows' pairs are in the other validation caches or
-    # --pair-cache-dir (streams.load_rows). In the main process: forking workers at a validation would fork the checkpoint
+    # --pair-cache-dir (rows.load_rows). In the main process: forking workers at a validation would fork the checkpoint
     # writer's thread too, and 300 batches assemble in ~3 s.
     names = [str(path) for path in args.val_cache_dir]  # as given: h100.sh replays the arguments
     val_loaders: dict[str, DataLoader] = {}
     val_row_counts: dict[str, int] = {}
     val_stream_counts: dict[str, int] = {}
     for name, val_cache_dir in zip(names, val_cache_dirs, strict=True):
-        val_rows, val_layout = streams.load_rows([val_cache_dir], args.max_frames, args.tokenizer,
-                                                 val_cache_dirs + pair_dirs)
+        val_rows, val_layout = load_rows([val_cache_dir], args.max_frames, args.tokenizer,
+                                         val_cache_dirs + pair_dirs)
         if val_layout != layout:
             raise RuntimeError(f"Validation layout {val_layout} of {name} differs from training {layout}")
         val_dataset = streams.StreamDataset(val_rows, layout, silence, frames, streams.VALIDATION_SEED, codebooks)
@@ -444,8 +469,8 @@ def main() -> None:
         print(f"Planned {len(val_dataset)} validation streams from {len(val_rows)} rows of {name}")
     # Checkpoints are selected on free-running translation, sampled as eval.py samples. The sets
     # share batches, so one pass translates them all.
-    eval_sets, eval_rows = common.load_eval_rows(args.eval_pairs)
-    selecting = common.selecting_sets(eval_sets, eval_rows)
+    eval_sets, eval_rows = load_eval_rows(args.eval_pairs)
+    selecting = selecting_sets(eval_sets, eval_rows)
     print(
         f"Validation translates {len(eval_rows)} rows of {', '.join(eval_sets)}; "
         f"{', '.join(selecting)} select the checkpoint"
@@ -462,7 +487,7 @@ def main() -> None:
             print(f"The run finished at step {total_steps}")
             return
     warmup_steps = round(total_steps * args.warmup_fraction)
-    weights = common.LossWeights(
+    weights = LossWeights(
         audio=args.audio_loss_weight,
         text=args.text_loss_weight,
         first_codebook=args.first_codebook_weight,
@@ -489,7 +514,7 @@ def main() -> None:
     claim_run_config(out_dir, run_config, RESUME_KEYS, resuming)
 
     print(f"Loading the start model from {repo_display_path(args.model_weight)}")
-    lm = common.load_policy(checkpoint_info, device, bf16_adamw_mode=args.bf16_adamw)
+    lm = load_policy(checkpoint_info, device, bf16_adamw_mode=args.bf16_adamw)
     if args.grad_checkpoint:
         lm.transformer.checkpointing = True
         lm.transformer.checkpoint_layers = args.grad_checkpoint_layers
@@ -528,7 +553,7 @@ def main() -> None:
     teacher = None
     if teacher_info is not None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
-        teacher = common.load_teacher(
+        teacher = load_teacher(
             teacher_info, args.teacher_weight, device, codebooks, fp8=args.fp8_teacher == "all"
         )
     text_tokenizer = checkpoint_info.get_text_tokenizer()
@@ -542,11 +567,11 @@ def main() -> None:
             seed=args.seed,
         )
     else:
-        optimizer = common.fused_adamw(params, args)
+        optimizer = fused_adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
-    offload = common.HostOffload()
+    offload = HostOffload()
     teacher_params = [] if teacher is None else list(teacher.parameters()) + list(teacher.buffers())
-    use_chunked_distill = common.can_chunked_distill(lm, teacher)
+    use_chunked_distill = can_chunked_distill(lm, teacher)
     if use_chunked_distill:
         print(
             "Chunked linear+KL distillation enabled"
@@ -644,7 +669,7 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
         with palettized():  # a palettizing run scores the model it would export
             teacher_forced = {
-                name: common.evaluate_teacher_forced(
+                name: evaluate_teacher_forced(
                     lm, loader, device, checkpoint_info.model_type, weights, args.val_batches
                 )
                 for name, loader in val_loaders.items()
@@ -652,10 +677,10 @@ def main() -> None:
             # On a bf16 copy of the model, in the room the gradients freed above, and with
             # --park-states AdamW's states and the teacher.
             if args.park_states:
-                offload.to_host(common.adam_states(optimizer) + teacher_params)
+                offload.to_host(adam_states(optimizer) + teacher_params)
             mimi.to(device)
             try:
-                free_running = common.validate_free_running(
+                free_running = validate_free_running(
                     lm, checkpoint_info, mimi, text_tokenizer, eval_rows, eval_sets,
                     args.eval_batch_size, out_dir / "eval" / f"step{step:06d}", args.seed,
                 )
@@ -674,7 +699,7 @@ def main() -> None:
             )
         print(f"val step={step} health={'pass' if healthy else 'fail'}")
         for name, metrics in free_running.items():
-            print(f"val step={step} {name} {common.score_summary(metrics)}")
+            print(f"val step={step} {name} {score_summary(metrics)}")
         # chrF weighs recall, so overlong output barely lowers it: the gates come first. Promotion
         # links the step's model file, so its write must be done, and precedes the log line,
         # which marks the step done for a resume.
@@ -709,18 +734,18 @@ def main() -> None:
         codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size, frames_padded = int(codes.shape[0]), int(codes.shape[-1])
         if batch_size not in condition_cache:
-            condition_cache[batch_size] = common.batch_condition_tensors(
+            condition_cache[batch_size] = batch_condition_tensors(
                 lm, checkpoint_info.model_type, batch_size
             )
         if teacher is not None and batch_size not in teacher_conditions:
-            teacher_conditions[batch_size] = common.batch_condition_tensors(
+            teacher_conditions[batch_size] = batch_condition_tensors(
                 teacher, teacher_info.model_type, batch_size
             )
         student_codes = codes if student_rows is None else codes.index_select(1, student_rows)
         with palettized():  # the straight-through estimator: gradients at the palettized weights
             if use_chunked_distill:
                 with autocast:
-                    losses = common.compute_distill_losses_chunked(
+                    losses = compute_distill_losses_chunked(
                         lm,
                         teacher,
                         student_codes,
@@ -736,7 +761,7 @@ def main() -> None:
                     with torch.no_grad(), autocast:
                         teacher_output = teacher(codes, condition_tensors=teacher_conditions[batch_size])
                 with autocast:
-                    losses = common.compute_batch_losses(
+                    losses = compute_batch_losses(
                         lm, student_codes, condition_cache[batch_size], weights, teacher=teacher_output,
                     )
                 teacher_output = None  # the loss's graph keeps what its backward needs
@@ -819,7 +844,7 @@ def main() -> None:
                 "streams": log["streams"],
                 "stream_frames": log["stream_frames"],
                 "padded_frames": log["padded_frames"],
-                "source_hours": log["source_frames"] / streams.FRAME_RATE / 3600,
+                "source_hours": log["source_frames"] / FRAME_RATE / 3600,
                 "min_batch_size": int(log["min_batch"]),
                 "max_batch_size": log["max_batch"],
                 "max_padded_frames": log["max_frames"],

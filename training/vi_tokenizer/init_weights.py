@@ -24,7 +24,7 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import load_file
 
-from training.finetune.common import TOKENIZER_KEY, save_state
+from training.finetune.model import TOKENIZER_KEY, save_state
 from training.paths import DEFAULT_TOKENIZER, require_file, resolve_repo_path
 
 TABLES = ("text_emb.weight", "depformer_text_emb.weight", "text_linear.weight")

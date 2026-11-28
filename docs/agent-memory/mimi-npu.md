@@ -1,9 +1,9 @@
 # Mimi on neural accelerators
 
-Read when touching `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py` or
-`inference/swift/Sources/HibikiCore/NeuralDecoder.swift`, or when moving Mimi onto an NPU: the
-Apple Neural Engine now, Qualcomm's later. The heads student's LM on the Neural Engine is
-[lm-npu](lm-npu.md).
+Read when touching `inference/tools/mimi_step.py`, `inference/tools/export_mimi_coreml.py`,
+`inference/tools/coreml.py` or `inference/swift/Sources/HibikiCore/NeuralDecoder.swift`, or when
+moving Mimi onto an NPU: the Apple Neural Engine now, Qualcomm's later. The heads student's LM on
+the Neural Engine is [lm-npu](lm-npu.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Step module](#step-module) · [Core ML](#core-ml) ·
 [Precision](#precision) · [Qualcomm](#qualcomm)
 
@@ -25,7 +25,7 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
   smaller shapes: the query and key features of each head are reordered from RoPE's
   interleaved pairs to two halves through `in_proj`'s rows, which leaves attention unchanged.
 - Exact in fp32: at 2 frames per call its codes equal the training caches' encoder
-  (`training/prep/mimi_mlx.py`, whole clip) on all 16 codebooks over 400 frames of `leon.wav`,
+  (`training/cache/mimi_mlx.py`, whole clip) on all 16 codebooks over 400 frames of `leon.wav`,
   and its audio is within 1.3e-5 (relative RMS) of moshi's whole-sequence decode.
 - moshi 0.2.13's own streaming Mimi is no reference for calls of several steps: its
   `RingKVCache` holds `context` (250) steps, so the first queries of a call lose their oldest
@@ -34,11 +34,13 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
 
 ## Core ML
 
-- `export_mimi_coreml.py CHECKPOINT MODEL_DIR --decoder-codebooks N` traces the decoder step at
-  one frame per call, converts it to an fp16 ML program (iOS 18, CPU and Neural Engine) and
-  compiles it, in ~10 s; `--encoder-frames K` adds the encoder for experiments. N is the LM's
-  `dep_q`; the Swift runtime checks it. A new model replaces the old only once it compiled. The compiled `.mlmodelc` is what an app ships; compiling
-  at load (`MLModel.compileModel`) left a 93 MB copy in the temporary folder on every launch.
+- `python -m inference.tools.export_mimi_coreml CHECKPOINT MODEL_DIR --decoder-codebooks N` traces
+  the decoder step at one frame per call, converts it (`tools/coreml.py`, shared with the LM's
+  export) to an fp16 ML program (iOS 18, CPU and Neural Engine) and compiles it, in ~10 s;
+  `--encoder-frames K` adds the encoder for experiments. N is the LM's `dep_q`; the Swift runtime
+  checks it. A new model replaces the old only once it compiled. The compiled `.mlmodelc` is what an
+  app ships; compiling at load (`MLModel.compileModel`) left a 93 MB copy in the temporary folder on
+  every launch.
 - `NeuralDecoder` loads the compiled model, reads the codebook count from its input shape and
   keeps the state arrays the model returns as the next call's inputs. `Translator` decodes each
   finished LM step's frame with one call. Calls of 2 frames cost less per frame (M4 Pro: 5.8 ms

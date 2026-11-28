@@ -1,7 +1,8 @@
 # SFT evaluation
 
 Read when touching `training/finetune/eval.py`, `training/finetune/validate.py`,
-`training/prep/eval_sets.py`, `data/eval/`, the validation and promotion in
+`training/finetune/eval_sets.py`, the free-running evaluation every trainer shares
+(`training/finetune/eval_rows.py`, `generation.py`, `metrics.py`), `data/eval/`, the validation and promotion in
 `training/finetune/train.py`, or the input level stage (`inference/hibiki_mlx/level.py`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Checkpoint selection](#checkpoint-selection) ·
 [Side tools](#side-tools) · [Recording results](#recording-results) ·
@@ -18,15 +19,15 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   `--eval-pairs` (default FLEURS dev, `en-vi-val/cv27` and `en-vi-val/libriheavy`, so build the
   [evaluation sets](#evaluation-sets) before training; rows need `duration_s`) with `eval.py`'s
   sampling, reseeded per batch from `--seed`.
-- Each pairs file is scored as its own set, named `<folder>/<stem>` (`common.score_sets`;
+- Each pairs file is scored as its own set, named `<folder>/<stem>` (`metrics.score_sets`;
   decided 2026-11-03). One blended score would hide the gap between the training data's own
   domain and real speech, weigh sets by their length (corpus chrF and BLEU) and let one set's
   rows carry another's gates.
 - `best_step*.safetensors` is a hard link to the checkpoint whose every set passes the
-  generation health gates (`common.generation_health`: at most a tenth of its rows empty, at
+  generation health gates (`metrics.generation_health`: at most a tenth of its rows empty, at
   most 12 in 128 repeating a 4-gram, a mean length ratio of at most 2)
   with a strictly higher mean corpus chrF over the first set of each direction
-  (`common.selecting_sets`, by the column a set's audio is in): FLEURS dev for a VI→EN run, because
+  (`eval_rows.selecting_sets`, by the column a set's audio is in): FLEURS dev for a VI→EN run, because
   the phone hears real speech; FLEURS dev both ways for a two-way run (user, 2026-11-11: the
   VI→EN set alone kept the early checkpoints, before EN→VI had learned)
   (`best.json`: `step`, `model`, `metric` `selecting_chrf`, `chrf`; a `best.json` of the earlier
@@ -36,8 +37,8 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
   361 FLEURS rows) while chrF rose, so it blocked every promotion. `val_log.jsonl` holds
   `teacher_forced` (by validation cache since 2026-11-10), the validation's `seconds` and, under `free_running`, each set's metrics per
   step; `eval/stepNNNNNN/predictions.csv` has an `eval_set` column.
-- Training's chrF ranks the checkpoints of one run. Training (`common.validate_free_running`,
-  which SFT and GRPO share) and `eval.py` both translate through `common.translate_rows`, rows
+- Training's chrF ranks the checkpoints of one run. Training (`generation.validate_free_running`,
+  which SFT and GRPO share) and `eval.py` both translate through `generation.translate_rows`, rows
   sorted by `duration_s`, in bf16 batches of 64 by default, and `eval.py`
   passes every row of every `--pairs` file in one call, so given the trainer's `--eval-pairs` in
   order and its `--seed`, `eval.py` builds the trainer's batches; device numerics still differ.
@@ -67,9 +68,9 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 
 - `eval.py` is the correct-source free-running check on a pair file (`id`, the source audio,
   the reference text, `duration_s`): a file's audio column picks its direction
-  (`common.EVAL_DIRECTIONS`: `vi_audio` scores against `text_en`, `en_audio` against `text_vi`;
+  (`eval_rows.EVAL_DIRECTIONS`: `vi_audio` scores against `text_en`, `en_audio` against `text_vi`;
   [two-way](two-way.md)), and files of both directions share batches. Its defaults are
-  `common.GenerationConfig`'s, which training's checkpoint selection uses too.
+  `generation.GenerationConfig`'s, which training's checkpoint selection uses too.
   - `translate_rows` samples every token at temperature 0.8, top-k 250, as the paper does
     (Sec. 4.5).
   - It generates until every row has emitted the text EOS, or 20 s past the batch's longest
@@ -85,7 +86,7 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
     after the source's end; the metrics report their mean (`mean_laal_s`) over the rows with a
     word, so a model that leaves hard rows empty looks faster; so does one that cuts rows short
     (an early EOS or silence leaves late words' even-pace times above their real ones, down to
-    negative LAAL). A word is timed at its last piece (`common.word_frames`), one frame after the
+    negative LAAL). A word is timed at its last piece (`generation.word_frames`), one frame after the
     source its token heard, as the end offset is. This is the paper's text LAAL (its RL plots, no
     table); its Table 1 times Whisper words in the generated speech, which lags the text by
     `max_delay` frames and each word's length, so its speech LAAL should run above ours.
@@ -107,16 +108,18 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
       to 50 GB and swap; `gc.collect()` frees nothing): `translate_rows` empties it after each
       batch on MPS, which holds it at 7 GiB (2026-11-03).
     - With `--checkpoint`, `eval.py` and `validate.py` neither need nor read `--model-weight`
-      (`common.load_lm`), which the checkpoint overwrites: 3.4 s against 11.0 s on MPS, the same
+      (`model.load_lm`), which the checkpoint overwrites: 3.4 s against 11.0 s on MPS, the same
       tensors (2026-11-04). `load_model` converts an fp32 checkpoint tensor by tensor, so its
       fp32 and bf16 copies are never whole at once (that held 18 GiB).
 - `inference/tools/gate.py` scores an MLX model directory (quantized or BF16) on pairs files
-  with this scoring (`common.score_sets`) and `translate_rows`' sampling and input, one row at a
+  with this scoring (`metrics.score_sets`) and `translate_rows`' sampling and input, one row at a
   time, on the Mac ([mlx-inference](mlx-inference.md#gates)).
 - `validate.py` reports teacher-forced losses with BF16 weights on the validation streams of one
   cache, planned as `train.py` plans them, so it takes the other direction's cache as
   `--pair-cache-dir` ([sft-training](sft-training.md#target-timing)).
-- `common.py` is shared by `train.py`, `validate.py` and `eval.py`.
+- `train.py`, `validate.py` and `eval.py` share `model.py` (loading) and, as each needs them,
+  `losses.py` (teacher-forced losses) and `eval_rows.py`, `generation.py` and `metrics.py`
+  (free-running translation and its scores).
 - `train.py` and `eval.py` take a required `--out-dir`.
 
 ## Recording results
@@ -140,7 +143,7 @@ in [sft-recovery](sft-recovery.md#checkpoints-and-recovery).
 
 ## Evaluation sets
 
-`training.prep.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, and for `giga-heldout`
+`training.finetune.eval_sets` (huggingface_hub, pyarrow, sphn, soxr and torch, and for `giga-heldout`
 PyAV and num2words, so it runs on the Mac or the pod)
 writes `eval.py` pair files under `data/eval/`; they are never trained on
 ([plan](../vi_en_parity_plan.md#2-evaluation-sets)). FLEURS and MultiMed-ST built and checked
@@ -166,7 +169,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
   and MultiMed-ST: [input level](#input-level).
 
 - `giga-heldout` (built 2026-11-09) samples, with `random.Random(0)`, 1,000 rows of GigaSpeech 2
-  archives 86 and 98 (`ingest.SOURCES["giga"].heldout`; 572 and 428 rows from 366 recordings,
+  archives 86 and 98 (`repo.SOURCES["giga"].heldout`; 572 and 428 rows from 366 recordings,
   clips 0.7–17.6 s, median 3.38 s), from the rows `filters.vi_gate` keeps that share no run with
   the training text. Those archives are held out of training whole: voice.py and the cache
   build skip them, and nothing had voiced or cached them when they were chosen.
@@ -189,7 +192,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
   commit (`GIGA_HELDOUT_REVISION`), so every pod writes the same rows.
 - GigaSpeech 2's terms keep its audio off the public dataset repo (an upload of `data/eval` to its
   `eval/` passes `--exclude "giga-heldout/*"`): build it where it runs, from the
-  gated tranche repo with an `HF_TOKEN` granted access (`training.prep.eval_sets --sets
+  gated tranche repo with an `HF_TOKEN` granted access (`training.finetune.eval_sets --sets
   giga-heldout`: ~5 min on the Mac, most of it reading the text columns of every training shard;
   ~0.9 GB of parquet into the HF cache, 354 MB of 48 kHz WAV). It is not in the cache build's
   overlap check (`filters.EVAL_SETS`): the build drops overlapping rows from the set instead.
@@ -214,7 +217,7 @@ on 2026-11-01, `en-vi-val` on 2026-11-03. Since 2026-11-04 they are also in the 
   the Libriheavy ones: libopus there sits 2 samples off with differences up to 0.45 (pod,
   2026-11-04; [noisy-source](noisy-source.md#checks)). Scores are comparable across checkpoints
   either way. It cuts at the stored duration, not the last granule: the TTS
-  encoder (`tts_en_speech.encode`) counts the pre-skip twice, so granules run 312 samples high. It refuses a clip that is not mono, has an output gain, or
+  encoder (`en_vi_dataset.tts.encode`) counts the pre-skip twice, so granules run 312 samples high. It refuses a clip that is not mono, has an output gain, or
   decodes shorter than its stored duration or a 20 ms packet or more longer. The rows keep
   `speaker` and `source_row`.
 
@@ -228,7 +231,7 @@ a noise floor (instant fall, 1.5 dB a second rise; digitally silent frames, unde
 leave it as it is): quiet speech is raised toward −6 dBFS, by at most 44 dB, unless that would lift
 its noise floor past −26 dBFS. Frames whose envelope is above −6 dBFS pass unchanged, and nothing
 clips. Non-finite or multichannel input is an error (Swift: `HibikiError.badAudio`, the session left
-as it was). `common.read_source` levels each clip as a stream of its own (its `_stereo.wav` keeps
+as it was). `eval_rows.read_source` levels each clip as a stream of its own (its `_stereo.wav` keeps
 the levelled source, what the model heard); `main.py` levels a file's first channel or a mic
 session, `Translator` a session (`reset` starts a new one); `prime` feeds its primers as recorded,
 at −6 dBFS already. Scores do not compare across settings: none from before the stage (2026-11-12)

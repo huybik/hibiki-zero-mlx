@@ -81,7 +81,7 @@ At 24 kHz, Mimi consumes 1,920 PCM samples per frame. The runtime performs four 
 3. **The text head and codebook head** emit English text plus target-audio codebooks.
 4. **Mimi decode** reconstructs 24 kHz English audio.
 
-The runtime implementation is intentionally small. [`inference/main.py`](../../inference/main.py) handles the CLI and live audio callbacks; [`inference/hibiki_mlx/pipeline.py`](../../inference/hibiki_mlx/pipeline.py) owns model loading, quantization, the file pipeline, and tail flushing (the opt-in parallel head it carried at the time has since been removed). Model-specific architecture support belongs in the vendored [`moshi-mlx`](../../inference/moshi-mlx/) fork rather than in per-script monkey patches.
+The runtime implementation is intentionally small. [`inference/main.py`](../../inference/main.py) handles the CLI and live audio callbacks; [`inference/hibiki_mlx/model.py`](../../inference/hibiki_mlx/model.py) owns model loading and quantization, and [`file_mode.py`](../../inference/hibiki_mlx/file_mode.py) the file pipeline and tail flushing (the opt-in parallel head it carried at the time has since been removed). Model-specific architecture support belongs in the vendored moshi-mlx fork ([`inference/hibiki_mlx/lm/`](../../inference/hibiki_mlx/lm/)) rather than in per-script monkey patches.
 
 ## 2.1 The hierarchical bottleneck
 
@@ -758,11 +758,11 @@ The largest uncertainties are dispatch overhead on a phone GPU, sustained clocks
 | CLI and live audio | [`inference/main.py`](../../inference/main.py) |
 | native macOS prototype | [`inference/macos/HibikiTestApp/`](../../inference/macos/HibikiTestApp/) |
 | external native iOS runtime and app | [An Quách's `hibiki-inference`](https://github.com/anthoai97/hibiki-inference) |
-| model loading, quantization, pipeline | [`inference/hibiki_mlx/pipeline.py`](../../inference/hibiki_mlx/pipeline.py) |
-| model architecture deltas | [`inference/moshi-mlx/moshi_mlx/models`](../../inference/moshi-mlx/moshi_mlx/models/) |
+| model loading, quantization, pipeline | [`inference/hibiki_mlx/model.py`](../../inference/hibiki_mlx/model.py), [`file_mode.py`](../../inference/hibiki_mlx/file_mode.py) |
+| model architecture deltas | [`inference/hibiki_mlx/lm`](../../inference/hibiki_mlx/lm/) |
 | benchmark and silence gate | [`inference/tools/bench.py`](../../inference/tools/bench.py) |
 | Swift artifact contract (removed) | [`check_swift_compat.py` at `5ff5a4e`](https://github.com/huybik/hibiki-zero-mlx/blob/5ff5a4e/inference/tools/check_swift_compat.py) |
-| translation benchmark data | [`training/prep/`](../../training/prep/) |
+| translation benchmark data | [`training/finetune/eval_sets.py`](../../training/finetune/eval_sets.py) |
 | Vietnamese cache/train/eval | [`training/`](../../training/) |
 | student and parallel-head training (removed) | [`student/` at `6a48332`](https://github.com/huybik/hibiki-zero-mlx/tree/6a48332/student) |
 | historical synthetic and VIVOS data pipeline | [`training-data/` at `b4ba8b8`](https://github.com/huybik/hibiki-zero-mlx/tree/b4ba8b8/training-data) |

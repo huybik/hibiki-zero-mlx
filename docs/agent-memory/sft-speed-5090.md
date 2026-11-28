@@ -60,7 +60,7 @@ accumulation): the sliced rows are measurements of a trainer option since remove
 
 2026-11-27 and 11-28, box 62513802:
 
-- `common.compute_distill_losses_chunked` computes linear projections + exact forward KL in
+- `distill.compute_distill_losses_chunked` computes linear projections + exact forward KL in
   chunks (`2048` audio / `1024` text) without materializing full-vocab logits (~5.5 GiB saved),
   and skips `text_linear` / `text_kl` when `--freeze-trunk` is set. A slices teacher (the
   6-bit finish distils the slices student from its own bf16 weights) feeds its last slice's

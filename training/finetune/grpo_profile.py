@@ -2,7 +2,7 @@
 """Profile GRPO's stages on the GPU before a run (docs/grpo_plan.md, phases 1 and 2).
 
 The policy's fp32 weights and AdamW's two states are held as in training (in pinned host memory
-while a window generates, `common.HostOffload`; with --park-states AdamW's also while the old-logprob
+while a window generates, `model.HostOffload`; with --park-states AdamW's also while the old-logprob
 pass and the update's micro-batches run, the round trip untimed and the optimizer's step, which
 holds them, left out of the peaks), and each stage runs on real streams from the start checkpoint:
 - rollout generation at each --gen-batch rows of --frames: time per step and peak memory, timed
@@ -19,11 +19,11 @@ holds them, left out of the peaks), and each stage runs on real streams from the
   `kl_text` and `kl_audio`.
 A size that runs out of memory is recorded and skipped. Every stage runs at --frames, a run's
 longest rollout and so its peak memory; `window` then gives what a run's first window costs at
-its own lengths (`grpo.rollout_frames`, `grpo.micro_frames`) for each --gen-batch's
-`--gen-frames` (rows times --frames, `grpo.generation_batches`), from a step's time fitted as a
-line in its rows and the measured time per update frame. <out-dir>/profile.json is rewritten after each stage,
-with a few streams' references, rollouts and rewards to read. Sample GPU utilization beside it
-(nvidia-smi every 0.5 s).
+its own lengths (`grpo_rollout.rollout_frames`, `grpo_objective.micro_frames`) for each
+--gen-batch's `--gen-frames` (rows times --frames, `grpo_rollout.generation_batches`), from a
+step's time fitted as a line in its rows and the measured time per update frame.
+<out-dir>/profile.json is rewritten after each stage, with a few streams' references, rollouts and
+rewards to read. Sample GPU utilization beside it (nvidia-smi every 0.5 s).
 """
 from __future__ import annotations
 
@@ -38,7 +38,21 @@ import torch
 
 from moshi.modules.streaming import StreamingModule
 
-from training.finetune import common, grpo, rewards, streams
+from training.finetune import grpo, grpo_objective, grpo_rollout, rewards
+from training.finetune.generation import GenerationConfig
+from training.finetune.losses import batch_condition_tensors, token_ce
+from training.finetune.model import (
+    HostOffload,
+    bf16_copy,
+    check_device,
+    load_checkpoint_info,
+    load_policy,
+    load_teacher,
+    run_tokenizer,
+)
+from training.finetune.packs import FRAME_RATE
+from training.finetune.rooms import add_room_args
+from training.finetune.rows import load_rows
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
@@ -51,7 +65,7 @@ from training.paths import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, nargs="+", required=True)
-    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", default=[], help="The other direction's caches of the same rows, read only for their text, which times each row's source (streams.load_rows); not needed for caches given with --cache-dir.")
+    parser.add_argument("--pair-cache-dir", type=Path, nargs="+", default=[], help="The other direction's caches of the same rows, read only for their text, which times each row's source (rows.load_rows); not needed for caches given with --cache-dir.")
     parser.add_argument("--model-weight", type=Path, required=True, help="Start checkpoint.")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -63,15 +77,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=44)
     parser.add_argument("--group", type=int, default=4)
     parser.add_argument("--frames", type=int, default=1200)
-    parser.add_argument("--tail-seconds", type=float, default=common.GenerationConfig.tail_s)
+    parser.add_argument("--tail-seconds", type=float, default=GenerationConfig.tail_s)
     parser.add_argument("--streams", type=int, default=32, help="Streams per update.")
     parser.add_argument("--tau", type=int, default=20, help="Updates per window.")
     parser.add_argument("--gen-batch", type=int, nargs="+", default=[192, 384, 512])
     parser.add_argument("--micro-batch", type=int, nargs="+", default=[2, 3, 4])
     parser.add_argument("--park-states", action="store_true", help="As a run's --park-states.")
     parser.add_argument("--reward-workers", type=int, default=8)
-    grpo.add_objective_args(parser)
-    streams.add_room_args(parser, grpo.ROOM_SHARE)
+    grpo_objective.add_objective_args(parser)
+    add_room_args(parser, grpo_rollout.ROOM_SHARE)
     return parser.parse_args()
 
 
@@ -90,15 +104,15 @@ def profile_generation(
     """Time rollout generation at each --gen-batch on a bf16 copy of `lm`, the policy, its
     optimizer states and `parked` (a teacher's parameters) in host memory as a run parks them, and
     return the rollouts of every source at the largest size that fits, with them back on the GPU."""
-    generator = common.bf16_copy(info, lm, lm.device)
-    offload = common.HostOffload()
+    generator = bf16_copy(info, lm, lm.device)
+    offload = HostOffload()
     offload.to_host(grpo.trainer_tensors(lm, optimizer) + parked)
     report["resident_while_generating_gib"] = torch.cuda.memory_allocated() / 2**30
 
     def generate(count: int, gen_batch: int) -> torch.Tensor:
         lengths = torch.full((count,), args.frames)
-        batches = grpo.generation_batches(lengths, gen_batch * args.frames, args.group)
-        return grpo.sample_window(
+        batches = grpo_rollout.generation_batches(lengths, gen_batch * args.frames, args.group)
+        return grpo_rollout.sample_window(
             generator, info, sources[:count], lengths, batches, silence_frame, (args.seed,),
             grpo.TEMPERATURE, grpo.TOP_K, lambda *_: None)
 
@@ -142,16 +156,17 @@ def profile_generation(
 
 def window_estimate(args, dataset, rollouts, stream_ids, delays, extra, eos_id, report: dict) -> dict:
     """What a run's first window (--tau updates of --streams streams) costs at its own lengths.
-    Generation: its rollouts in `grpo.generation_batches` of each --gen-batch's --gen-frames, each
-    as many steps as its longest rollout, a step's time a line in its rows fitted to the measured
-    sizes. Updates: the forward frames of the profiled rollouts cut to their streams' lengths and
-    kept tokens, scaled to the window. Times use this profile's frames per second."""
-    tail = round(args.tail_seconds * streams.FRAME_RATE)
+    Generation: its rollouts in `grpo_rollout.generation_batches` of each --gen-batch's
+    --gen-frames, each as many steps as its longest rollout, a step's time a line in its rows
+    fitted to the measured sizes. Updates: the forward frames of the profiled rollouts cut to their
+    streams' lengths and kept tokens, scaled to the window. Times use this profile's frames per
+    second."""
+    tail = round(args.tail_seconds * FRAME_RATE)
 
     def length(index: int) -> int:
-        return grpo.rollout_frames(dataset.streams[index].frames, tail, args.frames)
+        return grpo_rollout.rollout_frames(dataset.streams[index].frames, tail, args.frames)
 
-    order = grpo.stream_order(len(dataset), args.seed)[: args.tau * args.streams]
+    order = grpo_rollout.stream_order(len(dataset), args.seed)[: args.tau * args.streams]
     window = torch.tensor([length(int(index)) for index in order]).repeat_interleave(args.group)
     estimate: dict = {"streams": len(order), "rollout_frames_mean": float(window.float().mean())}
     measured = {gen_batch: report[f"generate_batch_{gen_batch}"]["ms_per_step"]
@@ -161,7 +176,7 @@ def window_estimate(args, dataset, rollouts, stream_ids, delays, extra, eos_id, 
         slope, intercept = np.polyfit(list(measured), list(measured.values()), 1)
         estimate["ms_per_step_fit"] = {"intercept": float(intercept), "per_row": float(slope)}
         for gen_batch in measured:
-            batches = grpo.generation_batches(window, gen_batch * args.frames, args.group)
+            batches = grpo_rollout.generation_batches(window, gen_batch * args.frames, args.group)
             steps = [int(window[rows].max()) + extra for rows in batches]
             ms = sum(count * (intercept + slope * len(rows)) for count, rows in zip(steps, batches))
             estimate[f"generate_batch_{gen_batch}"] = {
@@ -171,13 +186,15 @@ def window_estimate(args, dataset, rollouts, stream_ids, delays, extra, eos_id, 
     lengths = torch.tensor([length(index) for index in stream_ids]).repeat_interleave(args.group)
     cut = rollouts.clone()
     cut.masked_fill_((torch.arange(args.frames)[None] >= lengths[:, None])[:, None], -1)
-    spans = grpo.forward_frames(grpo.kept_tokens(cut, lengths, delays, eos_id), delays)
+    spans = grpo_objective.forward_frames(
+        grpo_objective.kept_tokens(cut, lengths, delays, eos_id), delays)
     estimate["eos_rate"] = float((cut[:, 0] == eos_id).any(dim=1).float().mean())
     for micro in args.micro_batch:
         measured = report.get(f"micro_batch_{micro}")
         if not isinstance(measured, dict):
             continue
-        frames = [grpo.micro_frames(spans, start, min(start + micro, len(spans)), args.frames)
+        frames = [grpo_objective.micro_frames(spans, start, min(start + micro, len(spans)),
+                                              args.frames)
                   * (min(start + micro, len(spans)) - start)
                   for start in range(0, len(spans), micro)]
         per_rollout = sum(frames) / len(spans)
@@ -215,11 +232,11 @@ def teacher_leak(teacher, teach, codes, keep, shifts: dict[int, int], device, ro
         for start in range(0, len(batch), 2):  # two rollouts a forward, as the smallest micro-batch
             part = batch[start : start + 2].to(device=device, dtype=torch.long)
             kept = keep[start : start + 2].to(device)
-            output = grpo.teacher_forward(teacher, teach, part)
+            output = grpo_objective.teacher_forward(teacher, teach, part)
             text_valid = output.text_mask & kept[:, :1]
             audio_valid = output.mask & kept[:, 1:]
-            text = common.token_ce(output.text_logits, part[:, :1], text_valid)
-            audio = common.token_ce(output.logits, part[:, 1 : 1 + codebooks], audio_valid)
+            text = token_ce(output.text_logits, part[:, :1], text_valid)
+            audio = token_ce(output.logits, part[:, 1 : 1 + codebooks], audio_valid)
             sums -= torch.cat([text, audio], dim=1).sum(dim=(0, 2)).cpu()
             counts += torch.cat([text_valid, audio_valid], dim=1).sum(dim=(0, 2)).cpu()
         means.append(sums / counts.clamp(min=1))
@@ -231,25 +248,25 @@ def teacher_leak(teacher, teach, codes, keep, shifts: dict[int, int], device, ro
 def main() -> None:
     grpo.set_alloc_conf()  # a run's allocators
     args = parse_args()
-    grpo.validate_objective_args(args)
+    grpo_objective.validate_objective_args(args)
     args.model_weight = require_file(args.model_weight, "start checkpoint")
-    args.tokenizer = common.run_tokenizer(args.tokenizer, args.model_weight)
-    pool = grpo.reward_pool(args.reward_workers, args.tokenizer)
-    device = common.check_device("cuda")
+    args.tokenizer = run_tokenizer(args.tokenizer, args.model_weight)
+    pool = grpo_rollout.reward_pool(args.reward_workers, args.tokenizer)
+    device = check_device("cuda")
     torch.set_float32_matmul_precision("high")
     out_dir = resolve_repo_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_dirs = [require_dir(path, "code cache directory") for path in args.cache_dir]
-    info = common.load_checkpoint_info(args)
+    info = load_checkpoint_info(args)
     tokenizer = info.get_text_tokenizer()
     pair_dirs = [require_dir(path, "pair code cache directory") for path in args.pair_cache_dir]
-    rows, layout = streams.load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
+    rows, layout = load_rows(cache_dirs, args.max_frames, args.tokenizer, pair_dirs)
     codebooks = int(info.lm_config["dep_q"])  # a stream's, fewer for a phone student
-    teach = grpo.teacher_info(args, codebooks)
-    dataset = grpo.stream_dataset(args, info, rows, layout, codebooks, info.get_mimi(device=device))
+    teach = grpo_objective.teacher_info(args, codebooks)
+    dataset = grpo_rollout.stream_dataset(args, info, rows, layout, codebooks, info.get_mimi(device=device))
     count = max(args.gen_batch)
-    stream_ids = [int(i) for i in grpo.stream_order(len(dataset), args.seed)[: count // args.group]]
-    sources = torch.stack([grpo.stream_source(dataset, index, codebooks)
+    stream_ids = [int(i) for i in grpo_rollout.stream_order(len(dataset), args.seed)[: count // args.group]]
+    sources = torch.stack([grpo_rollout.stream_source(dataset, index, codebooks)
                            for index in stream_ids for _ in range(args.group)])
     report: dict = {"frames": args.frames, "group": args.group,
                     "stream_frames": [dataset.streams[i].frames for i in stream_ids]}
@@ -257,7 +274,7 @@ def main() -> None:
     def write(report: dict) -> None:
         (out_dir / "profile.json").write_text(json.dumps(report, indent=2) + "\n")
 
-    lm = common.load_policy(info, device)
+    lm = load_policy(info, device)
     optimizer = torch.optim.AdamW(lm.parameters(), fused=True)  # its states, never stepped
     for param in lm.parameters():
         optimizer.state[param] = {"step": torch.zeros((), device=device),
@@ -265,7 +282,7 @@ def main() -> None:
                                   "exp_avg_sq": torch.zeros_like(param)}
     teacher = None
     if teach is not None:
-        teacher = common.load_teacher(teach, args.teacher_weight, device, codebooks)
+        teacher = load_teacher(teach, args.teacher_weight, device, codebooks)
     report["resident_gib"] = torch.cuda.memory_allocated() / 2**30
     silence_frame = dataset.silence[:codebooks, -1].long().to(device)
 
@@ -278,7 +295,7 @@ def main() -> None:
     eos_id, pad_id = int(tokenizer.eos_id()), int(tokenizer.pad_id())
     jobs = []
     for group, index in enumerate(stream_ids):
-        sentences = grpo.stream_sentences(dataset.streams[index], rows, tokenizer)
+        sentences = grpo_rollout.stream_sentences(dataset.streams[index], rows, tokenizer)
         tokens = rollouts[group * args.group : (group + 1) * args.group, 0].numpy().copy()
         jobs.append((tokens, sentences))
     start = time.time()
@@ -286,7 +303,8 @@ def main() -> None:
                for tokens, sentences in jobs]
     serial = time.time() - start
     start = time.time()
-    [future.result() for future in [pool.submit(grpo._group_rewards, tokens, sentences, rewards.ALPHA)
+    [future.result() for future in [pool.submit(grpo_rollout._group_rewards, tokens, sentences,
+                                                rewards.ALPHA)
                                     for tokens, sentences in jobs]]
     parallel = time.time() - start
     report["rewards"] = {"groups": len(jobs), "serial_s": serial, "parallel_s": parallel}
@@ -296,33 +314,35 @@ def main() -> None:
 
     # Phase 2: π_old's logprob pass and the update's forward and backward.
     codes = torch.cat([rollouts, sources.to(torch.int32)], dim=1)
-    delays = grpo.scored_delays(lm, teacher)
-    keep = grpo.kept_tokens(rollouts, torch.full((len(rollouts),), args.frames), delays, eos_id)
+    delays = grpo_objective.scored_delays(lm, teacher)
+    keep = grpo_objective.kept_tokens(rollouts, torch.full((len(rollouts),), args.frames), delays, eos_id)
     advantages = torch.from_numpy(np.concatenate([r[2] for r in results])).float()
     weights = torch.ones(1 + lm.dep_q, device=device)
     weights[0] = grpo.TEXT_WEIGHT
-    objective = grpo.Objective(weights, grpo.EPSILON, grpo.TEMPERATURE, args.reward_coef,
-                               args.kl_coef or 0.0)
+    objective = grpo_objective.Objective(weights, grpo.EPSILON, grpo.TEMPERATURE,
+                                         args.reward_coef, args.kl_coef or 0.0)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     if args.park_states:
-        grpo.park_states(common.HostOffload(), optimizer)  # as a run's old-logprob pass and micro-batches find them
+        grpo.park_states(HostOffload(), optimizer)  # as a run's old-logprob pass and micro-batches find them
     for micro in args.micro_batch:
         batch = codes[:micro].to(device=device, dtype=torch.long)
-        condition = common.batch_condition_tensors(lm, info.model_type, micro)
+        condition = batch_condition_tensors(lm, info.model_type, micro)
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
         def score():
             with autocast:  # the update's forward, gradients enabled, as grpo.py scores π_old
-                logprobs, mask = grpo.token_logprobs(lm, batch, condition, grpo.TEMPERATURE)
+                logprobs, mask = grpo_objective.token_logprobs(lm, batch, condition, grpo.TEMPERATURE)
             return logprobs.detach(), mask
 
         def update_loss():  # as an update of grpo.py runs it, the teacher's forward included
-            teacher_output = None if teacher is None else grpo.teacher_forward(teacher, teach, batch)
+            teacher_output = (None if teacher is None
+                              else grpo_objective.teacher_forward(teacher, teach, batch))
             with autocast:
-                return grpo.update_loss(lm, batch, condition, keep[:micro].to(device), objective,
-                                        old, advantages[:micro].to(device), teacher_output)
+                return grpo_objective.update_loss(lm, batch, condition, keep[:micro].to(device),
+                                                  objective, old, advantages[:micro].to(device),
+                                                  teacher_output)
 
         def update():
             loss, _ = update_loss()

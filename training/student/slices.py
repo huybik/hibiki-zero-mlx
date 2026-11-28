@@ -9,7 +9,7 @@ one frame, and the slices' steps follow its residual quantizer as the teacher's 
     trunk out ─► slice 0 (text) ─► cb 0 ─► slice 1 ─► cb 1 ─► ... ─► slice 8 (cb 7) ─► cb 8..15
 
 A config marks such a model with `"audio_heads": "depformer_parallel"` and `"parallel_codebooks"`,
-which `common.load_checkpoint_info` takes out before moshi reads the config. Its depformer keys are
+which `model.load_checkpoint_info` takes out before moshi reads the config. Its depformer keys are
 moshi's own, the step schedule codebook j -> slice min(j, dep_q - P) (`schedule`), so moshi builds
 the slices' weights, the input linears and the 16 output linears; `install` keeps a slice's input
 embedding and output norm, not a codebook's, and runs the steps (`_forward_training`,
@@ -183,7 +183,7 @@ def audio_source(weight: Path, keys: list[str], layers: list[int], depth: int) -
 def main() -> None:
     from safetensors import safe_open
 
-    from training.finetune import common
+    from training.finetune.model import build_lm, load_checkpoint_info, save_state, weight_tokenizer
     from training.paths import DEFAULT_MIMI_WEIGHT, DEFAULT_TOKENIZER, read_json, repo_display_path, require_file
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -206,7 +206,7 @@ def main() -> None:
                            args.dim, args.num_heads, args.layers, args.parallel)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     config_path, out_weight = args.out_dir / "config.json", args.out_dir / "model.safetensors"
-    config.update(moshi_name=out_weight.name, tokenizer_name=common.weight_tokenizer(weight))
+    config.update(moshi_name=out_weight.name, tokenizer_name=weight_tokenizer(weight))
     staged = args.out_dir / ".config.json.tmp"  # config.json only once the weight is in
     staged.write_text(json.dumps(config, indent=2) + "\n")
 
@@ -214,11 +214,11 @@ def main() -> None:
         metadata = dict(f.metadata() or {})
         parent = {key: f.get_tensor(key) for key in f.keys() if not key.startswith(AUDIO_PARTS)}
     dtype = parent["text_linear.weight"].dtype
-    info = common.load_checkpoint_info(argparse.Namespace(
+    info = load_checkpoint_info(argparse.Namespace(
         hf_repo="kyutai/hibiki-zero-3b-pytorch-bf16", model_weight=weight, mimi_weight=DEFAULT_MIMI_WEIGHT,
         tokenizer=DEFAULT_TOKENIZER, config_path=staged))  # Mimi and the tokenizer are never read here
     torch.manual_seed(args.seed)
-    child = common.build_lm(info, "cpu", dtype, load_weight=False).state_dict()
+    child = build_lm(info, "cpu", dtype, load_weight=False).state_dict()
     audio = None if args.audio_from is None else audio_source(
         require_file(args.audio_from, "audio source"), [key for key in child if key.startswith(AUDIO_PARTS)],
         [int(part) for part in args.audio_layers.split(",")], args.layers)
@@ -244,7 +244,7 @@ def main() -> None:
         record.update(audio_from=repo_display_path(args.audio_from), audio_layers=args.audio_layers)
     metadata["student_of"] = repo_display_path(weight)
     metadata["student"] = json.dumps(record)
-    common.save_state(state, out_weight, metadata)
+    save_state(state, out_weight, metadata)
     staged.replace(config_path)
     audio_params = sum(t.numel() for key, t in state.items() if key.startswith(AUDIO_PARTS))
     origin = f"seed {args.seed}" if args.audio_from is None else f"from {args.audio_from.name} layers {args.audio_layers}"

@@ -25,7 +25,7 @@ let usage = """
 
     """
 // Frames after the input, the source EOS frame included: training's evaluation generates its
-// longest clip plus 20 s (pipeline.py TAIL_S).
+// longest clip plus 20 s (file_mode.py TAIL_S).
 let tailFrames = 250
 
 let args = Array(CommandLine.arguments.dropFirst())

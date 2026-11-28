@@ -1,7 +1,7 @@
 # Slices student
 
 Read when touching `training/student/slices.py`, `restart.sh student-slices-5090`, `train.py
---freeze-trunk` or moshi_mlx's
+--freeze-trunk` or `hibiki_mlx.lm`'s
 `parallel_codebooks`, or training,
 scoring or deciding on the phone student whose audio part is depformer slices. Back to
 [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Why this shape](#why-this-shape) ·
@@ -34,8 +34,8 @@ trunk out ─► slice 0 (reads text) ─► cb 0 ─► slice 1 ─► cb 1 ─
   the slices' weights from them; `slices.install` drops the codebooks' input embeddings and norms
   past the slices' and runs the steps: `_forward_training` (teacher-forced, through
   `lm_training.run_depformer`) and `LMGen.depformer_step` (sampled slice by slice, the last
-  slice's 8 at once). `common.load_checkpoint_info` takes both keys out before moshi reads the
-  config; `common.build_lm` installs the slices.
+  slice's 8 at once). `model.load_checkpoint_info` takes both keys out before moshi reads the
+  config; `model.build_lm` installs the slices.
 - Checked on a tiny CPU model (2026-11-27, 4 codebooks, 3 slices): greedy `depformer_step`'s
   tokens are the argmax of the teacher-forced logits fed those tokens, on every codebook.
 
@@ -92,7 +92,7 @@ frozen: a trunk trained on this data lost text (the joint stage below).
 **Training optimizations (2026-11-27, box 62513802 RTX 5090, `pho` + `en-vi/pho` 12,288-frame
 batches; baseline `db0de25` vs optimized, warm updates 20–50):**
 
-- **Exact Track A** (`common.py`, `lm_training.py`, `slices.py`, `train.py`): chunked fused
+- **Exact Track A** (`distill.py`, `lm_training.py`, `slices.py`, `train.py`): chunked fused
   linear+KL (`compute_distill_losses_chunked`, eliminating full-vocab logit materialization and
   `_undelay_sequence` NaN copies, saving ~5.5 GiB), batched contiguous schedule runs in `_per_step`
   (8× fewer teacher slice-8 GEMMs/HBM reads), fused `depformer_in` and `linears[8..15]` GEMMs,
@@ -236,7 +236,7 @@ student's and the depformer student's on the same sets.
 
 ## On the Mac
 
-The vendored moshi_mlx reads the config (`DepFormerConfig.parallel_codebooks`; the slice count
+The vendored LM (`hibiki_mlx/lm/`) reads the config (`DepFormerConfig.parallel_codebooks`; the slice count
 dep_q − P + 1, `generated_codebooks` still dep_q) and the weights (the last slice's `linear_out`
 is `linears.8`..`15` stacked), and samples the last slice's codebooks at once, so `convert_mlx.py`
 stages a checkpoint, the gate runs it through `LmGen` and `export_lm_coreml.py` exports the staging.

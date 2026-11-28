@@ -1,6 +1,6 @@
 # On-policy distillation
 
-Read when touching `grpo.py`'s teacher term (`--teacher-weight`, `--reward-coef`, `--kl-coef`,
+Read when touching `grpo_objective.py`'s teacher term (`--teacher-weight`, `--reward-coef`, `--kl-coef`,
 `distill_loss`, `update_loss`), or when running, profiling or judging the
 phone student's on-policy runs and the recipe experiments of 2026-11-21.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Design](#design) · [Running](#running) ·
@@ -33,7 +33,7 @@ own rollouts go, timing included. 2026 work finds it teaches behaviour, not know
 ## Design
 
 `grpo.py --teacher-weight` (and `--teacher-config`, by default the 3B's) loads a frozen bf16
-teacher (`common.load_teacher`, the same as SFT's distillation) on the run's tokenizer.
+teacher (`model.load_teacher`, the same as SFT's distillation) on the run's tokenizer.
 
 ```text
 window: π_old samples rollouts (as GRPO) ──► rewards in the CPU workers (logged; the GRPO term's)
@@ -42,7 +42,7 @@ update micro-batch: teacher forward (no grad) ─┐
 ```
 
 - **The term** (`distill_loss`): each kept token's reverse KL(policy ‖ teacher) of its full
-  next-token distribution at temperature 1 (`common.token_kl` with its arguments swapped), where
+  next-token distribution at temperature 1 (`losses.token_kl` with its arguments swapped), where
   both forwards and `kept_tokens` hold it; weighted as the GRPO term is (`--text-weight` for
   text, 1 for each codebook), summed over tokens and averaged over the update's rollouts. The
   full distribution, not the sampled token's log ratio, so no variance from sampling. Rollouts are
@@ -170,7 +170,7 @@ The probes' results and the runs, `both_heads_z` and `both_heads_z2`, are in
 
 - Tiny models on the CPU (2026-11-21; dim 64, a 16-codebook heads student under a depformer
   teacher with delays 0 and 2, eager with `lm_training.sdpa_kernel` replaced; scratch script):
-  - `distill_loss` on a rollout the student sampled through `grpo.rollout` equals a hand-computed
+  - `distill_loss` on a rollout the student sampled through `grpo_rollout.rollout` equals a hand-computed
     reverse KL on the positions both masks and `kept_tokens` hold (831.5887 against 831.5887),
     drops the tokens after a rollout's first EOS, and scores codebook j up to the later of the
     two models' delays; a teacher equal to the policy gives exactly 0; gradients are finite and

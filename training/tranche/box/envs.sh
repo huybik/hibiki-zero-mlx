@@ -2,7 +2,7 @@
 # The tranche's envs under /workspace/envs: those named, or all, built side by side, each with the models it loads at
 # their pinned revisions. Without uv's cache, which on /workspace grows by tens of GB.
 #   ingest  ingest (YODAS's cut on the CPU, its rows heard on the ASR server)
-#   vieneu  voice.py (VieNeu-TTS v3 Turbo)
+#   vieneu  voice.py (VieNeu-TTS v3 Turbo, vieneu/)
 #   asr     the Qwen3-ASR server voice.py and ingest hear with
 #   cache   the cache builds (restart.sh cache)
 #   mt      translate.py
@@ -25,7 +25,7 @@ ingest() {
 
 vieneu() {
   # The SDK on torch 2.15 (CUDA 13.4) without its cuda extra, which pins torch 2.8 (CUDA 12.8): its runtime
-  # dependencies listed instead. Its ONNX graphs run in PyTorch (onnx_graph.py).
+  # dependencies listed instead. Its ONNX graphs run in PyTorch (vieneu/onnx_graph.py).
   mk vieneu 3.12
   $UV pip install -q -p $E/vieneu torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
   $UV pip install -q -p $E/vieneu --no-deps vieneu==3.7.1
@@ -69,7 +69,7 @@ print('cache:', torch.__version__, torch.version.cuda, 'triton:', triton.__versi
 }
 
 mt() {
-  # vLLM in process; it also imports ingest (av).
+  # vLLM in process.
   mk mt 3.12
   $UV pip install -q -p $E/mt vllm==0.34.0 pyarrow av==15.1.0
   # FlashInfer's prebuilt kernels for the flashinfer and CUDA vLLM brought: without them the first run compiles its

@@ -4,7 +4,8 @@ Read when choosing a Vietnamese speech corpus, checking its licence, or reading 
 labels, order, transcripts).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Corpora](#corpora) · [Corpus samples](#corpus-samples) ·
 [YODAS layout and sample](#yodas-layout-and-sample) · [YODAS3](#yodas3). What the tranche takes from
-them, and how, is in [real-vi-tranche](real-vi-tranche.md).
+them, and how, is in [real-vi-tranche](real-vi-tranche.md); the code reads each at the commit named here
+(`SOURCES` in `training/tranche/repo.py`).
 
 ## Corpora
 

@@ -1,14 +1,14 @@
 """Row filters of the tranche and the text measures behind them
 ([real-vi-tranche](../../docs/agent-memory/real-vi-tranche.md#filters)): the cache build drops rows on
-them, voice.py skips the rows `vi_gate` drops, YODAS's ingest hears its rows with `Hearer` and gates them,
+them, voice.py skips the rows `vi_gate` drops, YODAS's ingest gates its heard rows by `vi_gate`,
 eval_sets builds giga-heldout by the same rules, and translate.py rejects replies `broken` flags.
 
-- `spoken`: a transcript as compared, lower-case syllables with numbers written out;
+- `spoken`: a transcript as compared, lower-case syllables with numbers written out (asr.cer's);
 - the evaluation overlap: a row sharing a run of OVERLAP_N syllables (or a whole shorter sentence) with
-  a FLEURS vi or MultiMed-ST vi evaluation sentence (data/eval/, built by training.prep.eval_sets;
+  a FLEURS vi or MultiMed-ST vi evaluation sentence (data/eval/, built by training.finetune.eval_sets;
   `eval_grams`, `overlaps`);
 - `vi_gate`: the Vietnamese side's gate on a row's asr_vi (its language, its CER against the transcript);
-- `Hearer`: the ASR server's client, its language detected rather than forced.
+- `NON_LATIN`, `VI_LETTERS`: letters of another script than Vietnamese's, and Vietnamese's own beyond ASCII.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from training.tranche.ingest import REPO, SOURCES
+from training.tranche.repo import REPO, SOURCES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EVAL_SETS = ("fleurs-vi/dev", "fleurs-vi/test", "multimed-vi/select", "multimed-vi/final")
@@ -33,11 +33,11 @@ NUMBER_VARIANTS = {"ngàn": "nghìn", "linh": "lẻ", "nhăm": "lăm"}
 # A longer run of digits is an id or an ASR loop, read digit by digit: num2words overflows on one of
 # hundreds of digits (a YODAS row's transcript, 2026-11-25).
 MAX_DIGITS = 15
-ASR_URL = "http://localhost:8100/v1/audio/transcriptions"
-ASR_MAX_TOKENS = 512  # as voice.py: a looping transcript comes back long instead of running on
-ASR_TIMEOUT_S = 60
 # A letter outside the Latin blocks Vietnamese uses (Basic to Extended-B, Extended Additional).
 NON_LATIN = re.compile(r"[^\W\d_\x00-ɏḀ-ỿ]")
+# Vietnamese's lower-case letters beyond ASCII: in a TTS clip's English ASR, a clause spoken in Vietnamese
+# (cache.vietnamese_letters); in a translation, Vietnamese left in (translate.VIETNAMESE_LETTER).
+VI_LETTERS = "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
 
 
 def spoken(text: str) -> list[str]:
@@ -153,35 +153,3 @@ def broken(en: str, vi: str) -> bool:
     Where the English has them too (`京都`), they stay."""
     return bool(NON_LATIN.search(vi)) and not NON_LATIN.search(en)
 
-
-class Hearer:
-    """One HTTP client to the ASR server; each call sends one clip as 16 kHz WAV."""
-
-    def __init__(self, url: str, concurrency: int):
-        import httpx
-
-        self.url = url
-        self.client = httpx.Client(timeout=ASR_TIMEOUT_S, limits=httpx.Limits(max_connections=concurrency))
-
-    def hear(self, audio: bytes) -> tuple[str, str]:
-        """WAV bytes -> (language, transcript). Unforced, the model writes `language <Name><asr_text><text>`,
-        and `language None` for audio with no speech; a reply without the header is all
-        transcript, its language unknown (""), as qwen_asr's own parser reads it. Clips over 30 s,
-        which the server would split and join headers into, do not occur (rows are under 22.4 s)."""
-        import httpx
-
-        for attempt in range(3):  # the server drops an idle keep-alive connection now and then
-            try:
-                reply = self.client.post(self.url, files={"file": ("a.wav", audio, "audio/wav")},
-                                         data={"model": "asr", "max_completion_tokens": ASR_MAX_TOKENS})
-                break
-            except httpx.TransportError:
-                if attempt == 2:
-                    raise
-        reply.raise_for_status()
-        raw = reply.json()["text"]
-        head, tag, text = raw.partition("<asr_text>")
-        if not tag or not head.startswith("language "):
-            return "", raw.strip()
-        language = head.removeprefix("language ").strip()
-        return ("", "") if language == "None" else (language, text.strip())

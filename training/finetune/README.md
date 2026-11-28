@@ -13,16 +13,23 @@ Modules, run from the repository root as `python -m training.finetune.<module>`:
   speech (FLEURS dev) once every evaluation set passes the health gates, and exact recovery
   checkpoints written in the background; it resumes the newest one
   in its out-dir.
-- `grpo`: GRPO from an SFT checkpoint (rollouts, BLEU process rewards in `rewards`, the clipped
-  update), promoting as `train` does; `grpo_profile` times its stages before a run.
+- `grpo`: GRPO from an SFT checkpoint, promoting as `train` does: its rollouts and their BLEU
+  process rewards (`grpo_rollout`, `rewards`) and the clipped update (`grpo_objective`);
+  `grpo_profile` times its stages before a run.
 - `validate`: teacher-forced diagnostics on a cache's validation streams.
 - `eval`: correct-source free-running text/audio evaluation.
-- `streams`: memory-mapped cache rows (from per-shard packs), stream planning and assembly,
-  frame-budget batches.
+- `packs`: per-shard packs of a cache, the only form a run reads (`--drop-shards` deletes the
+  packed shards); `rows`: the rows a run loads from them, memory-mapped, and where each target
+  may start; `streams`: stream planning and assembly, frame-budget batches; `rooms`: room noise
+  in the source between sentences.
 - `lm_training`: moshi's LM made faster for training and generation, with the same math.
-- `common`: what the scripts share: the model and optimizer, the loss kernel and losses,
-  free-running translation, metrics and the health gates.
-- `checkpoints`: a run directory: checkpoint pairs, resume and its contract, promotion, logs.
+- `model`: the model, tokenizer, policy, teacher and optimizer as every script loads them
+  (importing it installs `lm_training`); `losses`: the loss kernel and teacher-forced losses;
+  `distill`: the chunked distillation that skips the full logits.
+- `eval_rows`: evaluation sets and their source audio; `generation`: free-running translation,
+  its outputs and the trainers' validation; `metrics`: its scores and the health gates.
+- `checkpoints`: a run directory: resume and its contract, promotion, logs; `run_files`: its
+  checkpoint pairs and `best.json`, as `checkpoints` and `hf_sync` both read them (no torch).
 - `hf_sync`: two-pair recovery plus promoted-best upload under the run's HF prefix, freeing what it prunes.
 
 See the [pod guide](../../docs/finetune.md).

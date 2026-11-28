@@ -7,7 +7,7 @@ import MLX
 
 /// Mimi's transformer cache: the keys and values of the last `context - 1` steps. Each query of
 /// a call, whatever its length, attends to exactly the `context` steps ending at itself, as
-/// Mimi was trained and as `training/prep/mimi_mlx.py` encodes whole clips, so chunked and
+/// Mimi was trained and as `training/cache/mimi_mlx.py` encodes whole clips, so chunked and
 /// frame-by-frame calls give the same codes. (A ring of `context` steps, as moshi-swift keeps,
 /// overwrites the oldest keys of a call's first queries, more so the longer the call.)
 ///

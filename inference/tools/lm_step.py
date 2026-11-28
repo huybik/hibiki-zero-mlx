@@ -12,7 +12,7 @@ emits the last codebooks at once (`"depformer_parallel"`):
     DepformerStep: hidden, emb, noise -> tokens [dep_q] (all slices + top-k sampling on ANE)
 
 Text is sampled before the audio because the heads and the first slice read its embedding, as
-`moshi_mlx.models.lm.ParallelHeads` and `DepFormer` do. The host computes the RoPE tables of the frame's
+`hibiki_mlx.lm.lm.ParallelHeads` and `DepFormer` do. The host computes the RoPE tables of the frame's
 position and the mask of its cache slots (`Inputs`), so positions, which grow without bound,
 never enter a half-precision graph. The cache is a ring of `context` slots: frame t writes slot
 t mod context and attends to the frames t - context + 1 .. t, as moshi's training does.

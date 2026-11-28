@@ -1,7 +1,7 @@
 # VieNeu's speed on the 5090
 
-Read when speeding up VieNeu-TTS v3 Turbo or its ASR checks on the RTX 5090 (`voice.Voicer`, `vieneu_frame.py`,
-`decode_attention.py`, `onnx_graph.py`), or weighing another TTS against it.
+Read when speeding up VieNeu-TTS v3 Turbo or its ASR checks on the RTX 5090 (`training/tranche/vieneu/`:
+`engine.Voicer`, `frame.py`, `onnx_graph.py`; `training/decode_attention.py`), or weighing another TTS against it.
 Back to [CONTEXT.md](../../CONTEXT.md) · part of [tranche-tts](tranche-tts.md) ·
 [Candidates](#candidates) · [Method](#method) · [Results](#results) ·
 [Optimizing VieNeu](#optimizing-vieneu) · [In production](#in-production) · [Finding](#finding)
@@ -79,13 +79,13 @@ VieNeu, each step adding to the one above:
 | denoiser autotuned | 35.5 | 7.7% | 0.604 | 3.18 |
 
 - Enrolment on the GPU: the SDK's ONNX denoiser and speaker encoder in PyTorch (onnx2torch in the
-  bench, `training/tranche/onnx_graph.py` in production: on the speaker encoder cosine ≥ 0.99997 to
+  bench, `training/tranche/vieneu/onnx_graph.py` in production: on the speaker encoder cosine ≥ 0.99997 to
   onnxruntime, on the denoiser bit-exact to the bench's runner), its Kaldi fbank batched on the GPU
-  (`training/prep/kaldi.py`, shared with the WeSpeaker scores: 0.019 ms a clip, embeddings at cosine 0.999999 to the SDK's
+  (`training/audio/kaldi.py`, shared with the WeSpeaker scores: 0.019 ms a clip, embeddings at cosine 0.999999 to the SDK's
   kaldi-native-fbank), clips trimmed to whole 0.25 s and batched by length (81% are the full 8 s).
   Without the denoiser VieNeu runs 38.1 rows/s at the continuous step but breaks 11.9%: it stays.
 - MOSS decode and encode run whole: every attention layer of the codec is causal with a window
-  (4–10 s), which `voice.window_attention` runs through `flex_attention` with a sliding-window block
+  (4–10 s), which `engine.window_attention` runs through `flex_attention` with a sliding-window block
   mask, and both paths are compiled. The SDK's whole batch decode builds a dense T² bias and runs out
   of memory, and its chunked `batch_decode` (2 s chunks, a ring cache a layer) ran 4.60 s a 512
   chunks against 0.60 s now, 54.6 dB from fp32's one-row decode (the chunked fp16 55.1; bf16 41).
@@ -95,7 +95,7 @@ VieNeu, each step adding to the one above:
   static shape (64 references padded to 8 s; causal layers keep the padding out of real frames, and
   a clip keeps its whole frames, as `batch_encode`'s lengths), and decode batches pad to at least two
   rows and 33 frames.
-- Continuous batching (the bench's `vieneu_cb.py`, `training/tranche/vieneu_frame.py` in production): the SDK's fused CUDA-graph frame with each row's own cache
+- Continuous batching (the bench's `vieneu_cb.py`, `training/tranche/vieneu/frame.py` in production): the SDK's fused CUDA-graph frame with each row's own cache
   position, frame counter and repetition window, a finished row's slot refilled; the SDK's static
   batches run to their longest row (37% of row-frames real). Graph-captured writes need device
   tensors: a host scalar fails capture ("operation not permitted when stream is capturing").
@@ -109,10 +109,10 @@ VieNeu, each step adding to the one above:
   the whole frame copies the 1.5 GB cache and runs out of memory. 10.1 → 6.0 ms a frame at 256
   slots, 9.9 ms at 512. The top-k-first sampler draws from the 25 top-k values, the SDK's
   distribution without its sort over 1,024 codes.
-- The backbone's attention (`training/tranche/decode_attention.py`): a Triton kernel over each
+- The backbone's attention (`training/decode_attention.py`): a Triton kernel over each
   slot's live keys only, a program per slot and KV head, its 3 query heads padded to `tl.dot`'s 16
   rows; the SDK's attends all 1,024 positions under a mask. 0.404 → 0.170 ms a layer, the frame
-  9.7 → 6.0 ms at 512 slots. The SDK's prompt cache is left-padded: `SlotBackbone.load` (`vieneu_frame.py`) moves
+  9.7 → 6.0 ms at 512 slots. The SDK's prompt cache is left-padded: `SlotBackbone.load` (`frame.py`) moves
   each row's keys to its slot's start in one gather.
 - Codec encode in fp16: 3.13 → 1.51 ms a clip, 97.9% of codes as fp32's (codebook 0 99.9%; bf16
   76%).
@@ -132,7 +132,7 @@ VieNeu, each step adding to the one above:
 - At 35.5 rows/s (56.3 s): enrolment 26.7 s (denoise 16.6, fbank and speaker encoder 3.3, codec
   encode 3.2, trim and resampling 3.5), frames 13.9 s, decode 14.7 s, joining 0.9 s.
 
-Then production's own `voice.Voicer` (2026-11-28, records in
+Then production's own `engine.Voicer` (2026-11-28, records in
 `/Volumes/data/hibiki-zero-evals/box-62513802/ttsbench-5090opt-2026-11-28/`: `vbench.py` feeds it the
 same 2,000 rows and times its stages), each step adding to the one above; levers that change the
 output were kept only within the bench's noise on all four scores:
@@ -149,7 +149,7 @@ output were kept only within the bench's noise on all four scores:
 - Paired against VoxCPM2 on rows neither broke, voice match −0.0909 ± 0.0024 on main, −0.0901 with
   the gate, −0.1130 with 5 s references: those lose 0.02 of voice match, ~9 standard errors.
 - The gate (`CLEAN_SPREAD_DB`): a reference whose 20 ms frame levels spread at least 40 dB (95th
-  minus 10th percentile, `voice.level_spread`) is clean enough to skip the denoiser: ~30% of YODAS's.
+  minus 10th percentile, `engine.level_spread`) is clean enough to skip the denoiser: ~30% of YODAS's.
   Chosen before its run from the 2026-11-26 bench's runs with and without the denoiser, each row
   taken from the run the gate would pick (levels by `snr_est.py`): broken 6.75% against 6.80%.
 - At 58.3 rows/s (34.3 s): denoise 11.2 s, speaker encoder 1.7, codec encode 1.4, admission 2.4,
@@ -158,7 +158,7 @@ output were kept only within the bench's noise on all four scores:
 
 ## In production
 
-`training/tranche/voice.py` (env `vieneu`, torch 2.15 + cu134) runs the production `Voicer` of the
+`training/tranche/voice.py` (env `vieneu`, torch 2.15 + cu134) runs the production `Voicer` (`vieneu/engine.py`) of the
 table above, streamed:
 
 - The loader's processes trim, cut and resample each shard's references and phonemize its lines a

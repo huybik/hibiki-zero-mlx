@@ -16,8 +16,9 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero) 
 ```text
 inference/            Apple Silicon
   main.py             file and microphone translation CLI (MLX)
-  hibiki_mlx/         pipelined runtime (CPU Mimi codec overlapped with the GPU LM)
-  moshi-mlx/          minimal vendored MLX model with the Hibiki-Zero deltas
+  hibiki_mlx/         runtime: model loading, file mode (CPU Mimi codec overlapped with the GPU
+                      LM), mic mode, level stage, voice gate, echo canceller, direction primers
+    lm/               the LM: vendored moshi_mlx with the Hibiki-Zero deltas
   tools/              quantized/BF16 staging, the quantization gate, benchmark, Core ML export
   assets/             leon.wav (French gate clip), the direction primers
   macos/              native SwiftUI file and microphone test app
@@ -25,7 +26,9 @@ inference/            Apple Silicon
 training/             CUDA · PyTorch
   h100.sh             pinned GPU setup, preflight, SFT and GRPO runs and resume with HF recovery
   paths.py            repository defaults and file guards
-  prep/               EN-VI dataset, translation, TTS, grounded Mimi + CTC caches, noisy copies
+  cache/              grounded Mimi + CTC caches (one engine, MLX or CUDA), their publishing, noisy copies
+  audio/              decoding, room/noise augmentation, Kaldi features
+  en_vi_dataset/      the EN-VI dataset: its publisher and the Mac's MLX VieNeu TTS
   finetune/           full-model SFT and GRPO trainers, evaluation, HF recovery sync
   tranche/            the real-Vietnamese tranche: ingest, ASR check, translation, TTS, caches
   vi_tokenizer/       the Vietnamese tokenizer swap for two-way text
@@ -39,7 +42,6 @@ translations/         inference outputs (gitignored)
 ## Inference
 
 ```bash
-pip install -e ./inference/moshi-mlx
 pip install -e .
 ```
 
@@ -53,7 +55,7 @@ hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
   "mimi-pytorch-e351c8d8@125.safetensors" \
   tokenizer_spm_48k_multi6_2.model \
   --local-dir weights
-python inference/tools/convert_mlx.py --bits 4 \
+python -m inference.tools.convert_mlx --bits 4 \
   --checkpoint "weights/hibiki-pytorch-77f82164@110.safetensors" --config weights/config.json \
   --mimi "weights/mimi-pytorch-e351c8d8@125.safetensors" --out-dir weights/hibiki-zero-3b-q4
 ```
@@ -105,16 +107,17 @@ and opens on the model last chosen, else the shipping two-way bundle where this 
 hf download huybik/hibiki-zero-vi-full-sft --include "release/twoway_grpo1400_mlx_q6/*" --local-dir weights
 ```
 
-The inference tools are:
+The inference tools in `inference/tools/` run from the repo root as
+`python -m inference.tools.<tool>`:
 
-- `inference/tools/convert_mlx.py`: stage an exact PyTorch checkpoint as an MLX model directory,
-  quantized (`--bits`) or BF16, with the tokenizer it is on.
-- `inference/tools/gate.py`: score a model directory on evaluation pairs through the runtime's
-  file mode, as training scores its checkpoints (`python -m inference.tools.gate`, from the repo
-  root).
-- `inference/tools/bench.py`: stage timing and silence-input gate.
-- `inference/tools/export_lm_coreml.py` and `export_mimi_coreml.py`: a phone student's LM and
-  Mimi's decoder as Core ML models, for the [Swift runtime](inference/swift/README.md).
+- `convert_mlx`: stage an exact PyTorch checkpoint as an MLX model directory, quantized
+  (`--bits`) or BF16, with the tokenizer it is on.
+- `gate`: score a model directory on evaluation pairs through the runtime's file mode, as
+  training scores its checkpoints.
+- `bench`: stage timing and silence-input gate.
+- `export_lm_coreml` and `export_mimi_coreml`: a phone student's LM (`lm_step`) and Mimi's
+  decoder (`mimi_step`) as Core ML models (`coreml`), for the
+  [Swift runtime](inference/swift/README.md).
 
 ## Training
 
@@ -138,6 +141,6 @@ rejected.
 
 The training data is grounded caches of both directions: the English read-speech corpus
 `en_speech` (Common Voice 27.0 EN + Libriheavy) with its Vietnamese translation and TTS, kept in
-the EN-VI dataset (`training.prep.publish_en_vi_speech`), its noisy copies, and the
+the EN-VI dataset (`training.en_vi_dataset.publish`), its noisy copies, and the
 real-Vietnamese tranche. See the [pod guide](docs/finetune.md), [data
-preparation](training/prep/README.md) and the [project context](CONTEXT.md).
+preparation](training/en_vi_dataset/README.md) and the [project context](CONTEXT.md).

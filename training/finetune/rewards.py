@@ -61,7 +61,7 @@ def emitted_texts(
     tokens: np.ndarray, boundaries: np.ndarray, eos_id: int, pad_id: int, decode
 ) -> list[str]:
     """ŷ at each boundary: the words of a rollout's text tokens [T] before it, up to the first
-    EOS, decoded as evaluation decodes (`common.decode_text_batch`: tokens above PAD)."""
+    EOS, decoded as evaluation decodes (`generation.decode_text_batch`: tokens above PAD)."""
     eos = np.flatnonzero(tokens == eos_id)
     end = int(eos[0]) if len(eos) else len(tokens)
     words = tokens > pad_id
