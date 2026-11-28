@@ -4,7 +4,8 @@ batched on the GPU ([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-sc
 
 Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=True, use_ref_codes=True)`:
 - the reference: the row's clip trimmed of silence at 30 dB, its first 8 s, cut to whole quarter seconds so the
-  clips batch at 32 lengths, at 44.1 kHz (the loader's processes, a shard ahead); on the GPU, a shard at a time:
+  clips batch at 32 lengths, at 44.1 kHz (the loader's processes, a shard ahead); on the GPU, ENROL_PIECE rows at a
+  time as the voicer takes them, shortest first:
   the resemble-enhance denoiser (onnx_graph.py, fp16, compiled per length), the speaker encoder (onnx_graph.py) on
   a Kaldi fbank of the clean clip at 16 kHz, and MOSS's codes of it at 48 kHz (fp16);
 - the English line in chunks of at most 256 characters, phonemized (the loader's processes);
@@ -32,7 +33,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import sys
 import time
+import types
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -53,10 +56,10 @@ DENOISE_BATCH = 16  # a batch padded to it with copies of its last clip (instanc
 # cold, and this module's first run on the box missed the bench's cache.
 DENOISE_MODE = "default"
 ENROL_BATCH = 64  # references per speaker-encoder and codec batch
-# Rows enrolled at once (a multiple of both batches, so the batches are a whole shard's): their denoised, 16 kHz
-# and 48 kHz copies (~3.4 MB a row) live for a piece. Over a whole shard they peaked at ~59 GB, which glibc then
-# kept in the process.
-ENROL_PIECE = 1024
+# Rows enrolled at once, as the voicer takes them (a multiple of both batches): their denoised, 16 kHz and 48 kHz
+# copies (~3.4 MB a row) live for a piece. A whole shard at once peaked at ~59 GB, which glibc then kept in the
+# process, and paused the frames and the ASR for 131-156 s.
+ENROL_PIECE = 256
 CHUNK_CHARS = 256  # the SDK's chunk length
 SAMPLING = dict(temperature=0.8, top_k=25, top_p=0.95, repetition_penalty=1.2)  # generate_batch's defaults
 # A chunk's frame cap: max_expected_frames of its phonemes up to MAX_NEW_FRAMES (the bench's; the SDK's default is
@@ -69,7 +72,6 @@ PREFILL = 64
 QUEUE = 512  # chunks waiting for a slot, their prompt embeddings built ahead on a thread
 DECODE_POOL = 512  # chunks decoded together, sorted by length into batches of DECODE_BATCH
 DECODE_BATCH = 64
-DECODE_CHUNK_S = 2.0  # MOSS's chunked decode (a multiple of its 80 ms frame)
 # Verification, as the bake-off scored ([tranche-tts](../../docs/agent-memory/tranche-tts.md)):
 WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English normalizer only
 BROKEN_WER = 0.2
@@ -170,6 +172,21 @@ def speaker_fbank(w16):
     return mel - mel.mean(1, keepdim=True)
 
 
+def window_attention(self, x, input_lengths):
+    """MOSS's non-streaming attention (`MossAudioTokenizerMultiheadAttention._forward_non_streaming_sdpa`) as the
+    causal sliding window it is, through flex_attention: the tiles outside the window are skipped, where the SDK's
+    dense T x T mask computed them all. Batches are padded only on the right and every layer is causal, so the
+    padding never reaches a real frame and `input_lengths` is not needed."""
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+    B, T, _ = x.shape
+    q, k, v = self._project_qkv(x)
+    q, k = self._apply_dense_rope(q, k)
+    W = self.context
+    mask = create_block_mask(lambda b, h, i, j: (i >= j) & (i - j < W), None, None, T, T, device=x.device)
+    return flex_attention(q, k, v, block_mask=mask).transpose(1, 2).reshape(B, T, self.embed_dim)
+
+
 def phonemize(text: str) -> tuple[list[str], list]:
     """An English line -> its chunks phonemized and the SDK's pauses between them; no chunk when nothing in it is
     speakable (the row is then skipped)."""
@@ -231,6 +248,17 @@ class Voicer:
         tts.speaker_encoder = tts.denoiser = None  # its onnxruntime sessions, each with a thread per core: run here on the GPU
         self.codec = tts.audio_tokenizer
         self.codec.set_compute_dtype("fp16")  # encode and decode: 59 dB from fp32 on the bench
+        # Encode and decode whole (no streaming chunks), their attention windowed (window_attention), each compiled
+        # once for every length: decode 7.7x and encode 2.8x the SDK's (decode 54.6 dB from fp32's one-row decode,
+        # as fp16's 55.1; 98.4% of the codes equal)
+        attention = sys.modules[type(self.codec).__module__].MossAudioTokenizerMultiheadAttention
+        for m in self.codec.modules():
+            if isinstance(m, attention):
+                if not (m.causal and m.context):
+                    raise SystemExit("MOSS attention without a causal window: window_attention does not apply")
+                m._forward_non_streaming_sdpa = types.MethodType(window_attention, m)
+        self.codec._encode_frame = torch.compile(self.codec._encode_frame, dynamic=True)  # batch_encode's whole path
+        self.decode_codes = torch.compile(lambda codes: self.codec._decode_frame(codes).audio, dynamic=True)
         self.prompt = V3TurboBatchEngine(tts)._prompt_embeds
         self.denoiser = OnnxGraph(f"{path}/denoiser.onnx", "cuda", torch.float16, compile=True, mode=DENOISE_MODE)
         self.speaker = OnnxGraph(f"{path}/speaker_encoder.onnx", "cuda")
@@ -372,8 +400,8 @@ class Voicer:
             chunk.codes = None
 
     def _decode(self) -> None:
-        """MOSS's chunked decode in fp16, batched by length (its decoder attends within 4-10 s, which the chunked
-        path keeps as a ring cache: 7e-6 from the SDK's one-chunk decode), then the babble guard."""
+        """MOSS's decode in fp16, batched by length (each batch's codes padded on the right), then the babble
+        guard."""
         import torch
         from vieneu_utils.core_utils import BABBLE_MAX_RETRIES, babble_prefer, babble_suspect
 
@@ -382,12 +410,13 @@ class Voicer:
         for b in range(0, len(pending), DECODE_BATCH):
             batch = pending[b: b + DECODE_BATCH]
             with torch.no_grad():
-                dec = self.codec.batch_decode([codes.T.contiguous() for _, codes in batch],
-                                              chunk_duration=DECODE_CHUNK_S)
-                audio = dec.audio.float().mean(1).cpu().numpy()
-                lengths = dec.audio_lengths.tolist()
-            for (chunk, codes), wav, n in zip(batch, audio, lengths):
-                wav = wav[:n].copy()  # not a view holding the batch's array
+                codes = torch.zeros(batch[0][1].shape[1], len(batch), len(batch[-1][1]), dtype=torch.long,
+                                    device="cuda")
+                for j, (_, c) in enumerate(batch):
+                    codes[:, j, : len(c)] = c.T
+                audio = self.decode_codes(codes).float().mean(1).cpu().numpy()
+            for (chunk, codes), wav in zip(batch, audio):
+                wav = wav[: len(codes) * self.codec.downsample_rate].copy()  # not a view holding the batch's array
                 verdict = babble_suspect(wav, OUT_RATE, chunk.req.chunks[chunk.k], chunk.cap, len(codes))
                 if chunk.wav is None:
                     chunk.wav, chunk.verdict = wav, verdict
@@ -610,8 +639,8 @@ def run(args: argparse.Namespace) -> None:
         os.environ[name] = "1"
     spawn = get_context("spawn")
     pool = ProcessPoolExecutor(max(1, int(cpu_budget() // LOADER_SHARE)), mp_context=spawn)
-    # A shard's references are ~17 GB (8 s at 44.1 kHz in float32 a row): the next shard loads once the one before it
-    # is enrolled and its references freed. Its ~80 s load hides behind a shard's voicing.
+    # A shard's references are ~17 GB (8 s at 44.1 kHz in float32 a row), freed as they enrol: the next shard loads
+    # once the one before it starts enrolling, so at most two are held. Its ~80 s load hides behind a shard's voicing.
     loaded: queue.Queue = queue.Queue()
     ahead = threading.Semaphore(1)
 
@@ -649,6 +678,25 @@ def run(args: argparse.Namespace) -> None:
         pushed[source] = time.monotonic()
         pushes.push(source)
 
+    def requests(key: str, shard: Shard, rows: list) -> Iterator[Request]:
+        """The shard's rows, enrolled ENROL_PIECE at a time as the voicer takes them, shortest references first (a
+        piece's references share few lengths): the frames and the ASR keep running between pieces."""
+        if len(rows) != len(shard.clips) or len(rows) != len(shard.lines):
+            raise SystemExit(f"{key}: {len(rows)} rows to voice, {len(shard.clips)} references, {len(shard.lines)} lines")
+        order = sorted(range(len(rows)), key=lambda k: len(shard.clips[k]))
+        spent = 0.0
+        for p in range(0, len(order), ENROL_PIECE):
+            piece = order[p: p + ENROL_PIECE]
+            began_enrol = time.monotonic()
+            refs = voicer.enrol([shard.clips[k] for k in piece])
+            spent += time.monotonic() - began_enrol
+            for k in piece:
+                shard.clips[k] = None
+            for k, (spk, codes) in zip(piece, refs):
+                (i, t_en), (chunks, gaps) = rows[k], shard.lines[k]
+                yield Request(i, t_en, chunks, gaps, spk, codes)
+        log(f"{key}: enrolled {len(rows)} references in {spent:.0f} s")
+
     def next_shard() -> bool:
         nonlocal fresh, loading_done
         shard = loaded.get()
@@ -657,18 +705,13 @@ def run(args: argparse.Namespace) -> None:
         if shard is None:
             loading_done = True
             return False
-        began_enrol = time.monotonic()
-        refs = voicer.enrol(shard.clips)
-        shard.clips = None
-        ahead.release()
+        ahead.release()  # the next shard loads while this one's references enrol, piece by piece
         key = f"{shard.source}/{shard.name}"
-        log(f"{key}: enrolled {len(refs)} references in {time.monotonic() - began_enrol:.0f} s")
         rows = [(i, t_en) for i, t_en in zip(shard.ids, shard.texts_en) if i not in shard.skipped]
         shards[key], remaining[key] = shard, len(rows)
         for i, _ in rows:
             owner[i] = shard
-        fresh = (Request(i, t_en, chunks, gaps, spk, codes)
-                 for (i, t_en), (chunks, gaps), (spk, codes) in zip(rows, shard.lines, refs, strict=True))
+        fresh = requests(key, shard, rows)
         if not rows:
             finish(shard)
         return True
