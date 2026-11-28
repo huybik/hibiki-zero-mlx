@@ -265,8 +265,8 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
 
 ## Next
 
-- Time `lm-depformer.mlmodelc` (`d512x2_fused`) and `ane4_6` on the A15 once `HibikiBench`'s
-  provisioning profile is renewed in Xcode.
+- Time `lm-depformer.mlmodelc` (`d512x2_fused`) and `ane4_6` on the A15 in `HibikiBench`; the
+  slices release's fused LM took 58–60 ms a frame in Speech Live ([slices-phone](slices-phone.md#speech-live)).
 - A full-set gate of the Core ML LM against MLX 6 bits, in one runtime.
 - Not a lever: Mimi GPU encode in fp16 or mixed fp16 failed the 20×2 FLEURS dev gate
   ([swift-runtime](swift-runtime.md#mimi-on-the-gpu)); the LM's host part beside the GPU encode

@@ -281,5 +281,5 @@ finish translates better from Vietnamese, worse from real and noisy English, wai
 the heads release's 0.21 / 0.13, HNR 3.8 / 6.3 dB against 3.2 / 4.8,
 [voice-scores](voice-scores.md)). The phone candidate is the finish's snap,
 `phone/pal6_slices_z4000_snap6.safetensors` on the Hub, exported in
-`/Volumes/data/models/hibiki/weights/student_slices14/pal6_snap6_ane6/`; its iPhone 13 Pro Max
-run in HibikiBench is the gate left.
+`/Volumes/data/models/hibiki/weights/student_slices14/pal6_snap6_ane6/`; it ships as
+`release/student_slices_coreml6` in Speech Live ([slices-phone](slices-phone.md)).
