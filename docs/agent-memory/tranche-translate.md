@@ -15,8 +15,48 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
 
 - It takes the GPU memory voice and the ASR server hold (0.9 of it), so translation and voice
   take turns: `/workspace/translate_burst.sh FIRST` (voice, filters and the ASR server stopped
-  first) translates every pushed shard from FIRST on, pushes `text_en` and restarts them. Four
-  shards go into each generate call, and the next four are read meanwhile.
+  first) translates every pushed shard from FIRST on, pushes `text_en` and restarts them. Eight
+  shards (`GROUP = 8`, `--group`) go into each generate call, and the next group is read meanwhile.
+- Engine & pipeline optimizations (2026-11-28, [translate_5090_optimization_plan](../translate_5090_optimization_plan.md)):
+  - `box/envs.sh mt` pins `vllm==0.34.0` + `flashinfer-jit-cache`; `engine()` sets
+    `VLLM_HAS_FLASHINFER_CUBIN=1`, passes `language_model_only=True` (falling back to
+    `limit_mm_per_prompt`), `async_scheduling=True`, and `max_model_len=2048` (down from 4096).
+  - On `<64 GiB` cards (RTX 5090 NVFP4), `engine()` defaults to **`mamba_ssm_cache_dtype="bfloat16"`**
+    + **`kv_cache_dtype="fp8"`** + **`max_num_seqs=512`** (at `gpu_memory_utilization=0.95`,
+    `max_num_batched_tokens=16384`). By default vLLM honors `config.json`'s `mamba_ssm_dtype: "float32"`
+    (61.4 MiB/seq), which capped Mamba cache blocks at 317–339 and refused `max_num_seqs=512`; pairing
+    `bfloat16` SSM (31.4 MiB/seq) with `fp8` KV keeps the hybrid attention block size aligned at 1,088
+    tokens (1.49% padding) and gives 117,145 KV tokens at 512 concurrent sequences. Cards ≥64 GiB keep
+    `auto` KV/SSM and `512` sequences; all knobs are overridable via CLI flags (`--max-num-seqs`,
+    `--max-model-len`, `--max-num-batched-tokens`, `--kv-cache-dtype`, `--mamba-ssm-cache-dtype`,
+    `--moe-backend`, `--mtp-tokens`, `--model`, `--quantization`).
+  - Per-row `row_max_tokens()` tightens `SamplingParams.max_tokens` to `bad()`'s character gate
+    (bucketed to multiples of 32, conservative 2.2 chars/token + 16-token margin) so runaway rows
+    abort 2–5× sooner without clipping valid replies; prompts are sorted longest-first (LPT) before
+    each generate call, deduplicated on greedy attempt 0, and pre-tokenized via
+    `apply_chat_template` + parallel Rust batch tokenizer into `TokensPrompt`.
+  - Optional `--context-rows` / `--max-context-chars` and multi-segment window packing (`--window K`,
+    `--window-context-rows`) pack consecutive rows of the same `doc` into numbered `n|English`
+    windows with all-or-nothing acceptance (`parse_window` + `bad()` on every line) and automatic
+    fallback to `K=1` single-row translation on any failed window. Default stays `--window 1`
+    until a full-shard YODAS sample audit verifies zero cross-line drift.
+  - Measured on box `62513802` (RTX 5090, `vllm==0.34.0`, `Index-Translate-35B-A3B-preview-FP4`@`111ff5e9`,
+    4,000 YODAS shard 0000 rows + 2,000 Archive 50 rows + 149 FLEURS dev; raw logs in
+    `/Volumes/data/hibiki-zero-evals/box-62513802/translate-5090opt-2026-11-28/`):
+    - Baseline (`main`, `max_model_len=4096`, `seqs=256`, `auto` KV/SSM): **42.5 rows/s** YODAS,
+      **97.5 rows/s** Arch 50, FLEURS 64.75 / 37.33, Arch 50 70.07 / 41.60.
+    - New 5090 default (`bfloat16` SSM + `fp8` KV + `seqs=512`, `FLASHINFER_CUTLASS` MoE, `K=1 ctx=2`):
+      **50.5–51.8 rows/s** YODAS (**1.19–1.22×**), **110.0 rows/s** Arch 50 (**1.13×**), FLEURS
+      64.47–64.67 / 36.74–36.94, Arch 50 **70.44 / 42.20**, YODAS vs baseline ref 87.58 chrF.
+      (`kv_cache_dtype=fp8` alone without `bfloat16` SSM slowed `seqs=256` to 39.7 rows/s; `marlin`
+      MoE was 47.8 rows/s, `b12x` 40.0 rows/s; `--mtp-tokens 1` failed at load because
+      `model_mtp.safetensors` is BF16 without NVFP4 scales / ignore entries.)
+    - Opt-in `--context-rows 1 --max-context-chars 120`: **59.6 rows/s** YODAS (**1.40×**), **121.9 rows/s**
+      Arch 50 (**1.25×**), FLEURS **64.80 / 36.91**, Arch 50 69.96 / 41.53.
+    - Opt-in `--window 4` / `6` / `8` (`--window-context-rows 1`): **98.9–99.7%** YODAS and
+      **99.8–100.0%** Arch 50 window acceptance; **70.3–70.7 rows/s** YODAS (**1.66×** on 4k slice)
+      and **168.6 / 179.1 / 189.0 rows/s** Arch 50 (**1.73–1.94×**), Arch 50 **70.76–71.38 / 45.22–46.52**
+      (+0.7–1.3 chrF / +3.6–4.9 BLEU over baseline).
 - Speed (2026-11-07, GigaSpeech 2, ~21,700 rows an archive): 204 rows/s, an archive in ~1.8 min,
   at 0.9 of the GPU, 512 sequences and 16k-token prefill steps; 125 rows/s at 0.75 beside the
   ASR server with 256 (PyTorch's allocator hitting out-of-memory). The GPU sits near 58% and
@@ -94,8 +134,8 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   already written is never translated again, as it may be voiced.
 - A run stops when more than half the rows of a try over more than 5,000 fail it, or once more
   than 1% of the rows it has tried fail every try (checked after each group, past 5,000); a lock
-  keeps a second run off the same folder. Shards are written four at a time, once all their rows
-  are done, so a crash loses the four in flight.
+  keeps a second run off the same folder. Shards are written `GROUP` at a time (default 8), once all
+  their rows are done, so a crash loses the group in flight.
 - Muse Spark 1.3 Contributor through OpenRouter translated the first tranche and GigaSpeech 2
   archives 13–50 (2026-11-05/06), in batches of up to 40 consecutive rows: all 840,520 rows of
   the first tranche in ~55 min for $9.75. It wrote Chinese mid-sentence in 22 of the first

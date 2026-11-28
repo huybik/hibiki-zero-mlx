@@ -71,7 +71,7 @@ print('cache:', torch.__version__, torch.version.cuda, 'triton:', triton.__versi
 mt() {
   # vLLM in process; it also imports translate_en_speech (anthropic, google-genai) and ingest (av).
   mk mt 3.12
-  $UV pip install -q -p $E/mt vllm==0.33.0 pyarrow anthropic google-genai av==15.1.0
+  $UV pip install -q -p $E/mt vllm==0.34.0 pyarrow anthropic google-genai av==15.1.0
   # FlashInfer's prebuilt kernels for the flashinfer and CUDA vLLM brought: without them the first run compiles its
   # kernels itself (an FP8 MoE took about an hour).
   local fi
