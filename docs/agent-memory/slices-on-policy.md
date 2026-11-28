@@ -216,6 +216,16 @@ Engine as MLX runs them (the plain export's 5–7 chrF loss is gone, inside 5 ro
 | z200, Core ML 6-bit (plain export) | 49.15 / 16.46 / 0 of 5 / 0.31 / 3.2 | 45.70 / 23.70 / 3 of 5 / 0.13 / 5.4 |
 | refit snap, MLX bf16 (`refit_snap6_bf16`) | 54.22 / 18.97 / 3 of 5 / 0.38 / 3.9 | 45.33 / 25.33 / 2 of 5 / 0.21 / 6.0 |
 | refit snap, Core ML 6-bit (`refit_snap6_ane6`) | 55.98 / 26.15 / 4 of 5 / 0.31 / 3.8 | 46.42 / 22.92 / 1 of 5 / 0.24 / 6.7 |
+| finish 4,000 snap, MLX bf16 (`pal6_snap6_bf16`) | 42.74 / 12.85 / 2 of 5 / 0.41 / 3.0 | 45.58 / 22.17 / 1 of 5 / 0.16 / 5.6 |
+| finish 4,000 snap, Core ML 6-bit (`pal6_snap6_ane6`) | 55.59 / 23.69 / 3 of 5 / 0.34 / 3.8 | 48.68 / 25.87 / 1 of 5 / 0.27 / 6.3 |
 
 The export took 8.5 GB at peak, the same sizes as z200's; trunk 11.7, slices 3.3, host 2.2 ms a
 frame (means of the 10 rows). Records in `refit_snap6_bf16/` and `refit_snap6_ane6_swift/`.
+
+The finish's snap (`phone/pal6_slices_z4000_snap6.safetensors`, fp32 as pal6 saves, 5.39 GB;
+2.69 GB in MLX bf16): the export in 3.5 min at 8.4 GB peak, 1.7 GB on disk (trunk 704 MB, slices
+7.7 MB each and the last 13 MB, Mimi's decoder 93 MB); trunk 11.8, slices 3.4, host 2.0 ms a
+frame. Its MLX VI→EN is 12 chrF under its Core ML on the same weights: sampling, not the runtime
+(row by row the three models make the same errors, Vietnamese words in the English among them,
+and the gap sits in two rows whose samples took other words). Five sampled rows check that the
+path runs and the tables survive the export; the 13-set tests below compare the models.
