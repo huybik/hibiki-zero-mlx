@@ -273,4 +273,6 @@ UTMOS 3.18 against 2.7. `voice.py` runs VieNeu from YODAS shard 0004 on
 ([In production](#in-production)). Its voicer now runs 58.3 rows/s alone (962× real time) and the
 whole job 36.6 rows/s beside its ASR checks (602×, 2026-11-28): 20k h of YODAS rows in ~33
 5090-hours, against ~51 at production's 395× before. The ASR's checks now cost the GPU ~12.5 ms a
-row against the voicer's ~17.
+row against the voicer's ~17. The user heard five rows of it against main's (each with its
+Vietnamese source, one whose reference skipped the denoiser; `listen/` in the records): "my listen
+test is good" (2026-11-28).
