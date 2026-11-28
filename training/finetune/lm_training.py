@@ -45,6 +45,7 @@ import os
 
 import torch
 import torch.nn.functional as F
+from moshi.models.compression import MimiModel
 from moshi.models.lm import LMGen, LMModel, LMOutput
 from moshi.models.lm_utils import _delay_sequence, _undelay_sequence
 from moshi.modules import transformer as moshi_transformer
@@ -623,6 +624,38 @@ def _lm_gen_step(
     return _moshi_lm_gen_step(self, input_tokens, depformer_replace_tokens)
 
 
+_moshi_mimi_encode = MimiModel.encode
+_moshi_mimi_apply = MimiModel._apply
+
+
+def _fast_mimi_encode(self: MimiModel, x: torch.Tensor) -> torch.Tensor:
+    """Accelerated stateless CUDA Mimi encode (`training.prep.mimi_cuda.FastMimiEncoder`) for
+    non-streaming `MimiModel.encode` in fine-tuning, room encoding, validation, and eval.
+    Falls back to moshi's stock encode on CPU, MPS, streaming mode, or `HIBIKI_LEGACY_MIMI=1`."""
+    if self._streaming_state is None and x.is_cuda and not os.environ.get("HIBIKI_LEGACY_MIMI"):
+        fast = getattr(self, "_fast_encoder", None)
+        if fast is None or fast._device != x.device:
+            from training.prep.mimi_cuda import FastMimiEncoder
+
+            fast = FastMimiEncoder.from_moshi(
+                self,
+                device=x.device,
+                fp16_seanet=not os.environ.get("HIBIKI_FP32_MIMI"),
+                fp16_transformer=not os.environ.get("HIBIKI_FP32_MIMI"),
+            )
+            object.__setattr__(self, "_fast_encoder", fast)
+        return fast.encode(x, num_codebooks=self.num_codebooks)
+    return _moshi_mimi_encode(self, x)
+
+
+def _fast_mimi_apply(self: MimiModel, fn: Any) -> MimiModel:
+    # Drop cached fast encoder on `.to("cpu")` / `.to(device)` so parking Mimi on CPU during
+    # training frees all GPU weights immediately (~85 MB saved on 32 GB RTX 5090).
+    if hasattr(self, "_fast_encoder"):
+        object.__setattr__(self, "_fast_encoder", None)
+    return _moshi_mimi_apply(self, fn)
+
+
 def install() -> None:
     # moshi compiles _rms_norm, apply_rope and gating_forward_kernel with automatic dynamic
     # shapes: one graph per dtype, rank, grad mode, autocast state and shape class. A training
@@ -636,3 +669,5 @@ def install() -> None:
     LMModel.forward_depformer_training = forward_depformer_training
     ActivationGating.forward = _gating_forward
     StreamingTransformer.forward = _transformer_forward
+    MimiModel.encode = _fast_mimi_encode
+    MimiModel._apply = _fast_mimi_apply

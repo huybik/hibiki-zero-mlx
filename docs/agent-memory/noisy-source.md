@@ -205,6 +205,16 @@ came out identical to the first encode's.
   the batch's shape), and 2560 ran out of memory beside another encode's 32 GB.
 - Decode and the GPU now take about the same time per shard, so the next gain needs more CPU (a
   pod with a larger quota) as well as a faster GPU step.
+- **RTX 5090 pipeline & kernel pass (2026-11-28, box `62513802`)**: `augment.Bank` caches raised-cosine
+  band-filter gains and provides batched GPU `apply_batch()` (0.00 max abs diff vs `apply()`), while
+  `noisy_cache encode` uses `mimi_cuda.FastMimiEncoder` (via `cuda_mimi`), 32-clip `/dev/shm` decode
+  slabs (`decode_batch`), preallocated double-buffered pinned H2D/D2H, and background loader/saver
+  threads (`fetch --dataset-dir` defaults to `--jobs 4` instead of 16 to cap peak RAM). On 4 shards
+  (6.11 h re-encoded, 15 workers): `18.22 s → 11.76 s` total wall (`2,009–2,990×` → `4,965–11,911× RT`
+  steady-state, ~3.3× faster steady-state); clean rows 100% byte-identical, conditions 100% identical,
+  re-encoded `cb0 = 99.74%`, `all16 = 95.41%`. `streams.room_codes` also batches room encoding
+  (`ROOM_BATCH_CUDA = 8`) on CUDA through `lm_training.install()`'s fast Mimi (`2.577 s → 0.477 s`
+  for 32 × 40 s rooms, **5.40× faster**, `cb0 = 99.93%`).
 
 ## Checks
 

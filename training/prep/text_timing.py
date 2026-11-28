@@ -3,8 +3,14 @@ audio, Vietnamese against Vietnamese audio, each with its language's CTC model (
 
 from __future__ import annotations
 
+import ctypes
 import math
+import os
+import platform
 import re
+import shutil
+import subprocess
+import tempfile
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +18,63 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+_VITERBI_LIB: Any = None
+_VITERBI_LOADED = False
+
+
+def _load_viterbi_lib() -> Any:
+    """Lazily compile and load `_ctc_viterbi.c` into a cached shared library; None if no C compiler."""
+    global _VITERBI_LIB, _VITERBI_LOADED
+    if _VITERBI_LOADED:
+        return _VITERBI_LIB
+    _VITERBI_LOADED = True
+    if os.environ.get("HIBIKI_NUMPY_VITERBI"):
+        return None
+    src = Path(__file__).with_name("_ctc_viterbi.c")
+    if not src.is_file():
+        return None
+    ext = ".dylib" if platform.system() == "Darwin" else ".so"
+    cache_dir = src.parent / "__pycache__"
+    tag = f"{platform.system().lower()}_{platform.machine().lower()}"
+    so_path = cache_dir / f"_ctc_viterbi_{tag}{ext}"
+    need_build = not so_path.is_file() or so_path.stat().st_mtime < src.stat().st_mtime
+    if need_build:
+        cc = shutil.which(os.environ.get("CC", "cc")) or shutil.which("gcc") or shutil.which("clang")
+        if cc is None:
+            return None
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(prefix=".viterbi_", suffix=ext, dir=cache_dir)
+            os.close(fd)
+            tmp_path = Path(tmp_name)
+            try:
+                cmd = [cc, "-O3", "-fPIC", "-shared", str(src), "-o", str(tmp_path), "-lm"]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                tmp_path.replace(so_path)
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                return None
+        except OSError:
+            return None
+    try:
+        lib = ctypes.CDLL(str(so_path))
+        lib.ctc_viterbi_align.argtypes = [
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_double),
+        ]
+        lib.ctc_viterbi_align.restype = ctypes.c_int
+        _VITERBI_LIB = lib
+    except OSError:
+        _VITERBI_LIB = None
+    return _VITERBI_LIB
 
 # wav2vec2's feature encoder, (kernel, stride) per convolution: 16 kHz -> 50 Hz (base and large).
 CTC_CONVS = ((10, 5), (3, 2), (3, 2), (3, 2), (3, 2), (2, 2), (2, 2))
@@ -250,14 +313,50 @@ class CTCWordAligner:
         """Word spans of `groups` as fractions of the clip, from its CTC log-probabilities; raises
         AlignmentError when the text cannot be aligned or the score is below the minimum."""
         targets, ranges = self._targets(groups)
-        token_frames, score = _ctc_token_frames(log_probs, targets, self.blank_id)
-        if score < self.min_score:
-            raise AlignmentError(f"CTC alignment score {score:.3f} is below {self.min_score:.3f}")
-        denom = int(log_probs.shape[0])
-        spans = []
-        for left, right in ranges:
-            frames = [frame for item in token_frames[left:right] for frame in item]
-            spans.append((min(frames) / denom, (max(frames) + 1) / denom))
+        if not targets:
+            raise AlignmentError("CTC target is empty")
+        time_steps = int(log_probs.shape[0])
+        needed = len(targets) + sum(a == b for a, b in zip(targets, targets[1:]))
+        if time_steps < needed:
+            raise AlignmentError(f"{EMISSION_TOO_SHORT}: {time_steps} < {needed}")
+
+        lib = _load_viterbi_lib()
+        if lib is not None:
+            lp = np.ascontiguousarray(log_probs, dtype=np.float32)
+            tgt = np.ascontiguousarray(targets, dtype=np.int32)
+            starts = np.empty(len(targets), dtype=np.int32)
+            ends = np.empty(len(targets), dtype=np.int32)
+            score_c = ctypes.c_double(0.0)
+            rc = lib.ctc_viterbi_align(
+                lp.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                time_steps,
+                int(lp.shape[1]),
+                tgt.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                len(targets),
+                self.blank_id,
+                starts.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                ends.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                ctypes.byref(score_c),
+            )
+            if rc == -2:
+                raise AlignmentError("CTC alignment omitted a transcript token")
+            if rc != 0:
+                raise MemoryError("ctc_viterbi_align allocation failed")
+            score = float(score_c.value)
+            if score < self.min_score:
+                raise AlignmentError(f"CTC alignment score {score:.3f} is below {self.min_score:.3f}")
+            spans = [
+                (int(starts[left:right].min()) / time_steps, (int(ends[left:right].max()) + 1) / time_steps)
+                for left, right in ranges
+            ]
+        else:
+            token_frames, score = _ctc_token_frames(log_probs, targets, self.blank_id)
+            if score < self.min_score:
+                raise AlignmentError(f"CTC alignment score {score:.3f} is below {self.min_score:.3f}")
+            spans = []
+            for left, right in ranges:
+                frames = [frame for item in token_frames[left:right] for frame in item]
+                spans.append((min(frames) / time_steps, (max(frames) + 1) / time_steps))
         if any(
             not (0 <= left < right <= 1) or (index and left < spans[index - 1][0])
             for index, (left, right) in enumerate(spans)

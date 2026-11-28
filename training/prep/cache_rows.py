@@ -110,29 +110,38 @@ class Row:
     index: int
     data: dict[str, Any]  # the builder's row, its audio taken
     source24: np.ndarray
-    target24: np.ndarray  # with the delay's silence in front
-    target16: np.ndarray  # undelayed, normalized for wav2vec2
+    target24: np.ndarray  # raw 24 kHz clip; delay silence (`delay_samples`) applied at staging
+    target16: np.ndarray | None  # undelayed, normalized for wav2vec2 (None when GPU resamples 24k->16k)
     lead: list[int]
     groups: list[tuple[list[int], str]]
     delay_s: float
     delay_frames: int
     source_frames: int
     target_frames: int
+    delay_samples: int = 0
 
 
-def prepare(source_audio: bytes, target_audio: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Worker: both clips at 24 kHz for Mimi, and the target at 16 kHz for CTC, normalized to zero
-    mean and unit variance over the clip as wav2vec2's feature extractor does."""
+def prepare(
+    source_audio: bytes, target_audio: bytes, make_target16: bool = True
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Worker: both clips at 24 kHz for Mimi, and (unless `make_target16=False`, when CUDA
+    resamples 24k->16k on GPU) the target at 16 kHz for CTC, normalized to zero mean and unit
+    variance over the clip as wav2vec2's feature extractor does."""
     import soxr
 
     from training.prep.audio import decode
 
     source, source_rate = decode(source_audio)
     target, target_rate = decode(target_audio)
-    target16 = soxr.resample(target, target_rate, CTC_RATE).astype(np.float32)
-    target16 = (target16 - target16.mean()) / np.sqrt(target16.var() + 1e-7)
-    return (soxr.resample(source, source_rate, SAMPLE_RATE),
-            soxr.resample(target, target_rate, SAMPLE_RATE), target16)
+    target16 = None
+    if make_target16:
+        target16 = soxr.resample(target, target_rate, CTC_RATE).astype(np.float32)
+        target16 = (target16 - target16.mean()) / np.sqrt(target16.var() + 1e-7)
+    return (
+        soxr.resample(source, source_rate, SAMPLE_RATE).astype(np.float32, copy=False),
+        soxr.resample(target, target_rate, SAMPLE_RATE).astype(np.float32, copy=False),
+        target16,
+    )
 
 
 def target_delay_s(row_id: str, split: str, max_delay_s: float, seed: int) -> float:
@@ -140,11 +149,15 @@ def target_delay_s(row_id: str, split: str, max_delay_s: float, seed: int) -> fl
     return random.Random(f"{seed}:{split}:{row_id}").uniform(0.0, max_delay_s)
 
 
+def _target16_len(target24_len: int) -> int:
+    return (target24_len * 2 + 1) // 3
+
+
 def plan(
     shard: Shard,
     index: int,
     row: dict[str, Any],
-    clips: tuple[np.ndarray, np.ndarray, np.ndarray],
+    clips: tuple[np.ndarray, np.ndarray, np.ndarray | None],
     settings: Settings,
     tokenizer: Any,
 ) -> Row:
@@ -161,7 +174,8 @@ def plan(
     frames = max(math.ceil(len(target24) / FRAME_SAMPLES), source_frames) + 1
     if frames > settings.max_frames:
         raise Rejected(f"{frames} frames exceed --max-frames {settings.max_frames}")
-    if ctc_frames(len(target16)) < 1:
+    t16_len = len(target16) if target16 is not None else _target16_len(len(target24))
+    if ctc_frames(t16_len) < 1:
         raise Rejected(f"the {target} clip is shorter than one CTC frame")
     # The delay is drawn within the room the target clip leaves under the cap, so a long clip
     # gets a shorter delay instead of being rejected. A duration is float32 holding a multiple
@@ -175,9 +189,9 @@ def plan(
         text = unicodedata.normalize("NFC", text)
     lead, groups = sentencepiece_groups(text, tokenizer, settings.aligner.spoken)
     return Row(
-        shard, index, row, source24, np.concatenate([np.zeros(pad, np.float32), target24]), target16,
+        shard, index, row, source24, target24, target16,
         lead, groups, delay_s, int(round(delay_s * FRAME_RATE)), source_frames,
-        math.ceil((pad + len(target24)) / FRAME_SAMPLES),
+        math.ceil((pad + len(target24)) / FRAME_SAMPLES), pad,
     )
 
 
@@ -185,26 +199,58 @@ _aligner: CTCWordAligner | None = None
 _tokenizer: Any = None
 _settings: Settings | None = None
 _pcm_dir: Path | None = None
+_make_target16: bool = True
+# Dual-direction worker state (`init_dual_worker`)
+_dual_aligners: dict[str, CTCWordAligner] = {}
+_dual_tokenizers: dict[str, Any] = {}
+_dual_settings: dict[str, Settings] = {}
 
 
-def init_worker(settings: Settings, tokenizer: Path, pcm_dir: Path | None) -> None:
+def init_worker(
+    settings: Settings, tokenizer: Path, pcm_dir: Path | None, make_target16: bool = True
+) -> None:
     """Worker initializer: the process's aligner (the build's target language's), the text
     tokenizer, the build's settings and where to leave the clips (`pcm_dir`; None returns them in
     the reply)."""
     import sentencepiece
 
     exit_with_parent()
-    global _aligner, _tokenizer, _settings, _pcm_dir
+    global _aligner, _tokenizer, _settings, _pcm_dir, _make_target16
     _aligner = CTCWordAligner(settings.aligner, settings.min_score)
     _tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer))
-    _settings, _pcm_dir = settings, pcm_dir
+    _settings, _pcm_dir, _make_target16 = settings, pcm_dir, make_target16
+
+
+def init_dual_worker(
+    settings_ve: Settings,
+    tokenizer_ve: Path,
+    settings_ev: Settings,
+    tokenizer_ev: Path,
+    pcm_dir: Path | None,
+    make_target16: bool = True,
+) -> None:
+    """Dual-direction worker initializer: holds both EN and VI aligners and tokenizers."""
+    import sentencepiece
+
+    exit_with_parent()
+    global _pcm_dir, _make_target16, _dual_aligners, _dual_tokenizers, _dual_settings
+    _pcm_dir = pcm_dir
+    _make_target16 = make_target16
+    _dual_settings = {"vi-en": settings_ve, "en-vi": settings_ev}
+    _dual_aligners = {
+        "vi-en": CTCWordAligner(settings_ve.aligner, settings_ve.min_score),
+        "en-vi": CTCWordAligner(settings_ev.aligner, settings_ev.min_score),
+    }
+    _dual_tokenizers = {
+        "vi-en": sentencepiece.SentencePieceProcessor(str(tokenizer_ve)),
+        "en-vi": sentencepiece.SentencePieceProcessor(str(tokenizer_ev)),
+    }
 
 
 @dataclass
 class Planned:
-    """A row's `plan` from a worker without its shard: the clips inline (`pcm`), or as one raw
-    float32 file of source24, target24 and target16 back to back (`file`, `lengths`) that `clips`
-    reads."""
+    """A row's `plan` from a worker without its shard: the clips inline (`pcm`), or as slices
+    into a per-job float32 slab (`offset`, `lengths`)."""
 
     lead: list[int]
     groups: list[tuple[list[int], str]]
@@ -212,59 +258,166 @@ class Planned:
     delay_frames: int
     source_frames: int
     target_frames: int
-    pcm: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-    file: str | None = None
+    delay_samples: int = 0
+    pcm: tuple[np.ndarray, np.ndarray, np.ndarray | None] | None = None
+    offset: int = 0
     lengths: tuple[int, int, int] = (0, 0, 0)
 
-    def clips(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """The three clips; a file is read and unlinked at once. Read, not mapped: numpy's memmap
-        keeps a descriptor open per file, and a window of 4,096 rows (the CUDA window until 2026-11-22) passed
-        the box's limit of 1,024."""
+    def clips(self, slab: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         if self.pcm is not None:
             return self.pcm
-        data = np.fromfile(self.file, np.float32)
-        os.unlink(self.file)
-        a, b = self.lengths[0], self.lengths[0] + self.lengths[1]
-        return data[:a], data[a:b], data[b:]
+        assert slab is not None
+        o = self.offset
+        a = o + self.lengths[0]
+        b = a + self.lengths[1]
+        c = b + self.lengths[2]
+        return slab[o:a], slab[a:b], (slab[b:c] if self.lengths[2] else None)
 
-    def row(self, shard: Shard, index: int, data: dict[str, Any]) -> Row:
-        source24, target24, target16 = self.clips()
-        return Row(shard, index, data, source24, target24, target16, self.lead, self.groups, self.delay_s,
-                   self.delay_frames, self.source_frames, self.target_frames)
-
-
-def prepare_row(row: dict[str, Any], source_audio: bytes, target_audio: bytes, split: str) -> Planned:
-    """A worker's row of `prepare_rows`: `prepare` then `plan` (the decode gates, the delay draw, the
-    text grouping), so the main process only reads the clips: piping ~1.4 MB of PCM a row through the pool's one result
-    pipe held the main thread ~30 s per GigaSpeech 2 shard. Raises Rejected or AlignmentError."""
-    shard = Shard(None, "", split, 0, [], [])
-    p = plan(shard, 0, row, prepare(source_audio, target_audio), _settings, _tokenizer)
-    out = Planned(p.lead, p.groups, p.delay_s, p.delay_frames, p.source_frames, p.target_frames)
-    clips = (p.source24, p.target24, p.target16)
-    if _pcm_dir is None:
-        out.pcm = clips
-        return out
-    out.file = str(_pcm_dir / f"{uuid.uuid4().hex}.f32")
-    with open(out.file, "wb") as f:
-        for clip in clips:
-            np.ascontiguousarray(clip, np.float32).tofile(f)
-    out.lengths = tuple(len(c) for c in clips)
-    return out
+    def row(self, shard: Shard, index: int, data: dict[str, Any], slab: np.ndarray | None = None) -> Row:
+        source24, target24, target16 = self.clips(slab)
+        return Row(
+            shard, index, data, source24, target24, target16, self.lead, self.groups, self.delay_s,
+            self.delay_frames, self.source_frames, self.target_frames, self.delay_samples,
+        )
 
 
-def prepare_rows(rows: list[tuple[dict[str, Any], bytes, bytes]], split: str) -> list[Planned | Rejected | AlignmentError]:
-    """Worker: `prepare_row` over a job of rows (`row`, source audio, target audio), each row's
-    Rejected or AlignmentError in its place. A job a row cost the main process each row's pool
-    round trip under its one GIL, which the GPU thread shares (2026-11-11)."""
+def prepare_rows(
+    rows: list[tuple[dict[str, Any], bytes, bytes]], split: str
+) -> tuple[str | None, list[Planned | Rejected | AlignmentError]]:
+    """Worker: decode and plan a job of rows (`row`, source audio, target audio). Writes all kept
+    clips of the job into ONE contiguous `/dev/shm` slab file (32x fewer open/write/unlink
+    syscalls than per-row files)."""
     out: list[Planned | Rejected | AlignmentError] = []
+    chunks: list[np.ndarray] = []
+    offset = 0
+    shard = Shard(None, "", split, 0, [], [])
     for row, source_audio, target_audio in rows:
         try:
-            out.append(prepare_row(row, source_audio, target_audio, split))
+            p = plan(shard, 0, row, prepare(source_audio, target_audio, _make_target16), _settings, _tokenizer)
         except (Rejected, AlignmentError) as exc:
-            # Its traceback, and the error it replaced, would hold the job's inputs until a GC pass.
             exc.__traceback__ = exc.__context__ = None
             out.append(exc)
-    return out
+            continue
+        planned = Planned(
+            p.lead, p.groups, p.delay_s, p.delay_frames, p.source_frames, p.target_frames, p.delay_samples
+        )
+        if _pcm_dir is None:
+            planned.pcm = (p.source24, p.target24, p.target16)
+        else:
+            s24 = np.ascontiguousarray(p.source24, np.float32)
+            t24 = np.ascontiguousarray(p.target24, np.float32)
+            chunks.append(s24)
+            chunks.append(t24)
+            t16_len = 0
+            if p.target16 is not None:
+                t16 = np.ascontiguousarray(p.target16, np.float32)
+                chunks.append(t16)
+                t16_len = len(t16)
+            planned.offset = offset
+            planned.lengths = (len(s24), len(t24), t16_len)
+            offset += len(s24) + len(t24) + t16_len
+        out.append(planned)
+    if _pcm_dir is None or not chunks:
+        return None, out
+    slab_path = str(_pcm_dir / f"{uuid.uuid4().hex}.f32")
+    with open(slab_path, "wb") as f:
+        for chunk in chunks:
+            chunk.tofile(f)
+    return slab_path, out
+
+
+@dataclass
+class DualPlanned:
+    """One row decoded once and planned for both `vi-en` and `en-vi` (either side may hold an
+    AlignmentError if only that language's text failed grouping)."""
+
+    vi_en: Planned | Rejected | AlignmentError
+    en_vi: Planned | Rejected | AlignmentError
+    offset: int = 0
+    lengths: tuple[int, int, int, int] = (0, 0, 0, 0)  # (len(vi24), len(en24), len(vi16), len(en16))
+    pcm: tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None] | None = None
+
+
+def prepare_dual_rows(
+    rows: list[tuple[dict[str, Any], bytes, bytes]], split: str
+) -> tuple[str | None, list[DualPlanned | Rejected]]:
+    """Dual-direction worker: decode `(vi_audio, en_audio)` ONCE per row, resample to 24 kHz (and
+    normalized 16 kHz when `_make_target16` is True) via `soxr`, then plan both `vi-en` and `en-vi`
+    into a single `/dev/shm` slab."""
+    import soxr
+
+    from training.prep.audio import decode
+
+    out: list[DualPlanned | Rejected] = []
+    chunks: list[np.ndarray] = []
+    offset = 0
+    shard = Shard(None, "", split, 0, [], [])
+    set_ve, set_ev = _dual_settings["vi-en"], _dual_settings["en-vi"]
+    tok_ve, tok_ev = _dual_tokenizers["vi-en"], _dual_tokenizers["en-vi"]
+    for row, vi_audio, en_audio in rows:
+        try:
+            vi_raw, vi_rate = decode(vi_audio)
+            en_raw, en_rate = decode(en_audio)
+            vi24 = soxr.resample(vi_raw, vi_rate, SAMPLE_RATE).astype(np.float32, copy=False)
+            en24 = soxr.resample(en_raw, en_rate, SAMPLE_RATE).astype(np.float32, copy=False)
+            vi16: np.ndarray | None = None
+            en16: np.ndarray | None = None
+            if _make_target16:
+                vi16 = soxr.resample(vi_raw, vi_rate, CTC_RATE).astype(np.float32)
+                vi16 = (vi16 - vi16.mean()) / np.sqrt(vi16.var() + 1e-7)
+                en16 = soxr.resample(en_raw, en_rate, CTC_RATE).astype(np.float32)
+                en16 = (en16 - en16.mean()) / np.sqrt(en16.var() + 1e-7)
+        except Rejected as exc:
+            exc.__traceback__ = exc.__context__ = None
+            out.append(exc)
+            continue
+
+        def _plan_one(
+            src24: np.ndarray, tgt24: np.ndarray, tgt16: np.ndarray | None, settings: Settings, tok: Any
+        ) -> Planned | Rejected | AlignmentError:
+            try:
+                p = plan(shard, 0, row, (src24, tgt24, tgt16), settings, tok)
+            except (Rejected, AlignmentError) as exc:
+                exc.__traceback__ = exc.__context__ = None
+                return exc
+            return Planned(
+                p.lead, p.groups, p.delay_s, p.delay_frames, p.source_frames, p.target_frames, p.delay_samples
+            )
+
+        p_ve = _plan_one(vi24, en24, en16, set_ve, tok_ve)
+        p_ev = _plan_one(en24, vi24, vi16, set_ev, tok_ev)
+        dp = DualPlanned(p_ve, p_ev)
+        keep_ve = isinstance(p_ve, Planned)
+        keep_ev = isinstance(p_ev, Planned)
+        if keep_ve or keep_ev:
+            if _pcm_dir is None:
+                dp.pcm = (vi24, en24, vi16 if keep_ev else None, en16 if keep_ve else None)
+            else:
+                v = np.ascontiguousarray(vi24, np.float32)
+                e = np.ascontiguousarray(en24, np.float32)
+                chunks.append(v)
+                chunks.append(e)
+                v16_len = 0
+                if keep_ev and vi16 is not None:
+                    v16 = np.ascontiguousarray(vi16, np.float32)
+                    chunks.append(v16)
+                    v16_len = len(v16)
+                e16_len = 0
+                if keep_ve and en16 is not None:
+                    e16 = np.ascontiguousarray(en16, np.float32)
+                    chunks.append(e16)
+                    e16_len = len(e16)
+                dp.offset = offset
+                dp.lengths = (len(v), len(e), v16_len, e16_len)
+                offset += len(v) + len(e) + v16_len + e16_len
+        out.append(dp)
+    if _pcm_dir is None or not chunks:
+        return None, out
+    slab_path = str(_pcm_dir / f"{uuid.uuid4().hex}.f32")
+    with open(slab_path, "wb") as f:
+        for chunk in chunks:
+            chunk.tofile(f)
+    return slab_path, out
 
 
 def check_tail(tail_frames: int, aligner: Aligner) -> None:
@@ -279,17 +432,20 @@ def align_rows(
     log_probs: list[np.ndarray],
     rows: list[tuple[list[int], list[tuple[list[int], str]], int, int]],
     eos_id: int,
+    direction: str | None = None,
 ) -> list[tuple[list[int], list[int], float] | AlignmentError]:
     """Worker: for each row of a CTC batch (its log-probabilities, and its `lead`, `groups`, raw
     target frames and delay frames), its text tokens, their frames and the alignment score, or the
     AlignmentError that rejects it."""
+    aligner = _dual_aligners[direction] if direction is not None else _aligner
+    settings = _dual_settings[direction] if direction is not None else _settings
     out: list[tuple[list[int], list[int], float] | AlignmentError] = []
     for probs, (lead, groups, raw_target_frames, delay_frames) in zip(log_probs, rows, strict=True):
         try:
-            alignment = _aligner.align(probs, groups)
+            alignment = aligner.align(probs, groups)
             tokens, frames = timed_sentencepiece_tokens(lead, groups, alignment, raw_target_frames, delay_frames,
                                                         eos_id)
-            check_tail(frames[-1] - frames[-2], _settings.aligner)
+            check_tail(frames[-1] - frames[-2], settings.aligner)
         except AlignmentError as exc:
             exc.__traceback__ = exc.__context__ = None
             out.append(exc)

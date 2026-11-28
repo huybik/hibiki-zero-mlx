@@ -199,7 +199,10 @@ class MLXModels:
                                   for index, (hs, frames) in zip(ane, inputs, strict=True)]) if ane else None
         log_probs = {index: mx.take(self.ctc.log_probs(rows[index].target16), self.columns, axis=1) for index in gpu}
         mx.async_eval(list(log_probs.values()))
-        codes = [(self.mimi.encode(row.source24), self.mimi.encode(row.target24)) for row in rows]
+        codes = [
+            (self.mimi.encode(row.source24), self.mimi.encode(row.target24, delay_samples=row.delay_samples))
+            for row in rows
+        ]
         mx.async_eval(codes)
         aligned = {index: (align([rows[index]], [lp]), 0)
                    for index, lp in zip(ane, on_ane.result() if ane else [], strict=True)}
@@ -211,16 +214,32 @@ class MLXModels:
 # --------------------------------------------------------------------------- CUDA
 
 
-def cuda_mimi(mimi_weight: Path, num_codebooks: int) -> Any:
-    """moshi's Mimi on CUDA in float32, with TF32 matmuls and convolutions when CUDA_TF32 (a
-    process-wide switch; it moves ~3% of residual codes to near-ties): the clean build's and the
-    noisy re-encode's."""
+def cuda_mimi(
+    mimi_weight: Path,
+    num_codebooks: int,
+    fp16_seanet: bool = True,
+    fp8_transformer: bool = False,
+) -> Any:
+    """Blackwell-optimized encode-only Mimi (`mimi_cuda.FastMimiEncoder`) on CUDA, or legacy
+    moshi Mimi when `HIBIKI_LEGACY_MIMI=1`. Sets `CUDA_TF32` process-wide."""
     import torch
-    from moshi.models import loaders
 
     torch.backends.cuda.matmul.allow_tf32 = CUDA_TF32
     torch.backends.cudnn.allow_tf32 = CUDA_TF32
-    return loaders.get_mimi(mimi_weight, device=torch.device(DEVICE), num_codebooks=num_codebooks).eval()
+    if os.environ.get("HIBIKI_LEGACY_MIMI"):
+        from moshi.models import loaders
+
+        return loaders.get_mimi(mimi_weight, device=torch.device(DEVICE), num_codebooks=num_codebooks).eval()
+    from training.prep.mimi_cuda import FastMimiEncoder
+
+    return FastMimiEncoder.from_checkpoint(
+        mimi_weight,
+        num_codebooks=num_codebooks,
+        device=DEVICE,
+        fp16_seanet=fp16_seanet and not os.environ.get("HIBIKI_FP32_MIMI"),
+        fp16_transformer=fp16_seanet and not os.environ.get("HIBIKI_FP32_MIMI"),
+        fp8_transformer=fp8_transformer,
+    )
 
 
 def mimi_batch(mimi: Any, clips: list[Any], device: Any) -> list[Any]:
@@ -251,36 +270,66 @@ def batches(lengths: list[int], budget: int) -> list[list[int]]:
     return out
 
 
-class CUDAModels:
-    """Mimi (moshi, float32) and the aligner's wav2vec2 CTC (transformers) on CUDA, over padded
-    batches of up to CUDA_BATCH_S of audio, shortest first. CTC runs in float32 by default; pass
-    `half_ctc=True` to run its transformer in bfloat16 (feature extractor and lm_head stay
-    float32, so GroupNorm stats are safe and log-probs match float32 within CTC rounding)."""
+class _PinnedOutputPool:
+    """Double-buffered reusable pinned host buffers (eliminates per-batch `cudaHostAlloc`)."""
 
-    # Rows per batched pass. The decoded clips of several windows are held at once (decoding, filling, queued, on
-    # the GPU), in /dev/shm and the main process: on Libriheavy the build took ~5 GB plus ~10 MB a window row. On
-    # four Libriheavy shards (RTX 5090, 31 GB RAM, 2026-11-22): 2,048 rows ran 2,018x at 26.0 GB, 1,024 2,106x at
-    # 15.6 GB, 512 2,133x at 10.4 GB; 4,096 was killed out of memory on a 40-shard batch.
+    def __init__(self) -> None:
+        self._bufs: list[Any] = [None, None]
+        self._turn = 0
+
+    def copy_from(self, tensor: Any) -> tuple[Any, Any]:
+        import torch
+
+        k = self._turn
+        self._turn ^= 1
+        need = tensor.numel()
+        buf = self._bufs[k]
+        if buf is None or buf.dtype != tensor.dtype or buf.numel() < need:
+            self._bufs[k] = torch.empty(max(need, 1), dtype=tensor.dtype, pin_memory=True)
+            buf = self._bufs[k]
+        host = buf[:need].view(tensor.shape)
+        host.copy_(tensor, non_blocking=True)
+        done = torch.cuda.Event()
+        done.record()
+        return host, done
+
+
+class CUDAModels:
+    """Blackwell-optimized Mimi (`FastMimiEncoder`) and wav2vec2 CTC (`FastWav2Vec2CTC`) on CUDA,
+    over padded batches of up to `CUDA_BATCH_S` of audio, shortest first. Uses FP16 compute with
+    FP32 GroupNorm/lm_head/RVQ/accumulation (10-bit mantissa = TF32), GPU 24k->16k resampling for
+    CTC, zero-copy delay staging, and preallocated double-buffered pinned H2D/D2H pools."""
+
     window = 512
     threaded = True  # encode runs in the build's GPU thread, a window ahead of the main thread
 
-    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path, half_ctc: bool = False):
-        import torch
-        from transformers import Wav2Vec2ForCTC
+    def __init__(
+        self,
+        mimi_weight: Path,
+        num_codebooks: int,
+        aligner: Aligner,
+        files: Path,
+        half_ctc: bool = False,
+        fp8_ctc: bool = False,
+        fp8_mimi: bool = False,
+        gpu_resample_ctc: bool = False,
+    ):
+        from training.prep.wav2vec2_cuda import FastWav2Vec2CTC, Resample24to16
 
-        self.mimi = cuda_mimi(mimi_weight, num_codebooks)
+        self.mimi = cuda_mimi(mimi_weight, num_codebooks, fp8_transformer=fp8_mimi)
         self.cardinality = self.mimi.cardinality
-        # cuda_mimi's TF32 switch covers the CTC too (CUDA_TF32).
-        self.ctc = Wav2Vec2ForCTC.from_pretrained(files, dtype=torch.float32).to(DEVICE).eval()
-        # The base layout every aligner has: its first convolution's GroupNorm normalizes over the
-        # whole input (ctc_log_probs masks the padding out of it), post-norm layers.
-        config = self.ctc.config
-        if config.do_stable_layer_norm or config.feat_extract_norm != "group":
-            raise ValueError(f"{aligner.repo}: ctc_log_probs runs only the base layout")
-        if self.ctc.wav2vec2.adapter is not None:  # ctc_log_probs runs the encoder without it
-            raise ValueError(f"{aligner.repo} has an adapter, which ctc_log_probs does not apply")
-        self._half_ctc = half_ctc
-        self._columns = torch.tensor(vocab_columns(aligner, files), device=DEVICE)
+        use_fp16_ctc = (not os.environ.get("HIBIKI_FP32_CTC")) and (DEVICE == "cuda")
+        self.ctc = FastWav2Vec2CTC(
+            files,
+            vocab_columns(aligner, files),
+            device=DEVICE,
+            fp16=use_fp16_ctc or half_ctc,
+            use_fp8=fp8_ctc,
+        )
+        self.gpu_resample_ctc = bool(gpu_resample_ctc or os.environ.get("HIBIKI_GPU_RESAMPLE_CTC"))
+        self.resampler = Resample24to16(DEVICE) if self.gpu_resample_ctc else None
+        self._mimi_out_pool = _PinnedOutputPool()
+        self._ctc_out_pool = _PinnedOutputPool()
 
     def encode(self, rows: list[Row], align: AlignJob) -> list[tuple[Aligned, np.ndarray, np.ndarray]]:
         """Each row's alignment (`align` given a CTC batch's rows and log-probabilities, as the batch
@@ -293,14 +342,14 @@ class CUDAModels:
             for place, i in enumerate(group):
                 aligned[i] = (job, place)
 
-        self.ctc_log_probs([row.target16 for row in rows], landed)
-        codes = self.mimi_codes([row.source24 for row in rows] + [row.target24 for row in rows])
+        if self.gpu_resample_ctc:
+            self.ctc_log_probs_24k([row.target24 for row in rows], landed)
+        else:
+            self.ctc_log_probs([row.target16 for row in rows], landed)
+        clips = [row.source24 for row in rows] + [row.target24 for row in rows]
+        delays = [0] * len(rows) + [row.delay_samples for row in rows]
+        codes = self.mimi_codes(clips, delays=delays)
         return list(zip(aligned, codes[: len(rows)], codes[len(rows):], strict=True))
-
-    # The GPU thread's host work (padding a batch into pinned memory, the copies back) runs while
-    # the GPU computes the batch before it: `_pipelined` launches batch k+1 before collecting k, and
-    # `_stage` fills one of two pinned buffers while the other's copy runs. Done in turn, it held
-    # each GigaSpeech 2 window ~16.5 s against ~12 s of kernels (2026-11-09).
 
     def _pipelined(self, groups: list[list[int]], launch: Callable, collect: Callable) -> None:
         prev = None
@@ -312,9 +361,15 @@ class CUDAModels:
         if prev is not None:
             collect(*prev)
 
-    def _stage(self, clips: list[np.ndarray], group: list[int], length: int) -> Any:
-        """`group`'s clips right-padded to `length` in the next pinned buffer, copied to the GPU
-        without blocking."""
+    def _stage(
+        self,
+        clips: list[np.ndarray],
+        group: list[int],
+        length: int,
+        delays: list[int] | None = None,
+    ) -> Any:
+        """`group`'s clips (optionally left-padded by `delays[i]`) right-padded to `length` in the
+        next pinned buffer, copied to the GPU without blocking."""
         import torch
 
         if not hasattr(self, "_pinned"):
@@ -329,128 +384,195 @@ class CUDAModels:
         host = self._pinned[k][:need].view(len(group), 1, length)
         view = host.numpy()
         for row, i in enumerate(group):
+            pad = delays[i] if delays is not None else 0
             n = len(clips[i])
-            view[row, 0, :n] = clips[i]
-            view[row, 0, n:] = 0.0
+            if pad:
+                view[row, 0, :pad] = 0.0
+            view[row, 0, pad : pad + n] = clips[i]
+            if pad + n < length:
+                view[row, 0, pad + n :] = 0.0
         batch = host.to(DEVICE, non_blocking=True)
-        self._copied[k] = torch.cuda.Event()
-        self._copied[k].record()
+        if DEVICE == "cuda":
+            self._copied[k] = torch.cuda.Event()
+            self._copied[k].record()
         return batch
 
-    @staticmethod
-    def _to_host(tensor: Any) -> tuple[Any, Any]:
-        """A non-blocking copy to pinned host memory and the event that marks it done."""
-        import torch
-
-        host = torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True)
-        host.copy_(tensor, non_blocking=True)
-        done = torch.cuda.Event()
-        done.record()
-        return host, done
-
-    def mimi_codes(self, clips: list[np.ndarray]) -> list[np.ndarray]:
-        """Each 24 kHz clip's codes, [codebooks, ceil(samples / 1920)] int32, as `mimi_batch`."""
+    def mimi_codes(self, clips: list[np.ndarray], delays: list[int] | None = None) -> list[np.ndarray]:
+        """Each 24 kHz clip's codes, [codebooks, ceil((samples + delay) / 1920)] int32."""
         import torch
 
         out: list[np.ndarray] = [np.empty(0)] * len(clips)
+        eff_lens = [len(c) + (delays[i] if delays is not None else 0) for i, c in enumerate(clips)]
 
         def launch(group: list[int]) -> tuple[Any, Any, list[int]]:
-            frames = [math.ceil(len(clips[i]) / FRAME_SAMPLES) for i in group]
-            batch = self._stage(clips, group, max(frames) * FRAME_SAMPLES)
+            frames = [math.ceil(eff_lens[i] / FRAME_SAMPLES) for i in group]
+            batch = self._stage(clips, group, max(frames) * FRAME_SAMPLES, delays=delays)
             with torch.no_grad():
                 codes = self.mimi.encode(batch).to(torch.int32)
-            return (*self._to_host(codes), frames)
+            if DEVICE == "cuda":
+                host, done = self._mimi_out_pool.copy_from(codes)
+            else:
+                host, done = codes.cpu(), None
+            return (host, done, frames)
 
         def collect(group: list[int], handle: tuple[Any, Any, list[int]]) -> None:
             host, done, frames = handle
-            done.synchronize()
+            if done is not None:
+                done.synchronize()
             codes = host.numpy()
             for row, (i, count) in enumerate(zip(group, frames, strict=True)):
-                out[i] = codes[row, :, :count]
+                # Copy out of the reusable pinned output buffer before the next collect overwrites it!
+                out[i] = codes[row, :, :count].copy()
 
-        self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * SAMPLE_RATE)), launch, collect)
+        self._pipelined(batches(eff_lens, int(CUDA_BATCH_S * SAMPLE_RATE)), launch, collect)
         return out
 
-    @staticmethod
-    def _within(lengths: Any, width: int) -> Any:
-        """[len(lengths), width] on the GPU, True where a position is within its row's length: the
-        lengths copied without blocking, since a blocking copy waits for the GPU's queue to drain."""
+    def _run_ctc_batches(
+        self,
+        ctc_model: Any,
+        clips: list[np.ndarray],
+        rate: int,
+        resample_24k: bool,
+        landed: Callable[[list[int], list[np.ndarray]], None] | None,
+    ) -> list[np.ndarray]:
         import torch
 
-        lengths = lengths.pin_memory().to(DEVICE, non_blocking=True)
-        return torch.arange(width, device=DEVICE)[None, :] < lengths[:, None]
-
-    def _encoder(self, hs: Any, mask: Any) -> Any:
-        """The wav2vec2 encoder's forward (transformers 5.22.1's `Wav2Vec2Encoder`, to check again
-        on an upgrade), without its two waits on the GPU: the padding's frames
-        zeroed by `where` rather than a boolean-mask write, and the attention mask always built
-        rather than first checked for padding. Each emptied the GPU's queue every CTC batch, so the
-        encoder's launches, slowed by the GIL the main process's other threads hold, idled the GPU
-        (2026-11-11, omniASR: CTC 108 s on three GigaSpeech 2 shards against ~30 s of kernels)."""
-        import torch
-        from transformers.masking_utils import create_bidirectional_mask
-
-        encoder = self.ctc.wav2vec2.encoder
-        hs = torch.where(mask[..., None], hs, 0.0)
-        attention = create_bidirectional_mask(config=encoder.config, inputs_embeds=hs, attention_mask=mask,
-                                              allow_is_bidirectional_skip=False)
-        hs = encoder.layer_norm(hs + encoder.pos_conv_embed(hs))
-        hs = encoder.dropout(hs)
-        for layer in encoder.layers:
-            hs = layer(hs, attention_mask=attention)
-        return hs
-
-    def ctc_log_probs(self, clips: list[np.ndarray],
-                      landed: Callable[[list[int], list[np.ndarray]], None] | None = None) -> list[np.ndarray]:
-        """Each normalized 16 kHz clip's CTC log-probabilities [frames, `vocab_columns`], as
-        computed alone: the padding is masked out of the positional convolution's input, the
-        attention keys and the statistics of the first convolution's GroupNorm, which normalizes
-        over the whole input (as wav2vec2_mlx does). `landed(indices,
-        log_probs)` hears of each batch's clips as it reaches the host."""
-        import torch
-
-        w2v = self.ctc.wav2vec2
-        first, rest = w2v.feature_extractor.conv_layers[0], w2v.feature_extractor.conv_layers[1:]
         out: list[np.ndarray] = [np.empty(0)] * len(clips)
 
-        def launch(group: list[int]) -> tuple[Any, Any, list[int]]:
+        def launch(group: list[int]) -> tuple[Any, Any, list[int], bool]:
             lengths = torch.tensor([len(clips[i]) for i in group])
             batch = self._stage(clips, group, int(lengths.max()))
             with torch.no_grad():
-                hs = first.conv(batch)
-                valid = (lengths - first.conv.kernel_size[0]) // first.conv.stride[0] + 1
-                own = self._within(valid, hs.shape[-1])[:, None, :].float()
-                count = own.sum(-1, keepdim=True)
-                mean = (hs * own).sum(-1, keepdim=True) / count
-                var = ((hs - mean).square() * own).sum(-1, keepdim=True) / count
-                norm = first.layer_norm
-                hs = (hs - mean) / torch.sqrt(var + norm.eps) * norm.weight[:, None] + norm.bias[:, None]
-                hs = first.activation(hs)
-                for layer in rest:
-                    hs = layer(hs)
-                hs, _ = w2v.feature_projection(hs.transpose(1, 2))
-                frames = self.ctc._get_feat_extract_output_lengths(lengths)
-                mask = self._within(frames, hs.shape[1])
-                if self._half_ctc:
-                    with torch.autocast("cuda", dtype=torch.bfloat16):
-                        hs = self._encoder(hs, mask)
-                    hs = hs.float()
-                else:
-                    hs = self._encoder(hs, mask)
-                log_probs = torch.log_softmax(self.ctc.lm_head(hs), dim=-1)[..., self._columns]
-            return (*self._to_host(log_probs), frames.tolist())
+                if resample_24k:
+                    assert self.resampler is not None
+                    batch, lengths = self.resampler(batch, lengths)
+                log_probs, frames, is_packed = ctc_model(batch, lengths)
+            if DEVICE == "cuda":
+                host, done = self._ctc_out_pool.copy_from(log_probs)
+            else:
+                host, done = log_probs.cpu(), None
+            return (host, done, frames, is_packed)
 
-        def collect(group: list[int], handle: tuple[Any, Any, list[int]]) -> None:
-            host, done, frames = handle
-            done.synchronize()
-            log_probs = host.numpy()
-            for row, (i, count) in enumerate(zip(group, frames, strict=True)):
-                out[i] = log_probs[row, :count]
+        def collect(group: list[int], handle: tuple[Any, Any, list[int], bool]) -> None:
+            host, done, frames, is_packed = handle
+            if done is not None:
+                done.synchronize()
+            arr = host.numpy()
+            if is_packed:
+                pos = 0
+                for i, count in zip(group, frames, strict=True):
+                    out[i] = arr[pos : pos + count].copy()
+                    pos += count
+            else:
+                for row, (i, count) in enumerate(zip(group, frames, strict=True)):
+                    out[i] = arr[row, :count].copy()
             if landed is not None:
                 landed(group, [out[i] for i in group])
 
-        self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * CTC_RATE)), launch, collect)
+        self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * rate)), launch, collect)
         return out
+
+    def ctc_log_probs(
+        self,
+        clips: list[np.ndarray],
+        landed: Callable[[list[int], list[np.ndarray]], None] | None = None,
+    ) -> list[np.ndarray]:
+        """CTC log-probabilities on pre-normalized 16 kHz clips."""
+        return self._run_ctc_batches(self.ctc, clips, CTC_RATE, resample_24k=False, landed=landed)
+
+    def ctc_log_probs_24k(
+        self,
+        clips: list[np.ndarray],
+        landed: Callable[[list[int], list[np.ndarray]], None] | None = None,
+    ) -> list[np.ndarray]:
+        """CTC log-probabilities on raw 24 kHz clips (resampled & normalized on GPU)."""
+        return self._run_ctc_batches(self.ctc, clips, SAMPLE_RATE, resample_24k=True, landed=landed)
+
+
+class CUDAModelsDual(CUDAModels):
+    """Dual-direction CUDA models: ONE shared Mimi + BOTH English (`vi-en`) and Vietnamese (`en-vi`)
+    `FastWav2Vec2CTC` aligners, encoding both directions of a shard in a single pass."""
+
+    def __init__(
+        self,
+        mimi_weight: Path,
+        num_codebooks: int,
+        aligner_ve: Aligner,
+        files_ve: Path,
+        aligner_ev: Aligner,
+        files_ev: Path,
+        fp8_ctc: bool = False,
+        fp8_mimi: bool = False,
+        gpu_resample_ctc: bool = False,
+    ):
+        from training.prep.wav2vec2_cuda import FastWav2Vec2CTC, Resample24to16
+
+        self.mimi = cuda_mimi(mimi_weight, num_codebooks, fp8_transformer=fp8_mimi)
+        self.cardinality = self.mimi.cardinality
+        use_fp16_ctc = (not os.environ.get("HIBIKI_FP32_CTC")) and (DEVICE == "cuda")
+        self.ctc_ve = FastWav2Vec2CTC(
+            files_ve, vocab_columns(aligner_ve, files_ve), device=DEVICE, fp16=use_fp16_ctc, use_fp8=fp8_ctc
+        )
+        self.ctc_ev = FastWav2Vec2CTC(
+            files_ev, vocab_columns(aligner_ev, files_ev), device=DEVICE, fp16=use_fp16_ctc, use_fp8=fp8_ctc
+        )
+        self.gpu_resample_ctc = bool(gpu_resample_ctc or os.environ.get("HIBIKI_GPU_RESAMPLE_CTC"))
+        self.resampler = Resample24to16(DEVICE) if self.gpu_resample_ctc else None
+        self._mimi_out_pool = _PinnedOutputPool()
+        self._ctc_out_pool = _PinnedOutputPool()
+
+    def encode_dual(
+        self,
+        rows_ve: list[Row],
+        rows_ev: list[Row],
+        align_ve: AlignJob,
+        align_ev: AlignJob,
+    ) -> tuple[list[tuple[Aligned, np.ndarray, np.ndarray]], list[tuple[Aligned, np.ndarray, np.ndarray]]]:
+        """Run EN CTC (`vi-en`) and VI CTC (`en-vi`), dispatching both Viterbi queues to CPU
+        workers, then run ONE unified sorted Mimi pass over all 4 clip streams."""
+        aligned_ve: list[Any] = [None] * len(rows_ve)
+        aligned_ev: list[Any] = [None] * len(rows_ev)
+
+        if rows_ve:
+            def landed_ve(group: list[int], lps: list[np.ndarray]) -> None:
+                job = align_ve([rows_ve[i] for i in group], lps)
+                for place, i in enumerate(group):
+                    aligned_ve[i] = (job, place)
+
+            if self.gpu_resample_ctc:
+                self._run_ctc_batches(self.ctc_ve, [r.target24 for r in rows_ve], SAMPLE_RATE, True, landed_ve)
+            else:
+                self._run_ctc_batches(self.ctc_ve, [r.target16 for r in rows_ve], CTC_RATE, False, landed_ve)
+
+        if rows_ev:
+            def landed_ev(group: list[int], lps: list[np.ndarray]) -> None:
+                job = align_ev([rows_ev[i] for i in group], lps)
+                for place, i in enumerate(group):
+                    aligned_ev[i] = (job, place)
+
+            if self.gpu_resample_ctc:
+                self._run_ctc_batches(self.ctc_ev, [r.target24 for r in rows_ev], SAMPLE_RATE, True, landed_ev)
+            else:
+                self._run_ctc_batches(self.ctc_ev, [r.target16 for r in rows_ev], CTC_RATE, False, landed_ev)
+
+        n_ve, n_ev = len(rows_ve), len(rows_ev)
+        clips = (
+            [r.source24 for r in rows_ve]
+            + [r.target24 for r in rows_ve]
+            + [r.source24 for r in rows_ev]
+            + [r.target24 for r in rows_ev]
+        )
+        delays = (
+            [0] * n_ve
+            + [r.delay_samples for r in rows_ve]
+            + [0] * n_ev
+            + [r.delay_samples for r in rows_ev]
+        )
+        codes = self.mimi_codes(clips, delays=delays) if clips else []
+        off = 2 * n_ve
+        res_ve = list(zip(aligned_ve, codes[:n_ve], codes[n_ve:off], strict=True))
+        res_ev = list(zip(aligned_ev, codes[off : off + n_ev], codes[off + n_ev :], strict=True))
+        return res_ve, res_ev
 
 
 MODELS = {"mlx": MLXModels, "cuda": CUDAModels}  # --device
@@ -462,8 +584,18 @@ MODELS = {"mlx": MLXModels, "cuda": CUDAModels}  # --device
 class Builder:
     """A cache build on one device; `run` turns a builder's source shards into cache shards."""
 
-    def __init__(self, device: str, settings: Settings, config_path: Path, mimi_weight: Path, tokenizer: Path,
-                 half_ctc: bool = False, ane_ctc: bool = False):
+    def __init__(
+        self,
+        device: str,
+        settings: Settings,
+        config_path: Path,
+        mimi_weight: Path,
+        tokenizer: Path,
+        half_ctc: bool = False,
+        ane_ctc: bool = False,
+        fp8_ctc: bool = False,
+        fp8_mimi: bool = False,
+    ):
         import sentencepiece
 
         self.settings = settings
@@ -477,9 +609,20 @@ class Builder:
         if ane_ctc and settings.target != "vi":
             # The English aligner there kept 99.35% of MLX float32's argmaxes (the Vietnamese 99.94%).
             raise ValueError("the Neural Engine CTC (ane_ctc) times Vietnamese text only: direction en-vi")
-        mlx_only = {"ane_ctc": True} if ane_ctc else {}
-        self.models = MODELS[device](require_file(mimi_weight, "Mimi weight"), num_codebooks, settings.aligner,
-                                     aligner_files(settings.aligner), half_ctc=half_ctc, **mlx_only)
+        extra_kwargs: dict[str, Any] = {}
+        if device == "mlx" and ane_ctc:
+            extra_kwargs["ane_ctc"] = True
+        elif device == "cuda":
+            extra_kwargs["fp8_ctc"] = fp8_ctc
+            extra_kwargs["fp8_mimi"] = fp8_mimi
+        self.models = MODELS[device](
+            require_file(mimi_weight, "Mimi weight"),
+            num_codebooks,
+            settings.aligner,
+            aligner_files(settings.aligner),
+            half_ctc=half_ctc,
+            **extra_kwargs,
+        )
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
 
@@ -493,11 +636,16 @@ class Builder:
         yielded, so a rerun rebuilds it."""
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ[var] = "1"  # the spawned workers' thread pools, one thread each
+        make_target16 = not getattr(self.models, "gpu_resample_ctc", False)
         with (
             ThreadPoolExecutor(1) as reads,
             pcm_dir() as pcm,
-            ProcessPoolExecutor(workers, mp_context=get_context("spawn"), initializer=cache_rows.init_worker,
-                                initargs=(self.settings, self.tokenizer_path, pcm)) as pool,
+            ProcessPoolExecutor(
+                workers,
+                mp_context=get_context("spawn"),
+                initializer=cache_rows.init_worker,
+                initargs=(self.settings, self.tokenizer_path, pcm, make_target16),
+            ) as pool,
         ):
             try:
                 yield from self._stream(self._read_ahead(keys, read, reads), pool)
@@ -518,6 +666,15 @@ class Builder:
                 yield current.result()
         if ahead is not None:
             yield ahead.result()
+
+    @staticmethod
+    def _consume_job(job: Future) -> tuple[np.ndarray | None, list]:
+        slab_path, items = job.result()
+        if slab_path is None:
+            return None, items
+        slab = np.fromfile(slab_path, np.float32)
+        os.unlink(slab_path)
+        return slab, items
 
     def _stream(self, shards: Iterator[Shard], pool: ProcessPoolExecutor) -> Iterator[Shard]:
         """The shards filled, their rows planned and encoded in windows that run across shard ends.
@@ -540,19 +697,20 @@ class Builder:
                     done.set_result(self._encode_start(rows, pool))
                     inflight.append(done)
 
-            for shard, index, row, job, place in self._decoded(shards, pool, started):
-                planned: Planned | Rejected | AlignmentError = job.result()[place]
-                if isinstance(planned, (Rejected, AlignmentError)):
-                    shard.reject(index, row["id"], planned)
-                else:
-                    window.append(planned.row(shard, index, row))
-                if len(window) == self.models.window:
-                    submit(window)
-                    window = []
-                    while len(inflight) > 1:
-                        self._encode_finish(inflight.popleft().result())
-                while started and not started[0].left:
-                    yield started.popleft().done()
+            for shard, batch_rows, job in self._decoded(shards, pool, started):
+                slab, items = self._consume_job(job)
+                for (index, row), planned in zip(batch_rows, items, strict=True):
+                    if isinstance(planned, (Rejected, AlignmentError)):
+                        shard.reject(index, row["id"], planned)
+                    else:
+                        window.append(planned.row(shard, index, row, slab))
+                    if len(window) == self.models.window:
+                        submit(window)
+                        window = []
+                        while len(inflight) > 1:
+                            self._encode_finish(inflight.popleft().result())
+                    while started and not started[0].left:
+                        yield started.popleft().done()
             submit(window)
             while inflight:
                 self._encode_finish(inflight.popleft().result())
@@ -563,20 +721,21 @@ class Builder:
 
     def _decoded(
         self, shards: Iterator[Shard], pool: ProcessPoolExecutor, started: deque[Shard]
-    ) -> Iterator[tuple[Shard, int, dict[str, Any], Future, int]]:
-        """Each kept row with its decode job (`cache_rows.prepare_rows`, DECODE_JOB_ROWS rows of its
-        shard) and its place in the job's results, submitted a window ahead (the pool runs jobs in
-        order, so more would only queue a window's alignments behind more decodes); a shard joins
-        `started` as its first job is submitted."""
-        queued: deque[tuple[Shard, int, dict[str, Any], Future, int]] = deque()
+    ) -> Iterator[tuple[Shard, list[tuple[int, dict[str, Any]]], Future]]:
+        """Each 32-row decode job (`cache_rows.prepare_rows`), submitted a window ahead."""
+        queued: deque[tuple[Shard, list[tuple[int, dict[str, Any]]], Future]] = deque()
+        queued_rows = 0
         for shard in shards:
             started.append(shard)
             for start in range(0, len(shard.rows), DECODE_JOB_ROWS):
-                rows = shard.rows[start: start + DECODE_JOB_ROWS]
+                rows = shard.rows[start : start + DECODE_JOB_ROWS]
                 job = pool.submit(cache_rows.prepare_rows, [self._decode_args(row) for _, row in rows], shard.split)
-                queued.extend((shard, index, row, job, place) for place, (index, row) in enumerate(rows))
-                while len(queued) > self.models.window:
-                    yield queued.popleft()
+                queued.append((shard, rows, job))
+                queued_rows += len(rows)
+                while queued_rows > self.models.window:
+                    item = queued.popleft()
+                    queued_rows -= len(item[1])
+                    yield item
         while queued:
             yield queued.popleft()
 
@@ -609,6 +768,214 @@ class Builder:
             row.shard.samples.append(cache_rows.sample(row, tokens, text_frames, score, np.array(source),
                                                         np.array(target), self.cfg, self.settings))
             row.shard.left -= 1
+
+
+class DualBuilder:
+    """Single-pass dual-direction CUDA cache builder (`vi-en` and `en-vi` simultaneously): reads
+    each shard once, decodes & resamples each clip to 24 kHz once, and encodes both directions with
+    one shared Mimi + both CTC aligners."""
+
+    def __init__(
+        self,
+        settings_ve: Settings,
+        settings_ev: Settings,
+        config_path: Path,
+        mimi_weight: Path,
+        tokenizer_ve: Path,
+        tokenizer_ev: Path,
+        fp8_ctc: bool = False,
+        fp8_mimi: bool = False,
+    ):
+        import sentencepiece
+
+        self.settings_ve = settings_ve
+        self.settings_ev = settings_ev
+        self.cfg = read_json(config_path)
+        self.tok_ve_path = require_file(tokenizer_ve, "vi-en text tokenizer")
+        self.tok_ev_path = require_file(tokenizer_ev, "en-vi text tokenizer")
+        self.eos_ve = int(sentencepiece.SentencePieceProcessor(str(self.tok_ve_path)).eos_id())
+        self.eos_ev = int(sentencepiece.SentencePieceProcessor(str(self.tok_ev_path)).eos_id())
+        num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
+        self.models = CUDAModelsDual(
+            require_file(mimi_weight, "Mimi weight"),
+            num_codebooks,
+            settings_ve.aligner,
+            aligner_files(settings_ve.aligner),
+            settings_ev.aligner,
+            aligner_files(settings_ev.aligner),
+            fp8_ctc=fp8_ctc,
+            fp8_mimi=fp8_mimi,
+        )
+        if self.models.cardinality != int(self.cfg["card"]):
+            raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
+
+    def payload(self, direction: str, shard: Shard, source: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        settings = self.settings_ve if direction == "vi-en" else self.settings_ev
+        tok_name = self.tok_ve_path.name if direction == "vi-en" else self.tok_ev_path.name
+        return cache_rows.payload(shard, settings, self.cfg, source, tokenizer=tok_name, **extra)
+
+    def run(self, keys: Iterable[Any], read: Callable[[Any], Shard], workers: int) -> Iterator[tuple[Shard, Shard]]:
+        """Yield `(shard_vi_en, shard_en_vi)` in key order."""
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+            os.environ[var] = "1"
+        make_target16 = not self.models.gpu_resample_ctc
+        with (
+            ThreadPoolExecutor(1) as reads,
+            pcm_dir() as pcm,
+            ProcessPoolExecutor(
+                workers,
+                mp_context=get_context("spawn"),
+                initializer=cache_rows.init_dual_worker,
+                initargs=(self.settings_ve, self.tok_ve_path, self.settings_ev, self.tok_ev_path, pcm, make_target16),
+            ) as pool,
+        ):
+            try:
+                yield from self._stream(Builder._read_ahead(keys, read, reads), pool)
+            except BaseException:
+                pool.shutdown(wait=True, cancel_futures=True)
+                reads.shutdown(wait=False, cancel_futures=True)
+                raise
+
+    def _stream(self, shards: Iterator[Shard], pool: ProcessPoolExecutor) -> Iterator[tuple[Shard, Shard]]:
+        started: deque[tuple[Shard, Shard]] = deque()
+        win_ve: list[Row] = []
+        win_ev: list[Row] = []
+        inflight: deque[Future] = deque()
+        # Half the single-direction row count since each row carries 4 Mimi clips (2 directions).
+        win_cap = max(1, self.models.window // 2)
+        with ThreadPoolExecutor(1, thread_name_prefix="gpu") as gpu:
+
+            def submit(r_ve: list[Row], r_ev: list[Row]) -> None:
+                if r_ve or r_ev:
+                    inflight.append(gpu.submit(self._encode_start, r_ve, r_ev, pool))
+
+            for sh_ve, sh_ev, batch_rows, job in self._decoded(shards, pool, started, win_cap):
+                slab, items = Builder._consume_job(job)
+                for (index, row), dp in zip(batch_rows, items, strict=True):
+                    if isinstance(dp, Rejected):
+                        sh_ve.reject(index, row["id"], dp)
+                        sh_ev.reject(index, row["id"], dp)
+                        continue
+                    vi16: np.ndarray | None = None
+                    en16: np.ndarray | None = None
+                    if dp.pcm is not None:
+                        vi24, en24, vi16, en16 = dp.pcm
+                    elif slab is not None and dp.lengths[0]:
+                        o = dp.offset
+                        a = o + dp.lengths[0]
+                        b = a + dp.lengths[1]
+                        c = b + dp.lengths[2]
+                        d = c + dp.lengths[3]
+                        vi24 = slab[o:a]
+                        en24 = slab[a:b]
+                        vi16 = slab[b:c] if dp.lengths[2] else None
+                        en16 = slab[c:d] if dp.lengths[3] else None
+                    else:
+                        vi24 = en24 = np.empty(0, np.float32)
+
+                    if isinstance(dp.vi_en, (Rejected, AlignmentError)):
+                        sh_ve.reject(index, row["id"], dp.vi_en)
+                    else:
+                        p = dp.vi_en
+                        win_ve.append(Row(
+                            sh_ve, index, row, vi24, en24, en16, p.lead, p.groups, p.delay_s,
+                            p.delay_frames, p.source_frames, p.target_frames, p.delay_samples,
+                        ))
+
+                    if isinstance(dp.en_vi, (Rejected, AlignmentError)):
+                        sh_ev.reject(index, row["id"], dp.en_vi)
+                    else:
+                        p = dp.en_vi
+                        win_ev.append(Row(
+                            sh_ev, index, row, en24, vi24, vi16, p.lead, p.groups, p.delay_s,
+                            p.delay_frames, p.source_frames, p.target_frames, p.delay_samples,
+                        ))
+
+                    if max(len(win_ve), len(win_ev)) >= win_cap:
+                        submit(win_ve, win_ev)
+                        win_ve, win_ev = [], []
+                        while len(inflight) > 1:
+                            self._encode_finish(inflight.popleft().result())
+                    while started and not started[0][0].left and not started[0][1].left:
+                        s_ve, s_ev = started.popleft()
+                        yield s_ve.done(), s_ev.done()
+            submit(win_ve, win_ev)
+            while inflight:
+                self._encode_finish(inflight.popleft().result())
+        if any(s_ve.left or s_ev.left for s_ve, s_ev in started):
+            raise RuntimeError("dual build ended with rows neither sampled nor rejected")
+        for s_ve, s_ev in started:
+            yield s_ve.done(), s_ev.done()
+
+    def _decoded(
+        self,
+        shards: Iterator[Shard],
+        pool: ProcessPoolExecutor,
+        started: deque[tuple[Shard, Shard]],
+        win_cap: int,
+    ) -> Iterator[tuple[Shard, Shard, list[tuple[int, dict[str, Any]]], Future]]:
+        queued: deque[tuple[Shard, Shard, list[tuple[int, dict[str, Any]]], Future]] = deque()
+        queued_rows = 0
+        for shard in shards:
+            sh_ve = Shard(shard.key, shard.file, shard.split, shard.size, [], list(shard.rejected))
+            sh_ev = Shard(shard.key, shard.file, shard.split, shard.size, [], list(shard.rejected))
+            sh_ve.left = sh_ev.left = len(shard.rows)
+            started.append((sh_ve, sh_ev))
+            for start in range(0, len(shard.rows), DECODE_JOB_ROWS):
+                rows = shard.rows[start : start + DECODE_JOB_ROWS]
+                args = []
+                for _, row in rows:
+                    vi_audio = row.pop("vi_audio")
+                    en_audio = row.pop("en_audio")
+                    fields = {k: row[k] for k in ("id", "text_en", "text_vi", "vi_duration_s", "en_duration_s")}
+                    args.append((fields, vi_audio, en_audio))
+                job = pool.submit(cache_rows.prepare_dual_rows, args, shard.split)
+                queued.append((sh_ve, sh_ev, rows, job))
+                queued_rows += len(rows)
+                while queued_rows > win_cap:
+                    item = queued.popleft()
+                    queued_rows -= len(item[2])
+                    yield item
+        while queued:
+            yield queued.popleft()
+
+    def _encode_start(
+        self, rows_ve: list[Row], rows_ev: list[Row], pool: ProcessPoolExecutor
+    ) -> tuple[list, list]:
+        def align_ve(rows: list[Row], lps: list[np.ndarray]) -> Future:
+            return pool.submit(
+                cache_rows.align_rows,
+                lps,
+                [(r.lead, r.groups, r.target_frames - r.delay_frames, r.delay_frames) for r in rows],
+                self.eos_ve,
+                "vi-en",
+            )
+
+        def align_ev(rows: list[Row], lps: list[np.ndarray]) -> Future:
+            return pool.submit(
+                cache_rows.align_rows,
+                lps,
+                [(r.lead, r.groups, r.target_frames - r.delay_frames, r.delay_frames) for r in rows],
+                self.eos_ev,
+                "en-vi",
+            )
+
+        res_ve, res_ev = self.models.encode_dual(rows_ve, rows_ev, align_ve, align_ev)
+        return list(zip(rows_ve, res_ve, strict=True)), list(zip(rows_ev, res_ev, strict=True))
+
+    def _encode_finish(self, pending: tuple[list, list]) -> None:
+        pend_ve, pend_ev = pending
+        for items, settings in ((pend_ve, self.settings_ve), (pend_ev, self.settings_ev)):
+            for row, ((job, place), source, target) in items:
+                aligned = job.result()[place]
+                if isinstance(aligned, AlignmentError):
+                    row.shard.reject(row.index, row.data["id"], aligned)
+                    continue
+                tokens, text_frames, score = aligned
+                row.shard.samples.append(
+                    cache_rows.sample(row, tokens, text_frames, score, np.array(source), np.array(target), self.cfg, settings)
+                )
+                row.shard.left -= 1
 
 
 def summary(shard: Shard, hours: float, wall: float) -> str:

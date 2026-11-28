@@ -272,15 +272,17 @@ class MimiEncoder:
                 codes.append(index)
         return mx.stack(codes, axis=1).astype(mx.int32)
 
-    def encode(self, pcm: np.ndarray) -> mx.array:
-        """Encode one mono 24 kHz clip as a whole; returns lazy int32 codes, ceil(len / 1920)
-        frames, queued on the next of the encoder's streams (evaluate several calls together)."""
+    def encode(self, pcm: np.ndarray, delay_samples: int = 0) -> mx.array:
+        """Encode one mono 24 kHz clip as a whole (optionally left-padded with `delay_samples`
+        zeros); returns lazy int32 codes, ceil((len + delay_samples) / 1920) frames, queued on the
+        next of the encoder's streams (evaluate several calls together)."""
         if pcm.ndim != 1 or not len(pcm):
             raise ValueError(f"Mimi needs a non-empty mono clip, got shape {pcm.shape}")
-        frames = math.ceil(len(pcm) / FRAME_SAMPLES)
+        total = delay_samples + len(pcm)
+        frames = math.ceil(total / FRAME_SAMPLES)
         bucket = BUCKET_FRAMES * FRAME_SAMPLES
-        padded = np.zeros(math.ceil(len(pcm) / bucket) * bucket, np.float32)
-        padded[: len(pcm)] = pcm
+        padded = np.zeros(math.ceil(total / bucket) * bucket, np.float32)
+        padded[delay_samples:total] = pcm
         self.calls += 1
         with mx.stream(self.streams[self.calls % len(self.streams)]):
             return self._encode(mx.array(padded[None]))[0, :, :frames]

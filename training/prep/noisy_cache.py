@@ -38,10 +38,12 @@ import fcntl
 import json
 import math
 import multiprocessing
+import os
 import random
 import shutil
 import tempfile
 import time
+import uuid
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -91,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         step.add_argument("--out-dir", type=Path, required=True)
     fetch.add_argument("--fraction", type=float, default=0.6, help="Rows given new conditions.")
     fetch.add_argument("--seed", type=int, default=0)
-    fetch.add_argument("--jobs", type=int, default=16, help="Parallel downloads.")
+    fetch.add_argument("--jobs", type=int, default=None, help="Parallel downloads (default: 16 Hub, 4 local --dataset-dir).")
     fetch.add_argument(
         "--dataset-dir",
         type=Path,
@@ -118,8 +120,11 @@ def parse_args() -> argparse.Namespace:
         "--batch-seconds", type=float, default=640.0, help="Padded audio per Mimi batch."
     )
     args = parser.parse_args()
-    if args.step == "fetch" and not 0 < args.fraction <= 1:
-        parser.error("--fraction must be in (0, 1]")
+    if args.step == "fetch":
+        if not 0 < args.fraction <= 1:
+            parser.error("--fraction must be in (0, 1]")
+        if args.jobs is None:
+            args.jobs = 4 if args.dataset_dir is not None else 16
     return args
 
 
@@ -302,19 +307,49 @@ def fetch(args: argparse.Namespace) -> None:
 
 # --------------------------------------------------------------------------- encode
 
+_noisy_pcm_dir: Path | None = None
+DECODE_JOB_ROWS = cache_build.DECODE_JOB_ROWS
+
+
+def _init_decode_worker(pcm_dir: Path | None) -> None:
+    exit_with_parent()
+    global _noisy_pcm_dir
+    _noisy_pcm_dir = pcm_dir
+
 
 def decode(data: bytes) -> np.ndarray:
     """Worker: the clip at 24 kHz, decoded and resampled by the cache builder's code, so it has
     the samples and frame count the cache was built from."""
     pcm, rate = audio.decode(data)
-    return soxr.resample(pcm, rate, augment.SAMPLE_RATE)
+    return soxr.resample(pcm, rate, augment.SAMPLE_RATE).astype(np.float32, copy=False)
+
+
+def decode_batch(
+    items: list[tuple[int, bytes]]
+) -> tuple[str | None, list[tuple[int, int, int] | tuple[int, np.ndarray]]]:
+    """Worker: decode a 32-clip job into one `/dev/shm` slab file (or inline arrays when no
+    `/dev/shm` exists), avoiding per-clip IPC and pickle pipe overhead."""
+    if _noisy_pcm_dir is None:
+        return None, [(idx, decode(data)) for idx, data in items]
+    chunks: list[np.ndarray] = []
+    meta: list[tuple[int, int, int]] = []
+    offset = 0
+    for idx, data in items:
+        pcm = np.ascontiguousarray(decode(data), np.float32)
+        chunks.append(pcm)
+        meta.append((idx, offset, len(pcm)))
+        offset += len(pcm)
+    slab_path = str(_noisy_pcm_dir / f"{uuid.uuid4().hex}.f32")
+    with open(slab_path, "wb") as f:
+        for c in chunks:
+            c.tofile(f)
+    return slab_path, meta
 
 
 class Encoder:
-    """Conditions, Mimi (float32; TF32 on CUDA) and the new source codes written into the rows. On CUDA moshi's
-    Mimi encodes right-padded batches and the conditions run on the GPU; on MLX `mimi_mlx` encodes
-    a batch's clips one per forward (as the cache build does) while the CPU conditions the next
-    batch's."""
+    """Conditions, Mimi (FastMimiEncoder on CUDA, mimi_mlx on MLX) and the new source codes
+    written into the rows. On CUDA uses double-buffered pinned H2D/D2H, batched GPU
+    `Bank.apply_batch`, and pipelined batch k+1 launches."""
 
     def __init__(self, args: argparse.Namespace):
         cfg = read_json(args.config_path)
@@ -340,68 +375,133 @@ class Encoder:
             )
         self.bank = augment.Bank(augment.fetch_bank(args.bank_dir), self.device)
         self.batch_samples = int(args.batch_seconds * augment.SAMPLE_RATE)
+        self._pinned = [torch.empty(0), torch.empty(0)]
+        self._copied: list[Any] = [None, None]
+        self._turn = 0
+        self._out_pool = cache_build._PinnedOutputPool()
 
-    def shard(self, samples: list[dict[str, Any]], clips: dict[int, Future], frames: str) -> float:
-        """Replace the source codes of the rows in `clips` (sample index -> decoded clip), shortest
-        first in padded batches; `frames` is the samples' source frame count key (`vi_frames` or
-        `en_frames`). Return the seconds of audio encoded. Empties `clips`, so each clip's PCM is
-        freed once it is encoded."""
-        pending: list[tuple[dict[str, Any], torch.Tensor]] = []
-        launched: tuple[list, list] | None = None
+    def _stage_cuda(self, pcms: list[np.ndarray], padded_len: int) -> torch.Tensor:
+        k = self._turn
+        self._turn ^= 1
+        if self._copied[k] is not None:
+            self._copied[k].synchronize()
+        need = len(pcms) * padded_len
+        if self._pinned[k].numel() < need:
+            self._pinned[k] = torch.empty(max(need, self.batch_samples), dtype=torch.float32, pin_memory=True)
+        host = self._pinned[k][:need].view(len(pcms), padded_len)
+        view = host.numpy()
+        for row, pcm in enumerate(pcms):
+            n = len(pcm)
+            view[row, :n] = pcm
+            if n < padded_len:
+                view[row, n:] = 0.0
+        batch = host.to(self.device, non_blocking=True)
+        if self.device.type == "cuda":
+            self._copied[k] = torch.cuda.Event()
+            self._copied[k].record()
+        return batch
+
+    def shard(self, samples: list[dict[str, Any]], jobs: list[Future], frames: str) -> float:
+        """Replace the source codes of all decoded clips from `jobs` (submitted shortest-first in
+        32-clip batches). Return the seconds of audio encoded."""
+        pending: list[tuple[dict[str, Any], np.ndarray]] = []
+        launched: Any = None
         seconds = 0.0
-        for index in sorted(clips, key=lambda index: samples[index][frames]):
-            sample = samples[index]
-            # Shortest first, so this row sets the padded length of the batch it joins.
-            if (
-                pending
-                and (len(pending) + 1) * sample[frames] * FRAME_SAMPLES > self.batch_samples
-            ):
-                launched = self._launch(pending, launched, frames)
-                pending = []
-            try:
-                pcm = clips.pop(index).result()
-            except audio.Rejected as exc:
-                raise RuntimeError(f"{sample['id']}: {exc}") from exc
-            clip = torch.from_numpy(pcm).to(self.device)
-            if math.ceil(clip.shape[-1] / FRAME_SAMPLES) != sample[frames]:
-                raise RuntimeError(
-                    f"{sample['id']}: {clip.shape[-1]} samples, the cache has "
-                    f"{sample[frames]} source frames"
-                )
-            conditions = augment.Conditions(**sample["source_conditions"])
-            pending.append((sample, self.bank.apply(clip, conditions)))
-            seconds += clip.shape[-1] / augment.SAMPLE_RATE
-        if pending:
-            launched = self._launch(pending, launched, frames)
-        if launched is not None:
-            self._write(*launched, frames)
-        return seconds
 
-    def _launch(
-        self, pending: list[tuple[dict[str, Any], torch.Tensor]], launched: tuple[list, list] | None, frames: str
-    ) -> tuple[list, list]:
-        """Start `pending`'s Mimi, then write the batch started before it: on MLX the GPU encodes
-        one batch while the CPU conditions the next. Return `pending` with its codes to come."""
-        clips = [clip for _, clip in pending]
-        if self.mlx:
+        def flush_cuda(
+            batch_items: list[tuple[dict[str, Any], np.ndarray]], prev: Any
+        ) -> tuple[list[dict[str, Any]], list[int], Any, Any]:
+            b_samples = [s for s, _ in batch_items]
+            b_pcms = [p for _, p in batch_items]
+            b_lens = [len(p) for p in b_pcms]
+            b_frames = [s[frames] for s in b_samples]
+            padded_len = max(b_frames) * FRAME_SAMPLES
+            conds = [augment.Conditions(**s["source_conditions"]) for s in b_samples]
+            wav = self._stage_cuda(b_pcms, padded_len)
+            with torch.no_grad():
+                aug = self.bank.apply_batch(wav, b_lens, conds)
+                codes = self.mimi.encode(aug.unsqueeze(1)).to(torch.int32)
+            if self.device.type == "cuda":
+                host, done = self._out_pool.copy_from(codes)
+            else:
+                host, done = codes.cpu(), None
+            if prev is not None:
+                self._collect_cuda(*prev, frames)
+            return b_samples, b_frames, host, done
+
+        def flush_mlx(
+            batch_items: list[tuple[dict[str, Any], np.ndarray]], prev: Any
+        ) -> tuple[list[dict[str, Any]], list[Any]]:
             import mlx.core as mx
 
-            codes = [self.mimi.encode(clip.numpy()) for clip in clips]
+            b_samples = [s for s, _ in batch_items]
+            codes = []
+            for s, pcm in batch_items:
+                cond = augment.Conditions(**s["source_conditions"])
+                aug = self.bank.apply(torch.from_numpy(pcm), cond)
+                codes.append(self.mimi.encode(aug.numpy()))
             mx.async_eval(codes)
-        else:
-            codes = cache_build.mimi_batch(self.mimi, clips, self.device)
-        if launched is not None:
-            self._write(*launched, frames)
-        return pending, codes
+            if prev is not None:
+                self._collect_mlx(*prev, frames)
+            return b_samples, codes
 
-    def _write(self, pending: list[tuple[dict[str, Any], torch.Tensor]], codes: list, frames: str) -> None:
-        for (sample, _), new in zip(pending, codes, strict=True):
+        for job in jobs:
+            try:
+                slab_path, entries = job.result()
+            except audio.Rejected as exc:
+                raise RuntimeError(str(exc)) from exc
+            slab = None
+            if slab_path is not None:
+                slab = np.fromfile(slab_path, np.float32)
+                os.unlink(slab_path)
+            for entry in entries:
+                if slab is not None:
+                    index, off, length = entry  # type: ignore[misc]
+                    pcm = slab[off : off + length]
+                else:
+                    index, pcm = entry  # type: ignore[misc]
+                sample = samples[index]
+                if math.ceil(len(pcm) / FRAME_SAMPLES) != sample[frames]:
+                    raise RuntimeError(
+                        f"{sample['id']}: {len(pcm)} samples, the cache has "
+                        f"{sample[frames]} source frames"
+                    )
+                if (
+                    pending
+                    and (len(pending) + 1) * sample[frames] * FRAME_SAMPLES > self.batch_samples
+                ):
+                    launched = flush_mlx(pending, launched) if self.mlx else flush_cuda(pending, launched)
+                    pending = []
+                pending.append((sample, pcm))
+                seconds += len(pcm) / augment.SAMPLE_RATE
+        if pending:
+            launched = flush_mlx(pending, launched) if self.mlx else flush_cuda(pending, launched)
+        if launched is not None:
             if self.mlx:
-                new = torch.from_numpy(np.array(new))
+                self._collect_mlx(*launched, frames)
+            else:
+                self._collect_cuda(*launched, frames)
+        return seconds
+
+    def _collect_cuda(
+        self, b_samples: list[dict[str, Any]], b_frames: list[int], host: torch.Tensor, done: Any, frames: str
+    ) -> None:
+        if done is not None:
+            done.synchronize()
+        arr = host.numpy()
+        for row, (sample, count) in enumerate(zip(b_samples, b_frames, strict=True)):
             source = sample["codes"][1 + self.dep_q : 1 + self.dep_q + self.source_q]
-            if int(source[0, sample[frames]]) != self.card:
-                raise RuntimeError(f"{sample['id']}: no codec EOS at frame {sample[frames]}")
-            source[:, : sample[frames]] = new
+            if int(source[0, count]) != self.card:
+                raise RuntimeError(f"{sample['id']}: no codec EOS at frame {count}")
+            source[:, :count] = torch.from_numpy(arr[row, :, :count].copy())
+
+    def _collect_mlx(self, b_samples: list[dict[str, Any]], codes: list[Any], frames: str) -> None:
+        for sample, new in zip(b_samples, codes, strict=True):
+            count = sample[frames]
+            source = sample["codes"][1 + self.dep_q : 1 + self.dep_q + self.source_q]
+            if int(source[0, count]) != self.card:
+                raise RuntimeError(f"{sample['id']}: no codec EOS at frame {count}")
+            source[:, :count] = torch.from_numpy(np.array(new))
 
 
 def wait_for_source(out_dir: Path, name: str) -> Path | None:
@@ -438,11 +538,12 @@ def encode(args: argparse.Namespace) -> None:
 
 @dataclasses.dataclass
 class Loaded:
-    """A clean shard with its rows' conditions drawn and their clips queued for decoding."""
+    """A clean shard with its rows' conditions drawn and their clips queued in 32-clip decode jobs."""
 
     source_path: Path
     payload: dict[str, Any]
-    clips: dict[int, Future]  # sample index -> the decoded clip
+    jobs: list[Future]
+    count: int
     frames: str  # the samples' source frame count key
 
 
@@ -453,8 +554,8 @@ def load(
     pool: ProcessPoolExecutor,
     shard_path: Path,
 ) -> Loaded | None:
-    """The shard, its source checked against it, and its selected rows submitted to the decode
-    workers; None when its source is missing and no fetch runs."""
+    """The shard, its source checked against it, and its selected rows submitted in 32-clip jobs
+    shortest-first to the decode workers; None when its source is missing and no fetch runs."""
     source_path = wait_for_source(args.out_dir, shard_name(shard_path))
     if source_path is None:
         return None
@@ -496,50 +597,66 @@ def load(
         conditions = bank.draw(f"{settings['seed']}:{sample['id']}")
         sample["source_conditions"] = dataclasses.asdict(conditions)
         clip_rows[index] = audio_bytes[row]
-    # Shortest first, the order Encoder.shard takes them in, so its first batch is ready first.
+    # Shortest first, in 32-clip decode jobs, so Encoder.shard consumes jobs in sorted order.
     order = sorted(clip_rows, key=lambda index: samples[index][frames])
-    clips = {index: pool.submit(decode, clip_rows[index]) for index in order}
-    return Loaded(source_path, payload, clips, frames)
+    jobs = [
+        pool.submit(decode_batch, [(idx, clip_rows[idx]) for idx in order[start : start + DECODE_JOB_ROWS]])
+        for start in range(0, len(order), DECODE_JOB_ROWS)
+    ]
+    return Loaded(source_path, payload, jobs, len(order), frames)
+
+
+def _save_noisy_shard(payload: dict[str, Any], out_path: Path, source_path: Path) -> None:
+    partial = out_path.with_name(f".{out_path.name}.tmp")
+    torch.save(payload, partial)
+    durable(partial)
+    partial.replace(out_path)
+    durable(out_path.parent)
+    source_path.unlink()
 
 
 def encode_shards(
     args: argparse.Namespace, settings: dict[str, Any], split: str, shards: list[Path]
 ) -> list[str]:
-    """Write the noisy shards; return the names of those whose source is missing. Each shard's
-    clips are queued before the GPU encodes the shard before it, so the workers decode them
-    meanwhile."""
+    """Write the noisy shards; return the names of those whose source is missing. Reads the next
+    shard in a background loader thread and writes the finished shard in a background writer
+    thread so neither `pq.read_table`/`torch.load` nor `torch.save`/`durable` stalls the GPU."""
     encoder = Encoder(args)
-    # One CPU stays for this process, which feeds the GPU: workers past the budget exhaust a
-    # container's quota, and the throttle stalls this process with them.
     workers = args.workers if args.workers is not None else cache_build.default_workers(args.device)
     print(f"{workers} decode workers", flush=True)
     spawn = multiprocessing.get_context("spawn")
     missing: list[str] = []
-    with ProcessPoolExecutor(workers, mp_context=spawn, initializer=exit_with_parent) as pool:
+    with (
+        cache_build.pcm_dir() as pcm,
+        ProcessPoolExecutor(
+            workers, mp_context=spawn, initializer=_init_decode_worker, initargs=(pcm,)
+        ) as pool,
+        ThreadPoolExecutor(1, thread_name_prefix="noisy-load") as loader,
+        ThreadPoolExecutor(1, thread_name_prefix="noisy-save") as saver,
+    ):
         try:
-            ahead = load(args, settings, encoder.bank, pool, shards[0])
+            ahead: Future | None = loader.submit(load, args, settings, encoder.bank, pool, shards[0])
+            saved: Future | None = None
             last = time.perf_counter()
             for number, shard_path in enumerate(shards, 1):
-                shard = ahead
-                if number < len(shards):
-                    ahead = load(args, settings, encoder.bank, pool, shards[number])
+                shard = ahead.result()
+                ahead = (
+                    loader.submit(load, args, settings, encoder.bank, pool, shards[number])
+                    if number < len(shards)
+                    else None
+                )
                 if shard is None:
                     print(f"{shard_path.name}: no fetched source, skipped", flush=True)
                     missing.append(shard_name(shard_path))
                     last = time.perf_counter()
                     continue
                 payload = shard.payload
-                count = len(shard.clips)
-                seconds = encoder.shard(payload["samples"], shard.clips, shard.frames)
+                count = shard.count
+                seconds = encoder.shard(payload["samples"], shard.jobs, shard.frames)
                 payload["source_augment"] = {"clean_cache": f"{split}/{shard_path.name}"} | settings
-                out_path = args.out_dir / shard_path.name
-                partial = out_path.with_name(f".{out_path.name}.tmp")
-                torch.save(payload, partial)
-                durable(partial)
-                partial.replace(out_path)
-                durable(args.out_dir)
-                shard.source_path.unlink()
-                # Since the previous shard: with the next one decoding meanwhile, the pace.
+                if saved is not None:
+                    saved.result()
+                saved = saver.submit(_save_noisy_shard, payload, args.out_dir / shard_path.name, shard.source_path)
                 now = time.perf_counter()
                 wall, last = now - last, now
                 print(
@@ -548,9 +665,12 @@ def encode_shards(
                     f"[{number}/{len(shards)}]",
                     flush=True,
                 )
+            if saved is not None:
+                saved.result()
         except BaseException:
-            # Without this, leaving the pool decodes every queued clip before the error shows.
-            pool.shutdown(cancel_futures=True)
+            pool.shutdown(wait=True, cancel_futures=True)
+            loader.shutdown(wait=False, cancel_futures=True)
+            saver.shutdown(wait=False, cancel_futures=True)
             raise
     return missing
 

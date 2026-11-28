@@ -23,6 +23,7 @@ import argparse
 import math
 import time
 from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +92,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers", type=int, help="Decode and alignment processes (default: the device's)."
     )
+    parser.add_argument("--fp8-ctc", action="store_true", help="CUDA Blackwell FP8 on wav2vec2 transformer linears.")
+    parser.add_argument("--fp8-mimi", action="store_true", help="CUDA Blackwell FP8 on Mimi encoder transformer linears.")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
     args = parser.parse_args()
     if args.max_frames <= 0:
@@ -159,16 +162,31 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(args.max_frames, args.min_alignment_score, args.direction, args.target_delay_ratio, args.seed)
     with exclusive(args.out_dir / ".cache_codes.lock", f"another cache_codes run is using {args.out_dir}"):
-        builder = Builder(args.device, settings, args.config_path, args.mimi_weight,
-                          args.tokenizer or DIRECTION_TOKENIZERS[args.direction], ane_ctc=args.ane_ctc)
+        builder = Builder(
+            args.device,
+            settings,
+            args.config_path,
+            args.mimi_weight,
+            args.tokenizer or DIRECTION_TOKENIZERS[args.direction],
+            ane_ctc=args.ane_ctc,
+            fp8_ctc=args.fp8_ctc,
+            fp8_mimi=args.fp8_mimi,
+        )
         began, hours = time.perf_counter(), 0.0
         workers = args.workers or default_workers(args.device)
-        for shard in builder.run(todo(args, sources), read, workers):
-            out_path = cache_path(args.out_dir, shard.key)
-            write(builder.payload(shard, {"file": shard.file, "bytes": shard.key.stat().st_size}), out_path)
-            hours += mimi_hours(shard.samples)
-            line = summary(shard, hours, time.perf_counter() - began)
-            print(f"{shard.split}/{out_path.name}: {line}", flush=True)
+        with ThreadPoolExecutor(1) as writes:
+            written: Future | None = None
+            for shard in builder.run(todo(args, sources), read, workers):
+                out_path = cache_path(args.out_dir, shard.key)
+                payload = builder.payload(shard, {"file": shard.file, "bytes": shard.key.stat().st_size})
+                if written is not None:
+                    written.result()
+                written = writes.submit(write, payload, out_path)
+                hours += mimi_hours(shard.samples)
+                line = summary(shard, hours, time.perf_counter() - began)
+                print(f"{shard.split}/{out_path.name}: {line}", flush=True)
+            if written is not None:
+                written.result()
 
 
 if __name__ == "__main__":
