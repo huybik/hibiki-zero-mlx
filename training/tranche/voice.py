@@ -76,6 +76,7 @@ PREFILL = 64
 QUEUE = 512  # chunks waiting for a slot, their prompt embeddings built ahead on a thread
 DECODE_POOL = 512  # chunks decoded together, sorted by length into batches of DECODE_BATCH
 DECODE_BATCH = 64
+DECODE_MIN_FRAMES = 33  # shorter, a decode stage of MOSS's fits one flex_attention block: compiled apart (Voicer)
 # Verification, as the bake-off scored ([tranche-tts](../../docs/agent-memory/tranche-tts.md)):
 WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English normalizer only
 BROKEN_WER = 0.2
@@ -264,17 +265,21 @@ class Voicer:
         tts.speaker_encoder = tts.denoiser = None  # its onnxruntime sessions, each with a thread per core: run here on the GPU
         self.codec = tts.audio_tokenizer
         self.codec.set_compute_dtype("fp16")  # encode and decode: 59 dB from fp32 on the bench
-        # Encode and decode whole (no streaming chunks), their attention windowed (window_attention), each compiled
-        # once for every length and batch of at least two (PyTorch specializes a batch of one: a recompile of ~25 s,
-        # so such a batch is padded to two): decode 7.7x and encode 2.8x the SDK's (decode 54.6 dB from fp32's
-        # one-row decode, as fp16's 55.1; 98.4% of the codes equal)
+        # Encode and decode whole (no streaming chunks), their attention windowed (window_attention), compiled:
+        # decode 7.7x and encode 2.8x the SDK's (decode 54.6 dB from fp32's one-row decode, as fp16's 55.1; 98.4% of
+        # the codes equal). Every layer is causal, so right padding never reaches a real frame. The encode runs at one
+        # shape, ENROL_BATCH references padded to the longest; the decode at any length of at least
+        # DECODE_MIN_FRAMES and batch of at least two. Smaller, PyTorch specializes it (a batch of one; a stage of a
+        # single flex_attention block): a recompile of 25-50 s each, mid-run.
         attention = sys.modules[type(self.codec).__module__].MossAudioTokenizerMultiheadAttention
         for m in self.codec.modules():
             if isinstance(m, attention):
                 if not (m.causal and m.context):
                     raise SystemExit("MOSS attention without a causal window: window_attention does not apply")
                 m._forward_non_streaming_sdpa = types.MethodType(window_attention, m)
-        self.codec._encode_frame = torch.compile(self.codec._encode_frame, dynamic=True)  # batch_encode's whole path
+        hop = self.codec.downsample_rate  # samples a code frame
+        self.encode_len = -(-int(REF_S * OUT_RATE) // hop) * hop
+        self.encode = torch.compile(lambda wav: self.codec._encode_frame(wav).audio_codes, dynamic=False)
         self.decode_codes = torch.compile(lambda codes: self.codec._decode_frame(codes).audio, dynamic=True)
         self.prompt = V3TurboBatchEngine(tts)._prompt_embeds
         self.denoiser = OnnxGraph(f"{path}/denoiser.onnx", "cuda", torch.float16, compile=True, mode=DENOISE_MODE)
@@ -300,8 +305,9 @@ class Voicer:
         log(f"denoiser compiled for {len(self.denoiser.plans)} lengths in {time.perf_counter() - began:.0f} s")
         began = time.perf_counter()
         with torch.no_grad():
-            self.codec.batch_encode([torch.zeros(2, int(BUCKET_S * OUT_RATE), device="cuda")] * 2)
-            self.decode_codes(torch.zeros(tts.config.n_vq, 2, 16, dtype=torch.long, device="cuda"))
+            self.encode(torch.zeros(ENROL_BATCH, 2, self.encode_len, device="cuda"))
+            # sizes unlike each other and the codebooks' 16, so none is tied to another
+            self.decode_codes(torch.zeros(tts.config.n_vq, 3, DECODE_MIN_FRAMES + 7, dtype=torch.long, device="cuda"))
         torch.cuda.synchronize()
         log(f"codec encode and decode compiled in {time.perf_counter() - began:.0f} s")
 
@@ -360,12 +366,13 @@ class Voicer:
                         part = range(k, min(k + ENROL_BATCH, len(piece)))
                         w16 = torch.from_numpy(np.stack([ins[j][0] for j in part])).cuda()
                         emb = self.speaker(speaker_fbank(w16))[0].float().cpu().numpy()
-                        wavs = [torch.from_numpy(ins[j][1]).cuda().expand(2, -1) for j in part]
-                        enc = self.codec.batch_encode(wavs + wavs[:1] * (len(wavs) == 1))  # at least two
-                        lengths = enc.audio_codes_lengths.tolist()
-                        codes = enc.audio_codes.permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
+                        wav = torch.zeros(ENROL_BATCH, 2, self.encode_len, device="cuda")
                         for b, j in enumerate(part):
-                            out[piece[j]] = (emb[b].copy(), np.ascontiguousarray(codes[b, : lengths[b]]))
+                            wav[b, :, : len(ins[j][1])] = torch.from_numpy(ins[j][1]).cuda()
+                        codes = self.encode(wav).permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
+                        for b, j in enumerate(part):  # batch_encode's lengths: whole frames of the clip
+                            n = len(ins[j][1]) // self.codec.downsample_rate
+                            out[piece[j]] = (emb[b].copy(), np.ascontiguousarray(codes[b, :n]))
         return out
 
     # generation
@@ -440,8 +447,8 @@ class Voicer:
         for b in range(0, len(pending), DECODE_BATCH):
             batch = pending[b: b + DECODE_BATCH]
             with torch.no_grad():
-                codes = torch.zeros(batch[0][1].shape[1], max(len(batch), 2), len(batch[-1][1]), dtype=torch.long,
-                                    device="cuda")  # at least two rows
+                codes = torch.zeros(batch[0][1].shape[1], max(len(batch), 2), max(len(batch[-1][1]), DECODE_MIN_FRAMES),
+                                    dtype=torch.long, device="cuda")
                 for j, (_, c) in enumerate(batch):
                     codes[:, j, : len(c)] = c.T
                 audio = self.decode_codes(codes).float().mean(1).cpu().numpy()
