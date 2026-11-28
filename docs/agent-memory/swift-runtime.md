@@ -66,7 +66,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Layout](#layout) · [Hibiki-Zero delt
 - Speech Live, the iPhone app in [onevoice-ai-challenge](https://github.com/anthoai97/onevoice-ai-challenge)
   (`apps/ios/`), copies `HibikiCore` by hand, adding `Translator.mlxMemoryMB()` and keeping the
   −20 dBFS level stage (+14 dB cost the phone EN→VI). It downloads the heads student's Core ML
-  `release/student_heads_coreml6` and samples as `lm_gen_config` says
+  `release/student_heads_coreml6` or the slices student's `release/student_slices_coreml6`
+  ([slices-phone](slices-phone.md)) and samples as `lm_gen_config` says
   ([student-palettize](student-palettize.md#release-and-phone)). Its screen shares the GPU with
   Mimi's encode, which a hot phone runs short of ([lm-npu](lm-npu.md#speed)).
 

@@ -1,6 +1,6 @@
 # Hibiki MLX — project context
 
-Last verified: 2026-11-27
+Last verified: 2026-11-28
 
 ## Purpose
 
@@ -196,6 +196,7 @@ inference/ (Apple Silicon, MLX)
 | The phone student cut from the two-way model: the cut, training and distilling a student, checks | [phone-student](docs/agent-memory/phone-student.md) | `training/student/`, `training/finetune/streams.py` (`model_rows`) |
 | The parallel-heads student: its delays, 16 codebooks with 8–15 at one delay, speed, runs and validations | [student-heads](docs/agent-memory/student-heads.md) | `training/student/heads.py`, `restart.sh student-heads` |
 | The slices student: the heads student's trunk with depformer slices (9 of 512 × 2, the last for codebooks 8–15), its cut, training and runs | [student-slices](docs/agent-memory/student-slices.md) | `training/student/slices.py`, `train.py --freeze-trunk`, `restart.sh student-slices-5090`, `inference/moshi-mlx/moshi_mlx/models/lm.py` |
+| The slices student's phone release: its fused Core ML export, Speech Live, its voice on the phone against the teacher | [slices-phone](docs/agent-memory/slices-phone.md) | `release/student_slices_coreml6`, onevoice-ai-challenge `apps/ios` |
 | Training the heads student against the Core ML palettization: the method, `--park-states`, the 6-bit run, its tests and Neural Engine agreement | [student-palettize](docs/agent-memory/student-palettize.md) | `training/student/palettize.py`, `train.py --palettize-bits` |
 | The slices student's on-policy run (`both_slices_z`): its profile and sizes, the run, its 6-bit finish and export to the phone | [slices-on-policy](docs/agent-memory/slices-on-policy.md) | `grpo_launch.sh both_slices_z`, `runs/both_slices_z` |
 | The phone student's GRPO run, its evaluations and tests, the shipped update 2,000 | [student-grpo](docs/agent-memory/student-grpo.md) | `runs/grpo_student`, `/Volumes/data/hibiki-zero-evals/` |
@@ -223,7 +224,8 @@ inference/ (Apple Silicon, MLX)
 - Upstream model: https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16
 - Run recovery repo (`HIBIKI_HF_REPO`): https://huggingface.co/huybik/hibiki-zero-vi-full-sft
   (its `release/twoway_grpo1400/`: the shipping two-way model, self-contained, with a model card;
-  `release/student_heads_coreml6/`: the phone's heads student in Core ML, with a card)
+  `release/student_heads_coreml6/` and `release/student_slices_coreml6/`: the phone's heads and
+  slices students in Core ML, with cards)
 - Training caches (the dataset repo; the model repo of the same name holds runs):
   https://huggingface.co/datasets/huybik/hibiki-zero-vi-full-sft
 - EN-VI speech and text pairs: https://huggingface.co/datasets/anquachdev/common-vi-en
