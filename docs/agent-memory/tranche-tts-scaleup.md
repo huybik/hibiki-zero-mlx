@@ -107,12 +107,21 @@ VieNeu, each step adding to the one above:
 
 - Enrolment on the GPU: the SDK's ONNX denoiser and speaker encoder in PyTorch (onnx2torch in the
   bench, `training/tranche/onnx_graph.py` in production: on the speaker encoder cosine ≥ 0.99997 to
-  onnxruntime, on the denoiser bit-exact to the bench's runner), its Kaldi fbank by torchaudio, clips trimmed to whole 0.25 s and batched by length (81% are the full 8 s).
+  onnxruntime, on the denoiser bit-exact to the bench's runner), its Kaldi fbank batched on the GPU
+  (`voice.speaker_fbank`: 0.019 ms a clip, embeddings at cosine 0.999999 to the SDK's
+  kaldi-native-fbank), clips trimmed to whole 0.25 s and batched by length (81% are the full 8 s).
   Without the denoiser VieNeu runs 38.1 rows/s at the continuous step but breaks 11.9%: it stays.
-- MOSS decode: `batch_decode(chunk_duration=2.0)` keeps each layer's context as a ring cache and
-  matches the SDK's one-row decode within 7e-6 (unchunked batch decode builds a dense T² bias and
-  runs out of memory); fp16 is 59 dB from fp32 (bf16 41 dB). 2 s chunks at 64 rows is its best,
-  ~3,200× real time on 20 s rows.
+- MOSS decode and encode run whole: every attention layer of the codec is causal with a window
+  (4–10 s), which `voice.window_attention` runs through `flex_attention` with a sliding-window block
+  mask, and both paths are compiled. The SDK's whole batch decode builds a dense T² bias and runs out
+  of memory, and its chunked `batch_decode` (2 s chunks, a ring cache a layer) ran 4.60 s a 512
+  chunks against 0.60 s now, 54.6 dB from fp32's one-row decode (the chunked fp16 55.1; bf16 41).
+  Encode 98 → 35 ms for 64 references, 98.4% of the codes equal.
+- Shapes: Dynamo specializes a batch of one and a codec stage that fits one flex_attention block
+  (under 33 code frames), and each such shape recompiles for 25–50 s. So the encode runs at one
+  static shape (64 references padded to 8 s; causal layers keep the padding out of real frames, and
+  a clip keeps its whole frames, as `batch_encode`'s lengths), and decode batches pad to at least two
+  rows and 33 frames.
 - Continuous batching (the bench's `vieneu_cb.py`, `training/tranche/vieneu_frame.py` in production): the SDK's fused CUDA-graph frame with each row's own cache
   position, frame counter and repetition window, a finished row's slot refilled; the SDK's static
   batches run to their longest row (37% of row-frames real). Graph-captured writes need device
@@ -123,44 +132,84 @@ VieNeu, each step adding to the one above:
   from fp32), a graph per reference length (32; ~14 min the first time, ~1 min from Inductor's
   cache), batches padded to 16 with copies (instance norms keep clips apart).
 - Frame compiled: each layer's projections, norms, rotary and MLP, and the acoustic decoder with
-  its sampling (attention as math), through Inductor; the cache writes and the backbone's attention
-  stay eager, since compiling the whole frame copies the 1.5 GB cache and runs out of memory.
-  10.1 → 6.0 ms a frame at 256 slots, 9.9 ms at 512. The top-k-first sampler draws from the 25
-  top-k values, the SDK's distribution without its sort over 1,024 codes.
+  its sampling (attention as math), through Inductor; the cache writes stay eager, since compiling
+  the whole frame copies the 1.5 GB cache and runs out of memory. 10.1 → 6.0 ms a frame at 256
+  slots, 9.9 ms at 512. The top-k-first sampler draws from the 25 top-k values, the SDK's
+  distribution without its sort over 1,024 codes.
+- The backbone's attention (`training/tranche/decode_attention.py`): a Triton kernel over each
+  slot's live keys only, a program per slot and KV head, its 3 query heads padded to `tl.dot`'s 16
+  rows; the SDK's attends all 1,024 positions under a mask. 0.404 → 0.170 ms a layer, the frame
+  9.7 → 6.0 ms at 512 slots. The SDK's prompt cache is left-padded: `ContinuousFrame.load` moves
+  each row's keys to its slot's start in one gather.
 - Codec encode in fp16: 3.13 → 1.51 ms a clip, 97.9% of codes as fp32's (codebook 0 99.9%; bf16
   76%).
 - Denoiser autotuned (`mode="max-autotune-no-cudagraphs"`): 8.9 → 7.4 ms a clip, but its first
   compile takes 54 min for the 32 lengths; later runs load it from Inductor's cache.
+- The denoiser's 40 InstanceNorms as fp32 sums reduced one axis at a time
+  (`onnx_graph.instance_norm`): Inductor reduces `F.instance_norm`'s 841 × T plane in one block a
+  channel. 8.0 → 7.2 ms a clip in the default mode.
 - Broken rows across VieNeu's steps (6.8–7.7%) and VoxCPM2's two concurrencies (3.8%, 4.5%) differ
   by sampling noise (±0.6 points on 2,000 rows).
 - No gain: two processes on the GPU (25.5 rows/s against one's 27.8: without MPS they take
   turns), a second CUDA stream beside the frames (overlaps ~25% of the shorter stage), denoiser
-  batches of 32, `cudnn.benchmark`, longer decode chunks or bigger decode batches. Not done: the
-  speaker encoder compiled (1 ms a clip).
+  batches of 32, `cudnn.benchmark`, longer decode chunks or bigger decode batches, and TensorRT
+  11.5 for the denoiser (fp16 no faster than the compiled graph and its output wrong, −0.1 dB from
+  fp32). Not done: the speaker encoder compiled in fp16 (0.59 → 0.18 ms a clip, but 1.6 s of a
+  bench run and 32 more compiled shapes) and the frame's sampler and prefill (~0.7 ms a frame).
 - At 35.5 rows/s (56.3 s): enrolment 26.7 s (denoise 16.6, fbank and speaker encoder 3.3, codec
   encode 3.2, trim and resampling 3.5), frames 13.9 s, decode 14.7 s, joining 0.9 s.
 
+Then production's own `voice.Voicer` (2026-11-28, records in
+`/Volumes/data/hibiki-zero-evals/box-62513802/ttsbench-5090opt-2026-11-28/`: `vbench.py` feeds it the
+same 2,000 rows and times its stages), each step adding to the one above; levers that change the
+output were kept only within the bench's noise on all four scores:
+
+| Step | Rows/s | Real time | Broken | Kept WER | Voice match | UTMOS |
+|---|---:|---:|---:|---:|---:|---:|
+| main (torch 2.8) | 29.6 | 485× | 7.3% | 0.035 | 0.594 | 3.19 |
+| torch 2.15 + cu134, the speaker fbank on the GPU, the frame's attention in Triton, MOSS whole and compiled | 50.2 | 827× | 7.3% | 0.032 | 0.593 | 3.19 |
+| the denoiser's instance norms by axis | 52.4 | 861× | 6.9% | 0.034 | 0.591 | 3.19 |
+| clean references skip the denoiser, the encode at one shape | 58.3 | 962× | 7.2% | 0.035 | 0.595 | 3.18 |
+| rejected: 5 s references (`REF_S`) | 69.5 | 1,145× | 6.9% | 0.035 | 0.572 | 3.19 |
+| rejected: 5 s references and the gate | 76.8 | 1,262× | 7.0% | 0.035 | 0.575 | 3.19 |
+
+- Paired against VoxCPM2 on rows neither broke, voice match −0.0909 ± 0.0024 on main, −0.0901 with
+  the gate, −0.1130 with 5 s references: those lose 0.02 of voice match, ~9 standard errors.
+- The gate (`CLEAN_SPREAD_DB`): a reference whose 20 ms frame levels spread at least 40 dB (95th
+  minus 10th percentile, `voice.level_spread`) is clean enough to skip the denoiser: ~30% of YODAS's.
+  Chosen before its run from the 2026-11-26 bench's runs with and without the denoiser, each row
+  taken from the run the gate would pick (levels by `snr_est.py`): broken 6.75% against 6.80%.
+- At 58.3 rows/s (34.3 s): denoise 11.2 s, speaker encoder 1.7, codec encode 1.4, admission 2.4,
+  frames 7.6, decode 6.8; peak 13.0 GiB allocated. At start-up the denoiser compiles its 32 lengths
+  in ~80 s from Inductor's cache and the codec in ~45 s.
+
 ## In production
 
-`training/tranche/voice.py` (env `vieneu`) runs the bench's last setup with the denoiser compiled in
-Inductor's default mode (the 34.1 rows/s step: max-autotune's first compile takes ~54 min, and the
-module's first run on the box missed the bench's cache), streamed:
+`training/tranche/voice.py` (env `vieneu`, torch 2.15 + cu134) runs the production `Voicer` of the
+table above, streamed:
 
 - The loader's processes trim, cut and resample each shard's references and phonemize its lines a
   shard ahead: 217 rows/s with 4 processes. A shard's references are ~17 GB (8 s at 44.1 kHz in
-  float32 a row), so the next shard loads only once the one before is enrolled and its references
-  freed: holding three, the first production run filled the box's 127 GB and was killed (2026-11-26).
-- The GPU enrols a shard at a time, between frames, 1,024 rows at once, dropping each reference
-  once denoised: a whole shard's denoised, 16 kHz and 48 kHz copies peaked at ~59 GB, which glibc
-  kept in the process after. A reference under one 0.25 s bucket is padded with silence to one,
-  so the 32 compiled lengths cover them all.
+  float32 a row), so the next shard starts loading only once the voicer starts on the one before:
+  two at most (holding three, the first production run filled the box's 127 GB and was killed,
+  2026-11-26).
+- Enrolment is streamed: the voicer takes a shard's rows 256 at a time (`ENROL_PIECE`), shortest
+  references first, enrolling each piece as it takes it and dropping its references, so the frames
+  and the checks keep running between pieces. Enrolling a whole shard at once held the frames for
+  128–156 s a shard (~30% of its time), with the ASR idle. A reference under one 0.25 s bucket is
+  padded with silence to one, so the 32 compiled lengths cover them all.
 - The SDK's own onnxruntime denoiser and speaker encoder, built by its constructor, are dropped
   (each holds a thread per core); PyTorch runs with expandable segments, as the bench did.
 - Rows enter as slots free, from a queue of 512 chunks whose prompt embeddings a thread builds ahead.
   A chunk made again (too short, or suspected of babble) goes to the queue's front. Chunks are
   decoded once 512 wait, sorted by length into batches of 64, or all that wait once nothing generates.
+- The checks: 32 processes, each hearing 8 rows at once on threads (`CHECK_ROWS`), so 256 requests
+  are in flight, the server's `--max-num-seqs`. The server spends ~92% of its time in decode steps
+  (0.67 s a request against 0.06 s of prefill; ~53 transcript tokens a row), each mostly a read of
+  its weights, so a bigger batch costs it little more a step. Runaway transcripts (to the 512-token
+  cap) are 0.6% of its decode tokens: no lower cap.
 
-Measured on box 62513802 (2026-11-26):
+Main's code, measured on box 62513802 (2026-11-26):
 
 - Alone, 2,000 YODAS rows of shard 0004 (the smoke test, enrolment in): 30.7 rows/s, 499× real
   time; pace off 2× on 1.1%. The denoiser's first compile took 681 s, 66–77 s from Inductor's
@@ -172,8 +221,31 @@ Measured on box 62513802 (2026-11-26):
 - One process over shards 0005–0021, loading and enrolment in: 197,947 rows, 919.9 h of English
   in 2.33 h, 23.7 rows/s, RTF 0.00253 (~395× real time, 2.8–3.0× VoxCPM2's); still broken 6.1–8.7%
   a shard.
-- Enrolment holds the frames for 128–156 s a shard (13 ms a row), ~30% of a shard's
-  time: the next lever is to run it beside the frames. Voice's main process stays at ~30 GB.
+
+End to end (2026-11-28, box 62513802): `voice.run` on YODAS shards 0000–0001 (21,930 rows, ~100 h of
+English) beside the ASR server under MPS, nothing pushed (`prod_e2e.py` in the records), timed from
+the voicer's start-up (compiles out) to the last shard written:
+
+| Code | Rows/s | Real time | Still broken (0000, 0001) |
+|---|---:|---:|---|
+| main | 19.9 | 328× | 6.7%, 8.4% |
+| this round's voicer, 32 requests in flight | 32.2 | 532× | 7.2%, 8.7% |
+| and 256 in flight (`CHECK_ROWS`) | 36.6 | 602× | 7.3%, 8.5% |
+
+- On main the voicer stops 128–151 s a shard to enrol it whole. With 32 requests in flight the
+  checks fell ~5,000 rows behind the voicer (~40 rows/s); with 256 they keep up.
+- At 256 the run is the GPU's (~97% busy, ~440 W): the voicer needs ~17 ms of it a row (58.3
+  rows/s alone) and the ASR ~12.5 ms (below), ~34 rows/s back to back; MPS overlaps a little more.
+  The voicer's main process peaked at ~40 GB (the rows waiting for checks, two shards' references).
+- Main's denoiser compile on torch 2.8 took 727 s again (Inductor's cache is per torch version).
+- The ASR alone on those rows (their Opus at 16 kHz, 256 in flight, `asr_ab.py`): 80.0 rows/s in
+  bf16, so ~12.5 ms of the GPU a row against the voicer's ~17. With `--quantization fp8` (vLLM's
+  online FP8; weights 3.87 → 2.55 GiB) 111.2 rows/s, 1.39×: the broken flag agrees on 98.7% of
+  rows, broken 7.61% against 7.66%, kept WER median 0.036 against 0.037. Not adopted: the same
+  server hears the Vietnamese of ingest and filters, unchecked in FP8.
+- Not done (the plan's B1, B3): vLLM past 0.14 (`qwen-asr` pins it), and checks that verify
+  `text_en` as a draft in one forward pass, which the server's HTTP API cannot take (it builds the
+  prompt itself); an in-process vLLM would.
 
 ## Running them on the 5090
 
@@ -194,9 +266,11 @@ Measured on box 62513802 (2026-11-26):
 
 ## Finding
 
-Optimized, VieNeu runs 35.5 rows/s (583× real time) against VoxCPM2's 11.3–11.45 (~168×): 3.1×,
+Optimized, VieNeu ran 35.5 rows/s (583× real time) against VoxCPM2's 11.3–11.45 (~168×): 3.1×,
 3.0× on rows that do not break. By the user's rule VieNeu is the scale-up's TTS (2026-11-26). It
 keeps its SDK's quality: 7.7% broken against VoxCPM2's 3.8–4.5%, voice match 0.60 against 0.69,
-UTMOS 3.18 against 2.7. Neither reaches 1,000×: at these rates 20k h of YODAS rows take ~41
-5090-hours on VieNeu against ~130 on VoxCPM2. `voice.py` runs VieNeu from YODAS shard 0004 on
-([In production](#in-production)).
+UTMOS 3.18 against 2.7. `voice.py` runs VieNeu from YODAS shard 0004 on
+([In production](#in-production)). Its voicer now runs 58.3 rows/s alone (962× real time) and the
+whole job 36.6 rows/s beside its ASR checks (602×, 2026-11-28): 20k h of YODAS rows in ~33
+5090-hours, against ~51 at production's 395× before. The ASR's checks now cost the GPU ~12.5 ms a
+row against the voicer's ~17.

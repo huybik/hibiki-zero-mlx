@@ -1,8 +1,8 @@
 # Tranche English TTS
 
-Read when touching `training/tranche/bakeoff.py`, `voice.py`, `vieneu_frame.py`, `onnx_graph.py` or
-`envs.sh`, or choosing, tuning or running the English TTS that voices the real-Vietnamese tranche's
-targets in each speaker's voice.
+Read when touching `training/tranche/bakeoff.py`, `voice.py`, `vieneu_frame.py`, `decode_attention.py`,
+`onnx_graph.py` or `envs.sh`, or choosing, tuning or running the English TTS that voices the
+real-Vietnamese tranche's targets in each speaker's voice.
 Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tranche.md)
 
 Kyutai's TTS 1.6B, the paper's, is out: its voice conditioning is closed and only precomputed
