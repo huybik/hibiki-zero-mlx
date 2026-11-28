@@ -21,6 +21,14 @@ export and runtime: [lm-npu](lm-npu.md#depformer-slices).
   each way, seed 42, `/Volumes/data/hibiki-zero-evals/mac/slices-gate/*_swift20/`): VI→EN chrF
   49.01 / 49.49, EN→VI 34.69 / 32.20, speaker_sim 0.37 / 0.38 and 0.16 / 0.17, HNR 4.3 / 4.4 and
   6.1 / 5.8 dB, every set healthy: the same model within sampling noise.
+- The wide slices on trial ([student-slices](student-slices.md#wide-slices), update 12,000 of the warm
+  start; not released): staged as `student_slices14_wide/wide12k_bf16` and exported the same way in 9 min
+  (peak 12.8 GB), its slices palettized as trained, not snapped: `lm-depformer.mlmodelc` 377 MB, slice 0's
+  table 94 MB. `wide12k_ane6f/` has the 16-codebook decoder and `wide12k_ane6f_cb8/` the 8-codebook one
+  (2.0 GB each, in `/Volumes/data/models/hibiki/weights/student_slices14_wide/`). Through the Swift CLI on
+  the M4 Pro, one FLEURS dev row: trunk 12.0, slices 4.4, host 3.6 ms a frame. Both are in Speech Live's
+  Documents on the user's iPhone as `student_slices_wide12k_coreml6` and `_cb8` (2026-11-28), for the
+  user's listening.
 
 ## Speech Live
 
