@@ -156,7 +156,7 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   ~500 GB. GRPO's own folders, kept apart, add ~62 GB; the SFT's pairs leave first, once on the
   Hub ([grpo](grpo.md#running)).
 - The card: 80 GB or more. An RTX PRO 6000 takes ~1.7× the time for about the same money; an
-  RTX 5090 can't hold the 3B's SFT ([sft-speed](sft-speed.md#by-gpu)).
+  RTX 5090 can't hold the 3B's SFT ([sft-speed-5090](sft-speed-5090.md)).
 
 ## Left out
 

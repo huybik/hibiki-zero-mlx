@@ -5,7 +5,7 @@ On RTX 5090 / RTX PRO 6000 (GB202, sm_120), rowwise FP8 GEMMs run at ~650-735 TF
 
 Two paths:
 1. Trainable `fp8_linear(x, weight)` (`--fp8`): single-pass Triton rowwise E4M3 quantization on
-   forward and fused tiled transpose+quantization on backward (no fp32 HBM intermediates and no
+   forward and tiled transpose+quantization on backward (no fp32 HBM intermediates and no
    `.T.contiguous()` HBM passes), registered as a `torch.library.custom_op` so `torch.compile`
    traces cleanly across layers with zero graph breaks.
 2. Pre-quantized frozen teacher `FrozenFP8Linear` (`--fp8-teacher trunk|all`): quantizes each
@@ -85,8 +85,31 @@ if _HAS_TRITON:
             tl.store(row_q + offs, q, mask=mask)
 
     @triton.jit
-    def _transpose_quantize_rowwise_kernel(
+    def _column_amax_kernel(
         x_ptr,
+        amax_ptr,
+        M,
+        K,
+        stride_xm,
+        BLOCK_M: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+    ):
+        """amax [K] (zeroed) of x [M, K]'s columns: each program one [BLOCK_M, BLOCK_K] tile, so a
+        tall x fills every SM, the tiles' maxima joined by atomic max (exact in any order)."""
+        m_offs = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+        k_offs = tl.program_id(1) * BLOCK_K + tl.arange(0, BLOCK_K)
+        k_mask = k_offs < K
+        tile = tl.load(
+            x_ptr + m_offs[:, None] * stride_xm + k_offs[None, :],
+            mask=(m_offs[:, None] < M) & k_mask[None, :],
+            other=0.0,
+        ).to(tl.float32)
+        tl.atomic_max(amax_ptr + k_offs, tl.max(tl.abs(tile), axis=0), mask=k_mask)
+
+    @triton.jit
+    def _transpose_quantize_kernel(
+        x_ptr,
+        amax_ptr,
         qt_ptr,
         s_ptr,
         M,
@@ -95,43 +118,27 @@ if _HAS_TRITON:
         BLOCK_M: tl.constexpr,
         BLOCK_K: tl.constexpr,
     ):
-        """Fused tiled transpose + rowwise E4M3 quantization of x [M, K] -> qt [K, M], s [K].
-        Reads x coalesced along K and writes qt coalesced along M (eliminates `.T.contiguous()`)."""
-        pid_k = tl.program_id(0)
-        k_offs = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
+        """One [BLOCK_M, BLOCK_K] tile of x [M, K] quantized by its columns' amax and stored
+        transposed into qt [K, M], coalesced along M; the first row of tiles stores s [K]."""
+        pid_m = tl.program_id(0)
+        m_offs = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        k_offs = tl.program_id(1) * BLOCK_K + tl.arange(0, BLOCK_K)
         k_mask = k_offs < K
-
-        col_amax = tl.zeros((BLOCK_K,), dtype=tl.float32)
-        for m0 in range(0, M, BLOCK_M):
-            m_offs = m0 + tl.arange(0, BLOCK_M)
-            mask = (m_offs[:, None] < M) & k_mask[None, :]
-            tile = tl.load(
-                x_ptr + m_offs[:, None] * stride_xm + k_offs[None, :],
-                mask=mask,
-                other=0.0,
-            ).to(tl.float32)
-            col_amax = tl.maximum(col_amax, tl.max(tl.abs(tile), axis=0))
-
-        scale = tl.maximum(col_amax, 1e-12) / 448.0
+        scale = tl.maximum(tl.load(amax_ptr + k_offs, mask=k_mask, other=0.0), 1e-12) / 448.0
         inv_scale = 1.0 / scale
-        tl.store(s_ptr + k_offs, scale, mask=k_mask)
-
-        for m0 in range(0, M, BLOCK_M):
-            m_offs = m0 + tl.arange(0, BLOCK_M)
-            in_mask = (m_offs[:, None] < M) & k_mask[None, :]
-            tile = tl.load(
-                x_ptr + m_offs[:, None] * stride_xm + k_offs[None, :],
-                mask=in_mask,
-                other=0.0,
-            ).to(tl.float32)
-            q_tile = tl.clamp(tile * inv_scale[None, :], -448.0, 448.0).to(tl.float8e4nv)
-            q_t = tl.trans(q_tile)  # [BLOCK_K, BLOCK_M]
-            out_mask = k_mask[:, None] & (m_offs[None, :] < M)
-            tl.store(
-                qt_ptr + k_offs[:, None] * M + m_offs[None, :],
-                q_t,
-                mask=out_mask,
-            )
+        if pid_m == 0:
+            tl.store(s_ptr + k_offs, scale, mask=k_mask)
+        tile = tl.load(
+            x_ptr + m_offs[:, None] * stride_xm + k_offs[None, :],
+            mask=(m_offs[:, None] < M) & k_mask[None, :],
+            other=0.0,
+        ).to(tl.float32)
+        q_t = tl.trans(tl.clamp(tile * inv_scale[None, :], -448.0, 448.0).to(tl.float8e4nv))
+        tl.store(
+            qt_ptr + k_offs[:, None] * M + m_offs[None, :],
+            q_t,
+            mask=k_mask[:, None] & (m_offs[None, :] < M),
+        )
 
 
 def _quantize_rowwise_eager(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -165,17 +172,21 @@ def quantize_rowwise(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def transpose_quantize_rowwise(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fused tiled transpose + rowwise E4M3 quantization of 2D [M, K] -> (qt [K, M], s [K, 1])."""
+    """Tiled transpose + rowwise E4M3 quantization of 2D [M, K] -> (qt [K, M], s [K, 1]): the
+    columns' amax over tiles of [128, 64] (128-byte bf16 loads, M/128 x K/64 programs), then each
+    tile quantized and stored transposed, reading x from L2 the second time."""
     if not (x.is_cuda and _HAS_TRITON):
         return _quantize_rowwise_eager(x.T.contiguous())
     x_c = x if x.stride(-1) == 1 else x.contiguous()
     M, K = x_c.shape
     qt = torch.empty((K, M), device=x_c.device, dtype=_FP8_DTYPE)
     s = torch.empty((K, 1), device=x_c.device, dtype=torch.float32)
-    block_m, block_k = 256, 16
-    grid = (triton.cdiv(K, block_k),)
-    _transpose_quantize_rowwise_kernel[grid](
-        x_c, qt, s, M, K, x_c.stride(0), BLOCK_M=block_m, BLOCK_K=block_k, num_warps=4
+    amax = torch.zeros((K,), device=x_c.device, dtype=torch.float32)
+    block_m, block_k = 128, 64
+    grid = (triton.cdiv(M, block_m), triton.cdiv(K, block_k))
+    _column_amax_kernel[grid](x_c, amax, M, K, x_c.stride(0), BLOCK_M=block_m, BLOCK_K=block_k, num_warps=4)
+    _transpose_quantize_kernel[grid](
+        x_c, amax, qt, s, M, K, x_c.stride(0), BLOCK_M=block_m, BLOCK_K=block_k, num_warps=4
     )
     return qt, s
 

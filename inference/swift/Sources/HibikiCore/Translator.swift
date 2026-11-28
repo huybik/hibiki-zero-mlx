@@ -147,8 +147,10 @@ public final class Translator {
         mimi = try Mimi.load(
             url: file(config.mimiName ?? "mimi-pytorch-e351c8d8@125.safetensors"),
             numCodebooks: config.nQ - config.depQ, device: Device(self.encoderDevice))
+        // The decoder may read only the first of the LM's codebooks: the slices student's 8–15,
+        // emitted together by its last slice, add noise to its voice (slices-phone.md#voice).
         decoder = try NeuralDecoder(url: file("mimi-decoder.mlmodelc"))
-        if decoder.codebooks != config.depQ {
+        if decoder.codebooks > config.depQ {
             throw HibikiError.unsupported(
                 "a \(decoder.codebooks)-codebook Mimi decoder for dep_q \(config.depQ)")
         }
@@ -255,7 +257,7 @@ public final class Translator {
     private func decodeTargets() throws -> [Float] {
         var pcm: [Float] = []
         while let target = targets.first {
-            pcm += try decoder.decode(target)
+            pcm += try decoder.decode(Array(target.prefix(decoder.codebooks)))
             targets.removeFirst()
         }
         return pcm

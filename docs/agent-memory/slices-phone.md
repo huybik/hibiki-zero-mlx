@@ -57,3 +57,24 @@ outputs in `/Volumes/data/hibiki-zero-evals/mac/slices-phone/`. HNR dB per run:
   (speaker_sim on the clip 0.35–0.41 against 0.01–0.20; the teacher 0.39–0.51).
 - Not measured: the speaker itself and Apple's voice processing on the playback path in
   microphone mode (the `translation.wav` tap sits before both).
+
+What makes it hoarse (the user heard "an old man", 2026-11-28): the user's 7 mic clips (`heads-voice`'s
+five, the two turns above), seeds 1 and 2, HNR dB / speaker_sim means; scripts, records and the
+files to listen to (`listen/`) in `/Volumes/data/hibiki-zero-evals/mac/slices-voice-fix/`.
+
+- **Not the sampling** (`sweep.py`, the Swift CLI, the per-slice export with host sampling): audio
+  temp / top-k 0.8 / 250, 0.6 / 250, 0.4 / 250, 0.4 / 25 and 0.2 / 25 score 4.2–4.8 dB, the
+  teacher 8.4.
+- **Codebooks 8–15, the last slice's, add noise** (`decoder_ab.py`): the same LM runs decoded
+  from codebooks 0–7 alone score 3.78 → 4.55 dB in the Swift CLI, higher in 13 of 14 pairs, the
+  texts identical and speaker_sim 0.21 either way; in MLX (`codebooks.py`) 5.26 → 6.35 on every
+  clip, where the teacher's 8–15 cost nothing (6.09 / 6.15). The Swift runtime takes a decoder of
+  fewer codebooks than `dep_q` (`export_mimi_coreml.py --decoder-codebooks 8`):
+  `pal6_snap6_ane6f_cb8/` on the Mac, `student_slices_coreml6_cb8` on the phone. The user: clearer,
+  not enough.
+- **The slices are too small** (`arch_ab.py`, MLX, primed `speaking="vi"`): the slices 3.91 /
+  0.226 (at 8 codebooks 4.62 / 0.225), the depformer student (8 sequential slices of 1024 × 3, its
+  own 10-layer trunk, [phone-student](phone-student.md)) 5.97 / 0.285, the teacher 7.67 / 0.249,
+  above the slices at 8 in 13 of 14 pairs. The depformer student is above them in 7 of 14: on two
+  clips the slices fall to noise (−4.5 to 0.7 dB) where it holds 3–8. The user heard it clearer,
+  so the slices are retrained wider ([student-slices](student-slices.md#wide-slices)).

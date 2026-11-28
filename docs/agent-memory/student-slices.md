@@ -6,7 +6,7 @@ Read when touching `training/student/slices.py`, `restart.sh student-slices-5090
 scoring or deciding on the phone student whose audio part is depformer slices. Back to
 [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Why this shape](#why-this-shape) ·
 [Making it](#making-it) · [Training](#training) · [Runs](#runs) · [On the Mac](#on-the-mac) ·
-[Not yet](#not-yet). The phone side
+[Wide slices](#wide-slices) · [Not yet](#not-yet). The phone side
 (export, Swift, A15 timings) is in [lm-npu](lm-npu.md#depformer-slices); the heads student it
 replaces in [student-heads](student-heads.md).
 
@@ -245,6 +245,47 @@ logits within 1.9e-6), `LmGen` steps, `convert_mlx.py` staged the 4-codebook one
 slices on a staging match PyTorch's logits on all 16 codebooks. On a trained checkpoint
 (`both_slices_z` 200, 2026-11-28) the staging, the gate, the 6-bit export and the Swift CLI on the
 Neural Engine all ran ([slices-on-policy](slices-on-policy.md#phone-finish)).
+
+## Wide slices
+
+The 512 × 2 slices leave the voice hoarse, and a depformer of 1024 × 3 slices sounded clearer to
+the user ([slices-phone](slices-phone.md#voice)), so the slices are trained again at that width:
+
+- `restart.sh student-slices-wide-5090` cuts `weights/student_slices14_wide` from the shipping
+  weights (`phone/pal6_slices_z4000_snap6.safetensors`, the 6-bit finish's snap, whose trunk the
+  phone runs): 9 random slices of 1024 × 3, 16 heads, `--parallel 8` as before, since the frozen
+  trunk reads its own codebooks 8–15. 1.783B parameters, 571.4M of them in the slices (512 × 2:
+  134.7M); the cut takes 55 s on the Mac. Stage 1's recipe on it, the trunk frozen, so the text
+  stays the release's, validating every 4,000; then `student-slices-wide-decay-5090`, its decay
+  over 8,000 updates.
+- `student-slices-wide-warm-5090` (and `-warm-decay-5090`) starts the slices from the teacher
+  instead (`slices.py --audio-from weights/grpo_twoway_best1400.safetensors --audio-layers 0,2,5`,
+  into `weights/student_slices14_wide_warm`): at 1024 × 3 every audio tensor has the teacher's
+  shape, so slices 0–8 are its depformer cut to layers 0, 2 and 5 (as `student_dep10`'s), its 16
+  output linears whole, at half the rate (1e-4) so as not to scramble them. On a tiny CPU model the
+  copy is exact and slices 0–8 give that cut depformer's outputs (max diff 1.9e-9;
+  `cpu_check.py` in the records below). At update 60 on the same rows its loss is 1.553 against
+  the random start's 1.986 (semantic and acoustic both lower).
+- Speed (2026-11-28, box 62513802, 60 updates on Stage 1's rows, whole 12,288-frame batches): the
+  base code 0.605 s an update at 27.9 GiB (`nvidia-smi`); with the slices' linears and
+  `depformer_in` in FP8 (`--fp8` now covers them) and the split transpose-quantize 0.571; with the
+  explicit K=9 attention 0.563 at 27.0 GiB, loss at update 60 1.9859 against the base's 1.9864.
+  Stage 1 and its decay, 24,000 updates and 6 validations: ~4.2 h. Kernel profile (before the
+  attention change): FP8 GEMMs 54%, activation quantization 6%, the backward's transposes 3.4%,
+  the student's attention 5%. Records, scripts and profile in
+  `/Volumes/data/hibiki-zero-evals/box-62513802/wide-slices-opt-2026-11-28/`.
+- It fits the phone: the depformer student's fused 8 slices of 1024 × 3 took 18.6 ms a frame
+  (p90 21.2) in Speech Live on the A15 (2026-11-28, `two-turns-vi.wav`, records in
+  `/Volumes/data/hibiki-zero-evals/mac/slices-voice-fix/phone/`), against 11.1–11.8 for the
+  release's 9 of 512 × 2 beside its 44 ms trunk: about 69 ms a frame of 80 for 9 wide slices.
+- It wins if its validations' voice scores pass the release's on the same seven sets (`runs/pal6_slices_z/val_log.jsonl`, update 4,000),
+  and then if its Core ML export, decoded from 16 codebooks and from 8, sounds clearer on the user's clips (`arch_ab.py`).
+- `student_slices14_wide_warm_stage1` (the warm start) passed the first: started 2026-11-28 11:32 UTC on box 62513802,
+  commit 1b642ef, 0.568 s an update at 27.8 GiB. At update 4,000, means of the seven against the release's: HNR 5.39
+  against 4.93 dB (higher on 6 sets, by 0.2–0.85 on 5; a rerun of the release moved 0.1–0.15), speaker_sim 0.311
+  against 0.308 (a rerun's ±0.01), chrF 41.2 against 40.8; teacher-forced on `en-vi-grounded-v2/validation`
+  cb 1–7 / 8–15 3.711 / 4.664 against 3.861 / 4.799, semantic 1.906 against 1.900. So the random start is not run.
+  Records (`compare_val.py` among them) in `/Volumes/data/hibiki-zero-evals/box-62513802/student_slices14_wide_warm_stage1/`.
 
 ## Not yet
 

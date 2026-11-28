@@ -10,11 +10,9 @@
   groups the heads itself with `enable_gqa=True`.
 - A generation step's attention (`_step_attention`). moshi attends over the whole KV cache at
   every step, whatever is written: 38 of the 46 ms of kernels a step at 320 rows of 1,208 slots,
-  profiled. Here it reads the written slots only, rounded up to STEP_SLOTS (`_lm_gen_step` narrows
-  them), and the query heads that share a key/value head become that head's query positions, so
-  the cache is read once and not once a query head. Seeded rollouts come out token for token the
-  same, at 16 ms a step instead of 44 (the heads student at 320 rows; the 3B at 32 rows is
-  identical too).
+  profiled. Here a Triton kernel (`training.tranche.decode_attention`) reads the written slots
+  only, their count on the device, so the main transformer's CUDA graph replays at every step,
+  and the query heads that share a key/value head read that head's cache once, together.
 - The depformer's training forward. moshi runs its 16 codebook steps as slices `x[:, t:t+1]` of
   a `[B*T, 16, C]` tensor, three times per layer, and the backward pass of every slice allocates
   and zero-fills a full-size gradient before adding it in. Here the activations are step-major,
@@ -61,8 +59,9 @@ from training.finetune.fp8_linear import (
 )
 
 # Depformer attention backend for short sequences (K=9 student, K=16 teacher); "auto" uses cuDNN
-# for forward-only teacher attention (1.57x faster on Blackwell sm_120) and memory-efficient for
-# backward-enabled student attention. Overridable via HIBIKI_DEPFORMER_ATTN=auto|efficient|math|flash|cudnn.
+# for forward-only teacher attention (1.57x faster on Blackwell sm_120) and the explicit form, compiled,
+# for attention with gradients (`_depformer_sdpa`). Overridable via
+# HIBIKI_DEPFORMER_ATTN=auto|efficient|math|flash|cudnn.
 DEPFORMER_ATTN = os.environ.get("HIBIKI_DEPFORMER_ATTN", "auto")
 
 _ROPE_CACHE: dict[tuple[torch.device, int, float], tuple[torch.Tensor, torch.Tensor]] = {}
@@ -163,8 +162,10 @@ def _schedule(owner: Any, steps: int) -> list[int]:
     return list(schedule[:steps]) if schedule is not None else list(range(steps))
 
 
-def _per_step(modules: Any, schedule: list[int], xs: torch.Tensor, function: Any) -> torch.Tensor:
-    """xs [K, N, C]: step k through function(modules[schedule[k]], step).
+def _per_step(
+    modules: Any, schedule: list[int], xs: torch.Tensor, function: Any, use_fp8: bool
+) -> torch.Tensor:
+    """xs [K, N, C]: step k through function(modules[schedule[k]], step, use_fp8).
     Contiguous runs of identical schedule indices (e.g. the 3B teacher's steps 8..15 sharing slice 8)
     are batched into one call, eliminating 7/8 of slice-8 GEMMs and weight HBM reads."""
     runs: list[tuple[int, int]] = []
@@ -174,37 +175,30 @@ def _per_step(modules: Any, schedule: list[int], xs: torch.Tensor, function: Any
         else:
             runs.append((idx, 1))
     if len(runs) == len(schedule):
-        return torch.stack([function(modules[index], x) for index, x in zip(schedule, xs.unbind(0))])
+        return torch.stack([function(modules[index], x, use_fp8) for index, x in zip(schedule, xs.unbind(0))])
     n, c = xs.shape[1], xs.shape[2]
     chunks = xs.split([count for _, count in runs], dim=0)
     outs = []
     for (idx, count), chunk in zip(runs, chunks, strict=True):
         if count == 1:
-            outs.append(function(modules[idx], chunk.squeeze(0)).unsqueeze(0))
+            outs.append(function(modules[idx], chunk.squeeze(0), use_fp8).unsqueeze(0))
         else:
-            outs.append(function(modules[idx], chunk.reshape(count * n, c)).view(count, n, -1))
+            outs.append(function(modules[idx], chunk.reshape(count * n, c), use_fp8).view(count, n, -1))
     return torch.cat(outs, dim=0)
 
 
-def _linear(module: Any, x: torch.Tensor) -> torch.Tensor:
-    return module(x)
-
-
 def _depformer_sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, steps: int) -> torch.Tensor:
-    """Causal attention for short depformer sequences (K=9 or K=16)."""
-    if DEPFORMER_ATTN == "math":
+    """Causal attention for short depformer sequences (K=9 or K=16). With gradients, "auto" is the
+    explicit form, which the compiled layers fuse: forward and backward of the wide slices' K=9
+    attention [12,288, 16, 9, 64] take 3.9 ms on the RTX 5090, the memory-efficient kernel 10.7."""
+    if DEPFORMER_ATTN == "math" or (DEPFORMER_ATTN == "auto" and torch.is_grad_enabled()):
         scale = 1.0 / math.sqrt(q.shape[-1])
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
         causal = torch.triu(torch.ones((steps, steps), device=q.device, dtype=torch.bool), diagonal=1)
         scores = scores.masked_fill(causal, float("-inf"))
         return torch.matmul(torch.softmax(scores.float(), dim=-1).to(q.dtype), v)
     if DEPFORMER_ATTN == "auto":
-        if not q.is_cuda:
-            backend = SDPBackend.MATH
-        elif not torch.is_grad_enabled():
-            backend = SDPBackend.CUDNN_ATTENTION
-        else:
-            backend = SDPBackend.EFFICIENT_ATTENTION
+        backend = SDPBackend.CUDNN_ATTENTION if q.is_cuda else SDPBackend.MATH
     else:
         backend = {
             "efficient": SDPBackend.EFFICIENT_ATTENTION,
@@ -215,30 +209,30 @@ def _depformer_sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, steps: in
         return F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
 
-def _depformer_layer(layer: Any, xs: torch.Tensor) -> torch.Tensor:
+def _depformer_layer(layer: Any, xs: torch.Tensor, use_fp8: bool) -> torch.Tensor:
     """One moshi StreamingTransformerLayer on step-major xs [K, N, C], without streaming."""
     steps, n, channels = xs.shape
     attention = layer.self_attn
     schedule = _schedule(attention, steps)
-    projected = _per_step(attention.in_projs, schedule, layer.norm1(xs), _linear)  # [K, N, 3C]
+    projected = _per_step(attention.in_projs, schedule, layer.norm1(xs), _linear_apply, use_fp8)  # [K, N, 3C]
     q, k, v = projected.view(steps, n, 3, attention.num_heads, -1).permute(2, 1, 3, 0, 4)
     out = _depformer_sdpa(q, k, v, steps)  # [N, H, K, D]
     out = out.permute(2, 0, 1, 3).reshape(steps, n, channels)
-    update = _per_step(attention.out_projs, schedule, out, _linear)
+    update = _per_step(attention.out_projs, schedule, out, _linear_apply, use_fp8)
     xs = xs.to(update) + layer.layer_scale_1(update)
-    update = _per_step(layer.gating, _schedule(layer, steps), layer.norm2(xs), _gating)
+    update = _per_step(layer.gating, _schedule(layer, steps), layer.norm2(xs), _gating, use_fp8)
     return xs.to(update) + layer.layer_scale_2(update)
 
 
-def _depformer_layers(depformer: Any, xs: torch.Tensor) -> torch.Tensor:
+def _depformer_layers(depformer: Any, xs: torch.Tensor, use_fp8: bool) -> torch.Tensor:
     for layer in depformer.layers:
-        xs = _depformer_layer(layer, xs)
+        xs = _depformer_layer(layer, xs, use_fp8)
     return xs
 
 
-def _depformer_layers_ckpt_graph(depformer: Any, xs: torch.Tensor) -> torch.Tensor:
+def _depformer_layers_ckpt_graph(depformer: Any, xs: torch.Tensor, use_fp8: bool) -> torch.Tensor:
     for layer in depformer.layers:
-        xs = torch.utils.checkpoint.checkpoint(_depformer_layer, layer, xs, use_reentrant=False)
+        xs = torch.utils.checkpoint.checkpoint(_depformer_layer, layer, xs, use_fp8, use_reentrant=False)
     return xs
 
 
@@ -247,37 +241,52 @@ _compiled_depformer_layers = torch.compile(_depformer_layers, dynamic=True)
 _compiled_depformer_layers_ckpt = torch.compile(_depformer_layers_ckpt_graph, dynamic=True)
 
 
+def depformer_fp8(depformer: Any) -> bool:
+    """Whether a depformer's training forward runs its linears in FP8 (`train.py --fp8` sets
+    `use_fp8`): in training only, as the main transformer's, so validation stays bf16."""
+    return bool(getattr(depformer, "use_fp8", False)) and depformer.training
+
+
 def check_depformer(depformer: Any) -> None:
     if depformer._streaming_state is not None:
         raise RuntimeError("The training depformer runs without streaming")
     if depformer.positional_embedding in {"sin", "sin_rope"}:
         raise RuntimeError("The training depformer has no positional embedding")
+    use_fp8 = depformer_fp8(depformer)
     for layer in depformer.layers:
         attention = layer.self_attn
         if attention.kv_repeat != 1 or attention.rope is not None or attention.cross_attention:
             raise RuntimeError("Unsupported depformer attention")
         if layer.cross_attention is not None or layer.skip_self_attn or layer.gating is None:
             raise RuntimeError("Unsupported depformer layer")
+        if use_fp8:
+            gatings = [linear for gating in layer.gating for linear in (gating.linear_in, gating.linear_out)]
+            if any(m.bias is not None for m in [*attention.in_projs, *attention.out_projs, *gatings]):
+                raise RuntimeError("FP8 depformer linears have no bias")
 
 
 def run_depformer(depformer: Any, xs: torch.Tensor) -> torch.Tensor:
     """The depformer's layers on step-major xs [K, N, C], compiled (checkpointed if the depformer
-    is), as unbound steps."""
+    is; its linears in FP8 per `depformer_fp8`), as unbound steps."""
     check_depformer(depformer)
     run = _compiled_depformer_layers_ckpt if getattr(depformer, "checkpointing", False) else _compiled_depformer_layers
-    return run(depformer, xs).to(xs.dtype).unbind(0)
+    return run(depformer, xs, depformer_fp8(depformer)).to(xs.dtype).unbind(0)
 
 
-def project_depformer_in(depformer_in: Any, transformer_out: torch.Tensor) -> tuple[torch.Tensor, ...]:
-    """Run all `depformer_in` projections on `transformer_out` [B, T, C] in a single fused GEMM,
-    reading `transformer_out` once instead of S times. Returns a tuple of S tensors [B, T, D]."""
+def project_depformer_in(
+    depformer_in: Any, transformer_out: torch.Tensor, use_fp8: bool = False
+) -> tuple[torch.Tensor, ...]:
+    """Run all `depformer_in` projections on `transformer_out` [B, T, C] in a single fused GEMM
+    (FP8 with `use_fp8`), reading `transformer_out` once instead of S times. Returns a tuple of S
+    tensors [B, T, D]."""
     B, T, _ = transformer_out.shape
     count = len(depformer_in)
     if count == 1:
         return (depformer_in[0](transformer_out),)
     if all(isinstance(m, torch.nn.Linear) and m.bias is None for m in depformer_in):
         w = torch.cat([m.weight for m in depformer_in], dim=0)
-        return F.linear(transformer_out, w).view(B, T, count, -1).unbind(2)
+        out = fp8_linear(transformer_out, w) if use_fp8 else F.linear(transformer_out, w)
+        return out.view(B, T, count, -1).unbind(2)
     if all(isinstance(m, FrozenFP8Linear) for m in depformer_in):
         if transformer_out.is_cuda and ((B * T) % 16 == 0):
             wq = torch.cat([m.weight_fp8 for m in depformer_in], dim=0)
@@ -306,7 +315,7 @@ def forward_depformer_hidden(
     if K != lm.num_codebooks:
         raise RuntimeError(f"Depformer training needs all {lm.num_codebooks} codebooks, got {K}")
     steps = lm.dep_q
-    projected = project_depformer_in(lm.depformer_in, transformer_out)
+    projected = project_depformer_in(lm.depformer_in, transformer_out, depformer_fp8(lm.depformer))
     inputs = []
     for cb in range(steps):
         index = 0
@@ -541,11 +550,6 @@ def _transformer_forward(self: StreamingTransformer, x: torch.Tensor, *args, **k
     return _compiled_transformer_layers(self, x, rotr, roti, use_fp8)
 
 
-# A generation step's attention reads its cache in whole STEP_SLOTS. The graph is captured again at
-# each change, so a finer width costs captures and a coarser one reads unwritten slots: 320 rows of
-# 1,208 steps take 19.7, 19.2, 19.4 and 20.5 s at 32, 64, 128 and 256, 29.9 s at the whole cache.
-STEP_SLOTS = 64
-
 _moshi_attention_forward = StreamingMultiheadAttention.forward
 _moshi_lm_gen_step = LMGen._step
 
@@ -553,17 +557,21 @@ _moshi_lm_gen_step = LMGen._step
 def _step_attention(
     self: StreamingMultiheadAttention, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
 ) -> torch.Tensor:
-    """moshi's attention for one streamed step, over the `step_slots` slots `_narrow` set on the
-    streaming state (moshi's own without them). The caller's contract: only LMGen steps it, one
-    frame a call and every row in step, so rows share one offset (no partial exec mask or reset),
-    and the attention context is not changed while streaming. `_narrow` keeps the ring from
-    wrapping, so slot j holds position j."""
+    """moshi's attention for one streamed step, over the cache's written slots only when `_narrow`
+    set `live_keys` on the streaming state (moshi's own without it). The caller's contract: only
+    LMGen steps it, one frame a call and every row in step, so rows share one offset (no partial
+    exec mask or reset), and the attention context is not changed while streaming. `_narrow` keeps
+    the ring from wrapping, so slot j holds position j, and slots 0..offset are the live ones. The
+    Triton kernel (`decode_attention.attend`) reads that length on the device, so one CUDA graph of
+    the main transformer serves every step, and the query heads that share a key/value head read
+    its cache once, together."""
     state = self._streaming_state
-    slots = getattr(state, "step_slots", None)
-    if slots is None:
+    if not getattr(state, "live_keys", False):
         return _moshi_attention_forward(self, query, key, value)
     if query.shape[1] != 1:
         raise RuntimeError("A narrowed attention step takes one frame")
+    from training.tranche.decode_attention import attend
+
     batch, _, channels = query.shape
     groups, dim = self.num_heads // self.kv_repeat, channels // self.num_heads
     projected = self.in_projs[0](query)
@@ -574,12 +582,7 @@ def _step_attention(
     position = state.offset[:1]
     keys.index_copy_(2, position, k)
     values.index_copy_(2, position, v)
-    mask = torch.arange(slots, device=position.device) <= position
-    # Query heads kh * kv_repeat .. kh * kv_repeat + kv_repeat - 1 use key/value head kh: as its
-    # kv_repeat query positions, they read its cache once.
-    out = F.scaled_dot_product_attention(
-        q.reshape(batch, groups, self.kv_repeat, dim),
-        keys[:, :, :slots], values[:, :, :slots], mask[None, None, None])
+    out = attend(q.reshape(batch, self.num_heads, dim), keys, values, state.offset + 1, dim**-0.5)
     out = self.out_projs[0](out.reshape(batch, 1, channels))
     state.kv_cache.end_offset.add_(1)
     state.offset.add_(1)
@@ -593,26 +596,21 @@ def _check_attention(attention: StreamingMultiheadAttention) -> None:
 
 
 def _narrow(lm_gen: LMGen) -> None:
-    """Set the slots the coming step's attention reads (`_step_attention`): the written ones and
-    this step's, up to a whole STEP_SLOTS, or none (moshi's attention) once the cache's ring wraps
-    or with `support_out_of_sync`, whose rows step apart. At a change the main transformer's CUDA
-    graph is captured again."""
+    """Whether the coming step's attention reads only the written slots (`_step_attention`): on
+    CUDA until the cache's ring wraps, and never with `support_out_of_sync`, whose rows step apart.
+    At a change the main transformer's CUDA graph is captured again."""
     state = lm_gen._streaming_state
     attentions = [layer.self_attn for layer in lm_gen.lm_model.transformer.layers]
-    capacity = attentions[0]._streaming_state.kv_cache.capacity
-    slots = None
-    if state.offset_cpu < capacity and not lm_gen.support_out_of_sync:
-        slots = min(STEP_SLOTS * (state.offset_cpu // STEP_SLOTS + 1), capacity)
-    current = getattr(attentions[0]._streaming_state, "step_slots", None)
-    if slots == current:
+    cache = attentions[0]._streaming_state.kv_cache
+    live = cache.cache.is_cuda and state.offset_cpu < cache.capacity and not lm_gen.support_out_of_sync
+    current = getattr(attentions[0]._streaming_state, "live_keys", None)
+    if live == current:
         return
     for attention in attentions:
-        if slots is not None:
+        if live:
             _check_attention(attention)
-        attention._streaming_state.step_slots = slots
-    # A full reset after a wrap (current None) leaves moshi's graph until the next change: it
-    # reads every slot, the same attention.
-    if current is not None:
+        attention._streaming_state.live_keys = live
+    if current is not None:  # None: a new streaming state, its graph not captured yet
         state.graphed_main.reset()
 
 

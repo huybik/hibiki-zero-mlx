@@ -163,7 +163,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   stochastic rounding and fused gradient clipping (1D norms/scales stay fp32; 8 bytes/param),
   paired with `--grad-checkpoint` (optionally `--grad-checkpoint-layers N`), `--micro-frames`
   (exact full-batch loss weighting via `common.batch_loss_denominators`), `--park-states`, and
-  optional `--fp8` (rowwise E4M3 on main-transformer linears) ([sft-speed](sft-speed.md#by-gpu)).
+  optional `--fp8` (rowwise E4M3 on the main transformer's and a depformer's linears) ([sft-speed-5090](sft-speed-5090.md)).
   Batches pad to 16-frame buckets (`streams.FRAME_BUCKET`), and training requires torch compile
   (moshi's and `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is
   CUDA-only (`train.py` has no device flag); the `training.prep` steps, the cache build included
