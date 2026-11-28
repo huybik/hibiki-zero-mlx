@@ -77,7 +77,9 @@ On the RTX 5090 box (19.2 CPUs, 2026-11-25), one tar (8.7 GB, ~15k rows) through
 - The ASR server alone (`--max-num-seqs 256`, 4 API processes) hears ~104 rows/s (~1,390× real
   time, SM busy ~90%): 78 at 64 requests in flight, 104 at 256, no more at 512 seqs, 8k or 16k
   `--max-num-batched-tokens` (2,048 by default), 6 API processes or a compiled audio encoder. So
-  a tar's ASR takes ~145 s, the bound once cutting keeps up.
+  a tar's ASR takes ~145 s, the bound once cutting keeps up. Those are bf16's; the server runs FP8
+  from 2026-11-28 (1.39× on voicing's checks), which keeps ~0.5% fewer rows at the gate, mostly sung
+  Vietnamese it tags Chinese ([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
 - At 4 OpenMP threads the server spent 170 CPU-s per 3,000 rows, at 1 thread 71, at the same
   rows/s; `restart.sh asr` now runs it at 1.
 - Cutting, one core alone: decoding 6.5 CPU-s per hour of video (ffmpeg's Opus decoder; libopus
