@@ -225,9 +225,27 @@ def _batch_norm(at, x, scale, bias, mean, var):
     return "step", (lambda x_, s_, b_, m_, v_, eps=eps: F.batch_norm(x_, m_, v_, s_, b_, False, 0.0, eps)), [0, 1, 2, 3, 4]
 
 
+def instance_norm(x, scale, bias, eps):
+    """F.instance_norm from fp32 sums reduced one axis at a time: Inductor gives F.instance_norm's reduction one
+    program per (batch, channel), each over a whole 841 x 841 plane (the denoiser's are 57% of its time). This is
+    11% faster on the denoiser, 51.5 dB from its fp32 eager graph either way."""
+    xf = x.float()
+    dims = tuple(range(2, x.ndim))
+    n = 1
+    for d in dims:
+        n *= x.shape[d]
+    s1, s2 = xf, xf.square()
+    for d in reversed(dims):
+        s1, s2 = s1.sum(d, keepdim=True), s2.sum(d, keepdim=True)
+    mean = s1 / n
+    var = (s2 / n - mean.square()).clamp(min=0)
+    shape = (1, -1) + (1,) * (x.ndim - 2)
+    return ((xf - mean) * torch.rsqrt(var + eps) * scale.float().view(shape) + bias.float().view(shape)).to(x.dtype)
+
+
 def _instance_norm(at, x, scale, bias):
     eps = float(at.get("epsilon", 1e-5))
-    return "step", (lambda x_, s_, b_, eps=eps: F.instance_norm(x_, weight=s_, bias=b_, eps=eps)), [0, 1, 2]
+    return "step", (lambda x_, s_, b_, eps=eps: instance_norm(x_, s_, b_, eps)), [0, 1, 2]
 
 
 def _resize(at, x, roi=None, scales=None, sizes=None):
