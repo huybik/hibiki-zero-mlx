@@ -164,7 +164,8 @@ start, the refit (bf16 and snapped) and the finish (snapped) with `test_student.
 seed 43, LAAL, voice scored) into `runs/slices_tests/`. Each step whose output exists is skipped,
 a job that ends without its final model stops the chain, one copy runs at a time (a lock), and
 the outputs are tied to the best they started from (`runs/slices_finish_best.txt`: a new best
-stops the chain until they are moved aside).
+stops the chain until they are moved aside). Rerun on the box after the tests (fe0ddbc): every
+step skipped, the uploads sent nothing, in 1 min.
 On the Mac the finished snapped model goes through `convert_mlx.py` (bf16), `gate.py`,
 `export_lm_coreml.py --bits 6`, `export_mimi_coreml.py` and the Swift CLI, as below; the iPhone
 13 Pro Max's 10 minutes in HibikiBench are the user's.
@@ -233,7 +234,7 @@ path runs and the tables survive the export; the 13-set tests below compare the 
 ## Tests
 
 `finish_slices.sh`'s `test_student.sh` calls (13 test sets, `eval.py` seed 43, batch 64, LAAL,
-voice scored, 2026-11-28 00:22–00:40 UTC on box 62513802, ~4 min a model; records, `table.md`
+voice scored, 2026-11-28 00:22–00:56 UTC on box 62513802, ~8.5 min a model; records, `table.md`
 and `paired.txt` in `/Volumes/data/hibiki-zero-evals/box-62513802/slices_tests/`). Every set
 healthy for every model. Cells chrF / BLEU / length ratio / median End Offset (s) / mean LAAL (s)
 / speaker_sim / HNR dB:
