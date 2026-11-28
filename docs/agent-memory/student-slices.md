@@ -281,11 +281,10 @@ the user ([slices-phone](slices-phone.md#voice)), so the slices are trained agai
   release's 9 of 512 × 2 beside its 44 ms trunk: about 69 ms a frame of 80 for 9 wide slices.
 - It wins if its validations' voice scores pass the release's on the same seven sets (`runs/pal6_slices_z/val_log.jsonl`, update 4,000),
   and then if its Core ML export, decoded from 16 codebooks and from 8, sounds clearer on the user's clips (`arch_ab.py`).
-- `student_slices14_wide_warm_stage1` (the warm start) passed the first, so the random start is not run: box
-  62513802 from 2026-11-28 11:32 UTC, commit 1b642ef, 0.568 s an update at 27.8 GiB, stopped at update 12,000 for
-  the phone ([slices-phone](slices-phone.md#release); its 12,000 pair on the Hub's `checkpoints/`). Means of the
-  seven against the release's (a rerun of the release moved HNR 0.1–0.15 dB a set, speaker_sim ±0.01; HNR above
-  the release's on every set from 8,000), and teacher-forced on `en-vi-grounded-v2/validation`:
+- `student_slices14_wide_warm_stage1` (the warm start) passed the first, so the random start is not run: box 62513802
+  from 2026-11-28 11:32 UTC, commit 1b642ef, 0.568 s an update at 27.8 GiB, stopped at 12,000 for the phone
+  ([slices-phone](slices-phone.md#release); that pair on the Hub's `checkpoints/`). Means of the seven (a rerun of the
+  release moved HNR 0.1–0.15 dB a set, speaker_sim ±0.01; HNR above it on every set from 8,000), teacher-forced on `en-vi-grounded-v2/validation`:
 
   | Update | HNR dB | speaker_sim | chrF | semantic / cb 1–7 / cb 8–15 |
   |---|---|---|---|---|
