@@ -5,9 +5,9 @@ batched on the GPU ([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-sc
 Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=True, use_ref_codes=True)`:
 - the reference: the row's clip trimmed of silence at 30 dB, its first 8 s, cut to whole quarter seconds so the
   clips batch at 32 lengths, at 44.1 kHz (the loader's processes, a shard ahead); on the GPU, ENROL_PIECE rows at a
-  time as the voicer takes them, shortest first:
-  the resemble-enhance denoiser (onnx_graph.py, fp16, compiled per length), the speaker encoder (onnx_graph.py) on
-  a Kaldi fbank of the clean clip at 16 kHz, and MOSS's codes of it at 48 kHz (fp16);
+  time as the voicer takes them, shortest first: the resemble-enhance denoiser (onnx_graph.py, fp16, compiled per
+  length; clean references skip it), the speaker encoder (onnx_graph.py) on a Kaldi fbank of the clean clip at
+  16 kHz, and MOSS's codes of it at 48 kHz (fp16);
 - the English line in chunks of at most 256 characters, phonemized (the loader's processes);
 - each chunk generated in one of SLOTS continuous-batching slots (vieneu_frame.py) and made again while shorter
   than the SDK's minimum (twice at most, the longest kept); decoded by MOSS in fp16, in batches of chunks of
@@ -51,6 +51,10 @@ ASR_RATE, DENOISE_RATE, SPEAKER_RATE, OUT_RATE = 16000, 44100, 16000, 48000
 # compiled denoiser graph (32 of them)
 TRIM_DB, REF_S, BUCKET_S = 30, 8.0, 0.25
 DENOISE_BATCH = 16  # a batch padded to it with copies of its last clip (instance norms keep clips apart)
+# References at least this clean (`level_spread`) skip the denoiser: YODAS's cleanest ~30%. On the bench's paired runs
+# with and without the denoiser, those rows broke no more undenoised (5.5% against 5.7%) and matched the voice a
+# little better; past ~40% skipped, broken rows grow. Without the denoiser at all, 11.9% broke against 6.8%.
+CLEAN_SPREAD_DB = 40.0
 # Inductor's default: the first compile of the 32 lengths takes ~14 min, later runs of the same code read its cache
 # (/tmp/torchinductor_root) in about a minute. max-autotune-no-cudagraphs ran the bench 4% faster but compiles ~54 min
 # cold, and this module's first run on the box missed the bench's cache.
@@ -141,6 +145,18 @@ def reference(data: bytes) -> np.ndarray:
     q = int(BUCKET_S * rate)
     w = w[: len(w) // q * q] if len(w) >= q else np.pad(w, (0, q - len(w)))
     return soxr.resample(w, rate, DENOISE_RATE).astype(np.float32)
+
+
+def level_spread(x):
+    """Equal-length 44.1 kHz clips [B, N] on the GPU -> each one's spread between its loud and quiet 20 ms frames,
+    dB (the 95th minus the 10th percentile of their RMS levels): a clean clip's pauses sit far below its speech."""
+    import torch
+
+    hop = DENOISE_RATE // 50
+    frames = x[:, : x.shape[1] // hop * hop].unflatten(1, (-1, hop))
+    db = 10 * torch.log10(frames.float().square().mean(-1) + 1e-12)
+    lo, hi = torch.quantile(db, torch.tensor([0.10, 0.95], device=x.device), dim=1)
+    return hi - lo
 
 
 def kaldi_mel(bins: int, fft: int, rate: int) -> np.ndarray:
@@ -314,7 +330,8 @@ class Voicer:
 
     def enrol(self, clips: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray]]:
         """44.1 kHz references (`reference`) -> each one's (speaker embedding, reference codes [T, n_vq]), ENROL_PIECE
-        rows at a time; each reference is dropped from `clips` once denoised."""
+        rows at a time, those clean enough (`level_spread`) not denoised; each reference is dropped from `clips` once
+        through the denoiser."""
         import soxr
         import torch
 
@@ -325,13 +342,18 @@ class Voicer:
         for members in groups.values():
             for p in range(0, len(members), ENROL_PIECE):
                 piece = members[p: p + ENROL_PIECE]
-                clean = []
-                for k in range(0, len(piece), DENOISE_BATCH):
-                    clean += self.denoise([clips[i] for i in piece[k: k + DENOISE_BATCH]])
+                with torch.no_grad():
+                    spread = level_spread(torch.from_numpy(np.stack([clips[i] for i in piece])).cuda()).tolist()
+                noisy = [i for i, db in zip(piece, spread) if db < CLEAN_SPREAD_DB]
+                clean = {i: clips[i] for i in piece}
+                for k in range(0, len(noisy), DENOISE_BATCH):
+                    part = noisy[k: k + DENOISE_BATCH]
+                    clean.update(zip(part, self.denoise([clips[i] for i in part])))
                 for i in piece:
                     clips[i] = None
                 ins = list(self.threads.map(lambda c: (soxr.resample(c, DENOISE_RATE, SPEAKER_RATE).astype(np.float32),
-                                                       soxr.resample(c, DENOISE_RATE, OUT_RATE).astype(np.float32)), clean))
+                                                       soxr.resample(c, DENOISE_RATE, OUT_RATE).astype(np.float32)),
+                                            [clean[i] for i in piece]))
                 del clean
                 with torch.no_grad():
                     for k in range(0, len(piece), ENROL_BATCH):
