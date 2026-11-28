@@ -280,6 +280,12 @@ the user ([slices-phone](slices-phone.md#voice)), so the slices are trained agai
   release's 9 of 512 × 2 beside its 44 ms trunk: about 69 ms a frame of 80 for 9 wide slices.
 - It wins if its validations' voice scores pass the release's on the same seven sets (`runs/pal6_slices_z/val_log.jsonl`, update 4,000),
   and then if its Core ML export, decoded from 16 codebooks and from 8, sounds clearer on the user's clips (`arch_ab.py`).
+- `student_slices14_wide_warm_stage1` (the warm start) passed the first: started 2026-11-28 11:32 UTC on box 62513802,
+  commit 1b642ef, 0.568 s an update at 27.8 GiB. At update 4,000, means of the seven against the release's: HNR 5.39
+  against 4.93 dB (higher on 6 sets, by 0.2–0.85 on 5; a rerun of the release moved 0.1–0.15), speaker_sim 0.311
+  against 0.308 (a rerun's ±0.01), chrF 41.2 against 40.8; teacher-forced on `en-vi-grounded-v2/validation`
+  cb 1–7 / 8–15 3.711 / 4.664 against 3.861 / 4.799, semantic 1.906 against 1.900. So the random start is not run.
+  Records (`compare_val.py` among them) in `/Volumes/data/hibiki-zero-evals/box-62513802/student_slices14_wide_warm_stage1/`.
 
 ## Not yet
 
