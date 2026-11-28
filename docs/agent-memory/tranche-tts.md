@@ -1,138 +1,69 @@
-# Tranche English TTS
+# VieNeu TTS both ways
 
-Read when touching `training/tranche/bakeoff.py`, `voice.py`, `vieneu_frame.py`, `decode_attention.py`,
-`onnx_graph.py` or `envs.sh`, or choosing, tuning or running the English TTS that voices the
-real-Vietnamese tranche's targets in each speaker's voice.
-Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tranche.md)
+Read when touching `training/tranche/voice.py`, `vieneu_frame.py`, `decode_attention.py`, `onnx_graph.py` or the
+`vieneu` env of `training/tranche/box/envs.sh`, or voicing a row in its own speaker's voice on the box, either way:
+the tranche's English targets, or the EN-VI dataset's Vietnamese.
+Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tranche.md) · [Choice](#choice) ·
+[Which TTS voiced what](#which-tts-voiced-what) · [The check](#the-check) · [English](#english) ·
+[Vietnamese](#vietnamese) · [Running](#running)
 
-Kyutai's TTS 1.6B, the paper's, is out: its voice conditioning is closed and only precomputed
-embeddings ship ([card](https://huggingface.co/kyutai/tts-1.6b-en_fr)). The finalists, with
-Apache code and weights, at least 24 kHz, cloning from any reference clip:
+## Choice
 
-| Model | Published English numbers | Notes |
-|---|---|---|
-| [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) (2B) | Seed test-en WER 1.84, similarity 75.3; 48 kHz | Vietnamese is one of its 30 languages, so a Vietnamese reference is in distribution; clones from the reference alone; batched serving through vLLM-Omni. Output varies between runs (its authors suggest 1–3 tries) |
-| [Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | WER 1.24, similarity 0.775; 24 kHz | No Vietnamese; its best mode needs the reference's transcript |
-| [Fun-CosyVoice3-0.5B-2512](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) | WER 2.24, similarity 71.8; 24 kHz | A cross-lingual mode; the smallest and fastest |
-| [dots.tts-soar](https://huggingface.co/dots-studio/dots.tts-soar) (Apache-2.0; post-trained from dots.tts-base) | WER 1.30, similarity 77.1 | New; no serving stack |
-| [LongCat-AudioDiT-3.5B](https://github.com/meituan-longcat/LongCat-AudioDiT) (MIT) | WER 1.50, similarity 78.6 | New; English and Chinese only |
+- VieNeu-TTS v3 Turbo voices both ways on the box (user, 2026-11-28): `voice.py run <source>` the tranche's
+  English, `voice.py run en_speech` the EN-VI dataset's Vietnamese where the dataset's is broken. Its GPU path and
+  speed: [tranche-tts-scaleup](tranche-tts-scaleup.md#optimizing-vieneu). The MLX port that voiced the dataset
+  on the Mac stays for the Mac's nights ([vi-tts](vi-tts.md)).
+- How it got there:
+  - Kyutai's TTS 1.6B, the paper's, is out: its voice conditioning is closed and only precomputed embeddings
+    ship.
+  - The first tranche's bake-off (2026-11-05, the H100; its code, `bakeoff.py`, is in git history): Apache
+    models of at least 24 kHz that clone from any clip. Ruled out before it: non-commercial weights (F5-TTS,
+    MaskGCT, Llasa, Spark-TTS, XTTS-v2, OpenAudio S1-mini, Fish S2), licences barring training on their
+    output (IndexTTS-2, Higgs Audio v2), VibeVoice (an audible disclaimer), MegaTTS 3 (no cloning
+    encoder), OpenVoice v2 (22.05 kHz), LongCat-AudioDiT (Chinese and English only). 281 real Vietnamese
+    clips, each cloned to speak an English line, round-tripped through Mimi; voice match is WeSpeaker
+    ResNet293-LM against the row's own clip (0 = another speaker, 1 = the speaker's other clip):
 
-- Ruled out:
-  - non-commercial weights (F5-TTS, MaskGCT, Llasa, Spark-TTS, XTTS-v2, OpenAudio S1-mini, Fish S2);
-  - licences that bar training other models on the output (IndexTTS-2 §3.4(c), Higgs Audio v2);
-  - VibeVoice (research only, an audible disclaimer in every output);
-  - MegaTTS 3 (its cloning encoder is unreleased);
-  - OpenVoice v2 (22.05 kHz).
-- For YODAS's ~20k h, ZONOS3-Mini and VieNeu-TTS v3 Turbo were measured against VoxCPM2 on the
-  5090 (2026-11-26); both optimized, VieNeu runs 3.1× VoxCPM2 at its own lower accuracy and is the
-  scale-up's TTS by the user's 3× rule → [tranche-tts-scaleup](tranche-tts-scaleup.md#finding).
-- Kyutai's `tts-0.75b-en-public` (CC BY 4.0, clones by an audio prefix, English only) is a fourth
-  candidate if time allows: it is the closest to the paper's setup.
-- From the cards and repos (2026-11-04): VoxCPM2 lists Vietnamese among its languages and
-  dots.tts benchmarks it; Qwen3-TTS, CosyVoice3 and LongCat do not. LongCat is out: it needs the
-  reference's transcript and was trained on Chinese and English only. No licence of the other
-  four restricts training on their outputs. Only CosyVoice3 (Triton/TRT-LLM) and VoxCPM2 (Nano-vLLM
-  or vLLM-Omni) document batched serving; their Python APIs, like dots.tts's, run one request at
-  a time, and Qwen3-TTS takes lists.
-- None publishes Vietnamese→English speaker similarity, so a bake-off chooses, on the H100
-  (`training/tranche/bakeoff.py`, each model in its own uv env under `/workspace/envs`):
-  1. real Vietnamese clips, one pair per speaker: PhoAudiobook readers, viVoice channels and
-     GigaSpeech 2 recordings, each clip with another 5–16 s clip of the same speaker as its
-     reference, and an `en-vi-val` English line to speak;
-  2. each model's cloning modes at fixed seeds (VoxCPM2 reference-only and with the reference's
-     transcript; dots.tts and Qwen3-TTS x-vector and with the transcript; CosyVoice3
-     cross-lingual), every output round-tripped through Mimi (16 codebooks), as training sees it.
-     Each model runs its best release: `dots.tts-soar` (post-trained; `-base` is its pretraining
-     baseline) and CosyVoice3's RL-tuned LLM (`llm.rl.pt`, ranked above `llm.pt` on its card);
-  3. scores:
-     - speaker similarity (WeSpeaker ResNet293-LM: the seed-tts-eval WavLM-Large checkpoint is
-       only on Google Drive) between the row's own Vietnamese clip and the English output,
-       anchored by the clip against its reference (ceiling; rows under 0.4 are not one speaker)
-       and against another speaker's clip (floor);
-     - Whisper-large-v3 WER on the English, and the share of broken clips: WER over 20%, or a
-       duration per character off the median by 2× either way;
-     - speed: wall time per second of audio, one model at a time, its rows shared out to 8
-       processes on the GPU through CUDA MPS, timed once every process has loaded. The bake-off
-       calls each model one request at a time, which leaves the GPU two-thirds idle; MPS lets the
-       processes' kernels overlap, where plain processes take turns. Qwen3-TTS on 64 rows: RTF
-       0.89 with one process, 0.40 with 4 without MPS, 0.29 with 4 and 0.17 with 8 under MPS
-       (2026-11-05). dots.tts gained far less (RTF 0.81 alone, 0.52–0.64 with 8), with its 8
-       processes given 16 torch threads each on a box whose container quota is 15.36 CPUs
-       (`nproc` says 128): workers now take the quota's share (`training.paths.cpu_budget`).
-       This speed compares the models; production cost is the winner's batched runtime
-       (vLLM-Omni serves Qwen3-TTS and VoxCPM2 with CUDA graphs, CosyVoice3 has TensorRT-LLM),
-       measured after. No Qwen3-TTS is newer than the January 2026 release;
-  4. production verifies every output with an ASR (Qwen3-ASR) and voices a broken one again, so a mode's
-     broken share is its retry cost, not a bar: take the highest voice match whose kept rows'
-     WER is near the best, then listen blind to 20 pairs; the winner must reach ~50 H100-hours
-     per 1,000 h (RTF 0.05, retries included) on its batched runtime, or the runner-up is
-     measured the same way. (The first rule, broken ≤ 2% and WER ≤ 3%, passed only CosyVoice3,
-     which barely clones, and Qwen3-TTS x-vector, at half the others' voice match.)
-- The run of 2026-11-05 (rerun on Japan 59219222, same seeds): 290 rows, 8 workers per model.
-  Whisper's normalizer deletes text in brackets, which scored correct readings of a parenthetical
-  as broken; `score` now unbrackets first, and leaves out the 9 lines most systems break (Latin,
-  rare names like "Cloak N Dagga", one mis-encoded line). 211 of the other 281 rows are one
-  speaker. Broken share and voice match (Mimi, 0 = another speaker, 1 = the speaker's own other
-  clip; ceiling 0.741, floor 0.268):
+    | Mode | Broken | Voice match | RTF |
+    |---|---:|---:|---:|
+    | CosyVoice3 cross-lingual | 0.0% | 0.11 | 0.19 |
+    | Qwen3-TTS x-vector | 1.4% | 0.21 | 0.16 |
+    | VoxCPM2 reference only | 3.6% | 0.29 | 0.08 |
+    | Qwen3-TTS with transcript | 5.0% | 0.31 | 0.16 |
+    | VoxCPM2 with transcript | 8.2% | 0.34 | 0.08 |
+    | dots.tts with transcript | 8.9% | 0.40 | 0.32 |
+    | dots.tts x-vector | 8.2% | 0.43 | 0.20 |
 
-  | Mode | Broken | Voice match | RTF |
-  |---|---:|---:|---:|
-  | CosyVoice3 cross-lingual | 0.0% | 0.11 | 0.19 |
-  | Qwen3-TTS x-vector | 1.4% | 0.21 | 0.16 |
-  | VoxCPM2 reference only | 3.6% | 0.29 | 0.08 |
-  | Qwen3-TTS with transcript | 5.0% | 0.31 | 0.16 |
-  | VoxCPM2 with transcript (`ult`) | 8.2% | 0.34 | 0.08 |
-  | dots.tts with transcript | 8.9% | 0.40 | 0.32 |
-  | dots.tts x-vector | 8.2% | 0.43 | 0.20 |
+    The user's blind listening on 20 rows (closest voice: VoxCPM2 11, Qwen3-TTS 7, dots.tts 2; the highest
+    voice match lost most often, so the embedding ranks modes but does not decide) chose VoxCPM2 with
+    transcript, run batched on nano-vllm-voxcpm.
+  - For YODAS's ~20k h (2026-11-26), VieNeu-TTS v3 Turbo optimized ran 3.1× VoxCPM2 optimized, at 7.7% broken
+    against 3.8–4.5% and voice match 0.60 against 0.69, and is the scale-up's TTS by the user's 3× rule;
+    ZONOS3-Mini broke 31% ([tranche-tts-scaleup](tranche-tts-scaleup.md#finding)).
 
-  The broken rows of the cloning modes are sampling glitches a retry fixes: dots.tts babbling
-  "Nhi, Nhi…", silence or "Subtitles by the Amara.org community", VoxCPM2 garbling names.
-- Blind listening (user, 2026-11-05): 20 one-speaker rows none of the three broke (7
-  PhoAudiobook, 10 viVoice, 3 GigaSpeech 2), the Vietnamese clip against Mimi-round-tripped
-  VoxCPM2 `ult`, dots.tts x-vector and Qwen3-TTS x-vector in shuffled order. Closest voice:
-  VoxCPM2 11, Qwen3-TTS 7, dots.tts 2; viVoice went 8–1–1 to VoxCPM2, PhoAudiobook 5–2 to
-  Qwen3-TTS. dots.tts was marked unusable twice, the others never. The ear and the speaker
-  embedding disagree: the highest voice match lost most often, so the embedding score ranks
-  modes but does not decide. **VoxCPM2 with transcript is the TTS**: the ear's pick and the
-  fastest model, run batched on nano-vllm-voxcpm's engine.
-- Which TTS voiced what: PhoAudiobook, viVoice, GigaSpeech 2 and YODAS shards 0000–0003 by VoxCPM2
-  with transcript on nano-vllm-voxcpm 2.0.5's engine (env `nanovox`), at 10 flow-matching steps until
-  2026-11-08 ~00:40 UTC+7 and 8 after (within noise of 10: broken +1.0 point, kept WER median
-  +0.003, voice match unchanged); YODAS from shard 0004 by VieNeu-TTS v3 Turbo, which `voice.py`
-  runs (env `vieneu`; its GPU path and speed:
-  [tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
-- `voice.py run` voices the tranche (see its docstring), except the shards held out for
-  evaluation (`ingest.SOURCES[...].heldout`, [giga-heldout](sft-evaluation.md#evaluation-sets)).
-  Each row is cloned from its own clip
-  (VoxCPM2 also took its Vietnamese transcript), as the paper conditions on the source speaker. The
-  bake-off cloned from another clip of the speaker only to score similarity fairly. Every output is heard by
-  Qwen3-ASR-1.7B (`qwen-asr-serve` from env `asr`, `to_language=en` to force English) and voiced
-  again while broken (WER over 20% under Whisper's normalizer, or pace off by 2x), up to
-  `MAX_TRIES` (3 for the first tranche). VoxCPM2's: two viVoice shards: 1.05 tries a row, 1.5% still broken. Those rows are mostly the ASR
-  mishearing Vietnamese names and numbers; `en_broken` marks them for the cache build.
-  PhoAudiobook: 1.01–1.06 tries a row, 0.2–2.2% still broken per shard. GigaSpeech 2: 1.35–1.40
-  tries a row, 10.2–11.9% still broken per shard. On its shard 0, 2,007 of the 2,085 broken rows fail
-  on WER, 78 on pace; clips under 2 s break most (23%, against 7% from 3 to 8 s), where one
-  Vietnamese name the ASR spells otherwise ("Binh Dinh" heard as "Benin") is over 20% of the words.
-  Of 12 sampled, 5 look like that ASR noise and 7 are real faults: a word repeated or dropped, a
-  number changed ("177" spoken as "100"), a Vietnamese clause. Ignoring spaces and punctuation would
-  pass only 23 of the 2,085, so the rule stays and the cache drops them. The full run voiced 2,138.1
-  h in 13.43 h (done 2026-11-06 12:17). Prompted with the
-  Vietnamese transcript, VoxCPM2 sometimes speaks a Vietnamese clause before the English; under
-  ~20% of the words it passes the WER check (~0.05% of rows, e.g. pho/00003/00588), so the cache
-  build also drops rows whose `en_asr` has Vietnamese letters absent from `text_en`. The TTS
-  overshoots full scale on 3% of PhoAudiobook rows and 15% of viVoice rows (at most 0.23% of
-  samples, hard-clipped by the Opus encode). Opus decodes at 48 kHz whatever the 24 kHz input,
-  so readers resample. Each check asks for at most 512
-  transcript tokens (`max_completion_tokens`, as `checks.py`): uncapped, ASR decoding is greedy, so
-  an output it loops on ran to the model's 65k context past any timeout, every try (one in the
-  first ~8,000). Capped, it comes back long and scores broken. The server still stalls past a 60 s
-  try now and then and recovers within minutes; with 3 tries that ended a run three times in two
-  days (2026-11-06/07), each losing the shards in flight, so a check now tries 10 times (`ASR_TRIES`)
-  before a timeout stops the run; an HTTP error stops it at once.
-- The scale-up (GigaSpeech 2 from archive 13, 2026-11-06) runs one try a row (`MAX_TRIES` 1): time,
-  not source rows, bounds it. On six of the first tranche's GigaSpeech 2 shards (131,669 rows,
-  158 h, VoxCPM2), counting each row's tries:
+## Which TTS voiced what
+
+- The tranche's English: PhoAudiobook, viVoice, GigaSpeech 2 and YODAS shards 0000–0003 by VoxCPM2 with
+  transcript on nano-vllm-voxcpm 2.0.5, at 10 flow-matching steps until 2026-11-08 ~00:40 UTC+7 and 8 after
+  (within noise of 10: broken +1.0 point, kept WER median +0.003, voice match unchanged); YODAS from shard 0004
+  by VieNeu ([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
+- The EN-VI dataset's Vietnamese: VieNeu in MLX on the Mac and on anquachdev's hardware, all 1,835 shards by
+  2026-10-27 ([vi-tts](vi-tts.md)); where `voice.py run en_speech` has run, its broken rows by VieNeu on the box
+  ([Vietnamese](#vietnamese)).
+
+## The check
+
+- Every try is heard by Qwen3-ASR-1.7B (`qwen-asr-serve` from env `asr`, `restart.sh asr`, in FP8:
+  [tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)), its language forced (`language` and
+  `to_language` `en` or `vi`), and is broken when its error is over `BROKEN` or its pace (seconds per character
+  of the line) is off `PACE` (0.0636) by 2× either way:
+  - English: WER under Whisper large-v3's English normalizer, the line unbracketed first (the normalizer deletes
+    text in brackets, which scored correct readings of a parenthetical broken), over 0.2;
+  - Vietnamese: CER over `filters.spoken` (syllables, numbers written out), as ingest scores its ASR, over 0.15,
+    the gate's `filters.MAX_CER`. The Mac's voicing ran 0.060–0.068 s a character (medians of cv27-00060,
+    libriheavy-large-00012-00103, libriheavy-medium-00100), close enough to English's for one `PACE`.
+- A try broken is voiced again up to `MAX_TRIES`, the one of lower error kept. 1 from the scale-up on
+  (2026-11-06; the first tranche ran 3): time, not rows, bounds it. On six GigaSpeech 2 shards (VoxCPM2):
 
   | Tries | Rows kept | Kept Vietnamese h per h of English voiced |
   |---:|---:|---:|
@@ -140,37 +71,81 @@ Apache code and weights, at least 24 kHz, cloning from any reference clip:
   | 2 | 85.8% | 0.607 |
   | 3 | 89.0% | 0.571 |
 
-  Clips under 2 s are 13.4% of the rows and 4.8% of the hours, 24.8% broken at 1.72 tries a row.
-  Loading and checking run in spawned processes: as threads, their Python held the GIL and
-  starved the GPU loop (GPU at 2%). One ASR API process featurizes ~11 requests/s on the
-  CPU, so the server runs a third of the CPU quota's worth (`restart.sh asr`).
-- Measured, not shipped (2026-11-07/08): Qwen3-ASR-0.6B as the check served 122 requests/s against
-  the 1.7B's 138 (the server is bound by its API processes' CPU featurizing, not the GPU) and agreed
-  with the 1.7B on broken 89% of rows (the 1.7B with itself on the Opus round trip: 95%), flagging 3
-  points more.
-- Skipped rows (2026-11-07): the cache build drops a row on its Vietnamese side alone (language,
-  CER over 0.15, a nghìn/triệu/tỷ the transcript lacks: `filters.vi_gate` on asr_vi) whatever its
-  English, 5.5% of GigaSpeech 2's rows and 6.6–6.9% of its hours (archives 147, 148). `voice.py`
-  no longer voices them: `en_tries` 0, the other English columns null; nor rows whose `text_en` VieNeu
-  finds nothing speakable in (logged per shard). So a shard waits for its
-  asr_vi as for its text_en: run `filters.py` beside voice, ahead of it (a run logs how many
-  translated shards wait for their asr_vi). Its per-shard "still broken" now counts voiced rows
-  only, so it reads lower than the ~17.7% of the shards voiced before (many skipped rows broke).
-- CPU: process pools take shares of the container's quota (`cpu_budget()`, cgroup `cpu.max`;
-  26.88 CPUs on the Japan box, `nproc` 224): voice's loader a quarter, filters' a sixth.
-  The 32 checkers stay fixed: they are the ASR requests in flight, not CPU work.
-- The box's container allows 6,656 threads. A pool sized by `nproc` (224) exceeds it, so threads
-  follow `cpu_budget()`. ffmpeg defaults to one decoder thread per host CPU, so PyAV codecs get
-  `thread_count = 1`. PyAV's `AudioResampler` builds a filter graph holding a thread per host CPU
-  while it lives (4,075 threads from 20 decoding threads), so `voice.py` decodes without it. Its
-  Opus encoder builds one too, so a semaphore shared by the checking processes lets at most 4
-  encode at once.
-- A crashed run drops its queued checks rather than running them, so its GPU memory frees within
-  a few minutes, except behind a check still trying a stalled server (up to `ASR_TRIES` × ~70 s):
-  a server that hangs is surfaced ~20 min after it does, one that refuses connections at once. Stop a run by its PID file (`/workspace/logs/voice-run.pid`), never `pkill -f`:
-  its spawned workers look like vLLM's own processes.
-- `training/tranche/envs.sh` builds those envs.
-- `synth` checks for the MPS daemon with `nvidia-cuda-mps-control` itself: on driver 615 its
-  socket is seqpacket, and a stream connect fails with EPROTOTYPE while the daemon runs.
-- The MPS daemon outlives the bake-off, and every later CUDA job on the box runs as its client:
-  stop it with `echo quit | nvidia-cuda-mps-control` before the trainer.
+- At most 512 transcript tokens a check (`ASR_MAX_TOKENS`): uncapped, greedy decoding looped on an output to the
+  model's 65k context past any timeout (one in the first ~8,000); capped, it comes back long and scores broken.
+- The server stalls past a 60 s try now and then and recovers within minutes; 3 tries ended a run three times in
+  two days (2026-11-06/07), so a check tries 10 times (`ASR_TRIES`); an HTTP error stops the run at once.
+- Measured, not shipped (2026-11-07/08): Qwen3-ASR-0.6B served 122 requests/s against the 1.7B's 138 and agreed
+  with it on broken on 89% of rows (the 1.7B with itself on the Opus round trip: 95%), flagging 3 points more.
+
+## English
+
+`voice.py run <source>` voices each tranche segments shard on the Hub that has its `text_en` and `asr_vi` but no
+`en_audio`, except those held out for evaluation (`ingest.SOURCES[...].heldout`,
+[giga-heldout](sft-evaluation.md#evaluation-sets)); each row from its own Vietnamese clip, as the paper conditions
+on the source speaker.
+
+- Rows not voiced (`en_tries` 0, the other English columns null): those the cache build drops on the Vietnamese
+  side alone (`filters.vi_gate` on asr_vi: language, CER over 0.15, a nghìn/triệu/tỷ the transcript lacks; 5.5%
+  of GigaSpeech 2's rows), and those whose `text_en` is missing or has nothing speakable. So a shard waits for its
+  asr_vi (`filters.py`, run ahead) as for its text_en.
+- Still broken after the check: VoxCPM2 0.2–2.2% of PhoAudiobook's rows a shard, ~1.5% of viVoice's, 10.2–11.9%
+  of GigaSpeech 2's at 3 tries; VieNeu 6.1–8.7% of YODAS's at 1. On GigaSpeech 2's shard 0, 2,007 of the 2,085
+  broken rows fail on WER, 78 on pace; clips under 2 s break most (23%, against 7% from 3 to 8 s), where one
+  Vietnamese name the ASR spells otherwise ("Binh Dinh" heard as "Benin") is over 20% of the words. Of 12 sampled,
+  5 were that ASR noise and 7 real faults (a word repeated or dropped, a number changed, a Vietnamese clause), so
+  the rule stays and the cache drops them (`en_broken`).
+- Prompted with the Vietnamese transcript, VoxCPM2 sometimes spoke a Vietnamese clause before the English (~0.05%
+  of rows pass the WER check, e.g. pho/00003/00588), so the cache build also drops rows whose `en_asr` has
+  Vietnamese letters absent from `text_en` ([tranche-cache](tranche-cache.md#gates)).
+- The kept audio is Ogg Opus from 24 kHz (Mimi's rate), which decodes at 48 kHz whatever its input: readers
+  resample. VoxCPM2 overshot full scale on 3% of PhoAudiobook rows and 15% of viVoice's (at most 0.23% of
+  samples, hard-clipped by the encode).
+
+## Vietnamese
+
+`voice.py run en_speech` checks the EN-VI dataset's Vietnamese, as the Mac voiced it, against its `text_vi` and
+voices again the rows it is broken on, from the row's English clip; it reads the dataset's copy in the tranche
+repo (`en_speech/train/`, 1,832 shards; the 3 validation shards are evaluation rows, left as they are).
+
+- Each shard's rows are first heard as the dataset holds them (try 0, through the checking processes, a shard
+  ahead of the voicer), then those broken, or without audio, voiced once (`MAX_TRIES`); the better of the two is
+  kept. The voicer is the English one's: the same reference cut, denoiser gate and sampling.
+- It writes `en_speech/vi_check/<shard>` (id, `vi_audio` as Ogg Opus from 48 kHz where a new try is kept and null
+  where the dataset's stays, then of the kept audio `vi_duration_s`, `vi_asr`, `vi_cer`, `vi_tries` (0: the
+  dataset's, heard only) and `vi_broken`), pushed to the tranche repo every 30 min; a row without `text_vi` is
+  neither heard nor voiced (all null, `vi_tries` 0). Each shard downloads beside the root and is deleted once
+  read (~447 GB in all).
+- Measured on two shards (2026-11-28, records in `/Volumes/data/hibiki-zero-evals/box-62513802/vieneu-both-2026-11-28/`,
+  with clips of the Mac's broken Vietnamese against the box's):
+
+  | Shard | Rows | Broken as the dataset holds them | Fixed by one re-voice | Broken after |
+  |---|---:|---:|---:|---:|
+  | cv27-00060 | 8,892 | 7.05% | 61% | 2.74% |
+  | libriheavy-medium-00100 | 2,617 | 2.06% | 67% | 0.69% |
+
+  Common Voice's ~180–220 rows/s were heard (4.6 s of Vietnamese a row); Libriheavy's ~12.5 s rows were not timed
+  apart. The corpus is 1,745 Libriheavy shards (409 GB) and 87 Common Voice (34 GB). In the same run YODAS 0010's
+  English came out as main voiced it: 6.40% broken on both, kept WER median 0.031 against 0.032.
+- Its consumers: `cache_codes --vi-check <copy of en_speech/vi_check>` takes the new audio of the rows re-voiced
+  and rejects those still broken or never heard (every train shard needs its part), and records the part in each
+  shard's `source`; `noisy_cache` then fetches the same clips for a Vietnamese source
+  ([sft-data-caches](sft-data-caches.md#builds), [noisy-source](noisy-source.md)).
+
+## Running
+
+- Env `/workspace/envs/vieneu` (`box/envs.sh vieneu`, with `asr` for the server): `restart.sh voice` (YODAS,
+  rerun as shards arrive) or `restart.sh voice-en-speech` (to the end). Stop a run by its PID file
+  (`/workspace/logs/voice.pid`, `voice-en-speech.pid`), never `pkill -f`: its spawned workers look like vLLM's.
+- Loading and checking run in spawned processes: as threads their Python held the GIL and starved the GPU loop
+  (GPU at 2%). Pools take shares of the container's quota (`cpu_budget()`, cgroup `cpu.max`, not `nproc`): the
+  loader a quarter. The 32 checking processes stay fixed: they are the ASR requests in flight (8 each,
+  `CHECK_ROWS`), not CPU work. One ASR API process featurizes ~11 requests/s, so the server runs a third of the
+  quota's worth.
+- The box's container allows 6,656 threads: ffmpeg defaults to a decoder thread per host CPU, so PyAV codecs get
+  `thread_count = 1`; PyAV's `AudioResampler` holds a thread per host CPU while it lives (4,075 threads from 20
+  decoding threads), so `voice.py` decodes without it; its Opus encoder builds one too, so a semaphore shared by
+  the checking processes lets 4 encode at once.
+- A crashed run drops its queued checks, so its GPU memory frees within minutes, except behind a check still
+  trying a stalled server (up to `ASR_TRIES` × ~70 s): a hung server surfaces ~20 min after it hangs, one that
+  refuses connections at once.

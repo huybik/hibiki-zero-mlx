@@ -1,6 +1,9 @@
 #!/usr/bin/env python
-"""English TTS for the real-Vietnamese tranche: VieNeu-TTS v3 Turbo in each row's own voice, its SDK's steps
-batched on the GPU ([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu-and-voxcpm2)).
+"""VieNeu-TTS v3 Turbo voicing both ways, each row in its own speaker's voice, its SDK's steps batched on the GPU
+([tranche-tts](../../docs/agent-memory/tranche-tts.md); speed: [tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu)):
+- English for the real-Vietnamese tranche (`run <source>`): each segments row's text_en from its Vietnamese clip;
+- Vietnamese for the EN-VI dataset (`run en_speech`): each en_speech train row's text_vi from its English clip, where
+  the Vietnamese the dataset holds (the Mac's MLX voicing, training/prep/tts_en_speech.py) is broken.
 
 Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=True, use_ref_codes=True)`:
 - the reference: the row's clip trimmed of silence at 30 dB, its first 8 s, cut to whole quarter seconds so the
@@ -8,25 +11,32 @@ Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=Tru
   time as the voicer takes them, shortest first: the resemble-enhance denoiser (onnx_graph.py, fp16, compiled per
   length; clean references skip it), the speaker encoder (onnx_graph.py) on a Kaldi fbank of the clean clip at
   16 kHz, and MOSS's codes of it at 48 kHz (fp16);
-- the English line in chunks of at most 256 characters, phonemized (the loader's processes);
+- the line in chunks of at most 256 characters, phonemized (the loader's processes);
 - each chunk generated in one of SLOTS continuous-batching slots (vieneu_frame.py) and made again while shorter
   than the SDK's minimum (twice at most, the longest kept); decoded by MOSS in fp16, in batches of chunks of
   similar length; made again while the SDK's babble guard suspects it (twice at most, its preference kept);
-- the chunks joined with the SDK's pauses, at 48 kHz.
+- the chunks joined with the SDK's pauses, at 48 kHz;
+- heard by the ASR server (Qwen3-ASR, its language forced) and broken when its error is over BROKEN (the English's
+  WER under Whisper's normalizer, the Vietnamese's CER over `filters.spoken`, as ingest scores its ASR) or its pace
+  is off PACE by 2x; voiced again while broken up to MAX_TRIES, the best try kept.
 
-Env /workspace/envs/vieneu (training/tranche/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in the
-environment and the ASR server up (`restart.sh asr`):
+Env /workspace/envs/vieneu (box/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in the environment and the
+ASR server up (`restart.sh asr`):
   /workspace/envs/vieneu/bin/python -m training.tranche.voice run yodas
-      every segments shard (each has its text_en and asr_vi) on the Hub without en_audio yet, but
-      those held out for evaluation (`ingest.SOURCES[...].heldout`): each
-      row voiced from its own clip, heard by the ASR, voiced again while broken (WER over 20% or pace
-      off by 2x) up to MAX_TRIES, the best try kept; writes
-      <root>/<source>/en_audio/<shard> (id, en_audio as Ogg Opus from 24 kHz, decoded at 48 kHz,
-      en_duration_s, en_asr, en_wer, en_tries, en_broken) and pushes each source's folder every
-      30 min and at its end. Rows the cache build drops on the Vietnamese side (`filters.vi_gate`
-      on asr_vi), and those whose text_en is missing or has nothing speakable, are not voiced:
-      en_tries 0, the other columns null. A rerun skips the shards
-      already written or pushed, and first pushes any written but not yet pushed.
+      every segments shard (each has its text_en and asr_vi) on the Hub without en_audio yet, but those held out
+      for evaluation (`ingest.SOURCES[...].heldout`); writes <root>/<source>/en_audio/<shard> (id, en_audio as Ogg
+      Opus from 24 kHz, decoded at 48 kHz, en_duration_s, en_asr, en_wer, en_tries, en_broken). Rows the cache build
+      drops on the Vietnamese side (`filters.vi_gate` on asr_vi), and those whose text_en is missing or has nothing
+      speakable, are not voiced: en_tries 0, the other columns null.
+  /workspace/envs/vieneu/bin/python -m training.tranche.voice run en_speech
+      every en_speech train shard of the tranche repo (the EN-VI dataset's copy) without vi_check yet: each row's
+      Vietnamese as the dataset holds it heard first, the broken ones (and any without audio) voiced again; writes
+      <root>/en_speech/vi_check/<shard> (id, vi_audio as Ogg Opus from 48 kHz where a new try is kept and null where
+      the dataset's stays, then of the row's kept audio vi_duration_s, vi_asr, vi_cer, vi_tries (0: the dataset's,
+      heard only) and vi_broken). A row without text_vi is neither heard nor voiced: all null but vi_tries 0. Each
+      shard's download is deleted once read.
+  Each source's folder is pushed every 30 min and at its end. A rerun skips the shards already written or pushed,
+  and first pushes any written but not yet pushed.
 """
 from __future__ import annotations
 
@@ -77,18 +87,24 @@ QUEUE = 512  # chunks waiting for a slot, their prompt embeddings built ahead on
 DECODE_POOL = 512  # chunks decoded together, sorted by length into batches of DECODE_BATCH
 DECODE_BATCH = 64
 DECODE_MIN_FRAMES = 33  # shorter, a decode stage of MOSS's fits one flex_attention block: compiled apart (Voicer)
-# Verification, as the bake-off scored ([tranche-tts](../../docs/agent-memory/tranche-tts.md)):
+EN_SPEECH = "en_speech"  # the EN-VI dataset's rows in the tranche repo, voiced in Vietnamese; every other source in English
 WHISPER_NORMALIZER = ("openai/whisper-large-v3", "06f233f")  # its English normalizer only
-BROKEN_WER = 0.2
-PACE = 0.0636  # the bake-off's median seconds of English audio per character of its line
-# Attempts per row, the best by WER kept. 1 from the scale-up on (2026-11-06): on GigaSpeech 2 a retry
+# A try is broken over these: the English's WER under Whisper's normalizer (as the TTS bake-off scored), the
+# Vietnamese's CER over filters.spoken at the gate's filters.MAX_CER.
+BROKEN = {"en": 0.2, "vi": 0.15}
+# Seconds of audio per character of the line: the bake-off's median English, within the Mac's Vietnamese medians on
+# en_speech (0.060-0.068, 2026-11-28); a try off it by 2x either way is broken.
+PACE = 0.0636
+# The kept Opus's input rate: the tranche's English at Mimi's 24 kHz, the EN-VI dataset's Vietnamese at its 48 kHz.
+KEPT_RATE = {"en": 24000, "vi": 48000}
+# Attempts per row, the best kept. 1 from the scale-up on (2026-11-06): on GigaSpeech 2 a retry
 # costs more TTS time than its rows give back (tranche-tts.md); the first tranche ran 3.
 MAX_TRIES = 1
 ASR_TIMEOUT_S = 60  # a request takes well under a second
 # The server stalls past a try now and then and recovers within minutes: 3 tries ended a run three
 # times in two days (2026-11-06, 11-07 17:22 and 23:17 UTC+7), each losing the shards in flight.
 ASR_TRIES = 10
-ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
+ASR_MAX_TOKENS = 512  # a looping transcript comes back long and scores broken
 CHECKERS = 32  # checking processes
 # rows a checking process hears at once, each on its own thread: 256 requests in flight, the server's --max-num-seqs.
 # The server's time is its decode steps, mostly a read of its weights: one request a process (~30 in flight) held
@@ -180,8 +196,8 @@ def window_attention(self, x, input_lengths):
 
 
 def phonemize(text: str) -> tuple[list[str], list]:
-    """An English line -> its chunks phonemized and the SDK's pauses between them; no chunk when nothing in it is
-    speakable (the row is then skipped)."""
+    """A line, English or Vietnamese -> its chunks phonemized and the SDK's pauses between them; no chunk when nothing
+    in it is speakable (the row is then skipped)."""
     from vieneu_utils.phonemize_text import normalize_to_chunks_v3_with_gaps, phonemize_text_with_emotions
 
     chunks, gaps = normalize_to_chunks_v3_with_gaps(text, max_chars=CHUNK_CHARS)
@@ -194,7 +210,7 @@ def phonemize(text: str) -> tuple[list[str], list]:
 @dataclass(eq=False)
 class Request:
     key: str
-    text: str  # the English line, which the check hears against
+    text: str  # the line, which the check hears against
     chunks: list[str]  # its phonemized chunks
     gaps: list  # the pauses between them
     speaker: np.ndarray  # the row's speaker embedding
@@ -465,20 +481,23 @@ class Voicer:
 @dataclass
 class Shard:
     source: str
-    name: str  # the segments file's name
-    dst: Path  # <root>/<source>/en_audio/<name>
+    name: str  # its file's name: a segments shard's, or an en_speech train shard's
+    lang: str  # the language it is voiced in: "en", or "vi" for en_speech
+    dst: Path  # <root>/<source>/en_audio/<name>, or <root>/en_speech/vi_check/<name>
     ids: list[str]
-    texts_en: list[str]
+    texts: list[str]  # each row's line, in `lang`
     clips: list[np.ndarray] | None  # the voiced rows' references (`reference`), until enrolled
     lines: list[tuple[list[str], list]]  # the voiced rows' chunks and pauses (`phonemize`)
-    results: dict = None  # id -> the best attempt so far: {"wer", "broken", "asr", "audio", "duration", "tries"}
-    skipped: set[str] = None  # rows voice.py skips: filters.vi_gate's, and those missing or with nothing speakable in text_en; not voiced, their English columns null
+    # id -> the best try so far: {"err", "broken", "asr", "audio", "duration", "tries"}; an en_speech row's Vietnamese
+    # as the dataset holds it is try 0, its "audio" None
+    results: dict
+    skipped: set[str]  # rows not voiced (`load_segments`, `load_en_speech`)
 
 
 class Checker:
-    """Hears each output with Qwen3-ASR (`qwen-asr-serve`, language forced) and scores it as the
-    bake-off scored: Whisper's English normalizer over both sides (the line unbracketed first), WER,
-    and the pace against the bake-off's median. Each check also encodes the 24 kHz Ogg Opus kept."""
+    """Hears a try with Qwen3-ASR (`qwen-asr-serve`, its language forced) and scores it against its line: the
+    English's WER under Whisper's normalizer (the line unbracketed first), the Vietnamese's CER over `filters.spoken`,
+    and its pace (BROKEN, PACE). A voiced try is also encoded as the Ogg Opus kept (KEPT_RATE)."""
 
     def __init__(self, url: str, encoding):
         import httpx
@@ -496,11 +515,22 @@ class Checker:
         path = snapshot_download(repo, revision=revision, allow_patterns=["*.json", "*.txt"])
         self.norm = WhisperTokenizer.from_pretrained(path).normalize
 
-    def check(self, text: str, wav: np.ndarray) -> dict:
+    def error(self, lang: str, text: str, asr: str) -> float:
+        import jiwer
+
+        if lang == "en":
+            ref = self.norm(re.sub(r"[()\[\]{}<>]", " ", text))
+            return jiwer.wer(ref, self.norm(asr)) if ref.strip() else 0.0
+        from training.tranche.filters import spoken
+
+        ref, hyp = " ".join(spoken(text)), " ".join(spoken(asr))
+        return jiwer.cer(ref, hyp) if ref else float(bool(hyp))
+
+    def check(self, lang: str, text: str, wav: np.ndarray, keep: bool = True) -> dict:
+        """A 48 kHz try of `text` in `lang` -> its score, and with `keep` the Ogg Opus kept of it."""
         import io
 
         import httpx
-        import jiwer
         import soundfile as sf
         from scipy.signal import resample_poly
 
@@ -511,7 +541,7 @@ class Checker:
         for attempt in range(ASR_TRIES):  # it also drops an idle keep-alive connection now and then
             try:
                 reply = self.client.post(self.url, files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
-                                         data={"model": "asr", "language": "en", "to_language": "en",
+                                         data={"model": "asr", "language": lang, "to_language": lang,
                                                "max_completion_tokens": ASR_MAX_TOKENS})
             except httpx.TransportError:
                 if attempt == ASR_TRIES - 1:
@@ -521,15 +551,17 @@ class Checker:
             reply.raise_for_status()
             asr = reply.json()["text"]
             break
-        ref = self.norm(re.sub(r"[()\[\]{}<>]", " ", text))
-        wer = jiwer.wer(ref, self.norm(asr)) if ref.strip() else 0.0
+        err = self.error(lang, text, asr)
         duration = len(wav) / OUT_RATE
         pace = duration / max(len(text), 1)
-        broken = wer > BROKEN_WER or not 0.5 * PACE <= pace <= 2 * PACE
-        pcm = resample_poly(wav, 1, 2).astype(np.float32)
-        with self.encoding:
-            audio = encode_opus(pcm, OUT_RATE // 2)
-        return {"wer": round(wer, 4), "broken": broken, "asr": asr, "duration": round(duration, 3), "audio": audio}
+        broken = err > BROKEN[lang] or not 0.5 * PACE <= pace <= 2 * PACE
+        audio = None
+        if keep:
+            rate = KEPT_RATE[lang]
+            pcm = wav if rate == OUT_RATE else resample_poly(wav, rate // np.gcd(rate, OUT_RATE), OUT_RATE // np.gcd(rate, OUT_RATE))
+            with self.encoding:
+                audio = encode_opus(pcm.astype(np.float32), rate)
+        return {"err": round(err, 4), "broken": broken, "asr": asr, "duration": round(duration, 3), "audio": audio}
 
 
 _checker: Checker | None = None
@@ -544,11 +576,38 @@ def _start_checker(url: str, encoding) -> None:
     _hearing = ThreadPoolExecutor(CHECK_ROWS)
 
 
-def _check(rows: list[tuple[str, np.ndarray]]) -> list[dict]:
+def _check(rows: list[tuple[str, str, np.ndarray]]) -> list[dict]:
+    """Voiced tries (lang, text, 48 kHz audio) -> their scores and Opus."""
     return list(_hearing.map(lambda row: _checker.check(*row), rows))
 
 
-def load_shard(source: str, name: str, root: Path, pool) -> Shard:
+def _hear_held(rows: list[tuple[str, bytes]]) -> list[dict]:
+    """The EN-VI dataset's Vietnamese (text_vi, its Ogg Opus) -> their scores; nothing encoded."""
+    def hear(row):
+        pcm, rate = decode(row[1])
+        if rate != OUT_RATE:  # libopus decodes at 48 kHz whatever rate it encoded
+            raise ValueError(f"Vietnamese audio decoded at {rate} Hz")
+        return _checker.check("vi", row[0], pcm, keep=False)
+
+    return list(_hearing.map(hear, rows))
+
+
+def prepare(key: str, pool, rows: list[tuple[str, bytes, str]]) -> tuple[list, list, set[str]]:
+    """The references and lines of rows to voice (id, their clip, their line), in the loader's processes; those
+    whose line has nothing speakable (the SDK would say nothing) come back apart, as ids."""
+    clips = pool.map(reference, [c for _, c, _ in rows], chunksize=32)  # both maps run at once
+    lines = pool.map(phonemize, [t for _, _, t in rows], chunksize=32)
+    clips, lines = list(clips), list(lines)
+    keep = [k for k, (chunks, _) in enumerate(lines) if chunks]
+    mute = {rows[k][0] for k in set(range(len(rows))) - set(keep)}
+    if mute:
+        log(f"{key}: {len(mute)} rows whose line has nothing speakable, e.g. {min(mute)}")
+    return [clips[k] for k in keep], [lines[k] for k in keep], mute
+
+
+def load_segments(source: str, name: str, root: Path, pool) -> Shard:
+    """A tranche segments shard, voiced in English: all its rows but those the cache build drops on the Vietnamese
+    side (`filters.vi_gate` on asr_vi), those missing text_en and those with nothing speakable in it."""
     import pyarrow.parquet as pq
 
     from training.tranche.filters import vi_gate
@@ -564,43 +623,123 @@ def load_shard(source: str, name: str, root: Path, pool) -> Shard:
     vi = get("asr_vi").select(["id", "asr_vi", "language", "cer"]).to_pylist()
     if [r["id"] for r in vi] != ids:
         raise SystemExit(f"{source}/{name}: its asr_vi does not hold the segments' rows in their order")
-    # Skipped: rows missing text_en (left null in en_audio) and those the Vietnamese gates drop.
     # The cache build rejects the vi_gate rows as "not voiced" and the no_en rows gracefully.
     skipped = no_en | {i for i, text, r in zip(ids, texts, vi) if vi_gate(r | {"text": text})}
-    voiced = [(i, a["bytes"]) for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
-    clips = pool.map(reference, [a for _, a in voiced], chunksize=32)  # both maps run at once
-    lines = pool.map(phonemize, [en[i] for i, _ in voiced], chunksize=32)
-    clips, lines = list(clips), list(lines)
-    mute = [k for k, (chunks, _) in enumerate(lines) if not chunks]  # skipped too: en_tries 0, as the SDK says nothing
-    if mute:
-        log(f"{source}/{name}: {len(mute)} rows whose text_en has nothing speakable, e.g. {voiced[mute[0]][0]}")
-        skipped |= {voiced[k][0] for k in mute}
-        keep = [k for k in range(len(voiced)) if lines[k][0]]
-        clips, lines = [clips[k] for k in keep], [lines[k] for k in keep]
-    return Shard(source, name, root / source / "en_audio" / name, ids, [en.get(i, "") for i in ids], clips, lines, {},
-                 skipped)
+    voiced = [(i, a["bytes"], en[i]) for i, a in zip(ids, seg.column("audio").to_pylist()) if i not in skipped]
+    clips, lines, mute = prepare(f"{source}/{name}", pool, voiced)
+    return Shard(source, name, "en", root / source / "en_audio" / name, ids, [en.get(i, "") for i in ids], clips,
+                 lines, {}, skipped | mute)
+
+
+def load_en_speech(name: str, root: Path, pool, checks) -> Shard:
+    """An en_speech train shard, voiced in Vietnamese: every row's Vietnamese as the dataset holds it heard first (in
+    the checking processes), then the rows it is broken on, or missing for, voiced again. Downloaded beside <root>
+    (as ingest's corpus shards), not into the HF cache, and deleted once read: the 1,832 shards are ~447 GB."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download
+
+    from training.tranche.ingest import REPO
+
+    path = Path(hf_hub_download(REPO, f"{EN_SPEECH}/train/{name}", repo_type="dataset",
+                                local_dir=root / EN_SPEECH / ".download"))
+    try:
+        t = pq.read_table(path, columns=["id", "text_vi", "vi_audio", "en_audio"])
+    finally:
+        path.unlink()
+    ids, texts = t.column("id").to_pylist(), [s or "" for s in t.column("text_vi").to_pylist()]
+    held = [a and a["bytes"] for a in t.column("vi_audio").to_pylist()]
+    heard = [k for k in range(len(ids)) if texts[k] and held[k]]
+    parts = [heard[p: p + CHECK_ROWS] for p in range(0, len(heard), CHECK_ROWS)]
+    futures = [checks.submit(_hear_held, [(texts[k], held[k]) for k in part]) for part in parts]
+    del held
+    results = {}
+    for part, future in zip(parts, futures):
+        for k, r in zip(part, future.result()):
+            results[ids[k]] = r | {"tries": 0}
+    voice = [k for k in range(len(ids)) if texts[k] and (ids[k] not in results or results[ids[k]]["broken"])]
+    english = t.column("en_audio").take(pa.array(voice, pa.int64())).to_pylist()  # typed: an empty list too
+    clips, lines, mute = prepare(f"{EN_SPEECH}/{name}", pool,
+                                 [(ids[k], a["bytes"], texts[k]) for k, a in zip(voice, english)])
+    log(f"{EN_SPEECH}/{name}: {len(heard)} of {len(ids)} rows heard, {len(voice)} to voice "
+        f"({sum(r['broken'] for r in results.values())} broken, {sum(map(bool, texts)) - len(heard)} without audio)")
+    return Shard(EN_SPEECH, name, "vi", root / EN_SPEECH / "vi_check" / name, ids, texts, clips, lines, results,
+                 (set(ids) - {ids[k] for k in voice}) | mute)
+
+
+ERROR = {"en": "wer", "vi": "cer"}  # the error column's name
 
 
 def write_shard(shard: Shard) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    r = [shard.results.get(i) for i in shard.ids]  # None: skipped (no text_en or Vietnamese gates)
+    lang = shard.lang
+    r = [shard.results.get(i) for i in shard.ids]  # None: neither voiced nor heard
     col = lambda f, kind: pa.array([None if x is None else f(x) for x in r], kind)  # noqa: E731
     table = pa.table({
         "id": shard.ids,
-        "en_audio": pa.array([None if x is None else {"bytes": x["audio"], "path": f"{i.replace('/', '_')}.opus"}
-                              for i, x in zip(shard.ids, r)], pa.struct([("bytes", pa.binary()), ("path", pa.string())])),
-        "en_duration_s": col(lambda x: x["duration"], pa.float64()),
-        "en_asr": col(lambda x: x["asr"], pa.string()),
-        "en_wer": col(lambda x: x["wer"], pa.float32()),
-        "en_tries": pa.array([0 if x is None else x["tries"] for x in r], pa.int8()),
-        "en_broken": col(lambda x: x["broken"], pa.bool_()),
+        f"{lang}_audio": pa.array([None if x is None or x["audio"] is None else
+                                   {"bytes": x["audio"], "path": f"{i.replace('/', '_')}.opus"}
+                                   for i, x in zip(shard.ids, r)],
+                                  pa.struct([("bytes", pa.binary()), ("path", pa.string())])),
+        f"{lang}_duration_s": col(lambda x: x["duration"], pa.float64()),
+        f"{lang}_asr": col(lambda x: x["asr"], pa.string()),
+        f"{lang}_{ERROR[lang]}": col(lambda x: x["err"], pa.float32()),
+        f"{lang}_tries": pa.array([0 if x is None else x["tries"] for x in r], pa.int8()),
+        f"{lang}_broken": col(lambda x: x["broken"], pa.bool_()),
     })
     shard.dst.parent.mkdir(parents=True, exist_ok=True)
     part = shard.dst.with_name(shard.dst.name + ".part")
     pq.write_table(table, part)
     os.replace(part, shard.dst)
+
+
+def out_part(source: str) -> str:
+    """The part a source's shards are voiced into."""
+    return "vi_check" if source == EN_SPEECH else "en_audio"
+
+
+def shards_to_voice(args: argparse.Namespace, files: list[str]) -> list[tuple[str, str]]:
+    """(source, name) of every shard on the Hub to voice that neither the Hub nor <root> has the voicing of: for the
+    tranche's sources, their segments shards but those held out for evaluation, once translated and heard (a later
+    run takes the others); for en_speech, its train shards."""
+    import pyarrow.parquet as pq
+
+    from training.tranche import ingest
+
+    todo = []
+    for source in args.sources:
+        part = out_part(source)
+        done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/{part}/")}
+        done |= {p.name for p in (args.root / source / part).glob("*.parquet")}
+        if source == EN_SPEECH:
+            todo += [(source, n) for n in sorted(f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/train/"))
+                     if n not in done]
+            continue
+        # A shard waits for its translation, pushed or still only here (translate runs beside voice),
+        # and while a row of it has none (translate's next pass fills it).
+        translated = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/text_en/")}
+        for p in (args.root / source / "text_en").glob("*.parquet"):
+            if pq.read_table(p, columns=["text_en"]).column("text_en").null_count:
+                translated.discard(p.name)
+            else:
+                translated.add(p.name)
+        # and for its Vietnamese ASR (filters.py, running ahead), whose gates skip rows.
+        heard = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/asr_vi/")}
+        heard |= {p.name for p in (args.root / source / "asr_vi").glob("*.parquet")}
+        waiting = 0
+        for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
+            name = f.rsplit("/", 1)[1]
+            if name in ingest.SOURCES[source].heldout or name not in translated or name in done:
+                continue  # held out: an evaluation set's shard, never trained on, so never voiced
+            if name in heard:
+                todo.append((source, name))
+            else:
+                waiting += 1
+        if waiting:
+            log(f"{source}: {waiting} translated shards wait for their asr_vi (filters.py)")
+    return todo[: args.limit]
 
 
 def run(args: argparse.Namespace) -> None:
@@ -617,41 +756,15 @@ def run(args: argparse.Namespace) -> None:
     from training.paths import cpu_budget
     from training.tranche import ingest
 
-    import pyarrow.parquet as pq
-
     ingest.an_token()
-    api = HfApi()
-    todo, waiting = [], 0
+    files = HfApi().list_repo_files(ingest.REPO, repo_type="dataset")
     for source in args.sources:
-        files = api.list_repo_files(ingest.REPO, repo_type="dataset")
-        done = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/en_audio/")}
-        # A shard waits for its translation, pushed or still only here (translate runs beside voice),
-        # and while a row of it has none (translate's next pass fills it).
-        translated = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/text_en/")}
-        for p in (args.root / source / "text_en").glob("*.parquet"):
-            if pq.read_table(p, columns=["text_en"]).column("text_en").null_count:
-                translated.discard(p.name)
-            else:
-                translated.add(p.name)
-        # and for its Vietnamese ASR (filters.py, running ahead), whose gates skip rows.
-        heard = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/asr_vi/")}
-        heard |= {p.name for p in (args.root / source / "asr_vi").glob("*.parquet")}
-        for f in sorted(f for f in files if f.startswith(f"{source}/segments/")):
-            name = f.rsplit("/", 1)[1]
-            if name in ingest.SOURCES[source].heldout:
-                continue  # an evaluation set's shard: never trained on, so never voiced
-            dst = args.root / source / "en_audio" / name
-            if name in translated and name not in done and not dst.exists():
-                if name in heard:
-                    todo.append((source, name))
-                else:
-                    waiting += 1  # filters.py has not heard it yet: a later run takes it
-        local = {p.name for p in (args.root / source / "en_audio").glob("*.parquet")}
-        if local - done:  # written by an earlier run that stopped before pushing them
-            ingest.push_part(args.root, source, "en_audio")
-    todo = todo[: args.limit]
-    log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources)
-        + f"; {waiting} translated but waiting for their asr_vi")
+        part = out_part(source)
+        hub = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/{part}/")}
+        if {p.name for p in (args.root / source / part).glob("*.parquet")} - hub:  # written by an earlier run
+            ingest.push_part(args.root, source, part)                              # that stopped before pushing them
+    todo = shards_to_voice(args, files)
+    log(f"{len(todo)} shards to voice: " + ", ".join(f"{s} {sum(t[0] == s for t in todo)}" for s in args.sources))
     if not todo:
         return
 
@@ -662,6 +775,9 @@ def run(args: argparse.Namespace) -> None:
         os.environ[name] = "1"
     spawn = get_context("spawn")
     pool = ProcessPoolExecutor(max(1, int(cpu_budget() // LOADER_SHARE)), mp_context=spawn)
+    # en_speech's loading hears its rows through these too, a shard ahead of the voicer.
+    checks = ProcessPoolExecutor(CHECKERS, mp_context=spawn, initializer=_start_checker,
+                                 initargs=(args.asr, spawn.BoundedSemaphore(OPUS_AT_ONCE)))
     # A shard's references are ~17 GB (8 s at 44.1 kHz in float32 a row), freed as they enrol: the next shard loads
     # once the one before it starts enrolling, so at most two are held. Its ~80 s load hides behind a shard's voicing.
     loaded: queue.Queue = queue.Queue()
@@ -672,7 +788,8 @@ def run(args: argparse.Namespace) -> None:
             for source, name in todo:
                 ahead.acquire()
                 began_load = time.monotonic()
-                shard = load_shard(source, name, args.root, pool)
+                shard = (load_en_speech(name, args.root, pool, checks) if source == EN_SPEECH
+                         else load_segments(source, name, args.root, pool))
                 log(f"{source}/{name}: loaded {len(shard.clips)} references and lines in "
                     f"{time.monotonic() - began_load:.0f} s")
                 loaded.put(shard)
@@ -682,8 +799,6 @@ def run(args: argparse.Namespace) -> None:
 
     threading.Thread(target=loader, name="shard-loader", daemon=True).start()
     voicer = Voicer()
-    checks = ProcessPoolExecutor(CHECKERS, mp_context=spawn, initializer=_start_checker,
-                                 initargs=(args.asr, spawn.BoundedSemaphore(OPUS_AT_ONCE)))
     checking: dict = {}  # future -> its part's requests
     inflight = set()
     retries: list[Request] = []
@@ -693,13 +808,13 @@ def run(args: argparse.Namespace) -> None:
     remaining: dict[str, int] = {}  # shard -> rows without a kept attempt
     loading_done = False
     left = {s: sum(t[0] == s for t in todo) for s in args.sources}  # shards not yet written
-    pushes = ingest.Pushes(args.root, "en_audio")  # uploads run beside the voicing
+    pushes = {s: ingest.Pushes(args.root, out_part(s)) for s in args.sources}  # uploads run beside the voicing
     pushed = {s: time.monotonic() for s in args.sources}
     began, voiced_s, attempts = time.monotonic(), 0.0, 0
 
     def push(source: str) -> None:
         pushed[source] = time.monotonic()
-        pushes.push(source)
+        pushes[source].push(source)
 
     def requests(key: str, shard: Shard, rows: list) -> Iterator[Request]:
         """The shard's rows, enrolled ENROL_PIECE at a time as the voicer takes them, shortest references first (a
@@ -716,13 +831,18 @@ def run(args: argparse.Namespace) -> None:
             for k in piece:
                 shard.clips[k] = None
             for k, (spk, codes) in zip(piece, refs):
-                (i, t_en), (chunks, gaps) = rows[k], shard.lines[k]
-                yield Request(i, t_en, chunks, gaps, spk, codes)
+                (i, line), (chunks, gaps) = rows[k], shard.lines[k]
+                yield Request(i, line, chunks, gaps, spk, codes)
         log(f"{key}: enrolled {len(rows)} references in {spent:.0f} s")
 
     def next_shard() -> bool:
+        """Opens the next loaded shard; waits for one only while the voicer is idle (en_speech's loads hear a whole
+        shard, longer than voicing the last one's broken rows)."""
         nonlocal fresh, loading_done
-        shard = loaded.get()
+        try:
+            shard = loaded.get(block=not voicer.active)
+        except queue.Empty:
+            return False
         if isinstance(shard, BaseException):
             raise shard
         if shard is None:
@@ -730,7 +850,7 @@ def run(args: argparse.Namespace) -> None:
             return False
         ahead.release()  # the next shard loads while this one's references enrol, piece by piece
         key = f"{shard.source}/{shard.name}"
-        rows = [(i, t_en) for i, t_en in zip(shard.ids, shard.texts_en) if i not in shard.skipped]
+        rows = [(i, line) for i, line in zip(shard.ids, shard.texts) if i not in shard.skipped]
         shards[key], remaining[key] = shard, len(rows)
         for i, _ in rows:
             owner[i] = shard
@@ -743,14 +863,14 @@ def run(args: argparse.Namespace) -> None:
         """Writes a shard whose voiced rows all have a kept attempt, and pushes as due."""
         key = f"{shard.source}/{shard.name}"
         write_shard(shard)
-        kept = list(shard.results.values())
-        log(f"{key}: {len(shard.ids)} rows, {len(shard.skipped)} skipped by voice.py (Vietnamese gates, text_en missing or unspeakable), "
-            f"{sum(x['tries'] for x in kept) / max(len(kept), 1):.2f} tries a row, "
-            f"{sum(x['broken'] for x in kept) / max(len(kept), 1):.1%} still broken; overall "
+        voiced = [shard.results[i] for i in shard.ids if i not in shard.skipped]
+        log(f"{key}: {len(shard.ids)} rows, {len(voiced)} voiced, {len(shard.skipped)} not; "
+            f"{sum(x['tries'] for x in voiced) / max(len(voiced), 1):.2f} tries a voiced row, "
+            f"{sum(x['broken'] for x in voiced) / max(len(voiced), 1):.1%} of them still broken; overall "
             f"{attempts / (time.monotonic() - began):.1f} rows/s, RTF {(time.monotonic() - began) / max(voiced_s, 1):.5f} "
             f"over {voiced_s / 3600:.1f} h voiced ({attempts} attempts)")
-        for i in shard.results:
-            del owner[i]
+        for i in shard.ids:
+            owner.pop(i, None)
         del shards[key], remaining[key]
         left[shard.source] -= 1
         if left[shard.source] == 0 or time.monotonic() - pushed[shard.source] > PUSH_S:
@@ -763,7 +883,7 @@ def run(args: argparse.Namespace) -> None:
         shard = owner[req.key]
         best = shard.results.get(req.key)
         result["tries"] = (best["tries"] if best else 0) + 1
-        if best is None or result["wer"] < best["wer"] or (best["broken"] and not result["broken"]):
+        if best is None or result["err"] < best["err"] or (best["broken"] and not result["broken"]):
             shard.results[req.key] = result
         else:
             best["tries"] = result["tries"]
@@ -787,14 +907,15 @@ def run(args: argparse.Namespace) -> None:
             out = voicer.step()
             for p in range(0, len(out), CHECK_ROWS):
                 part = out[p: p + CHECK_ROWS]
-                fut = checks.submit(_check, [(req.text, wav) for req, wav in part])
+                fut = checks.submit(_check, [(owner[req.key].lang, req.text, wav) for req, wav in part])
                 checking[fut] = [req for req, _ in part]
                 inflight.add(fut)
             for fut in [f for f in inflight if f.done()]:
                 inflight.discard(fut)
                 for req, result in zip(checking.pop(fut), fut.result()):
                     settle(req, result)
-            pushes.check()  # a failed upload stops the run; a rerun pushes what is written
+            for p in pushes.values():
+                p.check()  # a failed upload stops the run; a rerun pushes what is written
             if loading_done and not voicer.active and not inflight and not retries:
                 break
             if not voicer.active and not out:
@@ -802,7 +923,8 @@ def run(args: argparse.Namespace) -> None:
     finally:  # after a crash, queued checks are dropped, not run, so the GPU frees promptly
         checks.shutdown(wait=False, cancel_futures=True)
         pool.shutdown(wait=False, cancel_futures=True)
-    pushes.wait()
+    for p in pushes.values():
+        p.wait()
     log(f"done: {voiced_s / 3600:.1f} h voiced in {(time.monotonic() - began) / 3600:.2f} h")
 
 
@@ -812,7 +934,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     steps = parser.add_subparsers(dest="step", required=True)
     p = steps.add_parser("run")
-    p.add_argument("sources", nargs="+", choices=sorted(ingest.SOURCES))
+    p.add_argument("sources", nargs="+", choices=sorted([*ingest.SOURCES, EN_SPEECH]))
     p.add_argument("--root", type=Path, default=Path("/workspace/tranche/repo"))
     p.add_argument("--asr", default="http://localhost:8100/v1/audio/transcriptions")
     p.add_argument("--limit", type=int, help="voice only this many shards (a staged start)")

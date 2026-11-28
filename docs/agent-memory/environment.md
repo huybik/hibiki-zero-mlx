@@ -20,14 +20,14 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   [sft-recovery](sft-recovery.md).
 - Free-threaded Python 3.14 (no GIL) for every box env it can run (user, 2026-11-11: "we use this
   new python setup for everything"), at the `.venv`'s package versions except where a package's
-  free-threaded wheel turns the GIL back on (av 15.1.0; `box/envs-min.sh` pins the ones checked).
+  free-threaded wheel turns the GIL back on (av 15.1.0; `box/envs.sh` pins the ones checked).
   The cache builds run on it (`/workspace/envs/cache`, [cache-speed-cuda](cache-speed-cuda.md)).
   Check `sys._is_gil_enabled()` after a job's imports. Importing Triton turns the GIL back on
   (triton-lang/triton#8491, open), and forcing it off under Triton killed the cache build, so a job
   on `torch.compile` (the trainer; lxml through sacrebleu and the source-built sphn turn it on there
   first) gains nothing from the GIL's absence; it still ran ~1% faster on
-  3.14 (`h100.sh setup` builds it there); vLLM and flash-attn ship no free-threaded wheels (`nanovox`,
-  `asr`, `mt` stay 3.12). 3.14 starts processes by `forkserver`, not `fork`: a child re-imports the
+  3.14 (`h100.sh setup` builds it there); vLLM ships no free-threaded wheels (`asr`, `mt` stay
+  3.12; `ingest` and `vieneu` are 3.12 as `box/envs.sh` builds them, not tried on 3.14). 3.14 starts processes by `forkserver`, not `fork`: a child re-imports the
   main module (a script that works at import breaks) and gets its arguments pickled, so a
   DataLoader's dataset is copied into each worker. Name `fork` where that matters (train.py's and
   validate.py's DataLoaders, `streams.pack`, the GRPO reward pool).

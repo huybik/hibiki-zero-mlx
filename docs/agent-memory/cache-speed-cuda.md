@@ -118,7 +118,7 @@ Measured on Vast `62513802` (RTX 5090 32 GB, sm_120, torch 2.15 + triton 3.9, 19
     `94.48%` EN / `96.04%` VI; CPU `soxr` in workers stays default (`gpu_resample_ctc=False`).
   - `c0_conv` in FP16 (`c0_fp16=True`): passes 99% gate (`99.19%` EN, `99.60%` VI, `38.75 ms`), but
     `max_lp_diff` on EN was 4× larger (`2.99` vs `0.75`) for only `4.2 ms`/320 s; default stays `False`.
-- Env note: `/workspace/envs/cache` now keeps `triton` (`envs-min.sh`) and drops `NO_TORCH_COMPILE=1`
+- Env note: `/workspace/envs/cache` now keeps `triton` (`box/envs.sh`) and drops `NO_TORCH_COMPILE=1`
   (`restart.sh`, `envi_en_speech.sh`); `restart.sh cache` uses `--direction both --drop-inputs`.
 
 ## H100 and H200

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -29,14 +29,18 @@ case $job in
        cmd=(/workspace/envs/asr/bin/qwen-asr-serve $ASR_SNAP --served-model-name asr --gpu-memory-utilization 0.25
             --max-model-len 4096 --mm-processor-cache-gb 0 --port 8100 --max-num-seqs 256 --quantization fp8
             --api-server-count $(( N / 3 > 0 ? N / 3 : 1 ))) ;;
-  # The VI->EN server translate.py calls; it needs the GPU memory voice holds, so the two take turns.
-  mt) read -ra cmd <<< "$(/workspace/envs/translate/bin/python -m training.tranche.translate serve)" ;;
   # The scale-up: each reruns 30 s after a run that succeeds, as the ingest and translation bring
   # shards (a run takes the shards ready at its start); the first error stops the loop.
   # Voice reruns after a failure too (an ASR request timing out at 60 s ends a run about once a
   # day: 2026-11-06, 2026-11-07 17:30 UTC+7), but stops after 3 in a row.
   voice) cmd=(bash -c 'f=0; while (( f < 3 )); do if /workspace/envs/vieneu/bin/python -m training.tranche.voice run yodas; then f=0; else f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; fi; sleep 30; done') ;;
-  filters) cmd=(bash -c 'while /workspace/envs/nanovox/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
+  # The EN-VI dataset's Vietnamese heard, its broken rows voiced again (voice.py run en_speech), to the end: its parts go
+  # to en_speech/vi_check/ of the tranche repo as it goes, and a rerun continues after a failure, but after 3 in a row
+  # (a run that lasted 10 min counts as progress). Plain HTTP: each of its ~447 GB of shards downloads on the loader's
+  # path, ~140 MB/s where Xet throttles to ~5.
+  voice-en-speech) export HF_HUB_DISABLE_XET=1
+       cmd=(bash -c 'f=0; while true; do s=$SECONDS; /workspace/envs/vieneu/bin/python -m training.tranche.voice run en_speech && exit 0; (( SECONDS - s < 600 )) || f=0; f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; (( f < 3 )) || exit 1; sleep 30; done') ;;
+  filters) cmd=(bash -c 'while /workspace/envs/ingest/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
   # Single-pass dual-direction CUDA build (vi-en + en-vi): reads parquets & decodes clips ONCE,
   # runs Triton fused SEANet Mimi + FP16 wav2vec2 CTC + C Viterbi + /dev/shm slabs. Plain HTTP
   # for the Hub: 143 MB/s, where Xet throttles to ~4 MB/s.
@@ -254,7 +258,7 @@ case $job in
             --eval-batch-size 64 --keep-checkpoints 1 --seed 50 --save-every 1000 --val-every 1000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|mt|voice|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
+  *) echo "usage: $0 asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

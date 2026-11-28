@@ -12,7 +12,7 @@ is tried again sampled, up to TRIES times, the later half without context rows, 
 the tokens it wrote another script or the Vietnamese it echoed with. A row failing every try
 keeps text_en null, and a rerun tries the null rows again (and only those: a written row may
 already be voiced). It takes the GPU memory voice and the ASR server
-hold, so they take turns. From the repo root, in the env /workspace/envs/mt (`envs.sh`):
+hold, so they take turns. From the repo root, in the env /workspace/envs/mt (`box/envs.sh`):
 
   python -m training.tranche.translate giga --shards 51:
 """

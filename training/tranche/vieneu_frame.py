@@ -1,5 +1,5 @@
 """VieNeu-TTS v3 Turbo's generation with continuous batching, for voice.py
-([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu-and-voxcpm2)).
+([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu)).
 
 The SDK's fused frame (vieneu 3.7.1, `v3_turbo_serve.fused`: the acoustic frame, sampling with the repetition
 penalty, EOS and caps, the backbone step, one CUDA graph), with each slot's own cache position, frame counter and
