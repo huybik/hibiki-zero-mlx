@@ -22,9 +22,15 @@ $UV pip install -q -p $E/nanovox nano-vllm-voxcpm==2.0.5 pyarrow av httpx jiwer 
   "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu13torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" \
   --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
 log vieneu; mk vieneu 3.12
-# The production TTS (training/tranche/voice.py): VieNeu-TTS v3 Turbo's SDK, whose cuda extra pins torch 2.8.0
-# (CUDA 12.8); its ONNX graphs run in PyTorch (onnx_graph.py).
-$UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer num2words
+# The production TTS (training/tranche/voice.py): VieNeu-TTS v3 Turbo's SDK on torch 2.15 (CUDA 13.4), without its
+# cuda extra, which pins torch 2.8 (CUDA 12.8): its runtime dependencies listed instead. Its ONNX graphs run in
+# PyTorch (onnx_graph.py).
+$UV pip install -q -p $E/vieneu torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
+$UV pip install -q -p $E/vieneu --no-deps vieneu==3.7.1
+$UV pip install -q -p $E/vieneu torch==2.15.0 sea-g2p==0.10.0 onnxruntime==1.32.0 numpy==2.5.5 soundfile==0.14.0 soxr==1.1.0 \
+  kaldi-native-fbank==1.23.3 tokenizers==0.22.2 huggingface-hub==0.36.2 pyyaml==6.0.4 librosa==1.0.1 \
+  transformers==4.57.6 safetensors==0.8.0 onnx==1.23.2 pyarrow==26.0.1 av==19.0.2 httpx==0.28.1 jiwer==4.0.0 \
+  num2words==0.5.14 scipy==1.18.1 --extra-index-url https://download.pytorch.org/whl/cu134 --index-strategy unsafe-best-match
 log dots; mk dots 3.12
 $UV pip install -q -p $E/dots dots.tts==0.3.1 torch==2.8.0 torchaudio==2.8.0 transformers==4.57.0 soundfile
 log qwentts; mk qwentts 3.12

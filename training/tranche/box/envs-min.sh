@@ -29,7 +29,13 @@ cache=$!
 (mk asr 3.12; $UV pip install -q -p $E/asr "qwen-asr[vllm]==0.0.6" jiwer
  $E/asr/bin/python -c "import torch; print('asr:', torch.__version__, torch.version.cuda)") &
 asr=$!
-(mk vieneu 3.12; $UV pip install -q -p $E/vieneu "vieneu[cuda]==3.7.1" transformers==4.57.6 onnx==1.23.2 pyarrow av httpx jiwer num2words
+(mk vieneu 3.12  # as envs.sh: the SDK on torch 2.15 without its cuda extra
+ $UV pip install -q -p $E/vieneu torch==2.15.0 --index-url https://download.pytorch.org/whl/cu134
+ $UV pip install -q -p $E/vieneu --no-deps vieneu==3.7.1
+ $UV pip install -q -p $E/vieneu torch==2.15.0 sea-g2p==0.10.0 onnxruntime==1.32.0 numpy==2.5.5 soundfile==0.14.0 soxr==1.1.0 \
+  kaldi-native-fbank==1.23.3 tokenizers==0.22.2 huggingface-hub==0.36.2 pyyaml==6.0.4 librosa==1.0.1 \
+  transformers==4.57.6 safetensors==0.8.0 onnx==1.23.2 pyarrow==26.0.1 av==19.0.2 httpx==0.28.1 jiwer==4.0.0 \
+  num2words==0.5.14 scipy==1.18.1 --extra-index-url https://download.pytorch.org/whl/cu134 --index-strategy unsafe-best-match
  $E/vieneu/bin/python -c "import torch; print('vieneu:', torch.__version__, torch.version.cuda)") &
 vieneu=$!
 set +m

@@ -249,8 +249,9 @@ class Voicer:
         self.codec = tts.audio_tokenizer
         self.codec.set_compute_dtype("fp16")  # encode and decode: 59 dB from fp32 on the bench
         # Encode and decode whole (no streaming chunks), their attention windowed (window_attention), each compiled
-        # once for every length: decode 7.7x and encode 2.8x the SDK's (decode 54.6 dB from fp32's one-row decode,
-        # as fp16's 55.1; 98.4% of the codes equal)
+        # once for every length and batch of at least two (PyTorch specializes a batch of one: a recompile of ~25 s,
+        # so such a batch is padded to two): decode 7.7x and encode 2.8x the SDK's (decode 54.6 dB from fp32's
+        # one-row decode, as fp16's 55.1; 98.4% of the codes equal)
         attention = sys.modules[type(self.codec).__module__].MossAudioTokenizerMultiheadAttention
         for m in self.codec.modules():
             if isinstance(m, attention):
@@ -281,6 +282,12 @@ class Voicer:
             self.denoise([np.zeros(n * q, np.float32)])
         torch.cuda.synchronize()
         log(f"denoiser compiled for {len(self.denoiser.plans)} lengths in {time.perf_counter() - began:.0f} s")
+        began = time.perf_counter()
+        with torch.no_grad():
+            self.codec.batch_encode([torch.zeros(2, int(BUCKET_S * OUT_RATE), device="cuda")] * 2)
+            self.decode_codes(torch.zeros(tts.config.n_vq, 2, 16, dtype=torch.long, device="cuda"))
+        torch.cuda.synchronize()
+        log(f"codec encode and decode compiled in {time.perf_counter() - began:.0f} s")
 
     # enrolment
 
@@ -331,7 +338,8 @@ class Voicer:
                         part = range(k, min(k + ENROL_BATCH, len(piece)))
                         w16 = torch.from_numpy(np.stack([ins[j][0] for j in part])).cuda()
                         emb = self.speaker(speaker_fbank(w16))[0].float().cpu().numpy()
-                        enc = self.codec.batch_encode([torch.from_numpy(ins[j][1]).cuda().expand(2, -1) for j in part])
+                        wavs = [torch.from_numpy(ins[j][1]).cuda().expand(2, -1) for j in part]
+                        enc = self.codec.batch_encode(wavs + wavs[:1] * (len(wavs) == 1))  # at least two
                         lengths = enc.audio_codes_lengths.tolist()
                         codes = enc.audio_codes.permute(1, 2, 0).cpu().numpy()  # [B, T, n_vq]
                         for b, j in enumerate(part):
@@ -410,8 +418,8 @@ class Voicer:
         for b in range(0, len(pending), DECODE_BATCH):
             batch = pending[b: b + DECODE_BATCH]
             with torch.no_grad():
-                codes = torch.zeros(batch[0][1].shape[1], len(batch), len(batch[-1][1]), dtype=torch.long,
-                                    device="cuda")
+                codes = torch.zeros(batch[0][1].shape[1], max(len(batch), 2), len(batch[-1][1]), dtype=torch.long,
+                                    device="cuda")  # at least two rows
                 for j, (_, c) in enumerate(batch):
                     codes[:, j, : len(c)] = c.T
                 audio = self.decode_codes(codes).float().mean(1).cpu().numpy()
