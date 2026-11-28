@@ -164,35 +164,6 @@ def level_spread(x):
     return hi - lo
 
 
-def kaldi_mel(bins: int, fft: int, rate: int) -> np.ndarray:
-    """Kaldi's triangular mel filters, 20 Hz to Nyquist, over an rfft's fft // 2 + 1 bins (the last, Nyquist, unused):
-    [bins, fft // 2 + 1]."""
-    mel = lambda f: 1127.0 * np.log(1.0 + f / 700.0)  # noqa: E731
-    lo, hi = mel(20.0), mel(rate / 2)
-    delta = (hi - lo) / (bins + 1)
-    at = mel(np.arange(fft // 2) * rate / fft)[None]
-    left = lo + np.arange(bins)[:, None] * delta
-    w = np.maximum(0.0, np.minimum((at - left) / delta, (left + 2 * delta - at) / delta))
-    return np.pad(w, ((0, 0), (0, 1))).astype(np.float32)
-
-
-def speaker_fbank(w16):
-    """The SDK's extract_speaker_fbank (kaldi-native-fbank: 80 mel bins of 25 ms povey frames every 10 ms, edges
-    snipped, DC removed, pre-emphasis 0.97, power spectrum, log floored at float32's epsilon, mean-normalised over
-    time) of equal-length 16 kHz clips [B, N] on the GPU: [B, frames, 80]."""
-    import torch
-
-    n, hop, fft = SPEAKER_RATE // 40, SPEAKER_RATE // 100, 512
-    f = w16.float().unfold(1, n, hop)
-    f = f - f.mean(-1, keepdim=True)
-    f = torch.cat([f[..., :1] * (1 - 0.97), f[..., 1:] - 0.97 * f[..., :-1]], -1)
-    f = f * torch.hann_window(n, periodic=False, device=f.device).pow(0.85)
-    power = torch.fft.rfft(f, n=fft).abs().pow(2)
-    mel = power @ torch.from_numpy(kaldi_mel(80, fft, SPEAKER_RATE)).to(f.device).T
-    mel = mel.clamp(min=torch.finfo(torch.float32).eps).log()
-    return mel - mel.mean(1, keepdim=True)
-
-
 def window_attention(self, x, input_lengths):
     """MOSS's non-streaming attention (`MossAudioTokenizerMultiheadAttention._forward_non_streaming_sdpa`) as the
     causal sliding window it is, through flex_attention: the tiles outside the window are skipped, where the SDK's
@@ -276,11 +247,15 @@ class Voicer:
         # DECODE_MIN_FRAMES and batch of at least two. Smaller, PyTorch specializes it (a batch of one; a stage of a
         # single flex_attention block): a recompile of 25-50 s each, mid-run.
         attention = sys.modules[type(self.codec).__module__].MossAudioTokenizerMultiheadAttention
+        windowed = 0
         for m in self.codec.modules():
             if isinstance(m, attention):
                 if not (m.causal and m.context):
                     raise SystemExit("MOSS attention without a causal window: window_attention does not apply")
                 m._forward_non_streaming_sdpa = types.MethodType(window_attention, m)
+                windowed += 1
+        if not windowed:  # the SDK's dense decode would build a T x T bias and run out of memory
+            raise SystemExit("no MOSS attention layer found to window")
         hop = self.codec.downsample_rate  # samples a code frame
         self.encode_len = -(-int(REF_S * OUT_RATE) // hop) * hop
         self.encode = torch.compile(lambda wav: self.codec._encode_frame(wav).audio_codes, dynamic=False)
@@ -345,6 +320,8 @@ class Voicer:
         import soxr
         import torch
 
+        from training.prep import kaldi
+
         groups: dict[int, list[int]] = {}
         for i, c in enumerate(clips):
             groups.setdefault(len(c), []).append(i)
@@ -369,7 +346,8 @@ class Voicer:
                     for k in range(0, len(piece), ENROL_BATCH):
                         part = range(k, min(k + ENROL_BATCH, len(piece)))
                         w16 = torch.from_numpy(np.stack([ins[j][0] for j in part])).cuda()
-                        emb = self.speaker(speaker_fbank(w16))[0].float().cpu().numpy()
+                        # the SDK's extract_speaker_fbank (kaldi-native-fbank), batched: embeddings at cosine 0.999999
+                        emb = self.speaker(kaldi.fbank(w16, SPEAKER_RATE, "povey"))[0].float().cpu().numpy()
                         wav = torch.zeros(ENROL_BATCH, 2, self.encode_len, device="cuda")
                         for b, j in enumerate(part):
                             wav[b, :, : len(ins[j][1])] = torch.from_numpy(ins[j][1]).cuda()

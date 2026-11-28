@@ -30,6 +30,8 @@ from huggingface_hub import hf_hub_download
 from torch import nn
 from torch.nn import functional as F
 
+from training.prep import kaldi
+
 SPEAKER_MODEL = ("Wespeaker/wespeaker-voxceleb-resnet34-LM", "f0c48c298fd835726c27956a5d617bad7115627e")
 RATE = 16_000
 COLUMNS = ("speaker_sim", "hnr_db")
@@ -79,30 +81,6 @@ class SpeakerEncoder(nn.Module):
         return self.seg_1(torch.cat([x.mean(-1), torch.sqrt(x.var(-1) + 1e-7)], dim=-1))
 
 
-def _mel_banks(bins: int = 80, fft: int = 512, low: float = 20.0) -> torch.Tensor:
-    """Kaldi's triangular mel filters (torchaudio.compliance.kaldi.get_mel_banks), [bins, fft / 2 + 1]."""
-    mel = lambda f: 1127.0 * torch.log1p(torch.as_tensor(f, dtype=torch.float64) / 700.0)  # noqa: E731
-    lo, hi = mel(low), mel(RATE / 2)
-    delta = (hi - lo) / (bins + 1)
-    left = lo + torch.arange(bins, dtype=torch.float64)[:, None] * delta
-    freqs = mel(RATE / fft * torch.arange(fft // 2, dtype=torch.float64))[None]
-    banks = torch.clamp(torch.minimum((freqs - left) / delta, (left + 2 * delta - freqs) / delta), min=0)
-    return F.pad(banks, (0, 1)).float()
-
-
-def fbank(wav: torch.Tensor) -> torch.Tensor:
-    """WeSpeaker's features: Kaldi's 80-bin log mel filterbank (torchaudio.compliance.kaldi.fbank
-    with Hamming windows of 25 ms every 10 ms, no dither) of int16-scaled 16 kHz audio [N],
-    less its mean over the clip; [T, 80]."""
-    frames = wav.unfold(0, 400, 160)
-    frames = frames - frames.mean(1, keepdim=True)
-    frames = frames - 0.97 * torch.cat([frames[:, :1], frames[:, :-1]], 1)
-    frames = frames * torch.hamming_window(400, periodic=False, device=wav.device)
-    power = torch.fft.rfft(F.pad(frames, (0, 112))).abs().pow(2)
-    feats = torch.clamp(power @ _mel_banks().to(wav.device).T, min=torch.finfo(torch.float32).eps).log()
-    return feats - feats.mean(0, keepdim=True)
-
-
 def checkpoint() -> str:
     """The speaker model's checkpoint, from the Hub cache (`h100.sh preflight` fetches it before
     a run, so a run never meets the Hub at its first validation)."""
@@ -144,7 +122,7 @@ def _speech(x: np.ndarray, floor_db: float = -120.0, frame: int = 400, gap: int 
 def _embedding(x: np.ndarray, device: str) -> torch.Tensor:
     wav = torch.from_numpy(x * (1 << 15)).to(device)
     with torch.no_grad():
-        return F.normalize(_encoder(device)(fbank(wav)[None])[0], dim=0)
+        return F.normalize(_encoder(device)(kaldi.fbank(wav[None], RATE, "hamming"))[0], dim=0)
 
 
 def _finite(x: np.ndarray, what: str) -> np.ndarray:

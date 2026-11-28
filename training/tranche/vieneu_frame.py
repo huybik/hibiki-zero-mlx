@@ -145,9 +145,8 @@ class SlotBackbone:
         layer's keys shifted left by its row's padding in one gather (the positions after a row's prompt get copies of
         its last key, never read before the slot writes them)."""
         T = attn_mask.shape[1]
-        layers = cache.layers if hasattr(cache, "layers") else None
-        k = torch.stack([l.keys for l in layers] if layers is not None else list(cache.key_cache))
-        v = torch.stack([l.values for l in layers] if layers is not None else list(cache.value_cache))
+        k = torch.stack([layer.keys for layer in cache.layers])
+        v = torch.stack([layer.values for layer in cache.layers])
         n = attn_mask.sum(1)
         src = (torch.arange(T, device=n.device)[None] + (T - n)[:, None]).clamp(max=T - 1)  # [rows, T]
         src = src.view(1, -1, 1, T, 1).expand(k.shape[0], -1, k.shape[2], -1, k.shape[4])

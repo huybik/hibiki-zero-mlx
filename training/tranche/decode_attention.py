@@ -47,6 +47,10 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, lengths: torch.Ten
     0..lengths-1 attended; at least 1) -> [B, Hq, D]. Hq a multiple of Hkv, at most 16 a key head."""
     B, Hq, D = q.shape
     Hkv = k.shape[1]
+    if Hq % Hkv or Hq // Hkv > ROWS:
+        raise ValueError(f"{Hq} query heads over {Hkv} key heads: attend takes a multiple, at most {ROWS} a key head")
+    if k.shape != v.shape or k.stride() != v.stride() or k.stride(3) != 1 or q.stride(2) != 1:
+        raise ValueError("attend: k and v share one layout, contiguous in the last axis, as q")
     out = torch.empty_like(q)
     _attend[(B, Hkv)](q, k, v, out, lengths, scale, q.stride(0), q.stride(1), k.stride(0), k.stride(1), k.stride(2),
                       out.stride(0), out.stride(1), G=Hq // Hkv, D=D, BLOCK=block, ROWS=ROWS, num_warps=warps,
