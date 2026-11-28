@@ -98,8 +98,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers", type=int, help="Decode and alignment processes (default: the device's)."
     )
-    parser.add_argument("--fp8-ctc", action="store_true", help="CUDA Blackwell FP8 on wav2vec2 transformer linears.")
-    parser.add_argument("--fp8-mimi", action="store_true", help="CUDA Blackwell FP8 on Mimi encoder transformer linears.")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild existing shards.")
     args = parser.parse_args()
     if args.max_frames <= 0:
@@ -210,8 +208,6 @@ def main() -> None:
             args.mimi_weight,
             args.tokenizer or DIRECTION_TOKENIZERS[args.direction],
             ane_ctc=args.ane_ctc,
-            fp8_ctc=args.fp8_ctc,
-            fp8_mimi=args.fp8_mimi,
         )
         began, hours = time.perf_counter(), 0.0
         workers = args.workers or default_workers(args.device)

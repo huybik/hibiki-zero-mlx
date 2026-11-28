@@ -35,7 +35,7 @@ import torch
 
 GROUP_ROWS = 16  # export_lm_coreml's group_size: one table per 16 output channels
 THRESHOLD = 1 << 16  # its weight_threshold: a weight with more elements than this is palettized
-# The weights lm_step's Trunk, Heads and DepformerSlice hold (embeddings stay on the host, in fp16).
+# The weights lm_step's Trunk, Heads and DepformerStep hold (embeddings stay on the host, in fp16).
 PALETTIZED = re.compile(
     r"transformer\.layers\.\d+\..+\.weight|text_linear\.weight|depformer\.heads\.\d+\.weight"
     r"|depformer\.layers\.\d+\..+\.weight|depformer_in\.\d+\.weight|linears\.\d+\.weight"

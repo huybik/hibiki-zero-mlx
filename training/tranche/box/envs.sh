@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The tranche's envs under /workspace/envs: those named, or all, built side by side, each with the models it loads at
 # their pinned revisions. Without uv's cache, which on /workspace grows by tens of GB.
-#   ingest  ingest, filters and end_rental.sh (CPU)
+#   ingest  ingest (YODAS's cut on the CPU, its rows heard on the ASR server)
 #   vieneu  voice.py (VieNeu-TTS v3 Turbo)
-#   asr     the Qwen3-ASR server voice.py, ingest and filters hear with
-#   cache   the cache builds (restart.sh cache, envi-cache)
+#   asr     the Qwen3-ASR server voice.py and ingest hear with
+#   cache   the cache builds (restart.sh cache)
 #   mt      translate.py
 # From the box's copy of the box scripts: /workspace/envs.sh [env ...]
 set -Eeuo pipefail
@@ -69,9 +69,9 @@ print('cache:', torch.__version__, torch.version.cuda, 'triton:', triton.__versi
 }
 
 mt() {
-  # vLLM in process; it also imports translate_en_speech (anthropic, google-genai) and ingest (av).
+  # vLLM in process; it also imports ingest (av).
   mk mt 3.12
-  $UV pip install -q -p $E/mt vllm==0.34.0 pyarrow anthropic google-genai av==15.1.0
+  $UV pip install -q -p $E/mt vllm==0.34.0 pyarrow av==15.1.0
   # FlashInfer's prebuilt kernels for the flashinfer and CUDA vLLM brought: without them the first run compiles its
   # kernels itself (an FP8 MoE took about an hour).
   local fi

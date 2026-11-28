@@ -1,8 +1,9 @@
 # Cache build
 
 Read when touching `training/prep/cache_build.py`, `training/prep/cache_rows.py`,
-`training/prep/mimi_mlx.py`, `training/prep/wav2vec2_mlx.py`, `training/prep/wav2vec2_coreml.py`,
-`training/prep/text_timing.py` or `training/prep/audio.py`, and before running Mimi or a CTC
+`training/prep/mimi_mlx.py`, `training/prep/mimi_cuda.py`, `training/prep/wav2vec2_mlx.py`,
+`training/prep/wav2vec2_cuda.py`, `training/prep/wav2vec2_coreml.py`, `training/prep/text_timing.py`,
+`training/prep/_ctc_viterbi.c` or `training/prep/audio.py`, and before running Mimi or a CTC
 aligner anywhere else, on MLX or CUDA: how every grounded cache is built on either device, and
 what each device's speed depends on. The builders on top are in [sft-data-caches](sft-data-caches.md)
 (`cache_codes`, the EN-VI dataset) and [tranche-cache](tranche-cache.md) (`training.tranche.cache`,
@@ -28,7 +29,7 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 ```
 
 - One implementation per model per device. Every grounded cache runs Mimi and wav2vec2 through
-  `cache_build`, and the noisy re-encode takes its CUDA Mimi from it (`cuda_mimi`, `mimi_batch`;
+  `cache_build`, and the noisy re-encode takes its CUDA Mimi from it (`cuda_mimi`;
   [noisy-source](noisy-source.md#noisy-cache)). A builder adds only its source's reading and gates,
   the sample fields it keeps (`fields`) and where its shards go. A new source is a new `read`, a
   new device a new `*Models` class with `window`, `cardinality` and `encode`; never a second
@@ -117,8 +118,9 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
   codebook frame was a near-tie (distances 7.6e-6 apart). The rest are near-ties in the residual
   codebooks.
 - CTC: `wav2vec2_mlx.Wav2Vec2CTC` in float32 by default; `half=True` (`tranche.cache --half-ctc`)
-  for float16 weights, measured on omniASR (the former Vietnamese aligner) only. One clip per
-  forward, then the numpy Viterbi (`text_timing.CTCWordAligner`) in a worker. The port pads each
+  for float16 weights, measured on omniASR (the former Vietnamese aligner) only; `Builder` refuses
+  it on CUDA, whose CTC always runs in FP16. One clip per forward, then the C Viterbi
+  (`text_timing.CTCWordAligner`) in a worker. The port pads each
   clip to a multiple of 1.28 s and masks the padding (first GroupNorm statistics, positional
   convolution input, attention keys), so it computes the clip alone and compiles over ~18 shapes.
   It ports the base layout both aligners have (GroupNorm on the first convolution, post-norm
@@ -158,29 +160,31 @@ builder (cache_codes | tranche.cache): its shard keys, read(key) -> Shard (rows,
 ## CUDA
 
 - `CUDAModels` (and `CUDAModelsDual` / `DualBuilder` for single-pass `--direction both` in
-  `tranche.cache`): runs `mimi_cuda.FastMimiEncoder` (`cuda_mimi`; `HIBIKI_LEGACY_MIMI=1` falls back
-  to stock moshi, `HIBIKI_FP32_MIMI=1` forces FP32) and `wav2vec2_cuda.FastWav2Vec2CTC` (`HIBIKI_FP32_CTC=1`
-  forces FP32; `--fp8-ctc` and `--fp8-mimi` are opt-in), with `CUDA_TF32` enabled, over padded batches
-  of up to `CUDA_BATCH_S` (320 s) of audio, shortest first (`batches`; both clips of a window in one
-  sort for Mimi, delay silence applied zero-copy in `_stage`). `encode` runs in the build's GPU thread
+  `tranche.cache`): runs `mimi_cuda.FastMimiEncoder` (`cuda_mimi`) and `wav2vec2_cuda.FastWav2Vec2CTC`,
+  each a single FP16 path, with `CUDA_TF32` enabled, over padded batches of up to `CUDA_BATCH_S`
+  (320 s) of audio, shortest first (`batches`; both clips of a window in one sort for Mimi, delay
+  silence applied zero-copy in `_stage`). `encode` runs in the build's GPU thread
   (`threaded`) with preallocated double-buffered pinned H2D/D2H pools (`_PinnedOutputPool`), one window
   queued behind it.
 - Workers (`cache_rows.prepare_rows` / `prepare_dual_rows`) pack each 32-row decode job into ONE
-  contiguous `/dev/shm` `.f32` slab file instead of per-row files; `text_timing.CTCWordAligner` runs
-  the Viterbi DP in an auto-compiled C99 shared library (`training/prep/_ctc_viterbi.c`, bit-exact to
-  the NumPy fallback, `HIBIKI_NUMPY_VITERBI=1` to override). `cache_codes` writes shards on a background
-  thread; `tranche.cache` prefetches up to `--prefetch 3` Hub shards and gates metadata columns before
+  contiguous `/dev/shm` `.f32` slab file instead of per-row files, each row's 24 kHz clips and its
+  normalized 16 kHz target. `text_timing.CTCWordAligner` runs the Viterbi in a C99 shared library
+  (`_ctc_viterbi.c`), built with `cc -O3` into `__pycache__` beside it on first use (again when
+  the source is newer); without a compiler, or if the build or load fails, it raises, on MLX too.
+  `cache_codes` writes shards on a background thread; `tranche.cache` prefetches up to `--prefetch 3` Hub shards and gates metadata columns before
   reading audio bytes.
 - `FastWav2Vec2CTC` keeps `c0_conv`, the Triton two-pass masked GroupNorm+GELU statistics, and `lm_head`
   in FP32, runs `c1..c6` as channels-last FP16 `conv2d`, folds `pos_conv_embed` `weight_norm` once at
-  load, fuses QKV (`768 -> 2304`), and uses packed varlen FA2 when `flash_attn` is installed or additive
-  float-mask cuDNN SDPA otherwise. Measured RTX 5090 parity and speed are in
+  load, fuses QKV (`768 -> 2304`), runs SDPA with an additive float key mask (cuDNN attention), and
+  compiles the convolutions and the 12 layers (`torch.compile`, always). `mimi_cuda` and
+  `wav2vec2_cuda` import Triton at the top and refuse any device but CUDA, so the CUDA path runs only
+  on a box with Triton (`box/envs.sh`'s cache env). Measured RTX 5090 parity and speed, and the
+  levers measured and removed, are in
   [cache-speed-cuda](cache-speed-cuda.md#blackwell-kernels-and-pipeline-2026-11-28).
 - transformers reports `wav2vec2.masked_spec_embed` as missing from the checkpoint: it only masks
   in training, so the CTC is unaffected.
-- `DEVICE` is the torch device. Set to `"cpu"`, the CUDA path no longer runs since its pinned
-  staging (2026-11-09): pinned memory and `torch.cuda.Event` need a GPU. Check a change to it on
-  a box.
+- `DEVICE` is the torch device of `CUDAModels`: CUDA only (pinned staging, `torch.cuda.Event`, the
+  Triton kernels). Check a change to it on a box.
 
 ## Across devices
 

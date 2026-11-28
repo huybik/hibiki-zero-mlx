@@ -8,7 +8,7 @@ Two paths:
    forward and tiled transpose+quantization on backward (no fp32 HBM intermediates and no
    `.T.contiguous()` HBM passes), registered as a `torch.library.custom_op` so `torch.compile`
    traces cleanly across layers with zero graph breaks.
-2. Pre-quantized frozen teacher `FrozenFP8Linear` (`--fp8-teacher trunk|all`): quantizes each
+2. Pre-quantized frozen teacher `FrozenFP8Linear` (`--fp8-teacher all`): quantizes each
    frozen teacher linear weight once at startup into `(weight_fp8, scale_fp8)` and drops the bf16
    weight copy, eliminating all runtime weight quantization and halving teacher weight VRAM.
 """
@@ -392,18 +392,11 @@ def _replace_linear_list(module_list: nn.ModuleList) -> int:
     return count
 
 
-def prepare_fp8_teacher(teacher: Any, mode: str) -> int:
-    """Pre-quantize frozen teacher linear weights to rowwise E4M3 in place.
-    `mode`:
-      - 'none': no-op.
-      - 'trunk': main transformer's 4 linears per layer (in_proj, out_proj, gating linear_in/out).
-      - 'all': main transformer + depformer's per-step linears and gating + depformer_in.
-    Keeps `text_linear` and audio `linears` in bf16 for clean target distributions.
-    Returns number of quantized linears."""
-    if mode == "none":
-        return 0
-    if mode not in ("trunk", "all"):
-        raise ValueError(f"Unsupported fp8 teacher mode: {mode!r}")
+def prepare_fp8_teacher(teacher: Any) -> int:
+    """Pre-quantize frozen teacher linear weights to rowwise E4M3 in place: the main
+    transformer's 4 linears per layer (in_proj, out_proj, gating linear_in/out), the depformer's
+    per-step linears and gating, and depformer_in. Keeps `text_linear` and audio `linears` in
+    bf16 for clean target distributions. Returns number of quantized linears."""
     count = 0
     for layer in teacher.transformer.layers:
         count += _replace_linear_list(layer.self_attn.in_projs)
@@ -411,16 +404,15 @@ def prepare_fp8_teacher(teacher: Any, mode: str) -> int:
         if layer.gating is not None:
             count += _replace_linear(layer.gating, "linear_in")
             count += _replace_linear(layer.gating, "linear_out")
-    if mode == "all":
-        if getattr(teacher, "depformer_in", None) is not None:
-            count += _replace_linear_list(teacher.depformer_in)
-        if getattr(teacher, "depformer", None) is not None and hasattr(teacher.depformer, "layers"):
-            for layer in teacher.depformer.layers:
-                count += _replace_linear_list(layer.self_attn.in_projs)
-                count += _replace_linear_list(layer.self_attn.out_projs)
-                for gating in layer.gating:
-                    count += _replace_linear(gating, "linear_in")
-                    count += _replace_linear(gating, "linear_out")
+    if getattr(teacher, "depformer_in", None) is not None:
+        count += _replace_linear_list(teacher.depformer_in)
+    if getattr(teacher, "depformer", None) is not None and hasattr(teacher.depformer, "layers"):
+        for layer in teacher.depformer.layers:
+            count += _replace_linear_list(layer.self_attn.in_projs)
+            count += _replace_linear_list(layer.self_attn.out_projs)
+            for gating in layer.gating:
+                count += _replace_linear(gating, "linear_in")
+                count += _replace_linear(gating, "linear_out")
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return count

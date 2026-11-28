@@ -14,14 +14,11 @@ EOS on the frame after it, then silence. It stops at the first text EOS the mode
 has heard the source EOS; an earlier one stops nothing, where training's evaluation would end
 there and drop the rest of a long file. `run` (main.py's file mode) also stops after QUIET_S
 without a word once the source has ended; the gate does not.
-
-Usage: python inference/tools/verify_mlx_q4.py  (or `from hibiki_mlx import load, run`)
 """
 
 import codecs
 import json
 import queue
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -136,11 +133,6 @@ class Model:
         nq = max(self.config.other_codebooks, self.config.generated_codebooks)
         return rustymimi.Tokenizer(str(self.mimi_path), num_codebooks=nq)
 
-    def condition(self):
-        if self.lm.condition_provider is None:
-            return None
-        return self.lm.condition_provider.condition_tensor("description", "very_good")
-
 
 def load(weights_dir: Path) -> Model:
     """A staged model directory: config.json names the MLX weights (`moshi_name`), the tokenizer
@@ -185,7 +177,7 @@ def load(weights_dir: Path) -> Model:
     )
 
 
-def prime(model: Model, gen: models.LmGen, mimi_enc: rustymimi.Tokenizer, ct, language: str) -> None:
+def prime(model: Model, gen: models.LmGen, mimi_enc: rustymimi.Tokenizer, language: str) -> None:
     """Steps the primer of `language` (a PRIMERS key) through `gen` and `mimi_enc` at the start of
     a stream, then silence until the model has written no word for PRIMER_SETTLE_S (at most
     PRIMER_MAX_GAP_S). Their output is dropped. The primers are heard as recorded, without the
@@ -198,7 +190,7 @@ def prime(model: Model, gen: models.LmGen, mimi_enc: rustymimi.Tokenizer, ct, la
     def step(frame: np.ndarray) -> int:
         codes = mimi_enc.encode_step(frame[None, None, :])
         oat = np.transpose(codes, (0, 2, 1))[0, :, : model.config.other_codebooks]
-        return gen.step(mx.array(oat), ct)[0].item()
+        return gen.step(mx.array(oat)).item()
 
     for frame in pcm.reshape(-1, FRAME):
         step(frame)
@@ -251,7 +243,6 @@ def translate(
     lm, cfg = model.lm, model.config
     mimi_enc = model.mimi()
     mimi_dec = model.mimi() if audio else None
-    ct = model.condition()
     other_cb = cfg.other_codebooks
     gen_cb = cfg.generated_codebooks
 
@@ -274,12 +265,10 @@ def translate(
         max_steps=primer_steps(speaking) + steps + tail + 8,
         text_sampler=model.text_sampler,
         audio_sampler=model.audio_sampler,
-        cfg_coef=1.0,
-        check=False,
     )
-    lm.warmup(ct)
+    lm.warmup(model.text_sampler, model.audio_sampler)
     if speaking:
-        prime(model, gen, mimi_enc, ct, speaking)  # before the encoder thread takes mimi_enc
+        prime(model, gen, mimi_enc, speaking)  # before the encoder thread takes mimi_enc
     enc_q: queue.Queue = queue.Queue(maxsize=64)  # encoder -> main
     dec_q: queue.Queue = queue.Queue(maxsize=64)  # main -> decoder
     out_pcm: list = []
@@ -339,7 +328,7 @@ def translate(
         oat = enc_q.get()
         if oat is SENTINEL:
             break
-        tt = gen.step(mx.array(oat), ct)[0].item()  # sync this frame's LM
+        tt = gen.step(mx.array(oat)).item()  # sync this frame's LM
         processed += 1
         put_audio()
         # The source EOS frame goes in at step `steps`, which step steps + 1 hears first.
@@ -352,7 +341,7 @@ def translate(
                 oat = enc_q.get()
                 if oat is SENTINEL:  # the tail ended first, where training's generation ends too
                     break
-                gen.step(mx.array(oat), ct)
+                gen.step(mx.array(oat))
                 processed += 1
                 put_audio()
             break
@@ -413,9 +402,3 @@ def run(
         f"frames/s ({out.duration / wall:.2f}x RT), out: {outfile}, text: {text_path}]"
     )
 
-
-if __name__ == "__main__":
-    infile = sys.argv[1] if len(sys.argv) > 1 else str(SAMPLE)
-    outfile = sys.argv[2] if len(sys.argv) > 2 else str(ROOT / "translations" / "leon_mlx_fast.wav")
-    mx.random.seed(299792458)
-    run(infile, outfile, load(UPSTREAM))

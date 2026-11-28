@@ -32,16 +32,6 @@ With --freeze-trunk only the audio part trains (the depformer, its slices or hea
 and the codebooks' output linears: `slices.AUDIO_PARTS`); the main transformer, its embeddings and
 the text head keep the start model's weights, and no backward runs through them.
 
-With --sampled-text P (parallel scheduled sampling of the words, against exposure bias), each
-step first runs the main transformer teacher-forced without gradients and samples every text
-token as generation samples it (temperature 0.8, top-k 250); each word piece of the text then
-becomes the sampled word piece there with probability P in the history the main transformer
-reads, while the PADs (the timing), each step's own tokens (the depformer's inputs), the audio
-and the targets stay the dataset's. Generation conditions on the model's own words, teacher
-forcing never does: this shows the model its own word choices in training at the cost of one more
-main-transformer forward a step. Validation is unchanged
-([exposure-bias](../../docs/agent-memory/exposure-bias.md)).
-
 With --room-share S, that share of the training streams hold a room's noise in their source
 wherever nobody speaks (the lead, the gaps between sentences, after the last), instead of digital
 silence, as GRPO's streams do (`streams.run_rooms`, from the noise bank in --bank-dir); the targets
@@ -65,10 +55,9 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from moshi.utils.sampling import sample_token
 from torch.utils.data import DataLoader
 
-from training.finetune import bf16_adamw, common, lm_training, streams
+from training.finetune import bf16_adamw, common, streams
 from training.student import heads, palettize, slices
 from training.finetune.checkpoints import (
     BEST_METRIC,
@@ -113,7 +102,6 @@ RESUME_KEYS = (
     "bf16_adamw",
     "fp8",
     "fp8_teacher",
-    "sampled_text",
     "room_share",
     "mimi_weight",
     "tokenizer",
@@ -123,7 +111,6 @@ RESUME_KEYS = (
     "stream_seconds",
     "max_frames",
     "lr",
-    "trunk_lr",
     "schedule",
     "warmup_fraction",
     "adam_beta1",
@@ -199,12 +186,6 @@ def parse_args() -> argparse.Namespace:
         "free-running, which reads neither: the heads student's validation on a 32 GB card.",
     )
     parser.add_argument(
-        "--micro-frames", type=int, default=0,
-        help="Max padded frames per gradient-accumulation micro-batch (0 runs the whole batch at "
-        "once). Splits a batch's streams with exact full-batch loss weighting so large batches fit "
-        "a 32 GB card.",
-    )
-    parser.add_argument(
         "--grad-checkpoint", action="store_true",
         help="Checkpoint main transformer and depformer layers during training to cut activation "
         "memory (~6-8x smaller activations for ~20-25%% more compute).",
@@ -227,16 +208,9 @@ def parse_args() -> argparse.Namespace:
         "speedup; the output linears stay bf16.",
     )
     parser.add_argument(
-        "--fp8-teacher", choices=("none", "trunk", "all"), default="none",
-        help="Pre-quantize the frozen teacher's linear weights once to rowwise E4M3 FP8 "
-        "('trunk': 28 main layers only; 'all': main layers + depformer; keeps text_linear and "
-        "audio output linears in bf16).",
-    )
-    parser.add_argument(
-        "--sampled-text", type=float, default=0.0, metavar="P",
-        help="Probability that a word piece the main transformer reads is the word piece the model "
-        "sampled there, where it sampled one (scheduled sampling of the words); the timing and "
-        "the targets stay the dataset's.",
+        "--fp8-teacher", choices=("none", "all"), default="none",
+        help="'all' pre-quantizes the frozen teacher's main-transformer and depformer linears once "
+        "to rowwise E4M3 FP8; text_linear and the audio output linears stay bf16.",
     )
     streams.add_room_args(parser, 0.0)
     parser.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
@@ -263,11 +237,6 @@ def parse_args() -> argparse.Namespace:
         "--lr", type=float, default=2.25e-6,
         help="Peak learning rate. 2.25e-6 is round 4's 3e-6 at 8,192-frame batches times "
         "sqrt(4,608 / 8,192), Adam's square-root rule for the smaller batch.",
-    )
-    parser.add_argument(
-        "--trunk-lr", type=float, default=None,
-        help="Optional separate peak learning rate for trunk parameters (non-slices.AUDIO_PARTS); "
-        "default uses --lr for all trainable parameters.",
     )
     parser.add_argument(
         "--warmup-fraction", type=float, default=0.05, help="Share of steps warming up linearly."
@@ -333,7 +302,7 @@ def validate_args(args: argparse.Namespace) -> None:
     for name in ("epochs", "batch_frames", "max_frames", "eval_batch_size"):
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
-    for name in ("max_steps", "micro_frames", "grad_checkpoint_layers", "grad_clip", "val_every", "val_batches", "save_every"):
+    for name in ("max_steps", "grad_checkpoint_layers", "grad_clip", "val_every", "val_batches", "save_every"):
         if getattr(args, name) < 0:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.grad_checkpoint_layers and not args.grad_checkpoint:
@@ -351,20 +320,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--teacher-config needs --teacher-weight")
     if args.fp8_teacher != "none" and args.teacher_weight is None:
         raise ValueError("--fp8-teacher needs --teacher-weight")
-    if args.trunk_lr is not None:
-        if args.trunk_lr <= 0:
-            raise ValueError("--trunk-lr must be positive")
-        if args.freeze_trunk:
-            raise ValueError("--trunk-lr does not apply with --freeze-trunk")
     if args.acoustic_ar_weight <= 0:
         raise ValueError("--acoustic-ar-weight must be positive")
-    if not 0 <= args.sampled_text < 1:
-        raise ValueError("--sampled-text must be in [0, 1)")
     if not 0 <= args.room_share <= 1:
         raise ValueError("--room-share must be in [0, 1]")
-    if args.sampled_text and args.teacher_weight is not None:
-        raise ValueError("--sampled-text trains on the dataset's targets; a student learns from "
-                         "its own samples on-policy, with grpo.py --teacher-weight")
     if args.schedule == "decay" and (args.optimizer_state is None or args.warmup_fraction):
         raise ValueError("--schedule decay continues a constant run's pair: it needs "
                          "--optimizer-state and --warmup-fraction 0")
@@ -376,33 +335,6 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.val_every and (not args.save_every or args.val_every % args.save_every):
         raise ValueError("--val-every must be a multiple of a positive --save-every")
     common.require_torch_compile()
-
-
-def sample_text(
-    lm: Any, codes: torch.Tensor, condition_tensors: Any, rate: float
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Parallel scheduled sampling of the words (Duckworth et al. 2019, arXiv 1906.04331): a history
-    for `common.compute_batch_losses`, `codes` with each word piece of the text replaced, with
-    probability `rate`, by the word piece the main transformer's teacher-forced distribution
-    samples there as validation samples text (`common.TRAINER_GENERATION`), and how many replaced
-    pieces differ from the dataset's. Runs without gradients, under the caller's autocast.
-    Only a word piece the sample keeps a word piece is replaced: the targets stay the dataset's,
-    so a word sampled a frame early (where the dataset has PAD) would teach the model to write it
-    again a frame later, and one sampled late (PAD) to drop it; the timing stays the dataset's.
-    The audio stays the dataset's too: generation draws a frame's codebooks one after another,
-    and tokens sampled each on its own would pair a sampled codebook with the dataset's next."""
-    cfg = common.TRAINER_GENERATION
-    with torch.no_grad():
-        logits, scored = lm_training.text_logits(lm, codes, condition_tensors)
-        # Unscored positions hold NaN logits; they are never replaced.
-        sampled = sample_token(logits.float().nan_to_num(), True, cfg.text_temp, cfg.top_k_text)
-    text, sampled = codes[:, :1], sampled.to(codes.dtype)
-    pad = lm.text_padding_token_id  # the special tokens (PAD, EOS) sit at or below it
-    words = (text > pad) & (sampled > pad)
-    replace = scored & words & (torch.rand(scored.shape, device=codes.device) < rate)
-    history = codes.clone()
-    history[:, :1] = torch.where(replace, sampled, text)
-    return history, (replace & (sampled != text)).sum()
 
 
 def learning_rate(
@@ -597,34 +529,24 @@ def main() -> None:
     if teacher_info is not None:
         print(f"Loading the teacher from {repo_display_path(args.teacher_weight)}")
         teacher = common.load_teacher(
-            teacher_info, args.teacher_weight, device, codebooks, fp8_mode=args.fp8_teacher
+            teacher_info, args.teacher_weight, device, codebooks, fp8=args.fp8_teacher == "all"
         )
     text_tokenizer = checkpoint_info.get_text_tokenizer()
 
-    if args.trunk_lr is not None and trunk_params and audio_params:
-        opt_groups: Any = [
-            {"params": trunk_params, "lr": args.trunk_lr},
-            {"params": audio_params, "lr": args.lr},
-        ]
-        base_lrs = [args.trunk_lr, args.lr]
-    else:
-        opt_groups = params
-        base_lrs = [args.lr]
-
     if args.bf16_adamw:
         optimizer = bf16_adamw.BF16StochasticAdamW(
-            opt_groups,
+            params,
             lr=args.lr,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.weight_decay,
             seed=args.seed,
         )
     else:
-        optimizer = common.fused_adamw(opt_groups, args)
+        optimizer = common.fused_adamw(params, args)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16)
     offload = common.HostOffload()
     teacher_params = [] if teacher is None else list(teacher.parameters()) + list(teacher.buffers())
-    use_chunked_distill = common.can_chunked_distill(lm, teacher) and not args.sampled_text
+    use_chunked_distill = common.can_chunked_distill(lm, teacher)
     if use_chunked_distill:
         print(
             "Chunked linear+KL distillation enabled"
@@ -703,8 +625,6 @@ def main() -> None:
             "clipped_steps": 0,
             "max_grad_norm": None,
             "data_seconds": 0.0,
-            "text_changed": 0,
-            "word_tokens": 0,
         }
 
     def check_gradients(step: int) -> None:
@@ -779,101 +699,54 @@ def main() -> None:
         run_validation(global_step)
 
     while global_step < total_steps:
-        lr_scale = learning_rate(global_step, 1.0, warmup_steps, total_steps, args.schedule)
-        lr_value = args.lr * lr_scale
-        for group, base_lr in zip(optimizer.param_groups, base_lrs, strict=True):
-            group["lr"] = base_lr * lr_scale
+        lr_value = learning_rate(global_step, args.lr, warmup_steps, total_steps, args.schedule)
+        for group in optimizer.param_groups:
+            group["lr"] = lr_value
         optimizer.zero_grad(set_to_none=True)
         fetch_started = time.time()
         batch = next(data_iter)
         log["data_seconds"] += time.time() - fetch_started  # the wait for the stream workers
         codes = batch["codes"].to(device=device, non_blocking=True)
         batch_size, frames_padded = int(codes.shape[0]), int(codes.shape[-1])
-        micro_b = batch_size
-        if args.micro_frames and batch_size * frames_padded > args.micro_frames:
-            micro_b = max(1, args.micro_frames // frames_padded)
-        use_micro = micro_b < batch_size
-        denominators = None
-        if use_micro:
-            student_codes_all = codes if student_rows is None else codes.index_select(1, student_rows)
-            denominators = common.batch_loss_denominators(lm, student_codes_all, weights, teacher=teacher)
-            del student_codes_all
-        step_sums: dict[str, Any] | None = None
+        if batch_size not in condition_cache:
+            condition_cache[batch_size] = common.batch_condition_tensors(
+                lm, checkpoint_info.model_type, batch_size
+            )
+        if teacher is not None and batch_size not in teacher_conditions:
+            teacher_conditions[batch_size] = common.batch_condition_tensors(
+                teacher, teacher_info.model_type, batch_size
+            )
+        student_codes = codes if student_rows is None else codes.index_select(1, student_rows)
         with palettized():  # the straight-through estimator: gradients at the palettized weights
-            for start in range(0, batch_size, micro_b):
-                end = min(start + micro_b, batch_size)
-                sub_codes = codes[start:end]
-                sub_b = end - start
-                if sub_b not in condition_cache:
-                    condition_cache[sub_b] = common.batch_condition_tensors(
-                        lm, checkpoint_info.model_type, sub_b
+            if use_chunked_distill:
+                with autocast:
+                    losses = common.compute_distill_losses_chunked(
+                        lm,
+                        teacher,
+                        student_codes,
+                        codes,
+                        condition_cache[batch_size],
+                        teacher_conditions[batch_size],
+                        weights,
+                        freeze_trunk=args.freeze_trunk,
                     )
-                if use_chunked_distill:
-                    assert teacher is not None and teacher_info is not None
-                    if sub_b not in teacher_conditions:
-                        teacher_conditions[sub_b] = common.batch_condition_tensors(
-                            teacher, teacher_info.model_type, sub_b
-                        )
-                    student_sub = sub_codes if student_rows is None else sub_codes.index_select(1, student_rows)
-                    with autocast:
-                        losses = common.compute_distill_losses_chunked(
-                            lm,
-                            teacher,
-                            student_sub,
-                            sub_codes,
-                            condition_cache[sub_b],
-                            teacher_conditions[sub_b],
-                            weights,
-                            denominators=denominators,
-                            freeze_trunk=args.freeze_trunk,
-                        )
-                    del student_sub
-                else:
-                    teacher_output = None
-                    if teacher is not None:
-                        if sub_b not in teacher_conditions:
-                            teacher_conditions[sub_b] = common.batch_condition_tensors(
-                                teacher, teacher_info.model_type, sub_b
-                            )
-                        with torch.no_grad(), autocast:
-                            teacher_output = teacher(sub_codes, condition_tensors=teacher_conditions[sub_b])
-                        sub_codes = sub_codes.index_select(1, student_rows)
-                    with autocast:
-                        history = None
-                        if args.sampled_text:
-                            history, changed = sample_text(
-                                lm, sub_codes, condition_cache[sub_b], args.sampled_text
-                            )
-                            log["text_changed"] += changed
-                        losses = common.compute_batch_losses(
-                            lm, sub_codes, condition_cache[sub_b], weights,
-                            teacher=teacher_output, history=history, denominators=denominators,
-                        )
-                    history = teacher_output = None  # the loss's graph keeps what its backward needs
-                losses["loss"].backward()
-                if use_micro:
-                    if step_sums is None:
-                        step_sums = {
-                            f"{name}_{part}": losses[f"{name}_{part}"].detach()
-                            for name in common.LOSS_SUMS
-                            for part in ("sum", "n")
-                        }
-                    else:
-                        for name in common.LOSS_SUMS:
-                            for part in ("sum", "n"):
-                                key = f"{name}_{part}"
-                                step_sums[key] = step_sums[key] + losses[key].detach()
-                else:
-                    step_losses = {key: value.detach() for key, value in losses.items()}
-                del losses
-        if use_micro:
-            assert step_sums is not None
-            step_losses = {**step_sums, **common.loss_means(step_sums, weights)}
+            else:
+                teacher_output = None
+                if teacher is not None:
+                    with torch.no_grad(), autocast:
+                        teacher_output = teacher(codes, condition_tensors=teacher_conditions[batch_size])
+                with autocast:
+                    losses = common.compute_batch_losses(
+                        lm, student_codes, condition_cache[batch_size], weights, teacher=teacher_output,
+                    )
+                teacher_output = None  # the loss's graph keeps what its backward needs
+            losses["loss"].backward()
+        step_losses = {key: value.detach() for key, value in losses.items()}
+        del losses
         for key in LOG_LOSSES:
-            log["losses"][key] += step_losses[key].detach()
+            log["losses"][key] += step_losses[key]
         log["audio_tokens"] += step_losses["semantic_n"] + step_losses["acoustic_n"]
         log["text_tokens"] += step_losses["content_n"] + step_losses["pad_n"]
-        log["word_tokens"] += step_losses["content_n"]
         del step_losses
 
         trunk_grads = [p.grad for p in trunk_params if p.grad is not None]
@@ -960,10 +833,6 @@ def main() -> None:
                 "clipped_frac": float(log["clipped_steps"]) / steps,
                 "max_grad_norm": float(log["max_grad_norm"]),
             }
-            if args.trunk_lr is not None:
-                item["trunk_lr"] = args.trunk_lr * lr_scale
-            if args.sampled_text:  # the share of the content tokens (words, EOS) it read as other words
-                item["text_changed"] = float(log["text_changed"]) / max(1, int(log["word_tokens"]))
             append_log(log_path, item)
             print(
                 f"step={global_step} loss={item['loss']:.4f} "

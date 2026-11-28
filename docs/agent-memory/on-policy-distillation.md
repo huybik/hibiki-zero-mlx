@@ -1,7 +1,7 @@
 # On-policy distillation
 
 Read when touching `grpo.py`'s teacher term (`--teacher-weight`, `--reward-coef`, `--kl-coef`,
-`distill_loss`, `update_loss`) or its `--advantage`, or when running, profiling or judging the
+`distill_loss`, `update_loss`), or when running, profiling or judging the
 phone student's on-policy runs and the recipe experiments of 2026-11-21.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Design](#design) · [Running](#running) ·
 [Experiments](#experiments) · [Checks](#checks)
@@ -79,16 +79,15 @@ update micro-batch: teacher forward (no grad) ─┐
   depformer's part (`teacher_leak`, [Running](#running)).
 - The train log adds `kl_text` and `kl_audio`, the mean unweighted KL a token; the ratio
   statistics appear only with the GRPO term.
-- **`--advantage centered`** (Dr. GRPO, arXiv 2503.20783): each reward frame's advantage is
-  r − mean over the group, in BLEU points, without the paper's division by the std
-  (`rewards.normalize`); with the std a frame where the rollouts differ by one n-gram weighs as
-  much as one where they differ widely. The loss already sums tokens without a per-rollout
-  length normalization, Dr. GRPO's other change.
+- Advantages are z-scored (`rewards.normalize`). Centered ones (Dr. GRPO, arXiv 2503.20783:
+  r − mean in BLEU points, without the division by the std) gained less in the probes
+  ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)) and were removed. The loss
+  already sums tokens without a per-rollout length normalization, Dr. GRPO's other change.
 
 ## Running
 
 Profile first ([CONTEXT](../../CONTEXT.md#essential-invariants)): `grpo_profile.py` takes the same
-`--teacher-weight`, `--reward-coef`, `--kl-coef` and `--advantage` and times the update with the
+`--teacher-weight`, `--reward-coef` and `--kl-coef` and times the update with the
 teacher's forward, the teacher parked while generating. With a teacher it also reports
 `teacher_leak`. Each codebook the teacher delays less than the policy is shifted later in the
 teacher's input by the difference (the heads student's codebook j by min(j, 8) − 2), so at every
@@ -125,10 +124,10 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    run stops, before any GRPO-family run, the new code runs end to end on the box on short runs:
    the profile with the teacher (memory, the update's speed, `teacher_leak`); a short
    `--reward-coef 0` run through an evaluation, a kill and a resume; the same with both terms and
-   `--advantage centered`; plain GRPO's first updates against main's log; a `train.py --schedule
+   centered advantages; plain GRPO's first updates against main's log; a `train.py --schedule
    constant` run and a `decay` branch from its pair; `average.py` on two of its checkpoints; a
-   short `train.py --sampled-text 0.1` run through a validation, a kill and a resume. Done
-   2026-11-21, all passed ([Checks](#checks), [exposure-bias](exposure-bias.md#checks)).
+   short scheduled-sampling run through a validation, a kill and a resume. Done
+   2026-11-21, all passed ([Checks](#checks)).
 1. **The heads student's on-policy stage, aimed at the best phone model** (user, 2026-11-21: "i'm
    not asking for plain grpo, i'm asking for best outcome"): arms run only as probes, and only the
    winner runs long. Teacher GRPO update 1,400, one seed. The first probes (distillation alone and
@@ -139,8 +138,7 @@ run `student_heads14_cb16` holds the GPU until it stops). Every validation is re
    - **Probes**, 200 updates each, judged against their own update 0 by the evaluation at 200 (the
      selecting mean, the length ratio, the end offset) and the KL's fall. Distillation alone
      (`--reward-coef 0`) at 1e-6 (the student GRPO's rate), 3e-6 and 1e-5 (the off-policy anneal's
-     peak). Then both terms (`--kl-coef` 1) at the best of those rates, z-scored and `--advantage
-     centered`. Plain GRPO at 1e-6 is only the control that says whether the teacher's term helps;
+     peak). Then both terms (`--kl-coef` 1) at the best of those rates, z-scored and centered. Plain GRPO at 1e-6 is only the control that says whether the teacher's term helps;
      it gets no run of its own.
    - **The run**: the probes' winner, stopped by the user's rule (two validations without a new
      best). When both terms and distillation alone are close at 200, both terms run, since they
@@ -206,7 +204,7 @@ The probes' results and the runs, `both_heads_z` and `both_heads_z2`, are in
     39.31 / 36.50 (20) → 39.74 / 36.56 (40), VI→EN length ratio 1.31 → 1.23, but EN→VI's end
     offset 1.4 → 1.9–2.0 s and its rows ending with EOS 193 → 88 of 392: the latency gate held both
     checkpoints.
-  - **Both terms, `--advantage centered`** (20 updates, killed after the update-10 pair): resumed
+  - **Both terms, centered advantages** (20 updates, killed after the update-10 pair): resumed
     and promoted at 10 and 20, FLEURS dev 38.62 / 36.39 at 20 with the start's end offsets. The
     GRPO term's gradient (norm ~7e5) dwarfs distillation's (~3e4): `kl_audio` stayed 1.7–2.7.
   - A student pair is 15 GB (model 5.1, AdamW's 10.2): short runs on this 300 GB disk keep one.

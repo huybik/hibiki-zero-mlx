@@ -82,10 +82,8 @@ def convert(args: argparse.Namespace) -> None:
             "copy it there or pass --tokenizer"
         )
     model_name = f"hibiki.q{args.bits}.safetensors" if args.bits else "hibiki.bf16.safetensors"
-    # A staged model's config may come in: its own record and the keys older stagings wrote
-    # describe other weights.
-    for key in ("quantization", "weight_dtype", "artifact_format"):
-        cfg.pop(key, None)
+    # A staged model's config may come in: its own record describes other weights.
+    cfg.pop("quantization", None)
     cfg["moshi_name"] = model_name
     cfg["tokenizer_name"] = on
 

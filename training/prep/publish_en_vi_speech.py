@@ -2,8 +2,8 @@
 """Publish the EN-VI speech dataset that SFT pair rows are cached from.
 
 Each row holds an English clip of the en_speech corpus (Common Voice 27 and Libriheavy read
-speech) with its transcript and the Vietnamese translation exported by
-training/prep/translate_en_speech.py. The voice-transfer TTS step (training/prep/tts_en_speech.py)
+speech) with its transcript and its Vietnamese translation (made by `translate_en_speech`, in git
+at 364091a). The voice-transfer TTS step (training/prep/tts_en_speech.py)
 fills `vi_audio` and `vi_duration_s` shard by shard. Rows without a translation (transcripts
 without letters) were dropped when the corpus was moved in; the step that moved it is in git at
 a236ad5. It is published as anquachdev/common-vi-en, the one copy used; it was voiced on
@@ -49,13 +49,11 @@ from huggingface_hub.errors import HfHubHTTPError  # noqa: E402
 from huggingface_hub.utils import disable_progress_bars  # noqa: E402
 
 from training.paths import durable, exclusive  # noqa: E402
-from training.prep.translate_en_speech import MAX_SECONDS, log  # noqa: E402
 
 REPO = "anquachdev/common-vi-en"
-CLIP_SECONDS = (5.0, MAX_SECONDS)  # en_speech's clip range; longer clips never fit a 280-frame row
+CLIP_SECONDS = (5.0, 280 / 12.5)  # en_speech's clip range; longer clips never fit a 280-frame row at 12.5 Hz
 SPLITS = ("train", "validation")
 SOURCES = ("cv27", "libriheavy")  # shard and id prefixes
-SHARD_ROWS = 20_000  # the cv27 builder's shard size, before the corpus filters thinned its shards
 RETRIES = 5  # a failed commit is retried after 1, 2, 4, 8 and 16 minutes, then stops the run
 RETRY_WAIT = 60
 # 2-7 min of upload, all a stop loses; ~20-30 commits an hour, under the Hub's commit quota (~100
@@ -92,6 +90,10 @@ SCHEMA = pa.schema(
 )
 # Audio bytes are already compressed; zstd only the other columns.
 COMPRESSION = {c: "none" if c.endswith(".bytes") else "zstd" for c in SCHEMA.empty_table().flatten().column_names}
+
+
+def log(msg: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def write_shard(path: Path, t: pa.Table) -> None:

@@ -99,8 +99,8 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   of at most `--batch-frames` (4,608, as 16 rows of 288 frames before) padded frames, whose
   order is shuffled once; every epoch replays it, and resume skips the planned batches. Each
   batch is one update, computed whole: 4,608 frames fit an 80 GB card, round 4's 8,192 need ~97
-  GiB at once. Round 4 ran them on the H200; the two-way run on the H100 in slices of its streams
-  (`--micro-frames`, 6.5% slower, removed with the move to 4,608: [sft-speed](sft-speed.md)).
+  GiB at once. Round 4 ran them on the H200; the two-way run on the H100 in gradient-accumulated
+  slices (6.5% slower; `train.py` has none since the move to 4,608: [sft-speed](sft-speed.md)).
   Whole 4,096-frame batches accumulated two to an update ran out of memory there: the first's
   12 GB of fp32 gradients stay while the second's activations build.
   Validation streams and their batch order use the fixed `VALIDATION_SEED`, so `validate.py`
@@ -156,13 +156,12 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     in one pass, free-running on a bf16 copy of the model (built without reading
     `--model-weight`), shortest first in batches of
     `--eval-batch-size` 64 that mix the sets, each batch generated until every row ends or 20 s
-    past its longest row: at most 4,918 generation steps. Mimi codes 8 rows at a time
-    (`hibiki_helpers.MIMI_CHUNK_ROWS`).
+    past its longest row: at most 4,918 generation steps. Mimi codes 16 rows at a time on CUDA
+    (`hibiki_helpers.MIMI_CHUNK_ROWS_CUDA`; 8 elsewhere, `MIMI_CHUNK_ROWS`).
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". On 32 GB GPUs (RTX 5090),
   `--bf16-adamw` keeps 2D+ weights, gradients, and AdamW moments in bf16 with fused Triton
   stochastic rounding and fused gradient clipping (1D norms/scales stay fp32; 8 bytes/param),
-  paired with `--grad-checkpoint` (optionally `--grad-checkpoint-layers N`), `--micro-frames`
-  (exact full-batch loss weighting via `common.batch_loss_denominators`), `--park-states`, and
+  paired with `--grad-checkpoint` (optionally `--grad-checkpoint-layers N`), `--park-states`, and
   optional `--fp8` (rowwise E4M3 on the main transformer's and a depformer's linears) ([sft-speed-5090](sft-speed-5090.md)).
   Batches pad to 16-frame buckets (`streams.FRAME_BUCKET`), and training requires torch compile
   (moshi's and `lm_training`'s), meaning `NO_TORCH_COMPILE` must be unset. `training.finetune` is
@@ -297,9 +296,4 @@ sampling temperature) all run it, so a change to it needs all three checked
 - **Palettization** (`--palettize-bits`, a heads student: the step runs on the weights snapped to
   the Core ML export's k-means tables, straight-through) and **parking** (`--park-states`: AdamW's
   states and the teacher in pinned host memory while validation translates): [student-palettize](student-palettize.md).
-- **Scheduled sampling** (`--sampled-text P`, not with a teacher): the main transformer samples
-  every scored text token without gradients, each word piece it reads becomes the sampled word
-  piece there with probability P, and the loss scores the dataset's tokens; the PADs (timing),
-  each step's own inputs to the depformer and the audio stay the dataset's
-  (`compute_batch_losses(..., history=)`, `lm_training.forward_history`); the train log adds
-  `text_changed` ([exposure-bias](exposure-bias.md#scheduled-sampling)).
+- Scheduled sampling of the words tied plain SFT and was removed ([exposure-bias](exposure-bias.md#scheduled-sampling)).

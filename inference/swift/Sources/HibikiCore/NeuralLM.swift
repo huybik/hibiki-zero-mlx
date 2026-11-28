@@ -4,40 +4,34 @@ import Foundation
 
 /// A phone student's LM in Core ML, on the Neural Engine by default: the models
 /// `inference/tools/export_lm_coreml.py` writes from `lm_step.py`. The audio comes from the
-/// parallel heads (`lm-heads.mlmodelc`), a fused `depformer_parallel` model
-/// (`lm-depformer.mlmodelc`, one call for all slices with in-graph top-k Gumbel-max sampling),
-/// or legacy per-slice `lm-depformer-K.mlmodelc` models.
+/// parallel heads (`lm-heads.mlmodelc`) or a `depformer_parallel` model's depformer
+/// (`lm-depformer.mlmodelc`, one call for all slices with in-graph top-k Gumbel-max sampling).
 ///
 ///     host:   x = text_emb[text] + sum of audio_embs[q][audio q]     (lm-embeddings.bin, fp16)
 ///     trunk:  x, cos, sin, mask, slot -> hidden, text_logits        (KV cache: Core ML state)
 ///     host:   text token sampled
 ///     heads:  hidden, text_emb[sampled text] -> audio_logits [dep_q, card]; sampled
-///   or, slice k = 0 ..< slices:
-///     host:   emb = slice k's table [the token before: the text, else codebook k - 1]
-///                                                              (lm-depformer-embeddings.bin)
-///     slice:  hidden, emb, keys and values of slices < k -> logits, key, value
-///     host:   codebook k sampled (the last slice: the last parallel_codebooks)
+///   or:
+///     host:   emb = slice 0's table [the sampled text]  (lm-depformer-embeddings.bin);
+///             noise = temp * Gumbel(0, 1) [dep_q, card]
+///     depformer:  hidden, emb, noise -> tokens [dep_q]
 ///
 /// The KV cache is a ring of `context` slots: frame t writes slot t mod context and sees the
 /// slots written so far, as `lm_step.Inputs.at` computes. A frame runs on a serial queue, so
 /// `start` returns at once and the caller's codec work overlaps it.
-final class NeuralLM: FrameLM {
+final class NeuralLM {
     let cfg: HibikiConfig
     private let trunk: MLModel
-    /// The parallel heads; nil for a depformer_parallel model, which has `depformer` (fused) or `slices`.
+    /// The parallel heads; nil for a depformer_parallel model, which has `depformer`.
     private let heads: MLModel?
-    /// Fused depformer_parallel model (`lm-depformer.mlmodelc`); nil for heads or per-slice directories.
+    /// A depformer_parallel model's depformer (`lm-depformer.mlmodelc`); nil for the heads.
     private let depformer: MLModel?
-    private let slices: [MLModel]
-    /// The slices' input tables, memory-mapped: for `depformer`, slice 0's [text_card + 1, d];
-    /// for `slices`, slice 0's followed by each later slice's [card + 1, d].
-    private let sliceTables: Data?
-    /// Slice k's inputs: its table row, and (k > 0) the keys and values of the frame's slices
-    /// before it, [layers, heads, k, head_dim], at `past[k - 1]`.
-    private let sliceEmb: MLMultiArray
-    private let past: [(keys: MLMultiArray, values: MLMultiArray)]
-    /// Gumbel noise [dep_q, card] fp16 for fused `depformer` (zeros when temp == 0), filled from
-    /// a 65,536-entry quantile LUT (128 KB, pre-scaled by `temp`) using 4 lookups per 64-bit RNG step.
+    /// The depformer's input table (slice 0's) [text_card + 1, d], memory-mapped, and its row of
+    /// the sampled text, the depformer's `emb`.
+    private let depformerTable: Data?
+    private let depformerEmb: MLMultiArray
+    /// Gumbel noise [dep_q, card] fp16 for `depformer` (zeros when temp == 0), filled from a
+    /// 65,536-entry quantile LUT (128 KB, pre-scaled by `temp`) using 4 lookups per 64-bit RNG step.
     private let depformerNoise: MLMultiArray?
     private let gumbelLUT: [Float16]
     /// The KV cache; nil only while `reset` replaces it, so two never coexist (172 MB each).
@@ -72,15 +66,9 @@ final class NeuralLM: FrameLM {
         trunk = try MLModel(contentsOf: file("lm-trunk.mlmodelc"), configuration: config)
         let isDepformer = cfg.audioHeads == "depformer_parallel"
         heads = isDepformer ? nil : try MLModel(contentsOf: file("lm-heads.mlmodelc"), configuration: config)
-        let fusedURL = directory.appending(path: "lm-depformer.mlmodelc")
-        let fused = isDepformer && FileManager.default.fileExists(atPath: fusedURL.path)
-        depformer = fused ? try MLModel(contentsOf: fusedURL, configuration: config) : nil
-        slices = (isDepformer && !fused)
-            ? try (0..<cfg.depformerSlices).map {
-                try MLModel(contentsOf: file("lm-depformer-\($0).mlmodelc"), configuration: config)
-            }
-            : []
-        sliceTables = isDepformer
+        depformer = isDepformer
+            ? try MLModel(contentsOf: file("lm-depformer.mlmodelc"), configuration: config) : nil
+        depformerTable = isDepformer
             ? try Data(contentsOf: file("lm-depformer-embeddings.bin"), options: .alwaysMapped) : nil
         state = trunk.makeState()
         tables = try Data(contentsOf: file("lm-embeddings.bin"), options: .alwaysMapped)
@@ -88,16 +76,15 @@ final class NeuralLM: FrameLM {
         guard tables.count == rows * cfg.dim * MemoryLayout<Float16>.size else {
             throw HibikiError.unsupported("lm-embeddings.bin of \(tables.count) bytes")
         }
-        let d = cfg.depformerDim, headDim = cfg.depformerDim / cfg.depformerNumHeads
-        if let sliceTables {
-            let rows = fused ? (cfg.textCard + 1) : (cfg.textCard + 1 + (slices.count - 1) * (cfg.card + 1))
-            guard sliceTables.count == rows * d * MemoryLayout<Float16>.size else {
-                throw HibikiError.unsupported("lm-depformer-embeddings.bin of \(sliceTables.count) bytes")
+        let d = cfg.depformerDim
+        if let depformerTable {
+            guard depformerTable.count == (cfg.textCard + 1) * d * MemoryLayout<Float16>.size else {
+                throw HibikiError.unsupported("lm-depformer-embeddings.bin of \(depformerTable.count) bytes")
             }
         }
         let sampling = cfg.lmGenConfig
-        if fused, sampling.temp > 0, let baked = cfg.lmCoreMLDepformerTopK, baked != sampling.topK {
-            throw HibikiError.unsupported("fused lm-depformer top_k \(baked) for lm_gen_config top_k \(sampling.topK)")
+        if isDepformer, sampling.temp > 0, let baked = cfg.lmCoreMLDepformerTopK, baked != sampling.topK {
+            throw HibikiError.unsupported("lm-depformer top_k \(baked) for lm_gen_config top_k \(sampling.topK)")
         }
         let half = cfg.dim / cfg.numHeads / 2
         var inputs: [(MLModel, String, [Int])] = [
@@ -118,14 +105,6 @@ final class NeuralLM: FrameLM {
             ]
             outputs += [(depformer, "tokens", [cfg.depQ])]
         }
-        for (k, slice) in slices.enumerated() {
-            let pastShape = [cfg.depformerNumLayers, cfg.depformerNumHeads, k, headDim]
-            let keyShape = [cfg.depformerNumLayers, cfg.depformerNumHeads, 1, headDim]
-            inputs += [(slice, "hidden", [1, cfg.dim]), (slice, "emb", [1, d])]
-            if k > 0 { inputs += [(slice, "keys", pastShape), (slice, "values", pastShape)] }
-            let codebooks = k == slices.count - 1 ? cfg.depQ - k : 1
-            outputs += [(slice, "logits", [codebooks, cfg.card]), (slice, "key", keyShape), (slice, "value", keyShape)]
-        }
         for (model, name, shape) in inputs + outputs {
             let description = model.modelDescription
             let feature = description.inputDescriptionsByName[name]
@@ -144,12 +123,8 @@ final class NeuralLM: FrameLM {
         mask = try array([1, cfg.context], .float16)
         slot = try array([1], .int32)
         text = try array([1, cfg.dim], .float16)
-        sliceEmb = try array([1, d], .float16)
-        past = try (1..<max(slices.count, 1)).map { k in
-            let shape = [cfg.depformerNumLayers, cfg.depformerNumHeads, k, headDim]
-            return (try array(shape, .float16), try array(shape, .float16))
-        }
-        if fused {
+        depformerEmb = try array([1, d], .float16)
+        if isDepformer {
             let noise = try array([cfg.depQ, cfg.card], .float16)
             memset(noise.dataPointer, 0, noise.count * MemoryLayout<Float16>.size)
             depformerNoise = noise
@@ -171,6 +146,7 @@ final class NeuralLM: FrameLM {
         closeMask()
     }
 
+    /// Empties the KV cache for a new session.
     func reset() {
         queue.sync {
             frame = 0
@@ -190,6 +166,8 @@ final class NeuralLM: FrameLM {
         queue.sync { rng = SplitMix64(seed: value) }
     }
 
+    /// Starts the step of a frame from the previous text token and the 32 delayed audio tokens;
+    /// the closure it returns waits for the step's tokens.
     func start(text: Int, audio: [Int]) -> () throws -> LMStep {
         let done = DispatchSemaphore(value: 0)
         var result: Result<LMStep, Error>!
@@ -234,57 +212,21 @@ final class NeuralLM: FrameLM {
             audioTokens = logits.map { audioSampler($0, using: &rng) }
         }
         if let depformer, let depformerNoise {
-            copyRow(textToken, of: sliceTables!, width: cfg.depformerDim, into: sliceEmb)
+            copyRow(textToken, of: depformerTable!, width: cfg.depformerDim, into: depformerEmb)
             if !gumbelLUT.isEmpty { fillGumbelNoise(into: depformerNoise) }
             busy.host += lap()
             let depOut = try depformer.prediction(
                 from: MLDictionaryFeatureProvider(dictionary: [
-                    "hidden": hidden, "emb": sliceEmb, "noise": depformerNoise,
+                    "hidden": hidden, "emb": depformerEmb, "noise": depformerNoise,
                 ]))
             busy.heads += lap()
             let tokArray = depOut.featureValue(for: "tokens")!.multiArrayValue!
             audioTokens = readTokens(tokArray, count: cfg.depQ)
         }
-        for (k, slice) in slices.enumerated() {
-            // The token before codebook k: the text, else codebook k - 1, in slice k's table.
-            let previous = audioTokens.last ?? textToken
-            let row = k == 0 ? previous : cfg.textCard + 1 + (k - 1) * (cfg.card + 1) + previous
-            copyRow(row, of: sliceTables!, width: cfg.depformerDim, into: sliceEmb)
-            var features: [String: Any] = ["hidden": hidden, "emb": sliceEmb]
-            if k > 0 { features["keys"] = past[k - 1].keys; features["values"] = past[k - 1].values }
-            busy.host += lap()
-            let sliceOut = try slice.prediction(from: MLDictionaryFeatureProvider(dictionary: features))
-            busy.heads += lap()
-            for later in (k + 1)..<slices.count {
-                place(sliceOut.featureValue(for: "key")!.multiArrayValue!, at: k, in: past[later - 1].keys)
-                place(sliceOut.featureValue(for: "value")!.multiArrayValue!, at: k, in: past[later - 1].values)
-            }
-            audioTokens += rows(sliceOut.featureValue(for: "logits")!.multiArrayValue!).map {
-                audioSampler($0, using: &rng)
-            }
-        }
         precondition(audioTokens.count == cfg.depQ)
         busy.host += lap()
         frame += 1
         return LMStep(text: textToken, audio: audioTokens, busy: busy)
-    }
-
-    /// A slice's key or value [layers, heads, 1, head_dim] (by its strides) into position `k` of
-    /// a later slice's past [layers, heads, n, head_dim], which this class allocated contiguous.
-    private func place(_ source: MLMultiArray, at k: Int, in past: MLMultiArray) {
-        let shape = past.shape.map(\.intValue)
-        let (layers, heads, n, width) = (shape[0], shape[1], shape[2], shape[3])
-        let strides = source.strides.map(\.intValue)
-        let dst = past.dataPointer.bindMemory(to: Float16.self, capacity: past.count)
-        source.withUnsafeBufferPointer(ofType: Float16.self) { src in
-            for l in 0..<layers {
-                for h in 0..<heads {
-                    let from = src.baseAddress! + l * strides[0] + h * strides[1]
-                    let to = dst + ((l * heads + h) * n + k) * width
-                    for i in 0..<width { to[i] = from[i * strides[3]] }
-                }
-            }
-        }
     }
 
     /// The summed input embeddings, the RoPE tables of this frame's position, its cache slot,

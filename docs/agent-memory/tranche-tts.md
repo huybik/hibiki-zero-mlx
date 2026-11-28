@@ -62,8 +62,9 @@ Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tran
   - Vietnamese: CER over `filters.spoken` (syllables, numbers written out), as ingest scores its ASR, over 0.15,
     the gate's `filters.MAX_CER`. The Mac's voicing ran 0.060–0.068 s a character (medians of cv27-00060,
     libriheavy-large-00012-00103, libriheavy-medium-00100), close enough to English's for one `PACE`.
-- A try broken is voiced again up to `MAX_TRIES`, the one of lower error kept. 1 from the scale-up on
-  (2026-11-06; the first tranche ran 3): time, not rows, bounds it. On six GigaSpeech 2 shards (VoxCPM2):
+- A row is voiced once, broken or not (from the scale-up on, 2026-11-06; the first tranche ran up to 3 tries, the
+  one of lower error kept): time, not rows, bounds it, and a retry costs more TTS time than its rows give back. On
+  six GigaSpeech 2 shards (VoxCPM2):
 
   | Tries | Rows kept | Kept Vietnamese h per h of English voiced |
   |---:|---:|---:|
@@ -88,7 +89,7 @@ on the source speaker.
 - Rows not voiced (`en_tries` 0, the other English columns null): those the cache build drops on the Vietnamese
   side alone (`filters.vi_gate` on asr_vi: language, CER over 0.15, a nghìn/triệu/tỷ the transcript lacks; 5.5%
   of GigaSpeech 2's rows), and those whose `text_en` is missing or has nothing speakable. So a shard waits for its
-  asr_vi (`filters.py`, run ahead) as for its text_en.
+  asr_vi (YODAS's from ingest) as for its text_en.
 - Still broken after the check: VoxCPM2 0.2–2.2% of PhoAudiobook's rows a shard, ~1.5% of viVoice's, 10.2–11.9%
   of GigaSpeech 2's at 3 tries; VieNeu 6.1–8.7% of YODAS's at 1. On GigaSpeech 2's shard 0, 2,007 of the 2,085
   broken rows fail on WER, 78 on pace; clips under 2 s break most (23%, against 7% from 3 to 8 s), where one
@@ -109,7 +110,7 @@ voices again the rows it is broken on, from the row's English clip; it reads the
 repo (`en_speech/train/`, 1,832 shards; the 3 validation shards are evaluation rows, left as they are).
 
 - Each shard's rows are first heard as the dataset holds them (try 0, through the checking processes, a shard
-  ahead of the voicer), then those broken, or without audio, voiced once (`MAX_TRIES`); the better of the two is
+  ahead of the voicer), then those broken, or without audio, voiced once; the better of the two is
   kept. The voicer is the English one's: the same reference cut, denoiser gate and sampling.
 - It writes `en_speech/vi_check/<shard>` (id, `vi_audio` as Ogg Opus from 48 kHz where a new try is kept and null
   where the dataset's stays, then of the kept audio `vi_duration_s`, `vi_asr`, `vi_cer`, `vi_tries` (0: the

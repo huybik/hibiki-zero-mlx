@@ -39,13 +39,12 @@ from __future__ import annotations
 from typing import Any
 
 import math
-import os
 
 import torch
 import torch.nn.functional as F
 from moshi.models.compression import MimiModel
-from moshi.models.lm import LMGen, LMModel, LMOutput
-from moshi.models.lm_utils import _delay_sequence, _undelay_sequence
+from moshi.models.lm import LMGen, LMModel
+from moshi.models.lm_utils import _delay_sequence
 from moshi.modules import transformer as moshi_transformer
 from moshi.modules.gating import ActivationGating
 from moshi.modules.transformer import RMSNorm, StreamingMultiheadAttention, StreamingTransformer
@@ -57,12 +56,6 @@ from training.finetune.fp8_linear import (
     fp8_frozen_linear,
     fp8_linear,
 )
-
-# Depformer attention backend for short sequences (K=9 student, K=16 teacher); "auto" uses cuDNN
-# for forward-only teacher attention (1.57x faster on Blackwell sm_120) and the explicit form, compiled,
-# for attention with gradients (`_depformer_sdpa`). Overridable via
-# HIBIKI_DEPFORMER_ATTN=auto|efficient|math|flash|cudnn.
-DEPFORMER_ATTN = os.environ.get("HIBIKI_DEPFORMER_ATTN", "auto")
 
 _ROPE_CACHE: dict[tuple[torch.device, int, float], tuple[torch.Tensor, torch.Tensor]] = {}
 _ROPE_MAX_LEN = 4096
@@ -188,24 +181,17 @@ def _per_step(
 
 
 def _depformer_sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, steps: int) -> torch.Tensor:
-    """Causal attention for short depformer sequences (K=9 or K=16). With gradients, "auto" is the
-    explicit form, which the compiled layers fuse: forward and backward of the wide slices' K=9
-    attention [12,288, 16, 9, 64] take 3.9 ms on the RTX 5090, the memory-efficient kernel 10.7."""
-    if DEPFORMER_ATTN == "math" or (DEPFORMER_ATTN == "auto" and torch.is_grad_enabled()):
+    """Causal attention for short depformer sequences (K=9 student, K=16 teacher). With gradients,
+    the explicit form, which the compiled layers fuse: forward and backward of the wide slices' K=9
+    attention [12,288, 16, 9, 64] take 3.9 ms on the RTX 5090, the memory-efficient kernel 10.7.
+    Without (the frozen teacher's forward), cuDNN on CUDA: 1.57x faster on Blackwell sm_120."""
+    if torch.is_grad_enabled():
         scale = 1.0 / math.sqrt(q.shape[-1])
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
         causal = torch.triu(torch.ones((steps, steps), device=q.device, dtype=torch.bool), diagonal=1)
         scores = scores.masked_fill(causal, float("-inf"))
         return torch.matmul(torch.softmax(scores.float(), dim=-1).to(q.dtype), v)
-    if DEPFORMER_ATTN == "auto":
-        backend = SDPBackend.CUDNN_ATTENTION if q.is_cuda else SDPBackend.MATH
-    else:
-        backend = {
-            "efficient": SDPBackend.EFFICIENT_ATTENTION,
-            "flash": SDPBackend.FLASH_ATTENTION,
-            "cudnn": SDPBackend.CUDNN_ATTENTION,
-        }[DEPFORMER_ATTN]
-    with sdpa_kernel([backend]):
+    with sdpa_kernel([SDPBackend.CUDNN_ATTENTION if q.is_cuda else SDPBackend.MATH]):
         return F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
 
@@ -380,53 +366,6 @@ def forward_trunk_hidden(
     if lm.out_norm:
         transformer_out = lm.out_norm(transformer_out)
     return transformer_out, delayed
-
-
-def _main_transformer(
-    lm: LMModel, codes: torch.Tensor, condition_tensors: Any
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """`lm.forward_text` as moshi's forward calls it: each step's output and text logits, read
-    from the steps before it."""
-    sum_condition = cross_attention_src = None
-    if condition_tensors is not None:
-        sum_condition = lm.fuser.get_sum(condition_tensors)
-        cross_attention_src = lm.fuser.get_cross(condition_tensors)
-    elif lm.fuser is not None:
-        raise ValueError("this model needs its condition tensors")
-    return lm.forward_text(_delayed(lm, codes)[:, :, :-1], sum_condition, cross_attention_src)
-
-
-def _text_output(
-    lm: LMModel, text_logits: torch.Tensor, codes: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    text_logits, text_mask = _undelay_sequence(lm.delays[:1], text_logits, fill_value=float("NaN"))
-    return text_logits, text_mask & (codes[:, :1] != lm.zero_token_id)
-
-
-def text_logits(
-    lm: LMModel, codes: torch.Tensor, condition_tensors: Any = None
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The text logits [B, 1, T, card] and their mask, as moshi's forward gives them, from the main
-    transformer alone: no depformer."""
-    _, logits = _main_transformer(lm, codes, condition_tensors)
-    return _text_output(lm, logits, codes)
-
-
-def forward_history(
-    lm: LMModel, history: torch.Tensor, codes: torch.Tensor, condition_tensors: Any = None
-) -> LMOutput:
-    """moshi's `LMModel.forward` with two inputs, for scheduled sampling of the text: the main
-    transformer reads `history` (the steps before each one, their text partly the model's own
-    samples) and the depformer, or a heads student's text input, reads `codes` (each step's own
-    tokens, the dataset's), which also give the masks; `history` holds -1 where `codes` do. So a
-    step's audio is predicted after the text the dataset has at that frame, as its targets are."""
-    transformer_out, text = _main_transformer(lm, history, condition_tensors)
-    logits = lm.forward_depformer_training(_delayed(lm, codes)[:, :, 1:], transformer_out)
-    audio = slice(lm.audio_offset, lm.audio_offset + lm.dep_q)
-    logits, mask = _undelay_sequence(lm.delays[audio], logits, fill_value=float("NaN"))
-    mask &= codes[:, audio] != lm.zero_token_id
-    text_logits, text_mask = _text_output(lm, text, codes)
-    return LMOutput(logits, mask, text_logits, text_mask)
 
 
 def _rms_norm(norm: RMSNorm, x: torch.Tensor) -> torch.Tensor:
@@ -628,19 +567,14 @@ _moshi_mimi_apply = MimiModel._apply
 
 def _fast_mimi_encode(self: MimiModel, x: torch.Tensor) -> torch.Tensor:
     """Accelerated stateless CUDA Mimi encode (`training.prep.mimi_cuda.FastMimiEncoder`) for
-    non-streaming `MimiModel.encode` in fine-tuning, room encoding, validation, and eval.
-    Falls back to moshi's stock encode on CPU, MPS, streaming mode, or `HIBIKI_LEGACY_MIMI=1`."""
-    if self._streaming_state is None and x.is_cuda and not os.environ.get("HIBIKI_LEGACY_MIMI"):
+    non-streaming `MimiModel.encode` in fine-tuning, room encoding, validation, and eval; moshi's
+    stock encode on CPU, MPS or in streaming mode."""
+    if self._streaming_state is None and x.is_cuda:
         fast = getattr(self, "_fast_encoder", None)
         if fast is None or fast._device != x.device:
             from training.prep.mimi_cuda import FastMimiEncoder
 
-            fast = FastMimiEncoder.from_moshi(
-                self,
-                device=x.device,
-                fp16_seanet=not os.environ.get("HIBIKI_FP32_MIMI"),
-                fp16_transformer=not os.environ.get("HIBIKI_FP32_MIMI"),
-            )
+            fast = FastMimiEncoder.from_moshi(self, device=x.device)
             object.__setattr__(self, "_fast_encoder", fast)
         return fast.encode(x, num_codebooks=self.num_codebooks)
     return _moshi_mimi_encode(self, x)

@@ -34,7 +34,7 @@ Planned 2026-11-23; its gates are run ([Order](#order)), the full SFT is not sta
 ## Order
 
 ```text
-1. gates     exp 1 on this mix: SFT 10k × 2 (--sampled-text 0 / 0.1), GRPO 400 each   ~6.5 h
+1. gates     exp 1 on this mix: SFT 10k × 2 (scheduled sampling 0 / 0.1), GRPO 400 each   ~6.5 h
              exp 2 probe: GRPO 200 × 2, anchored at β 0.02 / 0.1                     ~2.5 h
 2. full SFT  twoway_final, one pass at a constant rate (0.1 if exp 1 won)            ~36–38 h
 3. decays    A from the pair at half the pass, B from the end                         ~5.5 h
@@ -92,7 +92,7 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   where nobody speaks, as GRPO's do, so the SFT already teaches quiet in a room
   ([noisy-source](noisy-source.md#rooms)).
 - `--schedule constant` for one pass (~445,000 updates), validated every 20,000, saved every
-  4,000, `--keep-checkpoints 1`, a new `--seed`; no `--sampled-text` (0.1 tied in experiment 1).
+  4,000, `--keep-checkpoints 1`, a new `--seed`; no scheduled sampling (0.1 tied in experiment 1; its flag is removed).
 - **Two decay branches** (`--schedule decay`, [sft-training](sft-training.md#schedules-and-averaging)),
   each with a new seed, over ~10% of the updates before it:
   - A from the pair at about half the pass (~222,000; ~22,000 updates, ~2 h);
@@ -111,9 +111,9 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   shards alone, timed by their `vi-en` copy (an extra shard has no pair and raises), while the SFT's
   `en-vi/en-vi-grounded-v2-noisy/train` holds all 1,832: keep GRPO's folders apart on the box, or point its `--pair-cache-dir` at the SFT's full `vi-en` noisy
   folder; settle it at launch ([envi-data](envi-data.md#the-runs-on-it)).
-- When the round starts, `restart.sh two-way` is repointed at these folders, `--room-share 0.5`
-  (fetching the bank first), this start and the
-  schedule. Its current target (`twoway_sft_4608` on the old data) goes.
+- The round writes its own launcher (a `restart.sh` job, through `h100.sh run`) on these folders,
+  `--room-share 0.5` (fetching the bank first), this start and the schedule: no job runs the 3B's
+  SFT now.
 
 ## Judging
 
@@ -155,8 +155,12 @@ so no clean `en_speech` folder goes beside it, and a tranche folder never goes b
   the run's pairs ~81 GiB, branch A's pair 37.5 GB, weights, env and evaluation sets ~40: rent
   ~500 GB. GRPO's own folders, kept apart, add ~62 GB; the SFT's pairs leave first, once on the
   Hub ([grpo](grpo.md#running)).
-- The card: 80 GB or more. An RTX PRO 6000 takes ~1.7× the time for about the same money; an
-  RTX 5090 can't hold the 3B's SFT ([sft-speed-5090](sft-speed-5090.md)).
+- The card: a 700 W H100 SXM (the user's choice). An RTX PRO 6000 takes ~1.7× the time for about
+  the same money. An RTX 5090 also holds the 3B's SFT, on its own route (`--bf16-adamw`: bf16
+  weights and moments with stochastic rounding, loss within 0.00001 of fp32 AdamW over 50 steps;
+  14 checkpointed layers; whole 4,608-frame batches at 6,554 frames/s, 28.3 GiB): ~40% less a frame
+  than the H100 at $2/h, at ~2.2× its time ([sft-speed-5090](sft-speed-5090.md#measured)); the YODAS
+  pilot's arms ran it ([tranche-yodas](tranche-yodas.md#pilot)).
 
 ## Left out
 

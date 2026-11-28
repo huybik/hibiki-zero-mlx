@@ -29,7 +29,7 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
   and its audio is within 1.3e-5 (relative RMS) of moshi's whole-sequence decode.
 - moshi 0.2.13's own streaming Mimi is no reference for calls of several steps: its
   `RingKVCache` holds `context` (250) steps, so the first queries of a call lose their oldest
-  keys, as moshi-swift's ring did ([swift-runtime](swift-runtime.md#chunks)). Its whole-sequence
+  keys, as moshi-swift's ring did ([swift-runtime](swift-runtime.md#mimis-encoder)). Its whole-sequence
   encode and decode use the exact window.
 
 ## Core ML
@@ -52,10 +52,10 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
 - M4 Pro Neural Engine: the encoder takes 11 ms per 2-frame call; in `translate` the decoder
   costs 3.3–3.8 ms a frame, against 14–22 ms for the MLX decoder on the CPU, and the text is
   unchanged (the LM never sees decoded audio).
-- A15 (iPhone 13 Pro Max), 10 paced minutes: the decoder costs 6.9 ms a frame (4.2 in 2-frame
-  calls), the same hot as cold, against 15–17 ms for the MLX decoder on the CPU; it runs while
-  the GPU computes an LM step, and the phone's step is GPU-bound throughout
-  ([swift-runtime](swift-runtime.md#device-test)).
+- A15 (iPhone 13 Pro Max), 10 paced minutes beside an MLX LM on the GPU: the decoder costs 6.9
+  ms a frame (4.2 in 2-frame calls), the same hot as cold, against 15–17 ms for the MLX decoder
+  on the CPU ([swift-runtime](swift-runtime.md#device-test)). Beside the Core ML LM it shares the
+  Neural Engine, so it waits behind the LM's frame ([lm-npu](lm-npu.md#speed)).
 - Core ML returns autoreleased objects; on the bench's thread, which has no run loop, they piled
   up until it ended (1.6 MB a minute on the phone). `NeuralDecoder.decode` runs each call in an
   `autoreleasepool`.
@@ -69,7 +69,7 @@ mimi_step.py (PyTorch, fp32 exact) ─► export_mimi_coreml.py ─► mimi-deco
   Swift's at a few positions, so Python validators drift to ~51 dB from the Swift output.)
 - Encoder in fp16 on the Neural Engine: codes equal fp32 on 94% of frames in codebook 0, 59% in
   1–7 and 17% in 8–15. MLX in fp16 (fp32 accumulation) keeps 99.8, 98 and 95%, so the encoder
-  stays in MLX fp32 (on the CPU, or the GPU beside a Core ML LM). The error enters inside SEANet (1.7% at its output, 4.4% at the
+  stays in MLX fp32 on the GPU. The error enters inside SEANet (1.7% at its output, 4.4% at the
   latent): at convolutions whose output is a small difference of large terms (the first
   residual convolution sums ~20x its output's magnitude and comes out 6% off; block 3 too).
 - Tried and dropped: centering each convolution's input on calibrated per-channel means (bias

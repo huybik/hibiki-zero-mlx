@@ -282,14 +282,11 @@ def main() -> None:
         tokens = rollouts[group * args.group : (group + 1) * args.group, 0].numpy().copy()
         jobs.append((tokens, sentences))
     start = time.time()
-    scale = args.advantage == "zscore"
-    results = [rewards.group_advantages(tokens, sentences, eos_id, pad_id, tokenizer.decode,
-                                        scale=scale)
+    results = [rewards.group_advantages(tokens, sentences, eos_id, pad_id, tokenizer.decode)
                for tokens, sentences in jobs]
     serial = time.time() - start
     start = time.time()
-    [future.result() for future in [pool.submit(grpo._group_rewards, tokens, sentences,
-                                                rewards.ALPHA, scale)
+    [future.result() for future in [pool.submit(grpo._group_rewards, tokens, sentences, rewards.ALPHA)
                                     for tokens, sentences in jobs]]
     parallel = time.time() - start
     report["rewards"] = {"groups": len(jobs), "serial_s": serial, "parallel_s": parallel}

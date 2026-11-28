@@ -1,14 +1,12 @@
 #!/usr/bin/env python
 """Unified per-stage benchmark for the MLX hibiki runtime.
 
-  python inference/tools/bench.py --model 3b            # per-stage ms table + projections
+  python inference/tools/bench.py --model 3b            # per-stage ms table
   python inference/tools/bench.py --model 3b --silence  # silence-in gate (rms/peak)
 
 Splits each frame into level + mimi encode / LM main transformer / LM audio head (the depformer,
-or a heads student's parallel heads) / mimi decode using mx.eval barriers, then reports RT factor, artifact size and a
-projected iPhone frame time. The projection is a documented assumption, not a
-measurement: --scale is the assumed A18 Pro / M4 Pro GPU throughput ratio for
-these kernels (default 0.5, plausible range 0.4-0.6).
+or a heads student's parallel heads) / mimi decode using mx.eval barriers, then reports the RT
+factor and the artifact size.
 """
 
 import argparse
@@ -30,12 +28,6 @@ def main() -> None:
     p.add_argument("--frames", type=int, default=150, help="timed frames (default 150)")
     p.add_argument("--warmup", type=int, default=15, help="untimed warmup frames (default 15)")
     p.add_argument(
-        "--scale",
-        type=float,
-        default=0.5,
-        help="assumed iPhone/M4 GPU throughput ratio (default 0.5)",
-    )
-    p.add_argument(
         "--silence",
         action="store_true",
         help="feed zeros instead of speech and gate rms<0.10, peak<1.1",
@@ -47,7 +39,6 @@ def main() -> None:
     mx.random.seed(299792458)
     model = loaded.lm
     mimi_enc, mimi_dec = loaded.mimi(), loaded.mimi()
-    ct = loaded.condition()
     other_cb = loaded.config.other_codebooks
     n_slices = loaded.config.generated_codebooks
     steps = loaded.config.depformer.num_slices  # sequential depformer steps (fewer for a slices student)
@@ -65,8 +56,6 @@ def main() -> None:
         max_steps=total + 8,
         text_sampler=loaded.text_sampler,
         audio_sampler=loaded.audio_sampler,
-        cfg_coef=1.0,
-        check=False,
     )
 
     # Time the audio head (the autoregressive depformer, or the parallel heads) inside the LM step
@@ -89,7 +78,7 @@ def main() -> None:
 
     audio_head.sample = timed_head
 
-    model.warmup(ct)
+    model.warmup(loaded.text_sampler, loaded.audio_sampler)
     mx.eval(model.parameters())
 
     enc_t = dec_t = step_t = 0.0
@@ -106,8 +95,8 @@ def main() -> None:
         enc_t += time.perf_counter() - t0
         oat = np.transpose(oat, (0, 2, 1))[0, :, :other_cb]
         t0 = time.perf_counter()
-        tt = gen.step(mx.array(oat), ct)
-        tt[0].item()  # barrier: full LM step (main + dep) forced
+        tt = gen.step(mx.array(oat))
+        tt.item()  # barrier: full LM step (main + dep) forced
         step_t += time.perf_counter() - t0
         at = gen.last_audio_tokens()
         if at is not None:
@@ -147,11 +136,6 @@ def main() -> None:
     print(
         f"pipelined critical path = LM total {lm_ms:.1f} ms/frame "
         f"-> {80 / lm_ms:.1f}x RT live ({1000 / lm_ms:.0f} frames/s)"
-    )
-    print(
-        f"projected iPhone LM step @ scale {args.scale:.2f} (A18 Pro ~= {args.scale:.2f}x M4 Pro "
-        f"assumption): {lm_ms / args.scale:.1f} ms vs 80 ms budget "
-        f"-> {'FITS' if lm_ms / args.scale < 80 else 'OVER'}"
     )
 
     if args.silence:

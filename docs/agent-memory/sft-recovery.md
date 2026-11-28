@@ -36,7 +36,7 @@ in [sft-evaluation](sft-evaluation.md#checkpoint-selection); the pod procedure i
       (`elem=4` for fp32, `elem=2` for `--bf16-adamw`: weights, gradients, AdamW's two moments) and
       2 a teacher's: 46.7 GiB on fp32 3B, 23.3 on `--bf16-adamw` 3B, 24.9 on fp32 heads student
       under the 3B, 15.4 on `--bf16-adamw` heads student under the 3B. The activations come on top,
-      sized by each run's profile (`--batch-frames`, `--micro-frames`, `--grad-checkpoint`,
+      sized by each run's profile (`--batch-frames`, `--grad-checkpoint`,
       `--grad-checkpoint-layers`, a palettizing run's full-precision copy, GRPO's `--micro-batch`
       and `--gen-frames`, or `--park-states`).
     - RAM: 5% over pinned host buffers plus 17 GiB process overhead (`train.py` and `grpo.py` both

@@ -33,9 +33,7 @@ alone (--reward-coef 0) is on-policy distillation (Agarwal et al. 2024, arXiv 23
 pass, the rewards only logged. Both together keep a GRPO run near its teacher. A teacher that
 delays a codebook less than the policy reads, at a text token, frames of it the policy sampled after
 that token (a heads student's codebooks 3-15), so its distribution may lean towards the policy's
-own choice; grpo_profile.py bounds that. --advantage
-centered drops the group normalization's division by the std (Dr. GRPO, arXiv 2503.20783), so a
-frame where the rollouts barely differ gets a small advantage, not ±1.
+own choice; grpo_profile.py bounds that.
 
 A --room-share of streams hold a room's noise in their source wherever nobody speaks, instead of
 digital silence (`streams.room_codes`, from the noise bank in --bank-dir): text written there
@@ -66,6 +64,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from moshi.modules.transformer import set_attention_context
 
 from training.finetune import common, rewards, streams
 from training.finetune.checkpoints import (
@@ -96,7 +95,7 @@ RESUME_KEYS = (
     "adam_beta2", "weight_decay", "grad_clip", "epsilon", "alpha", "text_weight", "temperature",
     "top_k", "eval_pairs", "eval_batch_size", "eval_every", "save_every", "keep_checkpoints",
     "seed", "train_rows", "train_streams", "eval_rows", "room_share", "teacher_weight",
-    "teacher_config", "reward_coef", "kl_coef", "advantage",
+    "teacher_config", "reward_coef", "kl_coef",
 )
 EVAL_PAIRS = [  # the two-way model's (user, 2026-11-10: one GRPO, on both directions)
     Path("data/eval/fleurs-vi/dev.jsonl"),
@@ -116,7 +115,6 @@ TEMPERATURE = 0.8  # rollouts sample, and logprobs are taken, at evaluation's te
 TOP_K = 250
 EPSILON = 0.2  # the ratio clip
 TEXT_WEIGHT = 100.0  # c_0: the text stream against 1 for each audio codebook
-ADVANTAGES = ("zscore", "centered")  # rewards.normalize with and without the std
 # Rooms where nobody speaks (streams.run_rooms), drawn once (a window's 640 streams draw from them).
 # Half the streams hold one: the other half keep digital silence, what a voice gate passes.
 ROOMS = 256
@@ -358,10 +356,10 @@ def _start_reward_worker(tokenizer_path: str, trainer: int) -> None:
 
 
 def _group_rewards(
-    tokens: np.ndarray, sentences: list[rewards.Sentence], alpha: float, scale: bool
+    tokens: np.ndarray, sentences: list[rewards.Sentence], alpha: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return rewards.group_advantages(tokens, sentences, int(_TOKENIZER.eos_id()),
-                                    int(_TOKENIZER.pad_id()), _TOKENIZER.decode, alpha, scale=scale)
+                                    int(_TOKENIZER.pad_id()), _TOKENIZER.decode, alpha)
 
 
 def reward_pool(workers: int, tokenizer: Path) -> ProcessPoolExecutor:
@@ -423,11 +421,11 @@ def sample_window(
             generator, info, batch_size=len(batch), temp=temperature, temp_text=temperature,
             top_k=top_k, top_k_text=top_k,
         )
-        common.set_attention_context(generator.transformer, min(steps, generator.context))
+        set_attention_context(generator.transformer, min(steps, generator.context))
         try:
             sampled = rollout(lm_gen, batch, silence_frame)
         finally:
-            common.set_attention_context(generator.transformer, generator.context)
+            set_attention_context(generator.transformer, generator.context)
         sampled = sampled.to(device="cpu", dtype=torch.int32)
         past = torch.arange(batch_frames)[None] >= batch_lengths[:, None]
         sampled.masked_fill_(past[:, None], -1)
@@ -564,11 +562,6 @@ def parse_args() -> argparse.Namespace:
 
 def add_objective_args(parser: argparse.ArgumentParser) -> None:
     """The loss terms' options, the profiler's too."""
-    parser.add_argument(
-        "--advantage", choices=ADVANTAGES, default="zscore",
-        help="zscore: each reward frame's (r - mean) / std over the group (the paper's); centered: "
-        "r - mean, in BLEU points (Dr. GRPO).",
-    )
     parser.add_argument(
         "--teacher-weight", type=Path,
         help="Also distil this frozen model on the policy's rollouts (reverse KL); it must read the policy's codebooks.",
@@ -779,8 +772,7 @@ def main() -> None:
                 stream = dataset.streams[stream_ids[group]]
                 sentences = stream_sentences(stream, rows, tokenizer)
                 tokens = rollouts[offset : offset + args.group, 0, : int(lengths[first_row])]
-                jobs[group] = pool.submit(_group_rewards, tokens.numpy().copy(), sentences,
-                                          args.alpha, args.advantage == "zscore")
+                jobs[group] = pool.submit(_group_rewards, tokens.numpy().copy(), sentences, args.alpha)
 
         generator = common.bf16_copy(info, lm, device)
         moving = time.time()

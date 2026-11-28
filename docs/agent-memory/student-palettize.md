@@ -36,12 +36,13 @@ argmax on 92.1% of tokens against fp16's 94.6% ([lm-npu](lm-npu.md#precision)), 
   student, an estimated 6–9% of a step) and keeps a 4.2 GB full-precision copy.
 - **Parking** (`--park-states`): while validation translates free-running, AdamW's states and
   the teacher wait in pinned host memory (`common.HostOffload`, as GRPO's evaluation parks them):
-  9.5 + 2.4 GiB on the heads student distilling itself, more as pinned blocks, since train.py
-  leaves torch's pinned allocator rounding each up to a power of two (GRPO's `ALLOC_CONF` stops
-  that). Without it, that run's validation on a 32 GB card ran out of memory at Mimi's encode of
-  the first batch, at batch 64 and 32 (2026-11-25; 28 GiB held, the palettizer's full-precision
-  copy among it). Off by default: the 3B's SFT fits on 80 GB without it, and parking would pin
-  23 GiB more of host memory, which `h100.sh`'s fixed 80 GiB RAM check for SFT doesn't count.
+  9.5 + 2.4 GiB on the heads student distilling itself (train.py's `pinned_max_round_threshold_mb:1`
+  pins blocks over 1 MB at their size, as GRPO's `ALLOC_CONF` does). Without it, that run's
+  validation on a 32 GB card ran out of memory at Mimi's encode of the first batch, at batch 64
+  and 32 (2026-11-25; 28 GiB held, the palettizer's full-precision copy among it). Off by default:
+  the 3B's SFT fits on 80 GB without it, and parking pins 23 GiB more of host memory, which
+  `h100.sh sizes` adds to a run's RAM check when it passes `--park-states` (80 GiB for the 3B's SFT,
+  55 without).
   GRPO after `HostOffload` and `adam_states` moved to `common.py` (2026-11-25, main e8dfbe8,
   the 5090): 4 updates of the heads student from `both_heads_z` update 1,200 (4 streams × 4
   rollouts, `--park-states`, an evaluation and a save every 2) ran to the final save; first
@@ -217,7 +218,7 @@ the Neural Engine. Share of argmaxes equal to the reference's:
   mostly mistranslation, not English left in; VI→EN 37.4 against 39.0 (three runs, no clear
   change). The gate opened on the same frames (±1 a turn); on the test's 870 s of noise alone it
   opened once (23 frames) and wrote nothing. Files: `level-d27d931/` in the folder above.
-- **4-bit PTQ fails without QAT** (2026-11-27, M4 Pro ANE, `export_lm_coreml.py --trunk-bits 4`,
+- **4-bit PTQ fails without QAT** (2026-11-27, M4 Pro ANE, a 4-bit trunk export (its flag since removed),
   490.6 MB trunk, all 892 ops on ANE): on the 4,533-frame replay, `z1200_ane4_6` lost −2.07% Text
   and −9.65% All 16 (−14.7% while source plays: `91.3% → 76.6%`); `z1200_ane4` lost −15.97% All 16
   (`68.0%` while source plays). On 10×2 FLEURS dev through Swift `hibiki translate`, `z1200_ane4_6`

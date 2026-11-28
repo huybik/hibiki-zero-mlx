@@ -37,8 +37,8 @@ with the same math on the same weights:
   shape class, and past the limit a function's new variants run eagerly for the rest of the
   process. Training builds two graphs of `_rms_norm` (the LM's output norm); a process that
   resumes, validates, trains and validates again built 8 (2026-11-03, H200 NVL);
-- non-streaming CUDA `MimiModel.encode` dispatches to `training.prep.mimi_cuda.FastMimiEncoder.from_moshi`
-  (`HIBIKI_LEGACY_MIMI=1` disables it), and `MimiModel._apply` clears `_fast_encoder` when Mimi moves
+- non-streaming CUDA `MimiModel.encode` dispatches to `training.prep.mimi_cuda.FastMimiEncoder.from_moshi`,
+  and `MimiModel._apply` clears `_fast_encoder` when Mimi moves
   to CPU so parking Mimi during training frees GPU weights immediately. Together with batched CUDA
   `streams.room_codes` (`ROOM_BATCH_CUDA = 8`) and batched causal `hibiki_helpers.decode_wavs`
   (`MIMI_DECODE_CHUNK_CUDA = 8`, `MIMI_CHUNK_ROWS_CUDA = 16`), RTX 5090 measurements (2026-11-28,
@@ -87,7 +87,7 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
 
 - The 2.8 row ran on another 16-shard sample; per-frame rates compare.
 - Tried and dropped: flash (8,880 frames/s) or cuDNN (8,969) for the depformer's 16-position
-  attention, one `bmm` per step group instead of per-step linears (no gain).
+  attention with gradients, one `bmm` per step group instead of per-step linears (no gain).
 - Tried on the 700 W H100 SXM (2026-11-03; 200 warm-up steps, then 80, against 13,405):
   - torchao 0.18 float8 on the main transformer's 112 linears: eager 8,587 (tensorwise) and
     8,050 (rowwise); compiled with the transformer 13,920, and the loss moved (4.006, not 4.018).
@@ -126,14 +126,14 @@ Measured on one H100 NVL (400 W, at its power limit) on 16 shards' real batches,
   wall (the GPU 99% busy): matmuls ~45% (~600 TFLOP/s), fused AdamW 12.4% (33.6 ms; 84 GB moved:
   memory-bound), the clip's norm and scale 5.3% (14.3 ms), the depformer's attention ~6%. Bench:
   15,321 frames/s at 0.2697 s a step (steps 151–300). Round 4's 8,192-frame batches in
-  `--micro-frames` slices: 14,330 frames/s in slices of 3,584 (−6.5%), 14,115 in 3,072; whole
+  gradient-accumulated slices: 14,330 frames/s in slices of 3,584 (−6.5%), 14,115 in 3,072; whole
   4,096-frame batches accumulated two to an update ran out of memory. Their profile (513 ms of
   kernels an update against 529 ms of wall): each slice after the first adds its gradients into
   the fp32 `.grad` (12 GB read twice and written once, ~29 ms an update over ~2 more slices), about
   what halving the optimizer's share saves, and the slices are smaller than 4,608 batches (a
   1,424-frame stream often alone in the last). So on the 80 GB card 4,608 is the fastest update;
   8,192 cost ~6.5% (the two-way run's). SFT updates on 4,608 since, at a lower peak
-  ([sft-training](sft-training.md#trainer); user, 2026-11-13), and `--micro-frames` is gone.
+  ([sft-training](sft-training.md#trainer); user, 2026-11-13), and `train.py` has no micro-batches.
 - What is left (warm profile, H200 NVL): matmuls 59% of GPU time, compiled kernels 16%, fused
   AdamW 8% and the grad norm 4% (bandwidth-bound: 87 GB per step), copies 5.5%, eager
   elementwise 3%; the GPU idles 4%, and the loader takes 0.15 ms per step. The first step of
@@ -190,13 +190,15 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
     teacher's forward is ~47% of the matmuls.
   - Flash for the teacher's forward-only depformer attention: 0.566 (no gain). An outlier first
     baseline (0.583, the box still busy with other jobs) had suggested −3%.
-  - FP8 teacher (e4m3, weights scaled per output row, activations per token; a bench patch,
-    not in the repo): the main transformer's 112 linears 0.514 s (−9%), all 354 0.492 (−13%).
+  - FP8 teacher (e4m3, weights scaled per output row, activations per token; now
+    `train.py --fp8-teacher all`): the main transformer's 112 linears 0.514 s (−9%), all 354
+    0.492 (−13%).
     - It moves the targets: KL(bf16 ‖ fp8) per token is 0.010 on audio and 0.0037 on text for
       the main transformer only (0.023 and 0.005 for all), and the text argmax flips at ~1.5% of
       positions. bf16 rounding alone gives 5e-4.
-    - Not taken (user, 2026-11-19). The saving is ~3–4 h (~$4), and the bf16 teacher keeps the
-      comparison with the depformer student clean.
+    - Not taken for the heads student (user, 2026-11-19). The saving is ~3–4 h (~$4), and the
+      bf16 teacher keeps the comparison with the depformer student clean. The slices' stages
+      take it ([student-slices](student-slices.md#training)).
   - Two fresh heads runs on the same batches differ by up to ~0.2 in loss by step 300, as on the
     H100 ([phone-student](phone-student.md#checks)).
   - The heads student at 16 codebooks: 0.694 s a step (+23%; 16,900 frames/s) and a 50.9 GiB peak,
@@ -221,8 +223,8 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   (76.8 GiB allocated), which a 141 GB card hides.
 - About 33 GiB of that 74.4 GiB was Mimi coding all 64 rows at once in fp32 (0.8 GiB per 40 s
   row, measured on CPU). With the 20 s tail FLEURS dev's biggest batch (64 rows of up to 17 s)
-  would have needed about 89 GiB in total, so Mimi now codes 8 rows at a time and validation
-  should peak well below training.
+  would have needed about 89 GiB in total, so Mimi codes a batch in chunks of rows (16 on CUDA,
+  `hibiki_helpers.MIMI_CHUNK_ROWS_CUDA`) and validation should peak well below training.
 - Since 2026-11-03 validation also translates the 360 `en-vi-val` rows (54 minutes of speech)
   in the same batches as FLEURS dev: 12 batches instead of 6, the biggest 64 rows of up to
   22.1 s and the last 17 rows of up to 32 s, at most 4,918 generation steps against 2,647.
@@ -287,4 +289,6 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   the trainer held its 38.5 GiB of pinned checkpoint buffers (shared memory, allocated once) and
   5 GiB of its own; each of the 4 loader workers 3 GiB plus 12 GiB of mapped packs. The cgroup
   counted 147 GiB of its 181 GiB limit, 135 GiB of it reclaimable page cache of the packs, so
-  about 50 GiB is the real need, under the 80 GiB `preflight` floor.
+  about 50 GiB is the real need. `h100.sh`'s RAM check (`sizes`) asks the 3B's SFT for 55 GiB:
+  its 35.0 GiB of pinned writer buffers (blocks over 1 MB pin at their size,
+  `pinned_max_round_threshold_mb:1`) plus 17 GiB, 5% over.

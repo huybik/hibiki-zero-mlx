@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="+",
         required=True,
-        help="Pairs files (.jsonl or .csv) with id and duration_s columns and vi_audio and text_en "
+        help="Pairs files (.jsonl) with id and duration_s columns and vi_audio and text_en "
         "(Vietnamese to English) or en_audio and text_vi (English to Vietnamese); each is scored as "
         "its own set.",
     )

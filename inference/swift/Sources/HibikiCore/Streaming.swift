@@ -65,10 +65,8 @@ class StreamArray {
         }
     }
 
-    /// ELU: written out on the CPU, where MLXNN's compiled `elu` cannot run on iOS; compiled
-    /// into one kernel on the GPU.
     func elu() -> StreamArray {
-        self.map { onCPU() ? which($0 .> 0, $0, exp($0) - 1) : MLXNN.elu($0) }
+        self.map { MLXNN.elu($0) }
     }
 
     func map(_ f: (MLXArray) -> MLXArray) -> StreamArray {

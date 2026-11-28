@@ -10,32 +10,35 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Cut](#cut) · [Training a student](#t
 
 The 3B misses real time on the A15, so the phone model is cut from the two-way model and scored in
 both directions ([plan](../vi_en_parity_plan.md#5-the-phone-model), stages 5.3 and 5.4; order steps
-9 and 10): first the depformer student (8 codebooks a stream, ~10 main layers, a 3-layer
-depformer), then a ~14-layer student with parallel codebook heads in a delay pattern, trained on
-the same streams for the same steps, adopted only if it wins at real time. Both start once GRPO
-has frozen the two-way model (user, 2026-11-11: "continue with the current plan, can prepare the
-code now").
+9 and 10). The depformer student (`student_dep10`: 8 codebooks a stream, 10 main layers, a 3-layer
+depformer) came first; the ~14-layer student with parallel codebook heads in a delay pattern,
+trained on the same streams for the same steps, beat it, and the slices student (the heads
+student's trunk with depformer slices) superseded both, so `cut.py` no longer cuts a depformer
+student. Their runs below are records.
 
 ## Cut
 
-`python -m training.student.cut --weight <parent> --out-dir <dir>` writes `<dir>/config.json` and
-`<dir>/model.safetensors`, every kept tensor copied whole from the parent:
+`python -m training.student.cut --weight <parent> --out-dir <dir>` cuts a parallel-heads student
+([student-heads](student-heads.md)): it writes `<dir>/config.json` and `<dir>/model.safetensors`,
+every kept tensor copied whole from the parent and the heads initialized afresh. A slices student
+is made from a heads student by `training.student.slices` ([student-slices](student-slices.md#making-it)).
 
 ```text
 parent (28 layers, 16+16 codebooks, depformer 6 layers x 9 step slices)
   main layers      --layers 0,3,... | --num-layers 10 (spread: 0,3,6,9,12,15,18,21,24,27)
   emb (inputs)     target 0..k-1, then source 0..k-1 (parent emb 0..k-1, 16..16+k-1)
-  depformer        --depformer-layers | --num-depformer-layers 3 (0,2,5); in each, step slices 0..k-1
-  per step         depformer_in, depformer_norms, linears: the first k steps (depformer_emb: steps 1..k-1)
-  unchanged        text_emb, text_linear, out_norm, depformer_text_emb
+  depformer        dropped: k linear heads in its slot (heads.py), seeded by --seed
+  unchanged        text_emb, text_linear, out_norm
 ```
 
-- `--codebooks` (k, default 8; up to 16, for stage 5.3's EN→VI check at 16) keeps the target's and
-  the source's first k: Mimi's codebooks are residual, so they are the cache's first k. The kept
-  steps' weight slices must be the parent's 0..m without gaps (Hibiki-Zero's steps 8–15 share
-  slice 8, which a cut past 9 keeps shared); the schedule is written only if the parent has one.
-- The config is the parent's with `num_layers`, `n_q` (2k), `dep_q` (k), `delays` (text, then each
-  stream's first k) and the step schedule cut alike, naming the student's own weight
+- `--codebooks` (k, default 8; the heads student 16) keeps the target's and the source's first k:
+  Mimi's codebooks are residual, so they are the cache's first k. The step schedule, which moshi
+  builds a one-layer depformer from before the heads replace it, is cut to the first k steps,
+  whose weight slices must be the parent's 0..m without gaps; it is written only if the parent has
+  one.
+- The config is the parent's with `num_layers`, `n_q` (2k), `dep_q` (k), `delays` (text, the
+  target's `heads.delays`, then the source's first k), the step schedule cut alike and
+  `"audio_heads": "parallel"`, naming the student's own weight
   (`moshi_name`) and the tokenizer it is on (`tokenizer_name`). moshi hands every config key to the model, so
   the cut's record goes only into the weight's metadata (`student`, `student_of`), beside the
   parent's own (its `text_tokenizer`, which `run_tokenizer` follows).

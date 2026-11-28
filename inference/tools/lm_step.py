@@ -7,13 +7,9 @@ emits the last codebooks at once (`"depformer_parallel"`):
     Trunk:  x, cos, sin, mask, slot  ->  hidden, text_logits          (state: keys, values)
     host:   text token sampled from text_logits
     Heads:  hidden, text_emb[sampled text]  ->  audio_logits [dep_q, card]
-  or, fused (`DepformerStep`, the default export):
+  or, for a depformer (`DepformerStep`):
     host:   emb = slice 0's table [the sampled text]; noise = temp * Gumbel(0, 1) [dep_q, card]
     DepformerStep: hidden, emb, noise -> tokens [dep_q] (all slices + top-k sampling on ANE)
-  or, per-slice (`DepformerSlice`, --per-slice):
-    host:   emb = slice k's table [the token before: the sampled text, else codebook k - 1]
-    DepformerSlice k:  hidden, emb, keys and values of slices < k  ->  logits, key, value
-    host:   codebook k sampled (the last slice: codebooks slices - 1 .. dep_q - 1)
 
 Text is sampled before the audio because the heads and the first slice read its embedding, as
 `moshi_mlx.models.lm.ParallelHeads` and `DepFormer` do. The host computes the RoPE tables of the frame's
@@ -135,16 +131,9 @@ def embeddings(cfg: Config, w: dict[str, torch.Tensor]) -> np.ndarray:
     return torch.cat(tables).to(torch.float16).numpy()
 
 
-def depformer_embeddings(cfg: Config, w: dict[str, torch.Tensor]) -> np.ndarray:
-    """The depformer slices' input tables the host reads, fp16, in order: slice 0's [text_card + 1,
-    depformer dim] (it reads the sampled text), then each later slice's [card + 1, depformer dim]."""
-    slices = cfg.depformer.slices(cfg.dep_q)
-    return torch.cat([w[f"depformer.slices.{k}.emb.weight"] for k in range(slices)]).to(torch.float16).numpy()
-
-
-def depformer_text_embeddings(cfg: Config, w: dict[str, torch.Tensor]) -> np.ndarray:
-    """Slice 0's input table [text_card + 1, depformer dim] in fp16 for the fused `Depformer`
-    model, whose later slices embed their sampled tokens inside the graph."""
+def depformer_text_embeddings(w: dict[str, torch.Tensor]) -> np.ndarray:
+    """Slice 0's input table [text_card + 1, depformer dim] in fp16, which the host reads for
+    `DepformerStep`; its later slices embed their sampled tokens inside the graph."""
     return w["depformer.slices.0.emb.weight"].to(torch.float16).numpy()
 
 
@@ -175,6 +164,8 @@ class Trunk(nn.Module):
 
     def __init__(self, cfg: Config, w: dict[str, torch.Tensor]):
         super().__init__()
+        if cfg.context % _ATTN_CHUNK:
+            raise ValueError(f"a context of {cfg.context} is not whole chunks of {_ATTN_CHUNK}")
         self.cfg = cfg
         for name, t in w.items():
             if name.startswith("transformer.") or name in ("out_norm.weight", "text_linear.weight"):
@@ -189,7 +180,6 @@ class Trunk(nn.Module):
     def forward(self, x, cos, sin, mask, slot):
         cfg = self.cfg
         h, hkv, d = cfg.heads, cfg.kv_heads, cfg.head_dim
-        chunk = _ATTN_CHUNK if (cfg.context > _ATTN_CHUNK and cfg.context % _ATTN_CHUNK == 0) else 0
         for i in range(cfg.layers):
             p = f"transformer.layers.{i}."
             qkv = _rms_norm(x, self._w(p + "norm1.weight")) @ self._w(p + "self_attn.in_proj.weight").T
@@ -201,20 +191,17 @@ class Trunk(nn.Module):
             keys, values = self.keys[i].to(x.dtype), self.values[i].to(x.dtype)
             # Grouped queries: query head j reads key/value head j // (h / hkv).
             scores = q.reshape(hkv, h // hkv, d) @ keys.transpose(1, 2) / math.sqrt(d) + mask
-            if chunk:
-                # Online-softmax across `.split(chunk)` (Core ML MLState rejects reshaping state
-                # directly to 4-D, whereas split stays 100% on the Neural Engine).
-                outs, lses = [], []
-                for sc, vc in zip(scores.split(chunk, dim=-1), values.split(chunk, dim=1)):
-                    mc = sc.max(dim=-1, keepdim=True).values
-                    wc = torch.exp(sc - mc)
-                    lc = wc.sum(dim=-1, keepdim=True)
-                    outs.append((wc / lc) @ vc)
-                    lses.append(mc + torch.log(lc))
-                cw = F.softmax(torch.cat(lses, dim=-1), dim=-1)
-                attn = sum(o * cw[..., idx : idx + 1] for idx, o in enumerate(outs)).reshape(1, h * d)
-            else:
-                attn = (F.softmax(scores, dim=-1) @ values).reshape(1, h * d)
+            # Online-softmax across `.split(_ATTN_CHUNK)` (Core ML MLState rejects reshaping
+            # state directly to 4-D, whereas split stays 100% on the Neural Engine).
+            outs, lses = [], []
+            for sc, vc in zip(scores.split(_ATTN_CHUNK, dim=-1), values.split(_ATTN_CHUNK, dim=1)):
+                mc = sc.max(dim=-1, keepdim=True).values
+                wc = torch.exp(sc - mc)
+                lc = wc.sum(dim=-1, keepdim=True)
+                outs.append((wc / lc) @ vc)
+                lses.append(mc + torch.log(lc))
+            cw = F.softmax(torch.cat(lses, dim=-1), dim=-1)
+            attn = sum(o * cw[..., idx : idx + 1] for idx, o in enumerate(outs)).reshape(1, h * d)
             x = x + attn @ self._w(p + "self_attn.out_proj.weight").T
             gate, up = (_rms_norm(x, self._w(p + "norm2.weight")) @ self._w(p + "gating.linear_in.weight").T).chunk(2, -1)
             x = x + (F.silu(gate) * up) @ self._w(p + "gating.linear_out.weight").T
@@ -235,56 +222,6 @@ class Heads(nn.Module):
         x, card = hidden + text, self.cfg.card
         # One matmul a head: the Neural Engine takes none as wide as all 16 together.
         return torch.cat([x @ self.weight[j * card : (j + 1) * card].T for j in range(self.cfg.dep_q)])
-
-
-class DepformerSlice(nn.Module):
-    """Depformer slice k for one frame, as `moshi_mlx.models.lm.DepFormerSlice._step`: the trunk's
-    hidden state through the slice's input linear plus the host's embedding of the token before it,
-    attending to itself and to the slices before it in the frame.
-
-    hidden [1, dim]; emb [1, d]; keys, values [layers, heads, k, head_dim] (slices k > 0 only)
-    -> logits [n, card] (n = 1, or `parallel` for the last slice); key, value [layers, heads, 1,
-    head_dim], this slice's, which the host passes to the slices after it.
-    """
-
-    def __init__(self, cfg: Config, w: dict[str, torch.Tensor], k: int):
-        super().__init__()
-        self.cfg, self.k = cfg, k
-        prefix = f"depformer.slices.{k}."
-        for name, t in w.items():
-            if name.startswith(prefix) and not name.startswith(prefix + "emb."):
-                self.register_buffer(name[len(prefix):].replace(".", "_"), t)
-        codebooks = cfg.depformer.parallel if k == cfg.depformer.slices(cfg.dep_q) - 1 else 1
-        if self._w("linear_out.weight").shape[0] != codebooks * cfg.card:
-            raise ValueError(f"slice {k}'s linear_out has {self._w('linear_out.weight').shape[0]} rows "
-                             f"for {codebooks} codebooks of {cfg.card}")
-
-    def _w(self, name: str) -> torch.Tensor:
-        return getattr(self, name.replace(".", "_"))
-
-    def forward(self, hidden, emb, keys=None, values=None):
-        d = self.cfg.depformer
-        h, hd, card = d.heads, d.head_dim, self.cfg.card
-        x = hidden @ self._w("linear_in.weight").T + emb
-        new_keys, new_values = [], []
-        for i in range(d.layers):
-            p = f"transformer.layers.{i}."
-            qkv = _rms_norm(x, self._w(p + "norm1.weight")) @ self._w(p + "self_attn.in_proj.weight").T
-            q, key, value = (t.reshape(h, 1, hd) for t in qkv.chunk(3, -1))
-            new_keys.append(key)
-            new_values.append(value)
-            if keys is not None:
-                key = torch.cat([keys[i].to(x.dtype), key], 1)
-                value = torch.cat([values[i].to(x.dtype), value], 1)
-            attn = (F.softmax(q @ key.transpose(1, 2) / math.sqrt(hd), dim=-1) @ value).reshape(1, d.dim)
-            x = x + attn @ self._w(p + "self_attn.out_proj.weight").T
-            gate, up = (_rms_norm(x, self._w(p + "norm2.weight")) @ self._w(p + "gating.linear_in.weight").T).chunk(2, -1)
-            x = x + (F.silu(gate) * up) @ self._w(p + "gating.linear_out.weight").T
-        x = F.layer_norm(x, (d.dim,), self._w("norm.weight"), self._w("norm.bias"), 1e-5)
-        out = self._w("linear_out.weight")
-        # One matmul a codebook: the Neural Engine takes none as wide as several together.
-        logits = torch.cat([x @ out[j * card : (j + 1) * card].T for j in range(out.shape[0] // card)])
-        return logits, torch.stack(new_keys), torch.stack(new_values)
 
 
 class DepformerStep(nn.Module):

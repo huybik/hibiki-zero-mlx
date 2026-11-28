@@ -41,12 +41,13 @@ trunk out ─► slice 0 (reads text) ─► cb 0 ─► slice 1 ─► cb 1 ─
 
 ## Why this shape
 
-The A15's Neural Engine runs a slice a Core ML call at ~1.8 ms a call whatever its size, so the
-step count sets the cost: 9 slices of 512 × 2 held 67 ms a frame for 10 minutes on the heads
+With one Core ML model a slice, the A15's Neural Engine took ~1.8 ms a call whatever its size, so
+the step count set the cost: 9 slices of 512 × 2 held 67 ms a frame for 10 minutes on the heads
 release's trunk, under the frame's 80; 1024 × 3, the depformer student's shape, missed it (78 ms,
 p90 80) ([lm-npu](lm-npu.md#depformer-slices)). 16 sequential steps (the teacher's) would cost
-~29 ms of calls alone. Fewer steps, grouping codebooks 3–7, or one call for all slices with the
-sampling inside, are later levers if the frame needs room. The trunk stays the heads student's,
+~29 ms of calls alone. The export now runs all slices in one model with the sampling inside
+(`lm-depformer.mlmodelc`), which fits 1024 × 3 ([Wide slices](#wide-slices)); fewer steps or
+grouping codebooks 3–7 are later levers if the frame needs room. The trunk stays the heads student's,
 whose text matched the depformer student's before its own on-policy stage (test chrF 39.87 against
 39.48 after GRPO, [student-heads](student-heads.md#tests)).
 
@@ -77,20 +78,19 @@ frozen: a trunk trained on this data lost text (the joint stage below).
   1's update-16,000 pair (both files hard-linked into `weights/student_slices14_stage1_step016000/`),
   the same recipe with the rate 2e-4 to 0 as 1 − sqrt over 8,000 updates, seed 49, validating at
   4,000 and 8,000.
-- **The joint stage (`student_slices14_stage2`, stopped)**: from Stage 1's 16,000 with
-  `--trunk-lr 1e-5 --lr 5e-5 --first-codebook-weight 20 --acoustic-ar-weight 2 --micro-frames 6144
-  --schedule constant`, meant to let the trunk adapt to the new delays without text drift. It
-  drifted: by 8,000 the voice rose and every set's chrF fell ([Runs](#runs)). Its job was
-  `restart.sh student-slices-joint-5090` in 6afc776.
+- **The joint stage (`student_slices14_stage2`, stopped)**: from Stage 1's 16,000, the trunk
+  training too at 1e-5 beside the slices' 5e-5, meant to let the trunk adapt to the new delays
+  without text drift. It drifted: by 8,000 the voice rose and every set's chrF fell ([Runs](#runs)),
+  so the trunk stays frozen and `train.py` has one learning rate.
 - **Diagnostics**: `train_log.jsonl` and `val_log.jsonl` always log `acoustic_ar_loss` (`cb 1..7`)
-  and `acoustic_par_loss` (`cb 8..15`) separately, plus `trunk_grad_norm`, `audio_grad_norm`,
-  `clipped_frac`, and `trunk_lr` (without extra per-step GPU syncs). Stage 1's training log has
+  and `acoustic_par_loss` (`cb 8..15`) separately, plus `trunk_grad_norm`, `audio_grad_norm` and
+  `clipped_frac` (without extra per-step GPU syncs). Stage 1's training log has
   text losses of 0 and `loss` = `audio`: its frozen trunk's text is not computed (its
   validation's `loss` still includes text). `validate.py --acoustic-ar-weight` reproduces a
   stage's teacher-forced `loss`.
 
-**Training optimizations (2026-11-27, branch `slices-opt`, box 62513802 RTX 5090, `pho` + `en-vi/pho`
-12,288-frame batches; baseline `db0de25` vs optimized, warm updates 20–50):**
+**Training optimizations (2026-11-27, box 62513802 RTX 5090, `pho` + `en-vi/pho` 12,288-frame
+batches; baseline `db0de25` vs optimized, warm updates 20–50):**
 
 - **Exact Track A** (`common.py`, `lm_training.py`, `slices.py`, `train.py`): chunked fused
   linear+KL (`compute_distill_losses_chunked`, eliminating full-vocab logit materialization and
@@ -102,25 +102,26 @@ frozen: a trunk trained on this data lost text (the joint stage below).
 - **Blackwell `sm_120` FP8 Track B** (`fp8_linear.py`): fused Triton rowwise E4M3 quantization
   (1-pass for `K <= 8192`, 2-pass for wider rows, fused tiled `BLOCK_M=256, BLOCK_K=16`
   transpose+quantize 3.8× faster on 170 SMs) registered as `torch.library.custom_op` (zero graph
-  breaks under whole-loop `torch.compile`), pre-quantized frozen teacher (`--fp8-teacher trunk|all`,
+  breaks under whole-loop `torch.compile`), pre-quantized frozen teacher (`--fp8-teacher all`,
   halving teacher weight VRAM and avoiding runtime weight quantization), and plain-attribute FP8
   weight caching for frozen student trunk linears under `--freeze-trunk --fp8` (keeps `state_dict()`
   and bf16 eval intact).
 - **Teacher FP8 target shift** (5 real variable-shape batches, `KL(bf16 || fp8)` / argmax flip):
-  `--fp8-teacher trunk`: `text 0.00197 (0.89%)`, `cb 0 0.00280 (2.53%)`, `cb 1..7 0.00957 (7.57%)`,
-  `cb 8..15 0.00745 (7.58%)`; `--fp8-teacher all`: `text 0.00197 (0.89%)`, `cb 0 0.00482 (3.37%)`,
+  its trunk alone: `text 0.00197 (0.89%)`, `cb 0 0.00280 (2.53%)`, `cb 1..7 0.00957 (7.57%)`,
+  `cb 8..15 0.00745 (7.58%)`; `--fp8-teacher all` (trunk and depformer): `text 0.00197 (0.89%)`, `cb 0 0.00482 (3.37%)`,
   `cb 1..7 0.02270 (11.65%)`, `cb 8..15 0.03674 (16.56%)` — under ~0.3–1.1% of student acoustic KL.
+  The trunk-only teacher (slower, below) was never run and is not in `train.py`.
 
-| Recipe (12,288 frames/update, `--bf16-adamw`) | Micro-frames | s/update | frames/s | Peak (`nvidia-smi`) | Step-50 loss |
+| Recipe (12,288 frames/update, `--bf16-adamw`) | Accumulated slices | s/update | frames/s | Peak (`nvidia-smi`) | Step-50 loss |
 |---|---:|---:|---:|---:|---|
 | Baseline joint (`db0de25`) | 4,096 (3×) | 0.985 | 12,475 | 25.9 GiB | `step40=2.6602` |
 | Opt joint exact bf16 (Track A) | 6,144 (2×) | 0.946 | 12,989 | 27.8 GiB | `2.2784` (`step40=2.6599`) |
-| Opt joint `--fp8 --fp8-teacher trunk` | 6,144 (2×) | 0.764 | 16,084 | ~27.0 GiB | `2.2793` (`text=0.1499`) |
+| Opt joint `--fp8`, teacher FP8 on its trunk | 6,144 (2×) | 0.764 | 16,084 | ~27.0 GiB | `2.2793` (`text=0.1499`) |
 | **Opt joint `--fp8 --fp8-teacher all`** | **6,144 (2×)** | **0.698** | **17,604** | **25.5 GiB** (`24.2` alloc) | **`2.2785`** (`+0.0001`) |
 | Opt joint `--fp8 --fp8-teacher all --grad-checkpoint-layers 2` | whole (1×) | 0.690 | 17,809 | 31.2 GiB | `2.2826` |
 | Baseline frozen (`db0de25 --freeze-trunk`) | whole (1×) | 0.699 | 17,579 | 25.2 GiB | `audio=3.7827` |
 | Opt frozen exact bf16 (Track A + R1) | whole (1×) | 0.620 | 19,819 | 16.7 GiB | `audio=3.7823` |
-| Opt frozen `--fp8-teacher trunk` | whole (1×) | 0.534 | 23,011 | 15.1 GiB | `audio=3.7771` |
+| Opt frozen, teacher FP8 on its trunk | whole (1×) | 0.534 | 23,011 | 15.1 GiB | `audio=3.7771` |
 | Opt frozen `--fp8-teacher all` | whole (1×) | 0.472 | 26,034 | 15.1 GiB | `audio=3.7763` |
 | **Opt frozen `--fp8 --fp8-teacher all`** | **whole (1×)** | **0.428** | **28,710** | **15.8 GiB** (`13.7` alloc) | **`audio=3.7741`** |
 
@@ -188,7 +189,7 @@ student's and the depformer student's on the same sets.
   93 → 231 / 361, FLEURS-en 24 → 183 / 392) and run longer (FLEURS-vi length ratio 1.31 → 1.42).
   The trunk's text came from on-policy training (`both_heads_z`, which took FLEURS EN→VI
   wrong-language rows to 0, [heads-on-policy-runs](heads-on-policy-runs.md)); teacher-forced
-  distillation at `--trunk-lr 1e-5` undoes it, as the first joint run's text did at 5e-5.
+  distillation with the trunk at 1e-5 undoes it, as the first joint run's text did at 5e-5.
 - `student_slices14_stage1`: started 2026-11-27 11:20 UTC on box 62513802, commit 65f6b51
   (PR #205), `restart.sh student-slices-5090`; HF recovery prefix `student_slices14_stage1`.
   Ran at 0.43 s an update, 15 GiB, the GPU at 100% and ~535 W; validated at 8,000 and 16,000.

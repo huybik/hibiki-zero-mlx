@@ -9,15 +9,15 @@ export and runtime: [lm-npu](lm-npu.md#depformer-slices).
 ## Release
 
 - The 6-bit finish's snap (`phone/pal6_slices_z4000_snap6.safetensors`), staged in bf16
-  (`pal6_snap6_bf16`) and exported by `export_lm_coreml.py --bits 6` with the fused depformer
-  (the default since #207): `lm-trunk.mlmodelc` 704 MB, `lm-depformer.mlmodelc` 80 MB (9 slices
-  with top-k 250 Gumbel-max sampling, `lm_coreml.depformer_top_k` 250), slice 0's table 49 MB, and
-  the 16-codebook Mimi decoder copied from the per-slice export. 1.82 GB in 17 files, about 6 min
-  on the M4 Pro (2026-11-28, peak 10.6 GB). On the Mac
+  (`pal6_snap6_bf16`) and exported by `export_lm_coreml.py --bits 6`: `lm-trunk.mlmodelc` 704 MB,
+  `lm-depformer.mlmodelc` 80 MB (9 slices with top-k 250 Gumbel-max sampling,
+  `lm_coreml.depformer_top_k` 250), slice 0's table 49 MB, and the 16-codebook Mimi decoder. 1.82
+  GB in 17 files, about 6 min on the M4 Pro (2026-11-28, peak 10.6 GB). On the Mac
   `/Volumes/data/models/hibiki/weights/student_slices14/pal6_snap6_ane6f/` (with the card,
-  `README.md`), on the Hub `release/student_slices_coreml6/`. The per-slice export
-  `pal6_snap6_ane6/` is what [slices-on-policy](slices-on-policy.md#phone-finish) gated.
-- Fused against per-slice through the Swift CLI (`swift_gate.py`, the first 20 FLEURS dev rows
+  `README.md`), on the Hub `release/student_slices_coreml6/`. What
+  [slices-on-policy](slices-on-policy.md#phone-finish) gated is `pal6_snap6_ane6/`, an export of
+  one Core ML model a slice, which the Swift runtime no longer runs.
+- Against that export through the Swift CLI (`swift_gate.py`, the first 20 FLEURS dev rows
   each way, seed 42, `/Volumes/data/hibiki-zero-evals/mac/slices-gate/*_swift20/`): VI→EN chrF
   49.01 / 49.49, EN→VI 34.69 / 32.20, speaker_sim 0.37 / 0.38 and 0.16 / 0.17, HNR 4.3 / 4.4 and
   6.1 / 5.8 dB, every set healthy: the same model within sampling noise.
@@ -62,7 +62,7 @@ What makes it hoarse (the user heard "an old man", 2026-11-28): the user's 7 mic
 five, the two turns above), seeds 1 and 2, HNR dB / speaker_sim means; scripts, records and the
 files to listen to (`listen/`) in `/Volumes/data/hibiki-zero-evals/mac/slices-voice-fix/`.
 
-- **Not the sampling** (`sweep.py`, the Swift CLI, the per-slice export with host sampling): audio
+- **Not the sampling** (`sweep.py`, the Swift CLI, the one-model-a-slice export, sampling on the host): audio
   temp / top-k 0.8 / 250, 0.6 / 250, 0.4 / 250, 0.4 / 25 and 0.2 / 25 score 4.2–4.8 dB, the
   teacher 8.4.
 - **Codebooks 8–15, the last slice's, add noise** (`decoder_ab.py`): the same LM runs decoded

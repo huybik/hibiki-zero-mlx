@@ -14,7 +14,7 @@ moshi's own, the step schedule codebook j -> slice min(j, dep_q - P) (`schedule`
 the slices' weights, the input linears and the 16 output linears; `install` keeps a slice's input
 embedding and output norm, not a codebook's, and runs the steps (`_forward_training`,
 `depformer_step`). `inference/tools/convert_mlx.py` stages a checkpoint for MLX, and
-`export_lm_coreml.py` exports the staging for the phone, one Core ML model a slice.
+`export_lm_coreml.py` exports the staging for the phone, all slices in one Core ML model.
 
 `python -m training.student.slices` gives a student new slices: its trunk, text and input
 embeddings copied, its audio part (heads or depformer) dropped, its target delays set to the source

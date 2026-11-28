@@ -44,7 +44,7 @@ start + 0.5 s): the two blocked distillation probes would pass at 3 s.
   every set up), ending VI→EN 0.29 s sooner and EN→VI 0.21 s later. Centered ends sooner both
   ways but gains less (+1.01, +0.75); its GRPO term in BLEU points outweighs the KL (grad norm
   ~6e5 against z's ~1.5e5). z won: quality first (user, 2026-11-22: "quality is what we after,
-  latency can be bit more relax").
+  latency can be bit more relax"), and `grpo.py` z-scores only.
 - Why distillation alone ends later is unmeasured. Its KL prices no time (only the reward pays a
   word for coming early), and reverse KL is mode-seeking: where the next word is uncertain the
   teacher's mass is split over many words while waiting is one token, so the student may learn to

@@ -1,40 +1,25 @@
 # EN→VI translation on Muse
 
-Read when touching the `muse` step of `training/prep/translate_en_speech.py` or
-`/Volumes/data/datasets/en_speech_vi_text/muse`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [The step](#the-step) ·
-[Measurements](#measurements) · [Running](#running)
+Read when touching `/Volumes/data/datasets/en_speech_vi_text/muse` or weighing Muse through
+OpenRouter for a translation.
+Back to [CONTEXT.md](../../CONTEXT.md) · [What it did](#what-it-did) ·
+[Measurements](#measurements)
 
-## Purpose
+## What it did
 
 After the corpus's bandwidth prune, the user chose to let Sonnet finish the Common Voice text and
-to translate all remaining Libriheavy text with Muse Spark 1.3 Contributor through the paid
-OpenRouter API. That takes hours instead of weeks of Claude quota, for about an eighth of Gemini's
-price, with slightly stiffer Vietnamese.
+to translate all remaining Libriheavy text with Muse Spark 1.3 Contributor
+(`meta/muse-spark-1.3-contributor`) through the paid OpenRouter API: hours instead of weeks of
+Claude quota, for about an eighth of Gemini's price, with slightly stiffer Vietnamese. It
+translated all 2,395,561 claimed Libriheavy texts for $33.93, with the Claude path's prompt, `n|`
+format, batches and retry rounds, at `reasoning.effort` `minimal` (reasoning cannot be turned
+off). The code (`translate_en_speech`'s `muse` step) is in git at commit 364091a; `muse/` holds
+the accepted batches (`translations.jsonl`: `en`, `vi`, `key`, `usage` with input, output and
+reasoning tokens) and the rejected output.
 
-Contributor mode's prices ($0.10 input, $0.20 output per million tokens) buy Meta the right to train
-on prompts and replies. So Muse gets only Libriheavy text: `claim` never claims a text with a Common
-Voice row.
-
-## The step
-
-- `claim --key OPEN_ROUTER` without `--hours` claims every untranslated Libriheavy text. Run it
-  again after `texts` picks up new shards; it adds the new texts, but not lines a paid engine
-  released, and it releases claimed texts that have gained a Common Voice row. `muse` and
-  `gemini` refuse to start while any claimed text has one.
-- `muse --key OPEN_ROUTER` sends the claimed lines to `meta/muse-spark-1.3-contributor` with
-  `translate`'s prompt, `n|` format, batches and retry rounds, at `--concurrency` calls.
-  Reasoning cannot be turned off, so `reasoning.effort` is `minimal`.
-- Accepted batches go to `muse/translations.jsonl` (`en`, `vi`, `key`, `usage` with input, output
-  and reasoning tokens) and rejected output to `muse/rejects.jsonl`. Lines that fail alone are
-  released from the claims, so `translate` takes them when started again; if they are over 10%
-  of the key's lines, the run stops instead, since that is a systematic failure.
-- A moderation 403 (its error carries `metadata.reasons`) counts as a rejected batch. Any other
-  403 is a spent key or budget limit, and it stops the run at once with OpenRouter's message, as
-  every other client error does (402 is out of account credit). A 408, 429, 5xx, a 200 holding
-  only an error, or a dropped connection is retried after 1, 2, 4, 8 and 16 minutes, then stops
-  the run.
-- It holds `claims.lock`, as `claim` and `gemini` do, so only one of them runs at a time.
+Contributor mode's prices ($0.10 input, $0.20 output per million tokens) buy Meta the right to
+train on prompts and replies, so Muse got only Libriheavy text, never a text with a Common Voice
+row.
 
 ## Measurements
 
@@ -51,23 +36,8 @@ On the Gemini test's 71 batches (2,843 Libriheavy lines, 560k characters):
 - Muse `minimal` trails Sonnet in fluency by 0.37 ± 0.10 (Opus) and 0.22 ± 0.10 (Sonnet judge), with
   literal calques and stiff word choice; in adequacy it is within ~0.1 of Gemini.
 - Throughput is bound by latency (~25 s a call), not by rate limits: 48 calls run ~110 batches a
-  minute and 96 calls ~210, with no 429s, at ~$0.69 per 1,000 batches either way. Muse
-  translated all 2,395,561 claimed Libriheavy texts for $33.93 of the key's $50.
+  minute and 96 calls ~210, with no 429s, at ~$0.69 per 1,000 batches either way.
 - OpenRouter's Batch API has no `:batch` variant of any Muse model (checked 2026-10-23), and the
-  Contributor price is below most batch prices anyway, so Muse uses the synchronous API.
-
-## Running
-
-- Load `.env` first (`set -a && . ./.env && set +a`). The `OPEN_ROUTER` key has a $50 credit
-  limit, set on OpenRouter.
-- Run as `nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER
-  --concurrency 96 >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &`. `kill` lets
-  in-flight batches finish; rerun to resume.
-- Twice on 2026-10-23 a run died with no traceback or crash report, once started with `nohup` and
-  once in its own session, after 12 and 98 minutes. No session sent a kill; the process held up
-  to 5.2 GB while swap was nearly full, so macOS memory pressure is the likely cause. A run that
-  stops with no last log line needs checking with `ps`. From an agent's shell, start it in its
-  own session (Python `subprocess.Popen(..., start_new_session=True)`) as `sh -c '… python -X
-  faulthandler …; echo "muse exited with status $?"'`, so a death leaves its status in the log.
-- When the corpus changes: stop `translate` and `muse`, run `texts`, then
-  `claim --key OPEN_ROUTER`, then start both again.
+  Contributor price is below most batch prices anyway, so Muse ran on the synchronous API.
+- A moderation refusal comes back as a 403 whose error carries `metadata.reasons`; any other 403
+  is a spent key or budget limit, and a 402 is out of account credit.

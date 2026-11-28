@@ -1,63 +1,29 @@
 # EN→VI transcript translation
 
-Read when touching `training/prep/translate_en_speech.py` or
-`/Volumes/data/datasets/en_speech_vi_text`.
-Back to [CONTEXT.md](../../CONTEXT.md) · [Purpose](#purpose) · [Output](#output) ·
-[Token budget](#token-budget) · [Model and prompt](#model-and-prompt) · [Running](#running) ·
-[How to work](#how-to-work)
+Read when touching the EN-VI dataset's `text_vi`, `/Volumes/data/datasets/en_speech_vi_text`, or
+translating English transcripts to Vietnamese again.
+Back to [CONTEXT.md](../../CONTEXT.md) · [What exists](#what-exists) ·
+[Model and prompt](#model-and-prompt) · [Retranslation](#retranslation)
 
-## Purpose
+## What exists
 
-Step 2 of phase 1 in [docs/vi_en_parity_plan.md](../vi_en_parity_plan.md): each `en_speech`
-clip gets a Vietnamese line for voice-transfer TTS to read. Vietnamese is the model's source
-stream, so each line must stay aligned with its English audio. The TTS step is [vi-tts](vi-tts.md).
+Every `en_speech` clip has a Vietnamese line for voice-transfer TTS to read ([vi-tts](vi-tts.md));
+Vietnamese is the model's source stream, so each line stays aligned with its English audio. The
+translation is finished. The code that made it, `training/prep/translate_en_speech.py`, is in git
+at commit 364091a.
 
-## Output
-
-`/Volumes/data/datasets/en_speech_vi_text/` stays local; the exported translations are published
-with the audio in the EN-VI dataset ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
-
-- `texts` reads every shard of the EN-VI dataset (`--src`) and writes `texts.parquet` (`text`, the unique transcripts in translation order)
-  and `rows.parquet` (`split`, `id`, `text`, `duration`) for every row with a letter in its
-  transcript, so the clip range is the corpus's own ([en-speech-corpus](en-speech-corpus.md)).
-  Validation comes first, then each Libriheavy recording in segment order, so a batch carries
-  the neighbouring book text. `texts` stops if a clip is over the 22.4 s (280-frame) cap.
-  Dataset shards are written by rename, so `texts` may read a snapshot while shards are only
-  added. A running `translate` reads the selection and the claims once, so start it again after
-  `texts` or a claim.
-- The selection on disk is the final corpus (PR #25): 3,388,263 texts (526M characters) in
-  3,490,088 rows. Every text is translated: Sonnet 616,834 (all Common Voice), Gemini 375,868 and
-  Muse 2,395,561, with no line left over for `translate`. `export` wrote `train.parquet`
-  (3,480,566 rows) and `validation.parquet` (9,522) on 2026-10-23; its gates flagged 267 lines
-  identical to the English and 167 over twice its length.
-- `translations.jsonl` (`en`, `vi`, `profile`, `usage` per accepted batch) and `rejects.jsonl`
-  (`en`, raw output) are append-only, and `translate` resumes from them by English text, so
-  rebuilding `texts` keeps every finished translation. `translate.lock` stops a second run on
-  the directory; `export` takes it and `claims.lock`.
-- `translate` skips texts claimed for Gemini or Muse, which write under `gemini/` and `muse/`
-  ([en-vi-gemini](en-vi-gemini.md), [en-vi-muse](en-vi-muse.md)); `export` merges all three.
-  Sonnet translates the Common Voice text.
-- `export` writes `{split}.parquet` (`id`, `text_vi`) once every row of the split is translated,
-  and removes it while not. Of several translations of a text, the one in the later file of
-  `translations.jsonl`, `gemini/`, `muse/` and `retranslations.jsonl` wins. It reports the plan's two gates (identical to the English, over
-  twice its length) but drops nothing.
-
-## Token budget
-
-Measured with Sonnet 5.5:
-
-- Output is 0.60-0.62 tokens per English character (Vietnamese costs 0.585 per character) and
-  ~88% of the cost at API price weights.
-- One 5-hour window held ~4-5M output tokens on `claude-p` and `claude-l` and ~11M on `default`.
-  A full window used ~11% of `default`'s week, so its week holds ~100M. At 8 calls (~600M a
-  week) the weekly caps, not the windows, bound the run: every named account, `default`
-  included, reaches its weekly cap each week until the corpus is done.
-- Measured levers, as changes to total cost: one call per line +80%; no prompt cache for the
-  687-token instructions +2.2% (they are ~0.3% of cost cached, so trimming them saves nothing);
-  no output line numbers −2.1%, but merged or split lines would pass unnoticed; 16k-character
-  batches −0.7%; Telex or VIQR output +26% or +61%.
-- Thinking can't be disabled through the local API; at low effort it shows in ~25% of calls but
-  adds under 1% of output.
+- 3,388,263 unique texts (526M characters) in 3,490,088 rows: Claude Sonnet 5.5 translated 616,834
+  (all Common Voice, through the local Claude API on subscription quota), Gemini 3.8 Flash 375,868
+  ([en-vi-gemini](en-vi-gemini.md)) and Muse Spark 1.3 Contributor 2,395,561
+  ([en-vi-muse](en-vi-muse.md)), those two only Libriheavy: no Common Voice text went to Google or
+  Meta.
+- The lines are the EN-VI dataset's `text_vi` ([en-vi-speech-dataset](en-vi-speech-dataset.md)).
+  `/Volumes/data/datasets/en_speech_vi_text/` keeps the working files: the selection
+  (`texts.parquet`, `rows.parquet`), each engine's accepted batches (`translations.jsonl`,
+  `gemini/`, `muse/`, `retranslations.jsonl`: `en`, `vi`, a later file's translation of a text
+  winning) and rejected output, `claims.parquet`, and the export, `train.parquet` (3,480,566 rows)
+  and `validation.parquet` (9,522) of `id`, `text_vi` (2026-10-23). The export's gates flagged
+  267 lines identical to the English and 167 over twice its length, and dropped none.
 
 ## Model and prompt
 
@@ -65,60 +31,30 @@ Measured with Sonnet 5.5:
   4.59/4.31 for Opus, 4.43/4.24 for Sonnet (tied on short Common Voice lines) and 3.82/3.74 for
   Haiku, which made meaning errors. Sonnet at low effort was chosen; Opus 5.5 costs twice
   Sonnet 5.5 per token.
+- Lines went in and out as plain numbered `n|text` in batches of up to 200, the instructions in a
+  cached prefix; a batch was accepted only with exactly one `n|` line per input (about 1 batch in
+  350 failed, mostly a translation broken across lines). Measured against that: one call per line
+  +80% cost, no prompt cache +2.2%, no output numbers −2.1% (but merged or split lines would pass
+  unnoticed), Telex or VIQR output +26% or +61%. Output was ~88% of the cost, 0.60–0.62 tokens per
+  English character.
 - The prompt keeps dialogue quotes and the English order of clauses. A wording that banned
   quotation marks made Sonnet move speech tags to the front of the line.
-- A batch is accepted only with exactly one `n|` line per input, numbered 1..N. Rejections are
-  rare (about 1 batch in 350): most break a translation across lines, and a few
-  answer with a stray `echo skip` tool call. Rejected lines are retried in quarter-size batches
-  down to ~500 characters, then alone; a line that still fails alone ends the run.
-- One Common Voice sentence did that: Sonnet returns `refusal` and an empty body for "Aqueous
-  cyclodextrin solutions can generate aerosols in particle size ranges suitable for pulmonary
-  deposition." Its clip was deleted from the corpus ([en-speech-corpus](en-speech-corpus.md)).
+- Sonnet refuses one Common Voice sentence ("Aqueous cyclodextrin solutions can generate aerosols
+  in particle size ranges suitable for pulmonary deposition."); its clip was deleted from the
+  corpus ([en-speech-corpus](en-speech-corpus.md)).
 - The gates mostly flag good output: on the validation texts, the 22 lines identical to the
   English are names, and the 17 over twice the source length translate very short lines.
+
+## Retranslation
+
 - Muse and Gemini wrote letters of other scripts into some lines, mostly mid-word: 7,095 texts
   whose English has none (checked 2026-10-24), 3,860 with Chinese, Japanese or Korean (`kính畏`)
   and the rest Cyrillic (`thế là спас`, ~2,700 rows), Arabic, Thai, Devanagari, Greek and a few
   others. Where the English has them too (`京都`), they are right and stay. Sonnet does it as
-  well, on some Sino-Vietnamese words (`征 dụng`, `ngoại延`), at any effort; the instructions now
-  ask for Latin letters only, which fixed some.
-- `retranslate` translates those texts again, rejecting any batch that still holds such letters:
-  on Sonnet at low effort, then the lines that fail alone on Opus at high effort (7, all fixed).
-  It appends to `retranslations.jsonl`, which `export` reads last, and writes
-  `retexts.parquet` (`id`, `text_vi`) for the rows of every retranslated text: 7,102 texts,
-  7,152 rows in 1,460 shards, 658 of them voiced already (2026-10-24). The TTS voices those rows
-  again with `--texts` once both machines have finished ([vi-tts](vi-tts.md#running)); until
-  then the shards keep the old text, since changing it under the other machine's sync would stop
-  its upload (user's choice, 2026-10-24).
-
-## Running
-
-- Commands are in [training/prep/README.md](../../training/prep/README.md). The script runs on the
-  Mac with the conda Python against the local Claude API (`~/.local/share/claude-local-api/`).
-- `--concurrency` (default 8, at most the server's 48) sets the calls in flight, and quota
-  drains in proportion: 8 calls spend ~3.6M output tokens an hour, so a 5-hour window lasts
-  from ~1-1.5 hours on `claude-p` and `claude-l` to ~3 on `default`.
-- `--profile` names each subscription to spend, in order of use; the run uses `claude-p`,
-  `claude-l`, then `default`. When all are out of quota it waits for the earliest
-  reset, checking the clock every minute so it also resumes after the Mac sleeps. `default` is
-  the `~/.claude` login; the user works interactively on another account, so the run may spend
-  it like the others, weekly cap included. Every named profile must
-  have extra usage off (`/v1/health` shows `overageStatus`), or the server keeps serving it and
-  bills.
-- Run long jobs as `nohup caffeinate -i python …`, logging to `translate.log` in the output
-  directory. Calls turn off the server's response cache, so a retried batch is generated again.
-- 5xx replies, dropped connections and a 429 without `retry-after` are retried after 1, 2, 4, 8
-  and 16 minutes, then stop the run; any other API error stops it at once.
-- Ctrl-C, or `kill <pid>` for a background run, lets in-flight batches finish and be logged. A
-  run refuses to start when a hard kill has cut off the last line of `translations.jsonl`.
-- Restarting the local API (after editing its `profiles.json`) cancels running calls, so stop the
-  run first. The restart forgets which profiles are spent, but each refuses its next call with
-  `retry-after`, so a new run skips it again.
-
-## How to work
-
-- Before committing pipeline changes or starting a quota-heavy run, test a small sample and
-  report measured alternatives, as the user asked.
-- The user chose to translate the whole corpus, with no limit beyond the corpus's own clip
-  range, with few calls in flight so the accounts drain slowly, and with the run resuming by
-  itself after quota resets.
+  well, on some Sino-Vietnamese words (`征 dụng`, `ngoại延`), at any effort; instructions asking
+  for Latin letters only fixed some.
+- Those texts were translated again, rejecting any batch that still held such letters: on Sonnet
+  at low effort, then the lines failing alone on Opus at high effort (7, all fixed), into
+  `retranslations.jsonl`. `retexts.parquet` (`id`, `text_vi`) lists the rows of every
+  retranslated text: 7,102 texts, 7,152 rows in 1,460 shards, voiced again with
+  `tts_en_speech --texts` ([vi-tts](vi-tts.md#running)).

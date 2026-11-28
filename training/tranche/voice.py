@@ -18,7 +18,8 @@ Per row, as vieneu 3.7.1's `generate_batch` after `_enroll_reference(denoise=Tru
 - the chunks joined with the SDK's pauses, at 48 kHz;
 - heard by the ASR server (Qwen3-ASR, its language forced) and broken when its error is over BROKEN (the English's
   WER under Whisper's normalizer, the Vietnamese's CER over `filters.spoken`, as ingest scores its ASR) or its pace
-  is off PACE by 2x; voiced again while broken up to MAX_TRIES, the best try kept.
+  is off PACE by 2x. A row is voiced once: a second try costs more TTS time than its rows give back
+  ([tranche-tts](../../docs/agent-memory/tranche-tts.md#the-check)).
 
 Env /workspace/envs/vieneu (box/envs.sh). From the repo root, with HF_TOKEN_AN (pushes) in the environment and the
 ASR server up (`restart.sh asr`):
@@ -97,9 +98,6 @@ BROKEN = {"en": 0.2, "vi": 0.15}
 PACE = 0.0636
 # The kept Opus's input rate: the tranche's English at Mimi's 24 kHz, the EN-VI dataset's Vietnamese at its 48 kHz.
 KEPT_RATE = {"en": 24000, "vi": 48000}
-# Attempts per row, the best kept. 1 from the scale-up on (2026-11-06): on GigaSpeech 2 a retry
-# costs more TTS time than its rows give back (tranche-tts.md); the first tranche ran 3.
-MAX_TRIES = 1
 ASR_TIMEOUT_S = 60  # a request takes well under a second
 # The server stalls past a try now and then and recovers within minutes: 3 tries ended a run three
 # times in two days (2026-11-06, 11-07 17:22 and 23:17 UTC+7), each losing the shards in flight.
@@ -143,15 +141,6 @@ def decode(data: bytes) -> tuple[np.ndarray, int]:
         rate = stream.codec_context.sample_rate
     pcm = np.concatenate(frames, axis=-1)
     return (pcm.mean(axis=0) if pcm.ndim == 2 and frames[0].shape[0] > 1 else pcm.reshape(-1)), rate
-
-
-def decode_16k(data: bytes) -> np.ndarray:
-    """A segment's Ogg Opus -> mono float32 at 16 kHz, the ASR server's rate (filters.py), resampled by scipy."""
-    from scipy.signal import resample_poly
-
-    pcm, rate = decode(data)
-    g = np.gcd(ASR_RATE, rate)
-    return resample_poly(pcm, ASR_RATE // g, rate // g).astype(np.float32)
 
 
 def reference(data: bytes) -> np.ndarray:
@@ -488,7 +477,7 @@ class Shard:
     texts: list[str]  # each row's line, in `lang`
     clips: list[np.ndarray] | None  # the voiced rows' references (`reference`), until enrolled
     lines: list[tuple[list[str], list]]  # the voiced rows' chunks and pauses (`phonemize`)
-    # id -> the best try so far: {"err", "broken", "asr", "audio", "duration", "tries"}; an en_speech row's Vietnamese
+    # id -> the kept try: {"err", "broken", "asr", "audio", "duration", "tries"}; an en_speech row's Vietnamese
     # as the dataset holds it is try 0, its "audio" None
     results: dict
     skipped: set[str]  # rows not voiced (`load_segments`, `load_en_speech`)
@@ -725,7 +714,7 @@ def shards_to_voice(args: argparse.Namespace, files: list[str]) -> list[tuple[st
                 translated.discard(p.name)
             else:
                 translated.add(p.name)
-        # and for its Vietnamese ASR (filters.py, running ahead), whose gates skip rows.
+        # and for its Vietnamese ASR (asr_vi: YODAS's from ingest), whose gates skip rows.
         heard = {f.rsplit("/", 1)[1] for f in files if f.startswith(f"{source}/asr_vi/")}
         heard |= {p.name for p in (args.root / source / "asr_vi").glob("*.parquet")}
         waiting = 0
@@ -738,14 +727,14 @@ def shards_to_voice(args: argparse.Namespace, files: list[str]) -> list[tuple[st
             else:
                 waiting += 1
         if waiting:
-            log(f"{source}: {waiting} translated shards wait for their asr_vi (filters.py)")
+            log(f"{source}: {waiting} translated shards wait for their asr_vi")
     return todo[: args.limit]
 
 
 def run(args: argparse.Namespace) -> None:
     """Every shard of each source in turn, the next one loading while the voicer voices; the voicer is kept full
-    with retries first, then new rows. A shard is written once every voiced row has a kept attempt, and each
-    source's written shards are pushed every PUSH_S and at its end."""
+    of new rows. A shard is written once every voiced row has its try checked, and each source's written shards
+    are pushed every PUSH_S and at its end."""
     import queue
     import threading
     from concurrent.futures import ProcessPoolExecutor
@@ -801,11 +790,10 @@ def run(args: argparse.Namespace) -> None:
     voicer = Voicer()
     checking: dict = {}  # future -> its part's requests
     inflight = set()
-    retries: list[Request] = []
     fresh: Iterator[Request] = iter(())
     shards: dict[str, Shard] = {}  # by source/name, until written
     owner: dict[str, Shard] = {}  # row id -> its shard
-    remaining: dict[str, int] = {}  # shard -> rows without a kept attempt
+    remaining: dict[str, int] = {}  # shard -> rows without a checked try
     loading_done = False
     left = {s: sum(t[0] == s for t in todo) for s in args.sources}  # shards not yet written
     pushes = {s: ingest.Pushes(args.root, out_part(s)) for s in args.sources}  # uploads run beside the voicing
@@ -860,12 +848,11 @@ def run(args: argparse.Namespace) -> None:
         return True
 
     def finish(shard: Shard) -> None:
-        """Writes a shard whose voiced rows all have a kept attempt, and pushes as due."""
+        """Writes a shard whose voiced rows all have a checked try, and pushes as due."""
         key = f"{shard.source}/{shard.name}"
         write_shard(shard)
         voiced = [shard.results[i] for i in shard.ids if i not in shard.skipped]
         log(f"{key}: {len(shard.ids)} rows, {len(voiced)} voiced, {len(shard.skipped)} not; "
-            f"{sum(x['tries'] for x in voiced) / max(len(voiced), 1):.2f} tries a voiced row, "
             f"{sum(x['broken'] for x in voiced) / max(len(voiced), 1):.1%} of them still broken; overall "
             f"{attempts / (time.monotonic() - began):.1f} rows/s, RTF {(time.monotonic() - began) / max(voiced_s, 1):.5f} "
             f"over {voiced_s / 3600:.1f} h voiced ({attempts} attempts)")
@@ -881,15 +868,13 @@ def run(args: argparse.Namespace) -> None:
         attempts += 1
         voiced_s += result["duration"]
         shard = owner[req.key]
-        best = shard.results.get(req.key)
-        result["tries"] = (best["tries"] if best else 0) + 1
-        if best is None or result["err"] < best["err"] or (best["broken"] and not result["broken"]):
+        # An en_speech row's Vietnamese as the dataset holds it (try 0) stays unless this try beats it.
+        held = shard.results.get(req.key)
+        result["tries"] = 1
+        if held is None or result["err"] < held["err"] or (held["broken"] and not result["broken"]):
             shard.results[req.key] = result
         else:
-            best["tries"] = result["tries"]
-        if result["broken"] and result["tries"] < MAX_TRIES and shard.results[req.key]["broken"]:
-            retries.append(req)
-            return
+            held["tries"] = 1
         key = f"{shard.source}/{shard.name}"
         remaining[key] -= 1
         if remaining[key] == 0:
@@ -898,7 +883,7 @@ def run(args: argparse.Namespace) -> None:
     try:
         while True:
             while voicer.room:
-                req = retries.pop() if retries else next(fresh, None)
+                req = next(fresh, None)
                 if req is None:
                     if loading_done or len(shards) >= MAX_OPEN or not next_shard():
                         break  # a few shards open: those finishing and the next
@@ -916,10 +901,10 @@ def run(args: argparse.Namespace) -> None:
                     settle(req, result)
             for p in pushes.values():
                 p.check()  # a failed upload stops the run; a rerun pushes what is written
-            if loading_done and not voicer.active and not inflight and not retries:
+            if loading_done and not voicer.active and not inflight:
                 break
             if not voicer.active and not out:
-                time.sleep(0.05)  # waiting on checks: their retries refill the voicer
+                time.sleep(0.05)  # waiting on checks: the open shards' finish lets the next one open
     finally:  # after a crash, queued checks are dropped, not run, so the GPU frees promptly
         checks.shutdown(wait=False, cancel_futures=True)
         pool.shutdown(wait=False, cancel_futures=True)

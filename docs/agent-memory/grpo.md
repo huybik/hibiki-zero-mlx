@@ -74,9 +74,9 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
     rollout's text ends at its first EOS, so an early EOS loses the rest of the translation.
   - A boundary follows every 31 frames (2.5 s) of Vietnamese speech, plus one at T, because the
     cache has no Vietnamese words.
-  - Normalization uses the group's unbiased std plus 1e-4, so a frame where every rollout scores
-    the same gets 0; `--advantage centered` keeps only r − mean (Dr. GRPO,
-    [on-policy-distillation](on-policy-distillation.md#design)).
+  - Normalization z-scores over the group with its unbiased std plus 1e-4, so a frame where every
+    rollout scores the same gets 0. Centered advantages (r − mean, Dr. GRPO) lost to it on the
+    heads student and are not in the code ([heads-on-policy-runs](heads-on-policy-runs.md#probe-results)).
 - **A teacher** (`--teacher-weight`) adds the reverse KL to it on the rollouts, or alone with
   `--reward-coef 0`: [on-policy-distillation](on-policy-distillation.md); the 3B's own start as
   a KL anchor: [exposure-bias](exposure-bias.md#anchored-grpo).
@@ -198,8 +198,8 @@ The CUDA profile and dry run are under [Running](#running).
   - Generation peaked at 72.6 of 79.2 GiB, in a batch of 724 rows of 848 frames. Its peak
     follows ~6.3 + 1.07e-4 × rows × frames GiB, so `--gen-frames 614400` holds ~6 GiB in
     reserve in any window.
-  - Host memory: 77 GiB pinned (the writer's and `HostOffload`'s copies, each tensor's block
-    then rounded up to a power of two) and ~17 GiB more that can't be given back (`h100.sh sizes`).
+  - Host memory: 77 GiB pinned (blocks rounded to powers of two; `ALLOC_CONF` now pins 70.0 GiB on
+    the 3B) and ~17 GiB more that can't be given back: `h100.sh sizes` asks 92 GiB.
   - Against main over the same 20 updates: final BLEU 32.45 against 32.50 and `eos_rate`
     0.922 against 0.920, with no systematic difference in loss or clipping.
   - Each process pays once: ~63–80 s of compilation in its first π_old pass, and 10–19 s each

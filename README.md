@@ -2,9 +2,11 @@
 
 Hibiki-Zero speech translation with two maintained paths:
 
-- MLX inference on Apple Silicon (upstream's 3B for FR/ES/PT/DE → English, or any staged
-  checkpoint, quantized or BF16);
-- full-model PyTorch SFT on one CUDA H100 for Vietnamese → English.
+- inference on Apple Silicon: MLX in Python (upstream's 3B for FR/ES/PT/DE → English, or any
+  staged checkpoint, quantized or BF16) and a Swift runtime for the phone students, whose LM runs
+  as Core ML on the Neural Engine;
+- training in PyTorch on one CUDA GPU: full-model SFT and GRPO of the 3B for Vietnamese ↔
+  English in one two-way model, and the phone students cut from it.
 
 Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero) ·
 [paper](https://arxiv.org/abs/2602.11072) · weights license CC BY-NC-SA 4.0.
@@ -12,18 +14,22 @@ Upstream: [kyutai-labs/hibiki-zero](https://github.com/kyutai-labs/hibiki-zero) 
 ## Layout
 
 ```text
-inference/            Apple Silicon · MLX
-  main.py             file and microphone translation CLI
+inference/            Apple Silicon
+  main.py             file and microphone translation CLI (MLX)
   hibiki_mlx/         pipelined runtime (CPU Mimi codec overlapped with the GPU LM)
   moshi-mlx/          minimal vendored MLX model with the Hibiki-Zero deltas
-  tools/              quantized/BF16 staging, the quantization gate, benchmark, Core ML Mimi
-  assets/leon.wav     French gate clip
+  tools/              quantized/BF16 staging, the quantization gate, benchmark, Core ML export
+  assets/             leon.wav (French gate clip), the direction primers
   macos/              native SwiftUI file and microphone test app
+  swift/              Swift runtime for the phone students (Core ML LM): CLI, iOS bench app
 training/             CUDA · PyTorch
-  h100.sh             pinned H100 setup, preflight, train and resume with HF recovery
+  h100.sh             pinned GPU setup, preflight, SFT and GRPO runs and resume with HF recovery
   paths.py            repository defaults and file guards
-  prep/               en_speech corpus builder, pair rows → grounded Mimi + CTC caches
-  finetune/           full-model SFT trainer, evaluation, HF recovery sync
+  prep/               EN-VI dataset, translation, TTS, grounded Mimi + CTC caches, noisy copies
+  finetune/           full-model SFT and GRPO trainers, evaluation, HF recovery sync
+  tranche/            the real-Vietnamese tranche: ingest, ASR check, translation, TTS, caches
+  vi_tokenizer/       the Vietnamese tokenizer swap for two-way text
+  student/            the phone students cut from the two-way model, their Core ML palettization
 docs/                 plans, analyses and the technical report
 weights → …           upstream and staged models (gitignored, shared by both paths)
 data/  runs/          caches and training runs (gitignored)
@@ -38,8 +44,7 @@ pip install -e .
 ```
 
 Download the 3B checkpoint and stage it as q4 into `weights/hibiki-zero-3b-q4`, the model
-`--model 3b` runs (a `weights/` staged before 2026-11-14, with `hibiki.q4.safetensors` beside
-upstream's files, no longer loads: stage it again):
+`--model 3b` runs:
 
 ```bash
 hf download kyutai/hibiki-zero-3b-pytorch-bf16 \
@@ -107,8 +112,9 @@ The inference tools are:
 - `inference/tools/gate.py`: score a model directory on evaluation pairs through the runtime's
   file mode, as training scores its checkpoints (`python -m inference.tools.gate`, from the repo
   root).
-- `inference/tools/verify_mlx_q4.py`: translate the gate clip with `weights/hibiki-zero-3b-q4`.
 - `inference/tools/bench.py`: stage timing and silence-input gate.
+- `inference/tools/export_lm_coreml.py` and `export_mimi_coreml.py`: a phone student's LM and
+  Mimi's decoder as Core ML models, for the [Swift runtime](inference/swift/README.md).
 
 ## Training
 
@@ -120,14 +126,18 @@ GRPO also on an RTX 5090), through the pinned CUDA 13.4 launcher:
 ./training/h100.sh preflight
 ./training/h100.sh run RUN_NAME --cache-dir data/cache/EN_SPEECH_TRAIN --val-cache-dir data/cache/VALIDATION
 ./training/h100.sh run RUN_NAME   # continues it, e.g. after a preemption
+./training/h100.sh grpo RUN_NAME ...
 ```
 
 Training modules run from the repository root as `python -m training.<package>.<module>`.
-The only trainer is `training.finetune.train`: base-start, full-model SFT with fp32 master
-weights and bf16 autocast on grounded caches. Checkpoints are exact full-model states;
-partial or adapter checkpoints are rejected.
+`training.finetune.train` is the SFT trainer: every parameter from a full-model weight, fp32
+master weights and bf16 autocast on grounded caches, streams of one direction or both, and the
+phone students' distillation and palettization; `training.finetune.grpo` is GRPO for the full
+model. Checkpoints are exact full-model states; partial or adapter checkpoints are
+rejected.
 
-The training data is the 5–22.4 s clips of the English read-speech corpus `en_speech`
-(Common Voice 27.0 EN + Libriheavy, kept in the EN-VI dataset built by `training.prep.publish_en_vi_speech`) plus the
-~0.8k-hour PhoMT grounded cache, together ~11.3k hours. See the
-[pod guide](docs/finetune.md) and [data preparation](training/prep/README.md).
+The training data is grounded caches of both directions: the English read-speech corpus
+`en_speech` (Common Voice 27.0 EN + Libriheavy) with its Vietnamese translation and TTS, kept in
+the EN-VI dataset (`training.prep.publish_en_vi_speech`), its noisy copies, and the
+real-Vietnamese tranche. See the [pod guide](docs/finetune.md), [data
+preparation](training/prep/README.md) and the [project context](CONTEXT.md).

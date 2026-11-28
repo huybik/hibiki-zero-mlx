@@ -4,7 +4,6 @@
 
 import MLX
 import MLXNN
-import MLXRandom
 
 // Conv1d + dilation
 class Conv1d: Module, UnaryLayer {
@@ -25,10 +24,8 @@ class Conv1d: Module, UnaryLayer {
         dilation: Int = 1,
         bias: Bool = true
     ) {
-        let scale = (1 / Float(inputChannels * kernelSize)).squareRoot()
-
-        self._weight.wrappedValue = uniform(
-            low: -scale, high: scale, [outputChannels, kernelSize, inputChannels / groups])
+        // Placeholders: `Mimi.load` replaces every weight from the checkpoint.
+        self._weight.wrappedValue = MLXArray.zeros([outputChannels, kernelSize, inputChannels / groups])
         self._bias.wrappedValue = bias ? MLXArray.zeros([outputChannels]) : nil
         self.padding = padding
         self.groups = groups

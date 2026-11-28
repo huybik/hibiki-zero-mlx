@@ -3,11 +3,6 @@ name = "moshi_mlx"
 requires-python = ">= 3.10"
 description = "Minimal MLX language-model runtime for Hibiki"
 dependencies = [
-    "numpy >= 2.1.0, < 2.3",
-    "rustymimi == 0.4.1",
-    "sentencepiece == 0.2",
-    "sounddevice == 0.5",
-    "sphn >= 0.2.0, < 0.3.0",
     "mlx >= 0.31",
 ]
 authors = [{name="Laurent Mazaré", email="laurent@kyutai.org"}]

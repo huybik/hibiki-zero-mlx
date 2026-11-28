@@ -13,9 +13,10 @@ FLEURS's content, which only real Vietnamese speech can teach
 ([noisy-source](noisy-source.md#evaluation)). The tranche follows the paper's recipe for a new
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
-Researched 2026-11-04 from the corpora's and models' own cards; the code so far
-(`training/tranche/`) is ingest (with YODAS's caption cut, `yodas.py`), translate, VieNeu's TTS both ways
-(`voice.py`), the row filters (`filters.py`) and the cache build (`cache.py`); the bake-off and the ASR check are in git history.
+Researched 2026-11-04 from the corpora's and models' own cards. The code (`training/tranche/`) is
+YODAS's ingest (`ingest.py`, `yodas.py`), translate, VieNeu's TTS both ways (`voice.py`), the row
+filters (`filters.py`) and the cache build (`cache.py`). PhoAudiobook, viVoice and GigaSpeech 2 are
+ingested and heard whole: their ingest and ASR pass, the bake-off and the ASR check are in git history.
 
 ## Decision
 
@@ -93,29 +94,27 @@ Turbo from YODAS's shard 0004 on, the voicer that now runs both ways: [tranche-t
 - Keep a corpus's own order (an audiobook's consecutive sentences, a video's runs) so that the
   trainer can join real neighbours into streams.
 - Rough box time per 1,000 h, from published speeds: the English TTS ~20–50 H100-hours, the
-  ASR ~1 h, the translation ~1 h if it runs on the box, alignment and diarization less: 1–3 days
+  ASR ~1 h, the translation ~1 h if it runs on the box, alignment less: 1–3 days
   of the box, ~$35–100. Box time, not money, bounds the scale-up; past ~5k h a second GPU for generation
   pays.
 
 ## Models
 
-The newest commercially usable model per step, from their cards (2026-11-04); every H100 speed
-here is published or estimated, to be measured on the box first:
+The models each step runs: the ASR, the translation and the TTS chosen from their cards (2026-11-04
+on, the newest commercially usable) and measured on the box; the aligners are the cache build's.
 
-| Step | Pick (licence) | Runner-up | Notes |
-|---|---|---|---|
-| VAD | Silero VAD v6.2.3 (MIT) | FireRedVAD | |
-| Diarization, overlap | `nvidia/Nemotron-3-Diarization` (OpenMDW-1.1) | pyannote community-1 (CC BY 4.0, gated) | DIHARD III DER 12.7 against 20.2; up to 8 speakers |
-| Speaker embedding (voice reference) | WeSpeaker ResNet293-LM (CC BY 4.0) | TitaNet-Large | |
-| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | `nvidia/parakeet-ctc-0.6b-Vietnamese` (NVIDIA Open Model) | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated; ~1 h per 1,000 h at concurrency 128. `checks.py` (2026-11-05, in git history): WER 5.5% on FLEURS dev, 1.8% PhoAudiobook, 7.7% viVoice (3 of 300 clips detected as another language), 4.9% GigaSpeech 2; 941 clips in 11 s. Parakeet was not run: the gate compares Qwen3-ASR with the corpus transcript ([tranche-cache](tranche-cache.md#gates)) |
-| Language ID | FireRedLID (Apache-2.0) | SpeechBrain VoxLingua107 ECAPA | Not run: the gate uses Qwen3-ASR's own language tag ([tranche-cache](tranche-cache.md#gates)) |
-| Vietnamese word times (real and VieNeu audio) | NeMo Forced Aligner + Parakeet-vi | `omniASR_CTC_1B_v2` + `torchaudio.functional.forced_align` | Vietnamese accuracy unpublished: check on hand-timed rows |
-| English word times | `Qwen/Qwen3-ForcedAligner-0.6B` (Apache-2.0) | the cache's `wav2vec2-base-960h` | Mean shift 37.5 ms against ~133; adopt only if its word starts agree with the existing caches' within a frame. Not run: the tranche cache keeps `wav2vec2-base-960h`, as the existing caches do |
-| VI→EN translation | `IndexTeam/Index-Translate-35B-A3B-preview` (Apache-2.0, Qwen3.5 MoE, FP8 as it loads) in vLLM 0.33 on the box, a row per prompt (`training/tranche/translate.py`), from GigaSpeech 2 archive 51 on (2026-11-06) | `IndexTeam/Index-Translate-9B-FP8` | [bake-off](tranche-translate.md#bake-off). Before: Muse Spark 1.3 Contributor through OpenRouter (user, 2026-11-05) for the first tranche and GigaSpeech 2 archives 13–50, until Meta blocked the key on 2026-11-06 21:46 UTC+7 (HTTP 403 `user_blocked`, "repeated policy violations"); paid APIs (Gemini 3.1 Flash-Lite, ~$1.2 an archive on OpenRouter's batch price) were too dear for the user |
-| English TTS | VieNeu-TTS v3 Turbo from the row's own clip, checked by Qwen3-ASR (`training/tranche/voice.py`); VoxCPM2 with the clip's transcript before | VoxCPM2 | [choice and checks](tranche-tts.md): VoxCPM2 by blind listening, VieNeu for 3.1× its speed |
-| TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | WavLM-Large SV (its checkpoint is only on Google Drive) | |
-| Dialect check | none usable exists | | A linear probe on WeSpeaker embeddings over ~300 hand-labelled speakers, plus the LLM tagging dialect words (mô/tê/răng; hông/nhen) |
+| Step | Model (licence) | Notes |
+|---|---|---|
+| Vietnamese ASR | `Qwen/Qwen3-ASR-1.7B` (Apache-2.0), vLLM | FLEURS-vi WER 5.55 against Whisper-v3's ~8.7; punctuated. `checks.py` (2026-11-05, in git history): WER 5.5% on FLEURS dev, 1.8% PhoAudiobook, 7.7% viVoice (3 of 300 clips detected as another language), 4.9% GigaSpeech 2; 941 clips in 11 s. Its own language tag is the language ID ([tranche-cache](tranche-cache.md#gates)) |
+| Vietnamese word times (real and VieNeu audio) | `nguyenvulebinh/wav2vec2-base-vietnamese-250h` (CC BY-NC 4.0), `text_timing.ALIGNERS["vi"]` | [two-way](two-way.md#vietnamese-aligner) |
+| English word times | `facebook/wav2vec2-base-960h`, as the existing caches | `Qwen/Qwen3-ForcedAligner-0.6B` (mean shift 37.5 ms against ~133) not adopted |
+| VI→EN translation | `IndexTeam/Index-Translate-35B-A3B-preview` (Apache-2.0, Qwen3.5 MoE, FP8 as it loads) in vLLM on the box, a row per prompt (`training/tranche/translate.py`), from GigaSpeech 2 archive 51 on (2026-11-06) | [bake-off](tranche-translate.md#bake-off). Before: Muse Spark 1.3 Contributor through OpenRouter (user, 2026-11-05) for the first tranche and GigaSpeech 2 archives 13–50, until Meta blocked the key on 2026-11-06 21:46 UTC+7 (HTTP 403 `user_blocked`, "repeated policy violations"); paid APIs (Gemini 3.1 Flash-Lite, ~$1.2 an archive on OpenRouter's batch price) were too dear for the user |
+| English TTS | VieNeu-TTS v3 Turbo from the row's own clip, checked by Qwen3-ASR (`training/tranche/voice.py`); VoxCPM2 with the clip's transcript before | [choice and checks](tranche-tts.md): VoxCPM2 by blind listening, VieNeu for 3.1× its speed |
+| TTS bake-off scoring | WeSpeaker ResNet293-LM (scoring only) | |
 
+- Weighed and never built: a VAD (Silero VAD v6.2.3), diarization (`nvidia/Nemotron-3-Diarization`),
+  speaker clustering per doc, a dialect check, and filters on pace, clipping or bandwidth. The rows'
+  filters are the ASR gates and the evaluation overlap ([Filters](#filters)).
 - Ruled out, non-commercial or with licences that bar training on outputs: ChunkFormer-vie,
   hynt Zipformer, MMS-FA and MMS-LID, `wav2vec2-base-vi-vlsp2020`, Hunyuan-MT 1.x / HY-MT1.5,
   TranslateGemma.
@@ -133,43 +132,38 @@ unchanged; the shared cache build runs it on CUDA, or on the Mac in MLX
 
 ```text
 YODAS3 caption runs (24 kHz) ─► Qwen3-ASR transcripts, gated on CER ───┐
-other corpora ─► their transcripts, word times by forced alignment ─────┤ (ASR where they are poor)
+other corpora ─► their transcripts, checked against Qwen3-ASR ──────────┤
                                                                         ▼
   rows of whole sentences, 5–22.4 s, in the source's order
   ─► drop rows that overlap FLEURS vi or MultiMed-ST vi
   ─► VI→EN on the box, a row per call with its doc's two earlier rows as context
-  ─► English TTS in the row speaker's voice (prompt and reference: the row's own clip and transcript)
-  ─► EN-VI parquet ─► CUDA cache build ─► trainer
+  ─► English TTS in the row speaker's voice (reference: the row's own clip)
+  ─► EN-VI parquet ─► CUDA cache build (word times by forced alignment) ─► trainer
 ```
 
 - YODAS3's rows are cut from its videos' caption runs and transcribed by Qwen3-ASR during ingest
   ([tranche-yodas](tranche-yodas.md)), not taken from owsmv4's segments.
-- Filter rows on syllables per second, transcript confidence, language ID, clipping and
-  bandwidth (flag sources at 16 kHz or below).
 - Speaker labels cannot pick the TTS reference: YODAS has none, and GigaSpeech 2's recordings
-  and some corpus "speakers" (platforms) hold several voices. On every source, cluster speaker
-  embeddings per doc (per channel for viVoice, whose docs are single rows) to drop overlapped
-  speech; the TTS needs no reference pick, as it prompts each row with its own clip. The same embeddings and a dialect classifier check the
-  North, Central and South balance.
-- Ingest (`training/tranche/ingest.py`, CPU) writes each source shard's usable segments as one
-  parquet sorted by `seq`, audio re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under
-  `/workspace/tranche/repo/<source>/segments/`, and `push` uploads that
-  folder to its repo. `doc` is the recording as far as the corpus tells and never spans shards:
-  a PhoAudiobook reader's run in rising time, a GigaSpeech 2 recording (its tars hold segments
+  and some corpus "speakers" (platforms) hold several voices. The TTS needs no reference pick, as
+  it prompts each row with its own clip.
+- Ingest writes each source shard's usable segments as one parquet sorted by `seq`, audio
+  re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under
+  `/workspace/tranche/repo/<source>/segments/`, and `ingest push` uploads that folder to its repo.
+  `doc` is the recording as far as the corpus tells and never spans shards: a PhoAudiobook reader's run in rising time, a GigaSpeech 2 recording (its tars hold segments
   out of order, and with no times its neighbours are only consecutive segment numbers), and for
   viVoice the row itself. `speaker` is the corpus's label, none for GigaSpeech 2. A PhoAudiobook
   doc can join two readings when the second starts later than the first ended (190 gaps within
   a doc exceed 1 h). Its rows are not contiguous speech: the corpus keeps parts of each reading,
   and consecutive rows of a doc start a median 40 s after the previous one ended (p90 4 min,
   three shards measured, 2026-11-05), so a stream joined from them has seams in time.
-  - Ingested and pushed on 2026-11-04 (`run_ingest.sh` on the box; each source's local copy
-    deleted once pushed), and checked end to end against the sources:
+  - The first tranche, ingested on 2026-11-04 and checked end to end against the sources (GigaSpeech
+    2's other archives followed: all 240 are in the repo):
 
-    | Source | Rows | Hours | Labels | Docs | Hub | Time on the box |
+    | Source | Rows | Hours | Labels | Docs | Size | Time on the box |
     |---|---:|---:|---|---:|---|---|
-    | PhoAudiobook (shards 0–223) | 290,037 | 939 | 710 readers | 17,243 | private, 15.7 GB | 23 min, 16 workers |
-    | viVoice (5–22.4 s clips) | 269,350 | 571 | 186 channels | one per row | public, 9.7 GB | 30 min, 16 workers |
-    | GigaSpeech 2 (archives 0–12) | 281,133 | 337 | none | per recording | private, 5.5 GB | 27 min, 4 workers |
+    | PhoAudiobook (shards 0–223) | 290,037 | 939 | 710 readers | 17,243 | 15.7 GB | 23 min, 16 workers |
+    | viVoice (5–22.4 s clips) | 269,350 | 571 | 186 channels | one per row | 9.7 GB | 30 min, 16 workers |
+    | GigaSpeech 2 (archives 0–12) | 281,133 | 337 | none | per recording | 5.5 GB | 27 min, 4 workers |
 
     GigaSpeech 2 archives 86 and 98 (`ingest.SOURCES["giga"].heldout`) are held out of training
     as the tranche's own evaluation set ([giga-heldout](sft-evaluation.md#evaluation-sets)).
@@ -201,50 +195,38 @@ other corpora ─► their transcripts, word times by forced alignment ───
 
 ## Filters
 
-`training/tranche/filters.py` measures what the cache build drops rows on (its Vietnamese-side gates are
-`filters.vi_gate`, which voice.py also applies, not voicing those rows); the build applies the
-thresholds, so they can change without measuring again, except that a `--max-cer` looser than
-0.15 cannot bring back the rows voice skipped at 0.15 (from 2026-11-07) without voicing them.
+`training/tranche/filters.py` holds what the cache build drops rows on and the text measures behind
+it (its Vietnamese-side gates are `filters.vi_gate`, which voice.py also applies, not voicing those
+rows); the build applies the thresholds, so they can change without measuring again, except that a
+`--max-cer` looser than 0.15 cannot bring back the rows voice skipped at 0.15 (from 2026-11-07)
+without voicing them.
 
 - Both filters compare text by `spoken`: lower-case NFC syllables without punctuation, digits
   written out by num2words' Vietnamese, and `ngàn`/`linh`/`nhăm` folded to `nghìn`/`lẻ`/`lăm`.
   PhoAudiobook and GigaSpeech 2 spell numbers; Qwen3-ASR and FLEURS write digits, and on the
   first PhoAudiobook shards rows with digits made 48% of those over 0.1 CER before (15 of 51
   digit rows over 0.1, 4 after). num2words reads a long digit run (a phone number) as one number.
-- Evaluation overlap (`filters overlap`, Mac or box, text columns only, held-out shards excepted;
-  `giga-heldout` applies the same rule the other way, [sft-evaluation](sft-evaluation.md#evaluation-sets)):
-  a row is dropped when its
-  transcript holds a 13-syllable run of a FLEURS vi dev or test or MultiMed-ST vi select or final
-  sentence, or a whole sentence of 9–12 syllables (62 of them) (`overlaps`, with the sets in
-  `data/eval/`). On the first tranche no row does (2026-11-05). Runs of 10 syllables or fewer
-  match stock broadcast phrases ("cảm ơn quý vị và các bạn đã quan tâm", 80 rows at 10, 257 at
-  8), and the 18 sentences under 9 syllables ("được", "alo", "vùng nông thôn") everyday speech,
+- Evaluation overlap (`overlaps`, with the sets in `data/eval/`; `giga-heldout` applies the same
+  rule the other way, [sft-evaluation](sft-evaluation.md#evaluation-sets)): a row is dropped when
+  its transcript holds a 13-syllable run of a FLEURS vi dev or test or MultiMed-ST vi select or
+  final sentence, or a whole sentence of 9–12 syllables (62 of them). None of the first tranche's
+  840,520 rows does (2026-11-05, measured over the text columns alone). Runs of 10 syllables or
+  fewer match stock broadcast phrases ("cảm ơn quý vị và các bạn đã quan tâm", 80 rows at 10, 257
+  at 8), and the 18 sentences under 9 syllables ("được", "alo", "vùng nông thôn") everyday speech,
   so those are not matched.
-- Vietnamese ASR (`filters asr`, box): every row heard by Qwen3-ASR-1.7B on the shared ASR
-  server, language detected, not forced (unforced, it writes `language <Name><asr_text>…`; a reply
-  without that header is all transcript with language `""`, as qwen_asr parses it), up to
-  512 tokens, written as `<source>/asr_vi/<shard>` (`id`, `asr_vi`, `language`, `cer` against the
-  corpus transcript over `spoken`) and pushed every 30 min and at each source's end. The
-  rows where the two disagree, or the language is not Vietnamese, are the ones the build drops.
-  - The client decodes each clip to 16 kHz WAV (4 processes): sent as Opus, the server's 8 API
-    processes saturated the box's 27 cores at 21 rows/s and starved the TTS's main process.
-  - Beside the English TTS on the same GPU it hears ~20 rows/s, bound by the engine (the TTS
-    holds the GPU at 100%), and slows the TTS ~30% (a PhoAudiobook shard every ~2.0 min against
-    ~1.55): ~12 h for 840,520 rows, about what running it after the TTS would take. It runs as
-    `/workspace/restart.sh filters` (log `/workspace/logs/filters.log`).
+- Vietnamese ASR (`<source>/asr_vi/<shard>`: `id`, `asr_vi`, `language`, `cer` against the
+  corpus transcript over `spoken`): every row of PhoAudiobook, viVoice and GigaSpeech 2 is heard by
+  Qwen3-ASR-1.7B on the shared ASR server, its language detected, not forced, up to 512 tokens;
+  YODAS's ingest writes its own ([tranche-yodas](tranche-yodas.md#rows)). The rows where the
+  transcript and the ASR disagree, or the language is not Vietnamese, are the ones the build drops.
+  - `filters.Hearer` parses the reply: unforced, the model writes `language <Name><asr_text>…`,
+    and `language None` for no speech; a reply without that header is all transcript with
+    language `""`, as qwen_asr parses it.
+  - The client sends 16 kHz WAV: sent as Opus, the server's 8 API processes saturated the box's 27
+    cores at 21 rows/s and starved the TTS's main process.
   - First PhoAudiobook shards: CER median 0.000, p90 0.03–0.04, about one row a shard detected
-    as another language.
-  - Checked end to end on the box (2026-11-05), beside the running jobs: `asr pho --limit 1`
-    into a scratch `--root`, its push stubbed, heard shard 0 in 79 s. The shard holds the
-    segments' 1,299 ids in order, `id`/`asr_vi`/`language` as strings and `cer` as float32, no
-    nulls; CER recomputed over `spoken` matches every row; a rerun skips it and pushes what is
-    unpushed. Against the running job's own pass over the shard, 1,239 transcripts are
-    identical and 60 differ (48 in punctuation or case only, the rest by at most 0.042 CER):
-    the server's batching. The reply parser reads the five reply shapes (a language header,
-    `language None`, an empty transcript, no header). The job's first push put 30 shards in the
-    private repo, byte-identical to the local ones. `filters overlap` on the box finds no row
-    of the 840,520; `overlaps` matches a 13-syllable run and a whole 9–12-syllable sentence, not
-    a 12-syllable run or shorter sentences.
+    as another language. The server's batching moves a rerun's transcripts a little: of a shard's
+    1,299, 60 differed (48 in punctuation or case only, the rest by at most 0.042 CER).
   - The highest CERs are faults of the corpus: PhoAudiobook transcripts that repeat the clip's
     last clause (0.24–0.34), numbers and punctuation spelled oddly ("chấm ba chấm", "triệu
     bốn nghìn"), abbreviations ("tp. hcm"); then words the ASR loses at a clip's cut edges.

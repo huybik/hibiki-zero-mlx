@@ -131,4 +131,4 @@ the base (2026-11-14):
 - Checked end to end on a tiny random-weight model (the 3B's weights were off the Mac): staged
   from a checkpoint naming the swap, its directory held and loaded the swap in `main.py` and the
   Swift CLI; with its text head pointed at four byte pieces, both printed the 2-byte characters
-  whole, the CLI the same text at `--chunk` 1 and 3.
+  whole, the CLI the same text.

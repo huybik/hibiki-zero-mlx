@@ -1,7 +1,8 @@
-/* Fast exact CTC Viterbi forced alignment matching text_timing._ctc_token_frames.
+/* Exact CTC Viterbi forced alignment of one clip's log-probabilities to a known token sequence
+ * (text_timing.CTCWordAligner.align, which compiles and loads this file).
  *
- * Tie-breaking matches numpy's argmax over [stay, advance, skip]:
- * on ties, stay (0) beats advance (1), which beats skip (2).
+ * A path skips the blank between two different tokens. On ties a state keeps the first candidate
+ * of [stay, advance, skip]: stay (0) beats advance (1), which beats skip (2).
  * Ending state: states - 1 if score[states - 1] >= score[states - 2] else states - 2.
  */
 #include <math.h>

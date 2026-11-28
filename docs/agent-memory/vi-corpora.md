@@ -46,7 +46,7 @@ corpora's terms for `huybik` that day.
   - Shards 0–222 and the first 360 rows of 223 are the 290,037 original chunks
     (`chunk-<start>-<end>_trimmed_norm_float32.wav`, 947 h by their names, 10–20 s, p50 11.4 s).
     The rest, through shard 802, are the 752,882 "augmented short audio" clips (its card; 554 h,
-    at most 10 s, cut inside the originals' spans), which ingest never downloads.
+    at most 10 s, cut inside the originals' spans), which the tranche left out.
   - Each reader's chunks come as runs in rising time, one per reading, which carries no book id:
     17,030 runs of ~17 chunks, 213 of them crossing a shard boundary. The chunks sample a reading
     rather than cover it: the gap to the previous chunk is 63 s at p50 and 401 s at p90, and only
