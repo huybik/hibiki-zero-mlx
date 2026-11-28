@@ -5,29 +5,15 @@
 import MLX
 import MLXNN
 
-enum Norm {
-    case layerNorm
-    case rmsNorm
-}
-
-enum PositionalEmbedding {
-    case none
-    /// Interleaved rotary embedding (MLX `traditional: true`), as in Mimi.
-    case rope
-    /// Rotary embedding over concatenated halves (MLX `traditional: false`), as in Hibiki-Zero.
-    case ropeConcat
-}
-
+/// Mimi's transformer: LayerNorm, interleaved rotary embedding (MLX `traditional: true`), a
+/// GELU feed-forward without gating, and layer scale.
 struct TransformerConfig {
     var dModel: Int
     var numHeads: Int
     var numLayers: Int
     var biasFF: Bool
     var biasAttn: Bool
-    var layerScale: Float?
-    var positionalEmbedding: PositionalEmbedding
-    var gating: Bool
-    var norm: Norm
+    var layerScale: Float
     var context: Int
     var maxPeriod: Float
     var kvRepeat: Int
@@ -35,25 +21,6 @@ struct TransformerConfig {
 
     func headDim() -> Int {
         self.dModel / self.numHeads
-    }
-}
-
-final class MlpGating: Module, UnaryLayer {
-    @ModuleInfo(key: "linear_in") var linear_in: Linear
-    @ModuleInfo(key: "linear_out") var linear_out: Linear
-
-    init(_ cfg: TransformerConfig) {
-        let hidden =
-            cfg.dimFeedForward == 4 * cfg.dModel ? 11 * cfg.dModel / 4 : 2 * cfg.dimFeedForward / 3
-        self._linear_in.wrappedValue = Linear(cfg.dModel, 2 * hidden, bias: cfg.biasFF)
-        self._linear_out.wrappedValue = Linear(hidden, cfg.dModel, bias: cfg.biasFF)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let x = linear_in(x)
-        let (B, T) = (x.dim(0), x.dim(1))
-        let x_reshaped = x.reshaped(B, T, 2, -1)
-        return linear_out(silu(x_reshaped[0..., 0..., 0]) * x_reshaped[0..., 0..., 1])
     }
 }
 
@@ -66,20 +33,15 @@ private class MlpNoGating: Module, UnaryLayer {
         self._linear2.wrappedValue = Linear(cfg.dimFeedForward, cfg.dModel, bias: cfg.biasFF)
     }
 
-    /// The tanh GELU: written out on the CPU, where MLXNN's compiled `geluApproximate` cannot
-    /// run on iOS; compiled into one kernel on the GPU.
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let h = linear1(x)
-        guard onCPU() else { return linear2(geluApproximate(h)) }
-        let inner = (2 / Float.pi).squareRoot() * (h + 0.044715 * h * h * h)
-        return linear2(0.5 * h * (1 + tanh(inner)))
+        linear2(geluApproximate(linear1(x)))
     }
 }
 
 final class Attention: Module {
     let cfg: TransformerConfig
     let scale: Float
-    let rope: RoPE?
+    let rope: RoPE
 
     @ModuleInfo(key: "in_proj") var inProj: Linear
     @ModuleInfo(key: "out_proj") var outProj: Linear
@@ -91,72 +53,30 @@ final class Attention: Module {
         let outDim = cfg.dModel + 2 * numKV * cfg.dModel / cfg.numHeads
         self._inProj.wrappedValue = Linear(cfg.dModel, outDim, bias: cfg.biasAttn)
         self._outProj.wrappedValue = Linear(cfg.dModel, cfg.dModel, bias: cfg.biasAttn)
-        self.rope =
-            switch cfg.positionalEmbedding {
-            case .none: nil
-            case .rope:
-                RoPE(dimensions: cfg.headDim(), traditional: true, base: cfg.maxPeriod)
-            case .ropeConcat:
-                RoPE(dimensions: cfg.headDim(), traditional: false, base: cfg.maxPeriod)
-            }
+        self.rope = RoPE(dimensions: cfg.headDim(), traditional: true, base: cfg.maxPeriod)
     }
 
-    /// Grouped-query projections before RoPE: q has numHeads heads, k and v
-    /// numHeads / kvRepeat, each `[B, heads, T, headDim]`.
-    func projections(_ x: MLXArray) -> (MLXArray, MLXArray, MLXArray) {
+    /// Attention over `cache` and `x`, whose first step is at position `offset` (an array, so a
+    /// compiled caller can pass it in). q has numHeads heads, k and v numHeads / kvRepeat.
+    func callAsFunction(
+        _ x: MLXArray, offset: MLXArray, mask: MLXArray, cache: WindowKVCache
+    ) -> MLXArray {
         let (B, T) = (x.dim(0), x.dim(1))
         let (heads, headDim) = (cfg.numHeads, cfg.headDim())
         let kvHeads = heads / cfg.kvRepeat
         let qkv = inProj(x)
-        let q = qkv[.ellipsis, ..<(heads * headDim)]
+        var q = qkv[.ellipsis, ..<(heads * headDim)]
             .reshaped(B, T, heads, headDim).transposed(0, 2, 1, 3)
-        let k = qkv[.ellipsis, (heads * headDim)..<((heads + kvHeads) * headDim)]
+        var k = qkv[.ellipsis, (heads * headDim)..<((heads + kvHeads) * headDim)]
             .reshaped(B, T, kvHeads, headDim).transposed(0, 2, 1, 3)
-        let v = qkv[.ellipsis, ((heads + kvHeads) * headDim)...]
+        var v = qkv[.ellipsis, ((heads + kvHeads) * headDim)...]
             .reshaped(B, T, kvHeads, headDim).transposed(0, 2, 1, 3)
-        return (q, k, v)
-    }
-
-    /// The output projection of an attention result `[B, heads, T, headDim]`.
-    func output(_ attn: MLXArray) -> MLXArray {
-        outProj(attn.transposed(0, 2, 1, 3).reshaped(attn.dim(0), attn.dim(2), cfg.dModel))
-    }
-
-    /// Attention over `cache` and `x`, whose first step is at position `offset` (an array, so a
-    /// compiled caller can pass it in).
-    func callAsFunction(
-        _ x: MLXArray, offset: MLXArray, mask: MLXArray, cache: WindowKVCache
-    ) -> MLXArray {
-        var (q, k, v) = projections(x)
-        if let rope {
-            q = rope(q, offset: offset)
-            k = rope(k, offset: offset)
-        }
+        q = rope(q, offset: offset)
+        k = rope(k, offset: offset)
         (k, v) = cache.update(keys: k, values: v)
-        return output(
-            MLXFast.scaledDotProductAttention(
-                queries: q, keys: k, values: v, scale: self.scale, mask: mask))
-    }
-}
-
-/// Whether the ops being built run on the CPU (the default device in scope). Mimi's encoder
-/// picks its kernels by it: MLX's CPU backend cannot compile kernels on iOS and its fused layer
-/// norm is slow, while the GPU wants the fewest, fused kernels.
-func onCPU() -> Bool {
-    Device.defaultDevice().deviceType == .cpu
-}
-
-/// Mimi's LayerNorm: MLXFast's fused kernel on the GPU; composed from mean and variance on the
-/// CPU, where MLXFast.layerNorm's fallback takes ~8x as long. Only Mimi's transformers use
-/// `Norm.layerNorm`.
-final class MimiLayerNorm: LayerNorm {
-    override func callAsFunction(_ x: MLXArray) -> MLXArray {
-        guard onCPU() else { return super.callAsFunction(x) }
-        let centered = x - x.mean(axis: -1, keepDims: true)
-        var y = centered * rsqrt((centered * centered).mean(axis: -1, keepDims: true) + eps)
-        if let weight { y = y * weight }
-        if let bias { y = y + bias }
-        return y
+        let attn = MLXFast.scaledDotProductAttention(
+            queries: q, keys: k, values: v, scale: self.scale, mask: mask)
+        return outProj(attn.transposed(0, 2, 1, 3).reshaped(B, T, cfg.dModel))
     }
 }
 
@@ -174,48 +94,26 @@ class LayerScale: Module, UnaryLayer {
 
 final class TransformerLayer: Module {
     @ModuleInfo(key: "gating") var gating: UnaryLayer
-    @ModuleInfo(key: "norm1") var norm1: UnaryLayer
-    @ModuleInfo(key: "norm2") var norm2: UnaryLayer
-    @ModuleInfo(key: "layer_scale_1") var layerScale1: LayerScale?
-    @ModuleInfo(key: "layer_scale_2") var layerScale2: LayerScale?
+    @ModuleInfo(key: "norm1") var norm1: LayerNorm
+    @ModuleInfo(key: "norm2") var norm2: LayerNorm
+    @ModuleInfo(key: "layer_scale_1") var layerScale1: LayerScale
+    @ModuleInfo(key: "layer_scale_2") var layerScale2: LayerScale
     @ModuleInfo(key: "self_attn") var selfAttn: Attention
 
     init(_ cfg: TransformerConfig) {
-        self._gating.wrappedValue = cfg.gating ? MlpGating(cfg) : MlpNoGating(cfg)
-        self._norm1.wrappedValue =
-            switch cfg.norm {
-            case .layerNorm: MimiLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
-            case .rmsNorm: RMSNorm(dimensions: cfg.dModel, eps: 1e-8)
-            }
-        self._norm2.wrappedValue =
-            switch cfg.norm {
-            case .layerNorm: MimiLayerNorm(dimensions: cfg.dModel, eps: 1e-5)
-            case .rmsNorm: RMSNorm(dimensions: cfg.dModel, eps: 1e-8)
-            }
+        self._gating.wrappedValue = MlpNoGating(cfg)
+        self._norm1.wrappedValue = LayerNorm(dimensions: cfg.dModel, eps: 1e-5)
+        self._norm2.wrappedValue = LayerNorm(dimensions: cfg.dModel, eps: 1e-5)
         self._selfAttn.wrappedValue = Attention(cfg)
-
-        if let scale = cfg.layerScale {
-            self._layerScale1.wrappedValue = LayerScale(cfg.dModel, initValue: scale)
-            self._layerScale2.wrappedValue = LayerScale(cfg.dModel, initValue: scale)
-        } else {
-            self._layerScale1.wrappedValue = nil
-            self._layerScale2.wrappedValue = nil
-        }
+        self._layerScale1.wrappedValue = LayerScale(cfg.dModel, initValue: cfg.layerScale)
+        self._layerScale2.wrappedValue = LayerScale(cfg.dModel, initValue: cfg.layerScale)
     }
 
     func callAsFunction(
         _ x: MLXArray, offset: MLXArray, mask: MLXArray, cache: WindowKVCache
     ) -> MLXArray {
-        residualFeedForward(
-            x, attended: selfAttn(norm1(x), offset: offset, mask: mask, cache: cache))
-    }
-
-    /// Adds the projected attention output to the residual, then the feed-forward block.
-    func residualFeedForward(_ x: MLXArray, attended: MLXArray) -> MLXArray {
-        var x = x + (layerScale1?.callAsFunction(attended) ?? attended)
-        let ff = gating(norm2(x))
-        x = x + (layerScale2?.callAsFunction(ff) ?? ff)
-        return x
+        let x = x + layerScale1(selfAttn(norm1(x), offset: offset, mask: mask, cache: cache))
+        return x + layerScale2(gating(norm2(x)))
     }
 }
 

@@ -6,36 +6,39 @@ student is in [student-heads](student-heads.md), the slices student in
 [student-slices](student-slices.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Cut](#cut) · [Training a student](#training-a-student) ·
 [Parallel heads](#parallel-heads) · [Distillation](#distillation) · [GRPO](#grpo) · [Checks](#checks) ·
-[Next](#next)
+[Runs](#runs)
 
 The 3B misses real time on the A15, so the phone model is cut from the two-way model and scored in
 both directions ([plan](../vi_en_parity_plan.md#5-the-phone-model), stages 5.3 and 5.4; order steps
-9 and 10): first the depformer student (8 codebooks a stream, ~10 main layers, a 3-layer
-depformer), then a ~14-layer student with parallel codebook heads in a delay pattern, trained on
-the same streams for the same steps, adopted only if it wins at real time. Both start once GRPO
-has frozen the two-way model (user, 2026-11-11: "continue with the current plan, can prepare the
-code now").
+9 and 10). The depformer student (`student_dep10`: 8 codebooks a stream, 10 main layers, a 3-layer
+depformer) came first; the ~14-layer student with parallel codebook heads in a delay pattern,
+trained on the same streams for the same steps, beat it, and the slices student (the heads
+student's trunk with depformer slices) superseded both, so `cut.py` no longer cuts a depformer
+student. Their runs below are records.
 
 ## Cut
 
-`python -m training.student.cut --weight <parent> --out-dir <dir>` writes `<dir>/config.json` and
-`<dir>/model.safetensors`, every kept tensor copied whole from the parent:
+`python -m training.student.cut --weight <parent> --out-dir <dir>` cuts a parallel-heads student
+([student-heads](student-heads.md)): it writes `<dir>/config.json` and `<dir>/model.safetensors`,
+every kept tensor copied whole from the parent and the heads initialized afresh. A slices student
+is made from a heads student by `training.student.slices` ([student-slices](student-slices.md#making-it)).
 
 ```text
 parent (28 layers, 16+16 codebooks, depformer 6 layers x 9 step slices)
   main layers      --layers 0,3,... | --num-layers 10 (spread: 0,3,6,9,12,15,18,21,24,27)
   emb (inputs)     target 0..k-1, then source 0..k-1 (parent emb 0..k-1, 16..16+k-1)
-  depformer        --depformer-layers | --num-depformer-layers 3 (0,2,5); in each, step slices 0..k-1
-  per step         depformer_in, depformer_norms, linears: the first k steps (depformer_emb: steps 1..k-1)
-  unchanged        text_emb, text_linear, out_norm, depformer_text_emb
+  depformer        dropped: k linear heads in its slot (heads.py), seeded by --seed
+  unchanged        text_emb, text_linear, out_norm
 ```
 
-- `--codebooks` (k, default 8; up to 16, for stage 5.3's EN→VI check at 16) keeps the target's and
-  the source's first k: Mimi's codebooks are residual, so they are the cache's first k. The kept
-  steps' weight slices must be the parent's 0..m without gaps (Hibiki-Zero's steps 8–15 share
-  slice 8, which a cut past 9 keeps shared); the schedule is written only if the parent has one.
-- The config is the parent's with `num_layers`, `n_q` (2k), `dep_q` (k), `delays` (text, then each
-  stream's first k) and the step schedule cut alike, naming the student's own weight
+- `--codebooks` (k, default 8; the heads student 16) keeps the target's and the source's first k:
+  Mimi's codebooks are residual, so they are the cache's first k. The step schedule, which moshi
+  builds a one-layer depformer from before the heads replace it, is cut to the first k steps,
+  whose weight slices must be the parent's 0..m without gaps; it is written only if the parent has
+  one.
+- The config is the parent's with `num_layers`, `n_q` (2k), `dep_q` (k), `delays` (text, the
+  target's `heads.delays`, then the source's first k), the step schedule cut alike and
+  `"audio_heads": "parallel"`, naming the student's own weight
   (`moshi_name`) and the tokenizer it is on (`tokenizer_name`). moshi hands every config key to the model, so
   the cut's record goes only into the weight's metadata (`student`, `student_of`), beside the
   parent's own (its `text_tokenizer`, which `run_tokenizer` follows).
@@ -53,7 +56,8 @@ GRPO (`grpo.py`, `grpo_profile.py`) do the same.
 A student run reads `<dir>/config.json` at every load (eval, validate, resume) and its start
 weight on every resume, and neither syncs to the run's Hub prefix: keep the student dir with the
 run, or recut it on a new box (the cut is deterministic from the parent and the weight's `student`
-record, a heads student's seed among it).
+record, a heads student's seed among it; `cut.py` cuts heads students only, so the depformer
+student `student_dep10` recuts only from git at 491422c).
 
 ## Parallel heads
 
@@ -64,7 +68,7 @@ The heads student, its 16 codebooks, speed and runs: [student-heads](student-hea
 The plan distils only if the student falls short of the 3B
 ([plan](../vi_en_parity_plan.md#5-the-phone-model), stage 5.3). Trained on the targets alone, the
 depformer student does, by ~14 chrF, and gains slowly: FLEURS dev VI→EN / EN→VI chrF 28.7 / 24.5
-at update 96,000, +1.6 / +0.7 over 64,000 ([Next](#next) has its validations), against the
+at update 96,000, +1.6 / +0.7 over 64,000 ([Runs](#runs) has its validations), against the
 teacher's 42.7 / 38.8; the end offset 4–8 s against 1.1–1.5 s. Teacher-forced on the VI→EN
 validation cache, its word accuracy is 0.569 at 96,000 (0.544 at 64,000) against the two-way SFT
 model's 0.664.
@@ -125,7 +129,7 @@ model's 0.664.
   selecting mean or the mean of all sets ("let's stop distil when 2 rounds of validation not
   improving"). Its best, 64,000 (Hub `student_dep10_anneal/best/`), is
   `weights/student_dep10_distilled.safetensors` on the box, [GRPO](#grpo)'s start. The heads
-  student distils from the start ([Next](#next)).
+  student distils from the start ([Runs](#runs)).
 - **On-policy** (2026-11-21): after this off-policy distillation, the student can distil on its
   own rollouts, the teacher scoring them, in the GRPO trainer
   ([on-policy-distillation](on-policy-distillation.md)); the 16-codebook heads student only, since
@@ -168,7 +172,7 @@ update 2,000 are in [student-grpo](student-grpo.md).
   student's text at output index i is the token sampled at step i for all 1,852 words, so the
   end offset's `max_delay − 2` correction holds. On the 3B the branch's teacher-forced losses
   equal main's bit for bit, and SFT and GRPO run. At 2.25e-6 a student barely learns in 200
-  steps (dep10's text argmax is always PAD), so its rate is probed first ([Next](#next)).
+  steps (dep10's text argmax is always PAD), so its rate is probed first ([Runs](#runs)).
 - The cut's mapping (2026-11-11, box CPU, the two-way start weight, a 120-frame validation
   stream): an 8-codebook student keeping all 28 layers and all 6 depformer layers against the
   parent with its codebooks 8–15's input embeddings zeroed. Text logits equal exactly, the first 8
@@ -192,10 +196,10 @@ update 2,000 are in [student-grpo](student-grpo.md).
 - The trainer's forward compiles: a CPU check runs eager (`TORCH_COMPILE_DISABLE=1`; compiled CPU
   kernels crash in OpenMP on the Mac), and needs Hibiki's (empty) condition tensors.
 
-## Next
+## Runs
 
-- **Training** (2026-11-14): `restart.sh student`, then `restart.sh student-heads`
-  ([tranche-box](tranche-box.md)), each cut from GRPO update 1,400 when its directory is missing:
+- **Training** (2026-11-14, by `restart.sh`'s `student` and `student-heads` jobs, both removed; in git
+  at 491422c), each cut from GRPO update 1,400:
   2 epochs of the two-way run's rows both ways (190,126 updates; ~12 h plain, ~21 h distilled, the heads student ~18 h), the same streams
   (seed 47) for the same steps, whole 12,288-frame batches at peak 5e-5, validation every 16,000
   updates on the two-way run's 7 sets (FLEURS dev both ways selects). The depformer student first:

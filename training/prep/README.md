@@ -150,32 +150,10 @@ C=data/cache/en-vi/en-vi-grounded-v2/train O=data/cache/en-vi/en-vi-grounded-v2-
 
 ## Vietnamese translations of `en_speech`
 
-Runs on the Mac with the conda Python. Claude Sonnet 5.5 translates through the local Claude API;
-the Libriheavy texts claimed for a paid key go to Gemini 3.8 Flash through the Gemini Batch API
-or to Muse Spark 1.3 Contributor through OpenRouter. Costs and rules are in
-[en-vi-translation](../../docs/agent-memory/en-vi-translation.md),
-[en-vi-gemini](../../docs/agent-memory/en-vi-gemini.md) and
-[en-vi-muse](../../docs/agent-memory/en-vi-muse.md).
-
-```bash
-python -m training.prep.translate_en_speech texts       # select the en_speech rows of the EN-VI dataset
-set -a && . ./.env && set +a                            # the Gemini and OpenRouter keys
-python -m training.prep.translate_en_speech claim --key OPEN_ROUTER  # all untranslated Libriheavy; while translate is stopped
-nohup caffeinate -i python -m training.prep.translate_en_speech muse --key OPEN_ROUTER --concurrency 96 \
-  >> /Volumes/data/datasets/en_speech_vi_text/muse.log 2>&1 &        # `kill` stops it cleanly; rerun to resume
-nohup caffeinate -i python -m training.prep.translate_en_speech translate \
-  --profile claude-p --profile claude-l --profile default \
-  >> /Volumes/data/datasets/en_speech_vi_text/translate.log 2>&1 &   # `kill` stops it cleanly; rerun to resume
-python -m training.prep.translate_en_speech retranslate --profile claude-p --profile claude-l \
-  --profile default                                      # CJK-script lines again on Claude; retexts.parquet
-python -m training.prep.translate_en_speech export      # {train,validation}.parquet for fully translated splits
-```
-
-`claim --hours H` gives each key H more hours instead, from the end of the translation order,
-Libriheavy only; `gemini --key GEMINI_API_KEY_1 --key GEMINI_API_KEY_2` sends those keys' claims
-as Batch API jobs. `translate` skips every claimed text. Its `--concurrency` (default 8) sets how
-fast the accounts' quota drains. Rerunning `texts` after the corpus changes keeps every
-translation already made; a running `translate` reads the selection and the claims once, so start
-it again afterwards. Every run resumes when started again.
-
-Output defaults to `/Volumes/data/datasets/en_speech_vi_text`.
+Every `en_speech` transcript is translated: the Common Voice text by Claude Sonnet 5.5, Libriheavy
+by Gemini 3.8 Flash and Muse Spark 1.3 Contributor. The lines are the dataset's `text_vi`; the
+working files stay in `/Volumes/data/datasets/en_speech_vi_text`
+([en-vi-translation](../../docs/agent-memory/en-vi-translation.md),
+[en-vi-gemini](../../docs/agent-memory/en-vi-gemini.md),
+[en-vi-muse](../../docs/agent-memory/en-vi-muse.md)). The code, `translate_en_speech.py`, is in git
+at commit `364091a`.

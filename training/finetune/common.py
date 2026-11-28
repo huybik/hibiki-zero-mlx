@@ -309,18 +309,18 @@ def teacher_checkpoint_info(args: argparse.Namespace) -> Any:
     )
 
 
-def load_teacher(info: Any, weight: Path, device: Any, dep_q: int, fp8_mode: str = "none") -> Any:
+def load_teacher(info: Any, weight: Path, device: Any, dep_q: int, fp8: bool = False) -> Any:
     """A frozen bf16 teacher in the compiled training forward (`lm_training`), run without a
     backward. Its depformer runs only the first `dep_q` codebooks: steps past them change no
-    earlier codebook's logits (the depformer is causal over steps). With `fp8_mode` in
-    ('trunk', 'all'), pre-quantizes the frozen teacher's linear weights once to rowwise E4M3."""
+    earlier codebook's logits (the depformer is causal over steps). With `fp8`, pre-quantizes the
+    frozen teacher's main-transformer and depformer linear weights once to rowwise E4M3."""
     teacher = load_lm(info, weight, device, torch.bfloat16)
     teacher.train()
     teacher.requires_grad_(False)
     teacher.dep_q = dep_q
-    if fp8_mode != "none":
-        n_q = fp8_linear.prepare_fp8_teacher(teacher, fp8_mode)
-        print(f"Pre-quantized {n_q} frozen teacher linears to rowwise FP8 (mode={fp8_mode})")
+    if fp8:
+        n_q = fp8_linear.prepare_fp8_teacher(teacher)
+        print(f"Pre-quantized {n_q} frozen teacher linears to rowwise FP8")
     return teacher
 
 
@@ -714,7 +714,6 @@ def compute_distill_losses_chunked(
     condition_tensors: Any | None,
     teacher_condition_tensors: Any | None,
     weights: LossWeights,
-    denominators: tuple[torch.Tensor, torch.Tensor] | None = None,
     freeze_trunk: bool = False,
 ) -> dict[str, Any]:
     """Exact hidden-state distillation avoiding full-vocab logit materialization (~5.5 GiB saved).
@@ -864,49 +863,9 @@ def compute_distill_losses_chunked(
         "pad_n": pad_n,
     }
     result = {**sums, **loss_means(sums, weights)}
-    if denominators is not None:
-        total_audio_n, total_text_n = denominators
-        if freeze_trunk:
-            result["loss"] = weights.audio * (audio_sum / total_audio_n.clamp(min=1))
-        else:
-            result["loss"] = (
-                weights.audio * (audio_sum / total_audio_n.clamp(min=1))
-                + weights.text * (text_sum / total_text_n.clamp(min=1))
-            )
-    elif freeze_trunk:
+    if freeze_trunk:
         result["loss"] = weights.audio * (audio_sum / audio_n.clamp(min=1))
     return result
-
-
-def batch_loss_denominators(
-    lm: Any,
-    codes: Any,
-    weights: LossWeights,
-    teacher: Any | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Exact full-batch `(audio_n, text_n)` denominators for micro-batch gradient accumulation,
-    computed directly from `codes` and delays without running any forward pass."""
-    T = int(codes.shape[-1])
-    device = codes.device
-    audio = slice(lm.audio_offset, lm.audio_offset + lm.dep_q)
-    lm_audio_delays = lm.delays[audio]
-    if teacher is not None:
-        t_audio = slice(teacher.audio_offset, teacher.audio_offset + lm.dep_q)
-        max_delays = [max(d1, d2) for d1, d2 in zip(lm_audio_delays, teacher.delays[t_audio], strict=True)]
-    else:
-        max_delays = list(lm_audio_delays)
-    delay_t = torch.tensor(max_delays, device=device, dtype=torch.long).view(1, -1, 1)
-    pos = torch.arange(T, device=device, dtype=torch.long).view(1, 1, T)
-    audio_valid = (pos < (T - delay_t)) & (codes[:, audio] != lm.zero_token_id)
-    cb_weights = audio_codebook_weights(lm, weights, device)
-    audio_n = (cb_weights * audio_valid).sum()
-
-    text_delay = max(lm.delays[0], teacher.delays[0]) if teacher is not None else lm.delays[0]
-    text_targets = codes[:, :1]
-    text_valid = (pos < (T - text_delay)) & (text_targets != lm.zero_token_id)
-    pad = (text_targets == lm.text_padding_token_id) & text_valid
-    text_n = (torch.where(pad, weights.text_pad, 1.0) * text_valid).sum()
-    return audio_n, text_n
 
 
 def compute_batch_losses(
@@ -916,8 +875,6 @@ def compute_batch_losses(
     weights: LossWeights,
     accuracy: bool = False,
     teacher: Any | None = None,
-    history: Any | None = None,
-    denominators: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> dict[str, Any]:
     """Teacher-forced losses of one batch, as tensors on the GPU (no host sync), with every
     component's sum and count beside them so evaluation can aggregate exactly. Positions holding
@@ -926,13 +883,8 @@ def compute_batch_losses(
     for the same codebooks), each token's loss is its KL from the teacher's distribution
     (`token_kl`) instead of its cross-entropy, with the same weights, at the positions both score:
     moshi returns each model's logits on the stream's frames, and a model with other delays (a
-    heads student's) has other last frames to score. With `history` (scheduled sampling's codes,
-    their text partly the model's samples) the main transformer reads it in place of `codes`,
-    which stay each step's own input and the targets (`lm_training.forward_history`)."""
-    if history is None:
-        output = lm(codes, condition_tensors=condition_tensors)
-    else:
-        output = lm_training.forward_history(lm, history, codes, condition_tensors)
+    heads student's) has other last frames to score."""
+    output = lm(codes, condition_tensors=condition_tensors)
     audio_valid = output.mask  # [B, dep_q, T]
     text_valid = output.text_mask  # [B, 1, T]
     if teacher is not None:
@@ -979,12 +931,6 @@ def compute_batch_losses(
         "pad_n": pad.sum(),
     }
     result = {**sums, **loss_means(sums, weights)}
-    if denominators is not None:
-        total_audio_n, total_text_n = denominators
-        result["loss"] = (
-            weights.audio * (sums["audio_sum"] / total_audio_n.clamp(min=1))
-            + weights.text * (sums["text_sum"] / total_text_n.clamp(min=1))
-        )
     if accuracy:
         correct = output.text_logits.argmax(-1) == text_targets
         result["content_correct"] = (correct & content).sum()
@@ -1057,22 +1003,19 @@ EVAL_DIRECTIONS = {"vi_audio": "text_en", "en_audio": "text_vi"}
 
 def read_eval_rows(path: Path) -> list[dict[str, str]]:
     path = require_file(path, "eval rows")
-    if path.suffix == ".csv":
-        with path.open("r", newline="", encoding="utf-8") as handle:
-            return [{k: v or "" for k, v in row.items()} for row in csv.DictReader(handle)]
-    if path.suffix == ".jsonl":
-        rows: list[dict[str, str]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line_no, line in enumerate(handle, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                row = json.loads(line)
-                if not isinstance(row, dict):
-                    raise ValueError(f"{path}:{line_no} is not a JSON object")
-                rows.append({key: str(value) for key, value in row.items()})
-        return rows
-    raise ValueError(f"Eval rows must be .jsonl or .csv: {path}")
+    if path.suffix != ".jsonl":
+        raise ValueError(f"Eval rows must be .jsonl: {path}")
+    rows: list[dict[str, str]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, 1):
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError(f"{path}:{line_no} is not a JSON object")
+            rows.append({key: str(value) for key, value in row.items()})
+    return rows
 
 
 def read_eval_sets(paths: list[Path]) -> dict[str, list[dict[str, str]]]:

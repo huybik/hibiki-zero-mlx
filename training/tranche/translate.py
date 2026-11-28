@@ -32,7 +32,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from training.paths import exclusive
-from training.prep.translate_en_speech import NON_LATIN, broken
+from training.tranche.filters import NON_LATIN, broken
 from training.tranche.ingest import REPO, ROOT, SOURCES
 
 # Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (tranche-translate, Bake-off).

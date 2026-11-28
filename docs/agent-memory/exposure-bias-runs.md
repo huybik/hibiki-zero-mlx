@@ -45,8 +45,8 @@ history there).
 | control | 2.6036 / 2.3084 | 0.6695 / 0.6824 | 1.6289 / 1.5450 | 0.6724 / 0.6867 | 0.9494 / 0.9566 | 1.9341 / 1.6260 |
 | 0.1 | 2.6060 / 2.3125 | 0.6712 / 0.6852 | 1.6360 / 1.5526 | 0.6697 / 0.6850 | 0.9498 / 0.9568 | 1.9349 / 1.6273 |
 
-Train loss by deciles of updates: control 2.137 → 2.113, 0.1 2.189 → 2.155 (flat). `text_changed` 1.2%
-of the content tokens throughout.
+Train loss by deciles of updates: control 2.137 → 2.113, 0.1 2.189 → 2.155 (flat). The 0.1 arm read
+another word piece in place of 1.2% of the content tokens throughout.
 
 Free-running at update 10,000 (seed 61), control / 0.1. EOS counts rows ended with text EOS.
 Selecting 36.19 / 35.97, mean of the ten sets 38.04 / 38.14; every set healthy.

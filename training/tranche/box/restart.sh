@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# restart.sh asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-slices-wide-warm-5090|student-slices-wide-warm-decay-5090|student-distill|yodas-pilot|yodas-control: stop the job by its PID file (its whole process group), start it again.
+# restart.sh asr|voice|voice-en-speech|cache|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-slices-wide-warm-5090|student-slices-wide-warm-decay-5090: stop the job by its PID file (its whole process group), start it again.
 # Logs: /workspace/logs/<job>.log, PID files /workspace/logs/<job>.pid. Never pkill -f: the jobs spawn
 # workers that look like vLLM processes.
 set -euo pipefail
@@ -40,147 +40,18 @@ case $job in
   # path, ~140 MB/s where Xet throttles to ~5.
   voice-en-speech) export HF_HUB_DISABLE_XET=1
        cmd=(bash -c 'f=0; while true; do s=$SECONDS; /workspace/envs/vieneu/bin/python -m training.tranche.voice run en_speech && exit 0; (( SECONDS - s < 600 )) || f=0; f=$((f+1)); echo "$(date -u "+%F %T") voice run failed ($f in a row)"; (( f < 3 )) || exit 1; sleep 30; done') ;;
-  filters) cmd=(bash -c 'while /workspace/envs/ingest/bin/python -m training.tranche.filters asr giga; do sleep 120; done') ;;
   # Single-pass dual-direction CUDA build (vi-en + en-vi): reads parquets & decodes clips ONCE,
   # runs Triton fused SEANet Mimi + FP16 wav2vec2 CTC + C Viterbi + /dev/shm slabs. Plain HTTP
   # for the Hub: 143 MB/s, where Xet throttles to ~4 MB/s.
   cache) export HF_HUB_DISABLE_XET=1
          cmd=(/workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga yodas
               --direction both --drop-inputs) ;;
-  # The two-way run's English-to-Vietnamese inputs (two-way.md#two-way-run): the English evaluation sets, round 4e's 500
-  # en_speech shards (envi_en_speech.sh, which pushes them at its end), then every tranche shard by the tranche builder
-  # (pushed to its cache repo's en-vi/ as it goes; each shard's parts deleted once read).
-  envi-cache) export HF_HUB_DISABLE_XET=1
-       cmd=(bash -c 'set -e; .venv/bin/python -m training.prep.eval_sets --sets fleurs-en en-vi-val-en
-            training/tranche/box/envi_en_speech.sh
-            /workspace/envs/cache/bin/python -m training.tranche.cache build pho vivoice giga \
-              --direction en-vi --drop-inputs') ;;
-  # The two-way SFT (two-way.md#two-way-run): round 4e's rows both ways, from round 4's final model moved onto the
-  # Vietnamese swap (init_weights writes weights/twoway_start_vi6k.safetensors; --tokenizer follows the weight), in
-  # the trainer's whole 4,608-frame batches at its 2.25e-6 peak. Every cache keeps only its packs here (streams
-  # --drop-shards). Validation every 20,000 updates on both directions. twoway_sft ran round 4's 8,192-frame batches
-  # in slices at 3e-6, so this is a new run, twoway_sft_4608. Two epochs (user, 2026-11-11), but the next run ends
-  # sooner (sft-training.md#trainer): decide its --max-steps with the user before launching it.
-  two-way) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
-       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       # Shards beside their packs would fill the disk at the second checkpoint pair: drop them first (two-way.md).
-       for d in $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train; do
-         [[ -d $d ]] || { echo "$d is missing: run envi-cache first" >&2; exit 1; }
-         if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
-       done
-       cmd=(./training/h100.sh run twoway_sft_4608
-            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
-            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
-            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --model-weight weights/twoway_start_vi6k.safetensors
-            --eval-batch-size 64 --keep-checkpoints 1
-            --epochs 2 --seed 47 --save-every 4000 --val-every 20000
-            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
-            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The phone students (phone-student.md#training-a-student), each cut from the shipping model, GRPO update 1,400
-  # (weights/grpo_twoway_best1400.safetensors: the recovery repo's grpo_twoway/best/best_step001400.safetensors) when
-  # its directory is missing: `student` the depformer student (10 layers, a 3-layer depformer, 8 codebooks),
-  # `student-heads` the parallel heads (14 layers, 16 codebooks, 8-15 at one delay: student-heads.md), distilled from
-  # that model from the start (--teacher-weight, phone-student.md#distillation). Both train on the two-way run's rows
-  # both ways, the same streams (seed 47) for the same steps, in whole 12,288-frame batches (51,000 frames/s on the
-  # depformer student, +32% over 4,608) at peak 5e-5 (the probe, phone-student.md#next).
-  student|student-heads) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
-       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       if [[ $job == student ]]; then name=student_dep10 cut=() teach=()
-       else name=student_heads14_cb16 cut=(--heads --num-layers 14 --codebooks 16) teach=(--teacher-weight weights/grpo_twoway_best1400.safetensors); fi
-       S=weights/$name
-       [[ -f $S/config.json ]] || .venv/bin/python -m training.student.cut \
-         --weight weights/grpo_twoway_best1400.safetensors "${cut[@]}" --out-dir $S
-       cmd=(./training/h100.sh run $name
-            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
-            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
-            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --config-path $S/config.json --model-weight $S/model.safetensors "${teach[@]}"
-            --batch-frames 12288 --lr 5e-5 --eval-batch-size 64 --keep-checkpoints 1
-            --epochs 2 --seed 47 --save-every 4000 --val-every 16000
-            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
-            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The depformer student distilled from its teacher, GRPO update 1,400 (phone-student.md#distillation): from
-  # student_dep10_distill's model 32,000 (hard-linked to weights/student_dep10_anneal_start.safetensors when that run
-  # stopped: its KL stalled at peak 3e-5), the same rows on new streams (seed 49), each token's loss its KL from the
-  # teacher's distribution, at peak 1e-5. --max-steps ends it with time left on the box for a GRPO run after it.
-  student-distill) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
-       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2 S=weights/student_dep10
-       cmd=(./training/h100.sh run student_dep10_anneal
-            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
-            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
-            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --config-path $S/config.json --model-weight weights/student_dep10_anneal_start.safetensors
-            --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --batch-frames 12288 --lr 1e-5 --warmup-fraction 0.02 --max-steps 110000 --eval-batch-size 64
-            --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 8000
-            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
-            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # 5090 route for 3B full-model two-way SFT: all-GPU bf16 weights/grads/moments with fused Triton
-  # stochastic rounding (--bf16-adamw: 23.3 GiB static, +0.00001 loss parity vs fp32 AdamW),
-  # whole-loop compiled selective checkpointing (first 14 main + depformer layers) and whole
-  # 4,608-frame batches (6,554 fr/s, 28.3 GiB reserved on real variable batches; or add --fp8 with
-  # --grad-checkpoint-layers 8 for 7,242 fr/s at 28.1 GiB reserved).
-  two-way-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
-       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       for d in $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train; do
-         [[ -d $d ]] || { echo "$d is missing: run envi-cache first" >&2; exit 1; }
-         if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
-       done
-       cmd=(./training/h100.sh run twoway_sft_5090
-            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
-            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
-            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --model-weight weights/twoway_start_vi6k.safetensors
-            --bf16-adamw --grad-checkpoint --grad-checkpoint-layers 14 --park-states --batch-frames 4608
-            --eval-batch-size 64 --keep-checkpoints 1
-            --epochs 2 --seed 47 --save-every 4000 --val-every 20000
-            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
-            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # 5090 route for 14-layer 16-codebook parallel-heads student distillation from the 3B teacher:
-  # --bf16-adamw + 6,144-frame slices (12,362 fr/s, 26.0 GiB peak, no checkpointing needed).
-  # For exact fp32 AdamW instead, drop --bf16-adamw and use --grad-checkpoint --micro-frames 3072 (10,065 fr/s, 27.35 GiB).
-  student-heads-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
-       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       name=student_heads14_cb16 S=weights/$name
-       [[ -f $S/config.json ]] || .venv/bin/python -m training.student.cut \
-         --weight weights/grpo_twoway_best1400.safetensors --heads --num-layers 14 --codebooks 16 --out-dir $S
-       cmd=(./training/h100.sh run ${name}_5090
-            --cache-dir $T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
-            $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train
-            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --config-path $S/config.json --model-weight $S/model.safetensors
-            --teacher-weight weights/grpo_twoway_best1400.safetensors
-            --bf16-adamw --batch-frames 12288 --micro-frames 6144 --park-states
-            --lr 5e-5 --eval-batch-size 64 --keep-checkpoints 1
-            --epochs 2 --seed 47 --save-every 4000 --val-every 16000
-            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
-            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  # The YODAS pilot (tranche-yodas.md#pilot): 20,000 updates from the two-way SFT's final model on two-way-5090's
-  # rows and route, the cosine over them; yodas-pilot adds YODAS's caches both ways, yodas-control does not. One
-  # seed, validated at the end; the test sets then compare the two.
-  yodas-pilot|yodas-control) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
-       T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
-       dirs=($T/pho $T/vivoice $T/giga data/cache/en_speech_sub/en-vi-grounded-v2-noisy/train
-             $T/en-vi/pho $T/en-vi/vivoice $T/en-vi/giga $V/train)
-       if [[ $job == yodas-pilot ]]; then dirs+=($T/yodas $T/en-vi/yodas); fi
-       for d in "${dirs[@]}"; do
-         [[ -d $d ]] || { echo "$d is missing" >&2; exit 1; }
-         if compgen -G "$d/shard_*.pt" > /dev/null; then echo "$d still holds shards: streams --drop-shards it first" >&2; exit 1; fi
-       done
-       cmd=(./training/h100.sh run ${job/-/_}
-            --cache-dir "${dirs[@]}"
-            --val-cache-dir data/cache/en-vi-grounded-v2/validation $V/validation
-            --model-weight weights/twoway_final.safetensors
-            --bf16-adamw --grad-checkpoint --grad-checkpoint-layers 14 --park-states --batch-frames 4608
-            --max-steps 20000 --eval-batch-size 64 --keep-checkpoints 1
-            --seed 47 --save-every 4000 --val-every 20000
-            --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
-            $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
   # Stage 1 of the depformer-slices phone student (training/student/slices.py,
   # docs/agent-memory/student-slices.md): warm up the 9 random 512x2 slices on the frozen
   # both_heads_z_best1200 trunk with chunked KL + cached frozen trunk FP8 + pre-quantized FP8
   # teacher (~0.43 s/update, 16.1 GiB peak on RTX 5090) and rebalanced AR acoustic loss (cb 1..7).
+  # Needs weights/student_heads14_cb16/config.json (only the config is read): on a new box, cut it with
+  # `python -m training.student.cut --num-layers 14 --codebooks 16 --weight <GRPO 1,400> --out-dir weights/student_heads14_cb16`.
   student-slices-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        name=student_slices14 S=weights/$name
@@ -202,7 +73,7 @@ case $job in
   # Stage 1's decay: a --schedule decay branch from Stage 1's update-16,000 pair (hard-linked under
   # its own names into weights/student_slices14_stage1_step016000/), the trunk still frozen, the
   # rate 2e-4 to 0 as 1 - sqrt over 8,000 updates (~0.43 s/update). Unfreezing the trunk on this
-  # data (the joint stage, --trunk-lr 1e-5) lost chrF on every set by 8,000:
+  # data (the joint stage, the trunk at 1e-5) lost chrF on every set by 8,000:
   # docs/agent-memory/student-slices.md.
   student-slices-decay-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
@@ -304,7 +175,7 @@ case $job in
             --eval-batch-size 64 --keep-checkpoints 1 --seed 49 --save-every 4000 --val-every 4000
             --eval-pairs $E/fleurs-vi/dev.jsonl $E/fleurs-en/dev.jsonl $E/multimed-vi/select.jsonl
             $E/en-vi-val/cv27.jsonl $E/en-vi-val/libriheavy.jsonl $E/en-vi-val-en/cv27.jsonl $E/en-vi-val-en/libriheavy.jsonl) ;;
-  *) echo "usage: $0 asr|voice|voice-en-speech|filters|cache|envi-cache|two-way|two-way-5090|student|student-heads|student-heads-5090|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-slices-wide-warm-5090|student-slices-wide-warm-decay-5090|student-distill|yodas-pilot|yodas-control" >&2; exit 1 ;;
+  *) echo "usage: $0 asr|voice|voice-en-speech|cache|student-slices-5090|student-slices-decay-5090|student-slices-refit-5090|student-slices-pal6-5090|student-slices-wide-5090|student-slices-wide-decay-5090|student-slices-wide-warm-5090|student-slices-wide-warm-decay-5090" >&2; exit 1 ;;
 esac
 echo "$(date -u "+%F %T") restart $job" >> $L/$job.log
 setsid "${cmd[@]}" >> $L/$job.log 2>&1 < /dev/null &

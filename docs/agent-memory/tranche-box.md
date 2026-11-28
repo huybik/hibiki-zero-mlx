@@ -36,8 +36,7 @@ Past boxes' records and scripts (no weights, but 62170174's) are in
 destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 600 W, driver
 580.178.04, a 61-CPU quota, 171 GiB of RAM, 300 GB of disk). Its network sat behind a slow proxy
 ([Bring-up](#a-box-behind-a-slow-proxy)).
-- It ran `student_heads14_cb16` (`restart.sh student-heads`, 16 codebooks, from `ce80c0b`,
-  started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
+- It ran `student_heads14_cb16` (16 codebooks, from `ce80c0b`, started 2026-11-20 05:19 UTC): 0.694 s an update, ~37 h for 190,126 updates plus 12 validations
   ([student-heads](student-heads.md#runs)). `student_heads14` (8 codebooks) stopped for it at
   ~22,600; its 16,000 pair and best are on the Hub.
 - The user (2026-11-20): run it to the end and score its test sets both ways, without asking.
@@ -76,29 +75,14 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
   spoke only for VI→EN, whose `en_speech` source is TTS; for EN→VI `en_speech` holds the only real
   English speech (2,481 of 8,456 h). The `vi-en` caches of all 1,832 train shards, noisy and
   clean, are on the Hub (78 GB each): a run fetches them, so `vi-en` needs no data work; using all
-  of them is the next run's shard list (round 4e listed 500). `en-vi` had round 4e's 500:
-  `/workspace/envi_rest.py` (box-only) builds the other 1,332 beside the heads run (started
-  2026-11-21 08:00 UTC; log `logs/envi_rest.log`). Sources by aria2c 25 at a time (321 GB,
-  ~16 MB/s), `cache_codes --direction en-vi` in `/workspace/envs/cache` (the `.venv` copied, with
-  free-threaded av 19.0.2) capped at 30% of the card, into `/workspace/en_vi_rest_out` (outside
-  the training caches, which runs started meanwhile read); each batch goes to the Hub's
-  `en-vi/en-vi-grounded-v2/train/`, is checked against its listing and deleted here. While
-  `logs/envi_rest.pause` exists no new build starts (for profiles). Profiled on 2 shards: 21.3 h
+  of them is the next run's shard list (round 4e listed 500). `en-vi` had round 4e's 500; this
+  box built 27 more beside the heads run (`cache_codes --direction en-vi`, capped at 30% of the
+  card) before the user took the data preparation to a separate session (2026-11-21: "continue with
+  training, i will do the data preparation on a separate session"). Profiled on 2 shards: 21.3 h
   of audio built in 122 s, 98.7% of rows kept; the heads run went 0.69 → ~1.4 s an update while it
-  built. The first batch of 25 (512 h of Mimi audio, both clips) took 1,903 s at ~970× real time on
-  the shared GPU, 719 s of download (~8 MB/s) and 180 s of upload: the whole build would hold half
-  the GPU ~14 h and the noisy copies ~3 h more, moving the heads run's end ~10 h. Stopped
-  2026-11-21 ~08:55 UTC: the user does the data preparation in a separate session ("continue with
-  training, i will do the data preparation on a separate session"). On the Hub then: 527 of the
-  1,832 `en-vi` shards, no noisy `en-vi` copy. Left on the box for it: `/workspace/envi_rest.py`
-  (resumes from the Hub's listings: builds the missing clean shards, makes every shard's noisy
-  copy with `mimi_cache_cuda` (PR #153, merged as `7090cc6`; validated on this box both ways,
-  [noisy-source](noisy-source.md#checks)) from `/workspace/wt-noisy` (main at `7090cc6`,
-  detached) at `--seed 1` into
-  `en-vi/en-vi-grounded-v2-noisy/`, uploads a batch while the next builds; holds its GPU steps while
-  `logs/envi_rest.pause` exists), `/workspace/envs/cache`. The Mac and then the RTX 5090 box built them
-  instead ([envi-data](envi-data.md)). `en-vi-val-en-noisy` is
-  built in `/workspace/hibiki-zero/data/eval/` (2026-11-21).
+  built. A batch of 25 (512 h of Mimi audio, both clips) took 1,903 s at ~970× real time on the
+  shared GPU, 719 s of download (~8 MB/s) and 180 s of upload. The Mac and then the RTX 5090 box
+  built the rest and every noisy copy (`training/prep/noisy_cache.py`, [envi-data](envi-data.md)).
 - The previous box, an H100 SXM in Japan (60447659), was destroyed on 2026-11-15. Its results are
   on the Mac in `/Volumes/data/hibiki-zero-evals/box-60447659/`, without weights
   ([sft-evaluation](sft-evaluation.md#recording-results)). Its weights are on the Hub.
@@ -111,14 +95,9 @@ destroyed 2026-11-22 04:25 UTC at the user's request; Beijing, $1.217/h; 96 GB, 
     its tokenizer model came out byte-identical to `release/twoway_grpo1400/`'s.
   - A copy is also kept on the Mac with the last box's results, under `weights-small/`.
 
-**VRAM budget (critical; the H200's 141 GB)**: VoxCPM2's TTS (nano-vllm-voxcpm, the TTS then) used 109 GB VRAM at peak; real ASR (vLLM) 29 GB; together
-= 138 GB → confirmed OOM kills (3 GB headroom insufficient). Voice cannot run with real ASR.
-Without any ASR server voice.py fails (connection refused after 10 × 10 s retries). Result: giga/89–99
-excl 98 (10 shards) are unvoiced — absent from Hub, not corrupted; recoverable on a future box with
-proper ASR. After voice stopped: cache 25 GB + SFT 73 GB = 98 GB → fine. GRPO + cache = 91–128 GB → fine.
-
 **Voice: DONE (stopped 2026-11-09 ~14:30 UTC)**. 230/240 giga archives voiced; giga/86 and 98 held
-out; giga/89–99 excl 98 unvoiced (ASR/VRAM conflict). Never restart ASR while cache or SFT runs.
+out; giga/89–99 but 98 unvoiced (absent from the Hub): the H200's TTS then and the ASR server did not
+fit its GPU together.
 
 **Cache: DONE (2026-11-09 17:51 UTC)**. All 228 buildable GigaSpeech 2 archives cached (pho 224,
 viVoice 354), on the Hub (fetched into `/workspace/tranche/repo/cache/` for SFT). The last 69 built in
@@ -130,9 +109,8 @@ parts were prefetched 8 at a time (a builder prefetch is drafted, not merged).
 `full_epoch4b`, 6,737 h of source (540,689 streams, 4.44M rows), 57,368 steps at 0.41 s,
 `--batch-frames 8192 --eval-batch-size 128 --keep-checkpoints 1`, LR 3e-6, seed 46. Its final
 model is its best (`full_epoch4b/` of the model repo, with its pair and logs); results in the
-[plan](../vi_en_parity_plan.md#order), with its test sets against rounds 2 and 3
-(`box/test_evals.sh`, copied to `/workspace/`, 11 min a model; outputs in each run's
-`eval/cmp_step*/`, local only).
+[plan](../vi_en_parity_plan.md#order), with its test sets against rounds 2 and 3 (eight sets in
+one `eval.py` call, 11 min a model; outputs in each run's `eval/cmp_step*/`, local only).
 
 **SFT round 4 redo: `full_epoch4e`**: round 4b's arguments with 500
 `en_speech` shards for 150, `--batch-frames 4608 --eval-batch-size 64 --save-every 4000
@@ -140,9 +118,7 @@ model is its best (`full_epoch4b/` of the model repo, with its pair and logs); r
 The user (2026-11-10): redo round 4 if its test sets were not good; then, shown them, stop the
 first redo (`full_epoch4c`, round 4b's data, deleted at step 1,760), add `en_speech` shards and
 restart. `full_epoch4d` was this run on the H200, lost with it; its Hub prefix holds only run
-metadata, so the redo took a new name. Its first Hub pair comes with the first validation, at
-step 28,000. Stop it with `kill -TERM` on the launcher's pid alone (`/workspace/logs/sft.pid`)
-and wait for its final sync.
+metadata, so the redo took a new name.
 
 **GRPO: DONE, `grpo_twoway` (`grpo_launch.sh` from `weights/twoway_final.safetensors`, commit
 `91e3c6f`)**, from the two-way SFT's final model: ~20 s an update with its window's generation,
@@ -150,8 +126,7 @@ and wait for its final sync.
 2026-11-14 00:37 UTC+7 and stopped at 1,800 by its stop rule (06:51 UTC+7); the best, update
 1,400, ships ([grpo](grpo.md#running) has its evaluations and test sets). It runs from the box's checkout, `/workspace/hibiki-zero` on `main` (the
 `wt-*` worktrees are only for edits while a run holds the checkout); log `/workspace/logs/grpo.log`,
-launcher pid in `grpo.pid`. `/workspace/auto_pipeline.sh`, `grpo_trigger.sh` and
-`monitor_voice_done.sh` are leftovers of a chained attempt and not in the repo.
+launcher pid in `grpo.pid`.
 
 The user's standing decisions for this work (the box's own agent memory does not travel):
 - Minimize rental cost, not wall time: one GPU, its throughput optimized; no extra GPUs for speed
@@ -175,12 +150,12 @@ one expires; everything a job writes goes to the Hub as it runs, so a new box re
 1. Clone the repo to `/workspace/hibiki-zero`; `training/h100.sh setup` (the `.venv`).
 2. `/workspace/.env` (mode 600): `HF_TOKEN_AN`, a write token of anquachdev, for the tranche repos'
    pushes; huybik's token in `$HF_HOME/token` for the run recovery repo. Never print either.
-3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs.sh [env ...]` builds, side by side, the `ingest` (ingest,
-   filters, end_rental.sh), `vieneu` (voice.py), `asr` (the Qwen3-ASR server), `cache` (the cache builds, free-threaded
+3. `cp training/tranche/box/*.sh /workspace/`; `/workspace/envs.sh [env ...]` builds, side by side, the `ingest`
+   (YODAS's ingest), `vieneu` (voice.py), `asr` (the Qwen3-ASR server), `cache` (the cache builds, free-threaded
    3.14; installs Rust for safetensors) and `mt` (translate.py) envs, all without arguments, and downloads their models
    at their pinned revisions. Use `HF_HUB_DISABLE_XET=1` for large downloads (Xet crawled at ~5 MB/s; HTTP ~140).
 4. The jobs read the tranche repos' parts locally under `/workspace/tranche/repo/<source>/<part>/`
-   and fall back to the Hub (`ingest.part_file`), so voice and filters need no download first.
+   and fall back to the Hub (`ingest.part_file`), so voice and the cache build need no download first.
 
 ### A box behind a slow proxy
 
@@ -252,25 +227,26 @@ Round 4 SFT's inputs, all on the Hub (read locally):
   the validation cache `en-vi-grounded-v2/validation/` into `data/cache/`, and the evaluation sets
   ([sft-evaluation](sft-evaluation.md)) under `data/eval/`;
 - round 3's model, `huybik/hibiki-zero-vi-full-sft` (model) `tranche_epoch1b/checkpoints/model_step026176.safetensors`,
-  into `runs/`, linked as `runs/tranche_epoch1b/model_step026176.safetensors` (the path `restart.sh` reads).
+  into `runs/`, linked as `runs/tranche_epoch1b/model_step026176.safetensors`.
 
 ## Jobs
 
-In order (user, 2026-11-07: all voicing first, then every cache, then SFT, then GRPO; 2026-11-10:
-the two-way caches and run before GRPO):
+The tranche's order (user, 2026-11-07): all voicing first, then every cache, then SFT, then GRPO.
+`restart.sh <job>` starts each of its jobs:
 
-| Job | Start | Done when |
+| Job | What | Done when |
 |---|---|---|
-| asr | `restart.sh asr` (the Qwen3-ASR server on :8100, beside filters and voice) | not needed after voice |
-| filters | `restart.sh filters` (asr_vi for every ingested shard) | it logs "0 shards to hear" |
-| voice | `restart.sh voice` (en_audio for every YODAS shard with text_en and asr_vi) | it logs "0 shards to voice" and none waits for asr_vi |
-| cache | `restart.sh cache` (both directions, [tranche-cache](tranche-cache.md)) | every voiced shard has its caches on the Hub |
-| envi-cache | `restart.sh envi-cache`: every `en-vi` cache and the English evaluation sets ([two-way](two-way.md#two-way-run)) | "en_speech en-vi done", then the tranche builder's "done:" line, logged once its last push is in (a rerun with nothing left logs "0 shards to build", then pushes any leftovers before it exits) |
-| two-way | `streams --drop-shards`, `init_weights` to `weights/twoway_start_vi6k.safetensors` and its baseline, then `restart.sh two-way` (`twoway_sft_4608`, [two-way](two-way.md#two-way-run); `twoway_sft` ran before at 8,192 frames) | its best checkpoint, then the test sets both ways |
-| grpo | `grpo_launch.sh RUN <weight> [ARGS]` (from the checkout, [grpo](grpo.md#running)), on the two-way model or a phone student | its updates; stop with TERM to the launcher alone |
-| student | `restart.sh student` (`student_dep10`, cut from GRPO update 1,400 if missing; [phone-student](phone-student.md#next)) | its 190,126 updates (~12 h), then the test sets both ways; stop with TERM to the launcher alone |
-| student-distill | `restart.sh student-distill` (`student_dep10_anneal`, from `student_dep10_distill`'s model 32,000, the teacher GRPO update 1,400; [phone-student](phone-student.md#distillation)) | its `--max-steps`, then the test sets both ways; stop with TERM to the launcher alone |
-| student-heads | `restart.sh student-heads` (`student_heads14_cb16`, 16 codebooks, distilled from GRPO update 1,400 from the start; [student-heads](student-heads.md#runs)): running on the RTX PRO 6000 ([State](#state)), ~37 h there (0.694 s an update, 50.9 GiB peak) | the same steps, then the test sets both ways |
+| asr | the Qwen3-ASR server on :8100, in FP8, beside voice and YODAS's ingest | not needed after voice |
+| voice | `voice.py run yodas`: en_audio for every YODAS shard with text_en and asr_vi, rerun as shards arrive ([tranche-tts](tranche-tts.md#running)) | it logs "0 shards to voice" |
+| voice-en-speech | `voice.py run en_speech`: the EN-VI dataset's Vietnamese heard, its broken rows voiced again ([tranche-tts](tranche-tts.md#vietnamese)) | it exits 0 after its last shard |
+| cache | every source's caches both ways in one pass ([tranche-cache](tranche-cache.md)) | every voiced shard has its caches on the Hub |
+| student-slices-5090, student-slices-decay-5090 | the slices student's Stage 1 and its decay ([student-slices](student-slices.md)) | its `--max-steps`, then `test_student.sh` |
+| student-slices-refit-5090, student-slices-pal6-5090 | the slices' refit on the on-policy trunk and its 6-bit finish ([slices-on-policy](slices-on-policy.md)) | the same |
+| student-slices-wide-5090, student-slices-wide-warm-5090, and their `-decay-5090` | the wide slices, from random or the teacher's depformer, then their decays ([student-slices](student-slices.md#wide-slices)) | the same |
+
+GRPO starts with `grpo_launch.sh RUN <weight> [ARGS]` instead (from the checkout, [grpo](grpo.md#running)); stop
+it with TERM to the launcher alone. `test_student.sh CONFIG WEIGHT OUT_DIR` scores a phone student on the 13
+test sets.
 
 Each job logs to `/workspace/logs/<job>.log` with its PID in `<job>.pid`; each runs as its own
 process group. Stop one with `kill -- -$(cat /workspace/logs/<job>.pid)` or restart it with
@@ -283,23 +259,13 @@ even when its leader is gone (36 of voice's, ~16 GB, were left so).
 
 ## Operating
 
-- `watchdog.sh`, run in the background, checks every 10 min and exits printing the first problem:
-  a job down, a new "voice run failed", voice or filters silent 30 min, the ASR server's health
-  failing twice, or voice finding 0 shards. Rerun it after handling one; stop it before a pause.
-- `pause_run.sh CMD...` runs a GPU benchmark at the next shard boundary: it stops voice and
-  filters right after a shard is written (an open shard's voicing is lost when voice stops),
-  runs the command from `/workspace/hibiki-zero` and restarts both. Nothing more fits beside
-  production: voice and the ASR server hold ~70 of the 80 GB.
 - Moving production voice to an unmerged branch for its end-to-end check: stop voice at a
   boundary, `git checkout --detach origin/<branch>` in `/workspace/hibiki-zero`, `restart.sh
   voice`; back to `main` after the merge. Never commit in `/workspace/hibiki-zero` while an SFT
   runs (a resume needs its launch commit): work in a worktree.
-- Before the rental ends: `end_rental.sh HH:MM HH:MM` (UTC+7), detached with `setsid` (its header
-  has the line), waits from the first time for voice's next shard boundary (at most until the
-  second), stops voice, filters and the ASR server, pushes en_audio (voice itself pushes only every
-  ~35 min) and prints what the Hub holds and what is left to voice; it exits 1 if a voiced shard is
-  not on the Hub. Leave an hour: the boundary takes up to ~9 min (~13 when a run is starting), the
-  stop up to 6, the push a few. The watchdog then reports the jobs down: stop it first.
+- Before the rental ends, stop voice at a shard boundary (an open shard's voicing is lost) and check
+  that the Hub holds every voiced shard: voice pushes only every 30 min, and a rerun pushes first what
+  an earlier run wrote but did not push.
 - Threads and pools follow the container's CPU quota (`/sys/fs/cgroup/cpu.max`, 26.88 CPUs on the
   Japan box, `nproc` 224), as `restart.sh` and `training.paths.cpu_budget()` read it.
 - Logs hold binary bytes: `grep -a`.

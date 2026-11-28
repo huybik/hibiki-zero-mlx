@@ -144,13 +144,12 @@ encode (--device cuda or mlx)                .sources + clean shard ─► shard
     wrong here ([Checks](#checks));
   - the clip goes under `Bank.draw(f"{seed}:{id}")`, stored as `source_conditions` (None for a
     clean row);
-  - Mimi in float32 encodes the clips shortest first, in batches of up to `--batch-seconds` (640)
-    of padded audio: on CUDA moshi's with TF32 matmuls and convolutions, as the clean build (the
-    cache build's `cuda_mimi`, `CUDA_TF32`, and `mimi_batch`, [cache-build](cache-build.md#cuda);
+  - Mimi encodes the clips shortest first, in batches of up to `--batch-seconds` (640) of padded
+    audio: on CUDA the clean build's `FastMimiEncoder` (`cache_build.cuda_mimi`: FP16 SEANet and
+    transformer, FP32 quantizer, `CUDA_TF32`; [cache-build](cache-build.md#cuda);
     [cache-speed-cuda](cache-speed-cuda.md) has its speed and the codes it moves), right-padded, the
-    conditions on the GPU; on MLX
-    `mimi_mlx` one clip per forward, the conditions on the CPU while the GPU encodes the batch
-    before;
+    conditions on the GPU (`Bank.apply_batch`); on MLX `mimi_mlx` in float32, one clip per forward,
+    the conditions on the CPU while the GPU encodes the batch before;
   - the codes replace rows 17–32 (the source codebooks, either direction) up to the source's
     frame count.
 
@@ -185,20 +184,21 @@ came out identical to the first encode's.
   shard and its source ~0.5 s; the save ~0.4 s.
 - `encode` overlaps shards: it loads the next shard and queues its clips, shortest first, before
   the GPU encodes the current one, so the workers decode them meanwhile. Each clip's PCM is
-  freed once encoded; on an error the queued clips are cancelled. The next shard's load sits on
-  the GPU's path (~0.5 s, ~2%): a loader thread hid it, but needed more care to fail cleanly. An
-  encode that overtakes a running fetch still waits for the next source before encoding the
+  freed once encoded; on an error the queued clips are cancelled. A loader thread reads the next
+  shard and queues its clips, and a saver thread writes the finished one, so neither the load
+  (~0.5 s) nor the save sits on the GPU's path; an error cancels both. An encode that overtakes a running fetch still waits for the next source before encoding the
   current shard, so a failure there shows only once the fetch has written it.
 - Seconds per shard after the first (which adds ~10 s of start-up): serial with 24 workers ~14
-  (~1,450x); pipelined ~10 with 24 workers, ~8 with 5–7 (~2,400x; the current loop, without a
-  loader thread, at the default 6).
+  (~1,450x); pipelined ~10 with 24 workers, ~8 with 5–7 (~2,400x at the default 6; moshi's Mimi
+  then, and no loader thread).
 
   `--workers` defaults to the CPU budget less one (6 here): the CPUs the process may run on,
   capped by the cgroup v2 or v1 quota. It keeps the throttle off (2 s summed over all threads in
   a run of six shards, against 21 s with 7 workers). Lower it when another CPU-bound job shares
   the container (two encodes split the budget: 3 workers each here); a fetch from the Hub is
-  network-bound and needs no share, but one from `--dataset-dir` reads and slims 16 parquets at
-  a time (37 s for an `en_speech` shard on the box). It reads the quota at the cgroup namespace's root, which a container has
+  network-bound and needs no share, but one from `--dataset-dir` reads and slims `--jobs`
+  parquets at a time (4 by default: at 16, 37 s for an `en_speech` shard on the box and ~18 GB of
+  RAM, [cache-speed-cuda](cache-speed-cuda.md#rtx-5090)). It reads the quota at the cgroup namespace's root, which a container has
   as its own; under `--cgroupns=host` or a parent cgroup's quota it misses the limit, so check
   the printed worker count.
 - `--batch-seconds` stays 640: 1280 was no faster and changed some codes (the kernels depend on
@@ -209,7 +209,7 @@ came out identical to the first encode's.
   band-filter gains and provides batched GPU `apply_batch()` (0.00 max abs diff vs `apply()`), while
   `noisy_cache encode` uses `mimi_cuda.FastMimiEncoder` (via `cuda_mimi`), 32-clip `/dev/shm` decode
   slabs (`decode_batch`), preallocated double-buffered pinned H2D/D2H, and background loader/saver
-  threads (`fetch --dataset-dir` defaults to `--jobs 4` instead of 16 to cap peak RAM). On 4 shards
+  threads (`fetch --dataset-dir` defaults to `--jobs 4`, the Hub's to 16, to cap peak RAM). On 4 shards
   (6.11 h re-encoded, 15 workers): `18.22 s → 11.76 s` total wall (`2,009–2,990×` → `4,965–11,911× RT`
   steady-state, ~3.3× faster steady-state); clean rows 100% byte-identical, conditions 100% identical,
   re-encoded `cb0 = 99.74%`, `all16 = 95.41%`. `streams.room_codes` also batches room encoding

@@ -6,7 +6,7 @@ shares (`training.prep.cache_build`, [cache-build](../../docs/agent-memory/cache
   build <sources...>  every shard whose segments, text_en, en_audio and asr_vi are on the Hub
                       becomes <root>/cache/<source>/shard_<shard stem>.pt:
                       the rows the filters below keep, the English text timed by wav2vec2-base-960h
-                      CTC (the `text_timing` Viterbi) and both clips Mimi-encoded in float32, each
+                      CTC (the `text_timing` Viterbi) and both clips Mimi-encoded (FP16 on CUDA, float32 in MLX), each
                       sample with its `doc` and `seq` so the trainer joins a document's rows in
                       order. Pushes each source's folder every 30 min and at its end, in a thread
                       beside the build (`ingest.Pushes`), and logs `done:` once the last is in; a
@@ -24,7 +24,7 @@ A row is dropped, with the first reason that applies (the shard's `rejected`), w
     (these three are `filters.vi_gate`, which voice.py applies before voicing: from 2026-11-07 such
     rows have a null en_audio, and one dropped at the default --max-cer but kept by a looser one is
     "not voiced");
-  - its English stayed broken after the TTS's retries (`en_broken`);
+  - its English came out broken from the TTS (`en_broken`);
   - the ASR of its English writes Vietnamese letters its text_en lacks (a Vietnamese lead-in);
   - its transcript overlaps an evaluation sentence (`filters.overlaps`; needs data/eval);
   - then on the build's own gates: a clip decodes more than 0.02 s off its stored duration, the row
@@ -82,9 +82,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--direction", choices=[*DIRECTIONS, "both"], default=DEFAULT_DIRECTION,
                    help="<source>-<target>: the language heard, then the one spoken and written; "
                         "'both' builds vi-en and en-vi in a single CUDA pass (decodes each clip once)")
-    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX; on CUDA fp16 is default)")
-    p.add_argument("--fp8-ctc", action="store_true", help="CUDA Blackwell FP8 on wav2vec2 transformer linears")
-    p.add_argument("--fp8-mimi", action="store_true", help="CUDA Blackwell FP8 on Mimi encoder transformer linears")
+    p.add_argument("--half-ctc", action="store_true", help="wav2vec2 in float16 (MLX only; CUDA's always runs in FP16)")
     p.add_argument("--prefetch", type=int, default=3, help="Number of shards to prefetch from the Hub ahead of reading")
     p.add_argument("--workers", type=int, help="decode and alignment processes (default: the device's)")
     p.add_argument("--drop-inputs", action="store_true",
@@ -93,7 +91,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     p.add_argument("--tokenizer", type=Path, help="default: the direction's (paths.DIRECTION_TOKENIZERS)")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.step == "build" and args.half_ctc and args.device != "mlx":
+        parser.error("--half-ctc is for --device mlx only")
+    return args
 
 
 # --------------------------------------------------------------------------- shards
@@ -326,8 +327,6 @@ def build_shards(args: argparse.Namespace, todo: list[tuple[str, str]], pushes: 
         args.mimi_weight,
         args.tokenizer or DIRECTION_TOKENIZERS[args.direction],
         half_ctc=args.half_ctc,
-        fp8_ctc=args.fp8_ctc,
-        fp8_mimi=args.fp8_mimi,
     )
     gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
     log(f"models loaded; Python {sys.version.split()[0]}, the GIL {gil}")
@@ -375,8 +374,6 @@ def build_shards_dual(args: argparse.Namespace, todo: list[tuple[str, str]], pus
         args.mimi_weight,
         DIRECTION_TOKENIZERS["vi-en"],
         DIRECTION_TOKENIZERS["en-vi"],
-        fp8_ctc=args.fp8_ctc,
-        fp8_mimi=args.fp8_mimi,
     )
     gil = "on" if getattr(sys, "_is_gil_enabled", lambda: True)() else "off"
     log(f"dual models loaded (vi-en + en-vi); Python {sys.version.split()[0]}, the GIL {gil}")

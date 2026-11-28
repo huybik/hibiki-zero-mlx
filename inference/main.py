@@ -53,17 +53,15 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
 
     mimi_enc, mimi_dec = model.mimi(), model.mimi()
     text = f.TextDecoder(model.tokenizer)
-    ct = model.condition()
     other_cb = model.config.other_codebooks
     gen_cb = model.config.generated_codebooks
     gen = models.LmGen(
         model=model.lm, max_steps=max_steps + f.primer_steps(speaking),
         text_sampler=model.text_sampler, audio_sampler=model.audio_sampler,
-        cfg_coef=1.0, check=False,
     )
-    model.lm.warmup(ct)
+    model.lm.warmup(model.text_sampler, model.audio_sampler)
     if speaking:                                      # the primer, unheard, before the mic opens
-        f.prime(model, gen, mimi_enc, ct, speaking)
+        f.prime(model, gen, mimi_enc, speaking)
     # A full collection over the loaded objects holds the GIL ~40 ms, enough to delay the 20 ms
     # sound callback, which shifts the echo's delay for good on the Mac's separate devices.
     gc.freeze()
@@ -154,9 +152,9 @@ def run_mic(max_steps: int, model: f.Model, speaking: str | None = None):
                     codes = enc_q.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                tt = gen.step(mx.array(codes), ct)
+                tt = gen.step(mx.array(codes))
                 live += 1
-                sys.stdout.write(text(tt[0].item()))                    # sync this frame
+                sys.stdout.write(text(tt.item()))                       # sync this frame
                 sys.stdout.flush()
                 audio = gen.last_audio_tokens()
                 # Audio lags by max_delay steps: the first ones' is the primer's, if any.
@@ -187,13 +185,12 @@ def main():
                    help="the language spoken; primes the direction (default: the model guesses)")
     args = p.parse_args()
 
-    mic = args.mic or args.input == "mic"
-    if not (mic or args.input):
+    if not (args.mic or args.input):
         p.error("give an audio file path, or --mic for realtime")
     print("loading MLX weights ...")
     model = f.load(f.resolve_weights_dir(args.model))
     mx.random.seed(299792458)
-    if mic:
+    if args.mic:
         run_mic(max_steps=int(args.minutes * 60 * 12.5) + 8, model=model, speaking=args.speaking)
     else:
         infile = args.input

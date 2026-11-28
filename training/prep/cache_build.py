@@ -34,7 +34,7 @@ import numpy as np
 from training.paths import cpu_budget, read_json, require_file
 from training.prep import cache_rows
 from training.prep.audio import Rejected
-from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Planned, Row, Settings, Shard
+from training.prep.cache_rows import CTC_RATE, FRAME_SAMPLES, SAMPLE_RATE, Row, Settings, Shard
 from training.prep.text_timing import Aligner, AlignmentError, aligner_files, vocab_columns
 
 if sys.platform == "darwin":  # before the builders' readers import pyarrow, whose mimalloc pool keeps freed buffers on macOS
@@ -214,49 +214,16 @@ class MLXModels:
 # --------------------------------------------------------------------------- CUDA
 
 
-def cuda_mimi(
-    mimi_weight: Path,
-    num_codebooks: int,
-    fp16_seanet: bool = True,
-    fp8_transformer: bool = False,
-) -> Any:
-    """Blackwell-optimized encode-only Mimi (`mimi_cuda.FastMimiEncoder`) on CUDA, or legacy
-    moshi Mimi when `HIBIKI_LEGACY_MIMI=1`. Sets `CUDA_TF32` process-wide."""
+def cuda_mimi(mimi_weight: Path, num_codebooks: int) -> Any:
+    """The encode-only CUDA Mimi (`mimi_cuda.FastMimiEncoder`: FP16 SEANet and transformer linears,
+    FP32 norms and RVQ). Sets `CUDA_TF32` process-wide."""
     import torch
+
+    from training.prep.mimi_cuda import FastMimiEncoder
 
     torch.backends.cuda.matmul.allow_tf32 = CUDA_TF32
     torch.backends.cudnn.allow_tf32 = CUDA_TF32
-    if os.environ.get("HIBIKI_LEGACY_MIMI"):
-        from moshi.models import loaders
-
-        return loaders.get_mimi(mimi_weight, device=torch.device(DEVICE), num_codebooks=num_codebooks).eval()
-    from training.prep.mimi_cuda import FastMimiEncoder
-
-    return FastMimiEncoder.from_checkpoint(
-        mimi_weight,
-        num_codebooks=num_codebooks,
-        device=DEVICE,
-        fp16_seanet=fp16_seanet and not os.environ.get("HIBIKI_FP32_MIMI"),
-        fp16_transformer=fp16_seanet and not os.environ.get("HIBIKI_FP32_MIMI"),
-        fp8_transformer=fp8_transformer,
-    )
-
-
-def mimi_batch(mimi: Any, clips: list[Any], device: Any) -> list[Any]:
-    """The codes of 24 kHz clips (1-D tensors, on the CPU or `device`) encoded on `device` as one
-    right-padded batch: each [codebooks, ceil(samples / 1920)] on the CPU as int32. Padding changes
-    nothing before it: Mimi's convolutions and attention are causal."""
-    import torch
-
-    frames = [math.ceil(clip.shape[-1] / FRAME_SAMPLES) for clip in clips]
-    # Filled where the clips are, then one copy: a copy per clip costs a sync each.
-    batch = torch.zeros(len(clips), 1, max(frames) * FRAME_SAMPLES, device=clips[0].device)
-    for row, clip in enumerate(clips):
-        batch[row, 0, : clip.shape[-1]] = clip
-    batch = batch.to(device, non_blocking=True)
-    with torch.no_grad():
-        codes = mimi.encode(batch).to("cpu", torch.int32)
-    return [codes[row, :, :count] for row, count in enumerate(frames)]
+    return FastMimiEncoder.from_checkpoint(mimi_weight, num_codebooks=num_codebooks, device=DEVICE)
 
 
 def batches(lengths: list[int], budget: int) -> list[list[int]]:
@@ -297,37 +264,18 @@ class _PinnedOutputPool:
 class CUDAModels:
     """Blackwell-optimized Mimi (`FastMimiEncoder`) and wav2vec2 CTC (`FastWav2Vec2CTC`) on CUDA,
     over padded batches of up to `CUDA_BATCH_S` of audio, shortest first. Uses FP16 compute with
-    FP32 GroupNorm/lm_head/RVQ/accumulation (10-bit mantissa = TF32), GPU 24k->16k resampling for
-    CTC, zero-copy delay staging, and preallocated double-buffered pinned H2D/D2H pools."""
+    FP32 GroupNorm/lm_head/RVQ/accumulation (10-bit mantissa = TF32) on the workers' 16 kHz CTC
+    clips, zero-copy delay staging, and preallocated double-buffered pinned H2D/D2H pools."""
 
     window = 512
     threaded = True  # encode runs in the build's GPU thread, a window ahead of the main thread
 
-    def __init__(
-        self,
-        mimi_weight: Path,
-        num_codebooks: int,
-        aligner: Aligner,
-        files: Path,
-        half_ctc: bool = False,
-        fp8_ctc: bool = False,
-        fp8_mimi: bool = False,
-        gpu_resample_ctc: bool = False,
-    ):
-        from training.prep.wav2vec2_cuda import FastWav2Vec2CTC, Resample24to16
+    def __init__(self, mimi_weight: Path, num_codebooks: int, aligner: Aligner, files: Path):
+        from training.prep.wav2vec2_cuda import FastWav2Vec2CTC
 
-        self.mimi = cuda_mimi(mimi_weight, num_codebooks, fp8_transformer=fp8_mimi)
+        self.mimi = cuda_mimi(mimi_weight, num_codebooks)
         self.cardinality = self.mimi.cardinality
-        use_fp16_ctc = (not os.environ.get("HIBIKI_FP32_CTC")) and (DEVICE == "cuda")
-        self.ctc = FastWav2Vec2CTC(
-            files,
-            vocab_columns(aligner, files),
-            device=DEVICE,
-            fp16=use_fp16_ctc or half_ctc,
-            use_fp8=fp8_ctc,
-        )
-        self.gpu_resample_ctc = bool(gpu_resample_ctc or os.environ.get("HIBIKI_GPU_RESAMPLE_CTC"))
-        self.resampler = Resample24to16(DEVICE) if self.gpu_resample_ctc else None
+        self.ctc = FastWav2Vec2CTC(files, vocab_columns(aligner, files), device=DEVICE)
         self._mimi_out_pool = _PinnedOutputPool()
         self._ctc_out_pool = _PinnedOutputPool()
 
@@ -342,10 +290,7 @@ class CUDAModels:
             for place, i in enumerate(group):
                 aligned[i] = (job, place)
 
-        if self.gpu_resample_ctc:
-            self.ctc_log_probs_24k([row.target24 for row in rows], landed)
-        else:
-            self.ctc_log_probs([row.target16 for row in rows], landed)
+        self.ctc_log_probs(self.ctc, [row.target16 for row in rows], landed)
         clips = [row.source24 for row in rows] + [row.target24 for row in rows]
         delays = [0] * len(rows) + [row.delay_samples for row in rows]
         codes = self.mimi_codes(clips, delays=delays)
@@ -392,9 +337,8 @@ class CUDAModels:
             if pad + n < length:
                 view[row, 0, pad + n :] = 0.0
         batch = host.to(DEVICE, non_blocking=True)
-        if DEVICE == "cuda":
-            self._copied[k] = torch.cuda.Event()
-            self._copied[k].record()
+        self._copied[k] = torch.cuda.Event()
+        self._copied[k].record()
         return batch
 
     def mimi_codes(self, clips: list[np.ndarray], delays: list[int] | None = None) -> list[np.ndarray]:
@@ -409,16 +353,12 @@ class CUDAModels:
             batch = self._stage(clips, group, max(frames) * FRAME_SAMPLES, delays=delays)
             with torch.no_grad():
                 codes = self.mimi.encode(batch).to(torch.int32)
-            if DEVICE == "cuda":
-                host, done = self._mimi_out_pool.copy_from(codes)
-            else:
-                host, done = codes.cpu(), None
+            host, done = self._mimi_out_pool.copy_from(codes)
             return (host, done, frames)
 
         def collect(group: list[int], handle: tuple[Any, Any, list[int]]) -> None:
             host, done, frames = handle
-            if done is not None:
-                done.synchronize()
+            done.synchronize()
             codes = host.numpy()
             for row, (i, count) in enumerate(zip(group, frames, strict=True)):
                 # Copy out of the reusable pinned output buffer before the next collect overwrites it!
@@ -427,66 +367,28 @@ class CUDAModels:
         self._pipelined(batches(eff_lens, int(CUDA_BATCH_S * SAMPLE_RATE)), launch, collect)
         return out
 
-    def _run_ctc_batches(
-        self,
-        ctc_model: Any,
-        clips: list[np.ndarray],
-        rate: int,
-        resample_24k: bool,
-        landed: Callable[[list[int], list[np.ndarray]], None] | None,
-    ) -> list[np.ndarray]:
+    def ctc_log_probs(
+        self, ctc: Any, clips: list[np.ndarray], landed: Callable[[list[int], list[np.ndarray]], None]
+    ) -> None:
+        """`ctc` over normalized 16 kHz clips in batches; each batch's clip indices and
+        log-probabilities go to `landed` as the batch lands."""
         import torch
 
-        out: list[np.ndarray] = [np.empty(0)] * len(clips)
-
-        def launch(group: list[int]) -> tuple[Any, Any, list[int], bool]:
+        def launch(group: list[int]) -> tuple[Any, Any, list[int]]:
             lengths = torch.tensor([len(clips[i]) for i in group])
             batch = self._stage(clips, group, int(lengths.max()))
             with torch.no_grad():
-                if resample_24k:
-                    assert self.resampler is not None
-                    batch, lengths = self.resampler(batch, lengths)
-                log_probs, frames, is_packed = ctc_model(batch, lengths)
-            if DEVICE == "cuda":
-                host, done = self._ctc_out_pool.copy_from(log_probs)
-            else:
-                host, done = log_probs.cpu(), None
-            return (host, done, frames, is_packed)
+                log_probs, frames = ctc(batch, lengths)
+            host, done = self._ctc_out_pool.copy_from(log_probs)
+            return (host, done, frames)
 
-        def collect(group: list[int], handle: tuple[Any, Any, list[int], bool]) -> None:
-            host, done, frames, is_packed = handle
-            if done is not None:
-                done.synchronize()
+        def collect(group: list[int], handle: tuple[Any, Any, list[int]]) -> None:
+            host, done, frames = handle
+            done.synchronize()
             arr = host.numpy()
-            if is_packed:
-                pos = 0
-                for i, count in zip(group, frames, strict=True):
-                    out[i] = arr[pos : pos + count].copy()
-                    pos += count
-            else:
-                for row, (i, count) in enumerate(zip(group, frames, strict=True)):
-                    out[i] = arr[row, :count].copy()
-            if landed is not None:
-                landed(group, [out[i] for i in group])
+            landed(group, [arr[row, :count].copy() for row, count in enumerate(frames)])
 
-        self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * rate)), launch, collect)
-        return out
-
-    def ctc_log_probs(
-        self,
-        clips: list[np.ndarray],
-        landed: Callable[[list[int], list[np.ndarray]], None] | None = None,
-    ) -> list[np.ndarray]:
-        """CTC log-probabilities on pre-normalized 16 kHz clips."""
-        return self._run_ctc_batches(self.ctc, clips, CTC_RATE, resample_24k=False, landed=landed)
-
-    def ctc_log_probs_24k(
-        self,
-        clips: list[np.ndarray],
-        landed: Callable[[list[int], list[np.ndarray]], None] | None = None,
-    ) -> list[np.ndarray]:
-        """CTC log-probabilities on raw 24 kHz clips (resampled & normalized on GPU)."""
-        return self._run_ctc_batches(self.ctc, clips, SAMPLE_RATE, resample_24k=True, landed=landed)
+        self._pipelined(batches([len(c) for c in clips], int(CUDA_BATCH_S * CTC_RATE)), launch, collect)
 
 
 class CUDAModelsDual(CUDAModels):
@@ -501,23 +403,13 @@ class CUDAModelsDual(CUDAModels):
         files_ve: Path,
         aligner_ev: Aligner,
         files_ev: Path,
-        fp8_ctc: bool = False,
-        fp8_mimi: bool = False,
-        gpu_resample_ctc: bool = False,
     ):
-        from training.prep.wav2vec2_cuda import FastWav2Vec2CTC, Resample24to16
+        from training.prep.wav2vec2_cuda import FastWav2Vec2CTC
 
-        self.mimi = cuda_mimi(mimi_weight, num_codebooks, fp8_transformer=fp8_mimi)
+        self.mimi = cuda_mimi(mimi_weight, num_codebooks)
         self.cardinality = self.mimi.cardinality
-        use_fp16_ctc = (not os.environ.get("HIBIKI_FP32_CTC")) and (DEVICE == "cuda")
-        self.ctc_ve = FastWav2Vec2CTC(
-            files_ve, vocab_columns(aligner_ve, files_ve), device=DEVICE, fp16=use_fp16_ctc, use_fp8=fp8_ctc
-        )
-        self.ctc_ev = FastWav2Vec2CTC(
-            files_ev, vocab_columns(aligner_ev, files_ev), device=DEVICE, fp16=use_fp16_ctc, use_fp8=fp8_ctc
-        )
-        self.gpu_resample_ctc = bool(gpu_resample_ctc or os.environ.get("HIBIKI_GPU_RESAMPLE_CTC"))
-        self.resampler = Resample24to16(DEVICE) if self.gpu_resample_ctc else None
+        self.ctc_ve = FastWav2Vec2CTC(files_ve, vocab_columns(aligner_ve, files_ve), device=DEVICE)
+        self.ctc_ev = FastWav2Vec2CTC(files_ev, vocab_columns(aligner_ev, files_ev), device=DEVICE)
         self._mimi_out_pool = _PinnedOutputPool()
         self._ctc_out_pool = _PinnedOutputPool()
 
@@ -539,10 +431,7 @@ class CUDAModelsDual(CUDAModels):
                 for place, i in enumerate(group):
                     aligned_ve[i] = (job, place)
 
-            if self.gpu_resample_ctc:
-                self._run_ctc_batches(self.ctc_ve, [r.target24 for r in rows_ve], SAMPLE_RATE, True, landed_ve)
-            else:
-                self._run_ctc_batches(self.ctc_ve, [r.target16 for r in rows_ve], CTC_RATE, False, landed_ve)
+            self.ctc_log_probs(self.ctc_ve, [r.target16 for r in rows_ve], landed_ve)
 
         if rows_ev:
             def landed_ev(group: list[int], lps: list[np.ndarray]) -> None:
@@ -550,10 +439,7 @@ class CUDAModelsDual(CUDAModels):
                 for place, i in enumerate(group):
                     aligned_ev[i] = (job, place)
 
-            if self.gpu_resample_ctc:
-                self._run_ctc_batches(self.ctc_ev, [r.target24 for r in rows_ev], SAMPLE_RATE, True, landed_ev)
-            else:
-                self._run_ctc_batches(self.ctc_ev, [r.target16 for r in rows_ev], CTC_RATE, False, landed_ev)
+            self.ctc_log_probs(self.ctc_ev, [r.target16 for r in rows_ev], landed_ev)
 
         n_ve, n_ev = len(rows_ve), len(rows_ev)
         clips = (
@@ -593,8 +479,6 @@ class Builder:
         tokenizer: Path,
         half_ctc: bool = False,
         ane_ctc: bool = False,
-        fp8_ctc: bool = False,
-        fp8_mimi: bool = False,
     ):
         import sentencepiece
 
@@ -604,24 +488,20 @@ class Builder:
         self.tokenizer = sentencepiece.SentencePieceProcessor(str(self.tokenizer_path))
         self.eos_id = int(self.tokenizer.eos_id())
         num_codebooks = max(int(self.cfg["dep_q"]), int(self.cfg["n_q"]) - int(self.cfg["dep_q"]))
+        if half_ctc and device != "mlx":
+            raise ValueError("half_ctc is MLX's float16 wav2vec2: device mlx only (CUDA's CTC always runs in FP16)")
         if ane_ctc and device != "mlx":
             raise ValueError("the Neural Engine CTC (ane_ctc) runs beside MLX: device mlx only")
         if ane_ctc and settings.target != "vi":
             # The English aligner there kept 99.35% of MLX float32's argmaxes (the Vietnamese 99.94%).
             raise ValueError("the Neural Engine CTC (ane_ctc) times Vietnamese text only: direction en-vi")
-        extra_kwargs: dict[str, Any] = {}
-        if device == "mlx" and ane_ctc:
-            extra_kwargs["ane_ctc"] = True
-        elif device == "cuda":
-            extra_kwargs["fp8_ctc"] = fp8_ctc
-            extra_kwargs["fp8_mimi"] = fp8_mimi
+        mlx_options = {"half_ctc": half_ctc, "ane_ctc": ane_ctc} if device == "mlx" else {}
         self.models = MODELS[device](
             require_file(mimi_weight, "Mimi weight"),
             num_codebooks,
             settings.aligner,
             aligner_files(settings.aligner),
-            half_ctc=half_ctc,
-            **extra_kwargs,
+            **mlx_options,
         )
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
@@ -636,7 +516,6 @@ class Builder:
         yielded, so a rerun rebuilds it."""
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ[var] = "1"  # the spawned workers' thread pools, one thread each
-        make_target16 = not getattr(self.models, "gpu_resample_ctc", False)
         with (
             ThreadPoolExecutor(1) as reads,
             pcm_dir() as pcm,
@@ -644,7 +523,7 @@ class Builder:
                 workers,
                 mp_context=get_context("spawn"),
                 initializer=cache_rows.init_worker,
-                initargs=(self.settings, self.tokenizer_path, pcm, make_target16),
+                initargs=(self.settings, self.tokenizer_path, pcm),
             ) as pool,
         ):
             try:
@@ -783,8 +662,6 @@ class DualBuilder:
         mimi_weight: Path,
         tokenizer_ve: Path,
         tokenizer_ev: Path,
-        fp8_ctc: bool = False,
-        fp8_mimi: bool = False,
     ):
         import sentencepiece
 
@@ -803,8 +680,6 @@ class DualBuilder:
             aligner_files(settings_ve.aligner),
             settings_ev.aligner,
             aligner_files(settings_ev.aligner),
-            fp8_ctc=fp8_ctc,
-            fp8_mimi=fp8_mimi,
         )
         if self.models.cardinality != int(self.cfg["card"]):
             raise RuntimeError(f"config card {self.cfg['card']} != Mimi cardinality {self.models.cardinality}")
@@ -818,7 +693,6 @@ class DualBuilder:
         """Yield `(shard_vi_en, shard_en_vi)` in key order."""
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ[var] = "1"
-        make_target16 = not self.models.gpu_resample_ctc
         with (
             ThreadPoolExecutor(1) as reads,
             pcm_dir() as pcm,
@@ -826,7 +700,7 @@ class DualBuilder:
                 workers,
                 mp_context=get_context("spawn"),
                 initializer=cache_rows.init_dual_worker,
-                initargs=(self.settings_ve, self.tok_ve_path, self.settings_ev, self.tok_ev_path, pcm, make_target16),
+                initargs=(self.settings_ve, self.tok_ve_path, self.settings_ev, self.tok_ev_path, pcm),
             ) as pool,
         ):
             try:

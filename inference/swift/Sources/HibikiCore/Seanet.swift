@@ -11,16 +11,12 @@ struct SeanetConfig {
     var nFilters: Int
     var nResidualLayers: Int
     var ratios: [Int]
-    // var activation: String: hardcoded to Elu(1) for now
-    // var norm: Norm
     var kernelSize: Int
     var residualKernelSize: Int
     var lastKernelSize: Int
     var dilationBase: Int
     var padMode: PadMode
     var compress: Int
-    // var disableNormOuterBlocks: Int
-    // var finalActivation: String?: hardcoded to None for now
 
     static func v0_1() -> SeanetConfig {
         SeanetConfig(

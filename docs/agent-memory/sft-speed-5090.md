@@ -33,10 +33,10 @@ RTX 5090: 32 GB, sm_120, $0.511/h, ~515 W (2026-11-26, box 62513802). Full-model
   avoids unrolling 28 quantize+scaled_mm blocks (~20× faster compile). Keeping Mimi on CPU during
   training saves ~0.4 GiB; detaching `step_losses` and avoiding long-lived gradient list
   references prevents a 5.8 GiB step-2 leak.
-- Launch entries in `training/tranche/box/restart.sh`: `two-way-5090` and `student-heads-5090`.
-  Both passed full preempt → resume (exact 4-digit loss match) → teacher-forced + free-running
-  FLEURS validation (15.9 GiB peak with `--park-states`) → promotion end-to-end tests on box
-  62513802.
+- The 3B's and the heads student's 5090 routes passed full preempt → resume (exact 4-digit loss
+  match) → teacher-forced + free-running FLEURS validation (15.9 GiB peak with `--park-states`) →
+  promotion end-to-end tests on box 62513802; the slices' `restart.sh student-slices*-5090` cases
+  run on the card.
 
 ## Measured
 
@@ -46,14 +46,15 @@ On real variable-shape batches (31.4 GiB usable VRAM, `--park-states` for valida
 |---|---:|---:|---:|---:|
 | 3B `--bf16-adamw --grad-checkpoint --grad-checkpoint-layers 14` (`4,608` whole) | 6,554 | 0.703 | 28.3 GiB | $0.0217 |
 | 3B `--bf16-adamw --fp8 --grad-checkpoint --grad-checkpoint-layers 8` (`4,608` whole) | 7,242 | 0.636 | 28.1 GiB | $0.0196 |
-| Student 14L 16cb + 3B teacher, exact fp32 + `--grad-checkpoint --micro-frames 3072` (`12,288`) | 10,065 | 1.221 | 27.4 GiB | $0.0141 |
-| Student 14L 16cb + 3B teacher, `--bf16-adamw --micro-frames 6144` (`12,288`, no ckpt) | 12,417 | 0.902 | 26.0 GiB | $0.0114 |
-| Slices student (`student_slices14`, joint) + 3B teacher, `--bf16-adamw --fp8 --fp8-teacher all --micro-frames 6144` (`12,288`, chunked KL + Triton FP8) | 17,604 | 0.698 | 25.5 GiB | $0.0081 |
+| Student 14L 16cb + 3B teacher, exact fp32 + `--grad-checkpoint` (`12,288` in 4 accumulated slices) | 10,065 | 1.221 | 27.4 GiB | $0.0141 |
+| Student 14L 16cb + 3B teacher, `--bf16-adamw` (`12,288` in 2 accumulated slices, no ckpt) | 12,417 | 0.902 | 26.0 GiB | $0.0114 |
+| Slices student (`student_slices14`, joint) + 3B teacher, `--bf16-adamw --fp8 --fp8-teacher all` (`12,288` in 2 accumulated slices, chunked KL + Triton FP8) | 17,604 | 0.698 | 25.5 GiB | $0.0081 |
 | Slices student (`student_slices14`, `--freeze-trunk`) + 3B teacher, `--bf16-adamw --fp8 --fp8-teacher all` (`12,288` whole) | 28,710 | 0.428 | 15.8 GiB | $0.0049 |
 | Wide slices (`student_slices14_wide`, 9 of 1024 × 3, `--freeze-trunk`), the same arguments (`12,288` whole; 2026-11-28) | 21,826 | 0.563 | 27.0 GiB | $0.0065 |
 
 The wide slices' row is after the 2026-11-28 kernels below (0.605 s before them); its breakdown is
-in [student-slices](student-slices.md#wide-slices).
+in [student-slices](student-slices.md#wide-slices). `train.py` runs every batch whole (no gradient
+accumulation): the sliced rows are measurements of a trainer option since removed.
 
 ## Slices distillation kernels
 
@@ -77,7 +78,7 @@ in [student-slices](student-slices.md#wide-slices).
   `[12,288, 1,024]` against 51.9 for the previous single-axis `BLOCK_K=16` kernel, 361 against 768
   at `[110,592, 1,024]`, byte for byte the same output; ~8 µs slower on a small weight
   (`[3,072, 1,024]`). Each is a `torch.library.custom_op` (no graph breaks under whole-loop
-  `torch.compile`), plus `FrozenFP8Linear` (`--fp8-teacher trunk|all`) and plain-attribute frozen
+  `torch.compile`), plus `FrozenFP8Linear` (`--fp8-teacher all`) and plain-attribute frozen
   student trunk FP8 caches (`--freeze-trunk --fp8`).
 - FP8 against bf16 at the wide slices' shapes (one linear's forward and backward, `M` = 12,288):
   1.24–1.6× faster, 3.75% relative error against an fp32 reference (bf16's 0.01–0.03%), the

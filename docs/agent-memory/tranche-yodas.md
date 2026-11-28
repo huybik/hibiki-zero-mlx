@@ -1,7 +1,7 @@
 # YODAS3 in the tranche
 
 Read when touching `training/tranche/yodas.py` (YODAS3's Vietnamese ingest, `ingest segments
-yodas`) or running the YODAS pilot. The corpus's layout and captions are in
+yodas`) or weighing YODAS for training (the pilot and its results). The corpus's layout and captions are in
 [vi-corpora](vi-corpora.md#yodas3); the stages after ingest in [real-vi-tranche](real-vi-tranche.md#pipeline).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Rows](#rows) · [Gate](#gate) · [Speed](#speed) ·
 [Running](#running) · [Voice](#voice) · [Pilot](#pilot) · [Pilot results](#pilot-results)
@@ -31,8 +31,8 @@ YODAS3's Vietnamese (12.6k h in 44k YouTube videos, none in YODAS v1/v2) is the 
   the cap then dropped.
 - Every row is heard by the ASR server (Qwen3-ASR-1.7B, `filters.Hearer`, 16 kHz WAV, language
   detected) and the transcript becomes the row's `text`; `<source>/asr_vi/<tar>` stores it again,
-  its language and its CER against the caption over `spoken`. So `filters asr` has nothing to hear
-  for yodas, and voice.py's and the cache build's `vi_gate` see the same CER as ingest did.
+  its language and its CER against the caption over `spoken`. So voice.py's and the cache build's
+  `vi_gate` see the same CER as ingest did.
 - `doc` is the video (`yodas/<tar>/<video>`), `speaker` none, `seq` the video's index in the tar
   × 10,000 + its row; rows are 24 kHz Opus (each source keeps its own rate).
 - Tar 0000 (551 videos, 162 h): 60 music, 28 without caption words, 12 without a run of 5 s;
@@ -119,33 +119,22 @@ with `HF_TOKEN_AN` in the environment:
 
 Shards 0000–0003 by VoxCPM2 ([tranche-tts](tranche-tts.md)) on the RTX 5090 (2026-11-25/26), the
 rest by VieNeu-TTS v3 Turbo, which `voice.py` now runs
-([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)). VoxCPM2 alone on the GPU, 2,999 YODAS
-rows (RTF is wall time over English voiced):
+([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)). VoxCPM2's speed there (RTF is wall
+time over English voiced): 0.0055–0.0062 alone on the GPU on 2,999 YODAS rows; in production,
+beside the ASR server at 0.22 of the GPU, per shard from the log's cumulative figures:
 
-| Setup | RTF | The process's GPU memory |
-|---|---:|---:|
-| 512 sequences, `--gpu-memory 0.5` | 0.0059 | 29.6 GB |
-| 1,024 sequences | 0.0062 | |
-| the VAE's `BATCH_FRAMES` 4,000 | 0.0061 | 26.0 GB |
-| expandable segments, 0.5 (762 KV blocks of 256 tokens) | 0.0058 | 20.5 GiB |
-| expandable segments, 0.6 (1,119 blocks) | 0.0055 | 23.6 GiB |
+| Run | Shard | English voiced | RTF |
+|---|---|---:|---:|
+| plain processes | 0001, the first (warm-up and its prompts' encode in) | 53.9 h | 0.0088 |
+| plain processes | 0002 | 46.1 h | 0.0075 |
+| under MPS (`nvidia-cuda-mps-control -d`) | 0000, the first | 46.5 h | 0.0075 |
+| under MPS | 0003 | 47.8 h | 0.0070 |
 
-- A YODAS row needs ~430 tokens of KV, 2–3 blocks. At 0.9 the VAE's warm-up ran out of memory.
-- In production, beside the ASR server at 0.22 of the GPU, voice at `--gpu-memory 0.58`
-  (0.57 under MPS); per shard, from the log's cumulative figures:
-
-  | Run | Shard | English voiced | RTF |
-  |---|---|---:|---:|
-  | plain processes | 0001, the first (warm-up and its prompts' encode in) | 53.9 h | 0.0088 |
-  | plain processes | 0002 | 46.1 h | 0.0075 |
-  | under MPS (`nvidia-cuda-mps-control -d`) | 0000, the first | 46.5 h | 0.0075 |
-  | under MPS | 0003 | 47.8 h | 0.0070 |
-
-  The gap to the bench is the ASR server's share (~8% of the GPU), each shard's prompt encode (67–86 s
-  at ~93% busy, not worth a thread) and each shard's tail of long rows. The GPU sat 93% busy at
-  ~560 W, touching the card's 575 W limit; the CPU used 2.2 of 19.2. MPS let the two processes'
-  kernels overlap: 7% on a warm shard, 15% on the first.
-- 4.6–4.9% of each shard's rows stay broken (`MAX_TRIES` 1; the cache drops them).
+- The gap to the bench is the ASR server's share (~8% of the GPU), each shard's prompt encode and
+  each shard's tail of long rows. The GPU sat 93% busy at ~560 W, touching the card's 575 W limit;
+  the CPU used 2.2 of 19.2. MPS let the two processes' kernels overlap: 7% on a warm shard, 15% on
+  the first.
+- 4.6–4.9% of each shard's rows stay broken (one try a row; the cache drops them).
 - One row failed every translation try (`yodas/0020/dc7d71a6a9cd974feba4ce55fc036641/000`, a
   grammar lesson whose English must quote "sẽ"); its `text_en` was set to "" by hand, so voice
   skips it and the rest of shard 0020 can be voiced.
@@ -167,19 +156,20 @@ pilot only if the arm with YODAS improves on the one without (user, 2026-11-26),
 the user has the pilot's results and says so, whatever they show (user, 2026-11-27: "either way
 stop to report and merge after validation done, dont start 20k h yet").
 
-- Caches: `restart.sh cache` builds both directions (`en-vi` second, deleting the parts it has
-  read); every YODAS row needs its pair in the other direction, which times its source
+- Caches: `restart.sh cache` builds both directions in one pass (`--direction both`, deleting the
+  parts it has read); every YODAS row needs its pair in the other direction, which times its source
   ([sft-training](sft-training.md#target-timing)). Then `streams --drop-shards` on
-  `cache/yodas` and `cache/en-vi/yodas`. Built 2026-11-26 (2,129× and 2,180× real time, 44 min
-  each way, 10.2 GB packed): vi-en kept 85.0% of VoxCPM2's rows (0000–0003) and 72.6% of
+  `cache/yodas` and `cache/en-vi/yodas`. Built 2026-11-26 a direction at a time (2,129× and 2,180×
+  real time, 44 min each way, 10.2 GB packed): vi-en kept 85.0% of VoxCPM2's rows (0000–0003) and 72.6% of
   VieNeu's, en-vi 83.8% and 71.2%. The gap is mostly length: VieNeu's ~12% longer English puts
   18.8% of its rows past the trainer's 280 frames against VoxCPM2's 8.7% (~10 of its 12 points);
   the rest is the ASR check, failed on 7.2% against 4.8%. For a scale-up on VieNeu, faster speech or shorter rows at ingest would win back
   ~10% of the rows it voices, beside the enrolment overlap's ~30% of its time
   ([tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)).
-- Arms: `restart.sh yodas-control`, then `restart.sh yodas-pilot`: `two-way-5090`'s rows and route
-  (`--bf16-adamw`, 14 checkpointed layers, 4,608 frames), `--max-steps 20000` with the cosine
-  over them, seed 47, validated at the end; the pilot adds `cache/yodas` and `cache/en-vi/yodas`:
+- Arms: the control, then the pilot, each from `twoway_final` on the first two-way run's rows both
+  ways and the 3B's 5090 route (`--bf16-adamw`, 14 checkpointed layers, whole 4,608-frame batches,
+  [sft-speed-5090](sft-speed-5090.md)), `--max-steps 20000` with the cosine over them, seed 47,
+  validated at the end; the pilot adds `cache/yodas` and `cache/en-vi/yodas`:
   359,254 rows past the loader (3,399 unpaired, 29,307 over 280 frames and 177 on a reassigned
   slot left out), 3.5% of its 10,243,579, and 1,273.6 source hours, 6.5% of its 19,586.8 (the
   control's 18,313.2). 20,000 updates are ~7% of an epoch (285,576 batches; the control's
@@ -221,8 +211,8 @@ UTC), as the control did.
   `giga-heldout` (0.1–0.2 s), the pilot within 0.5 s of the control on all but
   `en-vi-val-en-noisy/cv27` (+1.2 s): the extra SFT moved it, not YODAS.
 - The group means above are `pilot_groups.py`'s (`logs/pilot_groups.txt`), bootstrapped as
-  `pilot_compare.py` does. Both runs record commit `5ee7f64`, this branch before its rebase onto
-  #200 and #201; its `restart.sh` is this branch's.
+  `pilot_compare.py` does. Both runs record commit `5ee7f64`, whose `restart.sh` held their
+  launchers (`yodas-control`, `yodas-pilot`).
 - Not acted on: the user decides on the scale-up (2026-11-27).
 
 Test sets (chrF / BLEU / median End Offset s / length ratio):

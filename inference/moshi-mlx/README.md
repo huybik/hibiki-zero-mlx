@@ -1,8 +1,9 @@
 # Hibiki MLX model runtime
 
 This is the minimal vendored subset of `moshi-mlx` used by Hibiki inference.
-It contains the language model, streaming generator, transformer, KV cache,
-conditioning, and sampling code. Audio encoding and decoding use `rustymimi`
+It contains the language model, streaming generator, transformer, KV cache
+and sampling code, cut to what Hibiki-Zero's models use: a model config that sets
+any other upstream option (conditioners, cross-attention, layer scale, ...) is refused. Audio encoding and decoding use `rustymimi`
 through `hibiki_mlx.pipeline`.
 
 Install it from the repository root:

@@ -4,7 +4,7 @@ Read when touching a direction (`--direction`, `cache_rows.Settings.direction`, 
 pack's `direction`), the run's text tokenizer (`--tokenizer`, `common.run_tokenizer`,
 `paths.swap_slots`, a pack's `tokenizer` and `text.bin`), the Vietnamese aligner
 (`text_timing.ALIGNERS["vi"]`), an `en-vi` cache, the English-audio evaluation sets, or the
-two-way run (`box/envi_en_speech.sh`, the `envi-cache` and `two-way` jobs; [plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)).
+two-way run ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)); the next one is [teacher-next](teacher-next.md).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Where a direction lives](#where-a-direction-lives) ·
 [Tokenizer checks](#tokenizer-checks) · [Vietnamese aligner](#vietnamese-aligner) · [Checked](#checked) ·
 [Two-way run](#two-way-run) · [Next](#next)
@@ -143,65 +143,47 @@ Hub bot's safetensors conversion (`refs/pr/2`), tensor for tensor the main branc
 
 ## Checked
 
-On the H100 box, 2026-11-10, branch `twoway/prep`:
+On the H100 box, 2026-11-10 (the tokenizer checks in PR #100):
 
-- A `vi-en` Libriheavy validation shard rebuilt by main and by the branch: the same 1,696 rows
-  and rejections, every code and field equal; the payload adds `direction` and `tokenizer`.
-- The validation cache's stream plan (9,313 rows, 1,568 streams) equals main's; with an `en-vi`
-  shard added, 1,964 streams of one direction each, every row in one stream.
-- `fleurs-en` and `en-vi-val-en` built in 54 s. `eval.py` on 40 rows each of `en-vi-val-en/cv27`
-  and `fleurs-vi/dev` in shared batches, round 3's model moved onto the swap
-  (`init_weights`): FLEURS chrF 44.5, healthy; English to Vietnamese chrF 10.1 (it answers in
-  English: untrained).
-- The tokenizer checks end to end (PR #100, the same box): a 30-step `train.py` on the swap with
-  no `--tokenizer`, `vi-en` tranche shards and an `en-vi` shard, both directions' validation
-  caches (dropped 7 reassigned rows; two `teacher_forced` entries; the checkpoint's metadata the
-  swap; peak 74.9 GB); the refusals at startup (a weight on the other tokenizer, an `en-vi` shard
-  in a base run, a repeated validation cache); a base run and `eval.py`, `validate.py` (its loss
-  equal to the run's validation to the last digit), the packer and `grpo.py`/`grpo_profile.py`
-  on the swap.
+- A `vi-en` Libriheavy validation shard rebuilt with directions: the same 1,696 rows and
+  rejections, every code and field equal; the payload adds `direction` and `tokenizer`. The
+  validation cache's stream plan is unchanged, and with an `en-vi` shard added every stream holds
+  one direction.
+- Round 3's model moved onto the swap (`init_weights`): FLEURS chrF 44.5, healthy; English to
+  Vietnamese chrF 10.1 (it answers in English: untrained).
+- On the swap: a 30-step `train.py` on both directions' caches (peak 74.9 GB), the refusals at
+  startup (a weight on the other tokenizer, an `en-vi` shard in a base run, a repeated validation
+  cache), `eval.py`, `validate.py` (its loss equal to the run's validation to the last digit), the
+  packer and `grpo.py`/`grpo_profile.py`.
 
 ## Two-way run
 
 The user's choices (2026-11-10): optimize the training first, use more data than the 400 h
 pilot ("use more data for the two ways run"), update on round 4's 8,192 frames. So one run on
 both directions of every row round 4e trained, and the pilot's test at its first validation.
-Two box jobs ([tranche-box](tranche-box.md#jobs)):
 
-- `restart.sh envi-cache` (~8 h): `fleurs-en` and `en-vi-val-en`; `box/envi_en_speech.sh`:
-  the 3 `en_speech` validation shards and round 4e's 500 train shards (`box/en_speech_sub.txt`)
-  by `cache_codes --direction en-vi` into `data/cache/en-vi/en-vi-grounded-v2/{train,validation}`,
-  their sources fetched 25 at a time and deleted once built, then pushed to
-  `en-vi/en-vi-grounded-v2/` of `huybik/hibiki-zero-vi-full-sft` (dataset; `upload_folder`, as
-  huggingface-hub 2.4 has no `upload_large_folder`), failing unless the Hub lists every shard;
-  then every tranche shard `en-vi` (`cache build --drop-inputs`, pushed to the cache repo's
-  `en-vi/<source>/` as it goes). A rerun skips a shard built or packed.
-- Then every cache keeps only its packs on the box: `python -m training.finetune.streams
-  --drop-shards <dirs>`, the `vi-en` ones first (done 2026-11-10: 1,306 shards to version 5 packs,
-  78.7 GB freed; the trainer then loaded 5,085,492 rows on the swap, the same 1,265 reassigned
-  dropped), then the `en-vi` ones, each only once the Hub lists its shards (`--drop-shards` does
-  not check, and `envi_en_speech.sh` counts a packed shard as built): both directions' shards and
-  packs (~290 GB) would not fit the 350 GB disk beside a run's checkpoints. `two-way` refuses to
-  start while a training cache holds shards.
-- The other 1,332 `en_speech` shards' `en-vi` caches (2026-11-21, the RTX PRO 6000 box) go to the
-  same Hub folder ([tranche-box](tranche-box.md#state)).
+- Its `en-vi` inputs, all on the Hub: `fleurs-en` and `en-vi-val-en`; the 3 `en_speech`
+  validation shards and round 4e's 500 train shards (`box/en_speech_sub.txt`) by `cache_codes
+  --direction en-vi`, at `en-vi/en-vi-grounded-v2/` of `huybik/hibiki-zero-vi-full-sft` (dataset;
+  the other 1,332 train shards are there too, [envi-data](envi-data.md#on-the-hub)); every
+  tranche shard `en-vi` (`cache build`), at the cache repo's `en-vi/<source>/`.
+- Every cache keeps only its packs on the box: `python -m training.finetune.streams --drop-shards
+  <dirs>` (1,306 `vi-en` shards to packs freed 78.7 GB; the trainer then loaded 5,085,492 rows on
+  the swap, the same 1,265 reassigned dropped), each folder only once the Hub lists its shards
+  (`--drop-shards` does not check): both directions' shards and packs (~290 GB) would not fit the
+  350 GB disk beside a run's checkpoints.
 - `publish_caches` names its Hub prefix after the out-dir's name, which for
   `data/cache/en-vi/en-vi-grounded-v2` is the `vi-en` cache's: never run it on that folder.
-- The `en_speech` build restarts `cache_codes` every 25 shards (~35 s of model loading each,
-  ~12 min over the 500); its single upload commit (~17 GB) has no retry, so a Hub error there stops
-  the job before the tranche: rerun `restart.sh envi-cache`, which skips what is built.
 - `init_weights` moves round 4's final model onto the swap
   (`weights/twoway_start_vi6k.safetensors`); `eval.py` scores it on the run's seven sets with
   `--seed 47`, batch 64: the baseline of the pilot's test.
-- `twoway_sft` (`restart.sh two-way` then): both directions' caches (~8,500 h each), 8,192-frame
-  batches computed in `--micro-frames` slices of 3,584, peak 3e-6, seed 47; validation every 12,000
-  updates on both validation caches and `fleurs-vi/dev` and `fleurs-en/dev` (their mean selects),
+- `twoway_sft`: both directions' caches (~8,500 h each), 8,192-frame batches computed in
+  gradient-accumulated slices of 3,584 frames, peak 3e-6, seed 47; validation every 12,000 updates on both
+  validation caches and `fleurs-vi/dev` and `fleurs-en/dev` (their mean selects),
   `multimed-vi/select`, `en-vi-val` and `en-vi-val-en`. The first validation is the pilot's test:
-  EN→VI chrF up with healthy outputs, VI→EN FLEURS dev within 1 chrF of the start.
-  `restart.sh two-way` now launches the SFT recipe instead (whole 4,608-frame batches at peak
-  2.25e-6, validation every 20,000: [sft-training](sft-training.md#trainer)), so it no longer
-  resumes `twoway_sft`: it starts `twoway_sft_4608`, at two epochs until its length is decided
-  with the user (the next run ends sooner, [sft-training](sft-training.md#trainer)).
+  EN→VI chrF up with healthy outputs, VI→EN FLEURS dev within 1 chrF of the start. Its launcher is
+  gone; the next round writes its own on the trainer's current recipe
+  ([teacher-next](teacher-next.md#recipe)).
 - The run (started 2026-11-11 04:32 UTC, 0.52 s an update, a validation ~7 min; on free-threaded
   Python from step 8,000, [environment](environment.md#python)): early on EN→VI rose fast while
   VI→EN fell (FLEURS dev 38.54 → 33.75 by 36,000) and climbed back later. The user extended it to

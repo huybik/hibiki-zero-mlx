@@ -4,5 +4,5 @@
 # flake8: noqa
 """Modules used by the Hibiki language model."""
 
-from .kv_cache import KVCache, RotatingKVCache
-from .transformer import Transformer, TransformerConfig, ProjectedTransformer
+from .kv_cache import RotatingKVCache
+from .transformer import Transformer, TransformerConfig

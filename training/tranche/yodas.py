@@ -12,8 +12,8 @@ of the widest pause between two words. Every row is
 heard by the ASR server (`filters.Hearer`), whose transcript becomes the row's `text`; its CER against
 the caption is the row's check. Written per tar, both pushed as they come:
   <root>/yodas/segments/<tar>.parquet   ingest's schema; doc the video, speaker none
-  <root>/yodas/asr_vi/<tar>.parquet     filters.py's part: the transcript again, its language, and
-                                        its CER against the caption (the gates' `cer`)
+  <root>/yodas/asr_vi/<tar>.parquet     the transcript again, its language, and its CER against the
+                                        caption (the gates' `cer`, as every source's asr_vi)
 keeping the rows `filters.vi_gate` passes (the caption standing as the transcript).
 """
 from __future__ import annotations
@@ -168,7 +168,7 @@ def decode(container, stream, a: float, b: float) -> tuple[np.ndarray, float]:
 
 
 def wav_16k(pcm: np.ndarray) -> bytes:
-    """A row at RATE -> 16 kHz WAV for the ASR server, as filters.wav_16k sends."""
+    """A row at RATE -> 16 kHz WAV for the ASR server (`filters.Hearer`)."""
     import soundfile as sf
     from scipy.signal import resample_poly
 

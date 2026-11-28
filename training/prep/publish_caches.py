@@ -30,8 +30,7 @@ from huggingface_hub.utils import disable_progress_bars
 
 from training.paths import DEFAULT_DIRECTION, DEFAULT_TOKENIZER, durable, exclusive
 from training.prep.cache_codes import DATASET_DIR, cache_path, source_record, source_shards
-from training.prep.publish_en_vi_speech import COMMIT_BYTES, retried
-from training.prep.translate_en_speech import log
+from training.prep.publish_en_vi_speech import COMMIT_BYTES, log, retried
 
 REPO = "huybik/hibiki-zero-vi-full-sft"  # a dataset repo; the PhoMT cache is there too
 FOLLOW_WAIT = 600  # a cache shard is built every ~4 min

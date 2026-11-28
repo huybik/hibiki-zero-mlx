@@ -112,7 +112,7 @@ VieNeu, each step adding to the one above:
 - The backbone's attention (`training/tranche/decode_attention.py`): a Triton kernel over each
   slot's live keys only, a program per slot and KV head, its 3 query heads padded to `tl.dot`'s 16
   rows; the SDK's attends all 1,024 positions under a mask. 0.404 → 0.170 ms a layer, the frame
-  9.7 → 6.0 ms at 512 slots. The SDK's prompt cache is left-padded: `ContinuousFrame.load` moves
+  9.7 → 6.0 ms at 512 slots. The SDK's prompt cache is left-padded: `SlotBackbone.load` (`vieneu_frame.py`) moves
   each row's keys to its slot's start in one gather.
 - Codec encode in fp16: 3.13 → 1.51 ms a clip, 97.9% of codes as fp32's (codebook 0 99.9%; bf16
   76%).

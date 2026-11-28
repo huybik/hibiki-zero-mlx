@@ -8,10 +8,9 @@ A rollout's reward at a frame boundary b is (1 - α)·BLEU(ŷ_b, y_b) + α·BLEU
   spoken included.
 - T is the rollout's length.
 
-Each boundary's rewards are normalized over the rollouts of one stream (its group): z-scored, as
-the paper does, or only centered on the group's mean (Dr. GRPO). A token at
-frame t gets the sum of the normalized rewards at the boundaries after t. The tokens a reward
-counts are therefore exactly the ones it credits.
+Each boundary's rewards are z-scored over the rollouts of one stream (its group), as the paper
+does. A token at frame t gets the sum of the normalized rewards at the boundaries after t. The
+tokens a reward counts are therefore exactly the ones it credits.
 
 The paper puts reward frames at the end of every 8 input words. The cache has no Vietnamese
 words, so the boundaries close every `REWARD_SPEECH_FRAMES` frames of Vietnamese speech, plus
@@ -91,14 +90,10 @@ def process_rewards(hypotheses: list[list[str]], references: list[str], alpha: f
     return (1 - alpha) * partial + alpha * final[:, None]
 
 
-def normalize(rewards: np.ndarray, eps: float = 1e-4, scale: bool = True) -> np.ndarray:
-    """Each reward frame's rewards over the group: (r - mean) / (std + eps), or with `scale`
-    off r - mean, in BLEU points (Dr. GRPO, arXiv 2503.20783: the std's division lifts a frame
-    where the rollouts barely differ to the weight of one where they differ widely). A frame
-    where every rollout scored the same gets 0."""
+def normalize(rewards: np.ndarray, eps: float = 1e-4) -> np.ndarray:
+    """Each reward frame's rewards over the group: (r - mean) / (std + eps). A frame where every
+    rollout scored the same gets 0."""
     centered = rewards - rewards.mean(axis=0, keepdims=True)
-    if not scale:
-        return centered
     return centered / (rewards.std(axis=0, ddof=1, keepdims=True) + eps)
 
 
@@ -120,13 +115,12 @@ def group_advantages(
     decode,
     alpha: float = ALPHA,
     every: int = REWARD_SPEECH_FRAMES,
-    scale: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """One stream's G rollouts, text tokens [G, T]: their reward boundaries [J], rewards [G, J]
-    and per-frame advantages [G, T], normalized with or without the std (`scale`)."""
+    and per-frame advantages [G, T]."""
     length = tokens.shape[1]
     boundaries = reward_frames(sentences, length, every)
     references = prefix_references(sentences, boundaries)
     hypotheses = [emitted_texts(row, boundaries, eos_id, pad_id, decode) for row in tokens]
     rewards = process_rewards(hypotheses, references, alpha)
-    return boundaries, rewards, advantages(normalize(rewards, scale=scale), boundaries, length)
+    return boundaries, rewards, advantages(normalize(rewards), boundaries, length)

@@ -2,22 +2,19 @@ import Foundation
 import MLX
 import os
 
-/// Sustained-load test: feeds a looped clip for a fixed duration, k frames per step, either
-/// paced like a live microphone (frame i is available at (i + 1) × 80 ms, so a step can start
-/// once its last frame is) or back to back, and records every step's stage times, lag, thermal
-/// state and memory. Results go to disk as they are made, so a run the system kills still
-/// leaves its data: `<base>.jsonl` (one sample per step), `<base>.wav` (the translation) and,
-/// at the end, `<base>.txt` (Mimi's encoder device, the summary and the text).
+/// Sustained-load test: feeds a looped clip for a fixed duration, one frame per step, either
+/// paced like a live microphone (frame i is available at (i + 1) × 80 ms) or back to back, and
+/// records every step's stage times, lag, thermal state and memory. Results go to disk as they
+/// are made, so a run the system kills still leaves its data: `<base>.jsonl` (one sample per
+/// frame), `<base>.wav` (the translation) and, at the end, `<base>.txt` (the summary and the
+/// text).
 public enum Bench {
     public struct Sample: Codable {
-        /// The step's first frame, and its number of frames.
         public let frame: Int
-        public let frames: Int
-        /// Seconds since the run started, when this step finished.
+        /// Seconds since the run started, when this frame's step finished.
         public let wall: Double
-        /// Paced: seconds between the end of the step's last frame of audio and its result
-        /// (stays under 0.08 × frames while the device keeps up, grows without bound when it
-        /// does not). Unpaced: 0.
+        /// Paced: seconds between the end of the frame's audio and its result (stays under 0.08
+        /// while the device keeps up, grows without bound when it does not). Unpaced: 0.
         public let lag: Double
         /// `Translator.Timing` of the whole step, in milliseconds.
         public let lmStartMs: Double
@@ -25,7 +22,7 @@ public enum Bench {
         public let encodeMs: Double
         public let encodeWaitMs: Double
         public let lmWaitMs: Double
-        /// A Core ML LM's own time (`Translator.Timing.lmTrunk` and the rest; 0 for MLX).
+        /// The LM's own time (`Translator.Timing.lmTrunk` and the rest).
         public let lmTrunkMs: Double
         public let lmHeadsMs: Double
         public let lmHostMs: Double
@@ -38,19 +35,17 @@ public enum Bench {
         /// Memory the process may still allocate before the system kills it (iOS only).
         public let availableMB: Double?
 
+        /// The frame's time; real time needs it under 80 ms.
         public var totalMs: Double { lmStartMs + decodeMs + encodeMs + encodeWaitMs + lmWaitMs }
-        /// The step's time per frame; real time needs it under 80 ms.
-        public var msPerFrame: Double { totalMs / Double(frames) }
-        /// Whether this step completes a multiple of `every` frames, for progress lines.
-        public func ends(every: Int) -> Bool { (frame + frames) / every > frame / every }
+        /// Whether this frame completes a multiple of `every` frames, for progress lines.
+        public func ends(every: Int) -> Bool { (frame + 1) % every == 0 }
     }
 
     public static func run(
-        _ translator: Translator, clip: [Float], minutes: Double, framesPerStep: Int,
-        paced: Bool, output base: URL, progress: (Sample) -> Void = { _ in }
+        _ translator: Translator, clip: [Float], minutes: Double, paced: Bool, output base: URL,
+        progress: (Sample) -> Void = { _ in }
     ) throws -> [Sample] {
-        precondition(framesPerStep > 0, "a step takes at least one frame")
-        let frames = Int(minutes * 60 * 12.5) / framesPerStep * framesPerStep
+        let frames = Int(minutes * 60 * 12.5)
         let clipFrames = clip.count / Audio.frameSize
         precondition(clipFrames > 0, "the clip is shorter than one frame")
         translator.reset()
@@ -62,24 +57,21 @@ public enum Bench {
         let encoder = JSONEncoder()
         var samples: [Sample] = []
         var text = ""
-        samples.reserveCapacity(frames / framesPerStep)
+        samples.reserveCapacity(frames)
         let start = DispatchTime.now()
-        for idx in stride(from: 0, to: frames, by: framesPerStep) {
-            let arrival = Double(idx + framesPerStep) / 12.5
+        for idx in 0..<frames {
+            let arrival = Double(idx + 1) / 12.5
             if paced {
                 let wait = arrival - seconds(start, DispatchTime.now())
                 if wait > 0 { Thread.sleep(forTimeInterval: wait) }
             }
-            let pcm = (idx..<(idx + framesPerStep)).flatMap { frame in
-                let offset = (frame % clipFrames) * Audio.frameSize
-                return clip[offset..<(offset + Audio.frameSize)]
-            }
-            let out = try translator.step(pcm)
+            let offset = (idx % clipFrames) * Audio.frameSize
+            let out = try translator.step(Array(clip[offset..<(offset + Audio.frameSize)]))
             let wall = seconds(start, DispatchTime.now())
             text += out.text
             try wav.append(out.pcm)
             let sample = Sample(
-                frame: idx, frames: framesPerStep, wall: wall, lag: paced ? wall - arrival : 0,
+                frame: idx, wall: wall, lag: paced ? wall - arrival : 0,
                 lmStartMs: 1000 * out.timing.lmStart, decodeMs: 1000 * out.timing.decode,
                 encodeMs: 1000 * out.timing.encode, encodeWaitMs: 1000 * out.timing.encodeWait,
                 lmWaitMs: 1000 * out.timing.lmWait,
@@ -95,42 +87,34 @@ public enum Bench {
         let tail = try translator.flush()
         try wav.append(tail.pcm)
         text += tail.text
-        let device = "Mimi encoding on the \(translator.encoderDevice.rawValue)"
-        try (device + "\n" + summary(samples) + "\n\n" + text + "\n").write(
+        try (summary(samples) + "\n\n" + text + "\n").write(
             to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
         return samples
     }
 
-    /// One line per minute of audio: percentiles of the time per frame and of the LM wait per
-    /// frame over its steps, a Core ML LM's own time per frame (when it ran one), worst lag,
-    /// thermal state and memory. A step counts toward the
-    /// minute of its first frame, so with k not dividing 750 the rows hold a few frames more or
-    /// less.
+    /// One line per minute of audio: percentiles of the time per frame, the LM wait and the LM's
+    /// own time per frame, worst lag, thermal state and memory.
     public static func summary(_ samples: [Sample]) -> String {
-        let coreML = samples.contains { $0.lmTrunkMs > 0 }
         var lines = [
-            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50"
-                + (coreML ? "  Core ML LM p50" : "")
+            "minute  frames  p50 ms  p90 ms  p99 ms  LM wait p50  LM p50"
                 + "  max lag s  thermal  footprint MB  MLX active MB"
         ]
         let minutes = Dictionary(grouping: samples) { $0.frame / 750 }
         for minute in minutes.keys.sorted() {
-            let chunk = minutes[minute]!
-            let total = chunk.map(\.msPerFrame).sorted()
-            let wait = chunk.map { $0.lmWaitMs / Double($0.frames) }.sorted()
-            let lm = chunk.map { ($0.lmTrunkMs + $0.lmHeadsMs + $0.lmHostMs) / Double($0.frames) }
-                .sorted()
+            let frames = minutes[minute]!
+            let total = frames.map(\.totalMs).sorted()
+            let wait = frames.map(\.lmWaitMs).sorted()
+            let lm = frames.map { $0.lmTrunkMs + $0.lmHeadsMs + $0.lmHostMs }.sorted()
             let q = { (xs: [Double], p: Double) in xs[min(xs.count - 1, Int(p * Double(xs.count)))] }
             lines.append(
                 String(
-                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f",
-                    minute + 1, chunk.map(\.frames).reduce(0, +), q(total, 0.5), q(total, 0.9),
-                    q(total, 0.99), q(wait, 0.5))
-                    + (coreML ? String(format: "  %14.1f", q(lm, 0.5)) : "")
+                    format: "%6d  %6d  %6.1f  %6.1f  %6.1f  %11.1f  %6.1f",
+                    minute + 1, frames.count, q(total, 0.5), q(total, 0.9), q(total, 0.99),
+                    q(wait, 0.5), q(lm, 0.5))
                     + String(
-                        format: "  %9.2f  %7d  %12.0f  %13.0f", chunk.map(\.lag).max() ?? 0,
-                    chunk.map(\.thermal).max() ?? 0, chunk.map(\.footprintMB).max() ?? 0,
-                    chunk.map(\.mlxActiveMB).max() ?? 0))
+                        format: "  %9.2f  %7d  %12.0f  %13.0f", frames.map(\.lag).max() ?? 0,
+                    frames.map(\.thermal).max() ?? 0, frames.map(\.footprintMB).max() ?? 0,
+                    frames.map(\.mlxActiveMB).max() ?? 0))
         }
         return lines.joined(separator: "\n")
     }

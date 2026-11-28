@@ -25,10 +25,10 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   `com.huybik.hibiki-test` `modelPath`, written only by a choice, so a model on an unmounted drive
   is kept), else `weights/release/twoway_grpo1400_mlx_q6` (the README's download). Closing its window
   quits it, and quitting ends its backend. The mic transcript starts after the blank line that
-  follows main.py's `listening` line (a traceback during load has blank lines of its own). It decodes each pipe read as UTF-8 with replacement (a read that was not valid
-  UTF-8 used to be dropped whole; Python writes each streamed character in one small write, which
-  a pipe does not split, so only a long write such as a traceback can be cut mid-character) and
-  reads what is left at exit.
+  follows main.py's `listening` line (a traceback during load has blank lines of its own). It
+  decodes each pipe read as UTF-8 with replacement (Python writes each streamed character in one
+  small write, which a pipe does not split, so only a long write such as a traceback can be cut
+  mid-character) and reads what is left at exit.
   Its "Spoken language" picker (Auto, Vietnamese, English) passes `--speaking` to both modes
   ([priming](#runtime)). `build.sh` produces `build/Hibiki Test.app`. Its window can be driven by
   System Events (by index under `group 1 of window "Hibiki Test"`: `group 1` the model, `radio
@@ -49,8 +49,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   needs a fresh one (after `reset()`, a clip's first frame differed in 14 of 16 codebooks).
 - `translate()` overlaps CPU Mimi encoder and decoder threads with the GPU LM on the main thread;
   queues carry NumPy arrays (lazy MLX graphs are bound to their thread). `audio=False` skips the
-  decoder; `run()` writes its WAV and text. A frame is 1920 samples
-  at 24 kHz (80 ms, 12.5 Hz).
+  decoder; `run()` writes its WAV and text. A frame is 1920 samples at 24 kHz (80 ms, 12.5 Hz).
 - The source goes through the input level stage (`hibiki_mlx/level.py`, `Leveller`) before
   Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench.py`'s
   frames (timed in "level + mimi encode"). It raises quiet speech toward −6 dBFS; how and why
@@ -67,19 +66,18 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   whole-file encode codes the padding), then silence to 20 s after the clip (`TAIL_S`, training's
   `tail_s`), stopping at the first text EOS of a step that heard the source EOS (step t hears
   the frames fed before t). Upstream's own offline inference sends the source EOS the same way.
-  - An EOS before that stops nothing, where training's evaluation stops at any EOS and drops
-    the rest: on single FLEURS rows it came before the source ended on 6 of 361 VI→EN rows
-    (bf16), but on six 66–124 s files of joined FLEURS dev rows (6 bits, two seeds each) on 3 of
-    12 runs, both runs of the 124 s file among them, losing up to half the file. Kept going, the
-    model translated on to the end and ended right after the source: chrF 31.4 → 50.3,
-    43.2 → 47.3 and 40.8 → 51.2 on those runs, the other nine identical (2026-11-14). It is not
-    free: past an EOS written a frame or two before the source ended, the model may add a few
-    junk words or run the whole tail, and past one mid-file it may go silent for a while (on
-    the 124 s file, 30 s in Python, dropping a sentence, and 16 s in Swift, which then caught up).
-    Still, on the gate's rows with an early EOS the net chrF rose in all four runs (bf16 and 6
-    bits, both ways). So the gate differs from training's
-    evaluation only on rows whose EOS came early, and its `eos_found` counts only an EOS after
-    the source EOS.
+  - An EOS before that stops nothing, where training's evaluation stops at any EOS and drops the
+    rest: on single FLEURS rows it came before the source ended on 6 of 361 VI→EN rows (bf16), but
+    on six 66–124 s files of joined FLEURS dev rows (6 bits, two seeds each) on 3 of 12 runs, both
+    runs of the 124 s file among them, losing up to half the file. Kept going, the model translated
+    on to the end and ended right after the source: chrF 31.4 → 50.3, 43.2 → 47.3 and 40.8 → 51.2 on
+    those runs, the other nine identical (2026-11-14). It is not free: past an EOS written a frame
+    or two before the source ended, the model may add a few junk words or run the whole tail, and
+    past one mid-file it may go silent for a while (on the 124 s file, 30 s in Python, dropping a
+    sentence, and 16 s in Swift, which then caught up). Still, on the gate's rows with an early EOS
+    the net chrF rose in all four runs (bf16 and 6 bits, both ways). So the gate differs from
+    training's evaluation only on rows whose EOS came early, and its `eos_found` counts only an EOS
+    after the source EOS.
   - `run` (main.py's file mode, so the macOS app) also stops after `QUIET_S` (5 s) without a word
     once the source has ended (`translate(quiet_s=)`; the gate passes none). On OneVoice's 200
     short clips the shipping model wrote no EOS on 49, which ran the 20 s tail on silence: the
@@ -87,7 +85,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     +0.03 VI→EN. 3 rows lose words: EV-0523 waited 9 s after the source before speaking and lost
     its whole text; the other two lost a last sentence repeating what came before. 10 s lost one
     row, 11 s none, and those cut 14% and 12%. Measured on the two-way model only, though upstream's
-    3B (`--model 3b`, `verify_mlx_q4.py`) stops the same way.
+    3B (`--model 3b`) stops the same way.
   - Step t hears source frames before t, as training's forward does; moshi's `LMGen` in the
     evaluation hears `max_delay` − 1 silent frames first (one on the 3B, seven on the heads
     student), and the gate counts each End Offset as training does, at frames heard plus one.
@@ -96,9 +94,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
     `audio=False`) for the speech of the frames before it, which training keeps (640 ms, heads).
 - Sampling is `lm_gen_config`: every training checkpoint's config and upstream's own say
   temperature 0.8, top-k 250 for text and audio, which training's evaluation and upstream's
-  inference (`run.py`, `**lm_gen_config`) use. Until 2026-11-14 the runtimes sampled text at 0.4,
-  top-k 25, which makes the fine-tuned model lag and seldom end
-  ([analysis](../analysis/eos_and_lag.md)); upstream's 3B now samples as upstream does.
+  inference (`run.py`, `**lm_gen_config`) use. Text at 0.4, top-k 25 makes the fine-tuned model
+  lag and seldom end ([analysis](../analysis/eos_and_lag.md)).
 - Text comes from `TextDecoder` (both modes): a byte-fallback piece (`<0xE1>`) carries one
   UTF-8 byte, so a character the tokenizer lacks spans frames; the decoder (an incremental UTF-8
   codec with `errors="replace"`) prints it once complete, skips `<unk>`/`</s>`/`<pad>` without
@@ -106,8 +103,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   SentencePiece's `decode` of the non-special tokens, as the evaluation decodes
   (`decode_text_batch`; 2026-11-14, scratch check: the repo's ~6,500 lines of docs and
   Vietnamese sentences, on both tokenizers, PADs between pieces); an invalid run of bytes is one
-  U+FFFD where SentencePiece writes one per byte. Without byte pieces its text equals the old
-  piece-by-piece output. `<s>` is printed as before. Mic mode prints the flushed tail before `[stopping]`.
+  U+FFFD where SentencePiece writes one per byte. `<s>` is printed. Mic mode prints the flushed
+  tail before `[stopping]`.
 - The voice gate (`hibiki_mlx/voice.py`, `VoiceGate`; `translate(voice_gate=True)` from `run`, and
   `run_mic`'s encoder) passes the levelled source only near speech and digital silence elsewhere:
   Silero VAD v6 (MIT, ONNX, 0.1 ms per 32 ms window, run at 16 kHz through a streaming 24→16 kHz
@@ -167,18 +164,18 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   in 70% of 0.5 s chunks.
 - rustymimi stops at 8,192 positions (`narrow invalid args start + len > dim_len: [8192, 32]`):
   frame 2,920 (3.9 min) of a 6-minute file, 4,096 (5.46 min) of noise through one tokenizer, and
-  `reset()` keeps the count, so reuse across clips fails too. Swift has no such limit ([swift-runtime](swift-runtime.md)).
+  `reset()` keeps the count, so reuse across clips fails too. Swift's Mimi has no such limit
+  ([swift-runtime](swift-runtime.md#speed-and-memory)).
 
 ## Model directories
 
 - `config.json` names the MLX weights (`moshi_name`, required), the sampling (`lm_gen_config`,
   required) and, for quantized weights, `quantization`: `group_size` and `bits` for every Linear
   and Embedding, plus an entry `{"group_size", "bits"}` of its own for each layer quantized
-  otherwise, keyed by its module path (mlx-lm's layout). Both runtimes quantize the bf16 model
-  by it (`pipeline.quantize`, MLX's per-layer `class_predicate`; Swift `quantize(model:filter:)`
-  with a per-layer tuple, mapping its depformer cores to the checkpoint's slice paths), then load
-  strictly, shapes included: a record that disagrees with the weights fails to load. Without
-  `quantization` the weights are bf16. Older keys (`weight_dtype`, `artifact_format`) are ignored.
+  otherwise, keyed by its module path (mlx-lm's layout). `pipeline.quantize` quantizes the bf16
+  model by it (MLX's per-layer `class_predicate`), then loads strictly, shapes included: a record
+  that disagrees with the weights fails to load. Without `quantization` the weights are bf16. The
+  Swift runtime runs no MLX weights, only a Core ML LM's directory ([lm-npu](lm-npu.md#export)).
 - The recipes (`convert_mlx.py --bits {4,6}`, plan stage 6): that many bits on every
   transformer linear (main and depformer layers), group size 32 at 4 bits and 64 at 6; 8 bits,
   group size 32, on the 34 embeddings, the text head (`text_linear`) and each depformer slice's
@@ -193,36 +190,33 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   chrF, 6 bits 42.15 (0.41, −0.54 to 1.26), 4 bits 38.56 (4.01, 2.90 to 4.99); EN→VI bf16 37.21, 6
   bits 37.50 (−0.29, −1.07 to 0.54). Those ran with file mode stopping at any EOS, as training's
   evaluation does; rerunning the rows with an early EOS under the current rule gives VI→EN 42.76 /
-  42.22 and EN→VI 37.34 / 37.66 for bf16 / 6 bits. Upstream's 3B stays at 4 bits: the phone timings
-  are at 4, and 6 is unmeasured on its languages.
+  42.22 and EN→VI 37.34 / 37.66 for bf16 / 6 bits. Upstream's 3B stays at 4 bits: 6 is unmeasured
+  on its languages.
 - **The shipping bundle** is GRPO update 1,400 at 6 bits ([grpo](grpo.md#running)), staged from the
   recovery repo's `grpo_twoway/best/best_step001400.safetensors` with `convert_mlx.py --bits 6` and
-  the vi6k tokenizer (3.28 GB; add `mimi-decoder.mlmodelc` for Swift). On the six long files, two
-  seeds each (2026-11-14), every run translated to the end, its last word within ~4 s of the
-  source's: VI→EN mean chrF 52.6 against update 600's 48.7, EN→VI 46.9 against 45.8. It ends with
-  an EOS less often (3 of 12 runs, none on the EN→VI files, against update 600's 9 of 12, as GRPO's
-  EOS share fell), so file mode more often runs the whole 20 s tail.
-  The recovery repo's `release/twoway_grpo1400_mlx_q6/` holds this bundle ready to run (3.3 GB with
-  Mimi and `mimi-decoder.mlmodelc`). On OneVoice (2026-11-14; 100 VI→EN and 100 EN→VI short
-  conversational clips, 2–13 s at 16 kHz, from a Google Drive folder the user shared; the gate,
-  `--seed 42`): VI→EN chrF 46.3, BLEU 23.6, 72 rows ended; EN→VI chrF 32.2, BLEU 11.7, 79 ended,
-  18 rows in English ([two-way](two-way.md#next)), the other 81 at chrF 37.9. 26–28 ms a frame on the
-  M4 Pro (~3x real time).
+  the vi6k tokenizer (3.28 GB). On the six long files, two seeds each (2026-11-14), every run
+  translated to the end, its last word within ~4 s of the source's: VI→EN mean chrF 52.6 against
+  update 600's 48.7, EN→VI 46.9 against 45.8. It ends with an EOS less often (3 of 12 runs, none on
+  the EN→VI files, against update 600's 9 of 12, as GRPO's EOS share fell), so file mode more often
+  runs the whole 20 s tail. The recovery repo's `release/twoway_grpo1400_mlx_q6/` holds this bundle
+  ready to run (3.3 GB with Mimi and `mimi-decoder.mlmodelc`). On OneVoice (2026-11-14; 100 VI→EN
+  and 100 EN→VI short conversational clips, 2–13 s at 16 kHz, from a Google Drive folder the user
+  shared; the gate, `--seed 42`): VI→EN chrF 46.3, BLEU 23.6, 72 rows ended; EN→VI chrF 32.2, BLEU
+  11.7, 79 ended, 18 rows in English ([two-way](two-way.md#next)), the other 81 at chrF 37.9. 26–28
+  ms a frame on the M4 Pro (~3x real time).
 - **The release** (user, 2026-11-14: "upload the full f32 bundle, so he can run it and use it to
   optimize for qualcomm device"): the recovery repo's `release/twoway_grpo1400/` holds update
   1,400 as `model.safetensors` (fp32), a `config.json` naming its files, the vi6k tokenizer, Mimi
   and a model card (results, MLX and moshi loading, porting notes, the licence's research-only use).
   It is the one public place the vi6k tokenizer is; the folder alone stages or loads the model.
   Beside it, `release/twoway_grpo1400_mlx_q6/` is the 6-bit bundle as staged and checked on the Mac
-  (with `mimi-decoder.mlmodelc` for Swift and a short card): `inference/main.py --model <it>` runs
-  it, nothing to stage.
-- **Where 4 bits loses:** teacher-forced on bf16's sampled tokens (12 FLEURS dev clips both
-  ways, 1,788 frames; scratch script), the mean KL from bf16's sampling distribution (logits /
-  0.8), text / codebooks: the 4-bit recipe 0.057 / 0.17; 8 bits g64 on the main transformer and
-  4 on the depformer 0.0007 / 0.085; 4 on the main and 8 on the depformer 0.057 / 0.096; 5 bits
-  g32 0.018 / 0.043; 6 bits g64 0.0055 / 0.018; 8 bits g64 throughout (4.09 GB) 0.0008 / 0.004.
-  The main transformer's 4-bit linears carry all of the text's loss; both halves carry the
-  codebooks'.
+  (with a short card): `inference/main.py --model <it>` runs it, nothing to stage.
+- **Where 4 bits loses:** teacher-forced on bf16's sampled tokens (12 FLEURS dev clips both ways,
+  1,788 frames; scratch script), the mean KL from bf16's sampling distribution (logits / 0.8), text
+  / codebooks: the 4-bit recipe 0.057 / 0.17; 8 bits g64 on the main transformer and 4 on the
+  depformer 0.0007 / 0.085; 4 on the main and 8 on the depformer 0.057 / 0.096; 5 bits g32 0.018 /
+  0.043; 6 bits g64 0.0055 / 0.018; 8 bits g64 throughout (4.09 GB) 0.0008 / 0.004. The main
+  transformer's 4-bit linears carry all of the text's loss; both halves carry the codebooks'.
 - The tokenizer is the file `tokenizer_name` names (required, no default: the Vietnamese swap
   and the base share `text_card`, so a wrong one loads and prints the wrong words,
   [vi-tokenizer](vi-tokenizer.md#runtimes)); its vocabulary must equal `text_card`. The Mimi
@@ -235,22 +229,25 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   directory's `config.json` names it. A two-way checkpoint stages with the swap and no flag. The
   12.5 GB fp32 GRPO checkpoint stages in under a minute, with a peak footprint of 6.3–6.6 GB at 4
   bits, 7.5 at 6 and 10.7 in BF16 (2026-11-14).
-- Upstream's 3B stages into `weights/hibiki-zero-3b-q4` with `--bits 4` (README). An older
-  `weights/hibiki.q4.safetensors` (uniform q4, beside upstream's `config.json`, which names no MLX
-  weights) no longer loads: stage again, then delete it.
 
 ## Vendored moshi-mlx
 
-- `inference/moshi-mlx/` is a minimal LM, generator, transformer, KV cache and sampler subset
-  (`pip install -e ./inference/moshi-mlx`); it and the root `pyproject.toml` need `mlx>=0.31`.
+- `inference/moshi-mlx/` is upstream's LM cut to what Hibiki-Zero's models use (`pip install -e
+  ./inference/moshi-mlx`; it and the root `pyproject.toml` need `mlx>=0.31`): one stream generated
+  a frame at a time (`LmGen.step`; `RotatingKVCache` takes one step a call), top-k sampling, no
+  conditioning or guidance. `LmConfig.from_config_dict` refuses upstream's options no Hibiki-Zero
+  model sets (conditioners, cross-attention, a demuxed second stream, extra heads, layer scale,
+  low-rank depformer embeddings, a positional embedding other than `rope_concat`, or any in the
+  depformer). `Lm.warmup` steps once on the stream's own samplers: it draws from MLX's random
+  state, so what it samples is part of every seeded run's output.
 - Hibiki-Zero deltas: grouped-query attention via `kv_repeat`, FFN width `hidden_scale * dim`,
   `rope_concat` as non-traditional RoPE, and a learned per-slice depformer output LayerNorm.
 - The audio head is the depformer (a slices student's last slice samples its `parallel_codebooks`
   at once, their `linears` stacked: [student-slices](student-slices.md)) or a heads student's
   `ParallelHeads` (`"parallel"`, [student-heads](student-heads.md#design)): `depformer.heads.{j}` as
   one Linear (8 bits under `--bits`) on the main output plus the text token's `text_emb`. `load_pytorch_weights` reads upstream's fused
-  `in_proj_weight` and moshi 0.2.13's per-slice `in_projs.N`. `LmGen` checks for ungenerated tokens
-  only with `check=True` (callers pass False): a GPU sync a codebook, 3–4.5 ms of a student's step.
+  `in_proj_weight` and moshi 0.2.13's per-slice `in_projs.N`. `LmGen` does not check the tokens it
+  feeds for ungenerated ones: that check is a GPU sync a codebook, 3–4.5 ms of a student's step.
 
 ## Gates
 
@@ -267,10 +264,8 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Entry points](#entry-points) · [Runt
   with the box's in sampling and input, not in batching: training samples rows 64 at a time. The
   pairs are `data/eval/` files ([sft-evaluation](sft-evaluation.md#evaluation-sets)), their audio
   paths relative to the repo root.
-- `inference/tools/verify_mlx_q4.py` translates `inference/assets/leon.wav` (French) with the q4 3B.
 - `inference/tools/bench.py --model M` reports per-stage milliseconds (Mimi encode, LM, audio head,
-  Mimi decode) and a projected iPhone frame time from an assumed `--scale` (0.5). The
-  projection is not a measurement. `--silence` gates rms < 0.10 and peak < 1.1. Its GPU idles
+  Mimi decode), the RT factor and the artifact size. `--silence` gates rms < 0.10 and peak < 1.1. Its GPU idles
   on Mimi between steps and clocks down, as live steps do ([student-heads](student-heads.md#inference)).
 
 ## Memory

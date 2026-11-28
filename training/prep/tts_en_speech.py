@@ -15,9 +15,9 @@ publisher's `upload --follow` sends them to the Hub as they come. Shards go top 
 while another machine voices them bottom up; the upload brings in the shards voiced there, and the
 run skips them, so the two meet in between.
 
-Only the rows without speech are voiced. With --texts (id, text_vi; translate_en_speech
-retranslate's retexts.parquet), the rows it lists whose text differs take its text and are voiced
-again, in the same single rewrite of their shard.
+Only the rows without speech are voiced. With --texts (id, text_vi; the retranslation's
+retexts.parquet in /Volumes/data/datasets/en_speech_vi_text), the rows it lists whose text
+differs take its text and are voiced again, in the same single rewrite of their shard.
 
 Run from the repo root on Apple Silicon with the conda base Python:
   python -m training.prep.tts_en_speech [--shards N] [--texts PARQUET]
@@ -48,8 +48,7 @@ from vieneu_utils.core_utils import gaps_to_silence, join_audio_chunks  # noqa: 
 from vieneu_utils.phonemize_text import normalize_to_chunks_v3_with_gaps, phonemize_text_with_emotions  # noqa: E402
 
 from training.prep import vieneu_mlx  # noqa: E402
-from training.prep.publish_en_vi_speech import AUDIO, lock, voiced, write_shard  # noqa: E402
-from training.prep.translate_en_speech import log  # noqa: E402
+from training.prep.publish_en_vi_speech import AUDIO, lock, log, voiced, write_shard  # noqa: E402
 
 MAX_CHARS = 256  # upstream's chunk length
 # libopus at complexity 3 and a 24 kbps target gives ~32 kbps on this speech and encodes at 250x
@@ -231,7 +230,7 @@ def main() -> None:
     p.add_argument("--batch", type=int, default=128, help="chunks generated together")
     p.add_argument("--workers", type=int, default=6, help="CPU processes enrolling and encoding")
     p.add_argument("--texts", type=Path, help="parquet of id, text_vi: listed rows whose text differs take it "
-                   "and are voiced again (translate_en_speech retranslate's retexts.parquet)")
+                   "and are voiced again (the retranslation's retexts.parquet)")
     args = p.parse_args()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))  # so a `kill` shuts the workers down too
     with lock(args.root, "tts"):

@@ -68,7 +68,7 @@ draws use split `train`. It skips the shards held out for evaluation
   2026-11-06): `spoken` reads "20.000đ" or "7.940kg" (digits glued to a unit) without their
   nghìn, 2 kept rows in GigaSpeech 2's 245k; it does not fold "tỉ" into "tỷ", which drops ~14
   rows a source whose transcript writes "tỉ" ("ba tỉ" against the ASR's "3 tỷ"). Changing
-  `spoken` would also change the CER `filters asr` stored.
+  `spoken` would also change the stored `asr_vi` CER.
 - The full build (2026-11-06, 591 shards, 2.0 h of GPU time) kept 777,090 of 840,520 rows. Each
   gate's share of the source's rows, in the gates' order (a row counts under its first):
 

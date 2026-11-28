@@ -52,8 +52,9 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
   seven validation sets (`eval.py`, seed 47) the teacher means 0.389 / 6.50 dB, the slices student
   after Stage 1's decay 0.293 / 4.94 ([student-slices](student-slices.md#runs)).
 - Cost: scoring takes ~0.08 s a row on the M4 Pro's GPU; source embeddings are cached for the
-  process. On the box the validation also decodes every row's speech, each row alone up to its
-  end frame (`decode_wavs`): the same audio as a batch's (Mimi is causal), and 8 rows of a 52 s
-  batch took 4 GiB of the MPS pool and 2.45 s, against 15 GiB and 2.93 s as one chunk, which
-  could have run a 32 GB card out of memory. A review's estimate from MPS timings: 2–4 min more
-  for a 1,500-row validation (unmeasured on CUDA).
+  process. The validation also decodes every row's speech up to its end frame (`decode_wavs`):
+  on CUDA in length-sorted batches of 8 rows (`hibiki_helpers.MIMI_DECODE_CHUNK_CUDA`), each
+  padded only to its group's longest, the same audio as each row alone (Mimi is causal; 8 rows
+  of a validation batch 857 → 244 ms on the RTX 5090, [sft-speed](sft-speed.md#fast-path));
+  on MPS and the CPU each row alone, to keep the peak small (8 rows of a 52 s batch took 4 GiB of
+  the MPS pool and 2.45 s, against 15 GiB and 2.93 s as one chunk).

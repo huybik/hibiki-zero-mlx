@@ -1,7 +1,7 @@
 # Cache build speed and memory on CUDA
 
 Read when running, tuning or bringing up a grounded cache build (`CUDAModels` in
-`training/prep/cache_build.py`) or a noisy copy (`noisy_cache encode --device cuda`) on a GPU,
+`training/prep/cache_build.py`, on `mimi_cuda` and `wav2vec2_cuda`) or a noisy copy (`noisy_cache encode --device cuda`) on a GPU,
 above all on a new GPU or a box with little RAM: what each lever measured, and on which GPU. How
 the build works is in [cache-build](cache-build.md#cuda). Back to [CONTEXT.md](../../CONTEXT.md) ·
 [Memory](#memory) · [RTX 5090](#rtx-5090) · [H100 and H200](#h100-and-h200)
@@ -56,15 +56,16 @@ Vast 61906288 (2026-11-22): 32 GB, driver 580 (CUDA 13.0), a 15.4-CPU quota, 31 
   98% busy while active. The full run's first batch (Libriheavy-medium, 801 h against that
   batch's 571 h) built in 1,316 s and made its noisy copies in 364 s: the same ~2,200×, on longer
   shards. At that size a 40-shard batch takes ~29 min of GPU, ~15 h for the run's 1,264 builds
-  if the Mac took none. A batch's RAM peaks in the noisy fetch, not the build: ~18 GB for ~17 s
-  (it reads 16 local parquets' audio at once, `--jobs 16`), against ~13 GB in the build and the
-  encode (batches 2 and 3 of the full run).
+  if the Mac took none. A batch's RAM peaked in the noisy fetch, not the build: ~18 GB for ~17 s
+  reading 16 local parquets' audio at once (`--jobs 16`; a `--dataset-dir` fetch now defaults to
+  4), against ~13 GB in the build and the encode (batches 2 and 3 of the full run).
 - Against the Mac's `--ane-ctc` build of that shard (c1e778c): the same 3,147 rows kept and 71
   rejected for the same reasons, every non-code field equal, 22 rows with one word a 12.5 Hz frame
   apart, scores within 0.0105, audio codes 94.9% equal (first codebooks 99.8%): TF32's near-ties,
   as in [cache-build](cache-build.md#across-devices). The Vietnamese aligner's CUDA path, the
   English aligner's code, had been checked on the CPU only.
-- `noisy_cache encode`: ~2,100× (7.08 h of re-encoded English in 12 s) in fp32. TF32 (`CUDA_TF32`,
+- `noisy_cache encode` on moshi's Mimi, before `FastMimiEncoder`: ~2,100× (7.08 h of re-encoded
+  English in 12 s) in fp32. TF32 (`CUDA_TF32`,
   as the build), interleaved with fp32 on the GPU alone (two shards of batch 11, 3,135 rows, 10.8 h
   re-encoded): 14 s against 17 s every run (+20%; 2,645 → 3,182× on the 7.45 h shard), 21–22 against
   24–25 s with the start. Codebook 0 99.85% equal to fp32, all 16 95.3%, the build's TF32 near-ties;
@@ -83,13 +84,13 @@ Measured on Vast `62513802` (RTX 5090 32 GB, sm_120, torch 2.15 + triton 3.9, 19
 - **Model microbenchmarks (320 s batch, 16 × 20 s):**
   - `mimi_cuda.FastMimiEncoder` (channels-last `(B, T, C)`, FP16 SEANet + FP32 TC accum, Triton fused
     `init_conv1d_k7` & stages 0–2 residual+ELU, zero-copy strided GEMM downsamples, FP16 8L transformer
-    with cached RoPE, transposeless FP32 RVQ with Triton argmin, `compile_transformer=False`):
+    with cached RoPE, transposeless FP32 RVQ with Triton argmin, the transformer eager):
     **`18.63 ms` (`17,175× RT`, `3.15 GiB`)** vs stock moshi TF32 `119.23 ms` (`2,684× RT`, `19.79 GiB`)
     — **6.40× faster, 6.3× less VRAM**. Against exact FP32 (`6.746 dB` decode SNR): `cb0 = 99.83%`,
     `all16 = 93.59%`, SNR **`6.795 dB`** (beats stock moshi TF32 `99.78%` / `92.29%` / `6.745 dB`).
   - `wav2vec2_cuda.FastWav2Vec2CTC` (FP32 `c0_conv` + Triton two-pass masked GroupNorm+GELU + FP16
     NHWC `conv2d` `c1..c6` + load-time folded `pos_conv_embed` `weight_norm` + fused QKV + additive
-    float mask cuDNN SDPA / varlen FA2 + FP32 `lm_head`):
+    float mask cuDNN SDPA + FP32 `lm_head`):
     - English (`vi-en`): **`43.00 ms` (`7,442× RT`, `4.01 GiB`)** vs `119.76 ms` (`2,672× RT`, `20.56 GiB`)
       — **2.79× faster**; argmax vs single-clip exact FP32 `mean = 99.889%`, `min = 99.387%`.
     - Vietnamese (`en-vi`): **`43.41 ms` (`7,371× RT`, `5.07 GiB`)** vs `121.81 ms` (`2,627× RT`, `21.51 GiB`)
@@ -108,18 +109,21 @@ Measured on Vast `62513802` (RTX 5090 32 GB, sm_120, torch 2.15 + triton 3.9, 19
     32-clip `/dev/shm` slabs + background loader/saver): stock `18.22 s` (`2,009–2,990× RT` steady) →
     **`11.76 s` (`4,965–11,911× RT` steady, ~3.3× steady-state)**; `1,694/1,694` clean rows byte-identical,
     `2,506/2,506` conditions match, `cb0 = 99.74%`, `all16 = 95.41%`.
-- **Rejected as defaults after measurement on RTX 5090:**
-  - `compile_transformer=True` on `FastMimiEncoder`: saves only `1.36 ms` per 320 s (`18.63 → 17.27 ms`)
-    while adding `12–17 s` of compile/recompile stalls on variable shapes (`B = 1` tail batches). Default
-    is `False`.
-  - FP8 wav2vec2 (`--fp8-ctc`): min per-clip argmax agreement dropped below the 99% gate (`93.87%` EN,
-    `97.63%` VI). Opt-in only.
-  - GPU 24 kHz → 16 kHz resampler (`Resample24to16`) for CTC: min per-clip argmax vs CPU `soxr` was
-    `94.48%` EN / `96.04%` VI; CPU `soxr` in workers stays default (`gpu_resample_ctc=False`).
-  - `c0_conv` in FP16 (`c0_fp16=True`): passes 99% gate (`99.19%` EN, `99.60%` VI, `38.75 ms`), but
-    `max_lp_diff` on EN was 4× larger (`2.99` vs `0.75`) for only `4.2 ms`/320 s; default stays `False`.
-- Env note: `/workspace/envs/cache` now keeps `triton` (`box/envs.sh`) and drops `NO_TORCH_COMPILE=1`
-  (`restart.sh`, `envi_en_speech.sh`); `restart.sh cache` uses `--direction both --drop-inputs`.
+- **Rejected after measurement on the RTX 5090 (their code is gone):**
+  - `torch.compile` on `FastMimiEncoder`'s transformer: saves only `1.36 ms` per 320 s
+    (`18.63 → 17.27 ms`) while adding `12–17 s` of compile/recompile stalls on variable shapes
+    (`B = 1` tail batches); it runs eager.
+  - FP8 (`FrozenFP8Linear`) on wav2vec2's transformer linears: min per-clip argmax agreement below
+    the 99% gate (`93.87%` EN, `97.63%` VI).
+  - A GPU 24 kHz → 16 kHz Kaiser resampler for the CTC: min per-clip argmax against the workers'
+    `soxr` `94.48%` EN / `96.04%` VI; `soxr` in the workers stays.
+  - `c0_conv` in FP16: passes the 99% gate (`99.19%` EN, `99.60%` VI, `38.75 ms`), but EN's
+    `max_lp_diff` was 4× larger (`2.99` vs `0.75`) for only `4.2 ms`/320 s; it stays FP32.
+  - Never measured, removed: FP8 on Mimi's transformer, and FlashAttention-2 paths (no env installs
+    `flash_attn`).
+- `/workspace/envs/cache` keeps `triton` (`box/envs.sh`): `mimi_cuda` and `wav2vec2_cuda` need it
+  and fail to import without it, and `torch.compile` always runs (nothing sets `NO_TORCH_COMPILE`).
+  `restart.sh cache` uses `--direction both --drop-inputs`.
 
 ## H100 and H200
 
@@ -157,22 +161,21 @@ on the same rows (bench: a 4,094-row window for the models, whole shards for the
   |---|---:|---|
   | before | 3,101× | in each ~20 s window Mimi held the GPU at 100% for ~10 s, the CTC at 35–85% for ~9 s |
   | a decode job of 32 rows (`DECODE_JOB_ROWS`), an alignment job of a CTC batch (`align_rows`) | 3,344× | a job a row: the main thread 100 → 51 s of CPU, the pool's manager thread 44 → 8 s, all under the GIL the GPU thread needs |
-  | the CTC encoder without its host syncs (`_encoder`, `_within`) | 3,409× | a boolean-mask write, the mask's padding check and a blocking mask copy emptied the GPU's queue every CTC batch |
+  | the CTC encoder without its host syncs (now `FastWav2Vec2CTC`'s additive mask and pinned frame counts) | 3,409× | a boolean-mask write, the mask's padding check and a blocking mask copy emptied the GPU's queue every CTC batch |
   | free-threaded Python 3.14 (`/workspace/envs/cache`), Mimi's rope eager | 3,471× | no GIL between the GPU thread and the threads feeding it; CTC 91 → 84 s |
 
   The text timing came out as the old build's own rebuild (the same 8, 11 and 4 token frames moved
   against the Hub copies, every accept and reject alike). Audio codes: 99.95% equal on 3.12, 99.47%
   on 3.14, all from Mimi's rope run eager (the 3.12 `.venv` under `NO_TORCH_COMPILE=1` gives the same
   codes byte for byte; PyAV 19 decodes as 15.1 to subnormals), near-ties as TF32's. Rejected: CTC batches of 1,280 s (3,344×); Triton under `PYTHON_GIL=0` (died
-  without a traceback in its first window). Without Triton (it turns the GIL back on) Mimi's one
-  compiled function runs eager (`NO_TORCH_COMPILE=1`); safetensors is built from source.
-- What is left on it: a CTC window of 4,096 clips (17,265 s) is 6.3 s of kernels against ~7 s of
-  wall: float32 memory-efficient attention 17%, copies 15% (attention outputs, the feature
-  extractor's layer norms), TF32 matmuls ~24%, convolutions ~20%, layer norm 7%, GELU 6%. Faster
-  needs lower precision (bf16 CTC was rejected) or fused kernels (`torch.compile` needs Triton, so
-  the GIL); Mimi's ~8 s a window is untouched. Unmeasured: one worker less, as the main process now
-  uses ~1.8 CPUs and 20% of the cgroup's periods throttle. `CUDAModels._encoder` copies
-  transformers 5.22.1's encoder forward without its syncs: check it again on an upgrade.
+  without a traceback in its first window). The env now keeps Triton for the Blackwell kernels, which
+  turns the GIL back on; the decode and Viterbi run in worker processes, so that costs little against
+  their gain ([RTX 5090](#blackwell-kernels-and-pipeline-2026-11-28)). safetensors is built from source.
+- These H100 and H200 numbers predate `FastMimiEncoder` and `FastWav2Vec2CTC` (FP16, Triton,
+  compiled), measured on the RTX 5090 only ([above](#blackwell-kernels-and-pipeline-2026-11-28)):
+  profile them on an H100 or H200 before a full run there. Unmeasured: one worker less, as the main
+  process used ~1.8 CPUs and 20% of the cgroup's periods throttled. `FastWav2Vec2CTC` rebuilds
+  transformers 5.22.1's `Wav2Vec2ForCTC` forward from its modules: check it again on an upgrade.
 - Method (the scripts were per session): rebuild whole shards already built and compare them, bench a
   window's models for code equality and decode SNR; judge precision by reconstruction.
 - CPU: check the main process is not the one throttled (`/sys/fs/cgroup/cpu.stat`): 25 workers on

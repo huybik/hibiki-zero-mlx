@@ -220,6 +220,7 @@ class Bank:
             raise RuntimeError(f"{bank} lacks impulse responses or a kind of noise")
 
     def _band_gain(self, band: str, size: int, device: torch.device) -> torch.Tensor:
+        """`band`'s zero-phase gain on an rfft of `size`, raised-cosine edges; cached."""
         key = (band, size)
         gain = self._band_gains.get(key)
         if gain is None or gain.device != device:
@@ -401,18 +402,6 @@ def _loop(noise: torch.Tensor, start: int, length: int) -> torch.Tensor:
     """`length` samples of `noise` from `start`, wrapping around."""
     repeats = math.ceil((start + length) / noise.shape[-1])
     return noise.repeat(repeats)[start : start + length]
-
-
-def _band(x: torch.Tensor, high_pass: float | None, low_pass: float | None) -> torch.Tensor:
-    """Zero-phase band limit with raised-cosine edges, on a zero-padded FFT."""
-    size = _fft_size(x.shape[-1] + SAMPLE_RATE // 10)
-    freqs = torch.fft.rfftfreq(size, 1 / SAMPLE_RATE, device=x.device)
-    gain = torch.ones_like(freqs)
-    if low_pass:
-        gain = gain * _edge(freqs, low_pass * (1 - TRANSITION), low_pass)
-    if high_pass:
-        gain = gain * (1 - _edge(freqs, high_pass * (1 - TRANSITION), high_pass))
-    return torch.fft.irfft(torch.fft.rfft(x, size) * gain, size)[: x.shape[-1]]
 
 
 def _edge(freqs: torch.Tensor, start: float, stop: float) -> torch.Tensor:

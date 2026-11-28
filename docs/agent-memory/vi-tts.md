@@ -145,8 +145,8 @@ speech are voiced. A shard is rewritten whole once its last such row is encoded 
 publisher's `write_shard`, so a crash never leaves half a shard), and a rerun skips the shards
 whose `vi_duration_s` has no nulls.
 
-- `--texts retexts.parquet` (`id`, `text_vi`, from `translate_en_speech retranslate`,
-  [en-vi-translation](en-vi-translation.md)) also voices again each listed row whose text
+- `--texts retexts.parquet` (`id`, `text_vi`, the retranslation's,
+  [en-vi-translation](en-vi-translation.md#retranslation)) also voices again each listed row whose text
   differs, writing its new text and speech in the same one rewrite, so a shard is never left
   without speech and the upload can keep running. Startup then reads every shard's `id` and
   `text_vi` (~30 s). `fill` writes only the rows still without speech or with another text, so a

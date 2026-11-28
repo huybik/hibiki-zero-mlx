@@ -1,22 +1,22 @@
 # Tranche translation (VI→EN)
 
-Read when touching `training/tranche/translate.py`, the `mt` env of `training/tranche/box/envs.sh`, or
-`/workspace/translate_burst.sh`.
+Read when touching `training/tranche/translate.py` or the `mt` env of `training/tranche/box/envs.sh`,
+or translating the tranche on the box.
 Back to [CONTEXT.md](../../CONTEXT.md) · [real-vi-tranche](real-vi-tranche.md#pipeline) ·
 [Running](#running) · [Bake-off](#bake-off)
 
 ## Running
 
-`training/tranche/translate.py`, in the env `/workspace/envs/mt` that `box/envs.sh mt` builds, runs
+`training/tranche/translate.py`, in the env `/workspace/envs/mt` that `box/envs.sh mt` builds (vLLM 0.34.0), runs
 Index-Translate-35B-A3B in vLLM in its own process. It reads each segments shard's `id`, `doc` and
 `text` from the Hub, translates each row as its own prompt, with up to two earlier rows of its doc
 as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en`); `ingest push
 <source> --part text_en` uploads it beside the segments.
 
 - It takes the GPU memory voice and the ASR server hold (0.9 of it), so translation and voice
-  take turns: `/workspace/translate_burst.sh FIRST` (voice, filters and the ASR server stopped
-  first) translates every pushed shard from FIRST on, pushes `text_en` and restarts them. Eight
-  shards (`GROUP = 8`, `--group`) go into each generate call, and the next group is read meanwhile.
+  take turns: stop voice and the ASR server, run `translate.py <source> --shards FIRST:` over the
+  pushed shards, `ingest push <source> --part text_en`, then restart them. Eight shards
+  (`GROUP = 8`, `--group`) go into each generate call, and the next group is read meanwhile.
 - Engine & pipeline optimizations (2026-11-28, [translate_5090_optimization_plan](../translate_5090_optimization_plan.md)):
   - `box/envs.sh mt` pins `vllm==0.34.0` + `flashinfer-jit-cache`; `engine()` sets
     `VLLM_HAS_FLASHINFER_CUBIN=1`, passes `language_model_only=True` (falling back to
@@ -67,7 +67,7 @@ as context, and writes `<root>/<source>/text_en/<shard>.parquet` (`id`, `text_en
   in the main process; a 48 GB card would keep ~8 GB beside the FP8 weights) it loads IndexTeam's
   own NVFP4 build (Blackwell only),
   `Index-Translate-35B-A3B-preview-FP4`@`111ff5e` (21 GB; the FP8 35B does not fit a 32 GB RTX 5090),
-  in vLLM 0.34 at 0.95 of the GPU (its default there) and 256 sequences: at 0.9 only 232 sequences'
+  at 0.95 of the GPU (`translate.py`'s default there) and 256 sequences: at 0.9 only 232 sequences'
   linear-attention state fits and the engine refuses 512. On the 5090 (2026-11-25): FLEURS dev chrF 64.5, BLEU 36.4
   (the FP8's 65.1 in the [bake-off](#bake-off), 149 sentences); GigaSpeech 2 archive 60, 21,810
   rows in 225 s (97 rows/s, the GPU 92% busy), none failed, chrF 90.3 against the FP8's English.

@@ -6,8 +6,8 @@ Each `shard_<name>.pt` of --cache-dir becomes <out-dir>/shard_<name>.pt with the
 same order. A seeded --fraction of the rows get new source codes: their clip (the cache's source
 language), read from the dataset file the shard's own `source` names (`clip_file`), is decoded and
 resampled by the cache builder's own code (PyAV, soxr), put under `augment`'s drawn conditions and
-Mimi-encoded in float32 (on CUDA with TF32 matmuls and convolutions, as the cache build:
-`cache_build.CUDA_TF32`). The file is an EN-VI dataset parquet (`data/<split>/<name>.parquet`,
+Mimi-encoded as the cache build encodes (`cache_build.cuda_mimi` on CUDA, `mimi_mlx` in float32 on
+MLX). The file is an EN-VI dataset parquet (`data/<split>/<name>.parquet`,
 `vi_audio` or `en_audio`) for `cache_codes`' caches, and for the tranche's a part of its repo
 (`<source>/en_audio/<name>.parquet` beside the segments an `en-vi` shard was built from); a Vietnamese source
 built with `cache_codes --vi-check` takes the re-voiced clips of the part its `source` names, as that build did. Text,
@@ -403,9 +403,8 @@ class Encoder:
             if n < padded_len:
                 view[row, n:] = 0.0
         batch = host.to(self.device, non_blocking=True)
-        if self.device.type == "cuda":
-            self._copied[k] = torch.cuda.Event()
-            self._copied[k].record()
+        self._copied[k] = torch.cuda.Event()
+        self._copied[k].record()
         return batch
 
     def shard(self, samples: list[dict[str, Any]], jobs: list[Future], frames: str) -> float:
@@ -428,12 +427,9 @@ class Encoder:
             with torch.no_grad():
                 aug = self.bank.apply_batch(wav, b_lens, conds)
                 codes = self.mimi.encode(aug.unsqueeze(1)).to(torch.int32)
-            if self.device.type == "cuda":
-                host, done = self._out_pool.copy_from(codes)
-            else:
-                host, done = codes.cpu(), None
+            host, done = self._out_pool.copy_from(codes)
             if prev is not None:
-                self._collect_cuda(*prev, frames)
+                self._collect_cuda(*prev)
             return b_samples, b_frames, host, done
 
         def flush_mlx(
@@ -487,14 +483,13 @@ class Encoder:
             if self.mlx:
                 self._collect_mlx(*launched, frames)
             else:
-                self._collect_cuda(*launched, frames)
+                self._collect_cuda(*launched)
         return seconds
 
     def _collect_cuda(
-        self, b_samples: list[dict[str, Any]], b_frames: list[int], host: torch.Tensor, done: Any, frames: str
+        self, b_samples: list[dict[str, Any]], b_frames: list[int], host: torch.Tensor, done: Any
     ) -> None:
-        if done is not None:
-            done.synchronize()
+        done.synchronize()
         arr = host.numpy()
         for row, (sample, count) in enumerate(zip(b_samples, b_frames, strict=True)):
             source = sample["codes"][1 + self.dep_q : 1 + self.dep_q + self.source_q]

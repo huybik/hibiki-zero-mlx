@@ -1,27 +1,15 @@
 import Foundation
 
-/// The LM of one frame, run between `start` and the wait it returns so the caller's CPU work
-/// overlaps it: the MLX LM on the GPU (`HibikiLM`) or the parallel-heads student in Core ML
-/// (`NeuralLM`). Each samples as its `config.json`'s `lm_gen_config` says.
-protocol FrameLM: AnyObject {
-    var cfg: HibikiConfig { get }
-    /// Empties the KV cache for a new session.
-    func reset()
-    func seed(_ value: UInt64)
-    /// Starts the step of a frame from the previous text token and the 32 delayed audio tokens.
-    func start(text: Int, audio: [Int]) -> () throws -> LMStep
-}
-
 /// One frame's sampled tokens: the text token and the dep_q target codebooks.
 struct LMStep {
     let text: Int
     let audio: [Int]
-    /// The Core ML LM's own time on its worker (zero for the MLX LM).
+    /// The LM's own time on its worker.
     var busy = LMBusy()
 }
 
-/// Seconds a Core ML LM step spent in its main transformer, its heads, and on the host (the
-/// embedding sums and the sampling).
+/// Seconds an LM step spent in its main transformer, its audio head (the heads or the
+/// depformer), and on the host (the embedding sums and the sampling).
 struct LMBusy {
     var trunk = 0.0
     var heads = 0.0
@@ -37,13 +25,13 @@ struct LMBusy {
 final class Generator {
     private static let ungenerated = -2
 
-    let lm: FrameLM
+    let lm: NeuralLM
     private let delays: [Int]
     private let maxDelay: Int
     private var ring: [[Int]]
     private(set) var frame = 0
 
-    init(_ lm: FrameLM) {
+    init(_ lm: NeuralLM) {
         self.lm = lm
         delays = lm.cfg.audioDelays
         maxDelay = delays.max() ?? 0

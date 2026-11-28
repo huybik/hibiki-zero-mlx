@@ -1,6 +1,6 @@
 # Heads student
 
-Read when touching `training/student/heads.py` or `restart.sh student-heads`, or training, scoring or
+Read when touching `training/student/heads.py` or `training/student/cut.py`, or training, scoring or
 deciding on the phone student with parallel codebook heads. Back to [CONTEXT.md](../../CONTEXT.md) ·
 [Design](#design) · [Codebooks](#codebooks) · [Speed](#speed) ([inference](#inference),
 [training](#training)) · [Runs](#runs) · [Tests](#tests). The cut, training and
@@ -9,7 +9,7 @@ against the Core ML palettization in [student-palettize](student-palettize.md).
 
 ## Design
 
-`--heads` cuts the delay-pattern student (stage 5.4; the plan's is ~14 layers: `--num-layers 14`):
+`cut.py` cuts the delay-pattern student (stage 5.4; the plan's is ~14 layers: `--num-layers 14`):
 the kept main layers and `--codebooks`, no depformer, and `training/student/heads.py`'s
 `ParallelHeads` (one linear head a codebook, initialized afresh with `--seed`) in the model's
 `depformer` slot. The heads read the main transformer's normed output plus the model's own text
@@ -40,8 +40,8 @@ monologue. Text is sampled before audio at each step, so this adds no latency an
 
 16 a stream, codebooks 8–15 at one delay (user, 2026-11-15: "should we keep 16 codebook, since it's
 parallel?"; 2026-11-20: "i remember we planned 16 codebook, with the later 8 sent as once or so to
-not increase latency so much"). `restart.sh student-heads` cuts `student_heads14_cb16` with
-`--codebooks 16`.
+not increase latency so much"). `student_heads14_cb16` was cut with `cut.py --num-layers 14
+--codebooks 16` from GRPO update 1,400 (`weights/grpo_twoway_best1400.safetensors`).
 
 - A frame's speech completes 8 frames (640 ms) after its first codebook: 80 ms over the 8-codebook
   heads, 6 frames over the depformer student's 2. Fully delayed, 16 codebooks take 15 frames (1.2 s;
