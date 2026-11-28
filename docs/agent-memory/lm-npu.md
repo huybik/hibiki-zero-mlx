@@ -78,8 +78,10 @@ convert_mlx.py (bf16) ─► lm_step.py (PyTorch, fp32) ─► export_lm_coreml.
 Teacher-forced on the MLX runtime's own steps: 695 frames of 4 FLEURS dev clips (2 each way,
 `student_heads14_cb16` update 16,000, 2026-11-20; rebuilt 2026-11-25 as
 `/Volumes/data/hibiki-zero-evals/mac/npu-agree/npu_agree.py`, with a model trained against the
-6-bit tables: [student-palettize](student-palettize.md#neural-engine-agreement)). Each column is the share of
-argmaxes equal to the MLX bf16 run's, given the same inputs and sampled text:
+6-bit tables: [student-palettize](student-palettize.md#neural-engine-agreement)). The script predates the
+slimmed `moshi_mlx` (it patches `Lm._sample`, now `Lm.sample`, and expects samplers to return
+logprobs, and warmup now samples with the stream's own samplers): port it before rerunning.
+Each column is the share of argmaxes equal to the MLX bf16 run's, given the same inputs and sampled text:
 
 | Model | Text | Codebook 0 | 1–7 | 8–15 | All 16 |
 |---|---|---|---|---|---|
@@ -194,7 +196,8 @@ LM's own time per frame (trunk / heads / host) and the whole frame, medians:
   `parallel_codebooks: 1`), fp32, the same hidden states and tokens: logits within 5.4e-7 of the
   largest, argmax 32 of 32; `DepformerStep` greedy matched those slices on 80 of 80 codebooks.
 - **The Core ML path keeps the voice:** that student exported at 6 bits
-  (`/Volumes/data/models/hibiki/weights/student_dep10/g2000_ane6`, one Core ML model a slice),
+  (`/Volumes/data/models/hibiki/weights/student_dep10/g2000_ane6`, one Core ML model a slice,
+  which the Swift runtime no longer loads),
   through the Swift CLI on the M4 Pro's Neural Engine, on the gate's 5 FLEURS dev rows each way,
   against the same model in MLX 6 bits: VI→EN chrF 44.8 (49.6), `speaker_sim` 0.27 (0.27),
   `hnr_db` 4.4 (4.7); EN→VI 39.8 (40.8), 0.18 (0.19), 7.6 (7.8). In one model, on the same 5×2

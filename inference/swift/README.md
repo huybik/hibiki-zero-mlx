@@ -84,7 +84,7 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
   --minutes 10
 ```
 
-This copies every file of the heads release's directory; set `MODEL` for another (only its
+This copies every file of the slices release's directory; set `MODEL` for another (only its
 `config.json`, the files it names, the `.bin` tables and the `.mlmodelc` directories are read).
 
 `--model NAME` reads `Documents/NAME/` instead of `Documents/model/`, to keep several models

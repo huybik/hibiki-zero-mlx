@@ -8,12 +8,12 @@ dependencies = [
     # moshi_mlx comes from the vendored fork: pip install -e ./inference/moshi-mlx
     "livekit>=1.1",  # mic mode's echo canceller (WebRTC AEC3, its audio processing module)
     "mlx>=0.31",
-    "numpy",
-    "rustymimi>=0.4.1",
-    "sentencepiece",
+    "numpy>=2.1.0,<2.3",
+    "rustymimi==0.4.1",  # its 8,192-position limit and codes are what the runtime was measured on
+    "sentencepiece>=0.2,<0.3",
     "silero-vad[onnx-cpu]>=6.2",  # the voice gate (its ONNX model); brings torch and onnxruntime
     "sounddevice>=0.5.0",
-    "sphn>=0.2.0",
+    "sphn>=0.2.0,<0.3.0",
 ]
 
 [tool.ruff]

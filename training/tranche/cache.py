@@ -91,7 +91,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
     p.add_argument("--mimi-weight", type=Path, default=DEFAULT_MIMI_WEIGHT)
     p.add_argument("--tokenizer", type=Path, help="default: the direction's (paths.DIRECTION_TOKENIZERS)")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.step == "build" and args.half_ctc and args.device != "mlx":
+        parser.error("--half-ctc is for --device mlx only")
+    return args
 
 
 # --------------------------------------------------------------------------- shards

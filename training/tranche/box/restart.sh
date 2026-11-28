@@ -50,6 +50,8 @@ case $job in
   # docs/agent-memory/student-slices.md): warm up the 9 random 512x2 slices on the frozen
   # both_heads_z_best1200 trunk with chunked KL + cached frozen trunk FP8 + pre-quantized FP8
   # teacher (~0.43 s/update, 16.1 GiB peak on RTX 5090) and rebalanced AR acoustic loss (cb 1..7).
+  # Needs weights/student_heads14_cb16/config.json (only the config is read): on a new box, cut it with
+  # `python -m training.student.cut --num-layers 14 --codebooks 16 --weight <GRPO 1,400> --out-dir weights/student_heads14_cb16`.
   student-slices-5090) export HIBIKI_HF_REPO=huybik/hibiki-zero-vi-full-sft OMP_NUM_THREADS=$N MAX_JOBS=$N TORCHINDUCTOR_COMPILE_THREADS=$N
        T=/workspace/tranche/repo/cache E=data/eval V=data/cache/en-vi/en-vi-grounded-v2
        name=student_slices14 S=weights/$name

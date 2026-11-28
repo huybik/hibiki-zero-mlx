@@ -156,8 +156,8 @@ validation caches 4.4069 / 3.6156 at 1,000, 4.4026 / 3.6121 at 2,000.
 ## Phone finish
 
 On the box, after the on-policy run's final sync, from the branch's checkout (not the run's
-commit, which the refit's and the finish's jobs postdate): `training/tranche/box/finish_slices.sh`
-runs the refit on the run's best, the 6-bit finish from the refit (`restart.sh
+commit, which the refit's and the finish's jobs postdate), `finish_slices.sh` (a one-off, in git at
+491422c; the steps below are the recipe without it) ran the refit on the run's best, the 6-bit finish from the refit (`restart.sh
 student-slices-pal6-5090`, the heads student's recipe in [student-palettize](student-palettize.md)),
 snaps the refit and the finish's update 4,000 onto their 6-bit tables, uploads both snaps to the
 Hub repo's `phone/` (the Mac fetches them there: ssh from the box runs at ~2 MB/s), then tests the on-policy
@@ -165,8 +165,7 @@ start, the refit (bf16 and snapped) and the finish (snapped) with `test_student.
 seed 43, LAAL, voice scored) into `runs/slices_tests/`. Each step whose output exists is skipped,
 a job that ends without its final model stops the chain, one copy runs at a time (a lock), and
 the outputs are tied to the best they started from (`runs/slices_finish_best.txt`: a new best
-stops the chain until they are moved aside). Rerun on the box after the tests (fe0ddbc): every
-step skipped, the uploads sent nothing, in 1 min.
+stopped the chain until they were moved aside).
 On the Mac the finished snapped model goes through `convert_mlx.py` (bf16), `gate.py`,
 `export_lm_coreml.py --bits 6`, `export_mimi_coreml.py` and the Swift CLI, as below; the iPhone
 13 Pro Max's 10 minutes in HibikiBench are the user's.
@@ -234,7 +233,7 @@ path runs and the tables survive the export; the 13-set tests below compare the 
 
 ## Tests
 
-`finish_slices.sh`'s `test_student.sh` calls (13 test sets, `eval.py` seed 43, batch 64, LAAL,
+`test_student.sh` (13 test sets, `eval.py` seed 43, batch 64, LAAL,
 voice scored, 2026-11-28 00:22–00:56 UTC on box 62513802, ~8.5 min a model; records, `table.md`
 and `paired.txt` in `/Volumes/data/hibiki-zero-evals/box-62513802/slices_tests/`). Every set
 healthy for every model. Cells chrF / BLEU / length ratio / median End Offset (s) / mean LAAL (s)
