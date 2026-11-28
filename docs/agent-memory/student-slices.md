@@ -6,7 +6,7 @@ Read when touching `training/student/slices.py`, `restart.sh student-slices-5090
 scoring or deciding on the phone student whose audio part is depformer slices. Back to
 [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Why this shape](#why-this-shape) ·
 [Making it](#making-it) · [Training](#training) · [Runs](#runs) · [On the Mac](#on-the-mac) ·
-[Not yet](#not-yet). The phone side
+[Wide slices](#wide-slices) · [Not yet](#not-yet). The phone side
 (export, Swift, A15 timings) is in [lm-npu](lm-npu.md#depformer-slices); the heads student it
 replaces in [student-heads](student-heads.md).
 
@@ -245,6 +245,26 @@ logits within 1.9e-6), `LmGen` steps, `convert_mlx.py` staged the 4-codebook one
 slices on a staging match PyTorch's logits on all 16 codebooks. On a trained checkpoint
 (`both_slices_z` 200, 2026-11-28) the staging, the gate, the 6-bit export and the Swift CLI on the
 Neural Engine all ran ([slices-on-policy](slices-on-policy.md#phone-finish)).
+
+## Wide slices
+
+The 512 × 2 slices leave the voice hoarse, and a depformer of 1024 × 3 slices sounded clearer to
+the user ([slices-phone](slices-phone.md#voice)), so the slices are trained again at that width:
+
+- `restart.sh student-slices-wide-5090` cuts `weights/student_slices14_wide` from the shipping
+  weights (`phone/pal6_slices_z4000_snap6.safetensors`, the 6-bit finish's snap, whose trunk the
+  phone runs): 9 random slices of 1024 × 3, 16 heads, `--parallel 8` as before, since the frozen
+  trunk reads its own codebooks 8–15. 1.783B parameters, 571.4M of them in the slices (512 × 2:
+  134.7M); the cut takes 55 s on the Mac. Stage 1's recipe on it, the trunk frozen, so the text
+  stays the release's; then `student-slices-wide-decay-5090`, its decay over 8,000 updates.
+- It fits the phone: the depformer student's fused 8 slices of 1024 × 3 took 18.6 ms a frame
+  (p90 21.2) in Speech Live on the A15 (2026-11-28, `two-turns-vi.wav`, records in
+  `/Volumes/data/hibiki-zero-evals/mac/slices-voice-fix/phone/`), against 11.1–11.8 for the
+  release's 9 of 512 × 2 beside its 44 ms trunk: about 69 ms a frame of 80 for 9 wide slices.
+- Not profiled yet: from the slices' share of the FLOPs (4.2×) an update should take ~0.6–0.7 s,
+  both stages ~5 h on the 5090.
+- It wins if its validations' voice scores pass the release's on the same seven sets (`runs/pal6_slices_z/val_log.jsonl`, update 4,000),
+  and then if its Core ML export, decoded from 16 codebooks and from 8, sounds clearer on the user's clips (`arch_ab.py`).
 
 ## Not yet
 
