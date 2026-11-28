@@ -89,7 +89,11 @@ ASR_TIMEOUT_S = 60  # a request takes well under a second
 # times in two days (2026-11-06, 11-07 17:22 and 23:17 UTC+7), each losing the shards in flight.
 ASR_TRIES = 10
 ASR_MAX_TOKENS = 512  # as checks.py: a looping transcript comes back long and scores broken
-CHECKERS = 32  # checking processes, each with one request to the ASR server at a time
+CHECKERS = 32  # checking processes
+# rows a checking process hears at once, each on its own thread: 256 requests in flight, the server's --max-num-seqs.
+# The server's time is its decode steps, mostly a read of its weights: one request a process (~30 in flight) held
+# the whole run to ~28 rows/s beside the voicer (2026-11-28).
+CHECK_ROWS = 8
 LOADER_SHARE = 4  # processes preparing the next shard's references and lines: a quarter of the CPU quota
 OPUS_AT_ONCE = 4
 PUSH_S = 1800
@@ -551,15 +555,19 @@ class Checker:
 
 
 _checker: Checker | None = None
+_hearing = None  # the checking process's threads, one a row of a part
 
 
 def _start_checker(url: str, encoding) -> None:
-    global _checker
+    from concurrent.futures import ThreadPoolExecutor
+
+    global _checker, _hearing
     _checker = Checker(url, encoding)
+    _hearing = ThreadPoolExecutor(CHECK_ROWS)
 
 
-def _check(text: str, wav: np.ndarray) -> dict:
-    return _checker.check(text, wav)
+def _check(rows: list[tuple[str, np.ndarray]]) -> list[dict]:
+    return list(_hearing.map(lambda row: _checker.check(*row), rows))
 
 
 def load_shard(source: str, name: str, root: Path, pool) -> Shard:
@@ -698,7 +706,7 @@ def run(args: argparse.Namespace) -> None:
     voicer = Voicer()
     checks = ProcessPoolExecutor(CHECKERS, mp_context=spawn, initializer=_start_checker,
                                  initargs=(args.asr, spawn.BoundedSemaphore(OPUS_AT_ONCE)))
-    checking: dict = {}  # future -> its request
+    checking: dict = {}  # future -> its part's requests
     inflight = set()
     retries: list[Request] = []
     fresh: Iterator[Request] = iter(())
@@ -799,13 +807,15 @@ def run(args: argparse.Namespace) -> None:
                     continue
                 voicer.submit(req)
             out = voicer.step()
-            for req, wav in out:
-                fut = checks.submit(_check, req.text, wav)
-                checking[fut] = req
+            for p in range(0, len(out), CHECK_ROWS):
+                part = out[p: p + CHECK_ROWS]
+                fut = checks.submit(_check, [(req.text, wav) for req, wav in part])
+                checking[fut] = [req for req, _ in part]
                 inflight.add(fut)
             for fut in [f for f in inflight if f.done()]:
                 inflight.discard(fut)
-                settle(checking.pop(fut), fut.result())
+                for req, result in zip(checking.pop(fut), fut.result()):
+                    settle(req, result)
             pushes.check()  # a failed upload stops the run; a rerun pushes what is written
             if loading_done and not voicer.active and not inflight and not retries:
                 break
