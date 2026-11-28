@@ -89,7 +89,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Decision](#decision) · [On the Hub](
   text; an extra `en-vi` shard has no pair and raises). EN→VI is ~59% of the rows, from ~55% in
   the 3B's GRPO and `both_heads_z`, which had the tranche's clean `en-vi` rows and the 500 clean
   shards. As packs
-  (`streams --drop-shards` as each folder lands): 57 + ~52 + ~41 GB and the pair ~21, ~172 GB;
+  (`packs --drop-shards` as each folder lands): 57 + ~52 + ~41 GB and the pair ~21, ~172 GB;
   with the run, weights, env and evaluation sets ~250 of a 350 GB disk. All 1,832 shards both ways
   would need ~420, and a run of 2,000 updates reads only a few percent of the rows.
 - **The next two-way SFT run** trains on all of it ([Decision](#decision)), on an H100 SXM:

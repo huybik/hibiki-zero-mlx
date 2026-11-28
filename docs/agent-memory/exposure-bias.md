@@ -99,7 +99,7 @@ published (DeepSeekMath used β = 0.04), built for the student's on-policy disti
 
 - Same model, same delays and codebooks: none of that note's leak (`grpo_profile.py` reports no
   `teacher_leak`). The term starts near 0, not at it: the policy's load copies the text PAD's
-  input row over EOS's ([sft-training](sft-training.md#trainer), `common.load_policy`) and the
+  input row over EOS's ([sft-training](sft-training.md#trainer), `model.load_policy`) and the
   teacher keeps the file's, so the few kept tokens that read an EOS (codebooks 1–15 of the frame
   before it) differ (KL 0.01–0.06 on a tiny model), and fp32 masters differ from a bf16 copy a
   little everywhere. Read the profile's starting `kl_text` and `kl_audio` as that floor.

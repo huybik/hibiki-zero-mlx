@@ -31,7 +31,7 @@ HF <prefix>/ ─► data/cache/<prefix> on the pod (docs/finetune.md)
   ~70 GB and the internal disk is too small.
 - The full build (user's choice, 2026-10-27: every row that fits the trainer) is in
   [Builds](#builds).
-- Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `streams.load_rows`
+- Grounded-v2 (`hibiki_vn_grounded_cache_v2`) is the only cache format; `rows.load_rows`
   rejects anything else:
   - Mimi at 24 kHz / 12.5 Hz;
   - English audio delayed by a draw from U[0, min(0.5 × Vietnamese duration, room)], seeded by

@@ -69,7 +69,7 @@ limit (429) partway; logged in they do not, and `hf download` resumes where it s
   --include "en-vi/en-vi-grounded-v2/*/shard_*.pt"
 ./.venv/bin/python -m training.finetune.streams \
   data/cache/en-vi-grounded-v2/train data/cache/en-vi-grounded-v2/validation
-./.venv/bin/python -m training.finetune.streams --drop-shards \
+./.venv/bin/python -m training.finetune.packs --drop-shards \
   data/cache/en-vi/en-vi-grounded-v2/train data/cache/en-vi/en-vi-grounded-v2/validation
 ./.venv/bin/hf download huybik/hibiki-zero-vi-full-sft --repo-type dataset --local-dir data \
   --include "eval/*"

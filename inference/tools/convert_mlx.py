@@ -51,7 +51,7 @@ EIGHT_BITS = re.compile(
 def checkpoint_tokenizer(checkpoint: Path) -> str:
     """The tokenizer file the checkpoint's text rows are on: its safetensors metadata
     `text_tokenizer`, which every training checkpoint records (`weight_tokenizer` in
-    training/finetune/common.py), else upstream's (upstream's weight and checkpoints before
+    training/finetune/model.py), else upstream's (upstream's weight and checkpoints before
     2026-11-10)."""
     with open(checkpoint, "rb") as handle:
         header = json.loads(handle.read(struct.unpack("<Q", handle.read(8))[0]))

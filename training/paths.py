@@ -24,7 +24,7 @@ DEFAULT_TOKENIZER = REPO_ROOT / "weights" / "tokenizer_spm_48k_multi6_2.model"
 EN_VI_REPO = "anquachdev/common-vi-en"
 EN_VI_REVISION = "2ce8777d122123609722814f776f0505ea966ca5"
 
-# Written by training.cache.en_speech (Mac) and required by streams.load_rows (H100); kept here
+# Written by training.cache.en_speech (Mac) and required by rows.load_rows (H100); kept here
 # so the trainer never imports the builder's Mac-only packages.
 CACHE_FORMAT = "hibiki_vn_grounded_cache_v2"
 # A cache shard's direction, <source>-<target>, when the shard records none: the caches built

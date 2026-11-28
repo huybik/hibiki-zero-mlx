@@ -14,7 +14,8 @@ FLEURS's content, which only real Vietnamese speech can teach
 language: real source speech, its transcript translated sentence by sentence, and the English
 target synthesized in the speaker's voice (the paper's Italian: 850 h, base BLEU 14.3 → 31.4).
 Researched 2026-11-04 from the corpora's and models' own cards. The code (`training/tranche/`) is
-YODAS's ingest (`ingest.py`, `yodas.py`), translate, VieNeu's TTS both ways (`voice.py`), the row
+the tranche repos' layout every stage reads and pushes by (`repo.py`), YODAS's ingest (`ingest.py`, `yodas.py`),
+translate, VieNeu's TTS both ways (`voice.py`, its engine in `vieneu/`), the ASR server's client (`asr.py`), the row
 filters (`filters.py`) and the cache build (`cache.py`). PhoAudiobook, viVoice and GigaSpeech 2 are
 ingested and heard whole: their ingest and ASR pass, the bake-off and the ASR check are in git history.
 
@@ -30,8 +31,8 @@ ingested and heard whole: their ingest and ASR pass, the bake-off and the ASR ch
     non-commercial caches (~10 h of training); the generated data is kept either way.
 - Storage (user, 2026-11-06: every source public and gated, on the anquachdev account, the
   user's): every stage writes to the Hub shard by shard, `<source>/segments/`, `<source>/text_en/`,
-  `<source>/en_audio/` and `<source>/asr_vi/` of `ingest.REPO`, and the caches to `<source>/` of
-  `ingest.CACHE_REPO`, so a rerun or another machine picks up from the Hub. The box keeps what it
+  `<source>/en_audio/` and `<source>/asr_vi/` of `repo.REPO`, and the caches to `<source>/` of
+  `repo.CACHE_REPO`, so a rerun or another machine picks up from the Hub. The box keeps what it
   wrote and downloaded under `/workspace/tranche/repo/<source>/<part>/` and `…/cache/<source>/`.
   - [`anquachdev/en-vi-speech-20k`](https://huggingface.co/datasets/anquachdev/en-vi-speech-20k)
     (`REPO`): PhoMT's synthetic pairs in `data/` (config `default`; the repo was
@@ -147,7 +148,7 @@ other corpora ─► their transcripts, checked against Qwen3-ASR ────�
   and some corpus "speakers" (platforms) hold several voices. The TTS needs no reference pick, as
   it prompts each row with its own clip.
 - Ingest writes each source shard's usable segments as one parquet sorted by `seq`, audio
-  re-encoded to 32 kbps Ogg Opus (~16 MB per hour), under
+  re-encoded to 32 kbps Ogg Opus (~16 MB per hour; `training.audio.decode.encode_opus`), under
   `/workspace/tranche/repo/<source>/segments/`, and `ingest push` uploads that folder to its repo.
   `doc` is the recording as far as the corpus tells and never spans shards: a PhoAudiobook reader's run in rising time, a GigaSpeech 2 recording (its tars hold segments
   out of order, and with no times its neighbours are only consecutive segment numbers), and for
@@ -165,13 +166,13 @@ other corpora ─► their transcripts, checked against Qwen3-ASR ────�
     | viVoice (5–22.4 s clips) | 269,350 | 571 | 186 channels | one per row | 9.7 GB | 30 min, 16 workers |
     | GigaSpeech 2 (archives 0–12) | 281,133 | 337 | none | per recording | 5.5 GB | 27 min, 4 workers |
 
-    GigaSpeech 2 archives 86 and 98 (`ingest.SOURCES["giga"].heldout`) are held out of training
+    GigaSpeech 2 archives 86 and 98 (`repo.SOURCES["giga"].heldout`) are held out of training
     as the tranche's own evaluation set ([giga-heldout](sft-evaluation.md#evaluation-sets)).
 
   - The audio decodes to within 0.5 ms of `duration_s`. Clips under 1 s (some of GigaSpeech
     2's) decode 6.5 ms long, as ffmpeg cannot trim a one-page Ogg stream. Ogg serial numbers are
     random, so a re-ingested shard differs in bytes and uploads again.
-- Each stage reads a shard's parts through `ingest.part_file`: the copy under `--root` where a
+- Each stage reads a shard's parts through `repo.part_file`: the copy under `--root` where a
   stage on the box wrote one (all write whole, by a rename, and keep their files after pushing),
   else the Hub's. The box downloads through Xet at ~5 MB/s a stream (plain HTTP, `HF_HUB_DISABLE_XET=1`,
   reached 143 MB/s with 8 at once), and a second copy
@@ -219,9 +220,9 @@ without voicing them.
   Qwen3-ASR-1.7B on the shared ASR server, its language detected, not forced, up to 512 tokens;
   YODAS's ingest writes its own ([tranche-yodas](tranche-yodas.md#rows)). The rows where the
   transcript and the ASR disagree, or the language is not Vietnamese, are the ones the build drops.
-  - `filters.Hearer` parses the reply: unforced, the model writes `language <Name><asr_text>…`,
-    and `language None` for no speech; a reply without that header is all transcript with
-    language `""`, as qwen_asr parses it.
+  - `asr.parse` reads the reply (`asr.Client` in YODAS's ingest; voice.py forces the language): unforced, the
+    model writes `language <Name><asr_text>…`, and `language None` for no speech; a reply without that header is
+    all transcript with language `""`, as qwen_asr parses it.
   - The client sends 16 kHz WAV: sent as Opus, the server's 8 API processes saturated the box's 27
     cores at 21 rows/s and starved the TTS's main process.
   - First PhoAudiobook shards: CER median 0.000, p90 0.03–0.04, about one row a shard detected

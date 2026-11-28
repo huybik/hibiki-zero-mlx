@@ -31,8 +31,8 @@ monologue. Text is sampled before audio at each step, so this adds no latency an
   `heads.py` replaces `LMGen.depformer_step` (all codebooks sampled at once from the heads; any
   other model runs moshi's steps) and, per model, `forward_depformer_training`. The depformer's
   tensors are dropped; the config's `depformer_num_layers` is 1, the throwaway moshi builds first.
-- The config marks it with `"audio_heads": "parallel"`; `common.load_checkpoint_info` takes the
-  key out before moshi reads the config, and every model is built through `common.build_lm`
+- The config marks it with `"audio_heads": "parallel"`; `model.load_checkpoint_info` takes the
+  key out before moshi reads the config, and every model is built through `model.build_lm`
   (a heads model: built without weights, heads installed, then loaded, the EOS row copied from
   PAD's as moshi's own load does).
 

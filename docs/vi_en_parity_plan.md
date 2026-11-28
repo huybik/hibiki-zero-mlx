@@ -572,7 +572,7 @@ Vietnamese text cannot keep up with its speech.
       on the Mimi audio, ~8 h for all of it;
    3. the `en-vi` caches of everything round 4e trained (user, 2026-11-10: "use more data for
       the two ways run"): the whole tranche and the same 500 `en_speech` shards, ~8,500 h a
-      direction; the box keeps only their packs (`streams --drop-shards`), as both directions'
+      direction; the box keeps only their packs (`packs --drop-shards`), as both directions'
       shards and packs would not fit its 350 GB;
    4. the two-way SFT on both directions of those rows (~17k h, ~150k updates of 8,192 frames,
       ~23 h on the H100 at 14,330 frames/s) from the start through `init_weights`, the pilot's test at its first

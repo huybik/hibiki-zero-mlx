@@ -35,7 +35,7 @@ argmax on 92.1% of tokens against fp16's 94.6% ([lm-npu](lm-npu.md#precision)), 
   weights. The swap copies each palettized weight twice a step (~50 GB of memory traffic on the
   student, an estimated 6–9% of a step) and keeps a 4.2 GB full-precision copy.
 - **Parking** (`--park-states`): while validation translates free-running, AdamW's states and
-  the teacher wait in pinned host memory (`common.HostOffload`, as GRPO's evaluation parks them):
+  the teacher wait in pinned host memory (`model.HostOffload`, as GRPO's evaluation parks them):
   9.5 + 2.4 GiB on the heads student distilling itself (train.py's `pinned_max_round_threshold_mb:1`
   pins blocks over 1 MB at their size, as GRPO's `ALLOC_CONF` does). Without it, that run's
   validation on a 32 GB card ran out of memory at Mimi's encode of the first batch, at batch 64
@@ -43,7 +43,7 @@ argmax on 92.1% of tokens against fp16's 94.6% ([lm-npu](lm-npu.md#precision)), 
   the 3B's SFT fits on 80 GB without it, and parking pins 23 GiB more of host memory, which
   `h100.sh sizes` adds to a run's RAM check when it passes `--park-states` (80 GiB for the 3B's SFT,
   55 without).
-  GRPO after `HostOffload` and `adam_states` moved to `common.py` (2026-11-25, main e8dfbe8,
+  GRPO after `HostOffload` and `adam_states` moved to the shared module (now `model.py`; 2026-11-25, main e8dfbe8,
   the 5090): 4 updates of the heads student from `both_heads_z` update 1,200 (4 streams × 4
   rollouts, `--park-states`, an evaluation and a save every 2) ran to the final save; first
   ratio 1.0000, then ≤ 1.0003, no clipping, gradient norms 2.7–4.4e5 (the 3B's 2026-11-13 check:

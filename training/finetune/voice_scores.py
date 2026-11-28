@@ -1,5 +1,5 @@
 """How much a translation's speech sounds like its speaker, and how clean it is: free-running
-evaluation's voice scores (`common.generate_batch`, `inference/tools/gate.py`).
+evaluation's voice scores (`generation.generate_batch`, `inference/tools/gate.py`).
 
 - `speaker_sim`: cosine between WeSpeaker ResNet34-LM (VoxCeleb) embeddings of the source file as
   recorded (not through the level stage, which lifts the pauses' noise) and the translation, each

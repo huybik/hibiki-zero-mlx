@@ -27,7 +27,7 @@ T=/workspace/tranche/repo/cache
 # streams group its rows by doc), and from en_speech's real recordings, clean and noisy (each copy
 # keeps 40% of its rows clean). The en_speech rows are round 4e's 500 shards
 # (box/en_speech_sub.txt) in both en-vi folders, timed by the vi-en copy of the same rows
-# (--pair-cache-dir, streams.load_rows), so each en-vi folder holds those 500 alone: an extra shard
+# (--pair-cache-dir, rows.load_rows), so each en-vi folder holds those 500 alone: an extra shard
 # has no pair and raises (envi-data.md#the-runs-on-it). The 3B's H100 profile's sizes (grpo.md);
 # 2,000 updates, judged at 800 (user, 2026-11-13: 800, more while it still improves; the rate is
 # constant, so a longer --updates is the same run up to there).

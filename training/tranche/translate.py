@@ -32,8 +32,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from training.paths import exclusive
-from training.tranche.filters import NON_LATIN, broken
-from training.tranche.ingest import REPO, ROOT, SOURCES
+from training.tranche.filters import NON_LATIN, VI_LETTERS, broken
+from training.tranche.repo import REPO, ROOT, SOURCES
 
 # Chosen on the box against Index-Translate-9B, Hy-MT2-30B-A3B and Muse (tranche-translate, Bake-off).
 # Apache-2.0; BF16 weights, quantized to FP8 as they load. On a card under 64 GiB (an RTX 5090's 32
@@ -65,7 +65,7 @@ MAX_FAILED, MIN_ROWS = 0.01, 5_000
 # is right), and như, lại, từ, which a name the model leaves with its diacritics holds ("Như Xuân").
 VIETNAMESE_WORDS = {"và", "của", "là", "được", "những", "các", "này", "với", "không", "có", "một", "đã", "để",
                     "thì", "người", "đến", "về", "cũng", "nhiều", "sẽ", "đó", "phải", "còn", "rằng", "bị"}
-VIETNAMESE_LETTER = re.compile("[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]", re.IGNORECASE)
+VIETNAMESE_LETTER = re.compile(f"[{VI_LETTERS}]", re.IGNORECASE)
 
 
 def log(msg: str) -> None:

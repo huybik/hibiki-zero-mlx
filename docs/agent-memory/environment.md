@@ -30,7 +30,7 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Python](#python) · [Secrets](#secret
   3.12; `ingest` and `vieneu` are 3.12 as `box/envs.sh` builds them, not tried on 3.14). 3.14 starts processes by `forkserver`, not `fork`: a child re-imports the
   main module (a script that works at import breaks) and gets its arguments pickled, so a
   DataLoader's dataset is copied into each worker. Name `fork` where that matters (train.py's and
-  validate.py's DataLoaders, `streams.pack`, the GRPO reward pool).
+  validate.py's DataLoaders, `packs.pack`, the GRPO reward pool).
 - A rented box shows the host's cores (`nproc` 128) but its container may use only its quota
   (`/sys/fs/cgroup/cpu.max`, 15.36 CPUs on the Illinois H100), and torch (64 threads, 32
   compile workers), ninja and BLAS size themselves by the cores. `setup` ends with

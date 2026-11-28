@@ -125,17 +125,17 @@ def cut_state(parent: dict[str, Any], child_keys: dict[str, tuple[int, ...]], la
 
 
 def student_shapes(config_path: Path, weight: Path, tokenizer: Path = DEFAULT_TOKENIZER) -> dict[str, tuple[int, ...]]:
-    """The names and shapes of the model the trainer builds from `config_path` (`common.build_lm`),
+    """The names and shapes of the model the trainer builds from `config_path` (`model.build_lm`),
     on the meta device."""
     import torch
 
-    from training.finetune import common
+    from training.finetune.model import build_lm, load_checkpoint_info
 
     # Mimi and the tokenizer are never read here; named so nothing is fetched from the Hub.
-    info = common.load_checkpoint_info(argparse.Namespace(
+    info = load_checkpoint_info(argparse.Namespace(
         hf_repo="kyutai/hibiki-zero-3b-pytorch-bf16", model_weight=weight, mimi_weight=DEFAULT_MIMI_WEIGHT,
         tokenizer=tokenizer, config_path=config_path))
-    lm = common.build_lm(info, "meta", torch.bfloat16, load_weight=False)
+    lm = build_lm(info, "meta", torch.bfloat16, load_weight=False)
     return {key: tuple(value.shape) for key, value in lm.state_dict().items()}
 
 
@@ -152,7 +152,7 @@ def fresh_heads(config: dict[str, Any], dtype: Any, seed: int) -> dict[str, Any]
 def main() -> None:
     from safetensors import safe_open
 
-    from training.finetune.common import save_state, weight_tokenizer
+    from training.finetune.model import save_state, weight_tokenizer
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--weight", type=Path, required=True, help="the parent checkpoint (safetensors)")

@@ -2,7 +2,7 @@
 
 Read when touching `training/audio/augment.py`, `training/cache/noisy.py`, the
 `en-vi-val-noisy` or `en-vi-val-en-noisy` evaluation set, a `*-noisy` cache or the rooms of GRPO
-and SFT (`streams.run_rooms`, `--room-share`).
+and SFT (`rooms.run_rooms`, `--room-share`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Why](#why) · [Conditions](#conditions) ·
 [Rooms](#rooms) · [Noisy cache](#noisy-cache) · [Speed](#speed) · [Checks](#checks) ·
 [Evaluation](#evaluation)
@@ -95,7 +95,7 @@ room does not give.
   peaking at U[−45, −25], cut edges ramped over 10 ms; then the level stage from the track's start:
   frame peaks at a median −24.8 dBFS (p90 −18.9, events up to −6; 24 rooms of 30 s, seed 44), −38.7
   at its first settings, when codebook 0 took a steady silence value on ~71% of room frames.
-- **Encoded** by `streams.run_rooms`: GRPO 256 rooms, SFT 2,048 (a pass draws ~890,000 room streams),
+- **Encoded** by `rooms.run_rooms`: GRPO 256 rooms, SFT 2,048 (a pass draws ~890,000 room streams),
   each as long as the silence track (GRPO's `--frames`, SFT's longest stream), from a fresh state on
   the run's GPU at its start, SFT's before its resume check (TF32 on, so residual codes may differ by
   GPU). `StreamDataset` draws one for a stream from (seed, index), the same on a resume; `assemble`
@@ -212,7 +212,7 @@ came out identical to the first encode's.
   threads (`fetch --dataset-dir` defaults to `--jobs 4`, the Hub's to 16, to cap peak RAM). On 4 shards
   (6.11 h re-encoded, 15 workers): `18.22 s → 11.76 s` total wall (`2,009–2,990×` → `4,965–11,911× RT`
   steady-state, ~3.3× faster steady-state); clean rows 100% byte-identical, conditions 100% identical,
-  re-encoded `cb0 = 99.74%`, `all16 = 95.41%`. `streams.room_codes` also batches room encoding
+  re-encoded `cb0 = 99.74%`, `all16 = 95.41%`. `rooms.room_codes` also batches room encoding
   (`ROOM_BATCH_CUDA = 8`) on CUDA through `lm_training.install()`'s fast Mimi (`2.577 s → 0.477 s`
   for 32 × 40 s rooms, **5.40× faster**, `cb0 = 99.93%`).
 

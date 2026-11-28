@@ -1,9 +1,9 @@
 #!/bin/bash
-# A phone student's test call: the 13 test sets in one eval.py call, seed 43, batch 64, LAAL, as
+# A model's test call: the 13 test sets in one eval.py call, seed 43, batch 64, LAAL, as
 # both_heads_z's and the heads 6-bit finish's tests ran (heads-on-policy-runs.md, student-palettize.md),
 # with the voice scored and no speech written. Run it alone on the GPU; a finished OUT_DIR (its
 # metrics.json) is skipped, so a rerun continues.
-#   test_student.sh CONFIG MODEL_WEIGHT OUT_DIR
+#   test_sets.sh CONFIG MODEL_WEIGHT OUT_DIR
 set -euo pipefail
 [[ $# -eq 3 ]] || { echo "usage: $0 CONFIG MODEL_WEIGHT OUT_DIR" >&2; exit 1; }
 cd /workspace/hibiki-zero

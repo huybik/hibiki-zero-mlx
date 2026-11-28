@@ -161,7 +161,7 @@ commit, which the refit's and the finish's jobs postdate), `finish_slices.sh` (a
 student-slices-pal6-5090`, the heads student's recipe in [student-palettize](student-palettize.md)),
 snaps the refit and the finish's update 4,000 onto their 6-bit tables, uploads both snaps to the
 Hub repo's `phone/` (the Mac fetches them there: ssh from the box runs at ~2 MB/s), then tests the on-policy
-start, the refit (bf16 and snapped) and the finish (snapped) with `test_student.sh` (13 test sets,
+start, the refit (bf16 and snapped) and the finish (snapped) with `test_sets.sh` (13 test sets,
 seed 43, LAAL, voice scored) into `runs/slices_tests/`. Each step whose output exists is skipped,
 a job that ends without its final model stops the chain, one copy runs at a time (a lock), and
 the outputs are tied to the best they started from (`runs/slices_finish_best.txt`: a new best
@@ -233,7 +233,7 @@ path runs and the tables survive the export; the 13-set tests below compare the 
 
 ## Tests
 
-`test_student.sh` (13 test sets, `eval.py` seed 43, batch 64, LAAL,
+`test_sets.sh` (13 test sets, `eval.py` seed 43, batch 64, LAAL,
 voice scored, 2026-11-28 00:22–00:56 UTC on box 62513802, ~8.5 min a model; records, `table.md`
 and `paired.txt` in `/Volumes/data/hibiki-zero-evals/box-62513802/slices_tests/`). Every set
 healthy for every model. Cells chrF / BLEU / length ratio / median End Offset (s) / mean LAAL (s)

@@ -10,14 +10,14 @@ The trainer itself is in [sft-training](sft-training.md); the pod procedure in
 
 ## Fast path
 
-`lm_training.install()` (run when `common` is imported) replaces six things in moshi 0.2.13
+`lm_training.install()` (run when `model` is imported) replaces six things in moshi 0.2.13
 with the same math on the same weights:
 
 - the causal attention mask becomes `is_causal=True` (flash);
 - grouped-query attention runs in SDPA (`enable_gqa`) instead of copying each key and value to 16
   heads (validation, and steps past the ring; generation steps are the next item);
 - a generation step's attention (`_step_attention`, from `LMGen._step`) reads only the written
-  slots of the KV cache, in the Triton kernel `training/tranche/decode_attention.py` (VieNeu's),
+  slots of the KV cache, in the Triton kernel `training/decode_attention.py` (shared with VieNeu),
   which reads their count on the device, so the main transformer's CUDA graph replays at every
   step; the query heads that share a key/value head read its cache once, together (see below);
 - the depformer's training forward runs its 16 codebook steps step-major (`unbind`/`stack`,
@@ -40,9 +40,9 @@ with the same math on the same weights:
 - non-streaming CUDA `MimiModel.encode` dispatches to `training.cache.mimi_cuda.FastMimiEncoder.from_moshi`,
   and `MimiModel._apply` clears `_fast_encoder` when Mimi moves
   to CPU so parking Mimi during training frees GPU weights immediately. Together with batched CUDA
-  `streams.room_codes` (`ROOM_BATCH_CUDA = 8`) and batched causal `hibiki_helpers.decode_wavs`
+  `rooms.room_codes` (`ROOM_BATCH_CUDA = 8`) and batched causal `generation.decode_wavs`
   (`MIMI_DECODE_CHUNK_CUDA = 8`, `MIMI_CHUNK_ROWS_CUDA = 16`), RTX 5090 measurements (2026-11-28,
-  box `62513802`): `MimiModel.encode(8 × 16 s)` runs at `8.01 ms` (`15,976× RT`), `streams.room_codes`
+  box `62513802`): `MimiModel.encode(8 × 16 s)` runs at `8.01 ms` (`15,976× RT`), `rooms.room_codes`
   (32 × 40 s rooms) drops `2.577 s → 0.477 s` (**5.40×**, `cb0 = 99.93%`), and `decode_wavs(8 rows)`
   drops `857.2 ms → 244.2 ms` (**3.51×**, `max_diff = 1.86e-4`).
 
@@ -168,7 +168,7 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
   ~690 W of its 700 W cap, 99–100% busy)**: kernels of 10 warm steps at 4,608: matmuls 48.6%, fused
   AdamW and the clip's scaling 11.7%, the depformer's attention 6.4%, the loss's boolean-mask gather
   (IndexBackward, index_put) 4.5%. The loss now weighs masked positions 0 over the full logits in a
-  compiled CE (`common.token_ce`): +4.5%. It replaced the indexed loss everywhere on 2026-11-10
+  compiled CE (`losses.token_ce`): +4.5%. It replaced the indexed loss everywhere on 2026-11-10
   (validation ran the indexed one until then): on three validation batches the losses equal the
   indexed ones to 1e-7 and teacher-forced validation to 1e-6, and its bf16 gradients sit as far
   from an fp32 reference as the previous kernel's (per-parameter norms: median 1.2e-3, max 9–17%,
@@ -224,7 +224,7 @@ The same benchmark by GPU (one epoch is about 131,700 steps at batch_frames=4608
 - About 33 GiB of that 74.4 GiB was Mimi coding all 64 rows at once in fp32 (0.8 GiB per 40 s
   row, measured on CPU). With the 20 s tail FLEURS dev's biggest batch (64 rows of up to 17 s)
   would have needed about 89 GiB in total, so Mimi codes a batch in chunks of rows (16 on CUDA,
-  `hibiki_helpers.MIMI_CHUNK_ROWS_CUDA`) and validation should peak well below training.
+  `generation.MIMI_CHUNK_ROWS_CUDA`) and validation should peak well below training.
 - Since 2026-11-03 validation also translates the 360 `en-vi-val` rows (54 minutes of speech)
   in the same batches as FLEURS dev: 12 batches instead of 6, the biggest 64 rows of up to
   22.1 s and the last 17 rows of up to 32 s, at most 4,918 generation steps against 2,647.

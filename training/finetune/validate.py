@@ -16,7 +16,16 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from training.finetune import common, streams
+from training.finetune import streams
+from training.finetune.losses import LossWeights, evaluate_teacher_forced
+from training.finetune.model import (
+    check_device,
+    dtype_from_name,
+    load_checkpoint_info,
+    load_lm,
+    run_tokenizer,
+)
+from training.finetune.rows import load_rows
 from training.paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_MIMI_WEIGHT,
@@ -32,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cache-dir", type=Path, required=True)
     parser.add_argument("--pair-cache-dir", type=Path, nargs="+", required=True,
-                        help="The other direction's cache of the same rows, which times each row's source (streams.load_rows).")
+                        help="The other direction's cache of the same rows, which times each row's source (rows.load_rows).")
     parser.add_argument(
         "--checkpoint", type=Path, help="Optional full-model .safetensors checkpoint."
     )
@@ -66,8 +75,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    device = common.check_device(args.device)
-    dtype = common.dtype_from_name(args.dtype)
+    device = check_device(args.device)
+    dtype = dtype_from_name(args.dtype)
     torch.set_float32_matmul_precision("high")  # TF32 matmuls, as training validates
 
     cache_dir = require_dir(args.cache_dir, "code cache directory")
@@ -76,12 +85,12 @@ def main() -> None:
     if checkpoint is None:  # a checkpoint replaces the base weights, which are never read
         args.model_weight = require_file(args.model_weight, "model weight")
     args.mimi_weight = require_file(args.mimi_weight, "Mimi weight")
-    args.tokenizer = common.run_tokenizer(args.tokenizer, checkpoint or args.model_weight)
+    args.tokenizer = run_tokenizer(args.tokenizer, checkpoint or args.model_weight)
 
-    checkpoint_info = common.load_checkpoint_info(args)
+    checkpoint_info = load_checkpoint_info(args)
     frames = streams.frame_range(args.stream_seconds)
     pair_dirs = [require_dir(path, "pair code cache directory") for path in args.pair_cache_dir]
-    rows, layout = streams.load_rows([cache_dir], args.max_frames, args.tokenizer, pair_dirs)
+    rows, layout = load_rows([cache_dir], args.max_frames, args.tokenizer, pair_dirs)
     silence = streams.silence_track(checkpoint_info.get_mimi(device="cpu"), frames[1], layout.dep_q)
     dataset = streams.StreamDataset(rows, layout, silence, frames, streams.VALIDATION_SEED,
                                     int(checkpoint_info.lm_config["dep_q"]))
@@ -95,16 +104,16 @@ def main() -> None:
     )
     print(f"Planned {len(dataset)} streams from {len(rows)} rows of {repo_display_path(cache_dir)}")
 
-    lm = common.load_lm(checkpoint_info, checkpoint, device, dtype)
+    lm = load_lm(checkpoint_info, checkpoint, device, dtype)
 
-    weights = common.LossWeights(
+    weights = LossWeights(
         audio=args.audio_loss_weight,
         text=args.text_loss_weight,
         first_codebook=args.first_codebook_weight,
         text_pad=args.text_pad_weight,
         acoustic_ar=args.acoustic_ar_weight,
     )
-    metrics = common.evaluate_teacher_forced(
+    metrics = evaluate_teacher_forced(
         lm, dataloader, device, checkpoint_info.model_type, weights, args.max_batches
     )
     result = {

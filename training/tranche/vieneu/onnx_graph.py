@@ -1,5 +1,5 @@
 """An ONNX graph run as PyTorch ops on the GPU, compiled by Inductor if asked: VieNeu-TTS v3 Turbo's denoiser
-and speaker encoder in voice.py ([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md)).
+and speaker encoder in engine.Voicer ([tranche-tts-scaleup](../../../docs/agent-memory/tranche-tts-scaleup.md)).
 
 onnx2torch's modules read shapes and axes out of tensors as they run, which Dynamo cannot trace. Here the first run
 at each input shape computes every shape value in NumPy and records the tensor ops as closures over those values;

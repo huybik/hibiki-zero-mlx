@@ -2,7 +2,7 @@
 
 Replaces moshi's streaming `MimiModel.encode()` for non-streaming batch encoding across cache
 generation (`cuda.cuda_mimi`: `cuda.py`, `noisy.py`) and fine-tuning /
-evaluation (`lm_training`'s `MimiModel.encode` on CUDA: `streams.py`, `hibiki_helpers.py`,
+evaluation (`lm_training`'s `MimiModel.encode` on CUDA: `rooms.py`, `generation.py`,
 `eval.py`, `train.py`, `grpo.py`):
 
 - Zero `StreamingConv1d` state allocations or `torch.cat` padding copies.

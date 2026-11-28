@@ -23,7 +23,7 @@ Writes, under --out-dir (default data/eval):
                                    conditions, for English to Vietnamese.
   giga-heldout/test.jsonl          a seeded sample of the real-Vietnamese tranche's own rows
                                    from the GigaSpeech 2 archives held out of training
-                                   (`ingest.SOURCES["giga"].heldout`): real speech, the corpus
+                                   (`repo.SOURCES["giga"].heldout`): real speech, the corpus
                                    transcript, the tranche's machine English (text_en). Built
                                    from the gated tranche repo, so it needs an HF_TOKEN granted
                                    access, and its audio never goes to a public repo (GigaSpeech
@@ -77,7 +77,7 @@ EN_VI_ROWS = 180  # per source
 EN_VI_SEED = 0
 OPUS_RATE = 48_000
 NOISY_SEED = 0
-GIGA_HELDOUT_REVISION = "5111b38c705e7c0d630ff3c6f5bfaf4e5f51b0d1"  # ingest.REPO, 2026-11-08
+GIGA_HELDOUT_REVISION = "5111b38c705e7c0d630ff3c6f5bfaf4e5f51b0d1"  # repo.REPO, 2026-11-08
 GIGA_HELDOUT_ROWS = 1_000
 GIGA_HELDOUT_SEED = 0
 
@@ -292,7 +292,7 @@ def build_en_vi_val_noisy(out_dir: Path, bank: augment.Bank, heard: str) -> None
         rows = []
         clean = (out_dir / clean_name / f"{source}.jsonl").read_text().splitlines()
         for row in map(json.loads, clean):
-            # Resampled as eval.py resamples the clean clip (hibiki_helpers.audio_read), so the
+            # Resampled as eval.py resamples the clean clip (eval_rows.audio_read), so the
             # two sets differ by the conditions alone.
             wav, rate = sphn.read(resolve_repo_path(Path(row[column])))
             clip = torch.from_numpy(sphn.resample(wav, rate, augment.SAMPLE_RATE)[0])
@@ -318,9 +318,9 @@ def build_giga_heldout(out_dir: Path) -> None:
     from itertools import groupby
 
     from training.audio.decode import decode
-    from training.tranche import ingest
-    from training.tranche.cache import read_parts
+    from training.tranche import repo
     from training.tranche.filters import grams_of, matches, runs, spoken, training_texts, vi_gate
+    from training.tranche.repo import read_parts
 
     columns = {
         "segments": ["id", "doc", "text", "duration_s"],
@@ -328,9 +328,9 @@ def build_giga_heldout(out_dir: Path) -> None:
         "asr_vi": ["id", "asr_vi", "language", "cer"],
     }
     shards, kept = {}, []
-    for name in sorted(ingest.SOURCES["giga"].heldout):
+    for name in sorted(repo.SOURCES["giga"].heldout):
         files = {
-            part: download(ingest.REPO, GIGA_HELDOUT_REVISION, f"giga/{part}/{name}")
+            part: download(repo.REPO, GIGA_HELDOUT_REVISION, f"giga/{part}/{name}")
             for part in columns
         }
         rows = read_parts("giga", name, files, columns)

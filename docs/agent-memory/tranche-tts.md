@@ -1,7 +1,8 @@
 # VieNeu TTS both ways
 
-Read when touching `training/tranche/voice.py`, `vieneu_frame.py`, `decode_attention.py`, `onnx_graph.py` or the
-`vieneu` env of `training/tranche/box/envs.sh`, or voicing a row in its own speaker's voice on the box, either way:
+Read when touching `training/tranche/voice.py`, its engine `training/tranche/vieneu/` (`engine.py`, `frame.py`,
+`onnx_graph.py`; its attention kernel `training/decode_attention.py`), `training/tranche/asr.py` or the `vieneu` env of
+`training/tranche/box/envs.sh`, or voicing a row in its own speaker's voice on the box, either way:
 the tranche's English targets, or the EN-VI dataset's Vietnamese.
 Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tranche.md) · [Choice](#choice) ·
 [Which TTS voiced what](#which-tts-voiced-what) · [The check](#the-check) · [English](#english) ·
@@ -54,12 +55,12 @@ Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tran
 ## The check
 
 - Every try is heard by Qwen3-ASR-1.7B (`qwen-asr-serve` from env `asr`, `restart.sh asr`, in FP8:
-  [tranche-tts-scaleup](tranche-tts-scaleup.md#in-production)), its language forced (`language` and
-  `to_language` `en` or `vi`), and is broken when its error is over `BROKEN` or its pace (seconds per character
-  of the line) is off `PACE` (0.0636) by 2× either way:
+  [tranche-tts-scaleup](tranche-tts-scaleup.md#in-production); the client `asr.Client`, YODAS's ingest's too), its
+  language forced (`language` and `to_language` `en` or `vi`), and is broken when its error is over `BROKEN` or its
+  pace (seconds per character of the line) is off `PACE` (0.0636) by 2× either way:
   - English: WER under Whisper large-v3's English normalizer, the line unbracketed first (the normalizer deletes
     text in brackets, which scored correct readings of a parenthetical broken), over 0.2;
-  - Vietnamese: CER over `filters.spoken` (syllables, numbers written out), as ingest scores its ASR, over 0.15,
+  - Vietnamese: CER over `filters.spoken` (syllables, numbers written out; `asr.cer`, as ingest scores its ASR), over 0.15,
     the gate's `filters.MAX_CER`. The Mac's voicing ran 0.060–0.068 s a character (medians of cv27-00060,
     libriheavy-large-00012-00103, libriheavy-medium-00100), close enough to English's for one `PACE`.
 - A row is voiced once, broken or not (from the scale-up on, 2026-11-06; the first tranche ran up to 3 tries, the
@@ -72,17 +73,17 @@ Back to [CONTEXT.md](../../CONTEXT.md) · part of [real-vi-tranche](real-vi-tran
   | 2 | 85.8% | 0.607 |
   | 3 | 89.0% | 0.571 |
 
-- At most 512 transcript tokens a check (`ASR_MAX_TOKENS`): uncapped, greedy decoding looped on an output to the
+- At most 512 transcript tokens a check (`asr.MAX_TOKENS`): uncapped, greedy decoding looped on an output to the
   model's 65k context past any timeout (one in the first ~8,000); capped, it comes back long and scores broken.
 - The server stalls past a 60 s try now and then and recovers within minutes; 3 tries ended a run three times in
-  two days (2026-11-06/07), so a check tries 10 times (`ASR_TRIES`); an HTTP error stops the run at once.
+  two days (2026-11-06/07), so a check tries 10 times, 10 s apart (`ASR_TRIES`); an HTTP error stops the run at once.
 - Measured, not shipped (2026-11-07/08): Qwen3-ASR-0.6B served 122 requests/s against the 1.7B's 138 and agreed
   with it on broken on 89% of rows (the 1.7B with itself on the Opus round trip: 95%), flagging 3 points more.
 
 ## English
 
 `voice.py run <source>` voices each tranche segments shard on the Hub that has its `text_en` and `asr_vi` but no
-`en_audio`, except those held out for evaluation (`ingest.SOURCES[...].heldout`,
+`en_audio`, except those held out for evaluation (`repo.SOURCES[...].heldout`,
 [giga-heldout](sft-evaluation.md#evaluation-sets)); each row from its own Vietnamese clip, as the paper conditions
 on the source speaker.
 
@@ -145,7 +146,8 @@ repo (`en_speech/train/`, 1,832 shards; the 3 validation shards are evaluation r
   quota's worth.
 - The box's container allows 6,656 threads: ffmpeg defaults to a decoder thread per host CPU, so PyAV codecs get
   `thread_count = 1`; PyAV's `AudioResampler` holds a thread per host CPU while it lives (4,075 threads from 20
-  decoding threads), so `voice.py` decodes without it; its Opus encoder builds one too, so a semaphore shared by
+  decoding threads), so `voice.py` decodes without it (`training.audio.decode`, the cache build's decoder); its
+  Opus encoder (`training.audio.decode.encode_opus`) builds one too, so a semaphore shared by
   the checking processes lets 4 encode at once.
 - A crashed run drops its queued checks, so its GPU memory frees within minutes, except behind a check still
   trying a stalled server (up to `ASR_TRIES` × ~70 s): a hung server surfaces ~20 min after it hangs, one that

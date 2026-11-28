@@ -1,7 +1,7 @@
 # GRPO
 
-Read when touching `training/finetune/grpo.py`, `grpo_profile.py`, `rewards.py` or
-`h100.sh grpo`.
+Read when touching `training/finetune/grpo.py`, `grpo_rollout.py`, `grpo_objective.py`,
+`grpo_profile.py`, `rewards.py` or `h100.sh grpo`.
 Back to [CONTEXT.md](../../CONTEXT.md) · [Design](#design) · [Checks](#checks) · [Running](#running)
 
 The stage after SFT ([plan](../grpo_plan.md)): the paper's GRPO with BLEU process rewards, on
@@ -30,7 +30,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   written there costs BLEU like any extra word, up to the rollout's own EOS: [noisy-source](noisy-source.md#rooms).
 - **A rollout's length** is its stream's plus `--tail-seconds` (20 s, the tail evaluation
   generates past a source), up to a whole 16-frame bucket and at most `--frames` (1,200, the
-  longest stream plus that tail): `grpo.rollout_frames`. Its last reward sits there, so text a
+  longest stream plus that tail): `grpo_rollout.rollout_frames`. Its last reward sits there, so text a
   rollout emits later scores nothing, as evaluation would not hear it.
   - A window's streams are generated longest first (`sample_window`), each batch to its own
     longest rollout; a row's frames past its own length are -1.
@@ -50,7 +50,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   is used by exactly one update. The train log's `rollout_frames` and `forward_frames` are an
   update's mean rollout and forward lengths.
 - **Rollout layout:** rollouts replay the stream's cached Vietnamese through `LMGen` with
-  `stop_on_eos` off, and are stored in the cache's training layout (`grpo.rollout`).
+  `stop_on_eos` off, and are stored in the cache's training layout (`grpo_rollout.rollout`).
   - `LMGen` reads the input given at step s as source frame s − 1 (step 0's input is never read).
     It samples text frame s at step s, and audio codebook k's frame s − delay_k, at the config's
     delays: 0 for text and codebook 0, 2 for the rest in the 3B; j for a heads student's codebook j.
@@ -60,7 +60,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   result detached and never backpropagated. A no-grad forward picks other bf16 kernels, so the
   first update's ratio would not be 1.
   - Logprobs are taken at the sampling temperature 0.8; top-k is ignored. They are SFT's loss
-    kernel negated (`common.token_ce`, dense over the full logits), so the two trainers share
+    kernel negated (`losses.token_ce`, dense over the full logits), so the two trainers share
     one kernel ([sft-training](sft-training.md#objective)).
   - Text is weighted `--text-weight` 100 against 1 for each audio codebook. A k-codebook student
     so weighs text 100:k; an 8-codebook one passes 50 to keep the 3B's 100:16 (the paper's c_0),
@@ -70,7 +70,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
     R_t sums the boundaries after t, so a reward credits exactly the tokens it counted.
   - y_b joins the references of the rows whose Vietnamese started before b, the row being spoken
     included. A row's reference is its cache text stream.
-  - Texts are decoded as evaluation decodes (`common.decode_text_batch`): tokens above PAD, and a
+  - Texts are decoded as evaluation decodes (`generation.decode_text_batch`): tokens above PAD, and a
     rollout's text ends at its first EOS, so an early EOS loses the rest of the translation.
   - A boundary follows every 31 frames (2.5 s) of Vietnamese speech, plus one at T, because the
     cache has no Vietnamese words.
@@ -84,7 +84,7 @@ EN→VI rewards). Checkpoints, resume and logs are the SFT run's
   free-running pass on `EVAL_PAIRS`' ten sets, both directions (user, 2026-11-10): FLEURS dev both
   ways, `en-vi-val` and `en-vi-val-en`, each clean and noisy (the last since 2026-11-23), with
   AdamW's states and a teacher parked on the host (2026-11-24). The
-  first set of each direction selects (`common.selecting_sets`, by the audio a set is heard in):
+  first set of each direction selects (`eval_rows.selecting_sets`, by the audio a set is heard in):
   promotion goes to the best mean chrF over them among checkpoints that pass every set's gates
   and whose median end offset on each is at most `LATENCY_LIMIT_S` (3 s).
   The rewards need nothing per direction: a row's reference is its own text track decoded with
@@ -213,7 +213,7 @@ The CUDA profile and dry run are under [Running](#running).
   66 / 107 / 124 GiB); π_old's logprobs 53,100–62,300 and the update 16,200–20,400 frames/s at
   micro-batch 2–6. Then every rollout ran 1,202 steps and every forward 1,200 frames; the H100
   profile above has the cut rollouts and forwards.
-- **The start policy** loads as SFT's does (`common.load_policy`), so its text EOS input row
+- **The start policy** loads as SFT's does (`model.load_policy`), so its text EOS input row
   is reset to PAD's ([sft-training](sft-training.md#trainer)). Rollouts and scoring share the
   row, and the first ratio is still 1.
 - **A failed evaluation promotes nothing**, though its pair still reaches the Hub. The non-empty

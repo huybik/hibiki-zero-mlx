@@ -77,7 +77,7 @@ from training.paths import (
     require_dir,
     require_file,
 )
-from training.tranche.ingest import REPO as TRANCHE_REPO
+from training.tranche.repo import REPO as TRANCHE_REPO
 
 SOURCES = ".sources"
 FETCH_LOCK = ".fetch.lock"

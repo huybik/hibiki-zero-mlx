@@ -1,5 +1,5 @@
-"""VieNeu-TTS v3 Turbo's generation with continuous batching, for voice.py
-([tranche-tts-scaleup](../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu)).
+"""VieNeu-TTS v3 Turbo's generation with continuous batching, for engine.Voicer
+([tranche-tts-scaleup](../../../docs/agent-memory/tranche-tts-scaleup.md#optimizing-vieneu)).
 
 The SDK's fused frame (vieneu 3.7.1, `v3_turbo_serve.fused`: the acoustic frame, sampling with the repetition
 penalty, EOS and caps, the backbone step, one CUDA graph), with each slot's own cache position, frame counter and
@@ -23,7 +23,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb
 from vieneu.v3_turbo_serve.batched_backbone import BatchedBackbone
 
-from training.tranche.decode_attention import attend
+from training.decode_attention import attend
 
 
 def sample_topk_first(logits: torch.Tensor, temperature: float, top_k: int, top_p: float) -> torch.Tensor:

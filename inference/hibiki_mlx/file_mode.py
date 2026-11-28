@@ -9,7 +9,7 @@ FIFO queues preserve the streaming order, so output is bit-identical to the
 sequential loop; we just stop letting the CPU and GPU idle on each other.
 
 File mode feeds the source as training's free-running evaluation does
-(`training/finetune/common.py` `generate_batch`): the levelled clip in whole frames, the source
+(`training/finetune/generation.py` `generate_batch`): the levelled clip in whole frames, the source
 EOS on the frame after it, then silence. It stops at the first text EOS the model writes once it
 has heard the source EOS; an earlier one stops nothing, where training's evaluation would end
 there and drop the rest of a long file. `run` (main.py's file mode) also stops after QUIET_S

@@ -1,7 +1,7 @@
 # Two-way speech: English to Vietnamese beside Vietnamese to English
 
 Read when touching a direction (`--direction`, `cache.rows.Settings.direction`, a shard's or
-pack's `direction`), the run's text tokenizer (`--tokenizer`, `common.run_tokenizer`,
+pack's `direction`), the run's text tokenizer (`--tokenizer`, `model.run_tokenizer`,
 `paths.swap_slots`, a pack's `tokenizer` and `text.bin`), the Vietnamese aligner
 (`cache.timing.ALIGNERS["vi"]`), an `en-vi` cache, the English-audio evaluation sets, or the
 two-way run ([plan stage 7](../vi_en_parity_plan.md#7-two-way-speech)); the next one is [teacher-next](teacher-next.md).
@@ -44,7 +44,7 @@ Decided 2026-11-10, for two-way training:
 | trainers | `--tokenizer` defaults to the start weight's; each shard checked against it ([below](#tokenizer-checks)); `--val-cache-dir` takes each direction's cache, scored apart |
 | tranche cache | `--direction en-vi`: `<root>/cache/en-vi/<source>/`, the cache repo's `en-vi/<source>/` (`cache_key`) |
 | streams | Packs (`PACK_VERSION` 5 on) store each pack's direction (a shard without one is `vi-en`) and tokenizer; `Row.direction`, `Piece.source_start`/`target_start` |
-| evaluation | a pairs file's audio column picks its direction (`common.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
+| evaluation | a pairs file's audio column picks its direction (`eval_rows.EVAL_DIRECTIONS`: `vi_audio` → `text_en`, `en_audio` → `text_vi`); sets `fleurs-en`, `en-vi-val-en` ([sft-evaluation](sft-evaluation.md#evaluation-sets)) |
 
 `cache.noisy` (the noisy re-encode) takes either direction's source ([noisy-source](noisy-source.md#noisy-cache)); the next run's data is in [envi-data](envi-data.md).
 
@@ -52,12 +52,12 @@ Decided 2026-11-10, for two-way training:
 
 Every trainer and `eval.py`/`validate.py` check the run's `--tokenizer` against its inputs:
 
-- A model weight (`common.run_tokenizer`, at startup in every entry point, before the caches
-  load): its `text_tokenizer` metadata (`common.weight_tokenizer`; none is the base) must be the
+- A model weight (`model.run_tokenizer`, at startup in every entry point, before the caches
+  load): its `text_tokenizer` metadata (`model.weight_tokenizer`; none is the base) must be the
   tokenizer's file name. `--tokenizer` defaults to that file under `weights/`, so a two-way
   checkpoint evaluates on the swap with no flag. A base weight reaches the swap only through
   `init_weights`. The swap's `.model` needs its `_init.json` beside it in `weights/`.
-- A cache shard (`streams.load_rows`): its pack records the shard's `tokenizer` (none is the
+- A cache shard (`rows.load_rows`): its pack records the shard's `tokenizer` (none is the
   base). The same file loads whole. A shard on the base loads into a run on the swap
   without the rows whose text track uses one of the 6,000 slots the swap gave new pieces
   (`paths.swap_slots`, read from `<model>_init.json` beside the tokenizer): the rest decode the
@@ -139,7 +139,7 @@ Hub bot's safetensors conversion (`refs/pr/2`), tensor for tensor the main branc
   so fast real speech may lose rows as "CTC emission is too short": 3 of 400 GigaSpeech 2 rows
   failed alignment in the calibration. Read the rejections of the first `en-vi` tranche shards.
 - For Vietnamese output, chrF and BLEU see tones; WER, exact match and the repetition gate fold
-  text to ASCII (`common.ascii_text`), so they do not.
+  text to ASCII (`metrics.ascii_text`), so they do not.
 
 ## Checked
 
@@ -167,7 +167,7 @@ both directions of every row round 4e trained, and the pilot's test at its first
   --direction en-vi`, at `en-vi/en-vi-grounded-v2/` of `huybik/hibiki-zero-vi-full-sft` (dataset;
   the other 1,332 train shards are there too, [envi-data](envi-data.md#on-the-hub)); every
   tranche shard `en-vi` (`cache build`), at the cache repo's `en-vi/<source>/`.
-- Every cache keeps only its packs on the box: `python -m training.finetune.streams --drop-shards
+- Every cache keeps only its packs on the box: `python -m training.finetune.packs --drop-shards
   <dirs>` (1,306 `vi-en` shards to packs freed 78.7 GB; the trainer then loaded 5,085,492 rows on
   the swap, the same 1,265 reassigned dropped), each folder only once the Hub lists its shards
   (`--drop-shards` does not check): both directions' shards and packs (~290 GB) would not fit the

@@ -1,7 +1,8 @@
 # SFT launcher and recovery
 
 Read when touching `training/h100.sh`, `training/finetune/hf_sync.py`, or the checkpoint writer
-and resume in `training/finetune/checkpoints.py` (shared by `train.py` and `grpo.py`).
+and resume in `training/finetune/checkpoints.py` (shared by `train.py` and `grpo.py`), or the run
+directory's files both it and `hf_sync` read (`run_files.py`: the pairs, `best.json`).
 Back to [CONTEXT.md](../../CONTEXT.md) · [Launcher](#launcher) ·
 [Checkpoints and recovery](#checkpoints-and-recovery)
 

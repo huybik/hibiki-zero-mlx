@@ -1,6 +1,6 @@
 """Faster moshi LM for training and generation: the same modules and weights, the same math.
 
-`install()` (called when `common` is imported) replaces six things in moshi 0.2.13:
+`install()` (called when `model` is imported) replaces six things in moshi 0.2.13:
 
 - Causal attention. moshi passes SDPA a boolean mask, which rules out the flash kernel; at
   offset 0 that mask is exactly lower-triangular, so it becomes `is_causal=True`.
@@ -10,7 +10,7 @@
   groups the heads itself with `enable_gqa=True`.
 - A generation step's attention (`_step_attention`). moshi attends over the whole KV cache at
   every step, whatever is written: 38 of the 46 ms of kernels a step at 320 rows of 1,208 slots,
-  profiled. Here a Triton kernel (`training.tranche.decode_attention`) reads the written slots
+  profiled. Here a Triton kernel (`training.decode_attention`, shared with VieNeu) reads the written slots
   only, their count on the device, so the main transformer's CUDA graph replays at every step,
   and the query heads that share a key/value head read that head's cache once, together.
 - The depformer's training forward. moshi runs its 16 codebook steps as slices `x[:, t:t+1]` of
@@ -509,7 +509,7 @@ def _step_attention(
         return _moshi_attention_forward(self, query, key, value)
     if query.shape[1] != 1:
         raise RuntimeError("A narrowed attention step takes one frame")
-    from training.tranche.decode_attention import attend
+    from training.decode_attention import attend
 
     batch, _, channels = query.shape
     groups, dim = self.num_heads // self.kv_repeat, channels // self.num_heads

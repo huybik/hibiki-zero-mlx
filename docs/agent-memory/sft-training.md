@@ -14,7 +14,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 `training/finetune/train.py`:
 
 - Full-model SFT from `kyutai/hibiki-zero-3b-pytorch-bf16`; every parameter is trainable.
-  `common.load_policy` builds the model for SFT and GRPO alike, through `common.build_lm` (moshi's
+  `model.load_policy` builds the model for SFT and GRPO alike, through `model.build_lm` (moshi's
   `get_moshi`, or for a parallel-heads student its own load, [student-heads](student-heads.md#design)),
   which, loading a Hibiki weight, copies the text PAD's input embedding over the text EOS's (its
   way to make a sampled early EOS read on as PAD). So every run starts with that row reset, and
@@ -112,7 +112,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 - The full `en_speech` cache (3,441,391 rows) plans one epoch of 131,703 batches with seed 43
   (the second run). Single-row streams changed every plan, the validation streams' too, so
   teacher-forced validation losses do not compare across that change (2026-11-04).
-- Rows load from per-shard packs (`streams.pack_shard`: one flat int32 `codes.bin` plus an
+- Rows load from per-shard packs (`packs.pack_shard`: one flat int32 `codes.bin` plus an
   index and each row's doc and seq, in `<cache-dir>/.packed/<shard>/`, rebuilt when a shard's
   size or mtime changes or `PACK_VERSION` does: 7 since each pack lists its OCR-damaged rows, 6
   the rows its build rejected for the frame grids, both 2026-11-22, [Target timing](#target-timing); 5 recorded its shard's
@@ -120,7 +120,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
   memory-mapped with `torch.from_file`, which keeps no file descriptor (numpy's memmap holds one
   per shard, past the 1,024 limit). Packing all 1,832 shards takes ~30 s on 32 forked workers;
   a start then loads the rows in 9 s with 3 GiB resident, against 455 s and ~75 GiB unpickling
-  the shards. The trainer reads only packs: `python -m training.finetune.streams --drop-shards
+  the shards. The trainer reads only packs: `python -m training.finetune.packs --drop-shards
   DIR...` packs and then deletes the shards (only once the Hub lists them), marking each pack
   `dropped`. A pack so marked loads without its shard if it is of the current `PACK_VERSION` (a
   new version needs the shard fetched again); one left without its shard any other way raises, so
@@ -157,7 +157,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
     `--model-weight`), shortest first in batches of
     `--eval-batch-size` 64 that mix the sets, each batch generated until every row ends or 20 s
     past its longest row: at most 4,918 generation steps. Mimi codes 16 rows at a time on CUDA
-    (`hibiki_helpers.MIMI_CHUNK_ROWS_CUDA`; 8 elsewhere, `MIMI_CHUNK_ROWS`).
+    (`generation.MIMI_CHUNK_ROWS_CUDA`; 8 elsewhere, `MIMI_CHUNK_ROWS`).
 - Precision: fp32 master weights, bf16 autocast, TF32 matmul "high". On 32 GB GPUs (RTX 5090),
   `--bf16-adamw` keeps 2D+ weights, gradients, and AdamW moments in bf16 with fused Triton
   stochastic rounding and fused gradient clipping (1D norms/scales stay fp32; 8 bytes/param),
@@ -170,7 +170,7 @@ The pod procedure is in [docs/finetune.md](../finetune.md). Caches are covered i
 
 ## Target timing
 
-- A row's target starts at its cached delay or at `streams.start_floor`, whichever is later: no
+- A row's target starts at its cached delay or at `rows.start_floor`, whichever is later: no
   target text token starts before 0.32 s (`START_MARGIN`, 4 frames) after the source token a
   proportional alignment gives it has been heard (target token i of N waits for source token
   ⌈(i + 1)M / N⌉ of M; a source token is heard by the next one's start, the last 0.4 s after its
@@ -273,9 +273,9 @@ The fast path (`lm_training`), its measurements and the speed by GPU are in
 
 ## Objective
 
-`common.compute_batch_losses`, Kyutai's `moshi-finetune` weighting (decided 2026-11-01,
+`losses.compute_batch_losses`, Kyutai's `moshi-finetune` weighting (decided 2026-11-01,
 [plan](../vi_en_parity_plan.md#decisions-2026-11-01-later-dates-marked)), as weighted sums of one kernel,
-`common.token_ce`: each target token's cross-entropy over the full logits, 0 where the forward's
+`losses.token_ce`: each target token's cross-entropy over the full logits, 0 where the forward's
 mask is off. Training, teacher-forced validation and GRPO's token logprobs (its negative at the
 sampling temperature) all run it, so a change to it needs all three checked
 ([sft-speed](sft-speed.md#by-gpu) has why it is dense):
@@ -289,7 +289,7 @@ sampling temperature) all run it, so a change to it needs all three checked
 - The upstream model on two 96-frame streams: loss 8.61, word CE 13.3, PAD accuracy 0.64. The
   previous objective is in [docs/analysis/loss_function.md](../analysis/loss_function.md).
 - **Distillation** (`--teacher-weight`, [phone-student](phone-student.md#distillation)): each
-  training token's CE becomes `common.token_kl`, its KL from a frozen bf16 teacher's
+  training token's CE becomes `losses.token_kl`, its KL from a frozen bf16 teacher's
   distribution on the same stream, with the same weights, where both models' masks hold (a
   heads student's delays differ from its teacher's); the teacher reads the whole stream and the
   model its cut. Validation still reports CE against the targets.

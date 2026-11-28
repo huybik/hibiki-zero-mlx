@@ -1,7 +1,7 @@
 # Voice scores
 
 Read when touching `training/finetune/voice_scores.py` or `training/audio/kaldi.py`, or the speech decode and scores in
-`common.generate_batch` (`hibiki_helpers.decode_wavs`) and `inference/tools/gate.py`.
+`generation.generate_batch` (`generation.decode_wavs`) and `inference/tools/gate.py`.
 Back to [CONTEXT.md](../../CONTEXT.md) · evaluation itself: [sft-evaluation](sft-evaluation.md)
 
 Every free-running evaluation that decodes the speech scores it (`training/finetune/voice_scores.py`):
@@ -53,7 +53,7 @@ evaluation had missed a phone student speaking in a voice unlike the speaker's
   after Stage 1's decay 0.293 / 4.94 ([student-slices](student-slices.md#runs)).
 - Cost: scoring takes ~0.08 s a row on the M4 Pro's GPU; source embeddings are cached for the
   process. The validation also decodes every row's speech up to its end frame (`decode_wavs`):
-  on CUDA in length-sorted batches of 8 rows (`hibiki_helpers.MIMI_DECODE_CHUNK_CUDA`), each
+  on CUDA in length-sorted batches of 8 rows (`generation.MIMI_DECODE_CHUNK_CUDA`), each
   padded only to its group's longest, the same audio as each row alone (Mimi is causal; 8 rows
   of a validation batch 857 → 244 ms on the RTX 5090, [sft-speed](sft-speed.md#fast-path));
   on MPS and the CPU each row alone, to keep the peak small (8 rows of a 52 s batch took 4 GiB of

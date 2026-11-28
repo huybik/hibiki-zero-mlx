@@ -2,7 +2,8 @@
 pairs, resume and its contract (`run_config.json`), best-checkpoint promotion and the jsonl logs.
 
 A pair is `model_stepNNNNNN.safetensors` plus `trainer_stepNNNNNN.pt` (the optimizer state); a run
-resumes its newest complete pair. `hf_sync.py` uploads these files as they are.
+resumes its newest complete pair. `hf_sync.py` uploads these files as they are; the pairs and
+`best.json` as both read them are `run_files.py`'s.
 """
 from __future__ import annotations
 
@@ -16,24 +17,15 @@ from typing import Any
 
 import torch
 
-from training.finetune import common
+from training.finetune.model import TOKENIZER_KEY, load_model, save_state
+from training.finetune.run_files import (
+    BEST_METRIC,
+    atomic_write_text,
+    checkpoint_pairs,
+    fsync_path,
+    load_best_state,
+)
 from training.paths import repo_display_path, require_file
-
-# The mean chrF of the selecting sets (`common.selecting_sets`). Named apart from "free_running_chrf",
-# the first set's alone, which a run of both directions selected on before 2026-11-11: its best.json
-# is not comparable.
-BEST_METRIC = "selecting_chrf"
-
-
-def atomic_write_text(text: str, path: Path) -> None:
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.unlink(missing_ok=True)
-    try:
-        temporary.write_text(text, encoding="utf-8")
-        common.fsync_path(temporary)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def atomic_torch_save(payload: Any, path: Path) -> None:
@@ -41,27 +33,10 @@ def atomic_torch_save(payload: Any, path: Path) -> None:
     temporary.unlink(missing_ok=True)
     try:
         torch.save(payload, temporary)
-        common.fsync_path(temporary)
+        fsync_path(temporary)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def checkpoint_pairs(out_dir: Path) -> list[tuple[int, Path, Path]]:
-    models = {
-        int(path.stem.removeprefix("model_step")): path
-        for path in out_dir.glob("model_step*.safetensors")
-        if path.stem.removeprefix("model_step").isdigit()
-    }
-    trainers = {
-        int(path.stem.removeprefix("trainer_step")): path
-        for path in out_dir.glob("trainer_step*.pt")
-        if path.stem.removeprefix("trainer_step").isdigit()
-    }
-    return [
-        (step, models[step], trainers[step])
-        for step in sorted(models.keys() & trainers.keys())
-    ]
 
 
 def clean_incomplete_checkpoints(out_dir: Path) -> None:
@@ -142,24 +117,7 @@ def build_metadata(args: argparse.Namespace) -> dict[str, str]:
     """A saved model's safetensors metadata; `text_tokenizer` names the tokenizer its text rows
     are on (`vi_tokenizer.init_weights` reads it)."""
     return {"target": "full", "base_model": repo_display_path(args.model_weight),
-            common.TOKENIZER_KEY: Path(args.tokenizer).name}
-
-
-def load_best_state(out_dir: Path) -> dict[str, Any] | None:
-    path = out_dir / "best.json"
-    if not path.is_file():
-        return None
-    state = json.loads(path.read_text(encoding="utf-8"))
-    if set(state) != {"step", "model", "metric", "chrf"}:
-        raise RuntimeError("Invalid best-checkpoint metadata")
-    step = int(state["step"])
-    if state["metric"] != BEST_METRIC:
-        raise RuntimeError("Best-checkpoint metric changed")
-    model = out_dir / str(state["model"])
-    if model.name != f"best_step{step:06d}.safetensors" or not model.is_file():
-        raise RuntimeError("Best-checkpoint metadata references a missing model")
-    float(state["chrf"])
-    return state
+            TOKENIZER_KEY: Path(args.tokenizer).name}
 
 
 def promote_best(
@@ -265,9 +223,9 @@ class CheckpointWriter:
             clean_incomplete_checkpoints(self.out_dir)
             if self.args.keep_checkpoints > 0:  # room for the new pair before it is written
                 prune_checkpoint_pairs(self.out_dir, max(1, self.args.keep_checkpoints - 1))
-            common.save_state(model_state, model_path, build_metadata(self.args))
+            save_state(model_state, model_path, build_metadata(self.args))
             atomic_torch_save(trainer_state, trainer_path)
-            common.fsync_path(self.out_dir)
+            fsync_path(self.out_dir)
             prune_checkpoint_pairs(self.out_dir, self.args.keep_checkpoints)
         except BaseException as exc:  # raised by the next wait()
             model_path.unlink(missing_ok=True)
@@ -292,7 +250,7 @@ def load_newest_pair(model: Any, optimizer: Any, out_dir: Path, device: torch.de
     checkpoint = torch.load(trainer_path, map_location="cpu", weights_only=False)
     if int(checkpoint["step"]) != step or checkpoint["model"] != model_path.name:
         raise RuntimeError(f"{trainer_path.name} does not match {model_path.name}")
-    common.load_model(model, model_path, None)
+    load_model(model, model_path, None)
     optimizer.load_state_dict(checkpoint["optimizer"])
     _states_to(optimizer, device)
     print(f"Resumed step {step} from {repo_display_path(trainer_path)}")

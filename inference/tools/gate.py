@@ -33,7 +33,15 @@ import torch
 
 from hibiki_mlx.file_mode import translate
 from hibiki_mlx.model import load, resolve_weights_dir
-from training.finetune import common, voice_scores
+from training.finetune import voice_scores
+from training.finetune.eval_rows import (
+    EVAL_SET,
+    REFERENCE,
+    SOURCE,
+    read_eval_sets,
+    validate_eval_rows,
+)
+from training.finetune.metrics import score_sets, score_summary
 from training.paths import repo_display_path, require_file, resolve_repo_path
 
 FRAME_RATE = 12.5
@@ -59,12 +67,12 @@ def main() -> None:
     args = parse_args()
     if args.limit is not None and args.limit <= 0:
         raise ValueError("--limit must be positive")
-    sets = common.read_eval_sets(args.pairs)
-    common.validate_eval_rows(
+    sets = read_eval_sets(args.pairs)
+    validate_eval_rows(
         [row for set_rows in sets.values() for row in set_rows], "id", duration_column="duration_s"
     )
     rows = [row for set_rows in sets.values() for row in set_rows[: args.limit]]
-    sources = [require_file(row[common.SOURCE], "evaluation audio") for row in rows]
+    sources = [require_file(row[SOURCE], "evaluation audio") for row in rows]
     out_dir = resolve_repo_path(args.out_dir)
     hypotheses = out_dir / "hypotheses.jsonl"
     if hypotheses.exists():
@@ -90,9 +98,9 @@ def main() -> None:
             )
             record = {
                 "id": row["id"],
-                common.EVAL_SET: row[common.EVAL_SET],
-                common.SOURCE: row[common.SOURCE],
-                common.REFERENCE: row[common.REFERENCE],
+                EVAL_SET: row[EVAL_SET],
+                SOURCE: row[SOURCE],
+                REFERENCE: row[REFERENCE],
                 "prediction_text": out.text,
                 "eos_found": out.ended,
                 "end_offset_s": offset,
@@ -111,9 +119,9 @@ def main() -> None:
                 flush=True,
             )
 
-    scores = common.score_sets(records, list(sets))
+    scores = score_sets(records, list(sets))
     for name, metrics in scores.items():
-        print(f"{name}: {common.score_summary(metrics)}")
+        print(f"{name}: {score_summary(metrics)}")
     (out_dir / "scores.json").write_text(
         json.dumps(
             {

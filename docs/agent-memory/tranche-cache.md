@@ -9,14 +9,14 @@ Back to [CONTEXT.md](../../CONTEXT.md) · [Gates](#gates) · [Running](#running)
 
 `training/tranche/cache.py build <sources>` turns each segments shard whose `text_en`, `en_audio`
 and `asr_vi` are on the Hub into `<root>/cache/<source>/shard_<shard>.pt`, pushed to `<source>/`
-of the cache repo (`ingest.CACHE_REPO`), one cache per source (see
+of the cache repo (`repo.CACHE_REPO`), one cache per source (see
 [Decision](real-vi-tranche.md#decision)); `--direction en-vi` (its tokenizer the Vietnamese swap, `paths.DIRECTION_TOKENIZERS`) builds
 the other way into `<root>/cache/en-vi/<source>/` and `en-vi/<source>/` ([two-way](two-way.md)).
 The tranche's `en-vi` caches were timed by omniASR; a rebuild now uses wav2vec2-base-vietnamese-250h,
 whose 0.55 floor is calibrated on TTS rows and on YODAS's real speech
 ([two-way](two-way.md#vietnamese-aligner)).
 Its `read_shard` fetches a shard's four parts at once (the box's
-own copies first, `ingest.part_file`), joins them by id and applies the gates below
+own copies first, `repo.part_file`), joins them by id and applies the gates below
 (`--drop-inputs` then deletes the HF cache's copies, so a build of every shard holds a shard or
 two of inputs, not GigaSpeech 2's 216 GB); the shared
 build does the rest ([cache-build](cache-build.md#shape)). A sample also holds `text_vi` (the
@@ -25,14 +25,14 @@ an `en-vi` row writes it: lower case without punctuation, against PhoAudiobook's
 punctuation and viVoice's cased text), `doc`
 and `seq`, so the trainer joins a doc's rows in order ([sft-training](sft-training.md)); the delay
 draws use split `train`. It skips the shards held out for evaluation
-(`ingest.SOURCES[...].heldout`, [giga-heldout](sft-evaluation.md#evaluation-sets)).
+(`repo.SOURCES[...].heldout`, [giga-heldout](sft-evaluation.md#evaluation-sets)).
 
 ## Gates
 
 - A row is dropped, with the first reason in the shard's `rejected`, when its language is not
   Vietnamese; when its CER is over `--max-cer`; when the ASR hears more nghìn/triệu/tỷ than the
   transcript holds (these three are `filters.vi_gate`); when it was not voiced; when `en_broken`;
-  when `en_asr` has Vietnamese letters `text_en` lacks; when it overlaps an evaluation sentence;
+  when `en_asr` has Vietnamese letters (`filters.VI_LETTERS`) `text_en` lacks; when it overlaps an evaluation sentence;
   then on the build's own gates (decoded duration, frame cap, CTC alignment score 0.5, token
   timing; [cache-build](cache-build.md#rows)). The Vietnamese side comes first since 2026-11-07, when voice.py began skipping the
   rows `vi_gate` drops at the default 0.15 (null `en_audio`); shards built before then counted
@@ -116,12 +116,12 @@ draws use split `train`. It skips the shards held out for evaluation
 - Speeds of the first full build are in [cache-speed-cuda](cache-speed-cuda.md). In it (2026-11-06) viVoice ran ~1,000–1,170× with the GPU idle 34% of the time,
   mostly waiting on the next shard's Hub download (~4 MB/s on the box, 10–18 s for a viVoice
   shard's 60 MB against ~8 s of GPU work; parallel downloads got no more). `read_shard` now takes
-  each part's copy under `--root` where the box has one (`ingest.part_file`, which voice and
-  filters use too; from GigaSpeech 2 archive 13 on, every part is local); after that fix viVoice
+  each part's copy under `--root` where the box has one (`repo.part_file`, which voice also
+  uses; from GigaSpeech 2 archive 13 on, every part is local); after that fix viVoice
   ran ~1,300–1,400×, the GPU idle 17%, mostly at each shard's start. A review (2026-11-06) found
   every local `asr_vi` and `en_audio` the size of its Hub copy, hashes equal on all `asr_vi` and
   12 sampled `en_audio`.
-- The pushes run in their own thread, in order, while the build goes on (`ingest.Pushes`, which
+- The pushes run in their own thread, in order, while the build goes on (`repo.Pushes`, which
   voice.py uses too); a push that fails its retries stops the build at the next one, and `done:`
   is logged once the last push is in. In the en-vi build (2026-11-10) they ran in the build's
   loop: uploads to the Hub ran ~5 MB/s (~1–2 MB/s a file), so each 30-minute push of ~25

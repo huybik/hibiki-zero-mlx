@@ -9,9 +9,9 @@ and often wrong, but timed word by word. So they only place the rows: runs of wo
 RUN_GAP_S apart and with no tag ("[âm nhạc]") between them, the longest first up to CAP_S a video
 (a longer run cut at a pause), are decoded alone and cut into rows of 5-22.4 s at the quietest point
 of the widest pause between two words. Every row is
-heard by the ASR server (`filters.Hearer`), whose transcript becomes the row's `text`; its CER against
-the caption is the row's check. Written per tar, both pushed as they come:
-  <root>/yodas/segments/<tar>.parquet   ingest's schema; doc the video, speaker none
+heard by the ASR server (`asr.Client`, its language detected), whose transcript becomes the row's `text`; its
+CER against the caption (`asr.cer`) is the row's check. Written per tar, both pushed as they come:
+  <root>/yodas/segments/<tar>.parquet   the segments' schema (repo.SCHEMA); doc the video, speaker none
   <root>/yodas/asr_vi/<tar>.parquet     the transcript again, its language, and its CER against the
                                         caption (the gates' `cer`, as every source's asr_vi)
 keeping the rows `filters.vi_gate` passes (the caption standing as the transcript).
@@ -33,8 +33,10 @@ from pathlib import Path
 
 import numpy as np
 
+from training.tranche.repo import log
+
 RATE = 24_000  # Mimi's rate: the rows are stored at it
-ASR_RATE = 16_000
+ROW_S = (5.0, 22.4)  # the trainer's row lengths: the rows are cut to them
 CAP_S = 1200.0  # a video's rows at most: many voices and topics rather than a few long videos
 RUN_GAP_S = 2.0  # word starts further apart end a run
 MIN_PAUSE_S = 0.33  # a cut needs this between two word starts: a word's own length (~0.29 s at 3.4 syllables/s) plus a gap
@@ -47,10 +49,7 @@ TAG = re.compile(r"^\s*(\[[^\]]*\]\s*)+$")  # "[âm nhạc]", "[tiếng cười]
 MAX_TAG_SHARE = 0.2  # videos whose cues are more often tags are music, not speech
 IN_FLIGHT = 2  # videos queued per cutting process
 ASR_IN_FLIGHT = 256  # the server's batch (--max-num-seqs): 78 rows/s at 64 in flight, 104 at 256, no more at 512
-
-
-def log(msg: str) -> None:
-    print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
+ASR_TRIES = 3  # the server drops an idle keep-alive connection now and then: sent again at once
 
 
 def caption(meta: dict) -> tuple[list[tuple[float, str]], list[float], float]:
@@ -148,7 +147,7 @@ def cut_run(pcm: np.ndarray, off: float, run: list[tuple[float, str]], lo: float
 def decode(container, stream, a: float, b: float) -> tuple[np.ndarray, float]:
     """A video's audio from SEEK_S before a to just past b seconds, mono at RATE, and the time its
     first sample is at: only the chosen runs are decoded, not the hours of video around them.
-    Resampled by scipy: PyAV's AudioResampler starts a thread per host CPU, as voice.decode says."""
+    Resampled by scipy: PyAV's AudioResampler starts a thread per host CPU, as training.audio.decode says."""
     from scipy.signal import resample_poly
 
     container.seek(int(max(0.0, a - SEEK_S) / stream.time_base), stream=stream)
@@ -167,22 +166,13 @@ def decode(container, stream, a: float, b: float) -> tuple[np.ndarray, float]:
     return resample_poly(pcm, RATE // g, rate // g).astype(np.float32), off
 
 
-def wav_16k(pcm: np.ndarray) -> bytes:
-    """A row at RATE -> 16 kHz WAV for the ASR server (`filters.Hearer`)."""
-    import soundfile as sf
-    from scipy.signal import resample_poly
-
-    buf = io.BytesIO()
-    sf.write(buf, resample_poly(pcm, 2, 3).astype(np.float32), ASR_RATE, subtype="PCM_16", format="WAV")
-    return buf.getvalue()
-
-
 def video_rows(tar: str, index: int, meta: dict, webm: bytes, row_s: tuple[float, float]) -> tuple[list[dict], str]:
     """A video's rows, each with its Ogg Opus (`audio`) and the 16 kHz WAV the ASR hears (`wav`),
     and why it gives none ("" when it gives some). In a cutting process."""
     import av
 
-    from training.tranche.ingest import encode_opus
+    from training.audio.decode import encode_opus
+    from training.tranche.asr import wav_16k
 
     words, tags, tag_share = caption(meta)
     if not words:
@@ -229,7 +219,7 @@ def video_rows(tar: str, index: int, meta: dict, webm: bytes, row_s: tuple[float
                      "seq": index * 10_000 + k, "speaker": None, "start_s": round(a, 3), "end_s": round(b, 3),
                      "caption": text, "duration_s": round(len(clip) / RATE, 3), "source_rate": RATE,
                      "audio": {"bytes": encode_opus(clip, RATE), "path": f"yodas_{tar}_{meta['id']}_{k:03d}.opus"},
-                     "wav": wav_16k(clip)})
+                     "wav": wav_16k(clip, RATE)})
     return rows, "" if rows else "no row in its runs"
 
 
@@ -252,6 +242,7 @@ def download(url: str, dst: Path) -> Path:
 
 
 def hear_rows(rows: list[dict], hearer, pool: ThreadPoolExecutor) -> list[Future]:
+    """Each row's clip heard (`asr.Client.hear`, the language detected) in `pool`."""
     return [pool.submit(hearer.hear, row.pop("wav")) for row in rows]
 
 
@@ -294,34 +285,33 @@ def tar_shard(tar: Path, cutters: ProcessPoolExecutor, workers: int, hearer, asr
 
 def finish_tar(name: str, root: Path, heard: list[tuple[dict, Future]], videos: int, why: Counter,
                began: float, cut_s: float) -> str:
-    import jiwer
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from training.tranche.filters import spoken, vi_gate
-    from training.tranche.ingest import SCHEMA
+    from training.tranche import asr
+    from training.tranche.filters import vi_gate
+    from training.tranche.repo import SCHEMA
 
-    kept, asr, reasons, cers = [], [], Counter(), []
+    kept, asr_rows, reasons, cers = [], [], Counter(), []
     for row, future in heard:
         language, text = future.result()
         words = row.pop("caption")
-        ref, hyp = " ".join(spoken(words)), " ".join(spoken(text))
-        cer = jiwer.cer(ref, hyp) if ref else float(bool(hyp))
+        cer = asr.cer(words, text)
         cers.append(cer)
         gate = {"language": language, "cer": cer, "asr_vi": text, "text": words}
         if reason := vi_gate(gate):
             reasons["magnitudes" if reason.startswith("the ASR") else reason.split(" ")[0]] += 1
             continue
         kept.append(row | {"text": text})
-        asr.append({"id": row["id"], "asr_vi": text, "language": language, "cer": cer})
+        asr_rows.append({"id": row["id"], "asr_vi": text, "language": language, "cer": cer})
     kept.sort(key=lambda r: r["seq"])
     order = {r["id"]: k for k, r in enumerate(kept)}
-    asr.sort(key=lambda r: order[r["id"]])
+    asr_rows.sort(key=lambda r: order[r["id"]])
     # asr_vi first: a tar's segments, which mark it done, then mean its asr_vi is there too.
-    for part, table in (("asr_vi", pa.table({"id": [r["id"] for r in asr],
-                                             "asr_vi": pa.array([r["asr_vi"] for r in asr], pa.string()),
-                                             "language": pa.array([r["language"] for r in asr], pa.string()),
-                                             "cer": pa.array([r["cer"] for r in asr], pa.float32())})),
+    for part, table in (("asr_vi", pa.table({"id": [r["id"] for r in asr_rows],
+                                             "asr_vi": pa.array([r["asr_vi"] for r in asr_rows], pa.string()),
+                                             "language": pa.array([r["language"] for r in asr_rows], pa.string()),
+                                             "cer": pa.array([r["cer"] for r in asr_rows], pa.float32())})),
                         ("segments", pa.Table.from_pylist(kept, schema=SCHEMA))):
         dst = root / "yodas" / part / f"{name}.parquet"
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -346,8 +336,8 @@ def segments(args: argparse.Namespace) -> None:
     from huggingface_hub import HfApi
 
     from training.paths import cpu_budget
-    from training.tranche.filters import ASR_URL, Hearer
-    from training.tranche.ingest import REPO, ROW_S, SOURCES, Pushes, an_token, push_part, shard_files
+    from training.tranche import asr
+    from training.tranche.repo import REPO, SOURCES, Pushes, an_token, push_part, shard_files
 
     hub = set(HfApi(token=an_token()).list_repo_files(REPO, repo_type="dataset"))
     parts = ("asr_vi", "segments")
@@ -371,7 +361,7 @@ def segments(args: argparse.Namespace) -> None:
     workers = args.workers or max(1, int(cpu_budget()) - 3)  # the main process, the ASR client and the pushes
     cutters = ProcessPoolExecutor(workers, mp_context=get_context("spawn"))
     asr_pool = ThreadPoolExecutor(ASR_IN_FLIGHT)
-    hearer = Hearer(ASR_URL, ASR_IN_FLIGHT)
+    hearer = asr.Client(asr.URL, ASR_IN_FLIGHT, tries=ASR_TRIES, pause_s=0)
     fetch = ThreadPoolExecutor(1, thread_name_prefix="download")
     finisher = ThreadPoolExecutor(1, thread_name_prefix="finish")
     scratch = args.root / "yodas" / ".download"

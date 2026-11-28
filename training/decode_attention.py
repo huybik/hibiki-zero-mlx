@@ -1,7 +1,8 @@
-"""One query a slot over the first `lengths[b]` keys of its own preallocated cache, in Triton: vieneu_frame.py's
-backbone attention. Each program reads only its slot's live keys and values (the dense masked form reads the whole
-cache every frame), and the length is read on the device, so the kernel replays inside a CUDA graph. The query heads
-sharing a key head go through the tensor cores together, padded to 16 rows."""
+"""One query a slot over the first `lengths[b]` keys of its own preallocated cache, in Triton: frame.py's
+backbone attention, and the SFT trainer's generation step (lm_training). Each program reads only its slot's live
+keys and values (the dense masked form reads the whole cache every frame), and the length is read on the device, so
+the kernel replays inside a CUDA graph. The query heads sharing a key head go through the tensor cores together,
+padded to 16 rows."""
 from __future__ import annotations
 
 import torch

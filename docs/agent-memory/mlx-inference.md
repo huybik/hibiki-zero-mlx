@@ -55,11 +55,11 @@ parses arguments and picks a mode. `pip install -e .` installs `hibiki_mlx` from
   Mimi: a file's first channel as one stream, a mic session as another, and `tools/bench`'s
   frames (timed in "level + mimi encode"). It raises quiet speech toward −6 dBFS; how and why
   in [sft-evaluation](sft-evaluation.md#input-level). The evaluation (`training/finetune/
-  common.py`) imports it as `inference.hibiki_mlx.level`, so the module needs only NumPy.
+  eval_rows.py`) imports it as `inference.hibiki_mlx.level`, so the module needs only NumPy.
 - `hibiki_mlx` is installed editable from the main checkout, so in a worktree run the tools with
   `PYTHONPATH=<worktree>/inference`, or they run main's runtime (`main.py` finds its own first).
 - File mode feeds a file as training's free-running evaluation does
-  (`common.generate_batch`), so its scores compare with the box's: the levelled first channel
+  (`generation.generate_batch`), so its scores compare with the box's: the levelled first channel
   zero-padded to whole frames, then one frame whose 16 source codes are all the source EOS
   (`card`, 2048, `LmConfig.audio_eos_token`; Mimi still codes a silent frame there, as a
   whole-file encode codes the padding), then silence to 20 s after the clip (`TAIL_S`, training's
@@ -256,7 +256,7 @@ parses arguments and picks a mode. `pip install -e .` installs `hibiki_mlx` from
   directory as training's free-running evaluation scores a checkpoint, to gate a quantization
   against BF16 (plan stage 6). It translates each row alone in file mode, the MLX seed set to
   `--seed` + the row's index, and scores each pairs file as its own set with training's
-  `common.score_sets` (corpus chrF and BLEU, length ratio, empty and ended rows, the health gates,
+  `metrics.score_sets` (corpus chrF and BLEU, length ratio, empty and ended rows, the health gates,
   the voice scores of each row's decoded speech on the Mac's GPU:
   [voice-scores](voice-scores.md); decoding steps `max_delay` − 1 frames past
   the EOS, so its `frames` and `seconds` don't compare with gates before 2026-11-27). It writes

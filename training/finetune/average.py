@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
-from training.finetune import common
+from training.finetune.model import TOKENIZER_KEY, save_state
 from training.paths import repo_display_path, require_file, resolve_repo_path
 
 
@@ -36,11 +36,11 @@ def average(paths: list[Path]) -> tuple[dict[str, torch.Tensor], dict[str, str]]
     first = handles[0]
     keys = sorted(first.keys())
     metadata = dict(first.metadata() or {})
-    tokenizer = metadata.get(common.TOKENIZER_KEY)
+    tokenizer = metadata.get(TOKENIZER_KEY)
     for path, handle in zip(paths[1:], handles[1:]):
         if sorted(handle.keys()) != keys:
             raise ValueError(f"{repo_display_path(path)} holds other tensors than {repo_display_path(paths[0])}")
-        if (handle.metadata() or {}).get(common.TOKENIZER_KEY) != tokenizer:
+        if (handle.metadata() or {}).get(TOKENIZER_KEY) != tokenizer:
             raise ValueError(f"{repo_display_path(path)} is on another tokenizer than {repo_display_path(paths[0])}")
     state = {}
     for key in keys:
@@ -72,7 +72,7 @@ def main() -> None:
         raise ValueError("A checkpoint is named twice")
     state, metadata = average(paths)
     out = resolve_repo_path(args.out)
-    common.save_state(state, out, metadata)
+    save_state(state, out, metadata)
     print(f"Averaged {len(paths)} checkpoints into {repo_display_path(out)}")
 
 
